@@ -1,0 +1,13 @@
+[package]
+name = "php-lsp"
+version = "0.1.0"
+edition = "2024"
+description = "A PHP Language Server Protocol implementation"
+license = "MIT"
+
+[dependencies]
+php-parser-rs = "0.1.3"
+tower-lsp = "0.20"
+tokio = { version = "1", features = ["full"] }
+serde_json = "1"
+dashmap = "6"
