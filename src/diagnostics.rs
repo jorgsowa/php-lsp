@@ -1,5 +1,5 @@
 use php_parser_rs::parser::ast::Statement;
-use tower_lsp::lsp_types::{Diagnostic, DiagnosticSeverity, Position, Range, Url};
+use tower_lsp::lsp_types::{Diagnostic, DiagnosticSeverity, Position, Range};
 
 /// Parse source once, returning the (partial) AST and any diagnostics.
 /// This is the single parse entrypoint used by DocumentStore.
@@ -30,10 +30,6 @@ pub fn parse_document(source: &str) -> (Vec<Statement>, Vec<Diagnostic>) {
     }
 }
 
-pub fn parse_diagnostics(_uri: &Url, source: &str) -> Vec<Diagnostic> {
-    parse_document(source).1
-}
-
 pub(crate) fn span_to_position(span: &php_parser_rs::lexer::token::Span) -> Position {
     // php-parser-rs uses 1-based line/column; LSP uses 0-based
     Position {
@@ -46,21 +42,17 @@ pub(crate) fn span_to_position(span: &php_parser_rs::lexer::token::Span) -> Posi
 mod tests {
     use super::*;
 
-    fn uri() -> Url {
-        Url::parse("file:///test.php").unwrap()
-    }
-
     #[test]
     fn valid_php_produces_no_diagnostics() {
         let src = "<?php\nfunction hello() { return 42; }";
-        assert!(parse_diagnostics(&uri(), src).is_empty());
+        assert!(parse_document(src).1.is_empty());
     }
 
     #[test]
     fn missing_class_name_produces_diagnostic() {
         // "class {" on line 2 col 7 (1-based) → LSP line 1 character 6
         let src = "<?php\nclass {";
-        let diags = parse_diagnostics(&uri(), src);
+        let diags = parse_document(src).1;
         assert!(!diags.is_empty(), "expected at least one diagnostic");
         let d = &diags[0];
         assert_eq!(d.severity, Some(DiagnosticSeverity::ERROR));
@@ -78,14 +70,14 @@ mod tests {
     fn fixed_file_produces_no_diagnostics() {
         let broken = "<?php\nclass {";
         let fixed = "<?php\nclass Foo {}";
-        assert!(!parse_diagnostics(&uri(), broken).is_empty());
-        assert!(parse_diagnostics(&uri(), fixed).is_empty());
+        assert!(!parse_document(broken).1.is_empty());
+        assert!(parse_document(fixed).1.is_empty());
     }
 
     #[test]
     fn multiple_errors_all_reported() {
         let src = "<?php\nclass {\nfunction {";
-        let diags = parse_diagnostics(&uri(), src);
+        let diags = parse_document(src).1;
         assert!(diags.len() >= 1, "expected diagnostics for broken source");
     }
 
