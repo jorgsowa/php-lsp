@@ -1,28 +1,37 @@
+use php_parser_rs::parser::ast::Statement;
 use tower_lsp::lsp_types::{Diagnostic, DiagnosticSeverity, Position, Range, Url};
 
-pub fn parse_diagnostics(_uri: &Url, source: &str) -> Vec<Diagnostic> {
+/// Parse source once, returning the (partial) AST and any diagnostics.
+/// This is the single parse entrypoint used by DocumentStore.
+pub fn parse_document(source: &str) -> (Vec<Statement>, Vec<Diagnostic>) {
     match php_parser_rs::parser::parse(source) {
-        Ok(_) => vec![],
-        Err(stack) => stack
-            .errors
-            .iter()
-            .map(|e| {
-                let start = span_to_position(&e.span);
-                // Use a single-character range for the error location
-                let end = Position {
-                    line: start.line,
-                    character: start.character + 1,
-                };
-                Diagnostic {
-                    range: Range { start, end },
-                    severity: Some(DiagnosticSeverity::ERROR),
-                    source: Some("php-lsp".to_string()),
-                    message: e.message.clone(),
-                    ..Default::default()
-                }
-            })
-            .collect(),
+        Ok(ast) => (ast, vec![]),
+        Err(stack) => {
+            let diagnostics = stack
+                .errors
+                .iter()
+                .map(|e| {
+                    let start = span_to_position(&e.span);
+                    let end = Position {
+                        line: start.line,
+                        character: start.character + 1,
+                    };
+                    Diagnostic {
+                        range: Range { start, end },
+                        severity: Some(DiagnosticSeverity::ERROR),
+                        source: Some("php-lsp".to_string()),
+                        message: e.message.clone(),
+                        ..Default::default()
+                    }
+                })
+                .collect();
+            (stack.partial, diagnostics)
+        }
     }
+}
+
+pub fn parse_diagnostics(_uri: &Url, source: &str) -> Vec<Diagnostic> {
+    parse_document(source).1
 }
 
 pub(crate) fn span_to_position(span: &php_parser_rs::lexer::token::Span) -> Position {
@@ -75,9 +84,24 @@ mod tests {
 
     #[test]
     fn multiple_errors_all_reported() {
-        // Two distinct syntax errors
         let src = "<?php\nclass {\nfunction {";
         let diags = parse_diagnostics(&uri(), src);
         assert!(diags.len() >= 1, "expected diagnostics for broken source");
+    }
+
+    #[test]
+    fn parse_document_returns_partial_ast_and_errors() {
+        let src = "<?php\nfunction valid() {}\nclass {";
+        let (ast, diags) = parse_document(src);
+        assert!(!diags.is_empty(), "expected parse errors");
+        assert!(!ast.is_empty(), "expected partial AST with valid function");
+    }
+
+    #[test]
+    fn parse_document_valid_returns_full_ast_no_errors() {
+        let src = "<?php\nfunction greet(): string { return 'hi'; }";
+        let (ast, diags) = parse_document(src);
+        assert!(diags.is_empty());
+        assert!(!ast.is_empty());
     }
 }

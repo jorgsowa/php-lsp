@@ -5,7 +5,7 @@ use tower_lsp::lsp_types::*;
 use tower_lsp::{async_trait, Client, LanguageServer};
 
 use crate::completion::filtered_completions;
-use crate::diagnostics::parse_diagnostics;
+use crate::definition::goto_definition;
 use crate::document_store::DocumentStore;
 use crate::hover::hover_info;
 use crate::symbols::document_symbols;
@@ -37,6 +37,7 @@ impl LanguageServer for Backend {
                     ..Default::default()
                 }),
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
+                definition_provider: Some(OneOf::Left(true)),
                 document_symbol_provider: Some(OneOf::Left(true)),
                 ..Default::default()
             },
@@ -56,51 +57,58 @@ impl LanguageServer for Backend {
 
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
         let uri = params.text_document.uri;
-        let text = params.text_document.text;
-        self.docs.open(uri.clone(), text.clone());
-        let diagnostics = parse_diagnostics(&uri, &text);
-        self.client
-            .publish_diagnostics(uri, diagnostics, None)
-            .await;
+        self.docs.open(uri.clone(), params.text_document.text);
+        let diagnostics = self.docs.get_diagnostics(&uri).unwrap_or_default();
+        self.client.publish_diagnostics(uri, diagnostics, None).await;
     }
 
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
         let uri = params.text_document.uri;
         if let Some(change) = params.content_changes.into_iter().last() {
-            let text = change.text;
-            self.docs.update(uri.clone(), text.clone());
-            let diagnostics = parse_diagnostics(&uri, &text);
-            self.client
-                .publish_diagnostics(uri, diagnostics, None)
-                .await;
+            self.docs.update(uri.clone(), change.text);
+            let diagnostics = self.docs.get_diagnostics(&uri).unwrap_or_default();
+            self.client.publish_diagnostics(uri, diagnostics, None).await;
         }
     }
 
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
         let uri = params.text_document.uri;
         self.docs.close(&uri);
-        self.client
-            .publish_diagnostics(uri, vec![], None)
-            .await;
+        self.client.publish_diagnostics(uri, vec![], None).await;
     }
 
     async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
         let uri = &params.text_document_position.text_document.uri;
-        let source = self.docs.get(uri).unwrap_or_default();
+        let ast = self.docs.get_ast(uri).unwrap_or_default();
+        let other_asts = self.docs.other_asts(uri);
         let trigger = params
             .context
             .as_ref()
             .and_then(|c| c.trigger_character.as_deref());
         Ok(Some(CompletionResponse::Array(filtered_completions(
-            &source, trigger,
+            &ast, &other_asts, trigger,
         ))))
+    }
+
+    async fn goto_definition(
+        &self,
+        params: GotoDefinitionParams,
+    ) -> Result<Option<GotoDefinitionResponse>> {
+        let uri = &params.text_document_position_params.text_document.uri;
+        let position = params.text_document_position_params.position;
+        let source = self.docs.get(uri).unwrap_or_default();
+        let ast = self.docs.get_ast(uri).unwrap_or_default();
+        let other_docs = self.docs.other_docs(uri);
+        Ok(goto_definition(uri, &source, &ast, &other_docs, position)
+            .map(GotoDefinitionResponse::Scalar))
     }
 
     async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
         let uri = &params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
         let source = self.docs.get(uri).unwrap_or_default();
-        Ok(hover_info(&source, position))
+        let ast = self.docs.get_ast(uri).unwrap_or_default();
+        Ok(hover_info(&source, &ast, position))
     }
 
     async fn document_symbol(
@@ -108,9 +116,7 @@ impl LanguageServer for Backend {
         params: DocumentSymbolParams,
     ) -> Result<Option<DocumentSymbolResponse>> {
         let uri = &params.text_document.uri;
-        let source = self.docs.get(uri).unwrap_or_default();
-        Ok(Some(DocumentSymbolResponse::Nested(document_symbols(
-            &source,
-        ))))
+        let ast = self.docs.get_ast(uri).unwrap_or_default();
+        Ok(Some(DocumentSymbolResponse::Nested(document_symbols(&ast))))
     }
 }

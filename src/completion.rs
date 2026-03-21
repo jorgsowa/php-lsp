@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use php_parser_rs::parser::ast::{
     classes::ClassMember,
     namespaces::NamespaceStatement,
@@ -28,14 +30,9 @@ pub fn keyword_completions() -> Vec<CompletionItem> {
         .collect()
 }
 
-pub fn symbol_completions(source: &str) -> Vec<CompletionItem> {
-    let program = match php_parser_rs::parser::parse(source) {
-        Ok(ast) => ast,
-        Err(stack) => stack.partial,
-    };
-
+pub fn symbol_completions(ast: &[Statement]) -> Vec<CompletionItem> {
     let mut items = Vec::new();
-    collect_from_statements(&program, &mut items);
+    collect_from_statements(ast, &mut items);
     items
 }
 
@@ -50,7 +47,6 @@ fn collect_from_statements(stmts: &[Statement], items: &mut Vec<CompletionItem>)
                 });
                 for param in f.parameters.parameters.iter() {
                     items.push(CompletionItem {
-                        // ByteString already includes the leading `$`
                         label: param.name.name.to_string(),
                         kind: Some(CompletionItemKind::VARIABLE),
                         ..Default::default()
@@ -85,6 +81,33 @@ fn collect_from_statements(stmts: &[Statement], items: &mut Vec<CompletionItem>)
                                 kind: Some(CompletionItemKind::CONSTRUCTOR),
                                 ..Default::default()
                             });
+                        }
+                        ClassMember::Property(p) => {
+                            for entry in &p.entries {
+                                items.push(CompletionItem {
+                                    label: entry.variable().name.to_string(),
+                                    kind: Some(CompletionItemKind::PROPERTY),
+                                    ..Default::default()
+                                });
+                            }
+                        }
+                        ClassMember::VariableProperty(p) => {
+                            for entry in &p.entries {
+                                items.push(CompletionItem {
+                                    label: entry.variable().name.to_string(),
+                                    kind: Some(CompletionItemKind::PROPERTY),
+                                    ..Default::default()
+                                });
+                            }
+                        }
+                        ClassMember::Constant(c) => {
+                            for entry in &c.entries {
+                                items.push(CompletionItem {
+                                    label: entry.name.value.to_string(),
+                                    kind: Some(CompletionItemKind::CONSTANT),
+                                    ..Default::default()
+                                });
+                            }
                         }
                         _ => {}
                     }
@@ -125,7 +148,6 @@ fn collect_from_expression(expr: &Expression, items: &mut Vec<CompletionItem>) {
         Expression::AssignmentOperation(assign) => {
             if let Expression::Variable(Variable::SimpleVariable(v)) = assign.left() {
                 let name = v.name.to_string();
-                // ByteString already includes the leading `$`; skip $this
                 if name != "$this" {
                     items.push(CompletionItem {
                         label: name,
@@ -141,21 +163,31 @@ fn collect_from_expression(expr: &Expression, items: &mut Vec<CompletionItem>) {
 }
 
 pub fn filtered_completions(
-    source: &str,
+    ast: &[Statement],
+    other_asts: &[Arc<Vec<Statement>>],
     trigger_character: Option<&str>,
 ) -> Vec<CompletionItem> {
     match trigger_character {
-        Some("$") => symbol_completions(source)
+        Some("$") => symbol_completions(ast)
             .into_iter()
             .filter(|i| i.kind == Some(CompletionItemKind::VARIABLE))
             .collect(),
-        Some(">") => symbol_completions(source)
+        Some(">") => symbol_completions(ast)
             .into_iter()
             .filter(|i| i.kind == Some(CompletionItemKind::METHOD))
             .collect(),
         _ => {
             let mut items = keyword_completions();
-            items.extend(symbol_completions(source));
+            items.extend(symbol_completions(ast));
+            for other in other_asts {
+                let cross: Vec<CompletionItem> = symbol_completions(other)
+                    .into_iter()
+                    .filter(|i| i.kind != Some(CompletionItemKind::VARIABLE))
+                    .collect();
+                items.extend(cross);
+            }
+            let mut seen = std::collections::HashSet::new();
+            items.retain(|i| seen.insert(i.label.clone()));
             items
         }
     }
@@ -164,6 +196,13 @@ pub fn filtered_completions(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn parse_ast(source: &str) -> Vec<Statement> {
+        match php_parser_rs::parser::parse(source) {
+            Ok(ast) => ast,
+            Err(stack) => stack.partial,
+        }
+    }
 
     fn labels(items: &[CompletionItem]) -> Vec<&str> {
         items.iter().map(|i| i.label.as_str()).collect()
@@ -196,8 +235,8 @@ mod tests {
 
     #[test]
     fn extracts_top_level_function_name() {
-        let src = "<?php\nfunction greet() {}";
-        let items = symbol_completions(src);
+        let ast = parse_ast("<?php\nfunction greet() {}");
+        let items = symbol_completions(&ast);
         assert!(
             labels(&items).contains(&"greet"),
             "expected 'greet' in {:?}",
@@ -209,8 +248,8 @@ mod tests {
 
     #[test]
     fn extracts_top_level_class_name() {
-        let src = "<?php\nclass MyService {}";
-        let items = symbol_completions(src);
+        let ast = parse_ast("<?php\nclass MyService {}");
+        let items = symbol_completions(&ast);
         assert!(
             labels(&items).contains(&"MyService"),
             "expected 'MyService' in {:?}",
@@ -222,8 +261,8 @@ mod tests {
 
     #[test]
     fn extracts_class_method_names() {
-        let src = "<?php\nclass Calc { public function add() {} public function sub() {} }";
-        let items = symbol_completions(src);
+        let ast = parse_ast("<?php\nclass Calc { public function add() {} public function sub() {} }");
+        let items = symbol_completions(&ast);
         let ls = labels(&items);
         assert!(ls.contains(&"add"), "missing 'add'");
         assert!(ls.contains(&"sub"), "missing 'sub'");
@@ -234,8 +273,8 @@ mod tests {
 
     #[test]
     fn extracts_function_parameters_as_variables() {
-        let src = "<?php\nfunction process($input, $count) {}";
-        let items = symbol_completions(src);
+        let ast = parse_ast("<?php\nfunction process($input, $count) {}");
+        let items = symbol_completions(&ast);
         let ls = labels(&items);
         assert!(ls.contains(&"$input"), "missing '$input'");
         assert!(ls.contains(&"$count"), "missing '$count'");
@@ -243,8 +282,8 @@ mod tests {
 
     #[test]
     fn extracts_symbols_inside_namespace() {
-        let src = "<?php\nnamespace App;\nfunction render() {}\nclass View {}";
-        let items = symbol_completions(src);
+        let ast = parse_ast("<?php\nnamespace App;\nfunction render() {}\nclass View {}");
+        let items = symbol_completions(&ast);
         let ls = labels(&items);
         assert!(ls.contains(&"render"), "missing 'render' in namespaced file");
         assert!(ls.contains(&"View"), "missing 'View' in namespaced file");
@@ -252,8 +291,8 @@ mod tests {
 
     #[test]
     fn extracts_symbols_inside_braced_namespace() {
-        let src = "<?php\nnamespace App { function boot() {} class App {} }";
-        let items = symbol_completions(src);
+        let ast = parse_ast("<?php\nnamespace App { function boot() {} class App {} }");
+        let items = symbol_completions(&ast);
         let ls = labels(&items);
         assert!(ls.contains(&"boot"), "missing 'boot'");
         assert!(ls.contains(&"App"), "missing 'App'");
@@ -261,9 +300,8 @@ mod tests {
 
     #[test]
     fn partial_ast_used_when_file_has_errors() {
-        // Incomplete file: function is defined but class declaration is broken
-        let src = "<?php\nfunction valid() {}\nclass {";
-        let items = symbol_completions(src);
+        let ast = parse_ast("<?php\nfunction valid() {}\nclass {");
+        let items = symbol_completions(&ast);
         assert!(
             labels(&items).contains(&"valid"),
             "should extract 'valid' even with parse error"
@@ -272,8 +310,8 @@ mod tests {
 
     #[test]
     fn extracts_interface_name() {
-        let src = "<?php\ninterface Serializable {}";
-        let items = symbol_completions(src);
+        let ast = parse_ast("<?php\ninterface Serializable {}");
+        let items = symbol_completions(&ast);
         let item = items.iter().find(|i| i.label == "Serializable");
         assert!(item.is_some(), "missing 'Serializable'");
         assert_eq!(item.unwrap().kind, Some(CompletionItemKind::INTERFACE));
@@ -281,20 +319,44 @@ mod tests {
 
     #[test]
     fn variable_assignment_produces_variable_item() {
-        let src = "<?php\n$name = 'Alice';";
-        let items = symbol_completions(src);
+        let ast = parse_ast("<?php\n$name = 'Alice';");
+        let items = symbol_completions(&ast);
         assert!(
             labels(&items).contains(&"$name"),
             "missing '$name' from assignment"
         );
     }
 
+    #[test]
+    fn class_property_appears_in_completions() {
+        let ast = parse_ast("<?php\nclass User { public string $name; private int $age; }");
+        let items = symbol_completions(&ast);
+        let ls = labels(&items);
+        assert!(ls.contains(&"$name"), "missing property '$name'");
+        assert!(ls.contains(&"$age"), "missing property '$age'");
+        for item in items.iter().filter(|i| i.label == "$name" || i.label == "$age") {
+            assert_eq!(item.kind, Some(CompletionItemKind::PROPERTY));
+        }
+    }
+
+    #[test]
+    fn class_constant_appears_in_completions() {
+        let ast = parse_ast("<?php\nclass Status { const ACTIVE = 1; const INACTIVE = 0; }");
+        let items = symbol_completions(&ast);
+        let ls = labels(&items);
+        assert!(ls.contains(&"ACTIVE"), "missing constant 'ACTIVE'");
+        assert!(ls.contains(&"INACTIVE"), "missing constant 'INACTIVE'");
+        for item in items.iter().filter(|i| i.label == "ACTIVE" || i.label == "INACTIVE") {
+            assert_eq!(item.kind, Some(CompletionItemKind::CONSTANT));
+        }
+    }
+
     // --- filtered_completions ---
 
     #[test]
     fn dollar_trigger_returns_only_variables() {
-        let src = "<?php\nfunction greet($name) {}\nclass Foo {}\n$bar = 1;";
-        let items = filtered_completions(src, Some("$"));
+        let ast = parse_ast("<?php\nfunction greet($name) {}\nclass Foo {}\n$bar = 1;");
+        let items = filtered_completions(&ast, &[], Some("$"));
         assert!(!items.is_empty(), "should have variable items");
         for item in &items {
             assert_eq!(
@@ -312,8 +374,8 @@ mod tests {
 
     #[test]
     fn arrow_trigger_returns_only_methods() {
-        let src = "<?php\nclass Calc { public function add() {} public function sub() {} }";
-        let items = filtered_completions(src, Some(">"));
+        let ast = parse_ast("<?php\nclass Calc { public function add() {} public function sub() {} }");
+        let items = filtered_completions(&ast, &[], Some(">"));
         assert!(!items.is_empty(), "should have method items");
         for item in &items {
             assert_eq!(
@@ -328,8 +390,8 @@ mod tests {
 
     #[test]
     fn none_trigger_returns_keywords_functions_classes() {
-        let src = "<?php\nfunction greet() {}\nclass MyApp {}";
-        let items = filtered_completions(src, None);
+        let ast = parse_ast("<?php\nfunction greet() {}\nclass MyApp {}");
+        let items = filtered_completions(&ast, &[], None);
         let ls = labels(&items);
         assert!(ls.contains(&"function"), "should contain keyword 'function'");
         assert!(ls.contains(&"greet"), "should contain function 'greet'");
@@ -338,13 +400,33 @@ mod tests {
 
     #[test]
     fn dot_trigger_behaves_like_none() {
-        let src = "<?php\nfunction greet() {}\nclass MyApp {}";
-        let dot_items = filtered_completions(src, Some("."));
-        let none_items = filtered_completions(src, None);
+        let ast = parse_ast("<?php\nfunction greet() {}\nclass MyApp {}");
+        let dot_items = filtered_completions(&ast, &[], Some("."));
+        let none_items = filtered_completions(&ast, &[], None);
         assert_eq!(
             dot_items.len(),
             none_items.len(),
             "dot trigger should behave like None"
         );
+    }
+
+    #[test]
+    fn cross_file_symbols_appear_in_default_completions() {
+        let ast = parse_ast("<?php\nfunction localFn() {}");
+        let other_ast = Arc::new(parse_ast("<?php\nclass RemoteService {}\nfunction remoteHelper() {}"));
+        let items = filtered_completions(&ast, &[other_ast], None);
+        let ls = labels(&items);
+        assert!(ls.contains(&"localFn"), "missing local function");
+        assert!(ls.contains(&"RemoteService"), "missing cross-file class");
+        assert!(ls.contains(&"remoteHelper"), "missing cross-file function");
+    }
+
+    #[test]
+    fn cross_file_variables_not_included_in_default_completions() {
+        let ast = parse_ast("<?php\n$localVar = 1;");
+        let other_ast = Arc::new(parse_ast("<?php\n$remoteVar = 2;"));
+        let items = filtered_completions(&ast, &[other_ast], None);
+        let ls = labels(&items);
+        assert!(!ls.contains(&"$remoteVar"), "cross-file variable should not appear");
     }
 }

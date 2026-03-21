@@ -1,9 +1,11 @@
 mod backend;
 mod completion;
+mod definition;
 mod diagnostics;
 mod document_store;
 mod hover;
 mod symbols;
+mod util;
 
 use backend::Backend;
 use tower_lsp::{LspService, Server};
