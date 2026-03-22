@@ -76,6 +76,10 @@ fn scan_statements(stmts: &[Statement], word: &str) -> Option<String> {
     None
 }
 
+pub(crate) fn format_params_str(params: &php_parser_rs::parser::ast::functions::FunctionParameterList) -> String {
+    format_params(params)
+}
+
 fn format_params(params: &php_parser_rs::parser::ast::functions::FunctionParameterList) -> String {
     params
         .parameters

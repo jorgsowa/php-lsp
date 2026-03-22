@@ -4,8 +4,12 @@ mod definition;
 mod diagnostics;
 mod document_store;
 mod hover;
+mod references;
+mod rename;
+mod signature_help;
 mod symbols;
 mod util;
+mod walk;
 
 use backend::Backend;
 use tower_lsp::{LspService, Server};

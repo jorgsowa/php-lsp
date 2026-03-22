@@ -1,5 +1,7 @@
 #![allow(deprecated)]
 
+use std::sync::Arc;
+
 use crate::diagnostics::span_to_position;
 use php_parser_rs::parser::ast::{
     classes::ClassMember,
@@ -9,10 +11,124 @@ use php_parser_rs::parser::ast::{
     traits::TraitMember,
     Statement,
 };
-use tower_lsp::lsp_types::{DocumentSymbol, Position, Range, SymbolKind};
+use tower_lsp::lsp_types::{DocumentSymbol, Location, Position, Range, SymbolInformation, SymbolKind, Url};
 
 pub fn document_symbols(ast: &[Statement]) -> Vec<DocumentSymbol> {
     symbols_from_statements(ast)
+}
+
+/// Flat symbol search across all open documents. Query is a case-insensitive substring match.
+pub fn workspace_symbols(
+    query: &str,
+    docs: &[(Url, Arc<Vec<Statement>>)],
+) -> Vec<SymbolInformation> {
+    let q = query.to_lowercase();
+    let mut results = Vec::new();
+    for (uri, ast) in docs {
+        collect_symbol_info(ast, &q, uri, &mut results);
+    }
+    results
+}
+
+#[allow(deprecated)]
+fn collect_symbol_info(
+    stmts: &[Statement],
+    query: &str,
+    uri: &Url,
+    out: &mut Vec<SymbolInformation>,
+) {
+    for stmt in stmts {
+        match stmt {
+            Statement::Function(f) => {
+                let name = f.name.value.to_string();
+                if name.to_lowercase().contains(query) {
+                    let start = span_to_position(&f.name.span);
+                    let end = Position { line: start.line, character: start.character + name.len() as u32 };
+                    out.push(SymbolInformation {
+                        name,
+                        kind: SymbolKind::FUNCTION,
+                        location: Location { uri: uri.clone(), range: Range { start, end } },
+                        tags: None,
+                        deprecated: None,
+                        container_name: None,
+                    });
+                }
+            }
+            Statement::Class(c) => {
+                let name = c.name.value.to_string();
+                if name.to_lowercase().contains(query) {
+                    let start = span_to_position(&c.name.span);
+                    let end = Position { line: start.line, character: start.character + name.len() as u32 };
+                    out.push(SymbolInformation {
+                        name: name.clone(),
+                        kind: SymbolKind::CLASS,
+                        location: Location { uri: uri.clone(), range: Range { start, end } },
+                        tags: None,
+                        deprecated: None,
+                        container_name: None,
+                    });
+                }
+                for member in &c.body.members {
+                    match member {
+                        ClassMember::ConcreteMethod(m) => {
+                            let mname = m.name.value.to_string();
+                            if mname.to_lowercase().contains(query) {
+                                let start = span_to_position(&m.name.span);
+                                let end = Position { line: start.line, character: start.character + mname.len() as u32 };
+                                out.push(SymbolInformation {
+                                    name: mname,
+                                    kind: SymbolKind::METHOD,
+                                    location: Location { uri: uri.clone(), range: Range { start, end } },
+                                    tags: None,
+                                    deprecated: None,
+                                    container_name: Some(name.clone()),
+                                });
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            Statement::Interface(i) => {
+                let name = i.name.value.to_string();
+                if name.to_lowercase().contains(query) {
+                    let start = span_to_position(&i.name.span);
+                    let end = Position { line: start.line, character: start.character + name.len() as u32 };
+                    out.push(SymbolInformation {
+                        name,
+                        kind: SymbolKind::INTERFACE,
+                        location: Location { uri: uri.clone(), range: Range { start, end } },
+                        tags: None,
+                        deprecated: None,
+                        container_name: None,
+                    });
+                }
+            }
+            Statement::Trait(t) => {
+                let name = t.name.value.to_string();
+                if name.to_lowercase().contains(query) {
+                    let start = span_to_position(&t.name.span);
+                    let end = Position { line: start.line, character: start.character + name.len() as u32 };
+                    out.push(SymbolInformation {
+                        name,
+                        kind: SymbolKind::CLASS,
+                        location: Location { uri: uri.clone(), range: Range { start, end } },
+                        tags: None,
+                        deprecated: None,
+                        container_name: None,
+                    });
+                }
+            }
+            Statement::Namespace(ns) => {
+                let stmts = match ns {
+                    NamespaceStatement::Unbraced(u) => &u.statements[..],
+                    NamespaceStatement::Braced(b) => &b.body.statements[..],
+                };
+                collect_symbol_info(stmts, query, uri, out);
+            }
+            _ => {}
+        }
+    }
 }
 
 fn symbols_from_statements(stmts: &[Statement]) -> Vec<DocumentSymbol> {

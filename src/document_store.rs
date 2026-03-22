@@ -48,6 +48,14 @@ impl DocumentStore {
         self.0.get(uri).map(|d| d.diagnostics.clone())
     }
 
+    /// Returns (uri, ast) for all open documents.
+    pub fn all_docs_ast(&self) -> Vec<(Url, Arc<Vec<Statement>>)> {
+        self.0
+            .iter()
+            .map(|entry| (entry.key().clone(), entry.value().ast.clone()))
+            .collect()
+    }
+
     /// Returns (uri, ast) for every open document except the given URI.
     /// Used for cross-file go-to-definition.
     pub fn other_docs(&self, uri: &Url) -> Vec<(Url, Arc<Vec<Statement>>)> {

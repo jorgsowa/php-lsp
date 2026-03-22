@@ -8,7 +8,11 @@ use crate::completion::filtered_completions;
 use crate::definition::goto_definition;
 use crate::document_store::DocumentStore;
 use crate::hover::hover_info;
-use crate::symbols::document_symbols;
+use crate::references::find_references;
+use crate::rename::{prepare_rename, rename};
+use crate::signature_help::signature_help;
+use crate::symbols::{document_symbols, workspace_symbols};
+use crate::util::word_at;
 
 pub struct Backend {
     client: Client,
@@ -38,7 +42,18 @@ impl LanguageServer for Backend {
                 }),
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
                 definition_provider: Some(OneOf::Left(true)),
+                references_provider: Some(OneOf::Left(true)),
                 document_symbol_provider: Some(OneOf::Left(true)),
+                workspace_symbol_provider: Some(OneOf::Left(true)),
+                rename_provider: Some(OneOf::Right(RenameOptions {
+                    prepare_provider: Some(true),
+                    work_done_progress_options: Default::default(),
+                })),
+                signature_help_provider: Some(SignatureHelpOptions {
+                    trigger_characters: Some(vec!["(".to_string(), ",".to_string()]),
+                    retrigger_characters: None,
+                    work_done_progress_options: Default::default(),
+                }),
                 ..Default::default()
             },
             ..Default::default()
@@ -103,6 +118,50 @@ impl LanguageServer for Backend {
             .map(GotoDefinitionResponse::Scalar))
     }
 
+    async fn references(&self, params: ReferenceParams) -> Result<Option<Vec<Location>>> {
+        let uri = &params.text_document_position.text_document.uri;
+        let position = params.text_document_position.position;
+        let source = self.docs.get(uri).unwrap_or_default();
+        let word = match word_at(&source, position) {
+            Some(w) => w,
+            None => return Ok(None),
+        };
+        let all_docs = self.docs.all_docs_ast();
+        let include_declaration = params.context.include_declaration;
+        let locations = find_references(&word, &all_docs, include_declaration);
+        Ok(if locations.is_empty() { None } else { Some(locations) })
+    }
+
+    async fn prepare_rename(
+        &self,
+        params: TextDocumentPositionParams,
+    ) -> Result<Option<PrepareRenameResponse>> {
+        let uri = &params.text_document.uri;
+        let source = self.docs.get(uri).unwrap_or_default();
+        Ok(prepare_rename(&source, params.position)
+            .map(PrepareRenameResponse::Range))
+    }
+
+    async fn rename(&self, params: RenameParams) -> Result<Option<WorkspaceEdit>> {
+        let uri = &params.text_document_position.text_document.uri;
+        let position = params.text_document_position.position;
+        let source = self.docs.get(uri).unwrap_or_default();
+        let word = match word_at(&source, position) {
+            Some(w) => w,
+            None => return Ok(None),
+        };
+        let all_docs = self.docs.all_docs_ast();
+        Ok(Some(rename(&word, &params.new_name, &all_docs)))
+    }
+
+    async fn signature_help(&self, params: SignatureHelpParams) -> Result<Option<SignatureHelp>> {
+        let uri = &params.text_document_position_params.text_document.uri;
+        let position = params.text_document_position_params.position;
+        let source = self.docs.get(uri).unwrap_or_default();
+        let ast = self.docs.get_ast(uri).unwrap_or_default();
+        Ok(signature_help(&source, &ast, position))
+    }
+
     async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
         let uri = &params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
@@ -118,5 +177,14 @@ impl LanguageServer for Backend {
         let uri = &params.text_document.uri;
         let ast = self.docs.get_ast(uri).unwrap_or_default();
         Ok(Some(DocumentSymbolResponse::Nested(document_symbols(&ast))))
+    }
+
+    async fn symbol(
+        &self,
+        params: WorkspaceSymbolParams,
+    ) -> Result<Option<Vec<SymbolInformation>>> {
+        let docs = self.docs.all_docs_ast();
+        let results = workspace_symbols(&params.query, &docs);
+        Ok(if results.is_empty() { None } else { Some(results) })
     }
 }
