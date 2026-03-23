@@ -1,4 +1,5 @@
-use std::sync::Arc;
+use std::path::PathBuf;
+use std::sync::{Arc, RwLock};
 
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::*;
@@ -17,6 +18,7 @@ use crate::util::word_at;
 pub struct Backend {
     client: Client,
     docs: Arc<DocumentStore>,
+    root_path: Arc<RwLock<Option<PathBuf>>>,
 }
 
 impl Backend {
@@ -24,13 +26,32 @@ impl Backend {
         Backend {
             client,
             docs: Arc::new(DocumentStore::new()),
+            root_path: Arc::new(RwLock::new(None)),
         }
     }
 }
 
 #[async_trait]
 impl LanguageServer for Backend {
-    async fn initialize(&self, _params: InitializeParams) -> Result<InitializeResult> {
+    async fn initialize(&self, params: InitializeParams) -> Result<InitializeResult> {
+        // Store root path for workspace scanning
+        let root = params
+            .root_uri
+            .as_ref()
+            .and_then(|u| u.to_file_path().ok())
+            .or_else(|| {
+                params
+                    .workspace_folders
+                    .as_ref()?
+                    .first()?
+                    .uri
+                    .to_file_path()
+                    .ok()
+            });
+        if let Some(path) = root {
+            *self.root_path.write().unwrap() = Some(path);
+        }
+
         Ok(InitializeResult {
             capabilities: ServerCapabilities {
                 text_document_sync: Some(TextDocumentSyncCapability::Kind(
@@ -61,6 +82,37 @@ impl LanguageServer for Backend {
     }
 
     async fn initialized(&self, _params: InitializedParams) {
+        // Register a file watcher so we hear about PHP files created/changed/deleted on disk
+        let registration = Registration {
+            id: "php-lsp-file-watcher".to_string(),
+            method: "workspace/didChangeWatchedFiles".to_string(),
+            register_options: Some(
+                serde_json::to_value(DidChangeWatchedFilesRegistrationOptions {
+                    watchers: vec![FileSystemWatcher {
+                        glob_pattern: GlobPattern::String("**/*.php".to_string()),
+                        kind: None,
+                    }],
+                })
+                .unwrap(),
+            ),
+        };
+        self.client.register_capability(vec![registration]).await.ok();
+
+        // Kick off background workspace scan
+        if let Some(root) = self.root_path.read().unwrap().clone() {
+            let docs = Arc::clone(&self.docs);
+            let client = self.client.clone();
+            tokio::spawn(async move {
+                let count = scan_workspace(root, docs).await;
+                client
+                    .log_message(
+                        MessageType::INFO,
+                        format!("php-lsp: indexed {count} workspace files"),
+                    )
+                    .await;
+            });
+        }
+
         self.client
             .log_message(MessageType::INFO, "php-lsp ready")
             .await;
@@ -89,7 +141,26 @@ impl LanguageServer for Backend {
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
         let uri = params.text_document.uri;
         self.docs.close(&uri);
+        // Clear editor diagnostics; the file stays indexed for cross-file features
         self.client.publish_diagnostics(uri, vec![], None).await;
+    }
+
+    async fn did_change_watched_files(&self, params: DidChangeWatchedFilesParams) {
+        for change in params.changes {
+            match change.typ {
+                FileChangeType::CREATED | FileChangeType::CHANGED => {
+                    if let Ok(path) = change.uri.to_file_path() {
+                        if let Ok(text) = tokio::fs::read_to_string(&path).await {
+                            self.docs.index(change.uri, &text);
+                        }
+                    }
+                }
+                FileChangeType::DELETED => {
+                    self.docs.remove(&change.uri);
+                }
+                _ => {}
+            }
+        }
     }
 
     async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
@@ -187,4 +258,46 @@ impl LanguageServer for Backend {
         let results = workspace_symbols(&params.query, &docs);
         Ok(if results.is_empty() { None } else { Some(results) })
     }
+}
+
+/// Recursively scan `root` for `*.php` files and add them to the document store.
+/// Skips `vendor/` and hidden directories.
+/// Returns the number of files indexed.
+async fn scan_workspace(root: PathBuf, docs: Arc<DocumentStore>) -> usize {
+    let mut count = 0usize;
+    let mut stack = vec![root];
+
+    while let Some(dir) = stack.pop() {
+        let mut entries = match tokio::fs::read_dir(&dir).await {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+        while let Ok(Some(entry)) = entries.next_entry().await {
+            let path = entry.path();
+            let file_type = match entry.file_type().await {
+                Ok(ft) => ft,
+                Err(_) => continue,
+            };
+            if file_type.is_dir() {
+                let name = path
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("");
+                if !name.starts_with('.') && name != "vendor" {
+                    stack.push(path);
+                }
+            } else if file_type.is_file()
+                && path.extension().map_or(false, |e| e == "php")
+            {
+                if let Ok(uri) = Url::from_file_path(&path) {
+                    if let Ok(text) = tokio::fs::read_to_string(&path).await {
+                        docs.index(uri, &text);
+                        count += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    count
 }

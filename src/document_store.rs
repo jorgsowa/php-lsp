@@ -7,7 +7,8 @@ use tower_lsp::lsp_types::{Diagnostic, Url};
 use crate::diagnostics::parse_document;
 
 struct Document {
-    text: String,
+    /// `Some` when the file is open in the editor; `None` for workspace-indexed files.
+    text: Option<String>,
     ast: Arc<Vec<Statement>>,
     diagnostics: Vec<Diagnostic>,
 }
@@ -21,21 +22,40 @@ impl DocumentStore {
 
     pub fn open(&self, uri: Url, text: String) {
         let (ast, diagnostics) = parse_document(&text);
-        self.0.insert(uri, Document { text, ast: Arc::new(ast), diagnostics });
+        self.0.insert(uri, Document { text: Some(text), ast: Arc::new(ast), diagnostics });
     }
 
     pub fn update(&self, uri: Url, text: String) {
         let (ast, diagnostics) = parse_document(&text);
-        self.0.insert(uri, Document { text, ast: Arc::new(ast), diagnostics });
+        self.0.insert(uri, Document { text: Some(text), ast: Arc::new(ast), diagnostics });
     }
 
+    /// Called when the editor closes a file. Keeps the AST in the index so
+    /// cross-file features (references, completion, …) still see the file.
     pub fn close(&self, uri: &Url) {
+        if let Some(mut entry) = self.0.get_mut(uri) {
+            entry.text = None;
+        }
+    }
+
+    /// Index a file found by the workspace scanner. Does not overwrite files
+    /// that are currently open in the editor.
+    pub fn index(&self, uri: Url, text: &str) {
+        if self.0.get(&uri).map(|d| d.text.is_some()).unwrap_or(false) {
+            return; // open file takes priority
+        }
+        let (ast, _diagnostics) = parse_document(text);
+        self.0.insert(uri, Document { text: None, ast: Arc::new(ast), diagnostics: vec![] });
+    }
+
+    /// Remove a file entirely (e.g. deleted from disk).
+    pub fn remove(&self, uri: &Url) {
         self.0.remove(uri);
     }
 
-    /// Returns the raw source text.
+    /// Returns the raw source text. Returns `None` for indexed-only (closed) files.
     pub fn get(&self, uri: &Url) -> Option<String> {
-        self.0.get(uri).map(|d| d.text.clone())
+        self.0.get(uri).and_then(|d| d.text.clone())
     }
 
     /// Returns the cached AST (cheap Arc clone).
@@ -107,17 +127,53 @@ mod tests {
     }
 
     #[test]
-    fn close_removes_document() {
+    fn close_clears_text_but_keeps_ast() {
         let store = DocumentStore::new();
-        store.open(uri("/a.php"), "<?php".to_string());
+        store.open(uri("/a.php"), "<?php\nfunction greet() {}".to_string());
         store.close(&uri("/a.php"));
+        // text gone (editor closed it)
         assert!(store.get(&uri("/a.php")).is_none());
+        // but AST stays for cross-file features
+        assert!(store.get_ast(&uri("/a.php")).is_some());
     }
 
     #[test]
     fn close_nonexistent_uri_is_safe() {
         let store = DocumentStore::new();
         store.close(&uri("/nonexistent.php"));
+    }
+
+    #[test]
+    fn index_stores_ast_without_text() {
+        let store = DocumentStore::new();
+        store.index(uri("/lib.php"), "<?php\nfunction lib_fn() {}");
+        assert!(store.get(&uri("/lib.php")).is_none(), "indexed file has no text");
+        assert!(store.get_ast(&uri("/lib.php")).is_some(), "indexed file has AST");
+    }
+
+    #[test]
+    fn index_does_not_overwrite_open_file() {
+        let store = DocumentStore::new();
+        store.open(uri("/a.php"), "<?php\n$x = 1;".to_string());
+        store.index(uri("/a.php"), "<?php\n$x = 99;");
+        assert_eq!(store.get(&uri("/a.php")).as_deref(), Some("<?php\n$x = 1;"));
+    }
+
+    #[test]
+    fn remove_deletes_entry() {
+        let store = DocumentStore::new();
+        store.index(uri("/lib.php"), "<?php");
+        store.remove(&uri("/lib.php"));
+        assert!(store.get_ast(&uri("/lib.php")).is_none());
+    }
+
+    #[test]
+    fn all_docs_ast_includes_indexed_files() {
+        let store = DocumentStore::new();
+        store.open(uri("/a.php"), "<?php\nfunction a() {}".to_string());
+        store.index(uri("/b.php"), "<?php\nfunction b() {}");
+        let docs = store.all_docs_ast();
+        assert_eq!(docs.len(), 2);
     }
 
     #[test]
@@ -128,7 +184,7 @@ mod tests {
         assert_eq!(store.get(&uri("/a.php")).as_deref(), Some("a"));
         assert_eq!(store.get(&uri("/b.php")).as_deref(), Some("b"));
         store.close(&uri("/a.php"));
-        assert!(store.get(&uri("/a.php")).is_none());
+        assert!(store.get(&uri("/a.php")).is_none(), "closed file has no text");
         assert_eq!(store.get(&uri("/b.php")).as_deref(), Some("b"));
     }
 
