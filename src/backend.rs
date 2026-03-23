@@ -113,6 +113,21 @@ impl LanguageServer for Backend {
                 }),
                 document_formatting_provider: Some(OneOf::Left(true)),
                 document_range_formatting_provider: Some(OneOf::Left(true)),
+                execute_command_provider: Some(ExecuteCommandOptions {
+                    commands: vec![
+                        "php-lsp.showReferences".to_string(),
+                        "php-lsp.runTest".to_string(),
+                    ],
+                    work_done_progress_options: Default::default(),
+                }),
+                diagnostic_provider: Some(DiagnosticServerCapabilities::Options(
+                    DiagnosticOptions {
+                        identifier: None,
+                        inter_file_dependencies: true,
+                        workspace_diagnostics: false,
+                        work_done_progress_options: Default::default(),
+                    },
+                )),
                 ..Default::default()
             },
             ..Default::default()
@@ -534,6 +549,85 @@ impl LanguageServer for Backend {
         let uri = &params.text_document.uri;
         let source = self.docs.get(uri).unwrap_or_default();
         Ok(format_range(&source, params.range))
+    }
+
+    async fn execute_command(&self, params: ExecuteCommandParams) -> Result<Option<serde_json::Value>> {
+        match params.command.as_str() {
+            "php-lsp.showReferences" => {
+                // The client handles showing the references panel;
+                // the server just acknowledges the command.
+                Ok(None)
+            }
+            "php-lsp.runTest" => {
+                // Arguments: [uri_string, "ClassName::methodName"]
+                let filter = params
+                    .arguments
+                    .get(1)
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+
+                let root = self.root_path.read().unwrap().clone();
+                let client = self.client.clone();
+
+                tokio::spawn(async move {
+                    let output = tokio::process::Command::new("vendor/bin/phpunit")
+                        .arg("--filter")
+                        .arg(&filter)
+                        .current_dir(root.as_deref().unwrap_or(std::path::Path::new(".")))
+                        .output()
+                        .await;
+
+                    let message = match output {
+                        Ok(out) => {
+                            let text = String::from_utf8_lossy(&out.stdout).into_owned()
+                                + &String::from_utf8_lossy(&out.stderr);
+                            let last_line = text.lines().rev()
+                                .find(|l| !l.trim().is_empty())
+                                .unwrap_or("(no output)")
+                                .to_string();
+                            if out.status.success() {
+                                format!("✓ {filter}: {last_line}")
+                            } else {
+                                format!("✗ {filter}: {last_line}")
+                            }
+                        }
+                        Err(e) => format!("php-lsp.runTest: failed to spawn phpunit — {e}"),
+                    };
+
+                    client.show_message(MessageType::INFO, message).await;
+                });
+
+                Ok(None)
+            }
+            _ => Ok(None),
+        }
+    }
+
+    async fn diagnostic(
+        &self,
+        params: DocumentDiagnosticParams,
+    ) -> Result<DocumentDiagnosticReportResult> {
+        let uri = &params.text_document.uri;
+
+        // Merge parse diagnostics (already cached) with semantic diagnostics.
+        let parse_diags = self.docs.get_diagnostics(uri).unwrap_or_default();
+        let ast = self.docs.get_ast(uri).unwrap_or_default();
+        let other_docs = self.docs.other_docs(uri);
+        let sem_diags = semantic_diagnostics(uri, &ast, &other_docs);
+
+        let mut items = parse_diags;
+        items.extend(sem_diags);
+
+        Ok(DocumentDiagnosticReportResult::Report(
+            DocumentDiagnosticReport::Full(RelatedFullDocumentDiagnosticReport {
+                related_documents: None,
+                full_document_diagnostic_report: FullDocumentDiagnosticReport {
+                    result_id: None,
+                    items,
+                },
+            }),
+        ))
     }
 
     async fn code_action(

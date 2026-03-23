@@ -2,6 +2,13 @@
 
 All notable changes to php-lsp are documented here.
 
+## [0.1.7] — 2026-03-23
+
+### New features
+
+- **`workspace/executeCommand`** — server now advertises and handles `php-lsp.showReferences` (acknowledged, client handles the UI) and `php-lsp.runTest` (spawns `vendor/bin/phpunit --filter "ClassName::methodName"` in the project root and reports the result via `window/showMessage`). This makes code lens buttons functional.
+- **Pull diagnostics** (`textDocument/diagnostic`) — implements the LSP 3.17 pull model alongside the existing push model. The server merges cached parse diagnostics with semantic diagnostics and returns them on demand. Preferred by Neovim 0.10+ and recent VS Code.
+
 ## [0.1.6] — 2026-03-23
 
 ### New features
