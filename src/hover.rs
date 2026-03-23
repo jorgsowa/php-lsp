@@ -1,15 +1,27 @@
 use php_parser_rs::parser::ast::{classes::ClassMember, namespaces::NamespaceStatement, Statement};
 use tower_lsp::lsp_types::{Hover, HoverContents, MarkupContent, MarkupKind, Position};
 
+use crate::docblock::find_docblock;
 use crate::util::word_at;
 
 pub fn hover_info(source: &str, ast: &[Statement], position: Position) -> Option<Hover> {
     let word = word_at(source, position)?;
-    let text = scan_statements(ast, &word)?;
+    let sig = scan_statements(ast, &word)?;
+
+    // Build the hover value: PHP code block + optional docblock below
+    let mut value = wrap_php(&sig);
+    if let Some(db) = find_docblock(ast, &word) {
+        let md = db.to_markdown();
+        if !md.is_empty() {
+            value.push_str("\n\n---\n\n");
+            value.push_str(&md);
+        }
+    }
+
     Some(Hover {
         contents: HoverContents::Markup(MarkupContent {
             kind: MarkupKind::Markdown,
-            value: wrap_php(&text),
+            value,
         }),
         range: None,
     })

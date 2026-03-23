@@ -6,7 +6,9 @@ use php_parser_rs::parser::ast::{
     variables::Variable,
     Expression, Statement,
 };
-use tower_lsp::lsp_types::{CompletionItem, CompletionItemKind};
+use tower_lsp::lsp_types::{CompletionItem, CompletionItemKind, Position};
+
+use crate::type_map::{methods_of_class, TypeMap};
 
 const PHP_KEYWORDS: &[&str] = &[
     "abstract", "and", "array", "as", "break", "callable", "case", "catch", "class", "clone",
@@ -167,15 +169,53 @@ pub fn filtered_completions(
     other_asts: &[Arc<Vec<Statement>>],
     trigger_character: Option<&str>,
 ) -> Vec<CompletionItem> {
+    filtered_completions_at(ast, other_asts, trigger_character, None, None)
+}
+
+/// Like `filtered_completions` but also accepts an optional `source` + `position`
+/// so that `->` completions can be scoped to the variable's class.
+pub fn filtered_completions_at(
+    ast: &[Statement],
+    other_asts: &[Arc<Vec<Statement>>],
+    trigger_character: Option<&str>,
+    source: Option<&str>,
+    position: Option<Position>,
+) -> Vec<CompletionItem> {
     match trigger_character {
         Some("$") => symbol_completions(ast)
             .into_iter()
             .filter(|i| i.kind == Some(CompletionItemKind::VARIABLE))
             .collect(),
-        Some(">") => symbol_completions(ast)
-            .into_iter()
-            .filter(|i| i.kind == Some(CompletionItemKind::METHOD))
-            .collect(),
+        Some(">") => {
+            // Try to narrow by the variable before `->` using the type map
+            if let (Some(src), Some(pos)) = (source, position) {
+                let type_map = TypeMap::from_stmts(ast);
+                if let Some(class_name) = resolve_receiver_class(src, pos, &type_map) {
+                    // Gather methods from current AST + other ASTs
+                    let mut methods: Vec<String> = methods_of_class(ast, &class_name);
+                    for other in other_asts {
+                        methods.extend(methods_of_class(other, &class_name));
+                    }
+                    methods.sort();
+                    methods.dedup();
+                    if !methods.is_empty() {
+                        return methods
+                            .into_iter()
+                            .map(|m| CompletionItem {
+                                label: m,
+                                kind: Some(CompletionItemKind::METHOD),
+                                ..Default::default()
+                            })
+                            .collect();
+                    }
+                }
+            }
+            // Fallback: all methods from AST
+            symbol_completions(ast)
+                .into_iter()
+                .filter(|i| i.kind == Some(CompletionItemKind::METHOD))
+                .collect()
+        }
         _ => {
             let mut items = keyword_completions();
             items.extend(symbol_completions(ast));
@@ -191,6 +231,36 @@ pub fn filtered_completions(
             items
         }
     }
+}
+
+/// Given the source and position (the cursor is just after `->`) try to find
+/// the variable name that precedes `->` and look up its type.
+fn resolve_receiver_class(source: &str, position: Position, type_map: &TypeMap) -> Option<String> {
+    let line = source.lines().nth(position.line as usize)?;
+    let col = position.character as usize;
+    // col is the char index of the trigger `>`. Go back past `->`.
+    let arrow_end = col; // position is at the char after `>`
+    // Find `->` ending at arrow_end-1 (the `>`)
+    let before = &line[..arrow_end.min(line.len())];
+    let before = before.strip_suffix("->").unwrap_or(before);
+    // Extract the identifier immediately before
+    let var_name: String = before
+        .chars()
+        .rev()
+        .take_while(|&c| c.is_alphanumeric() || c == '_' || c == '$')
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect();
+    if var_name.is_empty() {
+        return None;
+    }
+    let var_name = if var_name.starts_with('$') {
+        var_name
+    } else {
+        format!("${var_name}")
+    };
+    type_map.get(&var_name).map(|s| s.to_string())
 }
 
 #[cfg(test)]

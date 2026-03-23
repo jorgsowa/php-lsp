@@ -1,13 +1,25 @@
+mod autoload;
 mod backend;
+mod call_hierarchy;
 mod completion;
 mod definition;
 mod diagnostics;
+mod docblock;
+mod document_highlight;
 mod document_store;
+mod folding;
 mod hover;
+mod implementation;
+mod inlay_hints;
 mod references;
 mod rename;
+mod selection_range;
+mod semantic_diagnostics;
+mod semantic_tokens;
 mod signature_help;
 mod symbols;
+mod type_map;
+mod use_resolver;
 mod util;
 mod walk;
 

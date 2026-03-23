@@ -4,20 +4,44 @@ use php_parser_rs::parser::ast::Statement;
 use tower_lsp::lsp_types::{Location, Position, Range, Url};
 
 use crate::diagnostics::span_to_position;
-use crate::walk::refs_in_stmts;
+use crate::walk::{refs_in_stmts, refs_in_stmts_with_use};
 
 /// Find all locations where `word` is referenced across the given documents.
 /// If `include_declaration` is true, also includes the declaration site.
+/// If `include_use_stmts` is true, also finds `use` statement spans.
 pub fn find_references(
     word: &str,
     all_docs: &[(Url, Arc<Vec<Statement>>)],
     include_declaration: bool,
 ) -> Vec<Location> {
+    find_references_inner(word, all_docs, include_declaration, false)
+}
+
+/// Like `find_references` but also includes `use` statement spans.
+/// Used by rename so that `use Foo;` statements are also updated.
+pub fn find_references_with_use(
+    word: &str,
+    all_docs: &[(Url, Arc<Vec<Statement>>)],
+    include_declaration: bool,
+) -> Vec<Location> {
+    find_references_inner(word, all_docs, include_declaration, true)
+}
+
+fn find_references_inner(
+    word: &str,
+    all_docs: &[(Url, Arc<Vec<Statement>>)],
+    include_declaration: bool,
+    include_use: bool,
+) -> Vec<Location> {
     let mut locations = Vec::new();
 
     for (uri, ast) in all_docs {
         let mut spans = Vec::new();
-        refs_in_stmts(ast, word, &mut spans);
+        if include_use {
+            refs_in_stmts_with_use(ast, word, &mut spans);
+        } else {
+            refs_in_stmts(ast, word, &mut spans);
+        }
 
         if !include_declaration {
             // Filter out declaration spans (the definition site)

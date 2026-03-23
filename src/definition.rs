@@ -43,6 +43,12 @@ fn name_range(span: &php_parser_rs::lexer::token::Span, name: &str) -> Range {
     }
 }
 
+/// Search an AST for a declaration named `name`, returning its selection range.
+/// Used by the PSR-4 fallback in the backend after resolving a class to a file.
+pub fn find_declaration_range(stmts: &[Statement], name: &str) -> Option<Range> {
+    scan_statements(stmts, name)
+}
+
 fn scan_statements(stmts: &[Statement], word: &str) -> Option<Range> {
     for stmt in stmts {
         match stmt {

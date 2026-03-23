@@ -22,6 +22,53 @@ pub fn refs_in_stmts(stmts: &[Statement], word: &str, out: &mut Vec<Span>) {
     }
 }
 
+/// Like `refs_in_stmts`, but also matches spans inside `use` statements.
+/// Needed so that renaming a class also renames its `use` import.
+pub fn refs_in_stmts_with_use(stmts: &[Statement], word: &str, out: &mut Vec<Span>) {
+    // First collect all normal refs
+    refs_in_stmts(stmts, word, out);
+    // Then scan `use` statements for the last segment matching `word`
+    use_refs(stmts, word, out);
+}
+
+fn use_refs(stmts: &[Statement], word: &str, out: &mut Vec<Span>) {
+    use php_parser_rs::lexer::token::Span;
+    for stmt in stmts {
+        match stmt {
+            Statement::Use(u) => {
+                for use_item in &u.uses {
+                    let fqn = use_item.name.value.to_string();
+                    let alias_match = use_item
+                        .alias
+                        .as_ref()
+                        .map(|a| a.value.to_string() == word)
+                        .unwrap_or(false);
+                    let last_seg = fqn.rsplit('\\').next().unwrap_or(&fqn);
+                    if alias_match || last_seg == word {
+                        // Create a synthetic span pointing only to the last segment
+                        // so rename edits target just the class name part.
+                        let offset = fqn.len() - last_seg.len();
+                        let syn_span = Span {
+                            line: use_item.name.span.line,
+                            column: use_item.name.span.column + offset,
+                            position: use_item.name.span.position + offset,
+                        };
+                        out.push(syn_span);
+                    }
+                }
+            }
+            Statement::Namespace(ns) => {
+                let inner = match ns {
+                    NamespaceStatement::Unbraced(u) => &u.statements[..],
+                    NamespaceStatement::Braced(b) => &b.body.statements[..],
+                };
+                use_refs(inner, word, out);
+            }
+            _ => {}
+        }
+    }
+}
+
 pub fn refs_in_stmt(stmt: &Statement, word: &str, out: &mut Vec<Span>) {
     match stmt {
         Statement::Expression(e) => refs_in_expr(&e.expression, word, out),

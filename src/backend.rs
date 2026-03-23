@@ -5,12 +5,22 @@ use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{async_trait, Client, LanguageServer};
 
-use crate::completion::filtered_completions;
-use crate::definition::goto_definition;
+use crate::autoload::Psr4Map;
+use crate::call_hierarchy::{incoming_calls, outgoing_calls, prepare_call_hierarchy};
+use crate::completion::filtered_completions_at;
+use crate::definition::{find_declaration_range, goto_definition};
+use crate::diagnostics::parse_document;
+use crate::document_highlight::document_highlights;
 use crate::document_store::DocumentStore;
+use crate::folding::folding_ranges;
 use crate::hover::hover_info;
+use crate::implementation::goto_implementation;
+use crate::inlay_hints::inlay_hints;
 use crate::references::find_references;
 use crate::rename::{prepare_rename, rename};
+use crate::selection_range::selection_ranges;
+use crate::semantic_diagnostics::semantic_diagnostics;
+use crate::semantic_tokens::{legend, semantic_tokens};
 use crate::signature_help::signature_help;
 use crate::symbols::{document_symbols, workspace_symbols};
 use crate::util::word_at;
@@ -19,6 +29,7 @@ pub struct Backend {
     client: Client,
     docs: Arc<DocumentStore>,
     root_path: Arc<RwLock<Option<PathBuf>>>,
+    psr4: Arc<RwLock<Psr4Map>>,
 }
 
 impl Backend {
@@ -27,6 +38,7 @@ impl Backend {
             client,
             docs: Arc::new(DocumentStore::new()),
             root_path: Arc::new(RwLock::new(None)),
+            psr4: Arc::new(RwLock::new(Psr4Map::empty())),
         }
     }
 }
@@ -75,6 +87,20 @@ impl LanguageServer for Backend {
                     retrigger_characters: None,
                     work_done_progress_options: Default::default(),
                 }),
+                inlay_hint_provider: Some(OneOf::Left(true)),
+                folding_range_provider: Some(FoldingRangeProviderCapability::Simple(true)),
+                semantic_tokens_provider: Some(
+                    SemanticTokensServerCapabilities::SemanticTokensOptions(SemanticTokensOptions {
+                        legend: legend(),
+                        full: Some(SemanticTokensFullOptions::Bool(true)),
+                        ..Default::default()
+                    }),
+                ),
+                selection_range_provider: Some(SelectionRangeProviderCapability::Simple(true)),
+                call_hierarchy_provider: Some(CallHierarchyServerCapability::Simple(true)),
+                document_highlight_provider: Some(OneOf::Left(true)),
+                implementation_provider: Some(ImplementationProviderCapability::Simple(true)),
+                code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
                 ..Default::default()
             },
             ..Default::default()
@@ -98,8 +124,11 @@ impl LanguageServer for Backend {
         };
         self.client.register_capability(vec![registration]).await.ok();
 
-        // Kick off background workspace scan
+        // Load PSR-4 autoload map and kick off background workspace scan
         if let Some(root) = self.root_path.read().unwrap().clone() {
+            // Build PSR-4 map synchronously — it's just JSON file reads, very fast
+            *self.psr4.write().unwrap() = Psr4Map::load(&root);
+
             let docs = Arc::clone(&self.docs);
             let client = self.client.clone();
             tokio::spawn(async move {
@@ -124,18 +153,50 @@ impl LanguageServer for Backend {
 
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
         let uri = params.text_document.uri;
-        self.docs.open(uri.clone(), params.text_document.text);
-        let diagnostics = self.docs.get_diagnostics(&uri).unwrap_or_default();
+        let text = params.text_document.text;
+
+        // Store text immediately so other features work while parsing
+        let version = self.docs.set_text(uri.clone(), text.clone());
+
+        // Parse in a blocking thread to avoid stalling the tokio runtime;
+        // await here so the AST is ready before the handler returns.
+        let (ast, diagnostics) = tokio::task::spawn_blocking(move || parse_document(&text))
+            .await
+            .unwrap_or_else(|_| (vec![], vec![]));
+
+        self.docs.apply_parse(&uri, ast, diagnostics.clone(), version);
         self.client.publish_diagnostics(uri, diagnostics, None).await;
     }
 
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
         let uri = params.text_document.uri;
-        if let Some(change) = params.content_changes.into_iter().last() {
-            self.docs.update(uri.clone(), change.text);
-            let diagnostics = self.docs.get_diagnostics(&uri).unwrap_or_default();
-            self.client.publish_diagnostics(uri, diagnostics, None).await;
-        }
+        let text = match params.content_changes.into_iter().last() {
+            Some(c) => c.text,
+            None => return,
+        };
+
+        // Store text immediately and capture the version token.
+        // Features (completion, hover, …) see the new text instantly while
+        // the parse runs in the background.
+        let version = self.docs.set_text(uri.clone(), text.clone());
+
+        let docs = Arc::clone(&self.docs);
+        let client = self.client.clone();
+        tokio::spawn(async move {
+            // 100 ms debounce: if another edit arrives before we parse, the
+            // version check in apply_parse will discard this stale result.
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
+            let (ast, diagnostics) =
+                tokio::task::spawn_blocking(move || parse_document(&text))
+                    .await
+                    .unwrap_or_else(|_| (vec![], vec![]));
+
+            // Only apply if no newer edit arrived while we were parsing
+            if docs.apply_parse(&uri, ast, diagnostics.clone(), version) {
+                client.publish_diagnostics(uri, diagnostics, None).await;
+            }
+        });
     }
 
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
@@ -165,14 +226,20 @@ impl LanguageServer for Backend {
 
     async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
         let uri = &params.text_document_position.text_document.uri;
+        let position = params.text_document_position.position;
+        let source = self.docs.get(uri).unwrap_or_default();
         let ast = self.docs.get_ast(uri).unwrap_or_default();
         let other_asts = self.docs.other_asts(uri);
         let trigger = params
             .context
             .as_ref()
             .and_then(|c| c.trigger_character.as_deref());
-        Ok(Some(CompletionResponse::Array(filtered_completions(
-            &ast, &other_asts, trigger,
+        Ok(Some(CompletionResponse::Array(filtered_completions_at(
+            &ast,
+            &other_asts,
+            trigger,
+            Some(&source),
+            Some(position),
         ))))
     }
 
@@ -185,8 +252,22 @@ impl LanguageServer for Backend {
         let source = self.docs.get(uri).unwrap_or_default();
         let ast = self.docs.get_ast(uri).unwrap_or_default();
         let other_docs = self.docs.other_docs(uri);
-        Ok(goto_definition(uri, &source, &ast, &other_docs, position)
-            .map(GotoDefinitionResponse::Scalar))
+
+        // Primary lookup: search all indexed documents
+        if let Some(loc) = goto_definition(uri, &source, &ast, &other_docs, position) {
+            return Ok(Some(GotoDefinitionResponse::Scalar(loc)));
+        }
+
+        // PSR-4 fallback: only useful for fully-qualified names (contain `\`)
+        if let Some(word) = word_at(&source, position) {
+            if word.contains('\\') {
+                if let Some(loc) = self.psr4_goto(&word).await {
+                    return Ok(Some(GotoDefinitionResponse::Scalar(loc)));
+                }
+            }
+        }
+
+        Ok(None)
     }
 
     async fn references(&self, params: ReferenceParams) -> Result<Option<Vec<Location>>> {
@@ -250,6 +331,26 @@ impl LanguageServer for Backend {
         Ok(Some(DocumentSymbolResponse::Nested(document_symbols(&ast))))
     }
 
+    async fn folding_range(
+        &self,
+        params: FoldingRangeParams,
+    ) -> Result<Option<Vec<FoldingRange>>> {
+        let uri = &params.text_document.uri;
+        let ast = self.docs.get_ast(uri).unwrap_or_default();
+        let ranges = folding_ranges(&ast);
+        Ok(if ranges.is_empty() { None } else { Some(ranges) })
+    }
+
+    async fn inlay_hint(&self, params: InlayHintParams) -> Result<Option<Vec<InlayHint>>> {
+        let uri = &params.text_document.uri;
+        let source = match self.docs.get(uri) {
+            Some(s) => s,
+            None => return Ok(None),
+        };
+        let ast = self.docs.get_ast(uri).unwrap_or_default();
+        Ok(Some(inlay_hints(&source, &ast, params.range)))
+    }
+
     async fn symbol(
         &self,
         params: WorkspaceSymbolParams,
@@ -258,21 +359,283 @@ impl LanguageServer for Backend {
         let results = workspace_symbols(&params.query, &docs);
         Ok(if results.is_empty() { None } else { Some(results) })
     }
+
+    async fn semantic_tokens_full(
+        &self,
+        params: SemanticTokensParams,
+    ) -> Result<Option<SemanticTokensResult>> {
+        let uri = &params.text_document.uri;
+        let ast = self.docs.get_ast(uri).unwrap_or_default();
+        let tokens = semantic_tokens(&ast);
+        Ok(Some(SemanticTokensResult::Tokens(SemanticTokens {
+            result_id: None,
+            data: tokens,
+        })))
+    }
+
+    async fn selection_range(
+        &self,
+        params: SelectionRangeParams,
+    ) -> Result<Option<Vec<SelectionRange>>> {
+        let uri = &params.text_document.uri;
+        let ast = self.docs.get_ast(uri).unwrap_or_default();
+        let ranges = selection_ranges(&ast, &params.positions);
+        Ok(if ranges.is_empty() { None } else { Some(ranges) })
+    }
+
+    async fn prepare_call_hierarchy(
+        &self,
+        params: CallHierarchyPrepareParams,
+    ) -> Result<Option<Vec<CallHierarchyItem>>> {
+        let uri = &params.text_document_position_params.text_document.uri;
+        let position = params.text_document_position_params.position;
+        let source = self.docs.get(uri).unwrap_or_default();
+        let word = match word_at(&source, position) {
+            Some(w) => w,
+            None => return Ok(None),
+        };
+        let all_docs = self.docs.all_docs_ast();
+        Ok(prepare_call_hierarchy(&word, &all_docs).map(|item| vec![item]))
+    }
+
+    async fn incoming_calls(
+        &self,
+        params: CallHierarchyIncomingCallsParams,
+    ) -> Result<Option<Vec<CallHierarchyIncomingCall>>> {
+        let all_docs = self.docs.all_docs_ast();
+        let calls = incoming_calls(&params.item, &all_docs);
+        Ok(if calls.is_empty() { None } else { Some(calls) })
+    }
+
+    async fn outgoing_calls(
+        &self,
+        params: CallHierarchyOutgoingCallsParams,
+    ) -> Result<Option<Vec<CallHierarchyOutgoingCall>>> {
+        let all_docs = self.docs.all_docs_ast();
+        let calls = outgoing_calls(&params.item, &all_docs);
+        Ok(if calls.is_empty() { None } else { Some(calls) })
+    }
+
+    async fn document_highlight(
+        &self,
+        params: DocumentHighlightParams,
+    ) -> Result<Option<Vec<DocumentHighlight>>> {
+        let uri = &params.text_document_position_params.text_document.uri;
+        let position = params.text_document_position_params.position;
+        let source = self.docs.get(uri).unwrap_or_default();
+        let ast = self.docs.get_ast(uri).unwrap_or_default();
+        let highlights = document_highlights(&source, &ast, position);
+        Ok(if highlights.is_empty() { None } else { Some(highlights) })
+    }
+
+    async fn goto_implementation(
+        &self,
+        params: tower_lsp::lsp_types::request::GotoImplementationParams,
+    ) -> Result<Option<tower_lsp::lsp_types::request::GotoImplementationResponse>> {
+        let uri = &params.text_document_position_params.text_document.uri;
+        let position = params.text_document_position_params.position;
+        let source = self.docs.get(uri).unwrap_or_default();
+        let all_docs = self.docs.all_docs_ast();
+        let locs = goto_implementation(&source, &all_docs, position);
+        if locs.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(GotoDefinitionResponse::Array(locs)))
+        }
+    }
+
+    async fn code_action(
+        &self,
+        params: CodeActionParams,
+    ) -> Result<Option<CodeActionResponse>> {
+        let uri = &params.text_document.uri;
+        let source = self.docs.get(uri).unwrap_or_default();
+        let ast = self.docs.get_ast(uri).unwrap_or_default();
+        let other_docs = self.docs.other_docs(uri);
+
+        // Semantic diagnostics — collect undefined symbols and offer "Add use import"
+        let sem_diags = semantic_diagnostics(uri, &ast, &other_docs);
+
+        // Publish semantic diagnostics merged with existing parse diagnostics
+        if !sem_diags.is_empty() {
+            let mut all_diags = self.docs.get_diagnostics(uri).unwrap_or_default();
+            all_diags.extend(sem_diags.clone());
+            self.client.publish_diagnostics(uri.clone(), all_diags, None).await;
+        }
+
+        // Build "Add use import" code actions for undefined class names in range
+        let mut actions: Vec<CodeActionOrCommand> = Vec::new();
+        for diag in &sem_diags {
+            if !diag.message.starts_with("Undefined:") {
+                continue;
+            }
+            // Only act on diagnostics within the requested range
+            if diag.range.start.line < params.range.start.line
+                || diag.range.start.line > params.range.end.line
+            {
+                continue;
+            }
+            let class_name = diag
+                .message
+                .strip_prefix("Undefined: ")
+                .unwrap_or("")
+                .trim();
+            if class_name.is_empty() {
+                continue;
+            }
+
+            // Find a class with this short name in other indexed documents
+            for (other_uri, other_ast) in &other_docs {
+                if let Some(fqn) = find_fqn_for_class(other_ast, class_name, other_uri) {
+                    let edit = build_use_import_edit(&source, uri, &fqn);
+                    let action = CodeAction {
+                        title: format!("Add use {fqn}"),
+                        kind: Some(CodeActionKind::QUICKFIX),
+                        edit: Some(edit),
+                        diagnostics: Some(vec![diag.clone()]),
+                        ..Default::default()
+                    };
+                    actions.push(CodeActionOrCommand::CodeAction(action));
+                    break; // one action per undefined symbol
+                }
+            }
+        }
+
+        Ok(if actions.is_empty() { None } else { Some(actions) })
+    }
 }
 
+/// Find the fully-qualified name for a class with the given short `name` by
+/// walking the AST.  Returns `namespace\name` if a namespace wraps it, else
+/// just `name`.
+fn find_fqn_for_class(
+    ast: &[php_parser_rs::parser::ast::Statement],
+    name: &str,
+    _uri: &Url,
+) -> Option<String> {
+    use php_parser_rs::parser::ast::{namespaces::NamespaceStatement, Statement};
+    for stmt in ast {
+        match stmt {
+            Statement::Class(c) if c.name.value.to_string() == name => {
+                return Some(name.to_string());
+            }
+            Statement::Namespace(ns) => match ns {
+                NamespaceStatement::Unbraced(u) => {
+                    for inner in &u.statements {
+                        if let Statement::Class(c) = inner {
+                            if c.name.value.to_string() == name {
+                                return Some(format!("{}\\{}", u.name.value, name));
+                            }
+                        }
+                    }
+                }
+                NamespaceStatement::Braced(b) => {
+                    for inner in &b.body.statements {
+                        if let Statement::Class(c) = inner {
+                            if c.name.value.to_string() == name {
+                                let ns_name = b
+                                    .name
+                                    .as_ref()
+                                    .map(|n| n.value.to_string())
+                                    .unwrap_or_default();
+                                return if ns_name.is_empty() {
+                                    Some(name.to_string())
+                                } else {
+                                    Some(format!("{ns_name}\\{name}"))
+                                };
+                            }
+                        }
+                    }
+                }
+            },
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Build a `WorkspaceEdit` that inserts `use FQN;` near the top of the file.
+fn build_use_import_edit(source: &str, uri: &Url, fqn: &str) -> WorkspaceEdit {
+    use std::collections::HashMap;
+    // Insert after the `<?php` line and any existing `use` / `namespace` lines
+    let insert_line = find_use_insert_line(source);
+    let insert_text = format!("use {fqn};\n");
+    let pos = tower_lsp::lsp_types::Position { line: insert_line, character: 0 };
+    let edit = tower_lsp::lsp_types::TextEdit {
+        range: tower_lsp::lsp_types::Range { start: pos, end: pos },
+        new_text: insert_text,
+    };
+    let mut changes = HashMap::new();
+    changes.insert(uri.clone(), vec![edit]);
+    WorkspaceEdit { changes: Some(changes), ..Default::default() }
+}
+
+fn find_use_insert_line(source: &str) -> u32 {
+    let mut last_use_or_ns: u32 = 0;
+    for (i, line) in source.lines().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("<?php")
+            || trimmed.starts_with("namespace ")
+            || trimmed.starts_with("use ")
+        {
+            last_use_or_ns = i as u32 + 1;
+        }
+    }
+    last_use_or_ns
+}
+
+impl Backend {
+    /// Try to resolve a fully-qualified name via the PSR-4 map.
+    /// Indexes the file on-demand if it is not already in the document store.
+    async fn psr4_goto(&self, fqn: &str) -> Option<Location> {
+        let path = {
+            let psr4 = self.psr4.read().unwrap();
+            psr4.resolve(fqn)?
+        };
+
+        let file_uri = Url::from_file_path(&path).ok()?;
+
+        // Index on-demand if the file was not picked up by the workspace scan
+        if self.docs.get_ast(&file_uri).is_none() {
+            let text = tokio::fs::read_to_string(&path).await.ok()?;
+            self.docs.index(file_uri.clone(), &text);
+        }
+
+        let ast = self.docs.get_ast(&file_uri)?;
+
+        // Classes are declared by their short (unqualified) name, e.g. `class Foo`
+        // not `class App\Services\Foo`.
+        let short_name = fqn.split('\\').next_back()?;
+        let range = find_declaration_range(&ast, short_name)?;
+
+        Some(Location { uri: file_uri, range })
+    }
+}
+
+/// Maximum number of PHP files indexed during a workspace scan.
+/// Prevents excessive memory use on projects with very large vendor trees.
+const MAX_INDEXED_FILES: usize = 50_000;
+
 /// Recursively scan `root` for `*.php` files and add them to the document store.
-/// Skips `vendor/` and hidden directories.
+/// Skips hidden directories (names starting with `.`).
+/// Vendor packages are now included so cross-file features work on dependencies.
 /// Returns the number of files indexed.
 async fn scan_workspace(root: PathBuf, docs: Arc<DocumentStore>) -> usize {
     let mut count = 0usize;
     let mut stack = vec![root];
 
     while let Some(dir) = stack.pop() {
+        if count >= MAX_INDEXED_FILES {
+            break;
+        }
         let mut entries = match tokio::fs::read_dir(&dir).await {
             Ok(e) => e,
             Err(_) => continue,
         };
         while let Ok(Some(entry)) = entries.next_entry().await {
+            if count >= MAX_INDEXED_FILES {
+                break;
+            }
             let path = entry.path();
             let file_type = match entry.file_type().await {
                 Ok(ft) => ft,
@@ -283,7 +646,8 @@ async fn scan_workspace(root: PathBuf, docs: Arc<DocumentStore>) -> usize {
                     .file_name()
                     .and_then(|n| n.to_str())
                     .unwrap_or("");
-                if !name.starts_with('.') && name != "vendor" {
+                // Skip hidden directories only; vendor is now indexed
+                if !name.starts_with('.') {
                     stack.push(path);
                 }
             } else if file_type.is_file()

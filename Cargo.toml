@@ -1,6 +1,6 @@
 [package]
 name = "php-lsp"
-version = "0.1.2"
+version = "0.1.5"
 edition = "2024"
 description = "A PHP Language Server Protocol implementation"
 license = "MIT"
@@ -13,3 +13,6 @@ tower-lsp = "0.20"
 tokio = { version = "1", features = ["full"] }
 serde_json = "1"
 dashmap = "6"
+
+[dev-dependencies]
+tempfile = "3"

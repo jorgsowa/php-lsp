@@ -6,7 +6,7 @@ use tower_lsp::lsp_types::{
     Position, Range, TextEdit, Url, WorkspaceEdit,
 };
 
-use crate::references::find_references;
+use crate::references::find_references_with_use;
 
 /// Compute a WorkspaceEdit that renames every occurrence of `word` to `new_name`
 /// across all open documents (including the declaration site).
@@ -15,7 +15,7 @@ pub fn rename(
     new_name: &str,
     all_docs: &[(Url, Arc<Vec<Statement>>)],
 ) -> WorkspaceEdit {
-    let locations = find_references(word, all_docs, true);
+    let locations = find_references_with_use(word, all_docs, true);
 
     let mut changes: HashMap<Url, Vec<TextEdit>> = HashMap::new();
     for loc in locations {
