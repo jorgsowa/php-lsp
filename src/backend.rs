@@ -7,12 +7,15 @@ use tower_lsp::{async_trait, Client, LanguageServer};
 
 use crate::autoload::Psr4Map;
 use crate::call_hierarchy::{incoming_calls, outgoing_calls, prepare_call_hierarchy};
+use crate::code_lens::code_lenses;
 use crate::completion::filtered_completions_at;
+use crate::declaration::goto_declaration;
 use crate::definition::{find_declaration_range, goto_definition};
 use crate::diagnostics::parse_document;
 use crate::document_highlight::document_highlights;
 use crate::document_store::DocumentStore;
 use crate::folding::folding_ranges;
+use crate::formatting::{format_document, format_range};
 use crate::hover::hover_info;
 use crate::implementation::goto_implementation;
 use crate::inlay_hints::inlay_hints;
@@ -23,6 +26,8 @@ use crate::semantic_diagnostics::semantic_diagnostics;
 use crate::semantic_tokens::{legend, semantic_tokens};
 use crate::signature_help::signature_help;
 use crate::symbols::{document_symbols, workspace_symbols};
+use crate::type_definition::goto_type_definition;
+use crate::type_hierarchy::{prepare_type_hierarchy, subtypes_of, supertypes_of};
 use crate::util::word_at;
 
 pub struct Backend {
@@ -101,6 +106,13 @@ impl LanguageServer for Backend {
                 document_highlight_provider: Some(OneOf::Left(true)),
                 implementation_provider: Some(ImplementationProviderCapability::Simple(true)),
                 code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
+                declaration_provider: Some(DeclarationCapability::Simple(true)),
+                type_definition_provider: Some(TypeDefinitionProviderCapability::Simple(true)),
+                code_lens_provider: Some(CodeLensOptions {
+                    resolve_provider: None,
+                }),
+                document_formatting_provider: Some(OneOf::Left(true)),
+                document_range_formatting_provider: Some(OneOf::Left(true)),
                 ..Default::default()
             },
             ..Default::default()
@@ -442,6 +454,86 @@ impl LanguageServer for Backend {
         } else {
             Ok(Some(GotoDefinitionResponse::Array(locs)))
         }
+    }
+
+    async fn goto_declaration(
+        &self,
+        params: tower_lsp::lsp_types::request::GotoDeclarationParams,
+    ) -> Result<Option<tower_lsp::lsp_types::request::GotoDeclarationResponse>> {
+        let uri = &params.text_document_position_params.text_document.uri;
+        let position = params.text_document_position_params.position;
+        let source = self.docs.get(uri).unwrap_or_default();
+        let all_docs = self.docs.all_docs_ast();
+        Ok(goto_declaration(&source, &all_docs, position)
+            .map(GotoDefinitionResponse::Scalar))
+    }
+
+    async fn goto_type_definition(
+        &self,
+        params: tower_lsp::lsp_types::request::GotoTypeDefinitionParams,
+    ) -> Result<Option<tower_lsp::lsp_types::request::GotoTypeDefinitionResponse>> {
+        let uri = &params.text_document_position_params.text_document.uri;
+        let position = params.text_document_position_params.position;
+        let source = self.docs.get(uri).unwrap_or_default();
+        let ast = self.docs.get_ast(uri).unwrap_or_default();
+        let all_docs = self.docs.all_docs_ast();
+        Ok(goto_type_definition(&source, &ast, &all_docs, position)
+            .map(GotoDefinitionResponse::Scalar))
+    }
+
+    async fn prepare_type_hierarchy(
+        &self,
+        params: TypeHierarchyPrepareParams,
+    ) -> Result<Option<Vec<TypeHierarchyItem>>> {
+        let uri = &params.text_document_position_params.text_document.uri;
+        let position = params.text_document_position_params.position;
+        let source = self.docs.get(uri).unwrap_or_default();
+        let all_docs = self.docs.all_docs_ast();
+        Ok(prepare_type_hierarchy(&source, &all_docs, position).map(|item| vec![item]))
+    }
+
+    async fn supertypes(
+        &self,
+        params: TypeHierarchySupertypesParams,
+    ) -> Result<Option<Vec<TypeHierarchyItem>>> {
+        let all_docs = self.docs.all_docs_ast();
+        let result = supertypes_of(&params.item, &all_docs);
+        Ok(if result.is_empty() { None } else { Some(result) })
+    }
+
+    async fn subtypes(
+        &self,
+        params: TypeHierarchySubtypesParams,
+    ) -> Result<Option<Vec<TypeHierarchyItem>>> {
+        let all_docs = self.docs.all_docs_ast();
+        let result = subtypes_of(&params.item, &all_docs);
+        Ok(if result.is_empty() { None } else { Some(result) })
+    }
+
+    async fn code_lens(&self, params: CodeLensParams) -> Result<Option<Vec<CodeLens>>> {
+        let uri = &params.text_document.uri;
+        let ast = self.docs.get_ast(uri).unwrap_or_default();
+        let all_docs = self.docs.all_docs_ast();
+        let lenses = code_lenses(uri, &ast, &all_docs);
+        Ok(if lenses.is_empty() { None } else { Some(lenses) })
+    }
+
+    async fn formatting(
+        &self,
+        params: DocumentFormattingParams,
+    ) -> Result<Option<Vec<TextEdit>>> {
+        let uri = &params.text_document.uri;
+        let source = self.docs.get(uri).unwrap_or_default();
+        Ok(format_document(&source))
+    }
+
+    async fn range_formatting(
+        &self,
+        params: DocumentRangeFormattingParams,
+    ) -> Result<Option<Vec<TextEdit>>> {
+        let uri = &params.text_document.uri;
+        let source = self.docs.get(uri).unwrap_or_default();
+        Ok(format_range(&source, params.range))
     }
 
     async fn code_action(

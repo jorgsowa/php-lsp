@@ -2,6 +2,16 @@
 
 All notable changes to php-lsp are documented here.
 
+## [0.1.6] — 2026-03-23
+
+### New features
+
+- **Go-to-declaration** (`textDocument/declaration`) — jumps to the abstract method or interface method declaration rather than the concrete implementation; falls back to go-to-definition for concrete symbols.
+- **Go-to-type-definition** (`textDocument/typeDefinition`) — resolves `$var` via `TypeMap` to find where its class is declared; also resolves non-variable identifiers via parameter type annotations.
+- **Type hierarchy** (`textDocument/prepareTypeHierarchy`, `typeHierarchy/supertypes`, `typeHierarchy/subtypes`) — navigate the full class/interface inheritance chain; supertypes shows `extends`/`implements` parents, subtypes finds all implementing/extending types across the workspace.
+- **Code lens** (`textDocument/codeLens`) — inline reference counts above every function, class, interface, and method; PHPUnit test methods get a "▶ Run test" lens with `php-lsp.runTest` command.
+- **Document formatting** (`textDocument/formatting`, `textDocument/rangeFormatting`) — delegates to `php-cs-fixer` (PSR-12, preferred) or `phpcbf` via stdin; returns `None` gracefully if neither tool is installed.
+
 ## [0.1.5] — 2026-03-23
 
 ### New features
