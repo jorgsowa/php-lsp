@@ -1,10 +1,10 @@
 /// `textDocument/prepareTypeHierarchy`, `typeHierarchy/supertypes`, `typeHierarchy/subtypes`.
 use std::sync::Arc;
 
-use php_ast::{ClassMemberKind, NamespaceBody, Stmt, StmtKind};
-use tower_lsp::lsp_types::{Position, Range, SymbolKind, TypeHierarchyItem, Url};
+use php_ast::{NamespaceBody, Stmt, StmtKind};
+use tower_lsp::lsp_types::{Position, SymbolKind, TypeHierarchyItem, Url};
 
-use crate::ast::{name_range, offset_to_position, ParsedDoc};
+use crate::ast::{name_range, ParsedDoc};
 use crate::util::word_at;
 
 // ── Prepare ───────────────────────────────────────────────────────────────────

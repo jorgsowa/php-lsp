@@ -3,7 +3,7 @@
 /// after `->`.
 use std::collections::HashMap;
 
-use php_ast::{ClassMemberKind, ExprKind, NamespaceBody, Stmt, StmtKind};
+use php_ast::{ClassMemberKind, ExprKind, NamespaceBody, Stmt, StmtKind, TypeHintKind};
 use tower_lsp::lsp_types::Position;
 
 use crate::ast::{offset_to_position, ParsedDoc};
@@ -13,10 +13,6 @@ use crate::ast::{offset_to_position, ParsedDoc};
 pub struct TypeMap(HashMap<String, String>);
 
 impl TypeMap {
-    pub fn empty() -> Self {
-        TypeMap(HashMap::new())
-    }
-
     /// Build from a parsed document.
     pub fn from_doc(doc: &ParsedDoc) -> Self {
         let mut map = HashMap::new();
@@ -34,10 +30,26 @@ fn collect_types_stmts(stmts: &[Stmt<'_, '_>], map: &mut HashMap<String, String>
     for stmt in stmts {
         match &stmt.kind {
             StmtKind::Expression(e) => collect_types_expr(e, map),
-            StmtKind::Function(f) => collect_types_stmts(&f.body, map),
+            StmtKind::Function(f) => {
+                for p in f.params.iter() {
+                    if let Some(hint) = &p.type_hint {
+                        if let TypeHintKind::Named(name) = &hint.kind {
+                            map.insert(format!("${}", p.name), name.to_string_repr().to_string());
+                        }
+                    }
+                }
+                collect_types_stmts(&f.body, map);
+            }
             StmtKind::Class(c) => {
                 for member in c.members.iter() {
                     if let ClassMemberKind::Method(m) = &member.kind {
+                        for p in m.params.iter() {
+                            if let Some(hint) = &p.type_hint {
+                                if let TypeHintKind::Named(name) = &hint.kind {
+                                    map.insert(format!("${}", p.name), name.to_string_repr().to_string());
+                                }
+                            }
+                        }
                         if let Some(body) = &m.body {
                             collect_types_stmts(body, map);
                         }
@@ -74,31 +86,28 @@ fn extract_class_name(expr: &php_ast::Expr<'_, '_>) -> Option<String> {
     }
 }
 
-/// Return the names of all methods defined on `class_name` in the document.
-pub fn methods_of_class(doc: &ParsedDoc, class_name: &str) -> Vec<String> {
-    let mut methods = Vec::new();
-    collect_methods_stmts(&doc.program().stmts, class_name, &mut methods);
-    methods
+/// Return the direct parent class name of `class_name` in `doc`, if any.
+pub fn parent_class_name(doc: &ParsedDoc, class_name: &str) -> Option<String> {
+    parent_in_stmts(&doc.program().stmts, class_name)
 }
 
-fn collect_methods_stmts(stmts: &[Stmt<'_, '_>], class_name: &str, out: &mut Vec<String>) {
+fn parent_in_stmts(stmts: &[Stmt<'_, '_>], class_name: &str) -> Option<String> {
     for stmt in stmts {
         match &stmt.kind {
             StmtKind::Class(c) if c.name == Some(class_name) => {
-                for member in c.members.iter() {
-                    if let ClassMemberKind::Method(m) = &member.kind {
-                        out.push(m.name.to_string());
-                    }
-                }
+                return c.extends.as_ref().map(|n| n.to_string_repr().to_string());
             }
             StmtKind::Namespace(ns) => {
                 if let NamespaceBody::Braced(inner) = &ns.body {
-                    collect_methods_stmts(inner, class_name, out);
+                    if let found @ Some(_) = parent_in_stmts(inner, class_name) {
+                        return found;
+                    }
                 }
             }
             _ => {}
         }
     }
+    None
 }
 
 /// All members of a named class split by kind and static-ness.
@@ -109,16 +118,23 @@ pub struct ClassMembers {
     /// (name, is_static)
     pub properties: Vec<(String, bool)>,
     pub constants: Vec<String>,
+    /// Direct parent class name, if any.
+    pub parent: Option<String>,
 }
 
 /// Return all members (methods, properties, constants) of `class_name`.
+/// Also returns the direct parent class name via `ClassMembers::parent`.
 pub fn members_of_class(doc: &ParsedDoc, class_name: &str) -> ClassMembers {
     let mut out = ClassMembers::default();
-    collect_members_stmts(&doc.program().stmts, class_name, &mut out);
+    out.parent = collect_members_stmts(&doc.program().stmts, class_name, &mut out);
     out
 }
 
-fn collect_members_stmts(stmts: &[Stmt<'_, '_>], class_name: &str, out: &mut ClassMembers) {
+fn collect_members_stmts(
+    stmts: &[Stmt<'_, '_>],
+    class_name: &str,
+    out: &mut ClassMembers,
+) -> Option<String> {
     for stmt in stmts {
         match &stmt.kind {
             StmtKind::Class(c) if c.name == Some(class_name) => {
@@ -136,15 +152,20 @@ fn collect_members_stmts(stmts: &[Stmt<'_, '_>], class_name: &str, out: &mut Cla
                         _ => {}
                     }
                 }
+                return c.extends.as_ref().map(|n| n.to_string_repr().to_string());
             }
             StmtKind::Namespace(ns) => {
                 if let NamespaceBody::Braced(inner) = &ns.body {
-                    collect_members_stmts(inner, class_name, out);
+                    let result = collect_members_stmts(inner, class_name, out);
+                    if result.is_some() || out.methods.len() + out.properties.len() + out.constants.len() > 0 {
+                        return result;
+                    }
                 }
             }
             _ => {}
         }
     }
+    None
 }
 
 /// Return the name of the class whose body contains `position`, or `None`.
@@ -255,19 +276,50 @@ mod tests {
     }
 
     #[test]
-    fn methods_of_class_finds_methods() {
-        let src = "<?php\nclass Calc { public function add() {} public function sub() {} }";
+    fn infers_type_from_typed_param() {
+        let src = "<?php\nfunction process(Mailer $mailer): void { $mailer-> }";
         let doc = ParsedDoc::parse(src.to_string());
-        let methods = methods_of_class(&doc, "Calc");
-        assert!(methods.contains(&"add".to_string()));
-        assert!(methods.contains(&"sub".to_string()));
+        let tm = TypeMap::from_doc(&doc);
+        assert_eq!(tm.get("$mailer"), Some("Mailer"));
     }
 
     #[test]
-    fn methods_of_unknown_class_is_empty() {
+    fn parent_class_name_finds_parent() {
+        let src = "<?php\nclass Base {}\nclass Child extends Base {}";
+        let doc = ParsedDoc::parse(src.to_string());
+        assert_eq!(parent_class_name(&doc, "Child"), Some("Base".to_string()));
+    }
+
+    #[test]
+    fn parent_class_name_returns_none_for_top_level() {
+        let src = "<?php\nclass Base {}";
+        let doc = ParsedDoc::parse(src.to_string());
+        assert!(parent_class_name(&doc, "Base").is_none());
+    }
+
+    #[test]
+    fn members_of_class_includes_parent_field() {
+        let src = "<?php\nclass Base {}\nclass Child extends Base {}";
+        let doc = ParsedDoc::parse(src.to_string());
+        let m = members_of_class(&doc, "Child");
+        assert_eq!(m.parent.as_deref(), Some("Base"));
+    }
+
+    #[test]
+    fn members_of_class_finds_methods() {
+        let src = "<?php\nclass Calc { public function add() {} public function sub() {} }";
+        let doc = ParsedDoc::parse(src.to_string());
+        let members = members_of_class(&doc, "Calc");
+        let names: Vec<&str> = members.methods.iter().map(|(n, _)| n.as_str()).collect();
+        assert!(names.contains(&"add"), "missing 'add'");
+        assert!(names.contains(&"sub"), "missing 'sub'");
+    }
+
+    #[test]
+    fn members_of_unknown_class_is_empty() {
         let src = "<?php\nclass Calc { public function add() {} }";
         let doc = ParsedDoc::parse(src.to_string());
-        let methods = methods_of_class(&doc, "Unknown");
-        assert!(methods.is_empty());
+        let members = members_of_class(&doc, "Unknown");
+        assert!(members.methods.is_empty());
     }
 }

@@ -45,7 +45,7 @@ fn fold_stmt(stmt: &Stmt<'_, '_>, source: &str, out: &mut Vec<FoldingRange>) {
             let end_line = offset_to_position(source, stmt.span.end).line;
             push(out, start_line, end_line, None);
             for member in i.members.iter() {
-                if let ClassMemberKind::Method(m) = &member.kind {
+                if let ClassMemberKind::Method(_m) = &member.kind {
                     let m_start = offset_to_position(source, member.span.start).line;
                     let m_end = offset_to_position(source, member.span.end).line;
                     push(out, m_start, m_end, None);

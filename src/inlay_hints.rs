@@ -285,10 +285,6 @@ fn pos_in_range(pos: Position, range: Range) -> bool {
     pos.line >= range.start.line && pos.line <= range.end.line
 }
 
-/// Converts a byte offset to an LSP `Position` (0-based line + character).
-fn byte_to_lsp_position(source: &str, byte_off: usize) -> Position {
-    offset_to_position(source, byte_off as u32)
-}
 
 #[cfg(test)]
 mod tests {

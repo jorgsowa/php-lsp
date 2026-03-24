@@ -784,7 +784,7 @@ impl LanguageServer for Backend {
 }
 
 /// Find the fully-qualified name for a class with the given short `name` by
-/// walking the ParsedDoc AST.
+/// walking the ParsedDoc AST. Returns `Namespace\ClassName` when inside a namespace.
 fn find_fqn_for_class(doc: &ParsedDoc, name: &str, _uri: &Url) -> Option<String> {
     use php_ast::{NamespaceBody, StmtKind};
     for stmt in doc.program().stmts.iter() {
@@ -793,11 +793,15 @@ fn find_fqn_for_class(doc: &ParsedDoc, name: &str, _uri: &Url) -> Option<String>
                 return Some(name.to_string());
             }
             StmtKind::Namespace(ns) => {
+                let ns_name = ns.name.as_ref().map(|n| n.to_string_repr().to_string());
                 if let NamespaceBody::Braced(inner) = &ns.body {
                     for inner_stmt in inner.iter() {
                         if let StmtKind::Class(c) = &inner_stmt.kind {
                             if c.name == Some(name) {
-                                return Some(name.to_string());
+                                return Some(match ns_name {
+                                    Some(ref ns) => format!("{ns}\\{name}"),
+                                    None => name.to_string(),
+                                });
                             }
                         }
                     }

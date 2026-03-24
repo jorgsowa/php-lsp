@@ -4,7 +4,7 @@ use php_ast::{ClassMemberKind, ExprKind, NamespaceBody, Stmt, StmtKind};
 use tower_lsp::lsp_types::{CompletionItem, CompletionItemKind, Position};
 
 use crate::ast::ParsedDoc;
-use crate::type_map::{enclosing_class_at, members_of_class, params_of_function, TypeMap};
+use crate::type_map::{enclosing_class_at, members_of_class, params_of_function, parent_class_name, TypeMap};
 
 const PHP_KEYWORDS: &[&str] = &[
     "abstract", "and", "array", "as", "break", "callable", "case", "catch", "class", "clone",
@@ -188,62 +188,98 @@ pub fn builtin_completions() -> Vec<CompletionItem> {
         .collect()
 }
 
-fn collect_instance_members(doc: &ParsedDoc, class_name: &str) -> Vec<CompletionItem> {
-    let members = members_of_class(doc, class_name);
+fn all_instance_members(
+    class_name: &str,
+    doc: &ParsedDoc,
+    other_docs: &[Arc<ParsedDoc>],
+) -> Vec<CompletionItem> {
+    let all: Vec<&ParsedDoc> = std::iter::once(doc)
+        .chain(other_docs.iter().map(|d| d.as_ref()))
+        .collect();
     let mut items = Vec::new();
-    for (name, is_static) in members.methods {
-        if !is_static {
-            items.push(CompletionItem {
-                label: name,
-                kind: Some(CompletionItemKind::METHOD),
-                ..Default::default()
-            });
+    let mut seen_names: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut visited: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut current = class_name.to_string();
+    loop {
+        if !visited.insert(current.clone()) { break; }
+        let mut parent: Option<String> = None;
+        for d in &all {
+            let members = members_of_class(d, &current);
+            if parent.is_none() { parent = members.parent.clone(); }
+            for (name, is_static) in members.methods {
+                if !is_static && seen_names.insert(name.clone()) {
+                    items.push(CompletionItem { label: name, kind: Some(CompletionItemKind::METHOD), ..Default::default() });
+                }
+            }
+            for (name, is_static) in members.properties {
+                if !is_static {
+                    let label = format!("${name}");
+                    if seen_names.insert(label.clone()) {
+                        items.push(CompletionItem { label, kind: Some(CompletionItemKind::PROPERTY), ..Default::default() });
+                    }
+                }
+            }
         }
-    }
-    for (name, is_static) in members.properties {
-        if !is_static {
-            items.push(CompletionItem {
-                label: format!("${name}"),
-                kind: Some(CompletionItemKind::PROPERTY),
-                ..Default::default()
-            });
+        match parent {
+            Some(p) => current = p,
+            None => break,
         }
     }
     items
 }
 
-fn collect_static_members(doc: &ParsedDoc, class_name: &str) -> Vec<CompletionItem> {
-    let members = members_of_class(doc, class_name);
+fn all_static_members(
+    class_name: &str,
+    doc: &ParsedDoc,
+    other_docs: &[Arc<ParsedDoc>],
+) -> Vec<CompletionItem> {
+    let all: Vec<&ParsedDoc> = std::iter::once(doc)
+        .chain(other_docs.iter().map(|d| d.as_ref()))
+        .collect();
     let mut items = Vec::new();
-    for (name, is_static) in members.methods {
-        if is_static {
-            items.push(CompletionItem {
-                label: name,
-                kind: Some(CompletionItemKind::METHOD),
-                ..Default::default()
-            });
+    let mut seen_names: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut visited: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut current = class_name.to_string();
+    loop {
+        if !visited.insert(current.clone()) { break; }
+        let mut parent: Option<String> = None;
+        for d in &all {
+            let members = members_of_class(d, &current);
+            if parent.is_none() { parent = members.parent.clone(); }
+            for (name, is_static) in members.methods {
+                if is_static && seen_names.insert(name.clone()) {
+                    items.push(CompletionItem { label: name, kind: Some(CompletionItemKind::METHOD), ..Default::default() });
+                }
+            }
+            for (name, is_static) in members.properties {
+                if is_static {
+                    let label = format!("${name}");
+                    if seen_names.insert(label.clone()) {
+                        items.push(CompletionItem { label, kind: Some(CompletionItemKind::PROPERTY), ..Default::default() });
+                    }
+                }
+            }
+            for name in members.constants {
+                if seen_names.insert(name.clone()) {
+                    items.push(CompletionItem { label: name, kind: Some(CompletionItemKind::CONSTANT), ..Default::default() });
+                }
+            }
         }
-    }
-    for (name, is_static) in members.properties {
-        if is_static {
-            items.push(CompletionItem {
-                label: format!("${name}"),
-                kind: Some(CompletionItemKind::PROPERTY),
-                ..Default::default()
-            });
+        match parent {
+            Some(p) => current = p,
+            None => break,
         }
-    }
-    for name in members.constants {
-        items.push(CompletionItem {
-            label: name,
-            kind: Some(CompletionItemKind::CONSTANT),
-            ..Default::default()
-        });
     }
     items
 }
 
-fn resolve_static_receiver(source: &str, position: Position) -> Option<String> {
+/// Resolve `ClassName::` or the aliases `self::`, `static::`, `parent::`.
+fn resolve_static_receiver(
+    source: &str,
+    doc: &ParsedDoc,
+    other_docs: &[Arc<ParsedDoc>],
+    position: Position,
+) -> Option<String> {
     let line = source.lines().nth(position.line as usize)?;
     let col = position.character as usize;
     let before = &line[..col.min(line.len())];
@@ -256,7 +292,24 @@ fn resolve_static_receiver(source: &str, position: Position) -> Option<String> {
         .chars()
         .rev()
         .collect();
-    if name.is_empty() { None } else { Some(name) }
+    match name.as_str() {
+        "" => None,
+        "self" | "static" => enclosing_class_at(source, doc, position),
+        "parent" => {
+            let enclosing = enclosing_class_at(source, doc, position)?;
+            // Look for the parent class in current doc then other docs
+            if let Some(p) = parent_class_name(doc, &enclosing) {
+                return Some(p);
+            }
+            for other in other_docs {
+                if let Some(p) = parent_class_name(other, &enclosing) {
+                    return Some(p);
+                }
+            }
+            None
+        }
+        _ => Some(name),
+    }
 }
 
 fn resolve_call_params(
@@ -295,15 +348,7 @@ fn resolve_call_params(
     params
 }
 
-pub fn filtered_completions(
-    doc: &ParsedDoc,
-    other_docs: &[Arc<ParsedDoc>],
-    trigger_character: Option<&str>,
-) -> Vec<CompletionItem> {
-    filtered_completions_at(doc, other_docs, trigger_character, None, None)
-}
-
-/// Like `filtered_completions` but also accepts an optional `source` + `position`
+/// Completions filtered by trigger character, with optional `source` + `position`
 /// so that `->` completions can be scoped to the variable's class.
 pub fn filtered_completions_at(
     doc: &ParsedDoc,
@@ -322,12 +367,7 @@ pub fn filtered_completions_at(
             if let (Some(src), Some(pos)) = (source, position) {
                 let type_map = TypeMap::from_doc(doc);
                 if let Some(class_name) = resolve_receiver_class(src, doc, pos, &type_map) {
-                    let mut items = collect_instance_members(doc, &class_name);
-                    for other in other_docs {
-                        items.extend(collect_instance_members(other, &class_name));
-                    }
-                    let mut seen = std::collections::HashSet::new();
-                    items.retain(|i| seen.insert(i.label.clone()));
+                    let items = all_instance_members(&class_name, doc, other_docs);
                     if !items.is_empty() {
                         return items;
                     }
@@ -340,15 +380,10 @@ pub fn filtered_completions_at(
                 .collect()
         }
         Some(":") => {
-            // Static access: ClassName::
+            // Static access: ClassName:: / self:: / static:: / parent::
             if let (Some(src), Some(pos)) = (source, position) {
-                if let Some(class_name) = resolve_static_receiver(src, pos) {
-                    let mut items = collect_static_members(doc, &class_name);
-                    for other in other_docs {
-                        items.extend(collect_static_members(other, &class_name));
-                    }
-                    let mut seen = std::collections::HashSet::new();
-                    items.retain(|i| seen.insert(i.label.clone()));
+                if let Some(class_name) = resolve_static_receiver(src, doc, other_docs, pos) {
+                    let items = all_static_members(&class_name, doc, other_docs);
                     if !items.is_empty() {
                         return items;
                     }
@@ -544,7 +579,7 @@ mod tests {
     #[test]
     fn dollar_trigger_returns_only_variables() {
         let d = doc("<?php\nfunction greet($name) {}\nclass Foo {}\n$bar = 1;");
-        let items = filtered_completions(&d, &[], Some("$"));
+        let items = filtered_completions_at(&d, &[], Some("$"), None, None);
         assert!(!items.is_empty(), "should have variable items");
         for item in &items {
             assert_eq!(item.kind, Some(CompletionItemKind::VARIABLE));
@@ -557,7 +592,7 @@ mod tests {
     #[test]
     fn arrow_trigger_returns_only_methods() {
         let d = doc("<?php\nclass Calc { public function add() {} public function sub() {} }");
-        let items = filtered_completions(&d, &[], Some(">"));
+        let items = filtered_completions_at(&d, &[], Some(">"), None, None);
         assert!(!items.is_empty(), "should have method items");
         for item in &items {
             assert_eq!(item.kind, Some(CompletionItemKind::METHOD));
@@ -567,11 +602,54 @@ mod tests {
     #[test]
     fn none_trigger_returns_keywords_functions_classes() {
         let d = doc("<?php\nfunction greet() {}\nclass MyApp {}");
-        let items = filtered_completions(&d, &[], None);
+        let items = filtered_completions_at(&d, &[], None, None, None);
         let ls = labels(&items);
         assert!(ls.contains(&"function"), "should contain keyword 'function'");
         assert!(ls.contains(&"greet"), "should contain function 'greet'");
         assert!(ls.contains(&"MyApp"), "should contain class 'MyApp'");
+    }
+
+    #[test]
+    fn builtins_appear_in_default_completions() {
+        let d = doc("<?php");
+        let items = filtered_completions_at(&d, &[], None, None, None);
+        let ls = labels(&items);
+        assert!(ls.contains(&"strlen"), "missing strlen");
+        assert!(ls.contains(&"array_map"), "missing array_map");
+        assert!(ls.contains(&"json_encode"), "missing json_encode");
+    }
+
+    #[test]
+    fn colon_trigger_returns_static_members() {
+        let src = "<?php\nclass Cfg { public static function load(): void {} public static int $debug = 0; const VERSION = '1'; }\nCfg::";
+        let d = doc(src);
+        let pos = Position { line: 2, character: 5 };
+        let items = filtered_completions_at(&d, &[], Some(":"), Some(src), Some(pos));
+        let ls = labels(&items);
+        assert!(ls.contains(&"load"), "missing static method");
+        assert!(ls.contains(&"VERSION"), "missing constant");
+    }
+
+    #[test]
+    fn inherited_methods_appear_in_arrow_completion() {
+        let src = "<?php\nclass Base { public function baseMethod() {} }\nclass Child extends Base { public function childMethod() {} }\n$c = new Child();\n$c->";
+        let d = doc(src);
+        let pos = Position { line: 4, character: 4 };
+        let items = filtered_completions_at(&d, &[], Some(">"), Some(src), Some(pos));
+        let ls = labels(&items);
+        assert!(ls.contains(&"baseMethod"), "missing inherited baseMethod");
+        assert!(ls.contains(&"childMethod"), "missing childMethod");
+    }
+
+    #[test]
+    fn param_named_arg_completion() {
+        let src = "<?php\nfunction connect(string $host, int $port): void {}\nconnect(";
+        let d = doc(src);
+        let pos = Position { line: 2, character: 8 };
+        let items = filtered_completions_at(&d, &[], Some("("), Some(src), Some(pos));
+        let ls = labels(&items);
+        assert!(ls.contains(&"host:"), "missing host:");
+        assert!(ls.contains(&"port:"), "missing port:");
     }
 
     #[test]
@@ -580,7 +658,7 @@ mod tests {
         let other = Arc::new(ParsedDoc::parse(
             "<?php\nclass RemoteService {}\nfunction remoteHelper() {}".to_string(),
         ));
-        let items = filtered_completions(&d, &[other], None);
+        let items = filtered_completions_at(&d, &[other], None, None, None);
         let ls = labels(&items);
         assert!(ls.contains(&"localFn"), "missing local function");
         assert!(ls.contains(&"RemoteService"), "missing cross-file class");
@@ -591,7 +669,7 @@ mod tests {
     fn cross_file_variables_not_included_in_default_completions() {
         let d = doc("<?php\n$localVar = 1;");
         let other = Arc::new(ParsedDoc::parse("<?php\n$remoteVar = 2;".to_string()));
-        let items = filtered_completions(&d, &[other], None);
+        let items = filtered_completions_at(&d, &[other], None, None, None);
         let ls = labels(&items);
         assert!(!ls.contains(&"$remoteVar"), "cross-file variable should not appear");
     }

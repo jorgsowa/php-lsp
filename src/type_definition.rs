@@ -87,7 +87,7 @@ fn find_class_range(source: &str, stmts: &[Stmt<'_, '_>], name: &str) -> Option<
     None
 }
 
-fn _offset_to_position_range(source: &str, name_str: &str, name: &str) -> Range {
+fn _offset_to_position_range(source: &str, name_str: &str, _name: &str) -> Range {
     let start = offset_to_position(source, 0);
     Range {
         start,

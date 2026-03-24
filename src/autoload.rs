@@ -16,11 +16,7 @@ impl Psr4Map {
         Psr4Map { entries: vec![] }
     }
 
-    pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
-    }
-
-    /// Build a map from the project root. Reads:
+/// Build a map from the project root. Reads:
     /// - `<root>/composer.json`           (project namespaces, incl. autoload-dev)
     /// - `<root>/vendor/composer/installed.json`  (all installed packages)
     pub fn load(root: &Path) -> Self {
@@ -149,7 +145,7 @@ mod tests {
     #[test]
     fn empty_map_resolves_nothing() {
         let m = Psr4Map::empty();
-        assert!(m.is_empty());
+        assert!(m.entries.is_empty());
         assert!(m.resolve("App\\Foo").is_none());
     }
 
@@ -168,7 +164,7 @@ mod tests {
         );
 
         let m = Psr4Map::load(root);
-        assert!(!m.is_empty());
+        assert!(!m.entries.is_empty());
 
         let resolved = m.resolve("App\\Services\\Foo");
         assert!(resolved.is_some(), "should resolve App\\Services\\Foo");
@@ -222,7 +218,7 @@ mod tests {
     fn loads_empty_when_composer_json_absent() {
         let dir = tempfile::tempdir().unwrap();
         let m = Psr4Map::load(dir.path());
-        assert!(m.is_empty());
+        assert!(m.entries.is_empty());
     }
 
     #[test]

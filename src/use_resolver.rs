@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 /// Resolves short class/function names to fully-qualified names using
 /// the `use` statements found in a PHP file.
 ///
@@ -13,10 +14,6 @@ use crate::ast::ParsedDoc;
 pub struct UseMap(HashMap<String, String>);
 
 impl UseMap {
-    pub fn empty() -> Self {
-        UseMap(HashMap::new())
-    }
-
     /// Build a UseMap from the `use` statements in a parsed document.
     pub fn from_doc(doc: &ParsedDoc) -> Self {
         let mut map = HashMap::new();
@@ -27,11 +24,6 @@ impl UseMap {
     /// Resolve a short name to a FQN, if a matching `use` statement exists.
     pub fn resolve<'a>(&'a self, short: &str) -> Option<&'a str> {
         self.0.get(short).map(|s| s.as_str())
-    }
-
-    /// Return all short → FQN mappings.
-    pub fn all(&self) -> impl Iterator<Item = (&str, &str)> {
-        self.0.iter().map(|(k, v)| (k.as_str(), v.as_str()))
     }
 }
 

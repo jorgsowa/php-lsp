@@ -33,28 +33,7 @@ impl DocumentStore {
         }
     }
 
-    pub fn open(&self, uri: Url, text: String) {
-        let (doc, diagnostics) = parse_document(&text);
-        self.map.insert(uri, Document {
-            text: Some(text),
-            doc: Arc::new(doc),
-            diagnostics,
-            text_version: 1,
-        });
-    }
-
-    pub fn update(&self, uri: Url, text: String) {
-        let (doc, diagnostics) = parse_document(&text);
-        let version = self.map.get(&uri).map(|d| d.text_version + 1).unwrap_or(1);
-        self.map.insert(uri, Document {
-            text: Some(text),
-            doc: Arc::new(doc),
-            diagnostics,
-            text_version: version,
-        });
-    }
-
-    /// Store new text immediately and return a version token for deferred parsing.
+/// Store new text immediately and return a version token for deferred parsing.
     pub fn set_text(&self, uri: Url, text: String) -> u64 {
         let mut entry = self.map.entry(uri).or_insert_with(|| Document {
             text: None,
@@ -165,25 +144,32 @@ mod tests {
         assert!(store.get(&uri("/unknown.php")).is_none());
     }
 
+    fn open(store: &DocumentStore, u: Url, text: String) {
+        use crate::diagnostics::parse_document;
+        let v = store.set_text(u.clone(), text.clone());
+        let (doc, diags) = parse_document(&text);
+        store.apply_parse(&u, doc, diags, v);
+    }
+
     #[test]
     fn open_then_get_returns_text() {
         let store = DocumentStore::new();
-        store.open(uri("/a.php"), "<?php echo 1;".to_string());
+        open(&store, uri("/a.php"), "<?php echo 1;".to_string());
         assert_eq!(store.get(&uri("/a.php")).as_deref(), Some("<?php echo 1;"));
     }
 
     #[test]
     fn update_replaces_text() {
         let store = DocumentStore::new();
-        store.open(uri("/a.php"), "<?php echo 1;".to_string());
-        store.update(uri("/a.php"), "<?php echo 2;".to_string());
+        open(&store, uri("/a.php"), "<?php echo 1;".to_string());
+        open(&store, uri("/a.php"), "<?php echo 2;".to_string());
         assert_eq!(store.get(&uri("/a.php")).as_deref(), Some("<?php echo 2;"));
     }
 
     #[test]
     fn close_clears_text_but_keeps_doc() {
         let store = DocumentStore::new();
-        store.open(uri("/a.php"), "<?php\nfunction greet() {}".to_string());
+        open(&store, uri("/a.php"), "<?php\nfunction greet() {}".to_string());
         store.close(&uri("/a.php"));
         assert!(store.get(&uri("/a.php")).is_none());
         assert!(store.get_doc(&uri("/a.php")).is_some());
@@ -206,7 +192,7 @@ mod tests {
     #[test]
     fn index_does_not_overwrite_open_file() {
         let store = DocumentStore::new();
-        store.open(uri("/a.php"), "<?php\n$x = 1;".to_string());
+        open(&store, uri("/a.php"), "<?php\n$x = 1;".to_string());
         store.index(uri("/a.php"), "<?php\n$x = 99;");
         assert_eq!(store.get(&uri("/a.php")).as_deref(), Some("<?php\n$x = 1;"));
     }
@@ -222,7 +208,7 @@ mod tests {
     #[test]
     fn all_docs_includes_indexed_files() {
         let store = DocumentStore::new();
-        store.open(uri("/a.php"), "<?php\nfunction a() {}".to_string());
+        open(&store, uri("/a.php"), "<?php\nfunction a() {}".to_string());
         store.index(uri("/b.php"), "<?php\nfunction b() {}");
         assert_eq!(store.all_docs().len(), 2);
     }
@@ -230,15 +216,15 @@ mod tests {
     #[test]
     fn other_docs_excludes_current_uri() {
         let store = DocumentStore::new();
-        store.open(uri("/a.php"), "<?php\nfunction a() {}".to_string());
-        store.open(uri("/b.php"), "<?php\nfunction b() {}".to_string());
+        open(&store, uri("/a.php"), "<?php\nfunction a() {}".to_string());
+        open(&store, uri("/b.php"), "<?php\nfunction b() {}".to_string());
         assert_eq!(store.other_docs(&uri("/a.php")).len(), 1);
     }
 
     #[test]
     fn open_caches_diagnostics_for_invalid_file() {
         let store = DocumentStore::new();
-        store.open(uri("/a.php"), "<?php\nclass {".to_string());
+        open(&store, uri("/a.php"), "<?php\nclass {".to_string());
         let diags = store.get_diagnostics(&uri("/a.php")).unwrap();
         assert!(!diags.is_empty());
     }

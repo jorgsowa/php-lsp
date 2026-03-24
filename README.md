@@ -5,7 +5,7 @@ A PHP Language Server Protocol (LSP) implementation written in Rust.
 ## Features
 
 ### Language intelligence
-- **Diagnostics** — syntax errors reported in real time; semantic warnings for undefined symbols and argument-count mismatches
+- **Diagnostics** — syntax errors reported in real time; semantic warnings for undefined symbols, argument-count mismatches, and undefined variables inside function/method bodies
 - **Hover** — PHP signature for functions, methods, classes, interfaces, and traits; includes `@param`/`@return` docblock annotations when present
 - **Go-to-definition** — jump to where a symbol is declared, including across open files and into Composer vendor packages via PSR-4 autoload maps
 - **Go-to-implementation** — find all classes that implement an interface or extend a class
@@ -13,7 +13,7 @@ A PHP Language Server Protocol (LSP) implementation written in Rust.
 - **Rename** — rename any function, method, or class across all open files, including its `use` import statements
 
 ### Editing aids
-- **Completion** — keywords, ~200 built-in PHP functions, classes, methods, properties, constants; `->` completions scoped to the inferred receiver type (`$obj = new Foo()` → `$obj->` shows only `Foo`'s instance members); `$this->` inside a class method shows the enclosing class's instance members; `ClassName::` shows static methods, static properties, and constants; `funcName(` offers named-argument (`param:`) completions; cross-file symbols from all indexed documents
+- **Completion** — keywords, ~200 built-in PHP functions, classes, methods, properties, constants; `->` completions scoped to the inferred receiver type (`$obj = new Foo()` → `$obj->` shows `Foo`'s and all ancestor instance members); `$this->` inside a method resolves to the enclosing class and walks the full inheritance chain; `ClassName::`/`self::`/`static::` show static members and constants; `parent::` shows parent-class static members; `funcName(` offers named-argument (`param:`) completions; type inference extends to typed function/method parameters; cross-file symbols from all indexed documents
 - **Signature help** — parameter hints while typing a call, including overload narrowing
 - **Inlay hints** — parameter name labels at call sites; return-type labels after assigned function calls
 - **Code actions** — "Add use import" quick-fix for undefined class names; PHPDoc stub generation for undocumented functions and methods
