@@ -25,8 +25,14 @@ pub fn format_document(source: &str) -> Option<Vec<TextEdit>> {
     let last_line_len = source.lines().last().map(|l| l.len() as u32).unwrap_or(0);
     Some(vec![TextEdit {
         range: Range {
-            start: Position { line: 0, character: 0 },
-            end: Position { line: line_count, character: last_line_len },
+            start: Position {
+                line: 0,
+                character: 0,
+            },
+            end: Position {
+                line: line_count,
+                character: last_line_len,
+            },
         },
         new_text: formatted,
     }])
@@ -65,8 +71,14 @@ pub fn format_range(source: &str, range: Range) -> Option<Vec<TextEdit>> {
     let end_char = lines.get(end - 1).map(|l| l.len() as u32).unwrap_or(0);
     Some(vec![TextEdit {
         range: Range {
-            start: Position { line: range.start.line, character: 0 },
-            end: Position { line: range.end.line, character: end_char },
+            start: Position {
+                line: range.start.line,
+                character: 0,
+            },
+            end: Position {
+                line: range.end.line,
+                character: end_char,
+            },
         },
         new_text: formatted,
     }])
@@ -148,8 +160,14 @@ mod tests {
     #[test]
     fn format_range_does_not_panic_on_empty_source() {
         let range = Range {
-            start: Position { line: 0, character: 0 },
-            end: Position { line: 0, character: 0 },
+            start: Position {
+                line: 0,
+                character: 0,
+            },
+            end: Position {
+                line: 0,
+                character: 0,
+            },
         };
         let _ = format_range("<?php\n", range);
     }
@@ -161,7 +179,13 @@ mod tests {
         // Either None (no formatter installed) or Some with a single edit
         if let Some(edits) = result {
             assert_eq!(edits.len(), 1);
-            assert_eq!(edits[0].range.start, Position { line: 0, character: 0 });
+            assert_eq!(
+                edits[0].range.start,
+                Position {
+                    line: 0,
+                    character: 0
+                }
+            );
         }
     }
 }

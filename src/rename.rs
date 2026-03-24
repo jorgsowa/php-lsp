@@ -8,11 +8,7 @@ use crate::references::find_references_with_use;
 
 /// Compute a WorkspaceEdit that renames every occurrence of `word` to `new_name`
 /// across all open documents (including the declaration site).
-pub fn rename(
-    word: &str,
-    new_name: &str,
-    all_docs: &[(Url, Arc<ParsedDoc>)],
-) -> WorkspaceEdit {
+pub fn rename(word: &str, new_name: &str, all_docs: &[(Url, Arc<ParsedDoc>)]) -> WorkspaceEdit {
     let locations = find_references_with_use(word, all_docs, true);
 
     let mut changes: HashMap<Url, Vec<TextEdit>> = HashMap::new();
@@ -56,11 +52,16 @@ pub fn prepare_rename(source: &str, position: Position) -> Option<Range> {
     }
 
     let start_utf16: u32 = chars[..left].iter().map(|c| c.len_utf16() as u32).sum();
-    let end_utf16: u32 =
-        start_utf16 + word.chars().map(|c| c.len_utf16() as u32).sum::<u32>();
+    let end_utf16: u32 = start_utf16 + word.chars().map(|c| c.len_utf16() as u32).sum::<u32>();
     Some(Range {
-        start: Position { line: position.line, character: start_utf16 },
-        end: Position { line: position.line, character: end_utf16 },
+        start: Position {
+            line: position.line,
+            character: start_utf16,
+        },
+        end: Position {
+            line: position.line,
+            character: end_utf16,
+        },
     })
 }
 
@@ -87,7 +88,11 @@ mod tests {
         let edit = rename("greet", "hello", &docs);
         let changes = edit.changes.unwrap();
         let edits = &changes[&uri("/a.php")];
-        assert!(edits.len() >= 2, "expected at least 2 edits, got {}", edits.len());
+        assert!(
+            edits.len() >= 2,
+            "expected at least 2 edits, got {}",
+            edits.len()
+        );
         assert!(edits.iter().all(|e| e.new_text == "hello"));
     }
 
@@ -108,8 +113,14 @@ mod tests {
         let docs = vec![a, b];
         let edit = rename("helper", "util", &docs);
         let changes = edit.changes.unwrap();
-        assert!(changes.contains_key(&uri("/a.php")), "should rename declaration in a.php");
-        assert!(changes.contains_key(&uri("/b.php")), "should rename usage in b.php");
+        assert!(
+            changes.contains_key(&uri("/a.php")),
+            "should rename declaration in a.php"
+        );
+        assert!(
+            changes.contains_key(&uri("/b.php")),
+            "should rename usage in b.php"
+        );
     }
 
     #[test]

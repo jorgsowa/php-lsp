@@ -3,7 +3,7 @@ use tower_lsp::lsp_types::{
     SemanticToken, SemanticTokenModifier, SemanticTokenType, SemanticTokensLegend,
 };
 
-use crate::ast::{offset_to_position, str_offset, ParsedDoc};
+use crate::ast::{ParsedDoc, offset_to_position, str_offset};
 
 // Token type indices — order must match `legend()` vec order
 #[allow(dead_code)]
@@ -58,14 +58,28 @@ pub fn semantic_tokens(source: &str, doc: &ParsedDoc) -> Vec<SemanticToken> {
     delta_encode(raw)
 }
 
-fn push_at(out: &mut Vec<RawToken>, source: &str, offset: u32, len: u32, token_type: u32, modifiers: u32) {
+fn push_at(
+    out: &mut Vec<RawToken>,
+    source: &str,
+    offset: u32,
+    len: u32,
+    token_type: u32,
+    modifiers: u32,
+) {
     let pos = offset_to_position(source, offset);
     out.push((pos.line, pos.character, len, token_type, modifiers));
 }
 
 fn push_name(out: &mut Vec<RawToken>, source: &str, name: &str, token_type: u32, modifiers: u32) {
     let offset = str_offset(source, name);
-    push_at(out, source, offset, name.len() as u32, token_type, modifiers);
+    push_at(
+        out,
+        source,
+        offset,
+        name.len() as u32,
+        token_type,
+        modifiers,
+    );
 }
 
 fn collect_stmts(source: &str, stmts: &[Stmt<'_, '_>], out: &mut Vec<RawToken>) {
@@ -155,7 +169,11 @@ fn collect_stmt(source: &str, stmt: &Stmt<'_, '_>, out: &mut Vec<RawToken>) {
     }
 }
 
-fn collect_class_member(source: &str, member: &php_ast::ClassMember<'_, '_>, out: &mut Vec<RawToken>) {
+fn collect_class_member(
+    source: &str,
+    member: &php_ast::ClassMember<'_, '_>,
+    out: &mut Vec<RawToken>,
+) {
     if let ClassMemberKind::Method(m) = &member.kind {
         let mut mods = MOD_DECLARATION;
         if m.is_static {
@@ -181,7 +199,14 @@ fn collect_expr(source: &str, expr: &php_ast::Expr<'_, '_>, out: &mut Vec<RawTok
         ExprKind::FunctionCall(f) => {
             if let ExprKind::Identifier(name) = &f.name.kind {
                 let name_str = name.as_ref();
-                push_at(out, source, f.name.span.start, name_str.len() as u32, TT_FUNCTION, 0);
+                push_at(
+                    out,
+                    source,
+                    f.name.span.start,
+                    name_str.len() as u32,
+                    TT_FUNCTION,
+                    0,
+                );
             } else {
                 collect_expr(source, f.name, out);
             }
@@ -193,7 +218,14 @@ fn collect_expr(source: &str, expr: &php_ast::Expr<'_, '_>, out: &mut Vec<RawTok
             collect_expr(source, m.object, out);
             if let ExprKind::Identifier(name) = &m.method.kind {
                 let name_str = name.as_ref();
-                push_at(out, source, m.method.span.start, name_str.len() as u32, TT_METHOD, 0);
+                push_at(
+                    out,
+                    source,
+                    m.method.span.start,
+                    name_str.len() as u32,
+                    TT_METHOD,
+                    0,
+                );
             }
             for arg in m.args.iter() {
                 collect_expr(source, &arg.value, out);
@@ -203,7 +235,14 @@ fn collect_expr(source: &str, expr: &php_ast::Expr<'_, '_>, out: &mut Vec<RawTok
             collect_expr(source, m.object, out);
             if let ExprKind::Identifier(name) = &m.method.kind {
                 let name_str = name.as_ref();
-                push_at(out, source, m.method.span.start, name_str.len() as u32, TT_METHOD, 0);
+                push_at(
+                    out,
+                    source,
+                    m.method.span.start,
+                    name_str.len() as u32,
+                    TT_METHOD,
+                    0,
+                );
             }
             for arg in m.args.iter() {
                 collect_expr(source, &arg.value, out);
@@ -239,7 +278,11 @@ fn delta_encode(raw: Vec<RawToken>) -> Vec<SemanticToken> {
 
     for (line, col, len, token_type, modifiers) in raw {
         let delta_line = line - prev_line;
-        let delta_start = if delta_line == 0 { col - prev_start } else { col };
+        let delta_start = if delta_line == 0 {
+            col - prev_start
+        } else {
+            col
+        };
         result.push(SemanticToken {
             delta_line,
             delta_start,
@@ -275,8 +318,12 @@ mod tests {
         let d = doc(src);
         let tokens = semantic_tokens(src, &d);
         assert!(
-            tokens.iter().any(|t| t.token_type == TT_FUNCTION && t.token_modifiers_bitset & MOD_DECLARATION != 0),
-            "expected function+declaration token, got {:?}", tokens
+            tokens
+                .iter()
+                .any(|t| t.token_type == TT_FUNCTION
+                    && t.token_modifiers_bitset & MOD_DECLARATION != 0),
+            "expected function+declaration token, got {:?}",
+            tokens
         );
     }
 
@@ -286,7 +333,9 @@ mod tests {
         let d = doc(src);
         let tokens = semantic_tokens(src, &d);
         assert!(
-            tokens.iter().any(|t| t.token_type == TT_CLASS && t.token_modifiers_bitset & MOD_DECLARATION != 0),
+            tokens.iter().any(
+                |t| t.token_type == TT_CLASS && t.token_modifiers_bitset & MOD_DECLARATION != 0
+            ),
             "expected class+declaration token"
         );
     }
@@ -297,7 +346,10 @@ mod tests {
         let d = doc(src);
         let tokens = semantic_tokens(src, &d);
         assert!(
-            tokens.iter().any(|t| t.token_type == TT_INTERFACE && t.token_modifiers_bitset & MOD_DECLARATION != 0),
+            tokens
+                .iter()
+                .any(|t| t.token_type == TT_INTERFACE
+                    && t.token_modifiers_bitset & MOD_DECLARATION != 0),
             "expected interface+declaration token"
         );
     }
@@ -308,7 +360,10 @@ mod tests {
         let d = doc(src);
         let tokens = semantic_tokens(src, &d);
         assert!(
-            tokens.iter().any(|t| t.token_type == TT_METHOD && t.token_modifiers_bitset & MOD_DECLARATION != 0),
+            tokens
+                .iter()
+                .any(|t| t.token_type == TT_METHOD
+                    && t.token_modifiers_bitset & MOD_DECLARATION != 0),
             "expected method+declaration token"
         );
     }
@@ -319,7 +374,9 @@ mod tests {
         let d = doc(src);
         let tokens = semantic_tokens(src, &d);
         assert!(
-            tokens.iter().any(|t| t.token_type == TT_METHOD && t.token_modifiers_bitset & MOD_ABSTRACT != 0),
+            tokens
+                .iter()
+                .any(|t| t.token_type == TT_METHOD && t.token_modifiers_bitset & MOD_ABSTRACT != 0),
             "expected abstract method token"
         );
     }
@@ -330,7 +387,9 @@ mod tests {
         let d = doc(src);
         let tokens = semantic_tokens(src, &d);
         assert!(
-            tokens.iter().any(|t| t.token_type == TT_METHOD && t.token_modifiers_bitset & MOD_STATIC != 0),
+            tokens
+                .iter()
+                .any(|t| t.token_type == TT_METHOD && t.token_modifiers_bitset & MOD_STATIC != 0),
             "expected static method token"
         );
     }
@@ -341,7 +400,10 @@ mod tests {
         let d = doc(src);
         let tokens = semantic_tokens(src, &d);
         assert!(
-            tokens.iter().any(|t| t.token_type == TT_PARAMETER && t.token_modifiers_bitset & MOD_DECLARATION != 0),
+            tokens
+                .iter()
+                .any(|t| t.token_type == TT_PARAMETER
+                    && t.token_modifiers_bitset & MOD_DECLARATION != 0),
             "expected parameter+declaration token"
         );
     }
@@ -352,7 +414,10 @@ mod tests {
         let d = doc(src);
         let tokens = semantic_tokens(src, &d);
         assert!(
-            tokens.iter().any(|t| t.token_type == TT_FUNCTION && t.token_modifiers_bitset & MOD_DECLARATION == 0),
+            tokens
+                .iter()
+                .any(|t| t.token_type == TT_FUNCTION
+                    && t.token_modifiers_bitset & MOD_DECLARATION == 0),
             "expected function call token (no declaration modifier)"
         );
     }
@@ -363,7 +428,10 @@ mod tests {
         let d = doc(src);
         let tokens = semantic_tokens(src, &d);
         assert!(
-            tokens.iter().any(|t| t.token_type == TT_METHOD && t.token_modifiers_bitset & MOD_DECLARATION == 0),
+            tokens
+                .iter()
+                .any(|t| t.token_type == TT_METHOD
+                    && t.token_modifiers_bitset & MOD_DECLARATION == 0),
             "expected method call token (no declaration modifier)"
         );
     }
@@ -374,7 +442,10 @@ mod tests {
         let d = doc(src);
         let tokens = semantic_tokens(src, &d);
         assert!(
-            tokens.iter().any(|t| t.token_type == TT_PROPERTY && t.token_modifiers_bitset & MOD_DECLARATION != 0),
+            tokens
+                .iter()
+                .any(|t| t.token_type == TT_PROPERTY
+                    && t.token_modifiers_bitset & MOD_DECLARATION != 0),
             "expected property+declaration token"
         );
     }
@@ -389,7 +460,11 @@ mod tests {
         let mut positions = Vec::new();
         for t in &tokens {
             line += t.delta_line;
-            col = if t.delta_line == 0 { col + t.delta_start } else { t.delta_start };
+            col = if t.delta_line == 0 {
+                col + t.delta_start
+            } else {
+                t.delta_start
+            };
             positions.push((line, col));
         }
         let sorted = {
@@ -397,7 +472,10 @@ mod tests {
             s.sort();
             s
         };
-        assert_eq!(positions, sorted, "tokens must be in ascending (line, col) order");
+        assert_eq!(
+            positions, sorted,
+            "tokens must be in ascending (line, col) order"
+        );
     }
 
     #[test]

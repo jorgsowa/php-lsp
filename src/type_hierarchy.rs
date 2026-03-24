@@ -4,7 +4,7 @@ use std::sync::Arc;
 use php_ast::{NamespaceBody, Stmt, StmtKind};
 use tower_lsp::lsp_types::{Position, SymbolKind, TypeHierarchyItem, Url};
 
-use crate::ast::{name_range, ParsedDoc};
+use crate::ast::{ParsedDoc, name_range};
 use crate::util::word_at;
 
 // ── Prepare ───────────────────────────────────────────────────────────────────
@@ -24,7 +24,12 @@ pub fn prepare_type_hierarchy(
     None
 }
 
-fn find_type_item(source: &str, stmts: &[Stmt<'_, '_>], word: &str, uri: &Url) -> Option<TypeHierarchyItem> {
+fn find_type_item(
+    source: &str,
+    stmts: &[Stmt<'_, '_>],
+    word: &str,
+    uri: &Url,
+) -> Option<TypeHierarchyItem> {
     for stmt in stmts {
         match &stmt.kind {
             StmtKind::Class(c) if c.name == Some(word) => {
@@ -124,7 +129,13 @@ pub fn subtypes_of(
     let mut result = Vec::new();
     for (uri, doc) in all_docs {
         let doc_source = doc.source();
-        collect_subtypes(doc_source, &doc.program().stmts, &item.name, uri, &mut result);
+        collect_subtypes(
+            doc_source,
+            &doc.program().stmts,
+            &item.name,
+            uri,
+            &mut result,
+        );
     }
     result
 }
@@ -257,7 +268,8 @@ mod tests {
 
     #[test]
     fn subtypes_finds_extending_class() {
-        let src = "<?php\nclass Animal {}\nclass Dog extends Animal {}\nclass Cat extends Animal {}";
+        let src =
+            "<?php\nclass Animal {}\nclass Dog extends Animal {}\nclass Cat extends Animal {}";
         let docs = vec![doc("/a.php", src)];
         let item = prepare_type_hierarchy(src, &docs, pos(1, 8)).unwrap();
         let subs = subtypes_of(&item, &docs);
@@ -269,11 +281,7 @@ mod tests {
         let base = doc("/base.php", "<?php\nclass Animal {}");
         let child = doc("/child.php", "<?php\nclass Dog extends Animal {}");
         let docs = vec![base, child];
-        let item = prepare_type_hierarchy(
-            "<?php\nclass Animal {}",
-            &docs,
-            pos(1, 8),
-        ).unwrap();
+        let item = prepare_type_hierarchy("<?php\nclass Animal {}", &docs, pos(1, 8)).unwrap();
         let subs = subtypes_of(&item, &docs);
         assert_eq!(subs.len(), 1);
         assert_eq!(subs[0].name, "Dog");

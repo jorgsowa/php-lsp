@@ -8,7 +8,7 @@ use std::sync::Arc;
 use php_ast::{NamespaceBody, Stmt, StmtKind};
 use tower_lsp::lsp_types::{Location, Position, Range, Url};
 
-use crate::ast::{format_type_hint, name_range, offset_to_position, ParsedDoc};
+use crate::ast::{ParsedDoc, format_type_hint, name_range, offset_to_position};
 use crate::type_map::TypeMap;
 use crate::util::word_at;
 
@@ -31,8 +31,12 @@ pub fn goto_type_definition(
 
     for (uri, other_doc) in all_docs {
         let other_source = other_doc.source();
-        if let Some(range) = find_class_range(other_source, &other_doc.program().stmts, &class_name) {
-            return Some(Location { uri: uri.clone(), range });
+        if let Some(range) = find_class_range(other_source, &other_doc.program().stmts, &class_name)
+        {
+            return Some(Location {
+                uri: uri.clone(),
+                range,
+            });
         }
     }
     None
@@ -132,7 +136,10 @@ mod tests {
         let other_uri = uri("/mailer.php");
         let docs = vec![
             doc("/a.php", src),
-            (other_uri.clone(), Arc::new(ParsedDoc::parse(other_src.to_string()))),
+            (
+                other_uri.clone(),
+                Arc::new(ParsedDoc::parse(other_src.to_string())),
+            ),
         ];
         let loc = goto_type_definition(src, &parsed, &docs, pos(2, 2));
         assert!(loc.is_some());

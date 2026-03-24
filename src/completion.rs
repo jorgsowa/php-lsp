@@ -4,17 +4,84 @@ use php_ast::{ClassMemberKind, ExprKind, NamespaceBody, Stmt, StmtKind};
 use tower_lsp::lsp_types::{CompletionItem, CompletionItemKind, Position};
 
 use crate::ast::ParsedDoc;
-use crate::type_map::{enclosing_class_at, members_of_class, params_of_function, parent_class_name, TypeMap};
+use crate::type_map::{
+    TypeMap, enclosing_class_at, members_of_class, params_of_function, parent_class_name,
+};
 
 const PHP_KEYWORDS: &[&str] = &[
-    "abstract", "and", "array", "as", "break", "callable", "case", "catch", "class", "clone",
-    "const", "continue", "declare", "default", "die", "do", "echo", "else", "elseif", "empty",
-    "enddeclare", "endfor", "endforeach", "endif", "endswitch", "endwhile", "enum", "eval",
-    "exit", "extends", "final", "finally", "fn", "for", "foreach", "function", "global", "goto",
-    "if", "implements", "include", "include_once", "instanceof", "insteadof", "interface",
-    "isset", "list", "match", "namespace", "new", "null", "or", "print", "private", "protected",
-    "public", "readonly", "require", "require_once", "return", "self", "static", "switch",
-    "throw", "trait", "true", "false", "try", "use", "var", "while", "xor", "yield",
+    "abstract",
+    "and",
+    "array",
+    "as",
+    "break",
+    "callable",
+    "case",
+    "catch",
+    "class",
+    "clone",
+    "const",
+    "continue",
+    "declare",
+    "default",
+    "die",
+    "do",
+    "echo",
+    "else",
+    "elseif",
+    "empty",
+    "enddeclare",
+    "endfor",
+    "endforeach",
+    "endif",
+    "endswitch",
+    "endwhile",
+    "enum",
+    "eval",
+    "exit",
+    "extends",
+    "final",
+    "finally",
+    "fn",
+    "for",
+    "foreach",
+    "function",
+    "global",
+    "goto",
+    "if",
+    "implements",
+    "include",
+    "include_once",
+    "instanceof",
+    "insteadof",
+    "interface",
+    "isset",
+    "list",
+    "match",
+    "namespace",
+    "new",
+    "null",
+    "or",
+    "print",
+    "private",
+    "protected",
+    "public",
+    "readonly",
+    "require",
+    "require_once",
+    "return",
+    "self",
+    "static",
+    "switch",
+    "throw",
+    "trait",
+    "true",
+    "false",
+    "try",
+    "use",
+    "var",
+    "while",
+    "xor",
+    "yield",
 ];
 
 pub fn keyword_completions() -> Vec<CompletionItem> {
@@ -132,47 +199,240 @@ fn collect_from_expression(expr: &php_ast::Expr<'_, '_>, items: &mut Vec<Complet
 
 const PHP_BUILTINS: &[&str] = &[
     // string
-    "strlen", "strpos", "strrpos", "substr", "str_replace", "str_contains", "str_starts_with",
-    "str_ends_with", "str_split", "explode", "implode", "join", "trim", "ltrim", "rtrim",
-    "strtolower", "strtoupper", "ucfirst", "lcfirst", "ucwords", "sprintf", "printf", "vsprintf",
-    "number_format", "nl2br", "htmlspecialchars", "htmlentities", "strip_tags", "addslashes",
-    "stripslashes", "str_pad", "str_repeat", "str_word_count", "strcmp", "strcasecmp",
-    "strncmp", "strncasecmp", "substr_count", "substr_replace", "strstr", "stristr",
-    "preg_match", "preg_match_all", "preg_replace", "preg_split", "preg_quote",
-    "md5", "sha1", "hash", "base64_encode", "base64_decode", "urlencode", "urldecode",
-    "rawurlencode", "rawurldecode", "http_build_query", "parse_str", "parse_url",
+    "strlen",
+    "strpos",
+    "strrpos",
+    "substr",
+    "str_replace",
+    "str_contains",
+    "str_starts_with",
+    "str_ends_with",
+    "str_split",
+    "explode",
+    "implode",
+    "join",
+    "trim",
+    "ltrim",
+    "rtrim",
+    "strtolower",
+    "strtoupper",
+    "ucfirst",
+    "lcfirst",
+    "ucwords",
+    "sprintf",
+    "printf",
+    "vsprintf",
+    "number_format",
+    "nl2br",
+    "htmlspecialchars",
+    "htmlentities",
+    "strip_tags",
+    "addslashes",
+    "stripslashes",
+    "str_pad",
+    "str_repeat",
+    "str_word_count",
+    "strcmp",
+    "strcasecmp",
+    "strncmp",
+    "strncasecmp",
+    "substr_count",
+    "substr_replace",
+    "strstr",
+    "stristr",
+    "preg_match",
+    "preg_match_all",
+    "preg_replace",
+    "preg_split",
+    "preg_quote",
+    "md5",
+    "sha1",
+    "hash",
+    "base64_encode",
+    "base64_decode",
+    "urlencode",
+    "urldecode",
+    "rawurlencode",
+    "rawurldecode",
+    "http_build_query",
+    "parse_str",
+    "parse_url",
     // array
-    "count", "array_key_exists", "in_array", "array_search", "array_merge", "array_replace",
-    "array_push", "array_pop", "array_shift", "array_unshift", "array_splice", "array_slice",
-    "array_chunk", "array_combine", "array_diff", "array_intersect", "array_unique",
-    "array_flip", "array_reverse", "array_keys", "array_values", "array_map", "array_filter",
-    "array_reduce", "array_walk", "array_fill", "array_fill_keys", "array_pad",
-    "sort", "rsort", "asort", "arsort", "ksort", "krsort", "usort", "uasort", "uksort",
-    "compact", "extract", "list", "range",
+    "count",
+    "array_key_exists",
+    "in_array",
+    "array_search",
+    "array_merge",
+    "array_replace",
+    "array_push",
+    "array_pop",
+    "array_shift",
+    "array_unshift",
+    "array_splice",
+    "array_slice",
+    "array_chunk",
+    "array_combine",
+    "array_diff",
+    "array_intersect",
+    "array_unique",
+    "array_flip",
+    "array_reverse",
+    "array_keys",
+    "array_values",
+    "array_map",
+    "array_filter",
+    "array_reduce",
+    "array_walk",
+    "array_fill",
+    "array_fill_keys",
+    "array_pad",
+    "sort",
+    "rsort",
+    "asort",
+    "arsort",
+    "ksort",
+    "krsort",
+    "usort",
+    "uasort",
+    "uksort",
+    "compact",
+    "extract",
+    "list",
+    "range",
     // math
-    "abs", "ceil", "floor", "round", "max", "min", "pow", "sqrt", "log", "exp",
-    "rand", "mt_rand", "random_int", "fmod", "intdiv", "intval", "floatval", "is_nan",
-    "is_infinite", "is_finite", "pi", "sin", "cos", "tan", "asin", "acos", "atan", "atan2",
+    "abs",
+    "ceil",
+    "floor",
+    "round",
+    "max",
+    "min",
+    "pow",
+    "sqrt",
+    "log",
+    "exp",
+    "rand",
+    "mt_rand",
+    "random_int",
+    "fmod",
+    "intdiv",
+    "intval",
+    "floatval",
+    "is_nan",
+    "is_infinite",
+    "is_finite",
+    "pi",
+    "sin",
+    "cos",
+    "tan",
+    "asin",
+    "acos",
+    "atan",
+    "atan2",
     // type / var
-    "isset", "empty", "unset", "is_null", "is_bool", "is_int", "is_integer", "is_long",
-    "is_float", "is_double", "is_string", "is_array", "is_object", "is_callable", "is_numeric",
-    "is_a", "instanceof", "gettype", "settype", "intval", "floatval", "strval", "boolval",
-    "var_dump", "var_export", "print_r", "serialize", "unserialize",
+    "isset",
+    "empty",
+    "unset",
+    "is_null",
+    "is_bool",
+    "is_int",
+    "is_integer",
+    "is_long",
+    "is_float",
+    "is_double",
+    "is_string",
+    "is_array",
+    "is_object",
+    "is_callable",
+    "is_numeric",
+    "is_a",
+    "instanceof",
+    "gettype",
+    "settype",
+    "intval",
+    "floatval",
+    "strval",
+    "boolval",
+    "var_dump",
+    "var_export",
+    "print_r",
+    "serialize",
+    "unserialize",
     // file / io
-    "file_get_contents", "file_put_contents", "file_exists", "is_file", "is_dir", "is_readable",
-    "is_writable", "mkdir", "rmdir", "unlink", "rename", "copy", "realpath", "dirname",
-    "basename", "pathinfo", "glob", "scandir", "opendir", "readdir", "closedir",
-    "fopen", "fclose", "fread", "fwrite", "fgets", "fputs", "feof", "fseek", "ftell", "rewind",
+    "file_get_contents",
+    "file_put_contents",
+    "file_exists",
+    "is_file",
+    "is_dir",
+    "is_readable",
+    "is_writable",
+    "mkdir",
+    "rmdir",
+    "unlink",
+    "rename",
+    "copy",
+    "realpath",
+    "dirname",
+    "basename",
+    "pathinfo",
+    "glob",
+    "scandir",
+    "opendir",
+    "readdir",
+    "closedir",
+    "fopen",
+    "fclose",
+    "fread",
+    "fwrite",
+    "fgets",
+    "fputs",
+    "feof",
+    "fseek",
+    "ftell",
+    "rewind",
     // date / time
-    "time", "microtime", "mktime", "strtotime", "date", "date_create", "date_format",
-    "date_diff", "date_add", "date_sub", "checkdate",
+    "time",
+    "microtime",
+    "mktime",
+    "strtotime",
+    "date",
+    "date_create",
+    "date_format",
+    "date_diff",
+    "date_add",
+    "date_sub",
+    "checkdate",
     // misc
-    "defined", "define", "constant", "class_exists", "interface_exists", "function_exists",
-    "method_exists", "property_exists", "get_class", "get_parent_class", "is_subclass_of",
-    "header", "headers_sent", "setcookie", "session_start", "session_destroy",
-    "ob_start", "ob_get_clean", "ob_end_clean", "json_encode", "json_decode",
-    "call_user_func", "call_user_func_array", "array_walk_recursive", "array_map",
-    "compact", "extract", "sleep", "usleep", "exit", "die",
+    "defined",
+    "define",
+    "constant",
+    "class_exists",
+    "interface_exists",
+    "function_exists",
+    "method_exists",
+    "property_exists",
+    "get_class",
+    "get_parent_class",
+    "is_subclass_of",
+    "header",
+    "headers_sent",
+    "setcookie",
+    "session_start",
+    "session_destroy",
+    "ob_start",
+    "ob_get_clean",
+    "ob_end_clean",
+    "json_encode",
+    "json_decode",
+    "call_user_func",
+    "call_user_func_array",
+    "array_walk_recursive",
+    "array_map",
+    "compact",
+    "extract",
+    "sleep",
+    "usleep",
+    "exit",
+    "die",
 ];
 
 pub fn builtin_completions() -> Vec<CompletionItem> {
@@ -201,21 +461,33 @@ fn all_instance_members(
     let mut visited: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut current = class_name.to_string();
     loop {
-        if !visited.insert(current.clone()) { break; }
+        if !visited.insert(current.clone()) {
+            break;
+        }
         let mut parent: Option<String> = None;
         for d in &all {
             let members = members_of_class(d, &current);
-            if parent.is_none() { parent = members.parent.clone(); }
+            if parent.is_none() {
+                parent = members.parent.clone();
+            }
             for (name, is_static) in members.methods {
                 if !is_static && seen_names.insert(name.clone()) {
-                    items.push(CompletionItem { label: name, kind: Some(CompletionItemKind::METHOD), ..Default::default() });
+                    items.push(CompletionItem {
+                        label: name,
+                        kind: Some(CompletionItemKind::METHOD),
+                        ..Default::default()
+                    });
                 }
             }
             for (name, is_static) in members.properties {
                 if !is_static {
                     let label = format!("${name}");
                     if seen_names.insert(label.clone()) {
-                        items.push(CompletionItem { label, kind: Some(CompletionItemKind::PROPERTY), ..Default::default() });
+                        items.push(CompletionItem {
+                            label,
+                            kind: Some(CompletionItemKind::PROPERTY),
+                            ..Default::default()
+                        });
                     }
                 }
             }
@@ -241,27 +513,43 @@ fn all_static_members(
     let mut visited: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut current = class_name.to_string();
     loop {
-        if !visited.insert(current.clone()) { break; }
+        if !visited.insert(current.clone()) {
+            break;
+        }
         let mut parent: Option<String> = None;
         for d in &all {
             let members = members_of_class(d, &current);
-            if parent.is_none() { parent = members.parent.clone(); }
+            if parent.is_none() {
+                parent = members.parent.clone();
+            }
             for (name, is_static) in members.methods {
                 if is_static && seen_names.insert(name.clone()) {
-                    items.push(CompletionItem { label: name, kind: Some(CompletionItemKind::METHOD), ..Default::default() });
+                    items.push(CompletionItem {
+                        label: name,
+                        kind: Some(CompletionItemKind::METHOD),
+                        ..Default::default()
+                    });
                 }
             }
             for (name, is_static) in members.properties {
                 if is_static {
                     let label = format!("${name}");
                     if seen_names.insert(label.clone()) {
-                        items.push(CompletionItem { label, kind: Some(CompletionItemKind::PROPERTY), ..Default::default() });
+                        items.push(CompletionItem {
+                            label,
+                            kind: Some(CompletionItemKind::PROPERTY),
+                            ..Default::default()
+                        });
                     }
                 }
             }
             for name in members.constants {
                 if seen_names.insert(name.clone()) {
-                    items.push(CompletionItem { label: name, kind: Some(CompletionItemKind::CONSTANT), ..Default::default() });
+                    items.push(CompletionItem {
+                        label: name,
+                        kind: Some(CompletionItemKind::CONSTANT),
+                        ..Default::default()
+                    });
                 }
             }
         }
@@ -479,7 +767,14 @@ mod tests {
     fn keywords_contain_common_php_keywords() {
         let kws = keyword_completions();
         let ls = labels(&kws);
-        for expected in &["function", "class", "return", "foreach", "match", "namespace"] {
+        for expected in &[
+            "function",
+            "class",
+            "return",
+            "foreach",
+            "match",
+            "namespace",
+        ] {
             assert!(ls.contains(expected), "missing keyword: {expected}");
         }
     }
@@ -516,7 +811,10 @@ mod tests {
         let ls = labels(&items);
         assert!(ls.contains(&"add"), "missing 'add'");
         assert!(ls.contains(&"sub"), "missing 'sub'");
-        for item in items.iter().filter(|i| i.label == "add" || i.label == "sub") {
+        for item in items
+            .iter()
+            .filter(|i| i.label == "add" || i.label == "sub")
+        {
             assert_eq!(item.kind, Some(CompletionItemKind::METHOD));
         }
     }
@@ -562,7 +860,10 @@ mod tests {
         let ls = labels(&items);
         assert!(ls.contains(&"$name"), "missing '$name'");
         assert!(ls.contains(&"$age"), "missing '$age'");
-        for item in items.iter().filter(|i| i.label == "$name" || i.label == "$age") {
+        for item in items
+            .iter()
+            .filter(|i| i.label == "$name" || i.label == "$age")
+        {
             assert_eq!(item.kind, Some(CompletionItemKind::PROPERTY));
         }
     }
@@ -604,7 +905,10 @@ mod tests {
         let d = doc("<?php\nfunction greet() {}\nclass MyApp {}");
         let items = filtered_completions_at(&d, &[], None, None, None);
         let ls = labels(&items);
-        assert!(ls.contains(&"function"), "should contain keyword 'function'");
+        assert!(
+            ls.contains(&"function"),
+            "should contain keyword 'function'"
+        );
         assert!(ls.contains(&"greet"), "should contain function 'greet'");
         assert!(ls.contains(&"MyApp"), "should contain class 'MyApp'");
     }
@@ -623,7 +927,10 @@ mod tests {
     fn colon_trigger_returns_static_members() {
         let src = "<?php\nclass Cfg { public static function load(): void {} public static int $debug = 0; const VERSION = '1'; }\nCfg::";
         let d = doc(src);
-        let pos = Position { line: 2, character: 5 };
+        let pos = Position {
+            line: 2,
+            character: 5,
+        };
         let items = filtered_completions_at(&d, &[], Some(":"), Some(src), Some(pos));
         let ls = labels(&items);
         assert!(ls.contains(&"load"), "missing static method");
@@ -634,7 +941,10 @@ mod tests {
     fn inherited_methods_appear_in_arrow_completion() {
         let src = "<?php\nclass Base { public function baseMethod() {} }\nclass Child extends Base { public function childMethod() {} }\n$c = new Child();\n$c->";
         let d = doc(src);
-        let pos = Position { line: 4, character: 4 };
+        let pos = Position {
+            line: 4,
+            character: 4,
+        };
         let items = filtered_completions_at(&d, &[], Some(">"), Some(src), Some(pos));
         let ls = labels(&items);
         assert!(ls.contains(&"baseMethod"), "missing inherited baseMethod");
@@ -645,7 +955,10 @@ mod tests {
     fn param_named_arg_completion() {
         let src = "<?php\nfunction connect(string $host, int $port): void {}\nconnect(";
         let d = doc(src);
-        let pos = Position { line: 2, character: 8 };
+        let pos = Position {
+            line: 2,
+            character: 8,
+        };
         let items = filtered_completions_at(&d, &[], Some("("), Some(src), Some(pos));
         let ls = labels(&items);
         assert!(ls.contains(&"host:"), "missing host:");
@@ -671,6 +984,9 @@ mod tests {
         let other = Arc::new(ParsedDoc::parse("<?php\n$remoteVar = 2;".to_string()));
         let items = filtered_completions_at(&d, &[other], None, None, None);
         let ls = labels(&items);
-        assert!(!ls.contains(&"$remoteVar"), "cross-file variable should not appear");
+        assert!(
+            !ls.contains(&"$remoteVar"),
+            "cross-file variable should not appear"
+        );
     }
 }

@@ -16,7 +16,7 @@ impl Psr4Map {
         Psr4Map { entries: vec![] }
     }
 
-/// Build a map from the project root. Reads:
+    /// Build a map from the project root. Reads:
     /// - `<root>/composer.json`           (project namespaces, incl. autoload-dev)
     /// - `<root>/vendor/composer/installed.json`  (all installed packages)
     pub fn load(root: &Path) -> Self {
@@ -44,8 +44,7 @@ impl Psr4Map {
                             .map(|p| vendor_composer.join(p));
 
                         if let Some(pkg_root) = install_path {
-                            let pkg_root =
-                                std::fs::canonicalize(&pkg_root).unwrap_or(pkg_root);
+                            let pkg_root = std::fs::canonicalize(&pkg_root).unwrap_or(pkg_root);
                             if let Some(autoload) = pkg.get("autoload") {
                                 load_psr4_section(autoload, &pkg_root, &mut map);
                             }

@@ -3,7 +3,7 @@ use std::sync::{Arc, RwLock};
 
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::*;
-use tower_lsp::{async_trait, Client, LanguageServer};
+use tower_lsp::{Client, LanguageServer, async_trait};
 
 use crate::ast::ParsedDoc;
 use crate::autoload::Psr4Map;
@@ -103,11 +103,13 @@ impl LanguageServer for Backend {
                 inlay_hint_provider: Some(OneOf::Left(true)),
                 folding_range_provider: Some(FoldingRangeProviderCapability::Simple(true)),
                 semantic_tokens_provider: Some(
-                    SemanticTokensServerCapabilities::SemanticTokensOptions(SemanticTokensOptions {
-                        legend: legend(),
-                        full: Some(SemanticTokensFullOptions::Bool(true)),
-                        ..Default::default()
-                    }),
+                    SemanticTokensServerCapabilities::SemanticTokensOptions(
+                        SemanticTokensOptions {
+                            legend: legend(),
+                            full: Some(SemanticTokensFullOptions::Bool(true)),
+                            ..Default::default()
+                        },
+                    ),
                 ),
                 selection_range_provider: Some(SelectionRangeProviderCapability::Simple(true)),
                 call_hierarchy_provider: Some(CallHierarchyServerCapability::Simple(true)),
@@ -161,7 +163,10 @@ impl LanguageServer for Backend {
                 .unwrap(),
             ),
         };
-        self.client.register_capability(vec![registration]).await.ok();
+        self.client
+            .register_capability(vec![registration])
+            .await
+            .ok();
 
         // Load PSR-4 autoload map and kick off background workspace scan
         if let Some(root) = self.root_path.read().unwrap().clone() {
@@ -199,13 +204,15 @@ impl LanguageServer for Backend {
 
         // Parse in a blocking thread to avoid stalling the tokio runtime;
         // await here so the AST is ready before the handler returns.
-        let (doc, diagnostics) =
-            tokio::task::spawn_blocking(move || parse_document(&text))
-                .await
-                .unwrap_or_else(|_| (ParsedDoc::default(), vec![]));
+        let (doc, diagnostics) = tokio::task::spawn_blocking(move || parse_document(&text))
+            .await
+            .unwrap_or_else(|_| (ParsedDoc::default(), vec![]));
 
-        self.docs.apply_parse(&uri, doc, diagnostics.clone(), version);
-        self.client.publish_diagnostics(uri, diagnostics, None).await;
+        self.docs
+            .apply_parse(&uri, doc, diagnostics.clone(), version);
+        self.client
+            .publish_diagnostics(uri, diagnostics, None)
+            .await;
     }
 
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
@@ -227,10 +234,9 @@ impl LanguageServer for Backend {
             // version check in apply_parse will discard this stale result.
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
-            let (doc, diagnostics) =
-                tokio::task::spawn_blocking(move || parse_document(&text))
-                    .await
-                    .unwrap_or_else(|_| (ParsedDoc::default(), vec![]));
+            let (doc, diagnostics) = tokio::task::spawn_blocking(move || parse_document(&text))
+                .await
+                .unwrap_or_else(|_| (ParsedDoc::default(), vec![]));
 
             // Only apply if no newer edit arrived while we were parsing
             if docs.apply_parse(&uri, doc, diagnostics.clone(), version) {
@@ -332,7 +338,11 @@ impl LanguageServer for Backend {
         let all_docs = self.docs.all_docs();
         let include_declaration = params.context.include_declaration;
         let locations = find_references(&word, &all_docs, include_declaration);
-        Ok(if locations.is_empty() { None } else { Some(locations) })
+        Ok(if locations.is_empty() {
+            None
+        } else {
+            Some(locations)
+        })
     }
 
     async fn prepare_rename(
@@ -393,17 +403,18 @@ impl LanguageServer for Backend {
         ))))
     }
 
-    async fn folding_range(
-        &self,
-        params: FoldingRangeParams,
-    ) -> Result<Option<Vec<FoldingRange>>> {
+    async fn folding_range(&self, params: FoldingRangeParams) -> Result<Option<Vec<FoldingRange>>> {
         let uri = &params.text_document.uri;
         let doc = match self.docs.get_doc(uri) {
             Some(d) => d,
             None => return Ok(None),
         };
         let ranges = folding_ranges(doc.source(), &doc);
-        Ok(if ranges.is_empty() { None } else { Some(ranges) })
+        Ok(if ranges.is_empty() {
+            None
+        } else {
+            Some(ranges)
+        })
     }
 
     async fn inlay_hint(&self, params: InlayHintParams) -> Result<Option<Vec<InlayHint>>> {
@@ -421,7 +432,11 @@ impl LanguageServer for Backend {
     ) -> Result<Option<Vec<SymbolInformation>>> {
         let docs = self.docs.all_docs();
         let results = workspace_symbols(&params.query, &docs);
-        Ok(if results.is_empty() { None } else { Some(results) })
+        Ok(if results.is_empty() {
+            None
+        } else {
+            Some(results)
+        })
     }
 
     async fn semantic_tokens_full(
@@ -455,7 +470,11 @@ impl LanguageServer for Backend {
             None => return Ok(None),
         };
         let ranges = selection_ranges(doc.source(), &doc, &params.positions);
-        Ok(if ranges.is_empty() { None } else { Some(ranges) })
+        Ok(if ranges.is_empty() {
+            None
+        } else {
+            Some(ranges)
+        })
     }
 
     async fn prepare_call_hierarchy(
@@ -503,7 +522,11 @@ impl LanguageServer for Backend {
             None => return Ok(None),
         };
         let highlights = document_highlights(&source, &doc, position);
-        Ok(if highlights.is_empty() { None } else { Some(highlights) })
+        Ok(if highlights.is_empty() {
+            None
+        } else {
+            Some(highlights)
+        })
     }
 
     async fn goto_implementation(
@@ -566,7 +589,11 @@ impl LanguageServer for Backend {
     ) -> Result<Option<Vec<TypeHierarchyItem>>> {
         let all_docs = self.docs.all_docs();
         let result = supertypes_of(&params.item, &all_docs);
-        Ok(if result.is_empty() { None } else { Some(result) })
+        Ok(if result.is_empty() {
+            None
+        } else {
+            Some(result)
+        })
     }
 
     async fn subtypes(
@@ -575,7 +602,11 @@ impl LanguageServer for Backend {
     ) -> Result<Option<Vec<TypeHierarchyItem>>> {
         let all_docs = self.docs.all_docs();
         let result = subtypes_of(&params.item, &all_docs);
-        Ok(if result.is_empty() { None } else { Some(result) })
+        Ok(if result.is_empty() {
+            None
+        } else {
+            Some(result)
+        })
     }
 
     async fn code_lens(&self, params: CodeLensParams) -> Result<Option<Vec<CodeLens>>> {
@@ -586,13 +617,14 @@ impl LanguageServer for Backend {
         };
         let all_docs = self.docs.all_docs();
         let lenses = code_lenses(uri, &doc, &all_docs);
-        Ok(if lenses.is_empty() { None } else { Some(lenses) })
+        Ok(if lenses.is_empty() {
+            None
+        } else {
+            Some(lenses)
+        })
     }
 
-    async fn document_link(
-        &self,
-        params: DocumentLinkParams,
-    ) -> Result<Option<Vec<DocumentLink>>> {
+    async fn document_link(&self, params: DocumentLinkParams) -> Result<Option<Vec<DocumentLink>>> {
         let uri = &params.text_document.uri;
         let doc = match self.docs.get_doc(uri) {
             Some(d) => d,
@@ -602,10 +634,7 @@ impl LanguageServer for Backend {
         Ok(if links.is_empty() { None } else { Some(links) })
     }
 
-    async fn formatting(
-        &self,
-        params: DocumentFormattingParams,
-    ) -> Result<Option<Vec<TextEdit>>> {
+    async fn formatting(&self, params: DocumentFormattingParams) -> Result<Option<Vec<TextEdit>>> {
         let uri = &params.text_document.uri;
         let source = self.docs.get(uri).unwrap_or_default();
         Ok(format_document(&source))
@@ -716,10 +745,7 @@ impl LanguageServer for Backend {
         ))
     }
 
-    async fn code_action(
-        &self,
-        params: CodeActionParams,
-    ) -> Result<Option<CodeActionResponse>> {
+    async fn code_action(&self, params: CodeActionParams) -> Result<Option<CodeActionResponse>> {
         let uri = &params.text_document.uri;
         let source = self.docs.get(uri).unwrap_or_default();
         let doc = match self.docs.get_doc(uri) {
@@ -735,7 +761,9 @@ impl LanguageServer for Backend {
         if !sem_diags.is_empty() {
             let mut all_diags = self.docs.get_diagnostics(uri).unwrap_or_default();
             all_diags.extend(sem_diags.clone());
-            self.client.publish_diagnostics(uri.clone(), all_diags, None).await;
+            self.client
+                .publish_diagnostics(uri.clone(), all_diags, None)
+                .await;
         }
 
         // Build "Add use import" code actions for undefined class names in range
@@ -779,7 +807,11 @@ impl LanguageServer for Backend {
         // PHPDoc generation actions
         actions.extend(phpdoc_actions(uri, &doc, &source, params.range));
 
-        Ok(if actions.is_empty() { None } else { Some(actions) })
+        Ok(if actions.is_empty() {
+            None
+        } else {
+            Some(actions)
+        })
     }
 }
 
@@ -819,14 +851,23 @@ fn build_use_import_edit(source: &str, uri: &Url, fqn: &str) -> WorkspaceEdit {
     // Insert after the `<?php` line and any existing `use` / `namespace` lines
     let insert_line = find_use_insert_line(source);
     let insert_text = format!("use {fqn};\n");
-    let pos = tower_lsp::lsp_types::Position { line: insert_line, character: 0 };
+    let pos = tower_lsp::lsp_types::Position {
+        line: insert_line,
+        character: 0,
+    };
     let edit = tower_lsp::lsp_types::TextEdit {
-        range: tower_lsp::lsp_types::Range { start: pos, end: pos },
+        range: tower_lsp::lsp_types::Range {
+            start: pos,
+            end: pos,
+        },
         new_text: insert_text,
     };
     let mut changes = HashMap::new();
     changes.insert(uri.clone(), vec![edit]);
-    WorkspaceEdit { changes: Some(changes), ..Default::default() }
+    WorkspaceEdit {
+        changes: Some(changes),
+        ..Default::default()
+    }
 }
 
 fn find_use_insert_line(source: &str) -> u32 {
@@ -867,7 +908,10 @@ impl Backend {
         let short_name = fqn.split('\\').next_back()?;
         let range = find_declaration_range(doc.source(), &doc, short_name)?;
 
-        Some(Location { uri: file_uri, range })
+        Some(Location {
+            uri: file_uri,
+            range,
+        })
     }
 }
 
@@ -906,9 +950,7 @@ async fn scan_workspace(root: PathBuf, docs: Arc<DocumentStore>) -> usize {
                 if !name.starts_with('.') {
                     stack.push(path);
                 }
-            } else if file_type.is_file()
-                && path.extension().map_or(false, |e| e == "php")
-            {
+            } else if file_type.is_file() && path.extension().map_or(false, |e| e == "php") {
                 if let Ok(uri) = Url::from_file_path(&path) {
                     if let Ok(text) = tokio::fs::read_to_string(&path).await {
                         docs.index(uri, &text);

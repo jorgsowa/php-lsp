@@ -33,7 +33,7 @@ impl DocumentStore {
         }
     }
 
-/// Store new text immediately and return a version token for deferred parsing.
+    /// Store new text immediately and return a version token for deferred parsing.
     pub fn set_text(&self, uri: Url, text: String) -> u64 {
         let mut entry = self.map.entry(uri).or_insert_with(|| Document {
             text: None,
@@ -74,22 +74,35 @@ impl DocumentStore {
     }
 
     pub fn index(&self, uri: Url, text: &str) {
-        if self.map.get(&uri).map(|d| d.text.is_some()).unwrap_or(false) {
+        if self
+            .map
+            .get(&uri)
+            .map(|d| d.text.is_some())
+            .unwrap_or(false)
+        {
             return;
         }
         let (doc, _) = parse_document(text);
-        self.map.insert(uri.clone(), Document {
-            text: None,
-            doc: Arc::new(doc),
-            diagnostics: vec![],
-            text_version: 0,
-        });
+        self.map.insert(
+            uri.clone(),
+            Document {
+                text: None,
+                doc: Arc::new(doc),
+                diagnostics: vec![],
+                text_version: 0,
+            },
+        );
 
         let mut order = self.indexed_order.lock().unwrap();
         order.push_back(uri);
         while order.len() > MAX_INDEXED {
             if let Some(oldest) = order.pop_front() {
-                if self.map.get(&oldest).map(|d| d.text.is_none()).unwrap_or(false) {
+                if self
+                    .map
+                    .get(&oldest)
+                    .map(|d| d.text.is_none())
+                    .unwrap_or(false)
+                {
                     self.map.remove(&oldest);
                 }
             }
@@ -169,7 +182,11 @@ mod tests {
     #[test]
     fn close_clears_text_but_keeps_doc() {
         let store = DocumentStore::new();
-        open(&store, uri("/a.php"), "<?php\nfunction greet() {}".to_string());
+        open(
+            &store,
+            uri("/a.php"),
+            "<?php\nfunction greet() {}".to_string(),
+        );
         store.close(&uri("/a.php"));
         assert!(store.get(&uri("/a.php")).is_none());
         assert!(store.get_doc(&uri("/a.php")).is_some());

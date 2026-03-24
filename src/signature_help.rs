@@ -31,7 +31,11 @@ pub fn signature_help(source: &str, doc: &ParsedDoc, position: Position) -> Opti
         signatures: vec![SignatureInformation {
             label,
             documentation: None,
-            parameters: if params.is_empty() { None } else { Some(params) },
+            parameters: if params.is_empty() {
+                None
+            } else {
+                Some(params)
+            },
             active_parameter: Some(active_param as u32),
         }],
         active_signature: Some(0),
@@ -160,7 +164,11 @@ mod tests {
         let result = signature_help(src, &doc, pos(2, 8));
         assert!(result.is_some());
         let sh = result.unwrap();
-        assert_eq!(sh.active_parameter, Some(1), "second param should be active");
+        assert_eq!(
+            sh.active_parameter,
+            Some(1),
+            "second param should be active"
+        );
     }
 
     #[test]
@@ -176,6 +184,9 @@ mod tests {
         let src = "<?php\nunknown(";
         let doc = ParsedDoc::parse(src.to_string());
         let result = signature_help(src, &doc, pos(1, 8));
-        assert!(result.is_none(), "unknown function should yield no signature");
+        assert!(
+            result.is_none(),
+            "unknown function should yield no signature"
+        );
     }
 }

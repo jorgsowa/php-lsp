@@ -1,6 +1,6 @@
 use tower_lsp::lsp_types::{Diagnostic, DiagnosticSeverity, Position, Range};
 
-use crate::ast::{offset_to_position, ParsedDoc};
+use crate::ast::{ParsedDoc, offset_to_position};
 
 /// Parse `source` and return the (owned) `ParsedDoc` plus any parse diagnostics.
 pub fn parse_document(source: &str) -> (ParsedDoc, Vec<Diagnostic>) {
@@ -14,7 +14,10 @@ pub fn parse_document(source: &str) -> (ParsedDoc, Vec<Diagnostic>) {
             let end = if span.end > span.start {
                 offset_to_position(source, span.end)
             } else {
-                Position { line: start.line, character: start.character + 1 }
+                Position {
+                    line: start.line,
+                    character: start.character + 1,
+                }
             };
             Diagnostic {
                 range: Range { start, end },

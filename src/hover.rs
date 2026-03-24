@@ -1,7 +1,7 @@
 use php_ast::{ClassMemberKind, NamespaceBody, Param, Stmt, StmtKind};
 use tower_lsp::lsp_types::{Hover, HoverContents, MarkupContent, MarkupKind, Position};
 
-use crate::ast::{format_type_hint, ParsedDoc};
+use crate::ast::{ParsedDoc, format_type_hint};
 use crate::docblock::find_docblock;
 use crate::util::word_at;
 
@@ -131,7 +131,11 @@ mod tests {
         let doc = ParsedDoc::parse(src.to_string());
         let result = hover_info(src, &doc, pos(1, 10));
         assert!(result.is_some(), "expected hover result");
-        if let Some(Hover { contents: HoverContents::Markup(mc), .. }) = result {
+        if let Some(Hover {
+            contents: HoverContents::Markup(mc),
+            ..
+        }) = result
+        {
             assert!(
                 mc.value.contains("function greet("),
                 "expected function signature, got: {}",
@@ -146,7 +150,11 @@ mod tests {
         let doc = ParsedDoc::parse(src.to_string());
         let result = hover_info(src, &doc, pos(1, 8));
         assert!(result.is_some(), "expected hover result");
-        if let Some(Hover { contents: HoverContents::Markup(mc), .. }) = result {
+        if let Some(Hover {
+            contents: HoverContents::Markup(mc),
+            ..
+        }) = result
+        {
             assert!(
                 mc.value.contains("class MyService"),
                 "expected class sig, got: {}",
@@ -184,7 +192,11 @@ mod tests {
         let doc = ParsedDoc::parse(src.to_string());
         let result = hover_info(src, &doc, pos(1, 8));
         assert!(result.is_some());
-        if let Some(Hover { contents: HoverContents::Markup(mc), .. }) = result {
+        if let Some(Hover {
+            contents: HoverContents::Markup(mc),
+            ..
+        }) = result
+        {
             assert!(
                 mc.value.contains("extends Animal"),
                 "expected 'extends Animal', got: {}",
@@ -199,7 +211,11 @@ mod tests {
         let doc = ParsedDoc::parse(src.to_string());
         let result = hover_info(src, &doc, pos(1, 8));
         assert!(result.is_some());
-        if let Some(Hover { contents: HoverContents::Markup(mc), .. }) = result {
+        if let Some(Hover {
+            contents: HoverContents::Markup(mc),
+            ..
+        }) = result
+        {
             assert!(
                 mc.value.contains("implements Countable, Serializable"),
                 "expected implements list, got: {}",
@@ -214,7 +230,11 @@ mod tests {
         let doc = ParsedDoc::parse(src.to_string());
         let result = hover_info(src, &doc, pos(1, 8));
         assert!(result.is_some());
-        if let Some(Hover { contents: HoverContents::Markup(mc), .. }) = result {
+        if let Some(Hover {
+            contents: HoverContents::Markup(mc),
+            ..
+        }) = result
+        {
             assert!(
                 mc.value.contains("trait Loggable"),
                 "expected 'trait Loggable', got: {}",
@@ -229,7 +249,11 @@ mod tests {
         let doc = ParsedDoc::parse(src.to_string());
         let result = hover_info(src, &doc, pos(1, 12));
         assert!(result.is_some(), "expected hover result");
-        if let Some(Hover { contents: HoverContents::Markup(mc), .. }) = result {
+        if let Some(Hover {
+            contents: HoverContents::Markup(mc),
+            ..
+        }) = result
+        {
             assert!(
                 mc.value.contains("interface Serializable"),
                 "expected interface sig, got: {}",
@@ -244,7 +268,11 @@ mod tests {
         let doc = ParsedDoc::parse(src.to_string());
         let result = hover_info(src, &doc, pos(1, 10));
         assert!(result.is_some());
-        if let Some(Hover { contents: HoverContents::Markup(mc), .. }) = result {
+        if let Some(Hover {
+            contents: HoverContents::Markup(mc),
+            ..
+        }) = result
+        {
             assert!(
                 mc.value.contains("function init()"),
                 "expected 'function init()', got: {}",

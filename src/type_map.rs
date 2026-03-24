@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use php_ast::{ClassMemberKind, ExprKind, NamespaceBody, Stmt, StmtKind, TypeHintKind};
 use tower_lsp::lsp_types::Position;
 
-use crate::ast::{offset_to_position, ParsedDoc};
+use crate::ast::{ParsedDoc, offset_to_position};
 
 /// Maps variable name (with `$`) → class name.
 #[derive(Debug, Default, Clone)]
@@ -46,7 +46,10 @@ fn collect_types_stmts(stmts: &[Stmt<'_, '_>], map: &mut HashMap<String, String>
                         for p in m.params.iter() {
                             if let Some(hint) = &p.type_hint {
                                 if let TypeHintKind::Named(name) = &hint.kind {
-                                    map.insert(format!("${}", p.name), name.to_string_repr().to_string());
+                                    map.insert(
+                                        format!("${}", p.name),
+                                        name.to_string_repr().to_string(),
+                                    );
                                 }
                             }
                         }
@@ -157,7 +160,9 @@ fn collect_members_stmts(
             StmtKind::Namespace(ns) => {
                 if let NamespaceBody::Braced(inner) = &ns.body {
                     let result = collect_members_stmts(inner, class_name, out);
-                    if result.is_some() || out.methods.len() + out.properties.len() + out.constants.len() > 0 {
+                    if result.is_some()
+                        || out.methods.len() + out.properties.len() + out.constants.len() > 0
+                    {
                         return result;
                     }
                 }
@@ -173,11 +178,7 @@ pub fn enclosing_class_at(source: &str, doc: &ParsedDoc, position: Position) -> 
     enclosing_class_in_stmts(source, &doc.program().stmts, position)
 }
 
-fn enclosing_class_in_stmts(
-    source: &str,
-    stmts: &[Stmt<'_, '_>],
-    pos: Position,
-) -> Option<String> {
+fn enclosing_class_in_stmts(source: &str, stmts: &[Stmt<'_, '_>], pos: Position) -> Option<String> {
     for stmt in stmts {
         match &stmt.kind {
             StmtKind::Class(c) => {

@@ -1,6 +1,6 @@
 use tower_lsp::lsp_types::{DocumentHighlight, DocumentHighlightKind, Position, Range};
 
-use crate::ast::{offset_to_position, ParsedDoc};
+use crate::ast::{ParsedDoc, offset_to_position};
 use crate::util::word_at;
 use crate::walk::refs_in_stmts;
 
@@ -82,7 +82,11 @@ mod tests {
         let src = "<?php\nclass Calc { public function add() {} }\n$c = new Calc();\n$c->add();";
         let doc = ParsedDoc::parse(src.to_string());
         let highlights = document_highlights(src, &doc, pos(3, 5));
-        assert!(highlights.len() >= 2, "expected at least 2 highlights, got: {}", highlights.len());
+        assert!(
+            highlights.len() >= 2,
+            "expected at least 2 highlights, got: {}",
+            highlights.len()
+        );
     }
 
     #[test]

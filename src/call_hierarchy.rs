@@ -6,7 +6,7 @@ use tower_lsp::lsp_types::{
     SymbolKind, Url,
 };
 
-use crate::ast::{name_range, span_to_range, ParsedDoc};
+use crate::ast::{ParsedDoc, name_range, span_to_range};
 use crate::references::find_references;
 
 /// Find the declaration matching `name` and return a `CallHierarchyItem`.
@@ -36,7 +36,12 @@ pub fn incoming_calls(
             .iter()
             .find(|(u, _)| *u == loc.uri)
             .and_then(|(_, doc)| {
-                enclosing_function(doc.source(), &doc.program().stmts, loc.range.start, &loc.uri)
+                enclosing_function(
+                    doc.source(),
+                    &doc.program().stmts,
+                    loc.range.start,
+                    &loc.uri,
+                )
             });
 
         if let Some(caller_item) = caller {
@@ -242,11 +247,7 @@ fn range_contains(range: Range, pos: Position) -> bool {
 }
 
 /// Collect all (callee_name, span) for calls made inside the body of `fn_name`.
-fn collect_calls_for(
-    fn_name: &str,
-    stmts: &[Stmt<'_, '_>],
-    out: &mut Vec<(String, Span)>,
-) {
+fn collect_calls_for(fn_name: &str, stmts: &[Stmt<'_, '_>], out: &mut Vec<(String, Span)>) {
     for stmt in stmts {
         match &stmt.kind {
             StmtKind::Function(f) if f.name == fn_name => {
@@ -417,7 +418,10 @@ mod tests {
 
     #[test]
     fn prepare_finds_method_declaration() {
-        let docs = vec![doc("/a.php", "<?php\nclass Foo { public function run() {} }")];
+        let docs = vec![doc(
+            "/a.php",
+            "<?php\nclass Foo { public function run() {} }",
+        )];
         let item = prepare_call_hierarchy("run", &docs);
         assert!(item.is_some(), "should find run");
         let item = item.unwrap();
@@ -446,7 +450,10 @@ mod tests {
         let item = prepare_call_hierarchy("greet", &docs).unwrap();
         let incoming = incoming_calls(&item, &docs);
         assert!(!incoming.is_empty(), "should find at least one caller");
-        assert!(incoming.iter().any(|c| c.from.name == "main"), "main should be a caller");
+        assert!(
+            incoming.iter().any(|c| c.from.name == "main"),
+            "main should be a caller"
+        );
     }
 
     #[test]
@@ -466,7 +473,10 @@ mod tests {
         let item = prepare_call_hierarchy("main", &docs).unwrap();
         let outgoing = outgoing_calls(&item, &docs);
         assert!(!outgoing.is_empty(), "should find at least one callee");
-        assert!(outgoing.iter().any(|c| c.to.name == "helper"), "helper should be a callee");
+        assert!(
+            outgoing.iter().any(|c| c.to.name == "helper"),
+            "helper should be a callee"
+        );
     }
 
     #[test]
@@ -484,7 +494,10 @@ mod tests {
         let docs = vec![a, b];
         let item = prepare_call_hierarchy("main", &docs).unwrap();
         let outgoing = outgoing_calls(&item, &docs);
-        assert!(outgoing.iter().any(|c| c.to.name == "helper"), "cross-file callee not found");
+        assert!(
+            outgoing.iter().any(|c| c.to.name == "helper"),
+            "cross-file callee not found"
+        );
     }
 
     #[test]
@@ -494,7 +507,10 @@ mod tests {
         let docs = vec![a, b];
         let item = prepare_call_hierarchy("greet", &docs).unwrap();
         let incoming = incoming_calls(&item, &docs);
-        assert!(incoming.iter().any(|c| c.from.name == "run"), "cross-file caller not found");
+        assert!(
+            incoming.iter().any(|c| c.from.name == "run"),
+            "cross-file caller not found"
+        );
     }
 
     #[test]
@@ -506,7 +522,15 @@ mod tests {
         let item = prepare_call_hierarchy("main", &docs).unwrap();
         let outgoing = outgoing_calls(&item, &docs);
         let helper_entries: Vec<_> = outgoing.iter().filter(|c| c.to.name == "helper").collect();
-        assert_eq!(helper_entries.len(), 1, "helper should appear once (with two from_ranges)");
-        assert_eq!(helper_entries[0].from_ranges.len(), 2, "should have two call-site ranges");
+        assert_eq!(
+            helper_entries.len(),
+            1,
+            "helper should appear once (with two from_ranges)"
+        );
+        assert_eq!(
+            helper_entries[0].from_ranges.len(),
+            2,
+            "should have two call-site ranges"
+        );
     }
 }

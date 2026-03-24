@@ -3,7 +3,7 @@ use std::sync::Arc;
 use php_ast::{ClassMemberKind, NamespaceBody, Stmt, StmtKind};
 use tower_lsp::lsp_types::{Location, Position, Range, Url};
 
-use crate::ast::{name_range, offset_to_position, str_offset, ParsedDoc};
+use crate::ast::{ParsedDoc, name_range, offset_to_position, str_offset};
 use crate::util::word_at;
 
 /// Find the definition of the symbol under `position`.
@@ -18,13 +18,19 @@ pub fn goto_definition(
     let word = word_at(source, position)?;
 
     if let Some(range) = scan_statements(source, &doc.program().stmts, &word) {
-        return Some(Location { uri: uri.clone(), range });
+        return Some(Location {
+            uri: uri.clone(),
+            range,
+        });
     }
 
     for (other_uri, other_doc) in other_docs {
         let other_source = other_doc.source();
         if let Some(range) = scan_statements(other_source, &other_doc.program().stmts, &word) {
-            return Some(Location { uri: other_uri.clone(), range });
+            return Some(Location {
+                uri: other_uri.clone(),
+                range,
+            });
         }
     }
 
@@ -200,7 +206,10 @@ mod tests {
             &[(other_uri.clone(), other_doc)],
             pos(1, 3),
         );
-        assert!(result.is_some(), "expected cross-file location for helperFn");
+        assert!(
+            result.is_some(),
+            "expected cross-file location for helperFn"
+        );
         assert_eq!(result.unwrap().uri, other_uri);
     }
 
@@ -212,13 +221,7 @@ mod tests {
         let other_uri = Url::parse("file:///other.php").unwrap();
         let other_doc = Arc::new(ParsedDoc::parse(other_src.to_string()));
 
-        let result = goto_definition(
-            &uri(),
-            src,
-            &doc,
-            &[(other_uri, other_doc)],
-            pos(1, 8),
-        );
+        let result = goto_definition(&uri(), src, &doc, &[(other_uri, other_doc)], pos(1, 8));
         assert_eq!(result.unwrap().uri, uri(), "should prefer current file");
     }
 }

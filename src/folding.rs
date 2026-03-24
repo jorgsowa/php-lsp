@@ -1,7 +1,7 @@
 use php_ast::{ClassMemberKind, NamespaceBody, Stmt, StmtKind};
 use tower_lsp::lsp_types::{FoldingRange, FoldingRangeKind};
 
-use crate::ast::{offset_to_position, ParsedDoc};
+use crate::ast::{ParsedDoc, offset_to_position};
 
 pub fn folding_ranges(source: &str, doc: &ParsedDoc) -> Vec<FoldingRange> {
     let mut ranges = Vec::new();
@@ -79,7 +79,12 @@ fn fold_stmt(stmt: &Stmt<'_, '_>, source: &str, out: &mut Vec<FoldingRange>) {
     }
 }
 
-fn push(out: &mut Vec<FoldingRange>, start_line: u32, end_line: u32, kind: Option<FoldingRangeKind>) {
+fn push(
+    out: &mut Vec<FoldingRange>,
+    start_line: u32,
+    end_line: u32,
+    kind: Option<FoldingRangeKind>,
+) {
     if end_line > start_line {
         out.push(FoldingRange {
             start_line,
@@ -118,12 +123,21 @@ mod tests {
 
     #[test]
     fn folds_class_and_its_method() {
-        let src = "<?php\nclass Foo {\n    public function bar(): void {\n        echo 1;\n    }\n}";
+        let src =
+            "<?php\nclass Foo {\n    public function bar(): void {\n        echo 1;\n    }\n}";
         let d = doc(src);
         let ranges = folding_ranges(src, &d);
         let ls = lines(&ranges);
-        assert!(ls.contains(&(1, 5)), "expected class fold (1..5), got {:?}", ls);
-        assert!(ls.contains(&(2, 4)), "expected method fold (2..4), got {:?}", ls);
+        assert!(
+            ls.contains(&(1, 5)),
+            "expected class fold (1..5), got {:?}",
+            ls
+        );
+        assert!(
+            ls.contains(&(2, 4)),
+            "expected method fold (2..4), got {:?}",
+            ls
+        );
     }
 
     #[test]
@@ -144,8 +158,16 @@ mod tests {
         let d = doc(src);
         let ranges = folding_ranges(src, &d);
         let ls = lines(&ranges);
-        assert!(ls.contains(&(1, 5)), "expected trait fold (1..5), got {:?}", ls);
-        assert!(ls.contains(&(2, 4)), "expected method fold (2..4), got {:?}", ls);
+        assert!(
+            ls.contains(&(1, 5)),
+            "expected trait fold (1..5), got {:?}",
+            ls
+        );
+        assert!(
+            ls.contains(&(2, 4)),
+            "expected method fold (2..4), got {:?}",
+            ls
+        );
     }
 
     #[test]
@@ -154,8 +176,16 @@ mod tests {
         let d = doc(src);
         let ranges = folding_ranges(src, &d);
         let ls = lines(&ranges);
-        assert!(ls.contains(&(1, 5)), "expected namespace fold (1..5), got {:?}", ls);
-        assert!(ls.contains(&(2, 4)), "expected function fold (2..4), got {:?}", ls);
+        assert!(
+            ls.contains(&(1, 5)),
+            "expected namespace fold (1..5), got {:?}",
+            ls
+        );
+        assert!(
+            ls.contains(&(2, 4)),
+            "expected function fold (2..4), got {:?}",
+            ls
+        );
     }
 
     #[test]
@@ -163,7 +193,11 @@ mod tests {
         let src = "<?php\nfunction f(): void { echo 1; }";
         let d = doc(src);
         let ranges = folding_ranges(src, &d);
-        assert!(ranges.is_empty(), "single-line function should not fold, got {:?}", ranges);
+        assert!(
+            ranges.is_empty(),
+            "single-line function should not fold, got {:?}",
+            ranges
+        );
     }
 
     #[test]

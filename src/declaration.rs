@@ -11,7 +11,7 @@ use std::sync::Arc;
 use php_ast::{ClassMemberKind, NamespaceBody, Stmt, StmtKind};
 use tower_lsp::lsp_types::{Location, Position, Url};
 
-use crate::ast::{name_range, ParsedDoc};
+use crate::ast::{ParsedDoc, name_range};
 use crate::util::word_at;
 
 /// Find the abstract or interface declaration of `word`.
@@ -27,7 +27,10 @@ pub fn goto_declaration(
     for (uri, doc) in all_docs {
         let doc_source = doc.source();
         if let Some(range) = find_abstract_declaration(doc_source, &doc.program().stmts, &word) {
-            return Some(Location { uri: uri.clone(), range });
+            return Some(Location {
+                uri: uri.clone(),
+                range,
+            });
         }
     }
 
@@ -35,7 +38,10 @@ pub fn goto_declaration(
     for (uri, doc) in all_docs {
         let doc_source = doc.source();
         if let Some(range) = find_any_declaration(doc_source, &doc.program().stmts, &word) {
-            return Some(Location { uri: uri.clone(), range });
+            return Some(Location {
+                uri: uri.clone(),
+                range,
+            });
         }
     }
 
@@ -179,12 +185,16 @@ mod tests {
 
     #[test]
     fn cross_file_interface_declaration() {
-        let impl_src = "<?php\nclass Repo implements Countable { public function count(): int { return 0; } }";
+        let impl_src =
+            "<?php\nclass Repo implements Countable { public function count(): int { return 0; } }";
         let iface_src = "<?php\ninterface Countable { public function count(): int; }";
         let iface_uri = uri("/iface.php");
         let docs = vec![
             doc("/impl.php", impl_src),
-            (iface_uri.clone(), Arc::new(ParsedDoc::parse(iface_src.to_string()))),
+            (
+                iface_uri.clone(),
+                Arc::new(ParsedDoc::parse(iface_src.to_string())),
+            ),
         ];
         let loc = goto_declaration(impl_src, &docs, pos(1, 51));
         assert!(loc.is_some());

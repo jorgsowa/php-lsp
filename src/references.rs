@@ -3,7 +3,7 @@ use std::sync::Arc;
 use php_ast::{ClassMemberKind, NamespaceBody, Span, Stmt, StmtKind};
 use tower_lsp::lsp_types::{Location, Position, Range, Url};
 
-use crate::ast::{offset_to_position, ParsedDoc};
+use crate::ast::{ParsedDoc, offset_to_position};
 use crate::walk::{refs_in_stmts, refs_in_stmts_with_use};
 
 /// Find all locations where `word` is referenced across the given documents.
@@ -144,7 +144,10 @@ mod tests {
         let docs = vec![doc("/a.php", src)];
         let with_decl = find_references("greet", &docs, true);
         let without_decl = find_references("greet", &docs, false);
-        assert!(with_decl.len() > without_decl.len(), "declaration should be included");
+        assert!(
+            with_decl.len() > without_decl.len(),
+            "declaration should be included"
+        );
     }
 
     #[test]

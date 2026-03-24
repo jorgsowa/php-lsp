@@ -5,7 +5,7 @@ use std::sync::Arc;
 use php_ast::{NamespaceBody, Stmt, StmtKind};
 use tower_lsp::lsp_types::{Location, Position, Url};
 
-use crate::ast::{name_range, ParsedDoc};
+use crate::ast::{ParsedDoc, name_range};
 use crate::util::word_at;
 
 /// Return all `Location`s where a class declares `extends Name` or
@@ -131,7 +131,14 @@ mod tests {
     fn goto_implementation_uses_cursor_word() {
         let src = "<?php\ninterface Countable {}\nclass Repo implements Countable {}";
         let docs = vec![doc("/a.php", src)];
-        let locs = goto_implementation(src, &docs, Position { line: 1, character: 12 });
+        let locs = goto_implementation(
+            src,
+            &docs,
+            Position {
+                line: 1,
+                character: 12,
+            },
+        );
         assert!(!locs.is_empty());
     }
 }

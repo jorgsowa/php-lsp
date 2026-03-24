@@ -7,7 +7,7 @@ use tower_lsp::lsp_types::{
     DocumentSymbol, Location, Position, Range, SymbolInformation, SymbolKind, Url,
 };
 
-use crate::ast::{name_range, offset_to_position, ParsedDoc};
+use crate::ast::{ParsedDoc, name_range, offset_to_position};
 
 pub fn document_symbols(source: &str, doc: &ParsedDoc) -> Vec<DocumentSymbol> {
     symbols_from_statements(source, &doc.program().stmts)
@@ -40,7 +40,10 @@ fn collect_symbol_info(
                     out.push(SymbolInformation {
                         name: name.to_string(),
                         kind: SymbolKind::FUNCTION,
-                        location: Location { uri: uri.clone(), range: name_range(source, name) },
+                        location: Location {
+                            uri: uri.clone(),
+                            range: name_range(source, name),
+                        },
                         tags: None,
                         deprecated: None,
                         container_name: None,
@@ -53,7 +56,10 @@ fn collect_symbol_info(
                     out.push(SymbolInformation {
                         name: name.to_string(),
                         kind: SymbolKind::CLASS,
-                        location: Location { uri: uri.clone(), range: name_range(source, name) },
+                        location: Location {
+                            uri: uri.clone(),
+                            range: name_range(source, name),
+                        },
                         tags: None,
                         deprecated: None,
                         container_name: None,
@@ -65,10 +71,17 @@ fn collect_symbol_info(
                             out.push(SymbolInformation {
                                 name: m.name.to_string(),
                                 kind: SymbolKind::METHOD,
-                                location: Location { uri: uri.clone(), range: name_range(source, m.name) },
+                                location: Location {
+                                    uri: uri.clone(),
+                                    range: name_range(source, m.name),
+                                },
                                 tags: None,
                                 deprecated: None,
-                                container_name: if !name.is_empty() { Some(name.to_string()) } else { None },
+                                container_name: if !name.is_empty() {
+                                    Some(name.to_string())
+                                } else {
+                                    None
+                                },
                             });
                         }
                     }
@@ -79,7 +92,10 @@ fn collect_symbol_info(
                     out.push(SymbolInformation {
                         name: i.name.to_string(),
                         kind: SymbolKind::INTERFACE,
-                        location: Location { uri: uri.clone(), range: name_range(source, i.name) },
+                        location: Location {
+                            uri: uri.clone(),
+                            range: name_range(source, i.name),
+                        },
                         tags: None,
                         deprecated: None,
                         container_name: None,
@@ -91,7 +107,10 @@ fn collect_symbol_info(
                     out.push(SymbolInformation {
                         name: t.name.to_string(),
                         kind: SymbolKind::CLASS,
-                        location: Location { uri: uri.clone(), range: name_range(source, t.name) },
+                        location: Location {
+                            uri: uri.clone(),
+                            range: name_range(source, t.name),
+                        },
                         tags: None,
                         deprecated: None,
                         container_name: None,
@@ -179,7 +198,11 @@ fn statement_to_symbol(source: &str, stmt: &Stmt<'_, '_>) -> Option<DocumentSymb
                 deprecated: None,
                 range,
                 selection_range,
-                children: if param_children.is_empty() { None } else { Some(param_children) },
+                children: if param_children.is_empty() {
+                    None
+                } else {
+                    Some(param_children)
+                },
             })
         }
 
@@ -196,7 +219,8 @@ fn statement_to_symbol(source: &str, stmt: &Stmt<'_, '_>) -> Option<DocumentSymb
                         ClassMemberKind::Method(m) => {
                             let mrange = member_range(source, member);
                             let msel = name_range(source, m.name);
-                            let detail = Some(format_fn_signature(&m.params, m.return_type.as_ref()));
+                            let detail =
+                                Some(format_fn_signature(&m.params, m.return_type.as_ref()));
                             vec![DocumentSymbol {
                                 name: m.name.to_string(),
                                 detail,
@@ -249,7 +273,11 @@ fn statement_to_symbol(source: &str, stmt: &Stmt<'_, '_>) -> Option<DocumentSymb
                 deprecated: None,
                 range,
                 selection_range,
-                children: if children.is_empty() { None } else { Some(children) },
+                children: if children.is_empty() {
+                    None
+                } else {
+                    Some(children)
+                },
             })
         }
 
@@ -302,7 +330,11 @@ fn statement_to_symbol(source: &str, stmt: &Stmt<'_, '_>) -> Option<DocumentSymb
                 deprecated: None,
                 range,
                 selection_range,
-                children: if children.is_empty() { None } else { Some(children) },
+                children: if children.is_empty() {
+                    None
+                } else {
+                    Some(children)
+                },
             })
         }
 
@@ -319,8 +351,12 @@ fn format_fn_signature(
         .iter()
         .map(|p| {
             let mut s = String::new();
-            if p.by_ref { s.push('&'); }
-            if p.variadic { s.push_str("..."); }
+            if p.by_ref {
+                s.push('&');
+            }
+            if p.variadic {
+                s.push_str("...");
+            }
             if let Some(t) = &p.type_hint {
                 s.push_str(&format!("{} ", format_type_hint(t)));
             }
@@ -348,11 +384,20 @@ mod tests {
         let src = "<?php\nfunction greet(string $name): string {}";
         let doc = ParsedDoc::parse(src.to_string());
         let syms = document_symbols(src, &doc);
-        let f = syms.iter().find(|s| s.name == "greet").expect("greet not found");
+        let f = syms
+            .iter()
+            .find(|s| s.name == "greet")
+            .expect("greet not found");
         assert_eq!(f.kind, SymbolKind::FUNCTION);
         let detail = f.detail.as_deref().unwrap_or("");
-        assert!(detail.contains("$name"), "detail should contain '$name', got: {detail}");
-        assert!(detail.contains(": string"), "detail should contain return type, got: {detail}");
+        assert!(
+            detail.contains("$name"),
+            "detail should contain '$name', got: {detail}"
+        );
+        assert!(
+            detail.contains(": string"),
+            "detail should contain return type, got: {detail}"
+        );
     }
 
     #[test]
@@ -360,14 +405,21 @@ mod tests {
         let src = "<?php\nfunction process($input, $count) {}";
         let doc = ParsedDoc::parse(src.to_string());
         let syms = document_symbols(src, &doc);
-        let f = syms.iter().find(|s| s.name == "process").expect("process not found");
+        let f = syms
+            .iter()
+            .find(|s| s.name == "process")
+            .expect("process not found");
         let children = f.children.as_ref().expect("should have children");
         assert!(
-            children.iter().any(|c| c.name == "$input" && c.kind == SymbolKind::VARIABLE),
+            children
+                .iter()
+                .any(|c| c.name == "$input" && c.kind == SymbolKind::VARIABLE),
             "missing $input child"
         );
         assert!(
-            children.iter().any(|c| c.name == "$count" && c.kind == SymbolKind::VARIABLE),
+            children
+                .iter()
+                .any(|c| c.name == "$count" && c.kind == SymbolKind::VARIABLE),
             "missing $count child"
         );
     }
@@ -377,11 +429,22 @@ mod tests {
         let src = "<?php\nclass Calc { public function add() {} public function sub() {} }";
         let doc = ParsedDoc::parse(src.to_string());
         let syms = document_symbols(src, &doc);
-        let c = syms.iter().find(|s| s.name == "Calc").expect("Calc not found");
+        let c = syms
+            .iter()
+            .find(|s| s.name == "Calc")
+            .expect("Calc not found");
         assert_eq!(c.kind, SymbolKind::CLASS);
         let children = c.children.as_ref().expect("should have method children");
-        assert!(children.iter().any(|m| m.name == "add" && m.kind == SymbolKind::METHOD));
-        assert!(children.iter().any(|m| m.name == "sub" && m.kind == SymbolKind::METHOD));
+        assert!(
+            children
+                .iter()
+                .any(|m| m.name == "add" && m.kind == SymbolKind::METHOD)
+        );
+        assert!(
+            children
+                .iter()
+                .any(|m| m.name == "sub" && m.kind == SymbolKind::METHOD)
+        );
     }
 
     #[test]
@@ -389,7 +452,10 @@ mod tests {
         let src = "<?php\ninterface Serializable {}";
         let doc = ParsedDoc::parse(src.to_string());
         let syms = document_symbols(src, &doc);
-        let i = syms.iter().find(|s| s.name == "Serializable").expect("Serializable not found");
+        let i = syms
+            .iter()
+            .find(|s| s.name == "Serializable")
+            .expect("Serializable not found");
         assert_eq!(i.kind, SymbolKind::INTERFACE);
     }
 
@@ -398,7 +464,10 @@ mod tests {
         let src = "<?php\ntrait Loggable {}";
         let doc = ParsedDoc::parse(src.to_string());
         let syms = document_symbols(src, &doc);
-        let t = syms.iter().find(|s| s.name == "Loggable").expect("Loggable not found");
+        let t = syms
+            .iter()
+            .find(|s| s.name == "Loggable")
+            .expect("Loggable not found");
         assert_eq!(t.kind, SymbolKind::CLASS);
     }
 
@@ -416,7 +485,10 @@ mod tests {
         let src = "<?php\nfunction hello(string $x): int {}";
         let doc = ParsedDoc::parse(src.to_string());
         let syms = document_symbols(src, &doc);
-        let f = syms.iter().find(|s| s.name == "hello").expect("hello not found");
+        let f = syms
+            .iter()
+            .find(|s| s.name == "hello")
+            .expect("hello not found");
         assert!(f.range.start.line <= f.selection_range.start.line);
         if f.range.start.line == f.selection_range.start.line {
             assert!(f.range.start.character <= f.selection_range.start.character);
@@ -428,10 +500,21 @@ mod tests {
         let src = "<?php\nclass User { public string $name; private int $age; }";
         let doc = ParsedDoc::parse(src.to_string());
         let syms = document_symbols(src, &doc);
-        let c = syms.iter().find(|s| s.name == "User").expect("User not found");
+        let c = syms
+            .iter()
+            .find(|s| s.name == "User")
+            .expect("User not found");
         let children = c.children.as_ref().expect("should have children");
-        assert!(children.iter().any(|ch| ch.name == "$name" && ch.kind == SymbolKind::PROPERTY));
-        assert!(children.iter().any(|ch| ch.name == "$age" && ch.kind == SymbolKind::PROPERTY));
+        assert!(
+            children
+                .iter()
+                .any(|ch| ch.name == "$name" && ch.kind == SymbolKind::PROPERTY)
+        );
+        assert!(
+            children
+                .iter()
+                .any(|ch| ch.name == "$age" && ch.kind == SymbolKind::PROPERTY)
+        );
     }
 
     #[test]
@@ -439,10 +522,21 @@ mod tests {
         let src = "<?php\nclass Status { const ACTIVE = 1; const INACTIVE = 0; }";
         let doc = ParsedDoc::parse(src.to_string());
         let syms = document_symbols(src, &doc);
-        let c = syms.iter().find(|s| s.name == "Status").expect("Status not found");
+        let c = syms
+            .iter()
+            .find(|s| s.name == "Status")
+            .expect("Status not found");
         let children = c.children.as_ref().expect("should have children");
-        assert!(children.iter().any(|ch| ch.name == "ACTIVE" && ch.kind == SymbolKind::CONSTANT));
-        assert!(children.iter().any(|ch| ch.name == "INACTIVE" && ch.kind == SymbolKind::CONSTANT));
+        assert!(
+            children
+                .iter()
+                .any(|ch| ch.name == "ACTIVE" && ch.kind == SymbolKind::CONSTANT)
+        );
+        assert!(
+            children
+                .iter()
+                .any(|ch| ch.name == "INACTIVE" && ch.kind == SymbolKind::CONSTANT)
+        );
     }
 
     #[test]
@@ -450,10 +544,24 @@ mod tests {
         let src = "<?php\ntrait Loggable { public function log() {} public function warn() {} }";
         let doc = ParsedDoc::parse(src.to_string());
         let syms = document_symbols(src, &doc);
-        let t = syms.iter().find(|s| s.name == "Loggable").expect("Loggable not found");
-        let children = t.children.as_ref().expect("trait should have method children");
-        assert!(children.iter().any(|m| m.name == "log" && m.kind == SymbolKind::METHOD));
-        assert!(children.iter().any(|m| m.name == "warn" && m.kind == SymbolKind::METHOD));
+        let t = syms
+            .iter()
+            .find(|s| s.name == "Loggable")
+            .expect("Loggable not found");
+        let children = t
+            .children
+            .as_ref()
+            .expect("trait should have method children");
+        assert!(
+            children
+                .iter()
+                .any(|m| m.name == "log" && m.kind == SymbolKind::METHOD)
+        );
+        assert!(
+            children
+                .iter()
+                .any(|m| m.name == "warn" && m.kind == SymbolKind::METHOD)
+        );
     }
 
     #[test]
@@ -461,6 +569,9 @@ mod tests {
         let src = "<?php\nfunction valid() {}\nclass {";
         let doc = ParsedDoc::parse(src.to_string());
         let syms = document_symbols(src, &doc);
-        assert!(syms.iter().any(|s| s.name == "valid"), "should still return 'valid' despite parse error");
+        assert!(
+            syms.iter().any(|s| s.name == "valid"),
+            "should still return 'valid' despite parse error"
+        );
     }
 }

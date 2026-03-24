@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use php_ast::{ClassMemberKind, Expr, ExprKind, NamespaceBody, Stmt, StmtKind};
 use tower_lsp::lsp_types::{InlayHint, InlayHintKind, InlayHintLabel, Position, Range};
 
-use crate::ast::{format_type_hint, offset_to_position, ParsedDoc};
+use crate::ast::{ParsedDoc, format_type_hint, offset_to_position};
 
 struct FuncDef {
     params: Vec<String>,
@@ -33,14 +33,26 @@ fn collect_defs_stmts(stmts: &[Stmt<'_, '_>], map: &mut HashMap<String, FuncDef>
             StmtKind::Function(f) => {
                 let params = f.params.iter().map(|p| p.name.to_string()).collect();
                 let return_type = f.return_type.as_ref().map(|t| format_type_hint(t));
-                map.insert(f.name.to_string(), FuncDef { params, return_type });
+                map.insert(
+                    f.name.to_string(),
+                    FuncDef {
+                        params,
+                        return_type,
+                    },
+                );
             }
             StmtKind::Class(c) => {
                 for member in c.members.iter() {
                     if let ClassMemberKind::Method(m) = &member.kind {
                         let params = m.params.iter().map(|p| p.name.to_string()).collect();
                         let return_type = m.return_type.as_ref().map(|t| format_type_hint(t));
-                        map.insert(m.name.to_string(), FuncDef { params, return_type });
+                        map.insert(
+                            m.name.to_string(),
+                            FuncDef {
+                                params,
+                                return_type,
+                            },
+                        );
                     }
                 }
             }
@@ -285,7 +297,6 @@ fn pos_in_range(pos: Position, range: Range) -> bool {
     pos.line >= range.start.line && pos.line <= range.end.line
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -296,8 +307,14 @@ mod tests {
 
     fn full_range() -> Range {
         Range {
-            start: Position { line: 0, character: 0 },
-            end: Position { line: u32::MAX, character: u32::MAX },
+            start: Position {
+                line: 0,
+                character: 0,
+            },
+            end: Position {
+                line: u32::MAX,
+                character: u32::MAX,
+            },
         }
     }
 
@@ -365,7 +382,13 @@ mod tests {
         let d = doc(src);
         let hints = inlay_hints(src, &d, full_range());
         assert_eq!(hints.len(), 1);
-        assert_eq!(hints[0].position, Position { line: 2, character: 6 });
+        assert_eq!(
+            hints[0].position,
+            Position {
+                line: 2,
+                character: 6
+            }
+        );
     }
 
     #[test]
@@ -374,8 +397,20 @@ mod tests {
         let d = doc(src);
         let hints = inlay_hints(src, &d, full_range());
         assert_eq!(hints.len(), 2);
-        assert_eq!(hints[0].position, Position { line: 2, character: 4 });
-        assert_eq!(hints[1].position, Position { line: 2, character: 7 });
+        assert_eq!(
+            hints[0].position,
+            Position {
+                line: 2,
+                character: 4
+            }
+        );
+        assert_eq!(
+            hints[1].position,
+            Position {
+                line: 2,
+                character: 7
+            }
+        );
     }
 
     #[test]
@@ -411,7 +446,10 @@ mod tests {
         let d = doc(src);
         let hints = inlay_hints(src, &d, full_range());
         let ret_hint = hints.iter().find(|h| label_str(h).starts_with(": "));
-        assert!(ret_hint.is_none(), "void return type should not produce a hint");
+        assert!(
+            ret_hint.is_none(),
+            "void return type should not produce a hint"
+        );
     }
 
     #[test]

@@ -9,7 +9,7 @@ use std::sync::Arc;
 use php_ast::{ClassMemberKind, NamespaceBody, Stmt, StmtKind};
 use tower_lsp::lsp_types::{CodeLens, Command, Url};
 
-use crate::ast::{name_range, ParsedDoc};
+use crate::ast::{ParsedDoc, name_range};
 use crate::docblock::docblock_before;
 use crate::references::find_references;
 
@@ -150,7 +150,11 @@ mod tests {
             .filter_map(|l| l.command.as_ref())
             .map(|c| c.title.as_str())
             .collect();
-        assert!(titles.iter().any(|t| t.ends_with("reference") || t.ends_with("references")));
+        assert!(
+            titles
+                .iter()
+                .any(|t| t.ends_with("reference") || t.ends_with("references"))
+        );
     }
 
     #[test]
@@ -161,7 +165,11 @@ mod tests {
         let lenses = code_lenses(&uri("/a.php"), &d, &docs);
         let ref_lens = lenses
             .iter()
-            .find(|l| l.command.as_ref().map_or(false, |c| c.title.contains("reference")))
+            .find(|l| {
+                l.command
+                    .as_ref()
+                    .map_or(false, |c| c.title.contains("reference"))
+            })
             .unwrap();
         assert!(ref_lens.command.as_ref().unwrap().title.starts_with("2"));
     }
@@ -172,9 +180,11 @@ mod tests {
         let d = doc(src);
         let docs = vec![(uri("/a.php"), Arc::new(doc(src)))];
         let lenses = code_lenses(&uri("/a.php"), &d, &docs);
-        let run_test = lenses
-            .iter()
-            .find(|l| l.command.as_ref().map_or(false, |c| c.title.contains("Run test")));
+        let run_test = lenses.iter().find(|l| {
+            l.command
+                .as_ref()
+                .map_or(false, |c| c.title.contains("Run test"))
+        });
         assert!(run_test.is_some(), "expected Run test lens");
     }
 
@@ -184,9 +194,11 @@ mod tests {
         let d = doc(src);
         let docs = vec![(uri("/a.php"), Arc::new(doc(src)))];
         let lenses = code_lenses(&uri("/a.php"), &d, &docs);
-        let run_test = lenses
-            .iter()
-            .find(|l| l.command.as_ref().map_or(false, |c| c.title.contains("Run test")));
+        let run_test = lenses.iter().find(|l| {
+            l.command
+                .as_ref()
+                .map_or(false, |c| c.title.contains("Run test"))
+        });
         assert!(run_test.is_none());
     }
 
@@ -214,9 +226,14 @@ mod tests {
         let d = doc(src);
         let docs = vec![(uri("/a.php"), Arc::new(doc(src)))];
         let lenses = code_lenses(&uri("/a.php"), &d, &docs);
-        let run_test = lenses
-            .iter()
-            .find(|l| l.command.as_ref().map_or(false, |c| c.title.contains("Run test")));
-        assert!(run_test.is_some(), "expected Run test lens from @test docblock");
+        let run_test = lenses.iter().find(|l| {
+            l.command
+                .as_ref()
+                .map_or(false, |c| c.title.contains("Run test"))
+        });
+        assert!(
+            run_test.is_some(),
+            "expected Run test lens from @test docblock"
+        );
     }
 }

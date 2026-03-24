@@ -1,11 +1,15 @@
 use php_ast::{ClassMemberKind, NamespaceBody, Stmt, StmtKind};
 use tower_lsp::lsp_types::{Position, Range, SelectionRange};
 
-use crate::ast::{offset_to_position, ParsedDoc};
+use crate::ast::{ParsedDoc, offset_to_position};
 
 /// Build a selection-range chain for each cursor position.
 /// Levels go from innermost to outermost via `parent` links.
-pub fn selection_ranges(source: &str, doc: &ParsedDoc, positions: &[Position]) -> Vec<SelectionRange> {
+pub fn selection_ranges(
+    source: &str,
+    doc: &ParsedDoc,
+    positions: &[Position],
+) -> Vec<SelectionRange> {
     let fr = file_range(source);
     positions
         .iter()
@@ -18,8 +22,14 @@ fn file_range(source: &str) -> Range {
     let total_lines = source.lines().count() as u32;
     let last_line = total_lines.saturating_sub(1);
     Range {
-        start: Position { line: 0, character: 0 },
-        end: Position { line: last_line, character: u32::MAX },
+        start: Position {
+            line: 0,
+            character: 0,
+        },
+        end: Position {
+            line: last_line,
+            character: u32::MAX,
+        },
     }
 }
 
@@ -55,7 +65,10 @@ fn build_chain(source: &str, stmts: &[Stmt<'_, '_>], pos: Position, fr: Range) -
         });
     }
 
-    chain.unwrap_or(SelectionRange { range: fr, parent: None })
+    chain.unwrap_or(SelectionRange {
+        range: fr,
+        parent: None,
+    })
 }
 
 fn contains(range: Range, pos: Position) -> bool {
@@ -249,7 +262,8 @@ mod tests {
         let ranges = chain_ranges(&result[0]);
         assert!(
             ranges.iter().any(|r| r.start.line == 1),
-            "expected a range starting at line 1 (function), got {:?}", ranges
+            "expected a range starting at line 1 (function), got {:?}",
+            ranges
         );
     }
 
@@ -261,11 +275,13 @@ mod tests {
         let ranges = chain_ranges(&result[0]);
         assert!(
             ranges.iter().any(|r| r.start.line == 1),
-            "expected class-level range at line 1, got {:?}", ranges
+            "expected class-level range at line 1, got {:?}",
+            ranges
         );
         assert!(
             ranges.iter().any(|r| r.start.line == 2),
-            "expected method-level range at line 2, got {:?}", ranges
+            "expected method-level range at line 2, got {:?}",
+            ranges
         );
     }
 
@@ -291,7 +307,9 @@ mod tests {
             let outer_lines = outer.end.line - outer.start.line;
             assert!(
                 outer_lines >= inner_lines,
-                "outer range should be >= inner range: inner={:?}, outer={:?}", inner, outer
+                "outer range should be >= inner range: inner={:?}, outer={:?}",
+                inner,
+                outer
             );
         }
     }
