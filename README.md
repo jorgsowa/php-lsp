@@ -16,18 +16,23 @@ A PHP Language Server Protocol (LSP) implementation written in Rust.
 - **Completion** — keywords, functions, classes, methods, properties, constants; `->` completions scoped to the inferred receiver type (`$obj = new Foo()` → `$obj->` shows only `Foo`'s methods); cross-file symbols from all indexed documents
 - **Signature help** — parameter hints while typing a call, including overload narrowing
 - **Inlay hints** — parameter name labels at call sites; return-type labels after assigned function calls
-- **Code actions** — "Add use import" quick-fix for undefined class names
+- **Code actions** — "Add use import" quick-fix for undefined class names; PHPDoc stub generation for undocumented functions and methods
+- **Document links** — `include`/`require` paths are clickable links to the target file
 
 ### Navigation
 - **Document symbols** — file outline of all functions, classes, methods, properties, and constants
 - **Workspace symbols** — fuzzy-search symbols across the entire project
 - **Call hierarchy** — incoming callers and outgoing callees for any function or method, including cross-file
+- **Type hierarchy** — navigate supertypes and subtypes for classes and interfaces
+- **Go-to-declaration** — jump to the abstract or interface declaration of a method
+- **Go-to-type-definition** — jump to the class of the type of a variable
 - **Selection range** — smart expand/shrink selection (Alt+Shift+→) from expression → statement → function/class → file
 - **Document highlight** — highlights all occurrences of the symbol under the cursor in the current file
 - **Folding ranges** — collapse functions, classes, methods, loops, and control-flow blocks
 
-### Syntax
+### Syntax & formatting
 - **Semantic tokens** — richer syntax highlighting for functions, methods, classes, interfaces, traits, parameters, and properties with `declaration`/`static`/`abstract`/`readonly` modifiers
+- **Formatting** — delegates to `php-cs-fixer` (PSR-12) or `phpcbf`; supports full-file and range formatting
 
 ### Workspace
 - **Workspace indexing** — background scan indexes all `*.php` files on startup (including `vendor/`), with a 50 000-file cap; LRU eviction keeps memory bounded at 10 000 indexed-only files
@@ -82,7 +87,7 @@ Use the [custom LSP client extension](https://marketplace.visualstudio.com/items
 
 ## How It Works
 
-The server communicates over stdin/stdout using the [Language Server Protocol](https://microsoft.github.io/language-server-protocol/). It uses [php-parser-rs](https://github.com/php-rust-tools/parser) to parse PHP source into an AST, which is cached per document and reused across all requests.
+The server communicates over stdin/stdout using the [Language Server Protocol](https://microsoft.github.io/language-server-protocol/). It uses [php-ast](https://crates.io/crates/php-ast) (backed by [php-rs-parser](https://crates.io/crates/php-rs-parser) and a [bumpalo](https://crates.io/crates/bumpalo) arena) to parse PHP source into an AST, which is cached per document and reused across all requests.
 
 ## License
 
