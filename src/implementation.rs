@@ -2,21 +2,19 @@
 /// or extend a class with the given name.
 use std::sync::Arc;
 
-use php_parser_rs::parser::ast::{namespaces::NamespaceStatement, Statement};
-use tower_lsp::lsp_types::{Location, Position, Range, Url};
+use php_ast::{NamespaceBody, Stmt, StmtKind};
+use tower_lsp::lsp_types::{Location, Position, Url};
 
-use crate::diagnostics::span_to_position;
+use crate::ast::{name_range, ParsedDoc};
 use crate::util::word_at;
 
 /// Return all `Location`s where a class declares `extends Name` or
 /// `implements Name`.
-pub fn find_implementations(
-    word: &str,
-    all_docs: &[(Url, Arc<Vec<Statement>>)],
-) -> Vec<Location> {
+pub fn find_implementations(word: &str, all_docs: &[(Url, Arc<ParsedDoc>)]) -> Vec<Location> {
     let mut locations = Vec::new();
-    for (uri, ast) in all_docs {
-        collect_implementations(ast, word, uri, &mut locations);
+    for (uri, doc) in all_docs {
+        let source = doc.source();
+        collect_implementations(&doc.program().stmts, word, source, uri, &mut locations);
     }
     locations
 }
@@ -24,7 +22,7 @@ pub fn find_implementations(
 /// Convenience wrapper: extract word at `position` then call `find_implementations`.
 pub fn goto_implementation(
     source: &str,
-    all_docs: &[(Url, Arc<Vec<Statement>>)],
+    all_docs: &[(Url, Arc<ParsedDoc>)],
     position: Position,
 ) -> Vec<Location> {
     let word = match word_at(source, position) {
@@ -35,50 +33,39 @@ pub fn goto_implementation(
 }
 
 fn collect_implementations(
-    stmts: &[Statement],
+    stmts: &[Stmt<'_, '_>],
     word: &str,
+    source: &str,
     uri: &Url,
     out: &mut Vec<Location>,
 ) {
     for stmt in stmts {
-        match stmt {
-            Statement::Class(c) => {
-                // Check `extends`
+        match &stmt.kind {
+            StmtKind::Class(c) => {
                 let extends_match = c
                     .extends
                     .as_ref()
-                    .map(|e| e.parent.value.to_string() == word)
+                    .map(|e| e.to_string_repr().as_ref() == word)
                     .unwrap_or(false);
 
-                // Check `implements`
                 let implements_match = c
                     .implements
-                    .as_ref()
-                    .map(|imp| {
-                        imp.interfaces
-                            .iter()
-                            .any(|iface| iface.value.to_string() == word)
-                    })
-                    .unwrap_or(false);
+                    .iter()
+                    .any(|iface| iface.to_string_repr().as_ref() == word);
 
                 if extends_match || implements_match {
-                    let start = span_to_position(&c.name.span);
-                    let end = Position {
-                        line: start.line,
-                        character: start.character + c.name.value.to_string().len() as u32,
-                    };
-                    out.push(Location {
-                        uri: uri.clone(),
-                        range: Range { start, end },
-                    });
+                    if let Some(class_name) = c.name {
+                        out.push(Location {
+                            uri: uri.clone(),
+                            range: name_range(source, class_name),
+                        });
+                    }
                 }
             }
-            Statement::Namespace(ns) => {
-                let inner = match ns {
-                    NamespaceStatement::Unbraced(u) => &u.statements[..],
-                    NamespaceStatement::Braced(b) => &b.body.statements[..],
-                };
-                collect_implementations(inner, word, uri, out);
+            StmtKind::Namespace(ns) => {
+                if let NamespaceBody::Braced(inner) = &ns.body {
+                    collect_implementations(inner, word, source, uri, out);
+                }
             }
             _ => {}
         }
@@ -89,19 +76,12 @@ fn collect_implementations(
 mod tests {
     use super::*;
 
-    fn parse_ast(source: &str) -> Vec<Statement> {
-        match php_parser_rs::parser::parse(source) {
-            Ok(ast) => ast,
-            Err(stack) => stack.partial,
-        }
-    }
-
     fn uri(path: &str) -> Url {
         Url::parse(&format!("file://{path}")).unwrap()
     }
 
-    fn doc(path: &str, source: &str) -> (Url, Arc<Vec<Statement>>) {
-        (uri(path), Arc::new(parse_ast(source)))
+    fn doc(path: &str, source: &str) -> (Url, Arc<ParsedDoc>) {
+        (uri(path), Arc::new(ParsedDoc::parse(source.to_string())))
     }
 
     #[test]
@@ -150,9 +130,7 @@ mod tests {
     #[test]
     fn goto_implementation_uses_cursor_word() {
         let src = "<?php\ninterface Countable {}\nclass Repo implements Countable {}";
-        let ast = parse_ast(src);
-        let docs = vec![(uri("/a.php"), Arc::new(ast))];
-        // cursor on "Countable" in the interface declaration line
+        let docs = vec![doc("/a.php", src)];
         let locs = goto_implementation(src, &docs, Position { line: 1, character: 12 });
         assert!(!locs.is_empty());
     }

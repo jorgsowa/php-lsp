@@ -1,6 +1,6 @@
 [package]
 name = "php-lsp"
-version = "0.1.7"
+version = "0.1.8"
 edition = "2024"
 description = "A PHP Language Server Protocol implementation"
 license = "MIT"
@@ -8,7 +8,9 @@ repository = "https://github.com/jorgsowa/php-lsp"
 readme = "README.md"
 
 [dependencies]
-php-parser-rs = "0.1.3"
+php-rs-parser = "0.2.1"
+php-ast = "0.2.1"
+bumpalo = { version = "3", features = ["collections"] }
 tower-lsp = "0.20"
 tokio = { version = "1", features = ["full"] }
 serde_json = "1"

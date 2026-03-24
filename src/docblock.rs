@@ -2,9 +2,6 @@
 ///
 /// Strips the `/**` / `*/` markers and leading `*` from each line, then
 /// extracts `@param`, `@return`, and `@var` annotations.
-use php_parser_rs::parser::ast::{
-    classes::ClassMember, comments::CommentFormat, namespaces::NamespaceStatement, Statement,
-};
 
 #[derive(Debug, Default, PartialEq)]
 pub struct Docblock {
@@ -60,7 +57,6 @@ impl Docblock {
 /// Parse a raw docblock string (the full `/** ... */` text, or just the
 /// inner content — either form is handled).
 pub fn parse_docblock(raw: &str) -> Docblock {
-    // Strip /** and */
     let inner = raw.trim();
     let inner = inner.strip_prefix("/**").unwrap_or(inner);
     let inner = inner.strip_suffix("*/").unwrap_or(inner);
@@ -71,7 +67,6 @@ pub fn parse_docblock(raw: &str) -> Docblock {
     let mut var_type: Option<String> = None;
 
     for line in inner.lines() {
-        // Strip leading whitespace and a leading `*`
         let line = line.trim();
         let line = line.strip_prefix('*').unwrap_or(line).trim();
 
@@ -101,7 +96,7 @@ pub fn parse_docblock(raw: &str) -> Docblock {
                     let (type_hint, _) = split_first_word(rest);
                     var_type = Some(type_hint.to_string());
                 }
-                _ => {} // ignore unknown tags
+                _ => {}
             }
         } else if !line.is_empty() && return_type.is_none() && params.is_empty() {
             description_lines.push(line.to_string());
@@ -124,52 +119,46 @@ fn split_first_word(s: &str) -> (&str, &str) {
     }
 }
 
-/// Extract the docblock string (if any) immediately preceding `node_span`
-/// from a `CommentGroup`.  Returns the content `ByteString` as a `String`.
-pub fn docblock_for_function(f: &php_parser_rs::parser::ast::functions::FunctionStatement) -> Option<String> {
-    docblock_from_group(&f.comments)
-}
-
-pub fn docblock_for_method(m: &php_parser_rs::parser::ast::functions::ConcreteMethod) -> Option<String> {
-    docblock_from_group(&m.comments)
-}
-
-fn docblock_from_group(
-    group: &php_parser_rs::parser::ast::comments::CommentGroup,
-) -> Option<String> {
-    group
-        .comments
-        .iter()
-        .rev()
-        .find(|c| c.format == CommentFormat::Document)
-        .map(|c| c.content.to_string())
+/// Scan `source` for a `/** ... */` docblock that ends immediately before
+/// `node_start` (byte offset). Whitespace between the `*/` and the node is
+/// allowed; non-whitespace text in between disqualifies the block.
+pub fn docblock_before(source: &str, node_start: u32) -> Option<String> {
+    let before = &source[..node_start.min(source.len() as u32) as usize];
+    // Trim trailing whitespace to find where `*/` might be
+    let trimmed = before.trim_end();
+    let end = trimmed.strip_suffix("*/")?;
+    let doc_start = end.rfind("/**")?;
+    Some(trimmed[doc_start..].to_string() + "*/")
 }
 
 /// Walk an AST and return the parsed docblock for the declaration named `word`.
-pub fn find_docblock(stmts: &[Statement], word: &str) -> Option<Docblock> {
+pub fn find_docblock(
+    source: &str,
+    stmts: &[php_ast::Stmt<'_, '_>],
+    word: &str,
+) -> Option<Docblock> {
+    use php_ast::{ClassMemberKind, NamespaceBody, StmtKind};
     for stmt in stmts {
-        match stmt {
-            Statement::Function(f) if f.name.value.to_string() == word => {
-                let raw = docblock_for_function(f)?;
+        match &stmt.kind {
+            StmtKind::Function(f) if f.name == word => {
+                let raw = docblock_before(source, stmt.span.start)?;
                 return Some(parse_docblock(&raw));
             }
-            Statement::Class(c) => {
-                for member in &c.body.members {
-                    if let ClassMember::ConcreteMethod(m) = member {
-                        if m.name.value.to_string() == word {
-                            let raw = docblock_for_method(m)?;
+            StmtKind::Class(c) => {
+                for member in c.members.iter() {
+                    if let ClassMemberKind::Method(m) = &member.kind {
+                        if m.name == word {
+                            let raw = docblock_before(source, member.span.start)?;
                             return Some(parse_docblock(&raw));
                         }
                     }
                 }
             }
-            Statement::Namespace(ns) => {
-                let inner = match ns {
-                    NamespaceStatement::Unbraced(u) => &u.statements[..],
-                    NamespaceStatement::Braced(b) => &b.body.statements[..],
-                };
-                if let Some(db) = find_docblock(inner, word) {
-                    return Some(db);
+            StmtKind::Namespace(ns) => {
+                if let NamespaceBody::Braced(inner) = &ns.body {
+                    if let Some(db) = find_docblock(source, inner, word) {
+                        return Some(db);
+                    }
                 }
             }
             _ => {}
@@ -243,24 +232,20 @@ mod tests {
 
     #[test]
     fn find_docblock_from_ast() {
+        use crate::ast::ParsedDoc;
         let src = "<?php\n/** Greets someone. */\nfunction greet() {}";
-        let ast = match php_parser_rs::parser::parse(src) {
-            Ok(a) => a,
-            Err(s) => s.partial,
-        };
-        let db = find_docblock(&ast, "greet");
+        let doc = ParsedDoc::parse(src.to_string());
+        let db = find_docblock(src, &doc.program().stmts, "greet");
         assert!(db.is_some(), "expected docblock for greet");
         assert!(db.unwrap().description.contains("Greets"));
     }
 
     #[test]
     fn find_docblock_returns_none_without_docblock() {
+        use crate::ast::ParsedDoc;
         let src = "<?php\nfunction greet() {}";
-        let ast = match php_parser_rs::parser::parse(src) {
-            Ok(a) => a,
-            Err(s) => s.partial,
-        };
-        let db = find_docblock(&ast, "greet");
+        let doc = ParsedDoc::parse(src.to_string());
+        let db = find_docblock(src, &doc.program().stmts, "greet");
         assert!(db.is_none());
     }
 

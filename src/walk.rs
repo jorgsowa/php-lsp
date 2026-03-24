@@ -1,22 +1,11 @@
 /// Deep AST walker — collects all spans where `word` appears as a name reference
 /// (function calls, `new Foo`, method calls, bare identifiers, static calls).
-use php_parser_rs::lexer::token::Span;
-use php_parser_rs::parser::ast::{
-    arguments::Argument,
-    classes::ClassMember,
-    control_flow::{IfStatementBody, IfStatementElseIf, IfStatementElseIfBlock},
-    identifiers::Identifier as AstIdentifier,
-    loops::{ForeachStatementBody, ForeachStatementIterator, WhileStatementBody},
-    namespaces::NamespaceStatement,
-    operators::{
-        ArithmeticOperationExpression, BitwiseOperationExpression, ComparisonOperationExpression,
-        LogicalOperationExpression,
-    },
-    traits::TraitMember,
-    Expression, Statement,
+use php_ast::{
+    ClassMemberKind, ExprKind, NamespaceBody, Span, StmtKind,
+    Expr, Stmt,
 };
 
-pub fn refs_in_stmts(stmts: &[Statement], word: &str, out: &mut Vec<Span>) {
+pub fn refs_in_stmts(stmts: &[Stmt<'_, '_>], word: &str, out: &mut Vec<Span>) {
     for stmt in stmts {
         refs_in_stmt(stmt, word, out);
     }
@@ -24,180 +13,146 @@ pub fn refs_in_stmts(stmts: &[Statement], word: &str, out: &mut Vec<Span>) {
 
 /// Like `refs_in_stmts`, but also matches spans inside `use` statements.
 /// Needed so that renaming a class also renames its `use` import.
-pub fn refs_in_stmts_with_use(stmts: &[Statement], word: &str, out: &mut Vec<Span>) {
-    // First collect all normal refs
+pub fn refs_in_stmts_with_use(stmts: &[Stmt<'_, '_>], word: &str, out: &mut Vec<Span>) {
     refs_in_stmts(stmts, word, out);
-    // Then scan `use` statements for the last segment matching `word`
     use_refs(stmts, word, out);
 }
 
-fn use_refs(stmts: &[Statement], word: &str, out: &mut Vec<Span>) {
-    use php_parser_rs::lexer::token::Span;
+fn use_refs(stmts: &[Stmt<'_, '_>], word: &str, out: &mut Vec<Span>) {
     for stmt in stmts {
-        match stmt {
-            Statement::Use(u) => {
-                for use_item in &u.uses {
-                    let fqn = use_item.name.value.to_string();
-                    let alias_match = use_item
-                        .alias
-                        .as_ref()
-                        .map(|a| a.value.to_string() == word)
-                        .unwrap_or(false);
+        match &stmt.kind {
+            StmtKind::Use(u) => {
+                for use_item in u.uses.iter() {
+                    let fqn = use_item.name.to_string_repr().into_owned();
+                    let alias_match = use_item.alias.map(|a| a == word).unwrap_or(false);
                     let last_seg = fqn.rsplit('\\').next().unwrap_or(&fqn);
                     if alias_match || last_seg == word {
-                        // Create a synthetic span pointing only to the last segment
-                        // so rename edits target just the class name part.
-                        let offset = fqn.len() - last_seg.len();
+                        let name_span = use_item.name.span();
+                        let offset = (fqn.len() - last_seg.len()) as u32;
                         let syn_span = Span {
-                            line: use_item.name.span.line,
-                            column: use_item.name.span.column + offset,
-                            position: use_item.name.span.position + offset,
+                            start: name_span.start + offset,
+                            end: name_span.start + fqn.len() as u32,
                         };
                         out.push(syn_span);
                     }
                 }
             }
-            Statement::Namespace(ns) => {
-                let inner = match ns {
-                    NamespaceStatement::Unbraced(u) => &u.statements[..],
-                    NamespaceStatement::Braced(b) => &b.body.statements[..],
-                };
-                use_refs(inner, word, out);
+            StmtKind::Namespace(ns) => {
+                if let NamespaceBody::Braced(inner) = &ns.body {
+                    use_refs(inner, word, out);
+                }
             }
             _ => {}
         }
     }
 }
 
-pub fn refs_in_stmt(stmt: &Statement, word: &str, out: &mut Vec<Span>) {
-    match stmt {
-        Statement::Expression(e) => refs_in_expr(&e.expression, word, out),
-        Statement::Return(r) => {
-            if let Some(v) = &r.value {
+pub fn refs_in_stmt(stmt: &Stmt<'_, '_>, word: &str, out: &mut Vec<Span>) {
+    match &stmt.kind {
+        StmtKind::Expression(e) => refs_in_expr(e, word, out),
+        StmtKind::Return(r) => {
+            if let Some(v) = r {
                 refs_in_expr(v, word, out);
             }
         }
-        Statement::Echo(e) => {
-            for expr in &e.values {
+        StmtKind::Echo(exprs) => {
+            for expr in exprs.iter() {
                 refs_in_expr(expr, word, out);
             }
         }
-        Statement::Function(f) => {
-            if f.name.value.to_string() == word {
-                out.push(f.name.span);
+        StmtKind::Function(f) => {
+            if f.name == word {
+                out.push(stmt.span);
             }
-            refs_in_stmts(&f.body.statements, word, out);
+            refs_in_stmts(&f.body, word, out);
         }
-        Statement::Class(c) => {
-            if c.name.value.to_string() == word {
-                out.push(c.name.span);
+        StmtKind::Class(c) => {
+            if c.name == Some(word) {
+                out.push(stmt.span);
             }
-            for member in &c.body.members {
-                match member {
-                    ClassMember::ConcreteMethod(m) => {
-                        if m.name.value.to_string() == word {
-                            out.push(m.name.span);
+            for member in c.members.iter() {
+                match &member.kind {
+                    ClassMemberKind::Method(m) => {
+                        if m.name == word {
+                            out.push(member.span);
                         }
-                        refs_in_stmts(&m.body.statements, word, out);
+                        if let Some(body) = &m.body {
+                            refs_in_stmts(body, word, out);
+                        }
                     }
                     _ => {}
                 }
             }
         }
-        Statement::Interface(i) => {
-            if i.name.value.to_string() == word {
-                out.push(i.name.span);
+        StmtKind::Interface(i) => {
+            if i.name == word {
+                out.push(stmt.span);
             }
         }
-        Statement::Trait(t) => {
-            if t.name.value.to_string() == word {
-                out.push(t.name.span);
+        StmtKind::Trait(t) => {
+            if t.name == word {
+                out.push(stmt.span);
             }
-            for member in &t.body.members {
-                match member {
-                    TraitMember::ConcreteMethod(m) => {
-                        if m.name.value.to_string() == word {
-                            out.push(m.name.span);
+            for member in t.members.iter() {
+                match &member.kind {
+                    ClassMemberKind::Method(m) => {
+                        if m.name == word {
+                            out.push(member.span);
                         }
-                        refs_in_stmts(&m.body.statements, word, out);
+                        if let Some(body) = &m.body {
+                            refs_in_stmts(body, word, out);
+                        }
                     }
                     _ => {}
                 }
             }
         }
-        Statement::Namespace(ns) => match ns {
-            NamespaceStatement::Unbraced(u) => refs_in_stmts(&u.statements, word, out),
-            NamespaceStatement::Braced(b) => refs_in_stmts(&b.body.statements, word, out),
-        },
-        Statement::If(i) => {
+        StmtKind::Namespace(ns) => {
+            if let NamespaceBody::Braced(inner) = &ns.body {
+                refs_in_stmts(inner, word, out);
+            }
+        }
+        StmtKind::If(i) => {
             refs_in_expr(&i.condition, word, out);
-            match &i.body {
-                IfStatementBody::Statement { statement, elseifs, r#else } => {
-                    refs_in_stmt(statement, word, out);
-                    for ei in elseifs {
-                        refs_in_elseif(ei, word, out);
-                    }
-                    if let Some(e) = r#else {
-                        refs_in_stmt(&e.statement, word, out);
-                    }
-                }
-                IfStatementBody::Block { statements, elseifs, r#else, .. } => {
-                    refs_in_stmts(statements, word, out);
-                    for ei in elseifs {
-                        refs_in_elseif_block(ei, word, out);
-                    }
-                    if let Some(e) = r#else {
-                        refs_in_stmts(&e.statements, word, out);
-                    }
-                }
+            refs_in_stmt(i.then_branch, word, out);
+            for ei in i.elseif_branches.iter() {
+                refs_in_expr(&ei.condition, word, out);
+                refs_in_stmt(&ei.body, word, out);
+            }
+            if let Some(e) = &i.else_branch {
+                refs_in_stmt(e, word, out);
             }
         }
-        Statement::While(w) => {
+        StmtKind::While(w) => {
             refs_in_expr(&w.condition, word, out);
-            match &w.body {
-                WhileStatementBody::Statement { statement } => refs_in_stmt(statement, word, out),
-                WhileStatementBody::Block { statements, .. } => refs_in_stmts(statements, word, out),
-            }
+            refs_in_stmt(w.body, word, out);
         }
-        Statement::DoWhile(d) => {
-            refs_in_stmt(&d.body, word, out);
+        StmtKind::DoWhile(d) => {
+            refs_in_stmt(d.body, word, out);
             refs_in_expr(&d.condition, word, out);
         }
-        Statement::Foreach(f) => {
-            match &f.iterator {
-                ForeachStatementIterator::Value { expression, .. } => refs_in_expr(expression, word, out),
-                ForeachStatementIterator::KeyAndValue { expression, .. } => refs_in_expr(expression, word, out),
-            }
-            match &f.body {
-                ForeachStatementBody::Statement { statement } => refs_in_stmt(statement, word, out),
-                ForeachStatementBody::Block { statements, .. } => refs_in_stmts(statements, word, out),
-            }
+        StmtKind::Foreach(f) => {
+            refs_in_expr(&f.expr, word, out);
+            refs_in_stmt(f.body, word, out);
         }
-        Statement::For(f) => {
-            for cond in &f.iterator.conditions.inner {
+        StmtKind::For(f) => {
+            for cond in f.condition.iter() {
                 refs_in_expr(cond, word, out);
             }
-            match &f.body {
-                php_parser_rs::parser::ast::loops::ForStatementBody::Statement { statement } => {
-                    refs_in_stmt(statement, word, out);
-                }
-                php_parser_rs::parser::ast::loops::ForStatementBody::Block { statements, .. } => {
-                    refs_in_stmts(statements, word, out);
-                }
-            }
+            refs_in_stmt(f.body, word, out);
         }
-        Statement::Try(t) => {
+        StmtKind::TryCatch(t) => {
             refs_in_stmts(&t.body, word, out);
-            for catch in &t.catches {
+            for catch in t.catches.iter() {
                 refs_in_stmts(&catch.body, word, out);
             }
             if let Some(finally) = &t.finally {
-                refs_in_stmts(&finally.body, word, out);
+                refs_in_stmts(finally, word, out);
             }
         }
-        Statement::Block(b) => refs_in_stmts(&b.statements, word, out),
-        Statement::Static(s) => {
-            for var in &s.vars {
+        StmtKind::Block(stmts) => refs_in_stmts(stmts, word, out),
+        StmtKind::StaticVar(vars) => {
+            for var in vars.iter() {
                 if let Some(v) = &var.default {
                     refs_in_expr(v, word, out);
                 }
@@ -207,211 +162,130 @@ pub fn refs_in_stmt(stmt: &Statement, word: &str, out: &mut Vec<Span>) {
     }
 }
 
-fn refs_in_elseif(ei: &IfStatementElseIf, word: &str, out: &mut Vec<Span>) {
-    refs_in_expr(&ei.condition, word, out);
-    refs_in_stmt(&ei.statement, word, out);
-}
-
-fn refs_in_elseif_block(ei: &IfStatementElseIfBlock, word: &str, out: &mut Vec<Span>) {
-    refs_in_expr(&ei.condition, word, out);
-    refs_in_stmts(&ei.statements, word, out);
-}
-
-fn args(arg_list: &php_parser_rs::parser::ast::arguments::ArgumentList, word: &str, out: &mut Vec<Span>) {
-    for a in &arg_list.arguments {
-        match a {
-            Argument::Positional(p) => refs_in_expr(&p.value, word, out),
-            Argument::Named(n) => refs_in_expr(&n.value, word, out),
-        }
+fn args(arg_list: &[php_ast::Arg<'_, '_>], word: &str, out: &mut Vec<Span>) {
+    for a in arg_list.iter() {
+        refs_in_expr(&a.value, word, out);
     }
 }
 
-fn ident_matches(id: &AstIdentifier, word: &str) -> Option<Span> {
-    match id {
-        AstIdentifier::SimpleIdentifier(si) if si.value.to_string() == word => Some(si.span),
-        _ => None,
-    }
-}
-
-pub fn refs_in_expr(expr: &Expression, word: &str, out: &mut Vec<Span>) {
-    match expr {
-        Expression::Identifier(id) => {
-            if let Some(span) = ident_matches(id, word) {
-                out.push(span);
+pub fn refs_in_expr(expr: &Expr<'_, '_>, word: &str, out: &mut Vec<Span>) {
+    match &expr.kind {
+        ExprKind::Identifier(name) => {
+            if name.as_ref() == word {
+                out.push(expr.span);
             }
         }
-        Expression::FunctionCall(f) => {
-            refs_in_expr(&f.target, word, out);
-            args(&f.arguments, word, out);
+        ExprKind::FunctionCall(f) => {
+            refs_in_expr(f.name, word, out);
+            args(&f.args, word, out);
         }
-        Expression::FunctionClosureCreation(f) => {
-            refs_in_expr(&f.target, word, out);
+        ExprKind::MethodCall(m) => {
+            refs_in_expr(m.object, word, out);
+            refs_in_expr(m.method, word, out);
+            args(&m.args, word, out);
         }
-        Expression::MethodCall(m) => {
-            refs_in_expr(&m.target, word, out);
-            refs_in_expr(&m.method, word, out);
-            args(&m.arguments, word, out);
+        ExprKind::NullsafeMethodCall(m) => {
+            refs_in_expr(m.object, word, out);
+            refs_in_expr(m.method, word, out);
+            args(&m.args, word, out);
         }
-        Expression::NullsafeMethodCall(m) => {
-            refs_in_expr(&m.target, word, out);
-            refs_in_expr(&m.method, word, out);
-            args(&m.arguments, word, out);
-        }
-        Expression::StaticMethodCall(s) => {
-            refs_in_expr(&s.target, word, out);
-            if let Some(span) = ident_matches(&s.method, word) {
-                out.push(span);
+        ExprKind::StaticMethodCall(s) => {
+            refs_in_expr(s.class, word, out);
+            if s.method.as_ref() == word {
+                out.push(expr.span);
             }
-            args(&s.arguments, word, out);
+            args(&s.args, word, out);
         }
-        Expression::New(n) => {
-            refs_in_expr(&n.target, word, out);
-            if let Some(arg_list) = &n.arguments {
-                args(arg_list, word, out);
-            }
+        ExprKind::New(n) => {
+            refs_in_expr(n.class, word, out);
+            args(&n.args, word, out);
         }
-        Expression::AssignmentOperation(a) => {
-            refs_in_expr(a.left(), word, out);
-            refs_in_expr(a.right(), word, out);
+        ExprKind::Assign(a) => {
+            refs_in_expr(a.target, word, out);
+            refs_in_expr(a.value, word, out);
         }
-        Expression::ArithmeticOperation(a) => match a {
-            ArithmeticOperationExpression::Addition { left, right, .. }
-            | ArithmeticOperationExpression::Subtraction { left, right, .. }
-            | ArithmeticOperationExpression::Multiplication { left, right, .. }
-            | ArithmeticOperationExpression::Division { left, right, .. }
-            | ArithmeticOperationExpression::Modulo { left, right, .. }
-            | ArithmeticOperationExpression::Exponentiation { left, right, .. } => {
-                refs_in_expr(left, word, out);
-                refs_in_expr(right, word, out);
-            }
-            ArithmeticOperationExpression::Negative { right, .. }
-            | ArithmeticOperationExpression::Positive { right, .. }
-            | ArithmeticOperationExpression::PreIncrement { right, .. }
-            | ArithmeticOperationExpression::PreDecrement { right, .. } => {
-                refs_in_expr(right, word, out);
-            }
-            ArithmeticOperationExpression::PostIncrement { left, .. }
-            | ArithmeticOperationExpression::PostDecrement { left, .. } => {
-                refs_in_expr(left, word, out);
-            }
-        },
-        Expression::ComparisonOperation(c) => match c {
-            ComparisonOperationExpression::Equal { left, right, .. }
-            | ComparisonOperationExpression::Identical { left, right, .. }
-            | ComparisonOperationExpression::NotEqual { left, right, .. }
-            | ComparisonOperationExpression::AngledNotEqual { left, right, .. }
-            | ComparisonOperationExpression::NotIdentical { left, right, .. }
-            | ComparisonOperationExpression::LessThan { left, right, .. }
-            | ComparisonOperationExpression::GreaterThan { left, right, .. }
-            | ComparisonOperationExpression::LessThanOrEqual { left, right, .. }
-            | ComparisonOperationExpression::GreaterThanOrEqual { left, right, .. }
-            | ComparisonOperationExpression::Spaceship { left, right, .. } => {
-                refs_in_expr(left, word, out);
-                refs_in_expr(right, word, out);
-            }
-        },
-        Expression::LogicalOperation(l) => match l {
-            LogicalOperationExpression::And { left, right, .. }
-            | LogicalOperationExpression::Or { left, right, .. }
-            | LogicalOperationExpression::LogicalAnd { left, right, .. }
-            | LogicalOperationExpression::LogicalOr { left, right, .. }
-            | LogicalOperationExpression::LogicalXor { left, right, .. } => {
-                refs_in_expr(left, word, out);
-                refs_in_expr(right, word, out);
-            }
-            LogicalOperationExpression::Not { right, .. } => refs_in_expr(right, word, out),
-        },
-        Expression::BitwiseOperation(b) => match b {
-            BitwiseOperationExpression::And { left, right, .. }
-            | BitwiseOperationExpression::Or { left, right, .. }
-            | BitwiseOperationExpression::Xor { left, right, .. }
-            | BitwiseOperationExpression::LeftShift { left, right, .. }
-            | BitwiseOperationExpression::RightShift { left, right, .. } => {
-                refs_in_expr(left, word, out);
-                refs_in_expr(right, word, out);
-            }
-            BitwiseOperationExpression::Not { right, .. } => refs_in_expr(right, word, out),
-        },
-        Expression::Concat(c) => {
-            refs_in_expr(&c.left, word, out);
-            refs_in_expr(&c.right, word, out);
+        ExprKind::Binary(b) => {
+            refs_in_expr(b.left, word, out);
+            refs_in_expr(b.right, word, out);
         }
-        Expression::Instanceof(i) => {
-            refs_in_expr(&i.left, word, out);
-            refs_in_expr(&i.right, word, out);
-        }
-        Expression::Ternary(t) => {
-            refs_in_expr(&t.condition, word, out);
-            refs_in_expr(&t.then, word, out);
-            refs_in_expr(&t.r#else, word, out);
-        }
-        Expression::ShortTernary(t) => {
-            refs_in_expr(&t.condition, word, out);
-            refs_in_expr(&t.r#else, word, out);
-        }
-        Expression::Coalesce(c) => {
-            refs_in_expr(&c.lhs, word, out);
-            refs_in_expr(&c.rhs, word, out);
-        }
-        Expression::Parenthesized(p) => refs_in_expr(&p.expr, word, out),
-        Expression::ErrorSuppress(e) => refs_in_expr(&e.expr, word, out),
-        Expression::Reference(r) => refs_in_expr(&r.right, word, out),
-        Expression::Clone(c) => refs_in_expr(&c.target, word, out),
-        Expression::Throw(t) => refs_in_expr(&t.value, word, out),
-        Expression::Yield(y) => {
-            if let Some(v) = &y.value {
-                refs_in_expr(v, word, out);
+        ExprKind::UnaryPrefix(u) => refs_in_expr(u.operand, word, out),
+        ExprKind::UnaryPostfix(u) => refs_in_expr(u.operand, word, out),
+        ExprKind::Ternary(t) => {
+            refs_in_expr(t.condition, word, out);
+            if let Some(then_expr) = t.then_expr {
+                refs_in_expr(then_expr, word, out);
             }
-            if let Some(k) = &y.key {
+            refs_in_expr(t.else_expr, word, out);
+        }
+        ExprKind::NullCoalesce(n) => {
+            refs_in_expr(n.left, word, out);
+            refs_in_expr(n.right, word, out);
+        }
+        ExprKind::Parenthesized(e) => refs_in_expr(e, word, out),
+        ExprKind::ErrorSuppress(e) => refs_in_expr(e, word, out),
+        ExprKind::Cast(_, e) => refs_in_expr(e, word, out),
+        ExprKind::Clone(e) => refs_in_expr(e, word, out),
+        ExprKind::ThrowExpr(e) => refs_in_expr(e, word, out),
+        ExprKind::Print(e) => refs_in_expr(e, word, out),
+        ExprKind::Empty(e) => refs_in_expr(e, word, out),
+        ExprKind::Eval(e) => refs_in_expr(e, word, out),
+        ExprKind::Yield(y) => {
+            if let Some(k) = y.key {
                 refs_in_expr(k, word, out);
             }
+            if let Some(v) = y.value {
+                refs_in_expr(v, word, out);
+            }
         }
-        Expression::ArrayIndex(a) => {
-            refs_in_expr(&a.array, word, out);
-            if let Some(idx) = &a.index {
+        ExprKind::ArrayAccess(a) => {
+            refs_in_expr(a.array, word, out);
+            if let Some(idx) = a.index {
                 refs_in_expr(idx, word, out);
             }
         }
-        Expression::PropertyFetch(p) => refs_in_expr(&p.target, word, out),
-        Expression::NullsafePropertyFetch(p) => refs_in_expr(&p.target, word, out),
-        Expression::StaticPropertyFetch(p) => refs_in_expr(&p.target, word, out),
-        Expression::ConstantFetch(c) => {
-            refs_in_expr(&c.target, word, out);
-            if let Some(span) = ident_matches(&c.constant, word) {
-                out.push(span);
+        ExprKind::PropertyAccess(p) => refs_in_expr(p.object, word, out),
+        ExprKind::NullsafePropertyAccess(p) => refs_in_expr(p.object, word, out),
+        ExprKind::StaticPropertyAccess(s) => refs_in_expr(s.class, word, out),
+        ExprKind::ClassConstAccess(c) => {
+            refs_in_expr(c.class, word, out);
+            if c.member.as_ref() == word {
+                out.push(expr.span);
             }
         }
-        Expression::Print(p) => {
-            if let Some(v) = &p.value {
-                refs_in_expr(v, word, out);
-            }
-        }
-        Expression::Closure(c) => refs_in_stmts(&c.body.statements, word, out),
-        Expression::ArrowFunction(a) => refs_in_expr(&a.body, word, out),
-        Expression::Match(m) => {
-            refs_in_expr(&*m.condition, word, out);
-            for arm in &m.arms {
-                for cond in &arm.conditions {
-                    refs_in_expr(cond, word, out);
+        ExprKind::Closure(c) => refs_in_stmts(&c.body, word, out),
+        ExprKind::ArrowFunction(a) => refs_in_expr(a.body, word, out),
+        ExprKind::Match(m) => {
+            refs_in_expr(m.subject, word, out);
+            for arm in m.arms.iter() {
+                if let Some(conds) = &arm.conditions {
+                    for cond in conds.iter() {
+                        refs_in_expr(cond, word, out);
+                    }
                 }
                 refs_in_expr(&arm.body, word, out);
             }
         }
-        Expression::ShortArray(a) => {
-            for item in a.items.iter() {
-                match item {
-                    php_parser_rs::parser::ast::ArrayItem::Value { value, .. } => refs_in_expr(value, word, out),
-                    php_parser_rs::parser::ast::ArrayItem::ReferencedValue { value, .. } => refs_in_expr(value, word, out),
-                    php_parser_rs::parser::ast::ArrayItem::SpreadValue { value, .. } => refs_in_expr(value, word, out),
-                    php_parser_rs::parser::ast::ArrayItem::KeyValue { key, value, .. } => {
-                        refs_in_expr(key, word, out);
-                        refs_in_expr(value, word, out);
+        ExprKind::Array(elements) => {
+            for elem in elements.iter() {
+                if let Some(key) = &elem.key {
+                    refs_in_expr(key, word, out);
+                }
+                refs_in_expr(&elem.value, word, out);
+            }
+        }
+        ExprKind::Isset(exprs) => {
+            for e in exprs.iter() {
+                refs_in_expr(e, word, out);
+            }
+        }
+        ExprKind::Include(_, e) => refs_in_expr(e, word, out),
+        ExprKind::Exit(Some(e)) => refs_in_expr(e, word, out),
+        ExprKind::AnonymousClass(c) => {
+            for member in c.members.iter() {
+                if let ClassMemberKind::Method(m) = &member.kind {
+                    if let Some(body) = &m.body {
+                        refs_in_stmts(body, word, out);
                     }
-                    php_parser_rs::parser::ast::ArrayItem::ReferencedKeyValue { key, value, .. } => {
-                        refs_in_expr(key, word, out);
-                        refs_in_expr(value, word, out);
-                    }
-                    php_parser_rs::parser::ast::ArrayItem::Skipped => {}
                 }
             }
         }

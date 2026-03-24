@@ -1,28 +1,22 @@
 use std::sync::Arc;
 
-use php_parser_rs::lexer::token::Span;
-use php_parser_rs::parser::ast::{
-    arguments::Argument,
-    classes::ClassMember,
-    identifiers::Identifier as AstIdentifier,
-    namespaces::NamespaceStatement,
-    Expression, Statement,
-};
+use php_ast::{ClassMemberKind, ExprKind, NamespaceBody, Span, Stmt, StmtKind};
 use tower_lsp::lsp_types::{
     CallHierarchyIncomingCall, CallHierarchyItem, CallHierarchyOutgoingCall, Position, Range,
     SymbolKind, Url,
 };
 
-use crate::diagnostics::span_to_position;
+use crate::ast::{name_range, span_to_range, ParsedDoc};
 use crate::references::find_references;
 
 /// Find the declaration matching `name` and return a `CallHierarchyItem`.
 pub fn prepare_call_hierarchy(
     name: &str,
-    all_docs: &[(Url, Arc<Vec<Statement>>)],
+    all_docs: &[(Url, Arc<ParsedDoc>)],
 ) -> Option<CallHierarchyItem> {
-    for (uri, ast) in all_docs {
-        if let Some(item) = find_declaration_item(name, ast, uri) {
+    for (uri, doc) in all_docs {
+        let source = doc.source();
+        if let Some(item) = find_declaration_item(name, &doc.program().stmts, source, uri) {
             return Some(item);
         }
     }
@@ -32,26 +26,24 @@ pub fn prepare_call_hierarchy(
 /// Find all callers of `item.name` and return them grouped by enclosing function.
 pub fn incoming_calls(
     item: &CallHierarchyItem,
-    all_docs: &[(Url, Arc<Vec<Statement>>)],
+    all_docs: &[(Url, Arc<ParsedDoc>)],
 ) -> Vec<CallHierarchyIncomingCall> {
     let call_sites = find_references(&item.name, all_docs, false);
-
     let mut result: Vec<CallHierarchyIncomingCall> = Vec::new();
 
     for loc in call_sites {
-        // Find the enclosing function/method for this call site
-        let ast = all_docs
+        let caller = all_docs
             .iter()
             .find(|(u, _)| *u == loc.uri)
-            .map(|(_, a)| a.as_slice())
-            .unwrap_or(&[]);
-        let caller = enclosing_function(ast, loc.range.start, &loc.uri);
+            .and_then(|(_, doc)| {
+                enclosing_function(doc.source(), &doc.program().stmts, loc.range.start, &loc.uri)
+            });
 
-        // Merge into existing entry if same caller, else add new
         if let Some(caller_item) = caller {
-            if let Some(entry) = result.iter_mut().find(|e| {
-                e.from.name == caller_item.name && e.from.uri == caller_item.uri
-            }) {
+            if let Some(entry) = result
+                .iter_mut()
+                .find(|e| e.from.name == caller_item.name && e.from.uri == caller_item.uri)
+            {
                 entry.from_ranges.push(loc.range);
             } else {
                 result.push(CallHierarchyIncomingCall {
@@ -60,7 +52,6 @@ pub fn incoming_calls(
                 });
             }
         } else {
-            // Call is at file scope — represent it with a synthetic item
             let synthetic = CallHierarchyItem {
                 name: "<file scope>".to_string(),
                 kind: SymbolKind::FILE,
@@ -71,9 +62,10 @@ pub fn incoming_calls(
                 selection_range: loc.range,
                 data: None,
             };
-            if let Some(entry) = result.iter_mut().find(|e| {
-                e.from.name == synthetic.name && e.from.uri == synthetic.uri
-            }) {
+            if let Some(entry) = result
+                .iter_mut()
+                .find(|e| e.from.name == synthetic.name && e.from.uri == synthetic.uri)
+            {
                 entry.from_ranges.push(loc.range);
             } else {
                 result.push(CallHierarchyIncomingCall {
@@ -90,27 +82,22 @@ pub fn incoming_calls(
 /// Find all calls made by the body of `item.name`.
 pub fn outgoing_calls(
     item: &CallHierarchyItem,
-    all_docs: &[(Url, Arc<Vec<Statement>>)],
+    all_docs: &[(Url, Arc<ParsedDoc>)],
 ) -> Vec<CallHierarchyOutgoingCall> {
-    // Find the function/method body
-    let body_stmts = find_body(item, all_docs);
-
-    // Collect all call targets (name → list of call-site spans)
     let mut calls: Vec<(String, Span)> = Vec::new();
-    calls_in_stmts(&body_stmts, &mut calls);
+    let mut item_source = String::new();
 
-    // For each unique callee name, find its declaration
+    for (uri, doc) in all_docs {
+        if *uri == item.uri {
+            item_source = doc.source().to_string();
+            collect_calls_for(&item.name, &doc.program().stmts, &mut calls);
+            break;
+        }
+    }
+
     let mut result: Vec<CallHierarchyOutgoingCall> = Vec::new();
-    for (callee_name, call_span) in calls {
-        let call_pos = span_to_position(&call_span);
-        let call_range = Range {
-            start: call_pos,
-            end: Position {
-                line: call_pos.line,
-                character: call_pos.character + callee_name.len() as u32,
-            },
-        };
-
+    for (callee_name, span) in calls {
+        let call_range = span_to_range(&item_source, span);
         if let Some(existing) = result.iter_mut().find(|e| e.to.name == callee_name) {
             existing.from_ranges.push(call_range);
         } else if let Some(callee_item) = prepare_call_hierarchy(&callee_name, all_docs) {
@@ -128,69 +115,51 @@ pub fn outgoing_calls(
 
 fn find_declaration_item(
     name: &str,
-    ast: &[Statement],
+    stmts: &[Stmt<'_, '_>],
+    source: &str,
     uri: &Url,
 ) -> Option<CallHierarchyItem> {
-    for stmt in ast {
-        match stmt {
-            Statement::Function(f) if f.name.value.to_string() == name => {
-                let start = span_to_position(&f.name.span);
-                let sel = Range {
-                    start,
-                    end: Position { line: start.line, character: start.character + name.len() as u32 },
-                };
-                let full_start = span_to_position(&f.function);
-                let full_end = span_to_position(&f.body.right_brace);
+    for stmt in stmts {
+        match &stmt.kind {
+            StmtKind::Function(f) if f.name == name => {
+                let range = span_to_range(source, stmt.span);
+                let sel = name_range(source, f.name);
                 return Some(CallHierarchyItem {
                     name: name.to_string(),
                     kind: SymbolKind::FUNCTION,
                     tags: None,
                     detail: None,
                     uri: uri.clone(),
-                    range: Range {
-                        start: full_start,
-                        end: Position { line: full_end.line, character: full_end.character + 1 },
-                    },
+                    range,
                     selection_range: sel,
                     data: None,
                 });
             }
-            Statement::Class(c) => {
-                for member in &c.body.members {
-                    match member {
-                        ClassMember::ConcreteMethod(m) if m.name.value.to_string() == name => {
-                            let start = span_to_position(&m.name.span);
-                            let sel = Range {
-                                start,
-                                end: Position { line: start.line, character: start.character + name.len() as u32 },
-                            };
-                            let full_start = span_to_position(&m.function);
-                            let full_end = span_to_position(&m.body.right_brace);
+            StmtKind::Class(c) => {
+                for member in c.members.iter() {
+                    if let ClassMemberKind::Method(m) = &member.kind {
+                        if m.name == name {
+                            let range = span_to_range(source, member.span);
+                            let sel = name_range(source, m.name);
                             return Some(CallHierarchyItem {
                                 name: name.to_string(),
                                 kind: SymbolKind::METHOD,
                                 tags: None,
-                                detail: Some(c.name.value.to_string()),
+                                detail: c.name.map(|n| n.to_string()),
                                 uri: uri.clone(),
-                                range: Range {
-                                    start: full_start,
-                                    end: Position { line: full_end.line, character: full_end.character + 1 },
-                                },
+                                range,
                                 selection_range: sel,
                                 data: None,
                             });
                         }
-                        _ => {}
                     }
                 }
             }
-            Statement::Namespace(ns) => {
-                let inner = match ns {
-                    NamespaceStatement::Unbraced(u) => &u.statements[..],
-                    NamespaceStatement::Braced(b) => &b.body.statements[..],
-                };
-                if let Some(item) = find_declaration_item(name, inner, uri) {
-                    return Some(item);
+            StmtKind::Namespace(ns) => {
+                if let NamespaceBody::Braced(inner) = &ns.body {
+                    if let Some(item) = find_declaration_item(name, inner, source, uri) {
+                        return Some(item);
+                    }
                 }
             }
             _ => {}
@@ -199,75 +168,57 @@ fn find_declaration_item(
     None
 }
 
-/// Find the enclosing function or method for a given position in the AST.
-fn enclosing_function(ast: &[Statement], pos: Position, uri: &Url) -> Option<CallHierarchyItem> {
-    for stmt in ast {
-        if let Some(item) = enclosing_in_stmt(stmt, pos, uri) {
+fn enclosing_function(
+    source: &str,
+    stmts: &[Stmt<'_, '_>],
+    pos: Position,
+    uri: &Url,
+) -> Option<CallHierarchyItem> {
+    for stmt in stmts {
+        if let Some(item) = enclosing_in_stmt(source, stmt, pos, uri) {
             return Some(item);
         }
     }
     None
 }
 
-fn enclosing_in_stmt(stmt: &Statement, pos: Position, uri: &Url) -> Option<CallHierarchyItem> {
-    match stmt {
-        Statement::Function(f) => {
-            let start_line = (f.function.line as u32).saturating_sub(1);
-            let end_line = (f.body.right_brace.line as u32).saturating_sub(1);
-            if pos.line < start_line || pos.line > end_line {
-                return None;
-            }
-            let fname = f.name.value.to_string();
-            let name_pos = span_to_position(&f.name.span);
-            let sel = Range {
-                start: name_pos,
-                end: Position { line: name_pos.line, character: name_pos.character + fname.len() as u32 },
-            };
-            let full_start = span_to_position(&f.function);
-            let full_end = span_to_position(&f.body.right_brace);
+fn enclosing_in_stmt(
+    source: &str,
+    stmt: &Stmt<'_, '_>,
+    pos: Position,
+    uri: &Url,
+) -> Option<CallHierarchyItem> {
+    let range = span_to_range(source, stmt.span);
+    if !range_contains(range, pos) {
+        return None;
+    }
+    match &stmt.kind {
+        StmtKind::Function(f) => {
+            let sel = name_range(source, f.name);
             Some(CallHierarchyItem {
-                name: fname,
+                name: f.name.to_string(),
                 kind: SymbolKind::FUNCTION,
                 tags: None,
                 detail: None,
                 uri: uri.clone(),
-                range: Range {
-                    start: full_start,
-                    end: Position { line: full_end.line, character: full_end.character + 1 },
-                },
+                range,
                 selection_range: sel,
                 data: None,
             })
         }
-        Statement::Class(c) => {
-            let class_start = (c.class.line as u32).saturating_sub(1);
-            let class_end = (c.body.right_brace.line as u32).saturating_sub(1);
-            if pos.line < class_start || pos.line > class_end {
-                return None;
-            }
-            for member in &c.body.members {
-                if let ClassMember::ConcreteMethod(m) = member {
-                    let mstart = (m.function.line as u32).saturating_sub(1);
-                    let mend = (m.body.right_brace.line as u32).saturating_sub(1);
-                    if pos.line >= mstart && pos.line <= mend {
-                        let mname = m.name.value.to_string();
-                        let name_pos = span_to_position(&m.name.span);
-                        let sel = Range {
-                            start: name_pos,
-                            end: Position { line: name_pos.line, character: name_pos.character + mname.len() as u32 },
-                        };
-                        let full_start = span_to_position(&m.function);
-                        let full_end = span_to_position(&m.body.right_brace);
+        StmtKind::Class(c) => {
+            for member in c.members.iter() {
+                let m_range = span_to_range(source, member.span);
+                if range_contains(m_range, pos) {
+                    if let ClassMemberKind::Method(m) = &member.kind {
+                        let sel = name_range(source, m.name);
                         return Some(CallHierarchyItem {
-                            name: mname,
+                            name: m.name.to_string(),
                             kind: SymbolKind::METHOD,
                             tags: None,
-                            detail: Some(c.name.value.to_string()),
+                            detail: c.name.map(|n| n.to_string()),
                             uri: uri.clone(),
-                            range: Range {
-                                start: full_start,
-                                end: Position { line: full_end.line, character: full_end.character + 1 },
-                            },
+                            range: m_range,
                             selection_range: sel,
                             data: None,
                         });
@@ -276,15 +227,9 @@ fn enclosing_in_stmt(stmt: &Statement, pos: Position, uri: &Url) -> Option<CallH
             }
             None
         }
-        Statement::Namespace(ns) => {
-            let inner = match ns {
-                NamespaceStatement::Unbraced(u) => &u.statements[..],
-                NamespaceStatement::Braced(b) => &b.body.statements[..],
-            };
-            for s in inner {
-                if let Some(item) = enclosing_in_stmt(s, pos, uri) {
-                    return Some(item);
-                }
+        StmtKind::Namespace(ns) => {
+            if let NamespaceBody::Braced(inner) = &ns.body {
+                return enclosing_function(source, inner, pos, uri);
             }
             None
         }
@@ -292,189 +237,159 @@ fn enclosing_in_stmt(stmt: &Statement, pos: Position, uri: &Url) -> Option<CallH
     }
 }
 
-/// Find the body statements for the named function/method in item.
-fn find_body(
-    item: &CallHierarchyItem,
-    all_docs: &[(Url, Arc<Vec<Statement>>)],
-) -> Vec<Statement> {
-    for (uri, ast) in all_docs {
-        if *uri == item.uri {
-            if let Some(stmts) = body_stmts_for(item, ast) {
-                return stmts;
-            }
-        }
-    }
-    vec![]
+fn range_contains(range: Range, pos: Position) -> bool {
+    pos.line >= range.start.line && pos.line <= range.end.line
 }
 
-fn body_stmts_for(item: &CallHierarchyItem, ast: &[Statement]) -> Option<Vec<Statement>> {
-    for stmt in ast {
-        match stmt {
-            Statement::Function(f) if f.name.value.to_string() == item.name => {
-                return Some(f.body.statements.clone());
+/// Collect all (callee_name, span) for calls made inside the body of `fn_name`.
+fn collect_calls_for(
+    fn_name: &str,
+    stmts: &[Stmt<'_, '_>],
+    out: &mut Vec<(String, Span)>,
+) {
+    for stmt in stmts {
+        match &stmt.kind {
+            StmtKind::Function(f) if f.name == fn_name => {
+                calls_in_stmts(&f.body, out);
+                return;
             }
-            Statement::Class(c) => {
-                for member in &c.body.members {
-                    if let ClassMember::ConcreteMethod(m) = member {
-                        if m.name.value.to_string() == item.name {
-                            return Some(m.body.statements.clone());
+            StmtKind::Class(c) => {
+                for member in c.members.iter() {
+                    if let ClassMemberKind::Method(m) = &member.kind {
+                        if m.name == fn_name {
+                            if let Some(body) = &m.body {
+                                calls_in_stmts(body, out);
+                                return;
+                            }
                         }
                     }
                 }
             }
-            Statement::Namespace(ns) => {
-                let inner = match ns {
-                    NamespaceStatement::Unbraced(u) => &u.statements[..],
-                    NamespaceStatement::Braced(b) => &b.body.statements[..],
-                };
-                if let Some(stmts) = body_stmts_for(item, inner) {
-                    return Some(stmts);
+            StmtKind::Namespace(ns) => {
+                if let NamespaceBody::Braced(inner) = &ns.body {
+                    collect_calls_for(fn_name, inner, out);
                 }
             }
             _ => {}
         }
     }
-    None
 }
 
-/// Walk statements collecting (callee_name, call_span) for all function and method calls.
-fn calls_in_stmts(stmts: &[Statement], out: &mut Vec<(String, Span)>) {
+fn calls_in_stmts(stmts: &[Stmt<'_, '_>], out: &mut Vec<(String, Span)>) {
     for stmt in stmts {
         calls_in_stmt(stmt, out);
     }
 }
 
-fn calls_in_stmt(stmt: &Statement, out: &mut Vec<(String, Span)>) {
-    match stmt {
-        Statement::Expression(e) => calls_in_expr(&e.expression, out),
-        Statement::Return(r) => {
-            if let Some(v) = &r.value {
+fn calls_in_stmt(stmt: &Stmt<'_, '_>, out: &mut Vec<(String, Span)>) {
+    match &stmt.kind {
+        StmtKind::Expression(e) => calls_in_expr(e, out),
+        StmtKind::Return(r) => {
+            if let Some(v) = r {
                 calls_in_expr(v, out);
             }
         }
-        Statement::Echo(e) => {
-            for expr in &e.values {
+        StmtKind::Echo(exprs) => {
+            for expr in exprs.iter() {
                 calls_in_expr(expr, out);
             }
         }
-        Statement::If(i) => {
-            use php_parser_rs::parser::ast::control_flow::IfStatementBody;
+        StmtKind::If(i) => {
             calls_in_expr(&i.condition, out);
-            match &i.body {
-                IfStatementBody::Statement { statement, elseifs, r#else } => {
-                    calls_in_stmt(statement, out);
-                    for ei in elseifs {
-                        calls_in_expr(&ei.condition, out);
-                        calls_in_stmt(&ei.statement, out);
-                    }
-                    if let Some(e) = r#else {
-                        calls_in_stmt(&e.statement, out);
-                    }
-                }
-                IfStatementBody::Block { statements, elseifs, r#else, .. } => {
-                    calls_in_stmts(statements, out);
-                    for ei in elseifs {
-                        calls_in_expr(&ei.condition, out);
-                        calls_in_stmts(&ei.statements, out);
-                    }
-                    if let Some(e) = r#else {
-                        calls_in_stmts(&e.statements, out);
-                    }
-                }
+            calls_in_stmt(i.then_branch, out);
+            for ei in i.elseif_branches.iter() {
+                calls_in_expr(&ei.condition, out);
+                calls_in_stmt(&ei.body, out);
+            }
+            if let Some(e) = &i.else_branch {
+                calls_in_stmt(e, out);
             }
         }
-        Statement::While(w) => {
-            use php_parser_rs::parser::ast::loops::WhileStatementBody;
+        StmtKind::While(w) => {
             calls_in_expr(&w.condition, out);
-            match &w.body {
-                WhileStatementBody::Statement { statement } => calls_in_stmt(statement, out),
-                WhileStatementBody::Block { statements, .. } => calls_in_stmts(statements, out),
-            }
+            calls_in_stmt(w.body, out);
         }
-        Statement::Foreach(f) => {
-            use php_parser_rs::parser::ast::loops::{ForeachStatementBody, ForeachStatementIterator};
-            let expr = match &f.iterator {
-                ForeachStatementIterator::Value { expression, .. } => expression,
-                ForeachStatementIterator::KeyAndValue { expression, .. } => expression,
-            };
-            calls_in_expr(expr, out);
-            match &f.body {
-                ForeachStatementBody::Statement { statement } => calls_in_stmt(statement, out),
-                ForeachStatementBody::Block { statements, .. } => calls_in_stmts(statements, out),
+        StmtKind::For(f) => {
+            for cond in f.condition.iter() {
+                calls_in_expr(cond, out);
             }
+            calls_in_stmt(f.body, out);
         }
-        Statement::Try(t) => {
+        StmtKind::Foreach(f) => {
+            calls_in_expr(&f.expr, out);
+            calls_in_stmt(f.body, out);
+        }
+        StmtKind::TryCatch(t) => {
             calls_in_stmts(&t.body, out);
-            for catch in &t.catches {
+            for catch in t.catches.iter() {
                 calls_in_stmts(&catch.body, out);
             }
             if let Some(finally) = &t.finally {
-                calls_in_stmts(&finally.body, out);
+                calls_in_stmts(finally, out);
             }
         }
-        Statement::Block(b) => calls_in_stmts(&b.statements, out),
+        StmtKind::Block(stmts) => calls_in_stmts(stmts, out),
         _ => {}
     }
 }
 
-fn calls_in_expr(expr: &Expression, out: &mut Vec<(String, Span)>) {
-    match expr {
-        Expression::FunctionCall(f) => {
-            if let Expression::Identifier(AstIdentifier::SimpleIdentifier(si)) = f.target.as_ref() {
-                out.push((si.value.to_string(), si.span));
+fn calls_in_expr(expr: &php_ast::Expr<'_, '_>, out: &mut Vec<(String, Span)>) {
+    match &expr.kind {
+        ExprKind::FunctionCall(f) => {
+            if let ExprKind::Identifier(name) = &f.name.kind {
+                out.push((name.as_ref().to_string(), f.name.span));
             } else {
-                calls_in_expr(&f.target, out);
+                calls_in_expr(f.name, out);
             }
-            call_args(&f.arguments, out);
-        }
-        Expression::MethodCall(m) => {
-            calls_in_expr(&m.target, out);
-            if let Expression::Identifier(AstIdentifier::SimpleIdentifier(si)) = m.method.as_ref() {
-                out.push((si.value.to_string(), si.span));
+            for arg in f.args.iter() {
+                calls_in_expr(&arg.value, out);
             }
-            call_args(&m.arguments, out);
         }
-        Expression::NullsafeMethodCall(m) => {
-            calls_in_expr(&m.target, out);
-            if let Expression::Identifier(AstIdentifier::SimpleIdentifier(si)) = m.method.as_ref() {
-                out.push((si.value.to_string(), si.span));
+        ExprKind::MethodCall(m) => {
+            calls_in_expr(m.object, out);
+            if let ExprKind::Identifier(name) = &m.method.kind {
+                out.push((name.as_ref().to_string(), m.method.span));
             }
-            call_args(&m.arguments, out);
+            for arg in m.args.iter() {
+                calls_in_expr(&arg.value, out);
+            }
         }
-        Expression::StaticMethodCall(s) => {
-            calls_in_expr(&s.target, out);
-            call_args(&s.arguments, out);
+        ExprKind::NullsafeMethodCall(m) => {
+            calls_in_expr(m.object, out);
+            if let ExprKind::Identifier(name) = &m.method.kind {
+                out.push((name.as_ref().to_string(), m.method.span));
+            }
+            for arg in m.args.iter() {
+                calls_in_expr(&arg.value, out);
+            }
         }
-        Expression::AssignmentOperation(a) => {
-            calls_in_expr(a.left(), out);
-            calls_in_expr(a.right(), out);
+        ExprKind::StaticMethodCall(s) => {
+            calls_in_expr(s.class, out);
+            for arg in s.args.iter() {
+                calls_in_expr(&arg.value, out);
+            }
         }
-        Expression::Ternary(t) => {
-            calls_in_expr(&t.condition, out);
-            calls_in_expr(&t.then, out);
-            calls_in_expr(&t.r#else, out);
+        ExprKind::Assign(a) => {
+            calls_in_expr(a.target, out);
+            calls_in_expr(a.value, out);
         }
-        Expression::Coalesce(c) => {
-            calls_in_expr(&c.lhs, out);
-            calls_in_expr(&c.rhs, out);
+        ExprKind::Ternary(t) => {
+            calls_in_expr(t.condition, out);
+            if let Some(then_expr) = t.then_expr {
+                calls_in_expr(then_expr, out);
+            }
+            calls_in_expr(t.else_expr, out);
         }
-        Expression::Parenthesized(p) => calls_in_expr(&p.expr, out),
-        Expression::Concat(c) => {
-            calls_in_expr(&c.left, out);
-            calls_in_expr(&c.right, out);
+        ExprKind::NullCoalesce(n) => {
+            calls_in_expr(n.left, out);
+            calls_in_expr(n.right, out);
         }
-        Expression::Closure(c) => calls_in_stmts(&c.body.statements, out),
-        Expression::ArrowFunction(a) => calls_in_expr(&a.body, out),
+        ExprKind::Binary(b) => {
+            calls_in_expr(b.left, out);
+            calls_in_expr(b.right, out);
+        }
+        ExprKind::Parenthesized(e) => calls_in_expr(e, out),
         _ => {}
-    }
-}
-
-fn call_args(args: &php_parser_rs::parser::ast::arguments::ArgumentList, out: &mut Vec<(String, Span)>) {
-    for arg in &args.arguments {
-        match arg {
-            Argument::Positional(p) => calls_in_expr(&p.value, out),
-            Argument::Named(n) => calls_in_expr(&n.value, out),
-        }
     }
 }
 
@@ -482,24 +397,17 @@ fn call_args(args: &php_parser_rs::parser::ast::arguments::ArgumentList, out: &m
 mod tests {
     use super::*;
 
-    fn parse_ast(source: &str) -> Vec<Statement> {
-        match php_parser_rs::parser::parse(source) {
-            Ok(ast) => ast,
-            Err(stack) => stack.partial,
-        }
-    }
-
     fn uri(path: &str) -> Url {
         Url::parse(&format!("file://{path}")).unwrap()
     }
 
-    fn doc(path: &str, source: &str) -> (Url, Arc<Vec<Statement>>) {
-        (uri(path), Arc::new(parse_ast(source)))
+    fn doc(path: &str, src: &str) -> (Url, Arc<ParsedDoc>) {
+        (uri(path), Arc::new(ParsedDoc::parse(src.to_string())))
     }
 
     #[test]
     fn prepare_finds_function_declaration() {
-        let docs = vec![doc("/a.php", "<?php\nfunction greet() {}") ];
+        let docs = vec![doc("/a.php", "<?php\nfunction greet() {}")];
         let item = prepare_call_hierarchy("greet", &docs);
         assert!(item.is_some(), "should find greet");
         let item = item.unwrap();
@@ -525,7 +433,7 @@ mod tests {
 
     #[test]
     fn prepare_returns_none_for_empty_docs() {
-        let docs: Vec<(Url, Arc<Vec<Statement>>)> = vec![];
+        let docs: Vec<(Url, Arc<ParsedDoc>)> = vec![];
         assert!(prepare_call_hierarchy("anything", &docs).is_none());
     }
 

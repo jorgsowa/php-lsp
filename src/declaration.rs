@@ -8,33 +8,33 @@
 /// result as go-to-definition so the request is never empty-handed.
 use std::sync::Arc;
 
-use php_parser_rs::parser::ast::{
-    classes::ClassMember, namespaces::NamespaceStatement, Statement,
-};
-use tower_lsp::lsp_types::{Location, Position, Range, Url};
+use php_ast::{ClassMemberKind, NamespaceBody, Stmt, StmtKind};
+use tower_lsp::lsp_types::{Location, Position, Url};
 
-use crate::diagnostics::span_to_position;
+use crate::ast::{name_range, ParsedDoc};
 use crate::util::word_at;
 
 /// Find the abstract or interface declaration of `word`.
 /// Prefers abstract/interface declarations; falls back to any declaration.
 pub fn goto_declaration(
     source: &str,
-    all_docs: &[(Url, Arc<Vec<Statement>>)],
+    all_docs: &[(Url, Arc<ParsedDoc>)],
     position: Position,
 ) -> Option<Location> {
     let word = word_at(source, position)?;
 
     // First pass: look for an abstract or interface declaration
-    for (uri, ast) in all_docs {
-        if let Some(range) = find_abstract_declaration(ast, &word) {
+    for (uri, doc) in all_docs {
+        let doc_source = doc.source();
+        if let Some(range) = find_abstract_declaration(doc_source, &doc.program().stmts, &word) {
             return Some(Location { uri: uri.clone(), range });
         }
     }
 
     // Second pass: any declaration (same as goto_definition)
-    for (uri, ast) in all_docs {
-        if let Some(range) = find_any_declaration(ast, &word) {
+    for (uri, doc) in all_docs {
+        let doc_source = doc.source();
+        if let Some(range) = find_any_declaration(doc_source, &doc.program().stmts, &word) {
             return Some(Location { uri: uri.clone(), range });
         }
     }
@@ -42,42 +42,40 @@ pub fn goto_declaration(
     None
 }
 
-// ── Abstract / interface declarations ────────────────────────────────────────
-
-fn find_abstract_declaration(stmts: &[Statement], word: &str) -> Option<Range> {
+fn find_abstract_declaration(
+    source: &str,
+    stmts: &[Stmt<'_, '_>],
+    word: &str,
+) -> Option<tower_lsp::lsp_types::Range> {
     for stmt in stmts {
-        match stmt {
-            Statement::Interface(i) => {
+        match &stmt.kind {
+            StmtKind::Interface(i) => {
                 // Interface methods are declarations without bodies
-                for member in &i.body.members {
-                    use php_parser_rs::parser::ast::interfaces::InterfaceMember;
-                    if let InterfaceMember::Method(m) = member {
-                        if m.name.value.to_string() == word {
-                            return Some(name_range(&m.name.span, word));
+                for member in i.members.iter() {
+                    if let ClassMemberKind::Method(m) = &member.kind {
+                        if m.name == word {
+                            return Some(name_range(source, m.name));
                         }
                     }
                 }
-                // The interface name itself
-                if i.name.value.to_string() == word {
-                    return Some(name_range(&i.name.span, word));
+                if i.name == word {
+                    return Some(name_range(source, i.name));
                 }
             }
-            Statement::Class(c) => {
-                for member in &c.body.members {
-                    if let ClassMember::AbstractMethod(m) = member {
-                        if m.name.value.to_string() == word {
-                            return Some(name_range(&m.name.span, word));
+            StmtKind::Class(c) => {
+                for member in c.members.iter() {
+                    if let ClassMemberKind::Method(m) = &member.kind {
+                        if m.is_abstract && m.name == word {
+                            return Some(name_range(source, m.name));
                         }
                     }
                 }
             }
-            Statement::Namespace(ns) => {
-                let inner = match ns {
-                    NamespaceStatement::Unbraced(u) => &u.statements[..],
-                    NamespaceStatement::Braced(b) => &b.body.statements[..],
-                };
-                if let Some(r) = find_abstract_declaration(inner, word) {
-                    return Some(r);
+            StmtKind::Namespace(ns) => {
+                if let NamespaceBody::Braced(inner) = &ns.body {
+                    if let Some(r) = find_abstract_declaration(source, inner, word) {
+                        return Some(r);
+                    }
                 }
             }
             _ => {}
@@ -86,79 +84,57 @@ fn find_abstract_declaration(stmts: &[Statement], word: &str) -> Option<Range> {
     None
 }
 
-// ── Fallback: any declaration (mirrors goto_definition) ──────────────────────
-
-fn find_any_declaration(stmts: &[Statement], word: &str) -> Option<Range> {
+fn find_any_declaration(
+    source: &str,
+    stmts: &[Stmt<'_, '_>],
+    word: &str,
+) -> Option<tower_lsp::lsp_types::Range> {
     for stmt in stmts {
-        match stmt {
-            Statement::Function(f) if f.name.value.to_string() == word => {
-                return Some(name_range(&f.name.span, word));
+        match &stmt.kind {
+            StmtKind::Function(f) if f.name == word => {
+                return Some(name_range(source, f.name));
             }
-            Statement::Class(c) if c.name.value.to_string() == word => {
-                return Some(name_range(&c.name.span, word));
+            StmtKind::Class(c) if c.name == Some(word) => {
+                return Some(name_range(source, c.name.unwrap()));
             }
-            Statement::Class(c) => {
-                for member in &c.body.members {
-                    match member {
-                        ClassMember::ConcreteMethod(m) if m.name.value.to_string() == word => {
-                            return Some(name_range(&m.name.span, word));
+            StmtKind::Class(c) => {
+                for member in c.members.iter() {
+                    if let ClassMemberKind::Method(m) = &member.kind {
+                        if m.name == word {
+                            return Some(name_range(source, m.name));
                         }
-                        ClassMember::AbstractMethod(m) if m.name.value.to_string() == word => {
-                            return Some(name_range(&m.name.span, word));
-                        }
-                        _ => {}
                     }
                 }
             }
-            Statement::Interface(i) if i.name.value.to_string() == word => {
-                return Some(name_range(&i.name.span, word));
+            StmtKind::Interface(i) if i.name == word => {
+                return Some(name_range(source, i.name));
             }
-            Statement::Trait(t) if t.name.value.to_string() == word => {
-                return Some(name_range(&t.name.span, word));
+            StmtKind::Trait(t) if t.name == word => {
+                return Some(name_range(source, t.name));
             }
-            Statement::Namespace(ns) => {
-                let inner = match ns {
-                    NamespaceStatement::Unbraced(u) => &u.statements[..],
-                    NamespaceStatement::Braced(b) => &b.body.statements[..],
-                };
-                if let Some(r) = find_any_declaration(inner, word) {
-                    return Some(r);
+            StmtKind::Namespace(ns) => {
+                if let NamespaceBody::Braced(inner) = &ns.body {
+                    if let Some(r) = find_any_declaration(source, inner, word) {
+                        return Some(r);
+                    }
                 }
             }
             _ => {}
         }
     }
     None
-}
-
-fn name_range(span: &php_parser_rs::lexer::token::Span, name: &str) -> Range {
-    let start = span_to_position(span);
-    Range {
-        start,
-        end: Position {
-            line: start.line,
-            character: start.character + name.len() as u32,
-        },
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn parse_ast(source: &str) -> Vec<Statement> {
-        match php_parser_rs::parser::parse(source) {
-            Ok(ast) => ast,
-            Err(stack) => stack.partial,
-        }
-    }
-
     fn uri(path: &str) -> Url {
         Url::parse(&format!("file://{path}")).unwrap()
     }
 
-    fn doc(path: &str, src: &str) -> (Url, Arc<Vec<Statement>>) {
-        (uri(path), Arc::new(parse_ast(src)))
+    fn doc(path: &str, src: &str) -> (Url, Arc<ParsedDoc>) {
+        (uri(path), Arc::new(ParsedDoc::parse(src.to_string())))
     }
 
     fn pos(line: u32, character: u32) -> Position {
@@ -169,10 +145,8 @@ mod tests {
     fn finds_interface_method_declaration() {
         let src = "<?php\ninterface Logger { public function log(string $msg): void; }\nclass FileLogger implements Logger { public function log(string $msg): void {} }";
         let docs = vec![doc("/a.php", src)];
-        // cursor on "log" in the concrete implementation (line 2)
         let loc = goto_declaration(src, &docs, pos(2, 53));
         assert!(loc.is_some(), "expected a declaration location");
-        // should jump to the interface declaration on line 1
         assert_eq!(loc.unwrap().range.start.line, 1);
     }
 
@@ -210,7 +184,7 @@ mod tests {
         let iface_uri = uri("/iface.php");
         let docs = vec![
             doc("/impl.php", impl_src),
-            (iface_uri.clone(), Arc::new(parse_ast(iface_src))),
+            (iface_uri.clone(), Arc::new(ParsedDoc::parse(iface_src.to_string()))),
         ];
         let loc = goto_declaration(impl_src, &docs, pos(1, 51));
         assert!(loc.is_some());

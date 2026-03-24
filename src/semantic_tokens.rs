@@ -1,16 +1,9 @@
-use php_parser_rs::parser::ast::{
-    classes::ClassMember,
-    identifiers::Identifier as AstIdentifier,
-    namespaces::NamespaceStatement,
-    properties::PropertyEntry,
-    traits::TraitMember,
-    Expression, Statement,
-};
+use php_ast::{ClassMemberKind, ExprKind, NamespaceBody, Stmt, StmtKind};
 use tower_lsp::lsp_types::{
     SemanticToken, SemanticTokenModifier, SemanticTokenType, SemanticTokensLegend,
 };
 
-use crate::diagnostics::span_to_position;
+use crate::ast::{offset_to_position, str_offset, ParsedDoc};
 
 // Token type indices — order must match `legend()` vec order
 #[allow(dead_code)]
@@ -58,293 +51,185 @@ pub fn legend() -> SemanticTokensLegend {
     }
 }
 
-pub fn semantic_tokens(ast: &[Statement]) -> Vec<SemanticToken> {
+pub fn semantic_tokens(source: &str, doc: &ParsedDoc) -> Vec<SemanticToken> {
     let mut raw: Vec<RawToken> = Vec::new();
-    collect_stmts(ast, &mut raw);
+    collect_stmts(source, &doc.program().stmts, &mut raw);
     raw.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
     delta_encode(raw)
 }
 
-fn push_span(
-    out: &mut Vec<RawToken>,
-    span: &php_parser_rs::lexer::token::Span,
-    len: u32,
-    token_type: u32,
-    modifiers: u32,
-) {
-    let pos = span_to_position(span);
+fn push_at(out: &mut Vec<RawToken>, source: &str, offset: u32, len: u32, token_type: u32, modifiers: u32) {
+    let pos = offset_to_position(source, offset);
     out.push((pos.line, pos.character, len, token_type, modifiers));
 }
 
-fn collect_stmts(stmts: &[Statement], out: &mut Vec<RawToken>) {
+fn push_name(out: &mut Vec<RawToken>, source: &str, name: &str, token_type: u32, modifiers: u32) {
+    let offset = str_offset(source, name);
+    push_at(out, source, offset, name.len() as u32, token_type, modifiers);
+}
+
+fn collect_stmts(source: &str, stmts: &[Stmt<'_, '_>], out: &mut Vec<RawToken>) {
     for stmt in stmts {
-        collect_stmt(stmt, out);
+        collect_stmt(source, stmt, out);
     }
 }
 
-fn collect_stmt(stmt: &Statement, out: &mut Vec<RawToken>) {
-    match stmt {
-        Statement::Function(f) => {
-            let name = f.name.value.to_string();
-            push_span(out, &f.name.span, name.len() as u32, TT_FUNCTION, MOD_DECLARATION);
-            for p in f.parameters.parameters.iter() {
-                let pname = p.name.name.to_string();
-                push_span(out, &p.name.span, pname.len() as u32, TT_PARAMETER, MOD_DECLARATION);
+fn collect_stmt(source: &str, stmt: &Stmt<'_, '_>, out: &mut Vec<RawToken>) {
+    match &stmt.kind {
+        StmtKind::Function(f) => {
+            push_name(out, source, f.name, TT_FUNCTION, MOD_DECLARATION);
+            for p in f.params.iter() {
+                push_name(out, source, p.name, TT_PARAMETER, MOD_DECLARATION);
             }
-            collect_stmts(&f.body.statements, out);
+            collect_stmts(source, &f.body, out);
         }
-        Statement::Class(c) => {
-            let name = c.name.value.to_string();
-            push_span(out, &c.name.span, name.len() as u32, TT_CLASS, MOD_DECLARATION);
-            for member in &c.body.members {
-                collect_class_member(member, out);
+        StmtKind::Class(c) => {
+            if let Some(name) = c.name {
+                push_name(out, source, name, TT_CLASS, MOD_DECLARATION);
             }
-        }
-        Statement::Interface(i) => {
-            let name = i.name.value.to_string();
-            push_span(out, &i.name.span, name.len() as u32, TT_INTERFACE, MOD_DECLARATION);
-        }
-        Statement::Trait(t) => {
-            let name = t.name.value.to_string();
-            push_span(out, &t.name.span, name.len() as u32, TT_CLASS, MOD_DECLARATION);
-            for member in &t.body.members {
-                collect_trait_member(member, out);
+            for member in c.members.iter() {
+                collect_class_member(source, member, out);
             }
         }
-        Statement::Namespace(ns) => {
-            let inner = match ns {
-                NamespaceStatement::Unbraced(u) => &u.statements[..],
-                NamespaceStatement::Braced(b) => &b.body.statements[..],
-            };
-            collect_stmts(inner, out);
+        StmtKind::Interface(i) => {
+            push_name(out, source, i.name, TT_INTERFACE, MOD_DECLARATION);
         }
-        Statement::Expression(e) => collect_expr(&e.expression, out),
-        Statement::Return(r) => {
-            if let Some(v) = &r.value {
-                collect_expr(v, out);
+        StmtKind::Trait(t) => {
+            push_name(out, source, t.name, TT_CLASS, MOD_DECLARATION);
+            for member in t.members.iter() {
+                collect_class_member(source, member, out);
             }
         }
-        Statement::Echo(e) => {
-            for expr in &e.values {
-                collect_expr(expr, out);
+        StmtKind::Namespace(ns) => {
+            if let NamespaceBody::Braced(inner) = &ns.body {
+                collect_stmts(source, inner, out);
             }
         }
-        Statement::If(i) => {
-            use php_parser_rs::parser::ast::control_flow::IfStatementBody;
-            collect_expr(&i.condition, out);
-            match &i.body {
-                IfStatementBody::Statement { statement, elseifs, r#else } => {
-                    collect_stmt(statement, out);
-                    for ei in elseifs {
-                        collect_expr(&ei.condition, out);
-                        collect_stmt(&ei.statement, out);
-                    }
-                    if let Some(e) = r#else {
-                        collect_stmt(&e.statement, out);
-                    }
-                }
-                IfStatementBody::Block { statements, elseifs, r#else, .. } => {
-                    collect_stmts(statements, out);
-                    for ei in elseifs {
-                        collect_expr(&ei.condition, out);
-                        collect_stmts(&ei.statements, out);
-                    }
-                    if let Some(e) = r#else {
-                        collect_stmts(&e.statements, out);
-                    }
-                }
+        StmtKind::Expression(e) => collect_expr(source, e, out),
+        StmtKind::Return(r) => {
+            if let Some(v) = r {
+                collect_expr(source, v, out);
             }
         }
-        Statement::While(w) => {
-            use php_parser_rs::parser::ast::loops::WhileStatementBody;
-            collect_expr(&w.condition, out);
-            match &w.body {
-                WhileStatementBody::Statement { statement } => collect_stmt(statement, out),
-                WhileStatementBody::Block { statements, .. } => collect_stmts(statements, out),
+        StmtKind::Echo(exprs) => {
+            for expr in exprs.iter() {
+                collect_expr(source, expr, out);
             }
         }
-        Statement::For(f) => {
-            use php_parser_rs::parser::ast::loops::ForStatementBody;
-            for cond in &f.iterator.conditions.inner {
-                collect_expr(cond, out);
+        StmtKind::If(i) => {
+            collect_expr(source, &i.condition, out);
+            collect_stmt(source, i.then_branch, out);
+            for ei in i.elseif_branches.iter() {
+                collect_expr(source, &ei.condition, out);
+                collect_stmt(source, &ei.body, out);
             }
-            match &f.body {
-                ForStatementBody::Statement { statement } => collect_stmt(statement, out),
-                ForStatementBody::Block { statements, .. } => collect_stmts(statements, out),
-            }
-        }
-        Statement::Foreach(f) => {
-            use php_parser_rs::parser::ast::loops::{ForeachStatementBody, ForeachStatementIterator};
-            let expr = match &f.iterator {
-                ForeachStatementIterator::Value { expression, .. } => expression,
-                ForeachStatementIterator::KeyAndValue { expression, .. } => expression,
-            };
-            collect_expr(expr, out);
-            match &f.body {
-                ForeachStatementBody::Statement { statement } => collect_stmt(statement, out),
-                ForeachStatementBody::Block { statements, .. } => collect_stmts(statements, out),
+            if let Some(e) = &i.else_branch {
+                collect_stmt(source, e, out);
             }
         }
-        Statement::Try(t) => {
-            collect_stmts(&t.body, out);
-            for catch in &t.catches {
-                collect_stmts(&catch.body, out);
+        StmtKind::While(w) => {
+            collect_expr(source, &w.condition, out);
+            collect_stmt(source, w.body, out);
+        }
+        StmtKind::For(f) => {
+            for cond in f.condition.iter() {
+                collect_expr(source, cond, out);
+            }
+            collect_stmt(source, f.body, out);
+        }
+        StmtKind::Foreach(f) => {
+            collect_expr(source, &f.expr, out);
+            collect_stmt(source, f.body, out);
+        }
+        StmtKind::TryCatch(t) => {
+            collect_stmts(source, &t.body, out);
+            for catch in t.catches.iter() {
+                collect_stmts(source, &catch.body, out);
             }
             if let Some(finally) = &t.finally {
-                collect_stmts(&finally.body, out);
+                collect_stmts(source, finally, out);
             }
         }
-        Statement::Block(b) => collect_stmts(&b.statements, out),
+        StmtKind::Block(stmts) => collect_stmts(source, stmts, out),
         _ => {}
     }
 }
 
-fn collect_class_member(member: &ClassMember, out: &mut Vec<RawToken>) {
-    match member {
-        ClassMember::ConcreteMethod(m) => {
-            let mname = m.name.value.to_string();
-            let mut mods = MOD_DECLARATION;
-            if m.modifiers.has_static() {
-                mods |= MOD_STATIC;
-            }
-            push_span(out, &m.name.span, mname.len() as u32, TT_METHOD, mods);
-            for p in m.parameters.parameters.iter() {
-                let pname = p.name.name.to_string();
-                push_span(out, &p.name.span, pname.len() as u32, TT_PARAMETER, MOD_DECLARATION);
-            }
-            collect_stmts(&m.body.statements, out);
+fn collect_class_member(source: &str, member: &php_ast::ClassMember<'_, '_>, out: &mut Vec<RawToken>) {
+    if let ClassMemberKind::Method(m) = &member.kind {
+        let mut mods = MOD_DECLARATION;
+        if m.is_static {
+            mods |= MOD_STATIC;
         }
-        ClassMember::AbstractMethod(m) => {
-            let mname = m.name.value.to_string();
-            let mut mods = MOD_DECLARATION | MOD_ABSTRACT;
-            if m.modifiers.has_static() {
-                mods |= MOD_STATIC;
-            }
-            push_span(out, &m.name.span, mname.len() as u32, TT_METHOD, mods);
-            for p in m.parameters.parameters.iter() {
-                let pname = p.name.name.to_string();
-                push_span(out, &p.name.span, pname.len() as u32, TT_PARAMETER, MOD_DECLARATION);
-            }
+        if m.is_abstract {
+            mods |= MOD_ABSTRACT;
         }
-        ClassMember::Property(p) => {
-            for entry in &p.entries {
-                collect_property_entry(entry, out);
-            }
+        push_name(out, source, m.name, TT_METHOD, mods);
+        for p in m.params.iter() {
+            push_name(out, source, p.name, TT_PARAMETER, MOD_DECLARATION);
         }
-        ClassMember::VariableProperty(p) => {
-            for entry in &p.entries {
-                collect_property_entry(entry, out);
-            }
+        if let Some(body) = &m.body {
+            collect_stmts(source, body, out);
         }
-        _ => {}
+    } else if let ClassMemberKind::Property(p) = &member.kind {
+        push_name(out, source, p.name, TT_PROPERTY, MOD_DECLARATION);
     }
 }
 
-fn collect_property_entry(entry: &PropertyEntry, out: &mut Vec<RawToken>) {
-    let var = entry.variable();
-    let vname = var.name.to_string();
-    push_span(out, &var.span, vname.len() as u32, TT_PROPERTY, MOD_DECLARATION);
-}
-
-fn collect_trait_member(member: &TraitMember, out: &mut Vec<RawToken>) {
-    match member {
-        TraitMember::ConcreteMethod(m) => {
-            let mname = m.name.value.to_string();
-            let mut mods = MOD_DECLARATION;
-            if m.modifiers.has_static() {
-                mods |= MOD_STATIC;
-            }
-            push_span(out, &m.name.span, mname.len() as u32, TT_METHOD, mods);
-            for p in m.parameters.parameters.iter() {
-                let pname = p.name.name.to_string();
-                push_span(out, &p.name.span, pname.len() as u32, TT_PARAMETER, MOD_DECLARATION);
-            }
-            collect_stmts(&m.body.statements, out);
-        }
-        TraitMember::AbstractMethod(m) => {
-            let mname = m.name.value.to_string();
-            push_span(out, &m.name.span, mname.len() as u32, TT_METHOD, MOD_DECLARATION | MOD_ABSTRACT);
-            for p in m.parameters.parameters.iter() {
-                let pname = p.name.name.to_string();
-                push_span(out, &p.name.span, pname.len() as u32, TT_PARAMETER, MOD_DECLARATION);
-            }
-        }
-        _ => {}
-    }
-}
-
-fn collect_expr(expr: &Expression, out: &mut Vec<RawToken>) {
-    match expr {
-        Expression::FunctionCall(f) => {
-            if let Expression::Identifier(AstIdentifier::SimpleIdentifier(si)) = f.target.as_ref() {
-                let name = si.value.to_string();
-                push_span(out, &si.span, name.len() as u32, TT_FUNCTION, 0);
+fn collect_expr(source: &str, expr: &php_ast::Expr<'_, '_>, out: &mut Vec<RawToken>) {
+    match &expr.kind {
+        ExprKind::FunctionCall(f) => {
+            if let ExprKind::Identifier(name) = &f.name.kind {
+                let name_str = name.as_ref();
+                push_at(out, source, f.name.span.start, name_str.len() as u32, TT_FUNCTION, 0);
             } else {
-                collect_expr(&f.target, out);
+                collect_expr(source, f.name, out);
             }
-            collect_args(&f.arguments, out);
-        }
-        Expression::MethodCall(m) => {
-            collect_expr(&m.target, out);
-            if let Expression::Identifier(AstIdentifier::SimpleIdentifier(si)) = m.method.as_ref() {
-                let name = si.value.to_string();
-                push_span(out, &si.span, name.len() as u32, TT_METHOD, 0);
+            for arg in f.args.iter() {
+                collect_expr(source, &arg.value, out);
             }
-            collect_args(&m.arguments, out);
         }
-        Expression::NullsafeMethodCall(m) => {
-            collect_expr(&m.target, out);
-            if let Expression::Identifier(AstIdentifier::SimpleIdentifier(si)) = m.method.as_ref() {
-                let name = si.value.to_string();
-                push_span(out, &si.span, name.len() as u32, TT_METHOD, 0);
+        ExprKind::MethodCall(m) => {
+            collect_expr(source, m.object, out);
+            if let ExprKind::Identifier(name) = &m.method.kind {
+                let name_str = name.as_ref();
+                push_at(out, source, m.method.span.start, name_str.len() as u32, TT_METHOD, 0);
             }
-            collect_args(&m.arguments, out);
-        }
-        Expression::StaticMethodCall(s) => {
-            collect_expr(&s.target, out);
-            collect_args(&s.arguments, out);
-        }
-        Expression::AssignmentOperation(a) => {
-            collect_expr(a.left(), out);
-            collect_expr(a.right(), out);
-        }
-        Expression::Ternary(t) => {
-            collect_expr(&t.condition, out);
-            collect_expr(&t.then, out);
-            collect_expr(&t.r#else, out);
-        }
-        Expression::ShortTernary(t) => {
-            collect_expr(&t.condition, out);
-            collect_expr(&t.r#else, out);
-        }
-        Expression::Coalesce(c) => {
-            collect_expr(&c.lhs, out);
-            collect_expr(&c.rhs, out);
-        }
-        Expression::Parenthesized(p) => collect_expr(&p.expr, out),
-        Expression::Closure(c) => {
-            for p in c.parameters.parameters.iter() {
-                let pname = p.name.name.to_string();
-                push_span(out, &p.name.span, pname.len() as u32, TT_PARAMETER, MOD_DECLARATION);
+            for arg in m.args.iter() {
+                collect_expr(source, &arg.value, out);
             }
-            collect_stmts(&c.body.statements, out);
         }
-        Expression::ArrowFunction(a) => collect_expr(&a.body, out),
-        Expression::Concat(c) => {
-            collect_expr(&c.left, out);
-            collect_expr(&c.right, out);
+        ExprKind::NullsafeMethodCall(m) => {
+            collect_expr(source, m.object, out);
+            if let ExprKind::Identifier(name) = &m.method.kind {
+                let name_str = name.as_ref();
+                push_at(out, source, m.method.span.start, name_str.len() as u32, TT_METHOD, 0);
+            }
+            for arg in m.args.iter() {
+                collect_expr(source, &arg.value, out);
+            }
         }
+        ExprKind::Assign(a) => {
+            collect_expr(source, a.target, out);
+            collect_expr(source, a.value, out);
+        }
+        ExprKind::Ternary(t) => {
+            collect_expr(source, t.condition, out);
+            if let Some(then_expr) = t.then_expr {
+                collect_expr(source, then_expr, out);
+            }
+            collect_expr(source, t.else_expr, out);
+        }
+        ExprKind::NullCoalesce(n) => {
+            collect_expr(source, n.left, out);
+            collect_expr(source, n.right, out);
+        }
+        ExprKind::Binary(b) => {
+            collect_expr(source, b.left, out);
+            collect_expr(source, b.right, out);
+        }
+        ExprKind::Parenthesized(e) => collect_expr(source, e, out),
         _ => {}
-    }
-}
-
-fn collect_args(args: &php_parser_rs::parser::ast::arguments::ArgumentList, out: &mut Vec<RawToken>) {
-    use php_parser_rs::parser::ast::arguments::Argument;
-    for arg in &args.arguments {
-        match arg {
-            Argument::Positional(p) => collect_expr(&p.value, out),
-            Argument::Named(n) => collect_expr(&n.value, out),
-        }
     }
 }
 
@@ -373,23 +258,22 @@ fn delta_encode(raw: Vec<RawToken>) -> Vec<SemanticToken> {
 mod tests {
     use super::*;
 
-    fn parse_ast(source: &str) -> Vec<Statement> {
-        match php_parser_rs::parser::parse(source) {
-            Ok(ast) => ast,
-            Err(stack) => stack.partial,
-        }
+    fn doc(src: &str) -> ParsedDoc {
+        ParsedDoc::parse(src.to_string())
     }
 
     #[test]
     fn empty_file_produces_no_tokens() {
-        let ast = parse_ast("<?php");
-        assert!(semantic_tokens(&ast).is_empty());
+        let src = "<?php";
+        let d = doc(src);
+        assert!(semantic_tokens(src, &d).is_empty());
     }
 
     #[test]
     fn function_declaration_emits_function_token_with_declaration_modifier() {
-        let ast = parse_ast("<?php\nfunction greet() {}");
-        let tokens = semantic_tokens(&ast);
+        let src = "<?php\nfunction greet() {}";
+        let d = doc(src);
+        let tokens = semantic_tokens(src, &d);
         assert!(
             tokens.iter().any(|t| t.token_type == TT_FUNCTION && t.token_modifiers_bitset & MOD_DECLARATION != 0),
             "expected function+declaration token, got {:?}", tokens
@@ -398,8 +282,9 @@ mod tests {
 
     #[test]
     fn class_declaration_emits_class_token() {
-        let ast = parse_ast("<?php\nclass Foo {}");
-        let tokens = semantic_tokens(&ast);
+        let src = "<?php\nclass Foo {}";
+        let d = doc(src);
+        let tokens = semantic_tokens(src, &d);
         assert!(
             tokens.iter().any(|t| t.token_type == TT_CLASS && t.token_modifiers_bitset & MOD_DECLARATION != 0),
             "expected class+declaration token"
@@ -408,8 +293,9 @@ mod tests {
 
     #[test]
     fn interface_declaration_emits_interface_token() {
-        let ast = parse_ast("<?php\ninterface Bar {}");
-        let tokens = semantic_tokens(&ast);
+        let src = "<?php\ninterface Bar {}";
+        let d = doc(src);
+        let tokens = semantic_tokens(src, &d);
         assert!(
             tokens.iter().any(|t| t.token_type == TT_INTERFACE && t.token_modifiers_bitset & MOD_DECLARATION != 0),
             "expected interface+declaration token"
@@ -418,8 +304,9 @@ mod tests {
 
     #[test]
     fn method_declaration_emits_method_token() {
-        let ast = parse_ast("<?php\nclass Foo { public function run() {} }");
-        let tokens = semantic_tokens(&ast);
+        let src = "<?php\nclass Foo { public function run() {} }";
+        let d = doc(src);
+        let tokens = semantic_tokens(src, &d);
         assert!(
             tokens.iter().any(|t| t.token_type == TT_METHOD && t.token_modifiers_bitset & MOD_DECLARATION != 0),
             "expected method+declaration token"
@@ -428,8 +315,9 @@ mod tests {
 
     #[test]
     fn abstract_method_has_abstract_modifier() {
-        let ast = parse_ast("<?php\nabstract class Base { abstract public function doIt(): void; }");
-        let tokens = semantic_tokens(&ast);
+        let src = "<?php\nabstract class Base { abstract public function doIt(): void; }";
+        let d = doc(src);
+        let tokens = semantic_tokens(src, &d);
         assert!(
             tokens.iter().any(|t| t.token_type == TT_METHOD && t.token_modifiers_bitset & MOD_ABSTRACT != 0),
             "expected abstract method token"
@@ -438,8 +326,9 @@ mod tests {
 
     #[test]
     fn static_method_has_static_modifier() {
-        let ast = parse_ast("<?php\nclass Foo { public static function build() {} }");
-        let tokens = semantic_tokens(&ast);
+        let src = "<?php\nclass Foo { public static function build() {} }";
+        let d = doc(src);
+        let tokens = semantic_tokens(src, &d);
         assert!(
             tokens.iter().any(|t| t.token_type == TT_METHOD && t.token_modifiers_bitset & MOD_STATIC != 0),
             "expected static method token"
@@ -448,8 +337,9 @@ mod tests {
 
     #[test]
     fn parameter_emits_parameter_token() {
-        let ast = parse_ast("<?php\nfunction greet(string $name) {}");
-        let tokens = semantic_tokens(&ast);
+        let src = "<?php\nfunction greet(string $name) {}";
+        let d = doc(src);
+        let tokens = semantic_tokens(src, &d);
         assert!(
             tokens.iter().any(|t| t.token_type == TT_PARAMETER && t.token_modifiers_bitset & MOD_DECLARATION != 0),
             "expected parameter+declaration token"
@@ -458,8 +348,9 @@ mod tests {
 
     #[test]
     fn function_call_emits_function_token_without_declaration() {
-        let ast = parse_ast("<?php\ngreet();");
-        let tokens = semantic_tokens(&ast);
+        let src = "<?php\ngreet();";
+        let d = doc(src);
+        let tokens = semantic_tokens(src, &d);
         assert!(
             tokens.iter().any(|t| t.token_type == TT_FUNCTION && t.token_modifiers_bitset & MOD_DECLARATION == 0),
             "expected function call token (no declaration modifier)"
@@ -468,8 +359,9 @@ mod tests {
 
     #[test]
     fn method_call_emits_method_token_without_declaration() {
-        let ast = parse_ast("<?php\n$obj->run();");
-        let tokens = semantic_tokens(&ast);
+        let src = "<?php\n$obj->run();";
+        let d = doc(src);
+        let tokens = semantic_tokens(src, &d);
         assert!(
             tokens.iter().any(|t| t.token_type == TT_METHOD && t.token_modifiers_bitset & MOD_DECLARATION == 0),
             "expected method call token (no declaration modifier)"
@@ -478,8 +370,9 @@ mod tests {
 
     #[test]
     fn property_emits_property_token() {
-        let ast = parse_ast("<?php\nclass Foo { public string $name; }");
-        let tokens = semantic_tokens(&ast);
+        let src = "<?php\nclass Foo { public string $name; }";
+        let d = doc(src);
+        let tokens = semantic_tokens(src, &d);
         assert!(
             tokens.iter().any(|t| t.token_type == TT_PROPERTY && t.token_modifiers_bitset & MOD_DECLARATION != 0),
             "expected property+declaration token"
@@ -488,9 +381,9 @@ mod tests {
 
     #[test]
     fn tokens_are_delta_encoded_in_order() {
-        let ast = parse_ast("<?php\nfunction a() {}\nfunction b() {}");
-        let tokens = semantic_tokens(&ast);
-        // Reconstruct absolute positions to verify ordering
+        let src = "<?php\nfunction a() {}\nfunction b() {}";
+        let d = doc(src);
+        let tokens = semantic_tokens(src, &d);
         let mut line = 0u32;
         let mut col = 0u32;
         let mut positions = Vec::new();
@@ -509,8 +402,9 @@ mod tests {
 
     #[test]
     fn namespace_contents_are_tokenized() {
-        let ast = parse_ast("<?php\nnamespace App;\nfunction boot() {}");
-        let tokens = semantic_tokens(&ast);
+        let src = "<?php\nnamespace App;\nfunction boot() {}";
+        let d = doc(src);
+        let tokens = semantic_tokens(src, &d);
         assert!(
             tokens.iter().any(|t| t.token_type == TT_FUNCTION),
             "function inside namespace should produce tokens"

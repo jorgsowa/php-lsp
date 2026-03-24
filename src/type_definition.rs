@@ -5,10 +5,10 @@
 /// and for function parameters with a declared type hint.
 use std::sync::Arc;
 
-use php_parser_rs::parser::ast::{namespaces::NamespaceStatement, Statement};
+use php_ast::{NamespaceBody, Stmt, StmtKind};
 use tower_lsp::lsp_types::{Location, Position, Range, Url};
 
-use crate::diagnostics::span_to_position;
+use crate::ast::{format_type_hint, name_range, offset_to_position, ParsedDoc};
 use crate::type_map::TypeMap;
 use crate::util::word_at;
 
@@ -16,24 +16,22 @@ use crate::util::word_at;
 /// location of that type's class/interface declaration.
 pub fn goto_type_definition(
     source: &str,
-    ast: &[Statement],
-    all_docs: &[(Url, Arc<Vec<Statement>>)],
+    doc: &ParsedDoc,
+    all_docs: &[(Url, Arc<ParsedDoc>)],
     position: Position,
 ) -> Option<Location> {
     let word = word_at(source, position)?;
 
-    // Resolve variable → class name via type map
-    let type_map = TypeMap::from_stmts(ast);
+    let type_map = TypeMap::from_doc(doc);
     let class_name = if word.starts_with('$') {
         type_map.get(&word)?.to_string()
     } else {
-        // Also check function parameter types
-        param_type_for(ast, &word)?
+        param_type_for(&doc.program().stmts, &word)?
     };
 
-    // Find the class/interface declaration across all docs
-    for (uri, doc_ast) in all_docs {
-        if let Some(range) = find_class_range(doc_ast, &class_name) {
+    for (uri, other_doc) in all_docs {
+        let other_source = other_doc.source();
+        if let Some(range) = find_class_range(other_source, &other_doc.program().stmts, &class_name) {
             return Some(Location { uri: uri.clone(), range });
         }
     }
@@ -41,25 +39,23 @@ pub fn goto_type_definition(
 }
 
 /// Look up the declared type hint for a parameter named `word` in any function/method.
-fn param_type_for(stmts: &[Statement], word: &str) -> Option<String> {
+fn param_type_for(stmts: &[Stmt<'_, '_>], word: &str) -> Option<String> {
     for stmt in stmts {
-        match stmt {
-            Statement::Function(f) => {
-                for p in f.parameters.parameters.iter() {
-                    if p.name.name.to_string() == word {
-                        if let Some(t) = &p.data_type {
-                            return Some(t.to_string());
+        match &stmt.kind {
+            StmtKind::Function(f) => {
+                for p in f.params.iter() {
+                    if p.name == word {
+                        if let Some(t) = &p.type_hint {
+                            return Some(format_type_hint(t));
                         }
                     }
                 }
             }
-            Statement::Namespace(ns) => {
-                let inner = match ns {
-                    NamespaceStatement::Unbraced(u) => &u.statements[..],
-                    NamespaceStatement::Braced(b) => &b.body.statements[..],
-                };
-                if let Some(t) = param_type_for(inner, word) {
-                    return Some(t);
+            StmtKind::Namespace(ns) => {
+                if let NamespaceBody::Braced(inner) = &ns.body {
+                    if let Some(t) = param_type_for(inner, word) {
+                        return Some(t);
+                    }
                 }
             }
             _ => {}
@@ -69,36 +65,20 @@ fn param_type_for(stmts: &[Statement], word: &str) -> Option<String> {
 }
 
 /// Find the range of the class or interface declaration named `name`.
-fn find_class_range(stmts: &[Statement], name: &str) -> Option<Range> {
+fn find_class_range(source: &str, stmts: &[Stmt<'_, '_>], name: &str) -> Option<Range> {
     for stmt in stmts {
-        match stmt {
-            Statement::Class(c) if c.name.value.to_string() == name => {
-                let start = span_to_position(&c.name.span);
-                return Some(Range {
-                    start,
-                    end: Position {
-                        line: start.line,
-                        character: start.character + name.len() as u32,
-                    },
-                });
+        match &stmt.kind {
+            StmtKind::Class(c) if c.name == Some(name) => {
+                return Some(name_range(source, c.name.unwrap()));
             }
-            Statement::Interface(i) if i.name.value.to_string() == name => {
-                let start = span_to_position(&i.name.span);
-                return Some(Range {
-                    start,
-                    end: Position {
-                        line: start.line,
-                        character: start.character + name.len() as u32,
-                    },
-                });
+            StmtKind::Interface(i) if i.name == name => {
+                return Some(name_range(source, i.name));
             }
-            Statement::Namespace(ns) => {
-                let inner = match ns {
-                    NamespaceStatement::Unbraced(u) => &u.statements[..],
-                    NamespaceStatement::Braced(b) => &b.body.statements[..],
-                };
-                if let Some(r) = find_class_range(inner, name) {
-                    return Some(r);
+            StmtKind::Namespace(ns) => {
+                if let NamespaceBody::Braced(inner) = &ns.body {
+                    if let Some(r) = find_class_range(source, inner, name) {
+                        return Some(r);
+                    }
                 }
             }
             _ => {}
@@ -107,16 +87,20 @@ fn find_class_range(stmts: &[Statement], name: &str) -> Option<Range> {
     None
 }
 
+fn _offset_to_position_range(source: &str, name_str: &str, name: &str) -> Range {
+    let start = offset_to_position(source, 0);
+    Range {
+        start,
+        end: Position {
+            line: start.line,
+            character: start.character + name_str.len() as u32,
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn parse_ast(source: &str) -> Vec<Statement> {
-        match php_parser_rs::parser::parse(source) {
-            Ok(ast) => ast,
-            Err(stack) => stack.partial,
-        }
-    }
 
     fn uri(path: &str) -> Url {
         Url::parse(&format!("file://{path}")).unwrap()
@@ -126,12 +110,16 @@ mod tests {
         Position { line, character }
     }
 
+    fn doc(path: &str, src: &str) -> (Url, Arc<ParsedDoc>) {
+        (uri(path), Arc::new(ParsedDoc::parse(src.to_string())))
+    }
+
     #[test]
     fn resolves_variable_type_to_class() {
         let src = "<?php\nclass Foo {}\n$obj = new Foo();\n$obj->bar();";
-        let ast = parse_ast(src);
-        let docs = vec![(uri("/a.php"), Arc::new(ast.clone()))];
-        let loc = goto_type_definition(src, &ast, &docs, pos(3, 2));
+        let parsed = ParsedDoc::parse(src.to_string());
+        let docs = vec![(uri("/a.php"), Arc::new(ParsedDoc::parse(src.to_string())))];
+        let loc = goto_type_definition(src, &parsed, &docs, pos(3, 2));
         assert!(loc.is_some(), "expected type definition for $obj");
         assert_eq!(loc.unwrap().range.start.line, 1);
     }
@@ -139,14 +127,14 @@ mod tests {
     #[test]
     fn cross_file_type_definition() {
         let src = "<?php\n$obj = new Mailer();\n$obj->send();";
-        let ast = parse_ast(src);
+        let parsed = ParsedDoc::parse(src.to_string());
         let other_src = "<?php\nclass Mailer {}";
         let other_uri = uri("/mailer.php");
         let docs = vec![
-            (uri("/a.php"), Arc::new(ast.clone())),
-            (other_uri.clone(), Arc::new(parse_ast(other_src))),
+            doc("/a.php", src),
+            (other_uri.clone(), Arc::new(ParsedDoc::parse(other_src.to_string()))),
         ];
-        let loc = goto_type_definition(src, &ast, &docs, pos(2, 2));
+        let loc = goto_type_definition(src, &parsed, &docs, pos(2, 2));
         assert!(loc.is_some());
         assert_eq!(loc.unwrap().uri, other_uri);
     }
@@ -154,19 +142,18 @@ mod tests {
     #[test]
     fn unknown_variable_returns_none() {
         let src = "<?php\n$unknown->foo();";
-        let ast = parse_ast(src);
-        let docs = vec![(uri("/a.php"), Arc::new(ast.clone()))];
-        let loc = goto_type_definition(src, &ast, &docs, pos(1, 2));
+        let parsed = ParsedDoc::parse(src.to_string());
+        let docs = vec![doc("/a.php", src)];
+        let loc = goto_type_definition(src, &parsed, &docs, pos(1, 2));
         assert!(loc.is_none());
     }
 
     #[test]
     fn resolves_interface_type() {
         let src = "<?php\ninterface Countable {}\n$obj = new MyList();\nclass MyList implements Countable {}";
-        let ast = parse_ast(src);
-        let docs = vec![(uri("/a.php"), Arc::new(ast.clone()))];
-        // cursor on "$obj" — type is MyList
-        let loc = goto_type_definition(src, &ast, &docs, pos(2, 2));
+        let parsed = ParsedDoc::parse(src.to_string());
+        let docs = vec![doc("/a.php", src)];
+        let loc = goto_type_definition(src, &parsed, &docs, pos(2, 2));
         assert!(loc.is_some());
         assert_eq!(loc.unwrap().range.start.line, 3);
     }
@@ -174,9 +161,9 @@ mod tests {
     #[test]
     fn returns_none_for_non_variable_without_type() {
         let src = "<?php\nfunction greet() {}\ngreet();";
-        let ast = parse_ast(src);
-        let docs = vec![(uri("/a.php"), Arc::new(ast.clone()))];
-        let loc = goto_type_definition(src, &ast, &docs, pos(2, 2));
+        let parsed = ParsedDoc::parse(src.to_string());
+        let docs = vec![doc("/a.php", src)];
+        let loc = goto_type_definition(src, &parsed, &docs, pos(2, 2));
         assert!(loc.is_none());
     }
 }

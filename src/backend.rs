@@ -5,6 +5,7 @@ use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{async_trait, Client, LanguageServer};
 
+use crate::ast::ParsedDoc;
 use crate::autoload::Psr4Map;
 use crate::call_hierarchy::{incoming_calls, outgoing_calls, prepare_call_hierarchy};
 use crate::code_lens::code_lenses;
@@ -13,12 +14,14 @@ use crate::declaration::goto_declaration;
 use crate::definition::{find_declaration_range, goto_definition};
 use crate::diagnostics::parse_document;
 use crate::document_highlight::document_highlights;
+use crate::document_link::document_links;
 use crate::document_store::DocumentStore;
 use crate::folding::folding_ranges;
 use crate::formatting::{format_document, format_range};
 use crate::hover::hover_info;
 use crate::implementation::goto_implementation;
 use crate::inlay_hints::inlay_hints;
+use crate::phpdoc_action::phpdoc_actions;
 use crate::references::find_references;
 use crate::rename::{prepare_rename, rename};
 use crate::selection_range::selection_ranges;
@@ -113,6 +116,10 @@ impl LanguageServer for Backend {
                 }),
                 document_formatting_provider: Some(OneOf::Left(true)),
                 document_range_formatting_provider: Some(OneOf::Left(true)),
+                document_link_provider: Some(DocumentLinkOptions {
+                    resolve_provider: Some(false),
+                    work_done_progress_options: Default::default(),
+                }),
                 execute_command_provider: Some(ExecuteCommandOptions {
                     commands: vec![
                         "php-lsp.showReferences".to_string(),
@@ -187,11 +194,12 @@ impl LanguageServer for Backend {
 
         // Parse in a blocking thread to avoid stalling the tokio runtime;
         // await here so the AST is ready before the handler returns.
-        let (ast, diagnostics) = tokio::task::spawn_blocking(move || parse_document(&text))
-            .await
-            .unwrap_or_else(|_| (vec![], vec![]));
+        let (doc, diagnostics) =
+            tokio::task::spawn_blocking(move || parse_document(&text))
+                .await
+                .unwrap_or_else(|_| (ParsedDoc::default(), vec![]));
 
-        self.docs.apply_parse(&uri, ast, diagnostics.clone(), version);
+        self.docs.apply_parse(&uri, doc, diagnostics.clone(), version);
         self.client.publish_diagnostics(uri, diagnostics, None).await;
     }
 
@@ -214,13 +222,13 @@ impl LanguageServer for Backend {
             // version check in apply_parse will discard this stale result.
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
-            let (ast, diagnostics) =
+            let (doc, diagnostics) =
                 tokio::task::spawn_blocking(move || parse_document(&text))
                     .await
-                    .unwrap_or_else(|_| (vec![], vec![]));
+                    .unwrap_or_else(|_| (ParsedDoc::default(), vec![]));
 
             // Only apply if no newer edit arrived while we were parsing
-            if docs.apply_parse(&uri, ast, diagnostics.clone(), version) {
+            if docs.apply_parse(&uri, doc, diagnostics.clone(), version) {
                 client.publish_diagnostics(uri, diagnostics, None).await;
             }
         });
@@ -255,15 +263,23 @@ impl LanguageServer for Backend {
         let uri = &params.text_document_position.text_document.uri;
         let position = params.text_document_position.position;
         let source = self.docs.get(uri).unwrap_or_default();
-        let ast = self.docs.get_ast(uri).unwrap_or_default();
-        let other_asts = self.docs.other_asts(uri);
+        let doc = match self.docs.get_doc(uri) {
+            Some(d) => d,
+            None => return Ok(Some(CompletionResponse::Array(vec![]))),
+        };
+        let other_docs: Vec<Arc<ParsedDoc>> = self
+            .docs
+            .other_docs(uri)
+            .into_iter()
+            .map(|(_, d)| d)
+            .collect();
         let trigger = params
             .context
             .as_ref()
             .and_then(|c| c.trigger_character.as_deref());
         Ok(Some(CompletionResponse::Array(filtered_completions_at(
-            &ast,
-            &other_asts,
+            &doc,
+            &other_docs,
             trigger,
             Some(&source),
             Some(position),
@@ -277,11 +293,14 @@ impl LanguageServer for Backend {
         let uri = &params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
         let source = self.docs.get(uri).unwrap_or_default();
-        let ast = self.docs.get_ast(uri).unwrap_or_default();
+        let doc = match self.docs.get_doc(uri) {
+            Some(d) => d,
+            None => return Ok(None),
+        };
         let other_docs = self.docs.other_docs(uri);
 
         // Primary lookup: search all indexed documents
-        if let Some(loc) = goto_definition(uri, &source, &ast, &other_docs, position) {
+        if let Some(loc) = goto_definition(uri, &source, &doc, &other_docs, position) {
             return Ok(Some(GotoDefinitionResponse::Scalar(loc)));
         }
 
@@ -305,7 +324,7 @@ impl LanguageServer for Backend {
             Some(w) => w,
             None => return Ok(None),
         };
-        let all_docs = self.docs.all_docs_ast();
+        let all_docs = self.docs.all_docs();
         let include_declaration = params.context.include_declaration;
         let locations = find_references(&word, &all_docs, include_declaration);
         Ok(if locations.is_empty() { None } else { Some(locations) })
@@ -317,8 +336,7 @@ impl LanguageServer for Backend {
     ) -> Result<Option<PrepareRenameResponse>> {
         let uri = &params.text_document.uri;
         let source = self.docs.get(uri).unwrap_or_default();
-        Ok(prepare_rename(&source, params.position)
-            .map(PrepareRenameResponse::Range))
+        Ok(prepare_rename(&source, params.position).map(PrepareRenameResponse::Range))
     }
 
     async fn rename(&self, params: RenameParams) -> Result<Option<WorkspaceEdit>> {
@@ -329,7 +347,7 @@ impl LanguageServer for Backend {
             Some(w) => w,
             None => return Ok(None),
         };
-        let all_docs = self.docs.all_docs_ast();
+        let all_docs = self.docs.all_docs();
         Ok(Some(rename(&word, &params.new_name, &all_docs)))
     }
 
@@ -337,16 +355,22 @@ impl LanguageServer for Backend {
         let uri = &params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
         let source = self.docs.get(uri).unwrap_or_default();
-        let ast = self.docs.get_ast(uri).unwrap_or_default();
-        Ok(signature_help(&source, &ast, position))
+        let doc = match self.docs.get_doc(uri) {
+            Some(d) => d,
+            None => return Ok(None),
+        };
+        Ok(signature_help(&source, &doc, position))
     }
 
     async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
         let uri = &params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
         let source = self.docs.get(uri).unwrap_or_default();
-        let ast = self.docs.get_ast(uri).unwrap_or_default();
-        Ok(hover_info(&source, &ast, position))
+        let doc = match self.docs.get_doc(uri) {
+            Some(d) => d,
+            None => return Ok(None),
+        };
+        Ok(hover_info(&source, &doc, position))
     }
 
     async fn document_symbol(
@@ -354,8 +378,14 @@ impl LanguageServer for Backend {
         params: DocumentSymbolParams,
     ) -> Result<Option<DocumentSymbolResponse>> {
         let uri = &params.text_document.uri;
-        let ast = self.docs.get_ast(uri).unwrap_or_default();
-        Ok(Some(DocumentSymbolResponse::Nested(document_symbols(&ast))))
+        let doc = match self.docs.get_doc(uri) {
+            Some(d) => d,
+            None => return Ok(None),
+        };
+        Ok(Some(DocumentSymbolResponse::Nested(document_symbols(
+            doc.source(),
+            &doc,
+        ))))
     }
 
     async fn folding_range(
@@ -363,26 +393,28 @@ impl LanguageServer for Backend {
         params: FoldingRangeParams,
     ) -> Result<Option<Vec<FoldingRange>>> {
         let uri = &params.text_document.uri;
-        let ast = self.docs.get_ast(uri).unwrap_or_default();
-        let ranges = folding_ranges(&ast);
+        let doc = match self.docs.get_doc(uri) {
+            Some(d) => d,
+            None => return Ok(None),
+        };
+        let ranges = folding_ranges(doc.source(), &doc);
         Ok(if ranges.is_empty() { None } else { Some(ranges) })
     }
 
     async fn inlay_hint(&self, params: InlayHintParams) -> Result<Option<Vec<InlayHint>>> {
         let uri = &params.text_document.uri;
-        let source = match self.docs.get(uri) {
-            Some(s) => s,
+        let doc = match self.docs.get_doc(uri) {
+            Some(d) => d,
             None => return Ok(None),
         };
-        let ast = self.docs.get_ast(uri).unwrap_or_default();
-        Ok(Some(inlay_hints(&source, &ast, params.range)))
+        Ok(Some(inlay_hints(doc.source(), &doc, params.range)))
     }
 
     async fn symbol(
         &self,
         params: WorkspaceSymbolParams,
     ) -> Result<Option<Vec<SymbolInformation>>> {
-        let docs = self.docs.all_docs_ast();
+        let docs = self.docs.all_docs();
         let results = workspace_symbols(&params.query, &docs);
         Ok(if results.is_empty() { None } else { Some(results) })
     }
@@ -392,8 +424,16 @@ impl LanguageServer for Backend {
         params: SemanticTokensParams,
     ) -> Result<Option<SemanticTokensResult>> {
         let uri = &params.text_document.uri;
-        let ast = self.docs.get_ast(uri).unwrap_or_default();
-        let tokens = semantic_tokens(&ast);
+        let doc = match self.docs.get_doc(uri) {
+            Some(d) => d,
+            None => {
+                return Ok(Some(SemanticTokensResult::Tokens(SemanticTokens {
+                    result_id: None,
+                    data: vec![],
+                })));
+            }
+        };
+        let tokens = semantic_tokens(doc.source(), &doc);
         Ok(Some(SemanticTokensResult::Tokens(SemanticTokens {
             result_id: None,
             data: tokens,
@@ -405,8 +445,11 @@ impl LanguageServer for Backend {
         params: SelectionRangeParams,
     ) -> Result<Option<Vec<SelectionRange>>> {
         let uri = &params.text_document.uri;
-        let ast = self.docs.get_ast(uri).unwrap_or_default();
-        let ranges = selection_ranges(&ast, &params.positions);
+        let doc = match self.docs.get_doc(uri) {
+            Some(d) => d,
+            None => return Ok(None),
+        };
+        let ranges = selection_ranges(doc.source(), &doc, &params.positions);
         Ok(if ranges.is_empty() { None } else { Some(ranges) })
     }
 
@@ -421,7 +464,7 @@ impl LanguageServer for Backend {
             Some(w) => w,
             None => return Ok(None),
         };
-        let all_docs = self.docs.all_docs_ast();
+        let all_docs = self.docs.all_docs();
         Ok(prepare_call_hierarchy(&word, &all_docs).map(|item| vec![item]))
     }
 
@@ -429,7 +472,7 @@ impl LanguageServer for Backend {
         &self,
         params: CallHierarchyIncomingCallsParams,
     ) -> Result<Option<Vec<CallHierarchyIncomingCall>>> {
-        let all_docs = self.docs.all_docs_ast();
+        let all_docs = self.docs.all_docs();
         let calls = incoming_calls(&params.item, &all_docs);
         Ok(if calls.is_empty() { None } else { Some(calls) })
     }
@@ -438,7 +481,7 @@ impl LanguageServer for Backend {
         &self,
         params: CallHierarchyOutgoingCallsParams,
     ) -> Result<Option<Vec<CallHierarchyOutgoingCall>>> {
-        let all_docs = self.docs.all_docs_ast();
+        let all_docs = self.docs.all_docs();
         let calls = outgoing_calls(&params.item, &all_docs);
         Ok(if calls.is_empty() { None } else { Some(calls) })
     }
@@ -450,8 +493,11 @@ impl LanguageServer for Backend {
         let uri = &params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
         let source = self.docs.get(uri).unwrap_or_default();
-        let ast = self.docs.get_ast(uri).unwrap_or_default();
-        let highlights = document_highlights(&source, &ast, position);
+        let doc = match self.docs.get_doc(uri) {
+            Some(d) => d,
+            None => return Ok(None),
+        };
+        let highlights = document_highlights(&source, &doc, position);
         Ok(if highlights.is_empty() { None } else { Some(highlights) })
     }
 
@@ -462,7 +508,7 @@ impl LanguageServer for Backend {
         let uri = &params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
         let source = self.docs.get(uri).unwrap_or_default();
-        let all_docs = self.docs.all_docs_ast();
+        let all_docs = self.docs.all_docs();
         let locs = goto_implementation(&source, &all_docs, position);
         if locs.is_empty() {
             Ok(None)
@@ -478,9 +524,8 @@ impl LanguageServer for Backend {
         let uri = &params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
         let source = self.docs.get(uri).unwrap_or_default();
-        let all_docs = self.docs.all_docs_ast();
-        Ok(goto_declaration(&source, &all_docs, position)
-            .map(GotoDefinitionResponse::Scalar))
+        let all_docs = self.docs.all_docs();
+        Ok(goto_declaration(&source, &all_docs, position).map(GotoDefinitionResponse::Scalar))
     }
 
     async fn goto_type_definition(
@@ -490,9 +535,12 @@ impl LanguageServer for Backend {
         let uri = &params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
         let source = self.docs.get(uri).unwrap_or_default();
-        let ast = self.docs.get_ast(uri).unwrap_or_default();
-        let all_docs = self.docs.all_docs_ast();
-        Ok(goto_type_definition(&source, &ast, &all_docs, position)
+        let doc = match self.docs.get_doc(uri) {
+            Some(d) => d,
+            None => return Ok(None),
+        };
+        let all_docs = self.docs.all_docs();
+        Ok(goto_type_definition(&source, &doc, &all_docs, position)
             .map(GotoDefinitionResponse::Scalar))
     }
 
@@ -503,7 +551,7 @@ impl LanguageServer for Backend {
         let uri = &params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
         let source = self.docs.get(uri).unwrap_or_default();
-        let all_docs = self.docs.all_docs_ast();
+        let all_docs = self.docs.all_docs();
         Ok(prepare_type_hierarchy(&source, &all_docs, position).map(|item| vec![item]))
     }
 
@@ -511,7 +559,7 @@ impl LanguageServer for Backend {
         &self,
         params: TypeHierarchySupertypesParams,
     ) -> Result<Option<Vec<TypeHierarchyItem>>> {
-        let all_docs = self.docs.all_docs_ast();
+        let all_docs = self.docs.all_docs();
         let result = supertypes_of(&params.item, &all_docs);
         Ok(if result.is_empty() { None } else { Some(result) })
     }
@@ -520,17 +568,33 @@ impl LanguageServer for Backend {
         &self,
         params: TypeHierarchySubtypesParams,
     ) -> Result<Option<Vec<TypeHierarchyItem>>> {
-        let all_docs = self.docs.all_docs_ast();
+        let all_docs = self.docs.all_docs();
         let result = subtypes_of(&params.item, &all_docs);
         Ok(if result.is_empty() { None } else { Some(result) })
     }
 
     async fn code_lens(&self, params: CodeLensParams) -> Result<Option<Vec<CodeLens>>> {
         let uri = &params.text_document.uri;
-        let ast = self.docs.get_ast(uri).unwrap_or_default();
-        let all_docs = self.docs.all_docs_ast();
-        let lenses = code_lenses(uri, &ast, &all_docs);
+        let doc = match self.docs.get_doc(uri) {
+            Some(d) => d,
+            None => return Ok(None),
+        };
+        let all_docs = self.docs.all_docs();
+        let lenses = code_lenses(uri, &doc, &all_docs);
         Ok(if lenses.is_empty() { None } else { Some(lenses) })
+    }
+
+    async fn document_link(
+        &self,
+        params: DocumentLinkParams,
+    ) -> Result<Option<Vec<DocumentLink>>> {
+        let uri = &params.text_document.uri;
+        let doc = match self.docs.get_doc(uri) {
+            Some(d) => d,
+            None => return Ok(None),
+        };
+        let links = document_links(uri, &doc, doc.source());
+        Ok(if links.is_empty() { None } else { Some(links) })
     }
 
     async fn formatting(
@@ -551,7 +615,10 @@ impl LanguageServer for Backend {
         Ok(format_range(&source, params.range))
     }
 
-    async fn execute_command(&self, params: ExecuteCommandParams) -> Result<Option<serde_json::Value>> {
+    async fn execute_command(
+        &self,
+        params: ExecuteCommandParams,
+    ) -> Result<Option<serde_json::Value>> {
         match params.command.as_str() {
             "php-lsp.showReferences" => {
                 // The client handles showing the references panel;
@@ -582,7 +649,9 @@ impl LanguageServer for Backend {
                         Ok(out) => {
                             let text = String::from_utf8_lossy(&out.stdout).into_owned()
                                 + &String::from_utf8_lossy(&out.stderr);
-                            let last_line = text.lines().rev()
+                            let last_line = text
+                                .lines()
+                                .rev()
                                 .find(|l| !l.trim().is_empty())
                                 .unwrap_or("(no output)")
                                 .to_string();
@@ -610,11 +679,23 @@ impl LanguageServer for Backend {
     ) -> Result<DocumentDiagnosticReportResult> {
         let uri = &params.text_document.uri;
 
-        // Merge parse diagnostics (already cached) with semantic diagnostics.
         let parse_diags = self.docs.get_diagnostics(uri).unwrap_or_default();
-        let ast = self.docs.get_ast(uri).unwrap_or_default();
+        let doc = match self.docs.get_doc(uri) {
+            Some(d) => d,
+            None => {
+                return Ok(DocumentDiagnosticReportResult::Report(
+                    DocumentDiagnosticReport::Full(RelatedFullDocumentDiagnosticReport {
+                        related_documents: None,
+                        full_document_diagnostic_report: FullDocumentDiagnosticReport {
+                            result_id: None,
+                            items: parse_diags,
+                        },
+                    }),
+                ));
+            }
+        };
         let other_docs = self.docs.other_docs(uri);
-        let sem_diags = semantic_diagnostics(uri, &ast, &other_docs);
+        let sem_diags = semantic_diagnostics(uri, &doc, &other_docs);
 
         let mut items = parse_diags;
         items.extend(sem_diags);
@@ -636,11 +717,14 @@ impl LanguageServer for Backend {
     ) -> Result<Option<CodeActionResponse>> {
         let uri = &params.text_document.uri;
         let source = self.docs.get(uri).unwrap_or_default();
-        let ast = self.docs.get_ast(uri).unwrap_or_default();
+        let doc = match self.docs.get_doc(uri) {
+            Some(d) => d,
+            None => return Ok(None),
+        };
         let other_docs = self.docs.other_docs(uri);
 
         // Semantic diagnostics — collect undefined symbols and offer "Add use import"
-        let sem_diags = semantic_diagnostics(uri, &ast, &other_docs);
+        let sem_diags = semantic_diagnostics(uri, &doc, &other_docs);
 
         // Publish semantic diagnostics merged with existing parse diagnostics
         if !sem_diags.is_empty() {
@@ -671,8 +755,8 @@ impl LanguageServer for Backend {
             }
 
             // Find a class with this short name in other indexed documents
-            for (other_uri, other_ast) in &other_docs {
-                if let Some(fqn) = find_fqn_for_class(other_ast, class_name, other_uri) {
+            for (other_uri, other_doc) in &other_docs {
+                if let Some(fqn) = find_fqn_for_class(other_doc, class_name, other_uri) {
                     let edit = build_use_import_edit(&source, uri, &fqn);
                     let action = CodeAction {
                         title: format!("Add use {fqn}"),
@@ -687,53 +771,33 @@ impl LanguageServer for Backend {
             }
         }
 
+        // PHPDoc generation actions
+        actions.extend(phpdoc_actions(uri, &doc, &source, params.range));
+
         Ok(if actions.is_empty() { None } else { Some(actions) })
     }
 }
 
 /// Find the fully-qualified name for a class with the given short `name` by
-/// walking the AST.  Returns `namespace\name` if a namespace wraps it, else
-/// just `name`.
-fn find_fqn_for_class(
-    ast: &[php_parser_rs::parser::ast::Statement],
-    name: &str,
-    _uri: &Url,
-) -> Option<String> {
-    use php_parser_rs::parser::ast::{namespaces::NamespaceStatement, Statement};
-    for stmt in ast {
-        match stmt {
-            Statement::Class(c) if c.name.value.to_string() == name => {
+/// walking the ParsedDoc AST.
+fn find_fqn_for_class(doc: &ParsedDoc, name: &str, _uri: &Url) -> Option<String> {
+    use php_ast::{NamespaceBody, StmtKind};
+    for stmt in doc.program().stmts.iter() {
+        match &stmt.kind {
+            StmtKind::Class(c) if c.name == Some(name) => {
                 return Some(name.to_string());
             }
-            Statement::Namespace(ns) => match ns {
-                NamespaceStatement::Unbraced(u) => {
-                    for inner in &u.statements {
-                        if let Statement::Class(c) = inner {
-                            if c.name.value.to_string() == name {
-                                return Some(format!("{}\\{}", u.name.value, name));
+            StmtKind::Namespace(ns) => {
+                if let NamespaceBody::Braced(inner) = &ns.body {
+                    for inner_stmt in inner.iter() {
+                        if let StmtKind::Class(c) = &inner_stmt.kind {
+                            if c.name == Some(name) {
+                                return Some(name.to_string());
                             }
                         }
                     }
                 }
-                NamespaceStatement::Braced(b) => {
-                    for inner in &b.body.statements {
-                        if let Statement::Class(c) = inner {
-                            if c.name.value.to_string() == name {
-                                let ns_name = b
-                                    .name
-                                    .as_ref()
-                                    .map(|n| n.value.to_string())
-                                    .unwrap_or_default();
-                                return if ns_name.is_empty() {
-                                    Some(name.to_string())
-                                } else {
-                                    Some(format!("{ns_name}\\{name}"))
-                                };
-                            }
-                        }
-                    }
-                }
-            },
+            }
             _ => {}
         }
     }
@@ -782,17 +846,17 @@ impl Backend {
         let file_uri = Url::from_file_path(&path).ok()?;
 
         // Index on-demand if the file was not picked up by the workspace scan
-        if self.docs.get_ast(&file_uri).is_none() {
+        if self.docs.get_doc(&file_uri).is_none() {
             let text = tokio::fs::read_to_string(&path).await.ok()?;
             self.docs.index(file_uri.clone(), &text);
         }
 
-        let ast = self.docs.get_ast(&file_uri)?;
+        let doc = self.docs.get_doc(&file_uri)?;
 
         // Classes are declared by their short (unqualified) name, e.g. `class Foo`
         // not `class App\Services\Foo`.
         let short_name = fqn.split('\\').next_back()?;
-        let range = find_declaration_range(&ast, short_name)?;
+        let range = find_declaration_range(doc.source(), &doc, short_name)?;
 
         Some(Location { uri: file_uri, range })
     }
@@ -828,10 +892,7 @@ async fn scan_workspace(root: PathBuf, docs: Arc<DocumentStore>) -> usize {
                 Err(_) => continue,
             };
             if file_type.is_dir() {
-                let name = path
-                    .file_name()
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("");
+                let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
                 // Skip hidden directories only; vendor is now indexed
                 if !name.starts_with('.') {
                     stack.push(path);

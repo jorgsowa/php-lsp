@@ -1,14 +1,13 @@
-use php_parser_rs::parser::ast::Statement;
 use tower_lsp::lsp_types::{DocumentHighlight, DocumentHighlightKind, Position, Range};
 
-use crate::diagnostics::span_to_position;
+use crate::ast::{offset_to_position, ParsedDoc};
 use crate::util::word_at;
 use crate::walk::refs_in_stmts;
 
-/// Return all ranges in `ast` where the word at `position` appears.
+/// Return all ranges in the document where the word at `position` appears.
 pub fn document_highlights(
     source: &str,
-    ast: &[Statement],
+    doc: &ParsedDoc,
     position: Position,
 ) -> Vec<DocumentHighlight> {
     let word = match word_at(source, position) {
@@ -17,12 +16,12 @@ pub fn document_highlights(
     };
 
     let mut spans = Vec::new();
-    refs_in_stmts(ast, &word, &mut spans);
+    refs_in_stmts(&doc.program().stmts, &word, &mut spans);
 
     spans
         .into_iter()
         .map(|span| {
-            let start = span_to_position(&span);
+            let start = offset_to_position(source, span.start);
             let end = Position {
                 line: start.line,
                 character: start.character + word.len() as u32,
@@ -39,13 +38,6 @@ pub fn document_highlights(
 mod tests {
     use super::*;
 
-    fn parse_ast(source: &str) -> Vec<Statement> {
-        match php_parser_rs::parser::parse(source) {
-            Ok(ast) => ast,
-            Err(stack) => stack.partial,
-        }
-    }
-
     fn pos(line: u32, character: u32) -> Position {
         Position { line, character }
     }
@@ -53,32 +45,32 @@ mod tests {
     #[test]
     fn highlights_function_declaration_and_calls() {
         let src = "<?php\nfunction greet() {}\ngreet();\ngreet();";
-        let ast = parse_ast(src);
-        let highlights = document_highlights(src, &ast, pos(1, 10));
+        let doc = ParsedDoc::parse(src.to_string());
+        let highlights = document_highlights(src, &doc, pos(1, 10));
         assert_eq!(highlights.len(), 3, "decl + 2 calls: {:?}", highlights);
     }
 
     #[test]
     fn returns_empty_for_unknown_word() {
         let src = "<?php\n$x = 1;";
-        let ast = parse_ast(src);
-        let highlights = document_highlights(src, &ast, pos(1, 1));
+        let doc = ParsedDoc::parse(src.to_string());
+        let highlights = document_highlights(src, &doc, pos(1, 1));
         assert!(highlights.is_empty());
     }
 
     #[test]
     fn highlights_class_name() {
         let src = "<?php\nclass Foo {}\n$x = new Foo();";
-        let ast = parse_ast(src);
-        let highlights = document_highlights(src, &ast, pos(1, 8));
+        let doc = ParsedDoc::parse(src.to_string());
+        let highlights = document_highlights(src, &doc, pos(1, 8));
         assert!(highlights.len() >= 2, "expected decl + new expr");
     }
 
     #[test]
     fn highlight_ranges_span_word_length() {
         let src = "<?php\nfunction greet() {}\ngreet();";
-        let ast = parse_ast(src);
-        let highlights = document_highlights(src, &ast, pos(1, 10));
+        let doc = ParsedDoc::parse(src.to_string());
+        let highlights = document_highlights(src, &doc, pos(1, 10));
         for h in &highlights {
             let len = h.range.end.character - h.range.start.character;
             assert_eq!(len, "greet".len() as u32);
@@ -88,18 +80,16 @@ mod tests {
     #[test]
     fn highlights_method_calls() {
         let src = "<?php\nclass Calc { public function add() {} }\n$c = new Calc();\n$c->add();";
-        let ast = parse_ast(src);
-        // pos(3, 5) is inside "add" on line 3: `$c->add();`
-        let highlights = document_highlights(src, &ast, pos(3, 5));
-        // "add" appears at declaration and call site
+        let doc = ParsedDoc::parse(src.to_string());
+        let highlights = document_highlights(src, &doc, pos(3, 5));
         assert!(highlights.len() >= 2, "expected at least 2 highlights, got: {}", highlights.len());
     }
 
     #[test]
     fn no_highlights_beyond_line_end() {
         let src = "<?php\nfunction greet() {}";
-        let ast = parse_ast(src);
-        let highlights = document_highlights(src, &ast, pos(1, 999));
+        let doc = ParsedDoc::parse(src.to_string());
+        let highlights = document_highlights(src, &doc, pos(1, 999));
         assert!(highlights.is_empty());
     }
 }

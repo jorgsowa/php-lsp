@@ -1,23 +1,11 @@
 /// Semantic diagnostics: undefined function/class calls and argument-count mismatches.
-///
-/// These complement the syntax diagnostics from the parser (which only report
-/// parse errors).  Semantic diagnostics require a two-pass approach:
-///   1. Collect definitions (functions, classes, methods) with arity.
-///   2. Walk the AST for call sites and flag mismatches.
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use php_parser_rs::lexer::token::Span;
-use php_parser_rs::parser::ast::{
-    arguments::Argument,
-    classes::ClassMember,
-    identifiers::Identifier as AstIdentifier,
-    namespaces::NamespaceStatement,
-    Expression, Statement,
-};
+use php_ast::{ClassMemberKind, ExprKind, Expr, NamespaceBody, Span, Stmt, StmtKind};
 use tower_lsp::lsp_types::{Diagnostic, DiagnosticSeverity, Position, Range, Url};
 
-use crate::diagnostics::span_to_position;
+use crate::ast::{offset_to_position, ParsedDoc};
 
 /// Arity bounds for a callable.
 #[derive(Debug, Clone, Copy)]
@@ -28,219 +16,174 @@ struct Arity {
 
 type DefMap = HashMap<String, Arity>;
 
-/// Run semantic checks over `ast` and all `other_docs`, producing diagnostics
-/// for the file at `uri`.  Only `uri`'s AST is checked for call sites; all
-/// docs contribute to the definition map.
+/// Run semantic checks over the current doc and all `other_docs`, producing
+/// diagnostics for the file at `uri`.
 pub fn semantic_diagnostics(
     _uri: &Url,
-    ast: &[Statement],
-    other_docs: &[(Url, Arc<Vec<Statement>>)],
+    doc: &ParsedDoc,
+    other_docs: &[(Url, Arc<ParsedDoc>)],
 ) -> Vec<Diagnostic> {
+    let source = doc.source();
     let mut defs: DefMap = HashMap::new();
 
-    // Collect definitions from current file
-    collect_defs(ast, &mut defs);
-
-    // Collect definitions from other indexed files (cross-file calls)
-    for (_, other_ast) in other_docs {
-        collect_defs(other_ast, &mut defs);
+    collect_defs(&doc.program().stmts, &mut defs);
+    for (_, other_doc) in other_docs {
+        collect_defs(&other_doc.program().stmts, &mut defs);
     }
 
     let mut diagnostics = Vec::new();
-    check_stmts(ast, &defs, &mut diagnostics);
+    check_stmts(source, &doc.program().stmts, &defs, &mut diagnostics);
     diagnostics
 }
 
-// ── Definition collection ─────────────────────────────────────────────────────
-
-fn collect_defs(stmts: &[Statement], defs: &mut DefMap) {
+fn collect_defs(stmts: &[Stmt<'_, '_>], defs: &mut DefMap) {
     for stmt in stmts {
-        match stmt {
-            Statement::Function(f) => {
-                let arity = params_arity(&f.parameters);
-                defs.insert(f.name.value.to_string(), arity);
+        match &stmt.kind {
+            StmtKind::Function(f) => {
+                let arity = params_arity_slice(&f.params);
+                defs.insert(f.name.to_string(), arity);
             }
-            Statement::Class(c) => {
-                defs.insert(c.name.value.to_string(), Arity { required: 0, max: 0 });
-                for member in &c.body.members {
-                    match member {
-                        ClassMember::ConcreteMethod(m) => {
-                            let arity = params_arity(&m.parameters);
-                            // Store as ClassName::method for scoped lookup
-                            let key = format!("{}::{}", c.name.value, m.name.value);
-                            defs.insert(key, arity);
-                            // Also store unqualified so simple name lookups work
-                            defs.insert(m.name.value.to_string(), arity);
+            StmtKind::Class(c) => {
+                let class_name = c.name.unwrap_or("");
+                defs.insert(class_name.to_string(), Arity { required: 0, max: 0 });
+                for member in c.members.iter() {
+                    if let ClassMemberKind::Method(m) = &member.kind {
+                        let arity = params_arity_slice(&m.params);
+                        if !class_name.is_empty() {
+                            defs.insert(format!("{}::{}", class_name, m.name), arity);
                         }
-                        ClassMember::AbstractMethod(m) => {
-                            let arity = params_arity(&m.parameters);
-                            defs.insert(m.name.value.to_string(), arity);
-                        }
-                        _ => {}
+                        defs.insert(m.name.to_string(), arity);
                     }
                 }
             }
-            Statement::Interface(i) => {
-                defs.insert(i.name.value.to_string(), Arity { required: 0, max: 0 });
+            StmtKind::Interface(i) => {
+                defs.insert(i.name.to_string(), Arity { required: 0, max: 0 });
             }
-            Statement::Trait(t) => {
-                defs.insert(t.name.value.to_string(), Arity { required: 0, max: 0 });
+            StmtKind::Trait(t) => {
+                defs.insert(t.name.to_string(), Arity { required: 0, max: 0 });
             }
-            Statement::Namespace(ns) => {
-                let inner = match ns {
-                    NamespaceStatement::Unbraced(u) => &u.statements[..],
-                    NamespaceStatement::Braced(b) => &b.body.statements[..],
-                };
-                collect_defs(inner, defs);
+            StmtKind::Namespace(ns) => {
+                if let NamespaceBody::Braced(inner) = &ns.body {
+                    collect_defs(inner, defs);
+                }
             }
             _ => {}
         }
     }
 }
 
-fn params_arity(
-    params: &php_parser_rs::parser::ast::functions::FunctionParameterList,
-) -> Arity {
+fn params_arity_slice(params: &[php_ast::Param<'_, '_>]) -> Arity {
     let mut required = 0usize;
     let mut is_variadic = false;
-    for p in params.parameters.iter() {
-        if p.ellipsis.is_some() {
+    for p in params.iter() {
+        if p.variadic {
             is_variadic = true;
         } else if p.default.is_none() {
             required += 1;
         }
     }
-    let total = params.parameters.iter().count();
     Arity {
         required,
-        max: if is_variadic { usize::MAX } else { total },
+        max: if is_variadic { usize::MAX } else { params.len() },
     }
 }
 
-// ── Call-site checking ────────────────────────────────────────────────────────
-
-fn check_stmts(stmts: &[Statement], defs: &DefMap, out: &mut Vec<Diagnostic>) {
+fn check_stmts(source: &str, stmts: &[Stmt<'_, '_>], defs: &DefMap, out: &mut Vec<Diagnostic>) {
     for stmt in stmts {
-        check_stmt(stmt, defs, out);
+        check_stmt(source, stmt, defs, out);
     }
 }
 
-fn check_stmt(stmt: &Statement, defs: &DefMap, out: &mut Vec<Diagnostic>) {
-    match stmt {
-        Statement::Expression(e) => check_expr(&e.expression, defs, out),
-        Statement::Return(r) => {
-            if let Some(v) = &r.value {
-                check_expr(v, defs, out);
+fn check_stmt(source: &str, stmt: &Stmt<'_, '_>, defs: &DefMap, out: &mut Vec<Diagnostic>) {
+    match &stmt.kind {
+        StmtKind::Expression(e) => check_expr(source, e, defs, out),
+        StmtKind::Return(r) => {
+            if let Some(v) = r {
+                check_expr(source, v, defs, out);
             }
         }
-        Statement::Echo(e) => {
-            for expr in &e.values {
-                check_expr(expr, defs, out);
+        StmtKind::Echo(exprs) => {
+            for expr in exprs.iter() {
+                check_expr(source, expr, defs, out);
             }
         }
-        Statement::Function(f) => check_stmts(&f.body.statements, defs, out),
-        Statement::Class(c) => {
-            for member in &c.body.members {
-                if let ClassMember::ConcreteMethod(m) = member {
-                    check_stmts(&m.body.statements, defs, out);
+        StmtKind::Function(f) => check_stmts(source, &f.body, defs, out),
+        StmtKind::Class(c) => {
+            for member in c.members.iter() {
+                if let ClassMemberKind::Method(m) = &member.kind {
+                    if let Some(body) = &m.body {
+                        check_stmts(source, body, defs, out);
+                    }
                 }
             }
         }
-        Statement::Namespace(ns) => {
-            let inner = match ns {
-                NamespaceStatement::Unbraced(u) => &u.statements[..],
-                NamespaceStatement::Braced(b) => &b.body.statements[..],
-            };
-            check_stmts(inner, defs, out);
+        StmtKind::Namespace(ns) => {
+            if let NamespaceBody::Braced(inner) = &ns.body {
+                check_stmts(source, inner, defs, out);
+            }
         }
         _ => {}
     }
 }
 
-fn check_expr(expr: &Expression, defs: &DefMap, out: &mut Vec<Diagnostic>) {
-    match expr {
-        Expression::FunctionCall(f) => {
-            if let Some(name) = simple_ident_name(&f.target) {
-                let arg_count = f.arguments.arguments.len();
+fn check_expr(source: &str, expr: &Expr<'_, '_>, defs: &DefMap, out: &mut Vec<Diagnostic>) {
+    match &expr.kind {
+        ExprKind::FunctionCall(f) => {
+            if let Some(name) = simple_ident_name(f.name) {
+                let arg_count = f.args.len();
                 if let Some(arity) = defs.get(&name) {
                     if arg_count < arity.required || arg_count > arity.max {
-                        let span = span_of_expr(&f.target);
-                        out.push(arity_diagnostic(span, &name, arity.required, arity.max, arg_count));
+                        out.push(arity_diagnostic(source, f.name.span, &name, arity.required, arity.max, arg_count));
                     }
                 } else {
-                    // Undefined function — warn, not error (may be built-in)
-                    let span = span_of_expr(&f.target);
-                    if let Some(span) = span {
-                        out.push(undefined_diagnostic(span, &name));
-                    }
+                    out.push(undefined_diagnostic(source, f.name.span, &name));
                 }
             }
-            for arg in &f.arguments.arguments {
-                check_expr(arg_value(arg), defs, out);
+            for arg in f.args.iter() {
+                check_expr(source, &arg.value, defs, out);
             }
         }
-        Expression::MethodCall(m) => {
-            check_expr(&m.target, defs, out);
-            for arg in &m.arguments.arguments {
-                check_expr(arg_value(arg), defs, out);
+        ExprKind::MethodCall(m) => {
+            check_expr(source, m.object, defs, out);
+            for arg in m.args.iter() {
+                check_expr(source, &arg.value, defs, out);
             }
         }
-        Expression::New(n) => {
-            if let Some(name) = simple_ident_name(&n.target) {
+        ExprKind::New(n) => {
+            if let Some(name) = simple_ident_name(n.class) {
                 if !defs.contains_key(&name) {
-                    let span = span_of_expr(&n.target);
-                    if let Some(span) = span {
-                        out.push(undefined_diagnostic(span, &name));
-                    }
+                    out.push(undefined_diagnostic(source, n.class.span, &name));
                 }
             }
-            if let Some(args) = &n.arguments {
-                for arg in &args.arguments {
-                    check_expr(arg_value(arg), defs, out);
-                }
+            for arg in n.args.iter() {
+                check_expr(source, &arg.value, defs, out);
             }
         }
-        Expression::AssignmentOperation(a) => {
-            check_expr(a.left(), defs, out);
-            check_expr(a.right(), defs, out);
+        ExprKind::Assign(a) => {
+            check_expr(source, a.target, defs, out);
+            check_expr(source, a.value, defs, out);
         }
-        Expression::Parenthesized(p) => check_expr(&p.expr, defs, out),
-        Expression::Ternary(t) => {
-            check_expr(&t.condition, defs, out);
-            check_expr(&t.then, defs, out);
-            check_expr(&t.r#else, defs, out);
+        ExprKind::Parenthesized(e) => check_expr(source, e, defs, out),
+        ExprKind::Ternary(t) => {
+            check_expr(source, t.condition, defs, out);
+            if let Some(then_expr) = t.then_expr {
+                check_expr(source, then_expr, defs, out);
+            }
+            check_expr(source, t.else_expr, defs, out);
         }
         _ => {}
     }
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-fn simple_ident_name(expr: &Expression) -> Option<String> {
-    match expr {
-        Expression::Identifier(AstIdentifier::SimpleIdentifier(si)) => {
-            Some(si.value.to_string())
-        }
+fn simple_ident_name(expr: &Expr<'_, '_>) -> Option<String> {
+    match &expr.kind {
+        ExprKind::Identifier(name) => Some(name.to_string()),
         _ => None,
     }
 }
 
-fn span_of_expr(expr: &Expression) -> Option<Span> {
-    match expr {
-        Expression::Identifier(AstIdentifier::SimpleIdentifier(si)) => Some(si.span),
-        _ => None,
-    }
-}
-
-fn arg_value(arg: &Argument) -> &Expression {
-    match arg {
-        Argument::Positional(p) => &p.value,
-        Argument::Named(n) => &n.value,
-    }
-}
-
-fn span_to_range(span: Span, name: &str) -> Range {
-    let start = span_to_position(&span);
+fn span_to_range(source: &str, span: Span, name: &str) -> Range {
+    let start = offset_to_position(source, span.start);
     Range {
         start,
         end: Position {
@@ -251,23 +194,18 @@ fn span_to_range(span: Span, name: &str) -> Range {
 }
 
 fn arity_diagnostic(
-    span: Option<Span>,
+    source: &str,
+    span: Span,
     name: &str,
     required: usize,
     max: usize,
     got: usize,
 ) -> Diagnostic {
-    let range = span
-        .map(|s| span_to_range(s, name))
-        .unwrap_or_default();
+    let range = span_to_range(source, span, name);
     let msg = if got < required {
-        format!(
-            "Too few arguments to {name}: expected at least {required}, got {got}"
-        )
+        format!("Too few arguments to {name}: expected at least {required}, got {got}")
     } else {
-        format!(
-            "Too many arguments to {name}: expected at most {max}, got {got}"
-        )
+        format!("Too many arguments to {name}: expected at most {max}, got {got}")
     };
     Diagnostic {
         range,
@@ -278,9 +216,9 @@ fn arity_diagnostic(
     }
 }
 
-fn undefined_diagnostic(span: Span, name: &str) -> Diagnostic {
+fn undefined_diagnostic(source: &str, span: Span, name: &str) -> Diagnostic {
     Diagnostic {
-        range: span_to_range(span, name),
+        range: span_to_range(source, span, name),
         severity: Some(DiagnosticSeverity::HINT),
         source: Some("php-lsp".to_string()),
         message: format!("Undefined: {name}"),
@@ -292,20 +230,13 @@ fn undefined_diagnostic(span: Span, name: &str) -> Diagnostic {
 mod tests {
     use super::*;
 
-    fn parse_ast(source: &str) -> Vec<Statement> {
-        match php_parser_rs::parser::parse(source) {
-            Ok(ast) => ast,
-            Err(stack) => stack.partial,
-        }
-    }
-
     fn uri() -> Url {
         Url::parse("file:///test.php").unwrap()
     }
 
     fn run(src: &str) -> Vec<Diagnostic> {
-        let ast = parse_ast(src);
-        semantic_diagnostics(&uri(), &ast, &[])
+        let doc = ParsedDoc::parse(src.to_string());
+        semantic_diagnostics(&uri(), &doc, &[])
     }
 
     #[test]
@@ -343,10 +274,10 @@ mod tests {
 
     #[test]
     fn cross_file_definition_suppresses_undefined() {
-        let ast = parse_ast("<?php\n$x = new MyService();");
+        let doc = ParsedDoc::parse("<?php\n$x = new MyService();".to_string());
         let other_uri = Url::parse("file:///other.php").unwrap();
-        let other_ast = Arc::new(parse_ast("<?php\nclass MyService {}"));
-        let diags = semantic_diagnostics(&uri(), &ast, &[(other_uri, other_ast)]);
+        let other_doc = Arc::new(ParsedDoc::parse("<?php\nclass MyService {}".to_string()));
+        let diags = semantic_diagnostics(&uri(), &doc, &[(other_uri, other_doc)]);
         let has_undefined = diags.iter().any(|d| d.message.contains("Undefined"));
         assert!(!has_undefined, "cross-file class should not be flagged");
     }

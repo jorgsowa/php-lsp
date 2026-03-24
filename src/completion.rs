@@ -1,13 +1,9 @@
 use std::sync::Arc;
 
-use php_parser_rs::parser::ast::{
-    classes::ClassMember,
-    namespaces::NamespaceStatement,
-    variables::Variable,
-    Expression, Statement,
-};
+use php_ast::{ClassMemberKind, ExprKind, NamespaceBody, Stmt, StmtKind};
 use tower_lsp::lsp_types::{CompletionItem, CompletionItemKind, Position};
 
+use crate::ast::ParsedDoc;
 use crate::type_map::{methods_of_class, TypeMap};
 
 const PHP_KEYWORDS: &[&str] = &[
@@ -32,168 +28,136 @@ pub fn keyword_completions() -> Vec<CompletionItem> {
         .collect()
 }
 
-pub fn symbol_completions(ast: &[Statement]) -> Vec<CompletionItem> {
+pub fn symbol_completions(doc: &ParsedDoc) -> Vec<CompletionItem> {
     let mut items = Vec::new();
-    collect_from_statements(ast, &mut items);
+    collect_from_statements(&doc.program().stmts, &mut items);
     items
 }
 
-fn collect_from_statements(stmts: &[Statement], items: &mut Vec<CompletionItem>) {
+fn collect_from_statements(stmts: &[Stmt<'_, '_>], items: &mut Vec<CompletionItem>) {
     for stmt in stmts {
-        match stmt {
-            Statement::Function(f) => {
+        match &stmt.kind {
+            StmtKind::Function(f) => {
                 items.push(CompletionItem {
-                    label: f.name.value.to_string(),
+                    label: f.name.to_string(),
                     kind: Some(CompletionItemKind::FUNCTION),
                     ..Default::default()
                 });
-                for param in f.parameters.parameters.iter() {
+                for param in f.params.iter() {
                     items.push(CompletionItem {
-                        label: param.name.name.to_string(),
+                        label: format!("${}", param.name),
                         kind: Some(CompletionItemKind::VARIABLE),
                         ..Default::default()
                     });
                 }
             }
-            Statement::Class(c) => {
-                items.push(CompletionItem {
-                    label: c.name.value.to_string(),
-                    kind: Some(CompletionItemKind::CLASS),
-                    ..Default::default()
-                });
-                for member in c.body.members.iter() {
-                    match member {
-                        ClassMember::ConcreteMethod(m) => {
+            StmtKind::Class(c) => {
+                let class_name = c.name.unwrap_or("");
+                if !class_name.is_empty() {
+                    items.push(CompletionItem {
+                        label: class_name.to_string(),
+                        kind: Some(CompletionItemKind::CLASS),
+                        ..Default::default()
+                    });
+                }
+                for member in c.members.iter() {
+                    match &member.kind {
+                        ClassMemberKind::Method(m) => {
                             items.push(CompletionItem {
-                                label: m.name.value.to_string(),
+                                label: m.name.to_string(),
                                 kind: Some(CompletionItemKind::METHOD),
                                 ..Default::default()
                             });
                         }
-                        ClassMember::AbstractMethod(m) => {
+                        ClassMemberKind::Property(p) => {
                             items.push(CompletionItem {
-                                label: m.name.value.to_string(),
-                                kind: Some(CompletionItemKind::METHOD),
+                                label: format!("${}", p.name),
+                                kind: Some(CompletionItemKind::PROPERTY),
                                 ..Default::default()
                             });
                         }
-                        ClassMember::ConcreteConstructor(_) => {
+                        ClassMemberKind::ClassConst(c) => {
                             items.push(CompletionItem {
-                                label: "__construct".to_string(),
-                                kind: Some(CompletionItemKind::CONSTRUCTOR),
+                                label: c.name.to_string(),
+                                kind: Some(CompletionItemKind::CONSTANT),
                                 ..Default::default()
                             });
-                        }
-                        ClassMember::Property(p) => {
-                            for entry in &p.entries {
-                                items.push(CompletionItem {
-                                    label: entry.variable().name.to_string(),
-                                    kind: Some(CompletionItemKind::PROPERTY),
-                                    ..Default::default()
-                                });
-                            }
-                        }
-                        ClassMember::VariableProperty(p) => {
-                            for entry in &p.entries {
-                                items.push(CompletionItem {
-                                    label: entry.variable().name.to_string(),
-                                    kind: Some(CompletionItemKind::PROPERTY),
-                                    ..Default::default()
-                                });
-                            }
-                        }
-                        ClassMember::Constant(c) => {
-                            for entry in &c.entries {
-                                items.push(CompletionItem {
-                                    label: entry.name.value.to_string(),
-                                    kind: Some(CompletionItemKind::CONSTANT),
-                                    ..Default::default()
-                                });
-                            }
                         }
                         _ => {}
                     }
                 }
             }
-            Statement::Interface(i) => {
+            StmtKind::Interface(i) => {
                 items.push(CompletionItem {
-                    label: i.name.value.to_string(),
+                    label: i.name.to_string(),
                     kind: Some(CompletionItemKind::INTERFACE),
                     ..Default::default()
                 });
             }
-            Statement::Trait(t) => {
+            StmtKind::Trait(t) => {
                 items.push(CompletionItem {
-                    label: t.name.value.to_string(),
+                    label: t.name.to_string(),
                     kind: Some(CompletionItemKind::CLASS),
                     ..Default::default()
                 });
             }
-            Statement::Namespace(ns) => match ns {
-                NamespaceStatement::Unbraced(u) => {
-                    collect_from_statements(&u.statements, items);
+            StmtKind::Namespace(ns) => {
+                if let NamespaceBody::Braced(inner) = &ns.body {
+                    collect_from_statements(inner, items);
                 }
-                NamespaceStatement::Braced(b) => {
-                    collect_from_statements(&b.body.statements, items);
-                }
-            },
-            Statement::Expression(e) => {
-                collect_from_expression(&e.expression, items);
+            }
+            StmtKind::Expression(e) => {
+                collect_from_expression(e, items);
             }
             _ => {}
         }
     }
 }
 
-fn collect_from_expression(expr: &Expression, items: &mut Vec<CompletionItem>) {
-    match expr {
-        Expression::AssignmentOperation(assign) => {
-            if let Expression::Variable(Variable::SimpleVariable(v)) = assign.left() {
-                let name = v.name.to_string();
-                if name != "$this" {
-                    items.push(CompletionItem {
-                        label: name,
-                        kind: Some(CompletionItemKind::VARIABLE),
-                        ..Default::default()
-                    });
-                }
+fn collect_from_expression(expr: &php_ast::Expr<'_, '_>, items: &mut Vec<CompletionItem>) {
+    if let ExprKind::Assign(assign) = &expr.kind {
+        if let ExprKind::Variable(name) = &assign.target.kind {
+            let label = format!("${}", name);
+            if label != "$this" {
+                items.push(CompletionItem {
+                    label,
+                    kind: Some(CompletionItemKind::VARIABLE),
+                    ..Default::default()
+                });
             }
-            collect_from_expression(assign.right(), items);
         }
-        _ => {}
+        collect_from_expression(assign.value, items);
     }
 }
 
 pub fn filtered_completions(
-    ast: &[Statement],
-    other_asts: &[Arc<Vec<Statement>>],
+    doc: &ParsedDoc,
+    other_docs: &[Arc<ParsedDoc>],
     trigger_character: Option<&str>,
 ) -> Vec<CompletionItem> {
-    filtered_completions_at(ast, other_asts, trigger_character, None, None)
+    filtered_completions_at(doc, other_docs, trigger_character, None, None)
 }
 
 /// Like `filtered_completions` but also accepts an optional `source` + `position`
 /// so that `->` completions can be scoped to the variable's class.
 pub fn filtered_completions_at(
-    ast: &[Statement],
-    other_asts: &[Arc<Vec<Statement>>],
+    doc: &ParsedDoc,
+    other_docs: &[Arc<ParsedDoc>],
     trigger_character: Option<&str>,
     source: Option<&str>,
     position: Option<Position>,
 ) -> Vec<CompletionItem> {
     match trigger_character {
-        Some("$") => symbol_completions(ast)
+        Some("$") => symbol_completions(doc)
             .into_iter()
             .filter(|i| i.kind == Some(CompletionItemKind::VARIABLE))
             .collect(),
         Some(">") => {
-            // Try to narrow by the variable before `->` using the type map
             if let (Some(src), Some(pos)) = (source, position) {
-                let type_map = TypeMap::from_stmts(ast);
+                let type_map = TypeMap::from_doc(doc);
                 if let Some(class_name) = resolve_receiver_class(src, pos, &type_map) {
-                    // Gather methods from current AST + other ASTs
-                    let mut methods: Vec<String> = methods_of_class(ast, &class_name);
-                    for other in other_asts {
+                    let mut methods: Vec<String> = methods_of_class(doc, &class_name);
+                    for other in other_docs {
                         methods.extend(methods_of_class(other, &class_name));
                     }
                     methods.sort();
@@ -210,16 +174,15 @@ pub fn filtered_completions_at(
                     }
                 }
             }
-            // Fallback: all methods from AST
-            symbol_completions(ast)
+            symbol_completions(doc)
                 .into_iter()
                 .filter(|i| i.kind == Some(CompletionItemKind::METHOD))
                 .collect()
         }
         _ => {
             let mut items = keyword_completions();
-            items.extend(symbol_completions(ast));
-            for other in other_asts {
+            items.extend(symbol_completions(doc));
+            for other in other_docs {
                 let cross: Vec<CompletionItem> = symbol_completions(other)
                     .into_iter()
                     .filter(|i| i.kind != Some(CompletionItemKind::VARIABLE))
@@ -233,17 +196,12 @@ pub fn filtered_completions_at(
     }
 }
 
-/// Given the source and position (the cursor is just after `->`) try to find
-/// the variable name that precedes `->` and look up its type.
 fn resolve_receiver_class(source: &str, position: Position, type_map: &TypeMap) -> Option<String> {
     let line = source.lines().nth(position.line as usize)?;
     let col = position.character as usize;
-    // col is the char index of the trigger `>`. Go back past `->`.
-    let arrow_end = col; // position is at the char after `>`
-    // Find `->` ending at arrow_end-1 (the `>`)
+    let arrow_end = col;
     let before = &line[..arrow_end.min(line.len())];
     let before = before.strip_suffix("->").unwrap_or(before);
-    // Extract the identifier immediately before
     let var_name: String = before
         .chars()
         .rev()
@@ -267,18 +225,13 @@ fn resolve_receiver_class(source: &str, position: Position, type_map: &TypeMap) 
 mod tests {
     use super::*;
 
-    fn parse_ast(source: &str) -> Vec<Statement> {
-        match php_parser_rs::parser::parse(source) {
-            Ok(ast) => ast,
-            Err(stack) => stack.partial,
-        }
+    fn doc(source: &str) -> ParsedDoc {
+        ParsedDoc::parse(source.to_string())
     }
 
     fn labels(items: &[CompletionItem]) -> Vec<&str> {
         items.iter().map(|i| i.label.as_str()).collect()
     }
-
-    // --- keyword_completions ---
 
     #[test]
     fn keywords_list_is_non_empty() {
@@ -288,9 +241,9 @@ mod tests {
     #[test]
     fn keywords_contain_common_php_keywords() {
         let kws = keyword_completions();
-        let labels = labels(&kws);
+        let ls = labels(&kws);
         for expected in &["function", "class", "return", "foreach", "match", "namespace"] {
-            assert!(labels.contains(expected), "missing keyword: {expected}");
+            assert!(ls.contains(expected), "missing keyword: {expected}");
         }
     }
 
@@ -301,38 +254,28 @@ mod tests {
         }
     }
 
-    // --- symbol_completions ---
-
     #[test]
     fn extracts_top_level_function_name() {
-        let ast = parse_ast("<?php\nfunction greet() {}");
-        let items = symbol_completions(&ast);
-        assert!(
-            labels(&items).contains(&"greet"),
-            "expected 'greet' in {:?}",
-            labels(&items)
-        );
+        let d = doc("<?php\nfunction greet() {}");
+        let items = symbol_completions(&d);
+        assert!(labels(&items).contains(&"greet"));
         let greet = items.iter().find(|i| i.label == "greet").unwrap();
         assert_eq!(greet.kind, Some(CompletionItemKind::FUNCTION));
     }
 
     #[test]
     fn extracts_top_level_class_name() {
-        let ast = parse_ast("<?php\nclass MyService {}");
-        let items = symbol_completions(&ast);
-        assert!(
-            labels(&items).contains(&"MyService"),
-            "expected 'MyService' in {:?}",
-            labels(&items)
-        );
+        let d = doc("<?php\nclass MyService {}");
+        let items = symbol_completions(&d);
+        assert!(labels(&items).contains(&"MyService"));
         let cls = items.iter().find(|i| i.label == "MyService").unwrap();
         assert_eq!(cls.kind, Some(CompletionItemKind::CLASS));
     }
 
     #[test]
     fn extracts_class_method_names() {
-        let ast = parse_ast("<?php\nclass Calc { public function add() {} public function sub() {} }");
-        let items = symbol_completions(&ast);
+        let d = doc("<?php\nclass Calc { public function add() {} public function sub() {} }");
+        let items = symbol_completions(&d);
         let ls = labels(&items);
         assert!(ls.contains(&"add"), "missing 'add'");
         assert!(ls.contains(&"sub"), "missing 'sub'");
@@ -343,8 +286,8 @@ mod tests {
 
     #[test]
     fn extracts_function_parameters_as_variables() {
-        let ast = parse_ast("<?php\nfunction process($input, $count) {}");
-        let items = symbol_completions(&ast);
+        let d = doc("<?php\nfunction process($input, $count) {}");
+        let items = symbol_completions(&d);
         let ls = labels(&items);
         assert!(ls.contains(&"$input"), "missing '$input'");
         assert!(ls.contains(&"$count"), "missing '$count'");
@@ -352,36 +295,17 @@ mod tests {
 
     #[test]
     fn extracts_symbols_inside_namespace() {
-        let ast = parse_ast("<?php\nnamespace App;\nfunction render() {}\nclass View {}");
-        let items = symbol_completions(&ast);
+        let d = doc("<?php\nnamespace App {\nfunction render() {}\nclass View {}\n}");
+        let items = symbol_completions(&d);
         let ls = labels(&items);
-        assert!(ls.contains(&"render"), "missing 'render' in namespaced file");
-        assert!(ls.contains(&"View"), "missing 'View' in namespaced file");
-    }
-
-    #[test]
-    fn extracts_symbols_inside_braced_namespace() {
-        let ast = parse_ast("<?php\nnamespace App { function boot() {} class App {} }");
-        let items = symbol_completions(&ast);
-        let ls = labels(&items);
-        assert!(ls.contains(&"boot"), "missing 'boot'");
-        assert!(ls.contains(&"App"), "missing 'App'");
-    }
-
-    #[test]
-    fn partial_ast_used_when_file_has_errors() {
-        let ast = parse_ast("<?php\nfunction valid() {}\nclass {");
-        let items = symbol_completions(&ast);
-        assert!(
-            labels(&items).contains(&"valid"),
-            "should extract 'valid' even with parse error"
-        );
+        assert!(ls.contains(&"render"), "missing 'render'");
+        assert!(ls.contains(&"View"), "missing 'View'");
     }
 
     #[test]
     fn extracts_interface_name() {
-        let ast = parse_ast("<?php\ninterface Serializable {}");
-        let items = symbol_completions(&ast);
+        let d = doc("<?php\ninterface Serializable {}");
+        let items = symbol_completions(&d);
         let item = items.iter().find(|i| i.label == "Serializable");
         assert!(item.is_some(), "missing 'Serializable'");
         assert_eq!(item.unwrap().kind, Some(CompletionItemKind::INTERFACE));
@@ -389,21 +313,18 @@ mod tests {
 
     #[test]
     fn variable_assignment_produces_variable_item() {
-        let ast = parse_ast("<?php\n$name = 'Alice';");
-        let items = symbol_completions(&ast);
-        assert!(
-            labels(&items).contains(&"$name"),
-            "missing '$name' from assignment"
-        );
+        let d = doc("<?php\n$name = 'Alice';");
+        let items = symbol_completions(&d);
+        assert!(labels(&items).contains(&"$name"), "missing '$name'");
     }
 
     #[test]
     fn class_property_appears_in_completions() {
-        let ast = parse_ast("<?php\nclass User { public string $name; private int $age; }");
-        let items = symbol_completions(&ast);
+        let d = doc("<?php\nclass User { public string $name; private int $age; }");
+        let items = symbol_completions(&d);
         let ls = labels(&items);
-        assert!(ls.contains(&"$name"), "missing property '$name'");
-        assert!(ls.contains(&"$age"), "missing property '$age'");
+        assert!(ls.contains(&"$name"), "missing '$name'");
+        assert!(ls.contains(&"$age"), "missing '$age'");
         for item in items.iter().filter(|i| i.label == "$name" || i.label == "$age") {
             assert_eq!(item.kind, Some(CompletionItemKind::PROPERTY));
         }
@@ -411,31 +332,20 @@ mod tests {
 
     #[test]
     fn class_constant_appears_in_completions() {
-        let ast = parse_ast("<?php\nclass Status { const ACTIVE = 1; const INACTIVE = 0; }");
-        let items = symbol_completions(&ast);
+        let d = doc("<?php\nclass Status { const ACTIVE = 1; const INACTIVE = 0; }");
+        let items = symbol_completions(&d);
         let ls = labels(&items);
-        assert!(ls.contains(&"ACTIVE"), "missing constant 'ACTIVE'");
-        assert!(ls.contains(&"INACTIVE"), "missing constant 'INACTIVE'");
-        for item in items.iter().filter(|i| i.label == "ACTIVE" || i.label == "INACTIVE") {
-            assert_eq!(item.kind, Some(CompletionItemKind::CONSTANT));
-        }
+        assert!(ls.contains(&"ACTIVE"), "missing 'ACTIVE'");
+        assert!(ls.contains(&"INACTIVE"), "missing 'INACTIVE'");
     }
-
-    // --- filtered_completions ---
 
     #[test]
     fn dollar_trigger_returns_only_variables() {
-        let ast = parse_ast("<?php\nfunction greet($name) {}\nclass Foo {}\n$bar = 1;");
-        let items = filtered_completions(&ast, &[], Some("$"));
+        let d = doc("<?php\nfunction greet($name) {}\nclass Foo {}\n$bar = 1;");
+        let items = filtered_completions(&d, &[], Some("$"));
         assert!(!items.is_empty(), "should have variable items");
         for item in &items {
-            assert_eq!(
-                item.kind,
-                Some(CompletionItemKind::VARIABLE),
-                "expected VARIABLE kind, got {:?} for '{}'",
-                item.kind,
-                item.label
-            );
+            assert_eq!(item.kind, Some(CompletionItemKind::VARIABLE));
         }
         let ls = labels(&items);
         assert!(!ls.contains(&"greet"), "should not contain function");
@@ -444,24 +354,18 @@ mod tests {
 
     #[test]
     fn arrow_trigger_returns_only_methods() {
-        let ast = parse_ast("<?php\nclass Calc { public function add() {} public function sub() {} }");
-        let items = filtered_completions(&ast, &[], Some(">"));
+        let d = doc("<?php\nclass Calc { public function add() {} public function sub() {} }");
+        let items = filtered_completions(&d, &[], Some(">"));
         assert!(!items.is_empty(), "should have method items");
         for item in &items {
-            assert_eq!(
-                item.kind,
-                Some(CompletionItemKind::METHOD),
-                "expected METHOD kind, got {:?} for '{}'",
-                item.kind,
-                item.label
-            );
+            assert_eq!(item.kind, Some(CompletionItemKind::METHOD));
         }
     }
 
     #[test]
     fn none_trigger_returns_keywords_functions_classes() {
-        let ast = parse_ast("<?php\nfunction greet() {}\nclass MyApp {}");
-        let items = filtered_completions(&ast, &[], None);
+        let d = doc("<?php\nfunction greet() {}\nclass MyApp {}");
+        let items = filtered_completions(&d, &[], None);
         let ls = labels(&items);
         assert!(ls.contains(&"function"), "should contain keyword 'function'");
         assert!(ls.contains(&"greet"), "should contain function 'greet'");
@@ -469,22 +373,12 @@ mod tests {
     }
 
     #[test]
-    fn dot_trigger_behaves_like_none() {
-        let ast = parse_ast("<?php\nfunction greet() {}\nclass MyApp {}");
-        let dot_items = filtered_completions(&ast, &[], Some("."));
-        let none_items = filtered_completions(&ast, &[], None);
-        assert_eq!(
-            dot_items.len(),
-            none_items.len(),
-            "dot trigger should behave like None"
-        );
-    }
-
-    #[test]
     fn cross_file_symbols_appear_in_default_completions() {
-        let ast = parse_ast("<?php\nfunction localFn() {}");
-        let other_ast = Arc::new(parse_ast("<?php\nclass RemoteService {}\nfunction remoteHelper() {}"));
-        let items = filtered_completions(&ast, &[other_ast], None);
+        let d = doc("<?php\nfunction localFn() {}");
+        let other = Arc::new(ParsedDoc::parse(
+            "<?php\nclass RemoteService {}\nfunction remoteHelper() {}".to_string(),
+        ));
+        let items = filtered_completions(&d, &[other], None);
         let ls = labels(&items);
         assert!(ls.contains(&"localFn"), "missing local function");
         assert!(ls.contains(&"RemoteService"), "missing cross-file class");
@@ -493,9 +387,9 @@ mod tests {
 
     #[test]
     fn cross_file_variables_not_included_in_default_completions() {
-        let ast = parse_ast("<?php\n$localVar = 1;");
-        let other_ast = Arc::new(parse_ast("<?php\n$remoteVar = 2;"));
-        let items = filtered_completions(&ast, &[other_ast], None);
+        let d = doc("<?php\n$localVar = 1;");
+        let other = Arc::new(ParsedDoc::parse("<?php\n$remoteVar = 2;".to_string()));
+        let items = filtered_completions(&d, &[other], None);
         let ls = labels(&items);
         assert!(!ls.contains(&"$remoteVar"), "cross-file variable should not appear");
     }

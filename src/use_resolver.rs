@@ -4,7 +4,9 @@
 /// Example: `use App\Services\Mailer;` lets callers resolve `Mailer` → `App\Services\Mailer`.
 use std::collections::HashMap;
 
-use php_parser_rs::parser::ast::{namespaces::NamespaceStatement, Statement};
+use php_ast::{NamespaceBody, Stmt, StmtKind};
+
+use crate::ast::ParsedDoc;
 
 /// Map of short (unqualified) name → fully-qualified name.
 #[derive(Debug, Default, Clone)]
@@ -15,10 +17,10 @@ impl UseMap {
         UseMap(HashMap::new())
     }
 
-    /// Build a UseMap from the `use` statements at the top of `stmts`.
-    pub fn from_ast(stmts: &[Statement]) -> Self {
+    /// Build a UseMap from the `use` statements in a parsed document.
+    pub fn from_doc(doc: &ParsedDoc) -> Self {
         let mut map = HashMap::new();
-        collect_uses(stmts, &mut map);
+        collect_uses(&doc.program().stmts, &mut map);
         UseMap(map)
     }
 
@@ -33,27 +35,23 @@ impl UseMap {
     }
 }
 
-fn collect_uses(stmts: &[Statement], map: &mut HashMap<String, String>) {
+fn collect_uses(stmts: &[Stmt<'_, '_>], map: &mut HashMap<String, String>) {
     for stmt in stmts {
-        match stmt {
-            Statement::Use(u) => {
-                for use_item in &u.uses {
-                    let fqn = use_item.name.value.to_string();
-                    // The alias overrides the short name; otherwise use the last segment
+        match &stmt.kind {
+            StmtKind::Use(u) => {
+                for use_item in u.uses.iter() {
+                    let fqn = use_item.name.to_string_repr().into_owned();
                     let short = use_item
                         .alias
-                        .as_ref()
-                        .map(|a| a.value.to_string())
+                        .map(|a| a.to_string())
                         .unwrap_or_else(|| last_segment(&fqn).to_string());
                     map.insert(short, fqn);
                 }
             }
-            Statement::Namespace(ns) => {
-                let inner = match ns {
-                    NamespaceStatement::Unbraced(u) => &u.statements[..],
-                    NamespaceStatement::Braced(b) => &b.body.statements[..],
-                };
-                collect_uses(inner, map);
+            StmtKind::Namespace(ns) => {
+                if let NamespaceBody::Braced(inner) = &ns.body {
+                    collect_uses(inner, map);
+                }
             }
             _ => {}
         }
@@ -68,26 +66,19 @@ fn last_segment(fqn: &str) -> &str {
 mod tests {
     use super::*;
 
-    fn parse_ast(source: &str) -> Vec<Statement> {
-        match php_parser_rs::parser::parse(source) {
-            Ok(ast) => ast,
-            Err(stack) => stack.partial,
-        }
-    }
-
     #[test]
     fn resolves_simple_use() {
         let src = "<?php\nuse App\\Services\\Mailer;\nclass Foo {}";
-        let ast = parse_ast(src);
-        let map = UseMap::from_ast(&ast);
+        let doc = ParsedDoc::parse(src.to_string());
+        let map = UseMap::from_doc(&doc);
         assert_eq!(map.resolve("Mailer"), Some("App\\Services\\Mailer"));
     }
 
     #[test]
     fn resolves_aliased_use() {
         let src = "<?php\nuse App\\Services\\Mailer as Mail;\nclass Foo {}";
-        let ast = parse_ast(src);
-        let map = UseMap::from_ast(&ast);
+        let doc = ParsedDoc::parse(src.to_string());
+        let map = UseMap::from_doc(&doc);
         assert_eq!(map.resolve("Mail"), Some("App\\Services\\Mailer"));
         assert!(map.resolve("Mailer").is_none());
     }
@@ -95,33 +86,33 @@ mod tests {
     #[test]
     fn unknown_short_name_returns_none() {
         let src = "<?php\nuse App\\Foo;\n";
-        let ast = parse_ast(src);
-        let map = UseMap::from_ast(&ast);
+        let doc = ParsedDoc::parse(src.to_string());
+        let map = UseMap::from_doc(&doc);
         assert!(map.resolve("Bar").is_none());
     }
 
     #[test]
     fn multiple_use_statements() {
         let src = "<?php\nuse App\\Foo;\nuse App\\Bar;\n";
-        let ast = parse_ast(src);
-        let map = UseMap::from_ast(&ast);
+        let doc = ParsedDoc::parse(src.to_string());
+        let map = UseMap::from_doc(&doc);
         assert_eq!(map.resolve("Foo"), Some("App\\Foo"));
         assert_eq!(map.resolve("Bar"), Some("App\\Bar"));
     }
 
     #[test]
     fn use_inside_namespace_is_collected() {
-        let src = "<?php\nnamespace MyNs;\nuse Lib\\Util;\nfunction f() {}";
-        let ast = parse_ast(src);
-        let map = UseMap::from_ast(&ast);
+        let src = "<?php\nnamespace MyNs {\nuse Lib\\Util;\nfunction f() {}\n}";
+        let doc = ParsedDoc::parse(src.to_string());
+        let map = UseMap::from_doc(&doc);
         assert_eq!(map.resolve("Util"), Some("Lib\\Util"));
     }
 
     #[test]
     fn empty_file_gives_empty_map() {
         let src = "<?php\nfunction f() {}";
-        let ast = parse_ast(src);
-        let map = UseMap::from_ast(&ast);
+        let doc = ParsedDoc::parse(src.to_string());
+        let map = UseMap::from_doc(&doc);
         assert!(map.resolve("Anything").is_none());
     }
 }

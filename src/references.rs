@@ -1,17 +1,16 @@
 use std::sync::Arc;
 
-use php_parser_rs::parser::ast::Statement;
+use php_ast::{ClassMemberKind, NamespaceBody, Span, Stmt, StmtKind};
 use tower_lsp::lsp_types::{Location, Position, Range, Url};
 
-use crate::diagnostics::span_to_position;
+use crate::ast::{offset_to_position, ParsedDoc};
 use crate::walk::{refs_in_stmts, refs_in_stmts_with_use};
 
 /// Find all locations where `word` is referenced across the given documents.
 /// If `include_declaration` is true, also includes the declaration site.
-/// If `include_use_stmts` is true, also finds `use` statement spans.
 pub fn find_references(
     word: &str,
-    all_docs: &[(Url, Arc<Vec<Statement>>)],
+    all_docs: &[(Url, Arc<ParsedDoc>)],
     include_declaration: bool,
 ) -> Vec<Location> {
     find_references_inner(word, all_docs, include_declaration, false)
@@ -21,7 +20,7 @@ pub fn find_references(
 /// Used by rename so that `use Foo;` statements are also updated.
 pub fn find_references_with_use(
     word: &str,
-    all_docs: &[(Url, Arc<Vec<Statement>>)],
+    all_docs: &[(Url, Arc<ParsedDoc>)],
     include_declaration: bool,
 ) -> Vec<Location> {
     find_references_inner(word, all_docs, include_declaration, true)
@@ -29,27 +28,28 @@ pub fn find_references_with_use(
 
 fn find_references_inner(
     word: &str,
-    all_docs: &[(Url, Arc<Vec<Statement>>)],
+    all_docs: &[(Url, Arc<ParsedDoc>)],
     include_declaration: bool,
     include_use: bool,
 ) -> Vec<Location> {
     let mut locations = Vec::new();
 
-    for (uri, ast) in all_docs {
+    for (uri, doc) in all_docs {
+        let source = doc.source();
+        let stmts = &doc.program().stmts;
         let mut spans = Vec::new();
         if include_use {
-            refs_in_stmts_with_use(ast, word, &mut spans);
+            refs_in_stmts_with_use(stmts, word, &mut spans);
         } else {
-            refs_in_stmts(ast, word, &mut spans);
+            refs_in_stmts(stmts, word, &mut spans);
         }
 
         if !include_declaration {
-            // Filter out declaration spans (the definition site)
-            spans.retain(|span| !is_declaration_span(ast, word, span));
+            spans.retain(|span| !is_declaration_span(stmts, word, span));
         }
 
         for span in spans {
-            let start = span_to_position(&span);
+            let start = offset_to_position(source, span.start);
             let end = Position {
                 line: start.line,
                 character: start.character + word.len() as u32,
@@ -65,43 +65,45 @@ fn find_references_inner(
 }
 
 /// Returns true if this span is the declaration site (function/class/method name).
-fn is_declaration_span(ast: &[Statement], word: &str, span: &php_parser_rs::lexer::token::Span) -> bool {
-    use php_parser_rs::parser::ast::{classes::ClassMember, namespaces::NamespaceStatement};
-
-    fn check(stmts: &[Statement], word: &str, span: &php_parser_rs::lexer::token::Span) -> bool {
+fn is_declaration_span(stmts: &[Stmt<'_, '_>], word: &str, span: &Span) -> bool {
+    fn check(stmts: &[Stmt<'_, '_>], word: &str, span: &Span) -> bool {
         for stmt in stmts {
-            match stmt {
-                Statement::Function(f) if f.name.value.to_string() == word => {
-                    if spans_equal(&f.name.span, span) { return true; }
+            match &stmt.kind {
+                StmtKind::Function(f) if f.name == word => {
+                    if spans_equal(&stmt.span, span) {
+                        return true;
+                    }
                 }
-                Statement::Class(c) if c.name.value.to_string() == word => {
-                    if spans_equal(&c.name.span, span) { return true; }
+                StmtKind::Class(c) if c.name == Some(word) => {
+                    if spans_equal(&stmt.span, span) {
+                        return true;
+                    }
                 }
-                Statement::Class(c) => {
-                    for member in &c.body.members {
-                        match member {
-                            ClassMember::ConcreteMethod(m) if m.name.value.to_string() == word => {
-                                if spans_equal(&m.name.span, span) { return true; }
+                StmtKind::Class(c) => {
+                    for member in c.members.iter() {
+                        if let ClassMemberKind::Method(m) = &member.kind {
+                            if m.name == word && spans_equal(&member.span, span) {
+                                return true;
                             }
-                            ClassMember::AbstractMethod(m) if m.name.value.to_string() == word => {
-                                if spans_equal(&m.name.span, span) { return true; }
-                            }
-                            _ => {}
                         }
                     }
                 }
-                Statement::Interface(i) if i.name.value.to_string() == word => {
-                    if spans_equal(&i.name.span, span) { return true; }
+                StmtKind::Interface(i) if i.name == word => {
+                    if spans_equal(&stmt.span, span) {
+                        return true;
+                    }
                 }
-                Statement::Trait(t) if t.name.value.to_string() == word => {
-                    if spans_equal(&t.name.span, span) { return true; }
+                StmtKind::Trait(t) if t.name == word => {
+                    if spans_equal(&stmt.span, span) {
+                        return true;
+                    }
                 }
-                Statement::Namespace(ns) => {
-                    let stmts = match ns {
-                        NamespaceStatement::Unbraced(u) => &u.statements[..],
-                        NamespaceStatement::Braced(b) => &b.body.statements[..],
-                    };
-                    if check(stmts, word, span) { return true; }
+                StmtKind::Namespace(ns) => {
+                    if let NamespaceBody::Braced(inner) = &ns.body {
+                        if check(inner, word, span) {
+                            return true;
+                        }
+                    }
                 }
                 _ => {}
             }
@@ -109,30 +111,23 @@ fn is_declaration_span(ast: &[Statement], word: &str, span: &php_parser_rs::lexe
         false
     }
 
-    check(ast, word, span)
+    check(stmts, word, span)
 }
 
-fn spans_equal(a: &php_parser_rs::lexer::token::Span, b: &php_parser_rs::lexer::token::Span) -> bool {
-    a.line == b.line && a.column == b.column
+fn spans_equal(a: &Span, b: &Span) -> bool {
+    a.start == b.start
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn parse_ast(source: &str) -> Vec<Statement> {
-        match php_parser_rs::parser::parse(source) {
-            Ok(ast) => ast,
-            Err(stack) => stack.partial,
-        }
-    }
-
     fn uri(path: &str) -> Url {
         Url::parse(&format!("file://{path}")).unwrap()
     }
 
-    fn doc(path: &str, source: &str) -> (Url, Arc<Vec<Statement>>) {
-        (uri(path), Arc::new(parse_ast(source)))
+    fn doc(path: &str, source: &str) -> (Url, Arc<ParsedDoc>) {
+        (uri(path), Arc::new(ParsedDoc::parse(source.to_string())))
     }
 
     #[test]
