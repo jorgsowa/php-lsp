@@ -4,7 +4,7 @@ use tower_lsp::lsp_types::{
     CodeAction, CodeActionKind, CodeActionOrCommand, Position, Range, TextEdit, Url, WorkspaceEdit,
 };
 
-use crate::ast::{format_type_hint, offset_to_position, ParsedDoc};
+use crate::ast::{ParsedDoc, format_type_hint, offset_to_position};
 use crate::docblock::docblock_before;
 
 /// Return "Generate PHPDoc" code actions for any function/method whose declaration line
@@ -31,7 +31,9 @@ fn collect(
         match &stmt.kind {
             StmtKind::Function(f) => {
                 let fn_line = offset_to_position(source, stmt.span.start).line;
-                if line_in_range(fn_line, range) && docblock_before(source, stmt.span.start).is_none() {
+                if line_in_range(fn_line, range)
+                    && docblock_before(source, stmt.span.start).is_none()
+                {
                     let ret = f.return_type.as_ref().map(|t| format_type_hint(t));
                     if let Some(action) = make_action(uri, source, fn_line, &f.params, ret) {
                         out.push(action);
@@ -46,7 +48,8 @@ fn collect(
                             && docblock_before(source, member.span.start).is_none()
                         {
                             let ret = m.return_type.as_ref().map(|t| format_type_hint(t));
-                            if let Some(action) = make_action(uri, source, fn_line, &m.params, ret) {
+                            if let Some(action) = make_action(uri, source, fn_line, &m.params, ret)
+                            {
                                 out.push(action);
                             }
                         }
@@ -103,8 +106,17 @@ fn make_action(
     lines.push(format!("{indent} */"));
 
     let new_text = lines.join("\n") + "\n";
-    let pos = Position { line: fn_line, character: 0 };
-    let edit = TextEdit { range: Range { start: pos, end: pos }, new_text };
+    let pos = Position {
+        line: fn_line,
+        character: 0,
+    };
+    let edit = TextEdit {
+        range: Range {
+            start: pos,
+            end: pos,
+        },
+        new_text,
+    };
 
     let mut changes = std::collections::HashMap::new();
     changes.insert(uri.clone(), vec![edit]);
@@ -112,7 +124,10 @@ fn make_action(
     Some(CodeActionOrCommand::CodeAction(CodeAction {
         title: "Generate PHPDoc".to_string(),
         kind: Some(CodeActionKind::REFACTOR),
-        edit: Some(WorkspaceEdit { changes: Some(changes), ..Default::default() }),
+        edit: Some(WorkspaceEdit {
+            changes: Some(changes),
+            ..Default::default()
+        }),
         ..Default::default()
     }))
 }
@@ -126,7 +141,7 @@ mod tests {
     }
 
     fn uri() -> Url {
-        Url::from_file_path("/tmp/test.php").unwrap()
+        Url::parse("file:///tmp/test.php").unwrap()
     }
 
     fn point(line: u32) -> Range {
@@ -158,7 +173,10 @@ mod tests {
         let src = "<?php\n/** Greets someone. */\nfunction greet(string $name): string {}";
         let d = doc(src);
         let actions = phpdoc_actions(&uri(), &d, src, point(2));
-        assert!(actions.is_empty(), "should not offer action when docblock exists");
+        assert!(
+            actions.is_empty(),
+            "should not offer action when docblock exists"
+        );
     }
 
     #[test]
@@ -194,7 +212,10 @@ mod tests {
         if let CodeActionOrCommand::CodeAction(a) = &actions[0] {
             let changes = a.edit.as_ref().unwrap().changes.as_ref().unwrap();
             let edits = changes.values().next().unwrap();
-            assert!(edits[0].new_text.starts_with("    /**"), "expected 4-space indent");
+            assert!(
+                edits[0].new_text.starts_with("    /**"),
+                "expected 4-space indent"
+            );
         } else {
             panic!("expected CodeAction");
         }

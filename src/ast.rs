@@ -34,9 +34,8 @@ impl ParsedDoc {
         // SAFETY: Both boxes are on the heap; moving a Box<T> moves the pointer,
         // not the heap data. These references therefore remain valid for as long
         // as the boxes (and hence `self`) are alive.
-        let src_ref: &'static str = unsafe {
-            std::mem::transmute::<&str, &'static str>(source_box.as_str())
-        };
+        let src_ref: &'static str =
+            unsafe { std::mem::transmute::<&str, &'static str>(source_box.as_str()) };
         let arena_ref: &'static bumpalo::Bump = unsafe {
             std::mem::transmute::<&bumpalo::Bump, &'static bumpalo::Bump>(arena_box.as_ref())
         };
@@ -130,8 +129,16 @@ fn fmt_kind(kind: &TypeHintKind<'_, '_>) -> String {
         TypeHintKind::Named(name) => name.to_string_repr().to_string(),
         TypeHintKind::Keyword(builtin, _) => builtin.as_str().to_string(),
         TypeHintKind::Nullable(inner) => format!("?{}", format_type_hint(inner)),
-        TypeHintKind::Union(types) => types.iter().map(format_type_hint).collect::<Vec<_>>().join("|"),
-        TypeHintKind::Intersection(types) => types.iter().map(format_type_hint).collect::<Vec<_>>().join("&"),
+        TypeHintKind::Union(types) => types
+            .iter()
+            .map(format_type_hint)
+            .collect::<Vec<_>>()
+            .join("|"),
+        TypeHintKind::Intersection(types) => types
+            .iter()
+            .map(format_type_hint)
+            .collect::<Vec<_>>()
+            .join("&"),
     }
 }
 
@@ -156,7 +163,10 @@ mod tests {
     fn offset_to_position_first_line() {
         assert_eq!(
             offset_to_position("<?php\nfoo", 0),
-            Position { line: 0, character: 0 }
+            Position {
+                line: 0,
+                character: 0
+            }
         );
     }
 
@@ -165,7 +175,10 @@ mod tests {
         // "<?php\n" — offset 6 is start of line 1
         assert_eq!(
             offset_to_position("<?php\nfoo", 6),
-            Position { line: 1, character: 0 }
+            Position {
+                line: 1,
+                character: 0
+            }
         );
     }
 

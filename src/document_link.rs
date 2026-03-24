@@ -2,7 +2,7 @@
 use php_ast::{ExprKind, NamespaceBody, Stmt, StmtKind};
 use tower_lsp::lsp_types::{DocumentLink, Position, Range, Url};
 
-use crate::ast::{offset_to_position, ParsedDoc};
+use crate::ast::{ParsedDoc, offset_to_position};
 
 pub fn document_links(uri: &Url, doc: &ParsedDoc, source: &str) -> Vec<DocumentLink> {
     let mut links = Vec::new();
@@ -91,12 +91,19 @@ fn link_from_path_expr(
         let base = uri.to_file_path().ok()?;
         let dir = base.parent()?;
         Url::from_file_path(
-            dir.join(raw).canonicalize().unwrap_or_else(|_| dir.join(raw)),
+            dir.join(raw)
+                .canonicalize()
+                .unwrap_or_else(|_| dir.join(raw)),
         )
         .ok()
     };
 
-    Some(DocumentLink { range, target, tooltip: None, data: None })
+    Some(DocumentLink {
+        range,
+        target,
+        tooltip: None,
+        data: None,
+    })
 }
 
 /// Scan source text for `@link` and `@see` tags with HTTP(S) URLs in docblock/line comments.
@@ -118,7 +125,10 @@ fn collect_docblock_links(source: &str, out: &mut Vec<DocumentLink>) {
                 }
                 if let Ok(target) = Url::parse(url_str) {
                     if let Some(col) = line.find(url_str) {
-                        let start = Position { line: line_idx as u32, character: col as u32 };
+                        let start = Position {
+                            line: line_idx as u32,
+                            character: col as u32,
+                        };
                         let end = Position {
                             line: line_idx as u32,
                             character: (col + url_str.len()) as u32,
@@ -145,7 +155,7 @@ mod tests {
     }
 
     fn dummy_uri() -> Url {
-        Url::from_file_path("/project/src/Foo.php").unwrap()
+        Url::parse("file:///project/src/Foo.php").unwrap()
     }
 
     #[test]
@@ -154,7 +164,10 @@ mod tests {
         let d = doc(src);
         let links = document_links(&dummy_uri(), &d, src);
         assert_eq!(links.len(), 1);
-        assert_eq!(links[0].target.as_ref().unwrap().as_str(), "https://php.net/array_map");
+        assert_eq!(
+            links[0].target.as_ref().unwrap().as_str(),
+            "https://php.net/array_map"
+        );
     }
 
     #[test]
@@ -163,7 +176,10 @@ mod tests {
         let d = doc(src);
         let links = document_links(&dummy_uri(), &d, src);
         assert_eq!(links.len(), 1);
-        assert_eq!(links[0].target.as_ref().unwrap().as_str(), "https://example.com/docs");
+        assert_eq!(
+            links[0].target.as_ref().unwrap().as_str(),
+            "https://example.com/docs"
+        );
     }
 
     #[test]
