@@ -4,8 +4,9 @@
 use std::collections::HashMap;
 
 use php_ast::{ClassMemberKind, ExprKind, NamespaceBody, Stmt, StmtKind};
+use tower_lsp::lsp_types::Position;
 
-use crate::ast::ParsedDoc;
+use crate::ast::{offset_to_position, ParsedDoc};
 
 /// Maps variable name (with `$`) → class name.
 #[derive(Debug, Default, Clone)]
@@ -93,6 +94,122 @@ fn collect_methods_stmts(stmts: &[Stmt<'_, '_>], class_name: &str, out: &mut Vec
             StmtKind::Namespace(ns) => {
                 if let NamespaceBody::Braced(inner) = &ns.body {
                     collect_methods_stmts(inner, class_name, out);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// All members of a named class split by kind and static-ness.
+#[derive(Debug, Default)]
+pub struct ClassMembers {
+    /// (name, is_static)
+    pub methods: Vec<(String, bool)>,
+    /// (name, is_static)
+    pub properties: Vec<(String, bool)>,
+    pub constants: Vec<String>,
+}
+
+/// Return all members (methods, properties, constants) of `class_name`.
+pub fn members_of_class(doc: &ParsedDoc, class_name: &str) -> ClassMembers {
+    let mut out = ClassMembers::default();
+    collect_members_stmts(&doc.program().stmts, class_name, &mut out);
+    out
+}
+
+fn collect_members_stmts(stmts: &[Stmt<'_, '_>], class_name: &str, out: &mut ClassMembers) {
+    for stmt in stmts {
+        match &stmt.kind {
+            StmtKind::Class(c) if c.name == Some(class_name) => {
+                for member in c.members.iter() {
+                    match &member.kind {
+                        ClassMemberKind::Method(m) => {
+                            out.methods.push((m.name.to_string(), m.is_static));
+                        }
+                        ClassMemberKind::Property(p) => {
+                            out.properties.push((p.name.to_string(), p.is_static));
+                        }
+                        ClassMemberKind::ClassConst(c) => {
+                            out.constants.push(c.name.to_string());
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            StmtKind::Namespace(ns) => {
+                if let NamespaceBody::Braced(inner) = &ns.body {
+                    collect_members_stmts(inner, class_name, out);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Return the name of the class whose body contains `position`, or `None`.
+pub fn enclosing_class_at(source: &str, doc: &ParsedDoc, position: Position) -> Option<String> {
+    enclosing_class_in_stmts(source, &doc.program().stmts, position)
+}
+
+fn enclosing_class_in_stmts(
+    source: &str,
+    stmts: &[Stmt<'_, '_>],
+    pos: Position,
+) -> Option<String> {
+    for stmt in stmts {
+        match &stmt.kind {
+            StmtKind::Class(c) => {
+                let start = offset_to_position(source, stmt.span.start).line;
+                let end = offset_to_position(source, stmt.span.end).line;
+                if pos.line >= start && pos.line <= end {
+                    return c.name.map(|n| n.to_string());
+                }
+            }
+            StmtKind::Namespace(ns) => {
+                if let NamespaceBody::Braced(inner) = &ns.body {
+                    if let Some(found) = enclosing_class_in_stmts(source, inner, pos) {
+                        return Some(found);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Return the parameter names of the function or method named `func_name`.
+pub fn params_of_function(doc: &ParsedDoc, func_name: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    collect_params_stmts(&doc.program().stmts, func_name, &mut out);
+    out
+}
+
+fn collect_params_stmts(stmts: &[Stmt<'_, '_>], func_name: &str, out: &mut Vec<String>) {
+    for stmt in stmts {
+        match &stmt.kind {
+            StmtKind::Function(f) if f.name == func_name => {
+                for p in f.params.iter() {
+                    out.push(p.name.to_string());
+                }
+                return;
+            }
+            StmtKind::Class(c) => {
+                for member in c.members.iter() {
+                    if let ClassMemberKind::Method(m) = &member.kind {
+                        if m.name == func_name {
+                            for p in m.params.iter() {
+                                out.push(p.name.to_string());
+                            }
+                            return;
+                        }
+                    }
+                }
+            }
+            StmtKind::Namespace(ns) => {
+                if let NamespaceBody::Braced(inner) = &ns.body {
+                    collect_params_stmts(inner, func_name, out);
                 }
             }
             _ => {}

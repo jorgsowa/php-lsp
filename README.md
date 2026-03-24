@@ -13,7 +13,7 @@ A PHP Language Server Protocol (LSP) implementation written in Rust.
 - **Rename** — rename any function, method, or class across all open files, including its `use` import statements
 
 ### Editing aids
-- **Completion** — keywords, functions, classes, methods, properties, constants; `->` completions scoped to the inferred receiver type (`$obj = new Foo()` → `$obj->` shows only `Foo`'s methods); cross-file symbols from all indexed documents
+- **Completion** — keywords, ~200 built-in PHP functions, classes, methods, properties, constants; `->` completions scoped to the inferred receiver type (`$obj = new Foo()` → `$obj->` shows only `Foo`'s instance members); `$this->` inside a class method shows the enclosing class's instance members; `ClassName::` shows static methods, static properties, and constants; `funcName(` offers named-argument (`param:`) completions; cross-file symbols from all indexed documents
 - **Signature help** — parameter hints while typing a call, including overload narrowing
 - **Inlay hints** — parameter name labels at call sites; return-type labels after assigned function calls
 - **Code actions** — "Add use import" quick-fix for undefined class names; PHPDoc stub generation for undocumented functions and methods
