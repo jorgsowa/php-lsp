@@ -61,6 +61,26 @@ impl Psr4Map {
         Psr4Map { entries }
     }
 
+    /// Reverse of `resolve`: given a file path, return the PSR-4 fully-qualified
+    /// class name that maps to it, or `None` if the path doesn't fall under any
+    /// known namespace prefix.
+    pub fn file_to_fqn(&self, path: &Path) -> Option<String> {
+        for (prefix, base_dirs) in &self.entries {
+            for base in base_dirs {
+                if let Ok(rel) = path.strip_prefix(base) {
+                    let rel_str = rel.to_string_lossy();
+                    let without_ext = rel_str.strip_suffix(".php")?;
+                    // Normalise path separators to backslashes (PSR-4 uses `\`)
+                    let class_path = without_ext
+                        .replace(std::path::MAIN_SEPARATOR, "\\")
+                        .replace('/', "\\");
+                    return Some(format!("{}{}", prefix, class_path));
+                }
+            }
+        }
+        None
+    }
+
     /// Resolve a fully-qualified class name to an existing file on disk.
     ///
     /// `class_name` may or may not have a leading `\`.

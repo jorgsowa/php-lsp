@@ -6,7 +6,7 @@ A PHP Language Server Protocol (LSP) implementation written in Rust.
 
 ### Language intelligence
 - **Diagnostics** — syntax errors reported in real time; semantic warnings for undefined symbols, argument-count mismatches, and undefined variables inside function/method bodies
-- **Hover** — PHP signature for functions, methods, classes, interfaces, and traits; includes `@param`/`@return` docblock annotations when present
+- **Hover** — PHP signature for functions, methods, classes, interfaces, and traits; includes `@param`/`@return`/`@throws`/`@deprecated`/`@see`/`@link` docblock annotations when present; deprecated symbols show a `> Deprecated` banner
 - **Go-to-definition** — jump to where a symbol is declared, including across open files and into Composer vendor packages via PSR-4 autoload maps
 - **Go-to-implementation** — find all classes that implement an interface or extend a class
 - **Find references** — locate every usage of a symbol across the workspace, including `use` import statements
@@ -23,7 +23,7 @@ A PHP Language Server Protocol (LSP) implementation written in Rust.
 - **Document symbols** — file outline of all functions, classes, methods, properties, and constants
 - **Workspace symbols** — fuzzy-search symbols across the entire project
 - **Call hierarchy** — incoming callers and outgoing callees for any function or method, including cross-file
-- **Type hierarchy** — navigate supertypes and subtypes for classes and interfaces
+- **Type hierarchy** — navigate supertypes and subtypes for classes and interfaces; registered dynamically so all LSP clients discover it correctly
 - **Go-to-declaration** — jump to the abstract or interface declaration of a method
 - **Go-to-type-definition** — jump to the class of the type of a variable
 - **Selection range** — smart expand/shrink selection (Alt+Shift+→) from expression → statement → function/class → file
@@ -31,13 +31,15 @@ A PHP Language Server Protocol (LSP) implementation written in Rust.
 - **Folding ranges** — collapse functions, classes, methods, loops, and control-flow blocks
 
 ### Syntax & formatting
-- **Semantic tokens** — richer syntax highlighting for functions, methods, classes, interfaces, traits, parameters, and properties with `declaration`/`static`/`abstract`/`readonly` modifiers
+- **Semantic tokens** — richer syntax highlighting for functions, methods, classes, interfaces, traits, parameters, and properties with `declaration`/`static`/`abstract`/`readonly`/`deprecated` modifiers; symbols marked `@deprecated` render with strikethrough in supporting editors; supports full, range, and incremental delta requests
+- **On-type formatting** — auto-indents the new line on Enter (copies surrounding indentation, adds one level after `{`); aligns `}` to its matching `{` on keypress
 - **Formatting** — delegates to `php-cs-fixer` (PSR-12) or `phpcbf`; supports full-file and range formatting
 
 ### Workspace
 - **Workspace indexing** — background scan indexes all `*.php` files on startup (including `vendor/`), with a 50 000-file cap; LRU eviction keeps memory bounded at 10 000 indexed-only files
 - **PSR-4 resolution** — reads `composer.json` and `vendor/composer/installed.json` to resolve fully-qualified class names to files on demand
 - **File watching** — index stays up to date when files are created, changed, or deleted on disk
+- **File rename** — moving or renaming a PHP file automatically updates all `use` import statements across the workspace to reflect the new PSR-4 fully-qualified class name (`workspace/willRenameFiles`)
 - **Async parsing** — edits are debounced (100 ms) and parsed off the tokio runtime; stale results from superseded edits are discarded
 
 ## Installation

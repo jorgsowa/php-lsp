@@ -7,6 +7,8 @@ use tower_lsp::{Client, LanguageServer, async_trait};
 
 use crate::ast::ParsedDoc;
 use crate::autoload::Psr4Map;
+use crate::file_rename::use_edits_for_rename;
+use crate::on_type_format::on_type_format;
 use crate::call_hierarchy::{incoming_calls, outgoing_calls, prepare_call_hierarchy};
 use crate::code_lens::code_lenses;
 use crate::completion::filtered_completions_at;
@@ -26,7 +28,9 @@ use crate::references::find_references;
 use crate::rename::{prepare_rename, rename};
 use crate::selection_range::selection_ranges;
 use crate::semantic_diagnostics::semantic_diagnostics;
-use crate::semantic_tokens::{legend, semantic_tokens};
+use crate::semantic_tokens::{
+    compute_token_delta, legend, semantic_tokens, semantic_tokens_range, token_hash,
+};
 use crate::signature_help::signature_help;
 use crate::symbols::{document_symbols, workspace_symbols};
 use crate::type_definition::goto_type_definition;
@@ -106,7 +110,10 @@ impl LanguageServer for Backend {
                     SemanticTokensServerCapabilities::SemanticTokensOptions(
                         SemanticTokensOptions {
                             legend: legend(),
-                            full: Some(SemanticTokensFullOptions::Bool(true)),
+                            full: Some(SemanticTokensFullOptions::Delta {
+                                delta: Some(true),
+                            }),
+                            range: Some(true),
                             ..Default::default()
                         },
                     ),
@@ -123,6 +130,10 @@ impl LanguageServer for Backend {
                 }),
                 document_formatting_provider: Some(OneOf::Left(true)),
                 document_range_formatting_provider: Some(OneOf::Left(true)),
+                document_on_type_formatting_provider: Some(DocumentOnTypeFormattingOptions {
+                    first_trigger_character: "}".to_string(),
+                    more_trigger_character: Some(vec!["\n".to_string()]),
+                }),
                 document_link_provider: Some(DocumentLinkOptions {
                     resolve_provider: Some(false),
                     work_done_progress_options: Default::default(),
@@ -142,6 +153,22 @@ impl LanguageServer for Backend {
                         work_done_progress_options: Default::default(),
                     },
                 )),
+                workspace: Some(WorkspaceServerCapabilities {
+                    file_operations: Some(WorkspaceFileOperationsServerCapabilities {
+                        will_rename: Some(FileOperationRegistrationOptions {
+                            filters: vec![FileOperationFilter {
+                                scheme: Some("file".to_string()),
+                                pattern: FileOperationPattern {
+                                    glob: "**/*.php".to_string(),
+                                    matches: Some(FileOperationPatternKind::File),
+                                    options: None,
+                                },
+                            }],
+                        }),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }),
                 ..Default::default()
             },
             ..Default::default()
@@ -149,22 +176,32 @@ impl LanguageServer for Backend {
     }
 
     async fn initialized(&self, _params: InitializedParams) {
-        // Register a file watcher so we hear about PHP files created/changed/deleted on disk
-        let registration = Registration {
-            id: "php-lsp-file-watcher".to_string(),
-            method: "workspace/didChangeWatchedFiles".to_string(),
-            register_options: Some(
-                serde_json::to_value(DidChangeWatchedFilesRegistrationOptions {
-                    watchers: vec![FileSystemWatcher {
-                        glob_pattern: GlobPattern::String("**/*.php".to_string()),
-                        kind: None,
-                    }],
-                })
-                .unwrap(),
-            ),
-        };
+        // Register dynamic capabilities: file watcher + type hierarchy
+        let php_selector = serde_json::json!([{"language": "php"}]);
+        let registrations = vec![
+            Registration {
+                id: "php-lsp-file-watcher".to_string(),
+                method: "workspace/didChangeWatchedFiles".to_string(),
+                register_options: Some(
+                    serde_json::to_value(DidChangeWatchedFilesRegistrationOptions {
+                        watchers: vec![FileSystemWatcher {
+                            glob_pattern: GlobPattern::String("**/*.php".to_string()),
+                            kind: None,
+                        }],
+                    })
+                    .unwrap(),
+                ),
+            },
+            // Type hierarchy has no static ServerCapabilities field in lsp-types 0.94,
+            // so register it dynamically here.
+            Registration {
+                id: "php-lsp-type-hierarchy".to_string(),
+                method: "textDocument/prepareTypeHierarchy".to_string(),
+                register_options: Some(serde_json::json!({"documentSelector": php_selector})),
+            },
+        ];
         self.client
-            .register_capability(vec![registration])
+            .register_capability(registrations)
             .await
             .ok();
 
@@ -460,6 +497,60 @@ impl LanguageServer for Backend {
         })))
     }
 
+    async fn semantic_tokens_range(
+        &self,
+        params: SemanticTokensRangeParams,
+    ) -> Result<Option<SemanticTokensRangeResult>> {
+        let uri = &params.text_document.uri;
+        let doc = match self.docs.get_doc(uri) {
+            Some(d) => d,
+            None => {
+                return Ok(Some(SemanticTokensRangeResult::Tokens(SemanticTokens {
+                    result_id: None,
+                    data: vec![],
+                })));
+            }
+        };
+        let tokens = semantic_tokens_range(doc.source(), &doc, params.range);
+        Ok(Some(SemanticTokensRangeResult::Tokens(SemanticTokens {
+            result_id: None,
+            data: tokens,
+        })))
+    }
+
+    async fn semantic_tokens_full_delta(
+        &self,
+        params: SemanticTokensDeltaParams,
+    ) -> Result<Option<SemanticTokensFullDeltaResult>> {
+        let uri = &params.text_document.uri;
+        let doc = match self.docs.get_doc(uri) {
+            Some(d) => d,
+            None => return Ok(None),
+        };
+
+        let new_tokens = semantic_tokens(doc.source(), &doc);
+        let new_result_id = token_hash(&new_tokens);
+        let prev_id = &params.previous_result_id;
+
+        let result = match self.docs.get_token_cache(uri, prev_id) {
+            Some(old_tokens) => {
+                let edits = compute_token_delta(&old_tokens, &new_tokens);
+                SemanticTokensFullDeltaResult::TokensDelta(SemanticTokensDelta {
+                    result_id: Some(new_result_id.clone()),
+                    edits,
+                })
+            }
+            // Unknown previous result — fall back to full tokens
+            None => SemanticTokensFullDeltaResult::Tokens(SemanticTokens {
+                result_id: Some(new_result_id.clone()),
+                data: new_tokens.clone(),
+            }),
+        };
+
+        self.docs.store_token_cache(uri, new_result_id, new_tokens);
+        Ok(Some(result))
+    }
+
     async fn selection_range(
         &self,
         params: SelectionRangeParams,
@@ -649,6 +740,21 @@ impl LanguageServer for Backend {
         Ok(format_range(&source, params.range))
     }
 
+    async fn on_type_formatting(
+        &self,
+        params: DocumentOnTypeFormattingParams,
+    ) -> Result<Option<Vec<TextEdit>>> {
+        let uri = &params.text_document_position.text_document.uri;
+        let source = self.docs.get(uri).unwrap_or_default();
+        let edits = on_type_format(
+            &source,
+            params.text_document_position.position,
+            &params.ch,
+            &params.options,
+        );
+        Ok(if edits.is_empty() { None } else { Some(edits) })
+    }
+
     async fn execute_command(
         &self,
         params: ExecuteCommandParams,
@@ -704,6 +810,71 @@ impl LanguageServer for Backend {
                 Ok(None)
             }
             _ => Ok(None),
+        }
+    }
+
+    async fn will_rename_files(
+        &self,
+        params: RenameFilesParams,
+    ) -> Result<Option<WorkspaceEdit>> {
+        let psr4 = self.psr4.read().unwrap();
+        let all_docs = self.docs.all_docs();
+        let mut merged_changes: std::collections::HashMap<
+            tower_lsp::lsp_types::Url,
+            Vec<tower_lsp::lsp_types::TextEdit>,
+        > = std::collections::HashMap::new();
+
+        for file_rename in &params.files {
+            let old_path = tower_lsp::lsp_types::Url::parse(&file_rename.old_uri)
+                .ok()
+                .and_then(|u| u.to_file_path().ok());
+            let new_path = tower_lsp::lsp_types::Url::parse(&file_rename.new_uri)
+                .ok()
+                .and_then(|u| u.to_file_path().ok());
+
+            let (Some(old_path), Some(new_path)) = (old_path, new_path) else {
+                continue;
+            };
+
+            let old_fqn = psr4.file_to_fqn(&old_path);
+            let new_fqn = psr4.file_to_fqn(&new_path);
+
+            let (Some(old_fqn), Some(new_fqn)) = (old_fqn, new_fqn) else {
+                continue;
+            };
+
+            let edit = use_edits_for_rename(&old_fqn, &new_fqn, &all_docs);
+            if let Some(changes) = edit.changes {
+                for (uri, edits) in changes {
+                    merged_changes.entry(uri).or_default().extend(edits);
+                }
+            }
+        }
+
+        Ok(if merged_changes.is_empty() {
+            None
+        } else {
+            Some(WorkspaceEdit {
+                changes: Some(merged_changes),
+                ..Default::default()
+            })
+        })
+    }
+
+    async fn did_rename_files(&self, params: RenameFilesParams) {
+        for file_rename in &params.files {
+            // Drop the old URI from the index
+            if let Ok(old_uri) = tower_lsp::lsp_types::Url::parse(&file_rename.old_uri) {
+                self.docs.remove(&old_uri);
+            }
+            // Index the file at its new location
+            if let Ok(new_uri) = tower_lsp::lsp_types::Url::parse(&file_rename.new_uri) {
+                if let Ok(path) = new_uri.to_file_path() {
+                    if let Ok(text) = tokio::fs::read_to_string(&path).await {
+                        self.docs.index(new_uri, &text);
+                    }
+                }
+            }
         }
     }
 

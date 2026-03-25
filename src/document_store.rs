@@ -2,7 +2,7 @@ use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 
 use dashmap::DashMap;
-use tower_lsp::lsp_types::{Diagnostic, Url};
+use tower_lsp::lsp_types::{Diagnostic, SemanticToken, Url};
 
 use crate::ast::ParsedDoc;
 use crate::diagnostics::parse_document;
@@ -23,6 +23,9 @@ pub struct DocumentStore {
     map: DashMap<Url, Document>,
     /// Insertion-order queue of indexed-only URIs for LRU eviction.
     indexed_order: Mutex<VecDeque<Url>>,
+    /// Cached semantic tokens per document: (result_id, tokens).
+    /// Used to compute incremental deltas for `textDocument/semanticTokens/full/delta`.
+    token_cache: DashMap<Url, (String, Vec<SemanticToken>)>,
 }
 
 impl DocumentStore {
@@ -30,6 +33,7 @@ impl DocumentStore {
         DocumentStore {
             map: DashMap::new(),
             indexed_order: Mutex::new(VecDeque::new()),
+            token_cache: DashMap::new(),
         }
     }
 
@@ -111,6 +115,21 @@ impl DocumentStore {
 
     pub fn remove(&self, uri: &Url) {
         self.map.remove(uri);
+        self.token_cache.remove(uri);
+    }
+
+    /// Cache the semantic tokens computed for a delta response.
+    /// `result_id` is an opaque string (a hash of the token data) returned to the client.
+    pub fn store_token_cache(&self, uri: &Url, result_id: String, tokens: Vec<SemanticToken>) {
+        self.token_cache.insert(uri.clone(), (result_id, tokens));
+    }
+
+    /// Return the cached tokens if `result_id` matches the stored one.
+    pub fn get_token_cache(&self, uri: &Url, result_id: &str) -> Option<Vec<SemanticToken>> {
+        self.token_cache
+            .get(uri)
+            .filter(|e| e.0.as_str() == result_id)
+            .map(|e| e.1.clone())
     }
 
     /// Returns the live source text (only for open files).

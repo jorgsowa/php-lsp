@@ -1,7 +1,8 @@
 /// Docblock (`/** ... */`) parser.
 ///
 /// Strips the `/**` / `*/` markers and leading `*` from each line, then
-/// extracts `@param`, `@return`, and `@var` annotations.
+/// extracts `@param`, `@return`, `@var`, `@throws`, `@deprecated`, `@see`,
+/// and `@link` annotations.
 
 #[derive(Debug, Default, PartialEq)]
 pub struct Docblock {
@@ -13,6 +14,12 @@ pub struct Docblock {
     pub return_type: Option<DocReturn>,
     /// `@var  TypeHint`
     pub var_type: Option<String>,
+    /// `@deprecated  message`  — `Some("")` when present without a message.
+    pub deprecated: Option<String>,
+    /// `@throws  ClassName  description`
+    pub throws: Vec<DocThrows>,
+    /// `@see target` and `@link url`
+    pub see: Vec<String>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -28,10 +35,30 @@ pub struct DocReturn {
     pub description: String,
 }
 
+#[derive(Debug, PartialEq)]
+pub struct DocThrows {
+    pub class: String,
+    pub description: String,
+}
+
 impl Docblock {
+    /// Returns `true` if the `@deprecated` tag is present.
+    pub fn is_deprecated(&self) -> bool {
+        self.deprecated.is_some()
+    }
+
     /// Format as a Markdown string suitable for LSP hover content.
     pub fn to_markdown(&self) -> String {
         let mut out = String::new();
+
+        if let Some(msg) = &self.deprecated {
+            if msg.is_empty() {
+                out.push_str("> **Deprecated**\n\n");
+            } else {
+                out.push_str(&format!("> **Deprecated**: {}\n\n", msg));
+            }
+        }
+
         if !self.description.is_empty() {
             out.push_str(&self.description);
             out.push_str("\n\n");
@@ -50,6 +77,16 @@ impl Docblock {
             }
             out.push('\n');
         }
+        for t in &self.throws {
+            out.push_str(&format!("**@throws** `{}`", t.class));
+            if !t.description.is_empty() {
+                out.push_str(&format!(" — {}", t.description));
+            }
+            out.push('\n');
+        }
+        for s in &self.see {
+            out.push_str(&format!("**@see** {}\n", s));
+        }
         out.trim_end().to_string()
     }
 }
@@ -65,6 +102,9 @@ pub fn parse_docblock(raw: &str) -> Docblock {
     let mut params: Vec<DocParam> = Vec::new();
     let mut return_type: Option<DocReturn> = None;
     let mut var_type: Option<String> = None;
+    let mut deprecated: Option<String> = None;
+    let mut throws: Vec<DocThrows> = Vec::new();
+    let mut see: Vec<String> = Vec::new();
 
     for line in inner.lines() {
         let line = line.trim();
@@ -96,6 +136,21 @@ pub fn parse_docblock(raw: &str) -> Docblock {
                     let (type_hint, _) = split_first_word(rest);
                     var_type = Some(type_hint.to_string());
                 }
+                "deprecated" => {
+                    deprecated = Some(rest.to_string());
+                }
+                "throws" | "throw" => {
+                    let (class, desc) = split_first_word(rest);
+                    throws.push(DocThrows {
+                        class: class.to_string(),
+                        description: desc.trim().to_string(),
+                    });
+                }
+                "see" | "link" => {
+                    if !rest.is_empty() {
+                        see.push(rest.to_string());
+                    }
+                }
                 _ => {}
             }
         } else if !line.is_empty() && return_type.is_none() && params.is_empty() {
@@ -108,6 +163,9 @@ pub fn parse_docblock(raw: &str) -> Docblock {
         params,
         return_type,
         var_type,
+        deprecated,
+        throws,
+        see,
     }
 }
 
@@ -223,6 +281,7 @@ mod tests {
                 description: "The greeting".to_string(),
             }),
             var_type: None,
+            ..Default::default()
         };
         let md = db.to_markdown();
         assert!(md.contains("Greets the user."));
@@ -255,5 +314,99 @@ mod tests {
         assert_eq!(db.description, "");
         assert!(db.return_type.is_none());
         assert!(db.params.is_empty());
+    }
+
+    #[test]
+    fn parses_deprecated_with_message() {
+        let raw = "/**\n * @deprecated Use newMethod() instead\n */";
+        let db = parse_docblock(raw);
+        assert_eq!(db.deprecated.as_deref(), Some("Use newMethod() instead"));
+        assert!(db.is_deprecated());
+    }
+
+    #[test]
+    fn parses_deprecated_without_message() {
+        let raw = "/** @deprecated */";
+        let db = parse_docblock(raw);
+        assert_eq!(db.deprecated.as_deref(), Some(""));
+        assert!(db.is_deprecated());
+    }
+
+    #[test]
+    fn not_deprecated_when_tag_absent() {
+        let raw = "/** Does stuff. */";
+        let db = parse_docblock(raw);
+        assert!(!db.is_deprecated());
+    }
+
+    #[test]
+    fn parses_throws_tag() {
+        let raw = "/**\n * @throws RuntimeException When something fails\n */";
+        let db = parse_docblock(raw);
+        assert_eq!(db.throws.len(), 1);
+        assert_eq!(db.throws[0].class, "RuntimeException");
+        assert_eq!(db.throws[0].description, "When something fails");
+    }
+
+    #[test]
+    fn parses_multiple_throws() {
+        let raw = "/**\n * @throws InvalidArgumentException\n * @throws RuntimeException Bad state\n */";
+        let db = parse_docblock(raw);
+        assert_eq!(db.throws.len(), 2);
+        assert_eq!(db.throws[0].class, "InvalidArgumentException");
+        assert_eq!(db.throws[1].class, "RuntimeException");
+    }
+
+    #[test]
+    fn parses_see_tag() {
+        let raw = "/**\n * @see OtherClass::method()\n */";
+        let db = parse_docblock(raw);
+        assert_eq!(db.see.len(), 1);
+        assert_eq!(db.see[0], "OtherClass::method()");
+    }
+
+    #[test]
+    fn parses_link_tag() {
+        let raw = "/**\n * @link https://example.com/docs\n */";
+        let db = parse_docblock(raw);
+        assert_eq!(db.see.len(), 1);
+        assert_eq!(db.see[0], "https://example.com/docs");
+    }
+
+    #[test]
+    fn to_markdown_shows_deprecated_banner() {
+        let db = Docblock {
+            deprecated: Some("Use bar() instead".to_string()),
+            description: "Does foo.".to_string(),
+            ..Default::default()
+        };
+        let md = db.to_markdown();
+        assert!(md.contains("> **Deprecated**"), "expected deprecated banner, got: {}", md);
+        assert!(md.contains("Use bar() instead"), "expected deprecation message, got: {}", md);
+    }
+
+    #[test]
+    fn to_markdown_shows_throws() {
+        let db = Docblock {
+            throws: vec![DocThrows {
+                class: "RuntimeException".to_string(),
+                description: "On failure".to_string(),
+            }],
+            ..Default::default()
+        };
+        let md = db.to_markdown();
+        assert!(md.contains("@throws"), "expected @throws in markdown, got: {}", md);
+        assert!(md.contains("RuntimeException"), "expected class name, got: {}", md);
+    }
+
+    #[test]
+    fn to_markdown_shows_see() {
+        let db = Docblock {
+            see: vec!["https://example.com".to_string()],
+            ..Default::default()
+        };
+        let md = db.to_markdown();
+        assert!(md.contains("@see"), "expected @see in markdown, got: {}", md);
+        assert!(md.contains("https://example.com"), "expected url, got: {}", md);
     }
 }

@@ -1,9 +1,13 @@
+use std::hash::{Hash, Hasher};
+
 use php_ast::{ClassMemberKind, ExprKind, NamespaceBody, Stmt, StmtKind};
 use tower_lsp::lsp_types::{
-    SemanticToken, SemanticTokenModifier, SemanticTokenType, SemanticTokensLegend,
+    Range, SemanticToken, SemanticTokenModifier, SemanticTokenType, SemanticTokensEdit,
+    SemanticTokensLegend,
 };
 
 use crate::ast::{ParsedDoc, offset_to_position, str_offset};
+use crate::docblock::{docblock_before, parse_docblock};
 
 // Token type indices — order must match `legend()` vec order
 #[allow(dead_code)]
@@ -25,6 +29,7 @@ const MOD_STATIC: u32 = 1 << 1;
 const MOD_ABSTRACT: u32 = 1 << 2;
 #[allow(dead_code)]
 const MOD_READONLY: u32 = 1 << 3;
+const MOD_DEPRECATED: u32 = 1 << 4;
 
 /// Raw token: (line_0based, col_0based, length, token_type, modifiers_bitmask)
 type RawToken = (u32, u32, u32, u32, u32);
@@ -47,6 +52,7 @@ pub fn legend() -> SemanticTokensLegend {
             SemanticTokenModifier::STATIC,
             SemanticTokenModifier::ABSTRACT,
             SemanticTokenModifier::READONLY,
+            SemanticTokenModifier::DEPRECATED,
         ],
     }
 }
@@ -56,6 +62,86 @@ pub fn semantic_tokens(source: &str, doc: &ParsedDoc) -> Vec<SemanticToken> {
     collect_stmts(source, &doc.program().stmts, &mut raw);
     raw.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
     delta_encode(raw)
+}
+
+/// Return semantic tokens restricted to the given source range.
+/// Useful for editors that only request tokens for the visible viewport.
+pub fn semantic_tokens_range(source: &str, doc: &ParsedDoc, range: Range) -> Vec<SemanticToken> {
+    let mut raw: Vec<RawToken> = Vec::new();
+    collect_stmts(source, &doc.program().stmts, &mut raw);
+    raw.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+
+    let filtered: Vec<RawToken> = raw
+        .into_iter()
+        .filter(|(line, col, _len, _, _)| {
+            let after_start = *line > range.start.line
+                || (*line == range.start.line && *col >= range.start.character);
+            let before_end = *line < range.end.line
+                || (*line == range.end.line && *col < range.end.character);
+            after_start && before_end
+        })
+        .collect();
+
+    delta_encode(filtered)
+}
+
+/// Stable hash of a token list, used as a `result_id` for delta requests.
+/// Identical token sequences always produce the same string.
+pub fn token_hash(tokens: &[SemanticToken]) -> String {
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    for t in tokens {
+        t.delta_line.hash(&mut hasher);
+        t.delta_start.hash(&mut hasher);
+        t.length.hash(&mut hasher);
+        t.token_type.hash(&mut hasher);
+        t.token_modifiers_bitset.hash(&mut hasher);
+    }
+    format!("{:x}", hasher.finish())
+}
+
+/// Compute the minimal single-span edit that transforms `old` into `new`.
+/// Returns an empty vec when the sequences are identical.
+pub fn compute_token_delta(old: &[SemanticToken], new: &[SemanticToken]) -> Vec<SemanticTokensEdit> {
+    let eq = |a: &SemanticToken, b: &SemanticToken| {
+        a.delta_line == b.delta_line
+            && a.delta_start == b.delta_start
+            && a.length == b.length
+            && a.token_type == b.token_type
+            && a.token_modifiers_bitset == b.token_modifiers_bitset
+    };
+
+    // First differing token index
+    let first = old
+        .iter()
+        .zip(new.iter())
+        .position(|(a, b)| !eq(a, b))
+        .unwrap_or(old.len().min(new.len()));
+
+    if first == old.len() && first == new.len() {
+        return vec![];
+    }
+
+    // Trim common suffix (working from the ends of each slice past `first`)
+    let trim = old[first..]
+        .iter()
+        .rev()
+        .zip(new[first..].iter().rev())
+        .take_while(|(a, b)| eq(a, b))
+        .count();
+
+    let old_end = old.len() - trim; // exclusive index in `old`
+    let new_end = new.len() - trim; // exclusive index in `new`
+
+    // Indices in the *flat* u32 array (5 u32s per SemanticToken)
+    let start = (first * 5) as u32;
+    let delete_count = ((old_end - first) * 5) as u32;
+    let insert: Vec<SemanticToken> = new[first..new_end].to_vec();
+
+    vec![SemanticTokensEdit {
+        start,
+        delete_count,
+        data: if insert.is_empty() { None } else { Some(insert) },
+    }]
 }
 
 fn push_at(
@@ -82,6 +168,18 @@ fn push_name(out: &mut Vec<RawToken>, source: &str, name: &str, token_type: u32,
     );
 }
 
+fn deprecated_mod(source: &str, node_start: u32) -> u32 {
+    docblock_before(source, node_start)
+        .map(|raw| {
+            if parse_docblock(&raw).is_deprecated() {
+                MOD_DEPRECATED
+            } else {
+                0
+            }
+        })
+        .unwrap_or(0)
+}
+
 fn collect_stmts(source: &str, stmts: &[Stmt<'_, '_>], out: &mut Vec<RawToken>) {
     for stmt in stmts {
         collect_stmt(source, stmt, out);
@@ -91,7 +189,8 @@ fn collect_stmts(source: &str, stmts: &[Stmt<'_, '_>], out: &mut Vec<RawToken>) 
 fn collect_stmt(source: &str, stmt: &Stmt<'_, '_>, out: &mut Vec<RawToken>) {
     match &stmt.kind {
         StmtKind::Function(f) => {
-            push_name(out, source, f.name, TT_FUNCTION, MOD_DECLARATION);
+            let mods = MOD_DECLARATION | deprecated_mod(source, stmt.span.start);
+            push_name(out, source, f.name, TT_FUNCTION, mods);
             for p in f.params.iter() {
                 push_name(out, source, p.name, TT_PARAMETER, MOD_DECLARATION);
             }
@@ -99,17 +198,20 @@ fn collect_stmt(source: &str, stmt: &Stmt<'_, '_>, out: &mut Vec<RawToken>) {
         }
         StmtKind::Class(c) => {
             if let Some(name) = c.name {
-                push_name(out, source, name, TT_CLASS, MOD_DECLARATION);
+                let mods = MOD_DECLARATION | deprecated_mod(source, stmt.span.start);
+                push_name(out, source, name, TT_CLASS, mods);
             }
             for member in c.members.iter() {
                 collect_class_member(source, member, out);
             }
         }
         StmtKind::Interface(i) => {
-            push_name(out, source, i.name, TT_INTERFACE, MOD_DECLARATION);
+            let mods = MOD_DECLARATION | deprecated_mod(source, stmt.span.start);
+            push_name(out, source, i.name, TT_INTERFACE, mods);
         }
         StmtKind::Trait(t) => {
-            push_name(out, source, t.name, TT_CLASS, MOD_DECLARATION);
+            let mods = MOD_DECLARATION | deprecated_mod(source, stmt.span.start);
+            push_name(out, source, t.name, TT_CLASS, mods);
             for member in t.members.iter() {
                 collect_class_member(source, member, out);
             }
@@ -175,7 +277,7 @@ fn collect_class_member(
     out: &mut Vec<RawToken>,
 ) {
     if let ClassMemberKind::Method(m) = &member.kind {
-        let mut mods = MOD_DECLARATION;
+        let mut mods = MOD_DECLARATION | deprecated_mod(source, member.span.start);
         if m.is_static {
             mods |= MOD_STATIC;
         }
@@ -493,6 +595,48 @@ mod tests {
     fn legend_has_correct_token_count() {
         let l = legend();
         assert_eq!(l.token_types.len(), 9);
-        assert_eq!(l.token_modifiers.len(), 4);
+        assert_eq!(l.token_modifiers.len(), 5);
+    }
+
+    #[test]
+    fn deprecated_function_has_deprecated_modifier() {
+        let src = "<?php\n/** @deprecated Use newFn() instead */\nfunction oldFn() {}";
+        let d = doc(src);
+        let tokens = semantic_tokens(src, &d);
+        assert!(
+            tokens
+                .iter()
+                .any(|t| t.token_type == TT_FUNCTION
+                    && t.token_modifiers_bitset & MOD_DEPRECATED != 0),
+            "expected deprecated modifier on function, got {:?}",
+            tokens
+        );
+    }
+
+    #[test]
+    fn deprecated_method_has_deprecated_modifier() {
+        let src = "<?php\nclass Foo {\n    /** @deprecated */\n    public function oldMethod() {}\n}";
+        let d = doc(src);
+        let tokens = semantic_tokens(src, &d);
+        assert!(
+            tokens
+                .iter()
+                .any(|t| t.token_type == TT_METHOD && t.token_modifiers_bitset & MOD_DEPRECATED != 0),
+            "expected deprecated modifier on method, got {:?}",
+            tokens
+        );
+    }
+
+    #[test]
+    fn non_deprecated_function_has_no_deprecated_modifier() {
+        let src = "<?php\n/** Just a regular function */\nfunction goodFn() {}";
+        let d = doc(src);
+        let tokens = semantic_tokens(src, &d);
+        assert!(
+            tokens
+                .iter()
+                .all(|t| t.token_modifiers_bitset & MOD_DEPRECATED == 0),
+            "expected no deprecated modifier on non-deprecated function"
+        );
     }
 }

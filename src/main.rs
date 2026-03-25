@@ -9,6 +9,8 @@ mod definition;
 mod diagnostics;
 mod docblock;
 mod document_highlight;
+mod file_rename;
+mod on_type_format;
 mod document_link;
 mod document_store;
 mod folding;

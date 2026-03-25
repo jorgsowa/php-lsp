@@ -2,6 +2,22 @@
 
 All notable changes to php-lsp are documented here.
 
+## [0.1.11] — 2026-03-25
+
+### New features
+
+- **Richer docblock parsing** — `@deprecated` (with optional message), `@throws`/`@throw` (class + description), `@see`, and `@link` tags are now parsed and rendered in hover responses. Deprecated symbols display a `> **Deprecated**` banner at the top of the hover tooltip.
+- **Semantic token `deprecated` modifier** — functions, methods, classes, interfaces, and traits annotated with `@deprecated` now carry a `deprecated` modifier in semantic token responses, rendering with strikethrough in supporting editors (VS Code, Neovim with tree-sitter).
+- **Semantic tokens range** (`textDocument/semanticTokens/range`) — clients can now request tokens for a visible viewport range rather than the entire file; the server filters the full token list to the requested range.
+- **Semantic tokens delta** (`textDocument/semanticTokens/full/delta`) — incremental token updates: the server caches the previous token set per document (content-hashed `result_id`) and returns only the changed spans, reducing payload size for large files.
+- **Type hierarchy dynamic registration** — `textDocument/prepareTypeHierarchy` is now registered dynamically via `client/registerCapability` in the `initialized` handler, making it discoverable by all LSP clients (fixes clients that inspect `serverCapabilities` at handshake time).
+- **On-type formatting** (`textDocument/onTypeFormatting`) — two trigger characters:
+  - `}` — de-indents the closing brace to align with its matching `{` line.
+  - `\n` — copies the previous non-empty line's indentation; adds one extra indent level when the previous line ends with `{`.
+- **File rename** (`workspace/willRenameFiles`, `workspace/didRenameFiles`) — moving or renaming a PHP file automatically updates all `use` import statements across the workspace to reflect the new PSR-4 fully-qualified class name; the index is kept current on `didRenameFiles`.
+- **PHPDoc stub code action** — "Generate PHPDoc" code action offered for undocumented functions and methods; inserts a `/** ... */` stub with `@param` and `@return` tags inferred from the signature.
+- **Document links** (`textDocument/documentLink`) — `include`, `require`, `include_once`, and `require_once` path arguments are returned as clickable document links.
+
 ## [0.1.7] — 2026-03-23
 
 ### New features
