@@ -6,21 +6,21 @@ A PHP Language Server Protocol (LSP) implementation written in Rust.
 
 ### Language intelligence
 - **Diagnostics** — syntax errors reported in real time; semantic warnings for undefined symbols, argument-count mismatches, and undefined variables inside function/method bodies
-- **Hover** — PHP signature for functions, methods, classes, interfaces, and traits; includes `@param`/`@return`/`@throws`/`@deprecated`/`@see`/`@link` docblock annotations when present; deprecated symbols show a `> Deprecated` banner
+- **Hover** — PHP signature for functions, methods, classes, interfaces, traits, and enums (including `implements`); includes `@param`/`@return`/`@throws`/`@deprecated`/`@see`/`@link` docblock annotations when present; deprecated symbols show a `> Deprecated` banner
 - **Go-to-definition** — jump to where a symbol is declared, including across open files and into Composer vendor packages via PSR-4 autoload maps
 - **Go-to-implementation** — find all classes that implement an interface or extend a class
 - **Find references** — locate every usage of a symbol across the workspace, including `use` import statements
 - **Rename** — rename any function, method, or class across all open files, including its `use` import statements
 
 ### Editing aids
-- **Completion** — keywords, ~200 built-in PHP functions, classes, methods, properties, constants; `->` completions scoped to the inferred receiver type (`$obj = new Foo()` → `$obj->` shows `Foo`'s and all ancestor instance members); `$this->` inside a method resolves to the enclosing class and walks the full inheritance chain; `ClassName::`/`self::`/`static::` show static members and constants; `parent::` shows parent-class static members; `funcName(` offers named-argument (`param:`) completions; type inference extends to typed function/method parameters; cross-file symbols from all indexed documents
+- **Completion** — keywords, ~200 built-in PHP functions, classes, methods, properties, constants, enums, and enum cases; `->` completions scoped to the inferred receiver type (`$obj = new Foo()` → `$obj->` shows `Foo`'s and all ancestor instance members); `$this->` inside a method resolves to the enclosing class and walks the full inheritance chain; `ClassName::`/`self::`/`static::` show static members and constants; `parent::` shows parent-class static members; `funcName(` offers named-argument (`param:`) completions; type inference extends to typed function/method parameters; cross-file symbols from all indexed documents
 - **Signature help** — parameter hints while typing a call, including overload narrowing
 - **Inlay hints** — parameter name labels at call sites; return-type labels after assigned function calls
 - **Code actions** — "Add use import" quick-fix for undefined class names; PHPDoc stub generation for undocumented functions and methods
 - **Document links** — `include`/`require` paths are clickable links to the target file
 
 ### Navigation
-- **Document symbols** — file outline of all functions, classes, methods, properties, and constants
+- **Document symbols** — file outline of all functions, classes, enums (with cases and methods), methods, properties, and constants
 - **Workspace symbols** — fuzzy-search symbols across the entire project
 - **Call hierarchy** — incoming callers and outgoing callees for any function or method, including cross-file
 - **Type hierarchy** — navigate supertypes and subtypes for classes and interfaces; registered dynamically so all LSP clients discover it correctly
@@ -31,12 +31,12 @@ A PHP Language Server Protocol (LSP) implementation written in Rust.
 - **Folding ranges** — collapse functions, classes, methods, loops, and control-flow blocks
 
 ### Syntax & formatting
-- **Semantic tokens** — richer syntax highlighting for functions, methods, classes, interfaces, traits, parameters, and properties with `declaration`/`static`/`abstract`/`readonly`/`deprecated` modifiers; symbols marked `@deprecated` render with strikethrough in supporting editors; supports full, range, and incremental delta requests
+- **Semantic tokens** — richer syntax highlighting for functions, methods, classes, interfaces, traits, enums, parameters, properties, and PHP 8 `#[Attribute]` names (highlighted as class references) with `declaration`/`static`/`abstract`/`readonly`/`deprecated` modifiers; symbols marked `@deprecated` render with strikethrough in supporting editors; supports full, range, and incremental delta requests
 - **On-type formatting** — auto-indents the new line on Enter (copies surrounding indentation, adds one level after `{`); aligns `}` to its matching `{` on keypress
 - **Formatting** — delegates to `php-cs-fixer` (PSR-12) or `phpcbf`; supports full-file and range formatting
 
 ### Workspace
-- **Workspace indexing** — background scan indexes all `*.php` files on startup (including `vendor/`), with a 50 000-file cap; LRU eviction keeps memory bounded at 10 000 indexed-only files
+- **Workspace indexing** — background scan indexes all `*.php` files on startup (including `vendor/`), with a 50 000-file cap; LRU eviction keeps memory bounded at 10 000 indexed-only files; progress is reported via `$/progress` so editors display a spinner during the initial scan
 - **PSR-4 resolution** — reads `composer.json` and `vendor/composer/installed.json` to resolve fully-qualified class names to files on demand
 - **File watching** — index stays up to date when files are created, changed, or deleted on disk
 - **File rename** — moving or renaming a PHP file automatically updates all `use` import statements across the workspace to reflect the new PSR-4 fully-qualified class name (`workspace/willRenameFiles`)

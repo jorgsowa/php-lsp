@@ -1,4 +1,4 @@
-use php_ast::{ClassMemberKind, NamespaceBody, Param, Stmt, StmtKind};
+use php_ast::{ClassMemberKind, EnumMemberKind, NamespaceBody, Param, Stmt, StmtKind};
 use tower_lsp::lsp_types::{Hover, HoverContents, MarkupContent, MarkupKind, Position};
 
 use crate::ast::{ParsedDoc, format_type_hint};
@@ -59,6 +59,33 @@ fn scan_statements(stmts: &[Stmt<'_, '_>], word: &str) -> Option<String> {
             }
             StmtKind::Trait(t) if t.name == word => {
                 return Some(format!("trait {}", word));
+            }
+            StmtKind::Enum(e) if e.name == word => {
+                let mut sig = format!("enum {}", word);
+                if !e.implements.is_empty() {
+                    let ifaces: Vec<String> = e
+                        .implements
+                        .iter()
+                        .map(|i| i.to_string_repr().into_owned())
+                        .collect();
+                    sig.push_str(&format!(" implements {}", ifaces.join(", ")));
+                }
+                return Some(sig);
+            }
+            StmtKind::Enum(e) => {
+                for member in e.members.iter() {
+                    if let EnumMemberKind::Method(m) = &member.kind {
+                        if m.name == word {
+                            let params = format_params(&m.params);
+                            let ret = m
+                                .return_type
+                                .as_ref()
+                                .map(|r| format!(": {}", format_type_hint(r)))
+                                .unwrap_or_default();
+                            return Some(format!("function {}({}){}", word, params, ret));
+                        }
+                    }
+                }
             }
             StmtKind::Class(c) => {
                 for member in c.members.iter() {
@@ -281,6 +308,32 @@ mod tests {
             assert!(
                 !mc.value.contains(':'),
                 "should not contain ':' when no return type, got: {}",
+                mc.value
+            );
+        }
+    }
+
+    #[test]
+    fn hover_on_enum_returns_enum_sig() {
+        let src = "<?php\nenum Suit {}";
+        let doc = ParsedDoc::parse(src.to_string());
+        let result = hover_info(src, &doc, pos(1, 6));
+        assert!(result.is_some());
+        if let Some(Hover { contents: HoverContents::Markup(mc), .. }) = result {
+            assert!(mc.value.contains("enum Suit"), "expected 'enum Suit', got: {}", mc.value);
+        }
+    }
+
+    #[test]
+    fn hover_on_enum_with_implements_shows_interface() {
+        let src = "<?php\nenum Status: string implements Stringable {}";
+        let doc = ParsedDoc::parse(src.to_string());
+        let result = hover_info(src, &doc, pos(1, 6));
+        assert!(result.is_some());
+        if let Some(Hover { contents: HoverContents::Markup(mc), .. }) = result {
+            assert!(
+                mc.value.contains("implements Stringable"),
+                "expected implements clause, got: {}",
                 mc.value
             );
         }

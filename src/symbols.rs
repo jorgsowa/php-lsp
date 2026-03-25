@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use php_ast::{ClassMemberKind, NamespaceBody, Stmt, StmtKind};
+use php_ast::{ClassMemberKind, EnumMemberKind, NamespaceBody, Stmt, StmtKind};
 use tower_lsp::lsp_types::{
     DocumentSymbol, Location, Position, Range, SymbolInformation, SymbolKind, Url,
 };
@@ -115,6 +115,38 @@ fn collect_symbol_info(
                         deprecated: None,
                         container_name: None,
                     });
+                }
+            }
+            StmtKind::Enum(e) => {
+                if e.name.to_lowercase().contains(query) {
+                    out.push(SymbolInformation {
+                        name: e.name.to_string(),
+                        kind: SymbolKind::ENUM,
+                        location: Location {
+                            uri: uri.clone(),
+                            range: name_range(source, e.name),
+                        },
+                        tags: None,
+                        deprecated: None,
+                        container_name: None,
+                    });
+                }
+                for member in e.members.iter() {
+                    if let EnumMemberKind::Case(c) = &member.kind {
+                        if c.name.to_lowercase().contains(query) {
+                            out.push(SymbolInformation {
+                                name: c.name.to_string(),
+                                kind: SymbolKind::ENUM_MEMBER,
+                                location: Location {
+                                    uri: uri.clone(),
+                                    range: name_range(source, c.name),
+                                },
+                                tags: None,
+                                deprecated: None,
+                                container_name: Some(e.name.to_string()),
+                            });
+                        }
+                    }
                 }
             }
             StmtKind::Namespace(ns) => {
@@ -326,6 +358,67 @@ fn statement_to_symbol(source: &str, stmt: &Stmt<'_, '_>) -> Option<DocumentSymb
                 name: t.name.to_string(),
                 detail: None,
                 kind: SymbolKind::CLASS,
+                tags: None,
+                deprecated: None,
+                range,
+                selection_range,
+                children: if children.is_empty() {
+                    None
+                } else {
+                    Some(children)
+                },
+            })
+        }
+
+        StmtKind::Enum(e) => {
+            let range = stmt_range(source, stmt);
+            let selection_range = name_range(source, e.name);
+            let children: Vec<DocumentSymbol> = e
+                .members
+                .iter()
+                .filter_map(|member| match &member.kind {
+                    EnumMemberKind::Case(c) => {
+                        let crange = Range {
+                            start: offset_to_position(source, member.span.start),
+                            end: offset_to_position(source, member.span.end),
+                        };
+                        let csel = name_range(source, c.name);
+                        Some(DocumentSymbol {
+                            name: c.name.to_string(),
+                            detail: None,
+                            kind: SymbolKind::ENUM_MEMBER,
+                            tags: None,
+                            deprecated: None,
+                            range: crange,
+                            selection_range: csel,
+                            children: None,
+                        })
+                    }
+                    EnumMemberKind::Method(m) => {
+                        let mrange = Range {
+                            start: offset_to_position(source, member.span.start),
+                            end: offset_to_position(source, member.span.end),
+                        };
+                        let msel = name_range(source, m.name);
+                        Some(DocumentSymbol {
+                            name: m.name.to_string(),
+                            detail: Some(format_fn_signature(&m.params, m.return_type.as_ref())),
+                            kind: SymbolKind::METHOD,
+                            tags: None,
+                            deprecated: None,
+                            range: mrange,
+                            selection_range: msel,
+                            children: None,
+                        })
+                    }
+                    _ => None,
+                })
+                .collect();
+
+            Some(DocumentSymbol {
+                name: e.name.to_string(),
+                detail: None,
+                kind: SymbolKind::ENUM,
                 tags: None,
                 deprecated: None,
                 range,

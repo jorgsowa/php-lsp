@@ -1,6 +1,6 @@
 use std::hash::{Hash, Hasher};
 
-use php_ast::{ClassMemberKind, ExprKind, NamespaceBody, Stmt, StmtKind};
+use php_ast::{Attribute, ClassMemberKind, EnumMemberKind, ExprKind, NamespaceBody, Stmt, StmtKind};
 use tower_lsp::lsp_types::{
     Range, SemanticToken, SemanticTokenModifier, SemanticTokenType, SemanticTokensEdit,
     SemanticTokensLegend,
@@ -168,6 +168,14 @@ fn push_name(out: &mut Vec<RawToken>, source: &str, name: &str, token_type: u32,
     );
 }
 
+fn push_attributes(out: &mut Vec<RawToken>, source: &str, attrs: &[Attribute<'_, '_>]) {
+    for attr in attrs.iter() {
+        let span = attr.name.span();
+        let len = span.end - span.start;
+        push_at(out, source, span.start, len, TT_CLASS, 0);
+    }
+}
+
 fn deprecated_mod(source: &str, node_start: u32) -> u32 {
     docblock_before(source, node_start)
         .map(|raw| {
@@ -189,14 +197,17 @@ fn collect_stmts(source: &str, stmts: &[Stmt<'_, '_>], out: &mut Vec<RawToken>) 
 fn collect_stmt(source: &str, stmt: &Stmt<'_, '_>, out: &mut Vec<RawToken>) {
     match &stmt.kind {
         StmtKind::Function(f) => {
+            push_attributes(out, source, &f.attributes);
             let mods = MOD_DECLARATION | deprecated_mod(source, stmt.span.start);
             push_name(out, source, f.name, TT_FUNCTION, mods);
             for p in f.params.iter() {
+                push_attributes(out, source, &p.attributes);
                 push_name(out, source, p.name, TT_PARAMETER, MOD_DECLARATION);
             }
             collect_stmts(source, &f.body, out);
         }
         StmtKind::Class(c) => {
+            push_attributes(out, source, &c.attributes);
             if let Some(name) = c.name {
                 let mods = MOD_DECLARATION | deprecated_mod(source, stmt.span.start);
                 push_name(out, source, name, TT_CLASS, mods);
@@ -206,14 +217,37 @@ fn collect_stmt(source: &str, stmt: &Stmt<'_, '_>, out: &mut Vec<RawToken>) {
             }
         }
         StmtKind::Interface(i) => {
+            push_attributes(out, source, &i.attributes);
             let mods = MOD_DECLARATION | deprecated_mod(source, stmt.span.start);
             push_name(out, source, i.name, TT_INTERFACE, mods);
         }
         StmtKind::Trait(t) => {
+            push_attributes(out, source, &t.attributes);
             let mods = MOD_DECLARATION | deprecated_mod(source, stmt.span.start);
             push_name(out, source, t.name, TT_CLASS, mods);
             for member in t.members.iter() {
                 collect_class_member(source, member, out);
+            }
+        }
+        StmtKind::Enum(e) => {
+            push_attributes(out, source, &e.attributes);
+            let mods = MOD_DECLARATION | deprecated_mod(source, stmt.span.start);
+            push_name(out, source, e.name, TT_CLASS, mods);
+            for member in e.members.iter() {
+                if let EnumMemberKind::Method(m) = &member.kind {
+                    push_attributes(out, source, &m.attributes);
+                    let mut mmods = MOD_DECLARATION | deprecated_mod(source, member.span.start);
+                    if m.is_static {
+                        mmods |= MOD_STATIC;
+                    }
+                    push_name(out, source, m.name, TT_METHOD, mmods);
+                    for p in m.params.iter() {
+                        push_name(out, source, p.name, TT_PARAMETER, MOD_DECLARATION);
+                    }
+                    if let Some(body) = &m.body {
+                        collect_stmts(source, body, out);
+                    }
+                }
             }
         }
         StmtKind::Namespace(ns) => {
@@ -277,6 +311,7 @@ fn collect_class_member(
     out: &mut Vec<RawToken>,
 ) {
     if let ClassMemberKind::Method(m) = &member.kind {
+        push_attributes(out, source, &m.attributes);
         let mut mods = MOD_DECLARATION | deprecated_mod(source, member.span.start);
         if m.is_static {
             mods |= MOD_STATIC;
@@ -286,12 +321,14 @@ fn collect_class_member(
         }
         push_name(out, source, m.name, TT_METHOD, mods);
         for p in m.params.iter() {
+            push_attributes(out, source, &p.attributes);
             push_name(out, source, p.name, TT_PARAMETER, MOD_DECLARATION);
         }
         if let Some(body) = &m.body {
             collect_stmts(source, body, out);
         }
     } else if let ClassMemberKind::Property(p) = &member.kind {
+        push_attributes(out, source, &p.attributes);
         push_name(out, source, p.name, TT_PROPERTY, MOD_DECLARATION);
     }
 }
@@ -637,6 +674,31 @@ mod tests {
                 .iter()
                 .all(|t| t.token_modifiers_bitset & MOD_DEPRECATED == 0),
             "expected no deprecated modifier on non-deprecated function"
+        );
+    }
+
+    #[test]
+    fn enum_declaration_emits_class_token() {
+        let src = "<?php\nenum Suit { case Hearts; }";
+        let d = doc(src);
+        let tokens = semantic_tokens(src, &d);
+        assert!(
+            tokens
+                .iter()
+                .any(|t| t.token_type == TT_CLASS && t.token_modifiers_bitset & MOD_DECLARATION != 0),
+            "expected class+declaration token for enum"
+        );
+    }
+
+    #[test]
+    fn attribute_name_emits_class_token() {
+        let src = "<?php\n#[Route(\"/home\")]\nfunction index() {}";
+        let d = doc(src);
+        let tokens = semantic_tokens(src, &d);
+        assert!(
+            tokens.iter().any(|t| t.token_type == TT_CLASS && t.token_modifiers_bitset == 0),
+            "expected bare class token for attribute name, got {:?}",
+            tokens
         );
     }
 }

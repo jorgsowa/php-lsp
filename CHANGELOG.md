@@ -2,6 +2,14 @@
 
 All notable changes to php-lsp are documented here.
 
+## [0.1.12] — 2026-03-25
+
+### New features
+
+- **PHP 8 enum support** — `enum` declarations are now first-class citizens throughout the server: hover shows the signature (including `implements`); semantic tokens emit a class token with `declaration` modifier; document symbols expose enum cases as `EnumMember` children and enum methods as `Method` children; workspace symbols index enums and their cases; completion suggests the enum name as `Enum` kind and each case as `EnumMember` (`SuitCase::Hearts`).
+- **Attribute semantic tokens** (`#[Attr]`) — PHP 8 attribute names are emitted as `class` tokens in all semantic token responses. Applies to attributes on functions, parameters, classes, interfaces, traits, enums, methods, and properties so editors highlight them as class references.
+- **Workspace scan progress** (`$/progress`) — a `window/workDoneProgress/create` request is sent to the client on startup, followed by `$/progress` Begin and End notifications bracketing the workspace scan. Editors that support work-done progress (VS Code, Neovim) will show a spinner/progress bar while indexing.
+
 ## [0.1.11] — 2026-03-25
 
 ### New features

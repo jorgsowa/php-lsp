@@ -2,6 +2,8 @@ use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
 use tower_lsp::jsonrpc::Result;
+use tower_lsp::lsp_types::notification::Progress as ProgressNotification;
+use tower_lsp::lsp_types::request::WorkDoneProgressCreate;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer, async_trait};
 
@@ -206,14 +208,51 @@ impl LanguageServer for Backend {
             .ok();
 
         // Load PSR-4 autoload map and kick off background workspace scan
-        if let Some(root) = self.root_path.read().unwrap().clone() {
+        // Extract root_opt first so the RwLockReadGuard is dropped before any .await.
+        let root_opt = self.root_path.read().unwrap().clone();
+        if let Some(root) = root_opt {
             // Build PSR-4 map synchronously — it's just JSON file reads, very fast
             *self.psr4.write().unwrap() = Psr4Map::load(&root);
+
+            // Create a client-side progress indicator for the workspace scan.
+            let token = NumberOrString::String("php-lsp/indexing".to_string());
+            self.client
+                .send_request::<WorkDoneProgressCreate>(
+                    WorkDoneProgressCreateParams { token: token.clone() },
+                )
+                .await
+                .ok();
 
             let docs = Arc::clone(&self.docs);
             let client = self.client.clone();
             tokio::spawn(async move {
+                client
+                    .send_notification::<ProgressNotification>(ProgressParams {
+                        token: token.clone(),
+                        value: ProgressParamsValue::WorkDone(WorkDoneProgress::Begin(
+                            WorkDoneProgressBegin {
+                                title: "php-lsp: indexing workspace".to_string(),
+                                cancellable: Some(false),
+                                message: None,
+                                percentage: None,
+                            },
+                        )),
+                    })
+                    .await;
+
                 let count = scan_workspace(root, docs).await;
+
+                client
+                    .send_notification::<ProgressNotification>(ProgressParams {
+                        token,
+                        value: ProgressParamsValue::WorkDone(WorkDoneProgress::End(
+                            WorkDoneProgressEnd {
+                                message: Some(format!("Indexed {count} files")),
+                            },
+                        )),
+                    })
+                    .await;
+
                 client
                     .log_message(
                         MessageType::INFO,

@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use php_ast::{ClassMemberKind, ExprKind, NamespaceBody, Stmt, StmtKind};
+use php_ast::{ClassMemberKind, EnumMemberKind, ExprKind, NamespaceBody, Stmt, StmtKind};
 use tower_lsp::lsp_types::{CompletionItem, CompletionItemKind, Position};
 
 use crate::ast::ParsedDoc;
@@ -167,6 +167,22 @@ fn collect_from_statements(stmts: &[Stmt<'_, '_>], items: &mut Vec<CompletionIte
                     kind: Some(CompletionItemKind::CLASS),
                     ..Default::default()
                 });
+            }
+            StmtKind::Enum(e) => {
+                items.push(CompletionItem {
+                    label: e.name.to_string(),
+                    kind: Some(CompletionItemKind::ENUM),
+                    ..Default::default()
+                });
+                for member in e.members.iter() {
+                    if let EnumMemberKind::Case(c) = &member.kind {
+                        items.push(CompletionItem {
+                            label: format!("{}::{}", e.name, c.name),
+                            kind: Some(CompletionItemKind::ENUM_MEMBER),
+                            ..Default::default()
+                        });
+                    }
+                }
             }
             StmtKind::Namespace(ns) => {
                 if let NamespaceBody::Braced(inner) = &ns.body {
