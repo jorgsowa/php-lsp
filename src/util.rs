@@ -1,5 +1,113 @@
 use tower_lsp::lsp_types::Position;
 
+/// Returns `true` if `query` matches `candidate` using camelCase/underscore
+/// abbreviation rules.
+///
+/// Rules (applied in order, first match wins):
+/// 1. `candidate` starts with `query` (case-insensitive prefix match).
+/// 2. Every character of `query` matches either the start of a camelCase word
+///    (uppercase letter preceded by lowercase) or the character after `_` in
+///    the candidate.
+///
+/// Examples:
+/// - `"GRF"` matches `"getRecentFiles"`
+/// - `"str_r"` matches `"str_replace"`
+/// - `"srp"` matches `"str_replace"`
+pub(crate) fn fuzzy_camel_match(query: &str, candidate: &str) -> bool {
+    if query.is_empty() {
+        return true;
+    }
+    let ql: String = query.to_lowercase();
+    let cl: String = candidate.to_lowercase();
+    // Fast path: plain prefix
+    if cl.starts_with(&ql) {
+        return true;
+    }
+    // Camel / underscore abbreviation
+    let qchars: Vec<char> = ql.chars().collect();
+    let cchars: Vec<char> = candidate.chars().collect();
+    let mut qi = 0usize;
+    let mut ci = 0usize;
+    while qi < qchars.len() && ci < cchars.len() {
+        let qc = qchars[qi];
+        // A "word boundary" in the candidate is: position 0, after '_', or
+        // an uppercase letter after a lowercase letter (camelCase transition).
+        let is_boundary = ci == 0
+            || cchars[ci - 1] == '_'
+            || (cchars[ci].is_uppercase() && ci > 0 && cchars[ci - 1].is_lowercase());
+        if is_boundary && cchars[ci].to_lowercase().next() == Some(qc) {
+            qi += 1;
+        }
+        ci += 1;
+    }
+    qi == qchars.len()
+}
+
+/// Compute a sort key for a completion item so that items matching the query
+/// by plain prefix sort before camel/underscore abbreviation matches.
+/// Lower string = higher priority.
+pub(crate) fn camel_sort_key(query: &str, label: &str) -> String {
+    let lq = query.to_lowercase();
+    let ll = label.to_lowercase();
+    if ll.starts_with(&lq) {
+        format!("0{}", ll)
+    } else {
+        format!("1{}", ll)
+    }
+}
+
+/// Return `true` if `name` is a known PHP built-in function.
+/// Used by hover to generate php.net links.
+pub(crate) fn is_php_builtin(name: &str) -> bool {
+    // Sorted for binary search.
+    const BUILTINS: &[&str] = &[
+        "abs", "acos", "addslashes", "array_chunk", "array_combine", "array_diff",
+        "array_fill", "array_fill_keys", "array_filter", "array_flip", "array_intersect",
+        "array_key_exists", "array_keys", "array_map", "array_merge", "array_pad",
+        "array_pop", "array_push", "array_reduce", "array_replace", "array_reverse",
+        "array_search", "array_shift", "array_slice", "array_splice", "array_unique",
+        "array_unshift", "array_values", "array_walk", "array_walk_recursive", "arsort",
+        "asort", "atan", "atan2", "asin", "base64_decode", "base64_encode", "basename",
+        "boolval", "call_user_func", "call_user_func_array", "ceil", "checkdate",
+        "class_exists", "closedir", "compact", "constant", "copy", "cos",
+        "date", "date_add", "date_create", "date_diff", "date_format", "date_sub",
+        "define", "defined", "die", "dirname", "empty", "exit", "exp", "explode",
+        "extract", "fclose", "feof", "fgets", "file_exists", "file_get_contents",
+        "file_put_contents", "floatval", "floor", "fmod", "fopen", "fputs", "fread",
+        "fseek", "ftell", "function_exists", "get_class", "get_parent_class", "gettype",
+        "glob", "hash", "header", "headers_sent", "htmlentities", "htmlspecialchars",
+        "http_build_query", "implode", "in_array", "intdiv", "interface_exists", "intval",
+        "is_a", "is_array", "is_bool", "is_callable", "is_dir", "is_double", "is_file",
+        "is_finite", "is_float", "is_infinite", "is_int", "is_integer", "is_long",
+        "is_nan", "is_null", "is_numeric", "is_object", "is_readable", "is_string",
+        "is_subclass_of", "is_writable", "isset", "join", "json_decode", "json_encode",
+        "ksort", "krsort", "lcfirst", "list", "log", "ltrim", "max", "md5", "method_exists",
+        "microtime", "min", "mkdir", "mktime", "mt_rand", "nl2br", "number_format",
+        "ob_end_clean", "ob_get_clean", "ob_start", "opendir", "parse_str", "parse_url",
+        "pathinfo", "pi", "pow", "preg_match", "preg_match_all", "preg_quote",
+        "preg_replace", "preg_split", "print_r", "printf", "property_exists", "rand",
+        "random_int", "rawurldecode", "rawurlencode", "readdir", "realpath", "rename",
+        "rewind", "rmdir", "round", "rsort", "rtrim", "scandir", "serialize",
+        "session_destroy", "session_start", "setcookie", "settype", "sha1", "sin",
+        "sleep", "sort", "sprintf", "sqrt", "str_contains", "str_ends_with", "str_pad",
+        "str_repeat", "str_replace", "str_split", "str_starts_with", "str_word_count",
+        "strcmp", "strcasecmp", "stristr", "strlen", "strncmp", "strncasecmp",
+        "strpos", "strrpos", "strstr", "strtotime", "strtolower", "strtoupper",
+        "strip_tags", "stripslashes", "strval", "substr", "substr_count", "substr_replace",
+        "tan", "time", "trim", "uasort", "ucfirst", "ucwords", "uksort", "unlink",
+        "unserialize", "unset", "urldecode", "urlencode", "usleep", "usort",
+        "var_dump", "var_export", "vsprintf",
+    ];
+    BUILTINS.binary_search(&name).is_ok()
+}
+
+/// Build the php.net documentation URL for a built-in function name.
+pub(crate) fn php_doc_url(name: &str) -> String {
+    // php.net uses underscores replaced with dashes in the URL path.
+    let slug = name.replace('_', "-");
+    format!("https://www.php.net/function.{}", slug)
+}
+
 /// Extract the word (identifier) under the cursor, handling UTF-16 offsets.
 pub(crate) fn word_at(source: &str, position: Position) -> Option<String> {
     let line = source.lines().nth(position.line as usize)?;

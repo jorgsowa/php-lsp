@@ -9,6 +9,7 @@ use tower_lsp::{Client, LanguageServer, async_trait};
 
 use crate::ast::ParsedDoc;
 use crate::autoload::Psr4Map;
+use crate::phpstorm_meta::PhpStormMeta;
 use crate::file_rename::use_edits_for_rename;
 use crate::on_type_format::on_type_format;
 use crate::call_hierarchy::{incoming_calls, outgoing_calls, prepare_call_hierarchy};
@@ -44,6 +45,7 @@ pub struct Backend {
     docs: Arc<DocumentStore>,
     root_path: Arc<RwLock<Option<PathBuf>>>,
     psr4: Arc<RwLock<Psr4Map>>,
+    meta: Arc<RwLock<PhpStormMeta>>,
 }
 
 impl Backend {
@@ -53,6 +55,7 @@ impl Backend {
             docs: Arc::new(DocumentStore::new()),
             root_path: Arc::new(RwLock::new(None)),
             psr4: Arc::new(RwLock::new(Psr4Map::empty())),
+            meta: Arc::new(RwLock::new(PhpStormMeta::default())),
         }
     }
 }
@@ -151,7 +154,7 @@ impl LanguageServer for Backend {
                     DiagnosticOptions {
                         identifier: None,
                         inter_file_dependencies: true,
-                        workspace_diagnostics: false,
+                        workspace_diagnostics: true,
                         work_done_progress_options: Default::default(),
                     },
                 )),
@@ -213,6 +216,8 @@ impl LanguageServer for Backend {
         if let Some(root) = root_opt {
             // Build PSR-4 map synchronously — it's just JSON file reads, very fast
             *self.psr4.write().unwrap() = Psr4Map::load(&root);
+            // Load PHPStorm metadata if .phpstorm.meta.php exists
+            *self.meta.write().unwrap() = PhpStormMeta::load(&root);
 
             // Create a client-side progress indicator for the workspace scan.
             let token = NumberOrString::String("php-lsp/indexing".to_string());
@@ -364,12 +369,19 @@ impl LanguageServer for Backend {
             .context
             .as_ref()
             .and_then(|c| c.trigger_character.as_deref());
+        let meta_guard = self.meta.read().unwrap();
+        let meta_opt = if meta_guard.is_empty() {
+            None
+        } else {
+            Some(&*meta_guard)
+        };
         Ok(Some(CompletionResponse::Array(filtered_completions_at(
             &doc,
             &other_docs,
             trigger,
             Some(&source),
             Some(position),
+            meta_opt,
         ))))
     }
 
@@ -952,6 +964,31 @@ impl LanguageServer for Backend {
                     items,
                 },
             }),
+        ))
+    }
+
+    async fn workspace_diagnostic(
+        &self,
+        _params: WorkspaceDiagnosticParams,
+    ) -> Result<WorkspaceDiagnosticReportResult> {
+        let items: Vec<WorkspaceDocumentDiagnosticReport> = self
+            .docs
+            .all_diagnostics()
+            .into_iter()
+            .map(|(uri, diags, version)| {
+                WorkspaceDocumentDiagnosticReport::Full(WorkspaceFullDocumentDiagnosticReport {
+                    uri,
+                    version,
+                    full_document_diagnostic_report: FullDocumentDiagnosticReport {
+                        result_id: None,
+                        items: diags,
+                    },
+                })
+            })
+            .collect();
+
+        Ok(WorkspaceDiagnosticReportResult::Report(
+            WorkspaceDiagnosticReport { items },
         ))
     }
 

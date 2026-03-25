@@ -5,15 +5,16 @@ A PHP Language Server Protocol (LSP) implementation written in Rust.
 ## Features
 
 ### Language intelligence
-- **Diagnostics** — syntax errors reported in real time; semantic warnings for undefined symbols, argument-count mismatches, and undefined variables inside function/method bodies
-- **Hover** — PHP signature for functions, methods, classes, interfaces, traits, and enums (including `implements`); includes `@param`/`@return`/`@throws`/`@deprecated`/`@see`/`@link` docblock annotations when present; deprecated symbols show a `> Deprecated` banner
+- **Diagnostics** — syntax errors reported in real time; semantic warnings for undefined symbols, argument-count mismatches, and undefined variables inside function/method bodies; workspace-wide diagnostics available for all indexed files (not just open ones)
+- **Hover** — PHP signature for functions, methods, classes, interfaces, traits, and enums (including `implements`); includes `@param`/`@return`/`@throws`/`@deprecated`/`@see`/`@link`/`@template`/`@mixin` docblock annotations when present; deprecated symbols show a `> Deprecated` banner; built-in PHP functions include a link to the official [php.net](https://www.php.net) documentation
+- **PHPDoc type system** — full docblock support: `@param`, `@return`, `@var`, `@throws`, `@deprecated`, `@see`, `@link`; `@template T` / `@template T of Base` generics; `@mixin ClassName`; callable type signatures `callable(int, string): void` parsed correctly
 - **Go-to-definition** — jump to where a symbol is declared, including across open files and into Composer vendor packages via PSR-4 autoload maps
 - **Go-to-implementation** — find all classes that implement an interface or extend a class
 - **Find references** — locate every usage of a symbol across the workspace, including `use` import statements
 - **Rename** — rename any function, method, or class across all open files, including its `use` import statements
 
 ### Editing aids
-- **Completion** — keywords, ~200 built-in PHP functions, classes, methods, properties, constants, enums, and enum cases; `->` completions scoped to the inferred receiver type (`$obj = new Foo()` → `$obj->` shows `Foo`'s and all ancestor instance members); `$this->` inside a method resolves to the enclosing class and walks the full inheritance chain; `ClassName::`/`self::`/`static::` show static members and constants; `parent::` shows parent-class static members; `funcName(` offers named-argument (`param:`) completions; type inference extends to typed function/method parameters; cross-file symbols from all indexed documents
+- **Completion** — keywords, ~200 built-in PHP functions, classes, methods, properties, constants, enums, and enum cases; `->` completions scoped to the inferred receiver type (`$obj = new Foo()` → `$obj->` shows `Foo`'s and all ancestor instance members); `$this->` inside a method resolves to the enclosing class and walks the full inheritance chain; `ClassName::`/`self::`/`static::` show static members and constants; `parent::` shows parent-class static members; `funcName(` offers named-argument (`param:`) completions; type inference extends to typed function/method parameters; cross-file symbols from all indexed documents; `@mixin ClassName` docblock causes mixin members to appear in `->` completions; **camel/underscore-case fuzzy matching** — typing `GRF` matches `getRecentFiles`, `str_r` matches `str_replace`
 - **Signature help** — parameter hints while typing a call, including overload narrowing
 - **Inlay hints** — parameter name labels at call sites; return-type labels after assigned function calls
 - **Code actions** — "Add use import" quick-fix for undefined class names; PHPDoc stub generation for undocumented functions and methods
@@ -38,6 +39,7 @@ A PHP Language Server Protocol (LSP) implementation written in Rust.
 ### Workspace
 - **Workspace indexing** — background scan indexes all `*.php` files on startup (including `vendor/`), with a 50 000-file cap; LRU eviction keeps memory bounded at 10 000 indexed-only files; progress is reported via `$/progress` so editors display a spinner during the initial scan
 - **PSR-4 resolution** — reads `composer.json` and `vendor/composer/installed.json` to resolve fully-qualified class names to files on demand
+- **PHPStorm metadata** — reads `.phpstorm.meta.php` from the workspace root and uses `override(ClassName::method(0), map([...]))` declarations to infer factory method return types (e.g. `$container->make(UserService::class)` → `$user: UserService`)
 - **File watching** — index stays up to date when files are created, changed, or deleted on disk
 - **File rename** — moving or renaming a PHP file automatically updates all `use` import statements across the workspace to reflect the new PSR-4 fully-qualified class name (`workspace/willRenameFiles`)
 - **Async parsing** — edits are debounced (100 ms) and parsed off the tokio runtime; stale results from superseded edits are discarded

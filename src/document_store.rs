@@ -86,13 +86,13 @@ impl DocumentStore {
         {
             return;
         }
-        let (doc, _) = parse_document(text);
+        let (doc, diagnostics) = parse_document(text);
         self.map.insert(
             uri.clone(),
             Document {
                 text: None,
                 doc: Arc::new(doc),
-                diagnostics: vec![],
+                diagnostics,
                 text_version: 0,
             },
         );
@@ -150,6 +150,22 @@ impl DocumentStore {
         self.map
             .iter()
             .map(|e| (e.key().clone(), e.value().doc.clone()))
+            .collect()
+    }
+
+    /// Returns `(uri, diagnostics, version)` for every indexed document.
+    /// `version` is `None` for non-open files.
+    pub fn all_diagnostics(&self) -> Vec<(Url, Vec<Diagnostic>, Option<i64>)> {
+        self.map
+            .iter()
+            .map(|e| {
+                let version = if e.value().text.is_some() {
+                    Some(e.value().text_version as i64)
+                } else {
+                    None
+                };
+                (e.key().clone(), e.value().diagnostics.clone(), version)
+            })
             .collect()
     }
 

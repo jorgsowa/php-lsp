@@ -3,28 +3,50 @@ use tower_lsp::lsp_types::{Hover, HoverContents, MarkupContent, MarkupKind, Posi
 
 use crate::ast::{ParsedDoc, format_type_hint};
 use crate::docblock::find_docblock;
-use crate::util::word_at;
+use crate::util::{is_php_builtin, php_doc_url, word_at};
 
 pub fn hover_info(source: &str, doc: &ParsedDoc, position: Position) -> Option<Hover> {
     let word = word_at(source, position)?;
-    let sig = scan_statements(&doc.program().stmts, &word)?;
 
-    let mut value = wrap_php(&sig);
-    if let Some(db) = find_docblock(source, &doc.program().stmts, &word) {
-        let md = db.to_markdown();
-        if !md.is_empty() {
-            value.push_str("\n\n---\n\n");
-            value.push_str(&md);
+    if let Some(sig) = scan_statements(&doc.program().stmts, &word) {
+        let mut value = wrap_php(&sig);
+        if let Some(db) = find_docblock(source, &doc.program().stmts, &word) {
+            let md = db.to_markdown();
+            if !md.is_empty() {
+                value.push_str("\n\n---\n\n");
+                value.push_str(&md);
+            }
         }
+        // Append php.net link when the symbol name also matches a built-in.
+        if is_php_builtin(&word) {
+            value.push_str(&format!("\n\n[php.net documentation]({})", php_doc_url(&word)));
+        }
+        return Some(Hover {
+            contents: HoverContents::Markup(MarkupContent {
+                kind: MarkupKind::Markdown,
+                value,
+            }),
+            range: None,
+        });
     }
 
-    Some(Hover {
-        contents: HoverContents::Markup(MarkupContent {
-            kind: MarkupKind::Markdown,
-            value,
-        }),
-        range: None,
-    })
+    // Fallback: built-in function with no user-defined counterpart.
+    if is_php_builtin(&word) {
+        let value = format!(
+            "```php\nfunction {}()\n```\n\n[php.net documentation]({})",
+            word,
+            php_doc_url(&word)
+        );
+        return Some(Hover {
+            contents: HoverContents::Markup(MarkupContent {
+                kind: MarkupKind::Markdown,
+                value,
+            }),
+            range: None,
+        });
+    }
+
+    None
 }
 
 fn scan_statements(stmts: &[Stmt<'_, '_>], word: &str) -> Option<String> {

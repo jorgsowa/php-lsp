@@ -19,6 +19,7 @@ mod hover;
 mod implementation;
 mod inlay_hints;
 mod phpdoc_action;
+mod phpstorm_meta;
 mod references;
 mod rename;
 mod selection_range;

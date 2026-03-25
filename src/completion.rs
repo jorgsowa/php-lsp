@@ -4,9 +4,12 @@ use php_ast::{ClassMemberKind, EnumMemberKind, ExprKind, NamespaceBody, Stmt, St
 use tower_lsp::lsp_types::{CompletionItem, CompletionItemKind, Position};
 
 use crate::ast::ParsedDoc;
+use crate::phpstorm_meta::PhpStormMeta;
 use crate::type_map::{
-    TypeMap, enclosing_class_at, members_of_class, params_of_function, parent_class_name,
+    TypeMap, enclosing_class_at, members_of_class, mixin_classes_of, params_of_function,
+    parent_class_name,
 };
+use crate::util::{camel_sort_key, fuzzy_camel_match};
 
 const PHP_KEYWORDS: &[&str] = &[
     "abstract",
@@ -475,10 +478,11 @@ fn all_instance_members(
     let mut items = Vec::new();
     let mut seen_names: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut visited: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut current = class_name.to_string();
-    loop {
+    // Queue: class names to process (inheritance chain + mixin chains).
+    let mut queue: Vec<String> = vec![class_name.to_string()];
+    while let Some(current) = queue.pop() {
         if !visited.insert(current.clone()) {
-            break;
+            continue;
         }
         let mut parent: Option<String> = None;
         for d in &all {
@@ -507,10 +511,13 @@ fn all_instance_members(
                     }
                 }
             }
+            // Collect @mixin classes for this class in this doc.
+            for mixin in mixin_classes_of(d, &current) {
+                queue.push(mixin);
+            }
         }
-        match parent {
-            Some(p) => current = p,
-            None => break,
+        if let Some(p) = parent {
+            queue.push(p);
         }
     }
     items
@@ -660,6 +667,7 @@ pub fn filtered_completions_at(
     trigger_character: Option<&str>,
     source: Option<&str>,
     position: Option<Position>,
+    meta: Option<&PhpStormMeta>,
 ) -> Vec<CompletionItem> {
     match trigger_character {
         Some("$") => symbol_completions(doc)
@@ -669,7 +677,7 @@ pub fn filtered_completions_at(
         Some(">") => {
             // Arrow: $obj->  or  $this->
             if let (Some(src), Some(pos)) = (source, position) {
-                let type_map = TypeMap::from_doc(doc);
+                let type_map = TypeMap::from_doc_with_meta(doc, meta);
                 if let Some(class_name) = resolve_receiver_class(src, doc, pos, &type_map) {
                     let items = all_instance_members(&class_name, doc, other_docs);
                     if !items.is_empty() {
@@ -725,9 +733,37 @@ pub fn filtered_completions_at(
             }
             let mut seen = std::collections::HashSet::new();
             items.retain(|i| seen.insert(i.label.clone()));
+
+            // Extract the typed prefix for fuzzy camel/underscore filtering.
+            let prefix = typed_prefix(source, position).unwrap_or_default();
+            if !prefix.is_empty() {
+                items.retain(|i| fuzzy_camel_match(&prefix, &i.label));
+                for item in &mut items {
+                    item.sort_text = Some(camel_sort_key(&prefix, &item.label));
+                    item.filter_text = Some(item.label.clone());
+                }
+            }
             items
         }
     }
+}
+
+/// Extract the identifier characters typed immediately before the cursor.
+fn typed_prefix(source: Option<&str>, position: Option<Position>) -> Option<String> {
+    let src = source?;
+    let pos = position?;
+    let line = src.lines().nth(pos.line as usize)?;
+    let col = (pos.character as usize).min(line.len());
+    let before = &line[..col];
+    let prefix: String = before
+        .chars()
+        .rev()
+        .take_while(|&c| c.is_alphanumeric() || c == '_')
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect();
+    if prefix.is_empty() { None } else { Some(prefix) }
 }
 
 fn resolve_receiver_class(
@@ -896,7 +932,7 @@ mod tests {
     #[test]
     fn dollar_trigger_returns_only_variables() {
         let d = doc("<?php\nfunction greet($name) {}\nclass Foo {}\n$bar = 1;");
-        let items = filtered_completions_at(&d, &[], Some("$"), None, None);
+        let items = filtered_completions_at(&d, &[], Some("$"), None, None, None);
         assert!(!items.is_empty(), "should have variable items");
         for item in &items {
             assert_eq!(item.kind, Some(CompletionItemKind::VARIABLE));
@@ -909,7 +945,7 @@ mod tests {
     #[test]
     fn arrow_trigger_returns_only_methods() {
         let d = doc("<?php\nclass Calc { public function add() {} public function sub() {} }");
-        let items = filtered_completions_at(&d, &[], Some(">"), None, None);
+        let items = filtered_completions_at(&d, &[], Some(">"), None, None, None);
         assert!(!items.is_empty(), "should have method items");
         for item in &items {
             assert_eq!(item.kind, Some(CompletionItemKind::METHOD));
@@ -919,7 +955,7 @@ mod tests {
     #[test]
     fn none_trigger_returns_keywords_functions_classes() {
         let d = doc("<?php\nfunction greet() {}\nclass MyApp {}");
-        let items = filtered_completions_at(&d, &[], None, None, None);
+        let items = filtered_completions_at(&d, &[], None, None, None, None);
         let ls = labels(&items);
         assert!(
             ls.contains(&"function"),
@@ -932,7 +968,7 @@ mod tests {
     #[test]
     fn builtins_appear_in_default_completions() {
         let d = doc("<?php");
-        let items = filtered_completions_at(&d, &[], None, None, None);
+        let items = filtered_completions_at(&d, &[], None, None, None, None);
         let ls = labels(&items);
         assert!(ls.contains(&"strlen"), "missing strlen");
         assert!(ls.contains(&"array_map"), "missing array_map");
@@ -947,7 +983,7 @@ mod tests {
             line: 2,
             character: 5,
         };
-        let items = filtered_completions_at(&d, &[], Some(":"), Some(src), Some(pos));
+        let items = filtered_completions_at(&d, &[], Some(":"), Some(src), Some(pos), None);
         let ls = labels(&items);
         assert!(ls.contains(&"load"), "missing static method");
         assert!(ls.contains(&"VERSION"), "missing constant");
@@ -961,7 +997,7 @@ mod tests {
             line: 4,
             character: 4,
         };
-        let items = filtered_completions_at(&d, &[], Some(">"), Some(src), Some(pos));
+        let items = filtered_completions_at(&d, &[], Some(">"), Some(src), Some(pos), None);
         let ls = labels(&items);
         assert!(ls.contains(&"baseMethod"), "missing inherited baseMethod");
         assert!(ls.contains(&"childMethod"), "missing childMethod");
@@ -975,7 +1011,7 @@ mod tests {
             line: 2,
             character: 8,
         };
-        let items = filtered_completions_at(&d, &[], Some("("), Some(src), Some(pos));
+        let items = filtered_completions_at(&d, &[], Some("("), Some(src), Some(pos), None);
         let ls = labels(&items);
         assert!(ls.contains(&"host:"), "missing host:");
         assert!(ls.contains(&"port:"), "missing port:");
@@ -987,7 +1023,7 @@ mod tests {
         let other = Arc::new(ParsedDoc::parse(
             "<?php\nclass RemoteService {}\nfunction remoteHelper() {}".to_string(),
         ));
-        let items = filtered_completions_at(&d, &[other], None, None, None);
+        let items = filtered_completions_at(&d, &[other], None, None, None, None);
         let ls = labels(&items);
         assert!(ls.contains(&"localFn"), "missing local function");
         assert!(ls.contains(&"RemoteService"), "missing cross-file class");
@@ -998,7 +1034,7 @@ mod tests {
     fn cross_file_variables_not_included_in_default_completions() {
         let d = doc("<?php\n$localVar = 1;");
         let other = Arc::new(ParsedDoc::parse("<?php\n$remoteVar = 2;".to_string()));
-        let items = filtered_completions_at(&d, &[other], None, None, None);
+        let items = filtered_completions_at(&d, &[other], None, None, None, None);
         let ls = labels(&items);
         assert!(
             !ls.contains(&"$remoteVar"),

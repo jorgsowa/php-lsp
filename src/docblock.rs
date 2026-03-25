@@ -2,7 +2,7 @@
 ///
 /// Strips the `/**` / `*/` markers and leading `*` from each line, then
 /// extracts `@param`, `@return`, `@var`, `@throws`, `@deprecated`, `@see`,
-/// and `@link` annotations.
+/// `@link`, `@template`, and `@mixin` annotations.
 
 #[derive(Debug, Default, PartialEq)]
 pub struct Docblock {
@@ -20,6 +20,18 @@ pub struct Docblock {
     pub throws: Vec<DocThrows>,
     /// `@see target` and `@link url`
     pub see: Vec<String>,
+    /// `@template T` or `@template T of BaseClass`
+    pub templates: Vec<DocTemplate>,
+    /// `@mixin ClassName`
+    pub mixins: Vec<String>,
+}
+
+#[derive(Debug, PartialEq)]
+pub struct DocTemplate {
+    /// Template parameter name, e.g. `T`.
+    pub name: String,
+    /// Optional upper bound, e.g. `Base` from `@template T of Base`.
+    pub bound: Option<String>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -87,6 +99,16 @@ impl Docblock {
         for s in &self.see {
             out.push_str(&format!("**@see** {}\n", s));
         }
+        for t in &self.templates {
+            if let Some(bound) = &t.bound {
+                out.push_str(&format!("**@template** `{}` of `{}`\n", t.name, bound));
+            } else {
+                out.push_str(&format!("**@template** `{}`\n", t.name));
+            }
+        }
+        for m in &self.mixins {
+            out.push_str(&format!("**@mixin** `{}`\n", m));
+        }
         out.trim_end().to_string()
     }
 }
@@ -105,6 +127,8 @@ pub fn parse_docblock(raw: &str) -> Docblock {
     let mut deprecated: Option<String> = None;
     let mut throws: Vec<DocThrows> = Vec::new();
     let mut see: Vec<String> = Vec::new();
+    let mut templates: Vec<DocTemplate> = Vec::new();
+    let mut mixins: Vec<String> = Vec::new();
 
     for line in inner.lines() {
         let line = line.trim();
@@ -117,7 +141,7 @@ pub fn parse_docblock(raw: &str) -> Docblock {
 
             match tag.as_str() {
                 "param" => {
-                    let (type_hint, rest) = split_first_word(rest);
+                    let (type_hint, rest) = split_type_hint(rest);
                     let (name, desc) = split_first_word(rest);
                     params.push(DocParam {
                         type_hint: type_hint.to_string(),
@@ -126,14 +150,14 @@ pub fn parse_docblock(raw: &str) -> Docblock {
                     });
                 }
                 "return" | "returns" => {
-                    let (type_hint, desc) = split_first_word(rest);
+                    let (type_hint, desc) = split_type_hint(rest);
                     return_type = Some(DocReturn {
                         type_hint: type_hint.to_string(),
                         description: desc.trim().to_string(),
                     });
                 }
                 "var" => {
-                    let (type_hint, _) = split_first_word(rest);
+                    let (type_hint, _) = split_type_hint(rest);
                     var_type = Some(type_hint.to_string());
                 }
                 "deprecated" => {
@@ -151,6 +175,26 @@ pub fn parse_docblock(raw: &str) -> Docblock {
                         see.push(rest.to_string());
                     }
                 }
+                "template" => {
+                    // @template T  or  @template T of BaseClass
+                    let (name, rest) = split_first_word(rest);
+                    if !name.is_empty() {
+                        let rest = rest.trim();
+                        let bound = if rest.to_lowercase().starts_with("of ") {
+                            let (b, _) = split_first_word(&rest[3..]);
+                            if b.is_empty() { None } else { Some(b.to_string()) }
+                        } else {
+                            None
+                        };
+                        templates.push(DocTemplate { name: name.to_string(), bound });
+                    }
+                }
+                "mixin" => {
+                    let (class, _) = split_first_word(rest);
+                    if !class.is_empty() {
+                        mixins.push(class.to_string());
+                    }
+                }
                 _ => {}
             }
         } else if !line.is_empty() && return_type.is_none() && params.is_empty() {
@@ -166,6 +210,8 @@ pub fn parse_docblock(raw: &str) -> Docblock {
         deprecated,
         throws,
         see,
+        templates,
+        mixins,
     }
 }
 
@@ -175,6 +221,56 @@ fn split_first_word(s: &str) -> (&str, &str) {
         Some(i) => (&s[..i], &s[i..]),
         None => (s, ""),
     }
+}
+
+/// Like `split_first_word` but respects balanced parentheses so that
+/// `callable(int, string): void $x desc` splits into
+/// `callable(int, string): void` and `$x desc`.
+///
+/// Handles the PSR-5 callable return-type syntax: after `): ` the next word
+/// is part of the type hint, not the description.
+fn split_type_hint(s: &str) -> (&str, &str) {
+    let s = s.trim();
+    let mut depth: usize = 0;
+    let mut first_boundary: Option<usize> = None;
+
+    for (i, c) in s.char_indices() {
+        match c {
+            '(' | '<' | '[' => depth += 1,
+            ')' | '>' | ']' => depth = depth.saturating_sub(1),
+            c if c.is_whitespace() && depth == 0 => {
+                first_boundary = Some(i);
+                break;
+            }
+            _ => {}
+        }
+    }
+
+    let i = match first_boundary {
+        Some(i) => i,
+        None => return (s, ""),
+    };
+
+    let type_hint = &s[..i];
+    let after = &s[i..]; // includes leading whitespace
+
+    // Callable return-type: `callable(int, string): void $x`.
+    // The token ending in `:` means the return type follows after whitespace.
+    if type_hint.ends_with(':') {
+        let rest = after.trim_start();
+        // Only extend if the next token looks like a type (not a `$variable`).
+        if !rest.is_empty() && !rest.starts_with('$') {
+            // Find where the return-type word ends.
+            let (ret, _) = split_first_word(rest);
+            if !ret.is_empty() {
+                let rest_offset = rest.as_ptr() as usize - s.as_ptr() as usize;
+                let ret_end = rest_offset + ret.len();
+                return (&s[..ret_end], &s[ret_end..]);
+            }
+        }
+    }
+
+    (type_hint, after)
 }
 
 /// Scan `source` for a `/** ... */` docblock that ends immediately before
@@ -408,5 +504,64 @@ mod tests {
         let md = db.to_markdown();
         assert!(md.contains("@see"), "expected @see in markdown, got: {}", md);
         assert!(md.contains("https://example.com"), "expected url, got: {}", md);
+    }
+
+    #[test]
+    fn parses_template_tag() {
+        let raw = "/**\n * @template T\n */";
+        let db = parse_docblock(raw);
+        assert_eq!(db.templates.len(), 1);
+        assert_eq!(db.templates[0].name, "T");
+        assert!(db.templates[0].bound.is_none());
+    }
+
+    #[test]
+    fn parses_template_with_bound() {
+        let raw = "/**\n * @template T of BaseClass\n */";
+        let db = parse_docblock(raw);
+        assert_eq!(db.templates.len(), 1);
+        assert_eq!(db.templates[0].name, "T");
+        assert_eq!(db.templates[0].bound.as_deref(), Some("BaseClass"));
+    }
+
+    #[test]
+    fn parses_mixin_tag() {
+        let raw = "/**\n * @mixin SomeTrait\n */";
+        let db = parse_docblock(raw);
+        assert_eq!(db.mixins.len(), 1);
+        assert_eq!(db.mixins[0], "SomeTrait");
+    }
+
+    #[test]
+    fn parses_callable_param() {
+        let raw = "/**\n * @param callable(int, string): void $fn The callback\n */";
+        let db = parse_docblock(raw);
+        assert_eq!(db.params.len(), 1);
+        assert_eq!(db.params[0].type_hint, "callable(int, string): void");
+        assert_eq!(db.params[0].name, "$fn");
+        assert_eq!(db.params[0].description, "The callback");
+    }
+
+    #[test]
+    fn to_markdown_shows_template() {
+        let db = Docblock {
+            templates: vec![DocTemplate { name: "T".to_string(), bound: Some("Base".to_string()) }],
+            ..Default::default()
+        };
+        let md = db.to_markdown();
+        assert!(md.contains("@template"), "expected @template in markdown, got: {}", md);
+        assert!(md.contains("T"), "expected T in markdown");
+        assert!(md.contains("Base"), "expected Base in markdown");
+    }
+
+    #[test]
+    fn to_markdown_shows_mixin() {
+        let db = Docblock {
+            mixins: vec!["SomeTrait".to_string()],
+            ..Default::default()
+        };
+        let md = db.to_markdown();
+        assert!(md.contains("@mixin"), "expected @mixin in markdown, got: {}", md);
+        assert!(md.contains("SomeTrait"), "expected SomeTrait in markdown");
     }
 }
