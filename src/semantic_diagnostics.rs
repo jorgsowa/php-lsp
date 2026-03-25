@@ -6,7 +6,7 @@ use std::sync::Arc;
 use php_ast::{ClassMemberKind, Expr, ExprKind, NamespaceBody, Span, Stmt, StmtKind};
 use tower_lsp::lsp_types::{Diagnostic, DiagnosticSeverity, Position, Range, Url};
 
-use crate::ast::{ParsedDoc, offset_to_position};
+use crate::ast::{ParsedDoc, format_type_hint, offset_to_position};
 
 /// Arity bounds for a callable.
 #[derive(Debug, Clone, Copy)]
@@ -133,6 +133,10 @@ fn check_stmt(source: &str, stmt: &Stmt<'_, '_>, defs: &DefMap, out: &mut Vec<Di
         StmtKind::Function(f) => {
             check_stmts(source, &f.body, defs, out);
             check_function_vars(source, f.params.as_ref(), &f.body, out);
+            if let Some(ret) = &f.return_type {
+                let ret_str = format_type_hint(ret);
+                check_return_types_in_body(source, &f.body, &ret_str, out);
+            }
         }
         StmtKind::Class(c) => {
             for member in c.members.iter() {
@@ -140,6 +144,10 @@ fn check_stmt(source: &str, stmt: &Stmt<'_, '_>, defs: &DefMap, out: &mut Vec<Di
                     if let Some(body) = &m.body {
                         check_stmts(source, body, defs, out);
                         check_function_vars(source, m.params.as_ref(), body, out);
+                        if let Some(ret) = &m.return_type {
+                            let ret_str = format_type_hint(ret);
+                            check_return_types_in_body(source, body, &ret_str, out);
+                        }
                     }
                 }
             }
@@ -457,6 +465,16 @@ fn check_expr(source: &str, expr: &Expr<'_, '_>, defs: &DefMap, out: &mut Vec<Di
             }
         }
         ExprKind::MethodCall(m) => {
+            // Null safety: calling a method directly on a null literal is always wrong.
+            if matches!(m.object.kind, ExprKind::Null) {
+                out.push(Diagnostic {
+                    range: span_to_range(source, m.object.span, "null"),
+                    severity: Some(DiagnosticSeverity::WARNING),
+                    source: Some("php-lsp".to_string()),
+                    message: "Calling a method on null".to_string(),
+                    ..Default::default()
+                });
+            }
             check_expr(source, m.object, defs, out);
             for arg in m.args.iter() {
                 check_expr(source, &arg.value, defs, out);
@@ -526,6 +544,139 @@ fn arity_diagnostic(
         source: Some("php-lsp".to_string()),
         message: msg,
         ..Default::default()
+    }
+}
+
+// ── Return-type mismatch ──────────────────────────────────────────────────────
+
+/// Walk all `return` statements in `body` and emit warnings when the returned
+/// literal type is incompatible with `ret_type_str` (the declared return type).
+fn check_return_types_in_body(
+    source: &str,
+    body: &[Stmt<'_, '_>],
+    ret_type_str: &str,
+    out: &mut Vec<Diagnostic>,
+) {
+    let is_nullable = ret_type_str.starts_with('?') || ret_type_str == "mixed";
+    let base_type = ret_type_str.trim_start_matches('?');
+    let is_void = base_type == "void" || base_type == "never";
+
+    for stmt in body {
+        match &stmt.kind {
+            StmtKind::Return(Some(expr)) => {
+                if is_void {
+                    out.push(Diagnostic {
+                        range: span_to_range(source, expr.span, "return"),
+                        severity: Some(DiagnosticSeverity::WARNING),
+                        source: Some("php-lsp".to_string()),
+                        message: "Returning a value from a void function".to_string(),
+                        ..Default::default()
+                    });
+                } else if let Some(msg) = literal_return_conflict(expr, base_type, is_nullable) {
+                    out.push(Diagnostic {
+                        range: span_to_range(source, expr.span, &format!("{expr:?}")),
+                        severity: Some(DiagnosticSeverity::WARNING),
+                        source: Some("php-lsp".to_string()),
+                        message: msg,
+                        ..Default::default()
+                    });
+                }
+            }
+            // Recurse into control-flow but NOT into nested functions/closures.
+            StmtKind::If(i) => {
+                check_return_types_in_body(
+                    source,
+                    std::slice::from_ref(i.then_branch),
+                    ret_type_str,
+                    out,
+                );
+                for b in i.elseif_branches.iter() {
+                    check_return_types_in_body(
+                        source,
+                        std::slice::from_ref(&b.body),
+                        ret_type_str,
+                        out,
+                    );
+                }
+                if let Some(b) = i.else_branch {
+                    check_return_types_in_body(
+                        source,
+                        std::slice::from_ref(b),
+                        ret_type_str,
+                        out,
+                    );
+                }
+            }
+            StmtKind::While(w) => {
+                check_return_types_in_body(
+                    source,
+                    std::slice::from_ref(&w.body),
+                    ret_type_str,
+                    out,
+                );
+            }
+            StmtKind::Block(stmts) => {
+                check_return_types_in_body(source, stmts, ret_type_str, out);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Return an error message if the literal expression type is incompatible with
+/// the declared return type. Returns `None` if the types are compatible or unknown.
+fn literal_return_conflict(
+    expr: &Expr<'_, '_>,
+    base_type: &str,
+    is_nullable: bool,
+) -> Option<String> {
+    match &expr.kind {
+        ExprKind::Null => {
+            if !is_nullable {
+                Some(format!(
+                    "Cannot return null from non-nullable function with return type '{base_type}'"
+                ))
+            } else {
+                None
+            }
+        }
+        ExprKind::String(_) => {
+            if matches!(base_type, "int" | "integer" | "float" | "double" | "bool" | "boolean" | "array") {
+                Some(format!(
+                    "Returning string literal from function declared to return '{base_type}'"
+                ))
+            } else {
+                None
+            }
+        }
+        ExprKind::Int(_) => {
+            if matches!(base_type, "string" | "bool" | "boolean" | "array") {
+                Some(format!(
+                    "Returning int literal from function declared to return '{base_type}'"
+                ))
+            } else {
+                None
+            }
+        }
+        ExprKind::Float(_) => {
+            if matches!(base_type, "string" | "bool" | "boolean" | "array" | "int" | "integer") {
+                Some(format!(
+                    "Returning float literal from function declared to return '{base_type}'"
+                ))
+            } else {
+                None
+            }
+        }
+        ExprKind::Bool(_) => {
+            if matches!(base_type, "string" | "int" | "integer" | "float" | "double" | "array") {
+                Some(format!(
+                    "Returning bool literal from function declared to return '{base_type}'"
+                ))
+            } else {
+                None
+            }
+        }
+        _ => None,
     }
 }
 
@@ -649,5 +800,47 @@ mod tests {
             diags.is_empty(),
             "optional param should not require argument"
         );
+    }
+
+    #[test]
+    fn return_null_from_non_nullable_int_warns() {
+        let diags = run("<?php\nfunction foo(): int { return null; }");
+        let has_warn = diags.iter().any(|d| d.message.contains("null") && d.message.contains("non-nullable"));
+        assert!(has_warn, "expected null-in-non-nullable warning: {:?}", diags);
+    }
+
+    #[test]
+    fn return_null_from_nullable_int_is_ok() {
+        let diags = run("<?php\nfunction foo(): ?int { return null; }");
+        let has_warn = diags.iter().any(|d| d.message.contains("null") && d.message.contains("non-nullable"));
+        assert!(!has_warn, "nullable ?int should allow null: {:?}", diags);
+    }
+
+    #[test]
+    fn return_string_from_int_function_warns() {
+        let diags = run("<?php\nfunction foo(): int { return 'hello'; }");
+        let has_warn = diags.iter().any(|d| d.message.contains("string literal") && d.message.contains("int"));
+        assert!(has_warn, "expected type mismatch warning: {:?}", diags);
+    }
+
+    #[test]
+    fn return_value_from_void_function_warns() {
+        let diags = run("<?php\nfunction foo(): void { return 42; }");
+        let has_warn = diags.iter().any(|d| d.message.contains("void"));
+        assert!(has_warn, "expected void-return warning: {:?}", diags);
+    }
+
+    #[test]
+    fn method_call_on_null_literal_warns() {
+        let diags = run("<?php\nnull->foo();");
+        let has_warn = diags.iter().any(|d| d.message.contains("null"));
+        assert!(has_warn, "expected null-safety warning: {:?}", diags);
+    }
+
+    #[test]
+    fn return_int_from_string_function_warns() {
+        let diags = run("<?php\nfunction foo(): string { return 42; }");
+        let has_warn = diags.iter().any(|d| d.message.contains("int literal") && d.message.contains("string"));
+        assert!(has_warn, "expected type mismatch warning: {:?}", diags);
     }
 }

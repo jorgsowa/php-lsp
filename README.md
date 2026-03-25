@@ -5,7 +5,7 @@ A PHP Language Server Protocol (LSP) implementation written in Rust.
 ## Features
 
 ### Language intelligence
-- **Diagnostics** — syntax errors reported in real time; semantic warnings for undefined symbols, argument-count mismatches, and undefined variables inside function/method bodies; workspace-wide diagnostics available for all indexed files (not just open ones)
+- **Diagnostics** — syntax errors reported in real time; semantic warnings for undefined symbols, argument-count mismatches, undefined variables inside function/method bodies, return-type literal mismatches (e.g. returning a string from an `int` function, returning a value from `void`), and null-safety violations (calling a method directly on `null`); workspace-wide diagnostics available for all indexed files (not just open ones)
 - **Hover** — PHP signature for functions, methods, classes, interfaces, traits, and enums (including `implements`); includes `@param`/`@return`/`@throws`/`@deprecated`/`@see`/`@link`/`@template`/`@mixin` docblock annotations when present; deprecated symbols show a `> Deprecated` banner; built-in PHP functions include a link to the official [php.net](https://www.php.net) documentation
 - **PHPDoc type system** — full docblock support: `@param`, `@return`, `@var`, `@throws`, `@deprecated`, `@see`, `@link`; `@template T` / `@template T of Base` generics; `@mixin ClassName`; callable type signatures `callable(int, string): void` parsed correctly
 - **Go-to-definition** — jump to where a symbol is declared, including across open files and into Composer vendor packages via PSR-4 autoload maps
@@ -14,10 +14,10 @@ A PHP Language Server Protocol (LSP) implementation written in Rust.
 - **Rename** — rename any function, method, or class across all open files, including its `use` import statements
 
 ### Editing aids
-- **Completion** — keywords, ~200 built-in PHP functions, classes, methods, properties, constants, enums, and enum cases; `->` completions scoped to the inferred receiver type (`$obj = new Foo()` → `$obj->` shows `Foo`'s and all ancestor instance members); `$this->` inside a method resolves to the enclosing class and walks the full inheritance chain; `ClassName::`/`self::`/`static::` show static members and constants; `parent::` shows parent-class static members; `funcName(` offers named-argument (`param:`) completions; type inference extends to typed function/method parameters; cross-file symbols from all indexed documents; `@mixin ClassName` docblock causes mixin members to appear in `->` completions; **camel/underscore-case fuzzy matching** — typing `GRF` matches `getRecentFiles`, `str_r` matches `str_replace`
-- **Signature help** — parameter hints while typing a call, including overload narrowing
-- **Inlay hints** — parameter name labels at call sites; return-type labels after assigned function calls
-- **Code actions** — "Add use import" quick-fix for undefined class names; PHPDoc stub generation for undocumented functions and methods
+- **Completion** — keywords, ~200 built-in PHP functions, classes, methods, properties, constants, enums, and enum cases; `->` completions scoped to the inferred receiver type (`$obj = new Foo()` → `$obj->` shows `Foo`'s and all ancestor instance members); `$this->` inside a method resolves to the enclosing class and walks the full inheritance chain; `ClassName::`/`self::`/`static::` show static members and constants; `parent::` shows parent-class static members; `funcName(` offers named-argument (`param:`) completions; type inference extends to typed function/method parameters; cross-file symbols from all indexed documents; `@mixin ClassName` docblock causes mixin members to appear in `->` completions; **camel/underscore-case fuzzy matching** — typing `GRF` matches `getRecentFiles`, `str_r` matches `str_replace`; **auto use-insertion** — selecting a class from another namespace automatically inserts the required `use` statement at the top of the file
+- **Signature help** — parameter hints while typing a call, including overload narrowing; signatures for ~150 PHP built-in functions are bundled so hints work without any external source
+- **Inlay hints** — parameter name labels at call sites; return-type labels after assigned function calls, closures, and arrow functions
+- **Code actions** — "Add use import" quick-fix for undefined class names; PHPDoc stub generation for undocumented functions and methods; "Implement missing methods" generates stubs for all abstract/interface methods not yet present in a class
 - **Document links** — `include`/`require` paths are clickable links to the target file
 
 ### Navigation
@@ -29,7 +29,8 @@ A PHP Language Server Protocol (LSP) implementation written in Rust.
 - **Go-to-type-definition** — jump to the class of the type of a variable
 - **Selection range** — smart expand/shrink selection (Alt+Shift+→) from expression → statement → function/class → file
 - **Document highlight** — highlights all occurrences of the symbol under the cursor in the current file
-- **Folding ranges** — collapse functions, classes, methods, loops, and control-flow blocks
+- **Folding ranges** — collapse functions, classes, methods, loops, and control-flow blocks; consecutive `use` import groups fold as a single region; multi-line comments fold; `// #region` / `// #endregion` markers create named foldable regions
+- **Code lens** — inline reference counts on functions, classes, and methods; implementations count on interfaces and abstract classes; "overrides" label on methods that override a parent-class method; "Run test" lens for PHPUnit test methods
 
 ### Syntax & formatting
 - **Semantic tokens** — richer syntax highlighting for functions, methods, classes, interfaces, traits, enums, parameters, properties, and PHP 8 `#[Attribute]` names (highlighted as class references) with `declaration`/`static`/`abstract`/`readonly`/`deprecated` modifiers; symbols marked `@deprecated` render with strikethrough in supporting editors; supports full, range, and incremental delta requests

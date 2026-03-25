@@ -61,6 +61,31 @@ fn collect_defs_stmts(stmts: &[Stmt<'_, '_>], map: &mut HashMap<String, FuncDef>
                     collect_defs_stmts(inner, map);
                 }
             }
+            // Register closure/arrow-function variables so `$fn(...)` call sites get hints.
+            StmtKind::Expression(e) => {
+                if let ExprKind::Assign(assign) = &e.kind {
+                    if let ExprKind::Variable(var_name) = &assign.target.kind {
+                        let key = format!("${var_name}");
+                        match &assign.value.kind {
+                            ExprKind::Closure(c) => {
+                                let params =
+                                    c.params.iter().map(|p| p.name.to_string()).collect();
+                                let return_type =
+                                    c.return_type.as_ref().map(|t| format_type_hint(t));
+                                map.insert(key, FuncDef { params, return_type });
+                            }
+                            ExprKind::ArrowFunction(a) => {
+                                let params =
+                                    a.params.iter().map(|p| p.name.to_string()).collect();
+                                let return_type =
+                                    a.return_type.as_ref().map(|t| format_type_hint(t));
+                                map.insert(key, FuncDef { params, return_type });
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
             _ => {}
         }
     }
@@ -164,8 +189,18 @@ fn hints_in_expr(
 ) {
     match &expr.kind {
         ExprKind::FunctionCall(f) => {
-            if let Some(name) = ident_name(f.name) {
-                if let Some(def) = defs.get(name) {
+            // Look up by identifier name or by variable name (for closure vars like `$fn(...)`).
+            let key: Option<String> = ident_name(f.name)
+                .map(|n| n.to_string())
+                .or_else(|| {
+                    if let ExprKind::Variable(n) = &f.name.kind {
+                        Some(format!("${n}"))
+                    } else {
+                        None
+                    }
+                });
+            if let Some(k) = key {
+                if let Some(def) = defs.get(&k) {
                     emit_param_hints(source, &f.args, &def.params, range, out);
                 }
             }
@@ -190,6 +225,14 @@ fn hints_in_expr(
             emit_return_type_hint(source, a.value, defs, range, out);
             hints_in_expr(source, a.target, defs, range, out);
             hints_in_expr(source, a.value, defs, range, out);
+        }
+        // Walk into closure bodies so nested function calls get hints.
+        ExprKind::Closure(c) => {
+            hints_in_stmts(source, &c.body, defs, range, out);
+        }
+        // Walk into arrow function bodies.
+        ExprKind::ArrowFunction(a) => {
+            hints_in_expr(source, a.body, defs, range, out);
         }
         ExprKind::Parenthesized(e) => hints_in_expr(source, e, defs, range, out),
         ExprKind::Ternary(t) => {
@@ -459,5 +502,46 @@ mod tests {
         let hints = inlay_hints(src, &d, full_range());
         assert_eq!(hints.len(), 1);
         assert_eq!(label_str(&hints[0]), "name:");
+    }
+
+    #[test]
+    fn closure_variable_call_gets_param_hints() {
+        let src = "<?php\n$greet = function(string $name, int $times): void {};\n$greet('Alice', 3);";
+        let d = doc(src);
+        let hints = inlay_hints(src, &d, full_range());
+        let param_hints: Vec<&str> = hints
+            .iter()
+            .filter(|h| h.kind == Some(InlayHintKind::PARAMETER))
+            .map(|h| label_str(h))
+            .collect();
+        assert!(param_hints.contains(&"name:"), "missing 'name:' hint");
+        assert!(param_hints.contains(&"times:"), "missing 'times:' hint");
+    }
+
+    #[test]
+    fn arrow_function_variable_call_gets_param_hints() {
+        let src = "<?php\n$double = fn(int $n): int => $n * 2;\n$result = $double(5);";
+        let d = doc(src);
+        let hints = inlay_hints(src, &d, full_range());
+        let param_hints: Vec<&str> = hints
+            .iter()
+            .filter(|h| h.kind == Some(InlayHintKind::PARAMETER))
+            .map(|h| label_str(h))
+            .collect();
+        assert!(param_hints.contains(&"n:"), "missing 'n:' param hint");
+    }
+
+    #[test]
+    fn function_call_inside_closure_body_gets_hints() {
+        let src = "<?php\nfunction add(int $a, int $b): int { return $a + $b; }\n$fn = function() { add(1, 2); };";
+        let d = doc(src);
+        let hints = inlay_hints(src, &d, full_range());
+        let param_hints: Vec<&str> = hints
+            .iter()
+            .filter(|h| h.kind == Some(InlayHintKind::PARAMETER))
+            .map(|h| label_str(h))
+            .collect();
+        assert!(param_hints.contains(&"a:"), "missing 'a:' hint inside closure body");
+        assert!(param_hints.contains(&"b:"), "missing 'b:' hint inside closure body");
     }
 }

@@ -8,18 +8,19 @@ use tower_lsp::lsp_types::{
 };
 
 use crate::ast::{ParsedDoc, name_range, offset_to_position};
+use crate::util::fuzzy_camel_match;
 
 pub fn document_symbols(source: &str, doc: &ParsedDoc) -> Vec<DocumentSymbol> {
     symbols_from_statements(source, &doc.program().stmts)
 }
 
-/// Flat symbol search across all open documents. Query is a case-insensitive substring match.
+/// Flat symbol search across all open documents.
+/// Matches by camel/underscore abbreviation or plain case-insensitive substring.
 pub fn workspace_symbols(query: &str, docs: &[(Url, Arc<ParsedDoc>)]) -> Vec<SymbolInformation> {
-    let q = query.to_lowercase();
     let mut results = Vec::new();
     for (uri, doc) in docs {
         let source = doc.source();
-        collect_symbol_info(source, &doc.program().stmts, &q, uri, &mut results);
+        collect_symbol_info(source, &doc.program().stmts, query, uri, &mut results);
     }
     results
 }
@@ -36,7 +37,7 @@ fn collect_symbol_info(
         match &stmt.kind {
             StmtKind::Function(f) => {
                 let name = f.name;
-                if name.to_lowercase().contains(query) {
+                if fuzzy_camel_match(query, name) {
                     out.push(SymbolInformation {
                         name: name.to_string(),
                         kind: SymbolKind::FUNCTION,
@@ -52,7 +53,7 @@ fn collect_symbol_info(
             }
             StmtKind::Class(c) => {
                 let name = c.name.unwrap_or("");
-                if !name.is_empty() && name.to_lowercase().contains(query) {
+                if !name.is_empty() && fuzzy_camel_match(query, name) {
                     out.push(SymbolInformation {
                         name: name.to_string(),
                         kind: SymbolKind::CLASS,
@@ -67,7 +68,7 @@ fn collect_symbol_info(
                 }
                 for member in c.members.iter() {
                     if let ClassMemberKind::Method(m) = &member.kind {
-                        if m.name.to_lowercase().contains(query) {
+                        if fuzzy_camel_match(query, m.name) {
                             out.push(SymbolInformation {
                                 name: m.name.to_string(),
                                 kind: SymbolKind::METHOD,
@@ -88,7 +89,7 @@ fn collect_symbol_info(
                 }
             }
             StmtKind::Interface(i) => {
-                if i.name.to_lowercase().contains(query) {
+                if fuzzy_camel_match(query, i.name) {
                     out.push(SymbolInformation {
                         name: i.name.to_string(),
                         kind: SymbolKind::INTERFACE,
@@ -103,7 +104,7 @@ fn collect_symbol_info(
                 }
             }
             StmtKind::Trait(t) => {
-                if t.name.to_lowercase().contains(query) {
+                if fuzzy_camel_match(query, t.name) {
                     out.push(SymbolInformation {
                         name: t.name.to_string(),
                         kind: SymbolKind::CLASS,
@@ -118,7 +119,7 @@ fn collect_symbol_info(
                 }
             }
             StmtKind::Enum(e) => {
-                if e.name.to_lowercase().contains(query) {
+                if fuzzy_camel_match(query, e.name) {
                     out.push(SymbolInformation {
                         name: e.name.to_string(),
                         kind: SymbolKind::ENUM,
@@ -133,7 +134,7 @@ fn collect_symbol_info(
                 }
                 for member in e.members.iter() {
                     if let EnumMemberKind::Case(c) = &member.kind {
-                        if c.name.to_lowercase().contains(query) {
+                        if fuzzy_camel_match(query, c.name) {
                             out.push(SymbolInformation {
                                 name: c.name.to_string(),
                                 kind: SymbolKind::ENUM_MEMBER,

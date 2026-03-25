@@ -18,6 +18,7 @@ mod formatting;
 mod hover;
 mod implementation;
 mod inlay_hints;
+mod implement_action;
 mod phpdoc_action;
 mod phpstorm_meta;
 mod references;

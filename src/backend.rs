@@ -26,6 +26,7 @@ use crate::formatting::{format_document, format_range};
 use crate::hover::hover_info;
 use crate::implementation::goto_implementation;
 use crate::inlay_hints::inlay_hints;
+use crate::implement_action::implement_missing_actions;
 use crate::phpdoc_action::phpdoc_actions;
 use crate::references::find_references;
 use crate::rename::{prepare_rename, rename};
@@ -1053,6 +1054,15 @@ impl LanguageServer for Backend {
 
         // PHPDoc generation actions
         actions.extend(phpdoc_actions(uri, &doc, &source, params.range));
+
+        // Implement missing abstract/interface methods
+        actions.extend(implement_missing_actions(
+            &source,
+            &doc,
+            &other_docs,
+            params.range,
+            uri,
+        ));
 
         Ok(if actions.is_empty() {
             None

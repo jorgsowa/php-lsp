@@ -11,7 +11,9 @@ use tower_lsp::lsp_types::{CodeLens, Command, Url};
 
 use crate::ast::{ParsedDoc, name_range};
 use crate::docblock::docblock_before;
+use crate::implementation::find_implementations;
 use crate::references::find_references;
+use crate::type_map::{members_of_class, parent_class_name};
 
 /// Build all code lenses for `uri`/`doc`, using `all_docs` for reference counts.
 pub fn code_lenses(
@@ -43,6 +45,15 @@ fn collect_lenses(
                     let class_range = name_range(source, class_name);
                     out.push(ref_count_lens(class_range, class_name, all_docs));
 
+                    // Implementations count for abstract classes (classes extending this).
+                    if c.modifiers.is_abstract {
+                        let impl_count = find_implementations(class_name, all_docs).len();
+                        out.push(impl_count_lens(class_range, impl_count));
+                    }
+
+                    // Find the parent class once for the whole class.
+                    let parent = find_parent_class(c, all_docs);
+
                     for member in c.members.iter() {
                         if let ClassMemberKind::Method(m) = &member.kind {
                             let method_range = name_range(source, m.name);
@@ -51,6 +62,13 @@ fn collect_lenses(
                             if is_test_method(source, m.name, member.span.start) {
                                 out.push(run_test_lens(method_range, uri, class_name, m.name));
                             }
+
+                            // Overrides lens: show if parent class has a method with the same name.
+                            if let Some(ref parent_name) = parent {
+                                if parent_has_method(parent_name, m.name, all_docs) {
+                                    out.push(overrides_lens(method_range, parent_name, m.name));
+                                }
+                            }
                         }
                     }
                 }
@@ -58,6 +76,9 @@ fn collect_lenses(
             StmtKind::Interface(i) => {
                 let range = name_range(source, i.name);
                 out.push(ref_count_lens(range, i.name, all_docs));
+                // Implementations count lens.
+                let impl_count = find_implementations(i.name, all_docs).len();
+                out.push(impl_count_lens(range, impl_count));
             }
             StmtKind::Namespace(ns) => {
                 if let NamespaceBody::Braced(inner) = &ns.body {
@@ -93,6 +114,39 @@ fn ref_count_lens(
     }
 }
 
+fn impl_count_lens(range: tower_lsp::lsp_types::Range, count: usize) -> CodeLens {
+    let label = match count {
+        0 => "0 implementations".to_string(),
+        1 => "1 implementation".to_string(),
+        n => format!("{n} implementations"),
+    };
+    CodeLens {
+        range,
+        command: Some(Command {
+            title: label,
+            command: "php-lsp.showImplementations".to_string(),
+            arguments: None,
+        }),
+        data: None,
+    }
+}
+
+fn overrides_lens(
+    range: tower_lsp::lsp_types::Range,
+    parent_class: &str,
+    method_name: &str,
+) -> CodeLens {
+    CodeLens {
+        range,
+        command: Some(Command {
+            title: format!("overrides {}::{}", parent_class, method_name),
+            command: "php-lsp.goToDeclaration".to_string(),
+            arguments: None,
+        }),
+        data: None,
+    }
+}
+
 fn run_test_lens(
     range: tower_lsp::lsp_types::Range,
     uri: &Url,
@@ -114,6 +168,32 @@ fn run_test_lens(
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+/// Return the direct parent class name of a class, if any.
+fn find_parent_class<'a>(
+    c: &php_ast::ClassDecl<'_, '_>,
+    all_docs: &'a [(Url, Arc<ParsedDoc>)],
+) -> Option<String> {
+    let parent_short = c.extends.as_ref()?.to_string_repr().into_owned();
+    // Resolve through the documents to get the canonical short name.
+    for (_, doc) in all_docs {
+        if let Some(p) = parent_class_name(doc, &parent_short) {
+            return Some(p);
+        }
+    }
+    Some(parent_short)
+}
+
+/// Check whether `parent_class` declares a method named `method_name`.
+fn parent_has_method(parent_class: &str, method_name: &str, all_docs: &[(Url, Arc<ParsedDoc>)]) -> bool {
+    for (_, doc) in all_docs {
+        let members = members_of_class(doc, parent_class);
+        if members.methods.iter().any(|(n, _)| n == method_name) {
+            return true;
+        }
+    }
+    false
+}
 
 /// A method is a test if its name starts with `test` (PHPUnit convention) or
 /// if its leading docblock contains `@test`.
@@ -218,6 +298,68 @@ mod tests {
         let docs = vec![(uri("/a.php"), Arc::new(doc(src)))];
         let lenses = code_lenses(&uri("/a.php"), &d, &docs);
         assert!(!lenses.is_empty());
+    }
+
+    #[test]
+    fn emits_implementations_lens_for_interface() {
+        let src = "<?php\ninterface Countable {}\nclass MyList implements Countable {}";
+        let d = doc(src);
+        let docs = vec![(uri("/a.php"), Arc::new(doc(src)))];
+        let lenses = code_lenses(&uri("/a.php"), &d, &docs);
+        let impl_lens = lenses.iter().find(|l| {
+            l.command
+                .as_ref()
+                .map_or(false, |c| c.title.contains("implementation"))
+        });
+        assert!(impl_lens.is_some(), "expected implementations lens");
+        assert!(
+            impl_lens
+                .unwrap()
+                .command
+                .as_ref()
+                .unwrap()
+                .title
+                .starts_with("1"),
+            "expected 1 implementation"
+        );
+    }
+
+    #[test]
+    fn emits_implementations_lens_for_abstract_class() {
+        let src = "<?php\nabstract class Shape {}\nclass Circle extends Shape {}";
+        let d = doc(src);
+        let docs = vec![(uri("/a.php"), Arc::new(doc(src)))];
+        let lenses = code_lenses(&uri("/a.php"), &d, &docs);
+        let impl_lens = lenses.iter().find(|l| {
+            l.command
+                .as_ref()
+                .map_or(false, |c| c.title.contains("implementation"))
+        });
+        assert!(impl_lens.is_some(), "expected implementations lens on abstract class");
+    }
+
+    #[test]
+    fn emits_overrides_lens_for_overriding_method() {
+        let src = "<?php\nclass Base { public function run(): void {} }\nclass Child extends Base { public function run(): void {} }";
+        let d = doc(src);
+        let docs = vec![(uri("/a.php"), Arc::new(doc(src)))];
+        let lenses = code_lenses(&uri("/a.php"), &d, &docs);
+        let overrides = lenses.iter().find(|l| {
+            l.command
+                .as_ref()
+                .map_or(false, |c| c.title.contains("overrides"))
+        });
+        assert!(overrides.is_some(), "expected overrides lens");
+        assert!(
+            overrides
+                .unwrap()
+                .command
+                .as_ref()
+                .unwrap()
+                .title
+                .contains("Base::run"),
+            "overrides lens should reference Base::run"
+        );
     }
 
     #[test]

@@ -6,6 +6,9 @@ use crate::ast::{ParsedDoc, offset_to_position};
 pub fn folding_ranges(source: &str, doc: &ParsedDoc) -> Vec<FoldingRange> {
     let mut ranges = Vec::new();
     fold_stmts(&doc.program().stmts, source, &mut ranges);
+    fold_use_groups(&doc.program().stmts, source, &mut ranges);
+    fold_comments(source, &mut ranges);
+    fold_regions(source, &mut ranges);
     ranges
 }
 
@@ -67,6 +70,65 @@ fn fold_stmt(stmt: &Stmt<'_, '_>, source: &str, out: &mut Vec<FoldingRange>) {
                 }
             }
         }
+        StmtKind::Enum(_e) => {
+            let start_line = offset_to_position(source, stmt.span.start).line;
+            let end_line = offset_to_position(source, stmt.span.end).line;
+            push(out, start_line, end_line, None);
+        }
+        StmtKind::If(i) => {
+            let start_line = offset_to_position(source, stmt.span.start).line;
+            let end_line = offset_to_position(source, stmt.span.end).line;
+            push(out, start_line, end_line, None);
+            fold_stmt(i.then_branch, source, out);
+            for ei in i.elseif_branches.iter() {
+                fold_stmt(&ei.body, source, out);
+            }
+            if let Some(e) = &i.else_branch {
+                fold_stmt(e, source, out);
+            }
+        }
+        StmtKind::While(w) => {
+            let start_line = offset_to_position(source, stmt.span.start).line;
+            let end_line = offset_to_position(source, stmt.span.end).line;
+            push(out, start_line, end_line, None);
+            fold_stmt(w.body, source, out);
+        }
+        StmtKind::For(f) => {
+            let start_line = offset_to_position(source, stmt.span.start).line;
+            let end_line = offset_to_position(source, stmt.span.end).line;
+            push(out, start_line, end_line, None);
+            fold_stmt(f.body, source, out);
+        }
+        StmtKind::Foreach(f) => {
+            let start_line = offset_to_position(source, stmt.span.start).line;
+            let end_line = offset_to_position(source, stmt.span.end).line;
+            push(out, start_line, end_line, None);
+            fold_stmt(f.body, source, out);
+        }
+        StmtKind::DoWhile(d) => {
+            let start_line = offset_to_position(source, stmt.span.start).line;
+            let end_line = offset_to_position(source, stmt.span.end).line;
+            push(out, start_line, end_line, None);
+            fold_stmt(d.body, source, out);
+        }
+        StmtKind::TryCatch(t) => {
+            let start_line = offset_to_position(source, stmt.span.start).line;
+            let end_line = offset_to_position(source, stmt.span.end).line;
+            push(out, start_line, end_line, None);
+            fold_stmts(&t.body, source, out);
+            for catch in t.catches.iter() {
+                fold_stmts(&catch.body, source, out);
+            }
+            if let Some(finally) = &t.finally {
+                fold_stmts(finally, source, out);
+            }
+        }
+        StmtKind::Block(stmts) => {
+            let start_line = offset_to_position(source, stmt.span.start).line;
+            let end_line = offset_to_position(source, stmt.span.end).line;
+            push(out, start_line, end_line, None);
+            fold_stmts(stmts, source, out);
+        }
         StmtKind::Namespace(ns) => {
             let start_line = offset_to_position(source, stmt.span.start).line;
             let end_line = offset_to_position(source, stmt.span.end).line;
@@ -77,6 +139,75 @@ fn fold_stmt(stmt: &Stmt<'_, '_>, source: &str, out: &mut Vec<FoldingRange>) {
         }
         _ => {}
     }
+}
+
+/// Fold consecutive top-level `use` statements into a single range.
+fn fold_use_groups(stmts: &[Stmt<'_, '_>], source: &str, out: &mut Vec<FoldingRange>) {
+    let mut group_start: Option<u32> = None;
+    let mut group_end: u32 = 0;
+    for stmt in stmts {
+        if matches!(stmt.kind, StmtKind::Use(_)) {
+            let line = offset_to_position(source, stmt.span.start).line;
+            if group_start.is_none() {
+                group_start = Some(line);
+            }
+            group_end = offset_to_position(source, stmt.span.end).line;
+        } else {
+            if let Some(start) = group_start.take() {
+                push(out, start, group_end, Some(FoldingRangeKind::Imports));
+            }
+        }
+    }
+    if let Some(start) = group_start {
+        push(out, start, group_end, Some(FoldingRangeKind::Imports));
+    }
+}
+
+/// Fold `/* ... */` and `/** ... */` multi-line block comments.
+fn fold_comments(source: &str, out: &mut Vec<FoldingRange>) {
+    let bytes = source.as_bytes();
+    let len = bytes.len();
+    let mut i = 0;
+    while i + 1 < len {
+        if bytes[i] == b'/' && bytes[i + 1] == b'*' {
+            let start_line = line_at(source, i);
+            // find closing */
+            let mut j = i + 2;
+            while j + 1 < len {
+                if bytes[j] == b'*' && bytes[j + 1] == b'/' {
+                    let end_line = line_at(source, j + 1);
+                    push(out, start_line, end_line, Some(FoldingRangeKind::Comment));
+                    i = j + 2;
+                    break;
+                }
+                j += 1;
+            }
+            if j + 1 >= len {
+                break;
+            }
+        } else {
+            i += 1;
+        }
+    }
+}
+
+/// Fold `// #region` … `// #endregion` pairs.
+fn fold_regions(source: &str, out: &mut Vec<FoldingRange>) {
+    let mut stack: Vec<u32> = Vec::new();
+    for (line_no, line) in source.lines().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("// #region") || trimmed.starts_with("//region") {
+            stack.push(line_no as u32);
+        } else if trimmed.starts_with("// #endregion") || trimmed.starts_with("//endregion") {
+            if let Some(start) = stack.pop() {
+                push(out, start, line_no as u32, Some(FoldingRangeKind::Region));
+            }
+        }
+    }
+}
+
+fn line_at(source: &str, byte_offset: usize) -> u32 {
+    source[..byte_offset].bytes().filter(|&b| b == b'\n').count() as u32
 }
 
 fn push(
@@ -205,5 +336,81 @@ mod tests {
         let src = "<?php";
         let d = doc(src);
         assert!(folding_ranges(src, &d).is_empty());
+    }
+
+    #[test]
+    fn folds_if_statement() {
+        let src = "<?php\nif (true) {\n    echo 1;\n}";
+        let d = doc(src);
+        let ranges = folding_ranges(src, &d);
+        assert!(
+            ranges.iter().any(|r| r.start_line == 1 && r.end_line == 3),
+            "expected if fold (1..3), got {:?}",
+            lines(&ranges)
+        );
+    }
+
+    #[test]
+    fn folds_foreach_statement() {
+        let src = "<?php\nforeach ($arr as $v) {\n    echo $v;\n}";
+        let d = doc(src);
+        let ranges = folding_ranges(src, &d);
+        assert!(
+            ranges.iter().any(|r| r.start_line == 1 && r.end_line == 3),
+            "expected foreach fold (1..3), got {:?}",
+            lines(&ranges)
+        );
+    }
+
+    #[test]
+    fn folds_try_catch() {
+        let src = "<?php\ntry {\n    foo();\n} catch (\\Exception $e) {\n    bar();\n}";
+        let d = doc(src);
+        let ranges = folding_ranges(src, &d);
+        assert!(
+            ranges.iter().any(|r| r.start_line == 1),
+            "expected try-catch fold, got {:?}",
+            lines(&ranges)
+        );
+    }
+
+    #[test]
+    fn folds_multiline_doc_comment() {
+        let src = "<?php\n/**\n * A docblock.\n * @param int $x\n */\nfunction f(int $x): void {}";
+        let d = doc(src);
+        let ranges = folding_ranges(src, &d);
+        assert!(
+            ranges.iter().any(|r| r.kind == Some(FoldingRangeKind::Comment) && r.start_line == 1),
+            "expected comment fold, got {:?}",
+            lines(&ranges)
+        );
+    }
+
+    #[test]
+    fn folds_region_endregion() {
+        let src = "<?php\n// #region Auth\n$x = 1;\n$y = 2;\n// #endregion";
+        let d = doc(src);
+        let ranges = folding_ranges(src, &d);
+        assert!(
+            ranges
+                .iter()
+                .any(|r| r.kind == Some(FoldingRangeKind::Region) && r.start_line == 1 && r.end_line == 4),
+            "expected region fold (1..4), got {:?}",
+            lines(&ranges)
+        );
+    }
+
+    #[test]
+    fn folds_consecutive_use_statements() {
+        let src = "<?php\nuse Foo\\Bar;\nuse Foo\\Baz;\nuse Foo\\Qux;\n\nclass A {}";
+        let d = doc(src);
+        let ranges = folding_ranges(src, &d);
+        assert!(
+            ranges
+                .iter()
+                .any(|r| r.kind == Some(FoldingRangeKind::Imports) && r.start_line == 1),
+            "expected imports fold, got {:?}",
+            lines(&ranges)
+        );
     }
 }

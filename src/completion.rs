@@ -1,10 +1,11 @@
 use std::sync::Arc;
 
 use php_ast::{ClassMemberKind, EnumMemberKind, ExprKind, NamespaceBody, Stmt, StmtKind};
-use tower_lsp::lsp_types::{CompletionItem, CompletionItemKind, Position};
+use tower_lsp::lsp_types::{CompletionItem, CompletionItemKind, Position, Range, TextEdit};
 
 use crate::ast::ParsedDoc;
 use crate::phpstorm_meta::PhpStormMeta;
+use crate::use_resolver::UseMap;
 use crate::type_map::{
     TypeMap, enclosing_class_at, members_of_class, mixin_classes_of, params_of_function,
     parent_class_name,
@@ -659,6 +660,96 @@ fn resolve_call_params(
     params
 }
 
+/// Collect class/interface/trait/enum names with their FQN from an AST.
+/// Handles both braced (`namespace Foo { ... }`) and unbraced (`namespace Foo;`) forms.
+fn collect_classes_with_ns(
+    stmts: &[Stmt<'_, '_>],
+    ns_prefix: &str,
+    items: &mut Vec<(String, CompletionItemKind, String)>,
+) {
+    // `cur_ns` tracks the namespace context for unbraced `namespace Foo;` declarations,
+    // which apply to all subsequent statements at the same level.
+    let mut cur_ns = ns_prefix.to_string();
+
+    let fqn_for = |short: &str, ns: &str| -> String {
+        if ns.is_empty() {
+            short.to_string()
+        } else {
+            format!("{}\\{}", ns, short)
+        }
+    };
+
+    for stmt in stmts {
+        match &stmt.kind {
+            StmtKind::Class(c) => {
+                let short = c.name.unwrap_or("");
+                if !short.is_empty() {
+                    items.push((short.to_string(), CompletionItemKind::CLASS, fqn_for(short, &cur_ns)));
+                }
+            }
+            StmtKind::Interface(i) => {
+                items.push((i.name.to_string(), CompletionItemKind::INTERFACE, fqn_for(i.name, &cur_ns)));
+            }
+            StmtKind::Trait(t) => {
+                items.push((t.name.to_string(), CompletionItemKind::CLASS, fqn_for(t.name, &cur_ns)));
+            }
+            StmtKind::Enum(e) => {
+                items.push((e.name.to_string(), CompletionItemKind::ENUM, fqn_for(e.name, &cur_ns)));
+            }
+            StmtKind::Namespace(ns) => {
+                let ns_name = ns
+                    .name
+                    .as_ref()
+                    .map(|n| n.to_string_repr().to_string())
+                    .unwrap_or_default();
+                match &ns.body {
+                    NamespaceBody::Braced(inner) => {
+                        collect_classes_with_ns(inner, &ns_name, items);
+                    }
+                    NamespaceBody::Simple => {
+                        // Unbraced namespace: applies to all subsequent statements.
+                        cur_ns = ns_name;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// The line+col where a new `use` statement should be inserted in the current file.
+fn use_insert_position(source: &str) -> Position {
+    let mut last_use_line: Option<u32> = None;
+    let mut anchor_line: u32 = 0;
+    for (i, line) in source.lines().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("<?") || trimmed.starts_with("namespace ") {
+            anchor_line = i as u32;
+        }
+        if trimmed.starts_with("use ") && !trimmed.starts_with("use function ") {
+            last_use_line = Some(i as u32);
+        }
+    }
+    Position {
+        line: last_use_line.unwrap_or(anchor_line) + 1,
+        character: 0,
+    }
+}
+
+/// The namespace declared at the top of the given statements, if any.
+fn current_file_namespace(stmts: &[Stmt<'_, '_>]) -> String {
+    for stmt in stmts {
+        if let StmtKind::Namespace(ns) = &stmt.kind {
+            return ns
+                .name
+                .as_ref()
+                .map(|n| n.to_string_repr().to_string())
+                .unwrap_or_default();
+        }
+    }
+    String::new()
+}
+
 /// Completions filtered by trigger character, with optional `source` + `position`
 /// so that `->` completions can be scoped to the variable's class.
 pub fn filtered_completions_at(
@@ -724,10 +815,54 @@ pub fn filtered_completions_at(
             let mut items = keyword_completions();
             items.extend(builtin_completions());
             items.extend(symbol_completions(doc));
+
+            // Pre-compute use-import context for the current file.
+            let use_map = source.map(|_| UseMap::from_doc(doc));
+            let cur_ns = current_file_namespace(&doc.program().stmts);
+
             for other in other_docs {
+                // Class-like symbols: add `use` insertion when needed.
+                let mut classes: Vec<(String, CompletionItemKind, String)> = Vec::new();
+                collect_classes_with_ns(&other.program().stmts, "", &mut classes);
+                for (label, kind, fqn) in classes {
+                    let additional_text_edits = if let (Some(src), Some(ref umap)) =
+                        (source, use_map.as_ref())
+                    {
+                        let in_same_ns = !cur_ns.is_empty()
+                            && fqn == format!("{}\\{}", cur_ns, label);
+                        let is_global = !fqn.contains('\\');
+                        let already = umap.resolve(&label).is_some();
+                        if !in_same_ns && !is_global && !already {
+                            let pos = use_insert_position(src);
+                            Some(vec![TextEdit {
+                                range: Range { start: pos, end: pos },
+                                new_text: format!("use {};\n", fqn),
+                            }])
+                        } else {
+                            None
+                        }
+                    } else {
+                        None
+                    };
+                    items.push(CompletionItem {
+                        label,
+                        kind: Some(kind),
+                        detail: if fqn.contains('\\') { Some(fqn) } else { None },
+                        additional_text_edits,
+                        ..Default::default()
+                    });
+                }
+                // Non-class symbols (functions, methods, constants) need no use statement.
                 let cross: Vec<CompletionItem> = symbol_completions(other)
                     .into_iter()
-                    .filter(|i| i.kind != Some(CompletionItemKind::VARIABLE))
+                    .filter(|i| {
+                        !matches!(
+                            i.kind,
+                            Some(CompletionItemKind::CLASS)
+                                | Some(CompletionItemKind::INTERFACE)
+                                | Some(CompletionItemKind::ENUM)
+                        ) && i.kind != Some(CompletionItemKind::VARIABLE)
+                    })
                     .collect();
                 items.extend(cross);
             }
@@ -1039,6 +1174,43 @@ mod tests {
         assert!(
             !ls.contains(&"$remoteVar"),
             "cross-file variable should not appear"
+        );
+    }
+
+    #[test]
+    fn cross_file_class_gets_use_insertion() {
+        let current_src = "<?php\nnamespace App;\n\n$x = new ";
+        let d = doc(current_src);
+        let other = Arc::new(ParsedDoc::parse(
+            "<?php\nnamespace Lib;\nclass Mailer {}".to_string(),
+        ));
+        let pos = Position { line: 3, character: 9 };
+        let items = filtered_completions_at(&d, &[other], None, Some(current_src), Some(pos), None);
+        let mailer = items.iter().find(|i| i.label == "Mailer");
+        assert!(mailer.is_some(), "Mailer should appear in completions");
+        let edits = mailer.unwrap().additional_text_edits.as_ref();
+        assert!(edits.is_some(), "Mailer should have additionalTextEdits");
+        let edit_text = &edits.unwrap()[0].new_text;
+        assert!(
+            edit_text.contains("use Lib\\Mailer;"),
+            "edit should insert 'use Lib\\Mailer;', got: {edit_text}"
+        );
+    }
+
+    #[test]
+    fn same_namespace_class_gets_no_use_insertion() {
+        let current_src = "<?php\nnamespace Lib;\n$x = new ";
+        let d = doc(current_src);
+        let other = Arc::new(ParsedDoc::parse(
+            "<?php\nnamespace Lib;\nclass Mailer {}".to_string(),
+        ));
+        let pos = Position { line: 2, character: 9 };
+        let items = filtered_completions_at(&d, &[other], None, Some(current_src), Some(pos), None);
+        let mailer = items.iter().find(|i| i.label == "Mailer");
+        assert!(mailer.is_some(), "Mailer should appear in completions");
+        assert!(
+            mailer.unwrap().additional_text_edits.is_none(),
+            "same-namespace class should not get a use edit"
         );
     }
 }
