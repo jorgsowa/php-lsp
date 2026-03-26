@@ -26,6 +26,16 @@ pub struct Docblock {
     pub templates: Vec<DocTemplate>,
     /// `@mixin ClassName`
     pub mixins: Vec<String>,
+    /// `@psalm-type Alias = TypeExpr` / `@phpstan-type Alias = TypeExpr`
+    pub type_aliases: Vec<DocTypeAlias>,
+}
+
+#[derive(Debug, PartialEq)]
+pub struct DocTypeAlias {
+    /// Alias name, e.g. `UserId`.
+    pub name: String,
+    /// Right-hand side type expression, e.g. `string|int`.
+    pub type_expr: String,
 }
 
 #[derive(Debug, PartialEq)]
@@ -111,6 +121,13 @@ impl Docblock {
         for m in &self.mixins {
             out.push_str(&format!("**@mixin** `{}`\n", m));
         }
+        for ta in &self.type_aliases {
+            if ta.type_expr.is_empty() {
+                out.push_str(&format!("**@type** `{}`\n", ta.name));
+            } else {
+                out.push_str(&format!("**@type** `{}` = `{}`\n", ta.name, ta.type_expr));
+            }
+        }
         out.trim_end().to_string()
     }
 }
@@ -132,6 +149,7 @@ pub fn parse_docblock(raw: &str) -> Docblock {
     let mut see: Vec<String> = Vec::new();
     let mut templates: Vec<DocTemplate> = Vec::new();
     let mut mixins: Vec<String> = Vec::new();
+    let mut type_aliases: Vec<DocTypeAlias> = Vec::new();
 
     for line in inner.lines() {
         let line = line.trim();
@@ -206,6 +224,17 @@ pub fn parse_docblock(raw: &str) -> Docblock {
                         mixins.push(class.to_string());
                     }
                 }
+                // Psalm / PHPStan type aliases: @psalm-type Alias = TypeExpr
+                "psalm-type" | "phpstan-type" => {
+                    let (name, rest2) = split_first_word(rest);
+                    if !name.is_empty() {
+                        let type_expr = rest2.trim().trim_start_matches('=').trim().to_string();
+                        type_aliases.push(DocTypeAlias {
+                            name: name.to_string(),
+                            type_expr,
+                        });
+                    }
+                }
                 _ => {}
             }
         } else if !line.is_empty() && return_type.is_none() && params.is_empty() {
@@ -224,6 +253,7 @@ pub fn parse_docblock(raw: &str) -> Docblock {
         see,
         templates,
         mixins,
+        type_aliases,
     }
 }
 
@@ -575,5 +605,37 @@ mod tests {
         let md = db.to_markdown();
         assert!(md.contains("@mixin"), "expected @mixin in markdown, got: {}", md);
         assert!(md.contains("SomeTrait"), "expected SomeTrait in markdown");
+    }
+
+    #[test]
+    fn parses_psalm_type_alias() {
+        let raw = "/**\n * @psalm-type UserId = string|int\n */";
+        let db = parse_docblock(raw);
+        assert_eq!(db.type_aliases.len(), 1);
+        assert_eq!(db.type_aliases[0].name, "UserId");
+        assert_eq!(db.type_aliases[0].type_expr, "string|int");
+    }
+
+    #[test]
+    fn parses_phpstan_type_alias() {
+        let raw = "/** @phpstan-type Row = array{id: int, name: string} */";
+        let db = parse_docblock(raw);
+        assert_eq!(db.type_aliases.len(), 1);
+        assert_eq!(db.type_aliases[0].name, "Row");
+        assert!(db.type_aliases[0].type_expr.contains("array"));
+    }
+
+    #[test]
+    fn to_markdown_shows_type_alias() {
+        let db = Docblock {
+            type_aliases: vec![DocTypeAlias {
+                name: "Status".to_string(),
+                type_expr: "string".to_string(),
+            }],
+            ..Default::default()
+        };
+        let md = db.to_markdown();
+        assert!(md.contains("Status"), "expected alias name in markdown");
+        assert!(md.contains("string"), "expected type expr in markdown");
     }
 }

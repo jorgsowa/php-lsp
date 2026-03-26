@@ -1,16 +1,42 @@
 use std::sync::Arc;
 
 use php_ast::{ClassMemberKind, EnumMemberKind, ExprKind, NamespaceBody, Stmt, StmtKind};
-use tower_lsp::lsp_types::{CompletionItem, CompletionItemKind, Position, Range, TextEdit};
+use tower_lsp::lsp_types::{
+    CompletionItem, CompletionItemKind, InsertTextFormat, Position, Range, TextEdit,
+};
 
 use crate::ast::ParsedDoc;
 use crate::phpstorm_meta::PhpStormMeta;
 use crate::use_resolver::UseMap;
 use crate::type_map::{
-    TypeMap, enclosing_class_at, members_of_class, mixin_classes_of, params_of_function,
-    parent_class_name,
+    TypeMap, enclosing_class_at, is_backed_enum, is_enum, members_of_class, mixin_classes_of,
+    params_of_function, parent_class_name,
 };
 use crate::util::{camel_sort_key, fuzzy_camel_match};
+
+/// Build a `CompletionItem` for a callable (function or method).
+///
+/// If the function has parameters the item uses snippet format with `$1`
+/// inside the parentheses so the cursor lands there.  Zero-parameter
+/// callables insert `name()` as plain text.
+fn callable_item(label: &str, kind: CompletionItemKind, has_params: bool) -> CompletionItem {
+    if has_params {
+        CompletionItem {
+            label: label.to_string(),
+            kind: Some(kind),
+            insert_text: Some(format!("{}($1)", label)),
+            insert_text_format: Some(InsertTextFormat::SNIPPET),
+            ..Default::default()
+        }
+    } else {
+        CompletionItem {
+            label: label.to_string(),
+            kind: Some(kind),
+            insert_text: Some(format!("{}()", label)),
+            ..Default::default()
+        }
+    }
+}
 
 const PHP_KEYWORDS: &[&str] = &[
     "abstract",
@@ -109,11 +135,7 @@ fn collect_from_statements(stmts: &[Stmt<'_, '_>], items: &mut Vec<CompletionIte
     for stmt in stmts {
         match &stmt.kind {
             StmtKind::Function(f) => {
-                items.push(CompletionItem {
-                    label: f.name.to_string(),
-                    kind: Some(CompletionItemKind::FUNCTION),
-                    ..Default::default()
-                });
+                items.push(callable_item(f.name, CompletionItemKind::FUNCTION, !f.params.is_empty()));
                 for param in f.params.iter() {
                     items.push(CompletionItem {
                         label: format!("${}", param.name),
@@ -134,11 +156,7 @@ fn collect_from_statements(stmts: &[Stmt<'_, '_>], items: &mut Vec<CompletionIte
                 for member in c.members.iter() {
                     match &member.kind {
                         ClassMemberKind::Method(m) => {
-                            items.push(CompletionItem {
-                                label: m.name.to_string(),
-                                kind: Some(CompletionItemKind::METHOD),
-                                ..Default::default()
-                            });
+                            items.push(callable_item(m.name, CompletionItemKind::METHOD, !m.params.is_empty()));
                         }
                         ClassMemberKind::Property(p) => {
                             items.push(CompletionItem {
@@ -460,11 +478,7 @@ pub fn builtin_completions() -> Vec<CompletionItem> {
     PHP_BUILTINS
         .iter()
         .filter(|&&f| seen.insert(f))
-        .map(|f| CompletionItem {
-            label: f.to_string(),
-            kind: Some(CompletionItemKind::FUNCTION),
-            ..Default::default()
-        })
+        .map(|f| callable_item(f, CompletionItemKind::FUNCTION, true))
         .collect()
 }
 
@@ -493,11 +507,9 @@ fn all_instance_members(
             }
             for (name, is_static) in members.methods {
                 if !is_static && seen_names.insert(name.clone()) {
-                    items.push(CompletionItem {
-                        label: name,
-                        kind: Some(CompletionItemKind::METHOD),
-                        ..Default::default()
-                    });
+                    // Method params unknown here; use has_params=true so
+                    // snippet cursor lands inside parens.
+                    items.push(callable_item(&name, CompletionItemKind::METHOD, true));
                 }
             }
             for (name, is_static) in members.properties {
@@ -510,6 +522,26 @@ fn all_instance_members(
                             ..Default::default()
                         });
                     }
+                }
+            }
+            // Built-in enum properties: every enum case has `->name: string`
+            // and backed enums also have `->value`.
+            if is_enum(d, &current) {
+                if seen_names.insert("name".to_string()) {
+                    items.push(CompletionItem {
+                        label: "name".to_string(),
+                        kind: Some(CompletionItemKind::PROPERTY),
+                        detail: Some("string".to_string()),
+                        ..Default::default()
+                    });
+                }
+                if is_backed_enum(d, &current) && seen_names.insert("value".to_string()) {
+                    items.push(CompletionItem {
+                        label: "value".to_string(),
+                        kind: Some(CompletionItemKind::PROPERTY),
+                        detail: Some("string|int".to_string()),
+                        ..Default::default()
+                    });
                 }
             }
             // Collect @mixin classes for this class in this doc.
@@ -552,11 +584,7 @@ fn all_static_members(
             }
             for (name, is_static) in members.methods {
                 if is_static && seen_names.insert(name.clone()) {
-                    items.push(CompletionItem {
-                        label: name,
-                        kind: Some(CompletionItemKind::METHOD),
-                        ..Default::default()
-                    });
+                    items.push(callable_item(&name, CompletionItemKind::METHOD, true));
                 }
             }
             for (name, is_static) in members.properties {
@@ -1227,5 +1255,60 @@ mod tests {
             mailer.unwrap().additional_text_edits.is_none(),
             "same-namespace class should not get a use edit"
         );
+    }
+
+    #[test]
+    fn function_with_params_gets_snippet() {
+        let d = doc("<?php\nfunction process($input) {}");
+        let items = symbol_completions(&d);
+        let item = items.iter().find(|i| i.label == "process").unwrap();
+        assert_eq!(item.insert_text_format, Some(InsertTextFormat::SNIPPET));
+        assert_eq!(item.insert_text.as_deref(), Some("process($1)"));
+    }
+
+    #[test]
+    fn function_without_params_gets_plain_call() {
+        let d = doc("<?php\nfunction doThing() {}");
+        let items = symbol_completions(&d);
+        let item = items.iter().find(|i| i.label == "doThing").unwrap();
+        // No snippet format needed for zero-arg functions.
+        assert_eq!(item.insert_text.as_deref(), Some("doThing()"));
+        assert_ne!(item.insert_text_format, Some(InsertTextFormat::SNIPPET));
+    }
+
+    #[test]
+    fn builtin_functions_get_snippet() {
+        let items = builtin_completions();
+        let strlen = items.iter().find(|i| i.label == "strlen").unwrap();
+        assert_eq!(strlen.insert_text_format, Some(InsertTextFormat::SNIPPET));
+        assert_eq!(strlen.insert_text.as_deref(), Some("strlen($1)"));
+    }
+
+    #[test]
+    fn enum_arrow_completion_includes_name_property() {
+        let src = "<?php\nenum Suit { case Hearts; }\n$s = new Suit();\n$s->";
+        let d = doc(src);
+        let pos = Position { line: 3, character: 4 };
+        let items = filtered_completions_at(&d, &[], Some(">"), Some(src), Some(pos), None);
+        assert!(items.iter().any(|i| i.label == "name"), "enum should have ->name");
+    }
+
+    #[test]
+    fn backed_enum_arrow_completion_includes_value_property() {
+        let src = "<?php\nenum Status: string { case Active = 'active'; }\n$s = new Status();\n$s->";
+        let d = doc(src);
+        let pos = Position { line: 3, character: 4 };
+        let items = filtered_completions_at(&d, &[], Some(">"), Some(src), Some(pos), None);
+        assert!(items.iter().any(|i| i.label == "name"), "backed enum should have ->name");
+        assert!(items.iter().any(|i| i.label == "value"), "backed enum should have ->value");
+    }
+
+    #[test]
+    fn pure_enum_arrow_completion_has_no_value_property() {
+        let src = "<?php\nenum Suit { case Hearts; }\n$s = new Suit();\n$s->";
+        let d = doc(src);
+        let pos = Position { line: 3, character: 4 };
+        let items = filtered_completions_at(&d, &[], Some(">"), Some(src), Some(pos), None);
+        assert!(!items.iter().any(|i| i.label == "value"), "pure enum should not have ->value");
     }
 }

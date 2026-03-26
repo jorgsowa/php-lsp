@@ -394,6 +394,51 @@ pub fn params_of_function(doc: &ParsedDoc, func_name: &str) -> Vec<String> {
     out
 }
 
+/// Returns `true` if `class_name` is declared as an `enum` in `doc`.
+pub fn is_enum(doc: &ParsedDoc, class_name: &str) -> bool {
+    is_enum_in_stmts(&doc.program().stmts, class_name)
+}
+
+fn is_enum_in_stmts(stmts: &[Stmt<'_, '_>], name: &str) -> bool {
+    for stmt in stmts {
+        match &stmt.kind {
+            StmtKind::Enum(e) if e.name == name => return true,
+            StmtKind::Namespace(ns) => {
+                if let NamespaceBody::Braced(inner) = &ns.body {
+                    if is_enum_in_stmts(inner, name) {
+                        return true;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+/// Returns `true` if `class_name` is a *backed* enum (`enum Foo: string` /
+/// `enum Foo: int`) in `doc`.  Backed enums have a `->value` property.
+pub fn is_backed_enum(doc: &ParsedDoc, class_name: &str) -> bool {
+    is_backed_enum_in_stmts(&doc.program().stmts, class_name)
+}
+
+fn is_backed_enum_in_stmts(stmts: &[Stmt<'_, '_>], name: &str) -> bool {
+    for stmt in stmts {
+        match &stmt.kind {
+            StmtKind::Enum(e) if e.name == name => return e.scalar_type.is_some(),
+            StmtKind::Namespace(ns) => {
+                if let NamespaceBody::Braced(inner) = &ns.body {
+                    if is_backed_enum_in_stmts(inner, name) {
+                        return true;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
 fn collect_params_stmts(stmts: &[Stmt<'_, '_>], func_name: &str, out: &mut Vec<String>) {
     for stmt in stmts {
         match &stmt.kind {
@@ -594,5 +639,29 @@ mod tests {
         let tm = TypeMap::from_doc(&doc);
         // Primitives (lowercase) should not be mapped as class names.
         assert!(tm.get("$name").is_none(), "primitive @var should not produce a class mapping");
+    }
+
+    #[test]
+    fn is_enum_pure() {
+        let src = "<?php\nenum Suit { case Hearts; case Clubs; }";
+        let doc = ParsedDoc::parse(src.to_string());
+        assert!(is_enum(&doc, "Suit"));
+        assert!(!is_backed_enum(&doc, "Suit"));
+    }
+
+    #[test]
+    fn is_backed_enum_string() {
+        let src = "<?php\nenum Status: string { case Active = 'active'; }";
+        let doc = ParsedDoc::parse(src.to_string());
+        assert!(is_enum(&doc, "Status"));
+        assert!(is_backed_enum(&doc, "Status"));
+    }
+
+    #[test]
+    fn is_enum_false_for_class() {
+        let src = "<?php\nclass Foo {}";
+        let doc = ParsedDoc::parse(src.to_string());
+        assert!(!is_enum(&doc, "Foo"));
+        assert!(!is_backed_enum(&doc, "Foo"));
     }
 }
