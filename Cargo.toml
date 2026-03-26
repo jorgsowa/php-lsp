@@ -8,7 +8,7 @@ repository = "https://github.com/jorgsowa/php-lsp"
 readme = "README.md"
 
 [dependencies]
-mir-php = { path = "../mir-php" }
+mir-php = { path = "../mir-php", version = "0.1.0" }
 php-rs-parser = "0.2.1"
 php-ast = "0.2.1"
 bumpalo = { version = "3", features = ["collections"] }
