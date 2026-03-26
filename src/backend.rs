@@ -4,8 +4,8 @@ use std::sync::{Arc, RwLock};
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::notification::Progress as ProgressNotification;
 use tower_lsp::lsp_types::request::{
-    CodeLensRefresh, InlayHintRefreshRequest, SemanticTokensRefresh, WorkDoneProgressCreate,
-    WorkspaceDiagnosticRefresh,
+    CodeLensRefresh, InlayHintRefreshRequest, InlineValueRefreshRequest, SemanticTokensRefresh,
+    WorkDoneProgressCreate, WorkspaceDiagnosticRefresh,
 };
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer, async_trait};
@@ -13,7 +13,9 @@ use tower_lsp::{Client, LanguageServer, async_trait};
 use crate::ast::ParsedDoc;
 use crate::autoload::Psr4Map;
 use crate::phpstorm_meta::PhpStormMeta;
-use crate::file_rename::use_edits_for_rename;
+use crate::file_rename::{use_edits_for_delete, use_edits_for_rename};
+use crate::inline_value::inline_values_in_range;
+use crate::moniker::moniker_at;
 use crate::on_type_format::on_type_format;
 use crate::call_hierarchy::{incoming_calls, outgoing_calls, prepare_call_hierarchy};
 use crate::code_lens::code_lenses;
@@ -214,16 +216,10 @@ impl LanguageServer for Backend {
                         change_notifications: Some(OneOf::Left(true)),
                     }),
                     file_operations: Some(WorkspaceFileOperationsServerCapabilities {
-                        will_rename: Some(FileOperationRegistrationOptions {
-                            filters: vec![FileOperationFilter {
-                                scheme: Some("file".to_string()),
-                                pattern: FileOperationPattern {
-                                    glob: "**/*.php".to_string(),
-                                    matches: Some(FileOperationPatternKind::File),
-                                    options: None,
-                                },
-                            }],
-                        }),
+                        will_rename: Some(php_file_op()),
+                        did_create: Some(php_file_op()),
+                        will_delete: Some(php_file_op()),
+                        did_delete: Some(php_file_op()),
                         ..Default::default()
                     }),
                     ..Default::default()
@@ -231,6 +227,12 @@ impl LanguageServer for Backend {
                 linked_editing_range_provider: Some(
                     LinkedEditingRangeServerCapabilities::Simple(true),
                 ),
+                moniker_provider: Some(OneOf::Left(true)),
+                inline_value_provider: Some(OneOf::Right(
+                    InlineValueServerCapabilities::Options(InlineValueOptions {
+                        work_done_progress_options: Default::default(),
+                    }),
+                )),
                 ..Default::default()
             },
             ..Default::default()
@@ -1113,6 +1115,106 @@ impl LanguageServer for Backend {
         }
     }
 
+    // ── File-create notifications ────────────────────────────────────────────
+
+    async fn will_create_files(
+        &self,
+        _params: CreateFilesParams,
+    ) -> Result<Option<WorkspaceEdit>> {
+        // Creating a PHP file requires no pre-emptive workspace edits.
+        Ok(None)
+    }
+
+    async fn did_create_files(&self, params: CreateFilesParams) {
+        for file in &params.files {
+            if let Ok(uri) = Url::parse(&file.uri) {
+                if let Ok(path) = uri.to_file_path() {
+                    if let Ok(text) = tokio::fs::read_to_string(&path).await {
+                        self.docs.index(uri, &text);
+                    }
+                }
+            }
+        }
+        send_refresh_requests(&self.client).await;
+    }
+
+    // ── File-delete notifications ────────────────────────────────────────────
+
+    /// Before a file is deleted, return workspace edits that remove every
+    /// `use` import referencing its PSR-4 class name.
+    async fn will_delete_files(
+        &self,
+        params: DeleteFilesParams,
+    ) -> Result<Option<WorkspaceEdit>> {
+        let psr4 = self.psr4.read().unwrap();
+        let all_docs = self.docs.all_docs();
+        let mut merged_changes: std::collections::HashMap<Url, Vec<TextEdit>> =
+            std::collections::HashMap::new();
+
+        for file in &params.files {
+            let path = Url::parse(&file.uri)
+                .ok()
+                .and_then(|u| u.to_file_path().ok());
+            let Some(path) = path else { continue };
+            let Some(fqn) = psr4.file_to_fqn(&path) else { continue };
+
+            let edit = use_edits_for_delete(&fqn, &all_docs);
+            if let Some(changes) = edit.changes {
+                for (uri, edits) in changes {
+                    merged_changes.entry(uri).or_default().extend(edits);
+                }
+            }
+        }
+
+        Ok(if merged_changes.is_empty() {
+            None
+        } else {
+            Some(WorkspaceEdit {
+                changes: Some(merged_changes),
+                ..Default::default()
+            })
+        })
+    }
+
+    async fn did_delete_files(&self, params: DeleteFilesParams) {
+        for file in &params.files {
+            if let Ok(uri) = Url::parse(&file.uri) {
+                self.docs.remove(&uri);
+                // Clear diagnostics for the now-deleted file.
+                self.client.publish_diagnostics(uri, vec![], None).await;
+            }
+        }
+        send_refresh_requests(&self.client).await;
+    }
+
+    // ── Moniker ──────────────────────────────────────────────────────────────
+
+    async fn moniker(
+        &self,
+        params: MonikerParams,
+    ) -> Result<Option<Vec<Moniker>>> {
+        let uri = &params.text_document_position_params.text_document.uri;
+        let position = params.text_document_position_params.position;
+        let source = self.docs.get(uri).unwrap_or_default();
+        let doc = match self.docs.get_doc(uri) {
+            Some(d) => d,
+            None => return Ok(None),
+        };
+        Ok(moniker_at(&source, &doc, position).map(|m| vec![m]))
+    }
+
+    // ── Inline values ────────────────────────────────────────────────────────
+
+    async fn inline_value(
+        &self,
+        params: InlineValueParams,
+    ) -> Result<Option<Vec<InlineValue>>> {
+        let uri = &params.text_document.uri;
+        let source = self.docs.get(uri).unwrap_or_default();
+        let values = inline_values_in_range(&source, params.range);
+        Ok(if values.is_empty() { None } else { Some(values) })
+    }
+
     async fn diagnostic(
         &self,
         params: DocumentDiagnosticParams,
@@ -1314,6 +1416,20 @@ impl LanguageServer for Backend {
         }
 
         Ok(item)
+    }
+}
+
+/// Shorthand for a `FileOperationRegistrationOptions` that matches `*.php` files.
+fn php_file_op() -> FileOperationRegistrationOptions {
+    FileOperationRegistrationOptions {
+        filters: vec![FileOperationFilter {
+            scheme: Some("file".to_string()),
+            pattern: FileOperationPattern {
+                glob: "**/*.php".to_string(),
+                matches: Some(FileOperationPatternKind::File),
+                options: None,
+            },
+        }],
     }
 }
 
@@ -1553,6 +1669,7 @@ async fn send_refresh_requests(client: &Client) {
     client.send_request::<CodeLensRefresh>(()).await.ok();
     client.send_request::<InlayHintRefreshRequest>(()).await.ok();
     client.send_request::<WorkspaceDiagnosticRefresh>(()).await.ok();
+    client.send_request::<InlineValueRefreshRequest>(()).await.ok();
 }
 
 /// Maximum number of PHP files indexed during a workspace scan.

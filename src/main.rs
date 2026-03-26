@@ -21,6 +21,8 @@ mod inlay_hints;
 mod extract_action;
 mod generate_action;
 mod implement_action;
+mod inline_value;
+mod moniker;
 mod phpdoc_action;
 mod phpstorm_meta;
 mod references;
