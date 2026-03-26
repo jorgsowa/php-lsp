@@ -12,8 +12,10 @@ pub struct Docblock {
     pub params: Vec<DocParam>,
     /// `@return  TypeHint  description`
     pub return_type: Option<DocReturn>,
-    /// `@var  TypeHint`
+    /// `@var  TypeHint` or `@var  TypeHint  $varName`
     pub var_type: Option<String>,
+    /// Variable name from `@var TypeHint $varName`, if present.
+    pub var_name: Option<String>,
     /// `@deprecated  message`  — `Some("")` when present without a message.
     pub deprecated: Option<String>,
     /// `@throws  ClassName  description`
@@ -124,6 +126,7 @@ pub fn parse_docblock(raw: &str) -> Docblock {
     let mut params: Vec<DocParam> = Vec::new();
     let mut return_type: Option<DocReturn> = None;
     let mut var_type: Option<String> = None;
+    let mut var_name: Option<String> = None;
     let mut deprecated: Option<String> = None;
     let mut throws: Vec<DocThrows> = Vec::new();
     let mut see: Vec<String> = Vec::new();
@@ -157,8 +160,16 @@ pub fn parse_docblock(raw: &str) -> Docblock {
                     });
                 }
                 "var" => {
-                    let (type_hint, _) = split_type_hint(rest);
+                    let (type_hint, remainder) = split_type_hint(rest);
                     var_type = Some(type_hint.to_string());
+                    // Optional `$varName` after the type hint.
+                    let vname = remainder.trim();
+                    if vname.starts_with('$') {
+                        let name: String = vname[1..].chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
+                        if !name.is_empty() {
+                            var_name = Some(name);
+                        }
+                    }
                 }
                 "deprecated" => {
                     deprecated = Some(rest.to_string());
@@ -207,6 +218,7 @@ pub fn parse_docblock(raw: &str) -> Docblock {
         params,
         return_type,
         var_type,
+        var_name,
         deprecated,
         throws,
         see,

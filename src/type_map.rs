@@ -3,7 +3,7 @@
 /// after `->`.
 use std::collections::HashMap;
 
-use php_ast::{ClassMemberKind, ExprKind, NamespaceBody, Stmt, StmtKind, TypeHintKind};
+use php_ast::{ClassMemberKind, EnumMemberKind, ExprKind, NamespaceBody, Stmt, StmtKind, TypeHintKind};
 use tower_lsp::lsp_types::Position;
 
 use crate::ast::{ParsedDoc, offset_to_position};
@@ -24,7 +24,7 @@ impl TypeMap {
     /// for factory-method return type inference.
     pub fn from_doc_with_meta(doc: &ParsedDoc, meta: Option<&PhpStormMeta>) -> Self {
         let mut map = HashMap::new();
-        collect_types_stmts(&doc.program().stmts, &mut map, meta);
+        collect_types_stmts(doc.source(), &doc.program().stmts, &mut map, meta);
         TypeMap(map)
     }
 
@@ -35,11 +35,36 @@ impl TypeMap {
 }
 
 fn collect_types_stmts(
+    source: &str,
     stmts: &[Stmt<'_, '_>],
     map: &mut HashMap<String, String>,
     meta: Option<&PhpStormMeta>,
 ) {
     for stmt in stmts {
+        // Check for `/** @var ClassName $varName */` docblock before this statement.
+        if let Some(raw) = docblock_before(source, stmt.span.start) {
+            let db = parse_docblock(&raw);
+            if let Some(type_str) = db.var_type {
+                // Only map object types (starts with uppercase or backslash).
+                let base = type_str.trim_start_matches('\\').trim_start_matches('?');
+                let first_char = base.chars().next().unwrap_or('_');
+                if first_char.is_uppercase() {
+                    let class_name = base.rsplit('\\').next().unwrap_or(base).to_string();
+                    if let Some(vname) = db.var_name {
+                        // `@var Foo $obj` — explicit variable name.
+                        map.insert(format!("${vname}"), class_name);
+                    } else if let StmtKind::Expression(e) = &stmt.kind {
+                        // `@var Foo` above `$obj = ...` — infer from the LHS.
+                        if let ExprKind::Assign(a) = &e.kind {
+                            if let ExprKind::Variable(vn) = &a.target.kind {
+                                map.insert(format!("${vn}"), class_name);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         match &stmt.kind {
             StmtKind::Expression(e) => collect_types_expr(e, map, meta),
             StmtKind::Function(f) => {
@@ -50,7 +75,7 @@ fn collect_types_stmts(
                         }
                     }
                 }
-                collect_types_stmts(&f.body, map, meta);
+                collect_types_stmts(source, &f.body, map, meta);
             }
             StmtKind::Class(c) => {
                 for member in c.members.iter() {
@@ -66,14 +91,14 @@ fn collect_types_stmts(
                             }
                         }
                         if let Some(body) = &m.body {
-                            collect_types_stmts(body, map, meta);
+                            collect_types_stmts(source, body, map, meta);
                         }
                     }
                 }
             }
             StmtKind::Namespace(ns) => {
                 if let NamespaceBody::Braced(inner) = &ns.body {
-                    collect_types_stmts(inner, map, meta);
+                    collect_types_stmts(source, inner, map, meta);
                 }
             }
             _ => {}
@@ -190,6 +215,8 @@ pub struct ClassMembers {
     pub constants: Vec<String>,
     /// Direct parent class name, if any.
     pub parent: Option<String>,
+    /// Trait names used by this class (`use Foo, Bar;`).
+    pub trait_uses: Vec<String>,
 }
 
 /// Return all members (methods, properties, constants) of `class_name`.
@@ -212,6 +239,14 @@ fn collect_members_stmts(
                     match &member.kind {
                         ClassMemberKind::Method(m) => {
                             out.methods.push((m.name.to_string(), m.is_static));
+                            // Constructor-promoted params become instance properties.
+                            if m.name == "__construct" {
+                                for p in m.params.iter() {
+                                    if p.visibility.is_some() {
+                                        out.properties.push((p.name.to_string(), false));
+                                    }
+                                }
+                            }
                         }
                         ClassMemberKind::Property(p) => {
                             out.properties.push((p.name.to_string(), p.is_static));
@@ -219,10 +254,65 @@ fn collect_members_stmts(
                         ClassMemberKind::ClassConst(c) => {
                             out.constants.push(c.name.to_string());
                         }
-                        _ => {}
+                        ClassMemberKind::TraitUse(t) => {
+                            for name in t.traits.iter() {
+                                out.trait_uses.push(name.to_string_repr().to_string());
+                            }
+                        }
                     }
                 }
                 return c.extends.as_ref().map(|n| n.to_string_repr().to_string());
+            }
+            StmtKind::Enum(e) if e.name == class_name => {
+                let is_backed = e.scalar_type.is_some();
+                // Every enum instance exposes `->name`; backed enums also expose `->value`.
+                out.properties.push(("name".to_string(), false));
+                if is_backed {
+                    out.properties.push(("value".to_string(), false));
+                }
+                // Built-in static methods present on every enum.
+                out.methods.push(("cases".to_string(), true));
+                if is_backed {
+                    out.methods.push(("from".to_string(), true));
+                    out.methods.push(("tryFrom".to_string(), true));
+                }
+                // User-declared cases, methods, and constants.
+                for member in e.members.iter() {
+                    match &member.kind {
+                        EnumMemberKind::Case(c) => {
+                            out.constants.push(c.name.to_string());
+                        }
+                        EnumMemberKind::Method(m) => {
+                            out.methods.push((m.name.to_string(), m.is_static));
+                        }
+                        EnumMemberKind::ClassConst(c) => {
+                            out.constants.push(c.name.to_string());
+                        }
+                        _ => {}
+                    }
+                }
+                return None; // enums have no parent class
+            }
+            StmtKind::Trait(t) if t.name == class_name => {
+                for member in t.members.iter() {
+                    match &member.kind {
+                        ClassMemberKind::Method(m) => {
+                            out.methods.push((m.name.to_string(), m.is_static));
+                        }
+                        ClassMemberKind::Property(p) => {
+                            out.properties.push((p.name.to_string(), p.is_static));
+                        }
+                        ClassMemberKind::ClassConst(c) => {
+                            out.constants.push(c.name.to_string());
+                        }
+                        ClassMemberKind::TraitUse(t) => {
+                            for name in t.traits.iter() {
+                                out.trait_uses.push(name.to_string_repr().to_string());
+                            }
+                        }
+                    }
+                }
+                return None; // traits have no parent
             }
             StmtKind::Namespace(ns) => {
                 if let NamespaceBody::Braced(inner) = &ns.body {
@@ -418,5 +508,91 @@ mod tests {
         let doc = ParsedDoc::parse(src.to_string());
         let members = members_of_class(&doc, "Unknown");
         assert!(members.methods.is_empty());
+    }
+
+    #[test]
+    fn constructor_promoted_params_appear_as_properties() {
+        let src = "<?php\nclass Point {\n    public function __construct(\n        public float $x,\n        public float $y,\n    ) {}\n}";
+        let doc = ParsedDoc::parse(src.to_string());
+        let members = members_of_class(&doc, "Point");
+        let prop_names: Vec<&str> = members.properties.iter().map(|(n, _)| n.as_str()).collect();
+        assert!(prop_names.contains(&"x"), "promoted param x should be a property");
+        assert!(prop_names.contains(&"y"), "promoted param y should be a property");
+    }
+
+    #[test]
+    fn enum_instance_members_include_name() {
+        let src = "<?php\nenum Status { case Active; case Inactive; }";
+        let doc = ParsedDoc::parse(src.to_string());
+        let members = members_of_class(&doc, "Status");
+        let prop_names: Vec<&str> = members.properties.iter().map(|(n, _)| n.as_str()).collect();
+        assert!(prop_names.contains(&"name"), "pure enum should expose ->name");
+        assert!(!prop_names.contains(&"value"), "pure enum should not expose ->value");
+    }
+
+    #[test]
+    fn backed_enum_exposes_value_and_factory_methods() {
+        let src = "<?php\nenum Color: string { case Red = 'red'; }";
+        let doc = ParsedDoc::parse(src.to_string());
+        let members = members_of_class(&doc, "Color");
+        let prop_names: Vec<&str> = members.properties.iter().map(|(n, _)| n.as_str()).collect();
+        let method_names: Vec<&str> = members.methods.iter().map(|(n, _)| n.as_str()).collect();
+        assert!(prop_names.contains(&"value"), "backed enum should expose ->value");
+        assert!(method_names.contains(&"from"), "backed enum should have ::from()");
+        assert!(method_names.contains(&"tryFrom"), "backed enum should have ::tryFrom()");
+        assert!(method_names.contains(&"cases"), "enum should have ::cases()");
+    }
+
+    #[test]
+    fn enum_cases_appear_as_constants() {
+        let src = "<?php\nenum Status { case Active; case Inactive; }";
+        let doc = ParsedDoc::parse(src.to_string());
+        let members = members_of_class(&doc, "Status");
+        assert!(members.constants.contains(&"Active".to_string()));
+        assert!(members.constants.contains(&"Inactive".to_string()));
+    }
+
+    #[test]
+    fn trait_members_are_collected() {
+        let src = "<?php\ntrait Logging { public function log() {} public string $logFile; }";
+        let doc = ParsedDoc::parse(src.to_string());
+        let members = members_of_class(&doc, "Logging");
+        let method_names: Vec<&str> = members.methods.iter().map(|(n, _)| n.as_str()).collect();
+        let prop_names: Vec<&str> = members.properties.iter().map(|(n, _)| n.as_str()).collect();
+        assert!(method_names.contains(&"log"), "trait method log should be collected");
+        assert!(prop_names.contains(&"logFile"), "trait property logFile should be collected");
+    }
+
+    #[test]
+    fn class_with_trait_use_lists_trait() {
+        let src = "<?php\ntrait Logging { public function log() {} }\nclass App { use Logging; }";
+        let doc = ParsedDoc::parse(src.to_string());
+        let members = members_of_class(&doc, "App");
+        assert!(members.trait_uses.contains(&"Logging".to_string()), "should list used trait");
+    }
+
+    #[test]
+    fn var_docblock_with_explicit_varname_infers_type() {
+        let src = "<?php\n/** @var Mailer $mailer */\n$mailer = $container->get('mailer');";
+        let doc = ParsedDoc::parse(src.to_string());
+        let tm = TypeMap::from_doc(&doc);
+        assert_eq!(tm.get("$mailer"), Some("Mailer"), "@var with explicit name should map the variable");
+    }
+
+    #[test]
+    fn var_docblock_without_varname_infers_from_assignment() {
+        let src = "<?php\n/** @var Repository */\n$repo = $this->getRepository();";
+        let doc = ParsedDoc::parse(src.to_string());
+        let tm = TypeMap::from_doc(&doc);
+        assert_eq!(tm.get("$repo"), Some("Repository"), "@var without name should use assignment LHS");
+    }
+
+    #[test]
+    fn var_docblock_does_not_map_primitive_types() {
+        let src = "<?php\n/** @var string */\n$name = 'hello';";
+        let doc = ParsedDoc::parse(src.to_string());
+        let tm = TypeMap::from_doc(&doc);
+        // Primitives (lowercase) should not be mapped as class names.
+        assert!(tm.get("$name").is_none(), "primitive @var should not produce a class mapping");
     }
 }

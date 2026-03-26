@@ -18,6 +18,8 @@ mod formatting;
 mod hover;
 mod implementation;
 mod inlay_hints;
+mod extract_action;
+mod generate_action;
 mod implement_action;
 mod phpdoc_action;
 mod phpstorm_meta;

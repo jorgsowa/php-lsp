@@ -61,6 +61,12 @@ impl Psr4Map {
         Psr4Map { entries }
     }
 
+    /// Merge another map's entries into this one, maintaining longest-prefix-first order.
+    pub fn extend(&mut self, other: Psr4Map) {
+        self.entries.extend(other.entries);
+        self.entries.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
+    }
+
     /// Reverse of `resolve`: given a file path, return the PSR-4 fully-qualified
     /// class name that maps to it, or `None` if the path doesn't fall under any
     /// known namespace prefix.

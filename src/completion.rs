@@ -516,6 +516,10 @@ fn all_instance_members(
             for mixin in mixin_classes_of(d, &current) {
                 queue.push(mixin);
             }
+            // Queue trait names so their members are also included.
+            for trait_name in members.trait_uses {
+                queue.push(trait_name);
+            }
         }
         if let Some(p) = parent {
             queue.push(p);
@@ -535,10 +539,10 @@ fn all_static_members(
     let mut items = Vec::new();
     let mut seen_names: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut visited: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut current = class_name.to_string();
-    loop {
+    let mut queue: Vec<String> = vec![class_name.to_string()];
+    while let Some(current) = queue.pop() {
         if !visited.insert(current.clone()) {
-            break;
+            continue;
         }
         let mut parent: Option<String> = None;
         for d in &all {
@@ -576,10 +580,13 @@ fn all_static_members(
                     });
                 }
             }
+            // Queue trait names so their static members are also included.
+            for trait_name in members.trait_uses {
+                queue.push(trait_name);
+            }
         }
-        match parent {
-            Some(p) => current = p,
-            None => break,
+        if let Some(p) = parent {
+            queue.push(p);
         }
     }
     items
@@ -871,7 +878,14 @@ pub fn filtered_completions_at(
 
             // Extract the typed prefix for fuzzy camel/underscore filtering.
             let prefix = typed_prefix(source, position).unwrap_or_default();
-            if !prefix.is_empty() {
+            if prefix.contains('\\') {
+                // Namespace-qualified prefix: filter by FQN prefix match.
+                let ns_prefix = prefix.trim_start_matches('\\').to_lowercase();
+                items.retain(|i| {
+                    let fqn = i.detail.as_deref().unwrap_or(&i.label);
+                    fqn.to_lowercase().starts_with(&ns_prefix)
+                });
+            } else if !prefix.is_empty() {
                 items.retain(|i| fuzzy_camel_match(&prefix, &i.label));
                 for item in &mut items {
                     item.sort_text = Some(camel_sort_key(&prefix, &item.label));
@@ -884,6 +898,7 @@ pub fn filtered_completions_at(
 }
 
 /// Extract the identifier characters typed immediately before the cursor.
+/// Includes `\` to support namespace-qualified prefixes like `App\Serv`.
 fn typed_prefix(source: Option<&str>, position: Option<Position>) -> Option<String> {
     let src = source?;
     let pos = position?;
@@ -893,7 +908,7 @@ fn typed_prefix(source: Option<&str>, position: Option<Position>) -> Option<Stri
     let prefix: String = before
         .chars()
         .rev()
-        .take_while(|&c| c.is_alphanumeric() || c == '_')
+        .take_while(|&c| c.is_alphanumeric() || c == '_' || c == '\\')
         .collect::<String>()
         .chars()
         .rev()
@@ -910,7 +925,7 @@ fn resolve_receiver_class(
     let line = source.lines().nth(position.line as usize)?;
     let col = position.character as usize;
     let before = &line[..col.min(line.len())];
-    let before = before.strip_suffix("->").unwrap_or(before);
+    let before = before.strip_suffix("->").or_else(|| before.strip_suffix("?->")).unwrap_or(before);
     let var_name: String = before
         .chars()
         .rev()

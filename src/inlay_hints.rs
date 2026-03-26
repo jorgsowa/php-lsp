@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use php_ast::{ClassMemberKind, Expr, ExprKind, NamespaceBody, Stmt, StmtKind};
 use tower_lsp::lsp_types::{InlayHint, InlayHintKind, InlayHintLabel, Position, Range};
+use serde_json::json;
 
 use crate::ast::{ParsedDoc, format_type_hint, offset_to_position};
 
@@ -201,7 +202,7 @@ fn hints_in_expr(
                 });
             if let Some(k) = key {
                 if let Some(def) = defs.get(&k) {
-                    emit_param_hints(source, &f.args, &def.params, range, out);
+                    emit_param_hints(source, &f.args, &def.params, &k, range, out);
                 }
             }
             hints_in_expr(source, f.name, defs, range, out);
@@ -212,7 +213,7 @@ fn hints_in_expr(
         ExprKind::MethodCall(m) => {
             if let Some(name) = ident_name(m.method) {
                 if let Some(def) = defs.get(name) {
-                    emit_param_hints(source, &m.args, &def.params, range, out);
+                    emit_param_hints(source, &m.args, &def.params, name, range, out);
                 }
             }
             hints_in_expr(source, m.object, defs, range, out);
@@ -258,6 +259,7 @@ fn emit_param_hints(
     source: &str,
     args: &[php_ast::Arg<'_, '_>],
     params: &[String],
+    func_name: &str,
     range: Range,
     out: &mut Vec<InlayHint>,
 ) {
@@ -269,7 +271,7 @@ fn emit_param_hints(
         if let Some(param) = params.get(i) {
             let pos = offset_to_position(source, arg.span.start);
             if pos_in_range(pos, range) {
-                out.push(make_param_hint(pos, param));
+                out.push(make_param_hint(pos, param, func_name));
             }
         }
     }
@@ -295,7 +297,7 @@ fn emit_return_type_hint(
                 }
                 let pos = offset_to_position(source, expr.span.end);
                 if pos_in_range(pos, range) {
-                    out.push(make_return_hint(pos, ret_type));
+                    out.push(make_return_hint(pos, ret_type, name));
                 }
             }
         }
@@ -310,7 +312,7 @@ fn ident_name<'a>(expr: &'a Expr<'_, '_>) -> Option<&'a str> {
     }
 }
 
-fn make_param_hint(position: Position, param_name: &str) -> InlayHint {
+fn make_param_hint(position: Position, param_name: &str, func_name: &str) -> InlayHint {
     InlayHint {
         position,
         label: InlayHintLabel::String(format!("{}:", param_name)),
@@ -319,11 +321,11 @@ fn make_param_hint(position: Position, param_name: &str) -> InlayHint {
         tooltip: None,
         padding_left: None,
         padding_right: Some(true),
-        data: None,
+        data: Some(json!({"php_lsp_fn": func_name})),
     }
 }
 
-fn make_return_hint(position: Position, ret_type: &str) -> InlayHint {
+fn make_return_hint(position: Position, ret_type: &str, func_name: &str) -> InlayHint {
     InlayHint {
         position,
         label: InlayHintLabel::String(format!(": {ret_type}")),
@@ -332,7 +334,7 @@ fn make_return_hint(position: Position, ret_type: &str) -> InlayHint {
         tooltip: None,
         padding_left: Some(true),
         padding_right: None,
-        data: None,
+        data: Some(json!({"php_lsp_fn": func_name})),
     }
 }
 

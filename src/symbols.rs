@@ -4,7 +4,8 @@ use std::sync::Arc;
 
 use php_ast::{ClassMemberKind, EnumMemberKind, NamespaceBody, Stmt, StmtKind};
 use tower_lsp::lsp_types::{
-    DocumentSymbol, Location, Position, Range, SymbolInformation, SymbolKind, Url,
+    DocumentSymbol, Location, OneOf, Position, Range, SymbolInformation, SymbolKind, Url,
+    WorkspaceSymbol,
 };
 
 use crate::ast::{ParsedDoc, name_range, offset_to_position};
@@ -12,6 +13,28 @@ use crate::util::fuzzy_camel_match;
 
 pub fn document_symbols(source: &str, doc: &ParsedDoc) -> Vec<DocumentSymbol> {
     symbols_from_statements(source, &doc.program().stmts)
+}
+
+/// Fill in the source range for a `WorkspaceSymbol` whose `location` carries only a URI
+/// (i.e. `OneOf::Right(WorkspaceLocation)`).  If the range is already present, or if the
+/// document cannot be found, the symbol is returned unchanged.
+pub fn resolve_workspace_symbol(
+    mut symbol: WorkspaceSymbol,
+    docs: &[(Url, Arc<ParsedDoc>)],
+) -> WorkspaceSymbol {
+    let uri = match &symbol.location {
+        // Already fully resolved — nothing to do.
+        OneOf::Left(_) => return symbol,
+        OneOf::Right(wl) => wl.uri.clone(),
+    };
+    for (doc_uri, doc) in docs {
+        if doc_uri == &uri {
+            let range = name_range(doc.source(), &symbol.name);
+            symbol.location = OneOf::Left(Location { uri, range });
+            break;
+        }
+    }
+    symbol
 }
 
 /// Flat symbol search across all open documents.

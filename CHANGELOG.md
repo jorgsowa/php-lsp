@@ -2,6 +2,23 @@
 
 All notable changes to php-lsp are documented here.
 
+## [0.1.15] — 2026-03-26
+
+### New features
+
+- **`completionItem/resolve`** — documentation is fetched lazily when a completion item is focused in the menu, keeping the initial completion list instant; `resolve_provider: true` advertised in `CompletionOptions`.
+- **`codeAction/resolve`** — edits for PHPDoc stub, "Implement missing methods", "Generate constructor", and "Generate getters/setters" are computed lazily when the action is selected; the action menu itself is instant.
+- **`codeLens/resolve`** — code lens items use deferred resolution; pass-through handler completes the contract.
+- **`inlayHint/resolve`** — hovering over a parameter-name or return-type inlay hint shows the full function/method signature as a tooltip; hint `data` carries `{"php_lsp_fn": name}` and is resolved via the existing `docs_for_symbol` helper.
+- **`documentLink/resolve`** — deferred document link resolution supported.
+- **`workspaceSymbol/resolve`** — `workspace/symbol` returns URI-only `WorkspaceLocation` items for speed; when a client resolves an item, the server fills in the full source `Location` (file + range).
+- **`workspace/didChangeConfiguration`** — server pulls updated `phpVersion` and `excludePaths` from the client on every configuration change via `workspace/configuration`; takes effect without restarting.
+- **Multi-root workspace** — all `workspaceFolders` are indexed at startup; `workspace/didChangeWorkspaceFolders` triggers incremental index updates and PSR-4 map rebuilds for added/removed roots.
+- **Server-initiated refresh** — after workspace indexing or file changes, the server fires `workspace/semanticTokens/refresh`, `workspace/codeLens/refresh`, `workspace/inlayHint/refresh`, and `workspace/diagnostic/refresh` so all open editors immediately reflect updated analysis results.
+- **`textDocument/linkedEditingRange`** — placing the cursor on any variable or symbol shows all its occurrences as linked ranges; editing one occurrence simultaneously edits all others (Alt+Shift+F2 in VS Code); returns the PHP word character pattern.
+- **`window/showMessageRequest` + `window/showDocument` in test runner** — the "Run test" code lens now reports results via an interactive `showMessageRequest` with **Run Again** and **Open File** action buttons; clicking "Open File" opens the test file in the editor.
+- **`docs_for_symbol` helper** — public function in `hover.rs` that looks up a symbol across all indexed docs and returns a formatted markdown string; shared by `completionItem/resolve` and `inlayHint/resolve`.
+
 ## [0.1.12] — 2026-03-25
 
 ### New features

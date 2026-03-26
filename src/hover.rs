@@ -1,31 +1,45 @@
-use php_ast::{ClassMemberKind, EnumMemberKind, NamespaceBody, Param, Stmt, StmtKind};
+use std::sync::Arc;
+
+use php_ast::{ClassMemberKind, EnumMemberKind, ExprKind, NamespaceBody, Param, Stmt, StmtKind};
 use tower_lsp::lsp_types::{Hover, HoverContents, MarkupContent, MarkupKind, Position};
 
 use crate::ast::{ParsedDoc, format_type_hint};
 use crate::docblock::find_docblock;
 use crate::util::{is_php_builtin, php_doc_url, word_at};
 
-pub fn hover_info(source: &str, doc: &ParsedDoc, position: Position) -> Option<Hover> {
+pub fn hover_info(
+    source: &str,
+    doc: &ParsedDoc,
+    position: Position,
+    other_docs: &[(tower_lsp::lsp_types::Url, Arc<ParsedDoc>)],
+) -> Option<Hover> {
     let word = word_at(source, position)?;
 
-    if let Some(sig) = scan_statements(&doc.program().stmts, &word) {
+    // Search current document first, then cross-file.
+    let found = scan_statements(&doc.program().stmts, &word).map(|sig| (sig, source, doc));
+    let found = found.or_else(|| {
+        for (_, other) in other_docs {
+            if let Some(sig) = scan_statements(&other.program().stmts, &word) {
+                return Some((sig, other.source(), other.as_ref()));
+            }
+        }
+        None
+    });
+
+    if let Some((sig, sig_source, sig_doc)) = found {
         let mut value = wrap_php(&sig);
-        if let Some(db) = find_docblock(source, &doc.program().stmts, &word) {
+        if let Some(db) = find_docblock(sig_source, &sig_doc.program().stmts, &word) {
             let md = db.to_markdown();
             if !md.is_empty() {
                 value.push_str("\n\n---\n\n");
                 value.push_str(&md);
             }
         }
-        // Append php.net link when the symbol name also matches a built-in.
         if is_php_builtin(&word) {
             value.push_str(&format!("\n\n[php.net documentation]({})", php_doc_url(&word)));
         }
         return Some(Hover {
-            contents: HoverContents::Markup(MarkupContent {
-                kind: MarkupKind::Markdown,
-                value,
-            }),
+            contents: HoverContents::Markup(MarkupContent { kind: MarkupKind::Markdown, value }),
             range: None,
         });
     }
@@ -38,10 +52,7 @@ pub fn hover_info(source: &str, doc: &ParsedDoc, position: Position) -> Option<H
             php_doc_url(&word)
         );
         return Some(Hover {
-            contents: HoverContents::Markup(MarkupContent {
-                kind: MarkupKind::Markdown,
-                value,
-            }),
+            contents: HoverContents::Markup(MarkupContent { kind: MarkupKind::Markdown, value }),
             range: None,
         });
     }
@@ -96,7 +107,32 @@ fn scan_statements(stmts: &[Stmt<'_, '_>], word: &str) -> Option<String> {
             }
             StmtKind::Enum(e) => {
                 for member in e.members.iter() {
-                    if let EnumMemberKind::Method(m) = &member.kind {
+                    match &member.kind {
+                        EnumMemberKind::Method(m) if m.name == word => {
+                            let params = format_params(&m.params);
+                            let ret = m
+                                .return_type
+                                .as_ref()
+                                .map(|r| format!(": {}", format_type_hint(r)))
+                                .unwrap_or_default();
+                            return Some(format!("function {}({}){}", word, params, ret));
+                        }
+                        EnumMemberKind::Case(c) if c.name == word => {
+                            let value_str = c
+                                .value
+                                .as_ref()
+                                .and_then(format_expr_literal)
+                                .map(|v| format!(" = {v}"))
+                                .unwrap_or_default();
+                            return Some(format!("case {}::{}{}", e.name, c.name, value_str));
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            StmtKind::Class(c) => {
+                for member in c.members.iter() {
+                    if let ClassMemberKind::Method(m) = &member.kind {
                         if m.name == word {
                             let params = format_params(&m.params);
                             let ret = m
@@ -109,8 +145,8 @@ fn scan_statements(stmts: &[Stmt<'_, '_>], word: &str) -> Option<String> {
                     }
                 }
             }
-            StmtKind::Class(c) => {
-                for member in c.members.iter() {
+            StmtKind::Trait(t) => {
+                for member in t.members.iter() {
                     if let ClassMemberKind::Method(m) = &member.kind {
                         if m.name == word {
                             let params = format_params(&m.params);
@@ -133,6 +169,49 @@ fn scan_statements(stmts: &[Stmt<'_, '_>], word: &str) -> Option<String> {
             }
             _ => {}
         }
+    }
+    None
+}
+
+/// Format a literal expression value for hover display (int or string literals only).
+fn format_expr_literal(expr: &php_ast::Expr<'_, '_>) -> Option<String> {
+    match &expr.kind {
+        ExprKind::Int(n) => Some(n.to_string()),
+        ExprKind::String(s) => Some(format!("\"{}\"", s)),
+        _ => None,
+    }
+}
+
+/// Look up markdown documentation for a symbol by name across all indexed documents.
+/// Returns a markdown string with a code fence signature and optional PHPDoc annotations,
+/// or `None` if the symbol is not found.
+pub fn docs_for_symbol(
+    name: &str,
+    all_docs: &[(tower_lsp::lsp_types::Url, Arc<ParsedDoc>)],
+) -> Option<String> {
+    for (_, doc) in all_docs {
+        if let Some(sig) = scan_statements(&doc.program().stmts, name) {
+            let mut value = wrap_php(&sig);
+            if let Some(db) = find_docblock(doc.source(), &doc.program().stmts, name) {
+                let md = db.to_markdown();
+                if !md.is_empty() {
+                    value.push_str("\n\n---\n\n");
+                    value.push_str(&md);
+                }
+            }
+            if is_php_builtin(name) {
+                value.push_str(&format!("\n\n[php.net documentation]({})", php_doc_url(name)));
+            }
+            return Some(value);
+        }
+    }
+    // Fallback: built-in with no user-defined counterpart.
+    if is_php_builtin(name) {
+        return Some(format!(
+            "```php\nfunction {}()\n```\n\n[php.net documentation]({})",
+            name,
+            php_doc_url(name)
+        ));
     }
     None
 }
@@ -178,7 +257,7 @@ mod tests {
     fn hover_on_function_name_returns_signature() {
         let src = "<?php\nfunction greet(string $name): string {}";
         let doc = ParsedDoc::parse(src.to_string());
-        let result = hover_info(src, &doc, pos(1, 10));
+        let result = hover_info(src, &doc, pos(1, 10), &[]);
         assert!(result.is_some(), "expected hover result");
         if let Some(Hover {
             contents: HoverContents::Markup(mc),
@@ -197,7 +276,7 @@ mod tests {
     fn hover_on_class_name_returns_class_sig() {
         let src = "<?php\nclass MyService {}";
         let doc = ParsedDoc::parse(src.to_string());
-        let result = hover_info(src, &doc, pos(1, 8));
+        let result = hover_info(src, &doc, pos(1, 8), &[]);
         assert!(result.is_some(), "expected hover result");
         if let Some(Hover {
             contents: HoverContents::Markup(mc),
@@ -216,7 +295,7 @@ mod tests {
     fn hover_on_unknown_word_returns_none() {
         let src = "<?php\n$unknown = 42;";
         let doc = ParsedDoc::parse(src.to_string());
-        let result = hover_info(src, &doc, pos(1, 2));
+        let result = hover_info(src, &doc, pos(1, 2), &[]);
         assert!(result.is_none(), "expected None for unknown word");
     }
 
@@ -224,7 +303,7 @@ mod tests {
     fn hover_at_column_beyond_line_length_returns_none() {
         let src = "<?php\nfunction hi() {}";
         let doc = ParsedDoc::parse(src.to_string());
-        let result = hover_info(src, &doc, pos(1, 999));
+        let result = hover_info(src, &doc, pos(1, 999), &[]);
         assert!(result.is_none());
     }
 
@@ -239,7 +318,7 @@ mod tests {
     fn hover_on_class_with_extends_shows_parent() {
         let src = "<?php\nclass Dog extends Animal {}";
         let doc = ParsedDoc::parse(src.to_string());
-        let result = hover_info(src, &doc, pos(1, 8));
+        let result = hover_info(src, &doc, pos(1, 8), &[]);
         assert!(result.is_some());
         if let Some(Hover {
             contents: HoverContents::Markup(mc),
@@ -258,7 +337,7 @@ mod tests {
     fn hover_on_class_with_implements_shows_interfaces() {
         let src = "<?php\nclass Repo implements Countable, Serializable {}";
         let doc = ParsedDoc::parse(src.to_string());
-        let result = hover_info(src, &doc, pos(1, 8));
+        let result = hover_info(src, &doc, pos(1, 8), &[]);
         assert!(result.is_some());
         if let Some(Hover {
             contents: HoverContents::Markup(mc),
@@ -277,7 +356,7 @@ mod tests {
     fn hover_on_trait_returns_trait_sig() {
         let src = "<?php\ntrait Loggable {}";
         let doc = ParsedDoc::parse(src.to_string());
-        let result = hover_info(src, &doc, pos(1, 8));
+        let result = hover_info(src, &doc, pos(1, 8), &[]);
         assert!(result.is_some());
         if let Some(Hover {
             contents: HoverContents::Markup(mc),
@@ -296,7 +375,7 @@ mod tests {
     fn hover_on_interface_returns_interface_sig() {
         let src = "<?php\ninterface Serializable {}";
         let doc = ParsedDoc::parse(src.to_string());
-        let result = hover_info(src, &doc, pos(1, 12));
+        let result = hover_info(src, &doc, pos(1, 12), &[]);
         assert!(result.is_some(), "expected hover result");
         if let Some(Hover {
             contents: HoverContents::Markup(mc),
@@ -315,7 +394,7 @@ mod tests {
     fn function_with_no_params_no_return_shows_no_colon() {
         let src = "<?php\nfunction init() {}";
         let doc = ParsedDoc::parse(src.to_string());
-        let result = hover_info(src, &doc, pos(1, 10));
+        let result = hover_info(src, &doc, pos(1, 10), &[]);
         assert!(result.is_some());
         if let Some(Hover {
             contents: HoverContents::Markup(mc),
@@ -339,7 +418,7 @@ mod tests {
     fn hover_on_enum_returns_enum_sig() {
         let src = "<?php\nenum Suit {}";
         let doc = ParsedDoc::parse(src.to_string());
-        let result = hover_info(src, &doc, pos(1, 6));
+        let result = hover_info(src, &doc, pos(1, 6), &[]);
         assert!(result.is_some());
         if let Some(Hover { contents: HoverContents::Markup(mc), .. }) = result {
             assert!(mc.value.contains("enum Suit"), "expected 'enum Suit', got: {}", mc.value);
@@ -350,12 +429,86 @@ mod tests {
     fn hover_on_enum_with_implements_shows_interface() {
         let src = "<?php\nenum Status: string implements Stringable {}";
         let doc = ParsedDoc::parse(src.to_string());
-        let result = hover_info(src, &doc, pos(1, 6));
+        let result = hover_info(src, &doc, pos(1, 6), &[]);
         assert!(result.is_some());
         if let Some(Hover { contents: HoverContents::Markup(mc), .. }) = result {
             assert!(
                 mc.value.contains("implements Stringable"),
                 "expected implements clause, got: {}",
+                mc.value
+            );
+        }
+    }
+
+    #[test]
+    fn hover_on_enum_case_shows_case_sig() {
+        let src = "<?php\nenum Status { case Active; case Inactive; }";
+        let doc = ParsedDoc::parse(src.to_string());
+        // "Active" starts at col 19: "enum Status { case Active;"
+        let result = hover_info(src, &doc, pos(1, 21), &[]);
+        assert!(result.is_some(), "expected hover on enum case");
+        if let Some(Hover { contents: HoverContents::Markup(mc), .. }) = result {
+            assert!(
+                mc.value.contains("Status::Active"),
+                "expected 'Status::Active', got: {}",
+                mc.value
+            );
+        }
+    }
+
+    #[test]
+    fn hover_on_backed_enum_case_shows_value() {
+        let src = "<?php\nenum Color: string { case Red = 'red'; }";
+        let doc = ParsedDoc::parse(src.to_string());
+        // "Red" starts at col 26: "enum Color: string { case Red"
+        let result = hover_info(src, &doc, pos(1, 27), &[]);
+        assert!(result.is_some(), "expected hover on backed enum case");
+        if let Some(Hover { contents: HoverContents::Markup(mc), .. }) = result {
+            assert!(
+                mc.value.contains("Color::Red"),
+                "expected 'Color::Red', got: {}",
+                mc.value
+            );
+            assert!(
+                mc.value.contains("\"red\""),
+                "expected case value, got: {}",
+                mc.value
+            );
+        }
+    }
+
+    #[test]
+    fn hover_on_trait_method_returns_signature() {
+        let src = "<?php\ntrait Loggable { public function log(string $msg): void {} }";
+        let doc = ParsedDoc::parse(src.to_string());
+        // "log" at "trait Loggable { public function log(" — col 33
+        let result = hover_info(src, &doc, pos(1, 34), &[]);
+        assert!(result.is_some(), "expected hover on trait method");
+        if let Some(Hover { contents: HoverContents::Markup(mc), .. }) = result {
+            assert!(
+                mc.value.contains("function log("),
+                "expected function sig, got: {}",
+                mc.value
+            );
+        }
+    }
+
+    #[test]
+    fn cross_file_hover_finds_class_in_other_doc() {
+        use std::sync::Arc;
+        let src = "<?php\n$x = new PaymentService();";
+        let other_src = "<?php\nclass PaymentService { public function charge() {} }";
+        let doc = ParsedDoc::parse(src.to_string());
+        let other_doc = Arc::new(ParsedDoc::parse(other_src.to_string()));
+        let uri = tower_lsp::lsp_types::Url::parse("file:///other.php").unwrap();
+        let other_docs = vec![(uri, other_doc)];
+        // Hover on "PaymentService" in line 1
+        let result = hover_info(src, &doc, pos(1, 12), &other_docs);
+        assert!(result.is_some(), "expected cross-file hover result");
+        if let Some(Hover { contents: HoverContents::Markup(mc), .. }) = result {
+            assert!(
+                mc.value.contains("PaymentService"),
+                "expected 'PaymentService', got: {}",
                 mc.value
             );
         }

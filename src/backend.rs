@@ -3,7 +3,10 @@ use std::sync::{Arc, RwLock};
 
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::notification::Progress as ProgressNotification;
-use tower_lsp::lsp_types::request::WorkDoneProgressCreate;
+use tower_lsp::lsp_types::request::{
+    CodeLensRefresh, InlayHintRefreshRequest, SemanticTokensRefresh, WorkDoneProgressCreate,
+    WorkspaceDiagnosticRefresh,
+};
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer, async_trait};
 
@@ -23,9 +26,11 @@ use crate::document_link::document_links;
 use crate::document_store::DocumentStore;
 use crate::folding::folding_ranges;
 use crate::formatting::{format_document, format_range};
-use crate::hover::hover_info;
+use crate::hover::{docs_for_symbol, hover_info};
 use crate::implementation::goto_implementation;
 use crate::inlay_hints::inlay_hints;
+use crate::extract_action::extract_variable_actions;
+use crate::generate_action::{generate_constructor_actions, generate_getters_setters_actions};
 use crate::implement_action::implement_missing_actions;
 use crate::phpdoc_action::phpdoc_actions;
 use crate::references::find_references;
@@ -36,17 +41,41 @@ use crate::semantic_tokens::{
     compute_token_delta, legend, semantic_tokens, semantic_tokens_range, token_hash,
 };
 use crate::signature_help::signature_help;
-use crate::symbols::{document_symbols, workspace_symbols};
+use crate::symbols::{document_symbols, resolve_workspace_symbol, workspace_symbols};
 use crate::type_definition::goto_type_definition;
 use crate::type_hierarchy::{prepare_type_hierarchy, subtypes_of, supertypes_of};
 use crate::util::word_at;
 
+/// Configuration received from the client via `initializationOptions`.
+#[derive(Debug, Default, Clone)]
+pub struct LspConfig {
+    /// PHP version string, e.g. `"8.1"`.  Currently informational; future
+    /// versions of the analyser will gate PHP-version-specific diagnostics.
+    pub php_version: Option<String>,
+    /// Glob patterns for paths to exclude from workspace indexing.
+    pub exclude_paths: Vec<String>,
+}
+
+impl LspConfig {
+    fn from_value(v: &serde_json::Value) -> Self {
+        let mut cfg = LspConfig::default();
+        if let Some(ver) = v.get("phpVersion").and_then(|x| x.as_str()) {
+            cfg.php_version = Some(ver.to_string());
+        }
+        if let Some(arr) = v.get("excludePaths").and_then(|x| x.as_array()) {
+            cfg.exclude_paths = arr.iter().filter_map(|x| x.as_str().map(str::to_string)).collect();
+        }
+        cfg
+    }
+}
+
 pub struct Backend {
     client: Client,
     docs: Arc<DocumentStore>,
-    root_path: Arc<RwLock<Option<PathBuf>>>,
+    root_paths: Arc<RwLock<Vec<PathBuf>>>,
     psr4: Arc<RwLock<Psr4Map>>,
     meta: Arc<RwLock<PhpStormMeta>>,
+    config: Arc<RwLock<LspConfig>>,
 }
 
 impl Backend {
@@ -54,9 +83,10 @@ impl Backend {
         Backend {
             client,
             docs: Arc::new(DocumentStore::new()),
-            root_path: Arc::new(RwLock::new(None)),
+            root_paths: Arc::new(RwLock::new(Vec::new())),
             psr4: Arc::new(RwLock::new(Psr4Map::empty())),
             meta: Arc::new(RwLock::new(PhpStormMeta::default())),
+            config: Arc::new(RwLock::new(LspConfig::default())),
         }
     }
 }
@@ -64,22 +94,27 @@ impl Backend {
 #[async_trait]
 impl LanguageServer for Backend {
     async fn initialize(&self, params: InitializeParams) -> Result<InitializeResult> {
-        // Store root path for workspace scanning
-        let root = params
-            .root_uri
-            .as_ref()
-            .and_then(|u| u.to_file_path().ok())
-            .or_else(|| {
-                params
-                    .workspace_folders
-                    .as_ref()?
-                    .first()?
-                    .uri
-                    .to_file_path()
-                    .ok()
-            });
-        if let Some(path) = root {
-            *self.root_path.write().unwrap() = Some(path);
+        // Collect all workspace roots. Prefer workspace_folders (multi-root) over
+        // the deprecated root_uri (single root).
+        {
+            let mut roots: Vec<PathBuf> = params
+                .workspace_folders
+                .as_deref()
+                .unwrap_or(&[])
+                .iter()
+                .filter_map(|f| f.uri.to_file_path().ok())
+                .collect();
+            if roots.is_empty() {
+                if let Some(path) = params.root_uri.as_ref().and_then(|u| u.to_file_path().ok()) {
+                    roots.push(path);
+                }
+            }
+            *self.root_paths.write().unwrap() = roots;
+        }
+
+        // Parse initializationOptions if provided by the client.
+        if let Some(opts) = &params.initialization_options {
+            *self.config.write().unwrap() = LspConfig::from_value(opts);
         }
 
         Ok(InitializeResult {
@@ -94,13 +129,17 @@ impl LanguageServer for Backend {
                         ":".to_string(),
                         "(".to_string(),
                     ]),
+                    resolve_provider: Some(true),
                     ..Default::default()
                 }),
                 hover_provider: Some(HoverProviderCapability::Simple(true)),
                 definition_provider: Some(OneOf::Left(true)),
                 references_provider: Some(OneOf::Left(true)),
                 document_symbol_provider: Some(OneOf::Left(true)),
-                workspace_symbol_provider: Some(OneOf::Left(true)),
+                workspace_symbol_provider: Some(OneOf::Right(WorkspaceSymbolOptions {
+                    resolve_provider: Some(true),
+                    work_done_progress_options: Default::default(),
+                })),
                 rename_provider: Some(OneOf::Right(RenameOptions {
                     prepare_provider: Some(true),
                     work_done_progress_options: Default::default(),
@@ -110,7 +149,12 @@ impl LanguageServer for Backend {
                     retrigger_characters: None,
                     work_done_progress_options: Default::default(),
                 }),
-                inlay_hint_provider: Some(OneOf::Left(true)),
+                inlay_hint_provider: Some(OneOf::Right(
+                    InlayHintServerCapabilities::Options(InlayHintOptions {
+                        resolve_provider: Some(true),
+                        work_done_progress_options: Default::default(),
+                    }),
+                )),
                 folding_range_provider: Some(FoldingRangeProviderCapability::Simple(true)),
                 semantic_tokens_provider: Some(
                     SemanticTokensServerCapabilities::SemanticTokensOptions(
@@ -128,11 +172,16 @@ impl LanguageServer for Backend {
                 call_hierarchy_provider: Some(CallHierarchyServerCapability::Simple(true)),
                 document_highlight_provider: Some(OneOf::Left(true)),
                 implementation_provider: Some(ImplementationProviderCapability::Simple(true)),
-                code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
+                code_action_provider: Some(CodeActionProviderCapability::Options(
+                    CodeActionOptions {
+                        resolve_provider: Some(true),
+                        ..Default::default()
+                    },
+                )),
                 declaration_provider: Some(DeclarationCapability::Simple(true)),
                 type_definition_provider: Some(TypeDefinitionProviderCapability::Simple(true)),
                 code_lens_provider: Some(CodeLensOptions {
-                    resolve_provider: None,
+                    resolve_provider: Some(true),
                 }),
                 document_formatting_provider: Some(OneOf::Left(true)),
                 document_range_formatting_provider: Some(OneOf::Left(true)),
@@ -141,7 +190,7 @@ impl LanguageServer for Backend {
                     more_trigger_character: Some(vec!["\n".to_string()]),
                 }),
                 document_link_provider: Some(DocumentLinkOptions {
-                    resolve_provider: Some(false),
+                    resolve_provider: Some(true),
                     work_done_progress_options: Default::default(),
                 }),
                 execute_command_provider: Some(ExecuteCommandOptions {
@@ -160,6 +209,10 @@ impl LanguageServer for Backend {
                     },
                 )),
                 workspace: Some(WorkspaceServerCapabilities {
+                    workspace_folders: Some(WorkspaceFoldersServerCapabilities {
+                        supported: Some(true),
+                        change_notifications: Some(OneOf::Left(true)),
+                    }),
                     file_operations: Some(WorkspaceFileOperationsServerCapabilities {
                         will_rename: Some(FileOperationRegistrationOptions {
                             filters: vec![FileOperationFilter {
@@ -175,6 +228,9 @@ impl LanguageServer for Backend {
                     }),
                     ..Default::default()
                 }),
+                linked_editing_range_provider: Some(
+                    LinkedEditingRangeServerCapabilities::Simple(true),
+                ),
                 ..Default::default()
             },
             ..Default::default()
@@ -205,20 +261,32 @@ impl LanguageServer for Backend {
                 method: "textDocument/prepareTypeHierarchy".to_string(),
                 register_options: Some(serde_json::json!({"documentSelector": php_selector})),
             },
+            // Watch for configuration changes so we can pull the latest settings.
+            Registration {
+                id: "php-lsp-config-change".to_string(),
+                method: "workspace/didChangeConfiguration".to_string(),
+                register_options: Some(serde_json::json!({"section": "php-lsp"})),
+            },
         ];
         self.client
             .register_capability(registrations)
             .await
             .ok();
 
-        // Load PSR-4 autoload map and kick off background workspace scan
-        // Extract root_opt first so the RwLockReadGuard is dropped before any .await.
-        let root_opt = self.root_path.read().unwrap().clone();
-        if let Some(root) = root_opt {
-            // Build PSR-4 map synchronously — it's just JSON file reads, very fast
-            *self.psr4.write().unwrap() = Psr4Map::load(&root);
-            // Load PHPStorm metadata if .phpstorm.meta.php exists
-            *self.meta.write().unwrap() = PhpStormMeta::load(&root);
+        // Load PSR-4 autoload map and kick off background workspace scan.
+        // Extract roots first so RwLockReadGuard is dropped before any .await.
+        let roots = self.root_paths.read().unwrap().clone();
+        if !roots.is_empty() {
+            // Build PSR-4 map from all roots (entries from all roots are merged).
+            {
+                let mut merged = Psr4Map::empty();
+                for root in &roots {
+                    merged.extend(Psr4Map::load(root));
+                }
+                *self.psr4.write().unwrap() = merged;
+            }
+            // Load PHPStorm metadata from the first root, if present.
+            *self.meta.write().unwrap() = PhpStormMeta::load(&roots[0]);
 
             // Create a client-side progress indicator for the workspace scan.
             let token = NumberOrString::String("php-lsp/indexing".to_string());
@@ -231,6 +299,7 @@ impl LanguageServer for Backend {
 
             let docs = Arc::clone(&self.docs);
             let client = self.client.clone();
+            let exclude_paths = self.config.read().unwrap().exclude_paths.clone();
             tokio::spawn(async move {
                 client
                     .send_notification::<ProgressNotification>(ProgressParams {
@@ -246,14 +315,17 @@ impl LanguageServer for Backend {
                     })
                     .await;
 
-                let count = scan_workspace(root, docs).await;
+                let mut total = 0usize;
+                for root in roots {
+                    total += scan_workspace(root, Arc::clone(&docs), &exclude_paths).await;
+                }
 
                 client
                     .send_notification::<ProgressNotification>(ProgressParams {
                         token,
                         value: ProgressParamsValue::WorkDone(WorkDoneProgress::End(
                             WorkDoneProgressEnd {
-                                message: Some(format!("Indexed {count} files")),
+                                message: Some(format!("Indexed {total} files")),
                             },
                         )),
                     })
@@ -262,15 +334,67 @@ impl LanguageServer for Backend {
                 client
                     .log_message(
                         MessageType::INFO,
-                        format!("php-lsp: indexed {count} workspace files"),
+                        format!("php-lsp: indexed {total} workspace files"),
                     )
                     .await;
+
+                // Ask clients to re-request tokens/lenses/hints/diagnostics now
+                // that the index is populated. Without this, editors that opened
+                // files before indexing finished would show stale information.
+                send_refresh_requests(&client).await;
             });
         }
 
         self.client
             .log_message(MessageType::INFO, "php-lsp ready")
             .await;
+    }
+
+    async fn did_change_configuration(&self, _params: DidChangeConfigurationParams) {
+        // Pull the current configuration from the client rather than parsing the
+        // (often-null) params.settings, which not all clients populate.
+        let items = vec![ConfigurationItem {
+            scope_uri: None,
+            section: Some("php-lsp".to_string()),
+        }];
+        if let Ok(values) = self.client.configuration(items).await {
+            if let Some(value) = values.into_iter().next() {
+                *self.config.write().unwrap() = LspConfig::from_value(&value);
+            }
+        }
+    }
+
+    async fn did_change_workspace_folders(&self, params: DidChangeWorkspaceFoldersParams) {
+        // Remove folders from our tracked roots.
+        {
+            let mut roots = self.root_paths.write().unwrap();
+            for removed in &params.event.removed {
+                if let Ok(path) = removed.uri.to_file_path() {
+                    roots.retain(|r| r != &path);
+                }
+            }
+        }
+
+        // Add new folders and kick off background scans for each.
+        let exclude_paths = self.config.read().unwrap().exclude_paths.clone();
+        for added in &params.event.added {
+            if let Ok(path) = added.uri.to_file_path() {
+                {
+                    let mut roots = self.root_paths.write().unwrap();
+                    if !roots.contains(&path) {
+                        roots.push(path.clone());
+                    }
+                }
+                let docs = Arc::clone(&self.docs);
+                let ex = exclude_paths.clone();
+                let path_clone = path.clone();
+                let client = self.client.clone();
+                tokio::spawn(async move {
+                    scan_workspace(path_clone, docs, &ex).await;
+                    send_refresh_requests(&client).await;
+                });
+            }
+        }
     }
 
     async fn shutdown(&self) -> Result<()> {
@@ -350,6 +474,8 @@ impl LanguageServer for Backend {
                 _ => {}
             }
         }
+        // File changes may affect cross-file features — refresh all live editors.
+        send_refresh_requests(&self.client).await;
     }
 
     async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
@@ -384,6 +510,22 @@ impl LanguageServer for Backend {
             Some(position),
             meta_opt,
         ))))
+    }
+
+    async fn completion_resolve(&self, mut item: CompletionItem) -> Result<CompletionItem> {
+        if item.documentation.is_some() {
+            return Ok(item);
+        }
+        // Strip trailing ':' from named-argument labels (e.g. "param:") before lookup.
+        let name = item.label.trim_end_matches(':');
+        let all_docs = self.docs.all_docs();
+        if let Some(md) = docs_for_symbol(name, &all_docs) {
+            item.documentation = Some(Documentation::MarkupContent(MarkupContent {
+                kind: MarkupKind::Markdown,
+                value: md,
+            }));
+        }
+        Ok(item)
     }
 
     async fn goto_definition(
@@ -474,7 +616,8 @@ impl LanguageServer for Backend {
             Some(d) => d,
             None => return Ok(None),
         };
-        Ok(hover_info(&source, &doc, position))
+        let other_docs = self.docs.other_docs(uri);
+        Ok(hover_info(&source, &doc, position, &other_docs))
     }
 
     async fn document_symbol(
@@ -515,6 +658,28 @@ impl LanguageServer for Backend {
         Ok(Some(inlay_hints(doc.source(), &doc, params.range)))
     }
 
+    async fn inlay_hint_resolve(&self, mut item: InlayHint) -> Result<InlayHint> {
+        if item.tooltip.is_some() {
+            return Ok(item);
+        }
+        let func_name = item
+            .data
+            .as_ref()
+            .and_then(|d| d.get("php_lsp_fn"))
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        if let Some(name) = func_name {
+            let all_docs = self.docs.all_docs();
+            if let Some(md) = docs_for_symbol(&name, &all_docs) {
+                item.tooltip = Some(InlayHintTooltip::MarkupContent(MarkupContent {
+                    kind: MarkupKind::Markdown,
+                    value: md,
+                }));
+            }
+        }
+        Ok(item)
+    }
+
     async fn symbol(
         &self,
         params: WorkspaceSymbolParams,
@@ -526,6 +691,11 @@ impl LanguageServer for Backend {
         } else {
             Some(results)
         })
+    }
+
+    async fn symbol_resolve(&self, params: WorkspaceSymbol) -> Result<WorkspaceSymbol> {
+        let docs = self.docs.all_docs();
+        Ok(resolve_workspace_symbol(params, &docs))
     }
 
     async fn semantic_tokens_full(
@@ -672,6 +842,30 @@ impl LanguageServer for Backend {
         })
     }
 
+    async fn linked_editing_range(
+        &self,
+        params: LinkedEditingRangeParams,
+    ) -> Result<Option<LinkedEditingRanges>> {
+        let uri = &params.text_document_position_params.text_document.uri;
+        let position = params.text_document_position_params.position;
+        let source = self.docs.get(uri).unwrap_or_default();
+        let doc = match self.docs.get_doc(uri) {
+            Some(d) => d,
+            None => return Ok(None),
+        };
+        // Reuse document_highlights: every occurrence of the symbol is a linked range.
+        let highlights = document_highlights(&source, &doc, position);
+        if highlights.is_empty() {
+            return Ok(None);
+        }
+        let ranges: Vec<Range> = highlights.into_iter().map(|h| h.range).collect();
+        Ok(Some(LinkedEditingRanges {
+            ranges,
+            // PHP identifiers: letters, digits, underscore; variables also allow leading $
+            word_pattern: Some(r"[$a-zA-Z_\x80-\xff][a-zA-Z0-9_\x80-\xff]*".to_string()),
+        }))
+    }
+
     async fn goto_implementation(
         &self,
         params: tower_lsp::lsp_types::request::GotoImplementationParams,
@@ -767,6 +961,11 @@ impl LanguageServer for Backend {
         })
     }
 
+    async fn code_lens_resolve(&self, params: CodeLens) -> Result<CodeLens> {
+        // Lenses are fully populated by code_lens; nothing to add.
+        Ok(params)
+    }
+
     async fn document_link(&self, params: DocumentLinkParams) -> Result<Option<Vec<DocumentLink>>> {
         let uri = &params.text_document.uri;
         let doc = match self.docs.get_doc(uri) {
@@ -775,6 +974,11 @@ impl LanguageServer for Backend {
         };
         let links = document_links(uri, &doc, doc.source());
         Ok(if links.is_empty() { None } else { Some(links) })
+    }
+
+    async fn document_link_resolve(&self, params: DocumentLink) -> Result<DocumentLink> {
+        // Links already carry their target URI; nothing to add.
+        Ok(params)
     }
 
     async fn formatting(&self, params: DocumentFormattingParams) -> Result<Option<Vec<TextEdit>>> {
@@ -819,6 +1023,11 @@ impl LanguageServer for Backend {
             }
             "php-lsp.runTest" => {
                 // Arguments: [uri_string, "ClassName::methodName"]
+                let file_uri = params
+                    .arguments
+                    .first()
+                    .and_then(|v| v.as_str())
+                    .and_then(|s| Url::parse(s).ok());
                 let filter = params
                     .arguments
                     .get(1)
@@ -826,37 +1035,11 @@ impl LanguageServer for Backend {
                     .unwrap_or("")
                     .to_string();
 
-                let root = self.root_path.read().unwrap().clone();
+                let root = self.root_paths.read().unwrap().first().cloned();
                 let client = self.client.clone();
 
                 tokio::spawn(async move {
-                    let output = tokio::process::Command::new("vendor/bin/phpunit")
-                        .arg("--filter")
-                        .arg(&filter)
-                        .current_dir(root.as_deref().unwrap_or(std::path::Path::new(".")))
-                        .output()
-                        .await;
-
-                    let message = match output {
-                        Ok(out) => {
-                            let text = String::from_utf8_lossy(&out.stdout).into_owned()
-                                + &String::from_utf8_lossy(&out.stderr);
-                            let last_line = text
-                                .lines()
-                                .rev()
-                                .find(|l| !l.trim().is_empty())
-                                .unwrap_or("(no output)")
-                                .to_string();
-                            if out.status.success() {
-                                format!("✓ {filter}: {last_line}")
-                            } else {
-                                format!("✗ {filter}: {last_line}")
-                            }
-                        }
-                        Err(e) => format!("php-lsp.runTest: failed to spawn phpunit — {e}"),
-                    };
-
-                    client.show_message(MessageType::INFO, message).await;
+                    run_phpunit(&client, &filter, root.as_deref(), file_uri.as_ref()).await;
                 });
 
                 Ok(None)
@@ -1052,17 +1235,27 @@ impl LanguageServer for Backend {
             }
         }
 
-        // PHPDoc generation actions
-        actions.extend(phpdoc_actions(uri, &doc, &source, params.range));
-
-        // Implement missing abstract/interface methods
-        actions.extend(implement_missing_actions(
-            &source,
-            &doc,
-            &other_docs,
-            params.range,
-            uri,
+        // PHPDoc, implement, constructor, getters/setters: defer edit computation to
+        // code_action_resolve so the menu appears instantly.
+        actions.extend(defer_actions(
+            phpdoc_actions(uri, &doc, &source, params.range),
+            "phpdoc", uri, params.range,
         ));
+        actions.extend(defer_actions(
+            implement_missing_actions(&source, &doc, &other_docs, params.range, uri),
+            "implement", uri, params.range,
+        ));
+        actions.extend(defer_actions(
+            generate_constructor_actions(&source, &doc, params.range, uri),
+            "constructor", uri, params.range,
+        ));
+        actions.extend(defer_actions(
+            generate_getters_setters_actions(&source, &doc, params.range, uri),
+            "getters_setters", uri, params.range,
+        ));
+
+        // Extract variable: cheap, keep eager.
+        actions.extend(extract_variable_actions(&source, params.range, uri));
 
         Ok(if actions.is_empty() {
             None
@@ -1070,6 +1263,83 @@ impl LanguageServer for Backend {
             Some(actions)
         })
     }
+
+    async fn code_action_resolve(&self, item: CodeAction) -> Result<CodeAction> {
+        let data = match &item.data {
+            Some(d) => d.clone(),
+            None => return Ok(item),
+        };
+        let kind_tag = match data.get("php_lsp_resolve").and_then(|v| v.as_str()) {
+            Some(k) => k.to_string(),
+            None => return Ok(item),
+        };
+        let uri: Url = match data
+            .get("uri")
+            .and_then(|v| v.as_str())
+            .and_then(|s| Url::parse(s).ok())
+        {
+            Some(u) => u,
+            None => return Ok(item),
+        };
+        let range: Range =
+            match data.get("range").and_then(|v| serde_json::from_value(v.clone()).ok()) {
+                Some(r) => r,
+                None => return Ok(item),
+            };
+
+        let source = self.docs.get(&uri).unwrap_or_default();
+        let doc = match self.docs.get_doc(&uri) {
+            Some(d) => d,
+            None => return Ok(item),
+        };
+
+        let candidates: Vec<CodeActionOrCommand> = match kind_tag.as_str() {
+            "phpdoc" => phpdoc_actions(&uri, &doc, &source, range),
+            "implement" => {
+                let other_docs = self.docs.other_docs(&uri);
+                implement_missing_actions(&source, &doc, &other_docs, range, &uri)
+            }
+            "constructor" => generate_constructor_actions(&source, &doc, range, &uri),
+            "getters_setters" => generate_getters_setters_actions(&source, &doc, range, &uri),
+            _ => return Ok(item),
+        };
+
+        // Find the action whose title matches and return it fully resolved.
+        for candidate in candidates {
+            if let CodeActionOrCommand::CodeAction(ca) = candidate {
+                if ca.title == item.title {
+                    return Ok(ca);
+                }
+            }
+        }
+
+        Ok(item)
+    }
+}
+
+/// Strip the `edit` from each `CodeAction` and attach a `data` payload so the
+/// client can request the edit lazily via `codeAction/resolve`.
+fn defer_actions(
+    actions: Vec<CodeActionOrCommand>,
+    kind_tag: &str,
+    uri: &Url,
+    range: Range,
+) -> Vec<CodeActionOrCommand> {
+    actions
+        .into_iter()
+        .map(|a| match a {
+            CodeActionOrCommand::CodeAction(mut ca) => {
+                ca.edit = None;
+                ca.data = Some(serde_json::json!({
+                    "php_lsp_resolve": kind_tag,
+                    "uri": uri.to_string(),
+                    "range": range,
+                }));
+                CodeActionOrCommand::CodeAction(ca)
+            }
+            other => other,
+        })
+        .collect()
 }
 
 /// Find the fully-qualified name for a class with the given short `name` by
@@ -1172,15 +1442,128 @@ impl Backend {
     }
 }
 
+/// Run `vendor/bin/phpunit --filter <filter>` and show the result via
+/// `window/showMessageRequest`.  Offers "Run Again" on both success and
+/// failure, and additionally "Open File" on failure so the user can jump
+/// straight to the test source.  Selecting "Run Again" re-executes the test
+/// in the same task without returning to the client first.
+async fn run_phpunit(
+    client: &Client,
+    filter: &str,
+    root: Option<&std::path::Path>,
+    file_uri: Option<&Url>,
+) {
+    let output = tokio::process::Command::new("vendor/bin/phpunit")
+        .arg("--filter")
+        .arg(filter)
+        .current_dir(root.unwrap_or(std::path::Path::new(".")))
+        .output()
+        .await;
+
+    let (success, message) = match output {
+        Ok(out) => {
+            let text = String::from_utf8_lossy(&out.stdout).into_owned()
+                + &String::from_utf8_lossy(&out.stderr);
+            let last_line = text
+                .lines()
+                .rev()
+                .find(|l| !l.trim().is_empty())
+                .unwrap_or("(no output)")
+                .to_string();
+            let ok = out.status.success();
+            let msg = if ok {
+                format!("✓ {filter}: {last_line}")
+            } else {
+                format!("✗ {filter}: {last_line}")
+            };
+            (ok, msg)
+        }
+        Err(e) => (false, format!("php-lsp.runTest: failed to spawn phpunit — {e}")),
+    };
+
+    let msg_type = if success { MessageType::INFO } else { MessageType::ERROR };
+    let mut actions = vec![MessageActionItem {
+        title: "Run Again".to_string(),
+        properties: Default::default(),
+    }];
+    if !success {
+        if file_uri.is_some() {
+            actions.push(MessageActionItem {
+                title: "Open File".to_string(),
+                properties: Default::default(),
+            });
+        }
+    }
+
+    let chosen = client
+        .show_message_request(msg_type, message, Some(actions))
+        .await;
+
+    match chosen {
+        Ok(Some(ref action)) if action.title == "Run Again" => {
+            // Re-run once; result shown as a plain message to avoid infinite recursion.
+            let output2 = tokio::process::Command::new("vendor/bin/phpunit")
+                .arg("--filter")
+                .arg(filter)
+                .current_dir(root.unwrap_or(std::path::Path::new(".")))
+                .output()
+                .await;
+            let msg2 = match output2 {
+                Ok(out) => {
+                    let text = String::from_utf8_lossy(&out.stdout).into_owned()
+                        + &String::from_utf8_lossy(&out.stderr);
+                    let last_line = text
+                        .lines()
+                        .rev()
+                        .find(|l| !l.trim().is_empty())
+                        .unwrap_or("(no output)")
+                        .to_string();
+                    if out.status.success() {
+                        format!("✓ {filter}: {last_line}")
+                    } else {
+                        format!("✗ {filter}: {last_line}")
+                    }
+                }
+                Err(e) => format!("php-lsp.runTest: failed to spawn phpunit — {e}"),
+            };
+            client.show_message(MessageType::INFO, msg2).await;
+        }
+        Ok(Some(ref action)) if action.title == "Open File" => {
+            if let Some(uri) = file_uri {
+                client
+                    .show_document(ShowDocumentParams {
+                        uri: uri.clone(),
+                        external: Some(false),
+                        take_focus: Some(true),
+                        selection: None,
+                    })
+                    .await
+                    .ok();
+            }
+        }
+        _ => {}
+    }
+}
+
+/// Ask all connected clients to re-request semantic tokens, code lenses, inlay hints,
+/// and diagnostics. Called after bulk index operations so that previously-opened editors
+/// immediately pick up the newly indexed symbol information.
+async fn send_refresh_requests(client: &Client) {
+    client.send_request::<SemanticTokensRefresh>(()).await.ok();
+    client.send_request::<CodeLensRefresh>(()).await.ok();
+    client.send_request::<InlayHintRefreshRequest>(()).await.ok();
+    client.send_request::<WorkspaceDiagnosticRefresh>(()).await.ok();
+}
+
 /// Maximum number of PHP files indexed during a workspace scan.
 /// Prevents excessive memory use on projects with very large vendor trees.
 const MAX_INDEXED_FILES: usize = 50_000;
 
 /// Recursively scan `root` for `*.php` files and add them to the document store.
-/// Skips hidden directories (names starting with `.`).
-/// Vendor packages are now included so cross-file features work on dependencies.
+/// Skips hidden directories (names starting with `.`) and any path whose string
+/// representation contains a segment matching one of the `exclude_paths` patterns.
 /// Returns the number of files indexed.
-async fn scan_workspace(root: PathBuf, docs: Arc<DocumentStore>) -> usize {
+async fn scan_workspace(root: PathBuf, docs: Arc<DocumentStore>, exclude_paths: &[String]) -> usize {
     let mut count = 0usize;
     let mut stack = vec![root];
 
@@ -1197,13 +1580,21 @@ async fn scan_workspace(root: PathBuf, docs: Arc<DocumentStore>) -> usize {
                 break;
             }
             let path = entry.path();
+            let path_str = path.to_string_lossy();
+            // Check user-configured exclude patterns (simple substring/prefix match).
+            if exclude_paths.iter().any(|pat| {
+                let p = pat.trim_end_matches('*').trim_end_matches('/');
+                path_str.contains(p)
+            }) {
+                continue;
+            }
             let file_type = match entry.file_type().await {
                 Ok(ft) => ft,
                 Err(_) => continue,
             };
             if file_type.is_dir() {
                 let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                // Skip hidden directories only; vendor is now indexed
+                // Skip hidden directories; vendor is indexed unless excluded above.
                 if !name.starts_with('.') {
                     stack.push(path);
                 }
