@@ -482,6 +482,30 @@ pub fn builtin_completions() -> Vec<CompletionItem> {
         .collect()
 }
 
+const PHP_SUPERGLOBALS: &[&str] = &[
+    "$_SERVER",
+    "$_GET",
+    "$_POST",
+    "$_FILES",
+    "$_COOKIE",
+    "$_SESSION",
+    "$_REQUEST",
+    "$_ENV",
+    "$GLOBALS",
+];
+
+pub fn superglobal_completions() -> Vec<CompletionItem> {
+    PHP_SUPERGLOBALS
+        .iter()
+        .map(|&name| CompletionItem {
+            label: name.to_string(),
+            kind: Some(CompletionItemKind::VARIABLE),
+            detail: Some("superglobal".to_string()),
+            ..Default::default()
+        })
+        .collect()
+}
+
 fn all_instance_members(
     class_name: &str,
     doc: &ParsedDoc,
@@ -796,10 +820,15 @@ pub fn filtered_completions_at(
     meta: Option<&PhpStormMeta>,
 ) -> Vec<CompletionItem> {
     match trigger_character {
-        Some("$") => symbol_completions(doc)
-            .into_iter()
-            .filter(|i| i.kind == Some(CompletionItemKind::VARIABLE))
-            .collect(),
+        Some("$") => {
+            let mut items = superglobal_completions();
+            items.extend(
+                symbol_completions(doc)
+                    .into_iter()
+                    .filter(|i| i.kind == Some(CompletionItemKind::VARIABLE)),
+            );
+            items
+        }
         Some(">") => {
             // Arrow: $obj->  or  $this->
             if let (Some(src), Some(pos)) = (source, position) {
@@ -849,6 +878,7 @@ pub fn filtered_completions_at(
         _ => {
             let mut items = keyword_completions();
             items.extend(builtin_completions());
+            items.extend(superglobal_completions());
             items.extend(symbol_completions(doc));
 
             // Pre-compute use-import context for the current file.
@@ -971,7 +1001,11 @@ fn resolve_receiver_class(
         format!("${var_name}")
     };
     if var_name == "$this" {
-        return enclosing_class_at(source, doc, position);
+        // Prefer the enclosing class (standard method context).
+        // Fall back to type_map for top-level bound closures where
+        // Closure::bind / bindTo / call injected a $this mapping.
+        return enclosing_class_at(source, doc, position)
+            .or_else(|| type_map.get("$this").map(|s| s.to_string()));
     }
     type_map.get(&var_name).map(|s| s.to_string())
 }
@@ -1310,5 +1344,36 @@ mod tests {
         let pos = Position { line: 3, character: 4 };
         let items = filtered_completions_at(&d, &[], Some(">"), Some(src), Some(pos), None);
         assert!(!items.iter().any(|i| i.label == "value"), "pure enum should not have ->value");
+    }
+
+    #[test]
+    fn superglobals_appear_on_dollar_trigger() {
+        let d = doc("<?php\n");
+        let items = filtered_completions_at(&d, &[], Some("$"), None, None, None);
+        let ls = labels(&items);
+        assert!(ls.contains(&"$_SERVER"), "missing $_SERVER");
+        assert!(ls.contains(&"$_GET"), "missing $_GET");
+        assert!(ls.contains(&"$_POST"), "missing $_POST");
+        assert!(ls.contains(&"$_SESSION"), "missing $_SESSION");
+        assert!(ls.contains(&"$GLOBALS"), "missing $GLOBALS");
+    }
+
+    #[test]
+    fn superglobals_appear_in_default_completions() {
+        let d = doc("<?php\n");
+        let items = filtered_completions_at(&d, &[], None, None, None, None);
+        let ls = labels(&items);
+        assert!(ls.contains(&"$_SERVER"), "missing $_SERVER in default completions");
+    }
+
+    #[test]
+    fn instanceof_narrowing_provides_arrow_completions() {
+        // $x instanceof Foo should narrow $x to Foo inside the if body
+        let src = "<?php\nclass Foo { public function doFoo() {} }\nif ($x instanceof Foo) {\n    $x->";
+        let d = doc(src);
+        let pos = Position { line: 3, character: 8 };
+        let items = filtered_completions_at(&d, &[], Some(">"), Some(src), Some(pos), None);
+        let ls = labels(&items);
+        assert!(ls.contains(&"doFoo"), "instanceof narrowing should make Foo methods available");
     }
 }

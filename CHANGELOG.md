@@ -2,6 +2,23 @@
 
 All notable changes to php-lsp are documented here.
 
+## [0.1.16] — 2026-03-27
+
+### New features
+
+- **`instanceof` type narrowing** — `if ($x instanceof Foo)` narrows `$x` to `Foo` in the type map; `->` completions inside the branch now show `Foo`'s members. Fully-qualified class names are shortened to the simple name (`App\Services\Mailer` → `Mailer`). `elseif` and `else` branches are also recursed into.
+- **PHP superglobals in completion** — `$_SERVER`, `$_GET`, `$_POST`, `$_FILES`, `$_COOKIE`, `$_SESSION`, `$_REQUEST`, `$_ENV`, and `$GLOBALS` appear as `Variable` completion items with a `"superglobal"` detail label. Available on both the `$` trigger character and the default (no-trigger) completion list.
+- **Bound-closure `$this` completion** — `Closure::bind($fn, $obj)`, `$fn->bindTo($obj)`, and `$fn->call($obj)` patterns map `$this` to `$obj`'s inferred class in the type map, so `$this->` completions work inside top-level bound closures.
+- **`array_map`/`array_filter` element-type propagation** — when the callback has an explicit return type hint (e.g. `fn($x): Widget => ...`), the element type is stored under the `$var[]` key. A `foreach ($result as $item)` over that variable then propagates `Widget` to `$item`, enabling `$item->` completions.
+- **`@psalm-type` / `@phpstan-type` type aliases** — docblock parser recognises `@psalm-type Alias = TypeExpr` and `@phpstan-type Alias = TypeExpr` tags; aliases are rendered in hover as `**@type** \`Alias\` = \`TypeExpr\``.
+- **Snippet completions** — functions and methods with parameters use `InsertTextFormat::SNIPPET` so the cursor lands inside the parentheses after accepting. Zero-parameter callables insert `name()` as plain text.
+- **Enum built-in properties** — `->name` is offered as a completion on every enum instance; backed enums (`enum Foo: string`) also expose `->value`. `::from()`, `::tryFrom()`, and `::cases()` appear as static completions on backed enums.
+- **`textDocument/moniker`** — returns a PHP-scheme moniker with the PSR-4 fully-qualified name as the identifier and `UniquenessLevel::Group`.
+- **`textDocument/inlineValue` + `workspace/inlineValue/refresh`** — scans for `$variable` occurrences in the requested range and returns `InlineValueVariableLookup` entries for debugger variable display; `$this` and `$$dynamic` variables are skipped.
+- **`workspace/willCreateFiles` / `workspace/didCreateFiles`** — new PHP files are indexed immediately when created; the server fires inline-value, semantic-token, code-lens, inlay-hint, and diagnostic refresh requests.
+- **`workspace/willDeleteFiles`** — returns a `WorkspaceEdit` that removes all `use FullyQualifiedName;` imports referencing the deleted file across the workspace.
+- **`workspace/didDeleteFiles`** — removes deleted files from the index and clears their diagnostics.
+
 ## [0.1.15] — 2026-03-26
 
 ### New features

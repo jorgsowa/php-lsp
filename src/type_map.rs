@@ -3,7 +3,7 @@
 /// after `->`.
 use std::collections::HashMap;
 
-use php_ast::{ClassMemberKind, EnumMemberKind, ExprKind, NamespaceBody, Stmt, StmtKind, TypeHintKind};
+use php_ast::{BinaryOp, ClassMemberKind, EnumMemberKind, ExprKind, NamespaceBody, Stmt, StmtKind, TypeHintKind};
 use tower_lsp::lsp_types::Position;
 
 use crate::ast::{ParsedDoc, offset_to_position};
@@ -31,6 +31,12 @@ impl TypeMap {
     /// Returns the class name for a variable, e.g. `get("$obj")` → `Some("Foo")`.
     pub fn get<'a>(&'a self, var: &str) -> Option<&'a str> {
         self.0.get(var).map(|s| s.as_str())
+    }
+
+    /// Returns the element type stored under the `$var[]` key — populated when
+    /// `$var` was assigned from `array_map` / `array_filter` with a typed callback.
+    pub fn get_element_type<'a>(&'a self, var: &str) -> Option<&'a str> {
+        self.0.get(&format!("{var}[]")).map(|s| s.as_str())
     }
 }
 
@@ -66,7 +72,7 @@ fn collect_types_stmts(
         }
 
         match &stmt.kind {
-            StmtKind::Expression(e) => collect_types_expr(e, map, meta),
+            StmtKind::Expression(e) => collect_types_expr(source, e, map, meta),
             StmtKind::Function(f) => {
                 for p in f.params.iter() {
                     if let Some(hint) = &p.type_hint {
@@ -101,33 +107,181 @@ fn collect_types_stmts(
                     collect_types_stmts(source, inner, map, meta);
                 }
             }
+            // if ($x instanceof Foo) — narrow $x to Foo inside the then-branch
+            StmtKind::If(if_stmt) => {
+                // Check whether the condition is a simple `$var instanceof ClassName`.
+                if let ExprKind::Binary(b) = &if_stmt.condition.kind {
+                    if b.op == BinaryOp::Instanceof {
+                        if let (ExprKind::Variable(var_name), ExprKind::Identifier(class)) =
+                            (&b.left.kind, &b.right.kind)
+                        {
+                            let var_key = format!("${}", var_name);
+                            let narrowed = class.as_ref()
+                                .trim_start_matches('\\')
+                                .rsplit('\\')
+                                .next()
+                                .unwrap_or(class.as_ref())
+                                .to_string();
+                            // Insert narrowed type then recurse into then-branch.
+                            // The flat map keeps the last write, so code after the if-block
+                            // may see the narrowed type — acceptable trade-off for a simple
+                            // single-pass map.
+                            map.insert(var_key, narrowed);
+                        }
+                    }
+                }
+                collect_types_stmts(source, std::slice::from_ref(if_stmt.then_branch), map, meta);
+                for elseif in if_stmt.elseif_branches.iter() {
+                    collect_types_stmts(source, std::slice::from_ref(&elseif.body), map, meta);
+                }
+                if let Some(else_branch) = if_stmt.else_branch {
+                    collect_types_stmts(source, std::slice::from_ref(else_branch), map, meta);
+                }
+            }
+
+            // foreach ($arr as $item) — propagate element type from $arr[] to $item
+            StmtKind::Foreach(f) => {
+                if let ExprKind::Variable(arr_name) = &f.expr.kind {
+                    let elem_key = format!("${}[]", arr_name);
+                    if let Some(elem_type) = map.get(&elem_key).cloned() {
+                        if let ExprKind::Variable(val_name) = &f.value.kind {
+                            map.insert(format!("${}", val_name), elem_type);
+                        }
+                    }
+                }
+                collect_types_stmts(source, std::slice::from_ref(f.body), map, meta);
+            }
             _ => {}
         }
     }
 }
 
 fn collect_types_expr(
+    source: &str,
     expr: &php_ast::Expr<'_, '_>,
     map: &mut HashMap<String, String>,
     meta: Option<&PhpStormMeta>,
 ) {
-    if let ExprKind::Assign(assign) = &expr.kind {
-        if let ExprKind::Variable(var_name) = &assign.target.kind {
-            if let ExprKind::New(new_expr) = &assign.value.kind {
-                if let Some(class_name) = extract_class_name(new_expr.class) {
-                    map.insert(format!("${}", var_name), class_name);
+    match &expr.kind {
+        ExprKind::Assign(assign) => {
+            if let ExprKind::Variable(var_name) = &assign.target.kind {
+                if let ExprKind::New(new_expr) = &assign.value.kind {
+                    if let Some(class_name) = extract_class_name(new_expr.class) {
+                        map.insert(format!("${}", var_name), class_name);
+                    }
+                }
+                // PHPStorm meta: `$var = $obj->make(SomeClass::class)`
+                if let Some(meta) = meta {
+                    if let Some(inferred) =
+                        infer_from_meta_method_call(&assign.value, map, meta)
+                    {
+                        map.insert(format!("${}", var_name), inferred);
+                    }
+                }
+                // $result = array_map(fn($x): Foo => ..., $arr) → $result[] = Foo
+                if let Some(elem_type) = extract_array_callback_return_type(&assign.value) {
+                    map.insert(format!("${}[]", var_name), elem_type);
                 }
             }
-            // PHPStorm meta: `$var = $obj->make(SomeClass::class)`
-            if let Some(meta) = meta {
-                if let Some(inferred) =
-                    infer_from_meta_method_call(&assign.value, map, meta)
-                {
-                    map.insert(format!("${}", var_name), inferred);
+            collect_types_expr(source, assign.value, map, meta);
+        }
+
+        // Closure::bind($fn, $obj) → $this maps to $obj's class
+        ExprKind::StaticMethodCall(s) => {
+            if let ExprKind::Identifier(class) = &s.class.kind {
+                if class.as_ref() == "Closure" && s.method.as_ref() == "bind" {
+                    if let Some(obj_arg) = s.args.get(1) {
+                        if let Some(cls) = resolve_var_type_str(&obj_arg.value, map) {
+                            map.insert("$this".to_string(), cls);
+                        }
+                    }
                 }
             }
         }
-        collect_types_expr(assign.value, map, meta);
+
+        // $fn->bindTo($obj) or $fn->call($obj) → $this maps to $obj's class
+        ExprKind::MethodCall(m) => {
+            if let ExprKind::Identifier(method) = &m.method.kind {
+                let mname = method.as_ref();
+                if mname == "bindTo" || mname == "call" {
+                    if let Some(obj_arg) = m.args.first() {
+                        if let Some(cls) = resolve_var_type_str(&obj_arg.value, map) {
+                            map.insert("$this".to_string(), cls);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Walk closure bodies so inner assignments are also captured
+        ExprKind::Closure(c) => {
+            for p in c.params.iter() {
+                if let Some(hint) = &p.type_hint {
+                    if let TypeHintKind::Named(name) = &hint.kind {
+                        map.insert(format!("${}", p.name), name.to_string_repr().to_string());
+                    }
+                }
+            }
+            collect_types_stmts(source, &c.body, map, meta);
+        }
+
+        ExprKind::ArrowFunction(af) => {
+            for p in af.params.iter() {
+                if let Some(hint) = &p.type_hint {
+                    if let TypeHintKind::Named(name) = &hint.kind {
+                        map.insert(format!("${}", p.name), name.to_string_repr().to_string());
+                    }
+                }
+            }
+            collect_types_expr(source, af.body, map, meta);
+        }
+
+        _ => {}
+    }
+}
+
+/// For `array_map`/`array_filter` calls: extract the return type of the first
+/// (callback) argument if it has an explicit type hint, e.g.
+/// `array_map(fn($x): Foo => $x->transform(), $arr)` → `"Foo"`.
+fn extract_array_callback_return_type(expr: &php_ast::Expr<'_, '_>) -> Option<String> {
+    let ExprKind::FunctionCall(call) = &expr.kind else {
+        return None;
+    };
+    let fn_name = match &call.name.kind {
+        ExprKind::Identifier(n) => n.as_ref(),
+        _ => return None,
+    };
+    if fn_name != "array_map" && fn_name != "array_filter" {
+        return None;
+    }
+    let callback_arg = call.args.first()?;
+    extract_callback_return_type(&callback_arg.value)
+}
+
+/// Extract the return-type class name from a Closure or ArrowFunction expression.
+fn extract_callback_return_type(expr: &php_ast::Expr<'_, '_>) -> Option<String> {
+    let hint = match &expr.kind {
+        ExprKind::Closure(c) => c.return_type.as_ref()?,
+        ExprKind::ArrowFunction(af) => af.return_type.as_ref()?,
+        _ => return None,
+    };
+    if let TypeHintKind::Named(name) = &hint.kind {
+        let s = name.to_string_repr();
+        let base = s.trim_start_matches('\\');
+        let short = base.rsplit('\\').next().unwrap_or(base);
+        if short.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) {
+            return Some(short.to_string());
+        }
+    }
+    None
+}
+
+/// Look up the class of a `$variable` expression from the current map.
+fn resolve_var_type_str(expr: &php_ast::Expr<'_, '_>, map: &HashMap<String, String>) -> Option<String> {
+    if let ExprKind::Variable(v) = &expr.kind {
+        map.get(&format!("${}", v)).cloned()
+    } else {
+        None
     }
 }
 
@@ -663,5 +817,59 @@ mod tests {
         let doc = ParsedDoc::parse(src.to_string());
         assert!(!is_enum(&doc, "Foo"));
         assert!(!is_backed_enum(&doc, "Foo"));
+    }
+
+    #[test]
+    fn array_map_with_typed_closure_populates_element_type() {
+        let src = "<?php\n$objs = new Foo();\n$result = array_map(fn($x): Bar => $x->transform(), $objs);";
+        let doc = ParsedDoc::parse(src.to_string());
+        let tm = TypeMap::from_doc(&doc);
+        assert_eq!(tm.get_element_type("$result"), Some("Bar"),
+            "array_map with typed fn callback should store element type as $result[]");
+    }
+
+    #[test]
+    fn foreach_propagates_array_map_element_type() {
+        let src = "<?php\n$items = array_map(fn($x): Widget => $x, []);\nforeach ($items as $item) { $item-> }";
+        let doc = ParsedDoc::parse(src.to_string());
+        let tm = TypeMap::from_doc(&doc);
+        assert_eq!(tm.get("$item"), Some("Widget"),
+            "foreach over array_map result should propagate element type to loop variable");
+    }
+
+    #[test]
+    fn closure_bind_maps_this_to_obj_class() {
+        let src = "<?php\n$service = new Mailer();\n$fn = Closure::bind(function() {}, $service);";
+        let doc = ParsedDoc::parse(src.to_string());
+        let tm = TypeMap::from_doc(&doc);
+        assert_eq!(tm.get("$this"), Some("Mailer"),
+            "Closure::bind with typed object should map $this to that class");
+    }
+
+    #[test]
+    fn instanceof_narrows_variable_type() {
+        let src = "<?php\nif ($x instanceof Foo) { $x->foo(); }";
+        let doc = ParsedDoc::parse(src.to_string());
+        let tm = TypeMap::from_doc(&doc);
+        assert_eq!(tm.get("$x"), Some("Foo"),
+            "instanceof should narrow $x to Foo inside the if body");
+    }
+
+    #[test]
+    fn instanceof_narrows_fqn_to_short_name() {
+        let src = "<?php\nif ($x instanceof App\\Services\\Mailer) { $x->send(); }";
+        let doc = ParsedDoc::parse(src.to_string());
+        let tm = TypeMap::from_doc(&doc);
+        assert_eq!(tm.get("$x"), Some("Mailer"),
+            "instanceof with FQN should narrow to short name");
+    }
+
+    #[test]
+    fn closure_bind_to_maps_this_to_obj_class() {
+        let src = "<?php\n$svc = new Logger();\n$fn = function() {};\n$bound = $fn->bindTo($svc);";
+        let doc = ParsedDoc::parse(src.to_string());
+        let tm = TypeMap::from_doc(&doc);
+        assert_eq!(tm.get("$this"), Some("Logger"),
+            "bindTo() should map $this to the bound object's class");
     }
 }
