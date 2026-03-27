@@ -49,6 +49,7 @@ A PHP Language Server Protocol (LSP) implementation written in Rust.
 - **File create/delete lifecycle** — `workspace/willCreateFiles` indexes new files immediately; `workspace/willDeleteFiles` removes all `use` imports referencing the deleted file; `workspace/didDeleteFiles` drops the file from the index and clears its diagnostics
 - **`textDocument/moniker`** — returns a PHP-scheme moniker with the PSR-4 FQN as the identifier, for cross-repository symbol linking
 - **`textDocument/inlineValue`** — returns variable lookup entries in the requested range for debugger variable display; refreshed via `workspace/inlineValue/refresh`
+- **Save lifecycle** — `textDocument/didSave` re-publishes diagnostics on save; `textDocument/willSave` and `willSaveWaitUntil` are registered so clients that gate on save notifications work correctly
 - **Async parsing** — edits are debounced (100 ms) and parsed off the tokio runtime; stale results from superseded edits are discarded
 
 ## Configuration

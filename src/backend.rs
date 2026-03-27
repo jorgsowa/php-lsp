@@ -38,7 +38,7 @@ use crate::phpdoc_action::phpdoc_actions;
 use crate::references::find_references;
 use crate::rename::{prepare_rename, rename};
 use crate::selection_range::selection_ranges;
-use crate::semantic_diagnostics::{semantic_diagnostics, duplicate_declaration_diagnostics};
+use crate::semantic_diagnostics::{semantic_diagnostics, duplicate_declaration_diagnostics, deprecated_call_diagnostics};
 use crate::semantic_tokens::{
     compute_token_delta, legend, semantic_tokens, semantic_tokens_range, token_hash,
 };
@@ -121,8 +121,16 @@ impl LanguageServer for Backend {
 
         Ok(InitializeResult {
             capabilities: ServerCapabilities {
-                text_document_sync: Some(TextDocumentSyncCapability::Kind(
-                    TextDocumentSyncKind::FULL,
+                text_document_sync: Some(TextDocumentSyncCapability::Options(
+                    TextDocumentSyncOptions {
+                        open_close: Some(true),
+                        change: Some(TextDocumentSyncKind::FULL),
+                        will_save: Some(true),
+                        will_save_wait_until: Some(true),
+                        save: Some(TextDocumentSyncSaveOptions::SaveOptions(SaveOptions {
+                            include_text: Some(false),
+                        })),
+                    },
                 )),
                 completion_provider: Some(CompletionOptions {
                     trigger_characters: Some(vec![
@@ -466,6 +474,35 @@ impl LanguageServer for Backend {
         self.docs.close(&uri);
         // Clear editor diagnostics; the file stays indexed for cross-file features
         self.client.publish_diagnostics(uri, vec![], None).await;
+    }
+
+    async fn will_save(&self, _params: WillSaveTextDocumentParams) {}
+
+    async fn will_save_wait_until(
+        &self,
+        _params: WillSaveTextDocumentParams,
+    ) -> Result<Option<Vec<TextEdit>>> {
+        Ok(None)
+    }
+
+    async fn did_save(&self, params: DidSaveTextDocumentParams) {
+        let uri = params.text_document.uri;
+        // Re-publish diagnostics on save so editors that defer diagnostics
+        // until save (rather than on every keystroke) see up-to-date results.
+        let source = self.docs.get(&uri).unwrap_or_default();
+        let doc = self.docs.get_doc(&uri);
+        if let Some(ref d) = doc {
+            let parse_diags = self.docs.get_diagnostics(&uri).unwrap_or_default();
+            let dup_diags = duplicate_declaration_diagnostics(&source, d);
+            let other_raw = self.docs.other_docs(&uri);
+            let other_docs: Vec<Arc<ParsedDoc>> =
+                other_raw.into_iter().map(|(_, d)| d).collect();
+            let dep_diags = deprecated_call_diagnostics(&source, d, &other_docs);
+            let mut all = parse_diags;
+            all.extend(dup_diags);
+            all.extend(dep_diags);
+            self.client.publish_diagnostics(uri, all, None).await;
+        }
     }
 
     async fn did_change_watched_files(&self, params: DidChangeWatchedFilesParams) {

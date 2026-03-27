@@ -2,6 +2,13 @@
 
 All notable changes to php-lsp are documented here.
 
+## [0.1.21] — 2026-03-27
+
+### New features
+
+- **`textDocument/didSave`** — diagnostics (parse errors, duplicate declarations, deprecated-call warnings) are re-published on every save, so editors that defer diagnostics until save see up-to-date results immediately.
+- **`textDocument/willSave` / `willSaveWaitUntil`** — handlers registered and advertised in server capabilities; `willSaveWaitUntil` returns no edits (format-on-save is handled by the existing `textDocument/formatting` request).
+
 ## [0.1.20] — 2026-03-27
 
 ### New features
