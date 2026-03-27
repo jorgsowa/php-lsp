@@ -5,7 +5,7 @@ use tower_lsp::lsp_types::{
     CompletionItem, CompletionItemKind, InsertTextFormat, Position, Range, TextEdit,
 };
 
-use crate::ast::ParsedDoc;
+use crate::ast::{ParsedDoc, offset_to_position};
 use crate::phpstorm_meta::PhpStormMeta;
 use crate::stubs::builtin_class_members;
 use crate::use_resolver::UseMap;
@@ -130,6 +130,42 @@ pub fn symbol_completions(doc: &ParsedDoc) -> Vec<CompletionItem> {
     let mut items = Vec::new();
     collect_from_statements(&doc.program().stmts, &mut items);
     items
+}
+
+/// Like `symbol_completions` but only includes variables declared at or before `line`.
+/// Non-variable items (functions, classes, etc.) are always included.
+pub fn symbol_completions_before(doc: &ParsedDoc, line: u32) -> Vec<CompletionItem> {
+    let mut items = Vec::new();
+    collect_from_statements_before(&doc.program().stmts, &mut items, line, doc.source());
+    items
+}
+
+fn collect_from_statements_before(
+    stmts: &[Stmt<'_, '_>],
+    items: &mut Vec<CompletionItem>,
+    line: u32,
+    source: &str,
+) {
+    for stmt in stmts {
+        match &stmt.kind {
+            StmtKind::Expression(e) => {
+                // Only add variables if they appear at or before the cursor line
+                let stmt_line = offset_to_position(source, stmt.span.start).line;
+                if stmt_line <= line {
+                    collect_from_expression(e, items);
+                }
+            }
+            StmtKind::Namespace(ns) => {
+                if let NamespaceBody::Braced(inner) = &ns.body {
+                    collect_from_statements_before(inner, items, line, source);
+                }
+            }
+            // Non-variable items: always include
+            _ => {
+                collect_from_statements(std::slice::from_ref(stmt), items);
+            }
+        }
+    }
 }
 
 fn collect_from_statements(stmts: &[Stmt<'_, '_>], items: &mut Vec<CompletionItem>) {
@@ -876,6 +912,36 @@ fn current_file_namespace(stmts: &[Stmt<'_, '_>]) -> String {
     String::new()
 }
 
+const PHP_MAGIC_METHODS: &[(&str, &str)] = &[
+    ("__construct", "public function __construct($1)\n{\n    $2\n}"),
+    ("__destruct",  "public function __destruct()\n{\n    $1\n}"),
+    ("__get",       "public function __get(string $name): mixed\n{\n    $1\n}"),
+    ("__set",       "public function __set(string $name, mixed $value): void\n{\n    $1\n}"),
+    ("__isset",     "public function __isset(string $name): bool\n{\n    $1\n}"),
+    ("__unset",     "public function __unset(string $name): void\n{\n    $1\n}"),
+    ("__call",      "public function __call(string $name, array $arguments): mixed\n{\n    $1\n}"),
+    ("__callStatic","public static function __callStatic(string $name, array $arguments): mixed\n{\n    $1\n}"),
+    ("__toString",  "public function __toString(): string\n{\n    $1\n}"),
+    ("__invoke",    "public function __invoke($1): mixed\n{\n    $2\n}"),
+    ("__clone",     "public function __clone(): void\n{\n    $1\n}"),
+    ("__sleep",     "public function __sleep(): array\n{\n    $1\n}"),
+    ("__wakeup",    "public function __wakeup(): void\n{\n    $1\n}"),
+    ("__serialize", "public function __serialize(): array\n{\n    $1\n}"),
+    ("__unserialize","public function __unserialize(array $data): void\n{\n    $1\n}"),
+    ("__debugInfo", "public function __debugInfo(): ?array\n{\n    $1\n}"),
+];
+
+fn magic_method_completions() -> Vec<CompletionItem> {
+    PHP_MAGIC_METHODS.iter().map(|(name, snippet)| CompletionItem {
+        label: name.to_string(),
+        kind: Some(CompletionItemKind::METHOD),
+        insert_text: Some(snippet.to_string()),
+        insert_text_format: Some(InsertTextFormat::SNIPPET),
+        detail: Some("magic method".to_string()),
+        ..Default::default()
+    }).collect()
+}
+
 /// Completions filtered by trigger character, with optional `source` + `position`
 /// so that `->` completions can be scoped to the variable's class.
 pub fn filtered_completions_at(
@@ -1003,6 +1069,50 @@ pub fn filtered_completions_at(
                 let _ = include_path_prefix(src, pos);
             }
 
+            // Feature 3: Sub-namespace \ completions outside use statement
+            if let (Some(src), Some(pos)) = (source, position) {
+                if let Some(prefix) = typed_prefix(Some(src), Some(pos)) {
+                    if prefix.contains('\\') {
+                        // Check we're NOT in a use statement
+                        let is_use = use_completion_prefix(src, pos).is_some();
+                        if !is_use {
+                            let mut ns_items: Vec<CompletionItem> = Vec::new();
+                            for other in other_docs {
+                                let mut classes = Vec::new();
+                                collect_classes_with_ns(&other.program().stmts, "", &mut classes);
+                                for (label, kind, fqn) in classes {
+                                    if fqn.to_lowercase().starts_with(&prefix.to_lowercase()) {
+                                        ns_items.push(CompletionItem {
+                                            label: label.clone(),
+                                            kind: Some(kind),
+                                            insert_text: Some(label),
+                                            detail: Some(fqn),
+                                            ..Default::default()
+                                        });
+                                    }
+                                }
+                            }
+                            let mut classes = Vec::new();
+                            collect_classes_with_ns(&doc.program().stmts, "", &mut classes);
+                            for (label, kind, fqn) in classes {
+                                if fqn.to_lowercase().starts_with(&prefix.to_lowercase()) {
+                                    ns_items.push(CompletionItem {
+                                        label: label.clone(),
+                                        kind: Some(kind),
+                                        insert_text: Some(label),
+                                        detail: Some(fqn),
+                                        ..Default::default()
+                                    });
+                                }
+                            }
+                            if !ns_items.is_empty() {
+                                return ns_items;
+                            }
+                        }
+                    }
+                }
+            }
+
             // Feature 7: match arm completions
             if let (Some(src), Some(pos)) = (source, position) {
                 if let Some(match_items) = match_arm_completions(src, doc, other_docs, pos, meta) {
@@ -1019,10 +1129,25 @@ pub fn filtered_completions_at(
                 }
             }
 
+            // Feature 5: Magic method completions in class body
+            let mut magic_items: Vec<CompletionItem> = Vec::new();
+            if let (Some(src), Some(pos)) = (source, position) {
+                if enclosing_class_at(src, doc, pos).is_some() {
+                    magic_items.extend(magic_method_completions());
+                }
+            }
+
             let mut items = keyword_completions();
             items.extend(builtin_completions());
             items.extend(superglobal_completions());
-            items.extend(symbol_completions(doc));
+            // Feature 2: scope variable completions to before cursor line
+            let sym_items = if let (Some(_src), Some(pos)) = (source, position) {
+                symbol_completions_before(doc, pos.line)
+            } else {
+                symbol_completions(doc)
+            };
+            items.extend(sym_items);
+            items.extend(magic_items);
 
             // Pre-compute use-import context for the current file.
             let use_map = source.map(|_| UseMap::from_doc(doc));
@@ -1743,5 +1868,42 @@ mod tests {
         let name_item = items.iter().find(|i| i.label == "$name");
         assert!(name_item.is_some(), "should have $name in completions");
         assert_eq!(name_item.unwrap().detail.as_deref(), Some("readonly"), "$name should be tagged readonly");
+    }
+
+    // Feature 2: variables scoped to cursor line
+    #[test]
+    fn variables_after_cursor_not_suggested() {
+        let src = "<?php\n$early = new Foo();\n// cursor here\n$late = new Bar();";
+        let d = doc(src);
+        let pos = Position { line: 2, character: 0 };
+        let items = filtered_completions_at(&d, &[], None, Some(src), Some(pos), None);
+        let ls = labels(&items);
+        assert!(ls.contains(&"$early"), "$early should be suggested");
+        assert!(!ls.contains(&"$late"), "$late declared after cursor should not be suggested");
+    }
+
+    // Feature 3: sub-namespace backslash completions
+    #[test]
+    fn backslash_prefix_suggests_matching_classes() {
+        let d = doc("<?php\n$x = new App\\");
+        let other = Arc::new(ParsedDoc::parse(
+            "<?php\nnamespace App\\Services;\nclass Mailer {}\nclass Logger {}".to_string(),
+        ));
+        let pos = Position { line: 1, character: 18 };
+        let items = filtered_completions_at(&d, &[other], None, Some("<?php\n$x = new App\\"), Some(pos), None);
+        let ls = labels(&items);
+        assert!(ls.contains(&"Mailer"), "should suggest Mailer under App\\Services");
+    }
+
+    // Feature 5: magic methods in class body
+    #[test]
+    fn magic_methods_suggested_in_class_body() {
+        let src = "<?php\nclass Foo {\n    __\n}";
+        let d = doc(src);
+        let pos = Position { line: 2, character: 6 };
+        let items = filtered_completions_at(&d, &[], None, Some(src), Some(pos), None);
+        let ls = labels(&items);
+        assert!(ls.contains(&"__construct"), "should suggest __construct");
+        assert!(ls.contains(&"__toString"), "should suggest __toString");
     }
 }

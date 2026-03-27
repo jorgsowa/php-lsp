@@ -313,6 +313,17 @@ fn collect_types_expr(
     match &expr.kind {
         ExprKind::Assign(assign) => {
             if let ExprKind::Variable(var_name) = &assign.target.kind {
+                // Handle ??= (null coalescing assignment): only assigns if null
+                // so use or_insert (existing type takes precedence)
+                if assign.op == php_ast::AssignOp::Coalesce {
+                    if let ExprKind::New(new_expr) = &assign.value.kind {
+                        if let Some(class_name) = extract_class_name(new_expr.class) {
+                            map.entry(format!("${}", var_name)).or_insert(class_name);
+                        }
+                    }
+                    collect_types_expr(source, assign.value, map, meta, method_returns);
+                    return;
+                }
                 if let ExprKind::New(new_expr) = &assign.value.kind {
                     if let Some(class_name) = extract_class_name(new_expr.class) {
                         map.insert(format!("${}", var_name), class_name);
@@ -541,11 +552,12 @@ pub struct ClassMembers {
 /// Also returns the direct parent class name via `ClassMembers::parent`.
 pub fn members_of_class(doc: &ParsedDoc, class_name: &str) -> ClassMembers {
     let mut out = ClassMembers::default();
-    out.parent = collect_members_stmts(&doc.program().stmts, class_name, &mut out);
+    out.parent = collect_members_stmts(doc.source(), &doc.program().stmts, class_name, &mut out);
     out
 }
 
 fn collect_members_stmts(
+    source: &str,
     stmts: &[Stmt<'_, '_>],
     class_name: &str,
     out: &mut ClassMembers,
@@ -553,6 +565,16 @@ fn collect_members_stmts(
     for stmt in stmts {
         match &stmt.kind {
             StmtKind::Class(c) if c.name == Some(class_name) => {
+                // Check docblock for @property and @method tags
+                if let Some(raw) = docblock_before(source, stmt.span.start) {
+                    let db = parse_docblock(&raw);
+                    for prop in &db.properties {
+                        out.properties.push((prop.name.clone(), false));
+                    }
+                    for method in &db.methods {
+                        out.methods.push((method.name.clone(), method.is_static));
+                    }
+                }
                 for member in c.members.iter() {
                     match &member.kind {
                         ClassMemberKind::Method(m) => {
@@ -637,7 +659,7 @@ fn collect_members_stmts(
             }
             StmtKind::Namespace(ns) => {
                 if let NamespaceBody::Braced(inner) = &ns.body {
-                    let result = collect_members_stmts(inner, class_name, out);
+                    let result = collect_members_stmts(source, inner, class_name, out);
                     if result.is_some()
                         || out.methods.len() + out.properties.len() + out.constants.len() > 0
                     {
@@ -1087,5 +1109,35 @@ mod tests {
         let doc = ParsedDoc::parse(src.to_string());
         let tm = TypeMap::from_doc(&doc);
         assert_eq!(tm.get("$b2"), Some("Builder"));
+    }
+
+    #[test]
+    fn null_coalesce_assign_infers_type() {
+        let src = "<?php\n$obj ??= new Foo();";
+        let doc = ParsedDoc::parse(src.to_string());
+        let tm = TypeMap::from_doc(&doc);
+        assert_eq!(tm.get("$obj"), Some("Foo"));
+    }
+
+    #[test]
+    fn docblock_property_appears_in_members() {
+        let src = "<?php\n/**\n * @property string $email\n * @property-read int $id\n */\nclass User {}";
+        let doc = ParsedDoc::parse(src.to_string());
+        let members = members_of_class(&doc, "User");
+        let props: Vec<&str> = members.properties.iter().map(|(n,_)| n.as_str()).collect();
+        assert!(props.contains(&"email"));
+        assert!(props.contains(&"id"));
+    }
+
+    #[test]
+    fn docblock_method_appears_in_members() {
+        let src = "<?php\n/**\n * @method User find(int $id)\n * @method static Builder where(string $col, mixed $val)\n */\nclass Model {}";
+        let doc = ParsedDoc::parse(src.to_string());
+        let members = members_of_class(&doc, "Model");
+        let method_names: Vec<&str> = members.methods.iter().map(|(n,_)| n.as_str()).collect();
+        assert!(method_names.contains(&"find"));
+        assert!(method_names.contains(&"where"));
+        let where_static = members.methods.iter().find(|(n,_)| n == "where").map(|(_,s)| *s);
+        assert_eq!(where_static, Some(true));
     }
 }

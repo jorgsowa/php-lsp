@@ -28,6 +28,24 @@ pub struct Docblock {
     pub mixins: Vec<String>,
     /// `@psalm-type Alias = TypeExpr` / `@phpstan-type Alias = TypeExpr`
     pub type_aliases: Vec<DocTypeAlias>,
+    /// `@property Type $name` / `@property-read Type $name` / `@property-write Type $name`
+    pub properties: Vec<DocProperty>,
+    /// `@method [static] ReturnType name([params])`
+    pub methods: Vec<DocMethod>,
+}
+
+#[derive(Debug, PartialEq)]
+pub struct DocProperty {
+    pub type_hint: String,
+    pub name: String,    // without $
+    pub read_only: bool, // true for @property-read
+}
+
+#[derive(Debug, PartialEq)]
+pub struct DocMethod {
+    pub return_type: String,
+    pub name: String,
+    pub is_static: bool,
 }
 
 #[derive(Debug, PartialEq)]
@@ -144,6 +162,8 @@ pub fn parse_docblock(raw: &str) -> Docblock {
     let mut return_type: Option<DocReturn> = None;
     let mut var_type: Option<String> = None;
     let mut var_name: Option<String> = None;
+    let mut properties: Vec<DocProperty> = Vec::new();
+    let mut methods: Vec<DocMethod> = Vec::new();
     let mut deprecated: Option<String> = None;
     let mut throws: Vec<DocThrows> = Vec::new();
     let mut see: Vec<String> = Vec::new();
@@ -235,6 +255,50 @@ pub fn parse_docblock(raw: &str) -> Docblock {
                         });
                     }
                 }
+                // @property Type $name / @property-read Type $name / @property-write Type $name
+                "property" | "property-read" | "property-write" => {
+                    let read_only = tag == "property-read";
+                    let (type_hint, rest2) = split_type_hint(rest);
+                    let name_part = rest2.trim();
+                    // name_part should be $name (with optional $)
+                    let name = name_part
+                        .split_whitespace()
+                        .next()
+                        .unwrap_or("")
+                        .trim_start_matches('$');
+                    if !name.is_empty() {
+                        properties.push(DocProperty {
+                            type_hint: type_hint.to_string(),
+                            name: name.to_string(),
+                            read_only,
+                        });
+                    }
+                }
+                // @method [static] ReturnType name([params])
+                "method" => {
+                    let rest = rest.trim();
+                    let (is_static, rest) = if rest.starts_with("static ") || rest == "static" {
+                        (true, rest[7..].trim())
+                    } else {
+                        (false, rest)
+                    };
+                    let (return_type_str, rest2) = split_first_word(rest);
+                    if !return_type_str.is_empty() {
+                        // method name stops at '('
+                        let method_name = rest2.trim()
+                            .split('(')
+                            .next()
+                            .unwrap_or("")
+                            .trim();
+                        if !method_name.is_empty() {
+                            methods.push(DocMethod {
+                                return_type: return_type_str.to_string(),
+                                name: method_name.to_string(),
+                                is_static,
+                            });
+                        }
+                    }
+                }
                 _ => {}
             }
         } else if !line.is_empty() && return_type.is_none() && params.is_empty() {
@@ -254,6 +318,8 @@ pub fn parse_docblock(raw: &str) -> Docblock {
         templates,
         mixins,
         type_aliases,
+        properties,
+        methods,
     }
 }
 
@@ -637,5 +703,41 @@ mod tests {
         let md = db.to_markdown();
         assert!(md.contains("Status"), "expected alias name in markdown");
         assert!(md.contains("string"), "expected type expr in markdown");
+    }
+
+    #[test]
+    fn parses_property_tag() {
+        let src = "/** @property string $name */";
+        let db = parse_docblock(src);
+        assert_eq!(db.properties.len(), 1);
+        assert_eq!(db.properties[0].name, "name");
+        assert_eq!(db.properties[0].type_hint, "string");
+        assert!(!db.properties[0].read_only);
+    }
+
+    #[test]
+    fn parses_property_read_tag() {
+        let src = "/** @property-read Carbon $createdAt */";
+        let db = parse_docblock(src);
+        assert_eq!(db.properties[0].name, "createdAt");
+        assert!(db.properties[0].read_only);
+    }
+
+    #[test]
+    fn parses_method_tag() {
+        let src = "/** @method User find(int $id) */";
+        let db = parse_docblock(src);
+        assert_eq!(db.methods.len(), 1);
+        assert_eq!(db.methods[0].name, "find");
+        assert_eq!(db.methods[0].return_type, "User");
+        assert!(!db.methods[0].is_static);
+    }
+
+    #[test]
+    fn parses_static_method_tag() {
+        let src = "/** @method static Builder where(string $col, mixed $val) */";
+        let db = parse_docblock(src);
+        assert!(db.methods[0].is_static);
+        assert_eq!(db.methods[0].name, "where");
     }
 }

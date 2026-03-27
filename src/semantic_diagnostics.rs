@@ -151,6 +151,50 @@ fn find_function_span_in_stmts(stmts: &[Stmt<'_, '_>], func_name: &str) -> Optio
     None
 }
 
+/// Check for duplicate class/function/interface/trait/enum declarations.
+pub fn duplicate_declaration_diagnostics(source: &str, doc: &ParsedDoc) -> Vec<Diagnostic> {
+    let mut seen: std::collections::HashMap<String, ()> = std::collections::HashMap::new();
+    let mut diags = Vec::new();
+    collect_duplicate_decls(source, &doc.program().stmts, &mut seen, &mut diags);
+    diags
+}
+
+fn collect_duplicate_decls(
+    source: &str,
+    stmts: &[php_ast::Stmt<'_, '_>],
+    seen: &mut std::collections::HashMap<String, ()>,
+    diags: &mut Vec<Diagnostic>,
+) {
+    for stmt in stmts {
+        let name_and_span: Option<(&str, u32)> = match &stmt.kind {
+            StmtKind::Class(c) => c.name.map(|n| (n, stmt.span.start)),
+            StmtKind::Interface(i) => Some((i.name, stmt.span.start)),
+            StmtKind::Trait(t) => Some((t.name, stmt.span.start)),
+            StmtKind::Enum(e) => Some((e.name, stmt.span.start)),
+            StmtKind::Function(f) => Some((f.name, stmt.span.start)),
+            StmtKind::Namespace(ns) => {
+                if let php_ast::NamespaceBody::Braced(inner) = &ns.body {
+                    collect_duplicate_decls(source, inner, seen, diags);
+                }
+                None
+            }
+            _ => None,
+        };
+        if let Some((name, span_start)) = name_and_span {
+            if seen.insert(name.to_string(), ()).is_some() {
+                let pos = crate::ast::offset_to_position(source, span_start);
+                diags.push(Diagnostic {
+                    range: Range { start: pos, end: pos },
+                    severity: Some(DiagnosticSeverity::WARNING),
+                    message: format!("Duplicate declaration: `{name}` is already defined in this file"),
+                    source: Some("php-lsp".to_string()),
+                    ..Default::default()
+                });
+            }
+        }
+    }
+}
+
 fn to_lsp_diagnostic(d: mir_php::Diagnostic, uri: &Url) -> Diagnostic {
     let related_information = if d.related.is_empty() {
         None
@@ -202,5 +246,22 @@ mod tests {
         let d = &diags[0];
         assert_eq!(d.severity, Some(DiagnosticSeverity::WARNING));
         assert!(d.message.contains("oldFunc"), "message should mention the function name");
+    }
+
+    #[test]
+    fn duplicate_class_emits_warning() {
+        let src = "<?php\nclass Foo {}\nclass Foo {}";
+        let doc = ParsedDoc::parse(src.to_string());
+        let diags = duplicate_declaration_diagnostics(src, &doc);
+        assert!(!diags.is_empty(), "should warn on duplicate class");
+        assert!(diags[0].message.contains("Foo"));
+    }
+
+    #[test]
+    fn no_duplicate_for_unique_declarations() {
+        let src = "<?php\nclass Foo {}\nclass Bar {}";
+        let doc = ParsedDoc::parse(src.to_string());
+        let diags = duplicate_declaration_diagnostics(src, &doc);
+        assert!(diags.is_empty());
     }
 }

@@ -38,7 +38,7 @@ use crate::phpdoc_action::phpdoc_actions;
 use crate::references::find_references;
 use crate::rename::{prepare_rename, rename};
 use crate::selection_range::selection_ranges;
-use crate::semantic_diagnostics::semantic_diagnostics;
+use crate::semantic_diagnostics::{semantic_diagnostics, duplicate_declaration_diagnostics};
 use crate::semantic_tokens::{
     compute_token_delta, legend, semantic_tokens, semantic_tokens_range, token_hash,
 };
@@ -419,8 +419,15 @@ impl LanguageServer for Backend {
 
         self.docs
             .apply_parse(&uri, doc, diagnostics.clone(), version);
+        let stored_source = self.docs.get(&uri).unwrap_or_default();
+        let doc2 = self.docs.get_doc(&uri);
+        let mut all_diags = diagnostics;
+        if let Some(ref d) = doc2 {
+            let dup_diags = duplicate_declaration_diagnostics(&stored_source, d);
+            all_diags.extend(dup_diags);
+        }
         self.client
-            .publish_diagnostics(uri, diagnostics, None)
+            .publish_diagnostics(uri, all_diags, None)
             .await;
     }
 
@@ -1221,6 +1228,7 @@ impl LanguageServer for Backend {
         params: DocumentDiagnosticParams,
     ) -> Result<DocumentDiagnosticReportResult> {
         let uri = &params.text_document.uri;
+        let source = self.docs.get(uri).unwrap_or_default();
 
         let parse_diags = self.docs.get_diagnostics(uri).unwrap_or_default();
         let doc = match self.docs.get_doc(uri) {
@@ -1239,9 +1247,11 @@ impl LanguageServer for Backend {
         };
         let other_docs = self.docs.other_docs(uri);
         let sem_diags = semantic_diagnostics(uri, &doc, &other_docs);
+        let dup_diags = duplicate_declaration_diagnostics(&source, &doc);
 
         let mut items = parse_diags;
         items.extend(sem_diags);
+        items.extend(dup_diags);
 
         Ok(DocumentDiagnosticReportResult::Report(
             DocumentDiagnosticReport::Full(RelatedFullDocumentDiagnosticReport {

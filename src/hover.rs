@@ -26,6 +26,37 @@ pub fn hover_at(
     position: Position,
     _other_docs_arc: Option<&[Arc<ParsedDoc>]>,
 ) -> Option<Hover> {
+    // Feature 6: hover on use statement shows full FQN
+    // Check this before word_at since cursor may be past the last word boundary
+    if let Some(line_text) = source.lines().nth(position.line as usize) {
+        let trimmed = line_text.trim();
+        if trimmed.starts_with("use ") && !trimmed.starts_with("use function ") {
+            let fqn = trimmed
+                .strip_prefix("use ")
+                .unwrap_or("")
+                .trim_end_matches(';')
+                .trim();
+            if !fqn.is_empty() {
+                // Find the word at position (may be None if at end of line)
+                let maybe_word = word_at(source, position);
+                let alias = fqn.rsplit('\\').next().unwrap_or(fqn);
+                let matches = match &maybe_word {
+                    Some(w) => w == alias || fqn.contains(w.as_str()),
+                    None => true, // hovering past end of line on a use statement
+                };
+                if matches {
+                    return Some(Hover {
+                        contents: HoverContents::Markup(MarkupContent {
+                            kind: MarkupKind::Markdown,
+                            value: format!("`use {};`", fqn),
+                        }),
+                        range: None,
+                    });
+                }
+            }
+        }
+    }
+
     let word = word_at(source, position)?;
 
     // Feature 2: hover on $variable shows its type
@@ -597,5 +628,18 @@ mod tests {
             _ => String::new(),
         };
         assert!(text.contains("PDO"), "hover should mention PDO");
+    }
+
+    #[test]
+    fn hover_on_use_alias_shows_fqn() {
+        let src = "<?php\nuse App\\Mail\\Mailer;\n$m = new Mailer();";
+        let doc = ParsedDoc::parse(src.to_string());
+        let h = hover_at(src, &doc, &[], Position { line: 1, character: 20 }, None);
+        assert!(h.is_some());
+        let text = match h.unwrap().contents {
+            HoverContents::Markup(m) => m.value,
+            _ => String::new(),
+        };
+        assert!(text.contains("App\\Mail\\Mailer"), "should show full FQN");
     }
 }

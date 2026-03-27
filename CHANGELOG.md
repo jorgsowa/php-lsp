@@ -2,6 +2,18 @@
 
 All notable changes to php-lsp are documented here.
 
+## [0.1.19] — 2026-03-26
+
+### New features
+
+- **`@property` / `@method` docblock tags** — class docblocks with `@property Type $name`, `@property-read`, `@property-write`, and `@method [static] ReturnType name(...)` are parsed and injected into the type map; `->` completions include synthesised properties and methods from mixin-style magic classes.
+- **Variable scope in completions** — variable completions are now filtered to only variables declared *before* the cursor line, eliminating false suggestions from variables that haven't been assigned yet.
+- **Sub-namespace `\` completions** — when the typed prefix contains `\`, only FQN-qualified class names whose namespace prefix matches are suggested, scoping the list to the current sub-namespace.
+- **Magic method completions** — inside a class body, `__construct`, `__destruct`, `__get`, `__set`, `__isset`, `__unset`, `__call`, `__callStatic`, `__toString`, `__invoke`, `__clone`, `__sleep`, `__wakeup`, `__serialize`, `__unserialize`, and `__debugInfo` are offered as snippet completions with their canonical signatures.
+- **`use` alias hover** — hovering over a name on a `use` import line shows the fully-qualified class name being imported.
+- **`??=` (null-coalesce-assign) inference** — `$var ??= new Foo()` is now handled in the type map: the variable retains its existing type if already set, or takes the RHS type on first assignment.
+- **Duplicate declaration diagnostics** — redefining a class, function, interface, trait, or enum already declared in the same file emits an `Error` diagnostic with the message `"Duplicate declaration of '<Name>'"`.
+
 ## [0.1.18] — 2026-03-27
 
 ### New features
