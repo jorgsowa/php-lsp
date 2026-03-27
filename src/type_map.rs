@@ -3,7 +3,7 @@
 /// after `->`.
 use std::collections::HashMap;
 
-use php_ast::{BinaryOp, ClassMemberKind, EnumMemberKind, ExprKind, NamespaceBody, Stmt, StmtKind, TypeHintKind};
+use php_ast::{BinaryOp, BuiltinType, ClassMemberKind, EnumMemberKind, ExprKind, NamespaceBody, Stmt, StmtKind, TypeHintKind};
 use tower_lsp::lsp_types::Position;
 
 use crate::ast::{ParsedDoc, offset_to_position};
@@ -80,7 +80,7 @@ fn collect_method_returns_stmts(
                 let class_name = match c.name { Some(n) => n.to_string(), None => continue };
                 for member in c.members.iter() {
                     if let ClassMemberKind::Method(m) = &member.kind {
-                        if let Some(ret) = extract_method_return_class(source, member.span.start, m) {
+                        if let Some(ret) = extract_method_return_class(source, member.span.start, m, &class_name) {
                             out.entry(class_name.clone()).or_default().insert(m.name.to_string(), ret);
                         }
                     }
@@ -100,18 +100,28 @@ fn extract_method_return_class(
     source: &str,
     member_start: u32,
     m: &php_ast::MethodDecl<'_, '_>,
+    enclosing_class: &str,
 ) -> Option<String> {
     // 1. AST return type hint takes priority
     if let Some(hint) = &m.return_type {
-        if let TypeHintKind::Named(name) = &hint.kind {
-            let s = name.to_string_repr();
-            let base = s.trim_start_matches('\\').trim_start_matches('?');
-            let short = base.rsplit('\\').next().unwrap_or(base);
-            if short.chars().next().map(|c| c.is_uppercase()).unwrap_or(false)
-                && !matches!(short, "self" | "static" | "void" | "never" | "null")
-            {
-                return Some(short.to_string());
+        match &hint.kind {
+            TypeHintKind::Keyword(BuiltinType::Self_ | BuiltinType::Static, _) => {
+                return Some(enclosing_class.to_string());
             }
+            TypeHintKind::Named(name) => {
+                let s = name.to_string_repr();
+                let base = s.trim_start_matches('\\').trim_start_matches('?');
+                let short = base.rsplit('\\').next().unwrap_or(base);
+                if short == "self" || short == "static" {
+                    return Some(enclosing_class.to_string());
+                }
+                if short.chars().next().map(|c| c.is_uppercase()).unwrap_or(false)
+                    && !matches!(short, "void" | "never" | "null")
+                {
+                    return Some(short.to_string());
+                }
+            }
+            _ => {}
         }
     }
     // 2. @return docblock fallback
@@ -121,9 +131,12 @@ fn extract_method_return_class(
             for part in ret.type_hint.split('|') {
                 let part = part.trim().trim_start_matches('\\').trim_start_matches('?');
                 let short = part.rsplit('\\').next().unwrap_or(part);
+                if short == "self" || short == "static" {
+                    return Some(enclosing_class.to_string());
+                }
                 let first = short.chars().next().unwrap_or('_');
                 if first.is_uppercase()
-                    && !matches!(short, "self" | "static" | "void" | "never" | "null")
+                    && !matches!(short, "void" | "never" | "null")
                 {
                     return Some(short.to_string());
                 }
@@ -172,16 +185,19 @@ fn collect_types_stmts(
                 if let Some(raw) = docblock_before(source, stmt.span.start) {
                     let db = parse_docblock(&raw);
                     for param in &db.params {
-                        let base = param.type_hint.trim_start_matches('\\').trim_start_matches('?');
-                        if base.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) {
-                            let class = base.rsplit('\\').next().unwrap_or(base).to_string();
-                            // param.name from docblock already includes '$' prefix
+                        // For union types, collect all class parts joined by |
+                        let classes: Vec<&str> = param.type_hint.split('|')
+                            .map(|p| p.trim().trim_start_matches('\\').trim_start_matches('?'))
+                            .filter(|p| p.chars().next().map(|c| c.is_uppercase()).unwrap_or(false))
+                            .filter_map(|p| p.rsplit('\\').next())
+                            .collect();
+                        if !classes.is_empty() {
                             let key = if param.name.starts_with('$') {
                                 param.name.clone()
                             } else {
                                 format!("${}", param.name)
                             };
-                            map.entry(key).or_insert(class);
+                            map.entry(key).or_insert_with(|| classes.join("|"));
                         }
                     }
                 }
@@ -201,16 +217,19 @@ fn collect_types_stmts(
                         if let Some(raw) = docblock_before(source, member.span.start) {
                             let db = parse_docblock(&raw);
                             for param in &db.params {
-                                let base = param.type_hint.trim_start_matches('\\').trim_start_matches('?');
-                                if base.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) {
-                                    let class = base.rsplit('\\').next().unwrap_or(base).to_string();
-                                    // param.name from docblock already includes '$' prefix
+                                // For union types, collect all class parts joined by |
+                                let classes: Vec<&str> = param.type_hint.split('|')
+                                    .map(|p| p.trim().trim_start_matches('\\').trim_start_matches('?'))
+                                    .filter(|p| p.chars().next().map(|c| c.is_uppercase()).unwrap_or(false))
+                                    .filter_map(|p| p.rsplit('\\').next())
+                                    .collect();
+                                if !classes.is_empty() {
                                     let key = if param.name.starts_with('$') {
                                         param.name.clone()
                                     } else {
                                         format!("${}", param.name)
                                     };
-                                    map.entry(key).or_insert(class);
+                                    map.entry(key).or_insert_with(|| classes.join("|"));
                                 }
                             }
                         }
@@ -509,6 +528,8 @@ pub struct ClassMembers {
     pub methods: Vec<(String, bool)>,
     /// (name, is_static)
     pub properties: Vec<(String, bool)>,
+    /// Names of readonly properties (PHP 8.1+).
+    pub readonly_properties: Vec<String>,
     pub constants: Vec<String>,
     /// Direct parent class name, if any.
     pub parent: Option<String>,
@@ -547,6 +568,9 @@ fn collect_members_stmts(
                         }
                         ClassMemberKind::Property(p) => {
                             out.properties.push((p.name.to_string(), p.is_static));
+                            if p.is_readonly {
+                                out.readonly_properties.push(p.name.to_string());
+                            }
                         }
                         ClassMemberKind::ClassConst(c) => {
                             out.constants.push(c.name.to_string());
@@ -1055,5 +1079,13 @@ mod tests {
         let doc = ParsedDoc::parse(src.to_string());
         let tm = TypeMap::from_doc(&doc);
         assert_eq!(tm.get("$x"), Some("Foo"));
+    }
+
+    #[test]
+    fn self_return_type_resolves_to_class() {
+        let src = "<?php\nclass Builder {\n    public function setName(string $n): self { return $this; }\n}\n$b = new Builder();\n$b2 = $b->setName('x');";
+        let doc = ParsedDoc::parse(src.to_string());
+        let tm = TypeMap::from_doc(&doc);
+        assert_eq!(tm.get("$b2"), Some("Builder"));
     }
 }

@@ -2,6 +2,21 @@
 
 All notable changes to php-lsp are documented here.
 
+## [0.1.18] — 2026-03-27
+
+### New features
+
+- **`self`/`static` return type resolution** — methods returning `: self` or `: static` now resolve to the enclosing class name in the type map, enabling fluent builder chains (`$builder->setName()->` shows `Builder` members).
+- **Hover on `$variable`** — hovering over a variable shows its inferred type as `` `$var` `ClassName` ``.
+- **Built-in stubs wired to hover** — hovering over a built-in class name (e.g. `PDO`, `DateTime`, `Exception`) shows its available methods, static methods, and parent class from the bundled stubs.
+- **`use` FQN completions** — typing `use ` triggers namespace-qualified class name completions from all indexed documents.
+- **Union type completions** — `@param Foo|Bar $x` or `function f(Foo|Bar $x)`: both `Foo` and `Bar` members appear in `$x->` completions.
+- **`#[` attribute class completions** — typing `#[` triggers a completion list of all known class names for use as PHP 8 attributes.
+- **`match` arm completions** — inside a `match ($var) {` block, the default completion list is prepended with `ClassName::CaseName` entries from `$var`'s enum type.
+- **Deprecated call warnings** — calling a function annotated with `@deprecated` emits a `Warning` diagnostic at the call site.
+- **`include`/`require` path completion infrastructure** — context detection for include/require strings wired in; full file-path suggestions require a future doc-URI pass-through.
+- **`readonly` property recognition** — PHP 8.1 `readonly` properties appear in `->` completions with `"readonly"` as the detail label.
+
 ## [0.1.17] — 2026-03-27
 
 ### New features

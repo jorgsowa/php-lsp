@@ -5,6 +5,7 @@ use tower_lsp::lsp_types::{Hover, HoverContents, MarkupContent, MarkupKind, Posi
 
 use crate::ast::{ParsedDoc, format_type_hint};
 use crate::docblock::find_docblock;
+use crate::type_map::TypeMap;
 use crate::util::{is_php_builtin, php_doc_url, word_at};
 
 pub fn hover_info(
@@ -13,7 +14,34 @@ pub fn hover_info(
     position: Position,
     other_docs: &[(tower_lsp::lsp_types::Url, Arc<ParsedDoc>)],
 ) -> Option<Hover> {
+    hover_at(source, doc, other_docs, position, None)
+}
+
+/// Full hover implementation with optional other-docs slice.
+/// The `other_docs_arc` parameter is used internally for TypeMap construction.
+pub fn hover_at(
+    source: &str,
+    doc: &ParsedDoc,
+    other_docs: &[(tower_lsp::lsp_types::Url, Arc<ParsedDoc>)],
+    position: Position,
+    _other_docs_arc: Option<&[Arc<ParsedDoc>]>,
+) -> Option<Hover> {
     let word = word_at(source, position)?;
+
+    // Feature 2: hover on $variable shows its type
+    if word.starts_with('$') {
+        let arc_docs: Vec<Arc<ParsedDoc>> = other_docs.iter().map(|(_, d)| d.clone()).collect();
+        let type_map = TypeMap::from_docs_with_meta(doc, &arc_docs, None);
+        if let Some(class_name) = type_map.get(&word) {
+            return Some(Hover {
+                contents: HoverContents::Markup(MarkupContent {
+                    kind: MarkupKind::Markdown,
+                    value: format!("`{}` `{}`", word, class_name),
+                }),
+                range: None,
+            });
+        }
+    }
 
     // Search current document first, then cross-file.
     let found = scan_statements(&doc.program().stmts, &word).map(|sig| (sig, source, doc));
@@ -53,6 +81,37 @@ pub fn hover_info(
         );
         return Some(Hover {
             contents: HoverContents::Markup(MarkupContent { kind: MarkupKind::Markdown, value }),
+            range: None,
+        });
+    }
+
+    // Feature 3: hover on a built-in class name shows stub info
+    if let Some(stub) = crate::stubs::builtin_class_members(&word) {
+        let method_names: Vec<&str> = stub.methods.iter()
+            .filter(|(_, is_static)| !is_static)
+            .map(|(n, _)| n.as_str())
+            .take(8)
+            .collect();
+        let static_names: Vec<&str> = stub.methods.iter()
+            .filter(|(_, is_static)| *is_static)
+            .map(|(n, _)| n.as_str())
+            .take(4)
+            .collect();
+        let mut lines = vec![format!("**{}** — built-in class", word)];
+        if !method_names.is_empty() {
+            lines.push(format!("Methods: {}", method_names.iter().map(|n| format!("`{n}`")).collect::<Vec<_>>().join(", ")));
+        }
+        if !static_names.is_empty() {
+            lines.push(format!("Static: {}", static_names.iter().map(|n| format!("`{n}`")).collect::<Vec<_>>().join(", ")));
+        }
+        if let Some(parent) = &stub.parent {
+            lines.push(format!("Extends: `{parent}`"));
+        }
+        return Some(Hover {
+            contents: HoverContents::Markup(MarkupContent {
+                kind: MarkupKind::Markdown,
+                value: lines.join("\n\n"),
+            }),
             range: None,
         });
     }
@@ -512,5 +571,31 @@ mod tests {
                 mc.value
             );
         }
+    }
+
+    #[test]
+    fn hover_on_variable_shows_type() {
+        let src = "<?php\n$obj = new Mailer();\n$obj";
+        let doc = ParsedDoc::parse(src.to_string());
+        let h = hover_at(src, &doc, &[], pos(2, 2), None);
+        assert!(h.is_some());
+        let text = match h.unwrap().contents {
+            HoverContents::Markup(m) => m.value,
+            _ => String::new(),
+        };
+        assert!(text.contains("Mailer"), "hover on $obj should show Mailer");
+    }
+
+    #[test]
+    fn hover_on_builtin_class_shows_stub_info() {
+        let src = "<?php\n$pdo = new PDO('sqlite::memory:');\n$pdo->query('SELECT 1');";
+        let doc = ParsedDoc::parse(src.to_string());
+        let h = hover_at(src, &doc, &[], pos(1, 12), None);
+        assert!(h.is_some(), "should hover on PDO");
+        let text = match h.unwrap().contents {
+            HoverContents::Markup(m) => m.value,
+            _ => String::new(),
+        };
+        assert!(text.contains("PDO"), "hover should mention PDO");
     }
 }

@@ -537,13 +537,15 @@ fn all_instance_members(
                     items.push(callable_item(&name, CompletionItemKind::METHOD, true));
                 }
             }
-            for (name, is_static) in members.properties {
+            for (name, is_static) in &members.properties {
                 if !is_static {
                     let label = format!("${name}");
                     if seen_names.insert(label.clone()) {
+                        let is_readonly = members.readonly_properties.contains(name);
                         items.push(CompletionItem {
                             label,
                             kind: Some(CompletionItemKind::PROPERTY),
+                            detail: if is_readonly { Some("readonly".to_string()) } else { None },
                             ..Default::default()
                         });
                     }
@@ -898,8 +900,18 @@ pub fn filtered_completions_at(
             // Arrow: $obj->  or  $this->
             if let (Some(src), Some(pos)) = (source, position) {
                 let type_map = TypeMap::from_docs_with_meta(doc, other_docs, meta);
-                if let Some(class_name) = resolve_receiver_class(src, doc, pos, &type_map) {
-                    let items = all_instance_members(&class_name, doc, other_docs);
+                if let Some(class_names) = resolve_receiver_class(src, doc, pos, &type_map) {
+                    // Feature 5: support union types (Foo|Bar)
+                    let mut items = Vec::new();
+                    let mut seen = std::collections::HashSet::new();
+                    for class_name in class_names.split('|') {
+                        let class_name = class_name.trim();
+                        for item in all_instance_members(class_name, doc, other_docs) {
+                            if seen.insert(item.label.clone()) {
+                                items.push(item);
+                            }
+                        }
+                    }
                     if !items.is_empty() {
                         return items;
                     }
@@ -923,6 +935,35 @@ pub fn filtered_completions_at(
             }
             vec![]
         }
+        Some("[") => {
+            // PHP attribute: #[ — suggest attribute classes
+            if let (Some(src), Some(pos)) = (source, position) {
+                let line = src.lines().nth(pos.line as usize).unwrap_or("");
+                let col = (pos.character as usize).min(line.len());
+                let before = &line[..col];
+                if before.trim_end_matches('[').trim_end().ends_with('#') {
+                    let mut items: Vec<CompletionItem> = Vec::new();
+                    // Include classes from current doc and other docs
+                    let mut classes = Vec::new();
+                    collect_classes_with_ns(&doc.program().stmts, "", &mut classes);
+                    for other in other_docs {
+                        collect_classes_with_ns(&other.program().stmts, "", &mut classes);
+                    }
+                    let mut seen = std::collections::HashSet::new();
+                    for (label, _kind, _fqn) in classes {
+                        if seen.insert(label.clone()) {
+                            items.push(CompletionItem {
+                                label,
+                                kind: Some(CompletionItemKind::CLASS),
+                                ..Default::default()
+                            });
+                        }
+                    }
+                    return items;
+                }
+            }
+            vec![]
+        }
         Some("(") => {
             // Named argument: funcName(
             if let (Some(src), Some(pos)) = (source, position) {
@@ -941,6 +982,43 @@ pub fn filtered_completions_at(
             vec![]
         }
         _ => {
+            // Feature 4: detect `use ` context and suggest FQNs from other docs
+            if let (Some(src), Some(pos)) = (source, position) {
+                if let Some(use_prefix) = use_completion_prefix(src, pos) {
+                    let mut use_items: Vec<CompletionItem> = Vec::new();
+                    for other in other_docs {
+                        collect_fqns_with_prefix(&other.program().stmts, "", &use_prefix, &mut use_items);
+                    }
+                    // Also check current doc
+                    collect_fqns_with_prefix(&doc.program().stmts, "", &use_prefix, &mut use_items);
+                    if !use_items.is_empty() {
+                        return use_items;
+                    }
+                }
+            }
+
+            // Feature 9: include/require path completions (infrastructure only)
+            // TODO: requires doc URI to suggest relative paths
+            if let (Some(src), Some(pos)) = (source, position) {
+                let _ = include_path_prefix(src, pos);
+            }
+
+            // Feature 7: match arm completions
+            if let (Some(src), Some(pos)) = (source, position) {
+                if let Some(match_items) = match_arm_completions(src, doc, other_docs, pos, meta) {
+                    if !match_items.is_empty() {
+                        let mut all = match_items;
+                        // extend with normal items below, but return early here
+                        let mut normal_items = keyword_completions();
+                        normal_items.extend(builtin_completions());
+                        normal_items.extend(superglobal_completions());
+                        normal_items.extend(symbol_completions(doc));
+                        all.extend(normal_items);
+                        return all;
+                    }
+                }
+            }
+
             let mut items = keyword_completions();
             items.extend(builtin_completions());
             items.extend(superglobal_completions());
@@ -1016,6 +1094,120 @@ pub fn filtered_completions_at(
                 }
             }
             items
+        }
+    }
+}
+
+fn match_arm_completions(
+    source: &str,
+    doc: &ParsedDoc,
+    other_docs: &[Arc<ParsedDoc>],
+    position: Position,
+    meta: Option<&PhpStormMeta>,
+) -> Option<Vec<CompletionItem>> {
+    let start_line = position.line as usize;
+    let end_line = start_line.saturating_sub(5);
+    for line_idx in (end_line..=start_line).rev() {
+        let line = source.lines().nth(line_idx)?;
+        if let Some(cap) = extract_match_subject(line) {
+            let type_map = TypeMap::from_docs_with_meta(doc, other_docs, meta);
+            let class_name = if cap == "this" {
+                enclosing_class_at(source, doc, position)?
+            } else {
+                type_map.get(&format!("${cap}"))?.to_string()
+            };
+            let all_docs: Vec<&ParsedDoc> = std::iter::once(doc)
+                .chain(other_docs.iter().map(|d| d.as_ref()))
+                .collect();
+            for d in &all_docs {
+                let members = members_of_class(d, &class_name);
+                if !members.constants.is_empty() {
+                    return Some(members.constants.iter().map(|c| CompletionItem {
+                        label: format!("{class_name}::{c}"),
+                        kind: Some(CompletionItemKind::ENUM_MEMBER),
+                        ..Default::default()
+                    }).collect());
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Returns the path prefix typed inside a string on an include/require line, or None.
+fn include_path_prefix(source: &str, position: Position) -> Option<String> {
+    let line = source.lines().nth(position.line as usize)?;
+    let trimmed = line.trim_start();
+    if !trimmed.starts_with("include") && !trimmed.starts_with("require") {
+        return None;
+    }
+    // Find the string being typed
+    let col = (position.character as usize).min(line.len());
+    let before = &line[..col];
+    let quote_pos = before.rfind(|c| c == '\'' || c == '"')?;
+    Some(before[quote_pos+1..].to_string())
+}
+
+fn extract_match_subject(line: &str) -> Option<String> {
+    let trimmed = line.trim();
+    let after = trimmed.strip_prefix("match")?.trim_start();
+    let after = after.strip_prefix('(')?;
+    let inner: String = after.chars().take_while(|&c| c != ')').collect();
+    let var = inner.trim().trim_start_matches('$');
+    if var.is_empty() { None } else { Some(var.to_string()) }
+}
+
+/// Returns the prefix typed after `use ` on the current line, or None if not in a use statement.
+fn use_completion_prefix(source: &str, position: Position) -> Option<String> {
+    let line = source.lines().nth(position.line as usize)?;
+    let col = (position.character as usize).min(line.len());
+    let before = line[..col].trim_start();
+    let prefix = before.strip_prefix("use ")?;
+    Some(prefix.trim_start_matches('\\').to_string())
+}
+
+/// Collect fully-qualified names from stmts that contain `prefix`.
+fn collect_fqns_with_prefix(
+    stmts: &[Stmt<'_, '_>],
+    ns: &str,
+    prefix: &str,
+    out: &mut Vec<CompletionItem>,
+) {
+    for stmt in stmts {
+        match &stmt.kind {
+            StmtKind::Class(c) => {
+                if let Some(name) = c.name {
+                    let fqn = if ns.is_empty() { name.to_string() } else { format!("{ns}\\{name}") };
+                    if fqn.to_lowercase().contains(&prefix.to_lowercase()) || prefix.is_empty() {
+                        out.push(CompletionItem {
+                            label: fqn.clone(),
+                            kind: Some(CompletionItemKind::CLASS),
+                            insert_text: Some(fqn),
+                            ..Default::default()
+                        });
+                    }
+                }
+            }
+            StmtKind::Interface(i) => {
+                let fqn = if ns.is_empty() { i.name.to_string() } else { format!("{ns}\\{}", i.name) };
+                if fqn.to_lowercase().contains(&prefix.to_lowercase()) || prefix.is_empty() {
+                    out.push(CompletionItem {
+                        label: fqn.clone(),
+                        kind: Some(CompletionItemKind::INTERFACE),
+                        insert_text: Some(fqn),
+                        ..Default::default()
+                    });
+                }
+            }
+            StmtKind::Namespace(ns_stmt) => {
+                let ns_name = ns_stmt.name.as_ref()
+                    .map(|n| if ns.is_empty() { n.to_string_repr().to_string() } else { format!("{ns}\\{}", n.to_string_repr()) })
+                    .unwrap_or_else(|| ns.to_string());
+                if let NamespaceBody::Braced(inner) = &ns_stmt.body {
+                    collect_fqns_with_prefix(inner, &ns_name, prefix, out);
+                }
+            }
+            _ => {}
         }
     }
 }
@@ -1493,5 +1685,63 @@ mod tests {
         let ls = labels(&items);
         assert!(ls.contains(&"build"), "constructor chain should complete Builder methods");
         assert!(ls.contains(&"reset"), "constructor chain should complete Builder methods");
+    }
+
+    // Feature 4: use statement FQN completions
+    #[test]
+    fn use_statement_suggests_fqns() {
+        let d = doc("<?php\nuse ");
+        let other = Arc::new(ParsedDoc::parse(
+            "<?php\nnamespace App\\Services;\nclass Mailer {}".to_string(),
+        ));
+        let pos = Position { line: 1, character: 4 };
+        let items = filtered_completions_at(&d, &[other], None, Some("<?php\nuse "), Some(pos), None);
+        assert!(items.iter().any(|i| i.label.contains("Mailer")), "use completion should suggest Mailer");
+    }
+
+    // Feature 5: union type param completions
+    #[test]
+    fn union_type_param_completes_both_classes() {
+        let src = "<?php\nclass Foo { public function fooMethod() {} }\nclass Bar { public function barMethod() {} }\n/**\n * @param Foo|Bar $x\n */\nfunction handle($x) {\n    $x->";
+        let d = doc(src);
+        let pos = Position { line: 7, character: 8 };
+        let items = filtered_completions_at(&d, &[], Some(">"), Some(src), Some(pos), None);
+        let ls = labels(&items);
+        assert!(ls.contains(&"fooMethod"), "should complete Foo methods from union");
+        assert!(ls.contains(&"barMethod"), "should complete Bar methods from union");
+    }
+
+    // Feature 6: attribute bracket completions
+    #[test]
+    fn attribute_bracket_suggests_classes() {
+        let d = doc("<?php\nclass Route {}\nclass Middleware {}\n#[");
+        let pos = Position { line: 3, character: 2 };
+        let items = filtered_completions_at(&d, &[], Some("["), Some("<?php\nclass Route {}\nclass Middleware {}\n#["), Some(pos), None);
+        let ls = labels(&items);
+        assert!(ls.contains(&"Route"), "should suggest Route as attribute");
+        assert!(ls.contains(&"Middleware"), "should suggest Middleware as attribute");
+    }
+
+    // Feature 7: match arm completions
+    #[test]
+    fn match_arm_suggests_enum_cases() {
+        let src = "<?php\nenum Status { case Active; case Inactive; case Pending; }\n$s = new Status();\nmatch ($s) {\n    ";
+        let d = doc(src);
+        let pos = Position { line: 4, character: 4 };
+        let items = filtered_completions_at(&d, &[], None, Some(src), Some(pos), None);
+        let ls = labels(&items);
+        assert!(ls.iter().any(|l| l.contains("Active")), "match should suggest Status::Active");
+    }
+
+    // Feature 10: readonly property recognition
+    #[test]
+    fn readonly_property_has_detail_tag() {
+        let src = "<?php\nclass Config { public readonly string $name; }\n$c = new Config();\n$c->";
+        let d = doc(src);
+        let pos = Position { line: 3, character: 4 };
+        let items = filtered_completions_at(&d, &[], Some(">"), Some(src), Some(pos), None);
+        let name_item = items.iter().find(|i| i.label == "$name");
+        assert!(name_item.is_some(), "should have $name in completions");
+        assert_eq!(name_item.unwrap().detail.as_deref(), Some("readonly"), "$name should be tagged readonly");
     }
 }
