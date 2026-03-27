@@ -7,6 +7,7 @@ use tower_lsp::lsp_types::{
 
 use crate::ast::ParsedDoc;
 use crate::phpstorm_meta::PhpStormMeta;
+use crate::stubs::builtin_class_members;
 use crate::use_resolver::UseMap;
 use crate::type_map::{
     TypeMap, enclosing_class_at, is_backed_enum, is_enum, members_of_class, mixin_classes_of,
@@ -577,6 +578,38 @@ fn all_instance_members(
                 queue.push(trait_name);
             }
         }
+        // Fall back to built-in stubs if the class wasn't found in any user doc
+        if let Some(stub) = builtin_class_members(&current) {
+            if parent.is_none() {
+                parent = stub.parent.clone();
+            }
+            for (name, is_static) in &stub.methods {
+                if !is_static && seen_names.insert(name.clone()) {
+                    items.push(callable_item(name, CompletionItemKind::METHOD, true));
+                }
+            }
+            for (name, is_static) in &stub.properties {
+                if !is_static {
+                    let label = format!("${name}");
+                    if seen_names.insert(label.clone()) {
+                        items.push(CompletionItem {
+                            label,
+                            kind: Some(CompletionItemKind::PROPERTY),
+                            ..Default::default()
+                        });
+                    }
+                }
+            }
+            for name in &stub.constants {
+                if seen_names.insert(name.clone()) {
+                    items.push(CompletionItem {
+                        label: name.clone(),
+                        kind: Some(CompletionItemKind::CONSTANT),
+                        ..Default::default()
+                    });
+                }
+            }
+        }
         if let Some(p) = parent {
             queue.push(p);
         }
@@ -635,6 +668,38 @@ fn all_static_members(
             // Queue trait names so their static members are also included.
             for trait_name in members.trait_uses {
                 queue.push(trait_name);
+            }
+        }
+        // Fall back to built-in stubs for static members
+        if let Some(stub) = builtin_class_members(&current) {
+            if parent.is_none() {
+                parent = stub.parent.clone();
+            }
+            for (name, is_static) in &stub.methods {
+                if *is_static && seen_names.insert(name.clone()) {
+                    items.push(callable_item(name, CompletionItemKind::METHOD, true));
+                }
+            }
+            for (name, is_static) in &stub.properties {
+                if *is_static {
+                    let label = format!("${name}");
+                    if seen_names.insert(label.clone()) {
+                        items.push(CompletionItem {
+                            label,
+                            kind: Some(CompletionItemKind::PROPERTY),
+                            ..Default::default()
+                        });
+                    }
+                }
+            }
+            for name in &stub.constants {
+                if seen_names.insert(name.clone()) {
+                    items.push(CompletionItem {
+                        label: name.clone(),
+                        kind: Some(CompletionItemKind::CONSTANT),
+                        ..Default::default()
+                    });
+                }
             }
         }
         if let Some(p) = parent {
@@ -832,7 +897,7 @@ pub fn filtered_completions_at(
         Some(">") => {
             // Arrow: $obj->  or  $this->
             if let (Some(src), Some(pos)) = (source, position) {
-                let type_map = TypeMap::from_doc_with_meta(doc, meta);
+                let type_map = TypeMap::from_docs_with_meta(doc, other_docs, meta);
                 if let Some(class_name) = resolve_receiver_class(src, doc, pos, &type_map) {
                     let items = all_instance_members(&class_name, doc, other_docs);
                     if !items.is_empty() {
@@ -984,6 +1049,12 @@ fn resolve_receiver_class(
     let col = position.character as usize;
     let before = &line[..col.min(line.len())];
     let before = before.strip_suffix("->").or_else(|| before.strip_suffix("?->")).unwrap_or(before);
+
+    // Handle (new ClassName()) before ->
+    if let Some(class_name) = extract_new_class_before_arrow(before) {
+        return Some(class_name);
+    }
+
     let var_name: String = before
         .chars()
         .rev()
@@ -1008,6 +1079,42 @@ fn resolve_receiver_class(
             .or_else(|| type_map.get("$this").map(|s| s.to_string()));
     }
     type_map.get(&var_name).map(|s| s.to_string())
+}
+
+/// Extract the class name from `(new ClassName(...))` or `new ClassName(...)` text
+/// appearing immediately before `->`.
+fn extract_new_class_before_arrow(text: &str) -> Option<String> {
+    let text = text.trim_end();
+    // Strip optional closing paren wrapping: `(new Foo())`
+    let inner = if text.ends_with(')') {
+        let without_last = &text[..text.len()-1];
+        // Find matching open paren — look for `(new` pattern
+        if let Some(pos) = without_last.rfind("(new ") {
+            &without_last[pos+1..]
+        } else if let Some(pos) = without_last.rfind("(new\t") {
+            &without_last[pos+1..]
+        } else {
+            text
+        }
+    } else {
+        text
+    };
+    // Now inner should start with `new ClassName(...)`
+    let inner = inner.trim();
+    if !inner.starts_with("new ") && !inner.starts_with("new\t") {
+        return None;
+    }
+    let after_new = inner[3..].trim_start();
+    // Extract class name (alphanumeric + _ + \)
+    let class: String = after_new
+        .chars()
+        .take_while(|&c| c.is_alphanumeric() || c == '_' || c == '\\')
+        .collect();
+    if class.is_empty() {
+        return None;
+    }
+    // Return short name
+    Some(class.rsplit('\\').next().unwrap_or(&class).to_string())
 }
 
 #[cfg(test)]
@@ -1375,5 +1482,16 @@ mod tests {
         let items = filtered_completions_at(&d, &[], Some(">"), Some(src), Some(pos), None);
         let ls = labels(&items);
         assert!(ls.contains(&"doFoo"), "instanceof narrowing should make Foo methods available");
+    }
+
+    #[test]
+    fn constructor_chain_arrow_completion() {
+        let src = "<?php\nclass Builder { public function build() {} public function reset() {} }\n(new Builder())->";
+        let d = doc(src);
+        let pos = Position { line: 2, character: 16 };
+        let items = filtered_completions_at(&d, &[], Some(">"), Some(src), Some(pos), None);
+        let ls = labels(&items);
+        assert!(ls.contains(&"build"), "constructor chain should complete Builder methods");
+        assert!(ls.contains(&"reset"), "constructor chain should complete Builder methods");
     }
 }

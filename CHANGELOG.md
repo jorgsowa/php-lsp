@@ -2,6 +2,16 @@
 
 All notable changes to php-lsp are documented here.
 
+## [0.1.17] — 2026-03-27
+
+### New features
+
+- **`@param` docblock → type map** — `@param ClassName $var` in function and method docblocks is now read into the type map. `$var->` completions work even when the PHP parameter has no type hint. AST type hints take precedence over docblock annotations.
+- **Method-chain `@return` type inference** — `$result = $obj->method()` now infers `$result`'s type from the method's return type hint (`: ClassName`) or `@return ClassName` docblock. Chains work across files when using `TypeMap::from_docs_with_meta`. Nullable return types (`?Foo`) are stripped to `Foo` automatically.
+- **Built-in PHP class stubs** — `->` and `::` completions now work for PHP's standard library classes without any user-defined stubs: full Exception hierarchy (`Exception`, `RuntimeException`, `InvalidArgumentException`, all sub-classes, `Error`, `TypeError`, `ValueError`, etc.), `DateTime`/`DateTimeImmutable`/`DateInterval`/`DateTimeZone`, `PDO`/`PDOStatement`, `ArrayObject`/`ArrayIterator`, `SplStack`/`SplQueue`/`SplDoublyLinkedList`/`SplFixedArray`/`SplHeap`/`SplObjectStorage`, `Iterator`/`IteratorAggregate`/`Countable`/`ArrayAccess`/`Stringable` interfaces, `Closure`, `Generator`, `WeakReference`, `stdClass`. PDO constants (`FETCH_ASSOC`, `ATTR_ERRMODE`, etc.) appear as `::` completions.
+- **Constructor-chain completions** — `(new ClassName())->` now triggers member completions for `ClassName`, including built-in stubs (e.g. `(new DateTime())->format(`).
+- **`!== null` type preservation** — variables typed via `new`, typed param, or `@var` retain their type inside `if ($x !== null)` blocks.
+
 ## [0.1.16] — 2026-03-27
 
 ### New features

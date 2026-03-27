@@ -31,6 +31,7 @@ mod selection_range;
 mod semantic_diagnostics;
 mod semantic_tokens;
 mod signature_help;
+mod stubs;
 mod symbols;
 mod type_definition;
 mod type_hierarchy;

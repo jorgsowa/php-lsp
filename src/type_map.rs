@@ -23,8 +23,28 @@ impl TypeMap {
     /// Build from a parsed document, optionally enriched by PHPStorm metadata
     /// for factory-method return type inference.
     pub fn from_doc_with_meta(doc: &ParsedDoc, meta: Option<&PhpStormMeta>) -> Self {
+        let method_returns = build_method_returns(doc);
         let mut map = HashMap::new();
-        collect_types_stmts(doc.source(), &doc.program().stmts, &mut map, meta);
+        collect_types_stmts(doc.source(), &doc.program().stmts, &mut map, meta, &method_returns);
+        TypeMap(map)
+    }
+
+    /// Build from a parsed document plus cross-file docs, optionally enriched
+    /// by PHPStorm metadata. Method-return-type inference spans all provided docs.
+    pub fn from_docs_with_meta(
+        doc: &ParsedDoc,
+        other_docs: &[std::sync::Arc<ParsedDoc>],
+        meta: Option<&PhpStormMeta>,
+    ) -> Self {
+        let mut method_returns = build_method_returns(doc);
+        for other in other_docs {
+            let other_returns = build_method_returns(other);
+            for (class, methods) in other_returns {
+                method_returns.entry(class).or_default().extend(methods);
+            }
+        }
+        let mut map = HashMap::new();
+        collect_types_stmts(doc.source(), &doc.program().stmts, &mut map, meta, &method_returns);
         TypeMap(map)
     }
 
@@ -40,11 +60,85 @@ impl TypeMap {
     }
 }
 
+/// Pre-build a map of class_name → method_name → return_class_name from all given docs.
+pub fn build_method_returns(
+    doc: &ParsedDoc,
+) -> HashMap<String, HashMap<String, String>> {
+    let mut out = HashMap::new();
+    collect_method_returns_stmts(doc.source(), &doc.program().stmts, &mut out);
+    out
+}
+
+fn collect_method_returns_stmts(
+    source: &str,
+    stmts: &[Stmt<'_, '_>],
+    out: &mut HashMap<String, HashMap<String, String>>,
+) {
+    for stmt in stmts {
+        match &stmt.kind {
+            StmtKind::Class(c) => {
+                let class_name = match c.name { Some(n) => n.to_string(), None => continue };
+                for member in c.members.iter() {
+                    if let ClassMemberKind::Method(m) = &member.kind {
+                        if let Some(ret) = extract_method_return_class(source, member.span.start, m) {
+                            out.entry(class_name.clone()).or_default().insert(m.name.to_string(), ret);
+                        }
+                    }
+                }
+            }
+            StmtKind::Namespace(ns) => {
+                if let NamespaceBody::Braced(inner) = &ns.body {
+                    collect_method_returns_stmts(source, inner, out);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn extract_method_return_class(
+    source: &str,
+    member_start: u32,
+    m: &php_ast::MethodDecl<'_, '_>,
+) -> Option<String> {
+    // 1. AST return type hint takes priority
+    if let Some(hint) = &m.return_type {
+        if let TypeHintKind::Named(name) = &hint.kind {
+            let s = name.to_string_repr();
+            let base = s.trim_start_matches('\\').trim_start_matches('?');
+            let short = base.rsplit('\\').next().unwrap_or(base);
+            if short.chars().next().map(|c| c.is_uppercase()).unwrap_or(false)
+                && !matches!(short, "self" | "static" | "void" | "never" | "null")
+            {
+                return Some(short.to_string());
+            }
+        }
+    }
+    // 2. @return docblock fallback
+    if let Some(raw) = docblock_before(source, member_start) {
+        let db = parse_docblock(&raw);
+        if let Some(ret) = db.return_type {
+            for part in ret.type_hint.split('|') {
+                let part = part.trim().trim_start_matches('\\').trim_start_matches('?');
+                let short = part.rsplit('\\').next().unwrap_or(part);
+                let first = short.chars().next().unwrap_or('_');
+                if first.is_uppercase()
+                    && !matches!(short, "self" | "static" | "void" | "never" | "null")
+                {
+                    return Some(short.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
 fn collect_types_stmts(
     source: &str,
     stmts: &[Stmt<'_, '_>],
     map: &mut HashMap<String, String>,
     meta: Option<&PhpStormMeta>,
+    method_returns: &HashMap<String, HashMap<String, String>>,
 ) {
     for stmt in stmts {
         // Check for `/** @var ClassName $varName */` docblock before this statement.
@@ -72,8 +166,25 @@ fn collect_types_stmts(
         }
 
         match &stmt.kind {
-            StmtKind::Expression(e) => collect_types_expr(source, e, map, meta),
+            StmtKind::Expression(e) => collect_types_expr(source, e, map, meta, method_returns),
             StmtKind::Function(f) => {
+                // Read @param docblock hints — fills in types for untyped params
+                if let Some(raw) = docblock_before(source, stmt.span.start) {
+                    let db = parse_docblock(&raw);
+                    for param in &db.params {
+                        let base = param.type_hint.trim_start_matches('\\').trim_start_matches('?');
+                        if base.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) {
+                            let class = base.rsplit('\\').next().unwrap_or(base).to_string();
+                            // param.name from docblock already includes '$' prefix
+                            let key = if param.name.starts_with('$') {
+                                param.name.clone()
+                            } else {
+                                format!("${}", param.name)
+                            };
+                            map.entry(key).or_insert(class);
+                        }
+                    }
+                }
                 for p in f.params.iter() {
                     if let Some(hint) = &p.type_hint {
                         if let TypeHintKind::Named(name) = &hint.kind {
@@ -81,11 +192,28 @@ fn collect_types_stmts(
                         }
                     }
                 }
-                collect_types_stmts(source, &f.body, map, meta);
+                collect_types_stmts(source, &f.body, map, meta, method_returns);
             }
             StmtKind::Class(c) => {
                 for member in c.members.iter() {
                     if let ClassMemberKind::Method(m) = &member.kind {
+                        // Read @param docblock hints — fills in types for untyped params
+                        if let Some(raw) = docblock_before(source, member.span.start) {
+                            let db = parse_docblock(&raw);
+                            for param in &db.params {
+                                let base = param.type_hint.trim_start_matches('\\').trim_start_matches('?');
+                                if base.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) {
+                                    let class = base.rsplit('\\').next().unwrap_or(base).to_string();
+                                    // param.name from docblock already includes '$' prefix
+                                    let key = if param.name.starts_with('$') {
+                                        param.name.clone()
+                                    } else {
+                                        format!("${}", param.name)
+                                    };
+                                    map.entry(key).or_insert(class);
+                                }
+                            }
+                        }
                         for p in m.params.iter() {
                             if let Some(hint) = &p.type_hint {
                                 if let TypeHintKind::Named(name) = &hint.kind {
@@ -97,14 +225,14 @@ fn collect_types_stmts(
                             }
                         }
                         if let Some(body) = &m.body {
-                            collect_types_stmts(source, body, map, meta);
+                            collect_types_stmts(source, body, map, meta, method_returns);
                         }
                     }
                 }
             }
             StmtKind::Namespace(ns) => {
                 if let NamespaceBody::Braced(inner) = &ns.body {
-                    collect_types_stmts(source, inner, map, meta);
+                    collect_types_stmts(source, inner, map, meta, method_returns);
                 }
             }
             // if ($x instanceof Foo) — narrow $x to Foo inside the then-branch
@@ -130,12 +258,12 @@ fn collect_types_stmts(
                         }
                     }
                 }
-                collect_types_stmts(source, std::slice::from_ref(if_stmt.then_branch), map, meta);
+                collect_types_stmts(source, std::slice::from_ref(if_stmt.then_branch), map, meta, method_returns);
                 for elseif in if_stmt.elseif_branches.iter() {
-                    collect_types_stmts(source, std::slice::from_ref(&elseif.body), map, meta);
+                    collect_types_stmts(source, std::slice::from_ref(&elseif.body), map, meta, method_returns);
                 }
                 if let Some(else_branch) = if_stmt.else_branch {
-                    collect_types_stmts(source, std::slice::from_ref(else_branch), map, meta);
+                    collect_types_stmts(source, std::slice::from_ref(else_branch), map, meta, method_returns);
                 }
             }
 
@@ -149,7 +277,7 @@ fn collect_types_stmts(
                         }
                     }
                 }
-                collect_types_stmts(source, std::slice::from_ref(f.body), map, meta);
+                collect_types_stmts(source, std::slice::from_ref(f.body), map, meta, method_returns);
             }
             _ => {}
         }
@@ -161,6 +289,7 @@ fn collect_types_expr(
     expr: &php_ast::Expr<'_, '_>,
     map: &mut HashMap<String, String>,
     meta: Option<&PhpStormMeta>,
+    method_returns: &HashMap<String, HashMap<String, String>>,
 ) {
     match &expr.kind {
         ExprKind::Assign(assign) => {
@@ -168,6 +297,20 @@ fn collect_types_expr(
                 if let ExprKind::New(new_expr) = &assign.value.kind {
                     if let Some(class_name) = extract_class_name(new_expr.class) {
                         map.insert(format!("${}", var_name), class_name);
+                    }
+                }
+                // $result = $obj->method() — infer result type from method's return type
+                if let ExprKind::MethodCall(mc) = &assign.value.kind {
+                    if let (ExprKind::Variable(obj_var), ExprKind::Identifier(method_name)) =
+                        (&mc.object.kind, &mc.method.kind)
+                    {
+                        if let Some(obj_class) = map.get(&format!("${}", obj_var)).cloned() {
+                            if let Some(class_rets) = method_returns.get(&obj_class) {
+                                if let Some(ret_type) = class_rets.get(method_name.as_ref()) {
+                                    map.insert(format!("${}", var_name), ret_type.clone());
+                                }
+                            }
+                        }
                     }
                 }
                 // PHPStorm meta: `$var = $obj->make(SomeClass::class)`
@@ -183,7 +326,7 @@ fn collect_types_expr(
                     map.insert(format!("${}[]", var_name), elem_type);
                 }
             }
-            collect_types_expr(source, assign.value, map, meta);
+            collect_types_expr(source, assign.value, map, meta, method_returns);
         }
 
         // Closure::bind($fn, $obj) → $this maps to $obj's class
@@ -222,7 +365,7 @@ fn collect_types_expr(
                     }
                 }
             }
-            collect_types_stmts(source, &c.body, map, meta);
+            collect_types_stmts(source, &c.body, map, meta, method_returns);
         }
 
         ExprKind::ArrowFunction(af) => {
@@ -233,7 +376,7 @@ fn collect_types_expr(
                     }
                 }
             }
-            collect_types_expr(source, af.body, map, meta);
+            collect_types_expr(source, af.body, map, meta, method_returns);
         }
 
         _ => {}
@@ -871,5 +1014,46 @@ mod tests {
         let tm = TypeMap::from_doc(&doc);
         assert_eq!(tm.get("$this"), Some("Logger"),
             "bindTo() should map $this to the bound object's class");
+    }
+
+    #[test]
+    fn param_docblock_type_inferred() {
+        let src = "<?php\n/**\n * @param Mailer $mailer\n */\nfunction send($mailer) { $mailer-> }";
+        let doc = ParsedDoc::parse(src.to_string());
+        let tm = TypeMap::from_doc(&doc);
+        assert_eq!(tm.get("$mailer"), Some("Mailer"));
+    }
+
+    #[test]
+    fn param_docblock_does_not_override_ast_hint() {
+        let src = "<?php\n/**\n * @param OtherClass $x\n */\nfunction foo(Foo $x) {}";
+        let doc = ParsedDoc::parse(src.to_string());
+        let tm = TypeMap::from_doc(&doc);
+        // AST type hint takes precedence over docblock (AST processed after, overwrites)
+        assert_eq!(tm.get("$x"), Some("Foo"));
+    }
+
+    #[test]
+    fn method_chain_return_type_from_ast_hint() {
+        let src = "<?php\nclass Repo {\n    public function findFirst(): User { }\n}\nclass User { public function getName(): string {} }\n$repo = new Repo();\n$user = $repo->findFirst();";
+        let doc = ParsedDoc::parse(src.to_string());
+        let tm = TypeMap::from_doc(&doc);
+        assert_eq!(tm.get("$user"), Some("User"));
+    }
+
+    #[test]
+    fn method_chain_return_type_from_docblock() {
+        let src = "<?php\nclass Repo {\n    /** @return Product */\n    public function latest() {}\n}\n$repo = new Repo();\n$product = $repo->latest();";
+        let doc = ParsedDoc::parse(src.to_string());
+        let tm = TypeMap::from_doc(&doc);
+        assert_eq!(tm.get("$product"), Some("Product"));
+    }
+
+    #[test]
+    fn not_null_check_preserves_existing_type() {
+        let src = "<?php\n$x = new Foo();\nif ($x !== null) { $x-> }";
+        let doc = ParsedDoc::parse(src.to_string());
+        let tm = TypeMap::from_doc(&doc);
+        assert_eq!(tm.get("$x"), Some("Foo"));
     }
 }
