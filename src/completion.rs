@@ -1365,7 +1365,8 @@ fn resolve_receiver_class(
     let line = source.lines().nth(position.line as usize)?;
     let col = position.character as usize;
     let before = &line[..col.min(line.len())];
-    let before = before.strip_suffix("->").or_else(|| before.strip_suffix("?->")).unwrap_or(before);
+    // Try ?-> first (longer pattern) so `$s?->` doesn't get stripped to `$s?` by the `->` rule.
+    let before = before.strip_suffix("?->").or_else(|| before.strip_suffix("->")).unwrap_or(before);
 
     // Handle (new ClassName()) before ->
     if let Some(class_name) = extract_new_class_before_arrow(before) {
@@ -1893,6 +1894,18 @@ mod tests {
         let items = filtered_completions_at(&d, &[other], None, Some("<?php\n$x = new App\\"), Some(pos), None);
         let ls = labels(&items);
         assert!(ls.contains(&"Mailer"), "should suggest Mailer under App\\Services");
+    }
+
+    // Feature 1: nullsafe ?-> completions
+    #[test]
+    fn nullsafe_arrow_triggers_member_completions() {
+        let src = "<?php\nclass Service { public function run() {} public string $status; }\n$s = new Service();\n$s?->";
+        let d = doc(src);
+        let pos = Position { line: 3, character: 5 };
+        let items = filtered_completions_at(&d, &[], Some(">"), Some(src), Some(pos), None);
+        let ls = labels(&items);
+        assert!(ls.contains(&"run"), "?-> should complete Service::run()");
+        assert!(ls.iter().any(|l| l.contains("status")), "?-> should complete Service::$status");
     }
 
     // Feature 5: magic methods in class body

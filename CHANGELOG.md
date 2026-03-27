@@ -2,6 +2,15 @@
 
 All notable changes to php-lsp are documented here.
 
+## [0.1.20] — 2026-03-27
+
+### New features
+
+- **Nullsafe `?->` completions** — `$obj?->` now triggers the same member completions as `$obj->` by correctly stripping the longer `?->` pattern before `->` during receiver extraction.
+- **Promoted constructor property completions** — `__construct(private string $name, public readonly int $age)` — promoted params are recognized as class properties (including `readonly`) and appear in `->` completions.
+- **Default values in signature help** — function parameters with defaults now show them in the hint: `int $x = 10`, `string $s = 'hello'`, `bool $flag = true`, `mixed $v = null`, `array $items = []`.
+- **Property type hover** — hovering over `propName` in `$obj->propName` or `$this->propName` shows `(property) ClassName::$propName: TypeHint`, resolved from the property declaration or promoted constructor param.
+
 ## [0.1.19] — 2026-03-26
 
 ### New features

@@ -584,6 +584,13 @@ fn collect_members_stmts(
                                 for p in m.params.iter() {
                                     if p.visibility.is_some() {
                                         out.properties.push((p.name.to_string(), false));
+                                        // Detect `readonly` in the source text before the
+                                        // param name (the AST does not expose this flag on
+                                        // Param, so we scan the raw text of the param span).
+                                        let param_src = &source[p.span.start as usize..p.span.end as usize];
+                                        if param_src.contains("readonly") {
+                                            out.readonly_properties.push(p.name.to_string());
+                                        }
                                     }
                                 }
                             }
@@ -906,6 +913,20 @@ mod tests {
         let prop_names: Vec<&str> = members.properties.iter().map(|(n, _)| n.as_str()).collect();
         assert!(prop_names.contains(&"x"), "promoted param x should be a property");
         assert!(prop_names.contains(&"y"), "promoted param y should be a property");
+    }
+
+    #[test]
+    fn promoted_readonly_params_appear_in_readonly_properties() {
+        let src = "<?php\nclass User {\n    public function __construct(\n        public readonly string $name,\n        public int $age,\n    ) {}\n}";
+        let doc = ParsedDoc::parse(src.to_string());
+        let members = members_of_class(&doc, "User");
+        let prop_names: Vec<&str> = members.properties.iter().map(|(n, _)| n.as_str()).collect();
+        assert!(prop_names.contains(&"name"), "promoted param name should be a property");
+        assert!(prop_names.contains(&"age"), "promoted param age should be a property");
+        assert!(members.readonly_properties.contains(&"name".to_string()),
+            "readonly promoted param name should be in readonly_properties");
+        assert!(!members.readonly_properties.contains(&"age".to_string()),
+            "non-readonly promoted param age should not be in readonly_properties");
     }
 
     #[test]

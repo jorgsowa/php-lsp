@@ -116,6 +116,56 @@ pub fn hover_at(
         });
     }
 
+    // Feature 4: hover on a property name in `$obj->propName` or `$this->propName`
+    if !word.starts_with('$') {
+        if let Some(line_text) = source.lines().nth(position.line as usize) {
+            // Check if the word appears after `->` or `?->` on this line
+            let arrow_word = format!("->{}", word);
+            let nullsafe_arrow_word = format!("?->{}", word);
+            if line_text.contains(&arrow_word) || line_text.contains(&nullsafe_arrow_word) {
+                // Find the position of `->word` in the line and extract the receiver var
+                // before it.
+                let arrow_pos = line_text.find(&nullsafe_arrow_word)
+                    .or_else(|| line_text.find(&arrow_word));
+                if let Some(apos) = arrow_pos {
+                    let before_arrow = &line_text[..apos];
+                    let receiver_var = extract_receiver_var_from_end(before_arrow);
+                    if let Some(var_name) = receiver_var {
+                        let arc_docs: Vec<Arc<ParsedDoc>> = other_docs.iter().map(|(_, d)| d.clone()).collect();
+                        let type_map = TypeMap::from_docs_with_meta(doc, &arc_docs, None);
+                        let class_name = if var_name == "$this" {
+                            crate::type_map::enclosing_class_at(source, doc, position)
+                                .or_else(|| type_map.get("$this").map(|s| s.to_string()))
+                        } else {
+                            type_map.get(&var_name).map(|s| s.to_string())
+                        };
+                        if let Some(cls) = class_name {
+                            // Search current doc + other docs for the property type
+                            let all_docs_search: Vec<&ParsedDoc> = std::iter::once(doc)
+                                .chain(other_docs.iter().map(|(_, d)| d.as_ref()))
+                                .collect();
+                            for d in &all_docs_search {
+                                if let Some(type_str) = find_property_type(d, &cls, &word) {
+                                    let value = format!("`(property) {}::${}:{}`",
+                                        cls, word,
+                                        if type_str.is_empty() { String::new() } else { format!(" {}", type_str) }
+                                    );
+                                    return Some(Hover {
+                                        contents: HoverContents::Markup(MarkupContent {
+                                            kind: MarkupKind::Markdown,
+                                            value,
+                                        }),
+                                        range: None,
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // Feature 3: hover on a built-in class name shows stub info
     if let Some(stub) = crate::stubs::builtin_class_members(&word) {
         let method_names: Vec<&str> = stub.methods.iter()
@@ -325,14 +375,104 @@ fn format_params(params: &[Param<'_, '_>]) -> String {
                 s.push_str(&format!("{} ", format_type_hint(t)));
             }
             s.push_str(&format!("${}", p.name));
+            if let Some(default) = &p.default {
+                s.push_str(&format!(" = {}", format_default_value(default)));
+            }
             s
         })
         .collect::<Vec<_>>()
         .join(", ")
 }
 
+/// Format a default parameter value for display in signatures.
+fn format_default_value(expr: &php_ast::Expr<'_, '_>) -> String {
+    match &expr.kind {
+        ExprKind::Int(n) => n.to_string(),
+        ExprKind::Float(f) => f.to_string(),
+        ExprKind::String(s) => format!("'{}'", s),
+        ExprKind::Bool(b) => if *b { "true".to_string() } else { "false".to_string() },
+        ExprKind::Null => "null".to_string(),
+        ExprKind::Array(items) => if items.is_empty() { "[]".to_string() } else { "[...]".to_string() },
+        _ => "...".to_string(),
+    }
+}
+
 fn wrap_php(sig: &str) -> String {
     format!("```php\n{}\n```", sig)
+}
+
+/// Extract the receiver variable name (with `$`) from the end of text that appears
+/// immediately before `->` or `?->`.
+fn extract_receiver_var_from_end(before_arrow: &str) -> Option<String> {
+    // The text ends with the variable name (and possibly whitespace)
+    let trimmed = before_arrow.trim_end();
+    let var_name: String = trimmed
+        .chars()
+        .rev()
+        .take_while(|&c| c.is_alphanumeric() || c == '_' || c == '$')
+        .collect::<String>()
+        .chars()
+        .rev()
+        .collect();
+    if var_name.starts_with('$') && var_name.len() > 1 {
+        Some(var_name)
+    } else if !var_name.is_empty() && !var_name.starts_with('$') {
+        Some(format!("${}", var_name))
+    } else {
+        None
+    }
+}
+
+/// Find the type hint for a property named `prop_name` in class `class_name` within `doc`.
+/// Returns `Some(type_str)` if found, where `type_str` may be empty if no type hint is present.
+fn find_property_type(doc: &ParsedDoc, class_name: &str, prop_name: &str) -> Option<String> {
+    find_property_type_in_stmts(&doc.program().stmts, class_name, prop_name)
+}
+
+fn find_property_type_in_stmts<'a>(
+    stmts: &[Stmt<'a, 'a>],
+    class_name: &str,
+    prop_name: &str,
+) -> Option<String> {
+    for stmt in stmts {
+        match &stmt.kind {
+            StmtKind::Class(c) if c.name == Some(class_name) => {
+                for member in c.members.iter() {
+                    match &member.kind {
+                        ClassMemberKind::Property(p) if p.name == prop_name => {
+                            let type_str = p.type_hint.as_ref()
+                                .map(|t| crate::ast::format_type_hint(t))
+                                .unwrap_or_default();
+                            return Some(type_str);
+                        }
+                        ClassMemberKind::Method(m) if m.name == "__construct" => {
+                            // Check promoted constructor parameters
+                            for p in m.params.iter() {
+                                if p.name == prop_name && p.visibility.is_some() {
+                                    let type_str = p.type_hint.as_ref()
+                                        .map(|t| crate::ast::format_type_hint(t))
+                                        .unwrap_or_default();
+                                    return Some(type_str);
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                // Property not found in this class
+                return None;
+            }
+            StmtKind::Namespace(ns) => {
+                if let NamespaceBody::Braced(inner) = &ns.body {
+                    if let Some(t) = find_property_type_in_stmts(inner, class_name, prop_name) {
+                        return Some(t);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -628,6 +768,38 @@ mod tests {
             _ => String::new(),
         };
         assert!(text.contains("PDO"), "hover should mention PDO");
+    }
+
+    #[test]
+    fn hover_on_property_shows_type() {
+        let src = "<?php\nclass User { public string $name; public int $age; }\n$u = new User();\n$u->name";
+        let doc = ParsedDoc::parse(src.to_string());
+        // "name" in "$u->name" — col 4 in "$u->name"
+        let h = hover_at(src, &doc, &[], pos(3, 5), None);
+        assert!(h.is_some(), "expected hover on property");
+        let text = match h.unwrap().contents {
+            HoverContents::Markup(m) => m.value,
+            _ => String::new(),
+        };
+        assert!(text.contains("User"), "should mention class name");
+        assert!(text.contains("name"), "should mention property name");
+        assert!(text.contains("string"), "should show type hint");
+    }
+
+    #[test]
+    fn hover_on_promoted_property_shows_type() {
+        let src = "<?php\nclass Point {\n    public function __construct(\n        public float $x,\n        public float $y,\n    ) {}\n}\n$p = new Point(1.0, 2.0);\n$p->x";
+        let doc = ParsedDoc::parse(src.to_string());
+        // "x" at the end of "$p->x"
+        let h = hover_at(src, &doc, &[], pos(8, 4), None);
+        assert!(h.is_some(), "expected hover on promoted property");
+        let text = match h.unwrap().contents {
+            HoverContents::Markup(m) => m.value,
+            _ => String::new(),
+        };
+        assert!(text.contains("Point"), "should mention class name");
+        assert!(text.contains("x"), "should mention property name");
+        assert!(text.contains("float"), "should show type hint for promoted property");
     }
 
     #[test]

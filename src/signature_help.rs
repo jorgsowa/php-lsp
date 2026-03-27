@@ -397,6 +397,24 @@ mod tests {
     }
 
     #[test]
+    fn default_values_shown_in_signature() {
+        let src = "<?php\nfunction greet(string $name = 'World', int $times = 1): void {}\ngreet(";
+        let doc = ParsedDoc::parse(src.to_string());
+        let result = signature_help(src, &doc, pos(2, 6));
+        assert!(result.is_some(), "expected signature help");
+        let sh = result.unwrap();
+        let label = &sh.signatures[0].label;
+        assert!(
+            label.contains("= 'World'"),
+            "signature should show default string value, got: {label}"
+        );
+        assert!(
+            label.contains("= 1"),
+            "signature should show default int value, got: {label}"
+        );
+    }
+
+    #[test]
     fn builtin_sigs_are_sorted() {
         for w in BUILTIN_SIGS.windows(2) {
             assert!(
