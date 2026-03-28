@@ -339,7 +339,16 @@ fn make_return_hint(position: Position, ret_type: &str, func_name: &str) -> Inla
 }
 
 fn pos_in_range(pos: Position, range: Range) -> bool {
-    pos.line >= range.start.line && pos.line <= range.end.line
+    if pos.line < range.start.line || pos.line > range.end.line {
+        return false;
+    }
+    if pos.line == range.start.line && pos.character < range.start.character {
+        return false;
+    }
+    if pos.line == range.end.line && pos.character > range.end.character {
+        return false;
+    }
+    true
 }
 
 #[cfg(test)]

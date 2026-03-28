@@ -2,6 +2,12 @@
 
 All notable changes to php-lsp are documented here.
 
+## [0.1.26] — 2026-03-28
+
+### Bug fixes
+
+- **Inlay hint range character check** — `textDocument/inlayHint` `pos_in_range` now validates the cursor's column/character position, not just its line. Hints were previously emitted for any position on the same line as the hint, even outside the requested range.
+
 ## [0.1.25] — 2026-03-28
 
 ### Bug fixes
