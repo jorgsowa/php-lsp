@@ -2,6 +2,12 @@
 
 All notable changes to php-lsp are documented here.
 
+## [0.1.25] — 2026-03-28
+
+### Bug fixes
+
+- **Diagnostics lost on `didChange`** — duplicate declaration warnings and deprecated-call warnings disappeared after the first keystroke and only reappeared on save. The `did_change` debounced parse now publishes all three diagnostic types (parse errors, duplicate declarations, deprecated calls) consistently with `did_open` and `did_save`.
+
 ## [0.1.24] — 2026-03-28
 
 ### Bug fixes

@@ -464,7 +464,16 @@ impl LanguageServer for Backend {
 
             // Only apply if no newer edit arrived while we were parsing
             if docs.apply_parse(&uri, doc, diagnostics.clone(), version) {
-                client.publish_diagnostics(uri, diagnostics, None).await;
+                let source = docs.get(&uri).unwrap_or_default();
+                let mut all_diags = diagnostics;
+                if let Some(d) = docs.get_doc(&uri) {
+                    all_diags.extend(duplicate_declaration_diagnostics(&source, &d));
+                    let other_raw = docs.other_docs(&uri);
+                    let other_docs: Vec<Arc<ParsedDoc>> =
+                        other_raw.into_iter().map(|(_, d)| d).collect();
+                    all_diags.extend(deprecated_call_diagnostics(&source, &d, &other_docs));
+                }
+                client.publish_diagnostics(uri, all_diags, None).await;
             }
         });
     }
