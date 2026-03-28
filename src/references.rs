@@ -52,7 +52,7 @@ fn find_references_inner(
             let start = offset_to_position(source, span.start);
             let end = Position {
                 line: start.line,
-                character: start.character + word.len() as u32,
+                character: start.character + word.chars().map(|c| c.len_utf16() as u32).sum::<u32>(),
             };
             locations.push(Location {
                 uri: uri.clone(),

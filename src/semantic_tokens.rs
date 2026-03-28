@@ -162,7 +162,7 @@ fn push_name(out: &mut Vec<RawToken>, source: &str, name: &str, token_type: u32,
         out,
         source,
         offset,
-        name.len() as u32,
+        name.chars().map(|c| c.len_utf16() as u32).sum::<u32>(),
         token_type,
         modifiers,
     );
@@ -342,7 +342,7 @@ fn collect_expr(source: &str, expr: &php_ast::Expr<'_, '_>, out: &mut Vec<RawTok
                     out,
                     source,
                     f.name.span.start,
-                    name_str.len() as u32,
+                    name_str.chars().map(|c| c.len_utf16() as u32).sum::<u32>(),
                     TT_FUNCTION,
                     0,
                 );
@@ -361,7 +361,7 @@ fn collect_expr(source: &str, expr: &php_ast::Expr<'_, '_>, out: &mut Vec<RawTok
                     out,
                     source,
                     m.method.span.start,
-                    name_str.len() as u32,
+                    name_str.chars().map(|c| c.len_utf16() as u32).sum::<u32>(),
                     TT_METHOD,
                     0,
                 );
@@ -378,7 +378,7 @@ fn collect_expr(source: &str, expr: &php_ast::Expr<'_, '_>, out: &mut Vec<RawTok
                     out,
                     source,
                     m.method.span.start,
-                    name_str.len() as u32,
+                    name_str.chars().map(|c| c.len_utf16() as u32).sum::<u32>(),
                     TT_METHOD,
                     0,
                 );

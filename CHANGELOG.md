@@ -2,6 +2,12 @@
 
 All notable changes to php-lsp are documented here.
 
+## [0.1.23] — 2026-03-28
+
+### Bug fixes
+
+- **UTF-16 range lengths** — `textDocument/references`, `textDocument/documentHighlight`, `textDocument/typeDefinition`, `textDocument/definition`, `textDocument/documentLink`, and `textDocument/semanticTokens` all now report symbol lengths in UTF-16 code units as required by the LSP spec, rather than byte lengths. No visible change for ASCII identifiers; correct behaviour for any non-ASCII content.
+
 ## [0.1.22] — 2026-03-28
 
 ### Bug fixes

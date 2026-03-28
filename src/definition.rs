@@ -91,7 +91,7 @@ fn _name_range_from_offset(source: &str, name: &str) -> Range {
         start,
         end: Position {
             line: start.line,
-            character: start.character + name.len() as u32,
+            character: start.character + name.chars().map(|c| c.len_utf16() as u32).sum::<u32>(),
         },
     }
 }

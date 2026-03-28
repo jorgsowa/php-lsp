@@ -81,7 +81,7 @@ fn link_from_path_expr(
     let start = offset_to_position(source, content_offset);
     let end = Position {
         line: start.line,
-        character: start.character + raw.len() as u32,
+        character: start.character + raw.chars().map(|c| c.len_utf16() as u32).sum::<u32>(),
     };
     let range = Range { start, end };
 
