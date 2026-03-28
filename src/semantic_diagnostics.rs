@@ -155,13 +155,14 @@ fn find_function_span_in_stmts(stmts: &[Stmt<'_, '_>], func_name: &str) -> Optio
 pub fn duplicate_declaration_diagnostics(source: &str, doc: &ParsedDoc) -> Vec<Diagnostic> {
     let mut seen: std::collections::HashMap<String, ()> = std::collections::HashMap::new();
     let mut diags = Vec::new();
-    collect_duplicate_decls(source, &doc.program().stmts, &mut seen, &mut diags);
+    collect_duplicate_decls(source, &doc.program().stmts, "", &mut seen, &mut diags);
     diags
 }
 
 fn collect_duplicate_decls(
     source: &str,
     stmts: &[php_ast::Stmt<'_, '_>],
+    current_ns: &str,
     seen: &mut std::collections::HashMap<String, ()>,
     diags: &mut Vec<Diagnostic>,
 ) {
@@ -174,14 +175,29 @@ fn collect_duplicate_decls(
             StmtKind::Function(f) => Some((f.name, stmt.span.start)),
             StmtKind::Namespace(ns) => {
                 if let php_ast::NamespaceBody::Braced(inner) = &ns.body {
-                    collect_duplicate_decls(source, inner, seen, diags);
+                    let ns_name = ns
+                        .name
+                        .as_ref()
+                        .map(|n| n.to_string_repr().to_string())
+                        .unwrap_or_default();
+                    let child_ns = if current_ns.is_empty() {
+                        ns_name
+                    } else {
+                        format!("{}\\{}", current_ns, ns_name)
+                    };
+                    collect_duplicate_decls(source, inner, &child_ns, seen, diags);
                 }
                 None
             }
             _ => None,
         };
         if let Some((name, span_start)) = name_and_span {
-            if seen.insert(name.to_string(), ()).is_some() {
+            let key = if current_ns.is_empty() {
+                name.to_string()
+            } else {
+                format!("{}\\{}", current_ns, name)
+            };
+            if seen.insert(key, ()).is_some() {
                 let pos = crate::ast::offset_to_position(source, span_start);
                 diags.push(Diagnostic {
                     range: Range { start: pos, end: pos },

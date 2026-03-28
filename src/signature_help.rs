@@ -5,6 +5,7 @@ use tower_lsp::lsp_types::{
 
 use crate::ast::ParsedDoc;
 use crate::hover::format_params_str;
+use crate::util::split_params;
 
 /// Returns signature help for the function call the cursor is inside of.
 pub fn signature_help(source: &str, doc: &ParsedDoc, position: Position) -> Option<SignatureHelp> {
@@ -13,18 +14,12 @@ pub fn signature_help(source: &str, doc: &ParsedDoc, position: Position) -> Opti
         .or_else(|| builtin_signature(&func_name).map(|s| s.to_string()))?;
 
     let label = format!("{}({})", func_name, sig_text);
-    let params: Vec<ParameterInformation> = sig_text
-        .split(',')
+    let params: Vec<ParameterInformation> = split_params(&sig_text)
+        .into_iter()
+        .filter(|p| !p.is_empty())
         .map(|p| ParameterInformation {
-            label: ParameterLabel::Simple(p.trim().to_string()),
+            label: ParameterLabel::Simple(p.to_string()),
             documentation: None,
-        })
-        .filter(|p| {
-            if let ParameterLabel::Simple(s) = &p.label {
-                !s.is_empty()
-            } else {
-                true
-            }
         })
         .collect();
 

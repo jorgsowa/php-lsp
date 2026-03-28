@@ -13,7 +13,7 @@ use crate::type_map::{
     TypeMap, enclosing_class_at, is_backed_enum, is_enum, members_of_class, mixin_classes_of,
     params_of_function, parent_class_name,
 };
-use crate::util::{camel_sort_key, fuzzy_camel_match};
+use crate::util::{camel_sort_key, fuzzy_camel_match, utf16_offset_to_byte};
 
 /// Build a `CompletionItem` for a callable (function or method).
 ///
@@ -755,8 +755,8 @@ fn resolve_static_receiver(
     position: Position,
 ) -> Option<String> {
     let line = source.lines().nth(position.line as usize)?;
-    let col = position.character as usize;
-    let before = &line[..col.min(line.len())];
+    let col = utf16_offset_to_byte(line, position.character as usize);
+    let before = &line[..col];
     let before = before.strip_suffix("::").unwrap_or(before);
     let name: String = before
         .chars()
@@ -796,8 +796,8 @@ fn resolve_call_params(
         Some(l) => l,
         None => return vec![],
     };
-    let col = position.character as usize;
-    let before = &line[..col.min(line.len())];
+    let col = utf16_offset_to_byte(line, position.character as usize);
+    let before = &line[..col];
     let before = before.strip_suffix('(').unwrap_or(before);
     let func_name: String = before
         .chars()
@@ -1005,7 +1005,7 @@ pub fn filtered_completions_at(
             // PHP attribute: #[ — suggest attribute classes
             if let (Some(src), Some(pos)) = (source, position) {
                 let line = src.lines().nth(pos.line as usize).unwrap_or("");
-                let col = (pos.character as usize).min(line.len());
+                let col = utf16_offset_to_byte(line, pos.character as usize);
                 let before = &line[..col];
                 if before.trim_end_matches('[').trim_end().ends_with('#') {
                     let mut items: Vec<CompletionItem> = Vec::new();
@@ -1267,7 +1267,7 @@ fn include_path_prefix(source: &str, position: Position) -> Option<String> {
         return None;
     }
     // Find the string being typed
-    let col = (position.character as usize).min(line.len());
+    let col = utf16_offset_to_byte(line, position.character as usize);
     let before = &line[..col];
     let quote_pos = before.rfind(|c| c == '\'' || c == '"')?;
     Some(before[quote_pos+1..].to_string())
@@ -1285,7 +1285,7 @@ fn extract_match_subject(line: &str) -> Option<String> {
 /// Returns the prefix typed after `use ` on the current line, or None if not in a use statement.
 fn use_completion_prefix(source: &str, position: Position) -> Option<String> {
     let line = source.lines().nth(position.line as usize)?;
-    let col = (position.character as usize).min(line.len());
+    let col = utf16_offset_to_byte(line, position.character as usize);
     let before = line[..col].trim_start();
     let prefix = before.strip_prefix("use ")?;
     Some(prefix.trim_start_matches('\\').to_string())
@@ -1343,7 +1343,7 @@ fn typed_prefix(source: Option<&str>, position: Option<Position>) -> Option<Stri
     let src = source?;
     let pos = position?;
     let line = src.lines().nth(pos.line as usize)?;
-    let col = (pos.character as usize).min(line.len());
+    let col = utf16_offset_to_byte(line, pos.character as usize);
     let before = &line[..col];
     let prefix: String = before
         .chars()
@@ -1363,8 +1363,8 @@ fn resolve_receiver_class(
     type_map: &TypeMap,
 ) -> Option<String> {
     let line = source.lines().nth(position.line as usize)?;
-    let col = position.character as usize;
-    let before = &line[..col.min(line.len())];
+    let col = utf16_offset_to_byte(line, position.character as usize);
+    let before = &line[..col];
     // Try ?-> first (longer pattern) so `$s?->` doesn't get stripped to `$s?` by the `->` rule.
     let before = before.strip_suffix("?->").or_else(|| before.strip_suffix("->")).unwrap_or(before);
 

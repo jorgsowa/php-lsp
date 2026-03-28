@@ -667,9 +667,7 @@ fn collect_members_stmts(
             StmtKind::Namespace(ns) => {
                 if let NamespaceBody::Braced(inner) = &ns.body {
                     let result = collect_members_stmts(source, inner, class_name, out);
-                    if result.is_some()
-                        || out.methods.len() + out.properties.len() + out.constants.len() > 0
-                    {
+                    if result.is_some() {
                         return result;
                     }
                 }

@@ -2,6 +2,15 @@
 
 All notable changes to php-lsp are documented here.
 
+## [0.1.22] — 2026-03-28
+
+### Bug fixes
+
+- **Namespace-aware duplicate detection** — `class Foo` in namespace `App` and `class Foo` in namespace `Other` no longer trigger a false "duplicate declaration" error; the check now uses fully-qualified names as keys.
+- **Bracket-aware signature parameter splitting** — parameter labels in signature help no longer break when a default value contains a comma (e.g. `array $x = [1, 2, 3]`, `callable $fn = fn($a, $b) => 0`); a depth-tracking splitter is used instead of a naive `.split(',')`.
+- **`collect_members_stmts` early-return fix** — member collection no longer bails out prematurely when any members are found in an earlier namespace block; the function now only short-circuits after definitively matching the target class.
+- **Union type whitespace** — `Foo | Bar` (spaces around `|`) is now handled identically to `Foo|Bar` throughout the type map and completion engine.
+
 ## [0.1.21] — 2026-03-27
 
 ### New features

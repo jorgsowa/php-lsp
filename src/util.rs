@@ -108,6 +108,49 @@ pub(crate) fn php_doc_url(name: &str) -> String {
     format!("https://www.php.net/function.{}", slug)
 }
 
+/// Convert a UTF-16 code unit offset into a UTF-8 byte offset for `s`.
+///
+/// LSP positions use UTF-16 code units; Rust strings are UTF-8.  This helper
+/// walks the string's `char_indices`, accumulating UTF-16 units, and returns
+/// the byte index of the character at the given UTF-16 offset.  If the offset
+/// is past the end of the string, `s.len()` is returned.
+pub(crate) fn utf16_offset_to_byte(s: &str, utf16_offset: usize) -> usize {
+    let mut utf16_count = 0usize;
+    for (byte_idx, ch) in s.char_indices() {
+        if utf16_count >= utf16_offset {
+            return byte_idx;
+        }
+        utf16_count += ch.len_utf16();
+    }
+    s.len()
+}
+
+/// Split a parameter list string on commas, respecting bracket nesting.
+///
+/// This avoids splitting inside default values like `array $x = [1, 2, 3]`.
+/// Each returned slice is trimmed of leading/trailing whitespace.
+pub(crate) fn split_params(s: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut depth = 0i32;
+    let mut start = 0;
+    for (i, ch) in s.char_indices() {
+        match ch {
+            '(' | '[' | '{' => depth += 1,
+            ')' | ']' | '}' => depth -= 1,
+            ',' if depth == 0 => {
+                parts.push(s[start..i].trim());
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    let last = s[start..].trim();
+    if !last.is_empty() {
+        parts.push(last);
+    }
+    parts
+}
+
 /// Extract the word (identifier) under the cursor, handling UTF-16 offsets.
 pub(crate) fn word_at(source: &str, position: Position) -> Option<String> {
     let line = source.lines().nth(position.line as usize)?;
