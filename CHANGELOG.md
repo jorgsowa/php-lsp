@@ -2,6 +2,14 @@
 
 All notable changes to php-lsp are documented here.
 
+## [0.1.24] — 2026-03-28
+
+### Bug fixes
+
+- **Range containment character check** — `textDocument/prepareCallHierarchy` and `textDocument/selectionRange` now correctly validate the column/character position, not just the line. Previously any position on the same line as a single-line symbol would match.
+- **Formatting end position** — `textDocument/formatting` used `line_count` (1-based) as the end line of the replacement range; fixed to `line_count - 1` (0-based). Formatters that return the same number of lines would previously emit an out-of-bounds range.
+- **Trait symbol kind in type hierarchy** — `textDocument/prepareTypeHierarchy` now returns `SymbolKind::INTERFACE` for traits instead of `SymbolKind::CLASS`.
+
 ## [0.1.23] — 2026-03-28
 
 ### Bug fixes

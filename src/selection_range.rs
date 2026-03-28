@@ -72,7 +72,16 @@ fn build_chain(source: &str, stmts: &[Stmt<'_, '_>], pos: Position, fr: Range) -
 }
 
 fn contains(range: Range, pos: Position) -> bool {
-    pos.line >= range.start.line && pos.line <= range.end.line
+    if pos.line < range.start.line || pos.line > range.end.line {
+        return false;
+    }
+    if pos.line == range.start.line && pos.character < range.start.character {
+        return false;
+    }
+    if pos.line == range.end.line && pos.character > range.end.character {
+        return false;
+    }
+    true
 }
 
 fn span_range(source: &str, start: u32, end: u32) -> Range {

@@ -243,7 +243,16 @@ fn enclosing_in_stmt(
 }
 
 fn range_contains(range: Range, pos: Position) -> bool {
-    pos.line >= range.start.line && pos.line <= range.end.line
+    if pos.line < range.start.line || pos.line > range.end.line {
+        return false;
+    }
+    if pos.line == range.start.line && pos.character < range.start.character {
+        return false;
+    }
+    if pos.line == range.end.line && pos.character > range.end.character {
+        return false;
+    }
+    true
 }
 
 /// Collect all (callee_name, span) for calls made inside the body of `fn_name`.

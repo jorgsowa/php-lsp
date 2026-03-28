@@ -40,7 +40,7 @@ fn find_type_item(
                 return Some(make_item(source, i.name, SymbolKind::INTERFACE, uri));
             }
             StmtKind::Trait(t) if t.name == word => {
-                return Some(make_item(source, t.name, SymbolKind::CLASS, uri));
+                return Some(make_item(source, t.name, SymbolKind::INTERFACE, uri));
             }
             StmtKind::Namespace(ns) => {
                 if let NamespaceBody::Braced(inner) = &ns.body {
