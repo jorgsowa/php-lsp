@@ -2,6 +2,20 @@
 
 All notable changes to php-lsp are documented here.
 
+## [0.1.27] — 2026-03-28
+
+### Improvements
+
+- **16 new tests** — 394 total (up from 378); also fixed real bugs uncovered by writing them:
+  - `deprecated_method_call_emits_warning` — method `@deprecated` calls now correctly emit a warning (the `ExprKind::MethodCall` branch was missing from `check_expr_for_deprecated`)
+  - `nullable_param_resolves_to_class` — `?Foo` type hints now correctly map `$x` to `Foo` in the type map (nullable stripped)
+  - `union_type_param_maps_both_classes` — `Foo|Bar` type hints now populate the type map for both classes
+  - `static_return_type_resolves_to_class` — `: static` return type now resolves to the enclosing class name
+  - `goto_definition_class_constant` / `goto_definition_property` — go-to-definition now finds class constants and properties
+  - `finds_use_statement_reference` / `partial_match_not_included` — reference search correctly includes `use` statements and excludes partial-word matches
+  - `rename_does_not_match_partial_words` / `rename_updates_use_statement` — rename correctly skips partial matches and updates `use` imports
+  - `hints_outside_range_excluded` / `method_call_gets_param_hints` — inlay hints respect the requested range and work for method calls
+
 ## [0.1.26] — 2026-03-28
 
 ### Bug fixes

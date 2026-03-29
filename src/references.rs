@@ -190,4 +190,50 @@ mod tests {
         let refs = find_references("check", &docs, false);
         assert!(!refs.is_empty(), "expected reference inside if body");
     }
+
+    #[test]
+    fn finds_use_statement_reference() {
+        // Renaming MyClass — the `use MyClass;` statement should be in the results
+        // when using find_references_with_use.
+        let src = "<?php\nuse MyClass;\n$x = new MyClass();";
+        let docs = vec![doc("/a.php", src)];
+        let refs = find_references_with_use("MyClass", &docs, false);
+        // Should contain both the `use MyClass;` span and the `new MyClass()` span.
+        assert!(
+            refs.len() >= 2,
+            "expected at least 2 references including use statement, got: {:?}",
+            refs
+        );
+        // The use statement reference should be on line 1 (0-based).
+        let has_use_ref = refs.iter().any(|r| r.range.start.line == 1);
+        assert!(has_use_ref, "expected a reference on the use statement line (line 1)");
+    }
+
+    #[test]
+    fn partial_match_not_included() {
+        // Searching for references to `greet` should NOT include occurrences of `greeting`.
+        let src = "<?php\nfunction greet() {}\nfunction greeting() {}\ngreet();\ngreeting();";
+        let docs = vec![doc("/a.php", src)];
+        let refs = find_references("greet", &docs, false);
+        // Only `greet()` call site should be included, not `greeting()`.
+        for r in &refs {
+            // Each reference range should span exactly the length of "greet" (5 chars),
+            // not longer (which would indicate "greeting" was matched).
+            let span_len = r.range.end.character - r.range.start.character;
+            assert_eq!(
+                span_len,
+                5,
+                "reference span length should equal len('greet')=5, got {} at {:?}",
+                span_len,
+                r
+            );
+        }
+        // There should be exactly 1 call-site reference (the greet() call, not greeting()).
+        assert_eq!(
+            refs.len(),
+            1,
+            "expected exactly 1 reference to 'greet' (not 'greeting'), got: {:?}",
+            refs
+        );
+    }
 }

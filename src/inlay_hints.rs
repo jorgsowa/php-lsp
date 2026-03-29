@@ -555,4 +555,54 @@ mod tests {
         assert!(param_hints.contains(&"a:"), "missing 'a:' hint inside closure body");
         assert!(param_hints.contains(&"b:"), "missing 'b:' hint inside closure body");
     }
+
+    #[test]
+    fn hints_outside_range_excluded() {
+        // The function call is on line 2; requesting a range that ends on line 1
+        // should return zero hints.
+        let src = "<?php\nfunction greet(string $name): void {}\ngreet('Alice');";
+        let d = doc(src);
+        // Range covers only lines 0-1 (the declaration), excluding line 2 (the call).
+        let narrow_range = Range {
+            start: Position { line: 0, character: 0 },
+            end: Position { line: 1, character: u32::MAX },
+        };
+        let hints = inlay_hints(src, &d, narrow_range);
+        assert!(
+            hints.is_empty(),
+            "hints on line 2 should be excluded when range ends at line 1, got: {:?}",
+            hints
+        );
+    }
+
+    #[test]
+    fn method_call_gets_param_hints() {
+        // $obj->method($arg) where method has a named param should get a param hint.
+        let src = concat!(
+            "<?php\n",
+            "class Greeter {\n",
+            "    public function sayHello(string $name): void {}\n",
+            "}\n",
+            "$g = new Greeter();\n",
+            "$g->sayHello('World');\n",
+        );
+        let d = doc(src);
+        let hints = inlay_hints(src, &d, full_range());
+        let param_hints: Vec<&str> = hints
+            .iter()
+            .filter(|h| h.kind == Some(InlayHintKind::PARAMETER))
+            .map(|h| label_str(h))
+            .collect();
+        assert!(
+            param_hints.contains(&"name:"),
+            "expected 'name:' param hint for method call, got: {:?}",
+            param_hints
+        );
+        assert_eq!(
+            param_hints.len(),
+            1,
+            "expected exactly 1 param hint, got: {:?}",
+            param_hints
+        );
+    }
 }

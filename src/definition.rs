@@ -44,6 +44,8 @@ pub fn find_declaration_range(source: &str, doc: &ParsedDoc, name: &str) -> Opti
 }
 
 fn scan_statements(source: &str, stmts: &[Stmt<'_, '_>], word: &str) -> Option<Range> {
+    // Strip a leading `$` so that `$name` matches property names stored without `$`.
+    let bare = word.strip_prefix('$').unwrap_or(word);
     for stmt in stmts {
         match &stmt.kind {
             StmtKind::Function(f) if f.name == word => {
@@ -55,10 +57,17 @@ fn scan_statements(source: &str, stmts: &[Stmt<'_, '_>], word: &str) -> Option<R
             }
             StmtKind::Class(c) => {
                 for member in c.members.iter() {
-                    if let ClassMemberKind::Method(m) = &member.kind {
-                        if m.name == word {
+                    match &member.kind {
+                        ClassMemberKind::Method(m) if m.name == word => {
                             return Some(name_range(source, m.name));
                         }
+                        ClassMemberKind::ClassConst(cc) if cc.name == word => {
+                            return Some(name_range(source, cc.name));
+                        }
+                        ClassMemberKind::Property(p) if p.name == bare => {
+                            return Some(name_range(source, p.name));
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -223,5 +232,46 @@ mod tests {
 
         let result = goto_definition(&uri(), src, &doc, &[(other_uri, other_doc)], pos(1, 8));
         assert_eq!(result.unwrap().uri, uri(), "should prefer current file");
+    }
+
+    #[test]
+    fn goto_definition_class_constant() {
+        // Cursor on `STATUS_OK` in the class constant declaration should jump to `const STATUS_OK`.
+        // Source: line 0 = <?php, line 1 = class MyClass { const STATUS_OK = 1; }
+        // The cursor is placed on `STATUS_OK` inside the const declaration.
+        let src = "<?php\nclass MyClass { const STATUS_OK = 1; }";
+        let doc = ParsedDoc::parse(src.to_string());
+        // `STATUS_OK` starts at column 22 on line 1 (after "class MyClass { const ")
+        let result = goto_definition(&uri(), src, &doc, &[], pos(1, 22));
+        assert!(
+            result.is_some(),
+            "expected a location for class constant STATUS_OK"
+        );
+        let loc = result.unwrap();
+        assert_eq!(loc.range.start.line, 1, "should jump to line 1 where the constant is declared");
+        assert_eq!(loc.uri, uri(), "should be in the same file");
+    }
+
+    #[test]
+    fn goto_definition_property() {
+        // Cursor on the property `$name` in its declaration should jump to that declaration.
+        // Source: line 0 = <?php, line 1 = class Person { public string $name; }
+        // Column breakdown of line 1: "class Person { public string $name; }"
+        //   col 0-4: "class", 5: " ", 6-11: "Person", 12: " ", 13: "{", 14: " ",
+        //   15-20: "public", 21: " ", 22-27: "string", 28: " ", 29: "$", 30-33: "name"
+        let src = "<?php\nclass Person { public string $name; }";
+        let doc = ParsedDoc::parse(src.to_string());
+        // Cursor on column 30 — on the `n` in `$name`.
+        let result = goto_definition(&uri(), src, &doc, &[], pos(1, 30));
+        assert!(
+            result.is_some(),
+            "expected a location for property '$name', cursor at column 30"
+        );
+        let loc = result.unwrap();
+        assert_eq!(
+            loc.range.start.line, 1,
+            "should jump to line 1 where the property is declared"
+        );
+        assert_eq!(loc.uri, uri(), "should be in the same file");
     }
 }

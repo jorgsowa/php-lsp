@@ -126,6 +126,40 @@ fn check_expr_for_deprecated(
             }
         }
     }
+    if let ExprKind::MethodCall(call) = &expr.kind {
+        if let ExprKind::Identifier(name) = &call.method.kind {
+            let method_name = name.as_ref();
+            let all_sources: Vec<(&str, &ParsedDoc)> = std::iter::once((source, doc))
+                .chain(other_docs.iter().map(|d| (d.source(), d.as_ref())))
+                .collect();
+            for (src, d) in &all_sources {
+                if let Some(span_start) = find_method_span(d, method_name) {
+                    if let Some(raw) = docblock_before(src, span_start) {
+                        let db = parse_docblock(&raw);
+                        if db.is_deprecated() {
+                            let start_pos = offset_to_position(source, call.method.span.start);
+                            let end_pos = offset_to_position(source, call.method.span.end);
+                            let msg = match &db.deprecated {
+                                Some(m) if !m.is_empty() => format!("Deprecated: {} — {}", method_name, m),
+                                _ => format!("Deprecated: {}", method_name),
+                            };
+                            diags.push(Diagnostic {
+                                range: Range {
+                                    start: Position { line: start_pos.line, character: start_pos.character },
+                                    end: Position { line: end_pos.line, character: end_pos.character },
+                                },
+                                severity: Some(DiagnosticSeverity::WARNING),
+                                source: Some("php-lsp".to_string()),
+                                message: msg,
+                                ..Default::default()
+                            });
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn find_function_span(doc: &ParsedDoc, func_name: &str) -> Option<u32> {
@@ -141,6 +175,35 @@ fn find_function_span_in_stmts(stmts: &[Stmt<'_, '_>], func_name: &str) -> Optio
             StmtKind::Namespace(ns) => {
                 if let NamespaceBody::Braced(inner) = &ns.body {
                     if let Some(s) = find_function_span_in_stmts(inner, func_name) {
+                        return Some(s);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn find_method_span(doc: &ParsedDoc, method_name: &str) -> Option<u32> {
+    find_method_span_in_stmts(&doc.program().stmts, method_name)
+}
+
+fn find_method_span_in_stmts(stmts: &[Stmt<'_, '_>], method_name: &str) -> Option<u32> {
+    for stmt in stmts {
+        match &stmt.kind {
+            StmtKind::Class(c) => {
+                for member in c.members.iter() {
+                    if let php_ast::ClassMemberKind::Method(m) = &member.kind {
+                        if m.name == method_name {
+                            return Some(member.span.start);
+                        }
+                    }
+                }
+            }
+            StmtKind::Namespace(ns) => {
+                if let NamespaceBody::Braced(inner) = &ns.body {
+                    if let Some(s) = find_method_span_in_stmts(inner, method_name) {
                         return Some(s);
                     }
                 }
@@ -279,5 +342,95 @@ mod tests {
         let doc = ParsedDoc::parse(src.to_string());
         let diags = duplicate_declaration_diagnostics(src, &doc);
         assert!(diags.is_empty());
+    }
+
+    #[test]
+    fn namespace_scoped_duplicate_not_flagged() {
+        // Two classes named `Foo` in different namespaces — should produce zero diagnostics.
+        let src = "<?php\nnamespace App\\A {\nclass Foo {}\n}\nnamespace App\\B {\nclass Foo {}\n}";
+        let doc = ParsedDoc::parse(src.to_string());
+        let diags = duplicate_declaration_diagnostics(src, &doc);
+        assert!(
+            diags.is_empty(),
+            "classes with same name in different namespaces should not be flagged, got: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn duplicate_interface_declaration() {
+        // Same interface defined twice in same file — should produce exactly one error.
+        let src = "<?php\ninterface Logger {}\ninterface Logger {}";
+        let doc = ParsedDoc::parse(src.to_string());
+        let diags = duplicate_declaration_diagnostics(src, &doc);
+        assert_eq!(
+            diags.len(),
+            1,
+            "expected exactly 1 duplicate-declaration diagnostic, got: {:?}",
+            diags
+        );
+        assert!(
+            diags[0].message.contains("Logger"),
+            "diagnostic message should mention 'Logger'"
+        );
+        assert_eq!(
+            diags[0].severity,
+            Some(DiagnosticSeverity::WARNING),
+            "duplicate declaration should be a warning"
+        );
+    }
+
+    #[test]
+    fn duplicate_trait_declaration() {
+        // Same trait defined twice in same file — should produce exactly one error.
+        let src = "<?php\ntrait Serializable {}\ntrait Serializable {}";
+        let doc = ParsedDoc::parse(src.to_string());
+        let diags = duplicate_declaration_diagnostics(src, &doc);
+        assert_eq!(
+            diags.len(),
+            1,
+            "expected exactly 1 duplicate-declaration diagnostic, got: {:?}",
+            diags
+        );
+        assert!(
+            diags[0].message.contains("Serializable"),
+            "diagnostic message should mention 'Serializable'"
+        );
+        assert_eq!(
+            diags[0].severity,
+            Some(DiagnosticSeverity::WARNING),
+            "duplicate trait declaration should be a warning"
+        );
+    }
+
+    #[test]
+    fn deprecated_method_call_emits_warning() {
+        // Calling a method annotated @deprecated should emit a warning.
+        let src = concat!(
+            "<?php\n",
+            "class Mailer {\n",
+            "    /** @deprecated Use sendAsync() instead */\n",
+            "    public function send() {}\n",
+            "}\n",
+            "$m = new Mailer();\n",
+            "$m->send();\n",
+        );
+        let doc = ParsedDoc::parse(src.to_string());
+        let diags = deprecated_call_diagnostics(src, &doc, &[]);
+        assert!(
+            !diags.is_empty(),
+            "expected a deprecated warning for deprecated method call"
+        );
+        let d = &diags[0];
+        assert_eq!(
+            d.severity,
+            Some(DiagnosticSeverity::WARNING),
+            "deprecated method call should be a WARNING"
+        );
+        assert!(
+            d.message.contains("send"),
+            "message should mention the method name 'send', got: {}",
+            d.message
+        );
     }
 }

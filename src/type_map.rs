@@ -3,7 +3,7 @@
 /// after `->`.
 use std::collections::HashMap;
 
-use php_ast::{BinaryOp, BuiltinType, ClassMemberKind, EnumMemberKind, ExprKind, NamespaceBody, Stmt, StmtKind, TypeHintKind};
+use php_ast::{BinaryOp, BuiltinType, ClassMemberKind, EnumMemberKind, ExprKind, NamespaceBody, Stmt, StmtKind, TypeHint, TypeHintKind};
 use tower_lsp::lsp_types::Position;
 
 use crate::ast::{ParsedDoc, offset_to_position};
@@ -146,6 +146,43 @@ fn extract_method_return_class(
     None
 }
 
+/// Extract a class-name string from a type hint, suitable for storing in the TypeMap.
+/// - `Named(Foo)` → `"Foo"`
+/// - `Nullable(Named(Foo))` → `"Foo"` (strips the nullable wrapper)
+/// - `Union([Named(Foo), Named(Bar)])` → `"Foo|Bar"`
+/// - `Keyword(static | self)` with `enclosing` → returns `enclosing`
+/// - Primitives and unrecognised kinds → `None`
+fn type_hint_to_class_string(hint: &TypeHint<'_, '_>, enclosing_class: Option<&str>) -> Option<String> {
+    match &hint.kind {
+        TypeHintKind::Named(name) => {
+            let s = name.to_string_repr();
+            let base = s.trim_start_matches('\\');
+            let short = base.rsplit('\\').next().unwrap_or(base);
+            if short == "self" || short == "static" {
+                return enclosing_class.map(|c| c.to_string());
+            }
+            if short.chars().next().map(|c| c.is_uppercase()).unwrap_or(false)
+                && !matches!(short, "void" | "never" | "null")
+            {
+                return Some(short.to_string());
+            }
+            None
+        }
+        TypeHintKind::Nullable(inner) => type_hint_to_class_string(inner, enclosing_class),
+        TypeHintKind::Union(parts) => {
+            let classes: Vec<String> = parts
+                .iter()
+                .filter_map(|p| type_hint_to_class_string(p, enclosing_class))
+                .collect();
+            if classes.is_empty() { None } else { Some(classes.join("|")) }
+        }
+        TypeHintKind::Keyword(BuiltinType::Self_ | BuiltinType::Static, _) => {
+            enclosing_class.map(|c| c.to_string())
+        }
+        _ => None,
+    }
+}
+
 fn collect_types_stmts(
     source: &str,
     stmts: &[Stmt<'_, '_>],
@@ -203,14 +240,15 @@ fn collect_types_stmts(
                 }
                 for p in f.params.iter() {
                     if let Some(hint) = &p.type_hint {
-                        if let TypeHintKind::Named(name) = &hint.kind {
-                            map.insert(format!("${}", p.name), name.to_string_repr().to_string());
+                        if let Some(class_str) = type_hint_to_class_string(hint, None) {
+                            map.insert(format!("${}", p.name), class_str);
                         }
                     }
                 }
                 collect_types_stmts(source, &f.body, map, meta, method_returns);
             }
             StmtKind::Class(c) => {
+                let class_name = c.name.map(|n| n.to_string());
                 for member in c.members.iter() {
                     if let ClassMemberKind::Method(m) = &member.kind {
                         // Read @param docblock hints — fills in types for untyped params
@@ -235,11 +273,8 @@ fn collect_types_stmts(
                         }
                         for p in m.params.iter() {
                             if let Some(hint) = &p.type_hint {
-                                if let TypeHintKind::Named(name) = &hint.kind {
-                                    map.insert(
-                                        format!("${}", p.name),
-                                        name.to_string_repr().to_string(),
-                                    );
+                                if let Some(class_str) = type_hint_to_class_string(hint, class_name.as_deref()) {
+                                    map.insert(format!("${}", p.name), class_str);
                                 }
                             }
                         }
@@ -1158,5 +1193,73 @@ mod tests {
         assert!(method_names.contains(&"where"));
         let where_static = members.methods.iter().find(|(n,_)| n == "where").map(|(_,s)| *s);
         assert_eq!(where_static, Some(true));
+    }
+
+    #[test]
+    fn union_type_param_maps_both_classes() {
+        // function f(Foo|Bar $x) — both Foo and Bar should be in the union type string
+        let src = "<?php\nfunction f(Foo|Bar $x) {}";
+        let doc = ParsedDoc::parse(src.to_string());
+        let tm = TypeMap::from_doc(&doc);
+        let val = tm.get("$x").expect("$x should be in the type map");
+        assert!(
+            val.contains("Foo"),
+            "union type should contain 'Foo', got: {}",
+            val
+        );
+        assert!(
+            val.contains("Bar"),
+            "union type should contain 'Bar', got: {}",
+            val
+        );
+    }
+
+    #[test]
+    fn nullable_param_resolves_to_class() {
+        // function f(?Foo $x) — $x should map to Foo (nullable stripped)
+        let src = "<?php\nfunction f(?Foo $x) {}";
+        let doc = ParsedDoc::parse(src.to_string());
+        let tm = TypeMap::from_doc(&doc);
+        assert_eq!(
+            tm.get("$x"),
+            Some("Foo"),
+            "nullable type hint ?Foo should map $x to Foo"
+        );
+    }
+
+    #[test]
+    fn static_return_type_resolves_to_class() {
+        // A method returning `: static` inside `class Builder` — result should map to `Builder`
+        let src = concat!(
+            "<?php\n",
+            "class Builder {\n",
+            "    public function build(): static { return $this; }\n",
+            "}\n",
+            "$b = new Builder();\n",
+            "$b2 = $b->build();\n",
+        );
+        let doc = ParsedDoc::parse(src.to_string());
+        let tm = TypeMap::from_doc(&doc);
+        assert_eq!(
+            tm.get("$b2"),
+            Some("Builder"),
+            "method returning :static should resolve to the enclosing class 'Builder'"
+        );
+    }
+
+    #[test]
+    fn null_assignment_does_not_overwrite_class() {
+        // $x = new Foo(); $x = null; — $x type should stay Foo because
+        // assigning null does not overwrite a known class type in the single-pass map.
+        let src = "<?php\n$x = new Foo();\n$x = null;\n";
+        let doc = ParsedDoc::parse(src.to_string());
+        let tm = TypeMap::from_doc(&doc);
+        // The single-pass type map does not treat null as a class, so the last
+        // successful class assignment (Foo) persists.
+        assert_eq!(
+            tm.get("$x"),
+            Some("Foo"),
+            "$x should retain its Foo type after being assigned null"
+        );
     }
 }
