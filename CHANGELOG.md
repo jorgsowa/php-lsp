@@ -2,6 +2,14 @@
 
 All notable changes to php-lsp are documented here.
 
+## [0.1.28] — 2026-03-28
+
+### Test quality
+
+- **415 tests** (up from 394); 32 new tests added, 11 existing weak tests rewritten with exact assertions
+- Replaced `assert!(!result.is_empty())` / `assert!(result.is_some())` with `assert_eq!` on exact counts, exact line numbers, exact message text, and exact command names throughout `semantic_diagnostics`, `references`, `document_highlight`, `code_lens`, and `symbols`
+- New tests cover: unknown receiver completions, static-only member filtering, hover on unknown/builtin symbols, nested call signature help, method call signature help, zero-reference lens, PHPUnit lens command/title format, exact fold ranges for nested constructs, single-line no-fold, docblock union/nullable/method tag parsing
+
 ## [0.1.27] — 2026-03-28
 
 ### Improvements

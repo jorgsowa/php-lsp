@@ -691,4 +691,55 @@ mod tests {
             "should still return 'valid' despite parse error"
         );
     }
+
+    #[test]
+    fn function_symbol_has_correct_range() {
+        // The symbol range should start at the line where the `function` keyword is.
+        // Source: line 0 = "<?php", line 1 = "function myFunc() {}"
+        let src = "<?php\nfunction myFunc() {}";
+        let doc = ParsedDoc::parse(src.to_string());
+        let syms = document_symbols(src, &doc);
+        let f = syms
+            .iter()
+            .find(|s| s.name == "myFunc")
+            .expect("myFunc not found");
+        assert_eq!(
+            f.kind,
+            SymbolKind::FUNCTION,
+            "symbol should have FUNCTION kind"
+        );
+        assert_eq!(
+            f.range.start.line,
+            1,
+            "function range should start at line 1 (where 'function' keyword is)"
+        );
+        // The selection_range (name range) should also be on line 1.
+        assert_eq!(
+            f.selection_range.start.line,
+            1,
+            "selection_range should start at line 1"
+        );
+    }
+
+    #[test]
+    fn enum_symbol_has_correct_kind() {
+        // An enum declaration should produce a symbol with SymbolKind::ENUM.
+        let src = "<?php\nenum Color { case Red; case Green; case Blue; }";
+        let doc = ParsedDoc::parse(src.to_string());
+        let syms = document_symbols(src, &doc);
+        let e = syms
+            .iter()
+            .find(|s| s.name == "Color")
+            .expect("Color enum not found");
+        assert_eq!(
+            e.kind,
+            SymbolKind::ENUM,
+            "enum should produce a symbol with SymbolKind::ENUM"
+        );
+        assert_eq!(
+            e.range.start.line,
+            1,
+            "enum range should start at line 1"
+        );
+    }
 }

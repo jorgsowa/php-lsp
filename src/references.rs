@@ -144,10 +144,11 @@ mod tests {
         let docs = vec![doc("/a.php", src)];
         let with_decl = find_references("greet", &docs, true);
         let without_decl = find_references("greet", &docs, false);
-        assert!(
-            with_decl.len() > without_decl.len(),
-            "declaration should be included"
-        );
+        // Without declaration: only the call site (line 2)
+        assert_eq!(without_decl.len(), 1, "expected 1 call-site ref without declaration");
+        assert_eq!(without_decl[0].range.start.line, 2, "call site should be on line 2");
+        // With declaration: 2 refs total (decl on line 1, call on line 2)
+        assert_eq!(with_decl.len(), 2, "expected 2 refs with declaration included");
     }
 
     #[test]
@@ -155,7 +156,8 @@ mod tests {
         let src = "<?php\nclass Foo {}\n$x = new Foo();";
         let docs = vec![doc("/a.php", src)];
         let refs = find_references("Foo", &docs, false);
-        assert!(!refs.is_empty(), "expected reference to Foo in new expr");
+        assert_eq!(refs.len(), 1, "expected exactly 1 reference to Foo in new expr");
+        assert_eq!(refs[0].range.start.line, 2, "new Foo() reference should be on line 2");
     }
 
     #[test]
@@ -163,7 +165,8 @@ mod tests {
         let src = "<?php\nfunction greet() {}\necho(greet());";
         let docs = vec![doc("/a.php", src)];
         let refs = find_references("greet", &docs, false);
-        assert!(!refs.is_empty(), "expected nested function call reference");
+        assert_eq!(refs.len(), 1, "expected exactly 1 nested function call reference");
+        assert_eq!(refs[0].range.start.line, 2, "nested greet() call should be on line 2");
     }
 
     #[test]
@@ -180,7 +183,8 @@ mod tests {
         let src = "<?php\nclass Calc { public function add() {} }\n$c = new Calc();\n$c->add();";
         let docs = vec![doc("/a.php", src)];
         let refs = find_references("add", &docs, false);
-        assert!(!refs.is_empty(), "expected method call reference to 'add'");
+        assert_eq!(refs.len(), 1, "expected exactly 1 method call reference to 'add'");
+        assert_eq!(refs[0].range.start.line, 3, "add() call should be on line 3");
     }
 
     #[test]
@@ -188,7 +192,8 @@ mod tests {
         let src = "<?php\nfunction check() {}\nif (true) { check(); }";
         let docs = vec![doc("/a.php", src)];
         let refs = find_references("check", &docs, false);
-        assert!(!refs.is_empty(), "expected reference inside if body");
+        assert_eq!(refs.len(), 1, "expected exactly 1 reference inside if body");
+        assert_eq!(refs[0].range.start.line, 2, "check() inside if should be on line 2");
     }
 
     #[test]
@@ -207,6 +212,34 @@ mod tests {
         // The use statement reference should be on line 1 (0-based).
         let has_use_ref = refs.iter().any(|r| r.range.start.line == 1);
         assert!(has_use_ref, "expected a reference on the use statement line (line 1)");
+    }
+
+    #[test]
+    fn find_references_returns_correct_lines() {
+        // `helper` is called on lines 1 and 2 (0-based); check exact line numbers.
+        let src = "<?php\nhelper();\nhelper();\nfunction helper() {}";
+        let docs = vec![doc("/a.php", src)];
+        let refs = find_references("helper", &docs, false);
+        assert_eq!(refs.len(), 2, "expected exactly 2 call-site references");
+        let mut lines: Vec<u32> = refs.iter().map(|r| r.range.start.line).collect();
+        lines.sort_unstable();
+        assert_eq!(lines, vec![1, 2], "references should be on lines 1 and 2");
+    }
+
+    #[test]
+    fn declaration_excluded_when_flag_false() {
+        // When include_declaration=false the declaration line must not appear.
+        let src = "<?php\nfunction doWork() {}\ndoWork();\ndoWork();";
+        let docs = vec![doc("/a.php", src)];
+        let refs = find_references("doWork", &docs, false);
+        // Declaration is on line 1; call sites are on lines 2 and 3.
+        let lines: Vec<u32> = refs.iter().map(|r| r.range.start.line).collect();
+        assert!(
+            !lines.contains(&1),
+            "declaration line (1) must not appear when include_declaration=false, got: {:?}",
+            lines
+        );
+        assert_eq!(refs.len(), 2, "expected 2 call-site references only");
     }
 
     #[test]

@@ -224,16 +224,13 @@ mod tests {
         let d = doc(src);
         let docs = vec![(uri("/a.php"), Arc::new(doc(src)))];
         let lenses = code_lenses(&uri("/a.php"), &d, &docs);
-        assert!(!lenses.is_empty());
-        let titles: Vec<&str> = lenses
-            .iter()
-            .filter_map(|l| l.command.as_ref())
-            .map(|c| c.title.as_str())
-            .collect();
-        assert!(
-            titles
-                .iter()
-                .any(|t| t.ends_with("reference") || t.ends_with("references"))
+        assert_eq!(lenses.len(), 1, "expected exactly 1 lens for a top-level function");
+        let cmd = lenses[0].command.as_ref().expect("lens should have a command");
+        // No callers -> "0 references"
+        assert_eq!(cmd.title, "0 references", "unused function should show '0 references'");
+        assert_eq!(
+            cmd.command, "php-lsp.showReferences",
+            "command name should be 'php-lsp.showReferences'"
         );
     }
 
@@ -263,9 +260,16 @@ mod tests {
         let run_test = lenses.iter().find(|l| {
             l.command
                 .as_ref()
-                .map_or(false, |c| c.title.contains("Run test"))
+                .map_or(false, |c| c.command == "php-lsp.runTest")
         });
         assert!(run_test.is_some(), "expected Run test lens");
+        let cmd = run_test.unwrap().command.as_ref().unwrap();
+        assert_eq!(cmd.command, "php-lsp.runTest", "command name must be 'php-lsp.runTest'");
+        assert!(
+            cmd.title.contains("Run test"),
+            "title should contain 'Run test', got: {}",
+            cmd.title
+        );
     }
 
     #[test]
@@ -288,7 +292,9 @@ mod tests {
         let d = doc(src);
         let docs = vec![(uri("/a.php"), Arc::new(doc(src)))];
         let lenses = code_lenses(&uri("/a.php"), &d, &docs);
-        assert!(!lenses.is_empty());
+        assert_eq!(lenses.len(), 1, "expected exactly 1 lens for a class declaration");
+        let cmd = lenses[0].command.as_ref().expect("lens should have a command");
+        assert_eq!(cmd.title, "0 references", "unused class should show '0 references'");
     }
 
     #[test]
@@ -297,7 +303,21 @@ mod tests {
         let d = doc(src);
         let docs = vec![(uri("/a.php"), Arc::new(doc(src)))];
         let lenses = code_lenses(&uri("/a.php"), &d, &docs);
-        assert!(!lenses.is_empty());
+        // Interface gets a ref-count lens + an implementations lens.
+        assert_eq!(lenses.len(), 2, "expected 2 lenses (ref-count + implementations) for interface");
+        let titles: Vec<&str> = lenses
+            .iter()
+            .filter_map(|l| l.command.as_ref())
+            .map(|c| c.title.as_str())
+            .collect();
+        assert!(
+            titles.iter().any(|t| t.ends_with("reference") || t.ends_with("references")),
+            "one lens should be a reference count, got: {:?}", titles
+        );
+        assert!(
+            titles.iter().any(|t| t.contains("implementation")),
+            "one lens should be an implementations count, got: {:?}", titles
+        );
     }
 
     #[test]
@@ -376,6 +396,62 @@ mod tests {
         assert!(
             run_test.is_some(),
             "expected Run test lens from @test docblock"
+        );
+    }
+
+    #[test]
+    fn ref_count_lens_shows_zero_for_unused() {
+        // A function with no call sites should show "0 references".
+        let src = "<?php\nfunction unusedFn() {}";
+        let d = doc(src);
+        // Use only this single doc so there are no call sites.
+        let docs = vec![(uri("/a.php"), Arc::new(doc(src)))];
+        let lenses = code_lenses(&uri("/a.php"), &d, &docs);
+        let ref_lens = lenses.iter().find(|l| {
+            l.command
+                .as_ref()
+                .map_or(false, |c| c.command == "php-lsp.showReferences")
+        });
+        let cmd = ref_lens
+            .expect("expected a showReferences lens")
+            .command
+            .as_ref()
+            .unwrap();
+        assert_eq!(
+            cmd.title,
+            "0 references",
+            "function with no callers should show '0 references', got: {}",
+            cmd.title
+        );
+    }
+
+    #[test]
+    fn run_test_lens_has_correct_command() {
+        // The Run test lens must use command "php-lsp.runTest" and title "▶ Run test".
+        let src = "<?php\nclass SomeTest { public function testItWorks() {} }";
+        let d = doc(src);
+        let docs = vec![(uri("/a.php"), Arc::new(doc(src)))];
+        let lenses = code_lenses(&uri("/a.php"), &d, &docs);
+        let run_test_lens = lenses.iter().find(|l| {
+            l.command
+                .as_ref()
+                .map_or(false, |c| c.command == "php-lsp.runTest")
+        });
+        let cmd = run_test_lens
+            .expect("expected a php-lsp.runTest lens")
+            .command
+            .as_ref()
+            .unwrap();
+        assert_eq!(
+            cmd.command,
+            "php-lsp.runTest",
+            "command name must be exactly 'php-lsp.runTest'"
+        );
+        assert_eq!(
+            cmd.title,
+            "▶ Run test",
+            "title must be exactly '▶ Run test', got: {}",
+            cmd.title
         );
     }
 }

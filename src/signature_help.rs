@@ -420,4 +420,49 @@ mod tests {
             );
         }
     }
+
+    #[test]
+    fn nested_call_shows_outer_signature() {
+        // `outer(inner(` — with cursor right after the second `(` (col 12),
+        // the innermost unclosed `(` belongs to `inner`, so `inner`'s signature
+        // is returned by call_context (it scans backward to the first unmatched `(`).
+        // With cursor at col 11 (before the second `(`), `outer` is the active call.
+        let src = "<?php\nfunction outer(int $a, string $b): void {}\nfunction inner(float $x): int {}\nouter(inner(";
+        let doc = ParsedDoc::parse(src.to_string());
+
+        // Col 11 = inside `outer(inner` — the unmatched `(` belongs to `outer`.
+        let result_outer = signature_help(src, &doc, pos(3, 11));
+        let sh_outer = result_outer.expect("expected signature help for outer");
+        assert_eq!(
+            sh_outer.signatures[0].label,
+            "outer(int $a, string $b)",
+            "at col 11 the active call should be 'outer'"
+        );
+
+        // Col 12 = after `outer(inner(` — the unmatched `(` belongs to `inner`.
+        let result_inner = signature_help(src, &doc, pos(3, 12));
+        let sh_inner = result_inner.expect("expected signature help for inner");
+        assert_eq!(
+            sh_inner.signatures[0].label,
+            "inner(float $x)",
+            "at col 12 the active call should be 'inner'"
+        );
+    }
+
+    #[test]
+    fn method_call_signature_via_function_lookup() {
+        // A method `process` defined in the current doc should be found by
+        // signature_help when the cursor is inside `process(`.
+        // (Note: the current implementation looks up by function/method name
+        // without receiver-type resolution, so `process` matches the method.)
+        let src = "<?php\nclass Worker {\n    public function process(string $job, int $priority): bool {}\n}\nprocess(";
+        let doc = ParsedDoc::parse(src.to_string());
+        let result = signature_help(src, &doc, pos(4, 8));
+        let sh = result.expect("expected signature help for process");
+        assert_eq!(
+            sh.signatures[0].label,
+            "process(string $job, int $priority)",
+            "method signature should show all parameters"
+        );
+    }
 }

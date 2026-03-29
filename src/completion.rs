@@ -1919,4 +1919,46 @@ mod tests {
         assert!(ls.contains(&"__construct"), "should suggest __construct");
         assert!(ls.contains(&"__toString"), "should suggest __toString");
     }
+
+    #[test]
+    fn arrow_trigger_does_not_complete_on_unknown_receiver() {
+        // $unknown-> has no type info, so no class members should be returned.
+        // The fallback returns methods from the current doc, but since the doc
+        // has no class, the result should be empty (no methods available).
+        let src = "<?php\n$unknown->";
+        let d = doc(src);
+        let pos = Position { line: 1, character: 10 };
+        let items = filtered_completions_at(&d, &[], Some(">"), Some(src), Some(pos), None);
+        // No class is defined in this doc, so the fallback method list is empty.
+        assert!(
+            items.is_empty(),
+            "unknown receiver should yield no completions, got: {:?}",
+            labels(&items)
+        );
+    }
+
+    #[test]
+    fn static_trigger_shows_only_static_members() {
+        // ClassName:: should only return static methods/constants, NOT instance methods.
+        let src = concat!(
+            "<?php\n",
+            "class MyClass {\n",
+            "    public static function staticMethod(): void {}\n",
+            "    public function instanceMethod(): void {}\n",
+            "    public static int $staticProp = 0;\n",
+            "    const MY_CONST = 42;\n",
+            "}\n",
+            "MyClass::",
+        );
+        let d = doc(src);
+        let pos = Position { line: 7, character: 9 };
+        let items = filtered_completions_at(&d, &[], Some(":"), Some(src), Some(pos), None);
+        let ls = labels(&items);
+        assert!(ls.contains(&"staticMethod"), "should include static method");
+        assert!(ls.contains(&"MY_CONST"), "should include constant");
+        assert!(
+            !ls.contains(&"instanceMethod"),
+            "should NOT include instance method in static completion, got: {:?}", ls
+        );
+    }
 }

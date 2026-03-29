@@ -814,4 +814,38 @@ mod tests {
         };
         assert!(text.contains("App\\Mail\\Mailer"), "should show full FQN");
     }
+
+    #[test]
+    fn hover_unknown_symbol_returns_none() {
+        // `unknownFunc` is not defined anywhere — hover should return None.
+        let src = "<?php\nunknownFunc();";
+        let doc = ParsedDoc::parse(src.to_string());
+        let result = hover_info(src, &doc, pos(1, 3), &[]);
+        assert!(
+            result.is_none(),
+            "hover on undefined symbol should return None"
+        );
+    }
+
+    #[test]
+    fn hover_on_builtin_function_returns_signature() {
+        // `strlen` is a built-in function; hovering should return a non-empty
+        // string that contains "strlen".
+        let src = "<?php\nstrlen('hello');";
+        let doc = ParsedDoc::parse(src.to_string());
+        let result = hover_info(src, &doc, pos(1, 3), &[]);
+        let h = result.expect("expected hover result for built-in 'strlen'");
+        let text = match h.contents {
+            HoverContents::Markup(mc) => mc.value,
+            _ => String::new(),
+        };
+        assert!(
+            !text.is_empty(),
+            "hover on strlen should return non-empty content"
+        );
+        assert!(
+            text.contains("strlen"),
+            "hover content should contain 'strlen', got: {text}"
+        );
+    }
 }

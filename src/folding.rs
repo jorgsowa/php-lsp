@@ -413,4 +413,43 @@ mod tests {
             lines(&ranges)
         );
     }
+
+    #[test]
+    fn nested_folds_both_returned() {
+        // A class containing a method should produce BOTH a class fold and a method fold.
+        let src = "<?php\nclass Outer {\n    public function inner(): void {\n        echo 1;\n    }\n}";
+        // Line 1 = class, Line 2 = method, Line 4 = }, Line 5 = }
+        let d = doc(src);
+        let ranges = folding_ranges(src, &d);
+        let ls = lines(&ranges);
+        assert!(
+            ls.contains(&(1, 5)),
+            "expected class fold (1..5), got {:?}",
+            ls
+        );
+        assert!(
+            ls.contains(&(2, 4)),
+            "expected method fold (2..4), got {:?}",
+            ls
+        );
+        assert_eq!(
+            ranges.len(),
+            2,
+            "expected exactly 2 fold ranges (class + method), got {:?}",
+            ls
+        );
+    }
+
+    #[test]
+    fn single_line_function_not_folded() {
+        // `function f() {}` is on a single line — no fold range should be produced.
+        let src = "<?php\nfunction f() {}";
+        let d = doc(src);
+        let ranges = folding_ranges(src, &d);
+        assert!(
+            ranges.is_empty(),
+            "single-line function should produce NO fold range, got {:?}",
+            lines(&ranges)
+        );
+    }
 }

@@ -63,7 +63,10 @@ mod tests {
         let src = "<?php\nclass Foo {}\n$x = new Foo();";
         let doc = ParsedDoc::parse(src.to_string());
         let highlights = document_highlights(src, &doc, pos(1, 8));
-        assert!(highlights.len() >= 2, "expected decl + new expr");
+        assert_eq!(highlights.len(), 2, "expected decl + new expr = 2 highlights");
+        let mut lines: Vec<u32> = highlights.iter().map(|h| h.range.start.line).collect();
+        lines.sort_unstable();
+        assert_eq!(lines, vec![1, 2], "Foo should be highlighted on lines 1 and 2");
     }
 
     #[test]
@@ -82,11 +85,15 @@ mod tests {
         let src = "<?php\nclass Calc { public function add() {} }\n$c = new Calc();\n$c->add();";
         let doc = ParsedDoc::parse(src.to_string());
         let highlights = document_highlights(src, &doc, pos(3, 5));
-        assert!(
-            highlights.len() >= 2,
-            "expected at least 2 highlights, got: {}",
+        assert_eq!(
+            highlights.len(),
+            2,
+            "expected exactly 2 highlights (decl + call), got: {}",
             highlights.len()
         );
+        let mut lines: Vec<u32> = highlights.iter().map(|h| h.range.start.line).collect();
+        lines.sort_unstable();
+        assert_eq!(lines, vec![1, 3], "add() should be highlighted on lines 1 (decl) and 3 (call)");
     }
 
     #[test]
@@ -95,5 +102,22 @@ mod tests {
         let doc = ParsedDoc::parse(src.to_string());
         let highlights = document_highlights(src, &doc, pos(1, 999));
         assert!(highlights.is_empty());
+    }
+
+    #[test]
+    fn highlights_return_correct_count_and_lines() {
+        // Symbol `myFn` used 3 times: declaration + 2 calls.
+        let src = "<?php\nfunction myFn() {}\nmyFn();\nmyFn();";
+        let doc = ParsedDoc::parse(src.to_string());
+        let highlights = document_highlights(src, &doc, pos(1, 10));
+        assert_eq!(
+            highlights.len(),
+            3,
+            "expected exactly 3 highlights (decl + 2 calls), got: {:?}",
+            highlights.iter().map(|h| h.range.start.line).collect::<Vec<_>>()
+        );
+        let mut lines: Vec<u32> = highlights.iter().map(|h| h.range.start.line).collect();
+        lines.sort_unstable();
+        assert_eq!(lines, vec![1, 2, 3], "myFn highlights should be on lines 1, 2, 3");
     }
 }

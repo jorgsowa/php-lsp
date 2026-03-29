@@ -321,7 +321,7 @@ mod tests {
         let src = "<?php\n/** @deprecated Use newFunc() instead */\nfunction oldFunc() {}\n\noldFunc();";
         let doc = ParsedDoc::parse(src.to_string());
         let diags = deprecated_call_diagnostics(src, &doc, &[]);
-        assert!(!diags.is_empty(), "expected a deprecated warning diagnostic");
+        assert_eq!(diags.len(), 1, "expected exactly 1 deprecated warning diagnostic");
         let d = &diags[0];
         assert_eq!(d.severity, Some(DiagnosticSeverity::WARNING));
         assert!(d.message.contains("oldFunc"), "message should mention the function name");
@@ -332,8 +332,9 @@ mod tests {
         let src = "<?php\nclass Foo {}\nclass Foo {}";
         let doc = ParsedDoc::parse(src.to_string());
         let diags = duplicate_declaration_diagnostics(src, &doc);
-        assert!(!diags.is_empty(), "should warn on duplicate class");
-        assert!(diags[0].message.contains("Foo"));
+        assert_eq!(diags.len(), 1, "expected exactly 1 duplicate warning, got: {:?}", diags);
+        assert_eq!(diags[0].severity, Some(DiagnosticSeverity::WARNING));
+        assert!(diags[0].message.contains("Foo"), "message should mention 'Foo'");
     }
 
     #[test]
@@ -431,6 +432,40 @@ mod tests {
             d.message.contains("send"),
             "message should mention the method name 'send', got: {}",
             d.message
+        );
+    }
+
+    #[test]
+    fn deprecated_function_warning_has_correct_message() {
+        // The deprecation warning message must contain the function name AND the
+        // word "Deprecated" (case-sensitive per implementation: "Deprecated: …").
+        let src = "<?php\n/** @deprecated old API */\nfunction legacyFn() {}\n\nlegacyFn();";
+        let doc = ParsedDoc::parse(src.to_string());
+        let diags = deprecated_call_diagnostics(src, &doc, &[]);
+        assert_eq!(diags.len(), 1, "expected exactly 1 diagnostic");
+        let msg = &diags[0].message;
+        assert!(
+            msg.contains("legacyFn"),
+            "message should contain function name 'legacyFn', got: {msg}"
+        );
+        assert!(
+            msg.to_lowercase().contains("deprecated"),
+            "message should contain 'deprecated', got: {msg}"
+        );
+    }
+
+    #[test]
+    fn duplicate_diagnostic_has_warning_severity() {
+        // Duplicate declarations are reported as WARNING by our implementation.
+        // (Note: `duplicate_declaration_diagnostics` emits DiagnosticSeverity::WARNING.)
+        let src = "<?php\nfunction doWork() {}\nfunction doWork() {}";
+        let doc = ParsedDoc::parse(src.to_string());
+        let diags = duplicate_declaration_diagnostics(src, &doc);
+        assert_eq!(diags.len(), 1, "expected exactly 1 duplicate diagnostic");
+        assert_eq!(
+            diags[0].severity,
+            Some(DiagnosticSeverity::WARNING),
+            "duplicate declaration diagnostic should have WARNING severity"
         );
     }
 }

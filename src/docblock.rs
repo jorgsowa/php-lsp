@@ -740,4 +740,71 @@ mod tests {
         assert!(db.methods[0].is_static);
         assert_eq!(db.methods[0].name, "where");
     }
+
+    #[test]
+    fn param_without_description_parses_correctly() {
+        // `@param string $x` has no description — name and type should still parse.
+        let raw = "/**\n * @param string $x\n */";
+        let db = parse_docblock(raw);
+        assert_eq!(db.params.len(), 1);
+        assert_eq!(
+            db.params[0].type_hint, "string",
+            "type_hint should be 'string'"
+        );
+        assert_eq!(
+            db.params[0].name, "$x",
+            "name should be '$x'"
+        );
+        assert_eq!(
+            db.params[0].description, "",
+            "description should be empty when absent"
+        );
+    }
+
+    #[test]
+    fn union_type_param_parsed() {
+        // `@param Foo|Bar $x` — type should be the full union string "Foo|Bar".
+        let raw = "/**\n * @param Foo|Bar $x Some value\n */";
+        let db = parse_docblock(raw);
+        assert_eq!(db.params.len(), 1);
+        assert_eq!(
+            db.params[0].type_hint, "Foo|Bar",
+            "union type should be 'Foo|Bar', got: {}",
+            db.params[0].type_hint
+        );
+        assert_eq!(db.params[0].name, "$x");
+    }
+
+    #[test]
+    fn nullable_type_param_parsed() {
+        // `@param ?Foo $x` — type should be "?Foo".
+        let raw = "/**\n * @param ?Foo $x\n */";
+        let db = parse_docblock(raw);
+        assert_eq!(db.params.len(), 1);
+        assert_eq!(
+            db.params[0].type_hint, "?Foo",
+            "nullable type should be '?Foo', got: {}",
+            db.params[0].type_hint
+        );
+        assert_eq!(db.params[0].name, "$x");
+    }
+
+    #[test]
+    fn method_tag_extracts_return_type() {
+        // `@method string getName()` — return_type should be "string", name "getName".
+        let raw = "/**\n * @method string getName()\n */";
+        let db = parse_docblock(raw);
+        assert_eq!(db.methods.len(), 1);
+        assert_eq!(
+            db.methods[0].return_type, "string",
+            "return_type should be 'string', got: {}",
+            db.methods[0].return_type
+        );
+        assert_eq!(
+            db.methods[0].name, "getName",
+            "name should be 'getName', got: {}",
+            db.methods[0].name
+        );
+        assert!(!db.methods[0].is_static, "should not be static");
+    }
 }
