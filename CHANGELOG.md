@@ -2,6 +2,71 @@
 
 All notable changes to php-lsp are documented here.
 
+## [0.1.34] — 2026-03-30
+
+### Bug fixes
+
+- **`call_hierarchy.rs` — `prepare_call_hierarchy` could not find trait/enum methods**: `find_declaration_item` only handled `Function`, `Class`, and `Namespace` nodes. Trait and enum methods were never returned by `prepare_call_hierarchy`, breaking call hierarchy for those symbols entirely. Added `StmtKind::Trait` and `StmtKind::Enum` arms to match the fix already applied to `enclosing_in_stmt`.
+
+### Tests
+
+- Added 13 tests covering all bug fixes from v0.1.29–v0.1.33 that previously had no test:
+  - `definition` — enum definition, enum case, and enum method go-to-definition
+  - `call_hierarchy` — `prepare_call_hierarchy` for enum method, outgoing calls from enum method body, outgoing calls from for-loop init/update
+  - `code_lens` — ref-count lens for enum declaration, trait declaration, and enum method
+  - `declaration` — go-to-declaration for enum method
+  - `semantic_diagnostics` — deprecated warning for enum method call
+  - `semantic_tokens` — for-loop init/update expressions are tokenized
+  - `type_map` — type inference inside trait method body, type inference inside enum method body
+
+## [0.1.33] — 2026-03-30
+
+### Bug fixes
+
+- **`signature_help.rs` — no signature help for trait/enum methods**: `find_signature` only scanned `Function` and `Class` nodes. Trait and enum method signatures are now found.
+- **`call_hierarchy.rs` — call hierarchy broken inside trait/enum methods**: `enclosing_in_stmt` returned `None` for `StmtKind::Trait` and `StmtKind::Enum`, so "Prepare Call Hierarchy" on a call inside those method bodies found nothing. Both are now handled.
+- **`type_map.rs` — type inference dead inside trait/enum method bodies**: `collect_types_stmts` walked `Class` method bodies but ignored `Trait` and `Enum`. Param types and variable assignments inside trait/enum methods now contribute to the type map, enabling hover and completion there.
+- **`inlay_hints.rs` — no param hints for trait/enum method calls**: `collect_defs_stmts` only registered `Function` and `Class` method signatures. Trait and enum method signatures are now registered so call sites get `param:` hints.
+
+## [0.1.32] — 2026-03-30
+
+### Bug fixes
+
+- **`type_map.rs` — `$this->` completion broken inside enum methods**: `enclosing_class_in_stmts` only matched `StmtKind::Class`; now also matches `StmtKind::Enum` so the enum name is returned as the enclosing type.
+- **`code_lens.rs` — no reference-count lenses for enums or traits**: `collect_lenses` had no cases for `StmtKind::Enum` or `StmtKind::Trait`. Both now emit a ref-count lens on their name and on each of their methods.
+- **`implementation.rs` — PHP 8.1 enum implementations not found**: `collect_implementations` only checked `StmtKind::Class`. Now also checks `StmtKind::Enum`, so enums implementing an interface appear in go-to-implementation results.
+- **`semantic_diagnostics.rs` — deprecated warnings missing for trait/enum method bodies**: `collect_deprecated_calls` walked Class and Function bodies but not Trait or Enum method bodies. Now all four are walked.
+- **`semantic_diagnostics.rs` — deprecated warnings missing for nested calls**: `check_expr_for_deprecated` checked only the outermost function/method call per statement. Now recurses into call arguments and the callee object, so `wrapper(oldFn())` correctly warns about `oldFn`.
+- **`semantic_diagnostics.rs` — `find_method_span_in_stmts` missed trait/enum methods**: Deprecation look-up only scanned Class members; methods declared in traits or enums were never found. Now scans all three.
+- **`declaration.rs` — go-to-declaration missed enum methods**: `find_any_declaration` had no `StmtKind::Enum` arm, so jumping to the declaration of an enum method returned nothing.
+
+## [0.1.31] — 2026-03-30
+
+### Bug fixes
+
+- **`inlay_hints.rs` — `for` init/update not walked**: Parameter hints inside `for (init; cond; update)` were missing. Same fix applied as was done to `walk.rs` in v0.1.30.
+- **`call_hierarchy.rs` — `for` init/update not walked**: Outgoing calls inside for-loop init/update expressions were not detected. Also added Trait and Enum method body scanning to `collect_calls_for` so outgoing calls from those are now visible.
+- **`semantic_tokens.rs` — `for` init/update not walked**: Expressions in for-loop init/update were not syntax-highlighted.
+- **`selection_range.rs` — `StmtKind::Enum` not handled**: Selection range inside an enum method body was silently dropped (no enum parent in the chain). Added handling matching the Trait pattern.
+- **`definition.rs` — Enum member scanning missing**: Go-to-definition for enum cases and enum methods only found the enum declaration itself, not individual members. Now scans `e.members` for both `EnumMemberKind::Case` and `EnumMemberKind::Method`.
+- **`symbols.rs` — Interface constants missing from document outline**: `StmtKind::Interface` emitted `children: None` regardless of whether the interface had constants. Interface constants are now emitted as `SymbolKind::CONSTANT` children.
+
+## [0.1.30] — 2026-03-30
+
+### Bug fixes
+
+- **`walk.rs` — enum method bodies not walked**: `StmtKind::Enum` fell into the catch-all `_ => {}` in `refs_in_stmt`, so references inside enum methods were invisible to find-references and rename. Now walks method bodies and backed enum case values.
+- **`walk.rs` — class/trait property default expressions not walked**: `ClassMemberKind::Property` was unhandled in both `StmtKind::Class` and `StmtKind::Trait`. Class constants used as property defaults (e.g. `public $x = Status::ACTIVE`) were missed by rename.
+- **`walk.rs` — `for` loop init/update not walked**: `StmtKind::For` only visited the condition. Now also visits `f.init` and `f.update` so function calls in those positions are found by references/rename.
+- **`inlay_hints.rs` — no parameter hints for `new ClassName(...)` calls**: `ExprKind::New` was unhandled in `hints_in_expr`. Constructors are now registered in the def map under the class name, and `new Foo(1, 2)` emits `x:`, `y:` hints when `__construct` is known.
+
+## [0.1.29] — 2026-03-27
+
+### Bug fixes
+
+- **Folding — duplicate ranges for control-flow statements**: `if`, `while`, `for`, `foreach`, and `do-while` statements called `fold_stmt(body)` on their `Block` body, which emitted a second fold range identical to the outer statement's range. Fixed by introducing `fold_body()` which recurses into block contents without emitting a fold for the block itself.
+- **Folding — spurious abstract method folds in interfaces**: `StmtKind::Interface` emitted a fold range for every method member, including abstract method declarations whose span bled into the closing `}` of the interface. Since interface methods have no body, method-level folds are now only emitted when a concrete body is present (consistent with `Class` and `Trait` handling).
+
 ## [0.1.28] — 2026-03-28
 
 ### Test quality

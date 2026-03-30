@@ -340,6 +340,28 @@ fn statement_to_symbol(source: &str, stmt: &Stmt<'_, '_>) -> Option<DocumentSymb
         StmtKind::Interface(i) => {
             let range = stmt_range(source, stmt);
             let selection_range = name_range(source, i.name);
+            let children: Vec<DocumentSymbol> = i
+                .members
+                .iter()
+                .filter_map(|member| {
+                    if let ClassMemberKind::ClassConst(cc) = &member.kind {
+                        let crange = member_range(source, member);
+                        let csel = name_range(source, cc.name);
+                        Some(DocumentSymbol {
+                            name: cc.name.to_string(),
+                            detail: None,
+                            kind: SymbolKind::CONSTANT,
+                            tags: None,
+                            deprecated: None,
+                            range: crange,
+                            selection_range: csel,
+                            children: None,
+                        })
+                    } else {
+                        None
+                    }
+                })
+                .collect();
             Some(DocumentSymbol {
                 name: i.name.to_string(),
                 detail: None,
@@ -348,7 +370,7 @@ fn statement_to_symbol(source: &str, stmt: &Stmt<'_, '_>) -> Option<DocumentSymb
                 deprecated: None,
                 range,
                 selection_range,
-                children: None,
+                children: if children.is_empty() { None } else { Some(children) },
             })
         }
 
@@ -741,5 +763,38 @@ mod tests {
             1,
             "enum range should start at line 1"
         );
+    }
+
+    #[test]
+    fn interface_constants_are_constant_children() {
+        // Interface constants should appear as CONSTANT children in document symbols.
+        let src = "<?php\ninterface Config {\n    const VERSION = '1.0';\n    const DEBUG = false;\n}";
+        let doc = ParsedDoc::parse(src.to_string());
+        let syms = document_symbols(src, &doc);
+        let i = syms
+            .iter()
+            .find(|s| s.name == "Config")
+            .expect("Config interface not found");
+        let children = i.children.as_ref().expect("interface should have constant children");
+        assert!(
+            children.iter().any(|c| c.name == "VERSION" && c.kind == SymbolKind::CONSTANT),
+            "missing VERSION constant child, got: {:?}",
+            children.iter().map(|c| &c.name).collect::<Vec<_>>()
+        );
+        assert!(
+            children.iter().any(|c| c.name == "DEBUG" && c.kind == SymbolKind::CONSTANT),
+            "missing DEBUG constant child"
+        );
+        assert_eq!(children.len(), 2, "expected exactly 2 constant children, got: {:?}", children.iter().map(|c| &c.name).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn interface_without_constants_has_no_children() {
+        // An interface with only abstract methods (no constants) should have children: None.
+        let src = "<?php\ninterface Runnable {\n    public function run(): void;\n}";
+        let doc = ParsedDoc::parse(src.to_string());
+        let syms = document_symbols(src, &doc);
+        let i = syms.iter().find(|s| s.name == "Runnable").expect("Runnable not found");
+        assert!(i.children.is_none(), "interface with no constants should have no children, got: {:?}", i.children);
     }
 }

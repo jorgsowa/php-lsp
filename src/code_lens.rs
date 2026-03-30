@@ -6,7 +6,7 @@
 ///      `test` or that carry a `/** @test */` docblock).
 use std::sync::Arc;
 
-use php_ast::{ClassMemberKind, NamespaceBody, Stmt, StmtKind};
+use php_ast::{ClassMemberKind, EnumMemberKind, NamespaceBody, Stmt, StmtKind};
 use tower_lsp::lsp_types::{CodeLens, Command, Url};
 
 use crate::ast::{ParsedDoc, name_range};
@@ -79,6 +79,26 @@ fn collect_lenses(
                 // Implementations count lens.
                 let impl_count = find_implementations(i.name, all_docs).len();
                 out.push(impl_count_lens(range, impl_count));
+            }
+            StmtKind::Trait(t) => {
+                let range = name_range(source, t.name);
+                out.push(ref_count_lens(range, t.name, all_docs));
+                for member in t.members.iter() {
+                    if let ClassMemberKind::Method(m) = &member.kind {
+                        let method_range = name_range(source, m.name);
+                        out.push(ref_count_lens(method_range, m.name, all_docs));
+                    }
+                }
+            }
+            StmtKind::Enum(e) => {
+                let range = name_range(source, e.name);
+                out.push(ref_count_lens(range, e.name, all_docs));
+                for member in e.members.iter() {
+                    if let EnumMemberKind::Method(m) = &member.kind {
+                        let method_range = name_range(source, m.name);
+                        out.push(ref_count_lens(method_range, m.name, all_docs));
+                    }
+                }
             }
             StmtKind::Namespace(ns) => {
                 if let NamespaceBody::Braced(inner) = &ns.body {
@@ -452,6 +472,50 @@ mod tests {
             "▶ Run test",
             "title must be exactly '▶ Run test', got: {}",
             cmd.title
+        );
+    }
+
+    #[test]
+    fn emits_lens_for_enum_declaration() {
+        let src = "<?php\nenum Suit { case Hearts; }";
+        let d = doc(src);
+        let docs = vec![(uri("/a.php"), Arc::new(doc(src)))];
+        let lenses = code_lenses(&uri("/a.php"), &d, &docs);
+        assert!(
+            lenses.iter().any(|l| l
+                .command
+                .as_ref()
+                .map_or(false, |c| c.title.contains("reference"))),
+            "expected a ref-count lens for enum declaration"
+        );
+    }
+
+    #[test]
+    fn emits_lens_for_trait_declaration() {
+        let src = "<?php\ntrait Loggable { public function log(): void {} }";
+        let d = doc(src);
+        let docs = vec![(uri("/a.php"), Arc::new(doc(src)))];
+        let lenses = code_lenses(&uri("/a.php"), &d, &docs);
+        assert!(
+            lenses.iter().any(|l| l
+                .command
+                .as_ref()
+                .map_or(false, |c| c.title.contains("reference"))),
+            "expected a ref-count lens for trait declaration"
+        );
+    }
+
+    #[test]
+    fn emits_lens_for_enum_method() {
+        let src = "<?php\nenum Suit { public function label(): string { return 'x'; } }";
+        let d = doc(src);
+        let docs = vec![(uri("/a.php"), Arc::new(doc(src)))];
+        let lenses = code_lenses(&uri("/a.php"), &d, &docs);
+        // Should have at least 2 lenses: one for the enum itself, one for the method.
+        assert!(
+            lenses.len() >= 2,
+            "expected lenses for both enum and enum method, got {} lens(es)",
+            lenses.len()
         );
     }
 }

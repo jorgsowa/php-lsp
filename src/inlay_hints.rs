@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use php_ast::{ClassMemberKind, Expr, ExprKind, NamespaceBody, Stmt, StmtKind};
+use php_ast::{ClassMemberKind, EnumMemberKind, Expr, ExprKind, NamespaceBody, Stmt, StmtKind};
 use tower_lsp::lsp_types::{InlayHint, InlayHintKind, InlayHintLabel, Position, Range};
 use serde_json::json;
 
@@ -45,15 +45,39 @@ fn collect_defs_stmts(stmts: &[Stmt<'_, '_>], map: &mut HashMap<String, FuncDef>
             StmtKind::Class(c) => {
                 for member in c.members.iter() {
                     if let ClassMemberKind::Method(m) = &member.kind {
-                        let params = m.params.iter().map(|p| p.name.to_string()).collect();
+                        let params: Vec<String> =
+                            m.params.iter().map(|p| p.name.to_string()).collect();
                         let return_type = m.return_type.as_ref().map(|t| format_type_hint(t));
-                        map.insert(
-                            m.name.to_string(),
-                            FuncDef {
-                                params,
-                                return_type,
-                            },
-                        );
+                        // Register __construct under the class name so `new ClassName(...)` gets hints.
+                        if m.name == "__construct" {
+                            if let Some(class_name) = c.name {
+                                map.insert(
+                                    class_name.to_string(),
+                                    FuncDef { params: params.clone(), return_type: None },
+                                );
+                            }
+                        }
+                        map.insert(m.name.to_string(), FuncDef { params, return_type });
+                    }
+                }
+            }
+            StmtKind::Trait(t) => {
+                for member in t.members.iter() {
+                    if let ClassMemberKind::Method(m) = &member.kind {
+                        let params: Vec<String> =
+                            m.params.iter().map(|p| p.name.to_string()).collect();
+                        let return_type = m.return_type.as_ref().map(|t| format_type_hint(t));
+                        map.insert(m.name.to_string(), FuncDef { params, return_type });
+                    }
+                }
+            }
+            StmtKind::Enum(e) => {
+                for member in e.members.iter() {
+                    if let EnumMemberKind::Method(m) = &member.kind {
+                        let params: Vec<String> =
+                            m.params.iter().map(|p| p.name.to_string()).collect();
+                        let return_type = m.return_type.as_ref().map(|t| format_type_hint(t));
+                        map.insert(m.name.to_string(), FuncDef { params, return_type });
                     }
                 }
             }
@@ -158,8 +182,14 @@ fn hints_in_stmt(
             hints_in_stmt(source, w.body, defs, range, out);
         }
         StmtKind::For(f) => {
+            for e in f.init.iter() {
+                hints_in_expr(source, e, defs, range, out);
+            }
             for cond in f.condition.iter() {
                 hints_in_expr(source, cond, defs, range, out);
+            }
+            for e in f.update.iter() {
+                hints_in_expr(source, e, defs, range, out);
             }
             hints_in_stmt(source, f.body, defs, range, out);
         }
@@ -218,6 +248,16 @@ fn hints_in_expr(
             }
             hints_in_expr(source, m.object, defs, range, out);
             for arg in m.args.iter() {
+                hints_in_expr(source, &arg.value, defs, range, out);
+            }
+        }
+        ExprKind::New(n) => {
+            if let Some(class_name) = ident_name(n.class) {
+                if let Some(def) = defs.get(class_name) {
+                    emit_param_hints(source, &n.args, &def.params, class_name, range, out);
+                }
+            }
+            for arg in n.args.iter() {
                 hints_in_expr(source, &arg.value, defs, range, out);
             }
         }
@@ -604,5 +644,81 @@ mod tests {
             "expected exactly 1 param hint, got: {:?}",
             param_hints
         );
+    }
+
+    #[test]
+    fn new_expression_gets_constructor_param_hints() {
+        // `new Point(1, 2)` should emit `x:` and `y:` hints from __construct.
+        let src = concat!(
+            "<?php\n",
+            "class Point {\n",
+            "    public function __construct(int $x, int $y) {}\n",
+            "}\n",
+            "$p = new Point(1, 2);\n",
+        );
+        let d = doc(src);
+        let hints = inlay_hints(src, &d, full_range());
+        let param_hints: Vec<&str> = hints
+            .iter()
+            .filter(|h| h.kind == Some(InlayHintKind::PARAMETER))
+            .map(|h| label_str(h))
+            .collect();
+        assert!(param_hints.contains(&"x:"), "expected 'x:' hint for __construct, got: {:?}", param_hints);
+        assert!(param_hints.contains(&"y:"), "expected 'y:' hint for __construct, got: {:?}", param_hints);
+        assert_eq!(param_hints.len(), 2, "expected exactly 2 constructor param hints, got: {:?}", param_hints);
+    }
+
+    #[test]
+    fn trait_method_call_gets_param_hints() {
+        // Methods defined in traits should produce param hints.
+        let src = concat!(
+            "<?php\n",
+            "trait Logger {\n",
+            "    public function log(string $msg, int $level): void {}\n",
+            "}\n",
+            "log('hello', 3);\n",
+        );
+        let d = doc(src);
+        let hints = inlay_hints(src, &d, full_range());
+        let param_hints: Vec<&str> = hints
+            .iter()
+            .filter(|h| h.kind == Some(InlayHintKind::PARAMETER))
+            .map(|h| label_str(h))
+            .collect();
+        assert!(param_hints.contains(&"msg:"), "expected 'msg:' hint for trait method, got: {:?}", param_hints);
+        assert!(param_hints.contains(&"level:"), "expected 'level:' hint, got: {:?}", param_hints);
+    }
+
+    #[test]
+    fn for_loop_init_and_update_get_hints() {
+        // Function calls in `for` init and update expressions should produce param hints.
+        let src = concat!(
+            "<?php\n",
+            "function tick(int $n): void {}\n",
+            "for (tick(1); $i < 10; tick(2)) {}\n",
+        );
+        let d = doc(src);
+        let hints = inlay_hints(src, &d, full_range());
+        let param_hints: Vec<&str> = hints
+            .iter()
+            .filter(|h| h.kind == Some(InlayHintKind::PARAMETER))
+            .map(|h| label_str(h))
+            .collect();
+        assert_eq!(param_hints.len(), 2, "expected 2 'n:' hints (init + update), got: {:?}", param_hints);
+        assert!(param_hints.iter().all(|&l| l == "n:"), "all hints should be 'n:', got: {:?}", param_hints);
+    }
+
+    #[test]
+    fn new_expression_no_hints_without_constructor() {
+        // `new Foo()` where Foo has no __construct should produce no param hints.
+        let src = "<?php\nclass Foo {}\n$f = new Foo();\n";
+        let d = doc(src);
+        let hints = inlay_hints(src, &d, full_range());
+        let param_hints: Vec<&str> = hints
+            .iter()
+            .filter(|h| h.kind == Some(InlayHintKind::PARAMETER))
+            .map(|h| label_str(h))
+            .collect();
+        assert!(param_hints.is_empty(), "expected no hints for class without constructor, got: {:?}", param_hints);
     }
 }

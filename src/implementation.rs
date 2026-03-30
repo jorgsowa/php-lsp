@@ -62,6 +62,18 @@ fn collect_implementations(
                     }
                 }
             }
+            StmtKind::Enum(e) => {
+                let implements_match = e
+                    .implements
+                    .iter()
+                    .any(|iface| iface.to_string_repr().as_ref() == word);
+                if implements_match {
+                    out.push(Location {
+                        uri: uri.clone(),
+                        range: name_range(source, e.name),
+                    });
+                }
+            }
             StmtKind::Namespace(ns) => {
                 if let NamespaceBody::Braced(inner) = &ns.body {
                     collect_implementations(inner, word, source, uri, out);
@@ -140,5 +152,15 @@ mod tests {
             },
         );
         assert!(!locs.is_empty());
+    }
+
+    #[test]
+    fn enum_implementing_interface_is_found() {
+        // PHP 8.1+ enums can implement interfaces.
+        let src = "<?php\ninterface HasLabel {}\nenum Status: string implements HasLabel {\n    case Active = 'active';\n}";
+        let docs = vec![doc("/a.php", src)];
+        let locs = find_implementations("HasLabel", &docs);
+        assert_eq!(locs.len(), 1, "expected enum Status as implementation of HasLabel, got: {:?}", locs);
+        assert_eq!(locs[0].range.start.line, 2, "enum declaration should be on line 2");
     }
 }

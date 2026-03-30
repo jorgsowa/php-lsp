@@ -8,7 +8,7 @@
 /// result as go-to-definition so the request is never empty-handed.
 use std::sync::Arc;
 
-use php_ast::{ClassMemberKind, NamespaceBody, Stmt, StmtKind};
+use php_ast::{ClassMemberKind, EnumMemberKind, NamespaceBody, Stmt, StmtKind};
 use tower_lsp::lsp_types::{Location, Position, Url};
 
 use crate::ast::{ParsedDoc, name_range};
@@ -118,6 +118,18 @@ fn find_any_declaration(
             StmtKind::Trait(t) if t.name == word => {
                 return Some(name_range(source, t.name));
             }
+            StmtKind::Enum(e) if e.name == word => {
+                return Some(name_range(source, e.name));
+            }
+            StmtKind::Enum(e) => {
+                for member in e.members.iter() {
+                    if let EnumMemberKind::Method(m) = &member.kind {
+                        if m.name == word {
+                            return Some(name_range(source, m.name));
+                        }
+                    }
+                }
+            }
             StmtKind::Namespace(ns) => {
                 if let NamespaceBody::Braced(inner) = &ns.body {
                     if let Some(r) = find_any_declaration(source, inner, word) {
@@ -207,5 +219,15 @@ mod tests {
         let docs = vec![doc("/a.php", src)];
         let loc = goto_declaration(src, &docs, pos(1, 1));
         assert!(loc.is_none());
+    }
+
+    #[test]
+    fn finds_enum_method_declaration() {
+        let src = "<?php\nenum Suit { public function label(): string; }\nclass Backing implements SomeInterface { public function label(): string { return ''; } }";
+        let docs = vec![doc("/a.php", src)];
+        // Position the cursor on the enum method name "label" (line 1, col ~29)
+        let loc = goto_declaration(src, &docs, pos(1, 29));
+        assert!(loc.is_some(), "expected declaration location for enum method");
+        assert_eq!(loc.unwrap().range.start.line, 1);
     }
 }

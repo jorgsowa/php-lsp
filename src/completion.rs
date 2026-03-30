@@ -1449,7 +1449,8 @@ mod tests {
 
     #[test]
     fn keywords_list_is_non_empty() {
-        assert!(!keyword_completions().is_empty());
+        let kws = keyword_completions();
+        assert!(kws.len() >= 20, "expected at least 20 keywords, got {}", kws.len());
     }
 
     #[test]

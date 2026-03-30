@@ -1,4 +1,4 @@
-use php_ast::{ClassMemberKind, NamespaceBody, Stmt, StmtKind};
+use php_ast::{ClassMemberKind, EnumMemberKind, NamespaceBody, Stmt, StmtKind};
 use tower_lsp::lsp_types::{
     ParameterInformation, ParameterLabel, Position, SignatureHelp, SignatureInformation,
 };
@@ -116,6 +116,24 @@ fn find_signature(stmts: &[Stmt<'_, '_>], word: &str) -> Option<String> {
             StmtKind::Class(c) => {
                 for member in c.members.iter() {
                     if let ClassMemberKind::Method(m) = &member.kind {
+                        if m.name == word {
+                            return Some(format_params_str(&m.params));
+                        }
+                    }
+                }
+            }
+            StmtKind::Trait(t) => {
+                for member in t.members.iter() {
+                    if let ClassMemberKind::Method(m) = &member.kind {
+                        if m.name == word {
+                            return Some(format_params_str(&m.params));
+                        }
+                    }
+                }
+            }
+            StmtKind::Enum(e) => {
+                for member in e.members.iter() {
+                    if let EnumMemberKind::Method(m) = &member.kind {
                         if m.name == word {
                             return Some(format_params_str(&m.params));
                         }
@@ -446,6 +464,34 @@ mod tests {
             sh_inner.signatures[0].label,
             "inner(float $x)",
             "at col 12 the active call should be 'inner'"
+        );
+    }
+
+    #[test]
+    fn trait_method_signature_is_found() {
+        // Methods defined in traits should be found by signature_help.
+        let src = "<?php\ntrait Logger {\n    public function log(string $msg, int $level): void {}\n}\nlog(";
+        let doc = ParsedDoc::parse(src.to_string());
+        let result = signature_help(src, &doc, pos(4, 4));
+        let sh = result.expect("expected signature help for trait method log");
+        assert!(
+            sh.signatures[0].label.contains("$msg"),
+            "signature should contain '$msg', got: {}",
+            sh.signatures[0].label
+        );
+    }
+
+    #[test]
+    fn enum_method_signature_is_found() {
+        // Methods defined in enums should be found by signature_help.
+        let src = "<?php\nenum Status {\n    public static function from(string $value): self {}\n}\nfrom(";
+        let doc = ParsedDoc::parse(src.to_string());
+        let result = signature_help(src, &doc, pos(4, 5));
+        let sh = result.expect("expected signature help for enum method from");
+        assert!(
+            sh.signatures[0].label.contains("$value"),
+            "signature should contain '$value', got: {}",
+            sh.signatures[0].label
         );
     }
 

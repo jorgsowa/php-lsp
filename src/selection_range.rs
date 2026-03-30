@@ -1,4 +1,4 @@
-use php_ast::{ClassMemberKind, NamespaceBody, Stmt, StmtKind};
+use php_ast::{ClassMemberKind, EnumMemberKind, NamespaceBody, Stmt, StmtKind};
 use tower_lsp::lsp_types::{Position, Range, SelectionRange};
 
 use crate::ast::{ParsedDoc, offset_to_position};
@@ -148,6 +148,24 @@ fn collect_ranges_stmt(source: &str, stmt: &Stmt<'_, '_>, pos: Position, out: &m
                 }
                 out.push(m_range);
                 if let ClassMemberKind::Method(m) = &member.kind {
+                    if let Some(body) = &m.body {
+                        collect_ranges_stmts(source, body, pos, out);
+                    }
+                }
+            }
+        }
+        StmtKind::Enum(e) => {
+            if !contains(range, pos) {
+                return;
+            }
+            out.push(range);
+            for member in e.members.iter() {
+                let m_range = span_range(source, member.span.start, member.span.end);
+                if !contains(m_range, pos) {
+                    continue;
+                }
+                out.push(m_range);
+                if let EnumMemberKind::Method(m) = &member.kind {
                     if let Some(body) = &m.body {
                         collect_ranges_stmts(source, body, pos, out);
                     }

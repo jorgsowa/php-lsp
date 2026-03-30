@@ -284,6 +284,38 @@ fn collect_types_stmts(
                     }
                 }
             }
+            StmtKind::Trait(t) => {
+                for member in t.members.iter() {
+                    if let ClassMemberKind::Method(m) = &member.kind {
+                        for p in m.params.iter() {
+                            if let Some(hint) = &p.type_hint {
+                                if let Some(class_str) = type_hint_to_class_string(hint, None) {
+                                    map.insert(format!("${}", p.name), class_str);
+                                }
+                            }
+                        }
+                        if let Some(body) = &m.body {
+                            collect_types_stmts(source, body, map, meta, method_returns);
+                        }
+                    }
+                }
+            }
+            StmtKind::Enum(e) => {
+                for member in e.members.iter() {
+                    if let EnumMemberKind::Method(m) = &member.kind {
+                        for p in m.params.iter() {
+                            if let Some(hint) = &p.type_hint {
+                                if let Some(class_str) = type_hint_to_class_string(hint, None) {
+                                    map.insert(format!("${}", p.name), class_str);
+                                }
+                            }
+                        }
+                        if let Some(body) = &m.body {
+                            collect_types_stmts(source, body, map, meta, method_returns);
+                        }
+                    }
+                }
+            }
             StmtKind::Namespace(ns) => {
                 if let NamespaceBody::Braced(inner) = &ns.body {
                     collect_types_stmts(source, inner, map, meta, method_returns);
@@ -755,6 +787,13 @@ fn enclosing_class_in_stmts(source: &str, stmts: &[Stmt<'_, '_>], pos: Position)
                 let end = offset_to_position(source, stmt.span.end).line;
                 if pos.line >= start && pos.line <= end {
                     return c.name.map(|n| n.to_string());
+                }
+            }
+            StmtKind::Enum(e) => {
+                let start = offset_to_position(source, stmt.span.start).line;
+                let end = offset_to_position(source, stmt.span.end).line;
+                if pos.line >= start && pos.line <= end {
+                    return Some(e.name.to_string());
                 }
             }
             StmtKind::Namespace(ns) => {
@@ -1260,6 +1299,30 @@ mod tests {
             tm.get("$x"),
             Some("Foo"),
             "$x should retain its Foo type after being assigned null"
+        );
+    }
+
+    #[test]
+    fn infers_type_from_assignment_inside_trait_method() {
+        let src = "<?php\ntrait Builder { public function make(): void { $obj = new Widget(); } }";
+        let doc = ParsedDoc::parse(src.to_string());
+        let tm = TypeMap::from_doc(&doc);
+        assert_eq!(
+            tm.get("$obj"),
+            Some("Widget"),
+            "type map should walk into trait method bodies"
+        );
+    }
+
+    #[test]
+    fn infers_type_from_assignment_inside_enum_method() {
+        let src = "<?php\nenum Color { case Red; public function make(): void { $obj = new Palette(); } }";
+        let doc = ParsedDoc::parse(src.to_string());
+        let tm = TypeMap::from_doc(&doc);
+        assert_eq!(
+            tm.get("$obj"),
+            Some("Palette"),
+            "type map should walk into enum method bodies"
         );
     }
 }

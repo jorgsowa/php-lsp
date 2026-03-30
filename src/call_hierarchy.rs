@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use php_ast::{ClassMemberKind, ExprKind, NamespaceBody, Span, Stmt, StmtKind};
+use php_ast::{ClassMemberKind, EnumMemberKind, ExprKind, NamespaceBody, Span, Stmt, StmtKind};
 use tower_lsp::lsp_types::{
     CallHierarchyIncomingCall, CallHierarchyItem, CallHierarchyOutgoingCall, Position, Range,
     SymbolKind, Url,
@@ -160,6 +160,46 @@ fn find_declaration_item(
                     }
                 }
             }
+            StmtKind::Trait(t) => {
+                for member in t.members.iter() {
+                    if let ClassMemberKind::Method(m) = &member.kind {
+                        if m.name == name {
+                            let range = span_to_range(source, member.span);
+                            let sel = name_range(source, m.name);
+                            return Some(CallHierarchyItem {
+                                name: name.to_string(),
+                                kind: SymbolKind::METHOD,
+                                tags: None,
+                                detail: Some(t.name.to_string()),
+                                uri: uri.clone(),
+                                range,
+                                selection_range: sel,
+                                data: None,
+                            });
+                        }
+                    }
+                }
+            }
+            StmtKind::Enum(e) => {
+                for member in e.members.iter() {
+                    if let EnumMemberKind::Method(m) = &member.kind {
+                        if m.name == name {
+                            let range = span_to_range(source, member.span);
+                            let sel = name_range(source, m.name);
+                            return Some(CallHierarchyItem {
+                                name: name.to_string(),
+                                kind: SymbolKind::METHOD,
+                                tags: None,
+                                detail: Some(e.name.to_string()),
+                                uri: uri.clone(),
+                                range,
+                                selection_range: sel,
+                                data: None,
+                            });
+                        }
+                    }
+                }
+            }
             StmtKind::Namespace(ns) => {
                 if let NamespaceBody::Braced(inner) = &ns.body {
                     if let Some(item) = find_declaration_item(name, inner, source, uri) {
@@ -232,6 +272,48 @@ fn enclosing_in_stmt(
             }
             None
         }
+        StmtKind::Trait(t) => {
+            for member in t.members.iter() {
+                let m_range = span_to_range(source, member.span);
+                if range_contains(m_range, pos) {
+                    if let ClassMemberKind::Method(m) = &member.kind {
+                        let sel = name_range(source, m.name);
+                        return Some(CallHierarchyItem {
+                            name: m.name.to_string(),
+                            kind: SymbolKind::METHOD,
+                            tags: None,
+                            detail: Some(t.name.to_string()),
+                            uri: uri.clone(),
+                            range: m_range,
+                            selection_range: sel,
+                            data: None,
+                        });
+                    }
+                }
+            }
+            None
+        }
+        StmtKind::Enum(e) => {
+            for member in e.members.iter() {
+                let m_range = span_to_range(source, member.span);
+                if range_contains(m_range, pos) {
+                    if let EnumMemberKind::Method(m) = &member.kind {
+                        let sel = name_range(source, m.name);
+                        return Some(CallHierarchyItem {
+                            name: m.name.to_string(),
+                            kind: SymbolKind::METHOD,
+                            tags: None,
+                            detail: Some(e.name.to_string()),
+                            uri: uri.clone(),
+                            range: m_range,
+                            selection_range: sel,
+                            data: None,
+                        });
+                    }
+                }
+            }
+            None
+        }
         StmtKind::Namespace(ns) => {
             if let NamespaceBody::Braced(inner) = &ns.body {
                 return enclosing_function(source, inner, pos, uri);
@@ -266,6 +348,30 @@ fn collect_calls_for(fn_name: &str, stmts: &[Stmt<'_, '_>], out: &mut Vec<(Strin
             StmtKind::Class(c) => {
                 for member in c.members.iter() {
                     if let ClassMemberKind::Method(m) = &member.kind {
+                        if m.name == fn_name {
+                            if let Some(body) = &m.body {
+                                calls_in_stmts(body, out);
+                                return;
+                            }
+                        }
+                    }
+                }
+            }
+            StmtKind::Trait(t) => {
+                for member in t.members.iter() {
+                    if let ClassMemberKind::Method(m) = &member.kind {
+                        if m.name == fn_name {
+                            if let Some(body) = &m.body {
+                                calls_in_stmts(body, out);
+                                return;
+                            }
+                        }
+                    }
+                }
+            }
+            StmtKind::Enum(e) => {
+                for member in e.members.iter() {
+                    if let EnumMemberKind::Method(m) = &member.kind {
                         if m.name == fn_name {
                             if let Some(body) = &m.body {
                                 calls_in_stmts(body, out);
@@ -320,8 +426,14 @@ fn calls_in_stmt(stmt: &Stmt<'_, '_>, out: &mut Vec<(String, Span)>) {
             calls_in_stmt(w.body, out);
         }
         StmtKind::For(f) => {
+            for e in f.init.iter() {
+                calls_in_expr(e, out);
+            }
             for cond in f.condition.iter() {
                 calls_in_expr(cond, out);
+            }
+            for e in f.update.iter() {
+                calls_in_expr(e, out);
             }
             calls_in_stmt(f.body, out);
         }
@@ -519,6 +631,51 @@ mod tests {
         assert!(
             incoming.iter().any(|c| c.from.name == "run"),
             "cross-file caller not found"
+        );
+    }
+
+    #[test]
+    fn prepare_finds_enum_method_declaration() {
+        let docs = vec![doc(
+            "/a.php",
+            "<?php\nenum Suit { public function label(): string { return 'x'; } }",
+        )];
+        let item = prepare_call_hierarchy("label", &docs);
+        assert!(item.is_some(), "should find enum method 'label'");
+        let item = item.unwrap();
+        assert_eq!(item.name, "label");
+        assert_eq!(item.kind, SymbolKind::METHOD);
+    }
+
+    #[test]
+    fn outgoing_calls_from_enum_method() {
+        let docs = vec![doc(
+            "/a.php",
+            "<?php\nfunction fmt(): string { return ''; }\nenum Suit { public function label(): string { return fmt(); } }",
+        )];
+        let item = prepare_call_hierarchy("label", &docs).unwrap();
+        let outgoing = outgoing_calls(&item, &docs);
+        assert!(
+            outgoing.iter().any(|c| c.to.name == "fmt"),
+            "should find outgoing call to fmt from enum method"
+        );
+    }
+
+    #[test]
+    fn outgoing_calls_from_for_init_and_update() {
+        let docs = vec![doc(
+            "/a.php",
+            "<?php\nfunction start(): int { return 0; }\nfunction step(): void {}\nfunction main(): void { for ($i = start(); $i < 10; step()) {} }",
+        )];
+        let item = prepare_call_hierarchy("main", &docs).unwrap();
+        let outgoing = outgoing_calls(&item, &docs);
+        assert!(
+            outgoing.iter().any(|c| c.to.name == "start"),
+            "should find call to start() in for-init"
+        );
+        assert!(
+            outgoing.iter().any(|c| c.to.name == "step"),
+            "should find call to step() in for-update"
         );
     }
 

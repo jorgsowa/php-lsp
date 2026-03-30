@@ -203,15 +203,11 @@ mod tests {
         let src = "<?php\nuse MyClass;\n$x = new MyClass();";
         let docs = vec![doc("/a.php", src)];
         let refs = find_references_with_use("MyClass", &docs, false);
-        // Should contain both the `use MyClass;` span and the `new MyClass()` span.
-        assert!(
-            refs.len() >= 2,
-            "expected at least 2 references including use statement, got: {:?}",
-            refs
-        );
-        // The use statement reference should be on line 1 (0-based).
-        let has_use_ref = refs.iter().any(|r| r.range.start.line == 1);
-        assert!(has_use_ref, "expected a reference on the use statement line (line 1)");
+        // Exactly 2 references: the `use MyClass;` on line 1 and `new MyClass()` on line 2.
+        assert_eq!(refs.len(), 2, "expected exactly 2 references, got: {:?}", refs);
+        let mut lines: Vec<u32> = refs.iter().map(|r| r.range.start.line).collect();
+        lines.sort_unstable();
+        assert_eq!(lines, vec![1, 2], "references should be on lines 1 (use) and 2 (new)");
     }
 
     #[test]
@@ -268,5 +264,51 @@ mod tests {
             "expected exactly 1 reference to 'greet' (not 'greeting'), got: {:?}",
             refs
         );
+    }
+
+    #[test]
+    fn finds_reference_in_class_property_default() {
+        // A class constant used as a property default value should be found by find_references.
+        let src = "<?php\nclass Foo {\n    public string $status = Status::ACTIVE;\n}";
+        let docs = vec![doc("/a.php", src)];
+        let refs = find_references("Status", &docs, false);
+        assert_eq!(
+            refs.len(),
+            1,
+            "expected exactly 1 reference to Status in property default, got: {:?}",
+            refs
+        );
+        assert_eq!(refs[0].range.start.line, 2, "reference should be on line 2");
+    }
+
+    #[test]
+    fn finds_reference_inside_enum_method_body() {
+        // A function call inside an enum method body should be found by find_references.
+        let src = "<?php\nfunction helper() {}\nenum Status {\n    public function label(): string { return helper(); }\n}";
+        let docs = vec![doc("/a.php", src)];
+        let refs = find_references("helper", &docs, false);
+        assert_eq!(
+            refs.len(),
+            1,
+            "expected exactly 1 reference to helper() inside enum method, got: {:?}",
+            refs
+        );
+        assert_eq!(refs[0].range.start.line, 3, "reference should be on line 3");
+    }
+
+    #[test]
+    fn finds_reference_in_for_init_and_update() {
+        // Function calls in `for` init and update expressions should be found.
+        let src = "<?php\nfunction tick() {}\nfor (tick(); $i < 10; tick()) {}";
+        let docs = vec![doc("/a.php", src)];
+        let refs = find_references("tick", &docs, false);
+        assert_eq!(
+            refs.len(),
+            2,
+            "expected exactly 2 references to tick() (init + update), got: {:?}",
+            refs
+        );
+        // Both are on line 2.
+        assert!(refs.iter().all(|r| r.range.start.line == 2));
     }
 }

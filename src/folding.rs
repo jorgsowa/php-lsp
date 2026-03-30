@@ -18,6 +18,15 @@ fn fold_stmts(stmts: &[Stmt<'_, '_>], source: &str, out: &mut Vec<FoldingRange>)
     }
 }
 
+/// Fold the contents of a block body without emitting a fold for the block itself.
+/// Used for control-flow statements (`if`, `while`, `for`, `foreach`, `do-while`)
+/// where the outer statement already covers the same span as the inner `Block`.
+fn fold_body(body: &Stmt<'_, '_>, source: &str, out: &mut Vec<FoldingRange>) {
+    if let StmtKind::Block(stmts) = &body.kind {
+        fold_stmts(stmts, source, out);
+    }
+}
+
 fn fold_stmt(stmt: &Stmt<'_, '_>, source: &str, out: &mut Vec<FoldingRange>) {
     match &stmt.kind {
         StmtKind::Function(f) => {
@@ -47,11 +56,15 @@ fn fold_stmt(stmt: &Stmt<'_, '_>, source: &str, out: &mut Vec<FoldingRange>) {
             let start_line = offset_to_position(source, stmt.span.start).line;
             let end_line = offset_to_position(source, stmt.span.end).line;
             push(out, start_line, end_line, None);
+            // Interface methods are abstract (no body) — nothing to fold per method.
             for member in i.members.iter() {
-                if let ClassMemberKind::Method(_m) = &member.kind {
-                    let m_start = offset_to_position(source, member.span.start).line;
-                    let m_end = offset_to_position(source, member.span.end).line;
-                    push(out, m_start, m_end, None);
+                if let ClassMemberKind::Method(m) = &member.kind {
+                    if let Some(body) = &m.body {
+                        let m_start = offset_to_position(source, member.span.start).line;
+                        let m_end = offset_to_position(source, member.span.end.saturating_sub(1)).line;
+                        push(out, m_start, m_end, None);
+                        fold_stmts(body, source, out);
+                    }
                 }
             }
         }
@@ -79,37 +92,37 @@ fn fold_stmt(stmt: &Stmt<'_, '_>, source: &str, out: &mut Vec<FoldingRange>) {
             let start_line = offset_to_position(source, stmt.span.start).line;
             let end_line = offset_to_position(source, stmt.span.end).line;
             push(out, start_line, end_line, None);
-            fold_stmt(i.then_branch, source, out);
+            fold_body(i.then_branch, source, out);
             for ei in i.elseif_branches.iter() {
-                fold_stmt(&ei.body, source, out);
+                fold_body(&ei.body, source, out);
             }
             if let Some(e) = &i.else_branch {
-                fold_stmt(e, source, out);
+                fold_body(e, source, out);
             }
         }
         StmtKind::While(w) => {
             let start_line = offset_to_position(source, stmt.span.start).line;
             let end_line = offset_to_position(source, stmt.span.end).line;
             push(out, start_line, end_line, None);
-            fold_stmt(w.body, source, out);
+            fold_body(w.body, source, out);
         }
         StmtKind::For(f) => {
             let start_line = offset_to_position(source, stmt.span.start).line;
             let end_line = offset_to_position(source, stmt.span.end).line;
             push(out, start_line, end_line, None);
-            fold_stmt(f.body, source, out);
+            fold_body(f.body, source, out);
         }
         StmtKind::Foreach(f) => {
             let start_line = offset_to_position(source, stmt.span.start).line;
             let end_line = offset_to_position(source, stmt.span.end).line;
             push(out, start_line, end_line, None);
-            fold_stmt(f.body, source, out);
+            fold_body(f.body, source, out);
         }
         StmtKind::DoWhile(d) => {
             let start_line = offset_to_position(source, stmt.span.start).line;
             let end_line = offset_to_position(source, stmt.span.end).line;
             push(out, start_line, end_line, None);
-            fold_stmt(d.body, source, out);
+            fold_body(d.body, source, out);
         }
         StmtKind::TryCatch(t) => {
             let start_line = offset_to_position(source, stmt.span.start).line;
@@ -245,11 +258,9 @@ mod tests {
         let src = "<?php\nfunction greet(): void {\n    echo 'hi';\n}";
         let d = doc(src);
         let ranges = folding_ranges(src, &d);
-        assert!(
-            ranges.iter().any(|r| r.start_line == 1 && r.end_line == 3),
-            "expected function fold (1..3), got {:?}",
-            lines(&ranges)
-        );
+        assert_eq!(ranges.len(), 1, "expected exactly 1 fold for top-level function, got {:?}", lines(&ranges));
+        assert_eq!(ranges[0].start_line, 1);
+        assert_eq!(ranges[0].end_line, 3);
     }
 
     #[test]
@@ -276,11 +287,9 @@ mod tests {
         let src = "<?php\ninterface Countable {\n    public function count(): int;\n}";
         let d = doc(src);
         let ranges = folding_ranges(src, &d);
-        assert!(
-            ranges.iter().any(|r| r.start_line == 1),
-            "expected interface fold, got {:?}",
-            lines(&ranges)
-        );
+        assert_eq!(ranges.len(), 1, "expected exactly 1 fold for interface, got {:?}", lines(&ranges));
+        assert_eq!(ranges[0].start_line, 1);
+        assert_eq!(ranges[0].end_line, 3);
     }
 
     #[test]
@@ -343,11 +352,9 @@ mod tests {
         let src = "<?php\nif (true) {\n    echo 1;\n}";
         let d = doc(src);
         let ranges = folding_ranges(src, &d);
-        assert!(
-            ranges.iter().any(|r| r.start_line == 1 && r.end_line == 3),
-            "expected if fold (1..3), got {:?}",
-            lines(&ranges)
-        );
+        assert_eq!(ranges.len(), 1, "expected exactly 1 fold for if, got {:?}", lines(&ranges));
+        assert_eq!(ranges[0].start_line, 1);
+        assert_eq!(ranges[0].end_line, 3);
     }
 
     #[test]
@@ -355,11 +362,9 @@ mod tests {
         let src = "<?php\nforeach ($arr as $v) {\n    echo $v;\n}";
         let d = doc(src);
         let ranges = folding_ranges(src, &d);
-        assert!(
-            ranges.iter().any(|r| r.start_line == 1 && r.end_line == 3),
-            "expected foreach fold (1..3), got {:?}",
-            lines(&ranges)
-        );
+        assert_eq!(ranges.len(), 1, "expected exactly 1 fold for foreach, got {:?}", lines(&ranges));
+        assert_eq!(ranges[0].start_line, 1);
+        assert_eq!(ranges[0].end_line, 3);
     }
 
     #[test]
@@ -368,8 +373,8 @@ mod tests {
         let d = doc(src);
         let ranges = folding_ranges(src, &d);
         assert!(
-            ranges.iter().any(|r| r.start_line == 1),
-            "expected try-catch fold, got {:?}",
+            ranges.iter().any(|r| r.start_line == 1 && r.end_line == 5),
+            "expected try-catch fold (1..5), got {:?}",
             lines(&ranges)
         );
     }
@@ -379,11 +384,11 @@ mod tests {
         let src = "<?php\n/**\n * A docblock.\n * @param int $x\n */\nfunction f(int $x): void {}";
         let d = doc(src);
         let ranges = folding_ranges(src, &d);
-        assert!(
-            ranges.iter().any(|r| r.kind == Some(FoldingRangeKind::Comment) && r.start_line == 1),
-            "expected comment fold, got {:?}",
-            lines(&ranges)
-        );
+        let comment_fold = ranges.iter().find(|r| r.kind == Some(FoldingRangeKind::Comment));
+        assert!(comment_fold.is_some(), "expected a comment fold, got {:?}", lines(&ranges));
+        let cf = comment_fold.unwrap();
+        assert_eq!(cf.start_line, 1);
+        assert_eq!(cf.end_line, 4);
     }
 
     #[test]

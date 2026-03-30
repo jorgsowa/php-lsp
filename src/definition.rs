@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use php_ast::{ClassMemberKind, NamespaceBody, Stmt, StmtKind};
+use php_ast::{ClassMemberKind, EnumMemberKind, NamespaceBody, Stmt, StmtKind};
 use tower_lsp::lsp_types::{Location, Position, Range, Url};
 
 use crate::ast::{ParsedDoc, name_range, offset_to_position, str_offset};
@@ -79,6 +79,19 @@ fn scan_statements(source: &str, stmts: &[Stmt<'_, '_>], word: &str) -> Option<R
             }
             StmtKind::Enum(e) if e.name == word => {
                 return Some(name_range(source, e.name));
+            }
+            StmtKind::Enum(e) => {
+                for member in e.members.iter() {
+                    match &member.kind {
+                        EnumMemberKind::Method(m) if m.name == word => {
+                            return Some(name_range(source, m.name));
+                        }
+                        EnumMemberKind::Case(c) if c.name == word => {
+                            return Some(name_range(source, c.name));
+                        }
+                        _ => {}
+                    }
+                }
             }
             StmtKind::Namespace(ns) => {
                 if let NamespaceBody::Braced(inner) = &ns.body {
@@ -170,6 +183,31 @@ mod tests {
         let doc = ParsedDoc::parse(src.to_string());
         let result = goto_definition(&uri(), src, &doc, &[], pos(1, 1));
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn jumps_to_enum_definition() {
+        let src = "<?php\nenum Suit { case Hearts; }";
+        let doc = ParsedDoc::parse(src.to_string());
+        let result = goto_definition(&uri(), src, &doc, &[], pos(1, 7));
+        assert!(result.is_some(), "expected location for enum 'Suit'");
+        assert_eq!(result.unwrap().range.start.line, 1);
+    }
+
+    #[test]
+    fn jumps_to_enum_case_definition() {
+        let src = "<?php\nenum Suit { case Hearts; case Spades; }";
+        let doc = ParsedDoc::parse(src.to_string());
+        let result = goto_definition(&uri(), src, &doc, &[], pos(1, 22));
+        assert!(result.is_some(), "expected location for enum case 'Hearts'");
+    }
+
+    #[test]
+    fn jumps_to_enum_method_definition() {
+        let src = "<?php\nenum Suit { public function label(): string { return ''; } }";
+        let doc = ParsedDoc::parse(src.to_string());
+        let result = goto_definition(&uri(), src, &doc, &[], pos(1, 30));
+        assert!(result.is_some(), "expected location for enum method 'label'");
     }
 
     #[test]

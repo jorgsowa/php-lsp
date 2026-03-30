@@ -1,6 +1,6 @@
 /// Deep AST walker — collects all spans where `word` appears as a name reference
 /// (function calls, `new Foo`, method calls, bare identifiers, static calls).
-use php_ast::{ClassMemberKind, Expr, ExprKind, NamespaceBody, Span, Stmt, StmtKind};
+use php_ast::{ClassMemberKind, EnumMemberKind, Expr, ExprKind, NamespaceBody, Span, Stmt, StmtKind};
 
 pub fn refs_in_stmts(stmts: &[Stmt<'_, '_>], word: &str, out: &mut Vec<Span>) {
     for stmt in stmts {
@@ -77,6 +77,11 @@ pub fn refs_in_stmt(stmt: &Stmt<'_, '_>, word: &str, out: &mut Vec<Span>) {
                             refs_in_stmts(body, word, out);
                         }
                     }
+                    ClassMemberKind::Property(p) => {
+                        if let Some(default) = &p.default {
+                            refs_in_expr(default, word, out);
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -98,6 +103,34 @@ pub fn refs_in_stmt(stmt: &Stmt<'_, '_>, word: &str, out: &mut Vec<Span>) {
                         }
                         if let Some(body) = &m.body {
                             refs_in_stmts(body, word, out);
+                        }
+                    }
+                    ClassMemberKind::Property(p) => {
+                        if let Some(default) = &p.default {
+                            refs_in_expr(default, word, out);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        StmtKind::Enum(e) => {
+            if e.name == word {
+                out.push(stmt.span);
+            }
+            for member in e.members.iter() {
+                match &member.kind {
+                    EnumMemberKind::Method(m) => {
+                        if m.name == word {
+                            out.push(member.span);
+                        }
+                        if let Some(body) = &m.body {
+                            refs_in_stmts(body, word, out);
+                        }
+                    }
+                    EnumMemberKind::Case(c) => {
+                        if let Some(value) = &c.value {
+                            refs_in_expr(value, word, out);
                         }
                     }
                     _ => {}
@@ -133,8 +166,14 @@ pub fn refs_in_stmt(stmt: &Stmt<'_, '_>, word: &str, out: &mut Vec<Span>) {
             refs_in_stmt(f.body, word, out);
         }
         StmtKind::For(f) => {
+            for e in f.init.iter() {
+                refs_in_expr(e, word, out);
+            }
             for cond in f.condition.iter() {
                 refs_in_expr(cond, word, out);
+            }
+            for e in f.update.iter() {
+                refs_in_expr(e, word, out);
             }
             refs_in_stmt(f.body, word, out);
         }

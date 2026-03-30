@@ -282,8 +282,14 @@ fn collect_stmt(source: &str, stmt: &Stmt<'_, '_>, out: &mut Vec<RawToken>) {
             collect_stmt(source, w.body, out);
         }
         StmtKind::For(f) => {
+            for e in f.init.iter() {
+                collect_expr(source, e, out);
+            }
             for cond in f.condition.iter() {
                 collect_expr(source, cond, out);
+            }
+            for e in f.update.iter() {
+                collect_expr(source, e, out);
             }
             collect_stmt(source, f.body, out);
         }
@@ -699,6 +705,24 @@ mod tests {
             tokens.iter().any(|t| t.token_type == TT_CLASS && t.token_modifiers_bitset == 0),
             "expected bare class token for attribute name, got {:?}",
             tokens
+        );
+    }
+
+    #[test]
+    fn for_loop_init_and_update_expressions_are_tokenized() {
+        let src = "<?php\nfunction init(): int { return 0; }\nfunction step(): void {}\nfor ($i = init(); $i < 10; step()) {}";
+        let d = doc(src);
+        let tokens = semantic_tokens(src, &d);
+        // Should produce function+declaration tokens for init() and step() plus
+        // function reference tokens for the calls in the for loop.
+        let func_tokens: Vec<_> = tokens
+            .iter()
+            .filter(|t| t.token_type == TT_FUNCTION)
+            .collect();
+        assert!(
+            func_tokens.len() >= 4,
+            "expected tokens for init decl, step decl, init() call, step() call; got {} function tokens",
+            func_tokens.len()
         );
     }
 }
