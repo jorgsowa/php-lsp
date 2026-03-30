@@ -99,6 +99,32 @@ fn collect_method_returns_stmts(
                     }
                 }
             }
+            StmtKind::Trait(t) => {
+                let trait_name = t.name.to_string();
+                for member in t.members.iter() {
+                    if let ClassMemberKind::Method(m) = &member.kind
+                        && let Some(ret) =
+                            extract_method_return_class(source, member.span.start, m, &trait_name)
+                    {
+                        out.entry(trait_name.clone())
+                            .or_default()
+                            .insert(m.name.to_string(), ret);
+                    }
+                }
+            }
+            StmtKind::Enum(e) => {
+                let enum_name = e.name.to_string();
+                for member in e.members.iter() {
+                    if let EnumMemberKind::Method(m) = &member.kind
+                        && let Some(ret) =
+                            extract_method_return_class(source, member.span.start, m, &enum_name)
+                    {
+                        out.entry(enum_name.clone())
+                            .or_default()
+                            .insert(m.name.to_string(), ret);
+                    }
+                }
+            }
             StmtKind::Namespace(ns) => {
                 if let NamespaceBody::Braced(inner) = &ns.body {
                     collect_method_returns_stmts(source, inner, out);

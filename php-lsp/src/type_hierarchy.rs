@@ -42,6 +42,9 @@ fn find_type_item(
             StmtKind::Trait(t) if t.name == word => {
                 return Some(make_item(source, t.name, SymbolKind::INTERFACE, uri));
             }
+            StmtKind::Enum(e) if e.name == word => {
+                return Some(make_item(source, e.name, SymbolKind::ENUM, uri));
+            }
             StmtKind::Namespace(ns) => {
                 if let NamespaceBody::Braced(inner) = &ns.body
                     && let Some(item) = find_type_item(source, inner, word, uri)
@@ -110,6 +113,11 @@ fn collect_super_names(stmts: &[Stmt<'_, '_>], name: &str, out: &mut Vec<String>
                     out.push(parent.to_string_repr().into_owned());
                 }
             }
+            StmtKind::Enum(e) if e.name == name => {
+                for iface in e.implements.iter() {
+                    out.push(iface.to_string_repr().into_owned());
+                }
+            }
             StmtKind::Namespace(ns) => {
                 if let NamespaceBody::Braced(inner) = &ns.body {
                     collect_super_names(inner, name, out);
@@ -172,6 +180,15 @@ fn collect_subtypes(
                     .any(|p| p.to_string_repr().as_ref() == parent_name);
                 if extends_match {
                     out.push(make_item(source, i.name, SymbolKind::INTERFACE, uri));
+                }
+            }
+            StmtKind::Enum(e) => {
+                let implements_match = e
+                    .implements
+                    .iter()
+                    .any(|i| i.to_string_repr().as_ref() == parent_name);
+                if implements_match {
+                    out.push(make_item(source, e.name, SymbolKind::ENUM, uri));
                 }
             }
             StmtKind::Namespace(ns) => {
@@ -274,6 +291,37 @@ mod tests {
         let item = prepare_type_hierarchy(src, &docs, pos(1, 8)).unwrap();
         let subs = subtypes_of(&item, &docs);
         assert_eq!(subs.len(), 2);
+    }
+
+    #[test]
+    fn prepare_finds_enum() {
+        let src = "<?php\nenum Suit { case Hearts; }";
+        let docs = vec![doc("/a.php", src)];
+        let item = prepare_type_hierarchy(src, &docs, pos(1, 7));
+        assert!(item.is_some(), "expected type hierarchy item for enum");
+        assert_eq!(item.as_ref().unwrap().name, "Suit");
+        assert_eq!(item.unwrap().kind, SymbolKind::ENUM);
+    }
+
+    #[test]
+    fn supertypes_of_enum_returns_implemented_interfaces() {
+        let src = "<?php\ninterface Labelable {}\nenum Status implements Labelable { case Active; }";
+        let docs = vec![doc("/a.php", src)];
+        let item = prepare_type_hierarchy(src, &docs, pos(2, 7)).unwrap();
+        let supers = supertypes_of(&item, &docs);
+        assert_eq!(supers.len(), 1, "expected 1 supertype (Labelable)");
+        assert_eq!(supers[0].name, "Labelable");
+    }
+
+    #[test]
+    fn subtypes_finds_implementing_enum() {
+        let src = "<?php\ninterface Labelable {}\nenum Status implements Labelable { case Active; }";
+        let docs = vec![doc("/a.php", src)];
+        let item = prepare_type_hierarchy(src, &docs, pos(1, 12)).unwrap();
+        let subs = subtypes_of(&item, &docs);
+        assert_eq!(subs.len(), 1, "expected enum Status as subtype");
+        assert_eq!(subs[0].name, "Status");
+        assert_eq!(subs[0].kind, SymbolKind::ENUM);
     }
 
     #[test]

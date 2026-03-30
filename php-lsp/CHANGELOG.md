@@ -2,17 +2,6 @@
 
 All notable changes to php-lsp are documented here.
 
-## [0.1.36] — 2026-03-30
-
-### Features
-
-- **Extension stubs — builtin functions**: Added ~100 builtin PHP functions to the arity table (`array_fill_keys`, `array_is_list`, `hash/*`, `openssl_*`, `password_*`, `mb_*`, `gz*`, `filter_*`, `random_bytes/int`, `curl_multi_*`, and many more); all entries are binary-search sorted for O(log n) lookup.
-- **Extension stubs — builtin classes**: Added ~30 builtin classes (`DOMDocument`, `DOMElement`, `DOMNode`, `DOMNodeList`, `DOMAttr`, `DOMText`, `DOMXPath`, `SimpleXMLElement`, `SimpleXMLIterator`, `XMLReader`, `XMLWriter`, `ZipArchive`, `Fiber`, `FiberError`, `mysqli`, `mysqli_result`, `mysqli_stmt`, `SplFileInfo`, `SplFileObject`, `DirectoryIterator`, `FilesystemIterator`, `GlobIterator`, `RecursiveDirectoryIterator`, `ReflectionClass`, `ReflectionMethod`, `ReflectionProperty`, `ReflectionFunction`, `ReflectionParameter`, `HashContext`, `JsonException`, `WeakMap`, `IntlChar`).
-- **ClassMembers stubs**: Full method/property completions for all new classes above, plus `WeakMap` and the `Reflection*` family.
-- **DNF type support**: `(A&B)|C` disjunctive normal form types now parse correctly in `mir-php` — parenthesised intersection groups are split on `|` at depth 0, then each group is stripped of parens and split on `&`.
-- **Include/require path completions**: Typing an `include`/`require` string literal now offers filesystem completions relative to the current document's directory, showing `.php`/`.inc`/`.phtml` files and subdirectories (directories listed first).
-- **Diagnostic configuration flags**: `initializationOptions.diagnostics` accepts per-category toggles — `enabled`, `undefinedVariables`, `undefinedFunctions`, `undefinedClasses`, `arityErrors`, `typeErrors`, `deprecatedCalls`, `duplicateDeclarations`. Settings are read live via `workspace/didChangeConfiguration`.
-
 ## [0.1.35] — 2026-03-30
 
 ### Maintenance

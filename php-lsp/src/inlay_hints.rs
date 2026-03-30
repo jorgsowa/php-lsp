@@ -186,6 +186,24 @@ fn hints_in_stmt(
                 }
             }
         }
+        StmtKind::Trait(t) => {
+            for member in t.members.iter() {
+                if let ClassMemberKind::Method(m) = &member.kind
+                    && let Some(body) = &m.body
+                {
+                    hints_in_stmts(source, body, defs, range, out);
+                }
+            }
+        }
+        StmtKind::Enum(e) => {
+            for member in e.members.iter() {
+                if let EnumMemberKind::Method(m) = &member.kind
+                    && let Some(body) = &m.body
+                {
+                    hints_in_stmts(source, body, defs, range, out);
+                }
+            }
+        }
         StmtKind::Namespace(ns) => {
             if let NamespaceBody::Braced(inner) = &ns.body {
                 hints_in_stmts(source, inner, defs, range, out);
@@ -787,6 +805,82 @@ mod tests {
         assert!(
             param_hints.is_empty(),
             "expected no hints for class without constructor, got: {:?}",
+            param_hints
+        );
+    }
+
+    #[test]
+    fn calls_inside_trait_method_body_get_hints() {
+        let src = concat!(
+            "<?php\n",
+            "function write(string $msg): void {}\n",
+            "trait Logger {\n",
+            "    public function log(): void { write('hello'); }\n",
+            "}\n",
+        );
+        let d = doc(src);
+        let hints = inlay_hints(src, &d, full_range());
+        let param_hints: Vec<&str> = hints
+            .iter()
+            .filter(|h| h.kind == Some(InlayHintKind::PARAMETER))
+            .map(|h| label_str(h))
+            .collect();
+        assert!(
+            param_hints.contains(&"msg:"),
+            "expected 'msg:' hint for call inside trait method body, got: {:?}",
+            param_hints
+        );
+    }
+
+    #[test]
+    fn calls_inside_enum_method_body_get_hints() {
+        let src = concat!(
+            "<?php\n",
+            "function write(string $msg): void {}\n",
+            "enum Status {\n",
+            "    case Active;\n",
+            "    public function log(): void { write('hello'); }\n",
+            "}\n",
+        );
+        let d = doc(src);
+        let hints = inlay_hints(src, &d, full_range());
+        let param_hints: Vec<&str> = hints
+            .iter()
+            .filter(|h| h.kind == Some(InlayHintKind::PARAMETER))
+            .map(|h| label_str(h))
+            .collect();
+        assert!(
+            param_hints.contains(&"msg:"),
+            "expected 'msg:' hint for call inside enum method body, got: {:?}",
+            param_hints
+        );
+    }
+
+    #[test]
+    fn enum_method_call_gets_param_hints() {
+        let src = concat!(
+            "<?php\n",
+            "enum Status {\n",
+            "    case Active;\n",
+            "    public function label(string $prefix, int $pad): string { return ''; }\n",
+            "}\n",
+            "label('x', 2);\n",
+        );
+        let d = doc(src);
+        let hints = inlay_hints(src, &d, full_range());
+        let param_hints: Vec<&str> = hints
+            .iter()
+            .filter(|h| h.kind == Some(InlayHintKind::PARAMETER))
+            .map(|h| label_str(h))
+            .collect();
+        assert!(
+            param_hints.contains(&"prefix:"),
+            "expected 'prefix:' hint for enum method, got: {:?}",
+            param_hints
+        );
+        assert!(
+            param_hints.contains(&"pad:"),
+            "expected 'pad:' hint, got: {:?}",
             param_hints
         );
     }

@@ -78,6 +78,12 @@ fn find_class_range(source: &str, stmts: &[Stmt<'_, '_>], name: &str) -> Option<
             StmtKind::Interface(i) if i.name == name => {
                 return Some(name_range(source, i.name));
             }
+            StmtKind::Trait(t) if t.name == name => {
+                return Some(name_range(source, t.name));
+            }
+            StmtKind::Enum(e) if e.name == name => {
+                return Some(name_range(source, e.name));
+            }
             StmtKind::Namespace(ns) => {
                 if let NamespaceBody::Braced(inner) = &ns.body
                     && let Some(r) = find_class_range(source, inner, name)
@@ -173,5 +179,29 @@ mod tests {
         let docs = vec![doc("/a.php", src)];
         let loc = goto_type_definition(src, &parsed, &docs, pos(2, 2));
         assert!(loc.is_none());
+    }
+
+    #[test]
+    fn resolves_enum_typed_param() {
+        // Cursor on `$s` in the function body — TypeMap infers Status from the typed param.
+        let src = "<?php\nenum Status { case Active; }\nfunction process(Status $s): void { $s-> }";
+        let parsed = ParsedDoc::parse(src.to_string());
+        let docs = vec![doc("/a.php", src)];
+        // "function process(Status $s): void { " is 37 chars, so $s is at col 37.
+        let loc = goto_type_definition(src, &parsed, &docs, pos(2, 37));
+        assert!(loc.is_some(), "expected type definition for Status-typed param");
+        assert_eq!(loc.unwrap().range.start.line, 1);
+    }
+
+    #[test]
+    fn resolves_trait_typed_param() {
+        // Cursor on `$l` in the function body — TypeMap infers Logger from the typed param.
+        let src = "<?php\ntrait Logger {}\nfunction process(Logger $l): void { $l-> }";
+        let parsed = ParsedDoc::parse(src.to_string());
+        let docs = vec![doc("/a.php", src)];
+        // "function process(Logger $l): void { " is 37 chars, so $l is at col 37.
+        let loc = goto_type_definition(src, &parsed, &docs, pos(2, 37));
+        assert!(loc.is_some(), "expected type definition for trait-typed param");
+        assert_eq!(loc.unwrap().range.start.line, 1);
     }
 }
