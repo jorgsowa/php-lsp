@@ -1,4 +1,4 @@
-use php_ast::{ClassMemberKind, NamespaceBody, Stmt, StmtKind};
+use php_ast::{ClassMemberKind, EnumMemberKind, NamespaceBody, Stmt, StmtKind};
 use tower_lsp::lsp_types::{FoldingRange, FoldingRangeKind};
 
 use crate::ast::{ParsedDoc, offset_to_position};
@@ -83,10 +83,21 @@ fn fold_stmt(stmt: &Stmt<'_, '_>, source: &str, out: &mut Vec<FoldingRange>) {
                 }
             }
         }
-        StmtKind::Enum(_e) => {
+        StmtKind::Enum(e) => {
             let start_line = offset_to_position(source, stmt.span.start).line;
             let end_line = offset_to_position(source, stmt.span.end).line;
             push(out, start_line, end_line, None);
+            for member in e.members.iter() {
+                if let EnumMemberKind::Method(m) = &member.kind {
+                    let m_start = offset_to_position(source, member.span.start).line;
+                    let m_end =
+                        offset_to_position(source, member.span.end.saturating_sub(1)).line;
+                    push(out, m_start, m_end, None);
+                    if let Some(body) = &m.body {
+                        fold_stmts(body, source, out);
+                    }
+                }
+            }
         }
         StmtKind::If(i) => {
             let start_line = offset_to_position(source, stmt.span.start).line;
@@ -488,5 +499,24 @@ mod tests {
             "single-line function should produce NO fold range, got {:?}",
             lines(&ranges)
         );
+    }
+
+    #[test]
+    fn enum_method_is_folded() {
+        let src = "<?php\nenum Suit {\n    case Hearts;\n    public function label(): string {\n        return 'hearts';\n    }\n}";
+        let d = doc(src);
+        let ranges = folding_ranges(src, &d);
+        let ls = lines(&ranges);
+        assert!(
+            ls.contains(&(1, 6)),
+            "expected enum fold (1..6), got {:?}",
+            ls
+        );
+        assert!(
+            ls.contains(&(3, 5)),
+            "expected method fold (3..5), got {:?}",
+            ls
+        );
+        assert_eq!(ranges.len(), 2, "expected 2 fold ranges (enum + method), got {:?}", ls);
     }
 }

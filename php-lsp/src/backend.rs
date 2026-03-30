@@ -50,6 +50,60 @@ use crate::type_definition::goto_type_definition;
 use crate::type_hierarchy::{prepare_type_hierarchy, subtypes_of, supertypes_of};
 use crate::util::word_at;
 
+/// Per-category diagnostic toggle flags.
+/// All flags default to `true` (enabled). Set to `false` to suppress that category.
+#[derive(Debug, Clone)]
+pub struct DiagnosticsConfig {
+    /// Master switch: when `false`, no diagnostics are emitted.
+    pub enabled: bool,
+    /// Undefined variable references.
+    pub undefined_variables: bool,
+    /// Calls to undefined functions.
+    pub undefined_functions: bool,
+    /// References to undefined classes / interfaces / traits.
+    pub undefined_classes: bool,
+    /// Wrong number of arguments passed to a function.
+    pub arity_errors: bool,
+    /// Return-type mismatches.
+    pub type_errors: bool,
+    /// Calls to `@deprecated` members.
+    pub deprecated_calls: bool,
+    /// Duplicate class / function declarations.
+    pub duplicate_declarations: bool,
+}
+
+impl Default for DiagnosticsConfig {
+    fn default() -> Self {
+        DiagnosticsConfig {
+            enabled: true,
+            undefined_variables: true,
+            undefined_functions: true,
+            undefined_classes: true,
+            arity_errors: true,
+            type_errors: true,
+            deprecated_calls: true,
+            duplicate_declarations: true,
+        }
+    }
+}
+
+impl DiagnosticsConfig {
+    fn from_value(v: &serde_json::Value) -> Self {
+        let mut cfg = DiagnosticsConfig::default();
+        let Some(obj) = v.as_object() else { return cfg };
+        let flag = |key: &str| obj.get(key).and_then(|x| x.as_bool()).unwrap_or(true);
+        cfg.enabled = flag("enabled");
+        cfg.undefined_variables = flag("undefinedVariables");
+        cfg.undefined_functions = flag("undefinedFunctions");
+        cfg.undefined_classes = flag("undefinedClasses");
+        cfg.arity_errors = flag("arityErrors");
+        cfg.type_errors = flag("typeErrors");
+        cfg.deprecated_calls = flag("deprecatedCalls");
+        cfg.duplicate_declarations = flag("duplicateDeclarations");
+        cfg
+    }
+}
+
 /// Configuration received from the client via `initializationOptions`.
 #[derive(Debug, Default, Clone)]
 pub struct LspConfig {
@@ -58,6 +112,8 @@ pub struct LspConfig {
     pub php_version: Option<String>,
     /// Glob patterns for paths to exclude from workspace indexing.
     pub exclude_paths: Vec<String>,
+    /// Per-category diagnostic toggles.
+    pub diagnostics: DiagnosticsConfig,
 }
 
 impl LspConfig {
@@ -71,6 +127,9 @@ impl LspConfig {
                 .iter()
                 .filter_map(|x| x.as_str().map(str::to_string))
                 .collect();
+        }
+        if let Some(diag_val) = v.get("diagnostics") {
+            cfg.diagnostics = DiagnosticsConfig::from_value(diag_val);
         }
         cfg
     }
@@ -430,7 +489,8 @@ impl LanguageServer for Backend {
         let doc2 = self.docs.get_doc(&uri);
         let mut all_diags = diagnostics;
         if let Some(ref d) = doc2 {
-            let dup_diags = duplicate_declaration_diagnostics(&stored_source, d);
+            let diag_cfg = self.config.read().unwrap().diagnostics.clone();
+            let dup_diags = duplicate_declaration_diagnostics(&stored_source, d, &diag_cfg);
             all_diags.extend(dup_diags);
         }
         self.client.publish_diagnostics(uri, all_diags, None).await;
@@ -450,6 +510,7 @@ impl LanguageServer for Backend {
 
         let docs = Arc::clone(&self.docs);
         let client = self.client.clone();
+        let diag_cfg = self.config.read().unwrap().diagnostics.clone();
         tokio::spawn(async move {
             // 100 ms debounce: if another edit arrives before we parse, the
             // version check in apply_parse will discard this stale result.
@@ -464,11 +525,16 @@ impl LanguageServer for Backend {
                 let source = docs.get(&uri).unwrap_or_default();
                 let mut all_diags = diagnostics;
                 if let Some(d) = docs.get_doc(&uri) {
-                    all_diags.extend(duplicate_declaration_diagnostics(&source, &d));
+                    all_diags.extend(duplicate_declaration_diagnostics(&source, &d, &diag_cfg));
                     let other_raw = docs.other_docs(&uri);
                     let other_docs: Vec<Arc<ParsedDoc>> =
                         other_raw.into_iter().map(|(_, d)| d).collect();
-                    all_diags.extend(deprecated_call_diagnostics(&source, &d, &other_docs));
+                    all_diags.extend(deprecated_call_diagnostics(
+                        &source,
+                        &d,
+                        &other_docs,
+                        &diag_cfg,
+                    ));
                 }
                 client.publish_diagnostics(uri, all_diags, None).await;
             }
@@ -498,11 +564,12 @@ impl LanguageServer for Backend {
         let source = self.docs.get(&uri).unwrap_or_default();
         let doc = self.docs.get_doc(&uri);
         if let Some(ref d) = doc {
+            let diag_cfg = self.config.read().unwrap().diagnostics.clone();
             let parse_diags = self.docs.get_diagnostics(&uri).unwrap_or_default();
-            let dup_diags = duplicate_declaration_diagnostics(&source, d);
+            let dup_diags = duplicate_declaration_diagnostics(&source, d, &diag_cfg);
             let other_raw = self.docs.other_docs(&uri);
             let other_docs: Vec<Arc<ParsedDoc>> = other_raw.into_iter().map(|(_, d)| d).collect();
-            let dep_diags = deprecated_call_diagnostics(&source, d, &other_docs);
+            let dep_diags = deprecated_call_diagnostics(&source, d, &other_docs, &diag_cfg);
             let mut all = parse_diags;
             all.extend(dup_diags);
             all.extend(dep_diags);
@@ -561,6 +628,7 @@ impl LanguageServer for Backend {
             Some(&source),
             Some(position),
             meta_opt,
+            Some(uri),
         ))))
     }
 
@@ -1276,8 +1344,9 @@ impl LanguageServer for Backend {
             }
         };
         let other_docs = self.docs.other_docs(uri);
-        let sem_diags = semantic_diagnostics(uri, &doc, &other_docs);
-        let dup_diags = duplicate_declaration_diagnostics(&source, &doc);
+        let diag_cfg = self.config.read().unwrap().diagnostics.clone();
+        let sem_diags = semantic_diagnostics(uri, &doc, &other_docs, &diag_cfg);
+        let dup_diags = duplicate_declaration_diagnostics(&source, &doc, &diag_cfg);
 
         let mut items = parse_diags;
         items.extend(sem_diags);
@@ -1329,7 +1398,8 @@ impl LanguageServer for Backend {
         let other_docs = self.docs.other_docs(uri);
 
         // Semantic diagnostics — collect undefined symbols and offer "Add use import"
-        let sem_diags = semantic_diagnostics(uri, &doc, &other_docs);
+        let diag_cfg = self.config.read().unwrap().diagnostics.clone();
+        let sem_diags = semantic_diagnostics(uri, &doc, &other_docs, &diag_cfg);
 
         // Publish semantic diagnostics merged with existing parse diagnostics
         if !sem_diags.is_empty() {

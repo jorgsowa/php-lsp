@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use php_ast::{ClassMemberKind, NamespaceBody, Span, Stmt, StmtKind};
+use php_ast::{ClassMemberKind, EnumMemberKind, NamespaceBody, Span, Stmt, StmtKind};
 use tower_lsp::lsp_types::{Location, Position, Range, Url};
 
 use crate::ast::{ParsedDoc, offset_to_position};
@@ -98,6 +98,38 @@ fn is_declaration_span(stmts: &[Stmt<'_, '_>], word: &str, span: &Span) -> bool 
                 StmtKind::Trait(t) if t.name == word => {
                     if spans_equal(&stmt.span, span) {
                         return true;
+                    }
+                }
+                StmtKind::Trait(t) => {
+                    for member in t.members.iter() {
+                        if let ClassMemberKind::Method(m) = &member.kind
+                            && m.name == word
+                            && spans_equal(&member.span, span)
+                        {
+                            return true;
+                        }
+                    }
+                }
+                StmtKind::Enum(e) if e.name == word => {
+                    if spans_equal(&stmt.span, span) {
+                        return true;
+                    }
+                }
+                StmtKind::Enum(e) => {
+                    for member in e.members.iter() {
+                        match &member.kind {
+                            EnumMemberKind::Method(m)
+                                if m.name == word && spans_equal(&member.span, span) =>
+                            {
+                                return true;
+                            }
+                            EnumMemberKind::Case(c)
+                                if c.name == word && spans_equal(&member.span, span) =>
+                            {
+                                return true;
+                            }
+                            _ => {}
+                        }
                     }
                 }
                 StmtKind::Namespace(ns) => {

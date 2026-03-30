@@ -1,5 +1,5 @@
 /// Code action: generate a PHPDoc stub for a function or method that lacks one.
-use php_ast::{ClassMemberKind, NamespaceBody, Param, Stmt, StmtKind};
+use php_ast::{ClassMemberKind, EnumMemberKind, NamespaceBody, Param, Stmt, StmtKind};
 use tower_lsp::lsp_types::{
     CodeAction, CodeActionKind, CodeActionOrCommand, Position, Range, TextEdit, Url, WorkspaceEdit,
 };
@@ -49,6 +49,40 @@ fn collect(
                         {
                             let ret = m.return_type.as_ref().map(|t| format_type_hint(t));
                             if let Some(action) = make_action(uri, source, fn_line, &m.params, ret)
+                            {
+                                out.push(action);
+                            }
+                        }
+                    }
+                }
+            }
+            StmtKind::Trait(t) => {
+                for member in t.members.iter() {
+                    if let ClassMemberKind::Method(m) = &member.kind {
+                        let fn_line = offset_to_position(source, member.span.start).line;
+                        if line_in_range(fn_line, range)
+                            && docblock_before(source, member.span.start).is_none()
+                        {
+                            let ret = m.return_type.as_ref().map(|t| format_type_hint(t));
+                            if let Some(action) =
+                                make_action(uri, source, fn_line, &m.params, ret)
+                            {
+                                out.push(action);
+                            }
+                        }
+                    }
+                }
+            }
+            StmtKind::Enum(e) => {
+                for member in e.members.iter() {
+                    if let EnumMemberKind::Method(m) = &member.kind {
+                        let fn_line = offset_to_position(source, member.span.start).line;
+                        if line_in_range(fn_line, range)
+                            && docblock_before(source, member.span.start).is_none()
+                        {
+                            let ret = m.return_type.as_ref().map(|t| format_type_hint(t));
+                            if let Some(action) =
+                                make_action(uri, source, fn_line, &m.params, ret)
                             {
                                 out.push(action);
                             }
@@ -201,6 +235,46 @@ mod tests {
         } else {
             panic!("expected CodeAction");
         }
+    }
+
+    #[test]
+    fn generates_action_for_trait_method() {
+        let src = "<?php\ntrait Logger {\n    public function log(string $msg): void {}\n}";
+        let d = doc(src);
+        let actions = phpdoc_actions(&uri(), &d, src, point(2));
+        assert_eq!(actions.len(), 1, "expected 1 action for trait method");
+        if let CodeActionOrCommand::CodeAction(a) = &actions[0] {
+            let changes = a.edit.as_ref().unwrap().changes.as_ref().unwrap();
+            let edits = changes.values().next().unwrap();
+            assert!(edits[0].new_text.contains("@param string $msg"));
+            assert!(edits[0].new_text.contains("@return void"));
+        } else {
+            panic!("expected CodeAction");
+        }
+    }
+
+    #[test]
+    fn generates_action_for_enum_method() {
+        let src = "<?php\nenum Suit {\n    case Hearts;\n    public function label(int $pad): string { return ''; }\n}";
+        let d = doc(src);
+        let actions = phpdoc_actions(&uri(), &d, src, point(3));
+        assert_eq!(actions.len(), 1, "expected 1 action for enum method");
+        if let CodeActionOrCommand::CodeAction(a) = &actions[0] {
+            let changes = a.edit.as_ref().unwrap().changes.as_ref().unwrap();
+            let edits = changes.values().next().unwrap();
+            assert!(edits[0].new_text.contains("@param int $pad"));
+            assert!(edits[0].new_text.contains("@return string"));
+        } else {
+            panic!("expected CodeAction");
+        }
+    }
+
+    #[test]
+    fn no_action_for_trait_method_with_existing_docblock() {
+        let src = "<?php\ntrait Logger {\n    /** Already documented. */\n    public function log(string $msg): void {}\n}";
+        let d = doc(src);
+        let actions = phpdoc_actions(&uri(), &d, src, point(3));
+        assert!(actions.is_empty(), "should not offer action when docblock exists");
     }
 
     #[test]

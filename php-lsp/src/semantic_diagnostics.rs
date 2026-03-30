@@ -10,14 +10,21 @@ use tower_lsp::lsp_types::{
 };
 
 use crate::ast::{ParsedDoc, offset_to_position};
+use crate::backend::DiagnosticsConfig;
 use crate::docblock::{docblock_before, parse_docblock};
 
 /// Run semantic checks on `doc` against `other_docs` and return LSP diagnostics.
+/// Applies `cfg` to suppress individual diagnostic categories.
 pub fn semantic_diagnostics(
     uri: &Url,
     doc: &ParsedDoc,
     other_docs: &[(Url, Arc<ParsedDoc>)],
+    cfg: &DiagnosticsConfig,
 ) -> Vec<Diagnostic> {
+    if !cfg.enabled {
+        return vec![];
+    }
+
     let source = doc.source();
     let stmts: &[php_ast::Stmt<'_, '_>] = doc.program().stmts.as_ref();
 
@@ -30,8 +37,37 @@ pub fn semantic_diagnostics(
 
     mir_php::analyze(source, stmts, &all)
         .into_iter()
+        .filter(|d| diagnostic_passes_filter(d, cfg))
         .map(|d| to_lsp_diagnostic(d, uri))
         .collect()
+}
+
+/// Returns `true` if the mir-php diagnostic is allowed through by the config.
+fn diagnostic_passes_filter(d: &mir_php::Diagnostic, cfg: &DiagnosticsConfig) -> bool {
+    let msg = &d.message;
+    if msg.starts_with("Undefined variable:") {
+        return cfg.undefined_variables;
+    }
+    if msg.starts_with("Undefined: ") {
+        // Heuristic: PHP classes start with an uppercase letter, functions with lowercase.
+        let name = &msg["Undefined: ".len()..];
+        let first = name.chars().next().unwrap_or('_');
+        return if first.is_uppercase() {
+            cfg.undefined_classes
+        } else {
+            cfg.undefined_functions
+        };
+    }
+    if msg.starts_with("Too few arguments") || msg.starts_with("Too many arguments") {
+        return cfg.arity_errors;
+    }
+    if msg.starts_with("Cannot return null")
+        || msg.starts_with("Calling a method on null")
+        || msg.contains("type mismatch")
+    {
+        return cfg.type_errors;
+    }
+    true
 }
 
 /// Check for deprecated function/method calls and emit Warning diagnostics.
@@ -39,7 +75,11 @@ pub fn deprecated_call_diagnostics(
     source: &str,
     doc: &ParsedDoc,
     other_docs: &[Arc<ParsedDoc>],
+    cfg: &DiagnosticsConfig,
 ) -> Vec<Diagnostic> {
+    if !cfg.enabled || !cfg.deprecated_calls {
+        return vec![];
+    }
     let mut diags = Vec::new();
     collect_deprecated_calls(source, &doc.program().stmts, doc, other_docs, &mut diags);
     diags
@@ -275,7 +315,14 @@ fn find_method_span_in_stmts(stmts: &[Stmt<'_, '_>], method_name: &str) -> Optio
 }
 
 /// Check for duplicate class/function/interface/trait/enum declarations.
-pub fn duplicate_declaration_diagnostics(source: &str, doc: &ParsedDoc) -> Vec<Diagnostic> {
+pub fn duplicate_declaration_diagnostics(
+    source: &str,
+    doc: &ParsedDoc,
+    cfg: &DiagnosticsConfig,
+) -> Vec<Diagnostic> {
+    if !cfg.enabled || !cfg.duplicate_declarations {
+        return vec![];
+    }
     let mut seen: std::collections::HashMap<String, ()> = std::collections::HashMap::new();
     let mut diags = Vec::new();
     collect_duplicate_decls(source, &doc.program().stmts, "", &mut seen, &mut diags);
@@ -289,6 +336,9 @@ fn collect_duplicate_decls(
     seen: &mut std::collections::HashMap<String, ()>,
     diags: &mut Vec<Diagnostic>,
 ) {
+    // Track the active namespace for unbraced `namespace Foo;` declarations.
+    let mut active_ns = current_ns.to_string();
+
     for stmt in stmts {
         let name_and_span: Option<(&str, u32)> = match &stmt.kind {
             StmtKind::Class(c) => c.name.map(|n| (n, stmt.span.start)),
@@ -297,28 +347,38 @@ fn collect_duplicate_decls(
             StmtKind::Enum(e) => Some((e.name, stmt.span.start)),
             StmtKind::Function(f) => Some((f.name, stmt.span.start)),
             StmtKind::Namespace(ns) => {
-                if let php_ast::NamespaceBody::Braced(inner) = &ns.body {
-                    let ns_name = ns
-                        .name
-                        .as_ref()
-                        .map(|n| n.to_string_repr().to_string())
-                        .unwrap_or_default();
-                    let child_ns = if current_ns.is_empty() {
-                        ns_name
-                    } else {
-                        format!("{}\\{}", current_ns, ns_name)
-                    };
-                    collect_duplicate_decls(source, inner, &child_ns, seen, diags);
+                let ns_name = ns
+                    .name
+                    .as_ref()
+                    .map(|n| n.to_string_repr().to_string())
+                    .unwrap_or_default();
+                match &ns.body {
+                    php_ast::NamespaceBody::Braced(inner) => {
+                        let child_ns = if current_ns.is_empty() {
+                            ns_name
+                        } else {
+                            format!("{}\\{}", current_ns, ns_name)
+                        };
+                        collect_duplicate_decls(source, inner, &child_ns, seen, diags);
+                    }
+                    php_ast::NamespaceBody::Simple => {
+                        // Unbraced namespace: subsequent siblings belong to this namespace.
+                        active_ns = if current_ns.is_empty() {
+                            ns_name
+                        } else {
+                            format!("{}\\{}", current_ns, ns_name)
+                        };
+                    }
                 }
                 None
             }
             _ => None,
         };
         if let Some((name, span_start)) = name_and_span {
-            let key = if current_ns.is_empty() {
+            let key = if active_ns.is_empty() {
                 name.to_string()
             } else {
-                format!("{}\\{}", current_ns, name)
+                format!("{}\\{}", active_ns, name)
             };
             if seen.insert(key, ()).is_some() {
                 let pos = crate::ast::offset_to_position(source, span_start);
@@ -398,7 +458,7 @@ mod tests {
         let src =
             "<?php\n/** @deprecated Use newFunc() instead */\nfunction oldFunc() {}\n\noldFunc();";
         let doc = ParsedDoc::parse(src.to_string());
-        let diags = deprecated_call_diagnostics(src, &doc, &[]);
+        let diags = deprecated_call_diagnostics(src, &doc, &[], &DiagnosticsConfig::default());
         assert_eq!(
             diags.len(),
             1,
@@ -416,7 +476,7 @@ mod tests {
     fn duplicate_class_emits_warning() {
         let src = "<?php\nclass Foo {}\nclass Foo {}";
         let doc = ParsedDoc::parse(src.to_string());
-        let diags = duplicate_declaration_diagnostics(src, &doc);
+        let diags = duplicate_declaration_diagnostics(src, &doc, &DiagnosticsConfig::default());
         assert_eq!(
             diags.len(),
             1,
@@ -434,7 +494,7 @@ mod tests {
     fn no_duplicate_for_unique_declarations() {
         let src = "<?php\nclass Foo {}\nclass Bar {}";
         let doc = ParsedDoc::parse(src.to_string());
-        let diags = duplicate_declaration_diagnostics(src, &doc);
+        let diags = duplicate_declaration_diagnostics(src, &doc, &DiagnosticsConfig::default());
         assert!(diags.is_empty());
     }
 
@@ -443,7 +503,7 @@ mod tests {
         // Two classes named `Foo` in different namespaces — should produce zero diagnostics.
         let src = "<?php\nnamespace App\\A {\nclass Foo {}\n}\nnamespace App\\B {\nclass Foo {}\n}";
         let doc = ParsedDoc::parse(src.to_string());
-        let diags = duplicate_declaration_diagnostics(src, &doc);
+        let diags = duplicate_declaration_diagnostics(src, &doc, &DiagnosticsConfig::default());
         assert!(
             diags.is_empty(),
             "classes with same name in different namespaces should not be flagged, got: {:?}",
@@ -456,7 +516,7 @@ mod tests {
         // Same interface defined twice in same file — should produce exactly one error.
         let src = "<?php\ninterface Logger {}\ninterface Logger {}";
         let doc = ParsedDoc::parse(src.to_string());
-        let diags = duplicate_declaration_diagnostics(src, &doc);
+        let diags = duplicate_declaration_diagnostics(src, &doc, &DiagnosticsConfig::default());
         assert_eq!(
             diags.len(),
             1,
@@ -479,7 +539,7 @@ mod tests {
         // Same trait defined twice in same file — should produce exactly one error.
         let src = "<?php\ntrait Serializable {}\ntrait Serializable {}";
         let doc = ParsedDoc::parse(src.to_string());
-        let diags = duplicate_declaration_diagnostics(src, &doc);
+        let diags = duplicate_declaration_diagnostics(src, &doc, &DiagnosticsConfig::default());
         assert_eq!(
             diags.len(),
             1,
@@ -510,7 +570,7 @@ mod tests {
             "$m->send();\n",
         );
         let doc = ParsedDoc::parse(src.to_string());
-        let diags = deprecated_call_diagnostics(src, &doc, &[]);
+        let diags = deprecated_call_diagnostics(src, &doc, &[], &DiagnosticsConfig::default());
         assert_eq!(
             diags.len(),
             1,
@@ -537,7 +597,7 @@ mod tests {
         // word "Deprecated" (case-sensitive per implementation: "Deprecated: …").
         let src = "<?php\n/** @deprecated old API */\nfunction legacyFn() {}\n\nlegacyFn();";
         let doc = ParsedDoc::parse(src.to_string());
-        let diags = deprecated_call_diagnostics(src, &doc, &[]);
+        let diags = deprecated_call_diagnostics(src, &doc, &[], &DiagnosticsConfig::default());
         assert_eq!(diags.len(), 1, "expected exactly 1 diagnostic");
         let msg = &diags[0].message;
         assert!(
@@ -556,7 +616,7 @@ mod tests {
         // (Note: `duplicate_declaration_diagnostics` emits DiagnosticSeverity::WARNING.)
         let src = "<?php\nfunction doWork() {}\nfunction doWork() {}";
         let doc = ParsedDoc::parse(src.to_string());
-        let diags = duplicate_declaration_diagnostics(src, &doc);
+        let diags = duplicate_declaration_diagnostics(src, &doc, &DiagnosticsConfig::default());
         assert_eq!(diags.len(), 1, "expected exactly 1 duplicate diagnostic");
         assert_eq!(
             diags[0].severity,
@@ -576,7 +636,7 @@ mod tests {
             "wrapper(oldFn());\n",
         );
         let doc = ParsedDoc::parse(src.to_string());
-        let diags = deprecated_call_diagnostics(src, &doc, &[]);
+        let diags = deprecated_call_diagnostics(src, &doc, &[], &DiagnosticsConfig::default());
         assert_eq!(
             diags.len(),
             1,
@@ -603,7 +663,7 @@ mod tests {
             "$a->log();\n",
         );
         let doc = ParsedDoc::parse(src.to_string());
-        let diags = deprecated_call_diagnostics(src, &doc, &[]);
+        let diags = deprecated_call_diagnostics(src, &doc, &[], &DiagnosticsConfig::default());
         assert_eq!(
             diags.len(),
             1,
@@ -629,7 +689,7 @@ mod tests {
             "$s->label();\n",
         );
         let doc = ParsedDoc::parse(src.to_string());
-        let diags = deprecated_call_diagnostics(src, &doc, &[]);
+        let diags = deprecated_call_diagnostics(src, &doc, &[], &DiagnosticsConfig::default());
         assert_eq!(
             diags.len(),
             1,
@@ -640,5 +700,33 @@ mod tests {
             diags[0].message.contains("label"),
             "message should mention 'label'"
         );
+    }
+
+    #[test]
+    fn unbraced_namespace_classes_with_same_name_not_flagged() {
+        // Two classes named `Foo` in different unbraced namespaces — should not be a duplicate.
+        let src = "<?php\nnamespace App\\A;\nclass Foo {}\nnamespace App\\B;\nclass Foo {}";
+        let doc = ParsedDoc::parse(src.to_string());
+        let diags = duplicate_declaration_diagnostics(src, &doc, &DiagnosticsConfig::default());
+        assert!(
+            diags.is_empty(),
+            "classes with same name in different unbraced namespaces should not be flagged, got: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn unbraced_namespace_duplicate_in_same_namespace_is_flagged() {
+        // Two classes named `Foo` in the same unbraced namespace — should produce one warning.
+        let src = "<?php\nnamespace App;\nclass Foo {}\nclass Foo {}";
+        let doc = ParsedDoc::parse(src.to_string());
+        let diags = duplicate_declaration_diagnostics(src, &doc, &DiagnosticsConfig::default());
+        assert_eq!(
+            diags.len(),
+            1,
+            "expected 1 duplicate-declaration diagnostic, got: {:?}",
+            diags
+        );
+        assert!(diags[0].message.contains("Foo"));
     }
 }

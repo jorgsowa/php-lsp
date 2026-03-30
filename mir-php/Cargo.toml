@@ -1,0 +1,22 @@
+[package]
+name = "mir-php"
+version = "0.1.0"
+edition = "2024"
+description = "PHP static analysis engine — type inference and diagnostics"
+license = "MIT"
+repository = "https://github.com/jorgsowa/php-lsp"
+readme = "README.md"
+
+[[bin]]
+name = "mir-php"
+path = "src/main.rs"
+
+[dependencies]
+php-rs-parser = "0.2.1"
+php-ast = "0.2.1"
+bumpalo = { version = "3", features = ["collections"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+tempfile = "3"

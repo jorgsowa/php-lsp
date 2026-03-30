@@ -436,9 +436,9 @@ checksum = "7655c9839580ee829dfacba1d1278c2b7883e50a277ff7541299489d6bdfdc45"
 
 [[package]]
 name = "itoa"
-version = "1.0.18"
+version = "1.0.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
+checksum = "92ecc6618181def0457392ccd0ee51198e065e016d1d527a7ac1b6dc7c1f09d2"
 
 [[package]]
 name = "lazy_static"
@@ -555,31 +555,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "mir-php"
-version = "0.1.0"
-dependencies = [
- "bumpalo",
- "php-ast",
- "php-rs-parser",
- "serde",
- "serde_json",
- "tempfile",
-]
-
-[[package]]
-name = "mir-php"
-version = "0.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3dbf5f2caaf1e0fa0a6598db3aa61ca255f0a5fe18ea1a1c5f5075ccf6c5ebff"
-dependencies = [
- "bumpalo",
- "php-ast",
- "php-rs-parser",
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "object"
 version = "0.37.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -651,11 +626,10 @@ dependencies = [
 
 [[package]]
 name = "php-lsp"
-version = "0.1.35"
+version = "0.1.14"
 dependencies = [
  "bumpalo",
  "dashmap 6.1.0",
- "mir-php 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
  "php-ast",
  "php-rs-parser",
  "serde_json",
