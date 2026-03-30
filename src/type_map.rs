@@ -67,13 +67,6 @@ impl TypeMap {
     pub fn get<'a>(&'a self, var: &str) -> Option<&'a str> {
         self.0.get(var).map(|s| s.as_str())
     }
-
-    /// Returns the element type stored under the `$var[]` key — populated when
-    /// `$var` was assigned from `array_map` / `array_filter` with a typed callback.
-    #[allow(dead_code)]
-    pub fn get_element_type<'a>(&'a self, var: &str) -> Option<&'a str> {
-        self.0.get(&format!("{var}[]")).map(|s| s.as_str())
-    }
 }
 
 /// Pre-build a map of class_name → method_name → return_class_name from all given docs.
@@ -1227,7 +1220,7 @@ mod tests {
         let doc = ParsedDoc::parse(src.to_string());
         let tm = TypeMap::from_doc(&doc);
         assert_eq!(
-            tm.get_element_type("$result"),
+            tm.get("$result[]"),
             Some("Bar"),
             "array_map with typed fn callback should store element type as $result[]"
         );
