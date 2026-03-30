@@ -2,6 +2,14 @@
 
 All notable changes to php-lsp are documented here.
 
+## [0.1.35] — 2026-03-30
+
+### Maintenance
+
+- **CI**: Removed `path = "../mir-php"` from the dependency — CI now resolves `mir-php` from crates.io; local workspace resolver continues to use the sibling crate unchanged.
+- **Clippy**: Resolved all 149 warnings surfaced when `mir-php` became available to the linter. Key fixes: collapsible `if` statements, redundant `..Default::default()`, `starts_with` + manual slice replaced with `strip_prefix`, `MetaEntries` type alias for complex `HashMap` type, dead `get_element_type` method removed (test updated to use `tm.get("$result[]")`).
+- **Formatting**: Applied `cargo fmt` across 31 files.
+
 ## [0.1.34] — 2026-03-30
 
 ### Bug fixes
