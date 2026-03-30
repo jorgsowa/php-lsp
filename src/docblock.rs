@@ -175,8 +175,8 @@ pub fn parse_docblock(raw: &str) -> Docblock {
         let line = line.trim();
         let line = line.strip_prefix('*').unwrap_or(line).trim();
 
-        if line.starts_with('@') {
-            let mut parts = line[1..].splitn(2, char::is_whitespace);
+        if let Some(line) = line.strip_prefix('@') {
+            let mut parts = line.splitn(2, char::is_whitespace);
             let tag = parts.next().unwrap_or("").to_lowercase();
             let rest = parts.next().unwrap_or("").trim();
 
@@ -202,8 +202,8 @@ pub fn parse_docblock(raw: &str) -> Docblock {
                     var_type = Some(type_hint.to_string());
                     // Optional `$varName` after the type hint.
                     let vname = remainder.trim();
-                    if vname.starts_with('$') {
-                        let name: String = vname[1..]
+                    if let Some(vname) = vname.strip_prefix('$') {
+                        let name: String = vname
                             .chars()
                             .take_while(|c| c.is_alphanumeric() || *c == '_')
                             .collect();
@@ -414,19 +414,19 @@ pub fn find_docblock(
             }
             StmtKind::Class(c) => {
                 for member in c.members.iter() {
-                    if let ClassMemberKind::Method(m) = &member.kind {
-                        if m.name == word {
-                            let raw = docblock_before(source, member.span.start)?;
-                            return Some(parse_docblock(&raw));
-                        }
+                    if let ClassMemberKind::Method(m) = &member.kind
+                        && m.name == word
+                    {
+                        let raw = docblock_before(source, member.span.start)?;
+                        return Some(parse_docblock(&raw));
                     }
                 }
             }
             StmtKind::Namespace(ns) => {
-                if let NamespaceBody::Braced(inner) = &ns.body {
-                    if let Some(db) = find_docblock(source, inner, word) {
-                        return Some(db);
-                    }
+                if let NamespaceBody::Braced(inner) = &ns.body
+                    && let Some(db) = find_docblock(source, inner, word)
+                {
+                    return Some(db);
                 }
             }
             _ => {}

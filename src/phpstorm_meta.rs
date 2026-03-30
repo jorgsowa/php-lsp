@@ -16,13 +16,15 @@ use php_ast::{ExprKind, NamespaceBody, Stmt, StmtKind};
 
 use crate::ast::ParsedDoc;
 
+type MetaEntries = HashMap<(String, String), Vec<(Option<String>, String)>>;
+
 /// A parsed `.phpstorm.meta.php` file.
 #[derive(Debug, Default, Clone)]
 pub struct PhpStormMeta {
     /// Key: `(lowercase_class, lowercase_method)`
     /// Value: list of `(arg_literal, return_class)` pairs.
     ///        `arg_literal == None` is the wildcard `'' => ReturnType` entry.
-    entries: HashMap<(String, String), Vec<(Option<String>, String)>>,
+    entries: MetaEntries,
 }
 
 impl PhpStormMeta {
@@ -61,10 +63,10 @@ impl PhpStormMeta {
 
         // 1. Exact match (case-insensitive, strip leading `\`)
         for (literal, ret) in pairs {
-            if let Some(lit) = literal {
-                if lit.trim_start_matches('\\').eq_ignore_ascii_case(needle) {
-                    return Some(ret.as_str());
-                }
+            if let Some(lit) = literal
+                && lit.trim_start_matches('\\').eq_ignore_ascii_case(needle)
+            {
+                return Some(ret.as_str());
             }
         }
         // 2. Wildcard (`'' => ReturnType`)
@@ -85,20 +87,20 @@ fn collect_overrides(stmts: &[Stmt<'_, '_>], meta: &mut PhpStormMeta) {
             StmtKind::Namespace(ns) => {
                 // We only care about the PHPSTORM_META namespace.
                 let name = ns.name.as_ref().map(|n| n.to_string_repr());
-                if name.as_deref() == Some("PHPSTORM_META") {
-                    if let NamespaceBody::Braced(inner) = &ns.body {
-                        collect_overrides(inner, meta);
-                    }
+                if name.as_deref() == Some("PHPSTORM_META")
+                    && let NamespaceBody::Braced(inner) = &ns.body
+                {
+                    collect_overrides(inner, meta);
                 }
             }
             StmtKind::Expression(expr) => {
                 // Top-level `override(...)` call.
-                if let ExprKind::FunctionCall(f) = &expr.kind {
-                    if let ExprKind::Identifier(name) = &f.name.kind {
-                        if name.as_ref().eq_ignore_ascii_case("override") && f.args.len() == 2 {
-                            parse_override(&f.args[0].value, &f.args[1].value, meta);
-                        }
-                    }
+                if let ExprKind::FunctionCall(f) = &expr.kind
+                    && let ExprKind::Identifier(name) = &f.name.kind
+                    && name.as_ref().eq_ignore_ascii_case("override")
+                    && f.args.len() == 2
+                {
+                    parse_override(&f.args[0].value, &f.args[1].value, meta);
                 }
             }
             _ => {}

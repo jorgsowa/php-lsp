@@ -181,13 +181,13 @@ fn non_static_props(c: &php_ast::ClassDecl<'_, '_>) -> Vec<Prop> {
     c.members
         .iter()
         .filter_map(|m| {
-            if let ClassMemberKind::Property(p) = &m.kind {
-                if !p.is_static {
-                    return Some(Prop {
-                        name: p.name.to_string(),
-                        type_str: p.type_hint.as_ref().map(format_type_hint),
-                    });
-                }
+            if let ClassMemberKind::Property(p) = &m.kind
+                && !p.is_static
+            {
+                return Some(Prop {
+                    name: p.name.to_string(),
+                    type_str: p.type_hint.as_ref().map(format_type_hint),
+                });
             }
             None
         })

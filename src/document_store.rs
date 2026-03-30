@@ -59,12 +59,12 @@ impl DocumentStore {
         diagnostics: Vec<Diagnostic>,
         version: u64,
     ) -> bool {
-        if let Some(mut entry) = self.map.get_mut(uri) {
-            if entry.text_version == version {
-                entry.doc = Arc::new(doc);
-                entry.diagnostics = diagnostics;
-                return true;
-            }
+        if let Some(mut entry) = self.map.get_mut(uri)
+            && entry.text_version == version
+        {
+            entry.doc = Arc::new(doc);
+            entry.diagnostics = diagnostics;
+            return true;
         }
         false
     }
@@ -100,15 +100,14 @@ impl DocumentStore {
         let mut order = self.indexed_order.lock().unwrap();
         order.push_back(uri);
         while order.len() > MAX_INDEXED {
-            if let Some(oldest) = order.pop_front() {
-                if self
+            if let Some(oldest) = order.pop_front()
+                && self
                     .map
                     .get(&oldest)
                     .map(|d| d.text.is_none())
                     .unwrap_or(false)
-                {
-                    self.map.remove(&oldest);
-                }
+            {
+                self.map.remove(&oldest);
             }
         }
     }

@@ -49,11 +49,7 @@ fn use_refs(stmts: &[Stmt<'_, '_>], word: &str, out: &mut Vec<Span>) {
 pub fn refs_in_stmt(stmt: &Stmt<'_, '_>, word: &str, out: &mut Vec<Span>) {
     match &stmt.kind {
         StmtKind::Expression(e) => refs_in_expr(e, word, out),
-        StmtKind::Return(r) => {
-            if let Some(v) = r {
-                refs_in_expr(v, word, out);
-            }
-        }
+        StmtKind::Return(Some(v)) => refs_in_expr(v, word, out),
         StmtKind::Echo(exprs) => {
             for expr in exprs.iter() {
                 refs_in_expr(expr, word, out);
@@ -320,10 +316,10 @@ pub fn refs_in_expr(expr: &Expr<'_, '_>, word: &str, out: &mut Vec<Span>) {
         ExprKind::Exit(Some(e)) => refs_in_expr(e, word, out),
         ExprKind::AnonymousClass(c) => {
             for member in c.members.iter() {
-                if let ClassMemberKind::Method(m) = &member.kind {
-                    if let Some(body) = &m.body {
-                        refs_in_stmts(body, word, out);
-                    }
+                if let ClassMemberKind::Method(m) = &member.kind
+                    && let Some(body) = &m.body
+                {
+                    refs_in_stmts(body, word, out);
                 }
             }
         }

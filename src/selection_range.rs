@@ -118,10 +118,10 @@ fn collect_ranges_stmt(source: &str, stmt: &Stmt<'_, '_>, pos: Position, out: &m
                     continue;
                 }
                 out.push(m_range);
-                if let ClassMemberKind::Method(m) = &member.kind {
-                    if let Some(body) = &m.body {
-                        collect_ranges_stmts(source, body, pos, out);
-                    }
+                if let ClassMemberKind::Method(m) = &member.kind
+                    && let Some(body) = &m.body
+                {
+                    collect_ranges_stmts(source, body, pos, out);
                 }
             }
         }
@@ -147,10 +147,10 @@ fn collect_ranges_stmt(source: &str, stmt: &Stmt<'_, '_>, pos: Position, out: &m
                     continue;
                 }
                 out.push(m_range);
-                if let ClassMemberKind::Method(m) = &member.kind {
-                    if let Some(body) = &m.body {
-                        collect_ranges_stmts(source, body, pos, out);
-                    }
+                if let ClassMemberKind::Method(m) = &member.kind
+                    && let Some(body) = &m.body
+                {
+                    collect_ranges_stmts(source, body, pos, out);
                 }
             }
         }
@@ -165,10 +165,10 @@ fn collect_ranges_stmt(source: &str, stmt: &Stmt<'_, '_>, pos: Position, out: &m
                     continue;
                 }
                 out.push(m_range);
-                if let EnumMemberKind::Method(m) = &member.kind {
-                    if let Some(body) = &m.body {
-                        collect_ranges_stmts(source, body, pos, out);
-                    }
+                if let EnumMemberKind::Method(m) = &member.kind
+                    && let Some(body) = &m.body
+                {
+                    collect_ranges_stmts(source, body, pos, out);
                 }
             }
         }

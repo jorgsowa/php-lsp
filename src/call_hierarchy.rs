@@ -142,69 +142,69 @@ fn find_declaration_item(
             }
             StmtKind::Class(c) => {
                 for member in c.members.iter() {
-                    if let ClassMemberKind::Method(m) = &member.kind {
-                        if m.name == name {
-                            let range = span_to_range(source, member.span);
-                            let sel = name_range(source, m.name);
-                            return Some(CallHierarchyItem {
-                                name: name.to_string(),
-                                kind: SymbolKind::METHOD,
-                                tags: None,
-                                detail: c.name.map(|n| n.to_string()),
-                                uri: uri.clone(),
-                                range,
-                                selection_range: sel,
-                                data: None,
-                            });
-                        }
+                    if let ClassMemberKind::Method(m) = &member.kind
+                        && m.name == name
+                    {
+                        let range = span_to_range(source, member.span);
+                        let sel = name_range(source, m.name);
+                        return Some(CallHierarchyItem {
+                            name: name.to_string(),
+                            kind: SymbolKind::METHOD,
+                            tags: None,
+                            detail: c.name.map(|n| n.to_string()),
+                            uri: uri.clone(),
+                            range,
+                            selection_range: sel,
+                            data: None,
+                        });
                     }
                 }
             }
             StmtKind::Trait(t) => {
                 for member in t.members.iter() {
-                    if let ClassMemberKind::Method(m) = &member.kind {
-                        if m.name == name {
-                            let range = span_to_range(source, member.span);
-                            let sel = name_range(source, m.name);
-                            return Some(CallHierarchyItem {
-                                name: name.to_string(),
-                                kind: SymbolKind::METHOD,
-                                tags: None,
-                                detail: Some(t.name.to_string()),
-                                uri: uri.clone(),
-                                range,
-                                selection_range: sel,
-                                data: None,
-                            });
-                        }
+                    if let ClassMemberKind::Method(m) = &member.kind
+                        && m.name == name
+                    {
+                        let range = span_to_range(source, member.span);
+                        let sel = name_range(source, m.name);
+                        return Some(CallHierarchyItem {
+                            name: name.to_string(),
+                            kind: SymbolKind::METHOD,
+                            tags: None,
+                            detail: Some(t.name.to_string()),
+                            uri: uri.clone(),
+                            range,
+                            selection_range: sel,
+                            data: None,
+                        });
                     }
                 }
             }
             StmtKind::Enum(e) => {
                 for member in e.members.iter() {
-                    if let EnumMemberKind::Method(m) = &member.kind {
-                        if m.name == name {
-                            let range = span_to_range(source, member.span);
-                            let sel = name_range(source, m.name);
-                            return Some(CallHierarchyItem {
-                                name: name.to_string(),
-                                kind: SymbolKind::METHOD,
-                                tags: None,
-                                detail: Some(e.name.to_string()),
-                                uri: uri.clone(),
-                                range,
-                                selection_range: sel,
-                                data: None,
-                            });
-                        }
+                    if let EnumMemberKind::Method(m) = &member.kind
+                        && m.name == name
+                    {
+                        let range = span_to_range(source, member.span);
+                        let sel = name_range(source, m.name);
+                        return Some(CallHierarchyItem {
+                            name: name.to_string(),
+                            kind: SymbolKind::METHOD,
+                            tags: None,
+                            detail: Some(e.name.to_string()),
+                            uri: uri.clone(),
+                            range,
+                            selection_range: sel,
+                            data: None,
+                        });
                     }
                 }
             }
             StmtKind::Namespace(ns) => {
-                if let NamespaceBody::Braced(inner) = &ns.body {
-                    if let Some(item) = find_declaration_item(name, inner, source, uri) {
-                        return Some(item);
-                    }
+                if let NamespaceBody::Braced(inner) = &ns.body
+                    && let Some(item) = find_declaration_item(name, inner, source, uri)
+                {
+                    return Some(item);
                 }
             }
             _ => {}
@@ -254,20 +254,20 @@ fn enclosing_in_stmt(
         StmtKind::Class(c) => {
             for member in c.members.iter() {
                 let m_range = span_to_range(source, member.span);
-                if range_contains(m_range, pos) {
-                    if let ClassMemberKind::Method(m) = &member.kind {
-                        let sel = name_range(source, m.name);
-                        return Some(CallHierarchyItem {
-                            name: m.name.to_string(),
-                            kind: SymbolKind::METHOD,
-                            tags: None,
-                            detail: c.name.map(|n| n.to_string()),
-                            uri: uri.clone(),
-                            range: m_range,
-                            selection_range: sel,
-                            data: None,
-                        });
-                    }
+                if range_contains(m_range, pos)
+                    && let ClassMemberKind::Method(m) = &member.kind
+                {
+                    let sel = name_range(source, m.name);
+                    return Some(CallHierarchyItem {
+                        name: m.name.to_string(),
+                        kind: SymbolKind::METHOD,
+                        tags: None,
+                        detail: c.name.map(|n| n.to_string()),
+                        uri: uri.clone(),
+                        range: m_range,
+                        selection_range: sel,
+                        data: None,
+                    });
                 }
             }
             None
@@ -275,20 +275,20 @@ fn enclosing_in_stmt(
         StmtKind::Trait(t) => {
             for member in t.members.iter() {
                 let m_range = span_to_range(source, member.span);
-                if range_contains(m_range, pos) {
-                    if let ClassMemberKind::Method(m) = &member.kind {
-                        let sel = name_range(source, m.name);
-                        return Some(CallHierarchyItem {
-                            name: m.name.to_string(),
-                            kind: SymbolKind::METHOD,
-                            tags: None,
-                            detail: Some(t.name.to_string()),
-                            uri: uri.clone(),
-                            range: m_range,
-                            selection_range: sel,
-                            data: None,
-                        });
-                    }
+                if range_contains(m_range, pos)
+                    && let ClassMemberKind::Method(m) = &member.kind
+                {
+                    let sel = name_range(source, m.name);
+                    return Some(CallHierarchyItem {
+                        name: m.name.to_string(),
+                        kind: SymbolKind::METHOD,
+                        tags: None,
+                        detail: Some(t.name.to_string()),
+                        uri: uri.clone(),
+                        range: m_range,
+                        selection_range: sel,
+                        data: None,
+                    });
                 }
             }
             None
@@ -296,20 +296,20 @@ fn enclosing_in_stmt(
         StmtKind::Enum(e) => {
             for member in e.members.iter() {
                 let m_range = span_to_range(source, member.span);
-                if range_contains(m_range, pos) {
-                    if let EnumMemberKind::Method(m) = &member.kind {
-                        let sel = name_range(source, m.name);
-                        return Some(CallHierarchyItem {
-                            name: m.name.to_string(),
-                            kind: SymbolKind::METHOD,
-                            tags: None,
-                            detail: Some(e.name.to_string()),
-                            uri: uri.clone(),
-                            range: m_range,
-                            selection_range: sel,
-                            data: None,
-                        });
-                    }
+                if range_contains(m_range, pos)
+                    && let EnumMemberKind::Method(m) = &member.kind
+                {
+                    let sel = name_range(source, m.name);
+                    return Some(CallHierarchyItem {
+                        name: m.name.to_string(),
+                        kind: SymbolKind::METHOD,
+                        tags: None,
+                        detail: Some(e.name.to_string()),
+                        uri: uri.clone(),
+                        range: m_range,
+                        selection_range: sel,
+                        data: None,
+                    });
                 }
             }
             None
@@ -347,37 +347,34 @@ fn collect_calls_for(fn_name: &str, stmts: &[Stmt<'_, '_>], out: &mut Vec<(Strin
             }
             StmtKind::Class(c) => {
                 for member in c.members.iter() {
-                    if let ClassMemberKind::Method(m) = &member.kind {
-                        if m.name == fn_name {
-                            if let Some(body) = &m.body {
-                                calls_in_stmts(body, out);
-                                return;
-                            }
-                        }
+                    if let ClassMemberKind::Method(m) = &member.kind
+                        && m.name == fn_name
+                        && let Some(body) = &m.body
+                    {
+                        calls_in_stmts(body, out);
+                        return;
                     }
                 }
             }
             StmtKind::Trait(t) => {
                 for member in t.members.iter() {
-                    if let ClassMemberKind::Method(m) = &member.kind {
-                        if m.name == fn_name {
-                            if let Some(body) = &m.body {
-                                calls_in_stmts(body, out);
-                                return;
-                            }
-                        }
+                    if let ClassMemberKind::Method(m) = &member.kind
+                        && m.name == fn_name
+                        && let Some(body) = &m.body
+                    {
+                        calls_in_stmts(body, out);
+                        return;
                     }
                 }
             }
             StmtKind::Enum(e) => {
                 for member in e.members.iter() {
-                    if let EnumMemberKind::Method(m) = &member.kind {
-                        if m.name == fn_name {
-                            if let Some(body) = &m.body {
-                                calls_in_stmts(body, out);
-                                return;
-                            }
-                        }
+                    if let EnumMemberKind::Method(m) = &member.kind
+                        && m.name == fn_name
+                        && let Some(body) = &m.body
+                    {
+                        calls_in_stmts(body, out);
+                        return;
                     }
                 }
             }
@@ -400,11 +397,7 @@ fn calls_in_stmts(stmts: &[Stmt<'_, '_>], out: &mut Vec<(String, Span)>) {
 fn calls_in_stmt(stmt: &Stmt<'_, '_>, out: &mut Vec<(String, Span)>) {
     match &stmt.kind {
         StmtKind::Expression(e) => calls_in_expr(e, out),
-        StmtKind::Return(r) => {
-            if let Some(v) = r {
-                calls_in_expr(v, out);
-            }
-        }
+        StmtKind::Return(Some(v)) => calls_in_expr(v, out),
         StmtKind::Echo(exprs) => {
             for expr in exprs.iter() {
                 calls_in_expr(expr, out);

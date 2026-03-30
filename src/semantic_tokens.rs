@@ -265,11 +265,7 @@ fn collect_stmt(source: &str, stmt: &Stmt<'_, '_>, out: &mut Vec<RawToken>) {
             }
         }
         StmtKind::Expression(e) => collect_expr(source, e, out),
-        StmtKind::Return(r) => {
-            if let Some(v) = r {
-                collect_expr(source, v, out);
-            }
-        }
+        StmtKind::Return(Some(v)) => collect_expr(source, v, out),
         StmtKind::Echo(exprs) => {
             for expr in exprs.iter() {
                 collect_expr(source, expr, out);

@@ -115,36 +115,36 @@ fn find_signature(stmts: &[Stmt<'_, '_>], word: &str) -> Option<String> {
             }
             StmtKind::Class(c) => {
                 for member in c.members.iter() {
-                    if let ClassMemberKind::Method(m) = &member.kind {
-                        if m.name == word {
-                            return Some(format_params_str(&m.params));
-                        }
+                    if let ClassMemberKind::Method(m) = &member.kind
+                        && m.name == word
+                    {
+                        return Some(format_params_str(&m.params));
                     }
                 }
             }
             StmtKind::Trait(t) => {
                 for member in t.members.iter() {
-                    if let ClassMemberKind::Method(m) = &member.kind {
-                        if m.name == word {
-                            return Some(format_params_str(&m.params));
-                        }
+                    if let ClassMemberKind::Method(m) = &member.kind
+                        && m.name == word
+                    {
+                        return Some(format_params_str(&m.params));
                     }
                 }
             }
             StmtKind::Enum(e) => {
                 for member in e.members.iter() {
-                    if let EnumMemberKind::Method(m) = &member.kind {
-                        if m.name == word {
-                            return Some(format_params_str(&m.params));
-                        }
+                    if let EnumMemberKind::Method(m) = &member.kind
+                        && m.name == word
+                    {
+                        return Some(format_params_str(&m.params));
                     }
                 }
             }
             StmtKind::Namespace(ns) => {
-                if let NamespaceBody::Braced(inner) = &ns.body {
-                    if let Some(s) = find_signature(inner, word) {
-                        return Some(s);
-                    }
+                if let NamespaceBody::Braced(inner) = &ns.body
+                    && let Some(s) = find_signature(inner, word)
+                {
+                    return Some(s);
                 }
             }
             _ => {}

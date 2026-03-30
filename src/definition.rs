@@ -94,10 +94,10 @@ fn scan_statements(source: &str, stmts: &[Stmt<'_, '_>], word: &str) -> Option<R
                 }
             }
             StmtKind::Namespace(ns) => {
-                if let NamespaceBody::Braced(inner) = &ns.body {
-                    if let Some(range) = scan_statements(source, inner, word) {
-                        return Some(range);
-                    }
+                if let NamespaceBody::Braced(inner) = &ns.body
+                    && let Some(range) = scan_statements(source, inner, word)
+                {
+                    return Some(range);
                 }
             }
             _ => {}

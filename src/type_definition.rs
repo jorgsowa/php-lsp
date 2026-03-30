@@ -48,18 +48,18 @@ fn param_type_for(stmts: &[Stmt<'_, '_>], word: &str) -> Option<String> {
         match &stmt.kind {
             StmtKind::Function(f) => {
                 for p in f.params.iter() {
-                    if p.name == word {
-                        if let Some(t) = &p.type_hint {
-                            return Some(format_type_hint(t));
-                        }
+                    if p.name == word
+                        && let Some(t) = &p.type_hint
+                    {
+                        return Some(format_type_hint(t));
                     }
                 }
             }
             StmtKind::Namespace(ns) => {
-                if let NamespaceBody::Braced(inner) = &ns.body {
-                    if let Some(t) = param_type_for(inner, word) {
-                        return Some(t);
-                    }
+                if let NamespaceBody::Braced(inner) = &ns.body
+                    && let Some(t) = param_type_for(inner, word)
+                {
+                    return Some(t);
                 }
             }
             _ => {}
@@ -79,10 +79,10 @@ fn find_class_range(source: &str, stmts: &[Stmt<'_, '_>], name: &str) -> Option<
                 return Some(name_range(source, i.name));
             }
             StmtKind::Namespace(ns) => {
-                if let NamespaceBody::Braced(inner) = &ns.body {
-                    if let Some(r) = find_class_range(source, inner, name) {
-                        return Some(r);
-                    }
+                if let NamespaceBody::Braced(inner) = &ns.body
+                    && let Some(r) = find_class_range(source, inner, name)
+                {
+                    return Some(r);
                 }
             }
             _ => {}

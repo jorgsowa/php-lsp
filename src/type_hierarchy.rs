@@ -43,10 +43,10 @@ fn find_type_item(
                 return Some(make_item(source, t.name, SymbolKind::INTERFACE, uri));
             }
             StmtKind::Namespace(ns) => {
-                if let NamespaceBody::Braced(inner) = &ns.body {
-                    if let Some(item) = find_type_item(source, inner, word, uri) {
-                        return Some(item);
-                    }
+                if let NamespaceBody::Braced(inner) = &ns.body
+                    && let Some(item) = find_type_item(source, inner, word, uri)
+                {
+                    return Some(item);
                 }
             }
             _ => {}
@@ -159,10 +159,10 @@ fn collect_subtypes(
                     .implements
                     .iter()
                     .any(|i| i.to_string_repr().as_ref() == parent_name);
-                if extends_match || implements_match {
-                    if let Some(name) = c.name {
-                        out.push(make_item(source, name, SymbolKind::CLASS, uri));
-                    }
+                if (extends_match || implements_match)
+                    && let Some(name) = c.name
+                {
+                    out.push(make_item(source, name, SymbolKind::CLASS, uri));
                 }
             }
             StmtKind::Interface(i) => {

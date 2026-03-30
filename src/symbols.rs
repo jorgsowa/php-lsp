@@ -90,24 +90,24 @@ fn collect_symbol_info(
                     });
                 }
                 for member in c.members.iter() {
-                    if let ClassMemberKind::Method(m) = &member.kind {
-                        if fuzzy_camel_match(query, m.name) {
-                            out.push(SymbolInformation {
-                                name: m.name.to_string(),
-                                kind: SymbolKind::METHOD,
-                                location: Location {
-                                    uri: uri.clone(),
-                                    range: name_range(source, m.name),
-                                },
-                                tags: None,
-                                deprecated: None,
-                                container_name: if !name.is_empty() {
-                                    Some(name.to_string())
-                                } else {
-                                    None
-                                },
-                            });
-                        }
+                    if let ClassMemberKind::Method(m) = &member.kind
+                        && fuzzy_camel_match(query, m.name)
+                    {
+                        out.push(SymbolInformation {
+                            name: m.name.to_string(),
+                            kind: SymbolKind::METHOD,
+                            location: Location {
+                                uri: uri.clone(),
+                                range: name_range(source, m.name),
+                            },
+                            tags: None,
+                            deprecated: None,
+                            container_name: if !name.is_empty() {
+                                Some(name.to_string())
+                            } else {
+                                None
+                            },
+                        });
                     }
                 }
             }
@@ -156,20 +156,20 @@ fn collect_symbol_info(
                     });
                 }
                 for member in e.members.iter() {
-                    if let EnumMemberKind::Case(c) = &member.kind {
-                        if fuzzy_camel_match(query, c.name) {
-                            out.push(SymbolInformation {
-                                name: c.name.to_string(),
-                                kind: SymbolKind::ENUM_MEMBER,
-                                location: Location {
-                                    uri: uri.clone(),
-                                    range: name_range(source, c.name),
-                                },
-                                tags: None,
-                                deprecated: None,
-                                container_name: Some(e.name.to_string()),
-                            });
-                        }
+                    if let EnumMemberKind::Case(c) = &member.kind
+                        && fuzzy_camel_match(query, c.name)
+                    {
+                        out.push(SymbolInformation {
+                            name: c.name.to_string(),
+                            kind: SymbolKind::ENUM_MEMBER,
+                            location: Location {
+                                uri: uri.clone(),
+                                range: name_range(source, c.name),
+                            },
+                            tags: None,
+                            deprecated: None,
+                            container_name: Some(e.name.to_string()),
+                        });
                     }
                 }
             }

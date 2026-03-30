@@ -58,14 +58,13 @@ fn fold_stmt(stmt: &Stmt<'_, '_>, source: &str, out: &mut Vec<FoldingRange>) {
             push(out, start_line, end_line, None);
             // Interface methods are abstract (no body) — nothing to fold per method.
             for member in i.members.iter() {
-                if let ClassMemberKind::Method(m) = &member.kind {
-                    if let Some(body) = &m.body {
-                        let m_start = offset_to_position(source, member.span.start).line;
-                        let m_end =
-                            offset_to_position(source, member.span.end.saturating_sub(1)).line;
-                        push(out, m_start, m_end, None);
-                        fold_stmts(body, source, out);
-                    }
+                if let ClassMemberKind::Method(m) = &member.kind
+                    && let Some(body) = &m.body
+                {
+                    let m_start = offset_to_position(source, member.span.start).line;
+                    let m_end = offset_to_position(source, member.span.end.saturating_sub(1)).line;
+                    push(out, m_start, m_end, None);
+                    fold_stmts(body, source, out);
                 }
             }
         }
@@ -212,10 +211,10 @@ fn fold_regions(source: &str, out: &mut Vec<FoldingRange>) {
         let trimmed = line.trim();
         if trimmed.starts_with("// #region") || trimmed.starts_with("//region") {
             stack.push(line_no as u32);
-        } else if trimmed.starts_with("// #endregion") || trimmed.starts_with("//endregion") {
-            if let Some(start) = stack.pop() {
-                push(out, start, line_no as u32, Some(FoldingRangeKind::Region));
-            }
+        } else if (trimmed.starts_with("// #endregion") || trimmed.starts_with("//endregion"))
+            && let Some(start) = stack.pop()
+        {
+            push(out, start, line_no as u32, Some(FoldingRangeKind::Region));
         }
     }
 }

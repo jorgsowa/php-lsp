@@ -213,10 +213,10 @@ fn collect_abstract_methods(stmts: &[Stmt<'_, '_>], name: &str) -> Option<Vec<Me
                 return Some(stubs);
             }
             StmtKind::Namespace(ns) => {
-                if let NamespaceBody::Braced(inner) = &ns.body {
-                    if let Some(stubs) = collect_abstract_methods(inner, name) {
-                        return Some(stubs);
-                    }
+                if let NamespaceBody::Braced(inner) = &ns.body
+                    && let Some(stubs) = collect_abstract_methods(inner, name)
+                {
+                    return Some(stubs);
                 }
             }
             _ => {}

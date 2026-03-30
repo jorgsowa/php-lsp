@@ -53,13 +53,13 @@ fn collect_implementations(
                     .iter()
                     .any(|iface| iface.to_string_repr().as_ref() == word);
 
-                if extends_match || implements_match {
-                    if let Some(class_name) = c.name {
-                        out.push(Location {
-                            uri: uri.clone(),
-                            range: name_range(source, class_name),
-                        });
-                    }
+                if (extends_match || implements_match)
+                    && let Some(class_name) = c.name
+                {
+                    out.push(Location {
+                        uri: uri.clone(),
+                        range: name_range(source, class_name),
+                    });
                 }
             }
             StmtKind::Enum(e) => {

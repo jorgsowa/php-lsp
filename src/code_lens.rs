@@ -64,10 +64,10 @@ fn collect_lenses(
                             }
 
                             // Overrides lens: show if parent class has a method with the same name.
-                            if let Some(ref parent_name) = parent {
-                                if parent_has_method(parent_name, m.name, all_docs) {
-                                    out.push(overrides_lens(method_range, parent_name, m.name));
-                                }
+                            if let Some(ref parent_name) = parent
+                                && parent_has_method(parent_name, m.name, all_docs)
+                            {
+                                out.push(overrides_lens(method_range, parent_name, m.name));
                             }
                         }
                     }
@@ -190,9 +190,9 @@ fn run_test_lens(
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 /// Return the direct parent class name of a class, if any.
-fn find_parent_class<'a>(
+fn find_parent_class(
     c: &php_ast::ClassDecl<'_, '_>,
-    all_docs: &'a [(Url, Arc<ParsedDoc>)],
+    all_docs: &[(Url, Arc<ParsedDoc>)],
 ) -> Option<String> {
     let parent_short = c.extends.as_ref()?.to_string_repr().into_owned();
     // Resolve through the documents to get the canonical short name.

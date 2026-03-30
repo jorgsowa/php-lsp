@@ -111,10 +111,10 @@ impl LanguageServer for Backend {
                 .iter()
                 .filter_map(|f| f.uri.to_file_path().ok())
                 .collect();
-            if roots.is_empty() {
-                if let Some(path) = params.root_uri.as_ref().and_then(|u| u.to_file_path().ok()) {
-                    roots.push(path);
-                }
+            if roots.is_empty()
+                && let Some(path) = params.root_uri.as_ref().and_then(|u| u.to_file_path().ok())
+            {
+                roots.push(path);
             }
             *self.root_paths.write().unwrap() = roots;
         }
@@ -234,7 +234,6 @@ impl LanguageServer for Backend {
                         did_delete: Some(php_file_op()),
                         ..Default::default()
                     }),
-                    ..Default::default()
                 }),
                 linked_editing_range_provider: Some(LinkedEditingRangeServerCapabilities::Simple(
                     true,
@@ -368,10 +367,10 @@ impl LanguageServer for Backend {
             scope_uri: None,
             section: Some("php-lsp".to_string()),
         }];
-        if let Ok(values) = self.client.configuration(items).await {
-            if let Some(value) = values.into_iter().next() {
-                *self.config.write().unwrap() = LspConfig::from_value(&value);
-            }
+        if let Ok(values) = self.client.configuration(items).await
+            && let Some(value) = values.into_iter().next()
+        {
+            *self.config.write().unwrap() = LspConfig::from_value(&value);
         }
     }
 
@@ -515,10 +514,10 @@ impl LanguageServer for Backend {
         for change in params.changes {
             match change.typ {
                 FileChangeType::CREATED | FileChangeType::CHANGED => {
-                    if let Ok(path) = change.uri.to_file_path() {
-                        if let Ok(text) = tokio::fs::read_to_string(&path).await {
-                            self.docs.index(change.uri, &text);
-                        }
+                    if let Ok(path) = change.uri.to_file_path()
+                        && let Ok(text) = tokio::fs::read_to_string(&path).await
+                    {
+                        self.docs.index(change.uri, &text);
                     }
                 }
                 FileChangeType::DELETED => {
@@ -600,12 +599,11 @@ impl LanguageServer for Backend {
         }
 
         // PSR-4 fallback: only useful for fully-qualified names (contain `\`)
-        if let Some(word) = word_at(&source, position) {
-            if word.contains('\\') {
-                if let Some(loc) = self.psr4_goto(&word).await {
-                    return Ok(Some(GotoDefinitionResponse::Scalar(loc)));
-                }
-            }
+        if let Some(word) = word_at(&source, position)
+            && word.contains('\\')
+            && let Some(loc) = self.psr4_goto(&word).await
+        {
+            return Ok(Some(GotoDefinitionResponse::Scalar(loc)));
         }
 
         Ok(None)
@@ -1153,12 +1151,11 @@ impl LanguageServer for Backend {
                 self.docs.remove(&old_uri);
             }
             // Index the file at its new location
-            if let Ok(new_uri) = tower_lsp::lsp_types::Url::parse(&file_rename.new_uri) {
-                if let Ok(path) = new_uri.to_file_path() {
-                    if let Ok(text) = tokio::fs::read_to_string(&path).await {
-                        self.docs.index(new_uri, &text);
-                    }
-                }
+            if let Ok(new_uri) = tower_lsp::lsp_types::Url::parse(&file_rename.new_uri)
+                && let Ok(path) = new_uri.to_file_path()
+                && let Ok(text) = tokio::fs::read_to_string(&path).await
+            {
+                self.docs.index(new_uri, &text);
             }
         }
     }
@@ -1172,12 +1169,11 @@ impl LanguageServer for Backend {
 
     async fn did_create_files(&self, params: CreateFilesParams) {
         for file in &params.files {
-            if let Ok(uri) = Url::parse(&file.uri) {
-                if let Ok(path) = uri.to_file_path() {
-                    if let Ok(text) = tokio::fs::read_to_string(&path).await {
-                        self.docs.index(uri, &text);
-                    }
-                }
+            if let Ok(uri) = Url::parse(&file.uri)
+                && let Ok(path) = uri.to_file_path()
+                && let Ok(text) = tokio::fs::read_to_string(&path).await
+            {
+                self.docs.index(uri, &text);
             }
         }
         send_refresh_requests(&self.client).await;
@@ -1463,10 +1459,10 @@ impl LanguageServer for Backend {
 
         // Find the action whose title matches and return it fully resolved.
         for candidate in candidates {
-            if let CodeActionOrCommand::CodeAction(ca) = candidate {
-                if ca.title == item.title {
-                    return Ok(ca);
-                }
+            if let CodeActionOrCommand::CodeAction(ca) = candidate
+                && ca.title == item.title
+            {
+                return Ok(ca);
             }
         }
 
@@ -1526,13 +1522,13 @@ fn find_fqn_for_class(doc: &ParsedDoc, name: &str, _uri: &Url) -> Option<String>
                 let ns_name = ns.name.as_ref().map(|n| n.to_string_repr().to_string());
                 if let NamespaceBody::Braced(inner) = &ns.body {
                     for inner_stmt in inner.iter() {
-                        if let StmtKind::Class(c) = &inner_stmt.kind {
-                            if c.name == Some(name) {
-                                return Some(match ns_name {
-                                    Some(ref ns) => format!("{ns}\\{name}"),
-                                    None => name.to_string(),
-                                });
-                            }
+                        if let StmtKind::Class(c) = &inner_stmt.kind
+                            && c.name == Some(name)
+                        {
+                            return Some(match ns_name {
+                                Some(ref ns) => format!("{ns}\\{name}"),
+                                None => name.to_string(),
+                            });
                         }
                     }
                 }
@@ -1664,13 +1660,11 @@ async fn run_phpunit(
         title: "Run Again".to_string(),
         properties: Default::default(),
     }];
-    if !success {
-        if file_uri.is_some() {
-            actions.push(MessageActionItem {
-                title: "Open File".to_string(),
-                properties: Default::default(),
-            });
-        }
+    if !success && file_uri.is_some() {
+        actions.push(MessageActionItem {
+            title: "Open File".to_string(),
+            properties: Default::default(),
+        });
     }
 
     let chosen = client
@@ -1790,13 +1784,13 @@ async fn scan_workspace(
                 if !name.starts_with('.') {
                     stack.push(path);
                 }
-            } else if file_type.is_file() && path.extension().map_or(false, |e| e == "php") {
-                if let Ok(uri) = Url::from_file_path(&path) {
-                    if let Ok(text) = tokio::fs::read_to_string(&path).await {
-                        docs.index(uri, &text);
-                        count += 1;
-                    }
-                }
+            } else if file_type.is_file()
+                && path.extension().is_some_and(|e| e == "php")
+                && let Ok(uri) = Url::from_file_path(&path)
+                && let Ok(text) = tokio::fs::read_to_string(&path).await
+            {
+                docs.index(uri, &text);
+                count += 1;
             }
         }
     }

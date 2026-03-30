@@ -1058,12 +1058,12 @@ pub fn filtered_completions_at(
         }
         Some(":") => {
             // Static access: ClassName:: / self:: / static:: / parent::
-            if let (Some(src), Some(pos)) = (source, position) {
-                if let Some(class_name) = resolve_static_receiver(src, doc, other_docs, pos) {
-                    let items = all_static_members(&class_name, doc, other_docs);
-                    if !items.is_empty() {
-                        return items;
-                    }
+            if let (Some(src), Some(pos)) = (source, position)
+                && let Some(class_name) = resolve_static_receiver(src, doc, other_docs, pos)
+            {
+                let items = all_static_members(&class_name, doc, other_docs);
+                if !items.is_empty() {
+                    return items;
                 }
             }
             vec![]
@@ -1116,22 +1116,22 @@ pub fn filtered_completions_at(
         }
         _ => {
             // Feature 4: detect `use ` context and suggest FQNs from other docs
-            if let (Some(src), Some(pos)) = (source, position) {
-                if let Some(use_prefix) = use_completion_prefix(src, pos) {
-                    let mut use_items: Vec<CompletionItem> = Vec::new();
-                    for other in other_docs {
-                        collect_fqns_with_prefix(
-                            &other.program().stmts,
-                            "",
-                            &use_prefix,
-                            &mut use_items,
-                        );
-                    }
-                    // Also check current doc
-                    collect_fqns_with_prefix(&doc.program().stmts, "", &use_prefix, &mut use_items);
-                    if !use_items.is_empty() {
-                        return use_items;
-                    }
+            if let (Some(src), Some(pos)) = (source, position)
+                && let Some(use_prefix) = use_completion_prefix(src, pos)
+            {
+                let mut use_items: Vec<CompletionItem> = Vec::new();
+                for other in other_docs {
+                    collect_fqns_with_prefix(
+                        &other.program().stmts,
+                        "",
+                        &use_prefix,
+                        &mut use_items,
+                    );
+                }
+                // Also check current doc
+                collect_fqns_with_prefix(&doc.program().stmts, "", &use_prefix, &mut use_items);
+                if !use_items.is_empty() {
+                    return use_items;
                 }
             }
 
@@ -1142,71 +1142,69 @@ pub fn filtered_completions_at(
             }
 
             // Feature 3: Sub-namespace \ completions outside use statement
-            if let (Some(src), Some(pos)) = (source, position) {
-                if let Some(prefix) = typed_prefix(Some(src), Some(pos)) {
-                    if prefix.contains('\\') {
-                        // Check we're NOT in a use statement
-                        let is_use = use_completion_prefix(src, pos).is_some();
-                        if !is_use {
-                            let mut ns_items: Vec<CompletionItem> = Vec::new();
-                            for other in other_docs {
-                                let mut classes = Vec::new();
-                                collect_classes_with_ns(&other.program().stmts, "", &mut classes);
-                                for (label, kind, fqn) in classes {
-                                    if fqn.to_lowercase().starts_with(&prefix.to_lowercase()) {
-                                        ns_items.push(CompletionItem {
-                                            label: label.clone(),
-                                            kind: Some(kind),
-                                            insert_text: Some(label),
-                                            detail: Some(fqn),
-                                            ..Default::default()
-                                        });
-                                    }
-                                }
-                            }
-                            let mut classes = Vec::new();
-                            collect_classes_with_ns(&doc.program().stmts, "", &mut classes);
-                            for (label, kind, fqn) in classes {
-                                if fqn.to_lowercase().starts_with(&prefix.to_lowercase()) {
-                                    ns_items.push(CompletionItem {
-                                        label: label.clone(),
-                                        kind: Some(kind),
-                                        insert_text: Some(label),
-                                        detail: Some(fqn),
-                                        ..Default::default()
-                                    });
-                                }
-                            }
-                            if !ns_items.is_empty() {
-                                return ns_items;
+            if let (Some(src), Some(pos)) = (source, position)
+                && let Some(prefix) = typed_prefix(Some(src), Some(pos))
+                && prefix.contains('\\')
+            {
+                // Check we're NOT in a use statement
+                let is_use = use_completion_prefix(src, pos).is_some();
+                if !is_use {
+                    let mut ns_items: Vec<CompletionItem> = Vec::new();
+                    for other in other_docs {
+                        let mut classes = Vec::new();
+                        collect_classes_with_ns(&other.program().stmts, "", &mut classes);
+                        for (label, kind, fqn) in classes {
+                            if fqn.to_lowercase().starts_with(&prefix.to_lowercase()) {
+                                ns_items.push(CompletionItem {
+                                    label: label.clone(),
+                                    kind: Some(kind),
+                                    insert_text: Some(label),
+                                    detail: Some(fqn),
+                                    ..Default::default()
+                                });
                             }
                         }
+                    }
+                    let mut classes = Vec::new();
+                    collect_classes_with_ns(&doc.program().stmts, "", &mut classes);
+                    for (label, kind, fqn) in classes {
+                        if fqn.to_lowercase().starts_with(&prefix.to_lowercase()) {
+                            ns_items.push(CompletionItem {
+                                label: label.clone(),
+                                kind: Some(kind),
+                                insert_text: Some(label),
+                                detail: Some(fqn),
+                                ..Default::default()
+                            });
+                        }
+                    }
+                    if !ns_items.is_empty() {
+                        return ns_items;
                     }
                 }
             }
 
             // Feature 7: match arm completions
-            if let (Some(src), Some(pos)) = (source, position) {
-                if let Some(match_items) = match_arm_completions(src, doc, other_docs, pos, meta) {
-                    if !match_items.is_empty() {
-                        let mut all = match_items;
-                        // extend with normal items below, but return early here
-                        let mut normal_items = keyword_completions();
-                        normal_items.extend(builtin_completions());
-                        normal_items.extend(superglobal_completions());
-                        normal_items.extend(symbol_completions(doc));
-                        all.extend(normal_items);
-                        return all;
-                    }
-                }
+            if let (Some(src), Some(pos)) = (source, position)
+                && let Some(match_items) = match_arm_completions(src, doc, other_docs, pos, meta)
+                && !match_items.is_empty()
+            {
+                let mut all = match_items;
+                // extend with normal items below, but return early here
+                let mut normal_items = keyword_completions();
+                normal_items.extend(builtin_completions());
+                normal_items.extend(superglobal_completions());
+                normal_items.extend(symbol_completions(doc));
+                all.extend(normal_items);
+                return all;
             }
 
             // Feature 5: Magic method completions in class body
             let mut magic_items: Vec<CompletionItem> = Vec::new();
-            if let (Some(src), Some(pos)) = (source, position) {
-                if enclosing_class_at(src, doc, pos).is_some() {
-                    magic_items.extend(magic_method_completions());
-                }
+            if let (Some(src), Some(pos)) = (source, position)
+                && enclosing_class_at(src, doc, pos).is_some()
+            {
+                magic_items.extend(magic_method_completions());
             }
 
             let mut items = keyword_completions();
@@ -1231,7 +1229,7 @@ pub fn filtered_completions_at(
                 collect_classes_with_ns(&other.program().stmts, "", &mut classes);
                 for (label, kind, fqn) in classes {
                     let additional_text_edits =
-                        if let (Some(src), Some(ref umap)) = (source, use_map.as_ref()) {
+                        if let (Some(src), Some(umap)) = (source, use_map.as_ref()) {
                             let in_same_ns =
                                 !cur_ns.is_empty() && fqn == format!("{}\\{}", cur_ns, label);
                             let is_global = !fqn.contains('\\');
@@ -1349,7 +1347,7 @@ fn include_path_prefix(source: &str, position: Position) -> Option<String> {
     // Find the string being typed
     let col = utf16_offset_to_byte(line, position.character as usize);
     let before = &line[..col];
-    let quote_pos = before.rfind(|c| c == '\'' || c == '"')?;
+    let quote_pos = before.rfind(['\'', '"'])?;
     Some(before[quote_pos + 1..].to_string())
 }
 
@@ -1511,8 +1509,7 @@ fn resolve_receiver_class(
 fn extract_new_class_before_arrow(text: &str) -> Option<String> {
     let text = text.trim_end();
     // Strip optional closing paren wrapping: `(new Foo())`
-    let inner = if text.ends_with(')') {
-        let without_last = &text[..text.len() - 1];
+    let inner = if let Some(without_last) = text.strip_suffix(')') {
         // Find matching open paren — look for `(new` pattern
         if let Some(pos) = without_last.rfind("(new ") {
             &without_last[pos + 1..]

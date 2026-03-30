@@ -126,55 +126,55 @@ pub fn hover_at(
     }
 
     // Feature 4: hover on a property name in `$obj->propName` or `$this->propName`
-    if !word.starts_with('$') {
-        if let Some(line_text) = source.lines().nth(position.line as usize) {
-            // Check if the word appears after `->` or `?->` on this line
-            let arrow_word = format!("->{}", word);
-            let nullsafe_arrow_word = format!("?->{}", word);
-            if line_text.contains(&arrow_word) || line_text.contains(&nullsafe_arrow_word) {
-                // Find the position of `->word` in the line and extract the receiver var
-                // before it.
-                let arrow_pos = line_text
-                    .find(&nullsafe_arrow_word)
-                    .or_else(|| line_text.find(&arrow_word));
-                if let Some(apos) = arrow_pos {
-                    let before_arrow = &line_text[..apos];
-                    let receiver_var = extract_receiver_var_from_end(before_arrow);
-                    if let Some(var_name) = receiver_var {
-                        let arc_docs: Vec<Arc<ParsedDoc>> =
-                            other_docs.iter().map(|(_, d)| d.clone()).collect();
-                        let type_map = TypeMap::from_docs_with_meta(doc, &arc_docs, None);
-                        let class_name = if var_name == "$this" {
-                            crate::type_map::enclosing_class_at(source, doc, position)
-                                .or_else(|| type_map.get("$this").map(|s| s.to_string()))
-                        } else {
-                            type_map.get(&var_name).map(|s| s.to_string())
-                        };
-                        if let Some(cls) = class_name {
-                            // Search current doc + other docs for the property type
-                            let all_docs_search: Vec<&ParsedDoc> = std::iter::once(doc)
-                                .chain(other_docs.iter().map(|(_, d)| d.as_ref()))
-                                .collect();
-                            for d in &all_docs_search {
-                                if let Some(type_str) = find_property_type(d, &cls, &word) {
-                                    let value = format!(
-                                        "`(property) {}::${}:{}`",
-                                        cls,
-                                        word,
-                                        if type_str.is_empty() {
-                                            String::new()
-                                        } else {
-                                            format!(" {}", type_str)
-                                        }
-                                    );
-                                    return Some(Hover {
-                                        contents: HoverContents::Markup(MarkupContent {
-                                            kind: MarkupKind::Markdown,
-                                            value,
-                                        }),
-                                        range: None,
-                                    });
-                                }
+    if !word.starts_with('$')
+        && let Some(line_text) = source.lines().nth(position.line as usize)
+    {
+        // Check if the word appears after `->` or `?->` on this line
+        let arrow_word = format!("->{}", word);
+        let nullsafe_arrow_word = format!("?->{}", word);
+        if line_text.contains(&arrow_word) || line_text.contains(&nullsafe_arrow_word) {
+            // Find the position of `->word` in the line and extract the receiver var
+            // before it.
+            let arrow_pos = line_text
+                .find(&nullsafe_arrow_word)
+                .or_else(|| line_text.find(&arrow_word));
+            if let Some(apos) = arrow_pos {
+                let before_arrow = &line_text[..apos];
+                let receiver_var = extract_receiver_var_from_end(before_arrow);
+                if let Some(var_name) = receiver_var {
+                    let arc_docs: Vec<Arc<ParsedDoc>> =
+                        other_docs.iter().map(|(_, d)| d.clone()).collect();
+                    let type_map = TypeMap::from_docs_with_meta(doc, &arc_docs, None);
+                    let class_name = if var_name == "$this" {
+                        crate::type_map::enclosing_class_at(source, doc, position)
+                            .or_else(|| type_map.get("$this").map(|s| s.to_string()))
+                    } else {
+                        type_map.get(&var_name).map(|s| s.to_string())
+                    };
+                    if let Some(cls) = class_name {
+                        // Search current doc + other docs for the property type
+                        let all_docs_search: Vec<&ParsedDoc> = std::iter::once(doc)
+                            .chain(other_docs.iter().map(|(_, d)| d.as_ref()))
+                            .collect();
+                        for d in &all_docs_search {
+                            if let Some(type_str) = find_property_type(d, &cls, &word) {
+                                let value = format!(
+                                    "`(property) {}::${}:{}`",
+                                    cls,
+                                    word,
+                                    if type_str.is_empty() {
+                                        String::new()
+                                    } else {
+                                        format!(" {}", type_str)
+                                    }
+                                );
+                                return Some(Hover {
+                                    contents: HoverContents::Markup(MarkupContent {
+                                        kind: MarkupKind::Markdown,
+                                        value,
+                                    }),
+                                    range: None,
+                                });
                             }
                         }
                     }
@@ -307,39 +307,39 @@ fn scan_statements(stmts: &[Stmt<'_, '_>], word: &str) -> Option<String> {
             }
             StmtKind::Class(c) => {
                 for member in c.members.iter() {
-                    if let ClassMemberKind::Method(m) = &member.kind {
-                        if m.name == word {
-                            let params = format_params(&m.params);
-                            let ret = m
-                                .return_type
-                                .as_ref()
-                                .map(|r| format!(": {}", format_type_hint(r)))
-                                .unwrap_or_default();
-                            return Some(format!("function {}({}){}", word, params, ret));
-                        }
+                    if let ClassMemberKind::Method(m) = &member.kind
+                        && m.name == word
+                    {
+                        let params = format_params(&m.params);
+                        let ret = m
+                            .return_type
+                            .as_ref()
+                            .map(|r| format!(": {}", format_type_hint(r)))
+                            .unwrap_or_default();
+                        return Some(format!("function {}({}){}", word, params, ret));
                     }
                 }
             }
             StmtKind::Trait(t) => {
                 for member in t.members.iter() {
-                    if let ClassMemberKind::Method(m) = &member.kind {
-                        if m.name == word {
-                            let params = format_params(&m.params);
-                            let ret = m
-                                .return_type
-                                .as_ref()
-                                .map(|r| format!(": {}", format_type_hint(r)))
-                                .unwrap_or_default();
-                            return Some(format!("function {}({}){}", word, params, ret));
-                        }
+                    if let ClassMemberKind::Method(m) = &member.kind
+                        && m.name == word
+                    {
+                        let params = format_params(&m.params);
+                        let ret = m
+                            .return_type
+                            .as_ref()
+                            .map(|r| format!(": {}", format_type_hint(r)))
+                            .unwrap_or_default();
+                        return Some(format!("function {}({}){}", word, params, ret));
                     }
                 }
             }
             StmtKind::Namespace(ns) => {
-                if let NamespaceBody::Braced(inner) = &ns.body {
-                    if let Some(sig) = scan_statements(inner, word) {
-                        return Some(sig);
-                    }
+                if let NamespaceBody::Braced(inner) = &ns.body
+                    && let Some(sig) = scan_statements(inner, word)
+                {
+                    return Some(sig);
                 }
             }
             _ => {}
@@ -517,10 +517,10 @@ fn find_property_type_in_stmts<'a>(
                 return None;
             }
             StmtKind::Namespace(ns) => {
-                if let NamespaceBody::Braced(inner) = &ns.body {
-                    if let Some(t) = find_property_type_in_stmts(inner, class_name, prop_name) {
-                        return Some(t);
-                    }
+                if let NamespaceBody::Braced(inner) = &ns.body
+                    && let Some(t) = find_property_type_in_stmts(inner, class_name, prop_name)
+                {
+                    return Some(t);
                 }
             }
             _ => {}

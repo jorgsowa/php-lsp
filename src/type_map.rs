@@ -70,6 +70,7 @@ impl TypeMap {
 
     /// Returns the element type stored under the `$var[]` key — populated when
     /// `$var` was assigned from `array_map` / `array_filter` with a typed callback.
+    #[allow(dead_code)]
     pub fn get_element_type<'a>(&'a self, var: &str) -> Option<&'a str> {
         self.0.get(&format!("{var}[]")).map(|s| s.as_str())
     }
@@ -95,14 +96,13 @@ fn collect_method_returns_stmts(
                     None => continue,
                 };
                 for member in c.members.iter() {
-                    if let ClassMemberKind::Method(m) = &member.kind {
-                        if let Some(ret) =
+                    if let ClassMemberKind::Method(m) = &member.kind
+                        && let Some(ret) =
                             extract_method_return_class(source, member.span.start, m, &class_name)
-                        {
-                            out.entry(class_name.clone())
-                                .or_default()
-                                .insert(m.name.to_string(), ret);
-                        }
+                    {
+                        out.entry(class_name.clone())
+                            .or_default()
+                            .insert(m.name.to_string(), ret);
                     }
                 }
             }
@@ -238,10 +238,10 @@ fn collect_types_stmts(
                         map.insert(format!("${vname}"), class_name);
                     } else if let StmtKind::Expression(e) = &stmt.kind {
                         // `@var Foo` above `$obj = ...` — infer from the LHS.
-                        if let ExprKind::Assign(a) = &e.kind {
-                            if let ExprKind::Variable(vn) = &a.target.kind {
-                                map.insert(format!("${vn}"), class_name);
-                            }
+                        if let ExprKind::Assign(a) = &e.kind
+                            && let ExprKind::Variable(vn) = &a.target.kind
+                        {
+                            map.insert(format!("${vn}"), class_name);
                         }
                     }
                 }
@@ -274,10 +274,10 @@ fn collect_types_stmts(
                     }
                 }
                 for p in f.params.iter() {
-                    if let Some(hint) = &p.type_hint {
-                        if let Some(class_str) = type_hint_to_class_string(hint, None) {
-                            map.insert(format!("${}", p.name), class_str);
-                        }
+                    if let Some(hint) = &p.type_hint
+                        && let Some(class_str) = type_hint_to_class_string(hint, None)
+                    {
+                        map.insert(format!("${}", p.name), class_str);
                     }
                 }
                 collect_types_stmts(source, &f.body, map, meta, method_returns);
@@ -313,12 +313,11 @@ fn collect_types_stmts(
                             }
                         }
                         for p in m.params.iter() {
-                            if let Some(hint) = &p.type_hint {
-                                if let Some(class_str) =
+                            if let Some(hint) = &p.type_hint
+                                && let Some(class_str) =
                                     type_hint_to_class_string(hint, class_name.as_deref())
-                                {
-                                    map.insert(format!("${}", p.name), class_str);
-                                }
+                            {
+                                map.insert(format!("${}", p.name), class_str);
                             }
                         }
                         if let Some(body) = &m.body {
@@ -331,10 +330,10 @@ fn collect_types_stmts(
                 for member in t.members.iter() {
                     if let ClassMemberKind::Method(m) = &member.kind {
                         for p in m.params.iter() {
-                            if let Some(hint) = &p.type_hint {
-                                if let Some(class_str) = type_hint_to_class_string(hint, None) {
-                                    map.insert(format!("${}", p.name), class_str);
-                                }
+                            if let Some(hint) = &p.type_hint
+                                && let Some(class_str) = type_hint_to_class_string(hint, None)
+                            {
+                                map.insert(format!("${}", p.name), class_str);
                             }
                         }
                         if let Some(body) = &m.body {
@@ -347,10 +346,10 @@ fn collect_types_stmts(
                 for member in e.members.iter() {
                     if let EnumMemberKind::Method(m) = &member.kind {
                         for p in m.params.iter() {
-                            if let Some(hint) = &p.type_hint {
-                                if let Some(class_str) = type_hint_to_class_string(hint, None) {
-                                    map.insert(format!("${}", p.name), class_str);
-                                }
+                            if let Some(hint) = &p.type_hint
+                                && let Some(class_str) = type_hint_to_class_string(hint, None)
+                            {
+                                map.insert(format!("${}", p.name), class_str);
                             }
                         }
                         if let Some(body) = &m.body {
@@ -367,26 +366,24 @@ fn collect_types_stmts(
             // if ($x instanceof Foo) — narrow $x to Foo inside the then-branch
             StmtKind::If(if_stmt) => {
                 // Check whether the condition is a simple `$var instanceof ClassName`.
-                if let ExprKind::Binary(b) = &if_stmt.condition.kind {
-                    if b.op == BinaryOp::Instanceof {
-                        if let (ExprKind::Variable(var_name), ExprKind::Identifier(class)) =
-                            (&b.left.kind, &b.right.kind)
-                        {
-                            let var_key = format!("${}", var_name);
-                            let narrowed = class
-                                .as_ref()
-                                .trim_start_matches('\\')
-                                .rsplit('\\')
-                                .next()
-                                .unwrap_or(class.as_ref())
-                                .to_string();
-                            // Insert narrowed type then recurse into then-branch.
-                            // The flat map keeps the last write, so code after the if-block
-                            // may see the narrowed type — acceptable trade-off for a simple
-                            // single-pass map.
-                            map.insert(var_key, narrowed);
-                        }
-                    }
+                if let ExprKind::Binary(b) = &if_stmt.condition.kind
+                    && b.op == BinaryOp::Instanceof
+                    && let (ExprKind::Variable(var_name), ExprKind::Identifier(class)) =
+                        (&b.left.kind, &b.right.kind)
+                {
+                    let var_key = format!("${}", var_name);
+                    let narrowed = class
+                        .as_ref()
+                        .trim_start_matches('\\')
+                        .rsplit('\\')
+                        .next()
+                        .unwrap_or(class.as_ref())
+                        .to_string();
+                    // Insert narrowed type then recurse into then-branch.
+                    // The flat map keeps the last write, so code after the if-block
+                    // may see the narrowed type — acceptable trade-off for a simple
+                    // single-pass map.
+                    map.insert(var_key, narrowed);
                 }
                 collect_types_stmts(
                     source,
@@ -419,10 +416,10 @@ fn collect_types_stmts(
             StmtKind::Foreach(f) => {
                 if let ExprKind::Variable(arr_name) = &f.expr.kind {
                     let elem_key = format!("${}[]", arr_name);
-                    if let Some(elem_type) = map.get(&elem_key).cloned() {
-                        if let ExprKind::Variable(val_name) = &f.value.kind {
-                            map.insert(format!("${}", val_name), elem_type);
-                        }
+                    if let Some(elem_type) = map.get(&elem_key).cloned()
+                        && let ExprKind::Variable(val_name) = &f.value.kind
+                    {
+                        map.insert(format!("${}", val_name), elem_type);
                     }
                 }
                 collect_types_stmts(
@@ -451,41 +448,37 @@ fn collect_types_expr(
                 // Handle ??= (null coalescing assignment): only assigns if null
                 // so use or_insert (existing type takes precedence)
                 if assign.op == php_ast::AssignOp::Coalesce {
-                    if let ExprKind::New(new_expr) = &assign.value.kind {
-                        if let Some(class_name) = extract_class_name(new_expr.class) {
-                            map.entry(format!("${}", var_name)).or_insert(class_name);
-                        }
+                    if let ExprKind::New(new_expr) = &assign.value.kind
+                        && let Some(class_name) = extract_class_name(new_expr.class)
+                    {
+                        map.entry(format!("${}", var_name)).or_insert(class_name);
                     }
                     collect_types_expr(source, assign.value, map, meta, method_returns);
                     return;
                 }
-                if let ExprKind::New(new_expr) = &assign.value.kind {
-                    if let Some(class_name) = extract_class_name(new_expr.class) {
-                        map.insert(format!("${}", var_name), class_name);
-                    }
+                if let ExprKind::New(new_expr) = &assign.value.kind
+                    && let Some(class_name) = extract_class_name(new_expr.class)
+                {
+                    map.insert(format!("${}", var_name), class_name);
                 }
                 // $result = $obj->method() — infer result type from method's return type
-                if let ExprKind::MethodCall(mc) = &assign.value.kind {
-                    if let (ExprKind::Variable(obj_var), ExprKind::Identifier(method_name)) =
+                if let ExprKind::MethodCall(mc) = &assign.value.kind
+                    && let (ExprKind::Variable(obj_var), ExprKind::Identifier(method_name)) =
                         (&mc.object.kind, &mc.method.kind)
-                    {
-                        if let Some(obj_class) = map.get(&format!("${}", obj_var)).cloned() {
-                            if let Some(class_rets) = method_returns.get(&obj_class) {
-                                if let Some(ret_type) = class_rets.get(method_name.as_ref()) {
-                                    map.insert(format!("${}", var_name), ret_type.clone());
-                                }
-                            }
-                        }
-                    }
+                    && let Some(obj_class) = map.get(&format!("${}", obj_var)).cloned()
+                    && let Some(class_rets) = method_returns.get(&obj_class)
+                    && let Some(ret_type) = class_rets.get(method_name.as_ref())
+                {
+                    map.insert(format!("${}", var_name), ret_type.clone());
                 }
                 // PHPStorm meta: `$var = $obj->make(SomeClass::class)`
-                if let Some(meta) = meta {
-                    if let Some(inferred) = infer_from_meta_method_call(&assign.value, map, meta) {
-                        map.insert(format!("${}", var_name), inferred);
-                    }
+                if let Some(meta) = meta
+                    && let Some(inferred) = infer_from_meta_method_call(assign.value, map, meta)
+                {
+                    map.insert(format!("${}", var_name), inferred);
                 }
                 // $result = array_map(fn($x): Foo => ..., $arr) → $result[] = Foo
-                if let Some(elem_type) = extract_array_callback_return_type(&assign.value) {
+                if let Some(elem_type) = extract_array_callback_return_type(assign.value) {
                     map.insert(format!("${}[]", var_name), elem_type);
                 }
             }
@@ -494,14 +487,13 @@ fn collect_types_expr(
 
         // Closure::bind($fn, $obj) → $this maps to $obj's class
         ExprKind::StaticMethodCall(s) => {
-            if let ExprKind::Identifier(class) = &s.class.kind {
-                if class.as_ref() == "Closure" && s.method.as_ref() == "bind" {
-                    if let Some(obj_arg) = s.args.get(1) {
-                        if let Some(cls) = resolve_var_type_str(&obj_arg.value, map) {
-                            map.insert("$this".to_string(), cls);
-                        }
-                    }
-                }
+            if let ExprKind::Identifier(class) = &s.class.kind
+                && class.as_ref() == "Closure"
+                && s.method.as_ref() == "bind"
+                && let Some(obj_arg) = s.args.get(1)
+                && let Some(cls) = resolve_var_type_str(&obj_arg.value, map)
+            {
+                map.insert("$this".to_string(), cls);
             }
         }
 
@@ -509,12 +501,11 @@ fn collect_types_expr(
         ExprKind::MethodCall(m) => {
             if let ExprKind::Identifier(method) = &m.method.kind {
                 let mname = method.as_ref();
-                if mname == "bindTo" || mname == "call" {
-                    if let Some(obj_arg) = m.args.first() {
-                        if let Some(cls) = resolve_var_type_str(&obj_arg.value, map) {
-                            map.insert("$this".to_string(), cls);
-                        }
-                    }
+                if (mname == "bindTo" || mname == "call")
+                    && let Some(obj_arg) = m.args.first()
+                    && let Some(cls) = resolve_var_type_str(&obj_arg.value, map)
+                {
+                    map.insert("$this".to_string(), cls);
                 }
             }
         }
@@ -522,10 +513,10 @@ fn collect_types_expr(
         // Walk closure bodies so inner assignments are also captured
         ExprKind::Closure(c) => {
             for p in c.params.iter() {
-                if let Some(hint) = &p.type_hint {
-                    if let TypeHintKind::Named(name) = &hint.kind {
-                        map.insert(format!("${}", p.name), name.to_string_repr().to_string());
-                    }
+                if let Some(hint) = &p.type_hint
+                    && let TypeHintKind::Named(name) = &hint.kind
+                {
+                    map.insert(format!("${}", p.name), name.to_string_repr().to_string());
                 }
             }
             collect_types_stmts(source, &c.body, map, meta, method_returns);
@@ -533,10 +524,10 @@ fn collect_types_expr(
 
         ExprKind::ArrowFunction(af) => {
             for p in af.params.iter() {
-                if let Some(hint) = &p.type_hint {
-                    if let TypeHintKind::Named(name) = &hint.kind {
-                        map.insert(format!("${}", p.name), name.to_string_repr().to_string());
-                    }
+                if let Some(hint) = &p.type_hint
+                    && let TypeHintKind::Named(name) = &hint.kind
+                {
+                    map.insert(format!("${}", p.name), name.to_string_repr().to_string());
                 }
             }
             collect_types_expr(source, af.body, map, meta, method_returns);
@@ -661,10 +652,10 @@ fn parent_in_stmts(stmts: &[Stmt<'_, '_>], class_name: &str) -> Option<String> {
                 return c.extends.as_ref().map(|n| n.to_string_repr().to_string());
             }
             StmtKind::Namespace(ns) => {
-                if let NamespaceBody::Braced(inner) = &ns.body {
-                    if let found @ Some(_) = parent_in_stmts(inner, class_name) {
-                        return found;
-                    }
+                if let NamespaceBody::Braced(inner) = &ns.body
+                    && let found @ Some(_) = parent_in_stmts(inner, class_name)
+                {
+                    return found;
                 }
             }
             _ => {}
@@ -872,10 +863,10 @@ fn enclosing_class_in_stmts(source: &str, stmts: &[Stmt<'_, '_>], pos: Position)
                 }
             }
             StmtKind::Namespace(ns) => {
-                if let NamespaceBody::Braced(inner) = &ns.body {
-                    if let Some(found) = enclosing_class_in_stmts(source, inner, pos) {
-                        return Some(found);
-                    }
+                if let NamespaceBody::Braced(inner) = &ns.body
+                    && let Some(found) = enclosing_class_in_stmts(source, inner, pos)
+                {
+                    return Some(found);
                 }
             }
             _ => {}
@@ -901,10 +892,10 @@ fn is_enum_in_stmts(stmts: &[Stmt<'_, '_>], name: &str) -> bool {
         match &stmt.kind {
             StmtKind::Enum(e) if e.name == name => return true,
             StmtKind::Namespace(ns) => {
-                if let NamespaceBody::Braced(inner) = &ns.body {
-                    if is_enum_in_stmts(inner, name) {
-                        return true;
-                    }
+                if let NamespaceBody::Braced(inner) = &ns.body
+                    && is_enum_in_stmts(inner, name)
+                {
+                    return true;
                 }
             }
             _ => {}
@@ -924,10 +915,10 @@ fn is_backed_enum_in_stmts(stmts: &[Stmt<'_, '_>], name: &str) -> bool {
         match &stmt.kind {
             StmtKind::Enum(e) if e.name == name => return e.scalar_type.is_some(),
             StmtKind::Namespace(ns) => {
-                if let NamespaceBody::Braced(inner) = &ns.body {
-                    if is_backed_enum_in_stmts(inner, name) {
-                        return true;
-                    }
+                if let NamespaceBody::Braced(inner) = &ns.body
+                    && is_backed_enum_in_stmts(inner, name)
+                {
+                    return true;
                 }
             }
             _ => {}
@@ -947,13 +938,13 @@ fn collect_params_stmts(stmts: &[Stmt<'_, '_>], func_name: &str, out: &mut Vec<S
             }
             StmtKind::Class(c) => {
                 for member in c.members.iter() {
-                    if let ClassMemberKind::Method(m) = &member.kind {
-                        if m.name == func_name {
-                            for p in m.params.iter() {
-                                out.push(p.name.to_string());
-                            }
-                            return;
+                    if let ClassMemberKind::Method(m) = &member.kind
+                        && m.name == func_name
+                    {
+                        for p in m.params.iter() {
+                            out.push(p.name.to_string());
                         }
+                        return;
                     }
                 }
             }

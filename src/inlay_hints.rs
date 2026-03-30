@@ -49,16 +49,16 @@ fn collect_defs_stmts(stmts: &[Stmt<'_, '_>], map: &mut HashMap<String, FuncDef>
                             m.params.iter().map(|p| p.name.to_string()).collect();
                         let return_type = m.return_type.as_ref().map(|t| format_type_hint(t));
                         // Register __construct under the class name so `new ClassName(...)` gets hints.
-                        if m.name == "__construct" {
-                            if let Some(class_name) = c.name {
-                                map.insert(
-                                    class_name.to_string(),
-                                    FuncDef {
-                                        params: params.clone(),
-                                        return_type: None,
-                                    },
-                                );
-                            }
+                        if m.name == "__construct"
+                            && let Some(class_name) = c.name
+                        {
+                            map.insert(
+                                class_name.to_string(),
+                                FuncDef {
+                                    params: params.clone(),
+                                    return_type: None,
+                                },
+                            );
                         }
                         map.insert(
                             m.name.to_string(),
@@ -109,36 +109,34 @@ fn collect_defs_stmts(stmts: &[Stmt<'_, '_>], map: &mut HashMap<String, FuncDef>
             }
             // Register closure/arrow-function variables so `$fn(...)` call sites get hints.
             StmtKind::Expression(e) => {
-                if let ExprKind::Assign(assign) = &e.kind {
-                    if let ExprKind::Variable(var_name) = &assign.target.kind {
-                        let key = format!("${var_name}");
-                        match &assign.value.kind {
-                            ExprKind::Closure(c) => {
-                                let params = c.params.iter().map(|p| p.name.to_string()).collect();
-                                let return_type =
-                                    c.return_type.as_ref().map(|t| format_type_hint(t));
-                                map.insert(
-                                    key,
-                                    FuncDef {
-                                        params,
-                                        return_type,
-                                    },
-                                );
-                            }
-                            ExprKind::ArrowFunction(a) => {
-                                let params = a.params.iter().map(|p| p.name.to_string()).collect();
-                                let return_type =
-                                    a.return_type.as_ref().map(|t| format_type_hint(t));
-                                map.insert(
-                                    key,
-                                    FuncDef {
-                                        params,
-                                        return_type,
-                                    },
-                                );
-                            }
-                            _ => {}
+                if let ExprKind::Assign(assign) = &e.kind
+                    && let ExprKind::Variable(var_name) = &assign.target.kind
+                {
+                    let key = format!("${var_name}");
+                    match &assign.value.kind {
+                        ExprKind::Closure(c) => {
+                            let params = c.params.iter().map(|p| p.name.to_string()).collect();
+                            let return_type = c.return_type.as_ref().map(|t| format_type_hint(t));
+                            map.insert(
+                                key,
+                                FuncDef {
+                                    params,
+                                    return_type,
+                                },
+                            );
                         }
+                        ExprKind::ArrowFunction(a) => {
+                            let params = a.params.iter().map(|p| p.name.to_string()).collect();
+                            let return_type = a.return_type.as_ref().map(|t| format_type_hint(t));
+                            map.insert(
+                                key,
+                                FuncDef {
+                                    params,
+                                    return_type,
+                                },
+                            );
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -170,11 +168,7 @@ fn hints_in_stmt(
 ) {
     match &stmt.kind {
         StmtKind::Expression(e) => hints_in_expr(source, e, defs, range, out),
-        StmtKind::Return(r) => {
-            if let Some(v) = r {
-                hints_in_expr(source, v, defs, range, out);
-            }
-        }
+        StmtKind::Return(Some(v)) => hints_in_expr(source, v, defs, range, out),
         StmtKind::Echo(exprs) => {
             for expr in exprs.iter() {
                 hints_in_expr(source, expr, defs, range, out);
@@ -185,10 +179,10 @@ fn hints_in_stmt(
         }
         StmtKind::Class(c) => {
             for member in c.members.iter() {
-                if let ClassMemberKind::Method(m) = &member.kind {
-                    if let Some(body) = &m.body {
-                        hints_in_stmts(source, body, defs, range, out);
-                    }
+                if let ClassMemberKind::Method(m) = &member.kind
+                    && let Some(body) = &m.body
+                {
+                    hints_in_stmts(source, body, defs, range, out);
                 }
             }
         }
@@ -259,10 +253,10 @@ fn hints_in_expr(
                     None
                 }
             });
-            if let Some(k) = key {
-                if let Some(def) = defs.get(&k) {
-                    emit_param_hints(source, &f.args, &def.params, &k, range, out);
-                }
+            if let Some(k) = key
+                && let Some(def) = defs.get(&k)
+            {
+                emit_param_hints(source, &f.args, &def.params, &k, range, out);
             }
             hints_in_expr(source, f.name, defs, range, out);
             for arg in f.args.iter() {
@@ -270,10 +264,10 @@ fn hints_in_expr(
             }
         }
         ExprKind::MethodCall(m) => {
-            if let Some(name) = ident_name(m.method) {
-                if let Some(def) = defs.get(name) {
-                    emit_param_hints(source, &m.args, &def.params, name, range, out);
-                }
+            if let Some(name) = ident_name(m.method)
+                && let Some(def) = defs.get(name)
+            {
+                emit_param_hints(source, &m.args, &def.params, name, range, out);
             }
             hints_in_expr(source, m.object, defs, range, out);
             for arg in m.args.iter() {
@@ -281,10 +275,10 @@ fn hints_in_expr(
             }
         }
         ExprKind::New(n) => {
-            if let Some(class_name) = ident_name(n.class) {
-                if let Some(def) = defs.get(class_name) {
-                    emit_param_hints(source, &n.args, &def.params, class_name, range, out);
-                }
+            if let Some(class_name) = ident_name(n.class)
+                && let Some(def) = defs.get(class_name)
+            {
+                emit_param_hints(source, &n.args, &def.params, class_name, range, out);
             }
             for arg in n.args.iter() {
                 hints_in_expr(source, &arg.value, defs, range, out);
@@ -358,17 +352,16 @@ fn emit_return_type_hint(
         ExprKind::MethodCall(m) => ident_name(m.method),
         _ => return,
     };
-    if let Some(name) = name {
-        if let Some(def) = defs.get(name) {
-            if let Some(ret_type) = &def.return_type {
-                if ret_type == "void" {
-                    return;
-                }
-                let pos = offset_to_position(source, expr.span.end);
-                if pos_in_range(pos, range) {
-                    out.push(make_return_hint(pos, ret_type, name));
-                }
-            }
+    if let Some(name) = name
+        && let Some(def) = defs.get(name)
+        && let Some(ret_type) = &def.return_type
+    {
+        if ret_type == "void" {
+            return;
+        }
+        let pos = offset_to_position(source, expr.span.end);
+        if pos_in_range(pos, range) {
+            out.push(make_return_hint(pos, ret_type, name));
         }
     }
 }

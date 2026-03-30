@@ -82,10 +82,11 @@ fn is_declaration_span(stmts: &[Stmt<'_, '_>], word: &str, span: &Span) -> bool 
                 }
                 StmtKind::Class(c) => {
                     for member in c.members.iter() {
-                        if let ClassMemberKind::Method(m) = &member.kind {
-                            if m.name == word && spans_equal(&member.span, span) {
-                                return true;
-                            }
+                        if let ClassMemberKind::Method(m) = &member.kind
+                            && m.name == word
+                            && spans_equal(&member.span, span)
+                        {
+                            return true;
                         }
                     }
                 }
@@ -100,10 +101,10 @@ fn is_declaration_span(stmts: &[Stmt<'_, '_>], word: &str, span: &Span) -> bool 
                     }
                 }
                 StmtKind::Namespace(ns) => {
-                    if let NamespaceBody::Braced(inner) = &ns.body {
-                        if check(inner, word, span) {
-                            return true;
-                        }
+                    if let NamespaceBody::Braced(inner) = &ns.body
+                        && check(inner, word, span)
+                    {
+                        return true;
                     }
                 }
                 _ => {}

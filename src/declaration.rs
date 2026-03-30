@@ -58,10 +58,10 @@ fn find_abstract_declaration(
             StmtKind::Interface(i) => {
                 // Interface methods are declarations without bodies
                 for member in i.members.iter() {
-                    if let ClassMemberKind::Method(m) = &member.kind {
-                        if m.name == word {
-                            return Some(name_range(source, m.name));
-                        }
+                    if let ClassMemberKind::Method(m) = &member.kind
+                        && m.name == word
+                    {
+                        return Some(name_range(source, m.name));
                     }
                 }
                 if i.name == word {
@@ -70,18 +70,19 @@ fn find_abstract_declaration(
             }
             StmtKind::Class(c) => {
                 for member in c.members.iter() {
-                    if let ClassMemberKind::Method(m) = &member.kind {
-                        if m.is_abstract && m.name == word {
-                            return Some(name_range(source, m.name));
-                        }
+                    if let ClassMemberKind::Method(m) = &member.kind
+                        && m.is_abstract
+                        && m.name == word
+                    {
+                        return Some(name_range(source, m.name));
                     }
                 }
             }
             StmtKind::Namespace(ns) => {
-                if let NamespaceBody::Braced(inner) = &ns.body {
-                    if let Some(r) = find_abstract_declaration(source, inner, word) {
-                        return Some(r);
-                    }
+                if let NamespaceBody::Braced(inner) = &ns.body
+                    && let Some(r) = find_abstract_declaration(source, inner, word)
+                {
+                    return Some(r);
                 }
             }
             _ => {}
@@ -105,10 +106,10 @@ fn find_any_declaration(
             }
             StmtKind::Class(c) => {
                 for member in c.members.iter() {
-                    if let ClassMemberKind::Method(m) = &member.kind {
-                        if m.name == word {
-                            return Some(name_range(source, m.name));
-                        }
+                    if let ClassMemberKind::Method(m) = &member.kind
+                        && m.name == word
+                    {
+                        return Some(name_range(source, m.name));
                     }
                 }
             }
@@ -123,18 +124,18 @@ fn find_any_declaration(
             }
             StmtKind::Enum(e) => {
                 for member in e.members.iter() {
-                    if let EnumMemberKind::Method(m) = &member.kind {
-                        if m.name == word {
-                            return Some(name_range(source, m.name));
-                        }
+                    if let EnumMemberKind::Method(m) = &member.kind
+                        && m.name == word
+                    {
+                        return Some(name_range(source, m.name));
                     }
                 }
             }
             StmtKind::Namespace(ns) => {
-                if let NamespaceBody::Braced(inner) = &ns.body {
-                    if let Some(r) = find_any_declaration(source, inner, word) {
-                        return Some(r);
-                    }
+                if let NamespaceBody::Braced(inner) = &ns.body
+                    && let Some(r) = find_any_declaration(source, inner, word)
+                {
+                    return Some(r);
                 }
             }
             _ => {}

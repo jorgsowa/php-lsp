@@ -19,6 +19,7 @@ pub struct ParsedDoc {
     program: Box<Program<'static, 'static>>,
     pub errors: Vec<php_rs_parser::diagnostics::ParseError>,
     _arena: Box<bumpalo::Bump>,
+    #[allow(clippy::box_collection)]
     _source: Box<String>,
 }
 
@@ -56,13 +57,13 @@ impl ParsedDoc {
     /// `&Program<'static, 'static>` shorten to `&Program<'_, '_>`.
     #[inline]
     pub fn program(&self) -> &Program<'_, '_> {
-        &*self.program
+        &self.program
     }
 
     /// Borrow the source text used when parsing.
     #[inline]
     pub fn source(&self) -> &str {
-        &*self._source
+        &self._source
     }
 }
 

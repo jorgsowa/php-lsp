@@ -67,28 +67,28 @@ fn collect_deprecated_calls(
             }
             StmtKind::Class(c) => {
                 for member in c.members.iter() {
-                    if let ClassMemberKind::Method(m) = &member.kind {
-                        if let Some(body) = &m.body {
-                            collect_deprecated_calls(source, body, doc, other_docs, diags);
-                        }
+                    if let ClassMemberKind::Method(m) = &member.kind
+                        && let Some(body) = &m.body
+                    {
+                        collect_deprecated_calls(source, body, doc, other_docs, diags);
                     }
                 }
             }
             StmtKind::Trait(t) => {
                 for member in t.members.iter() {
-                    if let ClassMemberKind::Method(m) = &member.kind {
-                        if let Some(body) = &m.body {
-                            collect_deprecated_calls(source, body, doc, other_docs, diags);
-                        }
+                    if let ClassMemberKind::Method(m) = &member.kind
+                        && let Some(body) = &m.body
+                    {
+                        collect_deprecated_calls(source, body, doc, other_docs, diags);
                     }
                 }
             }
             StmtKind::Enum(e) => {
                 for member in e.members.iter() {
-                    if let EnumMemberKind::Method(m) = &member.kind {
-                        if let Some(body) = &m.body {
-                            collect_deprecated_calls(source, body, doc, other_docs, diags);
-                        }
+                    if let EnumMemberKind::Method(m) = &member.kind
+                        && let Some(body) = &m.body
+                    {
+                        collect_deprecated_calls(source, body, doc, other_docs, diags);
                     }
                 }
             }
@@ -116,36 +116,36 @@ fn check_expr_for_deprecated(
                 .chain(other_docs.iter().map(|d| (d.source(), d.as_ref())))
                 .collect();
             for (src, d) in &all_sources {
-                if let Some(span_start) = find_function_span(d, func_name) {
-                    if let Some(raw) = docblock_before(src, span_start) {
-                        let db = parse_docblock(&raw);
-                        if db.is_deprecated() {
-                            let start_pos = offset_to_position(source, call.name.span.start);
-                            let end_pos = offset_to_position(source, call.name.span.end);
-                            let msg = match &db.deprecated {
-                                Some(m) if !m.is_empty() => {
-                                    format!("Deprecated: {} — {}", func_name, m)
-                                }
-                                _ => format!("Deprecated: {}", func_name),
-                            };
-                            diags.push(Diagnostic {
-                                range: Range {
-                                    start: Position {
-                                        line: start_pos.line,
-                                        character: start_pos.character,
-                                    },
-                                    end: Position {
-                                        line: end_pos.line,
-                                        character: end_pos.character,
-                                    },
+                if let Some(span_start) = find_function_span(d, func_name)
+                    && let Some(raw) = docblock_before(src, span_start)
+                {
+                    let db = parse_docblock(&raw);
+                    if db.is_deprecated() {
+                        let start_pos = offset_to_position(source, call.name.span.start);
+                        let end_pos = offset_to_position(source, call.name.span.end);
+                        let msg = match &db.deprecated {
+                            Some(m) if !m.is_empty() => {
+                                format!("Deprecated: {} — {}", func_name, m)
+                            }
+                            _ => format!("Deprecated: {}", func_name),
+                        };
+                        diags.push(Diagnostic {
+                            range: Range {
+                                start: Position {
+                                    line: start_pos.line,
+                                    character: start_pos.character,
                                 },
-                                severity: Some(DiagnosticSeverity::WARNING),
-                                source: Some("php-lsp".to_string()),
-                                message: msg,
-                                ..Default::default()
-                            });
-                            break;
-                        }
+                                end: Position {
+                                    line: end_pos.line,
+                                    character: end_pos.character,
+                                },
+                            },
+                            severity: Some(DiagnosticSeverity::WARNING),
+                            source: Some("php-lsp".to_string()),
+                            message: msg,
+                            ..Default::default()
+                        });
+                        break;
                     }
                 }
             }
@@ -162,36 +162,36 @@ fn check_expr_for_deprecated(
                 .chain(other_docs.iter().map(|d| (d.source(), d.as_ref())))
                 .collect();
             for (src, d) in &all_sources {
-                if let Some(span_start) = find_method_span(d, method_name) {
-                    if let Some(raw) = docblock_before(src, span_start) {
-                        let db = parse_docblock(&raw);
-                        if db.is_deprecated() {
-                            let start_pos = offset_to_position(source, call.method.span.start);
-                            let end_pos = offset_to_position(source, call.method.span.end);
-                            let msg = match &db.deprecated {
-                                Some(m) if !m.is_empty() => {
-                                    format!("Deprecated: {} — {}", method_name, m)
-                                }
-                                _ => format!("Deprecated: {}", method_name),
-                            };
-                            diags.push(Diagnostic {
-                                range: Range {
-                                    start: Position {
-                                        line: start_pos.line,
-                                        character: start_pos.character,
-                                    },
-                                    end: Position {
-                                        line: end_pos.line,
-                                        character: end_pos.character,
-                                    },
+                if let Some(span_start) = find_method_span(d, method_name)
+                    && let Some(raw) = docblock_before(src, span_start)
+                {
+                    let db = parse_docblock(&raw);
+                    if db.is_deprecated() {
+                        let start_pos = offset_to_position(source, call.method.span.start);
+                        let end_pos = offset_to_position(source, call.method.span.end);
+                        let msg = match &db.deprecated {
+                            Some(m) if !m.is_empty() => {
+                                format!("Deprecated: {} — {}", method_name, m)
+                            }
+                            _ => format!("Deprecated: {}", method_name),
+                        };
+                        diags.push(Diagnostic {
+                            range: Range {
+                                start: Position {
+                                    line: start_pos.line,
+                                    character: start_pos.character,
                                 },
-                                severity: Some(DiagnosticSeverity::WARNING),
-                                source: Some("php-lsp".to_string()),
-                                message: msg,
-                                ..Default::default()
-                            });
-                            break;
-                        }
+                                end: Position {
+                                    line: end_pos.line,
+                                    character: end_pos.character,
+                                },
+                            },
+                            severity: Some(DiagnosticSeverity::WARNING),
+                            source: Some("php-lsp".to_string()),
+                            message: msg,
+                            ..Default::default()
+                        });
+                        break;
                     }
                 }
             }
@@ -215,10 +215,10 @@ fn find_function_span_in_stmts(stmts: &[Stmt<'_, '_>], func_name: &str) -> Optio
                 return Some(stmt.span.start);
             }
             StmtKind::Namespace(ns) => {
-                if let NamespaceBody::Braced(inner) = &ns.body {
-                    if let Some(s) = find_function_span_in_stmts(inner, func_name) {
-                        return Some(s);
-                    }
+                if let NamespaceBody::Braced(inner) = &ns.body
+                    && let Some(s) = find_function_span_in_stmts(inner, func_name)
+                {
+                    return Some(s);
                 }
             }
             _ => {}
@@ -236,36 +236,36 @@ fn find_method_span_in_stmts(stmts: &[Stmt<'_, '_>], method_name: &str) -> Optio
         match &stmt.kind {
             StmtKind::Class(c) => {
                 for member in c.members.iter() {
-                    if let ClassMemberKind::Method(m) = &member.kind {
-                        if m.name == method_name {
-                            return Some(member.span.start);
-                        }
+                    if let ClassMemberKind::Method(m) = &member.kind
+                        && m.name == method_name
+                    {
+                        return Some(member.span.start);
                     }
                 }
             }
             StmtKind::Trait(t) => {
                 for member in t.members.iter() {
-                    if let ClassMemberKind::Method(m) = &member.kind {
-                        if m.name == method_name {
-                            return Some(member.span.start);
-                        }
+                    if let ClassMemberKind::Method(m) = &member.kind
+                        && m.name == method_name
+                    {
+                        return Some(member.span.start);
                     }
                 }
             }
             StmtKind::Enum(e) => {
                 for member in e.members.iter() {
-                    if let EnumMemberKind::Method(m) = &member.kind {
-                        if m.name == method_name {
-                            return Some(member.span.start);
-                        }
+                    if let EnumMemberKind::Method(m) = &member.kind
+                        && m.name == method_name
+                    {
+                        return Some(member.span.start);
                     }
                 }
             }
             StmtKind::Namespace(ns) => {
-                if let NamespaceBody::Braced(inner) = &ns.body {
-                    if let Some(s) = find_method_span_in_stmts(inner, method_name) {
-                        return Some(s);
-                    }
+                if let NamespaceBody::Braced(inner) = &ns.body
+                    && let Some(s) = find_method_span_in_stmts(inner, method_name)
+                {
+                    return Some(s);
                 }
             }
             _ => {}

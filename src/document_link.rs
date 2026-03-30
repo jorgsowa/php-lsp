@@ -20,11 +20,7 @@ fn collect_in_stmts(stmts: &[Stmt<'_, '_>], source: &str, uri: &Url, out: &mut V
 fn collect_in_stmt(stmt: &Stmt<'_, '_>, source: &str, uri: &Url, out: &mut Vec<DocumentLink>) {
     match &stmt.kind {
         StmtKind::Expression(e) => collect_in_expr(e, source, uri, out),
-        StmtKind::Return(r) => {
-            if let Some(v) = r {
-                collect_in_expr(v, source, uri, out);
-            }
-        }
+        StmtKind::Return(Some(v)) => collect_in_expr(v, source, uri, out),
         StmtKind::Echo(exprs) => {
             for expr in exprs.iter() {
                 collect_in_expr(expr, source, uri, out);
@@ -34,10 +30,10 @@ fn collect_in_stmt(stmt: &Stmt<'_, '_>, source: &str, uri: &Url, out: &mut Vec<D
         StmtKind::Class(c) => {
             use php_ast::ClassMemberKind;
             for member in c.members.iter() {
-                if let ClassMemberKind::Method(m) = &member.kind {
-                    if let Some(body) = &m.body {
-                        collect_in_stmts(body, source, uri, out);
-                    }
+                if let ClassMemberKind::Method(m) = &member.kind
+                    && let Some(body) = &m.body
+                {
+                    collect_in_stmts(body, source, uri, out);
                 }
             }
         }
@@ -56,10 +52,10 @@ fn collect_in_expr(
     uri: &Url,
     out: &mut Vec<DocumentLink>,
 ) {
-    if let ExprKind::Include(_, path_expr) = &expr.kind {
-        if let Some(link) = link_from_path_expr(path_expr, source, uri) {
-            out.push(link);
-        }
+    if let ExprKind::Include(_, path_expr) = &expr.kind
+        && let Some(link) = link_from_path_expr(path_expr, source, uri)
+    {
+        out.push(link);
     }
 }
 
@@ -123,23 +119,23 @@ fn collect_docblock_links(source: &str, out: &mut Vec<DocumentLink>) {
                 if url_str.is_empty() {
                     continue;
                 }
-                if let Ok(target) = Url::parse(url_str) {
-                    if let Some(col) = line.find(url_str) {
-                        let start = Position {
-                            line: line_idx as u32,
-                            character: col as u32,
-                        };
-                        let end = Position {
-                            line: line_idx as u32,
-                            character: (col + url_str.len()) as u32,
-                        };
-                        out.push(DocumentLink {
-                            range: Range { start, end },
-                            target: Some(target),
-                            tooltip: None,
-                            data: None,
-                        });
-                    }
+                if let Ok(target) = Url::parse(url_str)
+                    && let Some(col) = line.find(url_str)
+                {
+                    let start = Position {
+                        line: line_idx as u32,
+                        character: col as u32,
+                    };
+                    let end = Position {
+                        line: line_idx as u32,
+                        character: (col + url_str.len()) as u32,
+                    };
+                    out.push(DocumentLink {
+                        range: Range { start, end },
+                        target: Some(target),
+                        tooltip: None,
+                        data: None,
+                    });
                 }
             }
         }

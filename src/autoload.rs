@@ -27,27 +27,27 @@ impl Psr4Map {
 
         // Installed packages via vendor/composer/installed.json
         let installed_json = root.join("vendor").join("composer").join("installed.json");
-        if let Ok(text) = std::fs::read_to_string(&installed_json) {
-            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) {
-                // Composer v2: {"packages": [...]}  |  Composer v1: [...]
-                let packages = json
-                    .get("packages")
-                    .and_then(|v| v.as_array())
-                    .or_else(|| json.as_array());
+        if let Ok(text) = std::fs::read_to_string(&installed_json)
+            && let Ok(json) = serde_json::from_str::<serde_json::Value>(&text)
+        {
+            // Composer v2: {"packages": [...]}  |  Composer v1: [...]
+            let packages = json
+                .get("packages")
+                .and_then(|v| v.as_array())
+                .or_else(|| json.as_array());
 
-                if let Some(pkgs) = packages {
-                    let vendor_composer = root.join("vendor").join("composer");
-                    for pkg in pkgs {
-                        let install_path = pkg
-                            .get("install-path")
-                            .and_then(|v| v.as_str())
-                            .map(|p| vendor_composer.join(p));
+            if let Some(pkgs) = packages {
+                let vendor_composer = root.join("vendor").join("composer");
+                for pkg in pkgs {
+                    let install_path = pkg
+                        .get("install-path")
+                        .and_then(|v| v.as_str())
+                        .map(|p| vendor_composer.join(p));
 
-                        if let Some(pkg_root) = install_path {
-                            let pkg_root = std::fs::canonicalize(&pkg_root).unwrap_or(pkg_root);
-                            if let Some(autoload) = pkg.get("autoload") {
-                                load_psr4_section(autoload, &pkg_root, &mut map);
-                            }
+                    if let Some(pkg_root) = install_path {
+                        let pkg_root = std::fs::canonicalize(&pkg_root).unwrap_or(pkg_root);
+                        if let Some(autoload) = pkg.get("autoload") {
+                            load_psr4_section(autoload, &pkg_root, &mut map);
                         }
                     }
                 }
@@ -77,9 +77,7 @@ impl Psr4Map {
                     let rel_str = rel.to_string_lossy();
                     let without_ext = rel_str.strip_suffix(".php")?;
                     // Normalise path separators to backslashes (PSR-4 uses `\`)
-                    let class_path = without_ext
-                        .replace(std::path::MAIN_SEPARATOR, "\\")
-                        .replace('/', "\\");
+                    let class_path = without_ext.replace([std::path::MAIN_SEPARATOR, '/'], "\\");
                     return Some(format!("{}{}", prefix, class_path));
                 }
             }
