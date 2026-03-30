@@ -24,7 +24,8 @@ pub fn document_highlights(
             let start = offset_to_position(source, span.start);
             let end = Position {
                 line: start.line,
-                character: start.character + word.chars().map(|c| c.len_utf16() as u32).sum::<u32>(),
+                character: start.character
+                    + word.chars().map(|c| c.len_utf16() as u32).sum::<u32>(),
             };
             DocumentHighlight {
                 range: Range { start, end },
@@ -63,10 +64,18 @@ mod tests {
         let src = "<?php\nclass Foo {}\n$x = new Foo();";
         let doc = ParsedDoc::parse(src.to_string());
         let highlights = document_highlights(src, &doc, pos(1, 8));
-        assert_eq!(highlights.len(), 2, "expected decl + new expr = 2 highlights");
+        assert_eq!(
+            highlights.len(),
+            2,
+            "expected decl + new expr = 2 highlights"
+        );
         let mut lines: Vec<u32> = highlights.iter().map(|h| h.range.start.line).collect();
         lines.sort_unstable();
-        assert_eq!(lines, vec![1, 2], "Foo should be highlighted on lines 1 and 2");
+        assert_eq!(
+            lines,
+            vec![1, 2],
+            "Foo should be highlighted on lines 1 and 2"
+        );
     }
 
     #[test]
@@ -93,7 +102,11 @@ mod tests {
         );
         let mut lines: Vec<u32> = highlights.iter().map(|h| h.range.start.line).collect();
         lines.sort_unstable();
-        assert_eq!(lines, vec![1, 3], "add() should be highlighted on lines 1 (decl) and 3 (call)");
+        assert_eq!(
+            lines,
+            vec![1, 3],
+            "add() should be highlighted on lines 1 (decl) and 3 (call)"
+        );
     }
 
     #[test]
@@ -114,10 +127,17 @@ mod tests {
             highlights.len(),
             3,
             "expected exactly 3 highlights (decl + 2 calls), got: {:?}",
-            highlights.iter().map(|h| h.range.start.line).collect::<Vec<_>>()
+            highlights
+                .iter()
+                .map(|h| h.range.start.line)
+                .collect::<Vec<_>>()
         );
         let mut lines: Vec<u32> = highlights.iter().map(|h| h.range.start.line).collect();
         lines.sort_unstable();
-        assert_eq!(lines, vec![1, 2, 3], "myFn highlights should be on lines 1, 2, 3");
+        assert_eq!(
+            lines,
+            vec![1, 2, 3],
+            "myFn highlights should be on lines 1, 2, 3"
+        );
     }
 }

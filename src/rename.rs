@@ -149,16 +149,12 @@ mod tests {
         let edits = &changes[&uri("/a.php")];
         // Verify that every edit replaces exactly "foo" (not "foobar" or "barfoo")
         for e in edits {
-            assert_eq!(
-                e.new_text, "baz",
-                "all edits should replace with 'baz'"
-            );
+            assert_eq!(e.new_text, "baz", "all edits should replace with 'baz'");
             let span_len = e.range.end.character - e.range.start.character;
             assert_eq!(
                 span_len, 3,
                 "renamed span should be length 3 (the word 'foo'), got {} at {:?}",
-                span_len,
-                e.range
+                span_len, e.range
             );
         }
         // Ensure that `foobar` and `barfoo` are not renamed: their line positions

@@ -1,6 +1,8 @@
 /// Deep AST walker — collects all spans where `word` appears as a name reference
 /// (function calls, `new Foo`, method calls, bare identifiers, static calls).
-use php_ast::{ClassMemberKind, EnumMemberKind, Expr, ExprKind, NamespaceBody, Span, Stmt, StmtKind};
+use php_ast::{
+    ClassMemberKind, EnumMemberKind, Expr, ExprKind, NamespaceBody, Span, Stmt, StmtKind,
+};
 
 pub fn refs_in_stmts(stmts: &[Stmt<'_, '_>], word: &str, out: &mut Vec<Span>) {
     for stmt in stmts {

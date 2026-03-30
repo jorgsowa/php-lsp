@@ -69,7 +69,14 @@ fn collect_constructor<'a>(
                 }
 
                 let text = generate_constructor_text(&props);
-                push_action(source, stmt.span.end, text, "Generate constructor", uri, out);
+                push_action(
+                    source,
+                    stmt.span.end,
+                    text,
+                    "Generate constructor",
+                    uri,
+                    out,
+                );
             }
             StmtKind::Namespace(ns) => {
                 if let NamespaceBody::Braced(inner) = &ns.body {
@@ -212,16 +219,28 @@ fn push_action(
     out: &mut Vec<CodeActionOrCommand>,
 ) {
     let closing_line = offset_to_position(source, class_end_offset.saturating_sub(1)).line;
-    let pos = Position { line: closing_line, character: 0 };
+    let pos = Position {
+        line: closing_line,
+        character: 0,
+    };
     let mut changes = HashMap::new();
     changes.insert(
         uri.clone(),
-        vec![TextEdit { range: Range { start: pos, end: pos }, new_text }],
+        vec![TextEdit {
+            range: Range {
+                start: pos,
+                end: pos,
+            },
+            new_text,
+        }],
     );
     out.push(CodeActionOrCommand::CodeAction(CodeAction {
         title: title.to_string(),
         kind: Some(CodeActionKind::REFACTOR),
-        edit: Some(WorkspaceEdit { changes: Some(changes), ..Default::default() }),
+        edit: Some(WorkspaceEdit {
+            changes: Some(changes),
+            ..Default::default()
+        }),
         ..Default::default()
     }));
 }
@@ -247,8 +266,14 @@ mod tests {
 
     fn full_range() -> Range {
         Range {
-            start: Position { line: 0, character: 0 },
-            end: Position { line: u32::MAX, character: u32::MAX },
+            start: Position {
+                line: 0,
+                character: 0,
+            },
+            end: Position {
+                line: u32::MAX,
+                character: u32::MAX,
+            },
         }
     }
 
@@ -257,7 +282,10 @@ mod tests {
         let src = "<?php\nclass User {\n    private string $name;\n    private int $age;\n}";
         let doc = ParsedDoc::parse(src.to_string());
         let actions = generate_constructor_actions(src, &doc, full_range(), &uri());
-        assert!(!actions.is_empty(), "expected a generate constructor action");
+        assert!(
+            !actions.is_empty(),
+            "expected a generate constructor action"
+        );
         if let CodeActionOrCommand::CodeAction(a) = &actions[0] {
             let edits = a.edit.as_ref().unwrap().changes.as_ref().unwrap();
             let text = &edits.values().next().unwrap()[0].new_text;
@@ -273,7 +301,10 @@ mod tests {
         let src = "<?php\nclass User {\n    private string $name;\n    public function __construct(string $name) { $this->name = $name; }\n}";
         let doc = ParsedDoc::parse(src.to_string());
         let actions = generate_constructor_actions(src, &doc, full_range(), &uri());
-        assert!(actions.is_empty(), "no action when constructor already exists");
+        assert!(
+            actions.is_empty(),
+            "no action when constructor already exists"
+        );
     }
 
     #[test]
@@ -295,7 +326,10 @@ mod tests {
             let text = &edits.values().next().unwrap()[0].new_text;
             assert!(text.contains("getName"), "should contain getter");
             assert!(text.contains("setName"), "should contain setter");
-            assert!(text.contains("return $this->name"), "getter should return property");
+            assert!(
+                text.contains("return $this->name"),
+                "getter should return property"
+            );
         }
     }
 
@@ -307,8 +341,14 @@ mod tests {
         if let Some(CodeActionOrCommand::CodeAction(a)) = actions.first() {
             let edits = a.edit.as_ref().unwrap().changes.as_ref().unwrap();
             let text = &edits.values().next().unwrap()[0].new_text;
-            assert!(!text.contains("getName"), "should not regenerate existing getter");
-            assert!(text.contains("setName"), "should still generate missing setter");
+            assert!(
+                !text.contains("getName"),
+                "should not regenerate existing getter"
+            );
+            assert!(
+                text.contains("setName"),
+                "should still generate missing setter"
+            );
         }
     }
 }

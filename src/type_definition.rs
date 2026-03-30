@@ -97,7 +97,8 @@ fn _offset_to_position_range(source: &str, name_str: &str, _name: &str) -> Range
         start,
         end: Position {
             line: start.line,
-            character: start.character + name_str.chars().map(|c| c.len_utf16() as u32).sum::<u32>(),
+            character: start.character
+                + name_str.chars().map(|c| c.len_utf16() as u32).sum::<u32>(),
         },
     }
 }

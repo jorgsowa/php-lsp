@@ -61,7 +61,8 @@ fn fold_stmt(stmt: &Stmt<'_, '_>, source: &str, out: &mut Vec<FoldingRange>) {
                 if let ClassMemberKind::Method(m) = &member.kind {
                     if let Some(body) = &m.body {
                         let m_start = offset_to_position(source, member.span.start).line;
-                        let m_end = offset_to_position(source, member.span.end.saturating_sub(1)).line;
+                        let m_end =
+                            offset_to_position(source, member.span.end.saturating_sub(1)).line;
                         push(out, m_start, m_end, None);
                         fold_stmts(body, source, out);
                     }
@@ -220,7 +221,10 @@ fn fold_regions(source: &str, out: &mut Vec<FoldingRange>) {
 }
 
 fn line_at(source: &str, byte_offset: usize) -> u32 {
-    source[..byte_offset].bytes().filter(|&b| b == b'\n').count() as u32
+    source[..byte_offset]
+        .bytes()
+        .filter(|&b| b == b'\n')
+        .count() as u32
 }
 
 fn push(
@@ -258,7 +262,12 @@ mod tests {
         let src = "<?php\nfunction greet(): void {\n    echo 'hi';\n}";
         let d = doc(src);
         let ranges = folding_ranges(src, &d);
-        assert_eq!(ranges.len(), 1, "expected exactly 1 fold for top-level function, got {:?}", lines(&ranges));
+        assert_eq!(
+            ranges.len(),
+            1,
+            "expected exactly 1 fold for top-level function, got {:?}",
+            lines(&ranges)
+        );
         assert_eq!(ranges[0].start_line, 1);
         assert_eq!(ranges[0].end_line, 3);
     }
@@ -287,7 +296,12 @@ mod tests {
         let src = "<?php\ninterface Countable {\n    public function count(): int;\n}";
         let d = doc(src);
         let ranges = folding_ranges(src, &d);
-        assert_eq!(ranges.len(), 1, "expected exactly 1 fold for interface, got {:?}", lines(&ranges));
+        assert_eq!(
+            ranges.len(),
+            1,
+            "expected exactly 1 fold for interface, got {:?}",
+            lines(&ranges)
+        );
         assert_eq!(ranges[0].start_line, 1);
         assert_eq!(ranges[0].end_line, 3);
     }
@@ -352,7 +366,12 @@ mod tests {
         let src = "<?php\nif (true) {\n    echo 1;\n}";
         let d = doc(src);
         let ranges = folding_ranges(src, &d);
-        assert_eq!(ranges.len(), 1, "expected exactly 1 fold for if, got {:?}", lines(&ranges));
+        assert_eq!(
+            ranges.len(),
+            1,
+            "expected exactly 1 fold for if, got {:?}",
+            lines(&ranges)
+        );
         assert_eq!(ranges[0].start_line, 1);
         assert_eq!(ranges[0].end_line, 3);
     }
@@ -362,7 +381,12 @@ mod tests {
         let src = "<?php\nforeach ($arr as $v) {\n    echo $v;\n}";
         let d = doc(src);
         let ranges = folding_ranges(src, &d);
-        assert_eq!(ranges.len(), 1, "expected exactly 1 fold for foreach, got {:?}", lines(&ranges));
+        assert_eq!(
+            ranges.len(),
+            1,
+            "expected exactly 1 fold for foreach, got {:?}",
+            lines(&ranges)
+        );
         assert_eq!(ranges[0].start_line, 1);
         assert_eq!(ranges[0].end_line, 3);
     }
@@ -384,8 +408,14 @@ mod tests {
         let src = "<?php\n/**\n * A docblock.\n * @param int $x\n */\nfunction f(int $x): void {}";
         let d = doc(src);
         let ranges = folding_ranges(src, &d);
-        let comment_fold = ranges.iter().find(|r| r.kind == Some(FoldingRangeKind::Comment));
-        assert!(comment_fold.is_some(), "expected a comment fold, got {:?}", lines(&ranges));
+        let comment_fold = ranges
+            .iter()
+            .find(|r| r.kind == Some(FoldingRangeKind::Comment));
+        assert!(
+            comment_fold.is_some(),
+            "expected a comment fold, got {:?}",
+            lines(&ranges)
+        );
         let cf = comment_fold.unwrap();
         assert_eq!(cf.start_line, 1);
         assert_eq!(cf.end_line, 4);
@@ -399,7 +429,9 @@ mod tests {
         assert!(
             ranges
                 .iter()
-                .any(|r| r.kind == Some(FoldingRangeKind::Region) && r.start_line == 1 && r.end_line == 4),
+                .any(|r| r.kind == Some(FoldingRangeKind::Region)
+                    && r.start_line == 1
+                    && r.end_line == 4),
             "expected region fold (1..4), got {:?}",
             lines(&ranges)
         );
@@ -422,7 +454,8 @@ mod tests {
     #[test]
     fn nested_folds_both_returned() {
         // A class containing a method should produce BOTH a class fold and a method fold.
-        let src = "<?php\nclass Outer {\n    public function inner(): void {\n        echo 1;\n    }\n}";
+        let src =
+            "<?php\nclass Outer {\n    public function inner(): void {\n        echo 1;\n    }\n}";
         // Line 1 = class, Line 2 = method, Line 4 = }, Line 5 = }
         let d = doc(src);
         let ranges = folding_ranges(src, &d);

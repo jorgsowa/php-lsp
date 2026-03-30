@@ -4,21 +4,30 @@ pub fn builtin_class_members(name: &str) -> Option<ClassMembers> {
     Some(match name {
         // Exception hierarchy
         "Throwable" | "Exception" | "Error" => exception_members(name),
-        "RuntimeException" | "BadFunctionCallException" | "BadMethodCallException"
-        | "DomainException" | "InvalidArgumentException" | "LengthException"
-        | "LogicException" | "OutOfBoundsException" | "OutOfRangeException"
-        | "OverflowException" | "RangeException" | "UnderflowException"
+        "RuntimeException"
+        | "BadFunctionCallException"
+        | "BadMethodCallException"
+        | "DomainException"
+        | "InvalidArgumentException"
+        | "LengthException"
+        | "LogicException"
+        | "OutOfBoundsException"
+        | "OutOfRangeException"
+        | "OverflowException"
+        | "RangeException"
+        | "UnderflowException"
         | "UnexpectedValueException" => ClassMembers {
             parent: Some("Exception".to_string()),
             methods: exception_methods(),
             ..Default::default()
         },
-        "TypeError" | "ValueError" | "ArithmeticError" | "DivisionByZeroError"
-        | "ParseError" => ClassMembers {
-            parent: Some("Error".to_string()),
-            methods: exception_methods(),
-            ..Default::default()
-        },
+        "TypeError" | "ValueError" | "ArithmeticError" | "DivisionByZeroError" | "ParseError" => {
+            ClassMembers {
+                parent: Some("Error".to_string()),
+                methods: exception_methods(),
+                ..Default::default()
+            }
+        }
         // DateTime
         "DateTime" => datetime_members(false),
         "DateTimeImmutable" => datetime_members(true),
@@ -40,30 +49,41 @@ pub fn builtin_class_members(name: &str) -> Option<ClassMembers> {
         "SplObjectStorage" => spl_object_storage_members(),
         // Interfaces
         "Iterator" => ClassMembers {
-            methods: m(&[("current",false),("key",false),("next",false),("rewind",false),("valid",false)]),
+            methods: m(&[
+                ("current", false),
+                ("key", false),
+                ("next", false),
+                ("rewind", false),
+                ("valid", false),
+            ]),
             ..Default::default()
         },
         "IteratorAggregate" => ClassMembers {
-            methods: m(&[("getIterator",false)]),
+            methods: m(&[("getIterator", false)]),
             ..Default::default()
         },
         "Countable" => ClassMembers {
-            methods: m(&[("count",false)]),
+            methods: m(&[("count", false)]),
             ..Default::default()
         },
         "ArrayAccess" => ClassMembers {
-            methods: m(&[("offsetExists",false),("offsetGet",false),("offsetSet",false),("offsetUnset",false)]),
+            methods: m(&[
+                ("offsetExists", false),
+                ("offsetGet", false),
+                ("offsetSet", false),
+                ("offsetUnset", false),
+            ]),
             ..Default::default()
         },
         "Stringable" => ClassMembers {
-            methods: m(&[("__toString",false)]),
+            methods: m(&[("__toString", false)]),
             ..Default::default()
         },
         // Closure, Generator, others
         "Closure" => closure_members(),
         "Generator" => generator_members(),
         "WeakReference" => ClassMembers {
-            methods: m(&[("get",false),("create",true)]),
+            methods: m(&[("get", false), ("create", true)]),
             ..Default::default()
         },
         "stdClass" | "StdClass" => ClassMembers::default(),
@@ -81,9 +101,14 @@ fn p(pairs: &[(&str, bool)]) -> Vec<(String, bool)> {
 
 fn exception_methods() -> Vec<(String, bool)> {
     m(&[
-        ("getMessage", false), ("getCode", false), ("getFile", false),
-        ("getLine", false), ("getTrace", false), ("getTraceAsString", false),
-        ("getPrevious", false), ("__toString", false),
+        ("getMessage", false),
+        ("getCode", false),
+        ("getFile", false),
+        ("getLine", false),
+        ("getTrace", false),
+        ("getTraceAsString", false),
+        ("getPrevious", false),
+        ("__toString", false),
     ])
 }
 
@@ -93,17 +118,30 @@ fn exception_members(name: &str) -> ClassMembers {
         "Error" => None,
         _ => Some("Exception".to_string()),
     };
-    ClassMembers { parent, methods: exception_methods(), ..Default::default() }
+    ClassMembers {
+        parent,
+        methods: exception_methods(),
+        ..Default::default()
+    }
 }
 
 fn datetime_members(_immutable: bool) -> ClassMembers {
     ClassMembers {
         methods: m(&[
-            ("format", false), ("modify", false), ("add", false), ("sub", false),
-            ("diff", false), ("getTimestamp", false), ("setTimestamp", false),
-            ("getTimezone", false), ("setTimezone", false),
-            ("setDate", false), ("setTime", false), ("setISODate", false),
-            ("createFromFormat", true), ("createFromTimestamp", true),
+            ("format", false),
+            ("modify", false),
+            ("add", false),
+            ("sub", false),
+            ("diff", false),
+            ("getTimestamp", false),
+            ("setTimestamp", false),
+            ("getTimezone", false),
+            ("setTimezone", false),
+            ("setDate", false),
+            ("setTime", false),
+            ("setISODate", false),
+            ("createFromFormat", true),
+            ("createFromTimestamp", true),
             ("createFromInterface", true),
         ]),
         ..Default::default()
@@ -113,10 +151,17 @@ fn datetime_members(_immutable: bool) -> ClassMembers {
 fn date_interval_members() -> ClassMembers {
     ClassMembers {
         properties: p(&[
-            ("y",false),("m",false),("d",false),("h",false),("i",false),
-            ("s",false),("f",false),("invert",false),("days",false),
+            ("y", false),
+            ("m", false),
+            ("d", false),
+            ("h", false),
+            ("i", false),
+            ("s", false),
+            ("f", false),
+            ("invert", false),
+            ("days", false),
         ]),
-        methods: m(&[("format",false),("createFromDateString",true)]),
+        methods: m(&[("format", false), ("createFromDateString", true)]),
         ..Default::default()
     }
 }
@@ -124,8 +169,12 @@ fn date_interval_members() -> ClassMembers {
 fn datetimezone_members() -> ClassMembers {
     ClassMembers {
         methods: m(&[
-            ("getName",false),("getOffset",false),("getTransitions",false),
-            ("getLocation",false),("listAbbreviations",true),("listIdentifiers",true),
+            ("getName", false),
+            ("getOffset", false),
+            ("getTransitions", false),
+            ("getLocation", false),
+            ("listAbbreviations", true),
+            ("listIdentifiers", true),
         ]),
         ..Default::default()
     }
@@ -134,20 +183,39 @@ fn datetimezone_members() -> ClassMembers {
 fn pdo_members() -> ClassMembers {
     ClassMembers {
         methods: m(&[
-            ("query",false),("prepare",false),("exec",false),
-            ("lastInsertId",false),("beginTransaction",false),("commit",false),
-            ("rollBack",false),("inTransaction",false),("quote",false),
-            ("errorCode",false),("errorInfo",false),
-            ("getAttribute",false),("setAttribute",false),
-            ("getAvailableDrivers",true),
+            ("query", false),
+            ("prepare", false),
+            ("exec", false),
+            ("lastInsertId", false),
+            ("beginTransaction", false),
+            ("commit", false),
+            ("rollBack", false),
+            ("inTransaction", false),
+            ("quote", false),
+            ("errorCode", false),
+            ("errorInfo", false),
+            ("getAttribute", false),
+            ("setAttribute", false),
+            ("getAvailableDrivers", true),
         ]),
         constants: vec![
-            "ATTR_ERRMODE".into(),"ERRMODE_EXCEPTION".into(),"ERRMODE_SILENT".into(),
-            "ERRMODE_WARNING".into(),"FETCH_ASSOC".into(),"FETCH_OBJ".into(),
-            "FETCH_NUM".into(),"FETCH_BOTH".into(),"FETCH_CLASS".into(),
-            "FETCH_INTO".into(),"FETCH_LAZY".into(),"FETCH_NAMED".into(),
-            "PARAM_INT".into(),"PARAM_STR".into(),"PARAM_BOOL".into(),
-            "PARAM_NULL".into(),"PARAM_LOB".into(),
+            "ATTR_ERRMODE".into(),
+            "ERRMODE_EXCEPTION".into(),
+            "ERRMODE_SILENT".into(),
+            "ERRMODE_WARNING".into(),
+            "FETCH_ASSOC".into(),
+            "FETCH_OBJ".into(),
+            "FETCH_NUM".into(),
+            "FETCH_BOTH".into(),
+            "FETCH_CLASS".into(),
+            "FETCH_INTO".into(),
+            "FETCH_LAZY".into(),
+            "FETCH_NAMED".into(),
+            "PARAM_INT".into(),
+            "PARAM_STR".into(),
+            "PARAM_BOOL".into(),
+            "PARAM_NULL".into(),
+            "PARAM_LOB".into(),
         ],
         ..Default::default()
     }
@@ -156,12 +224,23 @@ fn pdo_members() -> ClassMembers {
 fn pdo_statement_members() -> ClassMembers {
     ClassMembers {
         methods: m(&[
-            ("fetch",false),("fetchAll",false),("fetchColumn",false),("fetchObject",false),
-            ("bindParam",false),("bindValue",false),("bindColumn",false),
-            ("execute",false),("rowCount",false),("columnCount",false),
-            ("closeCursor",false),("debugDumpParams",false),
-            ("errorCode",false),("errorInfo",false),
-            ("getColumnMeta",false),("nextRowset",false),("setFetchMode",false),
+            ("fetch", false),
+            ("fetchAll", false),
+            ("fetchColumn", false),
+            ("fetchObject", false),
+            ("bindParam", false),
+            ("bindValue", false),
+            ("bindColumn", false),
+            ("execute", false),
+            ("rowCount", false),
+            ("columnCount", false),
+            ("closeCursor", false),
+            ("debugDumpParams", false),
+            ("errorCode", false),
+            ("errorInfo", false),
+            ("getColumnMeta", false),
+            ("nextRowset", false),
+            ("setFetchMode", false),
         ]),
         ..Default::default()
     }
@@ -170,11 +249,20 @@ fn pdo_statement_members() -> ClassMembers {
 fn array_object_members() -> ClassMembers {
     ClassMembers {
         methods: m(&[
-            ("append",false),("count",false),("getArrayCopy",false),
-            ("getIterator",false),("offsetExists",false),("offsetGet",false),
-            ("offsetSet",false),("offsetUnset",false),
-            ("asort",false),("ksort",false),("uasort",false),("uksort",false),
-            ("serialize",false),("unserialize",false),
+            ("append", false),
+            ("count", false),
+            ("getArrayCopy", false),
+            ("getIterator", false),
+            ("offsetExists", false),
+            ("offsetGet", false),
+            ("offsetSet", false),
+            ("offsetUnset", false),
+            ("asort", false),
+            ("ksort", false),
+            ("uasort", false),
+            ("uksort", false),
+            ("serialize", false),
+            ("unserialize", false),
         ]),
         ..Default::default()
     }
@@ -183,12 +271,24 @@ fn array_object_members() -> ClassMembers {
 fn spl_list_members() -> ClassMembers {
     ClassMembers {
         methods: m(&[
-            ("push",false),("pop",false),("top",false),("bottom",false),
-            ("shift",false),("unshift",false),
-            ("count",false),("isEmpty",false),
-            ("current",false),("key",false),("next",false),("prev",false),
-            ("rewind",false),("valid",false),
-            ("offsetExists",false),("offsetGet",false),("offsetSet",false),("offsetUnset",false),
+            ("push", false),
+            ("pop", false),
+            ("top", false),
+            ("bottom", false),
+            ("shift", false),
+            ("unshift", false),
+            ("count", false),
+            ("isEmpty", false),
+            ("current", false),
+            ("key", false),
+            ("next", false),
+            ("prev", false),
+            ("rewind", false),
+            ("valid", false),
+            ("offsetExists", false),
+            ("offsetGet", false),
+            ("offsetSet", false),
+            ("offsetUnset", false),
         ]),
         ..Default::default()
     }
@@ -197,11 +297,21 @@ fn spl_list_members() -> ClassMembers {
 fn spl_fixed_array_members() -> ClassMembers {
     ClassMembers {
         methods: m(&[
-            ("count",false),("getSize",false),("setSize",false),
-            ("current",false),("key",false),("next",false),("prev",false),
-            ("rewind",false),("valid",false),
-            ("offsetExists",false),("offsetGet",false),("offsetSet",false),("offsetUnset",false),
-            ("toArray",false),("fromArray",true),
+            ("count", false),
+            ("getSize", false),
+            ("setSize", false),
+            ("current", false),
+            ("key", false),
+            ("next", false),
+            ("prev", false),
+            ("rewind", false),
+            ("valid", false),
+            ("offsetExists", false),
+            ("offsetGet", false),
+            ("offsetSet", false),
+            ("offsetUnset", false),
+            ("toArray", false),
+            ("fromArray", true),
         ]),
         ..Default::default()
     }
@@ -210,10 +320,17 @@ fn spl_fixed_array_members() -> ClassMembers {
 fn spl_heap_members() -> ClassMembers {
     ClassMembers {
         methods: m(&[
-            ("insert",false),("top",false),("extract",false),
-            ("count",false),("isEmpty",false),
-            ("current",false),("key",false),("next",false),("rewind",false),("valid",false),
-            ("recoverFromCorruption",false),
+            ("insert", false),
+            ("top", false),
+            ("extract", false),
+            ("count", false),
+            ("isEmpty", false),
+            ("current", false),
+            ("key", false),
+            ("next", false),
+            ("rewind", false),
+            ("valid", false),
+            ("recoverFromCorruption", false),
         ]),
         ..Default::default()
     }
@@ -222,11 +339,23 @@ fn spl_heap_members() -> ClassMembers {
 fn spl_object_storage_members() -> ClassMembers {
     ClassMembers {
         methods: m(&[
-            ("attach",false),("detach",false),("contains",false),
-            ("count",false),("addAll",false),("removeAll",false),
-            ("current",false),("key",false),("next",false),("rewind",false),("valid",false),
-            ("getInfo",false),("setInfo",false),
-            ("offsetExists",false),("offsetGet",false),("offsetSet",false),("offsetUnset",false),
+            ("attach", false),
+            ("detach", false),
+            ("contains", false),
+            ("count", false),
+            ("addAll", false),
+            ("removeAll", false),
+            ("current", false),
+            ("key", false),
+            ("next", false),
+            ("rewind", false),
+            ("valid", false),
+            ("getInfo", false),
+            ("setInfo", false),
+            ("offsetExists", false),
+            ("offsetGet", false),
+            ("offsetSet", false),
+            ("offsetUnset", false),
         ]),
         ..Default::default()
     }
@@ -234,7 +363,12 @@ fn spl_object_storage_members() -> ClassMembers {
 
 fn closure_members() -> ClassMembers {
     ClassMembers {
-        methods: m(&[("bind",true),("bindTo",false),("call",false),("fromCallable",true)]),
+        methods: m(&[
+            ("bind", true),
+            ("bindTo", false),
+            ("call", false),
+            ("fromCallable", true),
+        ]),
         ..Default::default()
     }
 }
@@ -242,8 +376,14 @@ fn closure_members() -> ClassMembers {
 fn generator_members() -> ClassMembers {
     ClassMembers {
         methods: m(&[
-            ("current",false),("key",false),("next",false),("rewind",false),("valid",false),
-            ("send",false),("throw",false),("getReturn",false),
+            ("current", false),
+            ("key", false),
+            ("next", false),
+            ("rewind", false),
+            ("valid", false),
+            ("send", false),
+            ("throw", false),
+            ("getReturn", false),
         ]),
         ..Default::default()
     }

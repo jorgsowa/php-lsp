@@ -8,11 +8,11 @@ use tower_lsp::lsp_types::{
 use crate::ast::{ParsedDoc, offset_to_position};
 use crate::phpstorm_meta::PhpStormMeta;
 use crate::stubs::builtin_class_members;
-use crate::use_resolver::UseMap;
 use crate::type_map::{
     TypeMap, enclosing_class_at, is_backed_enum, is_enum, members_of_class, mixin_classes_of,
     params_of_function, parent_class_name,
 };
+use crate::use_resolver::UseMap;
 use crate::util::{camel_sort_key, fuzzy_camel_match, utf16_offset_to_byte};
 
 /// Build a `CompletionItem` for a callable (function or method).
@@ -172,7 +172,11 @@ fn collect_from_statements(stmts: &[Stmt<'_, '_>], items: &mut Vec<CompletionIte
     for stmt in stmts {
         match &stmt.kind {
             StmtKind::Function(f) => {
-                items.push(callable_item(f.name, CompletionItemKind::FUNCTION, !f.params.is_empty()));
+                items.push(callable_item(
+                    f.name,
+                    CompletionItemKind::FUNCTION,
+                    !f.params.is_empty(),
+                ));
                 for param in f.params.iter() {
                     items.push(CompletionItem {
                         label: format!("${}", param.name),
@@ -193,7 +197,11 @@ fn collect_from_statements(stmts: &[Stmt<'_, '_>], items: &mut Vec<CompletionIte
                 for member in c.members.iter() {
                     match &member.kind {
                         ClassMemberKind::Method(m) => {
-                            items.push(callable_item(m.name, CompletionItemKind::METHOD, !m.params.is_empty()));
+                            items.push(callable_item(
+                                m.name,
+                                CompletionItemKind::METHOD,
+                                !m.params.is_empty(),
+                            ));
                         }
                         ClassMemberKind::Property(p) => {
                             items.push(CompletionItem {
@@ -581,7 +589,11 @@ fn all_instance_members(
                         items.push(CompletionItem {
                             label,
                             kind: Some(CompletionItemKind::PROPERTY),
-                            detail: if is_readonly { Some("readonly".to_string()) } else { None },
+                            detail: if is_readonly {
+                                Some("readonly".to_string())
+                            } else {
+                                None
+                            },
                             ..Default::default()
                         });
                     }
@@ -846,17 +858,33 @@ fn collect_classes_with_ns(
             StmtKind::Class(c) => {
                 let short = c.name.unwrap_or("");
                 if !short.is_empty() {
-                    items.push((short.to_string(), CompletionItemKind::CLASS, fqn_for(short, &cur_ns)));
+                    items.push((
+                        short.to_string(),
+                        CompletionItemKind::CLASS,
+                        fqn_for(short, &cur_ns),
+                    ));
                 }
             }
             StmtKind::Interface(i) => {
-                items.push((i.name.to_string(), CompletionItemKind::INTERFACE, fqn_for(i.name, &cur_ns)));
+                items.push((
+                    i.name.to_string(),
+                    CompletionItemKind::INTERFACE,
+                    fqn_for(i.name, &cur_ns),
+                ));
             }
             StmtKind::Trait(t) => {
-                items.push((t.name.to_string(), CompletionItemKind::CLASS, fqn_for(t.name, &cur_ns)));
+                items.push((
+                    t.name.to_string(),
+                    CompletionItemKind::CLASS,
+                    fqn_for(t.name, &cur_ns),
+                ));
             }
             StmtKind::Enum(e) => {
-                items.push((e.name.to_string(), CompletionItemKind::ENUM, fqn_for(e.name, &cur_ns)));
+                items.push((
+                    e.name.to_string(),
+                    CompletionItemKind::ENUM,
+                    fqn_for(e.name, &cur_ns),
+                ));
             }
             StmtKind::Namespace(ns) => {
                 let ns_name = ns
@@ -913,33 +941,72 @@ fn current_file_namespace(stmts: &[Stmt<'_, '_>]) -> String {
 }
 
 const PHP_MAGIC_METHODS: &[(&str, &str)] = &[
-    ("__construct", "public function __construct($1)\n{\n    $2\n}"),
-    ("__destruct",  "public function __destruct()\n{\n    $1\n}"),
-    ("__get",       "public function __get(string $name): mixed\n{\n    $1\n}"),
-    ("__set",       "public function __set(string $name, mixed $value): void\n{\n    $1\n}"),
-    ("__isset",     "public function __isset(string $name): bool\n{\n    $1\n}"),
-    ("__unset",     "public function __unset(string $name): void\n{\n    $1\n}"),
-    ("__call",      "public function __call(string $name, array $arguments): mixed\n{\n    $1\n}"),
-    ("__callStatic","public static function __callStatic(string $name, array $arguments): mixed\n{\n    $1\n}"),
-    ("__toString",  "public function __toString(): string\n{\n    $1\n}"),
-    ("__invoke",    "public function __invoke($1): mixed\n{\n    $2\n}"),
-    ("__clone",     "public function __clone(): void\n{\n    $1\n}"),
-    ("__sleep",     "public function __sleep(): array\n{\n    $1\n}"),
-    ("__wakeup",    "public function __wakeup(): void\n{\n    $1\n}"),
-    ("__serialize", "public function __serialize(): array\n{\n    $1\n}"),
-    ("__unserialize","public function __unserialize(array $data): void\n{\n    $1\n}"),
-    ("__debugInfo", "public function __debugInfo(): ?array\n{\n    $1\n}"),
+    (
+        "__construct",
+        "public function __construct($1)\n{\n    $2\n}",
+    ),
+    ("__destruct", "public function __destruct()\n{\n    $1\n}"),
+    (
+        "__get",
+        "public function __get(string $name): mixed\n{\n    $1\n}",
+    ),
+    (
+        "__set",
+        "public function __set(string $name, mixed $value): void\n{\n    $1\n}",
+    ),
+    (
+        "__isset",
+        "public function __isset(string $name): bool\n{\n    $1\n}",
+    ),
+    (
+        "__unset",
+        "public function __unset(string $name): void\n{\n    $1\n}",
+    ),
+    (
+        "__call",
+        "public function __call(string $name, array $arguments): mixed\n{\n    $1\n}",
+    ),
+    (
+        "__callStatic",
+        "public static function __callStatic(string $name, array $arguments): mixed\n{\n    $1\n}",
+    ),
+    (
+        "__toString",
+        "public function __toString(): string\n{\n    $1\n}",
+    ),
+    (
+        "__invoke",
+        "public function __invoke($1): mixed\n{\n    $2\n}",
+    ),
+    ("__clone", "public function __clone(): void\n{\n    $1\n}"),
+    ("__sleep", "public function __sleep(): array\n{\n    $1\n}"),
+    ("__wakeup", "public function __wakeup(): void\n{\n    $1\n}"),
+    (
+        "__serialize",
+        "public function __serialize(): array\n{\n    $1\n}",
+    ),
+    (
+        "__unserialize",
+        "public function __unserialize(array $data): void\n{\n    $1\n}",
+    ),
+    (
+        "__debugInfo",
+        "public function __debugInfo(): ?array\n{\n    $1\n}",
+    ),
 ];
 
 fn magic_method_completions() -> Vec<CompletionItem> {
-    PHP_MAGIC_METHODS.iter().map(|(name, snippet)| CompletionItem {
-        label: name.to_string(),
-        kind: Some(CompletionItemKind::METHOD),
-        insert_text: Some(snippet.to_string()),
-        insert_text_format: Some(InsertTextFormat::SNIPPET),
-        detail: Some("magic method".to_string()),
-        ..Default::default()
-    }).collect()
+    PHP_MAGIC_METHODS
+        .iter()
+        .map(|(name, snippet)| CompletionItem {
+            label: name.to_string(),
+            kind: Some(CompletionItemKind::METHOD),
+            insert_text: Some(snippet.to_string()),
+            insert_text_format: Some(InsertTextFormat::SNIPPET),
+            detail: Some("magic method".to_string()),
+            ..Default::default()
+        })
+        .collect()
 }
 
 /// Completions filtered by trigger character, with optional `source` + `position`
@@ -1053,7 +1120,12 @@ pub fn filtered_completions_at(
                 if let Some(use_prefix) = use_completion_prefix(src, pos) {
                     let mut use_items: Vec<CompletionItem> = Vec::new();
                     for other in other_docs {
-                        collect_fqns_with_prefix(&other.program().stmts, "", &use_prefix, &mut use_items);
+                        collect_fqns_with_prefix(
+                            &other.program().stmts,
+                            "",
+                            &use_prefix,
+                            &mut use_items,
+                        );
                     }
                     // Also check current doc
                     collect_fqns_with_prefix(&doc.program().stmts, "", &use_prefix, &mut use_items);
@@ -1158,25 +1230,27 @@ pub fn filtered_completions_at(
                 let mut classes: Vec<(String, CompletionItemKind, String)> = Vec::new();
                 collect_classes_with_ns(&other.program().stmts, "", &mut classes);
                 for (label, kind, fqn) in classes {
-                    let additional_text_edits = if let (Some(src), Some(ref umap)) =
-                        (source, use_map.as_ref())
-                    {
-                        let in_same_ns = !cur_ns.is_empty()
-                            && fqn == format!("{}\\{}", cur_ns, label);
-                        let is_global = !fqn.contains('\\');
-                        let already = umap.resolve(&label).is_some();
-                        if !in_same_ns && !is_global && !already {
-                            let pos = use_insert_position(src);
-                            Some(vec![TextEdit {
-                                range: Range { start: pos, end: pos },
-                                new_text: format!("use {};\n", fqn),
-                            }])
+                    let additional_text_edits =
+                        if let (Some(src), Some(ref umap)) = (source, use_map.as_ref()) {
+                            let in_same_ns =
+                                !cur_ns.is_empty() && fqn == format!("{}\\{}", cur_ns, label);
+                            let is_global = !fqn.contains('\\');
+                            let already = umap.resolve(&label).is_some();
+                            if !in_same_ns && !is_global && !already {
+                                let pos = use_insert_position(src);
+                                Some(vec![TextEdit {
+                                    range: Range {
+                                        start: pos,
+                                        end: pos,
+                                    },
+                                    new_text: format!("use {};\n", fqn),
+                                }])
+                            } else {
+                                None
+                            }
                         } else {
                             None
-                        }
-                    } else {
-                        None
-                    };
+                        };
                     items.push(CompletionItem {
                         label,
                         kind: Some(kind),
@@ -1247,11 +1321,17 @@ fn match_arm_completions(
             for d in &all_docs {
                 let members = members_of_class(d, &class_name);
                 if !members.constants.is_empty() {
-                    return Some(members.constants.iter().map(|c| CompletionItem {
-                        label: format!("{class_name}::{c}"),
-                        kind: Some(CompletionItemKind::ENUM_MEMBER),
-                        ..Default::default()
-                    }).collect());
+                    return Some(
+                        members
+                            .constants
+                            .iter()
+                            .map(|c| CompletionItem {
+                                label: format!("{class_name}::{c}"),
+                                kind: Some(CompletionItemKind::ENUM_MEMBER),
+                                ..Default::default()
+                            })
+                            .collect(),
+                    );
                 }
             }
         }
@@ -1270,7 +1350,7 @@ fn include_path_prefix(source: &str, position: Position) -> Option<String> {
     let col = utf16_offset_to_byte(line, position.character as usize);
     let before = &line[..col];
     let quote_pos = before.rfind(|c| c == '\'' || c == '"')?;
-    Some(before[quote_pos+1..].to_string())
+    Some(before[quote_pos + 1..].to_string())
 }
 
 fn extract_match_subject(line: &str) -> Option<String> {
@@ -1279,7 +1359,11 @@ fn extract_match_subject(line: &str) -> Option<String> {
     let after = after.strip_prefix('(')?;
     let inner: String = after.chars().take_while(|&c| c != ')').collect();
     let var = inner.trim().trim_start_matches('$');
-    if var.is_empty() { None } else { Some(var.to_string()) }
+    if var.is_empty() {
+        None
+    } else {
+        Some(var.to_string())
+    }
 }
 
 /// Returns the prefix typed after `use ` on the current line, or None if not in a use statement.
@@ -1302,7 +1386,11 @@ fn collect_fqns_with_prefix(
         match &stmt.kind {
             StmtKind::Class(c) => {
                 if let Some(name) = c.name {
-                    let fqn = if ns.is_empty() { name.to_string() } else { format!("{ns}\\{name}") };
+                    let fqn = if ns.is_empty() {
+                        name.to_string()
+                    } else {
+                        format!("{ns}\\{name}")
+                    };
                     if fqn.to_lowercase().contains(&prefix.to_lowercase()) || prefix.is_empty() {
                         out.push(CompletionItem {
                             label: fqn.clone(),
@@ -1314,7 +1402,11 @@ fn collect_fqns_with_prefix(
                 }
             }
             StmtKind::Interface(i) => {
-                let fqn = if ns.is_empty() { i.name.to_string() } else { format!("{ns}\\{}", i.name) };
+                let fqn = if ns.is_empty() {
+                    i.name.to_string()
+                } else {
+                    format!("{ns}\\{}", i.name)
+                };
                 if fqn.to_lowercase().contains(&prefix.to_lowercase()) || prefix.is_empty() {
                     out.push(CompletionItem {
                         label: fqn.clone(),
@@ -1325,8 +1417,16 @@ fn collect_fqns_with_prefix(
                 }
             }
             StmtKind::Namespace(ns_stmt) => {
-                let ns_name = ns_stmt.name.as_ref()
-                    .map(|n| if ns.is_empty() { n.to_string_repr().to_string() } else { format!("{ns}\\{}", n.to_string_repr()) })
+                let ns_name = ns_stmt
+                    .name
+                    .as_ref()
+                    .map(|n| {
+                        if ns.is_empty() {
+                            n.to_string_repr().to_string()
+                        } else {
+                            format!("{ns}\\{}", n.to_string_repr())
+                        }
+                    })
                     .unwrap_or_else(|| ns.to_string());
                 if let NamespaceBody::Braced(inner) = &ns_stmt.body {
                     collect_fqns_with_prefix(inner, &ns_name, prefix, out);
@@ -1353,7 +1453,11 @@ fn typed_prefix(source: Option<&str>, position: Option<Position>) -> Option<Stri
         .chars()
         .rev()
         .collect();
-    if prefix.is_empty() { None } else { Some(prefix) }
+    if prefix.is_empty() {
+        None
+    } else {
+        Some(prefix)
+    }
 }
 
 fn resolve_receiver_class(
@@ -1366,7 +1470,10 @@ fn resolve_receiver_class(
     let col = utf16_offset_to_byte(line, position.character as usize);
     let before = &line[..col];
     // Try ?-> first (longer pattern) so `$s?->` doesn't get stripped to `$s?` by the `->` rule.
-    let before = before.strip_suffix("?->").or_else(|| before.strip_suffix("->")).unwrap_or(before);
+    let before = before
+        .strip_suffix("?->")
+        .or_else(|| before.strip_suffix("->"))
+        .unwrap_or(before);
 
     // Handle (new ClassName()) before ->
     if let Some(class_name) = extract_new_class_before_arrow(before) {
@@ -1405,12 +1512,12 @@ fn extract_new_class_before_arrow(text: &str) -> Option<String> {
     let text = text.trim_end();
     // Strip optional closing paren wrapping: `(new Foo())`
     let inner = if text.ends_with(')') {
-        let without_last = &text[..text.len()-1];
+        let without_last = &text[..text.len() - 1];
         // Find matching open paren — look for `(new` pattern
         if let Some(pos) = without_last.rfind("(new ") {
-            &without_last[pos+1..]
+            &without_last[pos + 1..]
         } else if let Some(pos) = without_last.rfind("(new\t") {
-            &without_last[pos+1..]
+            &without_last[pos + 1..]
         } else {
             text
         }
@@ -1450,7 +1557,11 @@ mod tests {
     #[test]
     fn keywords_list_is_non_empty() {
         let kws = keyword_completions();
-        assert!(kws.len() >= 20, "expected at least 20 keywords, got {}", kws.len());
+        assert!(
+            kws.len() >= 20,
+            "expected at least 20 keywords, got {}",
+            kws.len()
+        );
     }
 
     #[test]
@@ -1687,7 +1798,10 @@ mod tests {
         let other = Arc::new(ParsedDoc::parse(
             "<?php\nnamespace Lib;\nclass Mailer {}".to_string(),
         ));
-        let pos = Position { line: 3, character: 9 };
+        let pos = Position {
+            line: 3,
+            character: 9,
+        };
         let items = filtered_completions_at(&d, &[other], None, Some(current_src), Some(pos), None);
         let mailer = items.iter().find(|i| i.label == "Mailer");
         assert!(mailer.is_some(), "Mailer should appear in completions");
@@ -1707,7 +1821,10 @@ mod tests {
         let other = Arc::new(ParsedDoc::parse(
             "<?php\nnamespace Lib;\nclass Mailer {}".to_string(),
         ));
-        let pos = Position { line: 2, character: 9 };
+        let pos = Position {
+            line: 2,
+            character: 9,
+        };
         let items = filtered_completions_at(&d, &[other], None, Some(current_src), Some(pos), None);
         let mailer = items.iter().find(|i| i.label == "Mailer");
         assert!(mailer.is_some(), "Mailer should appear in completions");
@@ -1748,28 +1865,50 @@ mod tests {
     fn enum_arrow_completion_includes_name_property() {
         let src = "<?php\nenum Suit { case Hearts; }\n$s = new Suit();\n$s->";
         let d = doc(src);
-        let pos = Position { line: 3, character: 4 };
+        let pos = Position {
+            line: 3,
+            character: 4,
+        };
         let items = filtered_completions_at(&d, &[], Some(">"), Some(src), Some(pos), None);
-        assert!(items.iter().any(|i| i.label == "name"), "enum should have ->name");
+        assert!(
+            items.iter().any(|i| i.label == "name"),
+            "enum should have ->name"
+        );
     }
 
     #[test]
     fn backed_enum_arrow_completion_includes_value_property() {
-        let src = "<?php\nenum Status: string { case Active = 'active'; }\n$s = new Status();\n$s->";
+        let src =
+            "<?php\nenum Status: string { case Active = 'active'; }\n$s = new Status();\n$s->";
         let d = doc(src);
-        let pos = Position { line: 3, character: 4 };
+        let pos = Position {
+            line: 3,
+            character: 4,
+        };
         let items = filtered_completions_at(&d, &[], Some(">"), Some(src), Some(pos), None);
-        assert!(items.iter().any(|i| i.label == "name"), "backed enum should have ->name");
-        assert!(items.iter().any(|i| i.label == "value"), "backed enum should have ->value");
+        assert!(
+            items.iter().any(|i| i.label == "name"),
+            "backed enum should have ->name"
+        );
+        assert!(
+            items.iter().any(|i| i.label == "value"),
+            "backed enum should have ->value"
+        );
     }
 
     #[test]
     fn pure_enum_arrow_completion_has_no_value_property() {
         let src = "<?php\nenum Suit { case Hearts; }\n$s = new Suit();\n$s->";
         let d = doc(src);
-        let pos = Position { line: 3, character: 4 };
+        let pos = Position {
+            line: 3,
+            character: 4,
+        };
         let items = filtered_completions_at(&d, &[], Some(">"), Some(src), Some(pos), None);
-        assert!(!items.iter().any(|i| i.label == "value"), "pure enum should not have ->value");
+        assert!(
+            !items.iter().any(|i| i.label == "value"),
+            "pure enum should not have ->value"
+        );
     }
 
     #[test]
@@ -1789,29 +1928,48 @@ mod tests {
         let d = doc("<?php\n");
         let items = filtered_completions_at(&d, &[], None, None, None, None);
         let ls = labels(&items);
-        assert!(ls.contains(&"$_SERVER"), "missing $_SERVER in default completions");
+        assert!(
+            ls.contains(&"$_SERVER"),
+            "missing $_SERVER in default completions"
+        );
     }
 
     #[test]
     fn instanceof_narrowing_provides_arrow_completions() {
         // $x instanceof Foo should narrow $x to Foo inside the if body
-        let src = "<?php\nclass Foo { public function doFoo() {} }\nif ($x instanceof Foo) {\n    $x->";
+        let src =
+            "<?php\nclass Foo { public function doFoo() {} }\nif ($x instanceof Foo) {\n    $x->";
         let d = doc(src);
-        let pos = Position { line: 3, character: 8 };
+        let pos = Position {
+            line: 3,
+            character: 8,
+        };
         let items = filtered_completions_at(&d, &[], Some(">"), Some(src), Some(pos), None);
         let ls = labels(&items);
-        assert!(ls.contains(&"doFoo"), "instanceof narrowing should make Foo methods available");
+        assert!(
+            ls.contains(&"doFoo"),
+            "instanceof narrowing should make Foo methods available"
+        );
     }
 
     #[test]
     fn constructor_chain_arrow_completion() {
         let src = "<?php\nclass Builder { public function build() {} public function reset() {} }\n(new Builder())->";
         let d = doc(src);
-        let pos = Position { line: 2, character: 16 };
+        let pos = Position {
+            line: 2,
+            character: 16,
+        };
         let items = filtered_completions_at(&d, &[], Some(">"), Some(src), Some(pos), None);
         let ls = labels(&items);
-        assert!(ls.contains(&"build"), "constructor chain should complete Builder methods");
-        assert!(ls.contains(&"reset"), "constructor chain should complete Builder methods");
+        assert!(
+            ls.contains(&"build"),
+            "constructor chain should complete Builder methods"
+        );
+        assert!(
+            ls.contains(&"reset"),
+            "constructor chain should complete Builder methods"
+        );
     }
 
     // Feature 4: use statement FQN completions
@@ -1821,9 +1979,16 @@ mod tests {
         let other = Arc::new(ParsedDoc::parse(
             "<?php\nnamespace App\\Services;\nclass Mailer {}".to_string(),
         ));
-        let pos = Position { line: 1, character: 4 };
-        let items = filtered_completions_at(&d, &[other], None, Some("<?php\nuse "), Some(pos), None);
-        assert!(items.iter().any(|i| i.label.contains("Mailer")), "use completion should suggest Mailer");
+        let pos = Position {
+            line: 1,
+            character: 4,
+        };
+        let items =
+            filtered_completions_at(&d, &[other], None, Some("<?php\nuse "), Some(pos), None);
+        assert!(
+            items.iter().any(|i| i.label.contains("Mailer")),
+            "use completion should suggest Mailer"
+        );
     }
 
     // Feature 5: union type param completions
@@ -1831,22 +1996,44 @@ mod tests {
     fn union_type_param_completes_both_classes() {
         let src = "<?php\nclass Foo { public function fooMethod() {} }\nclass Bar { public function barMethod() {} }\n/**\n * @param Foo|Bar $x\n */\nfunction handle($x) {\n    $x->";
         let d = doc(src);
-        let pos = Position { line: 7, character: 8 };
+        let pos = Position {
+            line: 7,
+            character: 8,
+        };
         let items = filtered_completions_at(&d, &[], Some(">"), Some(src), Some(pos), None);
         let ls = labels(&items);
-        assert!(ls.contains(&"fooMethod"), "should complete Foo methods from union");
-        assert!(ls.contains(&"barMethod"), "should complete Bar methods from union");
+        assert!(
+            ls.contains(&"fooMethod"),
+            "should complete Foo methods from union"
+        );
+        assert!(
+            ls.contains(&"barMethod"),
+            "should complete Bar methods from union"
+        );
     }
 
     // Feature 6: attribute bracket completions
     #[test]
     fn attribute_bracket_suggests_classes() {
         let d = doc("<?php\nclass Route {}\nclass Middleware {}\n#[");
-        let pos = Position { line: 3, character: 2 };
-        let items = filtered_completions_at(&d, &[], Some("["), Some("<?php\nclass Route {}\nclass Middleware {}\n#["), Some(pos), None);
+        let pos = Position {
+            line: 3,
+            character: 2,
+        };
+        let items = filtered_completions_at(
+            &d,
+            &[],
+            Some("["),
+            Some("<?php\nclass Route {}\nclass Middleware {}\n#["),
+            Some(pos),
+            None,
+        );
         let ls = labels(&items);
         assert!(ls.contains(&"Route"), "should suggest Route as attribute");
-        assert!(ls.contains(&"Middleware"), "should suggest Middleware as attribute");
+        assert!(
+            ls.contains(&"Middleware"),
+            "should suggest Middleware as attribute"
+        );
     }
 
     // Feature 7: match arm completions
@@ -1854,10 +2041,16 @@ mod tests {
     fn match_arm_suggests_enum_cases() {
         let src = "<?php\nenum Status { case Active; case Inactive; case Pending; }\n$s = new Status();\nmatch ($s) {\n    ";
         let d = doc(src);
-        let pos = Position { line: 4, character: 4 };
+        let pos = Position {
+            line: 4,
+            character: 4,
+        };
         let items = filtered_completions_at(&d, &[], None, Some(src), Some(pos), None);
         let ls = labels(&items);
-        assert!(ls.iter().any(|l| l.contains("Active")), "match should suggest Status::Active");
+        assert!(
+            ls.iter().any(|l| l.contains("Active")),
+            "match should suggest Status::Active"
+        );
     }
 
     // Feature 10: readonly property recognition
@@ -1865,11 +2058,18 @@ mod tests {
     fn readonly_property_has_detail_tag() {
         let src = "<?php\nclass Config { public readonly string $name; }\n$c = new Config();\n$c->";
         let d = doc(src);
-        let pos = Position { line: 3, character: 4 };
+        let pos = Position {
+            line: 3,
+            character: 4,
+        };
         let items = filtered_completions_at(&d, &[], Some(">"), Some(src), Some(pos), None);
         let name_item = items.iter().find(|i| i.label == "$name");
         assert!(name_item.is_some(), "should have $name in completions");
-        assert_eq!(name_item.unwrap().detail.as_deref(), Some("readonly"), "$name should be tagged readonly");
+        assert_eq!(
+            name_item.unwrap().detail.as_deref(),
+            Some("readonly"),
+            "$name should be tagged readonly"
+        );
     }
 
     // Feature 2: variables scoped to cursor line
@@ -1877,11 +2077,17 @@ mod tests {
     fn variables_after_cursor_not_suggested() {
         let src = "<?php\n$early = new Foo();\n// cursor here\n$late = new Bar();";
         let d = doc(src);
-        let pos = Position { line: 2, character: 0 };
+        let pos = Position {
+            line: 2,
+            character: 0,
+        };
         let items = filtered_completions_at(&d, &[], None, Some(src), Some(pos), None);
         let ls = labels(&items);
         assert!(ls.contains(&"$early"), "$early should be suggested");
-        assert!(!ls.contains(&"$late"), "$late declared after cursor should not be suggested");
+        assert!(
+            !ls.contains(&"$late"),
+            "$late declared after cursor should not be suggested"
+        );
     }
 
     // Feature 3: sub-namespace backslash completions
@@ -1891,10 +2097,23 @@ mod tests {
         let other = Arc::new(ParsedDoc::parse(
             "<?php\nnamespace App\\Services;\nclass Mailer {}\nclass Logger {}".to_string(),
         ));
-        let pos = Position { line: 1, character: 18 };
-        let items = filtered_completions_at(&d, &[other], None, Some("<?php\n$x = new App\\"), Some(pos), None);
+        let pos = Position {
+            line: 1,
+            character: 18,
+        };
+        let items = filtered_completions_at(
+            &d,
+            &[other],
+            None,
+            Some("<?php\n$x = new App\\"),
+            Some(pos),
+            None,
+        );
         let ls = labels(&items);
-        assert!(ls.contains(&"Mailer"), "should suggest Mailer under App\\Services");
+        assert!(
+            ls.contains(&"Mailer"),
+            "should suggest Mailer under App\\Services"
+        );
     }
 
     // Feature 1: nullsafe ?-> completions
@@ -1902,11 +2121,17 @@ mod tests {
     fn nullsafe_arrow_triggers_member_completions() {
         let src = "<?php\nclass Service { public function run() {} public string $status; }\n$s = new Service();\n$s?->";
         let d = doc(src);
-        let pos = Position { line: 3, character: 5 };
+        let pos = Position {
+            line: 3,
+            character: 5,
+        };
         let items = filtered_completions_at(&d, &[], Some(">"), Some(src), Some(pos), None);
         let ls = labels(&items);
         assert!(ls.contains(&"run"), "?-> should complete Service::run()");
-        assert!(ls.iter().any(|l| l.contains("status")), "?-> should complete Service::$status");
+        assert!(
+            ls.iter().any(|l| l.contains("status")),
+            "?-> should complete Service::$status"
+        );
     }
 
     // Feature 5: magic methods in class body
@@ -1914,7 +2139,10 @@ mod tests {
     fn magic_methods_suggested_in_class_body() {
         let src = "<?php\nclass Foo {\n    __\n}";
         let d = doc(src);
-        let pos = Position { line: 2, character: 6 };
+        let pos = Position {
+            line: 2,
+            character: 6,
+        };
         let items = filtered_completions_at(&d, &[], None, Some(src), Some(pos), None);
         let ls = labels(&items);
         assert!(ls.contains(&"__construct"), "should suggest __construct");
@@ -1928,7 +2156,10 @@ mod tests {
         // has no class, the result should be empty (no methods available).
         let src = "<?php\n$unknown->";
         let d = doc(src);
-        let pos = Position { line: 1, character: 10 };
+        let pos = Position {
+            line: 1,
+            character: 10,
+        };
         let items = filtered_completions_at(&d, &[], Some(">"), Some(src), Some(pos), None);
         // No class is defined in this doc, so the fallback method list is empty.
         assert!(
@@ -1952,14 +2183,18 @@ mod tests {
             "MyClass::",
         );
         let d = doc(src);
-        let pos = Position { line: 7, character: 9 };
+        let pos = Position {
+            line: 7,
+            character: 9,
+        };
         let items = filtered_completions_at(&d, &[], Some(":"), Some(src), Some(pos), None);
         let ls = labels(&items);
         assert!(ls.contains(&"staticMethod"), "should include static method");
         assert!(ls.contains(&"MY_CONST"), "should include constant");
         assert!(
             !ls.contains(&"instanceMethod"),
-            "should NOT include instance method in static completion, got: {:?}", ls
+            "should NOT include instance method in static completion, got: {:?}",
+            ls
         );
     }
 }

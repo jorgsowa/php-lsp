@@ -26,7 +26,11 @@ pub fn use_edits_for_rename(
     }
 
     WorkspaceEdit {
-        changes: if changes.is_empty() { None } else { Some(changes) },
+        changes: if changes.is_empty() {
+            None
+        } else {
+            Some(changes)
+        },
         ..Default::default()
     }
 }
@@ -34,10 +38,7 @@ pub fn use_edits_for_rename(
 /// Build a `WorkspaceEdit` that removes every `use` import referencing `fqn`
 /// across all indexed documents.  Called by `workspace/willDeleteFiles` so that
 /// deleting a PHP file automatically cleans up dangling imports.
-pub fn use_edits_for_delete(
-    fqn: &str,
-    all_docs: &[(Url, Arc<ParsedDoc>)],
-) -> WorkspaceEdit {
+pub fn use_edits_for_delete(fqn: &str, all_docs: &[(Url, Arc<ParsedDoc>)]) -> WorkspaceEdit {
     let mut changes: HashMap<Url, Vec<TextEdit>> = HashMap::new();
 
     for (uri, doc) in all_docs {
@@ -48,7 +49,11 @@ pub fn use_edits_for_delete(
     }
 
     WorkspaceEdit {
-        changes: if changes.is_empty() { None } else { Some(changes) },
+        changes: if changes.is_empty() {
+            None
+        } else {
+            Some(changes)
+        },
         ..Default::default()
     }
 }
@@ -65,7 +70,9 @@ fn delete_use_in_source(source: &str, fqn: &str) -> Vec<TextEdit> {
             continue;
         }
 
-        let Some(use_pos) = line.find("use ") else { continue };
+        let Some(use_pos) = line.find("use ") else {
+            continue;
+        };
         let after_use = use_pos + 4;
 
         let (_, fqn_str) = if line.as_bytes().get(after_use) == Some(&b'\\') {
@@ -90,8 +97,14 @@ fn delete_use_in_source(source: &str, fqn: &str) -> Vec<TextEdit> {
         let next_line = line_u32 + 1;
         edits.push(TextEdit {
             range: Range {
-                start: Position { line: line_u32, character: 0 },
-                end: Position { line: next_line, character: 0 },
+                start: Position {
+                    line: line_u32,
+                    character: 0,
+                },
+                end: Position {
+                    line: next_line,
+                    character: 0,
+                },
             },
             new_text: String::new(),
         });
@@ -119,7 +132,9 @@ fn use_edits_in_source(source: &str, old_fqn: &str, new_fqn: &str) -> Vec<TextEd
             continue;
         }
 
-        let Some(use_pos) = line.find("use ") else { continue };
+        let Some(use_pos) = line.find("use ") else {
+            continue;
+        };
         let after_use = use_pos + 4; // byte offset right after "use "
 
         // Skip an optional leading backslash in the source

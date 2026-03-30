@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
 use php_ast::{ClassMemberKind, EnumMemberKind, Expr, ExprKind, NamespaceBody, Stmt, StmtKind};
-use tower_lsp::lsp_types::{InlayHint, InlayHintKind, InlayHintLabel, Position, Range};
 use serde_json::json;
+use tower_lsp::lsp_types::{InlayHint, InlayHintKind, InlayHintLabel, Position, Range};
 
 use crate::ast::{ParsedDoc, format_type_hint, offset_to_position};
 
@@ -53,11 +53,20 @@ fn collect_defs_stmts(stmts: &[Stmt<'_, '_>], map: &mut HashMap<String, FuncDef>
                             if let Some(class_name) = c.name {
                                 map.insert(
                                     class_name.to_string(),
-                                    FuncDef { params: params.clone(), return_type: None },
+                                    FuncDef {
+                                        params: params.clone(),
+                                        return_type: None,
+                                    },
                                 );
                             }
                         }
-                        map.insert(m.name.to_string(), FuncDef { params, return_type });
+                        map.insert(
+                            m.name.to_string(),
+                            FuncDef {
+                                params,
+                                return_type,
+                            },
+                        );
                     }
                 }
             }
@@ -67,7 +76,13 @@ fn collect_defs_stmts(stmts: &[Stmt<'_, '_>], map: &mut HashMap<String, FuncDef>
                         let params: Vec<String> =
                             m.params.iter().map(|p| p.name.to_string()).collect();
                         let return_type = m.return_type.as_ref().map(|t| format_type_hint(t));
-                        map.insert(m.name.to_string(), FuncDef { params, return_type });
+                        map.insert(
+                            m.name.to_string(),
+                            FuncDef {
+                                params,
+                                return_type,
+                            },
+                        );
                     }
                 }
             }
@@ -77,7 +92,13 @@ fn collect_defs_stmts(stmts: &[Stmt<'_, '_>], map: &mut HashMap<String, FuncDef>
                         let params: Vec<String> =
                             m.params.iter().map(|p| p.name.to_string()).collect();
                         let return_type = m.return_type.as_ref().map(|t| format_type_hint(t));
-                        map.insert(m.name.to_string(), FuncDef { params, return_type });
+                        map.insert(
+                            m.name.to_string(),
+                            FuncDef {
+                                params,
+                                return_type,
+                            },
+                        );
                     }
                 }
             }
@@ -93,18 +114,28 @@ fn collect_defs_stmts(stmts: &[Stmt<'_, '_>], map: &mut HashMap<String, FuncDef>
                         let key = format!("${var_name}");
                         match &assign.value.kind {
                             ExprKind::Closure(c) => {
-                                let params =
-                                    c.params.iter().map(|p| p.name.to_string()).collect();
+                                let params = c.params.iter().map(|p| p.name.to_string()).collect();
                                 let return_type =
                                     c.return_type.as_ref().map(|t| format_type_hint(t));
-                                map.insert(key, FuncDef { params, return_type });
+                                map.insert(
+                                    key,
+                                    FuncDef {
+                                        params,
+                                        return_type,
+                                    },
+                                );
                             }
                             ExprKind::ArrowFunction(a) => {
-                                let params =
-                                    a.params.iter().map(|p| p.name.to_string()).collect();
+                                let params = a.params.iter().map(|p| p.name.to_string()).collect();
                                 let return_type =
                                     a.return_type.as_ref().map(|t| format_type_hint(t));
-                                map.insert(key, FuncDef { params, return_type });
+                                map.insert(
+                                    key,
+                                    FuncDef {
+                                        params,
+                                        return_type,
+                                    },
+                                );
                             }
                             _ => {}
                         }
@@ -221,15 +252,13 @@ fn hints_in_expr(
     match &expr.kind {
         ExprKind::FunctionCall(f) => {
             // Look up by identifier name or by variable name (for closure vars like `$fn(...)`).
-            let key: Option<String> = ident_name(f.name)
-                .map(|n| n.to_string())
-                .or_else(|| {
-                    if let ExprKind::Variable(n) = &f.name.kind {
-                        Some(format!("${n}"))
-                    } else {
-                        None
-                    }
-                });
+            let key: Option<String> = ident_name(f.name).map(|n| n.to_string()).or_else(|| {
+                if let ExprKind::Variable(n) = &f.name.kind {
+                    Some(format!("${n}"))
+                } else {
+                    None
+                }
+            });
             if let Some(k) = key {
                 if let Some(def) = defs.get(&k) {
                     emit_param_hints(source, &f.args, &def.params, &k, range, out);
@@ -557,7 +586,8 @@ mod tests {
 
     #[test]
     fn closure_variable_call_gets_param_hints() {
-        let src = "<?php\n$greet = function(string $name, int $times): void {};\n$greet('Alice', 3);";
+        let src =
+            "<?php\n$greet = function(string $name, int $times): void {};\n$greet('Alice', 3);";
         let d = doc(src);
         let hints = inlay_hints(src, &d, full_range());
         let param_hints: Vec<&str> = hints
@@ -592,8 +622,14 @@ mod tests {
             .filter(|h| h.kind == Some(InlayHintKind::PARAMETER))
             .map(|h| label_str(h))
             .collect();
-        assert!(param_hints.contains(&"a:"), "missing 'a:' hint inside closure body");
-        assert!(param_hints.contains(&"b:"), "missing 'b:' hint inside closure body");
+        assert!(
+            param_hints.contains(&"a:"),
+            "missing 'a:' hint inside closure body"
+        );
+        assert!(
+            param_hints.contains(&"b:"),
+            "missing 'b:' hint inside closure body"
+        );
     }
 
     #[test]
@@ -604,8 +640,14 @@ mod tests {
         let d = doc(src);
         // Range covers only lines 0-1 (the declaration), excluding line 2 (the call).
         let narrow_range = Range {
-            start: Position { line: 0, character: 0 },
-            end: Position { line: 1, character: u32::MAX },
+            start: Position {
+                line: 0,
+                character: 0,
+            },
+            end: Position {
+                line: 1,
+                character: u32::MAX,
+            },
         };
         let hints = inlay_hints(src, &d, narrow_range);
         assert!(
@@ -663,9 +705,22 @@ mod tests {
             .filter(|h| h.kind == Some(InlayHintKind::PARAMETER))
             .map(|h| label_str(h))
             .collect();
-        assert!(param_hints.contains(&"x:"), "expected 'x:' hint for __construct, got: {:?}", param_hints);
-        assert!(param_hints.contains(&"y:"), "expected 'y:' hint for __construct, got: {:?}", param_hints);
-        assert_eq!(param_hints.len(), 2, "expected exactly 2 constructor param hints, got: {:?}", param_hints);
+        assert!(
+            param_hints.contains(&"x:"),
+            "expected 'x:' hint for __construct, got: {:?}",
+            param_hints
+        );
+        assert!(
+            param_hints.contains(&"y:"),
+            "expected 'y:' hint for __construct, got: {:?}",
+            param_hints
+        );
+        assert_eq!(
+            param_hints.len(),
+            2,
+            "expected exactly 2 constructor param hints, got: {:?}",
+            param_hints
+        );
     }
 
     #[test]
@@ -685,8 +740,16 @@ mod tests {
             .filter(|h| h.kind == Some(InlayHintKind::PARAMETER))
             .map(|h| label_str(h))
             .collect();
-        assert!(param_hints.contains(&"msg:"), "expected 'msg:' hint for trait method, got: {:?}", param_hints);
-        assert!(param_hints.contains(&"level:"), "expected 'level:' hint, got: {:?}", param_hints);
+        assert!(
+            param_hints.contains(&"msg:"),
+            "expected 'msg:' hint for trait method, got: {:?}",
+            param_hints
+        );
+        assert!(
+            param_hints.contains(&"level:"),
+            "expected 'level:' hint, got: {:?}",
+            param_hints
+        );
     }
 
     #[test]
@@ -704,8 +767,17 @@ mod tests {
             .filter(|h| h.kind == Some(InlayHintKind::PARAMETER))
             .map(|h| label_str(h))
             .collect();
-        assert_eq!(param_hints.len(), 2, "expected 2 'n:' hints (init + update), got: {:?}", param_hints);
-        assert!(param_hints.iter().all(|&l| l == "n:"), "all hints should be 'n:', got: {:?}", param_hints);
+        assert_eq!(
+            param_hints.len(),
+            2,
+            "expected 2 'n:' hints (init + update), got: {:?}",
+            param_hints
+        );
+        assert!(
+            param_hints.iter().all(|&l| l == "n:"),
+            "all hints should be 'n:', got: {:?}",
+            param_hints
+        );
     }
 
     #[test]
@@ -719,6 +791,10 @@ mod tests {
             .filter(|h| h.kind == Some(InlayHintKind::PARAMETER))
             .map(|h| label_str(h))
             .collect();
-        assert!(param_hints.is_empty(), "expected no hints for class without constructor, got: {:?}", param_hints);
+        assert!(
+            param_hints.is_empty(),
+            "expected no hints for class without constructor, got: {:?}",
+            param_hints
+        );
     }
 }

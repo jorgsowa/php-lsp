@@ -30,7 +30,14 @@ pub fn implement_missing_actions(
     uri: &Url,
 ) -> Vec<CodeActionOrCommand> {
     let mut actions = Vec::new();
-    collect_actions(&doc.program().stmts, source, all_docs, range, uri, &mut actions);
+    collect_actions(
+        &doc.program().stmts,
+        source,
+        all_docs,
+        range,
+        uri,
+        &mut actions,
+    );
     actions
 }
 
@@ -101,8 +108,7 @@ fn collect_actions(
 
                 let stub_text = generate_stub_text(&missing);
                 // Insert just before the closing `}` of the class.
-                let closing_line =
-                    offset_to_position(source, stmt.span.end.saturating_sub(1)).line;
+                let closing_line = offset_to_position(source, stmt.span.end.saturating_sub(1)).line;
                 let insert_pos = Position {
                     line: closing_line,
                     character: 0,
@@ -167,7 +173,10 @@ fn collect_abstract_methods(stmts: &[Stmt<'_, '_>], name: &str) -> Option<Vec<Me
                                 visibility: "public",
                                 is_static: method.is_static,
                                 params: format_params_str(&method.params),
-                                return_type: method.return_type.as_ref().map(|t| format_type_hint(t)),
+                                return_type: method
+                                    .return_type
+                                    .as_ref()
+                                    .map(|t| format_type_hint(t)),
                             })
                         } else {
                             None
@@ -258,8 +267,14 @@ mod tests {
 
     fn full_range() -> Range {
         Range {
-            start: Position { line: 0, character: 0 },
-            end: Position { line: u32::MAX, character: u32::MAX },
+            start: Position {
+                line: 0,
+                character: 0,
+            },
+            end: Position {
+                line: u32::MAX,
+                character: u32::MAX,
+            },
         }
     }
 
@@ -310,12 +325,16 @@ mod tests {
             full_range(),
             &uri("/b.php"),
         );
-        assert!(actions.is_empty(), "no action needed when all methods are implemented");
+        assert!(
+            actions.is_empty(),
+            "no action needed when all methods are implemented"
+        );
     }
 
     #[test]
     fn generates_action_for_abstract_class_method() {
-        let abstract_src = "<?php\nabstract class Shape {\n    abstract public function area(): float;\n}";
+        let abstract_src =
+            "<?php\nabstract class Shape {\n    abstract public function area(): float;\n}";
         let class_src = "<?php\nclass Circle extends Shape {\n}";
         let all_docs = vec![doc(abstract_src), doc(class_src)];
         let class_doc = ParsedDoc::parse(class_src.to_string());

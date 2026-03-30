@@ -152,15 +152,12 @@ fn extract_class_name(expr: &php_ast::Expr<'_, '_>) -> Option<String> {
 }
 
 /// Extract `[(literal | ClassName::class) => ReturnType]` from `map([...])`.
-fn extract_map_pairs(
-    expr: &php_ast::Expr<'_, '_>,
-) -> Option<Vec<(Option<String>, String)>> {
+fn extract_map_pairs(expr: &php_ast::Expr<'_, '_>) -> Option<Vec<(Option<String>, String)>> {
     // `map([...])` — a function call with a single array argument.
     let ExprKind::FunctionCall(f) = &expr.kind else {
         return None;
     };
-    if !matches!(&f.name.kind, ExprKind::Identifier(n) if n.as_ref().eq_ignore_ascii_case("map"))
-    {
+    if !matches!(&f.name.kind, ExprKind::Identifier(n) if n.as_ref().eq_ignore_ascii_case("map")) {
         return None;
     }
     let array_arg = f.args.first()?;

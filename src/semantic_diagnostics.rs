@@ -22,8 +22,7 @@ pub fn semantic_diagnostics(
     let stmts: &[php_ast::Stmt<'_, '_>] = doc.program().stmts.as_ref();
 
     // Build the workspace context: (source, stmts) for each document.
-    let mut all: Vec<(&str, &[php_ast::Stmt<'_, '_>])> =
-        Vec::with_capacity(1 + other_docs.len());
+    let mut all: Vec<(&str, &[php_ast::Stmt<'_, '_>])> = Vec::with_capacity(1 + other_docs.len());
     all.push((source, stmts));
     for (_, d) in other_docs {
         all.push((d.source(), d.program().stmts.as_ref()));
@@ -124,13 +123,21 @@ fn check_expr_for_deprecated(
                             let start_pos = offset_to_position(source, call.name.span.start);
                             let end_pos = offset_to_position(source, call.name.span.end);
                             let msg = match &db.deprecated {
-                                Some(m) if !m.is_empty() => format!("Deprecated: {} — {}", func_name, m),
+                                Some(m) if !m.is_empty() => {
+                                    format!("Deprecated: {} — {}", func_name, m)
+                                }
                                 _ => format!("Deprecated: {}", func_name),
                             };
                             diags.push(Diagnostic {
                                 range: Range {
-                                    start: Position { line: start_pos.line, character: start_pos.character },
-                                    end: Position { line: end_pos.line, character: end_pos.character },
+                                    start: Position {
+                                        line: start_pos.line,
+                                        character: start_pos.character,
+                                    },
+                                    end: Position {
+                                        line: end_pos.line,
+                                        character: end_pos.character,
+                                    },
                                 },
                                 severity: Some(DiagnosticSeverity::WARNING),
                                 source: Some("php-lsp".to_string()),
@@ -162,13 +169,21 @@ fn check_expr_for_deprecated(
                             let start_pos = offset_to_position(source, call.method.span.start);
                             let end_pos = offset_to_position(source, call.method.span.end);
                             let msg = match &db.deprecated {
-                                Some(m) if !m.is_empty() => format!("Deprecated: {} — {}", method_name, m),
+                                Some(m) if !m.is_empty() => {
+                                    format!("Deprecated: {} — {}", method_name, m)
+                                }
                                 _ => format!("Deprecated: {}", method_name),
                             };
                             diags.push(Diagnostic {
                                 range: Range {
-                                    start: Position { line: start_pos.line, character: start_pos.character },
-                                    end: Position { line: end_pos.line, character: end_pos.character },
+                                    start: Position {
+                                        line: start_pos.line,
+                                        character: start_pos.character,
+                                    },
+                                    end: Position {
+                                        line: end_pos.line,
+                                        character: end_pos.character,
+                                    },
                                 },
                                 severity: Some(DiagnosticSeverity::WARNING),
                                 source: Some("php-lsp".to_string()),
@@ -308,9 +323,14 @@ fn collect_duplicate_decls(
             if seen.insert(key, ()).is_some() {
                 let pos = crate::ast::offset_to_position(source, span_start);
                 diags.push(Diagnostic {
-                    range: Range { start: pos, end: pos },
+                    range: Range {
+                        start: pos,
+                        end: pos,
+                    },
                     severity: Some(DiagnosticSeverity::WARNING),
-                    message: format!("Duplicate declaration: `{name}` is already defined in this file"),
+                    message: format!(
+                        "Duplicate declaration: `{name}` is already defined in this file"
+                    ),
                     source: Some("php-lsp".to_string()),
                     ..Default::default()
                 });
@@ -330,8 +350,14 @@ fn to_lsp_diagnostic(d: mir_php::Diagnostic, uri: &Url) -> Diagnostic {
                     location: Location {
                         uri: uri.clone(),
                         range: Range {
-                            start: Position { line: sl, character: sc },
-                            end: Position { line: el, character: ec },
+                            start: Position {
+                                line: sl,
+                                character: sc,
+                            },
+                            end: Position {
+                                line: el,
+                                character: ec,
+                            },
                         },
                     },
                     message: msg,
@@ -341,8 +367,14 @@ fn to_lsp_diagnostic(d: mir_php::Diagnostic, uri: &Url) -> Diagnostic {
     };
     Diagnostic {
         range: Range {
-            start: Position { line: d.start_line, character: d.start_char },
-            end: Position { line: d.end_line, character: d.end_char },
+            start: Position {
+                line: d.start_line,
+                character: d.start_char,
+            },
+            end: Position {
+                line: d.end_line,
+                character: d.end_char,
+            },
         },
         severity: Some(match d.severity {
             mir_php::Severity::Error => DiagnosticSeverity::ERROR,
@@ -363,13 +395,21 @@ mod tests {
 
     #[test]
     fn deprecated_function_call_emits_warning() {
-        let src = "<?php\n/** @deprecated Use newFunc() instead */\nfunction oldFunc() {}\n\noldFunc();";
+        let src =
+            "<?php\n/** @deprecated Use newFunc() instead */\nfunction oldFunc() {}\n\noldFunc();";
         let doc = ParsedDoc::parse(src.to_string());
         let diags = deprecated_call_diagnostics(src, &doc, &[]);
-        assert_eq!(diags.len(), 1, "expected exactly 1 deprecated warning diagnostic");
+        assert_eq!(
+            diags.len(),
+            1,
+            "expected exactly 1 deprecated warning diagnostic"
+        );
         let d = &diags[0];
         assert_eq!(d.severity, Some(DiagnosticSeverity::WARNING));
-        assert!(d.message.contains("oldFunc"), "message should mention the function name");
+        assert!(
+            d.message.contains("oldFunc"),
+            "message should mention the function name"
+        );
     }
 
     #[test]
@@ -377,9 +417,17 @@ mod tests {
         let src = "<?php\nclass Foo {}\nclass Foo {}";
         let doc = ParsedDoc::parse(src.to_string());
         let diags = duplicate_declaration_diagnostics(src, &doc);
-        assert_eq!(diags.len(), 1, "expected exactly 1 duplicate warning, got: {:?}", diags);
+        assert_eq!(
+            diags.len(),
+            1,
+            "expected exactly 1 duplicate warning, got: {:?}",
+            diags
+        );
         assert_eq!(diags[0].severity, Some(DiagnosticSeverity::WARNING));
-        assert!(diags[0].message.contains("Foo"), "message should mention 'Foo'");
+        assert!(
+            diags[0].message.contains("Foo"),
+            "message should mention 'Foo'"
+        );
     }
 
     #[test]
@@ -463,11 +511,24 @@ mod tests {
         );
         let doc = ParsedDoc::parse(src.to_string());
         let diags = deprecated_call_diagnostics(src, &doc, &[]);
-        assert_eq!(diags.len(), 1, "expected exactly 1 deprecated warning, got: {:?}", diags);
+        assert_eq!(
+            diags.len(),
+            1,
+            "expected exactly 1 deprecated warning, got: {:?}",
+            diags
+        );
         let d = &diags[0];
         assert_eq!(d.severity, Some(DiagnosticSeverity::WARNING));
-        assert!(d.message.contains("send"), "message should mention 'send', got: {}", d.message);
-        assert!(d.message.to_lowercase().contains("deprecated"), "message should contain 'deprecated', got: {}", d.message);
+        assert!(
+            d.message.contains("send"),
+            "message should mention 'send', got: {}",
+            d.message
+        );
+        assert!(
+            d.message.to_lowercase().contains("deprecated"),
+            "message should contain 'deprecated', got: {}",
+            d.message
+        );
     }
 
     #[test]
@@ -516,8 +577,16 @@ mod tests {
         );
         let doc = ParsedDoc::parse(src.to_string());
         let diags = deprecated_call_diagnostics(src, &doc, &[]);
-        assert_eq!(diags.len(), 1, "expected 1 deprecation warning for nested call, got: {:?}", diags);
-        assert!(diags[0].message.contains("oldFn"), "message should mention 'oldFn'");
+        assert_eq!(
+            diags.len(),
+            1,
+            "expected 1 deprecation warning for nested call, got: {:?}",
+            diags
+        );
+        assert!(
+            diags[0].message.contains("oldFn"),
+            "message should mention 'oldFn'"
+        );
     }
 
     #[test]
@@ -535,8 +604,16 @@ mod tests {
         );
         let doc = ParsedDoc::parse(src.to_string());
         let diags = deprecated_call_diagnostics(src, &doc, &[]);
-        assert_eq!(diags.len(), 1, "expected 1 deprecated warning for trait method, got: {:?}", diags);
-        assert!(diags[0].message.contains("log"), "message should mention 'log'");
+        assert_eq!(
+            diags.len(),
+            1,
+            "expected 1 deprecated warning for trait method, got: {:?}",
+            diags
+        );
+        assert!(
+            diags[0].message.contains("log"),
+            "message should mention 'log'"
+        );
     }
 
     #[test]
@@ -553,7 +630,15 @@ mod tests {
         );
         let doc = ParsedDoc::parse(src.to_string());
         let diags = deprecated_call_diagnostics(src, &doc, &[]);
-        assert_eq!(diags.len(), 1, "expected 1 deprecated warning for enum method, got: {:?}", diags);
-        assert!(diags[0].message.contains("label"), "message should mention 'label'");
+        assert_eq!(
+            diags.len(),
+            1,
+            "expected 1 deprecated warning for enum method, got: {:?}",
+            diags
+        );
+        assert!(
+            diags[0].message.contains("label"),
+            "message should mention 'label'"
+        );
     }
 }

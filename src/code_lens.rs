@@ -205,7 +205,11 @@ fn find_parent_class<'a>(
 }
 
 /// Check whether `parent_class` declares a method named `method_name`.
-fn parent_has_method(parent_class: &str, method_name: &str, all_docs: &[(Url, Arc<ParsedDoc>)]) -> bool {
+fn parent_has_method(
+    parent_class: &str,
+    method_name: &str,
+    all_docs: &[(Url, Arc<ParsedDoc>)],
+) -> bool {
     for (_, doc) in all_docs {
         let members = members_of_class(doc, parent_class);
         if members.methods.iter().any(|(n, _)| n == method_name) {
@@ -244,10 +248,20 @@ mod tests {
         let d = doc(src);
         let docs = vec![(uri("/a.php"), Arc::new(doc(src)))];
         let lenses = code_lenses(&uri("/a.php"), &d, &docs);
-        assert_eq!(lenses.len(), 1, "expected exactly 1 lens for a top-level function");
-        let cmd = lenses[0].command.as_ref().expect("lens should have a command");
+        assert_eq!(
+            lenses.len(),
+            1,
+            "expected exactly 1 lens for a top-level function"
+        );
+        let cmd = lenses[0]
+            .command
+            .as_ref()
+            .expect("lens should have a command");
         // No callers -> "0 references"
-        assert_eq!(cmd.title, "0 references", "unused function should show '0 references'");
+        assert_eq!(
+            cmd.title, "0 references",
+            "unused function should show '0 references'"
+        );
         assert_eq!(
             cmd.command, "php-lsp.showReferences",
             "command name should be 'php-lsp.showReferences'"
@@ -284,7 +298,10 @@ mod tests {
         });
         assert!(run_test.is_some(), "expected Run test lens");
         let cmd = run_test.unwrap().command.as_ref().unwrap();
-        assert_eq!(cmd.command, "php-lsp.runTest", "command name must be 'php-lsp.runTest'");
+        assert_eq!(
+            cmd.command, "php-lsp.runTest",
+            "command name must be 'php-lsp.runTest'"
+        );
         assert!(
             cmd.title.contains("Run test"),
             "title should contain 'Run test', got: {}",
@@ -312,9 +329,19 @@ mod tests {
         let d = doc(src);
         let docs = vec![(uri("/a.php"), Arc::new(doc(src)))];
         let lenses = code_lenses(&uri("/a.php"), &d, &docs);
-        assert_eq!(lenses.len(), 1, "expected exactly 1 lens for a class declaration");
-        let cmd = lenses[0].command.as_ref().expect("lens should have a command");
-        assert_eq!(cmd.title, "0 references", "unused class should show '0 references'");
+        assert_eq!(
+            lenses.len(),
+            1,
+            "expected exactly 1 lens for a class declaration"
+        );
+        let cmd = lenses[0]
+            .command
+            .as_ref()
+            .expect("lens should have a command");
+        assert_eq!(
+            cmd.title, "0 references",
+            "unused class should show '0 references'"
+        );
     }
 
     #[test]
@@ -324,19 +351,27 @@ mod tests {
         let docs = vec![(uri("/a.php"), Arc::new(doc(src)))];
         let lenses = code_lenses(&uri("/a.php"), &d, &docs);
         // Interface gets a ref-count lens + an implementations lens.
-        assert_eq!(lenses.len(), 2, "expected 2 lenses (ref-count + implementations) for interface");
+        assert_eq!(
+            lenses.len(),
+            2,
+            "expected 2 lenses (ref-count + implementations) for interface"
+        );
         let titles: Vec<&str> = lenses
             .iter()
             .filter_map(|l| l.command.as_ref())
             .map(|c| c.title.as_str())
             .collect();
         assert!(
-            titles.iter().any(|t| t.ends_with("reference") || t.ends_with("references")),
-            "one lens should be a reference count, got: {:?}", titles
+            titles
+                .iter()
+                .any(|t| t.ends_with("reference") || t.ends_with("references")),
+            "one lens should be a reference count, got: {:?}",
+            titles
         );
         assert!(
             titles.iter().any(|t| t.contains("implementation")),
-            "one lens should be an implementations count, got: {:?}", titles
+            "one lens should be an implementations count, got: {:?}",
+            titles
         );
     }
 
@@ -375,7 +410,10 @@ mod tests {
                 .as_ref()
                 .map_or(false, |c| c.title.contains("implementation"))
         });
-        assert!(impl_lens.is_some(), "expected implementations lens on abstract class");
+        assert!(
+            impl_lens.is_some(),
+            "expected implementations lens on abstract class"
+        );
     }
 
     #[test]
@@ -438,8 +476,7 @@ mod tests {
             .as_ref()
             .unwrap();
         assert_eq!(
-            cmd.title,
-            "0 references",
+            cmd.title, "0 references",
             "function with no callers should show '0 references', got: {}",
             cmd.title
         );
@@ -463,13 +500,11 @@ mod tests {
             .as_ref()
             .unwrap();
         assert_eq!(
-            cmd.command,
-            "php-lsp.runTest",
+            cmd.command, "php-lsp.runTest",
             "command name must be exactly 'php-lsp.runTest'"
         );
         assert_eq!(
-            cmd.title,
-            "▶ Run test",
+            cmd.title, "▶ Run test",
             "title must be exactly '▶ Run test', got: {}",
             cmd.title
         );

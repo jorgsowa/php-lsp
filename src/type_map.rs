@@ -3,7 +3,10 @@
 /// after `->`.
 use std::collections::HashMap;
 
-use php_ast::{BinaryOp, BuiltinType, ClassMemberKind, EnumMemberKind, ExprKind, NamespaceBody, Stmt, StmtKind, TypeHint, TypeHintKind};
+use php_ast::{
+    BinaryOp, BuiltinType, ClassMemberKind, EnumMemberKind, ExprKind, NamespaceBody, Stmt,
+    StmtKind, TypeHint, TypeHintKind,
+};
 use tower_lsp::lsp_types::Position;
 
 use crate::ast::{ParsedDoc, offset_to_position};
@@ -25,7 +28,13 @@ impl TypeMap {
     pub fn from_doc_with_meta(doc: &ParsedDoc, meta: Option<&PhpStormMeta>) -> Self {
         let method_returns = build_method_returns(doc);
         let mut map = HashMap::new();
-        collect_types_stmts(doc.source(), &doc.program().stmts, &mut map, meta, &method_returns);
+        collect_types_stmts(
+            doc.source(),
+            &doc.program().stmts,
+            &mut map,
+            meta,
+            &method_returns,
+        );
         TypeMap(map)
     }
 
@@ -44,7 +53,13 @@ impl TypeMap {
             }
         }
         let mut map = HashMap::new();
-        collect_types_stmts(doc.source(), &doc.program().stmts, &mut map, meta, &method_returns);
+        collect_types_stmts(
+            doc.source(),
+            &doc.program().stmts,
+            &mut map,
+            meta,
+            &method_returns,
+        );
         TypeMap(map)
     }
 
@@ -61,9 +76,7 @@ impl TypeMap {
 }
 
 /// Pre-build a map of class_name → method_name → return_class_name from all given docs.
-pub fn build_method_returns(
-    doc: &ParsedDoc,
-) -> HashMap<String, HashMap<String, String>> {
+pub fn build_method_returns(doc: &ParsedDoc) -> HashMap<String, HashMap<String, String>> {
     let mut out = HashMap::new();
     collect_method_returns_stmts(doc.source(), &doc.program().stmts, &mut out);
     out
@@ -77,11 +90,18 @@ fn collect_method_returns_stmts(
     for stmt in stmts {
         match &stmt.kind {
             StmtKind::Class(c) => {
-                let class_name = match c.name { Some(n) => n.to_string(), None => continue };
+                let class_name = match c.name {
+                    Some(n) => n.to_string(),
+                    None => continue,
+                };
                 for member in c.members.iter() {
                     if let ClassMemberKind::Method(m) = &member.kind {
-                        if let Some(ret) = extract_method_return_class(source, member.span.start, m, &class_name) {
-                            out.entry(class_name.clone()).or_default().insert(m.name.to_string(), ret);
+                        if let Some(ret) =
+                            extract_method_return_class(source, member.span.start, m, &class_name)
+                        {
+                            out.entry(class_name.clone())
+                                .or_default()
+                                .insert(m.name.to_string(), ret);
                         }
                     }
                 }
@@ -115,7 +135,11 @@ fn extract_method_return_class(
                 if short == "self" || short == "static" {
                     return Some(enclosing_class.to_string());
                 }
-                if short.chars().next().map(|c| c.is_uppercase()).unwrap_or(false)
+                if short
+                    .chars()
+                    .next()
+                    .map(|c| c.is_uppercase())
+                    .unwrap_or(false)
                     && !matches!(short, "void" | "never" | "null")
                 {
                     return Some(short.to_string());
@@ -135,9 +159,7 @@ fn extract_method_return_class(
                     return Some(enclosing_class.to_string());
                 }
                 let first = short.chars().next().unwrap_or('_');
-                if first.is_uppercase()
-                    && !matches!(short, "void" | "never" | "null")
-                {
+                if first.is_uppercase() && !matches!(short, "void" | "never" | "null") {
                     return Some(short.to_string());
                 }
             }
@@ -152,7 +174,10 @@ fn extract_method_return_class(
 /// - `Union([Named(Foo), Named(Bar)])` → `"Foo|Bar"`
 /// - `Keyword(static | self)` with `enclosing` → returns `enclosing`
 /// - Primitives and unrecognised kinds → `None`
-fn type_hint_to_class_string(hint: &TypeHint<'_, '_>, enclosing_class: Option<&str>) -> Option<String> {
+fn type_hint_to_class_string(
+    hint: &TypeHint<'_, '_>,
+    enclosing_class: Option<&str>,
+) -> Option<String> {
     match &hint.kind {
         TypeHintKind::Named(name) => {
             let s = name.to_string_repr();
@@ -161,7 +186,11 @@ fn type_hint_to_class_string(hint: &TypeHint<'_, '_>, enclosing_class: Option<&s
             if short == "self" || short == "static" {
                 return enclosing_class.map(|c| c.to_string());
             }
-            if short.chars().next().map(|c| c.is_uppercase()).unwrap_or(false)
+            if short
+                .chars()
+                .next()
+                .map(|c| c.is_uppercase())
+                .unwrap_or(false)
                 && !matches!(short, "void" | "never" | "null")
             {
                 return Some(short.to_string());
@@ -174,7 +203,11 @@ fn type_hint_to_class_string(hint: &TypeHint<'_, '_>, enclosing_class: Option<&s
                 .iter()
                 .filter_map(|p| type_hint_to_class_string(p, enclosing_class))
                 .collect();
-            if classes.is_empty() { None } else { Some(classes.join("|")) }
+            if classes.is_empty() {
+                None
+            } else {
+                Some(classes.join("|"))
+            }
         }
         TypeHintKind::Keyword(BuiltinType::Self_ | BuiltinType::Static, _) => {
             enclosing_class.map(|c| c.to_string())
@@ -223,7 +256,9 @@ fn collect_types_stmts(
                     let db = parse_docblock(&raw);
                     for param in &db.params {
                         // For union types, collect all class parts joined by |
-                        let classes: Vec<&str> = param.type_hint.split('|')
+                        let classes: Vec<&str> = param
+                            .type_hint
+                            .split('|')
                             .map(|p| p.trim().trim_start_matches('\\').trim_start_matches('?'))
                             .filter(|p| p.chars().next().map(|c| c.is_uppercase()).unwrap_or(false))
                             .filter_map(|p| p.rsplit('\\').next())
@@ -256,9 +291,15 @@ fn collect_types_stmts(
                             let db = parse_docblock(&raw);
                             for param in &db.params {
                                 // For union types, collect all class parts joined by |
-                                let classes: Vec<&str> = param.type_hint.split('|')
-                                    .map(|p| p.trim().trim_start_matches('\\').trim_start_matches('?'))
-                                    .filter(|p| p.chars().next().map(|c| c.is_uppercase()).unwrap_or(false))
+                                let classes: Vec<&str> = param
+                                    .type_hint
+                                    .split('|')
+                                    .map(|p| {
+                                        p.trim().trim_start_matches('\\').trim_start_matches('?')
+                                    })
+                                    .filter(|p| {
+                                        p.chars().next().map(|c| c.is_uppercase()).unwrap_or(false)
+                                    })
                                     .filter_map(|p| p.rsplit('\\').next())
                                     .collect();
                                 if !classes.is_empty() {
@@ -273,7 +314,9 @@ fn collect_types_stmts(
                         }
                         for p in m.params.iter() {
                             if let Some(hint) = &p.type_hint {
-                                if let Some(class_str) = type_hint_to_class_string(hint, class_name.as_deref()) {
+                                if let Some(class_str) =
+                                    type_hint_to_class_string(hint, class_name.as_deref())
+                                {
                                     map.insert(format!("${}", p.name), class_str);
                                 }
                             }
@@ -330,7 +373,8 @@ fn collect_types_stmts(
                             (&b.left.kind, &b.right.kind)
                         {
                             let var_key = format!("${}", var_name);
-                            let narrowed = class.as_ref()
+                            let narrowed = class
+                                .as_ref()
                                 .trim_start_matches('\\')
                                 .rsplit('\\')
                                 .next()
@@ -344,12 +388,30 @@ fn collect_types_stmts(
                         }
                     }
                 }
-                collect_types_stmts(source, std::slice::from_ref(if_stmt.then_branch), map, meta, method_returns);
+                collect_types_stmts(
+                    source,
+                    std::slice::from_ref(if_stmt.then_branch),
+                    map,
+                    meta,
+                    method_returns,
+                );
                 for elseif in if_stmt.elseif_branches.iter() {
-                    collect_types_stmts(source, std::slice::from_ref(&elseif.body), map, meta, method_returns);
+                    collect_types_stmts(
+                        source,
+                        std::slice::from_ref(&elseif.body),
+                        map,
+                        meta,
+                        method_returns,
+                    );
                 }
                 if let Some(else_branch) = if_stmt.else_branch {
-                    collect_types_stmts(source, std::slice::from_ref(else_branch), map, meta, method_returns);
+                    collect_types_stmts(
+                        source,
+                        std::slice::from_ref(else_branch),
+                        map,
+                        meta,
+                        method_returns,
+                    );
                 }
             }
 
@@ -363,7 +425,13 @@ fn collect_types_stmts(
                         }
                     }
                 }
-                collect_types_stmts(source, std::slice::from_ref(f.body), map, meta, method_returns);
+                collect_types_stmts(
+                    source,
+                    std::slice::from_ref(f.body),
+                    map,
+                    meta,
+                    method_returns,
+                );
             }
             _ => {}
         }
@@ -412,9 +480,7 @@ fn collect_types_expr(
                 }
                 // PHPStorm meta: `$var = $obj->make(SomeClass::class)`
                 if let Some(meta) = meta {
-                    if let Some(inferred) =
-                        infer_from_meta_method_call(&assign.value, map, meta)
-                    {
+                    if let Some(inferred) = infer_from_meta_method_call(&assign.value, map, meta) {
                         map.insert(format!("${}", var_name), inferred);
                     }
                 }
@@ -509,7 +575,12 @@ fn extract_callback_return_type(expr: &php_ast::Expr<'_, '_>) -> Option<String> 
         let s = name.to_string_repr();
         let base = s.trim_start_matches('\\');
         let short = base.rsplit('\\').next().unwrap_or(base);
-        if short.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) {
+        if short
+            .chars()
+            .next()
+            .map(|c| c.is_uppercase())
+            .unwrap_or(false)
+        {
             return Some(short.to_string());
         }
     }
@@ -517,7 +588,10 @@ fn extract_callback_return_type(expr: &php_ast::Expr<'_, '_>) -> Option<String> 
 }
 
 /// Look up the class of a `$variable` expression from the current map.
-fn resolve_var_type_str(expr: &php_ast::Expr<'_, '_>, map: &HashMap<String, String>) -> Option<String> {
+fn resolve_var_type_str(
+    expr: &php_ast::Expr<'_, '_>,
+    map: &HashMap<String, String>,
+) -> Option<String> {
     if let ExprKind::Variable(v) = &expr.kind {
         map.get(&format!("${}", v)).cloned()
     } else {
@@ -559,16 +633,16 @@ fn infer_from_meta_method_call(
     let arg = m.args.first()?;
     let arg_str = match &arg.value.kind {
         ExprKind::String(s) => s.as_ref().trim_start_matches('\\').to_string(),
-        ExprKind::ClassConstAccess(c) if c.member.as_ref() == "class" => {
-            match &c.class.kind {
-                ExprKind::Identifier(n) => {
-                    n.as_ref().trim_start_matches('\\').rsplit('\\').next()
-                        .unwrap_or(n.as_ref())
-                        .to_string()
-                }
-                _ => return None,
-            }
-        }
+        ExprKind::ClassConstAccess(c) if c.member.as_ref() == "class" => match &c.class.kind {
+            ExprKind::Identifier(n) => n
+                .as_ref()
+                .trim_start_matches('\\')
+                .rsplit('\\')
+                .next()
+                .unwrap_or(n.as_ref())
+                .to_string(),
+            _ => return None,
+        },
         _ => return None,
     };
     meta.resolve_return_type(&receiver_class, &method_name, &arg_str)
@@ -654,7 +728,8 @@ fn collect_members_stmts(
                                         // Detect `readonly` in the source text before the
                                         // param name (the AST does not expose this flag on
                                         // Param, so we scan the raw text of the param span).
-                                        let param_src = &source[p.span.start as usize..p.span.end as usize];
+                                        let param_src =
+                                            &source[p.span.start as usize..p.span.end as usize];
                                         if param_src.contains("readonly") {
                                             out.readonly_properties.push(p.name.to_string());
                                         }
@@ -983,8 +1058,14 @@ mod tests {
         let doc = ParsedDoc::parse(src.to_string());
         let members = members_of_class(&doc, "Point");
         let prop_names: Vec<&str> = members.properties.iter().map(|(n, _)| n.as_str()).collect();
-        assert!(prop_names.contains(&"x"), "promoted param x should be a property");
-        assert!(prop_names.contains(&"y"), "promoted param y should be a property");
+        assert!(
+            prop_names.contains(&"x"),
+            "promoted param x should be a property"
+        );
+        assert!(
+            prop_names.contains(&"y"),
+            "promoted param y should be a property"
+        );
     }
 
     #[test]
@@ -993,12 +1074,22 @@ mod tests {
         let doc = ParsedDoc::parse(src.to_string());
         let members = members_of_class(&doc, "User");
         let prop_names: Vec<&str> = members.properties.iter().map(|(n, _)| n.as_str()).collect();
-        assert!(prop_names.contains(&"name"), "promoted param name should be a property");
-        assert!(prop_names.contains(&"age"), "promoted param age should be a property");
-        assert!(members.readonly_properties.contains(&"name".to_string()),
-            "readonly promoted param name should be in readonly_properties");
-        assert!(!members.readonly_properties.contains(&"age".to_string()),
-            "non-readonly promoted param age should not be in readonly_properties");
+        assert!(
+            prop_names.contains(&"name"),
+            "promoted param name should be a property"
+        );
+        assert!(
+            prop_names.contains(&"age"),
+            "promoted param age should be a property"
+        );
+        assert!(
+            members.readonly_properties.contains(&"name".to_string()),
+            "readonly promoted param name should be in readonly_properties"
+        );
+        assert!(
+            !members.readonly_properties.contains(&"age".to_string()),
+            "non-readonly promoted param age should not be in readonly_properties"
+        );
     }
 
     #[test]
@@ -1007,8 +1098,14 @@ mod tests {
         let doc = ParsedDoc::parse(src.to_string());
         let members = members_of_class(&doc, "Status");
         let prop_names: Vec<&str> = members.properties.iter().map(|(n, _)| n.as_str()).collect();
-        assert!(prop_names.contains(&"name"), "pure enum should expose ->name");
-        assert!(!prop_names.contains(&"value"), "pure enum should not expose ->value");
+        assert!(
+            prop_names.contains(&"name"),
+            "pure enum should expose ->name"
+        );
+        assert!(
+            !prop_names.contains(&"value"),
+            "pure enum should not expose ->value"
+        );
     }
 
     #[test]
@@ -1018,10 +1115,22 @@ mod tests {
         let members = members_of_class(&doc, "Color");
         let prop_names: Vec<&str> = members.properties.iter().map(|(n, _)| n.as_str()).collect();
         let method_names: Vec<&str> = members.methods.iter().map(|(n, _)| n.as_str()).collect();
-        assert!(prop_names.contains(&"value"), "backed enum should expose ->value");
-        assert!(method_names.contains(&"from"), "backed enum should have ::from()");
-        assert!(method_names.contains(&"tryFrom"), "backed enum should have ::tryFrom()");
-        assert!(method_names.contains(&"cases"), "enum should have ::cases()");
+        assert!(
+            prop_names.contains(&"value"),
+            "backed enum should expose ->value"
+        );
+        assert!(
+            method_names.contains(&"from"),
+            "backed enum should have ::from()"
+        );
+        assert!(
+            method_names.contains(&"tryFrom"),
+            "backed enum should have ::tryFrom()"
+        );
+        assert!(
+            method_names.contains(&"cases"),
+            "enum should have ::cases()"
+        );
     }
 
     #[test]
@@ -1040,8 +1149,14 @@ mod tests {
         let members = members_of_class(&doc, "Logging");
         let method_names: Vec<&str> = members.methods.iter().map(|(n, _)| n.as_str()).collect();
         let prop_names: Vec<&str> = members.properties.iter().map(|(n, _)| n.as_str()).collect();
-        assert!(method_names.contains(&"log"), "trait method log should be collected");
-        assert!(prop_names.contains(&"logFile"), "trait property logFile should be collected");
+        assert!(
+            method_names.contains(&"log"),
+            "trait method log should be collected"
+        );
+        assert!(
+            prop_names.contains(&"logFile"),
+            "trait property logFile should be collected"
+        );
     }
 
     #[test]
@@ -1049,7 +1164,10 @@ mod tests {
         let src = "<?php\ntrait Logging { public function log() {} }\nclass App { use Logging; }";
         let doc = ParsedDoc::parse(src.to_string());
         let members = members_of_class(&doc, "App");
-        assert!(members.trait_uses.contains(&"Logging".to_string()), "should list used trait");
+        assert!(
+            members.trait_uses.contains(&"Logging".to_string()),
+            "should list used trait"
+        );
     }
 
     #[test]
@@ -1057,7 +1175,11 @@ mod tests {
         let src = "<?php\n/** @var Mailer $mailer */\n$mailer = $container->get('mailer');";
         let doc = ParsedDoc::parse(src.to_string());
         let tm = TypeMap::from_doc(&doc);
-        assert_eq!(tm.get("$mailer"), Some("Mailer"), "@var with explicit name should map the variable");
+        assert_eq!(
+            tm.get("$mailer"),
+            Some("Mailer"),
+            "@var with explicit name should map the variable"
+        );
     }
 
     #[test]
@@ -1065,7 +1187,11 @@ mod tests {
         let src = "<?php\n/** @var Repository */\n$repo = $this->getRepository();";
         let doc = ParsedDoc::parse(src.to_string());
         let tm = TypeMap::from_doc(&doc);
-        assert_eq!(tm.get("$repo"), Some("Repository"), "@var without name should use assignment LHS");
+        assert_eq!(
+            tm.get("$repo"),
+            Some("Repository"),
+            "@var without name should use assignment LHS"
+        );
     }
 
     #[test]
@@ -1074,7 +1200,10 @@ mod tests {
         let doc = ParsedDoc::parse(src.to_string());
         let tm = TypeMap::from_doc(&doc);
         // Primitives (lowercase) should not be mapped as class names.
-        assert!(tm.get("$name").is_none(), "primitive @var should not produce a class mapping");
+        assert!(
+            tm.get("$name").is_none(),
+            "primitive @var should not produce a class mapping"
+        );
     }
 
     #[test]
@@ -1106,8 +1235,11 @@ mod tests {
         let src = "<?php\n$objs = new Foo();\n$result = array_map(fn($x): Bar => $x->transform(), $objs);";
         let doc = ParsedDoc::parse(src.to_string());
         let tm = TypeMap::from_doc(&doc);
-        assert_eq!(tm.get_element_type("$result"), Some("Bar"),
-            "array_map with typed fn callback should store element type as $result[]");
+        assert_eq!(
+            tm.get_element_type("$result"),
+            Some("Bar"),
+            "array_map with typed fn callback should store element type as $result[]"
+        );
     }
 
     #[test]
@@ -1115,8 +1247,11 @@ mod tests {
         let src = "<?php\n$items = array_map(fn($x): Widget => $x, []);\nforeach ($items as $item) { $item-> }";
         let doc = ParsedDoc::parse(src.to_string());
         let tm = TypeMap::from_doc(&doc);
-        assert_eq!(tm.get("$item"), Some("Widget"),
-            "foreach over array_map result should propagate element type to loop variable");
+        assert_eq!(
+            tm.get("$item"),
+            Some("Widget"),
+            "foreach over array_map result should propagate element type to loop variable"
+        );
     }
 
     #[test]
@@ -1124,8 +1259,11 @@ mod tests {
         let src = "<?php\n$service = new Mailer();\n$fn = Closure::bind(function() {}, $service);";
         let doc = ParsedDoc::parse(src.to_string());
         let tm = TypeMap::from_doc(&doc);
-        assert_eq!(tm.get("$this"), Some("Mailer"),
-            "Closure::bind with typed object should map $this to that class");
+        assert_eq!(
+            tm.get("$this"),
+            Some("Mailer"),
+            "Closure::bind with typed object should map $this to that class"
+        );
     }
 
     #[test]
@@ -1133,8 +1271,11 @@ mod tests {
         let src = "<?php\nif ($x instanceof Foo) { $x->foo(); }";
         let doc = ParsedDoc::parse(src.to_string());
         let tm = TypeMap::from_doc(&doc);
-        assert_eq!(tm.get("$x"), Some("Foo"),
-            "instanceof should narrow $x to Foo inside the if body");
+        assert_eq!(
+            tm.get("$x"),
+            Some("Foo"),
+            "instanceof should narrow $x to Foo inside the if body"
+        );
     }
 
     #[test]
@@ -1142,8 +1283,11 @@ mod tests {
         let src = "<?php\nif ($x instanceof App\\Services\\Mailer) { $x->send(); }";
         let doc = ParsedDoc::parse(src.to_string());
         let tm = TypeMap::from_doc(&doc);
-        assert_eq!(tm.get("$x"), Some("Mailer"),
-            "instanceof with FQN should narrow to short name");
+        assert_eq!(
+            tm.get("$x"),
+            Some("Mailer"),
+            "instanceof with FQN should narrow to short name"
+        );
     }
 
     #[test]
@@ -1151,8 +1295,11 @@ mod tests {
         let src = "<?php\n$svc = new Logger();\n$fn = function() {};\n$bound = $fn->bindTo($svc);";
         let doc = ParsedDoc::parse(src.to_string());
         let tm = TypeMap::from_doc(&doc);
-        assert_eq!(tm.get("$this"), Some("Logger"),
-            "bindTo() should map $this to the bound object's class");
+        assert_eq!(
+            tm.get("$this"),
+            Some("Logger"),
+            "bindTo() should map $this to the bound object's class"
+        );
     }
 
     #[test]
@@ -1214,10 +1361,11 @@ mod tests {
 
     #[test]
     fn docblock_property_appears_in_members() {
-        let src = "<?php\n/**\n * @property string $email\n * @property-read int $id\n */\nclass User {}";
+        let src =
+            "<?php\n/**\n * @property string $email\n * @property-read int $id\n */\nclass User {}";
         let doc = ParsedDoc::parse(src.to_string());
         let members = members_of_class(&doc, "User");
-        let props: Vec<&str> = members.properties.iter().map(|(n,_)| n.as_str()).collect();
+        let props: Vec<&str> = members.properties.iter().map(|(n, _)| n.as_str()).collect();
         assert!(props.contains(&"email"));
         assert!(props.contains(&"id"));
     }
@@ -1227,10 +1375,14 @@ mod tests {
         let src = "<?php\n/**\n * @method User find(int $id)\n * @method static Builder where(string $col, mixed $val)\n */\nclass Model {}";
         let doc = ParsedDoc::parse(src.to_string());
         let members = members_of_class(&doc, "Model");
-        let method_names: Vec<&str> = members.methods.iter().map(|(n,_)| n.as_str()).collect();
+        let method_names: Vec<&str> = members.methods.iter().map(|(n, _)| n.as_str()).collect();
         assert!(method_names.contains(&"find"));
         assert!(method_names.contains(&"where"));
-        let where_static = members.methods.iter().find(|(n,_)| n == "where").map(|(_,s)| *s);
+        let where_static = members
+            .methods
+            .iter()
+            .find(|(n, _)| n == "where")
+            .map(|(_, s)| *s);
         assert_eq!(where_static, Some(true));
     }
 

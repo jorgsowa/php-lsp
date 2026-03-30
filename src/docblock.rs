@@ -203,7 +203,10 @@ pub fn parse_docblock(raw: &str) -> Docblock {
                     // Optional `$varName` after the type hint.
                     let vname = remainder.trim();
                     if vname.starts_with('$') {
-                        let name: String = vname[1..].chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
+                        let name: String = vname[1..]
+                            .chars()
+                            .take_while(|c| c.is_alphanumeric() || *c == '_')
+                            .collect();
                         if !name.is_empty() {
                             var_name = Some(name);
                         }
@@ -231,11 +234,18 @@ pub fn parse_docblock(raw: &str) -> Docblock {
                         let rest = rest.trim();
                         let bound = if rest.to_lowercase().starts_with("of ") {
                             let (b, _) = split_first_word(&rest[3..]);
-                            if b.is_empty() { None } else { Some(b.to_string()) }
+                            if b.is_empty() {
+                                None
+                            } else {
+                                Some(b.to_string())
+                            }
                         } else {
                             None
                         };
-                        templates.push(DocTemplate { name: name.to_string(), bound });
+                        templates.push(DocTemplate {
+                            name: name.to_string(),
+                            bound,
+                        });
                     }
                 }
                 "mixin" => {
@@ -285,11 +295,7 @@ pub fn parse_docblock(raw: &str) -> Docblock {
                     let (return_type_str, rest2) = split_first_word(rest);
                     if !return_type_str.is_empty() {
                         // method name stops at '('
-                        let method_name = rest2.trim()
-                            .split('(')
-                            .next()
-                            .unwrap_or("")
-                            .trim();
+                        let method_name = rest2.trim().split('(').next().unwrap_or("").trim();
                         if !method_name.is_empty() {
                             methods.push(DocMethod {
                                 return_type: return_type_str.to_string(),
@@ -554,7 +560,8 @@ mod tests {
 
     #[test]
     fn parses_multiple_throws() {
-        let raw = "/**\n * @throws InvalidArgumentException\n * @throws RuntimeException Bad state\n */";
+        let raw =
+            "/**\n * @throws InvalidArgumentException\n * @throws RuntimeException Bad state\n */";
         let db = parse_docblock(raw);
         assert_eq!(db.throws.len(), 2);
         assert_eq!(db.throws[0].class, "InvalidArgumentException");
@@ -585,8 +592,16 @@ mod tests {
             ..Default::default()
         };
         let md = db.to_markdown();
-        assert!(md.contains("> **Deprecated**"), "expected deprecated banner, got: {}", md);
-        assert!(md.contains("Use bar() instead"), "expected deprecation message, got: {}", md);
+        assert!(
+            md.contains("> **Deprecated**"),
+            "expected deprecated banner, got: {}",
+            md
+        );
+        assert!(
+            md.contains("Use bar() instead"),
+            "expected deprecation message, got: {}",
+            md
+        );
     }
 
     #[test]
@@ -599,8 +614,16 @@ mod tests {
             ..Default::default()
         };
         let md = db.to_markdown();
-        assert!(md.contains("@throws"), "expected @throws in markdown, got: {}", md);
-        assert!(md.contains("RuntimeException"), "expected class name, got: {}", md);
+        assert!(
+            md.contains("@throws"),
+            "expected @throws in markdown, got: {}",
+            md
+        );
+        assert!(
+            md.contains("RuntimeException"),
+            "expected class name, got: {}",
+            md
+        );
     }
 
     #[test]
@@ -610,8 +633,16 @@ mod tests {
             ..Default::default()
         };
         let md = db.to_markdown();
-        assert!(md.contains("@see"), "expected @see in markdown, got: {}", md);
-        assert!(md.contains("https://example.com"), "expected url, got: {}", md);
+        assert!(
+            md.contains("@see"),
+            "expected @see in markdown, got: {}",
+            md
+        );
+        assert!(
+            md.contains("https://example.com"),
+            "expected url, got: {}",
+            md
+        );
     }
 
     #[test]
@@ -653,11 +684,18 @@ mod tests {
     #[test]
     fn to_markdown_shows_template() {
         let db = Docblock {
-            templates: vec![DocTemplate { name: "T".to_string(), bound: Some("Base".to_string()) }],
+            templates: vec![DocTemplate {
+                name: "T".to_string(),
+                bound: Some("Base".to_string()),
+            }],
             ..Default::default()
         };
         let md = db.to_markdown();
-        assert!(md.contains("@template"), "expected @template in markdown, got: {}", md);
+        assert!(
+            md.contains("@template"),
+            "expected @template in markdown, got: {}",
+            md
+        );
         assert!(md.contains("T"), "expected T in markdown");
         assert!(md.contains("Base"), "expected Base in markdown");
     }
@@ -669,7 +707,11 @@ mod tests {
             ..Default::default()
         };
         let md = db.to_markdown();
-        assert!(md.contains("@mixin"), "expected @mixin in markdown, got: {}", md);
+        assert!(
+            md.contains("@mixin"),
+            "expected @mixin in markdown, got: {}",
+            md
+        );
         assert!(md.contains("SomeTrait"), "expected SomeTrait in markdown");
     }
 
@@ -751,10 +793,7 @@ mod tests {
             db.params[0].type_hint, "string",
             "type_hint should be 'string'"
         );
-        assert_eq!(
-            db.params[0].name, "$x",
-            "name should be '$x'"
-        );
+        assert_eq!(db.params[0].name, "$x", "name should be '$x'");
         assert_eq!(
             db.params[0].description, "",
             "description should be empty when absent"

@@ -96,11 +96,7 @@ fn close_brace(source: &str, position: Position) -> Vec<TextEdit> {
 ///
 /// - Copies the previous (non-empty) line's indentation as a base.
 /// - Adds one extra indent level when the previous line ends with `{`.
-fn indent_new_line(
-    source: &str,
-    position: Position,
-    options: &FormattingOptions,
-) -> Vec<TextEdit> {
+fn indent_new_line(source: &str, position: Position, options: &FormattingOptions) -> Vec<TextEdit> {
     let lines: Vec<&str> = source.lines().collect();
     let new_idx = position.line as usize;
 
@@ -166,7 +162,10 @@ mod tests {
     }
 
     fn pos(line: u32, ch: u32) -> Position {
-        Position { line, character: ch }
+        Position {
+            line,
+            character: ch,
+        }
     }
 
     // ── \n tests ─────────────────────────────────────────────────────────────
@@ -207,7 +206,10 @@ mod tests {
     fn new_line_no_edit_when_already_correct() {
         let src = "<?php\nif (true) {\n    ";
         let edits = on_type_format(src, pos(2, 0), "\n", &opts(true, 4));
-        assert!(edits.is_empty(), "no edit needed when indent already correct");
+        assert!(
+            edits.is_empty(),
+            "no edit needed when indent already correct"
+        );
     }
 
     // ── } tests ──────────────────────────────────────────────────────────────

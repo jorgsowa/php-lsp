@@ -160,7 +160,15 @@ mod tests {
         let src = "<?php\ninterface HasLabel {}\nenum Status: string implements HasLabel {\n    case Active = 'active';\n}";
         let docs = vec![doc("/a.php", src)];
         let locs = find_implementations("HasLabel", &docs);
-        assert_eq!(locs.len(), 1, "expected enum Status as implementation of HasLabel, got: {:?}", locs);
-        assert_eq!(locs[0].range.start.line, 2, "enum declaration should be on line 2");
+        assert_eq!(
+            locs.len(),
+            1,
+            "expected enum Status as implementation of HasLabel, got: {:?}",
+            locs
+        );
+        assert_eq!(
+            locs[0].range.start.line, 2,
+            "enum declaration should be on line 2"
+        );
     }
 }

@@ -178,7 +178,10 @@ static BUILTIN_SIGS: &[(&str, &str)] = &[
     ("array_key_exists", "$key, $array"),
     ("array_key_first", "$array"),
     ("array_key_last", "$array"),
-    ("array_keys", "$array, $filter_value = null, $strict = false"),
+    (
+        "array_keys",
+        "$array, $filter_value = null, $strict = false",
+    ),
     ("array_map", "$callback, $array, ...$arrays"),
     ("array_merge", "...$arrays"),
     ("array_merge_recursive", "...$arrays"),
@@ -189,8 +192,14 @@ static BUILTIN_SIGS: &[(&str, &str)] = &[
     ("array_reverse", "$array, $preserve_keys = false"),
     ("array_search", "$needle, $haystack, $strict = false"),
     ("array_shift", "&$array"),
-    ("array_slice", "$array, $offset, $length = null, $preserve_keys = false"),
-    ("array_splice", "&$array, $offset, $length = null, $replacement = []"),
+    (
+        "array_slice",
+        "$array, $offset, $length = null, $preserve_keys = false",
+    ),
+    (
+        "array_splice",
+        "&$array, $offset, $length = null, $replacement = []",
+    ),
     ("array_unique", "$array, $flags = SORT_STRING"),
     ("array_unshift", "&$array, ...$values"),
     ("array_values", "$array"),
@@ -204,7 +213,10 @@ static BUILTIN_SIGS: &[(&str, &str)] = &[
     ("call_user_func", "$callback, ...$args"),
     ("call_user_func_array", "$callback, $args"),
     ("ceil", "$num"),
-    ("chunk_split", "$string, $length = 76, $separator = \"\\r\\n\""),
+    (
+        "chunk_split",
+        "$string, $length = 76, $separator = \"\\r\\n\"",
+    ),
     ("class_exists", "$class, $autoload = true"),
     ("compact", "$var_names, ...$vars"),
     ("copy", "$from, $to, $context = null"),
@@ -215,17 +227,29 @@ static BUILTIN_SIGS: &[(&str, &str)] = &[
     ("error_reporting", "$error_level = null"),
     ("exp", "$num"),
     ("explode", "$separator, $string, $limit = PHP_INT_MAX"),
-    ("extract", "&$array, $flags = EXTR_OVERWRITE, $prefix = null"),
+    (
+        "extract",
+        "&$array, $flags = EXTR_OVERWRITE, $prefix = null",
+    ),
     ("fclose", "$handle"),
     ("feof", "$handle"),
     ("fgets", "$handle, $length = null"),
     ("file_exists", "$filename"),
-    ("file_get_contents", "$filename, $use_include_path = false, $context = null, $offset = 0, $length = null"),
-    ("file_put_contents", "$filename, $data, $flags = 0, $context = null"),
+    (
+        "file_get_contents",
+        "$filename, $use_include_path = false, $context = null, $offset = 0, $length = null",
+    ),
+    (
+        "file_put_contents",
+        "$filename, $data, $flags = 0, $context = null",
+    ),
     ("floatval", "$value"),
     ("floor", "$num"),
     ("fmod", "$num1, $num2"),
-    ("fopen", "$filename, $mode, $use_include_path = false, $context = null"),
+    (
+        "fopen",
+        "$filename, $mode, $use_include_path = false, $context = null",
+    ),
     ("fread", "$handle, $length"),
     ("function_exists", "$function"),
     ("fwrite", "$handle, $string, $length = null"),
@@ -236,17 +260,29 @@ static BUILTIN_SIGS: &[(&str, &str)] = &[
     ("hash", "$algo, $data, $binary = false"),
     ("header", "$header, $replace = true, $response_code = 0"),
     ("headers_sent", "&$filename = null, &$line = null"),
-    ("htmlspecialchars", "$string, $flags = ENT_QUOTES|ENT_SUBSTITUTE, $encoding = 'UTF-8', $double_encode = true"),
-    ("htmlspecialchars_decode", "$string, $flags = ENT_QUOTES|ENT_SUBSTITUTE"),
+    (
+        "htmlspecialchars",
+        "$string, $flags = ENT_QUOTES|ENT_SUBSTITUTE, $encoding = 'UTF-8', $double_encode = true",
+    ),
+    (
+        "htmlspecialchars_decode",
+        "$string, $flags = ENT_QUOTES|ENT_SUBSTITUTE",
+    ),
     ("implode", "$separator, $array"),
     ("in_array", "$needle, $haystack, $strict = false"),
     ("intdiv", "$num, $divisor"),
     ("interface_exists", "$interface, $autoload = true"),
     ("intval", "$value, $base = 10"),
-    ("is_a", "$object_or_class, $class_name, $allow_string = false"),
+    (
+        "is_a",
+        "$object_or_class, $class_name, $allow_string = false",
+    ),
     ("is_array", "$value"),
     ("is_bool", "$value"),
-    ("is_callable", "$value, $syntax_only = false, &$callable_name = null"),
+    (
+        "is_callable",
+        "$value, $syntax_only = false, &$callable_name = null",
+    ),
     ("is_dir", "$filename"),
     ("is_file", "$filename"),
     ("is_float", "$value"),
@@ -256,7 +292,10 @@ static BUILTIN_SIGS: &[(&str, &str)] = &[
     ("is_object", "$value"),
     ("is_string", "$value"),
     ("isset", "$var, ...$vars"),
-    ("json_decode", "$json, $associative = null, $depth = 512, $flags = 0"),
+    (
+        "json_decode",
+        "$json, $associative = null, $depth = 512, $flags = 0",
+    ),
     ("json_encode", "$value, $flags = 0, $depth = 512"),
     ("krsort", "&$array, $flags = SORT_REGULAR"),
     ("ksort", "&$array, $flags = SORT_REGULAR"),
@@ -270,20 +309,38 @@ static BUILTIN_SIGS: &[(&str, &str)] = &[
     ("method_exists", "$object_or_class, $method"),
     ("microtime", "$as_float = false"),
     ("min", "$value, ...$values"),
-    ("mkdir", "$directory, $permissions = 0777, $recursive = false, $context = null"),
+    (
+        "mkdir",
+        "$directory, $permissions = 0777, $recursive = false, $context = null",
+    ),
     ("mktime", "$hour, $minute, $second, $month, $day, $year"),
     ("mt_rand", "$min = 0, $max = mt_getrandmax()"),
     ("nl2br", "$string, $use_xhtml = true"),
-    ("number_format", "$num, $decimals = 0, $decimal_separator = '.', $thousands_separator = ','"),
+    (
+        "number_format",
+        "$num, $decimals = 0, $decimal_separator = '.', $thousands_separator = ','",
+    ),
     ("ob_end_clean", ""),
     ("ob_get_clean", ""),
-    ("ob_start", "$callback = null, $chunk_size = 0, $flags = PHP_OUTPUT_HANDLER_STDFLAGS"),
+    (
+        "ob_start",
+        "$callback = null, $chunk_size = 0, $flags = PHP_OUTPUT_HANDLER_STDFLAGS",
+    ),
     ("phpversion", "$extension = null"),
     ("pow", "$base, $exp"),
-    ("preg_match", "$pattern, $subject, &$matches = null, $flags = 0, $offset = 0"),
-    ("preg_match_all", "$pattern, $subject, &$matches = null, $flags = PREG_PATTERN_ORDER, $offset = 0"),
+    (
+        "preg_match",
+        "$pattern, $subject, &$matches = null, $flags = 0, $offset = 0",
+    ),
+    (
+        "preg_match_all",
+        "$pattern, $subject, &$matches = null, $flags = PREG_PATTERN_ORDER, $offset = 0",
+    ),
     ("preg_quote", "$string, $delimiter = null"),
-    ("preg_replace", "$pattern, $replacement, $subject, $limit = -1, &$count = null"),
+    (
+        "preg_replace",
+        "$pattern, $replacement, $subject, $limit = -1, &$count = null",
+    ),
     ("preg_split", "$pattern, $subject, $limit = -1, $flags = 0"),
     ("print_r", "$value, $return = false"),
     ("printf", "$format, ...$values"),
@@ -298,7 +355,10 @@ static BUILTIN_SIGS: &[(&str, &str)] = &[
     ("round", "$num, $precision = 0, $mode = PHP_ROUND_HALF_UP"),
     ("rsort", "&$array, $flags = SORT_REGULAR"),
     ("rtrim", "$string, $characters = \" \\t\\n\\r\\0\\x0B\""),
-    ("scandir", "$directory, $sorting_order = SCANDIR_SORT_ASCENDING, $context = null"),
+    (
+        "scandir",
+        "$directory, $sorting_order = SCANDIR_SORT_ASCENDING, $context = null",
+    ),
     ("session_destroy", ""),
     ("session_start", "$options = []"),
     ("set_error_handler", "$callback, $error_levels = E_ALL"),
@@ -310,7 +370,10 @@ static BUILTIN_SIGS: &[(&str, &str)] = &[
     ("sqrt", "$num"),
     ("str_contains", "$haystack, $needle"),
     ("str_ends_with", "$haystack, $needle"),
-    ("str_pad", "$string, $length, $pad_string = ' ', $pad_type = STR_PAD_RIGHT"),
+    (
+        "str_pad",
+        "$string, $length, $pad_string = ' ', $pad_type = STR_PAD_RIGHT",
+    ),
     ("str_repeat", "$string, $times"),
     ("str_replace", "$search, $replace, $subject, &$count = null"),
     ("str_split", "$string, $length = 1"),
@@ -328,8 +391,14 @@ static BUILTIN_SIGS: &[(&str, &str)] = &[
     ("strtoupper", "$string"),
     ("strval", "$value"),
     ("substr", "$string, $offset, $length = null"),
-    ("substr_count", "$haystack, $needle, $offset = 0, $length = null"),
-    ("substr_replace", "$string, $replace, $offset, $length = null"),
+    (
+        "substr_count",
+        "$haystack, $needle, $offset = 0, $length = null",
+    ),
+    (
+        "substr_replace",
+        "$string, $replace, $offset, $length = null",
+    ),
     ("time", ""),
     ("trigger_error", "$message, $error_level = E_USER_NOTICE"),
     ("trim", "$string, $characters = \" \\t\\n\\r\\0\\x0B\""),
@@ -345,7 +414,10 @@ static BUILTIN_SIGS: &[(&str, &str)] = &[
     ("usort", "&$array, $callback"),
     ("var_dump", "$value, ...$values"),
     ("var_export", "$value, $return = false"),
-    ("wordwrap", "$string, $width = 75, $break = \"\\n\", $cut_long_words = false"),
+    (
+        "wordwrap",
+        "$string, $width = 75, $break = \"\\n\", $cut_long_words = false",
+    ),
 ];
 
 #[cfg(test)]
@@ -452,8 +524,7 @@ mod tests {
         let result_outer = signature_help(src, &doc, pos(3, 11));
         let sh_outer = result_outer.expect("expected signature help for outer");
         assert_eq!(
-            sh_outer.signatures[0].label,
-            "outer(int $a, string $b)",
+            sh_outer.signatures[0].label, "outer(int $a, string $b)",
             "at col 11 the active call should be 'outer'"
         );
 
@@ -461,8 +532,7 @@ mod tests {
         let result_inner = signature_help(src, &doc, pos(3, 12));
         let sh_inner = result_inner.expect("expected signature help for inner");
         assert_eq!(
-            sh_inner.signatures[0].label,
-            "inner(float $x)",
+            sh_inner.signatures[0].label, "inner(float $x)",
             "at col 12 the active call should be 'inner'"
         );
     }
@@ -506,8 +576,7 @@ mod tests {
         let result = signature_help(src, &doc, pos(4, 8));
         let sh = result.expect("expected signature help for process");
         assert_eq!(
-            sh.signatures[0].label,
-            "process(string $job, int $priority)",
+            sh.signatures[0].label, "process(string $job, int $priority)",
             "method signature should show all parameters"
         );
     }

@@ -227,7 +227,10 @@ mod tests {
         let docs = vec![doc("/a.php", src)];
         // Position the cursor on the enum method name "label" (line 1, col ~29)
         let loc = goto_declaration(src, &docs, pos(1, 29));
-        assert!(loc.is_some(), "expected declaration location for enum method");
+        assert!(
+            loc.is_some(),
+            "expected declaration location for enum method"
+        );
         assert_eq!(loc.unwrap().range.start.line, 1);
     }
 }

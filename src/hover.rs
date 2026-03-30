@@ -95,10 +95,16 @@ pub fn hover_at(
             }
         }
         if is_php_builtin(&word) {
-            value.push_str(&format!("\n\n[php.net documentation]({})", php_doc_url(&word)));
+            value.push_str(&format!(
+                "\n\n[php.net documentation]({})",
+                php_doc_url(&word)
+            ));
         }
         return Some(Hover {
-            contents: HoverContents::Markup(MarkupContent { kind: MarkupKind::Markdown, value }),
+            contents: HoverContents::Markup(MarkupContent {
+                kind: MarkupKind::Markdown,
+                value,
+            }),
             range: None,
         });
     }
@@ -111,7 +117,10 @@ pub fn hover_at(
             php_doc_url(&word)
         );
         return Some(Hover {
-            contents: HoverContents::Markup(MarkupContent { kind: MarkupKind::Markdown, value }),
+            contents: HoverContents::Markup(MarkupContent {
+                kind: MarkupKind::Markdown,
+                value,
+            }),
             range: None,
         });
     }
@@ -125,13 +134,15 @@ pub fn hover_at(
             if line_text.contains(&arrow_word) || line_text.contains(&nullsafe_arrow_word) {
                 // Find the position of `->word` in the line and extract the receiver var
                 // before it.
-                let arrow_pos = line_text.find(&nullsafe_arrow_word)
+                let arrow_pos = line_text
+                    .find(&nullsafe_arrow_word)
                     .or_else(|| line_text.find(&arrow_word));
                 if let Some(apos) = arrow_pos {
                     let before_arrow = &line_text[..apos];
                     let receiver_var = extract_receiver_var_from_end(before_arrow);
                     if let Some(var_name) = receiver_var {
-                        let arc_docs: Vec<Arc<ParsedDoc>> = other_docs.iter().map(|(_, d)| d.clone()).collect();
+                        let arc_docs: Vec<Arc<ParsedDoc>> =
+                            other_docs.iter().map(|(_, d)| d.clone()).collect();
                         let type_map = TypeMap::from_docs_with_meta(doc, &arc_docs, None);
                         let class_name = if var_name == "$this" {
                             crate::type_map::enclosing_class_at(source, doc, position)
@@ -146,9 +157,15 @@ pub fn hover_at(
                                 .collect();
                             for d in &all_docs_search {
                                 if let Some(type_str) = find_property_type(d, &cls, &word) {
-                                    let value = format!("`(property) {}::${}:{}`",
-                                        cls, word,
-                                        if type_str.is_empty() { String::new() } else { format!(" {}", type_str) }
+                                    let value = format!(
+                                        "`(property) {}::${}:{}`",
+                                        cls,
+                                        word,
+                                        if type_str.is_empty() {
+                                            String::new()
+                                        } else {
+                                            format!(" {}", type_str)
+                                        }
                                     );
                                     return Some(Hover {
                                         contents: HoverContents::Markup(MarkupContent {
@@ -168,22 +185,40 @@ pub fn hover_at(
 
     // Feature 3: hover on a built-in class name shows stub info
     if let Some(stub) = crate::stubs::builtin_class_members(&word) {
-        let method_names: Vec<&str> = stub.methods.iter()
+        let method_names: Vec<&str> = stub
+            .methods
+            .iter()
             .filter(|(_, is_static)| !is_static)
             .map(|(n, _)| n.as_str())
             .take(8)
             .collect();
-        let static_names: Vec<&str> = stub.methods.iter()
+        let static_names: Vec<&str> = stub
+            .methods
+            .iter()
             .filter(|(_, is_static)| *is_static)
             .map(|(n, _)| n.as_str())
             .take(4)
             .collect();
         let mut lines = vec![format!("**{}** — built-in class", word)];
         if !method_names.is_empty() {
-            lines.push(format!("Methods: {}", method_names.iter().map(|n| format!("`{n}`")).collect::<Vec<_>>().join(", ")));
+            lines.push(format!(
+                "Methods: {}",
+                method_names
+                    .iter()
+                    .map(|n| format!("`{n}`"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
         }
         if !static_names.is_empty() {
-            lines.push(format!("Static: {}", static_names.iter().map(|n| format!("`{n}`")).collect::<Vec<_>>().join(", ")));
+            lines.push(format!(
+                "Static: {}",
+                static_names
+                    .iter()
+                    .map(|n| format!("`{n}`"))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
         }
         if let Some(parent) = &stub.parent {
             lines.push(format!("Extends: `{parent}`"));
@@ -340,7 +375,10 @@ pub fn docs_for_symbol(
                 }
             }
             if is_php_builtin(name) {
-                value.push_str(&format!("\n\n[php.net documentation]({})", php_doc_url(name)));
+                value.push_str(&format!(
+                    "\n\n[php.net documentation]({})",
+                    php_doc_url(name)
+                ));
             }
             return Some(value);
         }
@@ -390,9 +428,21 @@ fn format_default_value(expr: &php_ast::Expr<'_, '_>) -> String {
         ExprKind::Int(n) => n.to_string(),
         ExprKind::Float(f) => f.to_string(),
         ExprKind::String(s) => format!("'{}'", s),
-        ExprKind::Bool(b) => if *b { "true".to_string() } else { "false".to_string() },
+        ExprKind::Bool(b) => {
+            if *b {
+                "true".to_string()
+            } else {
+                "false".to_string()
+            }
+        }
         ExprKind::Null => "null".to_string(),
-        ExprKind::Array(items) => if items.is_empty() { "[]".to_string() } else { "[...]".to_string() },
+        ExprKind::Array(items) => {
+            if items.is_empty() {
+                "[]".to_string()
+            } else {
+                "[...]".to_string()
+            }
+        }
         _ => "...".to_string(),
     }
 }
@@ -440,7 +490,9 @@ fn find_property_type_in_stmts<'a>(
                 for member in c.members.iter() {
                     match &member.kind {
                         ClassMemberKind::Property(p) if p.name == prop_name => {
-                            let type_str = p.type_hint.as_ref()
+                            let type_str = p
+                                .type_hint
+                                .as_ref()
                                 .map(|t| crate::ast::format_type_hint(t))
                                 .unwrap_or_default();
                             return Some(type_str);
@@ -449,7 +501,9 @@ fn find_property_type_in_stmts<'a>(
                             // Check promoted constructor parameters
                             for p in m.params.iter() {
                                 if p.name == prop_name && p.visibility.is_some() {
-                                    let type_str = p.type_hint.as_ref()
+                                    let type_str = p
+                                        .type_hint
+                                        .as_ref()
                                         .map(|t| crate::ast::format_type_hint(t))
                                         .unwrap_or_default();
                                     return Some(type_str);
@@ -650,8 +704,16 @@ mod tests {
         let doc = ParsedDoc::parse(src.to_string());
         let result = hover_info(src, &doc, pos(1, 6), &[]);
         assert!(result.is_some());
-        if let Some(Hover { contents: HoverContents::Markup(mc), .. }) = result {
-            assert!(mc.value.contains("enum Suit"), "expected 'enum Suit', got: {}", mc.value);
+        if let Some(Hover {
+            contents: HoverContents::Markup(mc),
+            ..
+        }) = result
+        {
+            assert!(
+                mc.value.contains("enum Suit"),
+                "expected 'enum Suit', got: {}",
+                mc.value
+            );
         }
     }
 
@@ -661,7 +723,11 @@ mod tests {
         let doc = ParsedDoc::parse(src.to_string());
         let result = hover_info(src, &doc, pos(1, 6), &[]);
         assert!(result.is_some());
-        if let Some(Hover { contents: HoverContents::Markup(mc), .. }) = result {
+        if let Some(Hover {
+            contents: HoverContents::Markup(mc),
+            ..
+        }) = result
+        {
             assert!(
                 mc.value.contains("implements Stringable"),
                 "expected implements clause, got: {}",
@@ -677,7 +743,11 @@ mod tests {
         // "Active" starts at col 19: "enum Status { case Active;"
         let result = hover_info(src, &doc, pos(1, 21), &[]);
         assert!(result.is_some(), "expected hover on enum case");
-        if let Some(Hover { contents: HoverContents::Markup(mc), .. }) = result {
+        if let Some(Hover {
+            contents: HoverContents::Markup(mc),
+            ..
+        }) = result
+        {
             assert!(
                 mc.value.contains("Status::Active"),
                 "expected 'Status::Active', got: {}",
@@ -693,7 +763,11 @@ mod tests {
         // "Red" starts at col 26: "enum Color: string { case Red"
         let result = hover_info(src, &doc, pos(1, 27), &[]);
         assert!(result.is_some(), "expected hover on backed enum case");
-        if let Some(Hover { contents: HoverContents::Markup(mc), .. }) = result {
+        if let Some(Hover {
+            contents: HoverContents::Markup(mc),
+            ..
+        }) = result
+        {
             assert!(
                 mc.value.contains("Color::Red"),
                 "expected 'Color::Red', got: {}",
@@ -714,7 +788,11 @@ mod tests {
         // "log" at "trait Loggable { public function log(" — col 33
         let result = hover_info(src, &doc, pos(1, 34), &[]);
         assert!(result.is_some(), "expected hover on trait method");
-        if let Some(Hover { contents: HoverContents::Markup(mc), .. }) = result {
+        if let Some(Hover {
+            contents: HoverContents::Markup(mc),
+            ..
+        }) = result
+        {
             assert!(
                 mc.value.contains("function log("),
                 "expected function sig, got: {}",
@@ -735,7 +813,11 @@ mod tests {
         // Hover on "PaymentService" in line 1
         let result = hover_info(src, &doc, pos(1, 12), &other_docs);
         assert!(result.is_some(), "expected cross-file hover result");
-        if let Some(Hover { contents: HoverContents::Markup(mc), .. }) = result {
+        if let Some(Hover {
+            contents: HoverContents::Markup(mc),
+            ..
+        }) = result
+        {
             assert!(
                 mc.value.contains("PaymentService"),
                 "expected 'PaymentService', got: {}",
@@ -799,14 +881,26 @@ mod tests {
         };
         assert!(text.contains("Point"), "should mention class name");
         assert!(text.contains("x"), "should mention property name");
-        assert!(text.contains("float"), "should show type hint for promoted property");
+        assert!(
+            text.contains("float"),
+            "should show type hint for promoted property"
+        );
     }
 
     #[test]
     fn hover_on_use_alias_shows_fqn() {
         let src = "<?php\nuse App\\Mail\\Mailer;\n$m = new Mailer();";
         let doc = ParsedDoc::parse(src.to_string());
-        let h = hover_at(src, &doc, &[], Position { line: 1, character: 20 }, None);
+        let h = hover_at(
+            src,
+            &doc,
+            &[],
+            Position {
+                line: 1,
+                character: 20,
+            },
+            None,
+        );
         assert!(h.is_some());
         let text = match h.unwrap().contents {
             HoverContents::Markup(m) => m.value,

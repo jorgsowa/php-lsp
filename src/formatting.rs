@@ -22,7 +22,11 @@ pub fn format_document(source: &str) -> Option<Vec<TextEdit>> {
         return None; // already clean — no edits needed
     }
     let line_count = source.lines().count() as u32;
-    let last_line_len = source.lines().last().map(|l| l.chars().map(|c| c.len_utf16() as u32).sum()).unwrap_or(0);
+    let last_line_len = source
+        .lines()
+        .last()
+        .map(|l| l.chars().map(|c| c.len_utf16() as u32).sum())
+        .unwrap_or(0);
     Some(vec![TextEdit {
         range: Range {
             start: Position {

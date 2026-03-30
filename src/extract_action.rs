@@ -9,11 +9,7 @@ use tower_lsp::lsp_types::{
 /// extract it into a local variable.  The generated variable name is `$extracted`
 /// (a safe, unambiguous placeholder that the user can then rename with the LSP
 /// rename action).
-pub fn extract_variable_actions(
-    source: &str,
-    range: Range,
-    uri: &Url,
-) -> Vec<CodeActionOrCommand> {
+pub fn extract_variable_actions(source: &str, range: Range, uri: &Url) -> Vec<CodeActionOrCommand> {
     // Only act on non-empty selections.
     if range.start == range.end {
         return vec![];
@@ -24,7 +20,11 @@ pub fn extract_variable_actions(
     }
     // Don't offer on selections that are already a simple variable or plain keyword.
     let trimmed = selected.trim();
-    if trimmed.starts_with('$') && trimmed.chars().skip(1).all(|c| c.is_alphanumeric() || c == '_')
+    if trimmed.starts_with('$')
+        && trimmed
+            .chars()
+            .skip(1)
+            .all(|c| c.is_alphanumeric() || c == '_')
     {
         return vec![];
     }
@@ -33,7 +33,10 @@ pub fn extract_variable_actions(
     let indent = line_indent(source, range.start.line);
 
     // Insert `$extracted = <expression>;` on the line before the start of the selection.
-    let insert_pos = Position { line: range.start.line, character: 0 };
+    let insert_pos = Position {
+        line: range.start.line,
+        character: 0,
+    };
     let insert_text = format!("{indent}$extracted = {trimmed};\n");
 
     // Replace the selected text with `$extracted`.
@@ -43,15 +46,27 @@ pub fn extract_variable_actions(
     changes.insert(
         uri.clone(),
         vec![
-            TextEdit { range: Range { start: insert_pos, end: insert_pos }, new_text: insert_text },
-            TextEdit { range, new_text: replace_text },
+            TextEdit {
+                range: Range {
+                    start: insert_pos,
+                    end: insert_pos,
+                },
+                new_text: insert_text,
+            },
+            TextEdit {
+                range,
+                new_text: replace_text,
+            },
         ],
     );
 
     vec![CodeActionOrCommand::CodeAction(CodeAction {
         title: "Extract variable".to_string(),
         kind: Some(CodeActionKind::REFACTOR_EXTRACT),
-        edit: Some(WorkspaceEdit { changes: Some(changes), ..Default::default() }),
+        edit: Some(WorkspaceEdit {
+            changes: Some(changes),
+            ..Default::default()
+        }),
         ..Default::default()
     })]
 }
@@ -113,8 +128,14 @@ mod tests {
 
     fn range(sl: u32, sc: u32, el: u32, ec: u32) -> Range {
         Range {
-            start: Position { line: sl, character: sc },
-            end: Position { line: el, character: ec },
+            start: Position {
+                line: sl,
+                character: sc,
+            },
+            end: Position {
+                line: el,
+                character: ec,
+            },
         }
     }
 
@@ -123,7 +144,10 @@ mod tests {
         let src = "<?php\n$x = foo();";
         let r = range(1, 4, 1, 4);
         let actions = extract_variable_actions(src, r, &uri());
-        assert!(actions.is_empty(), "empty selection should not produce actions");
+        assert!(
+            actions.is_empty(),
+            "empty selection should not produce actions"
+        );
     }
 
     #[test]
@@ -132,7 +156,10 @@ mod tests {
         // Select "$foo"
         let r = range(1, 4, 1, 8);
         let actions = extract_variable_actions(src, r, &uri());
-        assert!(actions.is_empty(), "selecting a simple variable should not produce extract action");
+        assert!(
+            actions.is_empty(),
+            "selecting a simple variable should not produce extract action"
+        );
     }
 
     #[test]
@@ -145,11 +172,25 @@ mod tests {
         if let CodeActionOrCommand::CodeAction(a) = &actions[0] {
             assert_eq!(a.title, "Extract variable");
             let edits = a.edit.as_ref().unwrap().changes.as_ref().unwrap();
-            let texts: Vec<&str> = edits.values().next().unwrap().iter().map(|e| e.new_text.as_str()).collect();
+            let texts: Vec<&str> = edits
+                .values()
+                .next()
+                .unwrap()
+                .iter()
+                .map(|e| e.new_text.as_str())
+                .collect();
             // One edit inserts the assignment
-            assert!(texts.iter().any(|t| t.contains("$extracted = foo() + bar();")), "should insert assignment");
+            assert!(
+                texts
+                    .iter()
+                    .any(|t| t.contains("$extracted = foo() + bar();")),
+                "should insert assignment"
+            );
             // Another edit replaces with $extracted
-            assert!(texts.iter().any(|&t| t == "$extracted"), "should replace with $extracted");
+            assert!(
+                texts.iter().any(|&t| t == "$extracted"),
+                "should replace with $extracted"
+            );
         }
     }
 
@@ -162,10 +203,17 @@ mod tests {
         assert!(!actions.is_empty());
         if let CodeActionOrCommand::CodeAction(a) = &actions[0] {
             let edits = a.edit.as_ref().unwrap().changes.as_ref().unwrap();
-            let insert = edits.values().next().unwrap().iter()
+            let insert = edits
+                .values()
+                .next()
+                .unwrap()
+                .iter()
                 .find(|e| e.new_text.contains("$extracted ="))
                 .unwrap();
-            assert!(insert.new_text.starts_with("    "), "should preserve indentation");
+            assert!(
+                insert.new_text.starts_with("    "),
+                "should preserve indentation"
+            );
         }
     }
 }

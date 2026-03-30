@@ -370,7 +370,11 @@ fn statement_to_symbol(source: &str, stmt: &Stmt<'_, '_>) -> Option<DocumentSymb
                 deprecated: None,
                 range,
                 selection_range,
-                children: if children.is_empty() { None } else { Some(children) },
+                children: if children.is_empty() {
+                    None
+                } else {
+                    Some(children)
+                },
             })
         }
 
@@ -731,14 +735,12 @@ mod tests {
             "symbol should have FUNCTION kind"
         );
         assert_eq!(
-            f.range.start.line,
-            1,
+            f.range.start.line, 1,
             "function range should start at line 1 (where 'function' keyword is)"
         );
         // The selection_range (name range) should also be on line 1.
         assert_eq!(
-            f.selection_range.start.line,
-            1,
+            f.selection_range.start.line, 1,
             "selection_range should start at line 1"
         );
     }
@@ -758,34 +760,43 @@ mod tests {
             SymbolKind::ENUM,
             "enum should produce a symbol with SymbolKind::ENUM"
         );
-        assert_eq!(
-            e.range.start.line,
-            1,
-            "enum range should start at line 1"
-        );
+        assert_eq!(e.range.start.line, 1, "enum range should start at line 1");
     }
 
     #[test]
     fn interface_constants_are_constant_children() {
         // Interface constants should appear as CONSTANT children in document symbols.
-        let src = "<?php\ninterface Config {\n    const VERSION = '1.0';\n    const DEBUG = false;\n}";
+        let src =
+            "<?php\ninterface Config {\n    const VERSION = '1.0';\n    const DEBUG = false;\n}";
         let doc = ParsedDoc::parse(src.to_string());
         let syms = document_symbols(src, &doc);
         let i = syms
             .iter()
             .find(|s| s.name == "Config")
             .expect("Config interface not found");
-        let children = i.children.as_ref().expect("interface should have constant children");
+        let children = i
+            .children
+            .as_ref()
+            .expect("interface should have constant children");
         assert!(
-            children.iter().any(|c| c.name == "VERSION" && c.kind == SymbolKind::CONSTANT),
+            children
+                .iter()
+                .any(|c| c.name == "VERSION" && c.kind == SymbolKind::CONSTANT),
             "missing VERSION constant child, got: {:?}",
             children.iter().map(|c| &c.name).collect::<Vec<_>>()
         );
         assert!(
-            children.iter().any(|c| c.name == "DEBUG" && c.kind == SymbolKind::CONSTANT),
+            children
+                .iter()
+                .any(|c| c.name == "DEBUG" && c.kind == SymbolKind::CONSTANT),
             "missing DEBUG constant child"
         );
-        assert_eq!(children.len(), 2, "expected exactly 2 constant children, got: {:?}", children.iter().map(|c| &c.name).collect::<Vec<_>>());
+        assert_eq!(
+            children.len(),
+            2,
+            "expected exactly 2 constant children, got: {:?}",
+            children.iter().map(|c| &c.name).collect::<Vec<_>>()
+        );
     }
 
     #[test]
@@ -794,7 +805,14 @@ mod tests {
         let src = "<?php\ninterface Runnable {\n    public function run(): void;\n}";
         let doc = ParsedDoc::parse(src.to_string());
         let syms = document_symbols(src, &doc);
-        let i = syms.iter().find(|s| s.name == "Runnable").expect("Runnable not found");
-        assert!(i.children.is_none(), "interface with no constants should have no children, got: {:?}", i.children);
+        let i = syms
+            .iter()
+            .find(|s| s.name == "Runnable")
+            .expect("Runnable not found");
+        assert!(
+            i.children.is_none(),
+            "interface with no constants should have no children, got: {:?}",
+            i.children
+        );
     }
 }

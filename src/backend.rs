@@ -12,11 +12,6 @@ use tower_lsp::{Client, LanguageServer, async_trait};
 
 use crate::ast::ParsedDoc;
 use crate::autoload::Psr4Map;
-use crate::phpstorm_meta::PhpStormMeta;
-use crate::file_rename::{use_edits_for_delete, use_edits_for_rename};
-use crate::inline_value::inline_values_in_range;
-use crate::moniker::moniker_at;
-use crate::on_type_format::on_type_format;
 use crate::call_hierarchy::{incoming_calls, outgoing_calls, prepare_call_hierarchy};
 use crate::code_lens::code_lenses;
 use crate::completion::filtered_completions_at;
@@ -26,19 +21,26 @@ use crate::diagnostics::parse_document;
 use crate::document_highlight::document_highlights;
 use crate::document_link::document_links;
 use crate::document_store::DocumentStore;
+use crate::extract_action::extract_variable_actions;
+use crate::file_rename::{use_edits_for_delete, use_edits_for_rename};
 use crate::folding::folding_ranges;
 use crate::formatting::{format_document, format_range};
+use crate::generate_action::{generate_constructor_actions, generate_getters_setters_actions};
 use crate::hover::{docs_for_symbol, hover_info};
+use crate::implement_action::implement_missing_actions;
 use crate::implementation::goto_implementation;
 use crate::inlay_hints::inlay_hints;
-use crate::extract_action::extract_variable_actions;
-use crate::generate_action::{generate_constructor_actions, generate_getters_setters_actions};
-use crate::implement_action::implement_missing_actions;
+use crate::inline_value::inline_values_in_range;
+use crate::moniker::moniker_at;
+use crate::on_type_format::on_type_format;
 use crate::phpdoc_action::phpdoc_actions;
+use crate::phpstorm_meta::PhpStormMeta;
 use crate::references::find_references;
 use crate::rename::{prepare_rename, rename};
 use crate::selection_range::selection_ranges;
-use crate::semantic_diagnostics::{semantic_diagnostics, duplicate_declaration_diagnostics, deprecated_call_diagnostics};
+use crate::semantic_diagnostics::{
+    deprecated_call_diagnostics, duplicate_declaration_diagnostics, semantic_diagnostics,
+};
 use crate::semantic_tokens::{
     compute_token_delta, legend, semantic_tokens, semantic_tokens_range, token_hash,
 };
@@ -65,7 +67,10 @@ impl LspConfig {
             cfg.php_version = Some(ver.to_string());
         }
         if let Some(arr) = v.get("excludePaths").and_then(|x| x.as_array()) {
-            cfg.exclude_paths = arr.iter().filter_map(|x| x.as_str().map(str::to_string)).collect();
+            cfg.exclude_paths = arr
+                .iter()
+                .filter_map(|x| x.as_str().map(str::to_string))
+                .collect();
         }
         cfg
     }
@@ -160,20 +165,18 @@ impl LanguageServer for Backend {
                     retrigger_characters: None,
                     work_done_progress_options: Default::default(),
                 }),
-                inlay_hint_provider: Some(OneOf::Right(
-                    InlayHintServerCapabilities::Options(InlayHintOptions {
+                inlay_hint_provider: Some(OneOf::Right(InlayHintServerCapabilities::Options(
+                    InlayHintOptions {
                         resolve_provider: Some(true),
                         work_done_progress_options: Default::default(),
-                    }),
-                )),
+                    },
+                ))),
                 folding_range_provider: Some(FoldingRangeProviderCapability::Simple(true)),
                 semantic_tokens_provider: Some(
                     SemanticTokensServerCapabilities::SemanticTokensOptions(
                         SemanticTokensOptions {
                             legend: legend(),
-                            full: Some(SemanticTokensFullOptions::Delta {
-                                delta: Some(true),
-                            }),
+                            full: Some(SemanticTokensFullOptions::Delta { delta: Some(true) }),
                             range: Some(true),
                             ..Default::default()
                         },
@@ -233,15 +236,15 @@ impl LanguageServer for Backend {
                     }),
                     ..Default::default()
                 }),
-                linked_editing_range_provider: Some(
-                    LinkedEditingRangeServerCapabilities::Simple(true),
-                ),
-                moniker_provider: Some(OneOf::Left(true)),
-                inline_value_provider: Some(OneOf::Right(
-                    InlineValueServerCapabilities::Options(InlineValueOptions {
-                        work_done_progress_options: Default::default(),
-                    }),
+                linked_editing_range_provider: Some(LinkedEditingRangeServerCapabilities::Simple(
+                    true,
                 )),
+                moniker_provider: Some(OneOf::Left(true)),
+                inline_value_provider: Some(OneOf::Right(InlineValueServerCapabilities::Options(
+                    InlineValueOptions {
+                        work_done_progress_options: Default::default(),
+                    },
+                ))),
                 ..Default::default()
             },
             ..Default::default()
@@ -279,10 +282,7 @@ impl LanguageServer for Backend {
                 register_options: Some(serde_json::json!({"section": "php-lsp"})),
             },
         ];
-        self.client
-            .register_capability(registrations)
-            .await
-            .ok();
+        self.client.register_capability(registrations).await.ok();
 
         // Load PSR-4 autoload map and kick off background workspace scan.
         // Extract roots first so RwLockReadGuard is dropped before any .await.
@@ -302,9 +302,9 @@ impl LanguageServer for Backend {
             // Create a client-side progress indicator for the workspace scan.
             let token = NumberOrString::String("php-lsp/indexing".to_string());
             self.client
-                .send_request::<WorkDoneProgressCreate>(
-                    WorkDoneProgressCreateParams { token: token.clone() },
-                )
+                .send_request::<WorkDoneProgressCreate>(WorkDoneProgressCreateParams {
+                    token: token.clone(),
+                })
                 .await
                 .ok();
 
@@ -434,9 +434,7 @@ impl LanguageServer for Backend {
             let dup_diags = duplicate_declaration_diagnostics(&stored_source, d);
             all_diags.extend(dup_diags);
         }
-        self.client
-            .publish_diagnostics(uri, all_diags, None)
-            .await;
+        self.client.publish_diagnostics(uri, all_diags, None).await;
     }
 
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
@@ -504,8 +502,7 @@ impl LanguageServer for Backend {
             let parse_diags = self.docs.get_diagnostics(&uri).unwrap_or_default();
             let dup_diags = duplicate_declaration_diagnostics(&source, d);
             let other_raw = self.docs.other_docs(&uri);
-            let other_docs: Vec<Arc<ParsedDoc>> =
-                other_raw.into_iter().map(|(_, d)| d).collect();
+            let other_docs: Vec<Arc<ParsedDoc>> = other_raw.into_iter().map(|(_, d)| d).collect();
             let dep_diags = deprecated_call_diagnostics(&source, d, &other_docs);
             let mut all = parse_diags;
             all.extend(dup_diags);
@@ -1104,10 +1101,7 @@ impl LanguageServer for Backend {
         }
     }
 
-    async fn will_rename_files(
-        &self,
-        params: RenameFilesParams,
-    ) -> Result<Option<WorkspaceEdit>> {
+    async fn will_rename_files(&self, params: RenameFilesParams) -> Result<Option<WorkspaceEdit>> {
         let psr4 = self.psr4.read().unwrap();
         let all_docs = self.docs.all_docs();
         let mut merged_changes: std::collections::HashMap<
@@ -1171,10 +1165,7 @@ impl LanguageServer for Backend {
 
     // ── File-create notifications ────────────────────────────────────────────
 
-    async fn will_create_files(
-        &self,
-        _params: CreateFilesParams,
-    ) -> Result<Option<WorkspaceEdit>> {
+    async fn will_create_files(&self, _params: CreateFilesParams) -> Result<Option<WorkspaceEdit>> {
         // Creating a PHP file requires no pre-emptive workspace edits.
         Ok(None)
     }
@@ -1196,10 +1187,7 @@ impl LanguageServer for Backend {
 
     /// Before a file is deleted, return workspace edits that remove every
     /// `use` import referencing its PSR-4 class name.
-    async fn will_delete_files(
-        &self,
-        params: DeleteFilesParams,
-    ) -> Result<Option<WorkspaceEdit>> {
+    async fn will_delete_files(&self, params: DeleteFilesParams) -> Result<Option<WorkspaceEdit>> {
         let psr4 = self.psr4.read().unwrap();
         let all_docs = self.docs.all_docs();
         let mut merged_changes: std::collections::HashMap<Url, Vec<TextEdit>> =
@@ -1210,7 +1198,9 @@ impl LanguageServer for Backend {
                 .ok()
                 .and_then(|u| u.to_file_path().ok());
             let Some(path) = path else { continue };
-            let Some(fqn) = psr4.file_to_fqn(&path) else { continue };
+            let Some(fqn) = psr4.file_to_fqn(&path) else {
+                continue;
+            };
 
             let edit = use_edits_for_delete(&fqn, &all_docs);
             if let Some(changes) = edit.changes {
@@ -1243,10 +1233,7 @@ impl LanguageServer for Backend {
 
     // ── Moniker ──────────────────────────────────────────────────────────────
 
-    async fn moniker(
-        &self,
-        params: MonikerParams,
-    ) -> Result<Option<Vec<Moniker>>> {
+    async fn moniker(&self, params: MonikerParams) -> Result<Option<Vec<Moniker>>> {
         let uri = &params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
         let source = self.docs.get(uri).unwrap_or_default();
@@ -1259,14 +1246,15 @@ impl LanguageServer for Backend {
 
     // ── Inline values ────────────────────────────────────────────────────────
 
-    async fn inline_value(
-        &self,
-        params: InlineValueParams,
-    ) -> Result<Option<Vec<InlineValue>>> {
+    async fn inline_value(&self, params: InlineValueParams) -> Result<Option<Vec<InlineValue>>> {
         let uri = &params.text_document.uri;
         let source = self.docs.get(uri).unwrap_or_default();
         let values = inline_values_in_range(&source, params.range);
-        Ok(if values.is_empty() { None } else { Some(values) })
+        Ok(if values.is_empty() {
+            None
+        } else {
+            Some(values)
+        })
     }
 
     async fn diagnostic(
@@ -1398,19 +1386,27 @@ impl LanguageServer for Backend {
         // code_action_resolve so the menu appears instantly.
         actions.extend(defer_actions(
             phpdoc_actions(uri, &doc, &source, params.range),
-            "phpdoc", uri, params.range,
+            "phpdoc",
+            uri,
+            params.range,
         ));
         actions.extend(defer_actions(
             implement_missing_actions(&source, &doc, &other_docs, params.range, uri),
-            "implement", uri, params.range,
+            "implement",
+            uri,
+            params.range,
         ));
         actions.extend(defer_actions(
             generate_constructor_actions(&source, &doc, params.range, uri),
-            "constructor", uri, params.range,
+            "constructor",
+            uri,
+            params.range,
         ));
         actions.extend(defer_actions(
             generate_getters_setters_actions(&source, &doc, params.range, uri),
-            "getters_setters", uri, params.range,
+            "getters_setters",
+            uri,
+            params.range,
         ));
 
         // Extract variable: cheap, keep eager.
@@ -1440,11 +1436,13 @@ impl LanguageServer for Backend {
             Some(u) => u,
             None => return Ok(item),
         };
-        let range: Range =
-            match data.get("range").and_then(|v| serde_json::from_value(v.clone()).ok()) {
-                Some(r) => r,
-                None => return Ok(item),
-            };
+        let range: Range = match data
+            .get("range")
+            .and_then(|v| serde_json::from_value(v.clone()).ok())
+        {
+            Some(r) => r,
+            None => return Ok(item),
+        };
 
         let source = self.docs.get(&uri).unwrap_or_default();
         let doc = match self.docs.get_doc(&uri) {
@@ -1651,10 +1649,17 @@ async fn run_phpunit(
             };
             (ok, msg)
         }
-        Err(e) => (false, format!("php-lsp.runTest: failed to spawn phpunit — {e}")),
+        Err(e) => (
+            false,
+            format!("php-lsp.runTest: failed to spawn phpunit — {e}"),
+        ),
     };
 
-    let msg_type = if success { MessageType::INFO } else { MessageType::ERROR };
+    let msg_type = if success {
+        MessageType::INFO
+    } else {
+        MessageType::ERROR
+    };
     let mut actions = vec![MessageActionItem {
         title: "Run Again".to_string(),
         properties: Default::default(),
@@ -1724,9 +1729,18 @@ async fn run_phpunit(
 async fn send_refresh_requests(client: &Client) {
     client.send_request::<SemanticTokensRefresh>(()).await.ok();
     client.send_request::<CodeLensRefresh>(()).await.ok();
-    client.send_request::<InlayHintRefreshRequest>(()).await.ok();
-    client.send_request::<WorkspaceDiagnosticRefresh>(()).await.ok();
-    client.send_request::<InlineValueRefreshRequest>(()).await.ok();
+    client
+        .send_request::<InlayHintRefreshRequest>(())
+        .await
+        .ok();
+    client
+        .send_request::<WorkspaceDiagnosticRefresh>(())
+        .await
+        .ok();
+    client
+        .send_request::<InlineValueRefreshRequest>(())
+        .await
+        .ok();
 }
 
 /// Maximum number of PHP files indexed during a workspace scan.
@@ -1737,7 +1751,11 @@ const MAX_INDEXED_FILES: usize = 50_000;
 /// Skips hidden directories (names starting with `.`) and any path whose string
 /// representation contains a segment matching one of the `exclude_paths` patterns.
 /// Returns the number of files indexed.
-async fn scan_workspace(root: PathBuf, docs: Arc<DocumentStore>, exclude_paths: &[String]) -> usize {
+async fn scan_workspace(
+    root: PathBuf,
+    docs: Arc<DocumentStore>,
+    exclude_paths: &[String],
+) -> usize {
     let mut count = 0usize;
     let mut stack = vec![root];
 

@@ -1,6 +1,8 @@
 use std::hash::{Hash, Hasher};
 
-use php_ast::{Attribute, ClassMemberKind, EnumMemberKind, ExprKind, NamespaceBody, Stmt, StmtKind};
+use php_ast::{
+    Attribute, ClassMemberKind, EnumMemberKind, ExprKind, NamespaceBody, Stmt, StmtKind,
+};
 use tower_lsp::lsp_types::{
     Range, SemanticToken, SemanticTokenModifier, SemanticTokenType, SemanticTokensEdit,
     SemanticTokensLegend,
@@ -76,8 +78,8 @@ pub fn semantic_tokens_range(source: &str, doc: &ParsedDoc, range: Range) -> Vec
         .filter(|(line, col, _len, _, _)| {
             let after_start = *line > range.start.line
                 || (*line == range.start.line && *col >= range.start.character);
-            let before_end = *line < range.end.line
-                || (*line == range.end.line && *col < range.end.character);
+            let before_end =
+                *line < range.end.line || (*line == range.end.line && *col < range.end.character);
             after_start && before_end
         })
         .collect();
@@ -101,7 +103,10 @@ pub fn token_hash(tokens: &[SemanticToken]) -> String {
 
 /// Compute the minimal single-span edit that transforms `old` into `new`.
 /// Returns an empty vec when the sequences are identical.
-pub fn compute_token_delta(old: &[SemanticToken], new: &[SemanticToken]) -> Vec<SemanticTokensEdit> {
+pub fn compute_token_delta(
+    old: &[SemanticToken],
+    new: &[SemanticToken],
+) -> Vec<SemanticTokensEdit> {
     let eq = |a: &SemanticToken, b: &SemanticToken| {
         a.delta_line == b.delta_line
             && a.delta_start == b.delta_start
@@ -140,7 +145,11 @@ pub fn compute_token_delta(old: &[SemanticToken], new: &[SemanticToken]) -> Vec<
     vec![SemanticTokensEdit {
         start,
         delete_count,
-        data: if insert.is_empty() { None } else { Some(insert) },
+        data: if insert.is_empty() {
+            None
+        } else {
+            Some(insert)
+        },
     }]
 }
 
@@ -658,13 +667,14 @@ mod tests {
 
     #[test]
     fn deprecated_method_has_deprecated_modifier() {
-        let src = "<?php\nclass Foo {\n    /** @deprecated */\n    public function oldMethod() {}\n}";
+        let src =
+            "<?php\nclass Foo {\n    /** @deprecated */\n    public function oldMethod() {}\n}";
         let d = doc(src);
         let tokens = semantic_tokens(src, &d);
         assert!(
-            tokens
-                .iter()
-                .any(|t| t.token_type == TT_METHOD && t.token_modifiers_bitset & MOD_DEPRECATED != 0),
+            tokens.iter().any(
+                |t| t.token_type == TT_METHOD && t.token_modifiers_bitset & MOD_DEPRECATED != 0
+            ),
             "expected deprecated modifier on method, got {:?}",
             tokens
         );
@@ -689,9 +699,9 @@ mod tests {
         let d = doc(src);
         let tokens = semantic_tokens(src, &d);
         assert!(
-            tokens
-                .iter()
-                .any(|t| t.token_type == TT_CLASS && t.token_modifiers_bitset & MOD_DECLARATION != 0),
+            tokens.iter().any(
+                |t| t.token_type == TT_CLASS && t.token_modifiers_bitset & MOD_DECLARATION != 0
+            ),
             "expected class+declaration token for enum"
         );
     }
@@ -702,7 +712,9 @@ mod tests {
         let d = doc(src);
         let tokens = semantic_tokens(src, &d);
         assert!(
-            tokens.iter().any(|t| t.token_type == TT_CLASS && t.token_modifiers_bitset == 0),
+            tokens
+                .iter()
+                .any(|t| t.token_type == TT_CLASS && t.token_modifiers_bitset == 0),
             "expected bare class token for attribute name, got {:?}",
             tokens
         );

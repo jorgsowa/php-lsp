@@ -35,7 +35,9 @@ pub fn inline_values_in_range(source: &str, range: Range) -> Vec<InlineValue> {
             i += 1; // move past '$'
 
             // Collect [a-zA-Z_\x80-\xff][a-zA-Z0-9_\x80-\xff]*
-            if i >= bytes.len() || !(bytes[i].is_ascii_alphabetic() || bytes[i] == b'_' || bytes[i] >= 0x80) {
+            if i >= bytes.len()
+                || !(bytes[i].is_ascii_alphabetic() || bytes[i] == b'_' || bytes[i] >= 0x80)
+            {
                 continue;
             }
             let name_start = i;
@@ -54,8 +56,14 @@ pub fn inline_values_in_range(source: &str, range: Range) -> Vec<InlineValue> {
             let end_col = i as u32;
             result.push(InlineValue::VariableLookup(InlineValueVariableLookup {
                 range: Range {
-                    start: Position { line: line_num, character: dollar_col },
-                    end: Position { line: line_num, character: end_col },
+                    start: Position {
+                        line: line_num,
+                        character: dollar_col,
+                    },
+                    end: Position {
+                        line: line_num,
+                        character: end_col,
+                    },
                 },
                 // Provide the name without '$' so the DAP adapter can look it up
                 // by name in the current stack frame.
@@ -74,8 +82,14 @@ mod tests {
 
     fn range(sl: u32, sc: u32, el: u32, ec: u32) -> Range {
         Range {
-            start: Position { line: sl, character: sc },
-            end: Position { line: el, character: ec },
+            start: Position {
+                line: sl,
+                character: sc,
+            },
+            end: Position {
+                line: el,
+                character: ec,
+            },
         }
     }
 

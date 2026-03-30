@@ -207,7 +207,10 @@ mod tests {
         let src = "<?php\nenum Suit { public function label(): string { return ''; } }";
         let doc = ParsedDoc::parse(src.to_string());
         let result = goto_definition(&uri(), src, &doc, &[], pos(1, 30));
-        assert!(result.is_some(), "expected location for enum method 'label'");
+        assert!(
+            result.is_some(),
+            "expected location for enum method 'label'"
+        );
     }
 
     #[test]
@@ -286,7 +289,10 @@ mod tests {
             "expected a location for class constant STATUS_OK"
         );
         let loc = result.unwrap();
-        assert_eq!(loc.range.start.line, 1, "should jump to line 1 where the constant is declared");
+        assert_eq!(
+            loc.range.start.line, 1,
+            "should jump to line 1 where the constant is declared"
+        );
         assert_eq!(loc.uri, uri(), "should be in the same file");
     }
 

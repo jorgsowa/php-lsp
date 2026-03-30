@@ -52,7 +52,8 @@ fn find_references_inner(
             let start = offset_to_position(source, span.start);
             let end = Position {
                 line: start.line,
-                character: start.character + word.chars().map(|c| c.len_utf16() as u32).sum::<u32>(),
+                character: start.character
+                    + word.chars().map(|c| c.len_utf16() as u32).sum::<u32>(),
             };
             locations.push(Location {
                 uri: uri.clone(),
@@ -145,10 +146,21 @@ mod tests {
         let with_decl = find_references("greet", &docs, true);
         let without_decl = find_references("greet", &docs, false);
         // Without declaration: only the call site (line 2)
-        assert_eq!(without_decl.len(), 1, "expected 1 call-site ref without declaration");
-        assert_eq!(without_decl[0].range.start.line, 2, "call site should be on line 2");
+        assert_eq!(
+            without_decl.len(),
+            1,
+            "expected 1 call-site ref without declaration"
+        );
+        assert_eq!(
+            without_decl[0].range.start.line, 2,
+            "call site should be on line 2"
+        );
         // With declaration: 2 refs total (decl on line 1, call on line 2)
-        assert_eq!(with_decl.len(), 2, "expected 2 refs with declaration included");
+        assert_eq!(
+            with_decl.len(),
+            2,
+            "expected 2 refs with declaration included"
+        );
     }
 
     #[test]
@@ -156,8 +168,15 @@ mod tests {
         let src = "<?php\nclass Foo {}\n$x = new Foo();";
         let docs = vec![doc("/a.php", src)];
         let refs = find_references("Foo", &docs, false);
-        assert_eq!(refs.len(), 1, "expected exactly 1 reference to Foo in new expr");
-        assert_eq!(refs[0].range.start.line, 2, "new Foo() reference should be on line 2");
+        assert_eq!(
+            refs.len(),
+            1,
+            "expected exactly 1 reference to Foo in new expr"
+        );
+        assert_eq!(
+            refs[0].range.start.line, 2,
+            "new Foo() reference should be on line 2"
+        );
     }
 
     #[test]
@@ -165,8 +184,15 @@ mod tests {
         let src = "<?php\nfunction greet() {}\necho(greet());";
         let docs = vec![doc("/a.php", src)];
         let refs = find_references("greet", &docs, false);
-        assert_eq!(refs.len(), 1, "expected exactly 1 nested function call reference");
-        assert_eq!(refs[0].range.start.line, 2, "nested greet() call should be on line 2");
+        assert_eq!(
+            refs.len(),
+            1,
+            "expected exactly 1 nested function call reference"
+        );
+        assert_eq!(
+            refs[0].range.start.line, 2,
+            "nested greet() call should be on line 2"
+        );
     }
 
     #[test]
@@ -183,8 +209,15 @@ mod tests {
         let src = "<?php\nclass Calc { public function add() {} }\n$c = new Calc();\n$c->add();";
         let docs = vec![doc("/a.php", src)];
         let refs = find_references("add", &docs, false);
-        assert_eq!(refs.len(), 1, "expected exactly 1 method call reference to 'add'");
-        assert_eq!(refs[0].range.start.line, 3, "add() call should be on line 3");
+        assert_eq!(
+            refs.len(),
+            1,
+            "expected exactly 1 method call reference to 'add'"
+        );
+        assert_eq!(
+            refs[0].range.start.line, 3,
+            "add() call should be on line 3"
+        );
     }
 
     #[test]
@@ -193,7 +226,10 @@ mod tests {
         let docs = vec![doc("/a.php", src)];
         let refs = find_references("check", &docs, false);
         assert_eq!(refs.len(), 1, "expected exactly 1 reference inside if body");
-        assert_eq!(refs[0].range.start.line, 2, "check() inside if should be on line 2");
+        assert_eq!(
+            refs[0].range.start.line, 2,
+            "check() inside if should be on line 2"
+        );
     }
 
     #[test]
@@ -204,10 +240,19 @@ mod tests {
         let docs = vec![doc("/a.php", src)];
         let refs = find_references_with_use("MyClass", &docs, false);
         // Exactly 2 references: the `use MyClass;` on line 1 and `new MyClass()` on line 2.
-        assert_eq!(refs.len(), 2, "expected exactly 2 references, got: {:?}", refs);
+        assert_eq!(
+            refs.len(),
+            2,
+            "expected exactly 2 references, got: {:?}",
+            refs
+        );
         let mut lines: Vec<u32> = refs.iter().map(|r| r.range.start.line).collect();
         lines.sort_unstable();
-        assert_eq!(lines, vec![1, 2], "references should be on lines 1 (use) and 2 (new)");
+        assert_eq!(
+            lines,
+            vec![1, 2],
+            "references should be on lines 1 (use) and 2 (new)"
+        );
     }
 
     #[test]
@@ -250,11 +295,9 @@ mod tests {
             // not longer (which would indicate "greeting" was matched).
             let span_len = r.range.end.character - r.range.start.character;
             assert_eq!(
-                span_len,
-                5,
+                span_len, 5,
                 "reference span length should equal len('greet')=5, got {} at {:?}",
-                span_len,
-                r
+                span_len, r
             );
         }
         // There should be exactly 1 call-site reference (the greet() call, not greeting()).
