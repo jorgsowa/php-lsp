@@ -1,3 +1,21 @@
-[workspace]
-members = ["php-lsp", "mir-php"]
-resolver = "2"
+[package]
+name = "php-lsp"
+version = "0.1.37"
+edition = "2024"
+description = "A PHP Language Server Protocol implementation"
+license = "MIT"
+repository = "https://github.com/jorgsowa/php-lsp"
+readme = "README.md"
+
+[dependencies]
+mir-php = "0.1.0"
+php-rs-parser = "0.2.1"
+php-ast = "0.2.1"
+bumpalo = { version = "3", features = ["collections"] }
+tower-lsp = "0.20"
+tokio = { version = "1", features = ["full"] }
+serde_json = "1"
+dashmap = "6"
+
+[dev-dependencies]
+tempfile = "3"

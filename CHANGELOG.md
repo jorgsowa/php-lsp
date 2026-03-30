@@ -2,6 +2,12 @@
 
 All notable changes to php-lsp are documented here.
 
+## [0.1.37] — 2026-03-30
+
+### Maintenance
+
+- **Repository restructure**: Removed the Cargo workspace wrapper — `php-lsp` is now a standalone crate. `mir-php` continues to be resolved from crates.io as before.
+
 ## [0.1.36] — 2026-03-30
 
 ### Features
