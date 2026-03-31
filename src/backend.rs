@@ -255,7 +255,7 @@ impl LanguageServer for Backend {
                 declaration_provider: Some(DeclarationCapability::Simple(true)),
                 type_definition_provider: Some(TypeDefinitionProviderCapability::Simple(true)),
                 code_lens_provider: Some(CodeLensOptions {
-                    resolve_provider: Some(false),
+                    resolve_provider: Some(true),
                 }),
                 document_formatting_provider: Some(OneOf::Left(true)),
                 document_range_formatting_provider: Some(OneOf::Left(true)),
@@ -264,7 +264,7 @@ impl LanguageServer for Backend {
                     more_trigger_character: Some(vec!["\n".to_string()]),
                 }),
                 document_link_provider: Some(DocumentLinkOptions {
-                    resolve_provider: Some(false),
+                    resolve_provider: Some(true),
                     work_done_progress_options: Default::default(),
                 }),
                 execute_command_provider: Some(ExecuteCommandOptions {
@@ -554,9 +554,10 @@ impl LanguageServer for Backend {
 
     async fn will_save_wait_until(
         &self,
-        _params: WillSaveTextDocumentParams,
+        params: WillSaveTextDocumentParams,
     ) -> Result<Option<Vec<TextEdit>>> {
-        Ok(None)
+        let source = self.docs.get(&params.text_document.uri).unwrap_or_default();
+        Ok(format_document(&source))
     }
 
     async fn did_save(&self, params: DidSaveTextDocumentParams) {
@@ -1243,9 +1244,55 @@ impl LanguageServer for Backend {
 
     // ── File-create notifications ────────────────────────────────────────────
 
-    async fn will_create_files(&self, _params: CreateFilesParams) -> Result<Option<WorkspaceEdit>> {
-        // Creating a PHP file requires no pre-emptive workspace edits.
-        Ok(None)
+    async fn will_create_files(&self, params: CreateFilesParams) -> Result<Option<WorkspaceEdit>> {
+        let psr4 = self.psr4.read().unwrap();
+        let mut changes: std::collections::HashMap<Url, Vec<TextEdit>> =
+            std::collections::HashMap::new();
+
+        for file in &params.files {
+            let Ok(uri) = Url::parse(&file.uri) else {
+                continue;
+            };
+            let Ok(path) = uri.to_file_path() else {
+                continue;
+            };
+            if path.extension().and_then(|e| e.to_str()) != Some("php") {
+                continue;
+            }
+
+            let stub = if let Some(fqn) = psr4.file_to_fqn(&path) {
+                let (ns, class_name) = match fqn.rfind('\\') {
+                    Some(pos) => (&fqn[..pos], &fqn[pos + 1..]),
+                    None => ("", fqn.as_str()),
+                };
+                if ns.is_empty() {
+                    format!("<?php\n\ndeclare(strict_types=1);\n\nclass {class_name}\n{{\n}}\n")
+                } else {
+                    format!(
+                        "<?php\n\ndeclare(strict_types=1);\n\nnamespace {ns};\n\nclass {class_name}\n{{\n}}\n"
+                    )
+                }
+            } else {
+                "<?php\n\n".to_string()
+            };
+
+            changes.insert(
+                uri,
+                vec![TextEdit {
+                    range: Range {
+                        start: Position { line: 0, character: 0 },
+                        end: Position { line: 0, character: 0 },
+                    },
+                    new_text: stub,
+                }],
+            );
+        }
+
+        Ok(if changes.is_empty() {
+            None
+        } else {
+            Some(WorkspaceEdit { changes: Some(changes), ..Default::default() })
+        })
     }
 
     async fn did_create_files(&self, params: CreateFilesParams) {

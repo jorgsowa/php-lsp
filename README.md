@@ -18,7 +18,7 @@ A PHP Language Server Protocol (LSP) implementation written in Rust.
 - **Signature help** — parameter hints while typing a call, including overload narrowing; signatures for ~150 PHP built-in functions are bundled so hints work without any external source
 - **Inlay hints** — parameter name labels at call sites; return-type labels after assigned function calls, closures, and arrow functions; **`inlayHint/resolve`** — hovering over an inlay hint shows the full function/method signature as a tooltip
 - **Code actions** — "Add use import" quick-fix for undefined class names; PHPDoc stub generation; "Implement missing methods" generates stubs for all abstract/interface methods not yet present; "Generate constructor"/"Generate getters/setters" from declared properties (including constructor-promoted properties); "Extract variable" from a non-empty selection; "Extract method" moves a multi-line selection inside a class method into a new `private` method, forwarding any referenced variables as parameters; "Add return type" inserts `: void` or `: mixed` after the closing `)` of any function or method that lacks a return type annotation; **`codeAction/resolve`** — edits for PHPDoc, implement, constructor, getters/setters, and return type are computed lazily when the action is selected, so the action menu appears instantly
-- **Document links** — `include`/`require` paths are clickable links to the target file; **`documentLink/resolve`** supported
+- **Document links** — `include`/`require` paths are clickable links to the target file; **`documentLink/resolve`** registered (target URIs are populated eagerly; resolve is a passthrough for client compatibility)
 - **Linked editing** — placing the cursor on any variable or symbol shows all its occurrences as linked ranges; typing replaces all occurrences simultaneously (Alt+Shift+F2 in VS Code)
 
 ### Navigation
@@ -31,12 +31,12 @@ A PHP Language Server Protocol (LSP) implementation written in Rust.
 - **Selection range** — smart expand/shrink selection (Alt+Shift+→) from expression → statement → function/class → file
 - **Document highlight** — highlights all occurrences of the symbol under the cursor in the current file
 - **Folding ranges** — collapse functions, classes, methods, loops, and control-flow blocks; consecutive `use` import groups fold as a single region; multi-line comments fold; `// #region` / `// #endregion` markers create named foldable regions
-- **Code lens** — inline reference counts on functions, classes, and methods; implementations count on interfaces and abstract classes; "overrides" label on methods that override a parent-class method; "Run test" lens for PHPUnit test methods — result shown via `window/showMessageRequest` with **Run Again** and **Open File** action buttons; **`codeLens/resolve`** supported
+- **Code lens** — inline reference counts on functions, classes, and methods; implementations count on interfaces and abstract classes; "overrides" label on methods that override a parent-class method; "Run test" lens for PHPUnit test methods — result shown via `window/showMessageRequest` with **Run Again** and **Open File** action buttons; **`codeLens/resolve`** registered (lenses are fully populated eagerly; resolve is a passthrough for client compatibility)
 
 ### Syntax & formatting
 - **Semantic tokens** — richer syntax highlighting for functions, methods, classes, interfaces, traits, enums, parameters, properties, and PHP 8 `#[Attribute]` names with `declaration`/`static`/`abstract`/`readonly`/`deprecated` modifiers; symbols marked `@deprecated` render with strikethrough; supports full, range, and incremental delta requests; clients are notified to refresh via `workspace/semanticTokens/refresh` after indexing completes
 - **On-type formatting** — auto-indents the new line on Enter; aligns `}` to its matching `{` on keypress
-- **Formatting** — delegates to `php-cs-fixer` (PSR-12) or `phpcbf`; supports full-file and range formatting
+- **Formatting** — delegates to `php-cs-fixer` (PSR-12) or `phpcbf`; supports full-file and range formatting; **format-on-save** — the server responds to `textDocument/willSaveWaitUntil` with formatting edits so any editor that honours the will-save lifecycle gets format-on-save automatically
 
 ### Workspace
 - **Multi-root workspace** — all `workspaceFolders` are indexed at startup; folders added or removed at runtime via `workspace/didChangeWorkspaceFolders` trigger incremental scans and PSR-4 map updates
@@ -46,7 +46,7 @@ A PHP Language Server Protocol (LSP) implementation written in Rust.
 - **PHPStorm metadata** — reads `.phpstorm.meta.php` from the workspace root and uses `override(ClassName::method(0), map([...]))` declarations to infer factory method return types
 - **File watching** — index stays up to date when files are created, changed, or deleted on disk; open editors are refreshed automatically
 - **File rename** — moving or renaming a PHP file automatically updates all `use` import statements across the workspace (`workspace/willRenameFiles`)
-- **File create/delete lifecycle** — `workspace/willCreateFiles` indexes new files immediately; `workspace/willDeleteFiles` removes all `use` imports referencing the deleted file; `workspace/didDeleteFiles` drops the file from the index and clears its diagnostics
+- **File create/delete lifecycle** — `workspace/willCreateFiles` returns a workspace edit that inserts a `<?php declare(strict_types=1); namespace …; class ClassName {}` stub derived from the PSR-4 map (falls back to `<?php` for paths outside the map); `workspace/didCreateFiles` indexes the new file immediately; `workspace/willDeleteFiles` removes all `use` imports referencing the deleted file; `workspace/didDeleteFiles` drops the file from the index and clears its diagnostics
 - **`textDocument/moniker`** — returns a PHP-scheme moniker with the PSR-4 FQN as the identifier, for cross-repository symbol linking
 - **`textDocument/inlineValue`** — returns variable lookup entries in the requested range for debugger variable display; refreshed via `workspace/inlineValue/refresh`
 - **Save lifecycle** — `textDocument/didSave` re-publishes diagnostics on save; `textDocument/willSave` and `willSaveWaitUntil` are registered so clients that gate on save notifications work correctly
