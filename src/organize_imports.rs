@@ -257,10 +257,24 @@ fn line_start_byte(source: &str, line_no: u32) -> usize {
     if current == line_no { offset } else { source.len() }
 }
 
+/// Convert a UTF-16 column offset to a byte offset within a line that starts at `line_start`.
+fn utf16_col_to_byte(source: &str, line_start: usize, utf16_col: u32) -> usize {
+    let mut byte_off = line_start;
+    let mut col = 0u32;
+    for ch in source[line_start..].chars() {
+        if ch == '\n' || ch == '\r' || col >= utf16_col {
+            break;
+        }
+        col += ch.len_utf16() as u32;
+        byte_off += ch.len_utf8();
+    }
+    byte_off
+}
+
 /// Convert an LSP `Range` to a byte range in `source`.
 fn byte_range_of(source: &str, range: Range) -> std::ops::Range<usize> {
-    let start = line_start_byte(source, range.start.line) + range.start.character as usize;
-    let end = line_start_byte(source, range.end.line) + range.end.character as usize;
+    let start = utf16_col_to_byte(source, line_start_byte(source, range.start.line), range.start.character);
+    let end = utf16_col_to_byte(source, line_start_byte(source, range.end.line), range.end.character);
     start..end.min(source.len())
 }
 

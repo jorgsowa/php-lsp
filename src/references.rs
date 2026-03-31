@@ -149,7 +149,7 @@ fn is_declaration_span(stmts: &[Stmt<'_, '_>], word: &str, span: &Span) -> bool 
 }
 
 fn spans_equal(a: &Span, b: &Span) -> bool {
-    a.start == b.start
+    a.start == b.start && a.end == b.end
 }
 
 #[cfg(test)]

@@ -3,10 +3,13 @@ use tower_lsp::lsp_types::Position;
 /// Convert a UTF-16 LSP `Position` to a byte offset in `source`.
 pub(crate) fn utf16_pos_to_byte(source: &str, position: Position) -> usize {
     let mut byte_off = 0usize;
-    for (line_idx, line) in source.lines().enumerate() {
+    for (line_idx, line) in source.split('\n').enumerate() {
+        // `split('\n')` keeps any '\r', so line.len() includes it — correct for byte accounting.
+        // Strip '\r' only when iterating chars for UTF-16 column counting.
+        let line_content = line.strip_suffix('\r').unwrap_or(line);
         if line_idx == position.line as usize {
             let mut col_utf16 = 0u32;
-            for ch in line.chars() {
+            for ch in line_content.chars() {
                 if col_utf16 >= position.character {
                     break;
                 }
@@ -15,7 +18,7 @@ pub(crate) fn utf16_pos_to_byte(source: &str, position: Position) -> usize {
             }
             return byte_off;
         }
-        byte_off += line.len() + 1; // +1 for '\n'
+        byte_off += line.len() + 1; // +1 for '\n'; line.len() includes '\r' when present
     }
     byte_off
 }
