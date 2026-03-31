@@ -181,7 +181,7 @@ pub fn parse_docblock(raw: &str) -> Docblock {
             let rest = parts.next().unwrap_or("").trim();
 
             match tag.as_str() {
-                "param" => {
+                "param" | "psalm-param" | "phpstan-param" => {
                     let (type_hint, rest) = split_type_hint(rest);
                     let (name, desc) = split_first_word(rest);
                     params.push(DocParam {
@@ -190,14 +190,14 @@ pub fn parse_docblock(raw: &str) -> Docblock {
                         description: desc.trim().to_string(),
                     });
                 }
-                "return" | "returns" => {
+                "return" | "returns" | "psalm-return" | "phpstan-return" => {
                     let (type_hint, desc) = split_type_hint(rest);
                     return_type = Some(DocReturn {
                         type_hint: type_hint.to_string(),
                         description: desc.trim().to_string(),
                     });
                 }
-                "var" => {
+                "var" | "psalm-var" | "phpstan-var" => {
                     let (type_hint, remainder) = split_type_hint(rest);
                     var_type = Some(type_hint.to_string());
                     // Optional `$varName` after the type hint.
@@ -781,6 +781,53 @@ mod tests {
         let db = parse_docblock(src);
         assert!(db.methods[0].is_static);
         assert_eq!(db.methods[0].name, "where");
+    }
+
+    #[test]
+    fn psalm_param_alias_parsed_as_param() {
+        let raw = "/**\n * @psalm-param string $x The value\n */";
+        let db = parse_docblock(raw);
+        assert_eq!(db.params.len(), 1);
+        assert_eq!(db.params[0].type_hint, "string");
+        assert_eq!(db.params[0].name, "$x");
+    }
+
+    #[test]
+    fn phpstan_param_alias_parsed_as_param() {
+        let raw = "/**\n * @phpstan-param int $count\n */";
+        let db = parse_docblock(raw);
+        assert_eq!(db.params.len(), 1);
+        assert_eq!(db.params[0].type_hint, "int");
+        assert_eq!(db.params[0].name, "$count");
+    }
+
+    #[test]
+    fn psalm_return_alias_parsed_as_return() {
+        let raw = "/**\n * @psalm-return non-empty-string\n */";
+        let db = parse_docblock(raw);
+        assert_eq!(db.return_type.as_ref().map(|r| r.type_hint.as_str()), Some("non-empty-string"));
+    }
+
+    #[test]
+    fn phpstan_return_alias_parsed_as_return() {
+        let raw = "/**\n * @phpstan-return array<int, string>\n */";
+        let db = parse_docblock(raw);
+        assert_eq!(db.return_type.as_ref().map(|r| r.type_hint.as_str()), Some("array<int, string>"));
+    }
+
+    #[test]
+    fn psalm_var_alias_parsed_as_var() {
+        let raw = "/** @psalm-var Foo $item */";
+        let db = parse_docblock(raw);
+        assert_eq!(db.var_type.as_deref(), Some("Foo"));
+        assert_eq!(db.var_name.as_deref(), Some("item"));
+    }
+
+    #[test]
+    fn phpstan_var_alias_parsed_as_var() {
+        let raw = "/** @phpstan-var string */";
+        let db = parse_docblock(raw);
+        assert_eq!(db.var_type.as_deref(), Some("string"));
     }
 
     #[test]

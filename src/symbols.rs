@@ -37,13 +37,49 @@ pub fn resolve_workspace_symbol(
     symbol
 }
 
+/// Parse an optional kind-filter prefix from the query string.
+///
+/// Supported prefixes:
+/// - `#class:` → `SymbolKind::CLASS`
+/// - `#fn:` or `#function:` → `SymbolKind::FUNCTION`
+/// - `#method:` → `SymbolKind::METHOD`
+/// - `#interface:` → `SymbolKind::INTERFACE`
+/// - `#enum:` → `SymbolKind::ENUM`
+/// - `#const:` → `SymbolKind::CONSTANT`
+/// - `#prop:` or `#property:` → `SymbolKind::PROPERTY`
+///
+/// Returns `(kind_filter, actual_search_term)`.
+fn parse_kind_filter(query: &str) -> (Option<SymbolKind>, &str) {
+    let Some(rest) = query.strip_prefix('#') else {
+        return (None, query);
+    };
+    let (prefix, term) = match rest.split_once(':') {
+        Some((p, t)) => (p, t),
+        None => return (None, query),
+    };
+    let kind = match prefix.to_lowercase().as_str() {
+        "class" | "c" => SymbolKind::CLASS,
+        "fn" | "function" | "f" => SymbolKind::FUNCTION,
+        "method" | "m" => SymbolKind::METHOD,
+        "interface" | "i" => SymbolKind::INTERFACE,
+        "enum" | "e" => SymbolKind::ENUM,
+        "const" | "constant" => SymbolKind::CONSTANT,
+        "prop" | "property" | "p" => SymbolKind::PROPERTY,
+        _ => return (None, query),
+    };
+    (Some(kind), term)
+}
+
 /// Flat symbol search across all open documents.
 /// Matches by camel/underscore abbreviation or plain case-insensitive substring.
+///
+/// Supports optional kind-filter prefix in the query (e.g. `#class:User`).
 pub fn workspace_symbols(query: &str, docs: &[(Url, Arc<ParsedDoc>)]) -> Vec<SymbolInformation> {
+    let (kind_filter, term) = parse_kind_filter(query);
     let mut results = Vec::new();
     for (uri, doc) in docs {
         let source = doc.source();
-        collect_symbol_info(source, &doc.program().stmts, query, uri, &mut results);
+        collect_symbol_info(source, &doc.program().stmts, term, kind_filter, uri, &mut results);
     }
     results
 }
@@ -53,14 +89,17 @@ fn collect_symbol_info(
     source: &str,
     stmts: &[Stmt<'_, '_>],
     query: &str,
+    kind_filter: Option<SymbolKind>,
     uri: &Url,
     out: &mut Vec<SymbolInformation>,
 ) {
+    let matches_kind = |k: SymbolKind| kind_filter.map_or(true, |f| f == k);
+
     for stmt in stmts {
         match &stmt.kind {
             StmtKind::Function(f) => {
                 let name = f.name;
-                if fuzzy_camel_match(query, name) {
+                if matches_kind(SymbolKind::FUNCTION) && fuzzy_camel_match(query, name) {
                     out.push(SymbolInformation {
                         name: name.to_string(),
                         kind: SymbolKind::FUNCTION,
@@ -76,7 +115,7 @@ fn collect_symbol_info(
             }
             StmtKind::Class(c) => {
                 let name = c.name.unwrap_or("");
-                if !name.is_empty() && fuzzy_camel_match(query, name) {
+                if !name.is_empty() && matches_kind(SymbolKind::CLASS) && fuzzy_camel_match(query, name) {
                     out.push(SymbolInformation {
                         name: name.to_string(),
                         kind: SymbolKind::CLASS,
@@ -91,6 +130,7 @@ fn collect_symbol_info(
                 }
                 for member in c.members.iter() {
                     if let ClassMemberKind::Method(m) = &member.kind
+                        && matches_kind(SymbolKind::METHOD)
                         && fuzzy_camel_match(query, m.name)
                     {
                         out.push(SymbolInformation {
@@ -112,7 +152,7 @@ fn collect_symbol_info(
                 }
             }
             StmtKind::Interface(i) => {
-                if fuzzy_camel_match(query, i.name) {
+                if matches_kind(SymbolKind::INTERFACE) && fuzzy_camel_match(query, i.name) {
                     out.push(SymbolInformation {
                         name: i.name.to_string(),
                         kind: SymbolKind::INTERFACE,
@@ -127,7 +167,7 @@ fn collect_symbol_info(
                 }
             }
             StmtKind::Trait(t) => {
-                if fuzzy_camel_match(query, t.name) {
+                if matches_kind(SymbolKind::CLASS) && fuzzy_camel_match(query, t.name) {
                     out.push(SymbolInformation {
                         name: t.name.to_string(),
                         kind: SymbolKind::CLASS,
@@ -142,7 +182,7 @@ fn collect_symbol_info(
                 }
             }
             StmtKind::Enum(e) => {
-                if fuzzy_camel_match(query, e.name) {
+                if matches_kind(SymbolKind::ENUM) && fuzzy_camel_match(query, e.name) {
                     out.push(SymbolInformation {
                         name: e.name.to_string(),
                         kind: SymbolKind::ENUM,
@@ -157,6 +197,7 @@ fn collect_symbol_info(
                 }
                 for member in e.members.iter() {
                     if let EnumMemberKind::Case(c) = &member.kind
+                        && matches_kind(SymbolKind::ENUM_MEMBER)
                         && fuzzy_camel_match(query, c.name)
                     {
                         out.push(SymbolInformation {
@@ -175,7 +216,7 @@ fn collect_symbol_info(
             }
             StmtKind::Namespace(ns) => {
                 if let NamespaceBody::Braced(inner) = &ns.body {
-                    collect_symbol_info(source, inner, query, uri, out);
+                    collect_symbol_info(source, inner, query, kind_filter, uri, out);
                 }
             }
             _ => {}
@@ -814,5 +855,54 @@ mod tests {
             "interface with no constants should have no children, got: {:?}",
             i.children
         );
+    }
+
+    #[test]
+    fn kind_filter_class_excludes_functions() {
+        let src = "<?php\nclass Foo {}\nfunction bar() {}";
+        let doc = ParsedDoc::parse(src.to_string());
+        let uri = Url::parse("file:///test.php").unwrap();
+        let docs = vec![(uri.clone(), Arc::new(doc))];
+        let results = workspace_symbols("#class:Foo", &docs);
+        assert!(results.iter().all(|s| s.kind == SymbolKind::CLASS), "only classes expected");
+        assert!(results.iter().any(|s| s.name == "Foo"), "Foo should be found");
+        assert!(!results.iter().any(|s| s.name == "bar"), "bar should be excluded by class filter");
+    }
+
+    #[test]
+    fn kind_filter_fn_excludes_classes() {
+        let src = "<?php\nclass Foo {}\nfunction bar() {}";
+        let doc = ParsedDoc::parse(src.to_string());
+        let uri = Url::parse("file:///test.php").unwrap();
+        let docs = vec![(uri.clone(), Arc::new(doc))];
+        let results = workspace_symbols("#fn:bar", &docs);
+        assert!(results.iter().all(|s| s.kind == SymbolKind::FUNCTION), "only functions expected");
+        assert!(results.iter().any(|s| s.name == "bar"), "bar should be found");
+        assert!(!results.iter().any(|s| s.name == "Foo"), "Foo should be excluded by fn filter");
+    }
+
+    #[test]
+    fn no_kind_prefix_returns_all_kinds() {
+        let src = "<?php\nclass Foo {}\nfunction bar() {}";
+        let doc = ParsedDoc::parse(src.to_string());
+        let uri = Url::parse("file:///test.php").unwrap();
+        let docs = vec![(uri.clone(), Arc::new(doc))];
+        let results = workspace_symbols("", &docs);
+        assert!(results.iter().any(|s| s.kind == SymbolKind::CLASS), "should include classes");
+        assert!(results.iter().any(|s| s.kind == SymbolKind::FUNCTION), "should include functions");
+    }
+
+    #[test]
+    fn parse_kind_filter_extracts_class_prefix() {
+        let (kind, term) = parse_kind_filter("#class:MyClass");
+        assert_eq!(kind, Some(SymbolKind::CLASS));
+        assert_eq!(term, "MyClass");
+    }
+
+    #[test]
+    fn parse_kind_filter_no_prefix_returns_none() {
+        let (kind, term) = parse_kind_filter("MyClass");
+        assert_eq!(kind, None);
+        assert_eq!(term, "MyClass");
     }
 }
