@@ -21,7 +21,7 @@ use crate::diagnostics::parse_document;
 use crate::document_highlight::document_highlights;
 use crate::document_link::document_links;
 use crate::document_store::DocumentStore;
-use crate::extract_action::extract_variable_actions;
+use crate::extract_action::{extract_method_actions, extract_variable_actions};
 use crate::file_rename::{use_edits_for_delete, use_edits_for_rename};
 use crate::folding::folding_ranges;
 use crate::formatting::{format_document, format_range};
@@ -37,7 +37,7 @@ use crate::phpdoc_action::phpdoc_actions;
 use crate::type_action::add_return_type_actions;
 use crate::phpstorm_meta::PhpStormMeta;
 use crate::references::find_references;
-use crate::rename::{prepare_rename, rename};
+use crate::rename::{prepare_rename, rename, rename_variable};
 use crate::selection_range::selection_ranges;
 use crate::semantic_diagnostics::{
     deprecated_call_diagnostics, duplicate_declaration_diagnostics, semantic_diagnostics,
@@ -714,8 +714,16 @@ impl LanguageServer for Backend {
             Some(w) => w,
             None => return Ok(None),
         };
-        let all_docs = self.docs.all_docs();
-        Ok(Some(rename(&word, &params.new_name, &all_docs)))
+        if word.starts_with('$') {
+            let doc = match self.docs.get_doc(uri) {
+                Some(d) => d,
+                None => return Ok(None),
+            };
+            Ok(Some(rename_variable(&word, &params.new_name, uri, &source, &doc, position)))
+        } else {
+            let all_docs = self.docs.all_docs();
+            Ok(Some(rename(&word, &params.new_name, &all_docs)))
+        }
     }
 
     async fn signature_help(&self, params: SignatureHelpParams) -> Result<Option<SignatureHelp>> {
@@ -1486,6 +1494,7 @@ impl LanguageServer for Backend {
 
         // Extract variable: cheap, keep eager.
         actions.extend(extract_variable_actions(&source, params.range, uri));
+        actions.extend(extract_method_actions(&source, &doc, params.range, uri));
 
         Ok(if actions.is_empty() {
             None

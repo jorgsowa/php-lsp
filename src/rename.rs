@@ -3,8 +3,9 @@ use std::sync::Arc;
 
 use tower_lsp::lsp_types::{Position, Range, TextEdit, Url, WorkspaceEdit};
 
-use crate::ast::ParsedDoc;
+use crate::ast::{ParsedDoc, offset_to_position};
 use crate::references::find_references_with_use;
+use crate::walk::collect_var_refs_in_scope;
 
 /// Compute a WorkspaceEdit that renames every occurrence of `word` to `new_name`
 /// across all open documents (including the declaration site).
@@ -30,7 +31,7 @@ pub fn rename(word: &str, new_name: &str, all_docs: &[(Url, Arc<ParsedDoc>)]) ->
 pub fn prepare_rename(source: &str, position: Position) -> Option<Range> {
     use crate::util::word_at;
     let word = word_at(source, position)?;
-    if word.starts_with('$') || word.contains('\\') {
+    if word.contains('\\') {
         return None;
     }
     let line = source.lines().nth(position.line as usize)?;
@@ -63,6 +64,72 @@ pub fn prepare_rename(source: &str, position: Position) -> Option<Range> {
             character: end_utf16,
         },
     })
+}
+
+/// Rename a `$variable` (or parameter) within its enclosing function/method scope.
+/// Only produces edits within the single document `uri`; variables don't cross files.
+pub fn rename_variable(
+    var_name: &str,
+    new_name: &str,
+    uri: &Url,
+    source: &str,
+    doc: &ParsedDoc,
+    position: Position,
+) -> WorkspaceEdit {
+    let bare = var_name.trim_start_matches('$');
+    let new_bare = new_name.trim_start_matches('$');
+    let new_text = format!("${new_bare}");
+
+    let byte_off = utf16_pos_to_byte(source, position);
+    let stmts = &doc.program().stmts;
+
+    let mut spans = Vec::new();
+    collect_var_refs_in_scope(stmts, bare, byte_off, &mut spans);
+
+    let mut edits: Vec<TextEdit> = spans
+        .into_iter()
+        .map(|span| {
+            let start = offset_to_position(source, span.start);
+            let end = offset_to_position(source, span.end);
+            TextEdit {
+                range: Range { start, end },
+                new_text: new_text.clone(),
+            }
+        })
+        .collect();
+
+    edits.sort_by_key(|e| (e.range.start.line, e.range.start.character));
+    edits.dedup_by_key(|e| (e.range.start.line, e.range.start.character));
+
+    let mut changes = HashMap::new();
+    if !edits.is_empty() {
+        changes.insert(uri.clone(), edits);
+    }
+
+    WorkspaceEdit {
+        changes: if changes.is_empty() { None } else { Some(changes) },
+        ..Default::default()
+    }
+}
+
+/// Convert a UTF-16 LSP Position to a byte offset in `source`.
+fn utf16_pos_to_byte(source: &str, position: Position) -> usize {
+    let mut byte_off = 0usize;
+    for (line_idx, line) in source.lines().enumerate() {
+        if line_idx == position.line as usize {
+            let mut col_utf16 = 0u32;
+            for ch in line.chars() {
+                if col_utf16 >= position.character {
+                    break;
+                }
+                col_utf16 += ch.len_utf16() as u32;
+                byte_off += ch.len_utf8();
+            }
+            return byte_off;
+        }
+        byte_off += line.len() + 1; // +1 for '\n'
+    }
+    byte_off
 }
 
 #[cfg(test)]
@@ -133,10 +200,10 @@ mod tests {
     }
 
     #[test]
-    fn prepare_rename_rejects_variables() {
-        let src = "<?php\n$foo = 1;";
-        let result = prepare_rename(src, pos(1, 1));
-        assert!(result.is_none(), "should not allow renaming variables");
+    fn prepare_rename_rejects_fqn() {
+        let src = "<?php\nFoo\\Bar::baz();";
+        let result = prepare_rename(src, pos(1, 5));
+        assert!(result.is_none(), "should not allow renaming FQNs with backslash");
     }
 
     #[test]
@@ -205,5 +272,34 @@ mod tests {
             has_use_edit,
             "expected an edit on the use statement line (line 1) in b.php"
         );
+    }
+
+    #[test]
+    fn rename_variable_within_function() {
+        let src = "<?php\nfunction foo() {\n    $x = 1;\n    echo $x;\n}";
+        let doc = Arc::new(ParsedDoc::parse(src.to_string()));
+        let edit = rename_variable("$x", "$y", &uri("/a.php"), src, &doc, pos(2, 5));
+        let changes = edit.changes.unwrap();
+        let edits = &changes[&uri("/a.php")];
+        assert!(edits.len() >= 2, "should rename both assignment and usage");
+        assert!(edits.iter().all(|e| e.new_text == "$y"));
+    }
+
+    #[test]
+    fn rename_variable_does_not_cross_function_boundary() {
+        let src = "<?php\nfunction foo() { $x = 1; }\nfunction bar() { $x = 2; }";
+        let doc = Arc::new(ParsedDoc::parse(src.to_string()));
+        let edit = rename_variable("$x", "$z", &uri("/a.php"), src, &doc, pos(1, 20));
+        let changes = edit.changes.unwrap();
+        let edits = &changes[&uri("/a.php")];
+        // Only the $x in foo() should be renamed, not the one in bar()
+        assert_eq!(edits.len(), 1, "should only rename within foo()");
+    }
+
+    #[test]
+    fn prepare_rename_allows_variables() {
+        let src = "<?php\n$foo = 1;";
+        let result = prepare_rename(src, pos(1, 1));
+        assert!(result.is_some(), "should allow renaming variables now");
     }
 }
