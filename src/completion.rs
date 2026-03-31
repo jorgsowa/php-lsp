@@ -1137,12 +1137,12 @@ pub fn filtered_completions_at(
             }
 
             // Feature 9: include/require path completions
-            if let (Some(src), Some(pos), Some(uri)) = (source, position, doc_uri) {
-                if let Some(prefix) = include_path_prefix(src, pos) {
-                    let items = include_path_completions(uri, &prefix);
-                    if !items.is_empty() {
-                        return items;
-                    }
+            if let (Some(src), Some(pos), Some(uri)) = (source, position, doc_uri)
+                && let Some(prefix) = include_path_prefix(src, pos)
+            {
+                let items = include_path_completions(uri, &prefix);
+                if !items.is_empty() {
+                    return items;
                 }
             }
 

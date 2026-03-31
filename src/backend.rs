@@ -34,6 +34,7 @@ use crate::inline_value::inline_values_in_range;
 use crate::moniker::moniker_at;
 use crate::on_type_format::on_type_format;
 use crate::phpdoc_action::phpdoc_actions;
+use crate::type_action::add_return_type_actions;
 use crate::phpstorm_meta::PhpStormMeta;
 use crate::references::find_references;
 use crate::rename::{prepare_rename, rename};
@@ -1476,6 +1477,13 @@ impl LanguageServer for Backend {
             params.range,
         ));
 
+        actions.extend(defer_actions(
+            add_return_type_actions(&source, &doc, params.range, uri),
+            "return_type",
+            uri,
+            params.range,
+        ));
+
         // Extract variable: cheap, keep eager.
         actions.extend(extract_variable_actions(&source, params.range, uri));
 
@@ -1525,6 +1533,7 @@ impl LanguageServer for Backend {
             }
             "constructor" => generate_constructor_actions(&source, &doc, range, &uri),
             "getters_setters" => generate_getters_setters_actions(&source, &doc, range, &uri),
+            "return_type" => add_return_type_actions(&source, &doc, range, &uri),
             _ => return Ok(item),
         };
 
