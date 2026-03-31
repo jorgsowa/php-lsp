@@ -331,7 +331,7 @@ fn range_contains(range: Range, pos: Position) -> bool {
     if pos.line == range.start.line && pos.character < range.start.character {
         return false;
     }
-    if pos.line == range.end.line && pos.character > range.end.character {
+    if pos.line == range.end.line && pos.character >= range.end.character {
         return false;
     }
     true
@@ -690,6 +690,39 @@ mod tests {
             helper_entries[0].from_ranges.len(),
             2,
             "should have two call-site ranges"
+        );
+    }
+
+    // ── range_contains boundary regression tests ─────────────────────────────
+
+    #[test]
+    fn range_contains_excludes_exact_end_position() {
+        // LSP ranges are half-open [start, end).  A position exactly at
+        // range.end is OUTSIDE the range.  The old code used `>` instead of
+        // `>=`, which incorrectly included the end position.
+        let range = Range {
+            start: Position { line: 1, character: 0 },
+            end:   Position { line: 3, character: 5 },
+        };
+        // One past the last character on the end line — clearly outside.
+        assert!(
+            !range_contains(range, Position { line: 3, character: 6 }),
+            "position after end must be outside"
+        );
+        // Exactly at end — outside per LSP half-open semantics.
+        assert!(
+            !range_contains(range, Position { line: 3, character: 5 }),
+            "position exactly at range.end must be outside (half-open range)"
+        );
+        // One before end — inside.
+        assert!(
+            range_contains(range, Position { line: 3, character: 4 }),
+            "position just before end must be inside"
+        );
+        // Start of range — inside.
+        assert!(
+            range_contains(range, Position { line: 1, character: 0 }),
+            "start position must be inside"
         );
     }
 }

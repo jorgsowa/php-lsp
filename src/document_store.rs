@@ -8,7 +8,11 @@ use crate::ast::ParsedDoc;
 use crate::diagnostics::parse_document;
 
 /// Maximum number of indexed-only (not open in editor) files kept in memory.
+#[cfg(not(test))]
 const MAX_INDEXED: usize = 10_000;
+/// Reduced limit used in tests so eviction can be exercised without 10 k files.
+#[cfg(test)]
+const MAX_INDEXED: usize = 3;
 
 struct Document {
     /// `Some` when the file is open in the editor; `None` for workspace-indexed files.
@@ -99,16 +103,25 @@ impl DocumentStore {
 
         let mut order = self.indexed_order.lock().unwrap();
         order.push_back(uri);
-        while order.len() > MAX_INDEXED {
-            if let Some(oldest) = order.pop_front()
-                && self
-                    .map
-                    .get(&oldest)
-                    .map(|d| d.text.is_none())
-                    .unwrap_or(false)
+        // Evict enough indexed-only entries to bring the queue back to MAX_INDEXED.
+        // A file that became open after being indexed must be skipped — it will be
+        // re-queued when it is eventually closed.  We must not stop early just
+        // because popping an open file decremented order.len() to MAX_INDEXED;
+        // that would leave the map with too many entries.
+        let need_to_evict = order.len().saturating_sub(MAX_INDEXED);
+        let mut evicted = 0;
+        while evicted < need_to_evict {
+            let Some(oldest) = order.pop_front() else { break };
+            if self
+                .map
+                .get(&oldest)
+                .map(|d| d.text.is_none())
+                .unwrap_or(false)
             {
                 self.map.remove(&oldest);
+                evicted += 1;
             }
+            // If the file is open, discard it from the queue and keep looking.
         }
     }
 
@@ -278,5 +291,80 @@ mod tests {
         open(&store, uri("/a.php"), "<?php\nclass {".to_string());
         let diags = store.get_diagnostics(&uri("/a.php")).unwrap();
         assert!(!diags.is_empty());
+    }
+
+    // ── LRU eviction regression tests ────────────────────────────────────────
+
+    #[test]
+    fn eviction_removes_oldest_indexed_file() {
+        // Fill the store to exactly MAX_INDEXED, then add one more.
+        // The oldest entry must be evicted so the map stays at MAX_INDEXED.
+        let store = DocumentStore::new();
+        for i in 0..MAX_INDEXED {
+            store.index(uri(&format!("/{i}.php")), "<?php");
+        }
+        store.index(uri("/overflow.php"), "<?php");
+
+        assert_eq!(
+            store.all_docs().len(),
+            MAX_INDEXED,
+            "map must not exceed MAX_INDEXED after overflow"
+        );
+        assert!(
+            store.get_doc(&uri("/overflow.php")).is_some(),
+            "newly indexed file must be present"
+        );
+        assert!(
+            store.get_doc(&uri("/0.php")).is_none(),
+            "oldest file must have been evicted"
+        );
+    }
+
+    #[test]
+    fn eviction_skips_open_files_and_evicts_next_indexed() {
+        // Regression test for the bug where an open file at the front of the
+        // eviction queue caused the loop to exit without evicting anything:
+        //
+        //   order.len() was MAX_INDEXED+1 → pop open file → order.len() drops
+        //   to MAX_INDEXED → while condition false → loop exits → no eviction.
+        //
+        // After the fix the loop tracks `need_to_evict` independently of
+        // order.len(), so it keeps looking until it finds an indexed file.
+        let store = DocumentStore::new();
+
+        // Index MAX_INDEXED files; /0.php will be the oldest in the queue.
+        for i in 0..MAX_INDEXED {
+            store.index(uri(&format!("/{i}.php")), "<?php");
+        }
+
+        // Open /0.php — it now has text and must not be evicted.
+        open(&store, uri("/0.php"), "<?php $x = 1;".to_string());
+
+        // Index one more file.  Eviction must skip /0.php (open) and evict
+        // /1.php (the next oldest indexed-only file) instead.
+        store.index(uri("/overflow.php"), "<?php");
+
+        // The open file must still be present.
+        assert!(
+            store.get_doc(&uri("/0.php")).is_some(),
+            "/0.php is open and must not be evicted"
+        );
+        // The overflow file must have been indexed.
+        assert!(
+            store.get_doc(&uri("/overflow.php")).is_some(),
+            "overflow file must be present"
+        );
+        // The eviction must have brought the map back to MAX_INDEXED total
+        // entries: /0.php (open) + the remaining indexed files + /overflow.php.
+        assert_eq!(
+            store.all_docs().len(),
+            MAX_INDEXED,
+            "total docs must equal MAX_INDEXED after eviction"
+        );
+        // /1.php should have been evicted (oldest indexed-only file after /0.php).
+        assert!(
+            store.get_doc(&uri("/1.php")).is_none(),
+            "/1.php must have been evicted as the oldest indexed-only file"
+        );
     }
 }

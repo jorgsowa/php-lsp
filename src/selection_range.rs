@@ -78,7 +78,7 @@ fn contains(range: Range, pos: Position) -> bool {
     if pos.line == range.start.line && pos.character < range.start.character {
         return false;
     }
-    if pos.line == range.end.line && pos.character > range.end.character {
+    if pos.line == range.end.line && pos.character >= range.end.character {
         return false;
     }
     true
@@ -348,5 +348,48 @@ mod tests {
         let result = selection_ranges(src, &d, &[pos(1, 10), pos(2, 10)]);
         assert_eq!(result.len(), 2);
         assert_ne!(result[0].range, result[1].range);
+    }
+
+    // ── contains() boundary regression tests ─────────────────────────────────
+
+    #[test]
+    fn contains_excludes_exact_end_position() {
+        // LSP ranges are half-open [start, end).  The old code used `>` instead
+        // of `>=` for the end-character check, so a position exactly at
+        // range.end was incorrectly treated as inside the range.
+        let range = Range {
+            start: Position { line: 0, character: 4 },
+            end:   Position { line: 0, character: 9 },
+        };
+        assert!(
+            !contains(range, Position { line: 0, character: 9 }),
+            "exact end position must be outside (half-open range)"
+        );
+        assert!(
+            !contains(range, Position { line: 0, character: 10 }),
+            "position after end must be outside"
+        );
+        assert!(
+            contains(range, Position { line: 0, character: 8 }),
+            "position just before end must be inside"
+        );
+        assert!(
+            contains(range, Position { line: 0, character: 4 }),
+            "start position must be inside"
+        );
+    }
+
+    #[test]
+    fn contains_handles_multiline_range_end() {
+        let range = Range {
+            start: Position { line: 1, character: 0 },
+            end:   Position { line: 3, character: 1 },
+        };
+        // On the end line, character == end.character is outside.
+        assert!(!contains(range, Position { line: 3, character: 1 }));
+        // On the end line, character < end.character is inside.
+        assert!(contains(range, Position { line: 3, character: 0 }));
+        // Line between start and end — always inside regardless of character.
+        assert!(contains(range, Position { line: 2, character: 999 }));
     }
 }
