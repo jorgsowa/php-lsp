@@ -4,7 +4,8 @@ use php_ast::{ClassMemberKind, EnumMemberKind, NamespaceBody, Stmt, StmtKind};
 use tower_lsp::lsp_types::{Location, Position, Range, Url};
 
 use crate::ast::{ParsedDoc, name_range, offset_to_position, str_offset};
-use crate::util::word_at;
+use crate::util::{utf16_pos_to_byte, word_at};
+use crate::walk::collect_var_refs_in_scope;
 
 /// Find the definition of the symbol under `position`.
 /// Searches the current document first, then `other_docs` for cross-file resolution.
@@ -16,6 +17,23 @@ pub fn goto_definition(
     position: Position,
 ) -> Option<Location> {
     let word = word_at(source, position)?;
+
+    // For $variable, find the first occurrence in scope (= the definition/assignment).
+    if word.starts_with('$') {
+        let bare = word.trim_start_matches('$');
+        let byte_off = utf16_pos_to_byte(source, position);
+        let mut spans = Vec::new();
+        collect_var_refs_in_scope(&doc.program().stmts, bare, byte_off, &mut spans);
+        if let Some(span) = spans.into_iter().min_by_key(|s| s.start) {
+            return Some(Location {
+                uri: uri.clone(),
+                range: Range {
+                    start: offset_to_position(source, span.start),
+                    end: offset_to_position(source, span.end),
+                },
+            });
+        }
+    }
 
     if let Some(range) = scan_statements(source, &doc.program().stmts, &word) {
         return Some(Location {
@@ -179,10 +197,23 @@ mod tests {
 
     #[test]
     fn returns_none_for_unknown_word() {
-        let src = "<?php\n$x = 1;";
+        let src = "<?php\necho 'hello';";
         let doc = ParsedDoc::parse(src.to_string());
-        let result = goto_definition(&uri(), src, &doc, &[], pos(1, 1));
+        // `hello` is a string literal, not a symbol — no definition found.
+        let result = goto_definition(&uri(), src, &doc, &[], pos(1, 6));
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn variable_goto_definition_jumps_to_first_occurrence() {
+        let src = "<?php\nfunction foo() {\n    $x = 1;\n    return $x;\n}";
+        let doc = ParsedDoc::parse(src.to_string());
+        // Cursor on `$x` in `return $x;` (line 3)
+        let result = goto_definition(&uri(), src, &doc, &[], pos(3, 12));
+        assert!(result.is_some(), "expected location for $x");
+        let loc = result.unwrap();
+        // First occurrence is on line 2 (the assignment)
+        assert_eq!(loc.range.start.line, 2, "should jump to first $x occurrence");
     }
 
     #[test]

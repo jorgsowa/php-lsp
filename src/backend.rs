@@ -37,7 +37,7 @@ use crate::phpdoc_action::phpdoc_actions;
 use crate::type_action::add_return_type_actions;
 use crate::phpstorm_meta::PhpStormMeta;
 use crate::references::find_references;
-use crate::rename::{prepare_rename, rename, rename_variable};
+use crate::rename::{prepare_rename, rename, rename_property, rename_variable};
 use crate::selection_range::selection_ranges;
 use crate::semantic_diagnostics::{
     deprecated_call_diagnostics, duplicate_declaration_diagnostics, semantic_diagnostics,
@@ -720,6 +720,9 @@ impl LanguageServer for Backend {
                 None => return Ok(None),
             };
             Ok(Some(rename_variable(&word, &params.new_name, uri, &source, &doc, position)))
+        } else if is_after_arrow(&source, position) {
+            let all_docs = self.docs.all_docs();
+            Ok(Some(rename_property(&word, &params.new_name, &all_docs)))
         } else {
             let all_docs = self.docs.all_docs();
             Ok(Some(rename(&word, &params.new_name, &all_docs)))
@@ -1665,6 +1668,33 @@ fn find_use_insert_line(source: &str) -> u32 {
         }
     }
     last_use_or_ns
+}
+
+/// Returns `true` when the identifier at `position` is immediately preceded by `->`,
+/// indicating it is a property or method name in an instance access expression.
+fn is_after_arrow(source: &str, position: Position) -> bool {
+    let line = match source.lines().nth(position.line as usize) {
+        Some(l) => l,
+        None => return false,
+    };
+    let chars: Vec<char> = line.chars().collect();
+    let col = position.character as usize;
+    // Find the char index of the cursor (UTF-16 → char index).
+    let mut utf16_col = 0usize;
+    let mut char_idx = 0usize;
+    for ch in &chars {
+        if utf16_col >= col {
+            break;
+        }
+        utf16_col += ch.len_utf16();
+        char_idx += 1;
+    }
+    // Walk left past word chars to the start of the identifier.
+    let is_word = |c: char| c.is_alphanumeric() || c == '_';
+    while char_idx > 0 && is_word(chars[char_idx - 1]) {
+        char_idx -= 1;
+    }
+    char_idx >= 2 && chars[char_idx - 1] == '>' && chars[char_idx - 2] == '-'
 }
 
 impl Backend {
