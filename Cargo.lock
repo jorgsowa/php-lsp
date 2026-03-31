@@ -639,7 +639,7 @@ dependencies = [
 
 [[package]]
 name = "php-lsp"
-version = "0.1.43"
+version = "0.1.44"
 dependencies = [
  "bumpalo",
  "dashmap 6.1.0",

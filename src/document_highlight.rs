@@ -1,10 +1,13 @@
 use tower_lsp::lsp_types::{DocumentHighlight, DocumentHighlightKind, Position, Range};
 
 use crate::ast::{ParsedDoc, offset_to_position};
-use crate::util::word_at;
-use crate::walk::refs_in_stmts;
+use crate::util::{utf16_pos_to_byte, word_at};
+use crate::walk::{collect_var_refs_in_scope, refs_in_stmts};
 
 /// Return all ranges in the document where the word at `position` appears.
+/// For `$variables` the search is scope-aware: only occurrences within the
+/// same function/method scope are returned, preventing unrelated variables
+/// with the same name in other scopes from being highlighted.
 pub fn document_highlights(
     source: &str,
     doc: &ParsedDoc,
@@ -15,17 +18,35 @@ pub fn document_highlights(
         None => return vec![],
     };
 
+    let word_utf16_len: u32 = word.chars().map(|c| c.len_utf16() as u32).sum();
     let mut spans = Vec::new();
-    refs_in_stmts(&doc.program().stmts, &word, &mut spans);
+    let use_precise_end;
+
+    if word.starts_with('$') {
+        // Variable spans from collect_var_refs_in_scope are precise (cover exactly
+        // `$varname`), so we can use span.end directly.
+        let bare = word.trim_start_matches('$');
+        let byte_off = utf16_pos_to_byte(source, position);
+        collect_var_refs_in_scope(&doc.program().stmts, bare, byte_off, &mut spans);
+        use_precise_end = true;
+    } else {
+        // refs_in_stmts pushes full statement spans for declarations (e.g. the
+        // whole `function f() {}` node), so we compute end from word length.
+        refs_in_stmts(&doc.program().stmts, &word, &mut spans);
+        use_precise_end = false;
+    }
 
     spans
         .into_iter()
         .map(|span| {
             let start = offset_to_position(source, span.start);
-            let end = Position {
-                line: start.line,
-                character: start.character
-                    + word.chars().map(|c| c.len_utf16() as u32).sum::<u32>(),
+            let end = if use_precise_end {
+                offset_to_position(source, span.end)
+            } else {
+                Position {
+                    line: start.line,
+                    character: start.character + word_utf16_len,
+                }
             };
             DocumentHighlight {
                 range: Range { start, end },
@@ -53,10 +74,27 @@ mod tests {
 
     #[test]
     fn returns_empty_for_unknown_word() {
-        let src = "<?php\n$x = 1;";
+        let src = "<?php\necho 'hello';";
         let doc = ParsedDoc::parse(src.to_string());
-        let highlights = document_highlights(src, &doc, pos(1, 1));
+        let highlights = document_highlights(src, &doc, pos(1, 6));
         assert!(highlights.is_empty());
+    }
+
+    #[test]
+    fn highlights_variable_in_scope() {
+        let src = "<?php\nfunction foo() {\n    $x = 1;\n    echo $x;\n}";
+        let doc = ParsedDoc::parse(src.to_string());
+        let highlights = document_highlights(src, &doc, pos(2, 5));
+        assert_eq!(highlights.len(), 2, "should highlight both $x occurrences in foo()");
+    }
+
+    #[test]
+    fn variable_highlight_does_not_cross_scope() {
+        let src = "<?php\nfunction foo() { $x = 1; }\nfunction bar() { $x = 2; }";
+        let doc = ParsedDoc::parse(src.to_string());
+        // Cursor on $x in foo() — should NOT highlight $x in bar()
+        let highlights = document_highlights(src, &doc, pos(1, 18));
+        assert_eq!(highlights.len(), 1, "should only highlight $x within foo()");
     }
 
     #[test]
