@@ -3,6 +3,7 @@ use php_ast::{ExprKind, NamespaceBody, Stmt, StmtKind};
 use tower_lsp::lsp_types::{DocumentLink, Position, Range, Url};
 
 use crate::ast::{ParsedDoc, offset_to_position};
+use crate::util::byte_to_utf16;
 
 pub fn document_links(uri: &Url, doc: &ParsedDoc, source: &str) -> Vec<DocumentLink> {
     let mut links = Vec::new();
@@ -124,11 +125,11 @@ fn collect_docblock_links(source: &str, out: &mut Vec<DocumentLink>) {
                 {
                     let start = Position {
                         line: line_idx as u32,
-                        character: col as u32,
+                        character: byte_to_utf16(line, col),
                     };
                     let end = Position {
                         line: line_idx as u32,
-                        character: (col + url_str.len()) as u32,
+                        character: byte_to_utf16(line, col + url_str.len()),
                     };
                     out.push(DocumentLink {
                         range: Range { start, end },
@@ -184,5 +185,38 @@ mod tests {
         let d = doc(src);
         let links = document_links(&dummy_uri(), &d, src);
         assert!(links.is_empty());
+    }
+
+    #[test]
+    fn docblock_link_position_correct_after_multibyte_chars() {
+        // "café " is 5 chars but 6 bytes; the URL starts at UTF-16 offset 10
+        // (after "* " = 2, "café " = 5 → 7, "@link " = 6 → 13... let's keep it simple:
+        // place the URL after a 2-byte UTF-8 char so byte and UTF-16 diverge).
+        // Line: " * é @link https://example.com"
+        //         0123456789...
+        // "é" = U+00E9: 2 bytes UTF-8, 1 UTF-16 unit.
+        // byte col of URL start = len("* é @link ") = 2+3+1+6+1 = ... let's just check
+        // that start.character == end.character - url_len (in UTF-16 units).
+        let src = "<?php\n/** é @link https://example.com */\nfunction f() {}";
+        let d = doc(src);
+        let links = document_links(&dummy_uri(), &d, src);
+        assert_eq!(links.len(), 1);
+        let range = links[0].range;
+        let url = "https://example.com";
+        // URL is pure ASCII so its UTF-16 length == its byte length
+        assert_eq!(
+            range.end.character - range.start.character,
+            url.len() as u32,
+            "link range width must equal URL length in UTF-16 units"
+        );
+        // Verify start is not the raw byte offset (which would be wrong due to é)
+        // The line is "/** é @link https://example.com */"
+        // "é" encodes as 2 bytes, so raw byte find() of the URL would give a position
+        // 1 higher than the correct UTF-16 position.
+        let line = "/** é @link https://example.com */";
+        let byte_col = line.find(url).unwrap();
+        let utf16_col: u32 = line[..byte_col].chars().map(|c| c.len_utf16() as u32).sum();
+        assert_eq!(range.start.character, utf16_col);
+        assert_ne!(range.start.character, byte_col as u32, "must not use raw byte offset");
     }
 }

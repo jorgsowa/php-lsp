@@ -308,6 +308,18 @@ pub(crate) fn utf16_offset_to_byte(s: &str, utf16_offset: usize) -> usize {
     s.len()
 }
 
+/// Convert a UTF-8 byte offset into a UTF-16 code unit count.
+///
+/// LSP `Position.character` is measured in UTF-16 code units.  Given a string
+/// and a byte offset into it, this returns how many UTF-16 units precede that
+/// offset — which is the correct LSP character value.
+pub(crate) fn byte_to_utf16(s: &str, byte_offset: usize) -> u32 {
+    s[..byte_offset.min(s.len())]
+        .chars()
+        .map(|c| c.len_utf16() as u32)
+        .sum()
+}
+
 /// Split a parameter list string on commas, respecting bracket nesting.
 ///
 /// This avoids splitting inside default values like `array $x = [1, 2, 3]`.
@@ -374,4 +386,59 @@ pub(crate) fn word_at(source: &str, position: Position) -> Option<String> {
 
     let word: String = chars[left..right].iter().collect();
     if word.is_empty() { None } else { Some(word) }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn byte_to_utf16_ascii() {
+        assert_eq!(byte_to_utf16("hello", 3), 3);
+    }
+
+    #[test]
+    fn byte_to_utf16_multibyte_bmp() {
+        // "é" is U+00E9: 2 bytes in UTF-8, 1 code unit in UTF-16.
+        let s = "café";
+        assert_eq!(byte_to_utf16(s, 0), 0);
+        assert_eq!(byte_to_utf16(s, 3), 3); // up to "caf" (all ASCII)
+        assert_eq!(byte_to_utf16(s, 5), 4); // full string (é = 2 bytes → 1 UTF-16 unit)
+    }
+
+    #[test]
+    fn byte_to_utf16_surrogate_pair() {
+        // "😀" is U+1F600: 4 bytes in UTF-8, 2 code units in UTF-16 (surrogate pair).
+        let s = "a😀b";
+        assert_eq!(byte_to_utf16(s, 1), 1); // after "a"
+        assert_eq!(byte_to_utf16(s, 5), 3); // after "a😀" (emoji = 4 bytes → 2 UTF-16 units)
+        assert_eq!(byte_to_utf16(s, 6), 4); // full string
+    }
+
+    #[test]
+    fn byte_to_utf16_past_end_clamps() {
+        assert_eq!(byte_to_utf16("hi", 100), 2);
+    }
+
+    #[test]
+    fn utf16_offset_to_byte_ascii() {
+        assert_eq!(utf16_offset_to_byte("hello", 3), 3);
+    }
+
+    #[test]
+    fn utf16_offset_to_byte_surrogate_pair() {
+        // "a😀b": UTF-16 offset 1 → byte 1 (start of emoji), offset 3 → byte 5 (after emoji)
+        let s = "a😀b";
+        assert_eq!(utf16_offset_to_byte(s, 1), 1);
+        assert_eq!(utf16_offset_to_byte(s, 3), 5);
+    }
+
+    #[test]
+    fn byte_to_utf16_and_back_roundtrip() {
+        let s = "café 😀 world";
+        for (byte_idx, _) in s.char_indices() {
+            let utf16 = byte_to_utf16(s, byte_idx) as usize;
+            assert_eq!(utf16_offset_to_byte(s, utf16), byte_idx);
+        }
+    }
 }

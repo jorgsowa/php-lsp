@@ -5,6 +5,8 @@ use tower_lsp::lsp_types::{
     CodeAction, CodeActionKind, CodeActionOrCommand, Position, Range, TextEdit, Url, WorkspaceEdit,
 };
 
+use crate::util::utf16_offset_to_byte;
+
 /// When the selection is non-empty and appears to be an expression, offer to
 /// extract it into a local variable.  The generated variable name is `$extracted`
 /// (a safe, unambiguous placeholder that the user can then rename with the LSP
@@ -80,8 +82,8 @@ fn selected_text(source: &str, range: Range) -> String {
             Some(l) => l,
             None => return String::new(),
         };
-        let start = (range.start.character as usize).min(line.len());
-        let end = (range.end.character as usize).min(line.len());
+        let start = utf16_offset_to_byte(line, range.start.character as usize);
+        let end = utf16_offset_to_byte(line, range.end.character as usize);
         line[start..end].to_string()
     } else {
         let mut result = String::new();
@@ -91,10 +93,10 @@ fn selected_text(source: &str, range: Range) -> String {
                 None => break,
             };
             if i == range.start.line {
-                let start = (range.start.character as usize).min(line.len());
+                let start = utf16_offset_to_byte(line, range.start.character as usize);
                 result.push_str(&line[start..]);
             } else if i == range.end.line {
-                let end = (range.end.character as usize).min(line.len());
+                let end = utf16_offset_to_byte(line, range.end.character as usize);
                 result.push_str(&line[..end]);
             } else {
                 result.push_str(line);
@@ -213,6 +215,38 @@ mod tests {
             assert!(
                 insert.new_text.starts_with("    "),
                 "should preserve indentation"
+            );
+        }
+    }
+
+    #[test]
+    fn selected_text_correct_with_multibyte_prefix() {
+        // Line: $x = "café";
+        //        0123456789...
+        // "é" (U+00E9) is 2 bytes in UTF-8, 1 code unit in UTF-16.
+        // Selecting "café" starts at UTF-16 char 5 (after `$x = "`) and ends at 9.
+        // In raw bytes those would be 5 and 10 — using byte offsets directly would
+        // either panic (slicing inside é) or return the wrong text.
+        let src = "<?php\n$x = \"café\";";
+        // "café" begins after `$x = "` (6 chars, 6 UTF-16 units, 6 bytes — all ASCII)
+        let start_utf16 = 6u32; // right after the opening quote
+        // "café" = 4 chars = 4 UTF-16 units, but 5 bytes
+        let end_utf16 = start_utf16 + 4;
+        let r = range(1, start_utf16, 1, end_utf16);
+        let actions = extract_variable_actions(src, r, &uri());
+        // The extracted text must be exactly "café", not a garbled slice.
+        if let Some(CodeActionOrCommand::CodeAction(a)) = actions.first() {
+            let edits = a.edit.as_ref().unwrap().changes.as_ref().unwrap();
+            let texts: Vec<&str> = edits
+                .values()
+                .next()
+                .unwrap()
+                .iter()
+                .map(|e| e.new_text.as_str())
+                .collect();
+            assert!(
+                texts.iter().any(|t| t.contains("café")),
+                "extracted text must contain the correct multibyte string, got: {texts:?}"
             );
         }
     }
