@@ -33,6 +33,7 @@ mod semantic_tokens;
 mod signature_help;
 mod stubs;
 mod symbols;
+mod type_action;
 mod type_definition;
 mod type_hierarchy;
 mod type_map;

@@ -48,9 +48,8 @@ fn diagnostic_passes_filter(d: &mir_php::Diagnostic, cfg: &DiagnosticsConfig) ->
     if msg.starts_with("Undefined variable:") {
         return cfg.undefined_variables;
     }
-    if msg.starts_with("Undefined: ") {
+    if let Some(name) = msg.strip_prefix("Undefined: ") {
         // Heuristic: PHP classes start with an uppercase letter, functions with lowercase.
-        let name = &msg["Undefined: ".len()..];
         let first = name.chars().next().unwrap_or('_');
         return if first.is_uppercase() {
             cfg.undefined_classes

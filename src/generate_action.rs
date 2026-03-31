@@ -178,7 +178,8 @@ fn collect_getters_setters<'a>(
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 fn non_static_props(c: &php_ast::ClassDecl<'_, '_>) -> Vec<Prop> {
-    c.members
+    let mut props: Vec<Prop> = c
+        .members
         .iter()
         .filter_map(|m| {
             if let ClassMemberKind::Property(p) = &m.kind
@@ -191,7 +192,29 @@ fn non_static_props(c: &php_ast::ClassDecl<'_, '_>) -> Vec<Prop> {
             }
             None
         })
-        .collect()
+        .collect();
+
+    // Also collect constructor-promoted properties.
+    if let Some(ctor) = c.members.iter().find_map(|m| {
+        if let ClassMemberKind::Method(method) = &m.kind
+            && method.name == "__construct"
+        {
+            Some(method)
+        } else {
+            None
+        }
+    }) {
+        for p in ctor.params.iter() {
+            if p.visibility.is_some() {
+                props.push(Prop {
+                    name: p.name.to_string(),
+                    type_str: p.type_hint.as_ref().map(format_type_hint),
+                });
+            }
+        }
+    }
+
+    props
 }
 
 fn generate_constructor_text(props: &[Prop]) -> String {
