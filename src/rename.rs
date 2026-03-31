@@ -5,7 +5,8 @@ use tower_lsp::lsp_types::{Position, Range, TextEdit, Url, WorkspaceEdit};
 
 use crate::ast::{ParsedDoc, offset_to_position};
 use crate::references::find_references_with_use;
-use crate::walk::collect_var_refs_in_scope;
+use crate::util::utf16_pos_to_byte;
+use crate::walk::{collect_var_refs_in_scope, property_refs_in_stmts};
 
 /// Compute a WorkspaceEdit that renames every occurrence of `word` to `new_name`
 /// across all open documents (including the declaration site).
@@ -112,24 +113,40 @@ pub fn rename_variable(
     }
 }
 
-/// Convert a UTF-16 LSP Position to a byte offset in `source`.
-fn utf16_pos_to_byte(source: &str, position: Position) -> usize {
-    let mut byte_off = 0usize;
-    for (line_idx, line) in source.lines().enumerate() {
-        if line_idx == position.line as usize {
-            let mut col_utf16 = 0u32;
-            for ch in line.chars() {
-                if col_utf16 >= position.character {
-                    break;
-                }
-                col_utf16 += ch.len_utf16() as u32;
-                byte_off += ch.len_utf8();
-            }
-            return byte_off;
+/// Rename a property (`->prop` / `?->prop` / class declaration) across all indexed
+/// documents.  Unlike variable rename, properties are not scope-bound and may appear
+/// in many files.
+pub fn rename_property(
+    prop_name: &str,
+    new_name: &str,
+    all_docs: &[(Url, Arc<ParsedDoc>)],
+) -> WorkspaceEdit {
+    let mut changes: HashMap<Url, Vec<TextEdit>> = HashMap::new();
+    for (uri, doc) in all_docs {
+        let source = doc.source();
+        let mut spans = Vec::new();
+        property_refs_in_stmts(source, &doc.program().stmts, prop_name, &mut spans);
+        if !spans.is_empty() {
+            let mut edits: Vec<TextEdit> = spans
+                .into_iter()
+                .map(|span| {
+                    let start = offset_to_position(source, span.start);
+                    let end = offset_to_position(source, span.end);
+                    TextEdit {
+                        range: Range { start, end },
+                        new_text: new_name.to_string(),
+                    }
+                })
+                .collect();
+            edits.sort_by_key(|e| (e.range.start.line, e.range.start.character));
+            edits.dedup_by_key(|e| (e.range.start.line, e.range.start.character));
+            changes.insert(uri.clone(), edits);
         }
-        byte_off += line.len() + 1; // +1 for '\n'
     }
-    byte_off
+    WorkspaceEdit {
+        changes: if changes.is_empty() { None } else { Some(changes) },
+        ..Default::default()
+    }
 }
 
 #[cfg(test)]
@@ -301,5 +318,27 @@ mod tests {
         let src = "<?php\n$foo = 1;";
         let result = prepare_rename(src, pos(1, 1));
         assert!(result.is_some(), "should allow renaming variables now");
+    }
+
+    #[test]
+    fn rename_property_renames_declaration_and_accesses() {
+        let src = "<?php\nclass Foo {\n    public string $name;\n    public function get() { return $this->name; }\n}";
+        let docs = vec![doc("/a.php", src)];
+        let edit = rename_property("name", "title", &docs);
+        let changes = edit.changes.unwrap();
+        let edits = &changes[&uri("/a.php")];
+        assert!(edits.len() >= 2, "should rename declaration and access");
+        assert!(edits.iter().all(|e| e.new_text == "title"));
+    }
+
+    #[test]
+    fn rename_property_works_across_files() {
+        let a = doc("/a.php", "<?php\nclass Foo {\n    public int $count;\n}");
+        let b = doc("/b.php", "<?php\n$foo = new Foo();\necho $foo->count;");
+        let docs = vec![a, b];
+        let edit = rename_property("count", "total", &docs);
+        let changes = edit.changes.unwrap();
+        assert!(changes.contains_key(&uri("/a.php")), "declaration in a.php");
+        assert!(changes.contains_key(&uri("/b.php")), "access in b.php");
     }
 }

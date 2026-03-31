@@ -4,6 +4,8 @@ use php_ast::{
     ClassMemberKind, EnumMemberKind, Expr, ExprKind, NamespaceBody, Span, Stmt, StmtKind,
 };
 
+use crate::ast::str_offset;
+
 pub fn refs_in_stmts(stmts: &[Stmt<'_, '_>], word: &str, out: &mut Vec<Span>) {
     for stmt in stmts {
         refs_in_stmt(stmt, word, out);
@@ -510,6 +512,273 @@ fn collect_in_fn_at(
             false
         }
         _ => false,
+    }
+}
+
+// ── Property rename helpers ───────────────────────────────────────────────────
+
+/// Collect all spans where `prop_name` is accessed (`->prop`, `?->prop`) or
+/// declared as a class/trait property, across all statements.
+/// Because `PropertyAccess.property` is a `&'src str` sub-slice of `source`,
+/// we use `str_offset` (pointer arithmetic) to obtain its byte offset.
+pub fn property_refs_in_stmts(
+    source: &str,
+    stmts: &[Stmt<'_, '_>],
+    prop_name: &str,
+    out: &mut Vec<Span>,
+) {
+    for stmt in stmts {
+        property_refs_in_stmt(source, stmt, prop_name, out);
+    }
+}
+
+fn property_refs_in_stmt(
+    source: &str,
+    stmt: &Stmt<'_, '_>,
+    prop_name: &str,
+    out: &mut Vec<Span>,
+) {
+    match &stmt.kind {
+        StmtKind::Expression(e) => property_refs_in_expr(source, e, prop_name, out),
+        StmtKind::Return(Some(e)) => property_refs_in_expr(source, e, prop_name, out),
+        StmtKind::Echo(exprs) => {
+            for e in exprs.iter() {
+                property_refs_in_expr(source, e, prop_name, out);
+            }
+        }
+        StmtKind::Function(f) => {
+            property_refs_in_stmts(source, &f.body, prop_name, out);
+        }
+        StmtKind::Class(c) => {
+            for member in c.members.iter() {
+                match &member.kind {
+                    ClassMemberKind::Property(p) if p.name == prop_name => {
+                        let offset = str_offset(source, p.name);
+                        out.push(Span {
+                            start: offset,
+                            end: offset + p.name.len() as u32,
+                        });
+                    }
+                    ClassMemberKind::Method(m) => {
+                        if let Some(body) = &m.body {
+                            property_refs_in_stmts(source, body, prop_name, out);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        StmtKind::Trait(t) => {
+            for member in t.members.iter() {
+                match &member.kind {
+                    ClassMemberKind::Property(p) if p.name == prop_name => {
+                        let offset = str_offset(source, p.name);
+                        out.push(Span {
+                            start: offset,
+                            end: offset + p.name.len() as u32,
+                        });
+                    }
+                    ClassMemberKind::Method(m) => {
+                        if let Some(body) = &m.body {
+                            property_refs_in_stmts(source, body, prop_name, out);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        StmtKind::Enum(e) => {
+            for member in e.members.iter() {
+                if let EnumMemberKind::Method(m) = &member.kind {
+                    if let Some(body) = &m.body {
+                        property_refs_in_stmts(source, body, prop_name, out);
+                    }
+                }
+            }
+        }
+        StmtKind::Namespace(ns) => {
+            if let NamespaceBody::Braced(inner) = &ns.body {
+                property_refs_in_stmts(source, inner, prop_name, out);
+            }
+        }
+        StmtKind::If(i) => {
+            property_refs_in_expr(source, &i.condition, prop_name, out);
+            property_refs_in_stmt(source, i.then_branch, prop_name, out);
+            for ei in i.elseif_branches.iter() {
+                property_refs_in_expr(source, &ei.condition, prop_name, out);
+                property_refs_in_stmt(source, &ei.body, prop_name, out);
+            }
+            if let Some(e) = &i.else_branch {
+                property_refs_in_stmt(source, e, prop_name, out);
+            }
+        }
+        StmtKind::While(w) => {
+            property_refs_in_expr(source, &w.condition, prop_name, out);
+            property_refs_in_stmt(source, w.body, prop_name, out);
+        }
+        StmtKind::DoWhile(d) => {
+            property_refs_in_stmt(source, d.body, prop_name, out);
+            property_refs_in_expr(source, &d.condition, prop_name, out);
+        }
+        StmtKind::Foreach(f) => {
+            property_refs_in_expr(source, &f.expr, prop_name, out);
+            property_refs_in_stmt(source, f.body, prop_name, out);
+        }
+        StmtKind::For(f) => {
+            for e in f.init.iter() {
+                property_refs_in_expr(source, e, prop_name, out);
+            }
+            for cond in f.condition.iter() {
+                property_refs_in_expr(source, cond, prop_name, out);
+            }
+            for e in f.update.iter() {
+                property_refs_in_expr(source, e, prop_name, out);
+            }
+            property_refs_in_stmt(source, f.body, prop_name, out);
+        }
+        StmtKind::TryCatch(t) => {
+            property_refs_in_stmts(source, &t.body, prop_name, out);
+            for catch in t.catches.iter() {
+                property_refs_in_stmts(source, &catch.body, prop_name, out);
+            }
+            if let Some(finally) = &t.finally {
+                property_refs_in_stmts(source, finally, prop_name, out);
+            }
+        }
+        StmtKind::Block(inner) => property_refs_in_stmts(source, inner, prop_name, out),
+        _ => {}
+    }
+}
+
+fn property_refs_in_expr(
+    source: &str,
+    expr: &Expr<'_, '_>,
+    prop_name: &str,
+    out: &mut Vec<Span>,
+) {
+    match &expr.kind {
+        ExprKind::PropertyAccess(p) => {
+            property_refs_in_expr(source, p.object, prop_name, out);
+            let span = p.property.span;
+            let name_in_src = source
+                .get(span.start as usize..span.end as usize)
+                .unwrap_or("");
+            if name_in_src == prop_name {
+                out.push(span);
+            }
+        }
+        ExprKind::NullsafePropertyAccess(p) => {
+            property_refs_in_expr(source, p.object, prop_name, out);
+            let span = p.property.span;
+            let name_in_src = source
+                .get(span.start as usize..span.end as usize)
+                .unwrap_or("");
+            if name_in_src == prop_name {
+                out.push(span);
+            }
+        }
+        ExprKind::Assign(a) => {
+            property_refs_in_expr(source, a.target, prop_name, out);
+            property_refs_in_expr(source, a.value, prop_name, out);
+        }
+        ExprKind::Binary(b) => {
+            property_refs_in_expr(source, b.left, prop_name, out);
+            property_refs_in_expr(source, b.right, prop_name, out);
+        }
+        ExprKind::UnaryPrefix(u) => property_refs_in_expr(source, u.operand, prop_name, out),
+        ExprKind::UnaryPostfix(u) => property_refs_in_expr(source, u.operand, prop_name, out),
+        ExprKind::Ternary(t) => {
+            property_refs_in_expr(source, t.condition, prop_name, out);
+            if let Some(then_expr) = t.then_expr {
+                property_refs_in_expr(source, then_expr, prop_name, out);
+            }
+            property_refs_in_expr(source, t.else_expr, prop_name, out);
+        }
+        ExprKind::NullCoalesce(n) => {
+            property_refs_in_expr(source, n.left, prop_name, out);
+            property_refs_in_expr(source, n.right, prop_name, out);
+        }
+        ExprKind::Parenthesized(e) => property_refs_in_expr(source, e, prop_name, out),
+        ExprKind::ErrorSuppress(e) => property_refs_in_expr(source, e, prop_name, out),
+        ExprKind::Cast(_, e) => property_refs_in_expr(source, e, prop_name, out),
+        ExprKind::Clone(e) => property_refs_in_expr(source, e, prop_name, out),
+        ExprKind::ThrowExpr(e) => property_refs_in_expr(source, e, prop_name, out),
+        ExprKind::Print(e) => property_refs_in_expr(source, e, prop_name, out),
+        ExprKind::Empty(e) => property_refs_in_expr(source, e, prop_name, out),
+        ExprKind::Eval(e) => property_refs_in_expr(source, e, prop_name, out),
+        ExprKind::FunctionCall(f) => {
+            property_refs_in_expr(source, f.name, prop_name, out);
+            for a in f.args.iter() {
+                property_refs_in_expr(source, &a.value, prop_name, out);
+            }
+        }
+        ExprKind::MethodCall(m) => {
+            property_refs_in_expr(source, m.object, prop_name, out);
+            for a in m.args.iter() {
+                property_refs_in_expr(source, &a.value, prop_name, out);
+            }
+        }
+        ExprKind::NullsafeMethodCall(m) => {
+            property_refs_in_expr(source, m.object, prop_name, out);
+            for a in m.args.iter() {
+                property_refs_in_expr(source, &a.value, prop_name, out);
+            }
+        }
+        ExprKind::StaticMethodCall(s) => {
+            property_refs_in_expr(source, s.class, prop_name, out);
+            for a in s.args.iter() {
+                property_refs_in_expr(source, &a.value, prop_name, out);
+            }
+        }
+        ExprKind::New(n) => {
+            property_refs_in_expr(source, n.class, prop_name, out);
+            for a in n.args.iter() {
+                property_refs_in_expr(source, &a.value, prop_name, out);
+            }
+        }
+        ExprKind::ArrayAccess(a) => {
+            property_refs_in_expr(source, a.array, prop_name, out);
+            if let Some(idx) = a.index {
+                property_refs_in_expr(source, idx, prop_name, out);
+            }
+        }
+        ExprKind::Yield(y) => {
+            if let Some(k) = y.key {
+                property_refs_in_expr(source, k, prop_name, out);
+            }
+            if let Some(v) = y.value {
+                property_refs_in_expr(source, v, prop_name, out);
+            }
+        }
+        ExprKind::Match(m) => {
+            property_refs_in_expr(source, m.subject, prop_name, out);
+            for arm in m.arms.iter() {
+                if let Some(conds) = &arm.conditions {
+                    for c in conds.iter() {
+                        property_refs_in_expr(source, c, prop_name, out);
+                    }
+                }
+                property_refs_in_expr(source, &arm.body, prop_name, out);
+            }
+        }
+        ExprKind::Array(elems) => {
+            for el in elems.iter() {
+                if let Some(k) = &el.key {
+                    property_refs_in_expr(source, k, prop_name, out);
+                }
+                property_refs_in_expr(source, &el.value, prop_name, out);
+            }
+        }
+        ExprKind::Isset(exprs) => {
+            for e in exprs.iter() {
+                property_refs_in_expr(source, e, prop_name, out);
+            }
+        }
+        ExprKind::Include(_, e) => property_refs_in_expr(source, e, prop_name, out),
+        ExprKind::Exit(Some(e)) => property_refs_in_expr(source, e, prop_name, out),
+        ExprKind::Closure(c) => property_refs_in_stmts(source, &c.body, prop_name, out),
+        ExprKind::ArrowFunction(a) => property_refs_in_expr(source, a.body, prop_name, out),
+        _ => {}
     }
 }
 
