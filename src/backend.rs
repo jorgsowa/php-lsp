@@ -254,7 +254,7 @@ impl LanguageServer for Backend {
                 declaration_provider: Some(DeclarationCapability::Simple(true)),
                 type_definition_provider: Some(TypeDefinitionProviderCapability::Simple(true)),
                 code_lens_provider: Some(CodeLensOptions {
-                    resolve_provider: Some(true),
+                    resolve_provider: Some(false),
                 }),
                 document_formatting_provider: Some(OneOf::Left(true)),
                 document_range_formatting_provider: Some(OneOf::Left(true)),
@@ -263,7 +263,7 @@ impl LanguageServer for Backend {
                     more_trigger_character: Some(vec!["\n".to_string()]),
                 }),
                 document_link_provider: Some(DocumentLinkOptions {
-                    resolve_provider: Some(true),
+                    resolve_provider: Some(false),
                     work_done_progress_options: Default::default(),
                 }),
                 execute_command_provider: Some(ExecuteCommandOptions {
@@ -288,6 +288,7 @@ impl LanguageServer for Backend {
                     }),
                     file_operations: Some(WorkspaceFileOperationsServerCapabilities {
                         will_rename: Some(php_file_op()),
+                        did_rename: Some(php_file_op()),
                         did_create: Some(php_file_op()),
                         will_delete: Some(php_file_op()),
                         did_delete: Some(php_file_op()),

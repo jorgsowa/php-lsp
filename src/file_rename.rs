@@ -4,6 +4,7 @@ use std::sync::Arc;
 use tower_lsp::lsp_types::{Position, Range, TextEdit, Url, WorkspaceEdit};
 
 use crate::ast::ParsedDoc;
+use crate::util::byte_to_utf16;
 
 /// Build a `WorkspaceEdit` that updates every `use` import referencing `old_fqn`
 /// to `new_fqn` across all indexed documents.
@@ -161,11 +162,11 @@ fn use_edits_in_source(source: &str, old_fqn: &str, new_fqn: &str) -> Vec<TextEd
             range: Range {
                 start: Position {
                     line: line_u32,
-                    character: fqn_start as u32,
+                    character: byte_to_utf16(line, fqn_start),
                 },
                 end: Position {
                     line: line_u32,
-                    character: (fqn_start + old.len()) as u32,
+                    character: byte_to_utf16(line, fqn_start + old.len()),
                 },
             },
             new_text: new_clean.to_string(),
@@ -287,5 +288,28 @@ mod tests {
         assert!(changes.contains_key(&uri("/a.php")));
         assert!(changes.contains_key(&uri("/b.php")));
         assert!(!changes.contains_key(&uri("/c.php")));
+    }
+
+    #[test]
+    fn rename_character_positions_correct_with_multibyte_fqn() {
+        // PHP supports Unicode identifiers.  "Été" contains É (U+00C9) and é (U+00E9),
+        // each 2 bytes in UTF-8 but 1 UTF-16 code unit.
+        // FQN "App\Été\Old": 13 bytes but only 11 UTF-16 code units.
+        // The old code cast (fqn_start + old.len()) directly to u32, giving 17 instead of 15.
+        let fqn = "App\\Été\\Old"; // 13 bytes, 11 UTF-16 units
+        let src = format!("<?php\nuse {fqn};\n");
+        let edits = use_edits_in_source(&src, fqn, "App\\New\\Old");
+        assert_eq!(edits.len(), 1);
+        let edit = &edits[0];
+        // fqn_start = 4 (after "use ", all ASCII), start char must equal 4
+        assert_eq!(edit.range.start.character, 4);
+        // end char must be UTF-16 offset of end of FQN = 4 + 11 = 15, not 4 + 13 = 17
+        let utf16_len: u32 = fqn.chars().map(|c| c.len_utf16() as u32).sum();
+        assert_eq!(edit.range.end.character, 4 + utf16_len);
+        assert_ne!(
+            edit.range.end.character,
+            4 + fqn.len() as u32,
+            "must not use raw byte length"
+        );
     }
 }
