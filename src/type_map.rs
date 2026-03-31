@@ -538,7 +538,23 @@ fn collect_types_expr(
                     map.insert(format!("${}", p.name), name.to_string_repr().to_string());
                 }
             }
+            // Snapshot captured `use` variable types from the outer scope so they
+            // remain resolvable inside the closure body even if the body walk
+            // encounters assignments that would shadow them.
+            let use_var_snapshot: Vec<(String, String)> = c
+                .use_vars
+                .iter()
+                .filter_map(|uv| {
+                    let key = format!("${}", uv.name);
+                    map.get(&key).map(|ty| (key, ty.clone()))
+                })
+                .collect();
             collect_types_stmts(source, &c.body, map, meta, method_returns);
+            // Restore captured variable types: inner assignments inside the closure
+            // body should not affect the outer scope's type for completions.
+            for (key, ty) in use_var_snapshot {
+                map.insert(key, ty);
+            }
         }
 
         ExprKind::ArrowFunction(af) => {
@@ -901,6 +917,44 @@ pub fn params_of_function(doc: &ParsedDoc, func_name: &str) -> Vec<String> {
     out
 }
 
+/// Return the parameter names of `method_name` on class `class_name`.
+/// Primarily used to offer named-argument completions for attribute constructors.
+pub fn params_of_method(doc: &ParsedDoc, class_name: &str, method_name: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    collect_method_params_stmts(&doc.program().stmts, class_name, method_name, &mut out);
+    out
+}
+
+fn collect_method_params_stmts(
+    stmts: &[php_ast::Stmt<'_, '_>],
+    class_name: &str,
+    method_name: &str,
+    out: &mut Vec<String>,
+) {
+    for stmt in stmts {
+        match &stmt.kind {
+            StmtKind::Class(c) if c.name == Some(class_name) => {
+                for member in c.members.iter() {
+                    if let ClassMemberKind::Method(m) = &member.kind
+                        && m.name == method_name
+                    {
+                        for p in m.params.iter() {
+                            out.push(p.name.to_string());
+                        }
+                        return;
+                    }
+                }
+            }
+            StmtKind::Namespace(ns) => {
+                if let NamespaceBody::Braced(inner) = &ns.body {
+                    collect_method_params_stmts(inner, class_name, method_name, out);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 /// Returns `true` if `class_name` is declared as an `enum` in `doc`.
 pub fn is_enum(doc: &ParsedDoc, class_name: &str) -> bool {
     is_enum_in_stmts(&doc.program().stmts, class_name)
@@ -1261,6 +1315,33 @@ mod tests {
             tm.get("$item"),
             Some("Widget"),
             "foreach over array_map result should propagate element type to loop variable"
+        );
+    }
+
+    #[test]
+    fn closure_use_var_type_is_available_inside_body() {
+        let src = "<?php\n$svc = new PaymentService();\n$fn = function() use ($svc) { $svc->process(); };";
+        let doc = ParsedDoc::parse(src.to_string());
+        let tm = TypeMap::from_doc(&doc);
+        assert_eq!(
+            tm.get("$svc"),
+            Some("PaymentService"),
+            "captured use variable should retain its outer type inside closure body"
+        );
+    }
+
+    #[test]
+    fn closure_use_var_inner_assignment_does_not_override_outer_type() {
+        // If inside a closure we assign $svc = new Other(), the outer $svc type
+        // should be restored after walking the closure body (or_insert semantics).
+        let src = "<?php\n$svc = new PaymentService();\n$fn = function() use ($svc) { $svc = new OtherService(); };";
+        let doc = ParsedDoc::parse(src.to_string());
+        let tm = TypeMap::from_doc(&doc);
+        // The snapshot restore ensures $svc retains PaymentService for the outer scope.
+        assert_eq!(
+            tm.get("$svc"),
+            Some("PaymentService"),
+            "outer type should not be overwritten by inner assignment in closure"
         );
     }
 

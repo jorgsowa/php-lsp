@@ -10,7 +10,7 @@ use crate::phpstorm_meta::PhpStormMeta;
 use crate::stubs::builtin_class_members;
 use crate::type_map::{
     TypeMap, enclosing_class_at, is_backed_enum, is_enum, members_of_class, mixin_classes_of,
-    params_of_function, parent_class_name,
+    params_of_function, params_of_method, parent_class_name,
 };
 use crate::use_resolver::UseMap;
 use crate::util::{camel_sort_key, fuzzy_camel_match, utf16_offset_to_byte};
@@ -121,6 +121,29 @@ pub fn keyword_completions() -> Vec<CompletionItem> {
         .map(|kw| CompletionItem {
             label: kw.to_string(),
             kind: Some(CompletionItemKind::KEYWORD),
+            ..Default::default()
+        })
+        .collect()
+}
+
+const PHP_MAGIC_CONSTANTS: &[(&str, &str)] = &[
+    ("__FILE__", "Absolute path of the current file"),
+    ("__DIR__", "Directory of the current file"),
+    ("__LINE__", "Current line number"),
+    ("__CLASS__", "Current class name"),
+    ("__FUNCTION__", "Current function name"),
+    ("__METHOD__", "Current method name (Class::method)"),
+    ("__NAMESPACE__", "Current namespace"),
+    ("__TRAIT__", "Current trait name"),
+];
+
+pub fn magic_constant_completions() -> Vec<CompletionItem> {
+    PHP_MAGIC_CONSTANTS
+        .iter()
+        .map(|(name, doc)| CompletionItem {
+            label: name.to_string(),
+            kind: Some(CompletionItemKind::CONSTANT),
+            detail: Some(doc.to_string()),
             ..Default::default()
         })
         .collect()
@@ -798,6 +821,27 @@ fn resolve_static_receiver(
     }
 }
 
+/// If the `(` trigger occurs inside an attribute like `#[ClassName(`, extract
+/// the attribute class name so we can offer its `__construct` parameter names.
+fn resolve_attribute_class(source: &str, position: Position) -> Option<String> {
+    let line = source.lines().nth(position.line as usize)?;
+    let col = utf16_offset_to_byte(line, position.character as usize);
+    let before = line[..col].trim_end_matches('(').trim_end();
+    // Look backwards on the same line for `#[ClassName` or `#[\NS\ClassName`
+    let hash_pos = before.rfind("#[")?;
+    let after_bracket = before[hash_pos + 2..].trim_start();
+    // Strip leading backslashes (FQN), keep the short name
+    let name: String = after_bracket
+        .trim_start_matches('\\')
+        .rsplit('\\')
+        .next()
+        .unwrap_or("")
+        .chars()
+        .take_while(|c| c.is_alphanumeric() || *c == '_')
+        .collect();
+    if name.is_empty() { None } else { Some(name) }
+}
+
 fn resolve_call_params(
     source: &str,
     doc: &ParsedDoc,
@@ -1112,6 +1156,29 @@ pub fn filtered_completions_at(
                         })
                         .collect();
                 }
+                // Attribute constructor: #[ClassName(
+                if let Some(attr_class) = resolve_attribute_class(src, pos) {
+                    let mut attr_params = params_of_method(doc, &attr_class, "__construct");
+                    if attr_params.is_empty() {
+                        for other in other_docs {
+                            attr_params = params_of_method(other, &attr_class, "__construct");
+                            if !attr_params.is_empty() {
+                                break;
+                            }
+                        }
+                    }
+                    if !attr_params.is_empty() {
+                        return attr_params
+                            .into_iter()
+                            .map(|p| CompletionItem {
+                                label: format!("{p}:"),
+                                kind: Some(CompletionItemKind::VARIABLE),
+                                detail: Some(format!("#{attr_class} argument")),
+                                ..Default::default()
+                            })
+                            .collect();
+                    }
+                }
             }
             vec![]
         }
@@ -1197,6 +1264,7 @@ pub fn filtered_completions_at(
                 let mut all = match_items;
                 // extend with normal items below, but return early here
                 let mut normal_items = keyword_completions();
+                normal_items.extend(magic_constant_completions());
                 normal_items.extend(builtin_completions());
                 normal_items.extend(superglobal_completions());
                 normal_items.extend(symbol_completions(doc));
@@ -1213,6 +1281,7 @@ pub fn filtered_completions_at(
             }
 
             let mut items = keyword_completions();
+            items.extend(magic_constant_completions());
             items.extend(builtin_completions());
             items.extend(superglobal_completions());
             // Feature 2: scope variable completions to before cursor line
@@ -1649,6 +1718,55 @@ mod tests {
         for item in keyword_completions() {
             assert_eq!(item.kind, Some(CompletionItemKind::KEYWORD));
         }
+    }
+
+    #[test]
+    fn magic_constants_all_present() {
+        let items = magic_constant_completions();
+        let ls: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+        for name in &[
+            "__FILE__", "__DIR__", "__LINE__", "__CLASS__",
+            "__FUNCTION__", "__METHOD__", "__NAMESPACE__", "__TRAIT__",
+        ] {
+            assert!(ls.contains(name), "missing magic constant: {name}");
+        }
+    }
+
+    #[test]
+    fn magic_constants_have_constant_kind() {
+        for item in magic_constant_completions() {
+            assert_eq!(
+                item.kind,
+                Some(CompletionItemKind::CONSTANT),
+                "{} should have CONSTANT kind",
+                item.label
+            );
+        }
+    }
+
+    #[test]
+    fn resolve_attribute_class_extracts_name() {
+        let src = "<?php\n#[Route(\n";
+        // Position right after the '(' on line 1
+        let pos = Position { line: 1, character: 8 };
+        let result = resolve_attribute_class(src, pos);
+        assert_eq!(result.as_deref(), Some("Route"));
+    }
+
+    #[test]
+    fn resolve_attribute_class_fqn_extracts_short_name() {
+        let src = "<?php\n#[\\Symfony\\Component\\Routing\\Route(\n";
+        let pos = Position { line: 1, character: 38 };
+        let result = resolve_attribute_class(src, pos);
+        assert_eq!(result.as_deref(), Some("Route"));
+    }
+
+    #[test]
+    fn resolve_attribute_class_returns_none_for_regular_call() {
+        let src = "<?php\nsomeFunction(\n";
+        let pos = Position { line: 1, character: 14 };
+        let result = resolve_attribute_class(src, pos);
+        assert!(result.is_none(), "should not match regular function call");
     }
 
     #[test]
