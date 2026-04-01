@@ -1429,19 +1429,40 @@ impl LanguageServer for Backend {
         &self,
         _params: WorkspaceDiagnosticParams,
     ) -> Result<WorkspaceDiagnosticReportResult> {
-        let items: Vec<WorkspaceDocumentDiagnosticReport> = self
-            .docs
-            .all_diagnostics()
+        let all_docs = self.docs.all_docs();
+        let all_parse_diags = self.docs.all_diagnostics();
+        let diag_cfg = self.config.read().unwrap().diagnostics.clone();
+
+        let items: Vec<WorkspaceDocumentDiagnosticReport> = all_parse_diags
             .into_iter()
-            .map(|(uri, diags, version)| {
-                WorkspaceDocumentDiagnosticReport::Full(WorkspaceFullDocumentDiagnosticReport {
-                    uri,
-                    version,
-                    full_document_diagnostic_report: FullDocumentDiagnosticReport {
-                        result_id: None,
-                        items: diags,
+            .filter_map(|(uri, parse_diags, version)| {
+                let doc = self.docs.get_doc(&uri)?;
+
+                // Build other_docs by filtering the current URI out of all_docs.
+                let other_docs: Vec<(Url, Arc<ParsedDoc>)> = all_docs
+                    .iter()
+                    .filter(|(u, _)| u != &uri)
+                    .cloned()
+                    .collect();
+
+                let source = doc.source().to_string();
+                let sem_diags = semantic_diagnostics(&uri, &doc, &other_docs, &diag_cfg);
+                let dup_diags = duplicate_declaration_diagnostics(&source, &doc, &diag_cfg);
+
+                let mut all_diags = parse_diags;
+                all_diags.extend(sem_diags);
+                all_diags.extend(dup_diags);
+
+                Some(WorkspaceDocumentDiagnosticReport::Full(
+                    WorkspaceFullDocumentDiagnosticReport {
+                        uri,
+                        version,
+                        full_document_diagnostic_report: FullDocumentDiagnosticReport {
+                            result_id: None,
+                            items: all_diags,
+                        },
                     },
-                })
+                ))
             })
             .collect();
 
