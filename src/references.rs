@@ -4,26 +4,46 @@ use php_ast::{ClassMemberKind, EnumMemberKind, NamespaceBody, Span, Stmt, StmtKi
 use tower_lsp::lsp_types::{Location, Position, Range, Url};
 
 use crate::ast::{ParsedDoc, offset_to_position};
-use crate::walk::{refs_in_stmts, refs_in_stmts_with_use};
+use crate::walk::{
+    class_refs_in_stmts, function_refs_in_stmts, method_refs_in_stmts, refs_in_stmts,
+    refs_in_stmts_with_use,
+};
+
+/// What kind of symbol the cursor is on.  Used to dispatch to the
+/// appropriate semantic walker so that, e.g., searching for `get` as a
+/// *method* doesn't return free-function calls named `get`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SymbolKind {
+    /// A free (top-level) function.
+    Function,
+    /// An instance or static method (`->name`, `?->name`, `::name`).
+    Method,
+    /// A class, interface, trait, or enum name used as a type.
+    Class,
+}
 
 /// Find all locations where `word` is referenced across the given documents.
 /// If `include_declaration` is true, also includes the declaration site.
+/// Pass `kind` to restrict results to a particular symbol category; `None`
+/// falls back to the original word-based walker (better some results than none).
 pub fn find_references(
     word: &str,
     all_docs: &[(Url, Arc<ParsedDoc>)],
     include_declaration: bool,
+    kind: Option<SymbolKind>,
 ) -> Vec<Location> {
-    find_references_inner(word, all_docs, include_declaration, false)
+    find_references_inner(word, all_docs, include_declaration, false, kind)
 }
 
 /// Like `find_references` but also includes `use` statement spans.
 /// Used by rename so that `use Foo;` statements are also updated.
+/// Always uses the general walker (rename must update all occurrence kinds).
 pub fn find_references_with_use(
     word: &str,
     all_docs: &[(Url, Arc<ParsedDoc>)],
     include_declaration: bool,
 ) -> Vec<Location> {
-    find_references_inner(word, all_docs, include_declaration, true)
+    find_references_inner(word, all_docs, include_declaration, true, None)
 }
 
 fn find_references_inner(
@@ -31,6 +51,7 @@ fn find_references_inner(
     all_docs: &[(Url, Arc<ParsedDoc>)],
     include_declaration: bool,
     include_use: bool,
+    kind: Option<SymbolKind>,
 ) -> Vec<Location> {
     let mut locations = Vec::new();
 
@@ -39,9 +60,15 @@ fn find_references_inner(
         let stmts = &doc.program().stmts;
         let mut spans = Vec::new();
         if include_use {
+            // Rename path: always use the general walker so `use` imports are included.
             refs_in_stmts_with_use(stmts, word, &mut spans);
         } else {
-            refs_in_stmts(stmts, word, &mut spans);
+            match kind {
+                Some(SymbolKind::Function) => function_refs_in_stmts(stmts, word, &mut spans),
+                Some(SymbolKind::Method) => method_refs_in_stmts(stmts, word, &mut spans),
+                Some(SymbolKind::Class) => class_refs_in_stmts(stmts, word, &mut spans),
+                None => refs_in_stmts(stmts, word, &mut spans),
+            }
         }
 
         if !include_declaration {
@@ -168,7 +195,7 @@ mod tests {
     fn finds_function_call_reference() {
         let src = "<?php\nfunction greet() {}\ngreet();\ngreet();";
         let docs = vec![doc("/a.php", src)];
-        let refs = find_references("greet", &docs, false);
+        let refs = find_references("greet", &docs, false, None);
         assert_eq!(refs.len(), 2, "expected 2 call-site refs, got {:?}", refs);
     }
 
@@ -176,8 +203,8 @@ mod tests {
     fn include_declaration_adds_def_site() {
         let src = "<?php\nfunction greet() {}\ngreet();";
         let docs = vec![doc("/a.php", src)];
-        let with_decl = find_references("greet", &docs, true);
-        let without_decl = find_references("greet", &docs, false);
+        let with_decl = find_references("greet", &docs, true, None);
+        let without_decl = find_references("greet", &docs, false, None);
         // Without declaration: only the call site (line 2)
         assert_eq!(
             without_decl.len(),
@@ -200,7 +227,7 @@ mod tests {
     fn finds_new_expression_reference() {
         let src = "<?php\nclass Foo {}\n$x = new Foo();";
         let docs = vec![doc("/a.php", src)];
-        let refs = find_references("Foo", &docs, false);
+        let refs = find_references("Foo", &docs, false, None);
         assert_eq!(
             refs.len(),
             1,
@@ -216,7 +243,7 @@ mod tests {
     fn finds_reference_in_nested_function_call() {
         let src = "<?php\nfunction greet() {}\necho(greet());";
         let docs = vec![doc("/a.php", src)];
-        let refs = find_references("greet", &docs, false);
+        let refs = find_references("greet", &docs, false, None);
         assert_eq!(
             refs.len(),
             1,
@@ -232,7 +259,7 @@ mod tests {
     fn finds_references_across_multiple_docs() {
         let a = doc("/a.php", "<?php\nfunction helper() {}");
         let b = doc("/b.php", "<?php\nhelper();\nhelper();");
-        let refs = find_references("helper", &[a, b], false);
+        let refs = find_references("helper", &[a, b], false, None);
         assert_eq!(refs.len(), 2, "expected 2 cross-file references");
         assert!(refs.iter().all(|r| r.uri.path().ends_with("/b.php")));
     }
@@ -241,7 +268,7 @@ mod tests {
     fn finds_method_call_reference() {
         let src = "<?php\nclass Calc { public function add() {} }\n$c = new Calc();\n$c->add();";
         let docs = vec![doc("/a.php", src)];
-        let refs = find_references("add", &docs, false);
+        let refs = find_references("add", &docs, false, None);
         assert_eq!(
             refs.len(),
             1,
@@ -257,7 +284,7 @@ mod tests {
     fn finds_reference_inside_if_body() {
         let src = "<?php\nfunction check() {}\nif (true) { check(); }";
         let docs = vec![doc("/a.php", src)];
-        let refs = find_references("check", &docs, false);
+        let refs = find_references("check", &docs, false, None);
         assert_eq!(refs.len(), 1, "expected exactly 1 reference inside if body");
         assert_eq!(
             refs[0].range.start.line, 2,
@@ -293,7 +320,7 @@ mod tests {
         // `helper` is called on lines 1 and 2 (0-based); check exact line numbers.
         let src = "<?php\nhelper();\nhelper();\nfunction helper() {}";
         let docs = vec![doc("/a.php", src)];
-        let refs = find_references("helper", &docs, false);
+        let refs = find_references("helper", &docs, false, None);
         assert_eq!(refs.len(), 2, "expected exactly 2 call-site references");
         let mut lines: Vec<u32> = refs.iter().map(|r| r.range.start.line).collect();
         lines.sort_unstable();
@@ -305,7 +332,7 @@ mod tests {
         // When include_declaration=false the declaration line must not appear.
         let src = "<?php\nfunction doWork() {}\ndoWork();\ndoWork();";
         let docs = vec![doc("/a.php", src)];
-        let refs = find_references("doWork", &docs, false);
+        let refs = find_references("doWork", &docs, false, None);
         // Declaration is on line 1; call sites are on lines 2 and 3.
         let lines: Vec<u32> = refs.iter().map(|r| r.range.start.line).collect();
         assert!(
@@ -321,7 +348,7 @@ mod tests {
         // Searching for references to `greet` should NOT include occurrences of `greeting`.
         let src = "<?php\nfunction greet() {}\nfunction greeting() {}\ngreet();\ngreeting();";
         let docs = vec![doc("/a.php", src)];
-        let refs = find_references("greet", &docs, false);
+        let refs = find_references("greet", &docs, false, None);
         // Only `greet()` call site should be included, not `greeting()`.
         for r in &refs {
             // Each reference range should span exactly the length of "greet" (5 chars),
@@ -347,7 +374,7 @@ mod tests {
         // A class constant used as a property default value should be found by find_references.
         let src = "<?php\nclass Foo {\n    public string $status = Status::ACTIVE;\n}";
         let docs = vec![doc("/a.php", src)];
-        let refs = find_references("Status", &docs, false);
+        let refs = find_references("Status", &docs, false, None);
         assert_eq!(
             refs.len(),
             1,
@@ -362,7 +389,7 @@ mod tests {
         // A function call inside an enum method body should be found by find_references.
         let src = "<?php\nfunction helper() {}\nenum Status {\n    public function label(): string { return helper(); }\n}";
         let docs = vec![doc("/a.php", src)];
-        let refs = find_references("helper", &docs, false);
+        let refs = find_references("helper", &docs, false, None);
         assert_eq!(
             refs.len(),
             1,
@@ -377,7 +404,7 @@ mod tests {
         // Function calls in `for` init and update expressions should be found.
         let src = "<?php\nfunction tick() {}\nfor (tick(); $i < 10; tick()) {}";
         let docs = vec![doc("/a.php", src)];
-        let refs = find_references("tick", &docs, false);
+        let refs = find_references("tick", &docs, false, None);
         assert_eq!(
             refs.len(),
             2,
@@ -386,5 +413,90 @@ mod tests {
         );
         // Both are on line 2.
         assert!(refs.iter().all(|r| r.range.start.line == 2));
+    }
+
+    // ── Semantic (kind-aware) tests ───────────────────────────────────────────
+
+    #[test]
+    fn function_kind_skips_method_call_with_same_name() {
+        // When looking for the free function `get`, method calls `$obj->get()` must be excluded.
+        let src = "<?php\nfunction get() {}\nget();\n$obj->get();";
+        let docs = vec![doc("/a.php", src)];
+        let refs = find_references("get", &docs, false, Some(SymbolKind::Function));
+        // Only the free call `get()` on line 2 should appear; not the method call on line 3.
+        assert_eq!(
+            refs.len(),
+            1,
+            "expected 1 free-function ref, got: {:?}",
+            refs
+        );
+        assert_eq!(refs[0].range.start.line, 2);
+    }
+
+    #[test]
+    fn method_kind_skips_free_function_call_with_same_name() {
+        // When looking for the method `add`, the free function call `add()` must be excluded.
+        let src = "<?php\nfunction add() {}\nadd();\n$calc->add();";
+        let docs = vec![doc("/a.php", src)];
+        let refs = find_references("add", &docs, false, Some(SymbolKind::Method));
+        // Only the method call on line 3 should appear.
+        assert_eq!(refs.len(), 1, "expected 1 method ref, got: {:?}", refs);
+        assert_eq!(refs[0].range.start.line, 3);
+    }
+
+    #[test]
+    fn class_kind_finds_new_expression() {
+        // SymbolKind::Class should find `new Foo()` but not a free function call `Foo()`.
+        let src = "<?php\nclass Foo {}\n$x = new Foo();\nFoo();";
+        let docs = vec![doc("/a.php", src)];
+        let refs = find_references("Foo", &docs, false, Some(SymbolKind::Class));
+        // `new Foo()` on line 2 yes; `Foo()` on line 3 should NOT appear as a class ref.
+        let lines: Vec<u32> = refs.iter().map(|r| r.range.start.line).collect();
+        assert!(
+            lines.contains(&2),
+            "expected new Foo() on line 2, got: {:?}",
+            refs
+        );
+        assert!(
+            !lines.contains(&3),
+            "free call Foo() should not appear as class ref, got: {:?}",
+            refs
+        );
+    }
+
+    #[test]
+    fn class_kind_finds_extends_and_implements() {
+        let src = "<?php\nclass Base {}\ninterface Iface {}\nclass Child extends Base implements Iface {}";
+        let docs = vec![doc("/a.php", src)];
+
+        let base_refs = find_references("Base", &docs, false, Some(SymbolKind::Class));
+        let lines_base: Vec<u32> = base_refs.iter().map(|r| r.range.start.line).collect();
+        assert!(
+            lines_base.contains(&3),
+            "expected extends Base on line 3, got: {:?}",
+            base_refs
+        );
+
+        let iface_refs = find_references("Iface", &docs, false, Some(SymbolKind::Class));
+        let lines_iface: Vec<u32> = iface_refs.iter().map(|r| r.range.start.line).collect();
+        assert!(
+            lines_iface.contains(&3),
+            "expected implements Iface on line 3, got: {:?}",
+            iface_refs
+        );
+    }
+
+    #[test]
+    fn class_kind_finds_type_hint() {
+        // SymbolKind::Class should find `Foo` as a parameter type hint.
+        let src = "<?php\nclass Foo {}\nfunction take(Foo $x): void {}";
+        let docs = vec![doc("/a.php", src)];
+        let refs = find_references("Foo", &docs, false, Some(SymbolKind::Class));
+        let lines: Vec<u32> = refs.iter().map(|r| r.range.start.line).collect();
+        assert!(
+            lines.contains(&2),
+            "expected type hint Foo on line 2, got: {:?}",
+            refs
+        );
     }
 }
