@@ -1171,18 +1171,53 @@ pub fn filtered_completions_at(
                 let before = &line[..col];
                 if before.trim_end_matches('[').trim_end().ends_with('#') {
                     let mut items: Vec<CompletionItem> = Vec::new();
-                    // Include classes from current doc and other docs
-                    let mut classes = Vec::new();
-                    collect_classes_with_ns(&doc.program().stmts, "", &mut classes);
-                    for other in other_docs {
-                        collect_classes_with_ns(&other.program().stmts, "", &mut classes);
-                    }
+                    let use_map = UseMap::from_doc(doc);
+                    let cur_ns = current_file_namespace(&doc.program().stmts);
                     let mut seen = std::collections::HashSet::new();
-                    for (label, _kind, _fqn) in classes {
+
+                    // Current doc: no auto-import needed (same file).
+                    let mut cur_classes = Vec::new();
+                    collect_classes_with_ns(&doc.program().stmts, "", &mut cur_classes);
+                    for (label, _kind, _fqn) in cur_classes {
                         if seen.insert(label.clone()) {
                             items.push(CompletionItem {
                                 label,
                                 kind: Some(CompletionItemKind::CLASS),
+                                ..Default::default()
+                            });
+                        }
+                    }
+
+                    // Other docs: add `use` statement when crossing namespaces.
+                    for other in other_docs {
+                        let mut classes = Vec::new();
+                        collect_classes_with_ns(&other.program().stmts, "", &mut classes);
+                        for (label, _kind, fqn) in classes {
+                            if !seen.insert(label.clone()) {
+                                continue;
+                            }
+                            let in_same_ns =
+                                !cur_ns.is_empty() && fqn == format!("{}\\{}", cur_ns, label);
+                            let is_global = !fqn.contains('\\');
+                            let already = use_map.resolve(&label).is_some();
+                            let additional_text_edits =
+                                if !in_same_ns && !is_global && !already {
+                                    let insert_pos = use_insert_position(src);
+                                    Some(vec![TextEdit {
+                                        range: Range {
+                                            start: insert_pos,
+                                            end: insert_pos,
+                                        },
+                                        new_text: format!("use {};\n", fqn),
+                                    }])
+                                } else {
+                                    None
+                                };
+                            items.push(CompletionItem {
+                                label,
+                                kind: Some(CompletionItemKind::CLASS),
+                                detail: if fqn.contains('\\') { Some(fqn) } else { None },
+                                additional_text_edits,
                                 ..Default::default()
                             });
                         }
@@ -2300,6 +2335,68 @@ mod tests {
         assert!(
             ls.contains(&"Middleware"),
             "should suggest Middleware as attribute"
+        );
+    }
+
+    #[test]
+    fn attribute_bracket_cross_ns_gets_use_insertion() {
+        let current_src = "<?php\nnamespace App\\Controllers;\n\n#[";
+        let d = doc(current_src);
+        let other = Arc::new(ParsedDoc::parse(
+            "<?php\nnamespace App\\Attributes;\nclass Route {}".to_string(),
+        ));
+        let pos = Position {
+            line: 3,
+            character: 2,
+        };
+        let items = filtered_completions_at(
+            &d,
+            &[other],
+            Some("["),
+            Some(current_src),
+            Some(pos),
+            None,
+            None,
+        );
+        let route = items.iter().find(|i| i.label == "Route");
+        assert!(route.is_some(), "Route should appear in attribute completions");
+        let edits = route.unwrap().additional_text_edits.as_ref();
+        assert!(
+            edits.is_some(),
+            "Route attribute should have additionalTextEdits for auto-import"
+        );
+        let edit_text = &edits.unwrap()[0].new_text;
+        assert!(
+            edit_text.contains("use App\\Attributes\\Route;"),
+            "edit should insert 'use App\\Attributes\\Route;', got: {edit_text}"
+        );
+    }
+
+    #[test]
+    fn attribute_bracket_same_ns_no_use_insertion() {
+        let current_src = "<?php\nnamespace App\\Attributes;\n\n#[";
+        let d = doc(current_src);
+        let other = Arc::new(ParsedDoc::parse(
+            "<?php\nnamespace App\\Attributes;\nclass Route {}".to_string(),
+        ));
+        let pos = Position {
+            line: 3,
+            character: 2,
+        };
+        let items = filtered_completions_at(
+            &d,
+            &[other],
+            Some("["),
+            Some(current_src),
+            Some(pos),
+            None,
+            None,
+        );
+        let route = items.iter().find(|i| i.label == "Route");
+        assert!(route.is_some(), "Route should appear in attribute completions");
+        assert!(
+            route.unwrap().additional_text_edits.is_none(),
+            "same-namespace attribute class should not get a use edit"
         );
     }
 
