@@ -5,7 +5,11 @@ use tower_lsp::lsp_types::{
     CompletionItem, CompletionItemKind, InsertTextFormat, Position, Range, TextEdit, Url,
 };
 
-use crate::ast::{ParsedDoc, offset_to_position};
+use tower_lsp::lsp_types::{Documentation, MarkupContent, MarkupKind};
+
+use crate::ast::{ParsedDoc, format_type_hint, offset_to_position};
+use crate::docblock::find_docblock;
+use crate::hover::format_params_str;
 use crate::phpstorm_meta::PhpStormMeta;
 use crate::stubs::builtin_class_members;
 use crate::type_map::{
@@ -36,6 +40,34 @@ fn callable_item(label: &str, kind: CompletionItemKind, has_params: bool) -> Com
             insert_text: Some(format!("{}()", label)),
             ..Default::default()
         }
+    }
+}
+
+/// Build the full signature string for a callable, e.g.
+/// `"function foo(string $bar, int $baz): bool"`.
+fn build_function_sig(
+    name: &str,
+    params: &[php_ast::Param<'_, '_>],
+    return_type: Option<&php_ast::TypeHint<'_, '_>>,
+) -> String {
+    let params_str = format_params_str(params);
+    let ret = return_type
+        .map(|r| format!(": {}", format_type_hint(r)))
+        .unwrap_or_default();
+    format!("function {}({}){}", name, params_str, ret)
+}
+
+/// Build a `Documentation` value from a docblock found before `sym_name` in `doc`.
+fn docblock_docs(doc: &ParsedDoc, sym_name: &str) -> Option<Documentation> {
+    let db = find_docblock(doc.source(), &doc.program().stmts, sym_name)?;
+    let md = db.to_markdown();
+    if md.is_empty() {
+        None
+    } else {
+        Some(Documentation::MarkupContent(MarkupContent {
+            kind: MarkupKind::Markdown,
+            value: md,
+        }))
     }
 }
 
@@ -151,7 +183,7 @@ pub fn magic_constant_completions() -> Vec<CompletionItem> {
 
 pub fn symbol_completions(doc: &ParsedDoc) -> Vec<CompletionItem> {
     let mut items = Vec::new();
-    collect_from_statements(&doc.program().stmts, &mut items);
+    collect_from_statements_with_doc(&doc.program().stmts, &mut items, Some(doc));
     items
 }
 
@@ -159,7 +191,7 @@ pub fn symbol_completions(doc: &ParsedDoc) -> Vec<CompletionItem> {
 /// Non-variable items (functions, classes, etc.) are always included.
 pub fn symbol_completions_before(doc: &ParsedDoc, line: u32) -> Vec<CompletionItem> {
     let mut items = Vec::new();
-    collect_from_statements_before(&doc.program().stmts, &mut items, line, doc.source());
+    collect_from_statements_before(&doc.program().stmts, &mut items, line, doc.source(), Some(doc));
     items
 }
 
@@ -168,6 +200,7 @@ fn collect_from_statements_before(
     items: &mut Vec<CompletionItem>,
     line: u32,
     source: &str,
+    doc: Option<&ParsedDoc>,
 ) {
     for stmt in stmts {
         match &stmt.kind {
@@ -180,26 +213,35 @@ fn collect_from_statements_before(
             }
             StmtKind::Namespace(ns) => {
                 if let NamespaceBody::Braced(inner) = &ns.body {
-                    collect_from_statements_before(inner, items, line, source);
+                    collect_from_statements_before(inner, items, line, source, doc);
                 }
             }
             // Non-variable items: always include
             _ => {
-                collect_from_statements(std::slice::from_ref(stmt), items);
+                collect_from_statements_with_doc(std::slice::from_ref(stmt), items, doc);
             }
         }
     }
 }
 
-fn collect_from_statements(stmts: &[Stmt<'_, '_>], items: &mut Vec<CompletionItem>) {
+fn collect_from_statements_with_doc(
+    stmts: &[Stmt<'_, '_>],
+    items: &mut Vec<CompletionItem>,
+    doc: Option<&ParsedDoc>,
+) {
     for stmt in stmts {
         match &stmt.kind {
             StmtKind::Function(f) => {
-                items.push(callable_item(
+                let sig = build_function_sig(f.name, &f.params, f.return_type.as_ref());
+                let documentation = doc.and_then(|d| docblock_docs(d, f.name));
+                let mut item = callable_item(
                     f.name,
                     CompletionItemKind::FUNCTION,
                     !f.params.is_empty(),
-                ));
+                );
+                item.detail = Some(sig);
+                item.documentation = documentation;
+                items.push(item);
                 for param in f.params.iter() {
                     items.push(CompletionItem {
                         label: format!("${}", param.name),
@@ -220,11 +262,20 @@ fn collect_from_statements(stmts: &[Stmt<'_, '_>], items: &mut Vec<CompletionIte
                 for member in c.members.iter() {
                     match &member.kind {
                         ClassMemberKind::Method(m) => {
-                            items.push(callable_item(
+                            let sig = build_function_sig(
+                                m.name,
+                                &m.params,
+                                m.return_type.as_ref(),
+                            );
+                            let documentation = doc.and_then(|d| docblock_docs(d, m.name));
+                            let mut item = callable_item(
                                 m.name,
                                 CompletionItemKind::METHOD,
                                 !m.params.is_empty(),
-                            ));
+                            );
+                            item.detail = Some(sig);
+                            item.documentation = documentation;
+                            items.push(item);
                         }
                         ClassMemberKind::Property(p) => {
                             items.push(CompletionItem {
@@ -276,7 +327,7 @@ fn collect_from_statements(stmts: &[Stmt<'_, '_>], items: &mut Vec<CompletionIte
             }
             StmtKind::Namespace(ns) => {
                 if let NamespaceBody::Braced(inner) = &ns.body {
-                    collect_from_statements(inner, items);
+                    collect_from_statements_with_doc(inner, items, doc);
                 }
             }
             StmtKind::Expression(e) => {

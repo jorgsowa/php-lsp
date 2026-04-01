@@ -26,7 +26,7 @@ use crate::file_rename::{use_edits_for_delete, use_edits_for_rename};
 use crate::folding::folding_ranges;
 use crate::formatting::{format_document, format_range};
 use crate::generate_action::{generate_constructor_actions, generate_getters_setters_actions};
-use crate::hover::{docs_for_symbol, hover_info};
+use crate::hover::{docs_for_symbol, hover_info, signature_for_symbol};
 use crate::implement_action::implement_missing_actions;
 use crate::implementation::goto_implementation;
 use crate::inlay_hints::inlay_hints;
@@ -638,17 +638,24 @@ impl LanguageServer for Backend {
     }
 
     async fn completion_resolve(&self, mut item: CompletionItem) -> Result<CompletionItem> {
-        if item.documentation.is_some() {
+        if item.documentation.is_some() && item.detail.is_some() {
             return Ok(item);
         }
         // Strip trailing ':' from named-argument labels (e.g. "param:") before lookup.
         let name = item.label.trim_end_matches(':');
         let all_docs = self.docs.all_docs();
-        if let Some(md) = docs_for_symbol(name, &all_docs) {
-            item.documentation = Some(Documentation::MarkupContent(MarkupContent {
-                kind: MarkupKind::Markdown,
-                value: md,
-            }));
+        if item.detail.is_none() {
+            if let Some(sig) = signature_for_symbol(name, &all_docs) {
+                item.detail = Some(sig);
+            }
+        }
+        if item.documentation.is_none() {
+            if let Some(md) = docs_for_symbol(name, &all_docs) {
+                item.documentation = Some(Documentation::MarkupContent(MarkupContent {
+                    kind: MarkupKind::Markdown,
+                    value: md,
+                }));
+            }
         }
         Ok(item)
     }

@@ -406,6 +406,24 @@ pub(crate) fn format_params_str(params: &[Param<'_, '_>]) -> String {
     format_params(params)
 }
 
+/// Return the plain-text signature for a symbol (function or method) found in
+/// any of the supplied documents, or `None` if not found.
+///
+/// Examples of returned strings:
+///   `"function foo(string $bar, int $baz): bool"`
+///   `"function __construct(Foo $x)"`
+pub fn signature_for_symbol(
+    name: &str,
+    all_docs: &[(tower_lsp::lsp_types::Url, Arc<ParsedDoc>)],
+) -> Option<String> {
+    for (_, doc) in all_docs {
+        if let Some(sig) = scan_statements(&doc.program().stmts, name) {
+            return Some(sig);
+        }
+    }
+    None
+}
+
 fn format_params(params: &[Param<'_, '_>]) -> String {
     params
         .iter()
