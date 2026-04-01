@@ -24,6 +24,10 @@ const TT_VARIABLE: u32 = 6;
 const TT_PARAMETER: u32 = 7;
 #[allow(dead_code)]
 const TT_TYPE: u32 = 8;
+const TT_STRING: u32 = 9;
+const TT_NUMBER: u32 = 10;
+const TT_COMMENT: u32 = 11;
+const TT_KEYWORD: u32 = 12;
 
 // Modifier bits — order must match `legend()` modifier vec order
 const MOD_DECLARATION: u32 = 1 << 0;
@@ -48,6 +52,10 @@ pub fn legend() -> SemanticTokensLegend {
             SemanticTokenType::VARIABLE,
             SemanticTokenType::PARAMETER,
             SemanticTokenType::TYPE,
+            SemanticTokenType::STRING,
+            SemanticTokenType::NUMBER,
+            SemanticTokenType::COMMENT,
+            SemanticTokenType::KEYWORD,
         ],
         token_modifiers: vec![
             SemanticTokenModifier::DECLARATION,
@@ -61,6 +69,7 @@ pub fn legend() -> SemanticTokensLegend {
 
 pub fn semantic_tokens(source: &str, doc: &ParsedDoc) -> Vec<SemanticToken> {
     let mut raw: Vec<RawToken> = Vec::new();
+    collect_comments(source, &mut raw);
     collect_stmts(source, &doc.program().stmts, &mut raw);
     raw.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
     delta_encode(raw)
@@ -70,6 +79,7 @@ pub fn semantic_tokens(source: &str, doc: &ParsedDoc) -> Vec<SemanticToken> {
 /// Useful for editors that only request tokens for the visible viewport.
 pub fn semantic_tokens_range(source: &str, doc: &ParsedDoc, range: Range) -> Vec<SemanticToken> {
     let mut raw: Vec<RawToken> = Vec::new();
+    collect_comments(source, &mut raw);
     collect_stmts(source, &doc.program().stmts, &mut raw);
     raw.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
 
@@ -197,6 +207,143 @@ fn deprecated_mod(source: &str, node_start: u32) -> u32 {
         .unwrap_or(0)
 }
 
+/// Scan `source` for PHP comments (single-line `//` and `#`, multi-line `/* */`)
+/// and emit `TT_COMMENT` tokens.  Each physical line of a multi-line comment
+/// is emitted as a separate token because the LSP protocol requires tokens to
+/// fit on a single line.
+fn collect_comments(source: &str, out: &mut Vec<RawToken>) {
+    let bytes = source.as_bytes();
+    let len = bytes.len();
+    let mut i = 0usize;
+
+    // Track whether we are inside a string literal so we do not mistake
+    // `//` or `/*` inside strings for comments.  We only do a best-effort
+    // scan; the AST handles string contents properly.
+    while i < len {
+        match bytes[i] {
+            // Skip double-quoted strings
+            b'"' => {
+                i += 1;
+                while i < len {
+                    if bytes[i] == b'\\' {
+                        i += 2;
+                    } else if bytes[i] == b'"' {
+                        i += 1;
+                        break;
+                    } else {
+                        i += 1;
+                    }
+                }
+            }
+            // Skip single-quoted strings
+            b'\'' => {
+                i += 1;
+                while i < len {
+                    if bytes[i] == b'\\' {
+                        i += 2;
+                    } else if bytes[i] == b'\'' {
+                        i += 1;
+                        break;
+                    } else {
+                        i += 1;
+                    }
+                }
+            }
+            b'/' if i + 1 < len => {
+                if bytes[i + 1] == b'/' {
+                    // Single-line comment: `// ...` up to (but not including) newline
+                    let start = i;
+                    while i < len && bytes[i] != b'\n' {
+                        i += 1;
+                    }
+                    let text = &source[start..i];
+                    let len_utf16: u32 =
+                        text.chars().map(|c| c.len_utf16() as u32).sum();
+                    push_at(out, source, start as u32, len_utf16, TT_COMMENT, 0);
+                } else if bytes[i + 1] == b'*' {
+                    // Multi-line comment: `/* ... */`
+                    let start = i;
+                    i += 2;
+                    while i + 1 < len && !(bytes[i] == b'*' && bytes[i + 1] == b'/') {
+                        i += 1;
+                    }
+                    // consume the closing `*/`
+                    if i + 1 < len {
+                        i += 2;
+                    }
+                    // Emit per-line so the LSP single-line constraint is met
+                    emit_multiline_comment(source, start, i, out);
+                } else {
+                    i += 1;
+                }
+            }
+            // Single-line comment starting with `#` (also `#[` is an attribute,
+            // but `#` not followed by `[` is a comment in PHP)
+            b'#' if i + 1 < len && bytes[i + 1] != b'[' => {
+                let start = i;
+                while i < len && bytes[i] != b'\n' {
+                    i += 1;
+                }
+                let text = &source[start..i];
+                let len_utf16: u32 =
+                    text.chars().map(|c| c.len_utf16() as u32).sum();
+                push_at(out, source, start as u32, len_utf16, TT_COMMENT, 0);
+            }
+            _ => {
+                i += 1;
+            }
+        }
+    }
+}
+
+/// Emit a `TT_COMMENT` raw token for each line within a block comment
+/// `source[start..end]`.  Multi-line tokens are not allowed by the LSP spec.
+fn emit_multiline_comment(source: &str, start: usize, end: usize, out: &mut Vec<RawToken>) {
+    let text = &source[start..end];
+    let mut line_start = start;
+    for (rel, ch) in text.char_indices() {
+        if ch == '\n' {
+            let line_end = start + rel; // byte index of newline
+            if line_end > line_start {
+                let segment = &source[line_start..line_end];
+                let len_utf16: u32 =
+                    segment.chars().map(|c| c.len_utf16() as u32).sum();
+                if len_utf16 > 0 {
+                    push_at(out, source, line_start as u32, len_utf16, TT_COMMENT, 0);
+                }
+            }
+            line_start = start + rel + 1; // byte after '\n'
+        }
+    }
+    // Last (or only) line
+    if line_start < end {
+        let segment = &source[line_start..end];
+        let len_utf16: u32 = segment.chars().map(|c| c.len_utf16() as u32).sum();
+        if len_utf16 > 0 {
+            push_at(out, source, line_start as u32, len_utf16, TT_COMMENT, 0);
+        }
+    }
+}
+
+/// Emit a keyword token for `kw` if the source at `offset` literally starts
+/// with that keyword followed by a non-identifier byte (or end-of-input).
+fn push_keyword_at(out: &mut Vec<RawToken>, source: &str, offset: u32, kw: &str) {
+    let start = offset as usize;
+    let src_bytes = source.as_bytes();
+    if src_bytes.get(start..start + kw.len()) == Some(kw.as_bytes()) {
+        // Make sure it is not a prefix of a longer identifier
+        let after = start + kw.len();
+        let boundary = src_bytes
+            .get(after)
+            .map(|&b| !b.is_ascii_alphanumeric() && b != b'_')
+            .unwrap_or(true);
+        if boundary {
+            let len_utf16: u32 = kw.chars().map(|c| c.len_utf16() as u32).sum();
+            push_at(out, source, offset, len_utf16, TT_KEYWORD, 0);
+        }
+    }
+}
+
 fn collect_stmts(source: &str, stmts: &[Stmt<'_, '_>], out: &mut Vec<RawToken>) {
     for stmt in stmts {
         collect_stmt(source, stmt, out);
@@ -206,6 +353,7 @@ fn collect_stmts(source: &str, stmts: &[Stmt<'_, '_>], out: &mut Vec<RawToken>) 
 fn collect_stmt(source: &str, stmt: &Stmt<'_, '_>, out: &mut Vec<RawToken>) {
     match &stmt.kind {
         StmtKind::Function(f) => {
+            push_keyword_at(out, source, stmt.span.start, "function");
             push_attributes(out, source, &f.attributes);
             let mods = MOD_DECLARATION | deprecated_mod(source, stmt.span.start);
             push_name(out, source, f.name, TT_FUNCTION, mods);
@@ -216,6 +364,7 @@ fn collect_stmt(source: &str, stmt: &Stmt<'_, '_>, out: &mut Vec<RawToken>) {
             collect_stmts(source, &f.body, out);
         }
         StmtKind::Class(c) => {
+            push_keyword_at(out, source, stmt.span.start, "class");
             push_attributes(out, source, &c.attributes);
             if let Some(name) = c.name {
                 let mods = MOD_DECLARATION | deprecated_mod(source, stmt.span.start);
@@ -226,11 +375,13 @@ fn collect_stmt(source: &str, stmt: &Stmt<'_, '_>, out: &mut Vec<RawToken>) {
             }
         }
         StmtKind::Interface(i) => {
+            push_keyword_at(out, source, stmt.span.start, "interface");
             push_attributes(out, source, &i.attributes);
             let mods = MOD_DECLARATION | deprecated_mod(source, stmt.span.start);
             push_name(out, source, i.name, TT_INTERFACE, mods);
         }
         StmtKind::Trait(t) => {
+            push_keyword_at(out, source, stmt.span.start, "trait");
             push_attributes(out, source, &t.attributes);
             let mods = MOD_DECLARATION | deprecated_mod(source, stmt.span.start);
             push_name(out, source, t.name, TT_CLASS, mods);
@@ -239,6 +390,7 @@ fn collect_stmt(source: &str, stmt: &Stmt<'_, '_>, out: &mut Vec<RawToken>) {
             }
         }
         StmtKind::Enum(e) => {
+            push_keyword_at(out, source, stmt.span.start, "enum");
             push_attributes(out, source, &e.attributes);
             let mods = MOD_DECLARATION | deprecated_mod(source, stmt.span.start);
             push_name(out, source, e.name, TT_CLASS, mods);
@@ -260,33 +412,49 @@ fn collect_stmt(source: &str, stmt: &Stmt<'_, '_>, out: &mut Vec<RawToken>) {
             }
         }
         StmtKind::Namespace(ns) => {
+            push_keyword_at(out, source, stmt.span.start, "namespace");
             if let NamespaceBody::Braced(inner) = &ns.body {
                 collect_stmts(source, inner, out);
             }
         }
+        StmtKind::Use(_) => {
+            push_keyword_at(out, source, stmt.span.start, "use");
+        }
         StmtKind::Expression(e) => collect_expr(source, e, out),
-        StmtKind::Return(Some(v)) => collect_expr(source, v, out),
+        StmtKind::Return(v) => {
+            push_keyword_at(out, source, stmt.span.start, "return");
+            if let Some(expr) = v {
+                collect_expr(source, expr, out);
+            }
+        }
         StmtKind::Echo(exprs) => {
+            push_keyword_at(out, source, stmt.span.start, "echo");
             for expr in exprs.iter() {
                 collect_expr(source, expr, out);
             }
         }
         StmtKind::If(i) => {
+            push_keyword_at(out, source, stmt.span.start, "if");
             collect_expr(source, &i.condition, out);
             collect_stmt(source, i.then_branch, out);
             for ei in i.elseif_branches.iter() {
+                push_keyword_at(out, source, ei.span.start, "elseif");
                 collect_expr(source, &ei.condition, out);
                 collect_stmt(source, &ei.body, out);
             }
             if let Some(e) = &i.else_branch {
+                // `else` keyword offset: the else branch span should start at `else`
+                push_keyword_at(out, source, e.span.start, "else");
                 collect_stmt(source, e, out);
             }
         }
         StmtKind::While(w) => {
+            push_keyword_at(out, source, stmt.span.start, "while");
             collect_expr(source, &w.condition, out);
             collect_stmt(source, w.body, out);
         }
         StmtKind::For(f) => {
+            push_keyword_at(out, source, stmt.span.start, "for");
             for e in f.init.iter() {
                 collect_expr(source, e, out);
             }
@@ -299,15 +467,19 @@ fn collect_stmt(source: &str, stmt: &Stmt<'_, '_>, out: &mut Vec<RawToken>) {
             collect_stmt(source, f.body, out);
         }
         StmtKind::Foreach(f) => {
+            push_keyword_at(out, source, stmt.span.start, "foreach");
             collect_expr(source, &f.expr, out);
             collect_stmt(source, f.body, out);
         }
         StmtKind::TryCatch(t) => {
+            push_keyword_at(out, source, stmt.span.start, "try");
             collect_stmts(source, &t.body, out);
             for catch in t.catches.iter() {
+                push_keyword_at(out, source, catch.span.start, "catch");
                 collect_stmts(source, &catch.body, out);
             }
             if let Some(finally) = &t.finally {
+                // finally keyword — we don't have a span for it directly, skip
                 collect_stmts(source, finally, out);
             }
         }
@@ -346,6 +518,45 @@ fn collect_class_member(
 
 fn collect_expr(source: &str, expr: &php_ast::Expr<'_, '_>, out: &mut Vec<RawToken>) {
     match &expr.kind {
+        // ── Literals ──────────────────────────────────────────────────────────
+        ExprKind::Int(_) | ExprKind::Float(_) => {
+            let span_len = expr.span.end - expr.span.start;
+            push_at(out, source, expr.span.start, span_len, TT_NUMBER, 0);
+        }
+        ExprKind::String(_) | ExprKind::Nowdoc { .. } => {
+            let span_len = expr.span.end - expr.span.start;
+            push_at(out, source, expr.span.start, span_len, TT_STRING, 0);
+        }
+        ExprKind::InterpolatedString(parts) | ExprKind::ShellExec(parts) => {
+            // Emit the whole span as a string; embedded variables are not
+            // re-coloured here to keep the implementation simple.
+            let span_len = expr.span.end - expr.span.start;
+            push_at(out, source, expr.span.start, span_len, TT_STRING, 0);
+            // Still recurse into embedded expressions so method/function calls
+            // inside `"... {$obj->method()} ..."` get proper tokens.
+            for part in parts.iter() {
+                if let php_ast::StringPart::Expr(inner) = part {
+                    collect_expr(source, inner, out);
+                }
+            }
+        }
+        ExprKind::Heredoc { parts, .. } => {
+            let span_len = expr.span.end - expr.span.start;
+            push_at(out, source, expr.span.start, span_len, TT_STRING, 0);
+            for part in parts.iter() {
+                if let php_ast::StringPart::Expr(inner) = part {
+                    collect_expr(source, inner, out);
+                }
+            }
+        }
+        // ── Keywords as expressions ───────────────────────────────────────────
+        ExprKind::New(n) => {
+            push_keyword_at(out, source, expr.span.start, "new");
+            for arg in n.args.iter() {
+                collect_expr(source, &arg.value, out);
+            }
+        }
+        // ── Calls ─────────────────────────────────────────────────────────────
         ExprKind::FunctionCall(f) => {
             if let ExprKind::Identifier(name) = &f.name.kind {
                 let name_str = name.as_ref();
@@ -398,6 +609,7 @@ fn collect_expr(source: &str, expr: &php_ast::Expr<'_, '_>, out: &mut Vec<RawTok
                 collect_expr(source, &arg.value, out);
             }
         }
+        // ── Compound expressions ──────────────────────────────────────────────
         ExprKind::Assign(a) => {
             collect_expr(source, a.target, out);
             collect_expr(source, a.value, out);
@@ -418,6 +630,30 @@ fn collect_expr(source: &str, expr: &php_ast::Expr<'_, '_>, out: &mut Vec<RawTok
             collect_expr(source, b.right, out);
         }
         ExprKind::Parenthesized(e) => collect_expr(source, e, out),
+        ExprKind::Array(elements) => {
+            for elem in elements.iter() {
+                if let Some(key) = &elem.key {
+                    collect_expr(source, key, out);
+                }
+                collect_expr(source, &elem.value, out);
+            }
+        }
+        ExprKind::UnaryPrefix(u) => collect_expr(source, u.operand, out),
+        ExprKind::UnaryPostfix(u) => collect_expr(source, u.operand, out),
+        ExprKind::Closure(c) => {
+            push_keyword_at(out, source, expr.span.start, "function");
+            for p in c.params.iter() {
+                push_name(out, source, p.name, TT_PARAMETER, MOD_DECLARATION);
+            }
+            collect_stmts(source, &c.body, out);
+        }
+        ExprKind::ArrowFunction(af) => {
+            push_keyword_at(out, source, expr.span.start, "fn");
+            for p in af.params.iter() {
+                push_name(out, source, p.name, TT_PARAMETER, MOD_DECLARATION);
+            }
+            collect_expr(source, af.body, out);
+        }
         _ => {}
     }
 }
@@ -642,7 +878,7 @@ mod tests {
     #[test]
     fn legend_has_correct_token_count() {
         let l = legend();
-        assert_eq!(l.token_types.len(), 9);
+        assert_eq!(l.token_types.len(), 13);
         assert_eq!(l.token_modifiers.len(), 5);
     }
 
@@ -712,6 +948,90 @@ mod tests {
                 .iter()
                 .any(|t| t.token_type == TT_CLASS && t.token_modifiers_bitset == 0),
             "expected bare class token for attribute name, got {:?}",
+            tokens
+        );
+    }
+
+    #[test]
+    fn string_literal_emits_string_token() {
+        let src = "<?php\n$x = \"hello\";";
+        let d = doc(src);
+        let tokens = semantic_tokens(src, &d);
+        assert!(
+            tokens.iter().any(|t| t.token_type == TT_STRING),
+            "expected string token for double-quoted literal, got {:?}",
+            tokens
+        );
+    }
+
+    #[test]
+    fn integer_literal_emits_number_token() {
+        let src = "<?php\n$x = 42;";
+        let d = doc(src);
+        let tokens = semantic_tokens(src, &d);
+        assert!(
+            tokens.iter().any(|t| t.token_type == TT_NUMBER),
+            "expected number token for integer literal, got {:?}",
+            tokens
+        );
+    }
+
+    #[test]
+    fn float_literal_emits_number_token() {
+        let src = "<?php\n$x = 3.14;";
+        let d = doc(src);
+        let tokens = semantic_tokens(src, &d);
+        assert!(
+            tokens.iter().any(|t| t.token_type == TT_NUMBER),
+            "expected number token for float literal, got {:?}",
+            tokens
+        );
+    }
+
+    #[test]
+    fn single_line_comment_emits_comment_token() {
+        let src = "<?php\n// this is a comment\n$x = 1;";
+        let d = doc(src);
+        let tokens = semantic_tokens(src, &d);
+        assert!(
+            tokens.iter().any(|t| t.token_type == TT_COMMENT),
+            "expected comment token for // comment, got {:?}",
+            tokens
+        );
+    }
+
+    #[test]
+    fn multiline_comment_emits_comment_tokens() {
+        let src = "<?php\n/* block\n   comment */\n$x = 1;";
+        let d = doc(src);
+        let tokens = semantic_tokens(src, &d);
+        assert!(
+            tokens.iter().any(|t| t.token_type == TT_COMMENT),
+            "expected comment token for /* */ block, got {:?}",
+            tokens
+        );
+    }
+
+    #[test]
+    fn function_keyword_emits_keyword_token() {
+        let src = "<?php\nfunction greet() {}";
+        let d = doc(src);
+        let tokens = semantic_tokens(src, &d);
+        assert!(
+            tokens.iter().any(|t| t.token_type == TT_KEYWORD),
+            "expected keyword token for 'function', got {:?}",
+            tokens
+        );
+    }
+
+    #[test]
+    fn return_keyword_emits_keyword_token() {
+        let src = "<?php\nfunction f() { return 1; }";
+        let d = doc(src);
+        let tokens = semantic_tokens(src, &d);
+        assert!(
+            tokens.iter().any(|t| t.token_type == TT_KEYWORD),
+            "expected keyword token for 'return', got {:?}",
             tokens
         );
     }
