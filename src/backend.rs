@@ -1971,3 +1971,235 @@ async fn scan_workspace(
 
     count
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tower_lsp::lsp_types::{Position, Range, Url};
+
+    // DiagnosticsConfig::from_value tests
+    #[test]
+    fn diagnostics_config_defaults_all_enabled() {
+        let cfg = DiagnosticsConfig::default();
+        assert!(cfg.enabled);
+        assert!(cfg.undefined_variables);
+        assert!(cfg.undefined_functions);
+        assert!(cfg.undefined_classes);
+        assert!(cfg.arity_errors);
+        assert!(cfg.type_errors);
+        assert!(cfg.deprecated_calls);
+        assert!(cfg.duplicate_declarations);
+    }
+
+    #[test]
+    fn diagnostics_config_from_empty_object_uses_defaults() {
+        let cfg = DiagnosticsConfig::from_value(&serde_json::json!({}));
+        assert!(cfg.enabled);
+        assert!(cfg.undefined_variables);
+    }
+
+    #[test]
+    fn diagnostics_config_from_non_object_uses_defaults() {
+        let cfg = DiagnosticsConfig::from_value(&serde_json::json!(null));
+        assert!(cfg.enabled);
+    }
+
+    #[test]
+    fn diagnostics_config_can_disable_individual_flags() {
+        let cfg = DiagnosticsConfig::from_value(&serde_json::json!({
+            "enabled": true,
+            "undefinedVariables": false,
+            "undefinedFunctions": false,
+            "undefinedClasses": true,
+            "arityErrors": false,
+            "typeErrors": true,
+            "deprecatedCalls": false,
+            "duplicateDeclarations": true,
+        }));
+        assert!(cfg.enabled);
+        assert!(!cfg.undefined_variables);
+        assert!(!cfg.undefined_functions);
+        assert!(cfg.undefined_classes);
+        assert!(!cfg.arity_errors);
+        assert!(cfg.type_errors);
+        assert!(!cfg.deprecated_calls);
+        assert!(cfg.duplicate_declarations);
+    }
+
+    #[test]
+    fn diagnostics_config_master_switch_disables_all() {
+        let cfg = DiagnosticsConfig::from_value(&serde_json::json!({"enabled": false}));
+        assert!(!cfg.enabled);
+        // Other flags still have their default values
+        assert!(cfg.undefined_variables);
+    }
+
+    // LspConfig::from_value tests
+    #[test]
+    fn lsp_config_default_is_empty() {
+        let cfg = LspConfig::default();
+        assert!(cfg.php_version.is_none());
+        assert!(cfg.exclude_paths.is_empty());
+        assert!(cfg.diagnostics.enabled);
+    }
+
+    #[test]
+    fn lsp_config_parses_php_version() {
+        let cfg = LspConfig::from_value(&serde_json::json!({"phpVersion": "8.2"}));
+        assert_eq!(cfg.php_version.as_deref(), Some("8.2"));
+    }
+
+    #[test]
+    fn lsp_config_parses_exclude_paths() {
+        let cfg = LspConfig::from_value(&serde_json::json!({
+            "excludePaths": ["cache/*", "generated/*"]
+        }));
+        assert_eq!(cfg.exclude_paths, vec!["cache/*", "generated/*"]);
+    }
+
+    #[test]
+    fn lsp_config_parses_diagnostics_section() {
+        let cfg = LspConfig::from_value(&serde_json::json!({
+            "diagnostics": {"enabled": false}
+        }));
+        assert!(!cfg.diagnostics.enabled);
+    }
+
+    #[test]
+    fn lsp_config_ignores_missing_fields() {
+        let cfg = LspConfig::from_value(&serde_json::json!({}));
+        assert!(cfg.php_version.is_none());
+        assert!(cfg.exclude_paths.is_empty());
+    }
+
+    // find_use_insert_line tests
+    #[test]
+    fn find_use_insert_line_after_php_open_tag() {
+        let src = "<?php\nfunction foo() {}";
+        assert_eq!(find_use_insert_line(src), 1);
+    }
+
+    #[test]
+    fn find_use_insert_line_after_existing_use() {
+        let src = "<?php\nuse Foo\\Bar;\nuse Baz\\Qux;\nclass Impl {}";
+        assert_eq!(find_use_insert_line(src), 3);
+    }
+
+    #[test]
+    fn find_use_insert_line_after_namespace() {
+        let src = "<?php\nnamespace App\\Services;\nclass Service {}";
+        assert_eq!(find_use_insert_line(src), 2);
+    }
+
+    #[test]
+    fn find_use_insert_line_after_namespace_and_use() {
+        let src = "<?php\nnamespace App;\nuse Foo\\Bar;\nclass Impl {}";
+        assert_eq!(find_use_insert_line(src), 3);
+    }
+
+    #[test]
+    fn find_use_insert_line_empty_file() {
+        assert_eq!(find_use_insert_line(""), 0);
+    }
+
+    // is_after_arrow tests
+    #[test]
+    fn is_after_arrow_with_method_call() {
+        let src = "<?php\n$obj->method();\n";
+        // Position after `->m` i.e. on `method` — character 6 (after `$obj->`)
+        let pos = Position { line: 1, character: 6 };
+        assert!(is_after_arrow(src, pos));
+    }
+
+    #[test]
+    fn is_after_arrow_without_arrow() {
+        let src = "<?php\n$obj->method();\n";
+        // Position on `$obj` — not after arrow
+        let pos = Position { line: 1, character: 1 };
+        assert!(!is_after_arrow(src, pos));
+    }
+
+    #[test]
+    fn is_after_arrow_on_standalone_identifier() {
+        let src = "<?php\nfunction greet() {}\n";
+        let pos = Position { line: 1, character: 10 };
+        assert!(!is_after_arrow(src, pos));
+    }
+
+    #[test]
+    fn is_after_arrow_out_of_bounds_line() {
+        let src = "<?php\n$x = 1;\n";
+        let pos = Position { line: 99, character: 0 };
+        assert!(!is_after_arrow(src, pos));
+    }
+
+    #[test]
+    fn is_after_arrow_at_start_of_property() {
+        let src = "<?php\n$this->name;\n";
+        // `name` starts at character 7 (after `$this->`)
+        let pos = Position { line: 1, character: 7 };
+        assert!(is_after_arrow(src, pos));
+    }
+
+    // php_file_op tests
+    #[test]
+    fn php_file_op_matches_php_files() {
+        let op = php_file_op();
+        assert_eq!(op.filters.len(), 1);
+        let filter = &op.filters[0];
+        assert_eq!(filter.scheme.as_deref(), Some("file"));
+        assert_eq!(filter.pattern.glob, "**/*.php");
+    }
+
+    // defer_actions tests
+    #[test]
+    fn defer_actions_strips_edit_and_adds_data() {
+        let uri = Url::parse("file:///test.php").unwrap();
+        let range = Range {
+            start: Position { line: 0, character: 0 },
+            end: Position { line: 0, character: 5 },
+        };
+        let actions = vec![CodeActionOrCommand::CodeAction(CodeAction {
+            title: "My Action".to_string(),
+            kind: Some(CodeActionKind::REFACTOR),
+            edit: Some(WorkspaceEdit::default()),
+            data: None,
+            ..Default::default()
+        })];
+        let deferred = defer_actions(actions, "test_kind", &uri, range);
+        assert_eq!(deferred.len(), 1);
+        if let CodeActionOrCommand::CodeAction(ca) = &deferred[0] {
+            assert!(ca.edit.is_none(), "edit should be stripped");
+            assert!(ca.data.is_some(), "data payload should be set");
+            let data = ca.data.as_ref().unwrap();
+            assert_eq!(data["php_lsp_resolve"], "test_kind");
+            assert_eq!(data["uri"], uri.to_string());
+        } else {
+            panic!("expected CodeAction");
+        }
+    }
+
+    // build_use_import_edit tests
+    #[test]
+    fn build_use_import_edit_inserts_after_php_tag() {
+        let src = "<?php\nclass Foo {}";
+        let uri = Url::parse("file:///test.php").unwrap();
+        let edit = build_use_import_edit(src, &uri, "App\\Services\\Bar");
+        let changes = edit.changes.unwrap();
+        let edits = changes.get(&uri).unwrap();
+        assert_eq!(edits.len(), 1);
+        assert_eq!(edits[0].new_text, "use App\\Services\\Bar;\n");
+        assert_eq!(edits[0].range.start.line, 1);
+    }
+
+    #[test]
+    fn build_use_import_edit_inserts_after_existing_use() {
+        let src = "<?php\nuse Foo\\Bar;\nclass Impl {}";
+        let uri = Url::parse("file:///test.php").unwrap();
+        let edit = build_use_import_edit(src, &uri, "Baz\\Qux");
+        let changes = edit.changes.unwrap();
+        let edits = changes.get(&uri).unwrap();
+        assert_eq!(edits[0].range.start.line, 2);
+        assert_eq!(edits[0].new_text, "use Baz\\Qux;\n");
+    }
+}
