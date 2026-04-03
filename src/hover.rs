@@ -943,4 +943,106 @@ mod tests {
             "hover content should contain 'strlen', got: {text}"
         );
     }
+
+    // ── Snapshot tests ───────────────────────────────────────────────────────
+
+    use expect_test::{Expect, expect};
+
+    fn check_hover(src: &str, position: Position, expect: Expect) {
+        let doc = ParsedDoc::parse(src.to_string());
+        let result = hover_info(src, &doc, position, &[]);
+        let actual = match result {
+            Some(Hover {
+                contents: HoverContents::Markup(mc),
+                ..
+            }) => mc.value,
+            Some(_) => "(non-markup hover)".to_string(),
+            None => "(no hover)".to_string(),
+        };
+        expect.assert_eq(&actual);
+    }
+
+    #[test]
+    fn snapshot_hover_simple_function() {
+        check_hover(
+            "<?php\nfunction init() {}",
+            pos(1, 10),
+            expect![[r#"
+                ```php
+                function init()
+                ```"#]],
+        );
+    }
+
+    #[test]
+    fn snapshot_hover_function_with_return_type() {
+        check_hover(
+            "<?php\nfunction greet(string $name): string {}",
+            pos(1, 10),
+            expect![[r#"
+                ```php
+                function greet(string $name): string
+                ```"#]],
+        );
+    }
+
+    #[test]
+    fn snapshot_hover_class() {
+        check_hover(
+            "<?php\nclass MyService {}",
+            pos(1, 8),
+            expect![[r#"
+                ```php
+                class MyService
+                ```"#]],
+        );
+    }
+
+    #[test]
+    fn snapshot_hover_class_with_extends() {
+        check_hover(
+            "<?php\nclass Dog extends Animal {}",
+            pos(1, 8),
+            expect![[r#"
+                ```php
+                class Dog extends Animal
+                ```"#]],
+        );
+    }
+
+    #[test]
+    fn snapshot_hover_method() {
+        check_hover(
+            "<?php\nclass Calc { public function add(int $a, int $b): int {} }",
+            pos(1, 32),
+            expect![[r#"
+                ```php
+                function add(int $a, int $b): int
+                ```"#]],
+        );
+    }
+
+    #[test]
+    fn snapshot_hover_trait() {
+        check_hover(
+            "<?php\ntrait Loggable {}",
+            pos(1, 8),
+            expect![[r#"
+                ```php
+                trait Loggable
+                ```"#]],
+        );
+    }
+
+    #[test]
+    fn snapshot_hover_interface() {
+        check_hover(
+            "<?php\ninterface Serializable {}",
+            pos(1, 12),
+            expect![[r#"
+                ```php
+                interface Serializable
+                ```"#]],
+        );
+    }
 }
