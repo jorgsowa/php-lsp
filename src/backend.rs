@@ -644,18 +644,18 @@ impl LanguageServer for Backend {
         // Strip trailing ':' from named-argument labels (e.g. "param:") before lookup.
         let name = item.label.trim_end_matches(':');
         let all_docs = self.docs.all_docs();
-        if item.detail.is_none() {
-            if let Some(sig) = signature_for_symbol(name, &all_docs) {
-                item.detail = Some(sig);
-            }
+        if item.detail.is_none()
+            && let Some(sig) = signature_for_symbol(name, &all_docs)
+        {
+            item.detail = Some(sig);
         }
-        if item.documentation.is_none() {
-            if let Some(md) = docs_for_symbol(name, &all_docs) {
-                item.documentation = Some(Documentation::MarkupContent(MarkupContent {
-                    kind: MarkupKind::Markdown,
-                    value: md,
-                }));
-            }
+        if item.documentation.is_none()
+            && let Some(md) = docs_for_symbol(name, &all_docs)
+        {
+            item.documentation = Some(Documentation::MarkupContent(MarkupContent {
+                kind: MarkupKind::Markdown,
+                value: md,
+            }));
         }
         Ok(item)
     }
