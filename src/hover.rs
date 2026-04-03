@@ -532,6 +532,7 @@ fn find_property_type_in_stmts<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_utils::cursor;
 
     fn pos(line: u32, character: u32) -> Position {
         Position { line, character }
@@ -539,9 +540,9 @@ mod tests {
 
     #[test]
     fn hover_on_function_name_returns_signature() {
-        let src = "<?php\nfunction greet(string $name): string {}";
-        let doc = ParsedDoc::parse(src.to_string());
-        let result = hover_info(src, &doc, pos(1, 10), &[]);
+        let (src, p) = cursor("<?php\nfunction g$0reet(string $name): string {}");
+        let doc = ParsedDoc::parse(src.clone());
+        let result = hover_info(&src, &doc, p, &[]);
         assert!(result.is_some(), "expected hover result");
         if let Some(Hover {
             contents: HoverContents::Markup(mc),
@@ -558,9 +559,9 @@ mod tests {
 
     #[test]
     fn hover_on_class_name_returns_class_sig() {
-        let src = "<?php\nclass MyService {}";
-        let doc = ParsedDoc::parse(src.to_string());
-        let result = hover_info(src, &doc, pos(1, 8), &[]);
+        let (src, p) = cursor("<?php\nclass My$0Service {}");
+        let doc = ParsedDoc::parse(src.clone());
+        let result = hover_info(&src, &doc, p, &[]);
         assert!(result.is_some(), "expected hover result");
         if let Some(Hover {
             contents: HoverContents::Markup(mc),
@@ -593,8 +594,8 @@ mod tests {
 
     #[test]
     fn word_at_extracts_from_middle_of_identifier() {
-        let src = "<?php\nfunction greetUser() {}";
-        let word = word_at(src, pos(1, 13));
+        let (src, p) = cursor("<?php\nfunction greet$0User() {}");
+        let word = word_at(&src, p);
         assert_eq!(word.as_deref(), Some("greetUser"));
     }
 
