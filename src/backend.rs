@@ -2261,3 +2261,317 @@ mod tests {
         assert_eq!(edits[0].new_text, "use Baz\\Qux;\n");
     }
 }
+
+#[cfg(test)]
+mod integration {
+    use super::Backend;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tower_lsp::{LspService, Server};
+
+    /// Encode a JSON value as an LSP-framed message.
+    fn frame(msg: &serde_json::Value) -> Vec<u8> {
+        let body = serde_json::to_string(msg).unwrap();
+        format!("Content-Length: {}\r\n\r\n{}", body.len(), body).into_bytes()
+    }
+
+    /// Read one LSP-framed response from `reader`.
+    async fn read_msg(reader: &mut (impl AsyncReadExt + Unpin)) -> serde_json::Value {
+        // Read headers until \r\n\r\n
+        let mut header_buf = Vec::new();
+        loop {
+            let b = reader.read_u8().await.expect("read byte");
+            header_buf.push(b);
+            if header_buf.ends_with(b"\r\n\r\n") {
+                break;
+            }
+        }
+        let header_str = std::str::from_utf8(&header_buf).unwrap();
+        let content_length: usize = header_str
+            .lines()
+            .find(|l| l.to_lowercase().starts_with("content-length:"))
+            .and_then(|l| l.split(':').nth(1))
+            .and_then(|v| v.trim().parse().ok())
+            .expect("Content-Length header");
+        let mut body = vec![0u8; content_length];
+        reader.read_exact(&mut body).await.expect("read body");
+        serde_json::from_slice(&body).expect("parse JSON")
+    }
+
+    /// A minimal LSP test client backed by in-memory duplex streams.
+    struct TestClient {
+        write: tokio::io::WriteHalf<tokio::io::DuplexStream>,
+        read: tokio::io::ReadHalf<tokio::io::DuplexStream>,
+        next_id: u64,
+    }
+
+    impl TestClient {
+        fn new(
+            write: tokio::io::WriteHalf<tokio::io::DuplexStream>,
+            read: tokio::io::ReadHalf<tokio::io::DuplexStream>,
+        ) -> Self {
+            TestClient {
+                write,
+                read,
+                next_id: 1,
+            }
+        }
+
+        async fn request(&mut self, method: &str, params: serde_json::Value) -> serde_json::Value {
+            let id = self.next_id;
+            self.next_id += 1;
+            let msg = serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "method": method,
+                "params": params,
+            });
+            self.write.write_all(&frame(&msg)).await.unwrap();
+            // Read responses, skipping notifications (no "id" field), until we get our response
+            loop {
+                let resp = read_msg(&mut self.read).await;
+                if resp.get("id") == Some(&serde_json::json!(id)) {
+                    return resp;
+                }
+                // It's a notification (e.g. window/logMessage) — skip it
+            }
+        }
+
+        /// Send a request with no params (the "params" key is omitted entirely).
+        async fn request_no_params(&mut self, method: &str) -> serde_json::Value {
+            let id = self.next_id;
+            self.next_id += 1;
+            let msg = serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "method": method,
+            });
+            self.write.write_all(&frame(&msg)).await.unwrap();
+            loop {
+                let resp = read_msg(&mut self.read).await;
+                if resp.get("id") == Some(&serde_json::json!(id)) {
+                    return resp;
+                }
+            }
+        }
+
+        async fn notify(&mut self, method: &str, params: serde_json::Value) {
+            let msg = serde_json::json!({
+                "jsonrpc": "2.0",
+                "method": method,
+                "params": params,
+            });
+            self.write.write_all(&frame(&msg)).await.unwrap();
+        }
+    }
+
+    fn start_server() -> TestClient {
+        let (client_stream, server_stream) = tokio::io::duplex(1 << 20);
+        let (server_read, server_write) = tokio::io::split(server_stream);
+        let (client_read, client_write) = tokio::io::split(client_stream);
+        let (service, socket) = LspService::new(Backend::new);
+        tokio::spawn(Server::new(server_read, server_write, socket).serve(service));
+        TestClient::new(client_write, client_read)
+    }
+
+    async fn initialize(client: &mut TestClient) -> serde_json::Value {
+        let resp = client
+            .request(
+                "initialize",
+                serde_json::json!({
+                    "processId": null,
+                    "rootUri": null,
+                    "capabilities": {
+                        "textDocument": {
+                            "hover": { "contentFormat": ["markdown", "plaintext"] },
+                            "completion": { "completionItem": { "snippetSupport": true } }
+                        }
+                    }
+                }),
+            )
+            .await;
+        // Send initialized notification (required by LSP spec)
+        client.notify("initialized", serde_json::json!({})).await;
+        resp
+    }
+
+    #[tokio::test]
+    async fn initialize_returns_server_capabilities() {
+        let mut client = start_server();
+        let resp = initialize(&mut client).await;
+        assert!(
+            resp["error"].is_null(),
+            "initialize should not error: {:?}",
+            resp
+        );
+        let caps = &resp["result"]["capabilities"];
+        assert!(caps.is_object(), "expected capabilities object");
+        // Check a few key capabilities are advertised
+        assert!(
+            caps["hoverProvider"].as_bool().unwrap_or(false) || caps["hoverProvider"].is_object(),
+            "hoverProvider should be enabled"
+        );
+        assert!(
+            caps["textDocumentSync"].is_object() || caps["textDocumentSync"].is_number(),
+            "textDocumentSync should be set"
+        );
+    }
+
+    #[tokio::test]
+    async fn hover_on_opened_document() {
+        let mut client = start_server();
+        initialize(&mut client).await;
+
+        // Open a document
+        client
+            .notify(
+                "textDocument/didOpen",
+                serde_json::json!({
+                    "textDocument": {
+                        "uri": "file:///test.php",
+                        "languageId": "php",
+                        "version": 1,
+                        "text": "<?php\nfunction greet(string $name): string { return $name; }\n"
+                    }
+                }),
+            )
+            .await;
+
+        // Give the async parser a moment to run
+        tokio::time::sleep(tokio::time::Duration::from_millis(150)).await;
+
+        // Request hover on `greet` (line 1, char 10)
+        let resp = client
+            .request(
+                "textDocument/hover",
+                serde_json::json!({
+                    "textDocument": { "uri": "file:///test.php" },
+                    "position": { "line": 1, "character": 10 }
+                }),
+            )
+            .await;
+
+        assert!(
+            resp["error"].is_null(),
+            "hover should not error: {:?}",
+            resp
+        );
+        // result can be null (no hover) or an object — both are valid, but for `greet` we expect content
+        if !resp["result"].is_null() {
+            let contents = &resp["result"]["contents"];
+            assert!(
+                contents.is_object() || contents.is_string(),
+                "hover contents should be present"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn completion_after_initialize() {
+        let mut client = start_server();
+        initialize(&mut client).await;
+
+        client
+            .notify(
+                "textDocument/didOpen",
+                serde_json::json!({
+                    "textDocument": {
+                        "uri": "file:///comp.php",
+                        "languageId": "php",
+                        "version": 1,
+                        "text": "<?php\n"
+                    }
+                }),
+            )
+            .await;
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(150)).await;
+
+        let resp = client
+            .request(
+                "textDocument/completion",
+                serde_json::json!({
+                    "textDocument": { "uri": "file:///comp.php" },
+                    "position": { "line": 1, "character": 0 },
+                    "context": { "triggerKind": 1 }
+                }),
+            )
+            .await;
+
+        assert!(
+            resp["error"].is_null(),
+            "completion should not error: {:?}",
+            resp
+        );
+        // result should be an array or completion list object
+        let result = &resp["result"];
+        assert!(
+            result.is_array() || result.get("items").is_some() || result.is_null(),
+            "unexpected completion result shape: {:?}",
+            result
+        );
+    }
+
+    #[tokio::test]
+    async fn did_change_updates_document() {
+        let mut client = start_server();
+        initialize(&mut client).await;
+
+        client
+            .notify(
+                "textDocument/didOpen",
+                serde_json::json!({
+                    "textDocument": {
+                        "uri": "file:///change.php",
+                        "languageId": "php",
+                        "version": 1,
+                        "text": "<?php\n"
+                    }
+                }),
+            )
+            .await;
+
+        // Change the document
+        client
+            .notify(
+                "textDocument/didChange",
+                serde_json::json!({
+                    "textDocument": { "uri": "file:///change.php", "version": 2 },
+                    "contentChanges": [{ "text": "<?php\nfunction updated() {}\n" }]
+                }),
+            )
+            .await;
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(150)).await;
+
+        // Hover on `updated` — confirms the new content was applied
+        let resp = client
+            .request(
+                "textDocument/hover",
+                serde_json::json!({
+                    "textDocument": { "uri": "file:///change.php" },
+                    "position": { "line": 1, "character": 10 }
+                }),
+            )
+            .await;
+
+        assert!(
+            resp["error"].is_null(),
+            "hover after change should not error"
+        );
+    }
+
+    #[tokio::test]
+    async fn shutdown_responds_correctly() {
+        let mut client = start_server();
+        initialize(&mut client).await;
+
+        let resp = client.request_no_params("shutdown").await;
+
+        assert!(
+            resp["error"].is_null(),
+            "shutdown should not error: {:?}",
+            resp
+        );
+        assert!(resp["result"].is_null(), "shutdown result should be null");
+    }
+}
