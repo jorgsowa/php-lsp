@@ -582,10 +582,10 @@ fn property_refs_in_stmt(source: &str, stmt: &Stmt<'_, '_>, prop_name: &str, out
         }
         StmtKind::Enum(e) => {
             for member in e.members.iter() {
-                if let EnumMemberKind::Method(m) = &member.kind {
-                    if let Some(body) = &m.body {
-                        property_refs_in_stmts(source, body, prop_name, out);
-                    }
+                if let EnumMemberKind::Method(m) = &member.kind
+                    && let Some(body) = &m.body
+                {
+                    property_refs_in_stmts(source, body, prop_name, out);
                 }
             }
         }

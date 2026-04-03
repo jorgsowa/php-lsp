@@ -108,12 +108,12 @@ fn collect_usages(source: &str, var_name: &str, from_line: u32) -> Vec<Range> {
                 || line
                     .as_bytes()
                     .get(abs - 1)
-                    .map_or(true, |b| !b.is_ascii_alphanumeric() && *b != b'_');
+                    .is_none_or(|b| !b.is_ascii_alphanumeric() && *b != b'_');
             // Character after must not be alphanumeric/_
             let after_ok = line
                 .as_bytes()
                 .get(abs + var_name.len())
-                .map_or(true, |b| !b.is_ascii_alphanumeric() && *b != b'_');
+                .is_none_or(|b| !b.is_ascii_alphanumeric() && *b != b'_');
 
             if before_ok && after_ok {
                 // Skip if this looks like an assignment target: `$var =`

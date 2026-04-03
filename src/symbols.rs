@@ -100,7 +100,7 @@ fn collect_symbol_info(
     uri: &Url,
     out: &mut Vec<SymbolInformation>,
 ) {
-    let matches_kind = |k: SymbolKind| kind_filter.map_or(true, |f| f == k);
+    let matches_kind = |k: SymbolKind| kind_filter.is_none_or(|f| f == k);
 
     for stmt in stmts {
         match &stmt.kind {

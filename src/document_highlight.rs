@@ -20,21 +20,20 @@ pub fn document_highlights(
 
     let word_utf16_len: u32 = word.chars().map(|c| c.len_utf16() as u32).sum();
     let mut spans = Vec::new();
-    let use_precise_end;
 
-    if word.starts_with('$') {
+    let use_precise_end = if word.starts_with('$') {
         // Variable spans from collect_var_refs_in_scope are precise (cover exactly
         // `$varname`), so we can use span.end directly.
         let bare = word.trim_start_matches('$');
         let byte_off = utf16_pos_to_byte(source, position);
         collect_var_refs_in_scope(&doc.program().stmts, bare, byte_off, &mut spans);
-        use_precise_end = true;
+        true
     } else {
         // refs_in_stmts pushes full statement spans for declarations (e.g. the
         // whole `function f() {}` node), so we compute end from word length.
         refs_in_stmts(&doc.program().stmts, &word, &mut spans);
-        use_precise_end = false;
-    }
+        false
+    };
 
     spans
         .into_iter()
