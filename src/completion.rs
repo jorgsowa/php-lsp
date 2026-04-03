@@ -1200,19 +1200,18 @@ pub fn filtered_completions_at(
                                 !cur_ns.is_empty() && fqn == format!("{}\\{}", cur_ns, label);
                             let is_global = !fqn.contains('\\');
                             let already = use_map.resolve(&label).is_some();
-                            let additional_text_edits =
-                                if !in_same_ns && !is_global && !already {
-                                    let insert_pos = use_insert_position(src);
-                                    Some(vec![TextEdit {
-                                        range: Range {
-                                            start: insert_pos,
-                                            end: insert_pos,
-                                        },
-                                        new_text: format!("use {};\n", fqn),
-                                    }])
-                                } else {
-                                    None
-                                };
+                            let additional_text_edits = if !in_same_ns && !is_global && !already {
+                                let insert_pos = use_insert_position(src);
+                                Some(vec![TextEdit {
+                                    range: Range {
+                                        start: insert_pos,
+                                        end: insert_pos,
+                                    },
+                                    new_text: format!("use {};\n", fqn),
+                                }])
+                            } else {
+                                None
+                            };
                             items.push(CompletionItem {
                                 label,
                                 kind: Some(CompletionItemKind::CLASS),
@@ -2359,7 +2358,10 @@ mod tests {
             None,
         );
         let route = items.iter().find(|i| i.label == "Route");
-        assert!(route.is_some(), "Route should appear in attribute completions");
+        assert!(
+            route.is_some(),
+            "Route should appear in attribute completions"
+        );
         let edits = route.unwrap().additional_text_edits.as_ref();
         assert!(
             edits.is_some(),
@@ -2393,7 +2395,10 @@ mod tests {
             None,
         );
         let route = items.iter().find(|i| i.label == "Route");
-        assert!(route.is_some(), "Route should appear in attribute completions");
+        assert!(
+            route.is_some(),
+            "Route should appear in attribute completions"
+        );
         assert!(
             route.unwrap().additional_text_edits.is_none(),
             "same-namespace attribute class should not get a use edit"
