@@ -1,8 +1,8 @@
 /// Deep AST walker — collects all spans where `word` appears as a name reference
 /// (function calls, `new Foo`, method calls, bare identifiers, static calls).
 use php_ast::{
-    ClassMemberKind, EnumMemberKind, Expr, ExprKind, NamespaceBody, Span, Stmt, StmtKind,
-    TypeHint, TypeHintKind,
+    ClassMemberKind, EnumMemberKind, Expr, ExprKind, NamespaceBody, Span, Stmt, StmtKind, TypeHint,
+    TypeHintKind,
 };
 
 use crate::ast::str_offset;

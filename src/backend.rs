@@ -1843,7 +1843,12 @@ fn symbol_kind_at(source: &str, position: Position, word: &str) -> Option<Symbol
     }
 
     // If the word starts with an uppercase letter it is likely a class/interface/enum name.
-    if word.chars().next().map(|c| c.is_uppercase()).unwrap_or(false) {
+    if word
+        .chars()
+        .next()
+        .map(|c| c.is_uppercase())
+        .unwrap_or(false)
+    {
         return Some(SymbolKind::Class);
     }
 
