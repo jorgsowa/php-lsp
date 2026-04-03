@@ -257,8 +257,7 @@ fn collect_comments(source: &str, out: &mut Vec<RawToken>) {
                         i += 1;
                     }
                     let text = &source[start..i];
-                    let len_utf16: u32 =
-                        text.chars().map(|c| c.len_utf16() as u32).sum();
+                    let len_utf16: u32 = text.chars().map(|c| c.len_utf16() as u32).sum();
                     push_at(out, source, start as u32, len_utf16, TT_COMMENT, 0);
                 } else if bytes[i + 1] == b'*' {
                     // Multi-line comment: `/* ... */`
@@ -285,8 +284,7 @@ fn collect_comments(source: &str, out: &mut Vec<RawToken>) {
                     i += 1;
                 }
                 let text = &source[start..i];
-                let len_utf16: u32 =
-                    text.chars().map(|c| c.len_utf16() as u32).sum();
+                let len_utf16: u32 = text.chars().map(|c| c.len_utf16() as u32).sum();
                 push_at(out, source, start as u32, len_utf16, TT_COMMENT, 0);
             }
             _ => {
@@ -306,8 +304,7 @@ fn emit_multiline_comment(source: &str, start: usize, end: usize, out: &mut Vec<
             let line_end = start + rel; // byte index of newline
             if line_end > line_start {
                 let segment = &source[line_start..line_end];
-                let len_utf16: u32 =
-                    segment.chars().map(|c| c.len_utf16() as u32).sum();
+                let len_utf16: u32 = segment.chars().map(|c| c.len_utf16() as u32).sum();
                 if len_utf16 > 0 {
                     push_at(out, source, line_start as u32, len_utf16, TT_COMMENT, 0);
                 }
