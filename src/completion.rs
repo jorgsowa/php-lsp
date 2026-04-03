@@ -191,7 +191,13 @@ pub fn symbol_completions(doc: &ParsedDoc) -> Vec<CompletionItem> {
 /// Non-variable items (functions, classes, etc.) are always included.
 pub fn symbol_completions_before(doc: &ParsedDoc, line: u32) -> Vec<CompletionItem> {
     let mut items = Vec::new();
-    collect_from_statements_before(&doc.program().stmts, &mut items, line, doc.source(), Some(doc));
+    collect_from_statements_before(
+        &doc.program().stmts,
+        &mut items,
+        line,
+        doc.source(),
+        Some(doc),
+    );
     items
 }
 
@@ -234,11 +240,8 @@ fn collect_from_statements_with_doc(
             StmtKind::Function(f) => {
                 let sig = build_function_sig(f.name, &f.params, f.return_type.as_ref());
                 let documentation = doc.and_then(|d| docblock_docs(d, f.name));
-                let mut item = callable_item(
-                    f.name,
-                    CompletionItemKind::FUNCTION,
-                    !f.params.is_empty(),
-                );
+                let mut item =
+                    callable_item(f.name, CompletionItemKind::FUNCTION, !f.params.is_empty());
                 item.detail = Some(sig);
                 item.documentation = documentation;
                 items.push(item);
@@ -262,11 +265,7 @@ fn collect_from_statements_with_doc(
                 for member in c.members.iter() {
                     match &member.kind {
                         ClassMemberKind::Method(m) => {
-                            let sig = build_function_sig(
-                                m.name,
-                                &m.params,
-                                m.return_type.as_ref(),
-                            );
+                            let sig = build_function_sig(m.name, &m.params, m.return_type.as_ref());
                             let documentation = doc.and_then(|d| docblock_docs(d, m.name));
                             let mut item = callable_item(
                                 m.name,
