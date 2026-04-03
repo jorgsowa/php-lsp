@@ -2415,4 +2415,87 @@ mod tests {
             ls
         );
     }
+
+    // ── Snapshot tests ───────────────────────────────────────────────────────
+
+    use expect_test::{Expect, expect};
+
+    /// Collect completion labels from a source string (no trigger, no cross-file docs),
+    /// sort them, and compare against the snapshot.
+    #[allow(dead_code)]
+    fn check_completion_labels(src: &str, expect: Expect) {
+        let d = doc(src);
+        let items = filtered_completions_at(&d, &[], None, None, None, None, None);
+        let mut ls: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+        ls.sort_unstable();
+        expect.assert_eq(&ls.join("\n"));
+    }
+
+    #[test]
+    fn snapshot_keyword_completions_present() {
+        // Verify a handful of core PHP keywords appear in the default completion list.
+        let items = keyword_completions();
+        let mut ls: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+        ls.sort_unstable();
+        // Snapshot just the first 10 sorted keywords so the test is stable even
+        // if new keywords are added later.
+        let first_ten = ls[..10.min(ls.len())].join("\n");
+        expect![[r#"
+            abstract
+            and
+            array
+            as
+            break
+            callable
+            case
+            catch
+            class
+            clone"#]]
+        .assert_eq(&first_ten);
+    }
+
+    #[test]
+    fn snapshot_symbol_completions_for_simple_class() {
+        let d = doc(
+            "<?php\nclass Counter { public function increment(): void {} public function reset(): void {} }",
+        );
+        let items = symbol_completions(&d);
+        let mut ls: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+        ls.sort_unstable();
+        expect![[r#"
+            Counter
+            increment
+            reset"#]]
+        .assert_eq(&ls.join("\n"));
+    }
+
+    #[test]
+    fn snapshot_symbol_completions_for_function_with_params() {
+        let d = doc("<?php\nfunction connect(string $host, int $port): void {}");
+        let items = symbol_completions(&d);
+        let mut ls: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+        ls.sort_unstable();
+        expect![[r#"
+            $host
+            $port
+            connect"#]]
+        .assert_eq(&ls.join("\n"));
+    }
+
+    #[test]
+    fn snapshot_arrow_completions_for_typed_var() {
+        let src = "<?php\nclass Greeter { public function sayHello(): void {} public function sayBye(): void {} }\n$g = new Greeter();\n$g->";
+        let d = doc(src);
+        let pos = Position {
+            line: 3,
+            character: 4,
+        };
+        let items = filtered_completions_at(&d, &[], Some(">"), Some(src), Some(pos), None, None);
+        let mut ls: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+        ls.sort_unstable();
+        expect![[r#"
+            sayBye
+            sayHello"#]]
+        .assert_eq(&ls.join("\n"));
+    }
 }

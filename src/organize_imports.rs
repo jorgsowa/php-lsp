@@ -221,9 +221,10 @@ fn is_used(u: &UseStatement, body: &str) -> bool {
     while let Some(pos) = body[start..].find(short.as_str()) {
         let abs = start + pos;
         let before_ok = abs == 0
-            || !body.as_bytes().get(abs - 1).is_some_and(|b| {
-                b.is_ascii_alphanumeric() || *b == b'_' || *b == b'\\'
-            });
+            || !body
+                .as_bytes()
+                .get(abs - 1)
+                .is_some_and(|b| b.is_ascii_alphanumeric() || *b == b'_' || *b == b'\\');
         let after_ok = body
             .as_bytes()
             .get(abs + short.len())
