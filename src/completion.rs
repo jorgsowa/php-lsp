@@ -2450,19 +2450,23 @@ mod tests {
             case
             catch
             class
-            clone"#]].assert_eq(&first_ten);
+            clone"#]]
+        .assert_eq(&first_ten);
     }
 
     #[test]
     fn snapshot_symbol_completions_for_simple_class() {
-        let d = doc("<?php\nclass Counter { public function increment(): void {} public function reset(): void {} }");
+        let d = doc(
+            "<?php\nclass Counter { public function increment(): void {} public function reset(): void {} }",
+        );
         let items = symbol_completions(&d);
         let mut ls: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
         ls.sort_unstable();
         expect![[r#"
             Counter
             increment
-            reset"#]].assert_eq(&ls.join("\n"));
+            reset"#]]
+        .assert_eq(&ls.join("\n"));
     }
 
     #[test]
@@ -2474,19 +2478,24 @@ mod tests {
         expect![[r#"
             $host
             $port
-            connect"#]].assert_eq(&ls.join("\n"));
+            connect"#]]
+        .assert_eq(&ls.join("\n"));
     }
 
     #[test]
     fn snapshot_arrow_completions_for_typed_var() {
         let src = "<?php\nclass Greeter { public function sayHello(): void {} public function sayBye(): void {} }\n$g = new Greeter();\n$g->";
         let d = doc(src);
-        let pos = Position { line: 3, character: 4 };
+        let pos = Position {
+            line: 3,
+            character: 4,
+        };
         let items = filtered_completions_at(&d, &[], Some(">"), Some(src), Some(pos), None, None);
         let mut ls: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
         ls.sort_unstable();
         expect![[r#"
             sayBye
-            sayHello"#]].assert_eq(&ls.join("\n"));
+            sayHello"#]]
+        .assert_eq(&ls.join("\n"));
     }
 }
