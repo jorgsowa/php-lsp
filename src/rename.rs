@@ -108,7 +108,11 @@ pub fn rename_variable(
     }
 
     WorkspaceEdit {
-        changes: if changes.is_empty() { None } else { Some(changes) },
+        changes: if changes.is_empty() {
+            None
+        } else {
+            Some(changes)
+        },
         ..Default::default()
     }
 }
@@ -144,7 +148,11 @@ pub fn rename_property(
         }
     }
     WorkspaceEdit {
-        changes: if changes.is_empty() { None } else { Some(changes) },
+        changes: if changes.is_empty() {
+            None
+        } else {
+            Some(changes)
+        },
         ..Default::default()
     }
 }
@@ -220,7 +228,10 @@ mod tests {
     fn prepare_rename_rejects_fqn() {
         let src = "<?php\nFoo\\Bar::baz();";
         let result = prepare_rename(src, pos(1, 5));
-        assert!(result.is_none(), "should not allow renaming FQNs with backslash");
+        assert!(
+            result.is_none(),
+            "should not allow renaming FQNs with backslash"
+        );
     }
 
     #[test]

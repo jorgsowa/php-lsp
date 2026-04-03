@@ -1444,8 +1444,14 @@ fn include_path_completions(doc_uri: &Url, prefix: &str) -> Vec<CompletionItem> 
         (doc_dir.join(prefix), String::new())
     } else {
         let p = Path::new(prefix);
-        let parent = p.parent().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
-        let file = p.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
+        let parent = p
+            .parent()
+            .map(|p| p.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let file = p
+            .file_name()
+            .map(|f| f.to_string_lossy().into_owned())
+            .unwrap_or_default();
         (doc_dir.join(&parent), file)
     };
 
@@ -1466,7 +1472,11 @@ fn include_path_completions(doc_uri: &Url, prefix: &str) -> Vec<CompletionItem> 
         if !is_dir && !is_php {
             continue;
         }
-        let insert = if is_dir { format!("{}/", name) } else { name.clone() };
+        let insert = if is_dir {
+            format!("{}/", name)
+        } else {
+            name.clone()
+        };
         items.push(CompletionItem {
             label: name,
             kind: Some(if is_dir {
@@ -1725,8 +1735,14 @@ mod tests {
         let items = magic_constant_completions();
         let ls: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
         for name in &[
-            "__FILE__", "__DIR__", "__LINE__", "__CLASS__",
-            "__FUNCTION__", "__METHOD__", "__NAMESPACE__", "__TRAIT__",
+            "__FILE__",
+            "__DIR__",
+            "__LINE__",
+            "__CLASS__",
+            "__FUNCTION__",
+            "__METHOD__",
+            "__NAMESPACE__",
+            "__TRAIT__",
         ] {
             assert!(ls.contains(name), "missing magic constant: {name}");
         }
@@ -1748,7 +1764,10 @@ mod tests {
     fn resolve_attribute_class_extracts_name() {
         let src = "<?php\n#[Route(\n";
         // Position right after the '(' on line 1
-        let pos = Position { line: 1, character: 8 };
+        let pos = Position {
+            line: 1,
+            character: 8,
+        };
         let result = resolve_attribute_class(src, pos);
         assert_eq!(result.as_deref(), Some("Route"));
     }
@@ -1756,7 +1775,10 @@ mod tests {
     #[test]
     fn resolve_attribute_class_fqn_extracts_short_name() {
         let src = "<?php\n#[\\Symfony\\Component\\Routing\\Route(\n";
-        let pos = Position { line: 1, character: 38 };
+        let pos = Position {
+            line: 1,
+            character: 38,
+        };
         let result = resolve_attribute_class(src, pos);
         assert_eq!(result.as_deref(), Some("Route"));
     }
@@ -1764,7 +1786,10 @@ mod tests {
     #[test]
     fn resolve_attribute_class_returns_none_for_regular_call() {
         let src = "<?php\nsomeFunction(\n";
-        let pos = Position { line: 1, character: 14 };
+        let pos = Position {
+            line: 1,
+            character: 14,
+        };
         let result = resolve_attribute_class(src, pos);
         assert!(result.is_none(), "should not match regular function call");
     }
@@ -1984,7 +2009,8 @@ mod tests {
             line: 3,
             character: 9,
         };
-        let items = filtered_completions_at(&d, &[other], None, Some(current_src), Some(pos), None, None);
+        let items =
+            filtered_completions_at(&d, &[other], None, Some(current_src), Some(pos), None, None);
         let mailer = items.iter().find(|i| i.label == "Mailer");
         assert!(mailer.is_some(), "Mailer should appear in completions");
         let edits = mailer.unwrap().additional_text_edits.as_ref();
@@ -2007,7 +2033,8 @@ mod tests {
             line: 2,
             character: 9,
         };
-        let items = filtered_completions_at(&d, &[other], None, Some(current_src), Some(pos), None, None);
+        let items =
+            filtered_completions_at(&d, &[other], None, Some(current_src), Some(pos), None, None);
         let mailer = items.iter().find(|i| i.label == "Mailer");
         assert!(mailer.is_some(), "Mailer should appear in completions");
         assert!(
@@ -2165,8 +2192,15 @@ mod tests {
             line: 1,
             character: 4,
         };
-        let items =
-            filtered_completions_at(&d, &[other], None, Some("<?php\nuse "), Some(pos), None, None);
+        let items = filtered_completions_at(
+            &d,
+            &[other],
+            None,
+            Some("<?php\nuse "),
+            Some(pos),
+            None,
+            None,
+        );
         assert!(
             items.iter().any(|i| i.label.contains("Mailer")),
             "use completion should suggest Mailer"

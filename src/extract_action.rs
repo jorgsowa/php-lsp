@@ -107,7 +107,11 @@ pub fn extract_method_actions(
     // Build the call replacement text.
     let indent = line_indent(source, range.start.line);
     let params_list = vars.join(", ");
-    let call_prefix = if method_is_static { "self::" } else { "$this->" };
+    let call_prefix = if method_is_static {
+        "self::"
+    } else {
+        "$this->"
+    };
     let call_text = format!("{indent}{call_prefix}extractedMethod({params_list});\n");
 
     // Build the new method text to insert before the class closing brace.
@@ -205,9 +209,7 @@ fn collect_vars_in_text(text: &str) -> Vec<String> {
         if bytes[i] == b'$' {
             let start = i + 1;
             let mut end = start;
-            while end < bytes.len()
-                && (bytes[end].is_ascii_alphanumeric() || bytes[end] == b'_')
-            {
+            while end < bytes.len() && (bytes[end].is_ascii_alphanumeric() || bytes[end] == b'_') {
                 end += 1;
             }
             if end > start {

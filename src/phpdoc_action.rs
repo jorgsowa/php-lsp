@@ -64,8 +64,7 @@ fn collect(
                             && docblock_before(source, member.span.start).is_none()
                         {
                             let ret = m.return_type.as_ref().map(|t| format_type_hint(t));
-                            if let Some(action) =
-                                make_action(uri, source, fn_line, &m.params, ret)
+                            if let Some(action) = make_action(uri, source, fn_line, &m.params, ret)
                             {
                                 out.push(action);
                             }
@@ -81,8 +80,7 @@ fn collect(
                             && docblock_before(source, member.span.start).is_none()
                         {
                             let ret = m.return_type.as_ref().map(|t| format_type_hint(t));
-                            if let Some(action) =
-                                make_action(uri, source, fn_line, &m.params, ret)
+                            if let Some(action) = make_action(uri, source, fn_line, &m.params, ret)
                             {
                                 out.push(action);
                             }
@@ -274,7 +272,10 @@ mod tests {
         let src = "<?php\ntrait Logger {\n    /** Already documented. */\n    public function log(string $msg): void {}\n}";
         let d = doc(src);
         let actions = phpdoc_actions(&uri(), &d, src, point(3));
-        assert!(actions.is_empty(), "should not offer action when docblock exists");
+        assert!(
+            actions.is_empty(),
+            "should not offer action when docblock exists"
+        );
     }
 
     #[test]

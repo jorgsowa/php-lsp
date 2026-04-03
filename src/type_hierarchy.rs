@@ -305,7 +305,8 @@ mod tests {
 
     #[test]
     fn supertypes_of_enum_returns_implemented_interfaces() {
-        let src = "<?php\ninterface Labelable {}\nenum Status implements Labelable { case Active; }";
+        let src =
+            "<?php\ninterface Labelable {}\nenum Status implements Labelable { case Active; }";
         let docs = vec![doc("/a.php", src)];
         let item = prepare_type_hierarchy(src, &docs, pos(2, 7)).unwrap();
         let supers = supertypes_of(&item, &docs);
@@ -315,7 +316,8 @@ mod tests {
 
     #[test]
     fn subtypes_finds_implementing_enum() {
-        let src = "<?php\ninterface Labelable {}\nenum Status implements Labelable { case Active; }";
+        let src =
+            "<?php\ninterface Labelable {}\nenum Status implements Labelable { case Active; }";
         let docs = vec![doc("/a.php", src)];
         let item = prepare_type_hierarchy(src, &docs, pos(1, 12)).unwrap();
         let subs = subtypes_of(&item, &docs);

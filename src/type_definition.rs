@@ -189,7 +189,10 @@ mod tests {
         let docs = vec![doc("/a.php", src)];
         // "function process(Status $s): void { " is 37 chars, so $s is at col 37.
         let loc = goto_type_definition(src, &parsed, &docs, pos(2, 37));
-        assert!(loc.is_some(), "expected type definition for Status-typed param");
+        assert!(
+            loc.is_some(),
+            "expected type definition for Status-typed param"
+        );
         assert_eq!(loc.unwrap().range.start.line, 1);
     }
 
@@ -201,7 +204,10 @@ mod tests {
         let docs = vec![doc("/a.php", src)];
         // "function process(Logger $l): void { " is 37 chars, so $l is at col 37.
         let loc = goto_type_definition(src, &parsed, &docs, pos(2, 37));
-        assert!(loc.is_some(), "expected type definition for trait-typed param");
+        assert!(
+            loc.is_some(),
+            "expected type definition for trait-typed param"
+        );
         assert_eq!(loc.unwrap().range.start.line, 1);
     }
 }

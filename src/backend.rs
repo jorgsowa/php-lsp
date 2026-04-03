@@ -22,8 +22,6 @@ use crate::document_highlight::document_highlights;
 use crate::document_link::document_links;
 use crate::document_store::DocumentStore;
 use crate::extract_action::{extract_method_actions, extract_variable_actions};
-use crate::inline_action::inline_variable_actions;
-use crate::organize_imports::organize_imports_action;
 use crate::file_rename::{use_edits_for_delete, use_edits_for_rename};
 use crate::folding::folding_ranges;
 use crate::formatting::{format_document, format_range};
@@ -32,11 +30,12 @@ use crate::hover::{docs_for_symbol, hover_info};
 use crate::implement_action::implement_missing_actions;
 use crate::implementation::goto_implementation;
 use crate::inlay_hints::inlay_hints;
+use crate::inline_action::inline_variable_actions;
 use crate::inline_value::inline_values_in_range;
 use crate::moniker::moniker_at;
 use crate::on_type_format::on_type_format;
+use crate::organize_imports::organize_imports_action;
 use crate::phpdoc_action::phpdoc_actions;
-use crate::type_action::add_return_type_actions;
 use crate::phpstorm_meta::PhpStormMeta;
 use crate::references::find_references;
 use crate::rename::{prepare_rename, rename, rename_property, rename_variable};
@@ -49,6 +48,7 @@ use crate::semantic_tokens::{
 };
 use crate::signature_help::signature_help;
 use crate::symbols::{document_symbols, resolve_workspace_symbol, workspace_symbols};
+use crate::type_action::add_return_type_actions;
 use crate::type_definition::goto_type_definition;
 use crate::type_hierarchy::{prepare_type_hierarchy, subtypes_of, supertypes_of};
 use crate::util::word_at;
@@ -722,7 +722,14 @@ impl LanguageServer for Backend {
                 Some(d) => d,
                 None => return Ok(None),
             };
-            Ok(Some(rename_variable(&word, &params.new_name, uri, &source, &doc, position)))
+            Ok(Some(rename_variable(
+                &word,
+                &params.new_name,
+                uri,
+                &source,
+                &doc,
+                position,
+            )))
         } else if is_after_arrow(&source, position) {
             let all_docs = self.docs.all_docs();
             Ok(Some(rename_property(&word, &params.new_name, &all_docs)))
@@ -1282,8 +1289,14 @@ impl LanguageServer for Backend {
                 uri,
                 vec![TextEdit {
                     range: Range {
-                        start: Position { line: 0, character: 0 },
-                        end: Position { line: 0, character: 0 },
+                        start: Position {
+                            line: 0,
+                            character: 0,
+                        },
+                        end: Position {
+                            line: 0,
+                            character: 0,
+                        },
                     },
                     new_text: stub,
                 }],
@@ -1293,7 +1306,10 @@ impl LanguageServer for Backend {
         Ok(if changes.is_empty() {
             None
         } else {
-            Some(WorkspaceEdit { changes: Some(changes), ..Default::default() })
+            Some(WorkspaceEdit {
+                changes: Some(changes),
+                ..Default::default()
+            })
         })
     }
 
@@ -2128,7 +2144,10 @@ mod tests {
     fn is_after_arrow_with_method_call() {
         let src = "<?php\n$obj->method();\n";
         // Position after `->m` i.e. on `method` — character 6 (after `$obj->`)
-        let pos = Position { line: 1, character: 6 };
+        let pos = Position {
+            line: 1,
+            character: 6,
+        };
         assert!(is_after_arrow(src, pos));
     }
 
@@ -2136,21 +2155,30 @@ mod tests {
     fn is_after_arrow_without_arrow() {
         let src = "<?php\n$obj->method();\n";
         // Position on `$obj` — not after arrow
-        let pos = Position { line: 1, character: 1 };
+        let pos = Position {
+            line: 1,
+            character: 1,
+        };
         assert!(!is_after_arrow(src, pos));
     }
 
     #[test]
     fn is_after_arrow_on_standalone_identifier() {
         let src = "<?php\nfunction greet() {}\n";
-        let pos = Position { line: 1, character: 10 };
+        let pos = Position {
+            line: 1,
+            character: 10,
+        };
         assert!(!is_after_arrow(src, pos));
     }
 
     #[test]
     fn is_after_arrow_out_of_bounds_line() {
         let src = "<?php\n$x = 1;\n";
-        let pos = Position { line: 99, character: 0 };
+        let pos = Position {
+            line: 99,
+            character: 0,
+        };
         assert!(!is_after_arrow(src, pos));
     }
 
@@ -2158,7 +2186,10 @@ mod tests {
     fn is_after_arrow_at_start_of_property() {
         let src = "<?php\n$this->name;\n";
         // `name` starts at character 7 (after `$this->`)
-        let pos = Position { line: 1, character: 7 };
+        let pos = Position {
+            line: 1,
+            character: 7,
+        };
         assert!(is_after_arrow(src, pos));
     }
 
@@ -2177,8 +2208,14 @@ mod tests {
     fn defer_actions_strips_edit_and_adds_data() {
         let uri = Url::parse("file:///test.php").unwrap();
         let range = Range {
-            start: Position { line: 0, character: 0 },
-            end: Position { line: 0, character: 5 },
+            start: Position {
+                line: 0,
+                character: 0,
+            },
+            end: Position {
+                line: 0,
+                character: 5,
+            },
         };
         let actions = vec![CodeActionOrCommand::CodeAction(CodeAction {
             title: "My Action".to_string(),

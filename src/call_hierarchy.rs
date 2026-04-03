@@ -701,27 +701,57 @@ mod tests {
         // range.end is OUTSIDE the range.  The old code used `>` instead of
         // `>=`, which incorrectly included the end position.
         let range = Range {
-            start: Position { line: 1, character: 0 },
-            end:   Position { line: 3, character: 5 },
+            start: Position {
+                line: 1,
+                character: 0,
+            },
+            end: Position {
+                line: 3,
+                character: 5,
+            },
         };
         // One past the last character on the end line — clearly outside.
         assert!(
-            !range_contains(range, Position { line: 3, character: 6 }),
+            !range_contains(
+                range,
+                Position {
+                    line: 3,
+                    character: 6
+                }
+            ),
             "position after end must be outside"
         );
         // Exactly at end — outside per LSP half-open semantics.
         assert!(
-            !range_contains(range, Position { line: 3, character: 5 }),
+            !range_contains(
+                range,
+                Position {
+                    line: 3,
+                    character: 5
+                }
+            ),
             "position exactly at range.end must be outside (half-open range)"
         );
         // One before end — inside.
         assert!(
-            range_contains(range, Position { line: 3, character: 4 }),
+            range_contains(
+                range,
+                Position {
+                    line: 3,
+                    character: 4
+                }
+            ),
             "position just before end must be inside"
         );
         // Start of range — inside.
         assert!(
-            range_contains(range, Position { line: 1, character: 0 }),
+            range_contains(
+                range,
+                Position {
+                    line: 1,
+                    character: 0
+                }
+            ),
             "start position must be inside"
         );
     }

@@ -452,8 +452,7 @@ fn collect_in_fn_at(
         StmtKind::Class(c) => {
             for member in c.members.iter() {
                 if let ClassMemberKind::Method(m) = &member.kind {
-                    if byte_off < member.span.start as usize
-                        || byte_off >= member.span.end as usize
+                    if byte_off < member.span.start as usize || byte_off >= member.span.end as usize
                     {
                         continue;
                     }
@@ -478,8 +477,7 @@ fn collect_in_fn_at(
         StmtKind::Trait(t) => {
             for member in t.members.iter() {
                 if let ClassMemberKind::Method(m) = &member.kind {
-                    if byte_off < member.span.start as usize
-                        || byte_off >= member.span.end as usize
+                    if byte_off < member.span.start as usize || byte_off >= member.span.end as usize
                     {
                         continue;
                     }
@@ -532,12 +530,7 @@ pub fn property_refs_in_stmts(
     }
 }
 
-fn property_refs_in_stmt(
-    source: &str,
-    stmt: &Stmt<'_, '_>,
-    prop_name: &str,
-    out: &mut Vec<Span>,
-) {
+fn property_refs_in_stmt(source: &str, stmt: &Stmt<'_, '_>, prop_name: &str, out: &mut Vec<Span>) {
     match &stmt.kind {
         StmtKind::Expression(e) => property_refs_in_expr(source, e, prop_name, out),
         StmtKind::Return(Some(e)) => property_refs_in_expr(source, e, prop_name, out),
@@ -650,12 +643,7 @@ fn property_refs_in_stmt(
     }
 }
 
-fn property_refs_in_expr(
-    source: &str,
-    expr: &Expr<'_, '_>,
-    prop_name: &str,
-    out: &mut Vec<Span>,
-) {
+fn property_refs_in_expr(source: &str, expr: &Expr<'_, '_>, prop_name: &str, out: &mut Vec<Span>) {
     match &expr.kind {
         ExprKind::PropertyAccess(p) => {
             property_refs_in_expr(source, p.object, prop_name, out);

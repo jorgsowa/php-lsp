@@ -171,8 +171,14 @@ mod tests {
         // return an edit the end character must be the UTF-16 length, not byte length.
         let src = "<?php\n$x = 1;\n$y = \"café\";\n";
         let range = Range {
-            start: Position { line: 2, character: 0 },
-            end: Position { line: 2, character: 0 },
+            start: Position {
+                line: 2,
+                character: 0,
+            },
+            end: Position {
+                line: 2,
+                character: 0,
+            },
         };
         // We can't force a formatter to be installed, so we verify the computation
         // directly by checking that the UTF-16 length of the last line differs from
@@ -180,7 +186,10 @@ mod tests {
         let last_line = "$y = \"café\";";
         let byte_len = last_line.len() as u32;
         let utf16_len: u32 = last_line.chars().map(|c| c.len_utf16() as u32).sum();
-        assert_ne!(byte_len, utf16_len, "test requires a line where byte len != UTF-16 len");
+        assert_ne!(
+            byte_len, utf16_len,
+            "test requires a line where byte len != UTF-16 len"
+        );
         // "café" has 12 chars, each a BMP code point (é = 1 UTF-16 unit), so 12 UTF-16 units.
         // é is 2 bytes in UTF-8, so byte length is 13.
         assert_eq!(utf16_len, 12);

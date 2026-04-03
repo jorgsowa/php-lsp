@@ -203,11 +203,7 @@ fn parse_use_statement(text: &str) -> Option<UseStatement> {
 
     let short = match &alias {
         Some(a) => a.clone(),
-        None => fqn_part
-            .rsplit('\\')
-            .next()
-            .unwrap_or(fqn_part)
-            .to_string(),
+        None => fqn_part.rsplit('\\').next().unwrap_or(fqn_part).to_string(),
     };
 
     Some(UseStatement {
@@ -225,10 +221,9 @@ fn is_used(u: &UseStatement, body: &str) -> bool {
     while let Some(pos) = body[start..].find(short.as_str()) {
         let abs = start + pos;
         let before_ok = abs == 0
-            || !body
-                .as_bytes()
-                .get(abs - 1)
-                .map_or(false, |b| b.is_ascii_alphanumeric() || *b == b'_' || *b == b'\\');
+            || !body.as_bytes().get(abs - 1).map_or(false, |b| {
+                b.is_ascii_alphanumeric() || *b == b'_' || *b == b'\\'
+            });
         let after_ok = body
             .as_bytes()
             .get(abs + short.len())
@@ -254,7 +249,11 @@ fn line_start_byte(source: &str, line_no: u32) -> usize {
             offset = i + 1;
         }
     }
-    if current == line_no { offset } else { source.len() }
+    if current == line_no {
+        offset
+    } else {
+        source.len()
+    }
 }
 
 /// Convert a UTF-16 column offset to a byte offset within a line that starts at `line_start`.
@@ -273,8 +272,16 @@ fn utf16_col_to_byte(source: &str, line_start: usize, utf16_col: u32) -> usize {
 
 /// Convert an LSP `Range` to a byte range in `source`.
 fn byte_range_of(source: &str, range: Range) -> std::ops::Range<usize> {
-    let start = utf16_col_to_byte(source, line_start_byte(source, range.start.line), range.start.character);
-    let end = utf16_col_to_byte(source, line_start_byte(source, range.end.line), range.end.character);
+    let start = utf16_col_to_byte(
+        source,
+        line_start_byte(source, range.start.line),
+        range.start.character,
+    );
+    let end = utf16_col_to_byte(
+        source,
+        line_start_byte(source, range.end.line),
+        range.end.character,
+    );
     start..end.min(source.len())
 }
 
@@ -301,7 +308,8 @@ mod tests {
 
     #[test]
     fn unsorted_imports_are_sorted() {
-        let src = "<?php\nuse App\\Zebra;\nuse App\\Alpha;\n\n$a = new Alpha();\n$z = new Zebra();\n";
+        let src =
+            "<?php\nuse App\\Zebra;\nuse App\\Alpha;\n\n$a = new Alpha();\n$z = new Zebra();\n";
         let action = organize_imports_action(src, &uri());
         assert!(action.is_some(), "should produce an action");
         let CodeActionOrCommand::CodeAction(ca) = action.unwrap() else {
@@ -326,7 +334,10 @@ mod tests {
         let src = "<?php\nuse App\\Mailer;\nuse App\\Logger;\n\n$m = new Mailer();\n";
         // Logger is unused; Mailer is used.
         let action = organize_imports_action(src, &uri());
-        assert!(action.is_some(), "should produce an action to remove Logger");
+        assert!(
+            action.is_some(),
+            "should produce an action to remove Logger"
+        );
         let CodeActionOrCommand::CodeAction(ca) = action.unwrap() else {
             panic!("expected CodeAction");
         };
@@ -355,7 +366,8 @@ mod tests {
 
     #[test]
     fn aliased_import_kept_with_alias_syntax() {
-        let src = "<?php\nuse App\\Zebra as Z;\nuse App\\Alpha;\n\n$a = new Alpha();\n$z = new Z();\n";
+        let src =
+            "<?php\nuse App\\Zebra as Z;\nuse App\\Alpha;\n\n$a = new Alpha();\n$z = new Z();\n";
         let action = organize_imports_action(src, &uri());
         assert!(action.is_some());
         let CodeActionOrCommand::CodeAction(ca) = action.unwrap() else {
@@ -370,13 +382,18 @@ mod tests {
             .next()
             .unwrap();
         let new_text = &edits[0].new_text;
-        assert!(new_text.contains("as Z"), "aliased import should keep alias syntax");
+        assert!(
+            new_text.contains("as Z"),
+            "aliased import should keep alias syntax"
+        );
     }
 
     #[test]
     fn action_kind_is_source_organize_imports() {
-        let src = "<?php\nuse App\\Zebra;\nuse App\\Alpha;\n\n$a = new Alpha();\n$z = new Zebra();\n";
-        let CodeActionOrCommand::CodeAction(ca) = organize_imports_action(src, &uri()).unwrap() else {
+        let src =
+            "<?php\nuse App\\Zebra;\nuse App\\Alpha;\n\n$a = new Alpha();\n$z = new Zebra();\n";
+        let CodeActionOrCommand::CodeAction(ca) = organize_imports_action(src, &uri()).unwrap()
+        else {
             panic!("expected CodeAction");
         };
         assert_eq!(ca.kind, Some(CodeActionKind::SOURCE_ORGANIZE_IMPORTS));

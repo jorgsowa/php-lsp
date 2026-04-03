@@ -805,14 +805,20 @@ mod tests {
     fn psalm_return_alias_parsed_as_return() {
         let raw = "/**\n * @psalm-return non-empty-string\n */";
         let db = parse_docblock(raw);
-        assert_eq!(db.return_type.as_ref().map(|r| r.type_hint.as_str()), Some("non-empty-string"));
+        assert_eq!(
+            db.return_type.as_ref().map(|r| r.type_hint.as_str()),
+            Some("non-empty-string")
+        );
     }
 
     #[test]
     fn phpstan_return_alias_parsed_as_return() {
         let raw = "/**\n * @phpstan-return array<int, string>\n */";
         let db = parse_docblock(raw);
-        assert_eq!(db.return_type.as_ref().map(|r| r.type_hint.as_str()), Some("array<int, string>"));
+        assert_eq!(
+            db.return_type.as_ref().map(|r| r.type_hint.as_str()),
+            Some("array<int, string>")
+        );
     }
 
     #[test]

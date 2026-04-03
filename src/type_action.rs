@@ -35,8 +35,7 @@ fn collect(
                 if line_in_range(fn_line, range) && f.return_type.is_none() {
                     let returns_value = body_has_value_return(&f.body);
                     let type_str = if returns_value { "mixed" } else { "void" };
-                    if let Some(insert) =
-                        find_close_paren_offset(source, stmt.span.start as usize)
+                    if let Some(insert) = find_close_paren_offset(source, stmt.span.start as usize)
                     {
                         push_action(source, insert, type_str, uri, out);
                     }
@@ -57,7 +56,11 @@ fn collect(
                             && let Some(insert) =
                                 find_close_paren_offset(source, member.span.start as usize)
                         {
-                            let type_str = if body_has_value_return(body) { "mixed" } else { "void" };
+                            let type_str = if body_has_value_return(body) {
+                                "mixed"
+                            } else {
+                                "void"
+                            };
                             push_action(source, insert, type_str, uri, out);
                         }
                     }
@@ -73,7 +76,11 @@ fn collect(
                         && let Some(insert) =
                             find_close_paren_offset(source, member.span.start as usize)
                     {
-                        let type_str = if body_has_value_return(body) { "mixed" } else { "void" };
+                        let type_str = if body_has_value_return(body) {
+                            "mixed"
+                        } else {
+                            "void"
+                        };
                         push_action(source, insert, type_str, uri, out);
                     }
                 }
@@ -88,7 +95,11 @@ fn collect(
                         && let Some(insert) =
                             find_close_paren_offset(source, member.span.start as usize)
                     {
-                        let type_str = if body_has_value_return(body) { "mixed" } else { "void" };
+                        let type_str = if body_has_value_return(body) {
+                            "mixed"
+                        } else {
+                            "void"
+                        };
                         push_action(source, insert, type_str, uri, out);
                     }
                 }

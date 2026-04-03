@@ -111,7 +111,9 @@ impl DocumentStore {
         let need_to_evict = order.len().saturating_sub(MAX_INDEXED);
         let mut evicted = 0;
         while evicted < need_to_evict {
-            let Some(oldest) = order.pop_front() else { break };
+            let Some(oldest) = order.pop_front() else {
+                break;
+            };
             if self
                 .map
                 .get(&oldest)

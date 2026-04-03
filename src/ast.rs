@@ -81,7 +81,10 @@ pub fn offset_to_position(source: &str, offset: u32) -> Position {
     let prefix = &source[..offset];
     let line = prefix.bytes().filter(|&b| b == b'\n').count() as u32;
     let last_nl = prefix.rfind('\n').map(|i| i + 1).unwrap_or(0);
-    let character = prefix[last_nl..].chars().map(|c| c.len_utf16() as u32).sum::<u32>();
+    let character = prefix[last_nl..]
+        .chars()
+        .map(|c| c.len_utf16() as u32)
+        .sum::<u32>();
     Position { line, character }
 }
 
@@ -192,7 +195,10 @@ mod tests {
         let src = "a\u{1F600}b";
         assert_eq!(
             offset_to_position(src, 5), // byte offset of 'b'
-            Position { line: 0, character: 3 } // UTF-16 col 3
+            Position {
+                line: 0,
+                character: 3
+            }  // UTF-16 col 3
         );
     }
 

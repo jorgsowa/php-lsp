@@ -79,7 +79,14 @@ pub fn workspace_symbols(query: &str, docs: &[(Url, Arc<ParsedDoc>)]) -> Vec<Sym
     let mut results = Vec::new();
     for (uri, doc) in docs {
         let source = doc.source();
-        collect_symbol_info(source, &doc.program().stmts, term, kind_filter, uri, &mut results);
+        collect_symbol_info(
+            source,
+            &doc.program().stmts,
+            term,
+            kind_filter,
+            uri,
+            &mut results,
+        );
     }
     results
 }
@@ -115,7 +122,10 @@ fn collect_symbol_info(
             }
             StmtKind::Class(c) => {
                 let name = c.name.unwrap_or("");
-                if !name.is_empty() && matches_kind(SymbolKind::CLASS) && fuzzy_camel_match(query, name) {
+                if !name.is_empty()
+                    && matches_kind(SymbolKind::CLASS)
+                    && fuzzy_camel_match(query, name)
+                {
                     out.push(SymbolInformation {
                         name: name.to_string(),
                         kind: SymbolKind::CLASS,
@@ -864,9 +874,18 @@ mod tests {
         let uri = Url::parse("file:///test.php").unwrap();
         let docs = vec![(uri.clone(), Arc::new(doc))];
         let results = workspace_symbols("#class:Foo", &docs);
-        assert!(results.iter().all(|s| s.kind == SymbolKind::CLASS), "only classes expected");
-        assert!(results.iter().any(|s| s.name == "Foo"), "Foo should be found");
-        assert!(!results.iter().any(|s| s.name == "bar"), "bar should be excluded by class filter");
+        assert!(
+            results.iter().all(|s| s.kind == SymbolKind::CLASS),
+            "only classes expected"
+        );
+        assert!(
+            results.iter().any(|s| s.name == "Foo"),
+            "Foo should be found"
+        );
+        assert!(
+            !results.iter().any(|s| s.name == "bar"),
+            "bar should be excluded by class filter"
+        );
     }
 
     #[test]
@@ -876,9 +895,18 @@ mod tests {
         let uri = Url::parse("file:///test.php").unwrap();
         let docs = vec![(uri.clone(), Arc::new(doc))];
         let results = workspace_symbols("#fn:bar", &docs);
-        assert!(results.iter().all(|s| s.kind == SymbolKind::FUNCTION), "only functions expected");
-        assert!(results.iter().any(|s| s.name == "bar"), "bar should be found");
-        assert!(!results.iter().any(|s| s.name == "Foo"), "Foo should be excluded by fn filter");
+        assert!(
+            results.iter().all(|s| s.kind == SymbolKind::FUNCTION),
+            "only functions expected"
+        );
+        assert!(
+            results.iter().any(|s| s.name == "bar"),
+            "bar should be found"
+        );
+        assert!(
+            !results.iter().any(|s| s.name == "Foo"),
+            "Foo should be excluded by fn filter"
+        );
     }
 
     #[test]
@@ -888,8 +916,14 @@ mod tests {
         let uri = Url::parse("file:///test.php").unwrap();
         let docs = vec![(uri.clone(), Arc::new(doc))];
         let results = workspace_symbols("", &docs);
-        assert!(results.iter().any(|s| s.kind == SymbolKind::CLASS), "should include classes");
-        assert!(results.iter().any(|s| s.kind == SymbolKind::FUNCTION), "should include functions");
+        assert!(
+            results.iter().any(|s| s.kind == SymbolKind::CLASS),
+            "should include classes"
+        );
+        assert!(
+            results.iter().any(|s| s.kind == SymbolKind::FUNCTION),
+            "should include functions"
+        );
     }
 
     #[test]

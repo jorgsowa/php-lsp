@@ -117,9 +117,7 @@ pub fn builtin_class_members(name: &str) -> Option<ClassMembers> {
         // SPL file / directory iterators
         "SplFileInfo" => spl_file_info_members(),
         "SplFileObject" => spl_file_object_members(),
-        "DirectoryIterator" | "FilesystemIterator" | "GlobIterator" => {
-            directory_iterator_members()
-        }
+        "DirectoryIterator" | "FilesystemIterator" | "GlobIterator" => directory_iterator_members(),
         "RecursiveDirectoryIterator" => ClassMembers {
             parent: Some("FilesystemIterator".to_string()),
             methods: m(&[
@@ -148,7 +146,10 @@ pub fn builtin_class_members(name: &str) -> Option<ClassMembers> {
         },
         "DOMText" => ClassMembers {
             parent: Some("DOMNode".to_string()),
-            methods: m(&[("isWhitespaceInElementContent", false), ("splitText", false)]),
+            methods: m(&[
+                ("isWhitespaceInElementContent", false),
+                ("splitText", false),
+            ]),
             properties: p(&[("wholeText", false)]),
             ..Default::default()
         },
@@ -198,7 +199,11 @@ pub fn builtin_class_members(name: &str) -> Option<ClassMembers> {
             ..Default::default()
         },
         "ReflectionNamedType" | "ReflectionType" | "ReflectionUnionType" => ClassMembers {
-            methods: m(&[("getName", false), ("isBuiltin", false), ("allowsNull", false)]),
+            methods: m(&[
+                ("getName", false),
+                ("isBuiltin", false),
+                ("allowsNull", false),
+            ]),
             ..Default::default()
         },
         // Errors/exceptions: PHP 8.x
@@ -863,10 +868,7 @@ fn dom_element_members() -> ClassMembers {
             ("setIdAttributeNS", false),
             ("setIdAttributeNode", false),
         ]),
-        properties: p(&[
-            ("tagName", false),
-            ("schemaTypeInfo", false),
-        ]),
+        properties: p(&[("tagName", false), ("schemaTypeInfo", false)]),
         ..Default::default()
     }
 }

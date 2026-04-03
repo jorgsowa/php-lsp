@@ -217,6 +217,9 @@ mod tests {
         let byte_col = line.find(url).unwrap();
         let utf16_col: u32 = line[..byte_col].chars().map(|c| c.len_utf16() as u32).sum();
         assert_eq!(range.start.character, utf16_col);
-        assert_ne!(range.start.character, byte_col as u32, "must not use raw byte offset");
+        assert_ne!(
+            range.start.character, byte_col as u32,
+            "must not use raw byte offset"
+        );
     }
 }

@@ -14,11 +14,7 @@ use tower_lsp::lsp_types::{
 
 use crate::util::word_at;
 
-pub fn inline_variable_actions(
-    source: &str,
-    range: Range,
-    uri: &Url,
-) -> Vec<CodeActionOrCommand> {
+pub fn inline_variable_actions(source: &str, range: Range, uri: &Url) -> Vec<CodeActionOrCommand> {
     // Determine the variable name under cursor (or at start of selection).
     let cursor = range.start;
     let var_name = match word_at(source, cursor) {
@@ -165,8 +161,14 @@ mod tests {
     fn no_action_when_cursor_not_on_variable() {
         let src = "<?php\n$x = 1;\nfoo();\n";
         let range = Range {
-            start: Position { line: 2, character: 0 },
-            end: Position { line: 2, character: 0 },
+            start: Position {
+                line: 2,
+                character: 0,
+            },
+            end: Position {
+                line: 2,
+                character: 0,
+            },
         };
         let actions = inline_variable_actions(src, range, &uri());
         assert!(actions.is_empty(), "should not act on non-variable cursor");
@@ -176,8 +178,14 @@ mod tests {
     fn no_action_when_no_assignment_found() {
         let src = "<?php\necho $x;\n";
         let range = Range {
-            start: Position { line: 1, character: 5 },
-            end: Position { line: 1, character: 7 },
+            start: Position {
+                line: 1,
+                character: 5,
+            },
+            end: Position {
+                line: 1,
+                character: 7,
+            },
         };
         let actions = inline_variable_actions(src, range, &uri());
         assert!(actions.is_empty(), "no assignment to inline");
@@ -187,8 +195,14 @@ mod tests {
     fn inlines_single_usage() {
         let src = "<?php\n$x = new Foo();\necho $x;\n";
         let range = Range {
-            start: Position { line: 2, character: 5 },
-            end: Position { line: 2, character: 7 },
+            start: Position {
+                line: 2,
+                character: 5,
+            },
+            end: Position {
+                line: 2,
+                character: 7,
+            },
         };
         let actions = inline_variable_actions(src, range, &uri());
         assert!(!actions.is_empty(), "should produce an action");
@@ -209,17 +223,27 @@ mod tests {
         assert_eq!(edits.len(), 2, "expected replacement + deletion edits");
         // The replacement should be the RHS
         let replacement = edits.iter().find(|e| e.new_text == "new Foo()");
-        assert!(replacement.is_some(), "replacement should use RHS 'new Foo()'");
+        assert!(
+            replacement.is_some(),
+            "replacement should use RHS 'new Foo()'"
+        );
     }
 
     #[test]
     fn action_kind_is_refactor_inline() {
         let src = "<?php\n$val = 42;\nreturn $val;\n";
         let range = Range {
-            start: Position { line: 2, character: 7 },
-            end: Position { line: 2, character: 11 },
+            start: Position {
+                line: 2,
+                character: 7,
+            },
+            end: Position {
+                line: 2,
+                character: 11,
+            },
         };
-        let CodeActionOrCommand::CodeAction(ca) = &inline_variable_actions(src, range, &uri())[0] else {
+        let CodeActionOrCommand::CodeAction(ca) = &inline_variable_actions(src, range, &uri())[0]
+        else {
             panic!();
         };
         assert_eq!(ca.kind, Some(CodeActionKind::REFACTOR_INLINE));

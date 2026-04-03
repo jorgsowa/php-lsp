@@ -214,7 +214,10 @@ mod tests {
         assert!(result.is_some(), "expected location for $x");
         let loc = result.unwrap();
         // First occurrence is on line 2 (the assignment)
-        assert_eq!(loc.range.start.line, 2, "should jump to first $x occurrence");
+        assert_eq!(
+            loc.range.start.line, 2,
+            "should jump to first $x occurrence"
+        );
     }
 
     #[test]

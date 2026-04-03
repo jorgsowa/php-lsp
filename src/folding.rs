@@ -90,8 +90,7 @@ fn fold_stmt(stmt: &Stmt<'_, '_>, source: &str, out: &mut Vec<FoldingRange>) {
             for member in e.members.iter() {
                 if let EnumMemberKind::Method(m) = &member.kind {
                     let m_start = offset_to_position(source, member.span.start).line;
-                    let m_end =
-                        offset_to_position(source, member.span.end.saturating_sub(1)).line;
+                    let m_end = offset_to_position(source, member.span.end.saturating_sub(1)).line;
                     push(out, m_start, m_end, None);
                     if let Some(body) = &m.body {
                         fold_stmts(body, source, out);
@@ -517,6 +516,11 @@ mod tests {
             "expected method fold (3..5), got {:?}",
             ls
         );
-        assert_eq!(ranges.len(), 2, "expected 2 fold ranges (enum + method), got {:?}", ls);
+        assert_eq!(
+            ranges.len(),
+            2,
+            "expected 2 fold ranges (enum + method), got {:?}",
+            ls
+        );
     }
 }

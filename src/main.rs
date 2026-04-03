@@ -23,8 +23,8 @@ mod inlay_hints;
 mod inline_action;
 mod inline_value;
 mod moniker;
-mod organize_imports;
 mod on_type_format;
+mod organize_imports;
 mod phpdoc_action;
 mod phpstorm_meta;
 mod references;
@@ -35,6 +35,8 @@ mod semantic_tokens;
 mod signature_help;
 mod stubs;
 mod symbols;
+#[cfg(test)]
+mod test_utils;
 mod type_action;
 mod type_definition;
 mod type_hierarchy;
@@ -42,8 +44,6 @@ mod type_map;
 mod use_resolver;
 mod util;
 mod walk;
-#[cfg(test)]
-mod test_utils;
 
 use backend::Backend;
 use tower_lsp::{LspService, Server};

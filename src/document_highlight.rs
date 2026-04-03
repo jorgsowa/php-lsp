@@ -85,7 +85,11 @@ mod tests {
         let src = "<?php\nfunction foo() {\n    $x = 1;\n    echo $x;\n}";
         let doc = ParsedDoc::parse(src.to_string());
         let highlights = document_highlights(src, &doc, pos(2, 5));
-        assert_eq!(highlights.len(), 2, "should highlight both $x occurrences in foo()");
+        assert_eq!(
+            highlights.len(),
+            2,
+            "should highlight both $x occurrences in foo()"
+        );
     }
 
     #[test]
