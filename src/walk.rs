@@ -944,19 +944,19 @@ fn function_refs_in_stmt(stmt: &Stmt<'_, '_>, name: &str, out: &mut Vec<Span>) {
         }
         StmtKind::Trait(t) => {
             for member in t.members.iter() {
-                if let ClassMemberKind::Method(m) = &member.kind {
-                    if let Some(body) = &m.body {
-                        function_refs_in_stmts(body, name, out);
-                    }
+                if let ClassMemberKind::Method(m) = &member.kind
+                    && let Some(body) = &m.body
+                {
+                    function_refs_in_stmts(body, name, out);
                 }
             }
         }
         StmtKind::Enum(e) => {
             for member in e.members.iter() {
-                if let EnumMemberKind::Method(m) = &member.kind {
-                    if let Some(body) = &m.body {
-                        function_refs_in_stmts(body, name, out);
-                    }
+                if let EnumMemberKind::Method(m) = &member.kind
+                    && let Some(body) = &m.body
+                {
+                    function_refs_in_stmts(body, name, out);
                 }
             }
         }
@@ -1161,28 +1161,28 @@ fn method_refs_in_stmt(stmt: &Stmt<'_, '_>, name: &str, out: &mut Vec<Span>) {
         StmtKind::Function(f) => method_refs_in_stmts(&f.body, name, out),
         StmtKind::Class(c) => {
             for member in c.members.iter() {
-                if let ClassMemberKind::Method(m) = &member.kind {
-                    if let Some(body) = &m.body {
-                        method_refs_in_stmts(body, name, out);
-                    }
+                if let ClassMemberKind::Method(m) = &member.kind
+                    && let Some(body) = &m.body
+                {
+                    method_refs_in_stmts(body, name, out);
                 }
             }
         }
         StmtKind::Trait(t) => {
             for member in t.members.iter() {
-                if let ClassMemberKind::Method(m) = &member.kind {
-                    if let Some(body) = &m.body {
-                        method_refs_in_stmts(body, name, out);
-                    }
+                if let ClassMemberKind::Method(m) = &member.kind
+                    && let Some(body) = &m.body
+                {
+                    method_refs_in_stmts(body, name, out);
                 }
             }
         }
         StmtKind::Enum(e) => {
             for member in e.members.iter() {
-                if let EnumMemberKind::Method(m) = &member.kind {
-                    if let Some(body) = &m.body {
-                        method_refs_in_stmts(body, name, out);
-                    }
+                if let EnumMemberKind::Method(m) = &member.kind
+                    && let Some(body) = &m.body
+                {
+                    method_refs_in_stmts(body, name, out);
                 }
             }
         }
@@ -1505,10 +1505,10 @@ fn class_refs_in_stmt(stmt: &Stmt<'_, '_>, class_name: &str, out: &mut Vec<Span>
         }
         StmtKind::Enum(e) => {
             for member in e.members.iter() {
-                if let EnumMemberKind::Method(m) = &member.kind {
-                    if let Some(body) = &m.body {
-                        class_refs_in_stmts(body, class_name, out);
-                    }
+                if let EnumMemberKind::Method(m) = &member.kind
+                    && let Some(body) = &m.body
+                {
+                    class_refs_in_stmts(body, class_name, out);
                 }
             }
         }
