@@ -28,7 +28,7 @@ pub fn incoming_calls(
     item: &CallHierarchyItem,
     all_docs: &[(Url, Arc<ParsedDoc>)],
 ) -> Vec<CallHierarchyIncomingCall> {
-    let call_sites = find_references(&item.name, all_docs, false);
+    let call_sites = find_references(&item.name, all_docs, false, None);
     let mut result: Vec<CallHierarchyIncomingCall> = Vec::new();
 
     for loc in call_sites {

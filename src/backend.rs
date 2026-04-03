@@ -37,7 +37,7 @@ use crate::on_type_format::on_type_format;
 use crate::organize_imports::organize_imports_action;
 use crate::phpdoc_action::phpdoc_actions;
 use crate::phpstorm_meta::PhpStormMeta;
-use crate::references::find_references;
+use crate::references::{SymbolKind, find_references};
 use crate::rename::{prepare_rename, rename, rename_property, rename_variable};
 use crate::selection_range::selection_ranges;
 use crate::semantic_diagnostics::{
@@ -690,9 +690,10 @@ impl LanguageServer for Backend {
             Some(w) => w,
             None => return Ok(None),
         };
+        let kind = symbol_kind_at(&source, position, &word);
         let all_docs = self.docs.all_docs();
         let include_declaration = params.context.include_declaration;
-        let locations = find_references(&word, &all_docs, include_declaration);
+        let locations = find_references(&word, &all_docs, include_declaration, kind);
         Ok(if locations.is_empty() {
             None
         } else {
@@ -1787,6 +1788,72 @@ fn is_after_arrow(source: &str, position: Position) -> bool {
         char_idx -= 1;
     }
     char_idx >= 2 && chars[char_idx - 1] == '>' && chars[char_idx - 2] == '-'
+}
+
+/// Classify the symbol at `position` so `find_references` can use the right walker.
+///
+/// Heuristics (in priority order):
+/// 1. Preceded by `->` or `?->` → `Method`
+/// 2. Preceded by `::` → `Method` (static)
+/// 3. Word starts with `$` → variable (returns `None`; variables are handled separately)
+/// 4. First character is uppercase AND not preceded by `->` or `::` → `Class`
+/// 5. Otherwise → `Function`
+///
+/// Falls back to `None` when the context cannot be determined.
+fn symbol_kind_at(source: &str, position: Position, word: &str) -> Option<SymbolKind> {
+    if word.starts_with('$') {
+        return None; // variables handled elsewhere
+    }
+    let line = source.lines().nth(position.line as usize)?;
+    let chars: Vec<char> = line.chars().collect();
+
+    // Convert UTF-16 column to char index.
+    let col = position.character as usize;
+    let mut utf16_col = 0usize;
+    let mut char_idx = 0usize;
+    for ch in &chars {
+        if utf16_col >= col {
+            break;
+        }
+        utf16_col += ch.len_utf16();
+        char_idx += 1;
+    }
+
+    // Walk left past identifier characters to find the first character before the word.
+    let is_word_char = |c: char| c.is_alphanumeric() || c == '_';
+    while char_idx > 0 && is_word_char(chars[char_idx - 1]) {
+        char_idx -= 1;
+    }
+
+    // Check for `->` or `?->`
+    if char_idx >= 2 && chars[char_idx - 1] == '>' && chars[char_idx - 2] == '-' {
+        return Some(SymbolKind::Method);
+    }
+    if char_idx >= 3
+        && chars[char_idx - 1] == '>'
+        && chars[char_idx - 2] == '-'
+        && chars[char_idx - 3] == '?'
+    {
+        return Some(SymbolKind::Method);
+    }
+
+    // Check for `::`
+    if char_idx >= 2 && chars[char_idx - 1] == ':' && chars[char_idx - 2] == ':' {
+        return Some(SymbolKind::Method);
+    }
+
+    // If the word starts with an uppercase letter it is likely a class/interface/enum name.
+    if word
+        .chars()
+        .next()
+        .map(|c| c.is_uppercase())
+        .unwrap_or(false)
+    {
+        return Some(SymbolKind::Class);
+    }
+
+    // Otherwise treat as a free function.
+    Some(SymbolKind::Function)
 }
 
 impl Backend {

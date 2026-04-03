@@ -117,7 +117,7 @@ fn ref_count_lens(
     name: &str,
     all_docs: &[(Url, Arc<ParsedDoc>)],
 ) -> CodeLens {
-    let count = find_references(name, all_docs, false).len();
+    let count = find_references(name, all_docs, false, None).len();
     let label = match count {
         0 => "0 references".to_string(),
         1 => "1 reference".to_string(),
