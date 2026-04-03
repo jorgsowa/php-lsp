@@ -139,6 +139,7 @@ fn _name_range_from_offset(source: &str, name: &str) -> Range {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_utils::cursor;
 
     fn uri() -> Url {
         Url::parse("file:///test.php").unwrap()
@@ -150,9 +151,9 @@ mod tests {
 
     #[test]
     fn jumps_to_function_definition() {
-        let src = "<?php\nfunction greet() {}";
-        let doc = ParsedDoc::parse(src.to_string());
-        let result = goto_definition(&uri(), src, &doc, &[], pos(1, 10));
+        let (src, p) = cursor("<?php\nfunction g$0reet() {}");
+        let doc = ParsedDoc::parse(src.clone());
+        let result = goto_definition(&uri(), &src, &doc, &[], p);
         assert!(result.is_some(), "expected a location");
         let loc = result.unwrap();
         assert_eq!(loc.range.start.line, 1);
@@ -161,9 +162,9 @@ mod tests {
 
     #[test]
     fn jumps_to_class_definition() {
-        let src = "<?php\nclass MyService {}";
-        let doc = ParsedDoc::parse(src.to_string());
-        let result = goto_definition(&uri(), src, &doc, &[], pos(1, 8));
+        let (src, p) = cursor("<?php\nclass My$0Service {}");
+        let doc = ParsedDoc::parse(src.clone());
+        let result = goto_definition(&uri(), &src, &doc, &[], p);
         assert!(result.is_some());
         let loc = result.unwrap();
         assert_eq!(loc.range.start.line, 1);
@@ -171,9 +172,9 @@ mod tests {
 
     #[test]
     fn jumps_to_interface_definition() {
-        let src = "<?php\ninterface Countable {}";
-        let doc = ParsedDoc::parse(src.to_string());
-        let result = goto_definition(&uri(), src, &doc, &[], pos(1, 12));
+        let (src, p) = cursor("<?php\ninterface Co$0untable {}");
+        let doc = ParsedDoc::parse(src.clone());
+        let result = goto_definition(&uri(), &src, &doc, &[], p);
         assert!(result.is_some());
         assert_eq!(result.unwrap().range.start.line, 1);
     }

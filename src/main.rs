@@ -42,6 +42,8 @@ mod type_map;
 mod use_resolver;
 mod util;
 mod walk;
+#[cfg(test)]
+mod test_utils;
 
 use backend::Backend;
 use tower_lsp::{LspService, Server};
