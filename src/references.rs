@@ -3,6 +3,7 @@ use std::sync::Arc;
 use php_ast::{ClassMemberKind, EnumMemberKind, NamespaceBody, Span, Stmt, StmtKind};
 use tower_lsp::lsp_types::{Location, Position, Range, Url};
 
+use crate::ast::str_offset;
 use crate::ast::{ParsedDoc, offset_to_position};
 use crate::walk::{
     class_refs_in_stmts, function_refs_in_stmts, method_refs_in_stmts, refs_in_stmts,
@@ -61,18 +62,18 @@ fn find_references_inner(
         let mut spans = Vec::new();
         if include_use {
             // Rename path: always use the general walker so `use` imports are included.
-            refs_in_stmts_with_use(stmts, word, &mut spans);
+            refs_in_stmts_with_use(source, stmts, word, &mut spans);
         } else {
             match kind {
                 Some(SymbolKind::Function) => function_refs_in_stmts(stmts, word, &mut spans),
                 Some(SymbolKind::Method) => method_refs_in_stmts(stmts, word, &mut spans),
                 Some(SymbolKind::Class) => class_refs_in_stmts(stmts, word, &mut spans),
-                None => refs_in_stmts(stmts, word, &mut spans),
+                None => refs_in_stmts(source, stmts, word, &mut spans),
             }
         }
 
         if !include_declaration {
-            spans.retain(|span| !is_declaration_span(stmts, word, span));
+            spans.retain(|span| !is_declaration_span(source, stmts, word, span));
         }
 
         for span in spans {
@@ -93,17 +94,29 @@ fn find_references_inner(
 }
 
 /// Returns true if this span is the declaration site (function/class/method name).
-fn is_declaration_span(stmts: &[Stmt<'_, '_>], word: &str, span: &Span) -> bool {
-    fn check(stmts: &[Stmt<'_, '_>], word: &str, span: &Span) -> bool {
+/// Compares against the name's own span (not the whole statement span).
+fn is_declaration_span(source: &str, stmts: &[Stmt<'_, '_>], word: &str, span: &Span) -> bool {
+    fn name_span(source: &str, name: &str) -> Span {
+        let start = str_offset(source, name);
+        Span {
+            start,
+            end: start + name.len() as u32,
+        }
+    }
+
+    fn check(source: &str, stmts: &[Stmt<'_, '_>], word: &str, span: &Span) -> bool {
         for stmt in stmts {
             match &stmt.kind {
                 StmtKind::Function(f) if f.name == word => {
-                    if spans_equal(&stmt.span, span) {
+                    if spans_equal(&name_span(source, f.name), span) {
                         return true;
                     }
                 }
                 StmtKind::Class(c) if c.name == Some(word) => {
-                    if spans_equal(&stmt.span, span) {
+                    // c.name is Some(word) per the guard; unwrap to get the
+                    // arena-allocated slice so str_offset uses pointer arithmetic.
+                    let name = c.name.unwrap();
+                    if spans_equal(&name_span(source, name), span) {
                         return true;
                     }
                 }
@@ -111,19 +124,19 @@ fn is_declaration_span(stmts: &[Stmt<'_, '_>], word: &str, span: &Span) -> bool 
                     for member in c.members.iter() {
                         if let ClassMemberKind::Method(m) = &member.kind
                             && m.name == word
-                            && spans_equal(&member.span, span)
+                            && spans_equal(&name_span(source, m.name), span)
                         {
                             return true;
                         }
                     }
                 }
                 StmtKind::Interface(i) if i.name == word => {
-                    if spans_equal(&stmt.span, span) {
+                    if spans_equal(&name_span(source, i.name), span) {
                         return true;
                     }
                 }
                 StmtKind::Trait(t) if t.name == word => {
-                    if spans_equal(&stmt.span, span) {
+                    if spans_equal(&name_span(source, t.name), span) {
                         return true;
                     }
                 }
@@ -131,14 +144,14 @@ fn is_declaration_span(stmts: &[Stmt<'_, '_>], word: &str, span: &Span) -> bool 
                     for member in t.members.iter() {
                         if let ClassMemberKind::Method(m) = &member.kind
                             && m.name == word
-                            && spans_equal(&member.span, span)
+                            && spans_equal(&name_span(source, m.name), span)
                         {
                             return true;
                         }
                     }
                 }
                 StmtKind::Enum(e) if e.name == word => {
-                    if spans_equal(&stmt.span, span) {
+                    if spans_equal(&name_span(source, e.name), span) {
                         return true;
                     }
                 }
@@ -146,12 +159,14 @@ fn is_declaration_span(stmts: &[Stmt<'_, '_>], word: &str, span: &Span) -> bool 
                     for member in e.members.iter() {
                         match &member.kind {
                             EnumMemberKind::Method(m)
-                                if m.name == word && spans_equal(&member.span, span) =>
+                                if m.name == word
+                                    && spans_equal(&name_span(source, m.name), span) =>
                             {
                                 return true;
                             }
                             EnumMemberKind::Case(c)
-                                if c.name == word && spans_equal(&member.span, span) =>
+                                if c.name == word
+                                    && spans_equal(&name_span(source, c.name), span) =>
                             {
                                 return true;
                             }
@@ -161,7 +176,7 @@ fn is_declaration_span(stmts: &[Stmt<'_, '_>], word: &str, span: &Span) -> bool 
                 }
                 StmtKind::Namespace(ns) => {
                     if let NamespaceBody::Braced(inner) = &ns.body
-                        && check(inner, word, span)
+                        && check(source, inner, word, span)
                     {
                         return true;
                     }
@@ -172,7 +187,7 @@ fn is_declaration_span(stmts: &[Stmt<'_, '_>], word: &str, span: &Span) -> bool 
         false
     }
 
-    check(stmts, word, span)
+    check(source, stmts, word, span)
 }
 
 fn spans_equal(a: &Span, b: &Span) -> bool {
@@ -497,6 +512,65 @@ mod tests {
             lines.contains(&2),
             "expected type hint Foo on line 2, got: {:?}",
             refs
+        );
+    }
+
+    // ── Declaration span precision tests ────────────────────────────────────────
+
+    #[test]
+    fn function_declaration_span_points_to_name_not_keyword() {
+        // `include_declaration: true` — the declaration ref must start at `greet`,
+        // not at the `function` keyword.
+        let src = "<?php\nfunction greet() {}";
+        let docs = vec![doc("/a.php", src)];
+        let refs = find_references("greet", &docs, true, None);
+        assert_eq!(refs.len(), 1, "expected exactly 1 ref (the declaration)");
+        // "function " is 9 bytes; "greet" starts at byte 15 (after "<?php\n").
+        // As a position, line 1, character 9.
+        assert_eq!(
+            refs[0].range.start.line, 1,
+            "declaration should be on line 1"
+        );
+        assert_eq!(
+            refs[0].range.start.character, 9,
+            "declaration should start at the function name, not the 'function' keyword"
+        );
+        assert_eq!(
+            refs[0].range.end.character,
+            refs[0].range.start.character + "greet".len() as u32,
+            "range should span exactly the function name"
+        );
+    }
+
+    #[test]
+    fn class_declaration_span_points_to_name_not_keyword() {
+        let src = "<?php\nclass MyClass {}";
+        let docs = vec![doc("/a.php", src)];
+        let refs = find_references("MyClass", &docs, true, None);
+        assert_eq!(refs.len(), 1);
+        // "class " is 6 bytes; "MyClass" starts at character 6.
+        assert_eq!(refs[0].range.start.line, 1);
+        assert_eq!(
+            refs[0].range.start.character, 6,
+            "declaration should start at 'MyClass', not 'class'"
+        );
+    }
+
+    #[test]
+    fn method_declaration_span_points_to_name_not_keyword() {
+        let src = "<?php\nclass C {\n    public function doThing() {}\n}\n(new C())->doThing();";
+        let docs = vec![doc("/a.php", src)];
+        // include_declaration=true so we get the method declaration too.
+        let refs = find_references("doThing", &docs, true, None);
+        // Declaration on line 2, call on line 4.
+        let decl_ref = refs
+            .iter()
+            .find(|r| r.range.start.line == 2)
+            .expect("no declaration ref on line 2");
+        // "    public function " is 20 chars; "doThing" starts at character 20.
+        assert_eq!(
+            decl_ref.range.start.character, 20,
+            "method declaration should start at the method name, not 'public function'"
         );
     }
 }
