@@ -115,10 +115,10 @@ pub(crate) fn is_php_builtin(name: &str) -> bool {
         "array_walk",
         "array_walk_recursive",
         "arsort",
+        "asin",
         "asort",
         "atan",
         "atan2",
-        "asin",
         "base64_decode",
         "base64_encode",
         "basename",
@@ -203,8 +203,8 @@ pub(crate) fn is_php_builtin(name: &str) -> bool {
         "join",
         "json_decode",
         "json_encode",
-        "ksort",
         "krsort",
+        "ksort",
         "lcfirst",
         "list",
         "log",
@@ -268,20 +268,20 @@ pub(crate) fn is_php_builtin(name: &str) -> bool {
         "str_split",
         "str_starts_with",
         "str_word_count",
-        "strcmp",
         "strcasecmp",
+        "strcmp",
+        "strip_tags",
+        "stripslashes",
         "stristr",
         "strlen",
-        "strncmp",
         "strncasecmp",
+        "strncmp",
         "strpos",
         "strrpos",
         "strstr",
-        "strtotime",
         "strtolower",
+        "strtotime",
         "strtoupper",
-        "strip_tags",
-        "stripslashes",
         "strval",
         "substr",
         "substr_count",
@@ -304,6 +304,10 @@ pub(crate) fn is_php_builtin(name: &str) -> bool {
         "var_export",
         "vsprintf",
     ];
+    debug_assert!(
+        BUILTINS.windows(2).all(|w| w[0] <= w[1]),
+        "BUILTINS must be sorted for binary_search"
+    );
     BUILTINS.binary_search(&name).is_ok()
 }
 
@@ -371,7 +375,11 @@ pub(crate) fn split_params(s: &str) -> Vec<&str> {
 
 /// Extract the word (identifier) under the cursor, handling UTF-16 offsets.
 pub(crate) fn word_at(source: &str, position: Position) -> Option<String> {
-    let line = source.lines().nth(position.line as usize)?;
+    // Use split('\n') rather than lines() so that a trailing newline produces a
+    // final empty entry — lines() silently drops it, causing word_at to return
+    // None for any cursor on the last line of a normally-saved PHP file.
+    let raw = source.split('\n').nth(position.line as usize)?;
+    let line = raw.strip_suffix('\r').unwrap_or(raw);
     let char_offset = position.character as usize;
 
     let chars: Vec<char> = line.chars().collect();
@@ -463,5 +471,73 @@ mod tests {
             let utf16 = byte_to_utf16(s, byte_idx) as usize;
             assert_eq!(utf16_offset_to_byte(s, utf16), byte_idx);
         }
+    }
+
+    #[test]
+    fn word_at_last_line_with_trailing_newline() {
+        // Editors save files with a trailing newline; lines() drops the final
+        // empty entry, making word_at return None for cursors on the last line.
+        let src = "<?php\necho strlen($x);\n";
+        let pos = Position {
+            line: 1,
+            character: 6,
+        }; // "strlen" on line 1
+        let w = word_at(src, pos);
+        assert_eq!(
+            w.as_deref(),
+            Some("strlen"),
+            "word_at must work on lines before the trailing newline"
+        );
+        // Position on the final empty line produced by the trailing newline.
+        let last_line = Position {
+            line: 2,
+            character: 0,
+        };
+        // Should return None (empty line), but must not panic.
+        let _ = word_at(src, last_line);
+    }
+
+    #[test]
+    fn word_at_crlf_line_endings() {
+        let src = "<?php\r\nfunction foo() {}\r\n";
+        let pos = Position {
+            line: 1,
+            character: 9,
+        }; // "foo"
+        let w = word_at(src, pos);
+        assert_eq!(
+            w.as_deref(),
+            Some("foo"),
+            "word_at must handle CRLF line endings"
+        );
+    }
+
+    #[test]
+    fn is_php_builtin_asin_recognized() {
+        // asin was out of order in BUILTINS, causing binary_search to miss it.
+        assert!(
+            is_php_builtin("asin"),
+            "asin must be recognised as a PHP builtin"
+        );
+        assert!(
+            is_php_builtin("atan"),
+            "atan must be recognised as a PHP builtin"
+        );
+        assert!(
+            is_php_builtin("krsort"),
+            "krsort must be recognised as a PHP builtin"
+        );
+        assert!(
+            is_php_builtin("strcasecmp"),
+            "strcasecmp must be recognised as a PHP builtin"
+        );
+        assert!(
+            is_php_builtin("strncasecmp"),
+            "strncasecmp must be recognised as a PHP builtin"
+        );
+        assert!(
+            is_php_builtin("strip_tags"),
+            "strip_tags must be recognised as a PHP builtin"
+        );
     }
 }
