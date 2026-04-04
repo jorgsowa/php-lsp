@@ -18,19 +18,10 @@ Or download a pre-built binary from [Releases](https://github.com/jorgsowa/php-l
 
 ### Claude Code
 
-Add to `.claude/settings.json` in your project root:
+Install the [Claude Code plugin](https://github.com/jorgsowa/claude-php-lsp-plugin):
 
-```json
-{
-  "lsp": {
-    "php-lsp": {
-      "command": "php-lsp",
-      "extensionToLanguage": {
-        ".php": "php"
-      }
-    }
-  }
-}
+```bash
+claude plugin add https://github.com/jorgsowa/claude-php-lsp-plugin
 ```
 
 ### Cursor

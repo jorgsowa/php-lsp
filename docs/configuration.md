@@ -45,21 +45,6 @@ vim.lsp.start({
 })
 ```
 
-### Claude Code (`.claude/settings.json`)
+### Claude Code
 
-```json
-{
-  "lsp": {
-    "php-lsp": {
-      "command": "php-lsp",
-      "extensionToLanguage": {
-        ".php": "php"
-      },
-      "initializationOptions": {
-        "phpVersion": "8.2",
-        "excludePaths": ["cache/*"]
-      }
-    }
-  }
-}
-```
+Configuration is handled by the [claude-php-lsp-plugin](https://github.com/jorgsowa/claude-php-lsp-plugin). The defaults in the plugin's `.lsp.json` work for most projects. To override `initializationOptions`, edit `.lsp.json` in the plugin directory after installation.
