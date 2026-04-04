@@ -541,9 +541,30 @@ fn find_property_info_in_stmts<'a>(
                                         .map(|t| crate::ast::format_type_hint(t))
                                         .unwrap_or_default();
                                     // Promoted params don't have their own docblock;
-                                    // use the constructor's docblock @param annotation instead.
-                                    let db = docblock_before(source, member.span.start)
-                                        .map(|raw| parse_docblock(&raw));
+                                    // filter the constructor's docblock to the @param for this
+                                    // property only — exclude description, @return, @throws, etc.
+                                    // Returns None (not Some(empty)) when no matching @param
+                                    // exists, preserving the contract of this function.
+                                    let db = docblock_before(source, member.span.start).and_then(
+                                        |raw| {
+                                            let full = parse_docblock(&raw);
+                                            let matching: Vec<_> = full
+                                                .params
+                                                .into_iter()
+                                                .filter(|dp| {
+                                                    dp.name.strip_prefix('$') == Some(prop_name)
+                                                })
+                                                .collect();
+                                            if matching.is_empty() {
+                                                None
+                                            } else {
+                                                Some(crate::docblock::Docblock {
+                                                    params: matching,
+                                                    ..Default::default()
+                                                })
+                                            }
+                                        },
+                                    );
                                     return Some((type_str, db));
                                 }
                             }
@@ -924,6 +945,61 @@ mod tests {
         assert!(
             text.contains("float"),
             "should show type hint for promoted property"
+        );
+    }
+
+    #[test]
+    fn hover_on_promoted_property_shows_only_its_param_docblock() {
+        // Issue #26: hovering a promoted property should show only the @param for
+        // that property, not the full constructor docblock (no @return, @throws,
+        // or @param entries for other parameters).
+        let src = "<?php\nclass User {\n    /**\n     * Create a user.\n     * @param string $name The user's display name\n     * @param int $age The user's age\n     * @return void\n     * @throws \\InvalidArgumentException\n     */\n    public function __construct(\n        public string $name,\n        public int $age,\n    ) {}\n}\n$u = new User('Alice', 30);\n$u->name";
+        let doc = ParsedDoc::parse(src.to_string());
+        // hover on "$u->name" — cursor on 'name' (line 15, char 4 after "$u->")
+        let h = hover_at(src, &doc, &[], pos(15, 4), None);
+        assert!(h.is_some(), "expected hover on promoted property");
+        let text = match h.unwrap().contents {
+            HoverContents::Markup(m) => m.value,
+            _ => String::new(),
+        };
+        assert!(
+            text.contains("@param") && text.contains("$name"),
+            "should show @param for $name"
+        );
+        assert!(
+            !text.contains("$age"),
+            "should NOT show @param for other parameters"
+        );
+        assert!(
+            !text.contains("@return"),
+            "should NOT show @return from constructor docblock"
+        );
+        assert!(
+            !text.contains("@throws"),
+            "should NOT show @throws from constructor docblock"
+        );
+        assert!(
+            !text.contains("Create a user"),
+            "should NOT show constructor description"
+        );
+    }
+
+    #[test]
+    fn hover_on_promoted_property_with_no_param_docblock_shows_type_only() {
+        // When the constructor has a docblock but no @param for this promoted property,
+        // hover should still work (showing type) without appending any docblock section.
+        let src = "<?php\nclass User {\n    /**\n     * Create a user.\n     * @return void\n     */\n    public function __construct(\n        public string $name,\n    ) {}\n}\n$u = new User('Alice');\n$u->name";
+        let doc = ParsedDoc::parse(src.to_string());
+        let h = hover_at(src, &doc, &[], pos(11, 4), None);
+        assert!(h.is_some(), "expected hover on promoted property");
+        let text = match h.unwrap().contents {
+            HoverContents::Markup(m) => m.value,
+            _ => String::new(),
+        };
+        assert!(text.contains("string"), "should show type hint");
+        assert!(
+            !text.contains("---"),
+            "should not append a docblock section"
         );
     }
 
