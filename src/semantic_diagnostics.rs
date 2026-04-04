@@ -1,13 +1,11 @@
 /// Semantic diagnostics bridge.
 ///
-/// Delegates all analysis to the `mir-php` crate and converts its `Diagnostic`
+/// Delegates all analysis to the `mir-analyzer` crate and converts its `Issue`
 /// type into the `tower-lsp` `Diagnostic` type expected by the LSP backend.
 use std::sync::Arc;
 
 use php_ast::{ClassMemberKind, EnumMemberKind, ExprKind, NamespaceBody, Stmt, StmtKind};
-use tower_lsp::lsp_types::{
-    Diagnostic, DiagnosticRelatedInformation, DiagnosticSeverity, Location, Position, Range, Url,
-};
+use tower_lsp::lsp_types::{Diagnostic, DiagnosticSeverity, Position, Range, Url};
 
 use crate::ast::{ParsedDoc, offset_to_position};
 use crate::backend::DiagnosticsConfig;
@@ -25,48 +23,72 @@ pub fn semantic_diagnostics(
         return vec![];
     }
 
-    let source = doc.source();
-    let stmts: &[php_ast::Stmt<'_, '_>] = doc.program().stmts.as_ref();
+    let codebase = mir_codebase::Codebase::new();
+    let file: Arc<str> = Arc::from(uri.as_str());
 
-    // Build the workspace context: (source, stmts) for each document.
-    let mut all: Vec<(&str, &[php_ast::Stmt<'_, '_>])> = Vec::with_capacity(1 + other_docs.len());
-    all.push((source, stmts));
-    for (_, d) in other_docs {
-        all.push((d.source(), d.program().stmts.as_ref()));
+    // Load PHP built-in stubs so calls to strlen(), array_map(), etc. are recognised.
+    mir_analyzer::stubs::load_stubs(&codebase);
+
+    // Pass 1: collect definitions from all documents so cross-file type info is available.
+    for (other_uri, other_doc) in other_docs {
+        let other_file: Arc<str> = Arc::from(other_uri.as_str());
+        let collector = mir_analyzer::collector::DefinitionCollector::new(
+            &codebase,
+            other_file,
+            other_doc.source(),
+        );
+        collector.collect(other_doc.program());
     }
+    let collector =
+        mir_analyzer::collector::DefinitionCollector::new(&codebase, file.clone(), doc.source());
+    let collector_issues = collector.collect(doc.program());
 
-    mir_php::analyze(source, stmts, &all)
+    // Resolve inheritance, build dispatch tables, etc.
+    codebase.finalize();
+
+    // Pass 2: analyse function/method bodies in the current document.
+    let mut issue_buffer = mir_issues::IssueBuffer::new();
+    let mut analyzer = mir_analyzer::stmt::StatementsAnalyzer::new(
+        &codebase,
+        file.clone(),
+        doc.source(),
+        &mut issue_buffer,
+    );
+    let mut ctx = mir_analyzer::context::Context::new();
+    analyzer.analyze_stmts(&doc.program().stmts, &mut ctx);
+
+    collector_issues
         .into_iter()
-        .filter(|d| diagnostic_passes_filter(d, cfg))
-        .map(|d| to_lsp_diagnostic(d, uri))
+        .chain(issue_buffer.into_issues())
+        .filter(|i| !i.suppressed)
+        .filter(|i| issue_passes_filter(i, cfg))
+        .map(|i| to_lsp_diagnostic(i, uri))
         .collect()
 }
 
-/// Returns `true` if the mir-php diagnostic is allowed through by the config.
-fn diagnostic_passes_filter(d: &mir_php::Diagnostic, cfg: &DiagnosticsConfig) -> bool {
-    let msg = &d.message;
-    if msg.starts_with("Undefined variable:") {
-        return cfg.undefined_variables;
-    }
-    if let Some(name) = msg.strip_prefix("Undefined: ") {
-        // Heuristic: PHP classes start with an uppercase letter, functions with lowercase.
-        let first = name.chars().next().unwrap_or('_');
-        return if first.is_uppercase() {
-            cfg.undefined_classes
-        } else {
+/// Returns `true` if the mir-analyzer issue is allowed through by the config.
+fn issue_passes_filter(issue: &mir_issues::Issue, cfg: &DiagnosticsConfig) -> bool {
+    use mir_issues::IssueKind;
+    match &issue.kind {
+        IssueKind::UndefinedVariable { .. } | IssueKind::PossiblyUndefinedVariable { .. } => {
+            cfg.undefined_variables
+        }
+        IssueKind::UndefinedFunction { .. } | IssueKind::UndefinedMethod { .. } => {
             cfg.undefined_functions
-        };
+        }
+        IssueKind::UndefinedClass { .. } => cfg.undefined_classes,
+        IssueKind::InvalidReturnType { .. }
+        | IssueKind::InvalidArgument { .. }
+        | IssueKind::NullMethodCall { .. }
+        | IssueKind::NullPropertyFetch { .. }
+        | IssueKind::NullableReturnStatement { .. }
+        | IssueKind::InvalidPropertyAssignment { .. }
+        | IssueKind::InvalidOperand { .. } => cfg.type_errors,
+        IssueKind::DeprecatedMethod { .. } | IssueKind::DeprecatedClass { .. } => {
+            cfg.deprecated_calls
+        }
+        _ => true,
     }
-    if msg.starts_with("Too few arguments") || msg.starts_with("Too many arguments") {
-        return cfg.arity_errors;
-    }
-    if msg.starts_with("Cannot return null")
-        || msg.starts_with("Calling a method on null")
-        || msg.contains("type mismatch")
-    {
-        return cfg.type_errors;
-    }
-    true
 }
 
 /// Check for deprecated function/method calls and emit Warning diagnostics.
@@ -398,52 +420,29 @@ fn collect_duplicate_decls(
     }
 }
 
-fn to_lsp_diagnostic(d: mir_php::Diagnostic, uri: &Url) -> Diagnostic {
-    let related_information = if d.related.is_empty() {
-        None
-    } else {
-        Some(
-            d.related
-                .into_iter()
-                .map(|(sl, sc, el, ec, msg)| DiagnosticRelatedInformation {
-                    location: Location {
-                        uri: uri.clone(),
-                        range: Range {
-                            start: Position {
-                                line: sl,
-                                character: sc,
-                            },
-                            end: Position {
-                                line: el,
-                                character: ec,
-                            },
-                        },
-                    },
-                    message: msg,
-                })
-                .collect(),
-        )
-    };
+fn to_lsp_diagnostic(issue: mir_issues::Issue, _uri: &Url) -> Diagnostic {
+    // mir-analyzer uses 1-based line numbers; LSP uses 0-based.
+    let line = issue.location.line.saturating_sub(1);
+    let col_start = issue.location.col_start as u32;
+    let col_end = issue.location.col_end as u32;
     Diagnostic {
         range: Range {
             start: Position {
-                line: d.start_line,
-                character: d.start_char,
+                line,
+                character: col_start,
             },
             end: Position {
-                line: d.end_line,
-                character: d.end_char,
+                line,
+                character: col_end.max(col_start + 1),
             },
         },
-        severity: Some(match d.severity {
-            mir_php::Severity::Error => DiagnosticSeverity::ERROR,
-            mir_php::Severity::Warning => DiagnosticSeverity::WARNING,
-            mir_php::Severity::Information => DiagnosticSeverity::INFORMATION,
-            mir_php::Severity::Hint => DiagnosticSeverity::HINT,
+        severity: Some(match issue.severity {
+            mir_issues::Severity::Error => DiagnosticSeverity::ERROR,
+            mir_issues::Severity::Warning => DiagnosticSeverity::WARNING,
+            mir_issues::Severity::Info => DiagnosticSeverity::INFORMATION,
         }),
         source: Some("php-lsp".to_string()),
-        message: d.message,
-        related_information,
+        message: issue.kind.message(),
         ..Default::default()
     }
 }
