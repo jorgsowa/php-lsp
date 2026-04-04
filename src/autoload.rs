@@ -98,7 +98,13 @@ impl Psr4Map {
             if !class_name.starts_with(ns) {
                 continue;
             }
-            let remainder = class_name[ns.len()..].trim_start_matches('\\');
+            let after = &class_name[ns.len()..];
+            // Require `\` or end-of-string after the prefix so that "App" does
+            // not match "Application\Foo".
+            if !after.is_empty() && !after.starts_with('\\') {
+                continue;
+            }
+            let remainder = after.trim_start_matches('\\');
             let relative = remainder.replace('\\', "/") + ".php";
 
             for base in base_dirs {
@@ -242,6 +248,39 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let m = Psr4Map::load(dir.path());
         assert!(m.entries.is_empty());
+    }
+
+    #[test]
+    fn psr4_prefix_does_not_match_longer_namespace() {
+        // "App\" prefix must not resolve "Application\Foo" (substring false positive).
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        // Create the file that would be resolved if the bug were present.
+        write(&root.join("src/lication/Foo.php"), "<?php");
+        write(
+            &root.join("composer.json"),
+            r#"{"autoload": {"psr-4": {"App\\": "src/"}}}"#,
+        );
+        let m = Psr4Map::load(root);
+        // "Application\Foo" must NOT resolve via the "App\" prefix.
+        assert!(
+            m.resolve("Application\\Foo").is_none(),
+            "App\\ prefix must not match Application\\Foo"
+        );
+    }
+
+    #[test]
+    fn psr4_exact_prefix_still_resolves() {
+        // Confirm that "App\Foo" still resolves correctly after the boundary fix.
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write(&root.join("src/Foo.php"), "<?php");
+        write(
+            &root.join("composer.json"),
+            r#"{"autoload": {"psr-4": {"App\\": "src/"}}}"#,
+        );
+        let m = Psr4Map::load(root);
+        assert!(m.resolve("App\\Foo").is_some(), "App\\Foo must resolve");
     }
 
     #[test]

@@ -77,7 +77,10 @@ impl DocumentStore {
         if let Some(mut entry) = self.map.get_mut(uri) {
             entry.text = None;
             entry.text_version += 1;
-            self.indexed_order.lock().unwrap().push_back(uri.clone());
+            let mut q = self.indexed_order.lock().unwrap();
+            if !q.contains(uri) {
+                q.push_back(uri.clone());
+            }
         }
     }
 
@@ -367,6 +370,23 @@ mod tests {
         assert!(
             store.get_doc(&uri("/1.php")).is_none(),
             "/1.php must have been evicted as the oldest indexed-only file"
+        );
+    }
+
+    #[test]
+    fn close_twice_does_not_duplicate_lru_entry() {
+        let store = DocumentStore::new();
+        let u = uri("/a.php");
+        open(&store, u.clone(), "<?php".to_string());
+        // First close.
+        store.close(&u);
+        let len_after_first = store.indexed_order.lock().unwrap().len();
+        // Second close — must not push a duplicate.
+        store.close(&u);
+        let len_after_second = store.indexed_order.lock().unwrap().len();
+        assert_eq!(
+            len_after_first, len_after_second,
+            "second close must not add a duplicate entry to indexed_order"
         );
     }
 }
