@@ -1520,7 +1520,7 @@ impl LanguageServer for Backend {
         // Build "Add use import" code actions for undefined class names in range
         let mut actions: Vec<CodeActionOrCommand> = Vec::new();
         for diag in &sem_diags {
-            if !diag.message.starts_with("Undefined:") {
+            if diag.code != Some(NumberOrString::String("UndefinedClass".to_string())) {
                 continue;
             }
             // Only act on diagnostics within the requested range
@@ -1529,9 +1529,11 @@ impl LanguageServer for Backend {
             {
                 continue;
             }
+            // Message format: "Class {name} does not exist"
             let class_name = diag
                 .message
-                .strip_prefix("Undefined: ")
+                .strip_prefix("Class ")
+                .and_then(|s| s.strip_suffix(" does not exist"))
                 .unwrap_or("")
                 .trim();
             if class_name.is_empty() {
@@ -2333,6 +2335,34 @@ mod tests {
         let edits = changes.get(&uri).unwrap();
         assert_eq!(edits[0].range.start.line, 2);
         assert_eq!(edits[0].new_text, "use Baz\\Qux;\n");
+    }
+
+    // Extraction logic for "Add use import" code action — matches IssueKind::UndefinedClass message format
+    #[test]
+    fn undefined_class_name_extracted_from_message() {
+        let msg = "Class MyService does not exist";
+        let name = msg
+            .strip_prefix("Class ")
+            .and_then(|s| s.strip_suffix(" does not exist"))
+            .unwrap_or("")
+            .trim();
+        assert_eq!(name, "MyService");
+    }
+
+    #[test]
+    fn undefined_function_message_not_matched_by_extraction() {
+        // UndefinedFunction message format must NOT match the UndefinedClass extraction,
+        // ensuring code action is not offered for undefined functions.
+        let msg = "Function myHelper() is not defined";
+        let name = msg
+            .strip_prefix("Class ")
+            .and_then(|s| s.strip_suffix(" does not exist"))
+            .unwrap_or("")
+            .trim();
+        assert!(
+            name.is_empty(),
+            "function diagnostic should not extract a class name"
+        );
     }
 }
 
