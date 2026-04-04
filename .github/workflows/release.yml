@@ -125,6 +125,7 @@ jobs:
         run: |
           git fetch origin main
           git merge-base --is-ancestor ${{ github.sha }} origin/main || { echo "Tag is not on main branch"; exit 1; }
+        shell: bash
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@v1
