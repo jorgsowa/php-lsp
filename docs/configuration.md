@@ -52,6 +52,9 @@ vim.lsp.start({
   "lsp": {
     "php-lsp": {
       "command": "php-lsp",
+      "extensionToLanguage": {
+        ".php": "php"
+      },
       "initializationOptions": {
         "phpVersion": "8.2",
         "excludePaths": ["cache/*"]

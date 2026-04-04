@@ -24,7 +24,10 @@ Add to `.claude/settings.json` in your project root:
 {
   "lsp": {
     "php-lsp": {
-      "command": "php-lsp"
+      "command": "php-lsp",
+      "extensionToLanguage": {
+        ".php": "php"
+      }
     }
   }
 }
