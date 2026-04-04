@@ -22,6 +22,7 @@ use crate::document_highlight::document_highlights;
 use crate::document_link::document_links;
 use crate::document_store::DocumentStore;
 use crate::extract_action::{extract_method_actions, extract_variable_actions};
+use crate::extract_constant_action::extract_constant_actions;
 use crate::file_rename::{use_edits_for_delete, use_edits_for_rename};
 use crate::folding::folding_ranges;
 use crate::formatting::{format_document, format_range};
@@ -1594,6 +1595,7 @@ impl LanguageServer for Backend {
         // Extract variable: cheap, keep eager.
         actions.extend(extract_variable_actions(&source, params.range, uri));
         actions.extend(extract_method_actions(&source, &doc, params.range, uri));
+        actions.extend(extract_constant_actions(&source, params.range, uri));
         // Inline variable: inverse of extract variable.
         actions.extend(inline_variable_actions(&source, params.range, uri));
         // Organize imports: sort and remove unused use statements.

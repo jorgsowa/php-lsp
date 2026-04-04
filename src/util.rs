@@ -419,6 +419,44 @@ pub(crate) fn word_at(source: &str, position: Position) -> Option<String> {
     if word.is_empty() { None } else { Some(word) }
 }
 
+/// Extract the source text covered by an LSP `Range`.
+///
+/// `Range` positions use UTF-16 code-unit offsets; this function converts them
+/// correctly before slicing the UTF-8 source string.
+pub(crate) fn selected_text_range(source: &str, range: tower_lsp::lsp_types::Range) -> String {
+    let lines: Vec<&str> = source.lines().collect();
+    if range.start.line == range.end.line {
+        let line = match lines.get(range.start.line as usize) {
+            Some(l) => l,
+            None => return String::new(),
+        };
+        let start = utf16_offset_to_byte(line, range.start.character as usize);
+        let end = utf16_offset_to_byte(line, range.end.character as usize);
+        line[start..end].to_string()
+    } else {
+        let mut result = String::new();
+        for i in range.start.line..=range.end.line {
+            let line = match lines.get(i as usize) {
+                Some(l) => *l,
+                None => break,
+            };
+            if i == range.start.line {
+                let start = utf16_offset_to_byte(line, range.start.character as usize);
+                result.push_str(&line[start..]);
+            } else if i == range.end.line {
+                let end = utf16_offset_to_byte(line, range.end.character as usize);
+                result.push_str(&line[..end]);
+            } else {
+                result.push_str(line);
+            }
+            if i < range.end.line {
+                result.push('\n');
+            }
+        }
+        result
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
