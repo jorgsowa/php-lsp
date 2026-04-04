@@ -5,7 +5,7 @@
 use std::sync::Arc;
 
 use php_ast::{ClassMemberKind, EnumMemberKind, ExprKind, NamespaceBody, Stmt, StmtKind};
-use tower_lsp::lsp_types::{Diagnostic, DiagnosticSeverity, Position, Range, Url};
+use tower_lsp::lsp_types::{Diagnostic, DiagnosticSeverity, NumberOrString, Position, Range, Url};
 
 use crate::ast::{ParsedDoc, offset_to_position};
 use crate::backend::DiagnosticsConfig;
@@ -441,6 +441,7 @@ fn to_lsp_diagnostic(issue: mir_issues::Issue, _uri: &Url) -> Diagnostic {
             mir_issues::Severity::Warning => DiagnosticSeverity::WARNING,
             mir_issues::Severity::Info => DiagnosticSeverity::INFORMATION,
         }),
+        code: Some(NumberOrString::String(issue.kind.name().to_string())),
         source: Some("php-lsp".to_string()),
         message: issue.kind.message(),
         ..Default::default()
@@ -726,5 +727,36 @@ mod tests {
             diags
         );
         assert!(diags[0].message.contains("Foo"));
+    }
+
+    #[test]
+    fn to_lsp_diagnostic_sets_code_to_issue_kind_name() {
+        use mir_issues::{Issue, IssueKind, Location};
+        use std::sync::Arc;
+        use tower_lsp::lsp_types::{NumberOrString, Url};
+
+        let uri = Url::parse("file:///test.php").unwrap();
+        let location = Location {
+            file: Arc::from("file:///test.php"),
+            line: 1,
+            col_start: 0,
+            col_end: 3,
+        };
+        let issue = Issue::new(
+            IssueKind::UndefinedClass {
+                name: "Foo".to_string(),
+            },
+            location,
+        );
+        let diag = to_lsp_diagnostic(issue, &uri);
+        assert_eq!(
+            diag.code,
+            Some(NumberOrString::String("UndefinedClass".to_string())),
+            "diagnostic code must be the IssueKind name so code actions can match by type"
+        );
+        assert!(
+            diag.message.contains("Foo"),
+            "diagnostic message should mention the class name"
+        );
     }
 }
