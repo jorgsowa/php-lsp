@@ -54,7 +54,27 @@ In `~/.config/zed/settings.json`:
 
 Install any extension that supports custom LSP servers (e.g. [llllvvuu-lsp-client](https://marketplace.visualstudio.com/items?itemName=llllvvuu.llllvvuu-lsp-client)) and set the server command to `php-lsp`.
 
-### Neovim
+### Neovim 0.11+
+
+Drop this file into `~/.config/nvim/lsp/php_lsp.lua`:
+
+```lua
+---@type vim.lsp.Config
+return {
+  cmd = { 'php-lsp' },
+  filetypes = { 'php' },
+  root_markers = { 'composer.json', '.git' },
+  workspace_required = true,
+}
+```
+
+Then enable it in `init.lua`:
+
+```lua
+vim.lsp.enable('php_lsp')
+```
+
+#### Neovim 0.10 and older
 
 ```lua
 vim.api.nvim_create_autocmd("FileType", {
