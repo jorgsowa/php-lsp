@@ -2,7 +2,7 @@
 
 A PHP Language Server written in Rust — diagnostics, completions, hover, go-to-definition, rename, refactoring, and more.
 
-**[Features](docs/features.md)** · **[Configuration](docs/configuration.md)** · **[Architecture](docs/architecture.md)** · **[Contributing](CONTRIBUTING.md)**
+**[Features](docs/features.md)** · **[Editors & AI Clients](docs/editors.md)** · **[Configuration](docs/configuration.md)** · **[Architecture](docs/architecture.md)** · **[Contributing](CONTRIBUTING.md)**
 
 ## Install
 
@@ -14,94 +14,17 @@ Or download a pre-built binary from [Releases](https://github.com/jorgsowa/php-l
 
 ---
 
-## AI Agents
+## Setup
 
-### Claude Code
+For full setup instructions for all editors and AI clients (Claude Code, Cursor, Zed, VS Code, Neovim, PHPStorm) see **[docs/editors.md](docs/editors.md)**.
 
-Install the [Claude Code plugin](https://github.com/jorgsowa/claude-php-lsp-plugin):
-
-```bash
-claude plugin add https://github.com/jorgsowa/claude-php-lsp-plugin
-```
-
-### Cursor
-
-Add to `.cursor/mcp.json` or open **Settings → Features → Language Servers** and set:
-- **Command:** `php-lsp`
-- **File pattern:** `*.php`
-
-### Zed
-
-In `~/.config/zed/settings.json`:
-
-```json
-{
-  "lsp": {
-    "php-lsp": {
-      "binary": {
-        "path": "php-lsp"
-      }
-    }
-  }
-}
-```
-
----
-
-## IDEs
-
-### VS Code
-
-Install any extension that supports custom LSP servers (e.g. [llllvvuu-lsp-client](https://marketplace.visualstudio.com/items?itemName=llllvvuu.llllvvuu-lsp-client)) and set the server command to `php-lsp`.
-
-### Neovim 0.11+
-
-Drop this file into `~/.config/nvim/lsp/php_lsp.lua`:
-
-```lua
----@type vim.lsp.Config
-return {
-  cmd = { 'php-lsp' },
-  filetypes = { 'php' },
-  root_markers = { 'composer.json', '.git' },
-  workspace_required = true,
-}
-```
-
-Then enable it in `init.lua`:
-
-```lua
-vim.lsp.enable('php_lsp')
-```
-
-#### Neovim 0.10 and older
-
-```lua
-vim.api.nvim_create_autocmd("FileType", {
-  pattern = "php",
-  callback = function()
-    vim.lsp.start({
-      name = "php-lsp",
-      cmd = { "php-lsp" },
-      root_dir = vim.fs.root(0, { "composer.json", ".git" }),
-    })
-  end,
-})
-```
-
-### PHPStorm (2023.2+)
-
-**Settings → Languages & Frameworks → Language Servers → +**
-
-- **Name:** `php-lsp`
-- **Language:** `PHP`
-- **Command:** `php-lsp`
+The binary path after `cargo install` is `~/.cargo/bin/php-lsp`. Run `which php-lsp` to confirm.
 
 ---
 
 ## Configuration
 
-Pass via `initializationOptions`:
+Pass options via `initializationOptions`:
 
 ```json
 {
@@ -109,6 +32,59 @@ Pass via `initializationOptions`:
   "excludePaths": ["cache/*", "storage/*"]
 }
 ```
+
+See **[docs/configuration.md](docs/configuration.md)** for all options.
+
+---
+
+## Why php-lsp?
+
+The only free, open-source PHP language server with enterprise-grade feature completeness.
+
+| Server | Language | License | Semantic Tokens | Inlay Hints | Call Hierarchy | Type Hierarchy | Code Actions |
+|---|---|---|---|---|---|---|---|
+| **php-lsp** | Rust | Free/OSS | ✓ | ✓ | ✓ | ✓ | 10 types |
+| Intelephense | TypeScript | Freemium | ✗ | ✗ | ✗ | Premium | ~3 free |
+| PHPantom | Rust | Free/OSS | ✗ | ✗ | ✗ | ✗ | ~4 |
+| Phpactor | PHP | Free/OSS | ✗ | ✓ | ✗ | ✗ | ~6 |
+| DEVSENSE | Node.js | Paid | ✓ | ✓ | ✓ | ✓ | ~8 |
+| Psalm LSP | PHP | Free/OSS | ✗ | ✗ | ✗ | ✗ | ✗ |
+| phpls | Go | Free/OSS | ✗ | ✗ | ✗ | ✗ | ✗ |
+
+**Full feature comparison:**
+
+| Feature | php-lsp | Intelephense | PHPantom | Phpactor | DEVSENSE |
+|---|---|---|---|---|---|
+| Completion | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Hover | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Go-to-definition | ✓ | ✓ | ✓ | ✓ | ✓ |
+| Go-to-declaration | ✓ | Premium | ✗ | ✓ | ✓ |
+| Go-to-type-definition | ✓ | Premium | ✗ | ✗ | ✓ |
+| Find references | ✓ | ✓ | ✗ | ✓ | ✓ |
+| Rename | ✓ | Premium | ✓ | ✓ | ✓ |
+| Call hierarchy | ✓ | ✗ | ✗ | ✗ | ✓ |
+| Type hierarchy | ✓ | Premium | ✗ | ✗ | ✓ |
+| Implementations | ✓ | Premium | ✗ | ✓ | ✓ |
+| Semantic tokens | ✓ | ✗ | ✗ | ✗ | ✓ |
+| Inlay hints | ✓ | ✗ | ✗ | ✓ | ✓ |
+| Code lens | ✓ | Premium | ✗ | ✗ | ✓ |
+| Signature help | ✓ | ✓ | ✗ | ✓ | ✓ |
+| Selection range | ✓ | ✗ | ✗ | ✗ | ✓ |
+| Document highlight | ✓ | ✗ | ✗ | ✗ | ✓ |
+| Folding | ✓ | Premium | ✗ | ✗ | ✓ |
+| On-type formatting | ✓ | ✗ | ✗ | ✗ | ✓ |
+| Document links | ✓ | ✗ | ✗ | ✗ | ✓ |
+| PSR-4 autoload | ✓ | ✓ | ✗ | ✓ | ✓ |
+| PhpStorm meta | ✓ | ✗ | ✗ | ✗ | ✗ |
+| Static analysis | ✓ | ✓ | ✓ | ✓ | ✓ |
+
+**Key advantages:**
+
+- **Rust-based** — no GC pauses, async-first with `tokio`, lock-free document store via `dashmap`
+- **mir-php static analysis** — two-pass cross-file engine: undefined vars/functions, arity errors, type mismatches, deprecated calls
+- **PhpStorm metadata** — the only open-source LSP that parses `.phpstorm.meta.php` for DI container type inference
+- **Deepest completion engine** — type-aware `->` / `::` chains, `match` arm enum completions, named args, attribute completions, auto `use` insertion, camel/underscore fuzzy matching
+- **10 code action types** — extract variable/method/constant, inline variable, implement methods, add PHPDoc, generate constructor/getters/setters, organize imports, add return type
 
 ---
 
