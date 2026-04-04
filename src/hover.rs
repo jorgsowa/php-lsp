@@ -4,7 +4,7 @@ use php_ast::{ClassMemberKind, EnumMemberKind, ExprKind, NamespaceBody, Param, S
 use tower_lsp::lsp_types::{Hover, HoverContents, MarkupContent, MarkupKind, Position};
 
 use crate::ast::{ParsedDoc, format_type_hint};
-use crate::docblock::find_docblock;
+use crate::docblock::{Docblock, docblock_before, find_docblock, parse_docblock};
 use crate::type_map::TypeMap;
 use crate::util::{is_php_builtin, php_doc_url, word_at};
 
@@ -157,17 +157,25 @@ pub fn hover_at(
                             .chain(other_docs.iter().map(|(_, d)| d.as_ref()))
                             .collect();
                         for d in &all_docs_search {
-                            if let Some(type_str) = find_property_type(d, &cls, &word) {
-                                let value = format!(
-                                    "`(property) {}::${}:{}`",
+                            if let Some((type_str, db)) = find_property_info(d, &cls, &word) {
+                                let sig = format!(
+                                    "(property) {}::${}{}",
                                     cls,
                                     word,
                                     if type_str.is_empty() {
                                         String::new()
                                     } else {
-                                        format!(" {}", type_str)
+                                        format!(": {}", type_str)
                                     }
                                 );
+                                let mut value = wrap_php(&sig);
+                                if let Some(doc) = db {
+                                    let md = doc.to_markdown();
+                                    if !md.is_empty() {
+                                        value.push_str("\n\n---\n\n");
+                                        value.push_str(&md);
+                                    }
+                                }
                                 return Some(Hover {
                                     contents: HoverContents::Markup(MarkupContent {
                                         kind: MarkupKind::Markdown,
@@ -473,17 +481,23 @@ fn extract_receiver_var_from_end(before_arrow: &str) -> Option<String> {
     }
 }
 
-/// Find the type hint for a property named `prop_name` in class `class_name` within `doc`.
-/// Returns `Some(type_str)` if found, where `type_str` may be empty if no type hint is present.
-fn find_property_type(doc: &ParsedDoc, class_name: &str, prop_name: &str) -> Option<String> {
-    find_property_type_in_stmts(&doc.program().stmts, class_name, prop_name)
+/// Find the type hint and docblock for a property named `prop_name` in class `class_name`
+/// within `doc`. Returns `Some((type_str, docblock))` if found, where `type_str` may be empty
+/// if no type hint is present and `docblock` is `None` if there is no preceding `/** */` comment.
+fn find_property_info(
+    doc: &ParsedDoc,
+    class_name: &str,
+    prop_name: &str,
+) -> Option<(String, Option<Docblock>)> {
+    find_property_info_in_stmts(doc.source(), &doc.program().stmts, class_name, prop_name)
 }
 
-fn find_property_type_in_stmts<'a>(
+fn find_property_info_in_stmts<'a>(
+    source: &str,
     stmts: &[Stmt<'a, 'a>],
     class_name: &str,
     prop_name: &str,
-) -> Option<String> {
+) -> Option<(String, Option<Docblock>)> {
     for stmt in stmts {
         match &stmt.kind {
             StmtKind::Class(c) if c.name == Some(class_name) => {
@@ -495,7 +509,9 @@ fn find_property_type_in_stmts<'a>(
                                 .as_ref()
                                 .map(|t| crate::ast::format_type_hint(t))
                                 .unwrap_or_default();
-                            return Some(type_str);
+                            let db = docblock_before(source, member.span.start)
+                                .map(|raw| parse_docblock(&raw));
+                            return Some((type_str, db));
                         }
                         ClassMemberKind::Method(m) if m.name == "__construct" => {
                             // Check promoted constructor parameters
@@ -506,7 +522,11 @@ fn find_property_type_in_stmts<'a>(
                                         .as_ref()
                                         .map(|t| crate::ast::format_type_hint(t))
                                         .unwrap_or_default();
-                                    return Some(type_str);
+                                    // Promoted params don't have their own docblock;
+                                    // use the constructor's docblock @param annotation instead.
+                                    let db = docblock_before(source, member.span.start)
+                                        .map(|raw| parse_docblock(&raw));
+                                    return Some((type_str, db));
                                 }
                             }
                         }
@@ -518,7 +538,8 @@ fn find_property_type_in_stmts<'a>(
             }
             StmtKind::Namespace(ns) => {
                 if let NamespaceBody::Braced(inner) = &ns.body
-                    && let Some(t) = find_property_type_in_stmts(inner, class_name, prop_name)
+                    && let Some(t) =
+                        find_property_info_in_stmts(source, inner, class_name, prop_name)
                 {
                     return Some(t);
                 }
@@ -942,6 +963,59 @@ mod tests {
             text.contains("strlen"),
             "hover content should contain 'strlen', got: {text}"
         );
+    }
+
+    #[test]
+    fn hover_on_property_shows_docblock() {
+        let src = "<?php\nclass User {\n    /** The user's display name. */\n    public string $name;\n}\n$u = new User();\n$u->name";
+        let doc = ParsedDoc::parse(src.to_string());
+        // "name" in "$u->name" at the last line
+        let h = hover_at(src, &doc, &[], pos(6, 5), None);
+        assert!(h.is_some(), "expected hover on property with docblock");
+        let text = match h.unwrap().contents {
+            HoverContents::Markup(m) => m.value,
+            _ => String::new(),
+        };
+        assert!(text.contains("User"), "should mention class name");
+        assert!(text.contains("name"), "should mention property name");
+        assert!(text.contains("string"), "should show type hint");
+        assert!(
+            text.contains("display name"),
+            "should include docblock description, got: {}",
+            text
+        );
+    }
+
+    #[test]
+    fn hover_on_this_property_shows_type() {
+        let src = "<?php\nclass Counter {\n    public int $count = 0;\n    public function increment(): void {\n        $this->count;\n    }\n}";
+        let doc = ParsedDoc::parse(src.to_string());
+        // "$this->count" — "count" starts at col 15 in "        $this->count;"
+        let h = hover_at(src, &doc, &[], pos(4, 16), None);
+        assert!(h.is_some(), "expected hover on $this->property");
+        let text = match h.unwrap().contents {
+            HoverContents::Markup(m) => m.value,
+            _ => String::new(),
+        };
+        assert!(text.contains("Counter"), "should mention enclosing class");
+        assert!(text.contains("count"), "should mention property name");
+        assert!(text.contains("int"), "should show type hint");
+    }
+
+    #[test]
+    fn hover_on_nullsafe_property_shows_type() {
+        let src = "<?php\nclass Profile { public string $bio; }\n$p = new Profile();\n$p?->bio";
+        let doc = ParsedDoc::parse(src.to_string());
+        // "bio" in "$p?->bio" at line 3, col 5
+        let h = hover_at(src, &doc, &[], pos(3, 5), None);
+        assert!(h.is_some(), "expected hover on nullsafe property access");
+        let text = match h.unwrap().contents {
+            HoverContents::Markup(m) => m.value,
+            _ => String::new(),
+        };
+        assert!(text.contains("Profile"), "should mention class name");
+        assert!(text.contains("bio"), "should mention property name");
+        assert!(text.contains("string"), "should show type hint");
     }
 
     // ── Snapshot tests ───────────────────────────────────────────────────────
