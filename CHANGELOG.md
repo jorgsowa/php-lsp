@@ -2,6 +2,128 @@
 
 All notable changes to php-lsp are documented here.
 
+## [0.1.50] — 2026-04-05
+
+### Features
+
+- **Extract constant code action**: Added "Extract constant" code action — promotes an inline scalar expression to a class or file-level constant.
+
+### Bug fixes
+
+- **'Add use import' code action**: Gated the action on a typed `IssueKind` code so it no longer appears for unrelated diagnostics.
+
+### Documentation
+
+- Rewrote README; added LICENSE, CONTRIBUTING, and editor setup guides (`docs/editors.md`).
+- Added Neovim 0.11 `lsp/` config with 0.10 fallback.
+- Fixed Claude Code LSP config — added required `extensionToLanguage` field.
+
+### Maintenance
+
+- **Release workflow**: Added `.github/workflows/release.yml` — triggers on `v*` tag pushes, runs tests on Ubuntu/macOS/Windows, builds cross-platform binaries (`aarch64-apple-darwin`, `x86_64-apple-darwin`, `x86_64-unknown-linux-gnu`) with `.sha256` checksums, uploads artifacts to a GitHub Release, and publishes to crates.io.
+- **CI hardening**: Pinned all GitHub Actions to commit SHAs (`actions/checkout` v6.0.2, `actions/cache` v5.0.4, `softprops/action-gh-release` v2.6.1, `dtolnay/rust-toolchain` v1); scoped `contents: write` permission to the build job only.
+
+## [0.1.49] — 2026-04-04
+
+### Features
+
+- **Hover for property docblocks**: `$obj->prop` and `$this->prop` now show the property's docblock in hover.
+- **Completion item detail**: Completion items now carry a full signature in `detail` and documentation from docblocks.
+- **Auto-import on attribute completion**: Selecting an attribute class completion inserts the `use` statement automatically.
+
+### Bug fixes
+
+- Fixed four independent bugs (refs jorgsowa/php-lsp#2 #3 #4 #5).
+- `refs_in_stmt` now pushes the name span instead of the whole-statement span, fixing incorrect reference ranges.
+
+## [0.1.48] — 2026-04-04
+
+### Features
+
+- **Semantic tokens**: Added `string`, `number`, `comment`, and `keyword` semantic token types.
+- **Semantic find-references**: Filters results by symbol kind to eliminate false positives.
+
+### Maintenance
+
+- Migrated from `mir-php` to `mir-analyzer` for semantic diagnostics.
+- Added snapshot tests with `expect-test` for hover and completion.
+- Added unit tests for `backend.rs` pure helper functions and a `cursor()` position marker helper for test fixtures.
+- Applied `cargo fmt` across all files; resolved clippy warnings (`needless_late_init`, `unnecessary_map_or`, `collapsible_if`).
+
+## [0.1.47] — 2026-04-03
+
+### Bug fixes
+
+- **Workspace diagnostics**: Semantic diagnostics are now included in `workspace/diagnostic` pull responses.
+
+## [0.1.46] — 2026-04-01
+
+### Bug fixes
+
+- Fixed UTF-16 byte offset calculations, CRLF line ending handling, and span equality comparisons.
+
+## [0.1.45] — 2026-03-31
+
+### Features
+
+- **Organize imports**: New code action to sort and deduplicate `use` statements.
+- **Inline variable**: New code action to inline a variable assignment at its usage sites.
+- **Magic constants**: `__DIR__`, `__FILE__`, `__CLASS__`, etc. now complete and resolve correctly.
+- **Closure `use` completions**: Variables captured in `use (...)` clauses are now suggested.
+- **Attribute argument completions**: Named arguments on attributes are now completed.
+- **Symbol kind filter**: Workspace symbol search now accepts a kind filter.
+- **Psalm/PHPStan tags**: `@psalm-param`, `@phpstan-return`, etc. are parsed and surfaced in hover/completion.
+
+## [0.1.44] — 2026-03-31
+
+### Features
+
+- **Scope-aware highlights**: Document highlights now respect variable scope boundaries.
+- **Moniker FQN via `use`**: Monikers resolve the fully-qualified name through `use` imports.
+
+## [0.1.43] — 2026-03-31
+
+### Features
+
+- **Format-on-save**: The server now handles `textDocument/willSaveWaitUntil` to format before save.
+- **PHP file stub on create**: A minimal `<?php` stub is inserted when a new PHP file is created.
+- Fixed several LSP capability registration gaps.
+
+## [0.1.42] — 2026-03-31
+
+### Features
+
+- **Rename property**: Cross-file rename now covers property declarations and all `$obj->prop` / `$this->prop` usages.
+- **Go-to-definition for `$variable`**: Navigates to the assignment site of a local variable.
+
+## [0.1.41] — 2026-03-31
+
+### Features
+
+- **Rename variable/param in scope**: Renames a local variable or parameter within its enclosing scope without affecting other scopes.
+- **Extract method**: New code action to extract a selected block into a new method.
+
+## [0.1.40] — 2026-03-31
+
+### Features
+
+- **Add return type declaration**: New code action to insert a return type based on inferred type.
+- **Constructor-promoted properties**: Promoted properties (`__construct(private Type $prop)`) are now resolved in type inference and completion.
+
+## [0.1.39] — 2026-03-31
+
+### Bug fixes
+
+- LRU eviction now skips currently open files to prevent evicting active documents.
+- Fixed half-open range boundary off-by-one in eviction logic.
+
+## [0.1.38] — 2026-03-31
+
+### Bug fixes
+
+- Fixed multiple UTF-16 position calculation bugs affecting go-to-definition, hover, and completion on multibyte characters.
+- Filled LSP capability gaps surfaced by capability negotiation tests.
+
 ## [0.1.37] — 2026-03-30
 
 ### Maintenance
