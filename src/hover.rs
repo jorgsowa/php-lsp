@@ -328,6 +328,9 @@ fn scan_statements(stmts: &[Stmt<'_, '_>], word: &str) -> Option<String> {
                                 .unwrap_or_default();
                             return Some(format!("case {}::{}{}", e.name, c.name, value_str));
                         }
+                        EnumMemberKind::ClassConst(k) if k.name == word => {
+                            return Some(format_class_const(k));
+                        }
                         _ => {}
                     }
                 }
@@ -874,6 +877,18 @@ mod tests {
             expect![[r#"
                 ```php
                 case Color::Red = 'red'
+                ```"#]],
+        );
+    }
+
+    #[test]
+    fn snapshot_hover_enum_class_const() {
+        check_hover(
+            "<?php\nenum Suit { const int MAX = 4; }",
+            pos(1, 22),
+            expect![[r#"
+                ```php
+                const int MAX = 4
                 ```"#]],
         );
     }
