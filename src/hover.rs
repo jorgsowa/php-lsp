@@ -273,6 +273,25 @@ fn scan_statements(stmts: &[Stmt<'_, '_>], word: &str) -> Option<String> {
             StmtKind::Interface(i) if i.name == word => {
                 return Some(format!("interface {}", word));
             }
+            StmtKind::Interface(i) => {
+                for member in i.members.iter() {
+                    match &member.kind {
+                        ClassMemberKind::Method(m) if m.name == word => {
+                            let params = format_params(&m.params);
+                            let ret = m
+                                .return_type
+                                .as_ref()
+                                .map(|r| format!(": {}", format_type_hint(r)))
+                                .unwrap_or_default();
+                            return Some(format!("function {}({}){}", word, params, ret));
+                        }
+                        ClassMemberKind::ClassConst(k) if k.name == word => {
+                            return Some(format_class_const(k));
+                        }
+                        _ => {}
+                    }
+                }
+            }
             StmtKind::Trait(t) if t.name == word => {
                 return Some(format!("trait {}", word));
             }
@@ -334,16 +353,20 @@ fn scan_statements(stmts: &[Stmt<'_, '_>], word: &str) -> Option<String> {
             }
             StmtKind::Trait(t) => {
                 for member in t.members.iter() {
-                    if let ClassMemberKind::Method(m) = &member.kind
-                        && m.name == word
-                    {
-                        let params = format_params(&m.params);
-                        let ret = m
-                            .return_type
-                            .as_ref()
-                            .map(|r| format!(": {}", format_type_hint(r)))
-                            .unwrap_or_default();
-                        return Some(format!("function {}({}){}", word, params, ret));
+                    match &member.kind {
+                        ClassMemberKind::Method(m) if m.name == word => {
+                            let params = format_params(&m.params);
+                            let ret = m
+                                .return_type
+                                .as_ref()
+                                .map(|r| format!(": {}", format_type_hint(r)))
+                                .unwrap_or_default();
+                            return Some(format!("function {}({}){}", word, params, ret));
+                        }
+                        ClassMemberKind::ClassConst(k) if k.name == word => {
+                            return Some(format_class_const(k));
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -1247,6 +1270,45 @@ mod tests {
             expect![[r#"
                 ```php
                 const float PI = 3.14
+                ```"#]],
+        );
+    }
+
+    #[test]
+    fn snapshot_hover_class_const_infers_type_from_value() {
+        let (src, p) = cursor("<?php\nclass Config { const VERSION$0 = '1.0.0'; }");
+        check_hover(
+            &src,
+            p,
+            expect![[r#"
+                ```php
+                const string VERSION = '1.0.0'
+                ```"#]],
+        );
+    }
+
+    #[test]
+    fn snapshot_hover_interface_const_shows_type_and_value() {
+        let (src, p) = cursor("<?php\ninterface Limits { const int MA$0X = 100; }");
+        check_hover(
+            &src,
+            p,
+            expect![[r#"
+                ```php
+                const int MAX = 100
+                ```"#]],
+        );
+    }
+
+    #[test]
+    fn snapshot_hover_trait_const_shows_type_and_value() {
+        let (src, p) = cursor("<?php\ntrait HasVersion { const string TAG$0 = 'v1'; }");
+        check_hover(
+            &src,
+            p,
+            expect![[r#"
+                ```php
+                const string TAG = 'v1'
                 ```"#]],
         );
     }
