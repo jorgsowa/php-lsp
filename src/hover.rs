@@ -273,6 +273,25 @@ fn scan_statements(stmts: &[Stmt<'_, '_>], word: &str) -> Option<String> {
             StmtKind::Interface(i) if i.name == word => {
                 return Some(format!("interface {}", word));
             }
+            StmtKind::Interface(i) => {
+                for member in i.members.iter() {
+                    match &member.kind {
+                        ClassMemberKind::Method(m) if m.name == word => {
+                            let params = format_params(&m.params);
+                            let ret = m
+                                .return_type
+                                .as_ref()
+                                .map(|r| format!(": {}", format_type_hint(r)))
+                                .unwrap_or_default();
+                            return Some(format!("function {}({}){}", word, params, ret));
+                        }
+                        ClassMemberKind::ClassConst(k) if k.name == word => {
+                            return Some(format_class_const(k));
+                        }
+                        _ => {}
+                    }
+                }
+            }
             StmtKind::Trait(t) if t.name == word => {
                 return Some(format!("trait {}", word));
             }
@@ -309,37 +328,48 @@ fn scan_statements(stmts: &[Stmt<'_, '_>], word: &str) -> Option<String> {
                                 .unwrap_or_default();
                             return Some(format!("case {}::{}{}", e.name, c.name, value_str));
                         }
+                        EnumMemberKind::ClassConst(k) if k.name == word => {
+                            return Some(format_class_const(k));
+                        }
                         _ => {}
                     }
                 }
             }
             StmtKind::Class(c) => {
                 for member in c.members.iter() {
-                    if let ClassMemberKind::Method(m) = &member.kind
-                        && m.name == word
-                    {
-                        let params = format_params(&m.params);
-                        let ret = m
-                            .return_type
-                            .as_ref()
-                            .map(|r| format!(": {}", format_type_hint(r)))
-                            .unwrap_or_default();
-                        return Some(format!("function {}({}){}", word, params, ret));
+                    match &member.kind {
+                        ClassMemberKind::Method(m) if m.name == word => {
+                            let params = format_params(&m.params);
+                            let ret = m
+                                .return_type
+                                .as_ref()
+                                .map(|r| format!(": {}", format_type_hint(r)))
+                                .unwrap_or_default();
+                            return Some(format!("function {}({}){}", word, params, ret));
+                        }
+                        ClassMemberKind::ClassConst(k) if k.name == word => {
+                            return Some(format_class_const(k));
+                        }
+                        _ => {}
                     }
                 }
             }
             StmtKind::Trait(t) => {
                 for member in t.members.iter() {
-                    if let ClassMemberKind::Method(m) = &member.kind
-                        && m.name == word
-                    {
-                        let params = format_params(&m.params);
-                        let ret = m
-                            .return_type
-                            .as_ref()
-                            .map(|r| format!(": {}", format_type_hint(r)))
-                            .unwrap_or_default();
-                        return Some(format!("function {}({}){}", word, params, ret));
+                    match &member.kind {
+                        ClassMemberKind::Method(m) if m.name == word => {
+                            let params = format_params(&m.params);
+                            let ret = m
+                                .return_type
+                                .as_ref()
+                                .map(|r| format!(": {}", format_type_hint(r)))
+                                .unwrap_or_default();
+                            return Some(format!("function {}({}){}", word, params, ret));
+                        }
+                        ClassMemberKind::ClassConst(k) if k.name == word => {
+                            return Some(format_class_const(k));
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -356,13 +386,35 @@ fn scan_statements(stmts: &[Stmt<'_, '_>], word: &str) -> Option<String> {
     None
 }
 
-/// Format a literal expression value for hover display (int or string literals only).
+/// Format a literal expression value for hover display (int, float, bool, or string literals).
 fn format_expr_literal(expr: &php_ast::Expr<'_, '_>) -> Option<String> {
     match &expr.kind {
         ExprKind::Int(n) => Some(n.to_string()),
-        ExprKind::String(s) => Some(format!("\"{}\"", s)),
+        ExprKind::Float(f) => Some(f.to_string()),
+        ExprKind::Bool(b) => Some(if *b { "true" } else { "false" }.to_string()),
+        ExprKind::String(s) => Some(format!("'{}'", s)),
         _ => None,
     }
+}
+
+/// Format a class/interface/enum constant declaration for hover display.
+fn format_class_const(c: &php_ast::ClassConstDecl<'_, '_>) -> String {
+    let type_str = c
+        .type_hint
+        .as_ref()
+        .map(|t| format!("{} ", format_type_hint(t)))
+        .or_else(|| match &c.value.kind {
+            ExprKind::Int(_) => Some("int ".to_string()),
+            ExprKind::String(_) => Some("string ".to_string()),
+            ExprKind::Float(_) => Some("float ".to_string()),
+            ExprKind::Bool(_) => Some("bool ".to_string()),
+            _ => None,
+        })
+        .unwrap_or_default();
+    let value_str = format_expr_literal(&c.value)
+        .map(|v| format!(" = {v}"))
+        .unwrap_or_default();
+    format!("const {}{}{}", type_str, c.name, value_str)
 }
 
 /// Look up markdown documentation for a symbol by name across all indexed documents.
@@ -818,28 +870,27 @@ mod tests {
     }
 
     #[test]
-    fn hover_on_backed_enum_case_shows_value() {
-        let src = "<?php\nenum Color: string { case Red = 'red'; }";
-        let doc = ParsedDoc::parse(src.to_string());
-        // "Red" starts at col 26: "enum Color: string { case Red"
-        let result = hover_info(src, &doc, pos(1, 27), &[]);
-        assert!(result.is_some(), "expected hover on backed enum case");
-        if let Some(Hover {
-            contents: HoverContents::Markup(mc),
-            ..
-        }) = result
-        {
-            assert!(
-                mc.value.contains("Color::Red"),
-                "expected 'Color::Red', got: {}",
-                mc.value
-            );
-            assert!(
-                mc.value.contains("\"red\""),
-                "expected case value, got: {}",
-                mc.value
-            );
-        }
+    fn snapshot_hover_backed_enum_case_shows_value() {
+        check_hover(
+            "<?php\nenum Color: string { case Red = 'red'; }",
+            pos(1, 27),
+            expect![[r#"
+                ```php
+                case Color::Red = 'red'
+                ```"#]],
+        );
+    }
+
+    #[test]
+    fn snapshot_hover_enum_class_const() {
+        check_hover(
+            "<?php\nenum Suit { const int MAX = 4; }",
+            pos(1, 22),
+            expect![[r#"
+                ```php
+                const int MAX = 4
+                ```"#]],
+        );
     }
 
     #[test]
@@ -1210,6 +1261,69 @@ mod tests {
             expect![[r#"
                 ```php
                 interface Serializable
+                ```"#]],
+        );
+    }
+
+    #[test]
+    fn snapshot_hover_class_const_with_type_hint() {
+        check_hover(
+            "<?php\nclass Config { const string VERSION = '1.0.0'; }",
+            pos(1, 28),
+            expect![[r#"
+                ```php
+                const string VERSION = '1.0.0'
+                ```"#]],
+        );
+    }
+
+    #[test]
+    fn snapshot_hover_class_const_float_value() {
+        check_hover(
+            "<?php\nclass Math { const float PI = 3.14; }",
+            pos(1, 27),
+            expect![[r#"
+                ```php
+                const float PI = 3.14
+                ```"#]],
+        );
+    }
+
+    #[test]
+    fn snapshot_hover_class_const_infers_type_from_value() {
+        let (src, p) = cursor("<?php\nclass Config { const VERSION$0 = '1.0.0'; }");
+        check_hover(
+            &src,
+            p,
+            expect![[r#"
+                ```php
+                const string VERSION = '1.0.0'
+                ```"#]],
+        );
+    }
+
+    #[test]
+    fn snapshot_hover_interface_const_shows_type_and_value() {
+        let (src, p) = cursor("<?php\ninterface Limits { const int MA$0X = 100; }");
+        check_hover(
+            &src,
+            p,
+            expect![[r#"
+                ```php
+                const int MAX = 100
+                ```"#]],
+        );
+    }
+
+    #[test]
+    fn snapshot_hover_trait_const_shows_type_and_value() {
+        let (src, p) = cursor("<?php\ntrait HasVersion { const string TAG$0 = 'v1'; }");
+        check_hover(
+            &src,
+            p,
+            expect![[r#"
+                ```php
+                const string TAG = 'v1'
                 ```"#]],
         );
     }
