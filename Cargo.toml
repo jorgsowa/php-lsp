@@ -11,6 +11,7 @@ readme = "README.md"
 mir-analyzer = "0.1.0"
 mir-issues = "0.1.0"
 mir-codebase = "0.1.0"
+mir-types = "0.1.0"
 php-rs-parser = "0.3.2"
 php-ast = "0.3.2"
 bumpalo = { version = "3", features = ["collections"] }

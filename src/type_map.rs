@@ -4,8 +4,8 @@
 use std::collections::HashMap;
 
 use php_ast::{
-    BinaryOp, BuiltinType, ClassMemberKind, EnumMemberKind, ExprKind, NamespaceBody, Stmt,
-    StmtKind, TypeHint, TypeHintKind,
+    BinaryOp, ClassMemberKind, EnumMemberKind, ExprKind, NamespaceBody, Stmt, StmtKind, TypeHint,
+    TypeHintKind,
 };
 use tower_lsp::lsp_types::Position;
 
@@ -142,30 +142,10 @@ fn extract_method_return_class(
     enclosing_class: &str,
 ) -> Option<String> {
     // 1. AST return type hint takes priority
-    if let Some(hint) = &m.return_type {
-        match &hint.kind {
-            TypeHintKind::Keyword(BuiltinType::Self_ | BuiltinType::Static, _) => {
-                return Some(enclosing_class.to_string());
-            }
-            TypeHintKind::Named(name) => {
-                let s = name.to_string_repr();
-                let base = s.trim_start_matches('\\').trim_start_matches('?');
-                let short = base.rsplit('\\').next().unwrap_or(base);
-                if short == "self" || short == "static" {
-                    return Some(enclosing_class.to_string());
-                }
-                if short
-                    .chars()
-                    .next()
-                    .map(|c| c.is_uppercase())
-                    .unwrap_or(false)
-                    && !matches!(short, "void" | "never" | "null")
-                {
-                    return Some(short.to_string());
-                }
-            }
-            _ => {}
-        }
+    if let Some(hint) = &m.return_type
+        && let Some(s) = type_hint_to_class_string(hint, Some(enclosing_class))
+    {
+        return Some(s);
     }
     // 2. @return docblock fallback
     if let Some(raw) = docblock_before(source, member_start) {
@@ -187,51 +167,36 @@ fn extract_method_return_class(
     None
 }
 
-/// Extract a class-name string from a type hint, suitable for storing in the TypeMap.
-/// - `Named(Foo)` → `"Foo"`
+/// Extract a class-name string from a type hint using mir's type resolver.
+/// - `Named(Foo)` → `"Foo"`, `Named(\App\Foo)` → `"Foo"` (short name)
 /// - `Nullable(Named(Foo))` → `"Foo"` (strips the nullable wrapper)
 /// - `Union([Named(Foo), Named(Bar)])` → `"Foo|Bar"`
-/// - `Keyword(static | self)` with `enclosing` → returns `enclosing`
+/// - `self` / `static` with `enclosing` → returns the enclosing short name
 /// - Primitives and unrecognised kinds → `None`
 fn type_hint_to_class_string(
     hint: &TypeHint<'_, '_>,
     enclosing_class: Option<&str>,
 ) -> Option<String> {
-    match &hint.kind {
-        TypeHintKind::Named(name) => {
-            let s = name.to_string_repr();
-            let base = s.trim_start_matches('\\');
-            let short = base.rsplit('\\').next().unwrap_or(base);
-            if short == "self" || short == "static" {
-                return enclosing_class.map(|c| c.to_string());
+    use mir_types::Atomic;
+    let union = mir_analyzer::parser::type_from_hint(hint, enclosing_class);
+    let classes: Vec<String> = union
+        .types
+        .iter()
+        .filter_map(|a| match a {
+            Atomic::TNamedObject { fqcn, .. }
+            | Atomic::TSelf { fqcn }
+            | Atomic::TStaticObject { fqcn }
+            | Atomic::TParent { fqcn } => {
+                let short = fqcn.rsplit('\\').next().unwrap_or(fqcn.as_ref());
+                Some(short.to_string())
             }
-            if short
-                .chars()
-                .next()
-                .map(|c| c.is_uppercase())
-                .unwrap_or(false)
-                && !matches!(short, "void" | "never" | "null")
-            {
-                return Some(short.to_string());
-            }
-            None
-        }
-        TypeHintKind::Nullable(inner) => type_hint_to_class_string(inner, enclosing_class),
-        TypeHintKind::Union(parts) => {
-            let classes: Vec<String> = parts
-                .iter()
-                .filter_map(|p| type_hint_to_class_string(p, enclosing_class))
-                .collect();
-            if classes.is_empty() {
-                None
-            } else {
-                Some(classes.join("|"))
-            }
-        }
-        TypeHintKind::Keyword(BuiltinType::Self_ | BuiltinType::Static, _) => {
-            enclosing_class.map(|c| c.to_string())
-        }
-        _ => None,
+            _ => None,
+        })
+        .collect();
+    if classes.is_empty() {
+        None
+    } else {
+        Some(classes.join("|"))
     }
 }
 
