@@ -59,7 +59,7 @@ fn collect_lenses(
                             let method_range = name_range(source, m.name);
                             out.push(ref_count_lens(method_range, m.name, all_docs));
 
-                            if is_test_method(source, m.name, member.span.start) {
+                            if is_test_method(source, m, member.span.start) {
                                 out.push(run_test_lens(method_range, uri, class_name, m.name));
                             }
 
@@ -219,10 +219,21 @@ fn parent_has_method(
     false
 }
 
-/// A method is a test if its name starts with `test` (PHPUnit convention) or
-/// if its leading docblock contains `@test`.
-fn is_test_method(source: &str, name: &str, member_start: u32) -> bool {
-    if name.starts_with("test") {
+/// A method is a test if its name starts with `test` (PHPUnit convention),
+/// if its leading docblock contains `@test`, or if it carries a `#[Test]`
+/// or `#[PHPUnit\Framework\Attributes\Test]` PHP attribute.
+fn is_test_method(source: &str, m: &php_ast::MethodDecl<'_, '_>, member_start: u32) -> bool {
+    if m.name.starts_with("test") {
+        return true;
+    }
+    let has_test_attr = m.attributes.iter().any(|attr| {
+        let span = attr.name.span();
+        let attr_name = source
+            .get(span.start as usize..span.end as usize)
+            .unwrap_or("");
+        attr_name == "Test" || attr_name.ends_with("\\Test")
+    });
+    if has_test_attr {
         return true;
     }
     docblock_before(source, member_start)
@@ -437,6 +448,40 @@ mod tests {
                 .title
                 .contains("Base::run"),
             "overrides lens should reference Base::run"
+        );
+    }
+
+    #[test]
+    fn test_attribute_triggers_run_test_lens() {
+        let src = "<?php\nclass FooTest {\n#[Test]\npublic function it_does_something() {}\n}";
+        let d = doc(src);
+        let docs = vec![(uri("/a.php"), Arc::new(doc(src)))];
+        let lenses = code_lenses(&uri("/a.php"), &d, &docs);
+        let run_test = lenses.iter().find(|l| {
+            l.command
+                .as_ref()
+                .map_or(false, |c| c.title.contains("Run test"))
+        });
+        assert!(
+            run_test.is_some(),
+            "expected Run test lens from #[Test] attribute"
+        );
+    }
+
+    #[test]
+    fn fqn_test_attribute_triggers_run_test_lens() {
+        let src = "<?php\nclass FooTest {\n#[PHPUnit\\Framework\\Attributes\\Test]\npublic function it_does_something() {}\n}";
+        let d = doc(src);
+        let docs = vec![(uri("/a.php"), Arc::new(doc(src)))];
+        let lenses = code_lenses(&uri("/a.php"), &d, &docs);
+        let run_test = lenses.iter().find(|l| {
+            l.command
+                .as_ref()
+                .map_or(false, |c| c.title.contains("Run test"))
+        });
+        assert!(
+            run_test.is_some(),
+            "expected Run test lens from fully-qualified #[PHPUnit\\Framework\\Attributes\\Test] attribute"
         );
     }
 
