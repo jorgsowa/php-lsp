@@ -315,16 +315,20 @@ fn scan_statements(stmts: &[Stmt<'_, '_>], word: &str) -> Option<String> {
             }
             StmtKind::Class(c) => {
                 for member in c.members.iter() {
-                    if let ClassMemberKind::Method(m) = &member.kind
-                        && m.name == word
-                    {
-                        let params = format_params(&m.params);
-                        let ret = m
-                            .return_type
-                            .as_ref()
-                            .map(|r| format!(": {}", format_type_hint(r)))
-                            .unwrap_or_default();
-                        return Some(format!("function {}({}){}", word, params, ret));
+                    match &member.kind {
+                        ClassMemberKind::Method(m) if m.name == word => {
+                            let params = format_params(&m.params);
+                            let ret = m
+                                .return_type
+                                .as_ref()
+                                .map(|r| format!(": {}", format_type_hint(r)))
+                                .unwrap_or_default();
+                            return Some(format!("function {}({}){}", word, params, ret));
+                        }
+                        ClassMemberKind::ClassConst(k) if k.name == word => {
+                            return Some(format_class_const(k));
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -363,6 +367,28 @@ fn format_expr_literal(expr: &php_ast::Expr<'_, '_>) -> Option<String> {
         ExprKind::String(s) => Some(format!("\"{}\"", s)),
         _ => None,
     }
+}
+
+/// Format a class/interface/enum constant declaration for hover display.
+fn format_class_const(c: &php_ast::ClassConstDecl<'_, '_>) -> String {
+    let type_str = c
+        .type_hint
+        .as_ref()
+        .map(|t| format!("{} ", format_type_hint(t)))
+        .or_else(|| {
+            // Infer type from literal value when no annotation present.
+            // format_expr_literal wraps strings in double quotes and ints as plain digits.
+            match format_expr_literal(&c.value) {
+                Some(ref v) if v.starts_with('"') => Some("string ".to_string()),
+                Some(ref v) if v.parse::<i64>().is_ok() => Some("int ".to_string()),
+                _ => None,
+            }
+        })
+        .unwrap_or_default();
+    let value_str = format_expr_literal(&c.value)
+        .map(|v| format!(" = {v}"))
+        .unwrap_or_default();
+    format!("const {}{}{}", type_str, c.name, value_str)
 }
 
 /// Look up markdown documentation for a symbol by name across all indexed documents.
@@ -1212,5 +1238,30 @@ mod tests {
                 interface Serializable
                 ```"#]],
         );
+    }
+
+    #[test]
+    fn hover_on_class_const_with_type_hint() {
+        let src = "<?php\nclass Config { const string VERSION = '1.0.0'; }";
+        let doc = ParsedDoc::parse(src.to_string());
+        // "VERSION" starts at col 34: "class Config { const string VERSION"
+        let result = hover_info(src, &doc, pos(1, 34), &[]);
+        assert!(result.is_some(), "expected hover on class constant");
+        if let Some(Hover {
+            contents: HoverContents::Markup(mc),
+            ..
+        }) = result
+        {
+            assert!(
+                mc.value.contains("string VERSION"),
+                "expected type and name, got: {}",
+                mc.value
+            );
+            assert!(
+                mc.value.contains("'1.0.0'") || mc.value.contains("\"1.0.0\""),
+                "expected value, got: {}",
+                mc.value
+            );
+        }
     }
 }
