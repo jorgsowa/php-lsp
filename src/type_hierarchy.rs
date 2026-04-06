@@ -1,7 +1,7 @@
 /// `textDocument/prepareTypeHierarchy`, `typeHierarchy/supertypes`, `typeHierarchy/subtypes`.
 use std::sync::Arc;
 
-use php_ast::{NamespaceBody, Stmt, StmtKind};
+use php_ast::{ClassMemberKind, NamespaceBody, Stmt, StmtKind};
 use tower_lsp::lsp_types::{Position, SymbolKind, TypeHierarchyItem, Url};
 
 use crate::ast::{ParsedDoc, name_range};
@@ -40,7 +40,7 @@ fn find_type_item(
                 return Some(make_item(source, i.name, SymbolKind::INTERFACE, uri));
             }
             StmtKind::Trait(t) if t.name == word => {
-                return Some(make_item(source, t.name, SymbolKind::INTERFACE, uri));
+                return Some(make_item(source, t.name, SymbolKind::CLASS, uri));
             }
             StmtKind::Enum(e) if e.name == word => {
                 return Some(make_item(source, e.name, SymbolKind::ENUM, uri));
@@ -167,7 +167,16 @@ fn collect_subtypes(
                     .implements
                     .iter()
                     .any(|i| i.to_string_repr().as_ref() == parent_name);
-                if (extends_match || implements_match)
+                let trait_use_match = c.members.iter().any(|m| {
+                    if let ClassMemberKind::TraitUse(tu) = &m.kind {
+                        tu.traits
+                            .iter()
+                            .any(|t| t.to_string_repr().as_ref() == parent_name)
+                    } else {
+                        false
+                    }
+                });
+                if (extends_match || implements_match || trait_use_match)
                     && let Some(name) = c.name
                 {
                     out.push(make_item(source, name, SymbolKind::CLASS, uri));
@@ -335,5 +344,31 @@ mod tests {
         let subs = subtypes_of(&item, &docs);
         assert_eq!(subs.len(), 1);
         assert_eq!(subs[0].name, "Dog");
+    }
+
+    #[test]
+    fn prepare_finds_trait_with_class_kind() {
+        let src = "<?php\ntrait Loggable {}";
+        let docs = vec![doc("/a.php", src)];
+        let item = prepare_type_hierarchy(src, &docs, pos(1, 8));
+        assert!(item.is_some(), "expected type hierarchy item for trait");
+        assert_eq!(item.as_ref().unwrap().name, "Loggable");
+        // Traits use CLASS (not INTERFACE) — LSP has no dedicated trait kind.
+        assert_eq!(item.unwrap().kind, SymbolKind::CLASS);
+    }
+
+    #[test]
+    fn subtypes_finds_class_using_trait() {
+        let src = "<?php\ntrait Loggable {}\nclass Service {\n    use Loggable;\n}";
+        let docs = vec![doc("/a.php", src)];
+        let item = prepare_type_hierarchy(src, &docs, pos(1, 8)).unwrap();
+        let subs = subtypes_of(&item, &docs);
+        assert_eq!(
+            subs.len(),
+            1,
+            "expected Service as subtype of trait Loggable"
+        );
+        assert_eq!(subs[0].name, "Service");
+        assert_eq!(subs[0].kind, SymbolKind::CLASS);
     }
 }
