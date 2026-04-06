@@ -12,45 +12,8 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  test:
-    name: Test (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          fetch-depth: 0
-
-      - name: Check tag is on main
-        run: |
-          git fetch origin main
-          git merge-base --is-ancestor ${{ github.sha }} origin/main || { echo "Tag is not on main branch"; exit 1; }
-        shell: bash
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
-        with:
-          toolchain: "1.94.0"
-
-      - name: Cache cargo registry
-        uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5.0.4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-
-
-      - name: Run tests
-        run: cargo test
-
   build:
     name: Build (${{ matrix.target }})
-    needs: test
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: write
@@ -64,6 +27,19 @@ jobs:
             runner: macos-latest
           - target: x86_64-unknown-linux-gnu
             runner: ubuntu-latest
+            release_notes: true
+          - target: aarch64-unknown-linux-gnu
+            runner: ubuntu-latest
+            deps: gcc-aarch64-linux-gnu
+            linker: aarch64-linux-gnu-gcc
+            cross: 'true'
+          - target: x86_64-unknown-linux-musl
+            runner: ubuntu-latest
+            deps: musl-tools
+            # tests run against the host GNU target, not musl; musl-specific
+            # runtime failures would only surface at build or user runtime
+          - target: x86_64-pc-windows-msvc
+            runner: windows-latest
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -92,11 +68,32 @@ jobs:
           key: ${{ runner.os }}-${{ matrix.target }}-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-${{ matrix.target }}-cargo-
 
+      - name: Install cross-compilation dependencies
+        if: matrix.deps
+        run: sudo apt-get update && sudo apt-get install -y ${{ matrix.deps }}
+
+      - name: Configure linker
+        if: matrix.linker
+        run: |
+          TARGET_UPPER=$(echo '${{ matrix.target }}' | tr 'a-z-' 'A-Z_')
+          echo "CARGO_TARGET_${TARGET_UPPER}_LINKER=${{ matrix.linker }}" >> $GITHUB_ENV
+        shell: bash
+
+      - name: Run tests
+        if: matrix.cross != 'true'
+        run: cargo test
+
       - name: Build
         run: cargo build --release --target ${{ matrix.target }}
 
-      - name: Verify binary
+      - name: Verify binary (Unix)
+        if: runner.os != 'Windows'
         run: test -s target/${{ matrix.target }}/release/php-lsp
+
+      - name: Verify binary (Windows)
+        if: runner.os == 'Windows'
+        run: test-path target/${{ matrix.target }}/release/php-lsp.exe
+        shell: pwsh
 
       - name: Archive (macOS)
         if: runner.os == 'macOS'
@@ -110,17 +107,37 @@ jobs:
           tar czf php-lsp-${{ matrix.target }}.tar.gz -C target/${{ matrix.target }}/release php-lsp
           sha256sum php-lsp-${{ matrix.target }}.tar.gz > php-lsp-${{ matrix.target }}.tar.gz.sha256
 
-      - name: Upload to GitHub Release
+      - name: Archive (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          Compress-Archive -Path target/${{ matrix.target }}/release/php-lsp.exe -DestinationPath php-lsp-${{ matrix.target }}.zip
+          $hash = (Get-FileHash php-lsp-${{ matrix.target }}.zip -Algorithm SHA256).Hash.ToLower()
+          "$hash  php-lsp-${{ matrix.target }}.zip" | Out-File -Encoding utf8NoBOM php-lsp-${{ matrix.target }}.zip.sha256
+        shell: pwsh
+
+      - name: Upload to GitHub Release (Unix)
+        if: runner.os != 'Windows'
         uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2.6.1
         with:
-          generate_release_notes: true
+          generate_release_notes: ${{ matrix.release_notes == true }}
+          fail_on_unmatched_files: true
           files: |
             php-lsp-${{ matrix.target }}.tar.gz
             php-lsp-${{ matrix.target }}.tar.gz.sha256
 
+      - name: Upload to GitHub Release (Windows)
+        if: runner.os == 'Windows'
+        uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2.6.1
+        with:
+          generate_release_notes: false
+          fail_on_unmatched_files: true
+          files: |
+            php-lsp-${{ matrix.target }}.zip
+            php-lsp-${{ matrix.target }}.zip.sha256
+
   publish-crates:
     name: Publish to crates.io
-    needs: test
+    needs: build
     runs-on: ubuntu-latest
 
     steps:
