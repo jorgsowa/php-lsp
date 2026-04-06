@@ -115,11 +115,23 @@ jobs:
           "$hash  php-lsp-${{ matrix.target }}.zip" | Out-File -Encoding utf8NoBOM php-lsp-${{ matrix.target }}.zip.sha256
         shell: pwsh
 
+      - name: Extract changelog section
+        if: matrix.release_notes == true
+        id: changelog
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          BODY=$(awk "/^## \[${VERSION}\]/{found=1; next} found && /^## \[/{exit} found{print}" CHANGELOG.md)
+          echo "body<<EOF" >> $GITHUB_OUTPUT
+          echo "$BODY" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+        shell: bash
+
       - name: Upload to GitHub Release (Unix)
         if: runner.os != 'Windows'
         uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2.6.1
         with:
-          generate_release_notes: ${{ matrix.release_notes == true }}
+          body: ${{ steps.changelog.outputs.body }}
+          generate_release_notes: false
           fail_on_unmatched_files: true
           files: |
             php-lsp-${{ matrix.target }}.tar.gz
