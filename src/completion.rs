@@ -43,6 +43,47 @@ fn callable_item(label: &str, kind: CompletionItemKind, has_params: bool) -> Com
     }
 }
 
+/// Build a named-argument `CompletionItem` for a callable when param names are
+/// known.  Produces a label like `create(name:, age:)` and a snippet like
+/// `create(name: $1, age: $2)`.  Returns `None` when the param list is empty
+/// (no advantage over the positional item in that case).
+fn named_arg_item(
+    label: &str,
+    kind: CompletionItemKind,
+    params: &[php_ast::Param<'_, '_>],
+) -> Option<CompletionItem> {
+    if params.is_empty() {
+        return None;
+    }
+    let named_label = format!(
+        "{}({})",
+        label,
+        params
+            .iter()
+            .map(|p| format!("{}:", p.name))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    let snippet = format!(
+        "{}({})",
+        label,
+        params
+            .iter()
+            .enumerate()
+            .map(|(i, p)| format!("{}: ${}", p.name, i + 1))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    Some(CompletionItem {
+        label: named_label,
+        kind: Some(kind),
+        insert_text: Some(snippet),
+        insert_text_format: Some(InsertTextFormat::SNIPPET),
+        detail: Some("named args".to_string()),
+        ..Default::default()
+    })
+}
+
 /// Build the full signature string for a callable, e.g.
 /// `"function foo(string $bar, int $baz): bool"`.
 fn build_function_sig(
@@ -245,6 +286,10 @@ fn collect_from_statements_with_doc(
                 item.detail = Some(sig);
                 item.documentation = documentation;
                 items.push(item);
+                if let Some(named) = named_arg_item(f.name, CompletionItemKind::FUNCTION, &f.params)
+                {
+                    items.push(named);
+                }
                 for param in f.params.iter() {
                     items.push(CompletionItem {
                         label: format!("${}", param.name),
@@ -275,6 +320,11 @@ fn collect_from_statements_with_doc(
                             item.detail = Some(sig);
                             item.documentation = documentation;
                             items.push(item);
+                            if let Some(named) =
+                                named_arg_item(m.name, CompletionItemKind::METHOD, &m.params)
+                            {
+                                items.push(named);
+                            }
                         }
                         ClassMemberKind::Property(p) => {
                             items.push(CompletionItem {
@@ -2630,7 +2680,8 @@ mod tests {
         expect![[r#"
             $host
             $port
-            connect"#]]
+            connect
+            connect(host:, port:)"#]]
         .assert_eq(&ls.join("\n"));
     }
 
