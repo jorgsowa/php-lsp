@@ -360,10 +360,12 @@ fn scan_statements(stmts: &[Stmt<'_, '_>], word: &str) -> Option<String> {
     None
 }
 
-/// Format a literal expression value for hover display (int or string literals only).
+/// Format a literal expression value for hover display (int, float, bool, or string literals).
 fn format_expr_literal(expr: &php_ast::Expr<'_, '_>) -> Option<String> {
     match &expr.kind {
         ExprKind::Int(n) => Some(n.to_string()),
+        ExprKind::Float(f) => Some(f.to_string()),
+        ExprKind::Bool(b) => Some(if *b { "true" } else { "false" }.to_string()),
         ExprKind::String(s) => Some(format!("'{}'", s)),
         _ => None,
     }
@@ -842,28 +844,15 @@ mod tests {
     }
 
     #[test]
-    fn hover_on_backed_enum_case_shows_value() {
-        let src = "<?php\nenum Color: string { case Red = 'red'; }";
-        let doc = ParsedDoc::parse(src.to_string());
-        // "Red" starts at col 26: "enum Color: string { case Red"
-        let result = hover_info(src, &doc, pos(1, 27), &[]);
-        assert!(result.is_some(), "expected hover on backed enum case");
-        if let Some(Hover {
-            contents: HoverContents::Markup(mc),
-            ..
-        }) = result
-        {
-            assert!(
-                mc.value.contains("Color::Red"),
-                "expected 'Color::Red', got: {}",
-                mc.value
-            );
-            assert!(
-                mc.value.contains("'red'"),
-                "expected case value, got: {}",
-                mc.value
-            );
-        }
+    fn snapshot_hover_backed_enum_case_shows_value() {
+        check_hover(
+            "<?php\nenum Color: string { case Red = 'red'; }",
+            pos(1, 27),
+            expect![[r#"
+                ```php
+                case Color::Red = 'red'
+                ```"#]],
+        );
     }
 
     #[test]
@@ -1246,6 +1235,18 @@ mod tests {
             expect![[r#"
                 ```php
                 const string VERSION = '1.0.0'
+                ```"#]],
+        );
+    }
+
+    #[test]
+    fn snapshot_hover_class_const_float_value() {
+        check_hover(
+            "<?php\nclass Math { const float PI = 3.14; }",
+            pos(1, 27),
+            expect![[r#"
+                ```php
+                const float PI = 3.14
                 ```"#]],
         );
     }
