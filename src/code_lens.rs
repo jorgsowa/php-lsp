@@ -1,9 +1,13 @@
 /// `textDocument/codeLens` — inline actionable annotations above declarations.
 ///
-/// Two lens types are emitted:
+/// Four lens types are emitted:
 ///   1. **Reference count** — above every function, class, and method declaration.
 ///   2. **Run test** — above PHPUnit test methods (methods whose name starts with
 ///      `test` or that carry a `/** @test */` docblock).
+///   3. **N implementations** — above abstract classes, interfaces, and traits,
+///      counting classes that extend/implement/use them.
+///   4. **overrides ClassName::method** — above methods that override a parent
+///      class method of the same name.
 use std::sync::Arc;
 
 use php_ast::{ClassMemberKind, EnumMemberKind, NamespaceBody, Stmt, StmtKind};
@@ -83,6 +87,9 @@ fn collect_lenses(
             StmtKind::Trait(t) => {
                 let range = name_range(source, t.name);
                 out.push(ref_count_lens(range, t.name, all_docs));
+                // Usages count: how many classes use this trait.
+                let usage_count = count_trait_usages(t.name, all_docs);
+                out.push(impl_count_lens(range, usage_count));
                 for member in t.members.iter() {
                     if let ClassMemberKind::Method(m) = &member.kind {
                         let method_range = name_range(source, m.name);
@@ -188,6 +195,44 @@ fn run_test_lens(
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+/// Count how many classes across `all_docs` use `trait_name` via a `use` statement.
+fn count_trait_usages(trait_name: &str, all_docs: &[(Url, Arc<ParsedDoc>)]) -> usize {
+    let mut count = 0;
+    for (_, doc) in all_docs {
+        count += count_trait_usages_in_stmts(trait_name, &doc.program().stmts);
+    }
+    count
+}
+
+fn count_trait_usages_in_stmts(trait_name: &str, stmts: &[php_ast::Stmt<'_, '_>]) -> usize {
+    let mut count = 0;
+    for stmt in stmts {
+        match &stmt.kind {
+            StmtKind::Class(c) => {
+                let uses_trait = c.members.iter().any(|m| {
+                    if let ClassMemberKind::TraitUse(t) = &m.kind {
+                        t.traits
+                            .iter()
+                            .any(|name| name.to_string_repr().as_ref() == trait_name)
+                    } else {
+                        false
+                    }
+                });
+                if uses_trait {
+                    count += 1;
+                }
+            }
+            StmtKind::Namespace(ns) => {
+                if let NamespaceBody::Braced(inner) = &ns.body {
+                    count += count_trait_usages_in_stmts(trait_name, inner);
+                }
+            }
+            _ => {}
+        }
+    }
+    count
+}
 
 /// Return the direct parent class name of a class, if any.
 fn find_parent_class(
@@ -551,6 +596,85 @@ mod tests {
             lenses.len() >= 2,
             "expected lenses for both enum and enum method, got {} lens(es)",
             lenses.len()
+        );
+    }
+
+    #[test]
+    fn emits_trait_usages_lens_with_zero_when_unused() {
+        let src = "<?php\ntrait Loggable {}";
+        let d = doc(src);
+        let docs = vec![(uri("/a.php"), Arc::new(doc(src)))];
+        let lenses = code_lenses(&uri("/a.php"), &d, &docs);
+        let impl_lens = lenses.iter().find(|l| {
+            l.command
+                .as_ref()
+                .map_or(false, |c| c.title.contains("implementation"))
+        });
+        assert!(
+            impl_lens.is_some(),
+            "expected a usages/implementations lens for trait"
+        );
+        assert!(
+            impl_lens
+                .unwrap()
+                .command
+                .as_ref()
+                .unwrap()
+                .title
+                .starts_with("0"),
+            "expected 0 implementations when no class uses the trait"
+        );
+    }
+
+    #[test]
+    fn emits_trait_usages_lens_counts_classes_using_trait() {
+        let src = "<?php\ntrait Loggable {}\nclass A { use Loggable; }\nclass B { use Loggable; }";
+        let d = doc(src);
+        let docs = vec![(uri("/a.php"), Arc::new(doc(src)))];
+        let lenses = code_lenses(&uri("/a.php"), &d, &docs);
+        let impl_lens = lenses.iter().find(|l| {
+            l.command
+                .as_ref()
+                .map_or(false, |c| c.title.contains("implementation"))
+        });
+        assert!(
+            impl_lens.is_some(),
+            "expected a usages lens for trait with users"
+        );
+        let title = &impl_lens.unwrap().command.as_ref().unwrap().title;
+        assert!(
+            title.starts_with("2"),
+            "expected 2 implementations for trait used by 2 classes, got: {}",
+            title
+        );
+    }
+
+    #[test]
+    fn trait_usages_lens_counts_across_multiple_docs() {
+        let trait_src = "<?php\ntrait Loggable {}";
+        let user_a = "<?php\nclass A { use Loggable; }";
+        let user_b = "<?php\nclass B { use Loggable; }";
+        let d = doc(trait_src);
+        let docs = vec![
+            (uri("/trait.php"), Arc::new(doc(trait_src))),
+            (uri("/a.php"), Arc::new(doc(user_a))),
+            (uri("/b.php"), Arc::new(doc(user_b))),
+        ];
+        let lenses = code_lenses(&uri("/trait.php"), &d, &docs);
+        let impl_lens = lenses.iter().find(|l| {
+            l.command
+                .as_ref()
+                .map_or(false, |c| c.title.contains("implementation"))
+        });
+        assert!(
+            impl_lens.is_some(),
+            "expected a usages lens for trait used across multiple docs"
+        );
+        let title = &impl_lens.unwrap().command.as_ref().unwrap().title;
+        assert!(
+            title.starts_with("2"),
+            "expected 2 implementations across docs, got: {}",
+            title
         );
     }
 }
