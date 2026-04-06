@@ -1,9 +1,11 @@
 use php_ast::{ClassMemberKind, EnumMemberKind, NamespaceBody, Stmt, StmtKind};
 use tower_lsp::lsp_types::{
-    ParameterInformation, ParameterLabel, Position, SignatureHelp, SignatureInformation,
+    Documentation, ParameterInformation, ParameterLabel, Position, SignatureHelp,
+    SignatureInformation,
 };
 
 use crate::ast::ParsedDoc;
+use crate::docblock::find_docblock;
 use crate::hover::format_params_str;
 use crate::util::split_params;
 
@@ -14,12 +16,28 @@ pub fn signature_help(source: &str, doc: &ParsedDoc, position: Position) -> Opti
         .or_else(|| builtin_signature(&func_name).map(|s| s.to_string()))?;
 
     let label = format!("{}({})", func_name, sig_text);
+    let docblock = find_docblock(source, &doc.program().stmts, &func_name);
     let params: Vec<ParameterInformation> = split_params(&sig_text)
         .into_iter()
         .filter(|p| !p.is_empty())
-        .map(|p| ParameterInformation {
-            label: ParameterLabel::Simple(p.to_string()),
-            documentation: None,
+        .map(|p| {
+            // Extract the variable name (e.g. "$name") from the param string.
+            let param_name = p
+                .split_whitespace()
+                .find(|t| t.starts_with('$'))
+                .unwrap_or("")
+                .trim_start_matches('$');
+            let doc = docblock.as_ref().and_then(|db| {
+                db.params
+                    .iter()
+                    .find(|dp| dp.name.trim_start_matches('$') == param_name)
+                    .filter(|dp| !dp.description.is_empty())
+                    .map(|dp| Documentation::String(dp.description.clone()))
+            });
+            ParameterInformation {
+                label: ParameterLabel::Simple(p.to_string()),
+                documentation: doc,
+            }
         })
         .collect();
 
