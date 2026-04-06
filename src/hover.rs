@@ -364,7 +364,7 @@ fn scan_statements(stmts: &[Stmt<'_, '_>], word: &str) -> Option<String> {
 fn format_expr_literal(expr: &php_ast::Expr<'_, '_>) -> Option<String> {
     match &expr.kind {
         ExprKind::Int(n) => Some(n.to_string()),
-        ExprKind::String(s) => Some(format!("\"{}\"", s)),
+        ExprKind::String(s) => Some(format!("'{}'", s)),
         _ => None,
     }
 }
@@ -375,14 +375,12 @@ fn format_class_const(c: &php_ast::ClassConstDecl<'_, '_>) -> String {
         .type_hint
         .as_ref()
         .map(|t| format!("{} ", format_type_hint(t)))
-        .or_else(|| {
-            // Infer type from literal value when no annotation present.
-            // format_expr_literal wraps strings in double quotes and ints as plain digits.
-            match format_expr_literal(&c.value) {
-                Some(ref v) if v.starts_with('"') => Some("string ".to_string()),
-                Some(ref v) if v.parse::<i64>().is_ok() => Some("int ".to_string()),
-                _ => None,
-            }
+        .or_else(|| match &c.value.kind {
+            ExprKind::Int(_) => Some("int ".to_string()),
+            ExprKind::String(_) => Some("string ".to_string()),
+            ExprKind::Float(_) => Some("float ".to_string()),
+            ExprKind::Bool(_) => Some("bool ".to_string()),
+            _ => None,
         })
         .unwrap_or_default();
     let value_str = format_expr_literal(&c.value)
@@ -861,7 +859,7 @@ mod tests {
                 mc.value
             );
             assert!(
-                mc.value.contains("\"red\""),
+                mc.value.contains("'red'"),
                 "expected case value, got: {}",
                 mc.value
             );
@@ -1241,27 +1239,14 @@ mod tests {
     }
 
     #[test]
-    fn hover_on_class_const_with_type_hint() {
-        let src = "<?php\nclass Config { const string VERSION = '1.0.0'; }";
-        let doc = ParsedDoc::parse(src.to_string());
-        // "VERSION" starts at col 34: "class Config { const string VERSION"
-        let result = hover_info(src, &doc, pos(1, 34), &[]);
-        assert!(result.is_some(), "expected hover on class constant");
-        if let Some(Hover {
-            contents: HoverContents::Markup(mc),
-            ..
-        }) = result
-        {
-            assert!(
-                mc.value.contains("string VERSION"),
-                "expected type and name, got: {}",
-                mc.value
-            );
-            assert!(
-                mc.value.contains("'1.0.0'") || mc.value.contains("\"1.0.0\""),
-                "expected value, got: {}",
-                mc.value
-            );
-        }
+    fn snapshot_hover_class_const_with_type_hint() {
+        check_hover(
+            "<?php\nclass Config { const string VERSION = '1.0.0'; }",
+            pos(1, 28),
+            expect![[r#"
+                ```php
+                const string VERSION = '1.0.0'
+                ```"#]],
+        );
     }
 }
