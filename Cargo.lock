@@ -781,6 +781,7 @@ dependencies = [
  "mir-analyzer",
  "mir-codebase",
  "mir-issues",
+ "mir-types",
  "php-ast",
  "php-rs-parser",
  "serde_json",
