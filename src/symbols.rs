@@ -9,6 +9,7 @@ use tower_lsp::lsp_types::{
 };
 
 use crate::ast::{ParsedDoc, name_range, offset_to_position};
+use crate::docblock::{docblock_before, parse_docblock};
 use crate::util::fuzzy_camel_match;
 
 pub fn document_symbols(source: &str, doc: &ParsedDoc) -> Vec<DocumentSymbol> {
@@ -277,6 +278,9 @@ fn statement_to_symbol(source: &str, stmt: &Stmt<'_, '_>) -> Option<DocumentSymb
             let range = stmt_range(source, stmt);
             let selection_range = name_range(source, f.name);
             let detail = Some(format_fn_signature(&f.params, f.return_type.as_ref()));
+            let is_deprecated = docblock_before(source, stmt.span.start)
+                .filter(|raw| parse_docblock(raw).deprecated.is_some())
+                .map(|_| true);
 
             let param_children: Vec<DocumentSymbol> = f
                 .params
@@ -302,7 +306,7 @@ fn statement_to_symbol(source: &str, stmt: &Stmt<'_, '_>) -> Option<DocumentSymb
                 detail,
                 kind: SymbolKind::FUNCTION,
                 tags: None,
-                deprecated: None,
+                deprecated: is_deprecated,
                 range,
                 selection_range,
                 children: if param_children.is_empty() {
@@ -317,6 +321,9 @@ fn statement_to_symbol(source: &str, stmt: &Stmt<'_, '_>) -> Option<DocumentSymb
             let name = c.name?;
             let range = stmt_range(source, stmt);
             let selection_range = name_range(source, name);
+            let class_deprecated = docblock_before(source, stmt.span.start)
+                .filter(|raw| parse_docblock(raw).deprecated.is_some())
+                .map(|_| true);
 
             let children: Vec<DocumentSymbol> = c
                 .members
@@ -328,12 +335,15 @@ fn statement_to_symbol(source: &str, stmt: &Stmt<'_, '_>) -> Option<DocumentSymb
                             let msel = name_range(source, m.name);
                             let detail =
                                 Some(format_fn_signature(&m.params, m.return_type.as_ref()));
+                            let method_deprecated = docblock_before(source, member.span.start)
+                                .filter(|raw| parse_docblock(raw).deprecated.is_some())
+                                .map(|_| true);
                             vec![DocumentSymbol {
                                 name: m.name.to_string(),
                                 detail,
                                 kind: SymbolKind::METHOD,
                                 tags: None,
-                                deprecated: None,
+                                deprecated: method_deprecated,
                                 range: mrange,
                                 selection_range: msel,
                                 children: None,
@@ -342,12 +352,15 @@ fn statement_to_symbol(source: &str, stmt: &Stmt<'_, '_>) -> Option<DocumentSymb
                         ClassMemberKind::Property(p) => {
                             let prange = member_range(source, member);
                             let psel = name_range(source, p.name);
+                            let prop_deprecated = docblock_before(source, member.span.start)
+                                .filter(|raw| parse_docblock(raw).deprecated.is_some())
+                                .map(|_| true);
                             vec![DocumentSymbol {
                                 name: format!("${}", p.name),
                                 detail: None,
                                 kind: SymbolKind::PROPERTY,
                                 tags: None,
-                                deprecated: None,
+                                deprecated: prop_deprecated,
                                 range: prange,
                                 selection_range: psel,
                                 children: None,
@@ -356,12 +369,15 @@ fn statement_to_symbol(source: &str, stmt: &Stmt<'_, '_>) -> Option<DocumentSymb
                         ClassMemberKind::ClassConst(cc) => {
                             let crange = member_range(source, member);
                             let csel = name_range(source, cc.name);
+                            let const_deprecated = docblock_before(source, member.span.start)
+                                .filter(|raw| parse_docblock(raw).deprecated.is_some())
+                                .map(|_| true);
                             vec![DocumentSymbol {
                                 name: cc.name.to_string(),
                                 detail: None,
                                 kind: SymbolKind::CONSTANT,
                                 tags: None,
-                                deprecated: None,
+                                deprecated: const_deprecated,
                                 range: crange,
                                 selection_range: csel,
                                 children: None,
@@ -377,7 +393,7 @@ fn statement_to_symbol(source: &str, stmt: &Stmt<'_, '_>) -> Option<DocumentSymb
                 detail: None,
                 kind: SymbolKind::CLASS,
                 tags: None,
-                deprecated: None,
+                deprecated: class_deprecated,
                 range,
                 selection_range,
                 children: if children.is_empty() {
@@ -391,6 +407,9 @@ fn statement_to_symbol(source: &str, stmt: &Stmt<'_, '_>) -> Option<DocumentSymb
         StmtKind::Interface(i) => {
             let range = stmt_range(source, stmt);
             let selection_range = name_range(source, i.name);
+            let iface_deprecated = docblock_before(source, stmt.span.start)
+                .filter(|raw| parse_docblock(raw).deprecated.is_some())
+                .map(|_| true);
             let children: Vec<DocumentSymbol> = i
                 .members
                 .iter()
@@ -398,12 +417,15 @@ fn statement_to_symbol(source: &str, stmt: &Stmt<'_, '_>) -> Option<DocumentSymb
                     if let ClassMemberKind::ClassConst(cc) = &member.kind {
                         let crange = member_range(source, member);
                         let csel = name_range(source, cc.name);
+                        let const_deprecated = docblock_before(source, member.span.start)
+                            .filter(|raw| parse_docblock(raw).deprecated.is_some())
+                            .map(|_| true);
                         Some(DocumentSymbol {
                             name: cc.name.to_string(),
                             detail: None,
                             kind: SymbolKind::CONSTANT,
                             tags: None,
-                            deprecated: None,
+                            deprecated: const_deprecated,
                             range: crange,
                             selection_range: csel,
                             children: None,
@@ -418,7 +440,7 @@ fn statement_to_symbol(source: &str, stmt: &Stmt<'_, '_>) -> Option<DocumentSymb
                 detail: None,
                 kind: SymbolKind::INTERFACE,
                 tags: None,
-                deprecated: None,
+                deprecated: iface_deprecated,
                 range,
                 selection_range,
                 children: if children.is_empty() {
@@ -432,6 +454,9 @@ fn statement_to_symbol(source: &str, stmt: &Stmt<'_, '_>) -> Option<DocumentSymb
         StmtKind::Trait(t) => {
             let range = stmt_range(source, stmt);
             let selection_range = name_range(source, t.name);
+            let trait_deprecated = docblock_before(source, stmt.span.start)
+                .filter(|raw| parse_docblock(raw).deprecated.is_some())
+                .map(|_| true);
             let children: Vec<DocumentSymbol> = t
                 .members
                 .iter()
@@ -439,12 +464,15 @@ fn statement_to_symbol(source: &str, stmt: &Stmt<'_, '_>) -> Option<DocumentSymb
                     if let ClassMemberKind::Method(m) = &member.kind {
                         let mrange = member_range(source, member);
                         let msel = name_range(source, m.name);
+                        let method_deprecated = docblock_before(source, member.span.start)
+                            .filter(|raw| parse_docblock(raw).deprecated.is_some())
+                            .map(|_| true);
                         Some(DocumentSymbol {
                             name: m.name.to_string(),
                             detail: Some(format_fn_signature(&m.params, m.return_type.as_ref())),
                             kind: SymbolKind::METHOD,
                             tags: None,
-                            deprecated: None,
+                            deprecated: method_deprecated,
                             range: mrange,
                             selection_range: msel,
                             children: None,
@@ -460,7 +488,7 @@ fn statement_to_symbol(source: &str, stmt: &Stmt<'_, '_>) -> Option<DocumentSymb
                 detail: None,
                 kind: SymbolKind::CLASS,
                 tags: None,
-                deprecated: None,
+                deprecated: trait_deprecated,
                 range,
                 selection_range,
                 children: if children.is_empty() {
@@ -474,6 +502,9 @@ fn statement_to_symbol(source: &str, stmt: &Stmt<'_, '_>) -> Option<DocumentSymb
         StmtKind::Enum(e) => {
             let range = stmt_range(source, stmt);
             let selection_range = name_range(source, e.name);
+            let enum_deprecated = docblock_before(source, stmt.span.start)
+                .filter(|raw| parse_docblock(raw).deprecated.is_some())
+                .map(|_| true);
             let children: Vec<DocumentSymbol> = e
                 .members
                 .iter()
@@ -501,12 +532,15 @@ fn statement_to_symbol(source: &str, stmt: &Stmt<'_, '_>) -> Option<DocumentSymb
                             end: offset_to_position(source, member.span.end),
                         };
                         let msel = name_range(source, m.name);
+                        let method_deprecated = docblock_before(source, member.span.start)
+                            .filter(|raw| parse_docblock(raw).deprecated.is_some())
+                            .map(|_| true);
                         Some(DocumentSymbol {
                             name: m.name.to_string(),
                             detail: Some(format_fn_signature(&m.params, m.return_type.as_ref())),
                             kind: SymbolKind::METHOD,
                             tags: None,
-                            deprecated: None,
+                            deprecated: method_deprecated,
                             range: mrange,
                             selection_range: msel,
                             children: None,
@@ -521,7 +555,7 @@ fn statement_to_symbol(source: &str, stmt: &Stmt<'_, '_>) -> Option<DocumentSymb
                 detail: None,
                 kind: SymbolKind::ENUM,
                 tags: None,
-                deprecated: None,
+                deprecated: enum_deprecated,
                 range,
                 selection_range,
                 children: if children.is_empty() {
@@ -938,5 +972,74 @@ mod tests {
         let (kind, term) = parse_kind_filter("MyClass");
         assert_eq!(kind, None);
         assert_eq!(term, "MyClass");
+    }
+
+    #[test]
+    fn deprecated_function_sets_deprecated_field() {
+        let src = "<?php\n/** @deprecated Use newGreet() instead */\nfunction greet() {}";
+        let doc = ParsedDoc::parse(src.to_string());
+        let syms = document_symbols(src, &doc);
+        let f = syms
+            .iter()
+            .find(|s| s.name == "greet")
+            .expect("greet not found");
+        assert_eq!(
+            f.deprecated,
+            Some(true),
+            "deprecated function should have deprecated: Some(true)"
+        );
+    }
+
+    #[test]
+    fn non_deprecated_function_has_no_deprecated_field() {
+        let src = "<?php\n/** Does stuff. */\nfunction greet() {}";
+        let doc = ParsedDoc::parse(src.to_string());
+        let syms = document_symbols(src, &doc);
+        let f = syms
+            .iter()
+            .find(|s| s.name == "greet")
+            .expect("greet not found");
+        assert_eq!(
+            f.deprecated, None,
+            "non-deprecated function should have deprecated: None"
+        );
+    }
+
+    #[test]
+    fn deprecated_class_sets_deprecated_field() {
+        let src = "<?php\n/** @deprecated */\nclass OldService {}";
+        let doc = ParsedDoc::parse(src.to_string());
+        let syms = document_symbols(src, &doc);
+        let c = syms
+            .iter()
+            .find(|s| s.name == "OldService")
+            .expect("OldService not found");
+        assert_eq!(
+            c.deprecated,
+            Some(true),
+            "deprecated class should have deprecated: Some(true)"
+        );
+    }
+
+    #[test]
+    fn deprecated_method_sets_deprecated_field() {
+        let src =
+            "<?php\nclass Svc {\n    /** @deprecated */\n    public function oldMethod() {}\n}";
+        let doc = ParsedDoc::parse(src.to_string());
+        let syms = document_symbols(src, &doc);
+        let c = syms
+            .iter()
+            .find(|s| s.name == "Svc")
+            .expect("Svc not found");
+        let children = c.children.as_ref().expect("Svc should have children");
+        let m = children
+            .iter()
+            .find(|ch| ch.name == "oldMethod")
+            .expect("oldMethod not found");
+        assert_eq!(
+            m.deprecated,
+            Some(true),
+            "deprecated method should have deprecated: Some(true)"
+        );
     }
 }
