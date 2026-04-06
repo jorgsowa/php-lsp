@@ -27,14 +27,17 @@ jobs:
             runner: macos-latest
           - target: x86_64-unknown-linux-gnu
             runner: ubuntu-latest
+            release_notes: true
           - target: aarch64-unknown-linux-gnu
             runner: ubuntu-latest
             deps: gcc-aarch64-linux-gnu
             linker: aarch64-linux-gnu-gcc
-            cross: true
+            cross: 'true'
           - target: x86_64-unknown-linux-musl
             runner: ubuntu-latest
             deps: musl-tools
+            # tests run against the host GNU target, not musl; musl-specific
+            # runtime failures would only surface at build or user runtime
           - target: x86_64-pc-windows-msvc
             runner: windows-latest
 
@@ -67,17 +70,17 @@ jobs:
 
       - name: Install cross-compilation dependencies
         if: matrix.deps
-        run: sudo apt-get install -y ${{ matrix.deps }}
+        run: sudo apt-get update && sudo apt-get install -y ${{ matrix.deps }}
 
       - name: Configure linker
         if: matrix.linker
         run: |
-          TARGET_UPPER=$(echo '${{ matrix.target }}' | tr '[:lower:]-' '[:upper:]_')
+          TARGET_UPPER=$(echo '${{ matrix.target }}' | tr 'a-z-' 'A-Z_')
           echo "CARGO_TARGET_${TARGET_UPPER}_LINKER=${{ matrix.linker }}" >> $GITHUB_ENV
         shell: bash
 
       - name: Run tests
-        if: matrix.cross != true
+        if: matrix.cross != 'true'
         run: cargo test
 
       - name: Build
@@ -108,17 +111,27 @@ jobs:
         if: runner.os == 'Windows'
         run: |
           Compress-Archive -Path target/${{ matrix.target }}/release/php-lsp.exe -DestinationPath php-lsp-${{ matrix.target }}.zip
-          (Get-FileHash php-lsp-${{ matrix.target }}.zip -Algorithm SHA256).Hash | Out-File php-lsp-${{ matrix.target }}.zip.sha256
+          $hash = (Get-FileHash php-lsp-${{ matrix.target }}.zip -Algorithm SHA256).Hash.ToLower()
+          "$hash  php-lsp-${{ matrix.target }}.zip" | Out-File -Encoding utf8NoBOM php-lsp-${{ matrix.target }}.zip.sha256
         shell: pwsh
 
-      - name: Upload to GitHub Release
+      - name: Upload to GitHub Release (Unix)
+        if: runner.os != 'Windows'
         uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2.6.1
         with:
-          generate_release_notes: true
-          fail_on_unmatched_files: false
+          generate_release_notes: ${{ matrix.release_notes == true }}
+          fail_on_unmatched_files: true
           files: |
             php-lsp-${{ matrix.target }}.tar.gz
             php-lsp-${{ matrix.target }}.tar.gz.sha256
+
+      - name: Upload to GitHub Release (Windows)
+        if: runner.os == 'Windows'
+        uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2.6.1
+        with:
+          generate_release_notes: false
+          fail_on_unmatched_files: true
+          files: |
             php-lsp-${{ matrix.target }}.zip
             php-lsp-${{ matrix.target }}.zip.sha256
 
