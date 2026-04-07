@@ -339,15 +339,33 @@ fn collect_from_statements_with_doc(
 
 fn collect_from_expression(expr: &php_ast::Expr<'_, '_>, items: &mut Vec<CompletionItem>) {
     if let ExprKind::Assign(assign) = &expr.kind {
-        if let ExprKind::Variable(name) = &assign.target.kind {
-            let label = format!("${}", name);
-            if label != "$this" {
-                items.push(CompletionItem {
-                    label,
-                    kind: Some(CompletionItemKind::VARIABLE),
-                    ..Default::default()
-                });
+        match &assign.target.kind {
+            ExprKind::Variable(name) => {
+                let label = format!("${}", name);
+                if label != "$this" {
+                    items.push(CompletionItem {
+                        label,
+                        kind: Some(CompletionItemKind::VARIABLE),
+                        ..Default::default()
+                    });
+                }
             }
+            // Array destructuring: [$a, $b] = ... or list($a, $b) = ...
+            ExprKind::Array(elements) => {
+                for elem in elements.iter() {
+                    if let ExprKind::Variable(name) = &elem.value.kind {
+                        let label = format!("${}", name);
+                        if label != "$this" {
+                            items.push(CompletionItem {
+                                label,
+                                kind: Some(CompletionItemKind::VARIABLE),
+                                ..Default::default()
+                            });
+                        }
+                    }
+                }
+            }
+            _ => {}
         }
         collect_from_expression(assign.value, items);
     }
@@ -1496,6 +1514,8 @@ fn match_arm_completions(
 }
 
 /// Returns the path prefix typed inside a string on an include/require line, or None.
+/// Only triggers for relative paths (starting with `./`, `../`, or empty after the quote)
+/// so that absolute-path strings are left alone.
 fn include_path_prefix(source: &str, position: Position) -> Option<String> {
     let line = source.lines().nth(position.line as usize)?;
     let trimmed = line.trim_start();
@@ -1506,11 +1526,21 @@ fn include_path_prefix(source: &str, position: Position) -> Option<String> {
     let col = utf16_offset_to_byte(line, position.character as usize);
     let before = &line[..col];
     let quote_pos = before.rfind(['\'', '"'])?;
-    Some(before[quote_pos + 1..].to_string())
+    let typed = &before[quote_pos + 1..];
+    // Only offer completions for relative paths (./  ../  or empty start)
+    // and not for absolute paths (starting with /) or PHP stream wrappers.
+    if typed.starts_with('/') || typed.contains("://") {
+        return None;
+    }
+    Some(typed.to_string())
 }
 
 /// Build completion items for include/require path strings.
+///
 /// `prefix` is the partial path typed so far (e.g. `"../lib/"` or `"./"`).
+/// The returned `insert_text` for each item is the full replacement text
+/// from the opening quote to the end of the completed entry, so that the
+/// LSP client can replace the whole typed path (not just the last segment).
 fn include_path_completions(doc_uri: &Url, prefix: &str) -> Vec<CompletionItem> {
     use std::path::Path;
 
@@ -1523,21 +1553,30 @@ fn include_path_completions(doc_uri: &Url, prefix: &str) -> Vec<CompletionItem> 
         None => return vec![],
     };
 
-    // Resolve the directory to list: join the doc dir with the prefix's directory component.
-    let (dir_to_list, typed_file) = if prefix.ends_with('/') || prefix.ends_with('\\') {
-        (doc_dir.join(prefix), String::new())
+    // Split prefix into a directory part (already traversed) and the partial filename.
+    let (dir_prefix, typed_file) = if prefix.ends_with('/') || prefix.ends_with('\\') {
+        (prefix.to_string(), String::new())
     } else {
         let p = Path::new(prefix);
         let parent = p
             .parent()
-            .map(|p| p.to_string_lossy().into_owned())
+            .map(|p| {
+                let s = p.to_string_lossy();
+                if s.is_empty() {
+                    String::new()
+                } else {
+                    format!("{}/", s)
+                }
+            })
             .unwrap_or_default();
         let file = p
             .file_name()
             .map(|f| f.to_string_lossy().into_owned())
             .unwrap_or_default();
-        (doc_dir.join(&parent), file)
+        (parent, file)
     };
+
+    let dir_to_list = doc_dir.join(&dir_prefix);
 
     let entries = match std::fs::read_dir(&dir_to_list) {
         Ok(e) => e,
@@ -1547,7 +1586,7 @@ fn include_path_completions(doc_uri: &Url, prefix: &str) -> Vec<CompletionItem> 
     let mut items = Vec::new();
     for entry in entries.flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
-        // Skip hidden files unless the prefix already starts with a dot
+        // Skip hidden files/dirs unless the prefix already starts with a dot.
         if name.starts_with('.') && !typed_file.starts_with('.') {
             continue;
         }
@@ -1556,11 +1595,14 @@ fn include_path_completions(doc_uri: &Url, prefix: &str) -> Vec<CompletionItem> 
         if !is_dir && !is_php {
             continue;
         }
-        let insert = if is_dir {
+        let entry_name = if is_dir {
             format!("{}/", name)
         } else {
             name.clone()
         };
+        // insert_text is the full path from the opening quote so the whole
+        // typed prefix (e.g. "../lib/") is preserved in the replacement.
+        let insert_text = format!("{}{}", dir_prefix, entry_name);
         items.push(CompletionItem {
             label: name,
             kind: Some(if is_dir {
@@ -1568,7 +1610,7 @@ fn include_path_completions(doc_uri: &Url, prefix: &str) -> Vec<CompletionItem> 
             } else {
                 CompletionItemKind::FILE
             }),
-            insert_text: Some(insert),
+            insert_text: Some(insert_text),
             ..Default::default()
         });
     }
@@ -2649,5 +2691,233 @@ mod tests {
             sayBye
             sayHello"#]]
         .assert_eq(&ls.join("\n"));
+    }
+
+    // ── Array destructuring variable suggestions ─────────────────────────────
+
+    #[test]
+    fn array_destructuring_short_syntax_produces_variables() {
+        // [$a, $b] = someFunction() — both variables should be suggested.
+        let d = doc("<?php\n[$first, $second] = getSomething();");
+        let items = symbol_completions(&d);
+        let ls = labels(&items);
+        assert!(
+            ls.contains(&"$first"),
+            "$first from array destructuring should be in completions"
+        );
+        assert!(
+            ls.contains(&"$second"),
+            "$second from array destructuring should be in completions"
+        );
+    }
+
+    #[test]
+    fn array_destructuring_variables_have_variable_kind() {
+        let d = doc("<?php\n[$x, $y, $z] = getData();");
+        let items = symbol_completions(&d);
+        for name in &["$x", "$y", "$z"] {
+            let item = items.iter().find(|i| i.label.as_str() == *name);
+            assert!(item.is_some(), "{name} should be in completions");
+            assert_eq!(
+                item.unwrap().kind,
+                Some(CompletionItemKind::VARIABLE),
+                "{name} should have VARIABLE kind"
+            );
+        }
+    }
+
+    #[test]
+    fn array_destructuring_respects_cursor_line_scope() {
+        // Variables from array destructuring after the cursor line should not appear.
+        let src = "<?php\n// cursor here\n[$early] = getA();\n[$late] = getB();";
+        let d = doc(src);
+        // cursor at line 1 (the comment line)
+        let pos = Position {
+            line: 1,
+            character: 0,
+        };
+        let items = filtered_completions_at(&d, &[], None, Some(src), Some(pos), None, None);
+        let ls = labels(&items);
+        assert!(
+            !ls.contains(&"$early"),
+            "$early declared after cursor should not appear"
+        );
+        assert!(
+            !ls.contains(&"$late"),
+            "$late declared after cursor should not appear"
+        );
+    }
+
+    // ── Include/require path completions ────────────────────────────────────
+
+    #[test]
+    fn include_path_prefix_returns_none_for_non_include_line() {
+        let src = "<?php\n$x = 'some string';";
+        let pos = Position {
+            line: 1,
+            character: 14,
+        };
+        assert!(
+            include_path_prefix(src, pos).is_none(),
+            "should not trigger on non-include line"
+        );
+    }
+
+    #[test]
+    fn include_path_prefix_returns_none_for_absolute_path() {
+        let src = "<?php\nrequire '/absolute/path/file.php';";
+        let pos = Position {
+            line: 1,
+            character: 30,
+        };
+        assert!(
+            include_path_prefix(src, pos).is_none(),
+            "should not trigger for absolute paths"
+        );
+    }
+
+    #[test]
+    fn include_path_prefix_returns_none_for_stream_wrapper() {
+        let src = "<?php\nrequire 'phar://archive.phar/file.php';";
+        let pos = Position {
+            line: 1,
+            character: 35,
+        };
+        assert!(
+            include_path_prefix(src, pos).is_none(),
+            "should not trigger for stream wrappers"
+        );
+    }
+
+    #[test]
+    fn include_path_prefix_returns_relative_dot_slash() {
+        let src = "<?php\nrequire './lib/Helper";
+        let pos = Position {
+            line: 1,
+            character: 23,
+        };
+        let result = include_path_prefix(src, pos);
+        assert_eq!(
+            result.as_deref(),
+            Some("./lib/Helper"),
+            "should return the typed relative path prefix"
+        );
+    }
+
+    #[test]
+    fn include_path_prefix_returns_double_dot_prefix() {
+        let src = "<?php\ninclude '../utils/";
+        let pos = Position {
+            line: 1,
+            character: 22,
+        };
+        let result = include_path_prefix(src, pos);
+        assert_eq!(
+            result.as_deref(),
+            Some("../utils/"),
+            "should return ../utils/ prefix"
+        );
+    }
+
+    #[test]
+    fn include_path_prefix_returns_empty_for_bare_quote() {
+        let src = "<?php\nrequire '";
+        let pos = Position {
+            line: 1,
+            character: 10,
+        };
+        let result = include_path_prefix(src, pos);
+        assert_eq!(
+            result.as_deref(),
+            Some(""),
+            "bare quote should return empty prefix (list current dir)"
+        );
+    }
+
+    #[test]
+    fn include_path_completions_lists_relative_directory() {
+        use std::fs;
+
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let subdir = tmp.path().join("lib");
+        fs::create_dir_all(&subdir).expect("create lib dir");
+        fs::write(subdir.join("Helper.php"), "<?php").expect("write Helper.php");
+        fs::write(subdir.join("Utils.php"), "<?php").expect("write Utils.php");
+        // Non-PHP file that should be excluded
+        fs::write(subdir.join("README.md"), "# readme").expect("write README.md");
+
+        let doc_path = tmp.path().join("index.php");
+        let doc_uri = Url::from_file_path(&doc_path).expect("doc uri");
+
+        // Prefix "./lib/" — should list the lib directory contents
+        let items = include_path_completions(&doc_uri, "./lib/");
+        let ls: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+        assert!(ls.contains(&"Helper.php"), "should list Helper.php");
+        assert!(ls.contains(&"Utils.php"), "should list Utils.php");
+        assert!(
+            !ls.contains(&"README.md"),
+            "non-PHP files should be excluded"
+        );
+    }
+
+    #[test]
+    fn include_path_completions_insert_text_includes_directory_prefix() {
+        use std::fs;
+
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let subdir = tmp.path().join("src");
+        fs::create_dir_all(&subdir).expect("create src dir");
+        fs::write(subdir.join("Boot.php"), "<?php").expect("write Boot.php");
+
+        let doc_path = tmp.path().join("main.php");
+        let doc_uri = Url::from_file_path(&doc_path).expect("doc uri");
+
+        let items = include_path_completions(&doc_uri, "./src/");
+        let boot = items.iter().find(|i| i.label == "Boot.php");
+        assert!(boot.is_some(), "Boot.php should be in completions");
+        assert_eq!(
+            boot.unwrap().insert_text.as_deref(),
+            Some("./src/Boot.php"),
+            "insert_text should include the directory prefix"
+        );
+    }
+
+    #[test]
+    fn include_path_completions_is_empty_for_non_existent_directory() {
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let doc_path = tmp.path().join("index.php");
+        let doc_uri = Url::from_file_path(&doc_path).expect("doc uri");
+
+        let items = include_path_completions(&doc_uri, "./nonexistent/");
+        assert!(
+            items.is_empty(),
+            "should return empty list for non-existent directory"
+        );
+    }
+
+    #[test]
+    fn include_path_completions_dir_entries_have_folder_kind() {
+        use std::fs;
+
+        let tmp = tempfile::tempdir().expect("tmpdir");
+        let subdir = tmp.path().join("modules");
+        fs::create_dir_all(&subdir).expect("create modules dir");
+
+        let doc_path = tmp.path().join("index.php");
+        let doc_uri = Url::from_file_path(&doc_path).expect("doc uri");
+
+        let items = include_path_completions(&doc_uri, "");
+        let modules = items.iter().find(|i| i.label == "modules");
+        assert!(modules.is_some(), "modules dir should be in completions");
+        assert_eq!(
+            modules.unwrap().kind,
+            Some(CompletionItemKind::FOLDER),
+            "directory should have FOLDER kind"
+        );
+        assert_eq!(
+            modules.unwrap().insert_text.as_deref(),
+            Some("modules/"),
+            "directory insert_text should end with /"
+        );
     }
 }
