@@ -449,6 +449,49 @@ fn collect_types_stmts(
                     method_returns,
                 );
             }
+            // try { ... } catch (FooException $e) { ... }
+            // Map the catch variable to the first caught exception class.
+            StmtKind::TryCatch(t) => {
+                collect_types_stmts(source, &t.body, map, meta, method_returns);
+                for catch in t.catches.iter() {
+                    if let Some(var_name) = &catch.var
+                        && let Some(first_type) = catch.types.first()
+                    {
+                        let class_name = first_type
+                            .to_string_repr()
+                            .trim_start_matches('\\')
+                            .rsplit('\\')
+                            .next()
+                            .unwrap_or("")
+                            .to_string();
+                        if !class_name.is_empty() {
+                            map.insert(format!("${}", var_name), class_name);
+                        }
+                    }
+                    collect_types_stmts(source, &catch.body, map, meta, method_returns);
+                }
+                if let Some(finally) = &t.finally {
+                    collect_types_stmts(source, finally, map, meta, method_returns);
+                }
+            }
+
+            // static $var = expr — infer type from the default value expression.
+            StmtKind::StaticVar(vars) => {
+                for var in vars.iter() {
+                    let var_key = format!("${}", var.name);
+                    if let Some(default) = &var.default {
+                        if let ExprKind::New(new_expr) = &default.kind
+                            && let Some(class_name) = extract_class_name(new_expr.class)
+                        {
+                            map.insert(var_key.clone(), class_name);
+                        }
+                        if let ExprKind::Array(_) = &default.kind {
+                            map.insert(var_key, "array".to_string());
+                        }
+                    }
+                }
+            }
+
             _ => {}
         }
     }
