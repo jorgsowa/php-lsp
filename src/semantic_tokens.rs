@@ -1,7 +1,8 @@
 use std::hash::{Hash, Hasher};
 
 use php_ast::{
-    Attribute, ClassMemberKind, EnumMemberKind, ExprKind, NamespaceBody, Stmt, StmtKind,
+    Attribute, ClassMemberKind, EnumMemberKind, ExprKind, NamespaceBody, Stmt, StmtKind, TypeHint,
+    TypeHintKind,
 };
 use tower_lsp::lsp_types::{
     Range, SemanticToken, SemanticTokenModifier, SemanticTokenType, SemanticTokensEdit,
@@ -341,6 +342,34 @@ fn push_keyword_at(out: &mut Vec<RawToken>, source: &str, offset: u32, kw: &str)
     }
 }
 
+/// Emit `TT_TYPE` tokens for each atomic component of a type hint.
+/// Named types (e.g. `Foo`, `\Bar\Baz`) get one token at the name span.
+/// Keyword types (e.g. `int`, `string`, `void`, `null`) get one token at
+/// the keyword span.  Union/intersection/nullable are recursed into so
+/// every component is covered.
+fn push_type_hint(out: &mut Vec<RawToken>, source: &str, hint: &TypeHint<'_, '_>) {
+    match &hint.kind {
+        TypeHintKind::Named(name) => {
+            let span = name.span();
+            let len = span.end - span.start;
+            push_at(out, source, span.start, len, TT_TYPE, 0);
+        }
+        TypeHintKind::Keyword(builtin, span) => {
+            let text = builtin.as_str();
+            let len_utf16: u32 = text.chars().map(|c| c.len_utf16() as u32).sum();
+            push_at(out, source, span.start, len_utf16, TT_TYPE, 0);
+        }
+        TypeHintKind::Nullable(inner) => {
+            push_type_hint(out, source, inner);
+        }
+        TypeHintKind::Union(types) | TypeHintKind::Intersection(types) => {
+            for t in types.iter() {
+                push_type_hint(out, source, t);
+            }
+        }
+    }
+}
+
 fn collect_stmts(source: &str, stmts: &[Stmt<'_, '_>], out: &mut Vec<RawToken>) {
     for stmt in stmts {
         collect_stmt(source, stmt, out);
@@ -356,7 +385,13 @@ fn collect_stmt(source: &str, stmt: &Stmt<'_, '_>, out: &mut Vec<RawToken>) {
             push_name(out, source, f.name, TT_FUNCTION, mods);
             for p in f.params.iter() {
                 push_attributes(out, source, &p.attributes);
+                if let Some(th) = &p.type_hint {
+                    push_type_hint(out, source, th);
+                }
                 push_name(out, source, p.name, TT_PARAMETER, MOD_DECLARATION);
+            }
+            if let Some(rt) = &f.return_type {
+                push_type_hint(out, source, rt);
             }
             collect_stmts(source, &f.body, out);
         }
@@ -400,7 +435,13 @@ fn collect_stmt(source: &str, stmt: &Stmt<'_, '_>, out: &mut Vec<RawToken>) {
                     }
                     push_name(out, source, m.name, TT_METHOD, mmods);
                     for p in m.params.iter() {
+                        if let Some(th) = &p.type_hint {
+                            push_type_hint(out, source, th);
+                        }
                         push_name(out, source, p.name, TT_PARAMETER, MOD_DECLARATION);
+                    }
+                    if let Some(rt) = &m.return_type {
+                        push_type_hint(out, source, rt);
                     }
                     if let Some(body) = &m.body {
                         collect_stmts(source, body, out);
@@ -502,13 +543,22 @@ fn collect_class_member(
         push_name(out, source, m.name, TT_METHOD, mods);
         for p in m.params.iter() {
             push_attributes(out, source, &p.attributes);
+            if let Some(th) = &p.type_hint {
+                push_type_hint(out, source, th);
+            }
             push_name(out, source, p.name, TT_PARAMETER, MOD_DECLARATION);
+        }
+        if let Some(rt) = &m.return_type {
+            push_type_hint(out, source, rt);
         }
         if let Some(body) = &m.body {
             collect_stmts(source, body, out);
         }
     } else if let ClassMemberKind::Property(p) = &member.kind {
         push_attributes(out, source, &p.attributes);
+        if let Some(th) = &p.type_hint {
+            push_type_hint(out, source, th);
+        }
         push_name(out, source, p.name, TT_PROPERTY, MOD_DECLARATION);
     }
 }
@@ -640,16 +690,33 @@ fn collect_expr(source: &str, expr: &php_ast::Expr<'_, '_>, out: &mut Vec<RawTok
         ExprKind::Closure(c) => {
             push_keyword_at(out, source, expr.span.start, "function");
             for p in c.params.iter() {
+                if let Some(th) = &p.type_hint {
+                    push_type_hint(out, source, th);
+                }
                 push_name(out, source, p.name, TT_PARAMETER, MOD_DECLARATION);
+            }
+            if let Some(rt) = &c.return_type {
+                push_type_hint(out, source, rt);
             }
             collect_stmts(source, &c.body, out);
         }
         ExprKind::ArrowFunction(af) => {
             push_keyword_at(out, source, expr.span.start, "fn");
             for p in af.params.iter() {
+                if let Some(th) = &p.type_hint {
+                    push_type_hint(out, source, th);
+                }
                 push_name(out, source, p.name, TT_PARAMETER, MOD_DECLARATION);
             }
+            if let Some(rt) = &af.return_type {
+                push_type_hint(out, source, rt);
+            }
             collect_expr(source, af.body, out);
+        }
+        // ── Variables ─────────────────────────────────────────────────────────
+        ExprKind::Variable(_) => {
+            let span_len = expr.span.end - expr.span.start;
+            push_at(out, source, expr.span.start, span_len, TT_VARIABLE, 0);
         }
         _ => {}
     }
@@ -1048,6 +1115,73 @@ mod tests {
             func_tokens.len() >= 4,
             "expected tokens for init decl, step decl, init() call, step() call; got {} function tokens",
             func_tokens.len()
+        );
+    }
+
+    #[test]
+    fn variable_expression_emits_variable_token() {
+        let src = "<?php\n$x = 1;\n$y = $x + 2;";
+        let d = doc(src);
+        let tokens = semantic_tokens(src, &d);
+        let var_tokens: Vec<_> = tokens
+            .iter()
+            .filter(|t| t.token_type == TT_VARIABLE)
+            .collect();
+        assert!(
+            var_tokens.len() >= 2,
+            "expected variable tokens for $x and $y, got {} variable tokens: {:?}",
+            var_tokens.len(),
+            var_tokens
+        );
+    }
+
+    #[test]
+    fn keyword_type_hint_on_param_emits_type_token() {
+        let src = "<?php\nfunction add(int $a, int $b): int { return $a + $b; }";
+        let d = doc(src);
+        let tokens = semantic_tokens(src, &d);
+        let type_tokens: Vec<_> = tokens.iter().filter(|t| t.token_type == TT_TYPE).collect();
+        assert!(
+            type_tokens.len() >= 3,
+            "expected TYPE tokens for two 'int' params and 'int' return type, got {} type tokens: {:?}",
+            type_tokens.len(),
+            type_tokens
+        );
+    }
+
+    #[test]
+    fn named_type_hint_on_param_emits_type_token() {
+        let src = "<?php\nfunction greet(string $name, DateTime $when): void {}";
+        let d = doc(src);
+        let tokens = semantic_tokens(src, &d);
+        assert!(
+            tokens.iter().any(|t| t.token_type == TT_TYPE),
+            "expected TYPE token for named/keyword type hints, got {:?}",
+            tokens
+        );
+    }
+
+    #[test]
+    fn property_type_hint_emits_type_token() {
+        let src = "<?php\nclass Foo { public int $count; }";
+        let d = doc(src);
+        let tokens = semantic_tokens(src, &d);
+        assert!(
+            tokens.iter().any(|t| t.token_type == TT_TYPE),
+            "expected TYPE token for property type hint, got {:?}",
+            tokens
+        );
+    }
+
+    #[test]
+    fn method_return_type_emits_type_token() {
+        let src = "<?php\nclass Foo { public function get(): string { return ''; } }";
+        let d = doc(src);
+        let tokens = semantic_tokens(src, &d);
+        assert!(
+            tokens.iter().any(|t| t.token_type == TT_TYPE),
+            "expected TYPE token for method return type, got {:?}",
+            tokens
         );
     }
 }
