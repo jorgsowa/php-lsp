@@ -13,6 +13,7 @@ use tower_lsp::lsp_types::{
 
 use crate::ast::{ParsedDoc, format_type_hint, offset_to_position};
 use crate::hover::format_params_str;
+use crate::use_resolver::UseMap;
 
 struct MethodStub {
     name: String,
@@ -30,10 +31,12 @@ pub fn implement_missing_actions(
     uri: &Url,
 ) -> Vec<CodeActionOrCommand> {
     let mut actions = Vec::new();
+    let use_map = UseMap::from_doc(doc);
     collect_actions(
         &doc.program().stmts,
         source,
         all_docs,
+        &use_map,
         range,
         uri,
         &mut actions,
@@ -45,6 +48,7 @@ fn collect_actions(
     stmts: &[Stmt<'_, '_>],
     source: &str,
     all_docs: &[(Url, Arc<ParsedDoc>)],
+    use_map: &UseMap,
     range: Range,
     uri: &Url,
     out: &mut Vec<CodeActionOrCommand>,
@@ -78,7 +82,9 @@ fn collect_actions(
                 for iface in c.implements.iter() {
                     let iface_name = iface.to_string_repr().into_owned();
                     let short = last_segment(&iface_name).to_string();
-                    for stub in abstract_methods_of(&short, all_docs) {
+                    // Try to resolve through `use` imports first; fall back to short-name scan.
+                    let fqn = use_map.resolve(&short).map(|s| s.to_string());
+                    for stub in abstract_methods_of(&short, fqn.as_deref(), all_docs) {
                         if !existing.contains(&stub.name) {
                             missing.push(stub);
                         }
@@ -89,7 +95,8 @@ fn collect_actions(
                 if let Some(parent) = &c.extends {
                     let parent_name = parent.to_string_repr().into_owned();
                     let short = last_segment(&parent_name).to_string();
-                    for stub in abstract_methods_of(&short, all_docs) {
+                    let fqn = use_map.resolve(&short).map(|s| s.to_string());
+                    for stub in abstract_methods_of(&short, fqn.as_deref(), all_docs) {
                         if !existing.contains(&stub.name) {
                             missing.push(stub);
                         }
@@ -141,7 +148,7 @@ fn collect_actions(
             }
             StmtKind::Namespace(ns) => {
                 if let NamespaceBody::Braced(inner) = &ns.body {
-                    collect_actions(inner, source, all_docs, range, uri, out);
+                    collect_actions(inner, source, all_docs, use_map, range, uri, out);
                 }
             }
             _ => {}
@@ -150,13 +157,139 @@ fn collect_actions(
 }
 
 /// Collect abstract/interface methods declared by `name` across all documents.
-fn abstract_methods_of(name: &str, all_docs: &[(Url, Arc<ParsedDoc>)]) -> Vec<MethodStub> {
+///
+/// When `fqn` is provided (resolved from a `use` statement), the search uses
+/// FQN-aware matching only — it looks for a document whose namespace + class
+/// name matches the FQN exactly.  This avoids picking up a different class that
+/// happens to share the same short name in another namespace.
+///
+/// When `fqn` is `None` (no `use` import found), falls back to a plain
+/// short-name scan across all documents, preserving the original behaviour.
+fn abstract_methods_of(
+    name: &str,
+    fqn: Option<&str>,
+    all_docs: &[(Url, Arc<ParsedDoc>)],
+) -> Vec<MethodStub> {
+    if let Some(fqn) = fqn {
+        // FQN-aware pass: only return stubs when the exact namespace matches.
+        // Do NOT fall back to short-name scan to avoid picking the wrong class.
+        for (_, doc) in all_docs {
+            if let Some(stubs) = collect_abstract_methods_fqn(&doc.program().stmts, fqn, "") {
+                return stubs;
+            }
+        }
+        return vec![];
+    }
+
+    // Short-name fallback (no `use` import): scan all docs as before.
     for (_, doc) in all_docs {
         if let Some(stubs) = collect_abstract_methods(&doc.program().stmts, name) {
             return stubs;
         }
     }
     vec![]
+}
+
+/// Like `collect_abstract_methods` but matches the fully-qualified name
+/// `namespace\ClassName` by tracking the current namespace prefix while
+/// recursing into `StmtKind::Namespace` blocks.
+fn collect_abstract_methods_fqn(
+    stmts: &[Stmt<'_, '_>],
+    fqn: &str,
+    current_ns: &str,
+) -> Option<Vec<MethodStub>> {
+    // The expected short name is the last segment of the FQN.
+    let short = last_segment(fqn);
+
+    for stmt in stmts {
+        match &stmt.kind {
+            StmtKind::Interface(i) if i.name == short => {
+                // Verify the namespace matches.
+                let declared_fqn = if current_ns.is_empty() {
+                    i.name.to_string()
+                } else {
+                    format!("{}\\{}", current_ns, i.name)
+                };
+                if fqn_eq(fqn, &declared_fqn) {
+                    let stubs = i
+                        .members
+                        .iter()
+                        .filter_map(|m| {
+                            if let ClassMemberKind::Method(method) = &m.kind {
+                                Some(MethodStub {
+                                    name: method.name.to_string(),
+                                    visibility: "public",
+                                    is_static: method.is_static,
+                                    params: format_params_str(&method.params),
+                                    return_type: method
+                                        .return_type
+                                        .as_ref()
+                                        .map(|t| format_type_hint(t)),
+                                })
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
+                    return Some(stubs);
+                }
+            }
+            StmtKind::Class(c) if c.name == Some(short) && c.modifiers.is_abstract => {
+                let declared_fqn = if current_ns.is_empty() {
+                    short.to_string()
+                } else {
+                    format!("{}\\{}", current_ns, short)
+                };
+                if fqn_eq(fqn, &declared_fqn) {
+                    let stubs = c
+                        .members
+                        .iter()
+                        .filter_map(|m| {
+                            if let ClassMemberKind::Method(method) = &m.kind {
+                                if method.is_abstract {
+                                    Some(MethodStub {
+                                        name: method.name.to_string(),
+                                        visibility: visibility_str(method.visibility.as_ref()),
+                                        is_static: method.is_static,
+                                        params: format_params_str(&method.params),
+                                        return_type: method
+                                            .return_type
+                                            .as_ref()
+                                            .map(|t| format_type_hint(t)),
+                                    })
+                                } else {
+                                    None
+                                }
+                            } else {
+                                None
+                            }
+                        })
+                        .collect();
+                    return Some(stubs);
+                }
+            }
+            StmtKind::Namespace(ns) => {
+                if let NamespaceBody::Braced(inner) = &ns.body {
+                    let ns_name = ns.name.as_ref().map(|n| n.to_string_repr().into_owned());
+                    let child_ns = match &ns_name {
+                        Some(n) if !current_ns.is_empty() => format!("{}\\{}", current_ns, n),
+                        Some(n) => n.clone(),
+                        None => current_ns.to_string(),
+                    };
+                    if let Some(stubs) = collect_abstract_methods_fqn(inner, fqn, &child_ns) {
+                        return Some(stubs);
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Compare two FQNs ignoring a leading backslash.
+fn fqn_eq(a: &str, b: &str) -> bool {
+    a.trim_start_matches('\\') == b.trim_start_matches('\\')
 }
 
 fn collect_abstract_methods(stmts: &[Stmt<'_, '_>], name: &str) -> Option<Vec<MethodStub>> {
@@ -242,7 +375,7 @@ fn generate_stub_text(stubs: &[MethodStub]) -> String {
             None => String::new(),
         };
         text.push_str(&format!(
-            "    {} {}function {}({}){ret}\n    {{\n        // TODO: implement\n    }}\n\n",
+            "    {} {}function {}({}){ret}\n    {{\n        throw new \\RuntimeException('Not implemented');\n    }}\n\n",
             stub.visibility, static_kw, stub.name, stub.params
         ));
     }
@@ -353,6 +486,124 @@ mod tests {
                 edits[0].new_text.contains("function area()"),
                 "stub should contain 'function area()'"
             );
+        }
+    }
+
+    #[test]
+    fn stub_body_throws_runtime_exception() {
+        let iface_src = "<?php\ninterface Runnable {\n    public function run(): void;\n}";
+        let class_src = "<?php\nclass Task implements Runnable {\n}";
+        let all_docs = vec![doc(iface_src), doc(class_src)];
+        let class_doc = ParsedDoc::parse(class_src.to_string());
+        let actions = implement_missing_actions(
+            class_src,
+            &class_doc,
+            &all_docs,
+            full_range(),
+            &uri("/b.php"),
+        );
+        assert!(!actions.is_empty());
+        if let CodeActionOrCommand::CodeAction(action) = &actions[0] {
+            let changes = action.edit.as_ref().unwrap().changes.as_ref().unwrap();
+            let edits = changes.values().next().unwrap();
+            assert!(
+                edits[0]
+                    .new_text
+                    .contains("throw new \\RuntimeException('Not implemented')"),
+                "stub body should throw RuntimeException, got: {}",
+                edits[0].new_text
+            );
+        } else {
+            panic!("expected CodeAction");
+        }
+    }
+
+    #[test]
+    fn resolves_interface_through_use_import() {
+        // The interface is declared in a braced namespace; the class file imports it via `use`.
+        let iface_src = "<?php\nnamespace App\\Contracts {\ninterface Renderable {\n    public function render(): string;\n}\n}";
+        let class_src =
+            "<?php\nuse App\\Contracts\\Renderable;\nclass View implements Renderable {\n}";
+        let all_docs = vec![
+            (
+                uri("/contracts/Renderable.php"),
+                Arc::new(ParsedDoc::parse(iface_src.to_string())),
+            ),
+            (
+                uri("/View.php"),
+                Arc::new(ParsedDoc::parse(class_src.to_string())),
+            ),
+        ];
+        let class_doc = ParsedDoc::parse(class_src.to_string());
+        let actions = implement_missing_actions(
+            class_src,
+            &class_doc,
+            &all_docs,
+            full_range(),
+            &uri("/View.php"),
+        );
+        assert!(
+            !actions.is_empty(),
+            "expected action when interface is resolved through use import"
+        );
+        if let CodeActionOrCommand::CodeAction(action) = &actions[0] {
+            let changes = action.edit.as_ref().unwrap().changes.as_ref().unwrap();
+            let edits = changes.values().next().unwrap();
+            assert!(
+                edits[0].new_text.contains("function render()"),
+                "stub should contain 'function render()', got: {}",
+                edits[0].new_text
+            );
+        } else {
+            panic!("expected CodeAction");
+        }
+    }
+
+    #[test]
+    fn use_import_resolution_picks_correct_interface_over_same_short_name() {
+        // Two interfaces share the short name `Logger`; only the imported one's
+        // methods should be stubbed.  Both use braced-namespace syntax so the
+        // AST traversal can track the namespace prefix.
+        let wrong_iface = "<?php\nnamespace Other {\ninterface Logger {\n    public function wrong(): void;\n}\n}";
+        let right_iface = "<?php\nnamespace App\\Logging {\ninterface Logger {\n    public function log(string $msg): void;\n}\n}";
+        let class_src = "<?php\nuse App\\Logging\\Logger;\nclass FileLogger implements Logger {\n}";
+        let all_docs = vec![
+            (
+                uri("/other/Logger.php"),
+                Arc::new(ParsedDoc::parse(wrong_iface.to_string())),
+            ),
+            (
+                uri("/logging/Logger.php"),
+                Arc::new(ParsedDoc::parse(right_iface.to_string())),
+            ),
+            (
+                uri("/FileLogger.php"),
+                Arc::new(ParsedDoc::parse(class_src.to_string())),
+            ),
+        ];
+        let class_doc = ParsedDoc::parse(class_src.to_string());
+        let actions = implement_missing_actions(
+            class_src,
+            &class_doc,
+            &all_docs,
+            full_range(),
+            &uri("/FileLogger.php"),
+        );
+        assert!(!actions.is_empty(), "expected action");
+        if let CodeActionOrCommand::CodeAction(action) = &actions[0] {
+            let changes = action.edit.as_ref().unwrap().changes.as_ref().unwrap();
+            let edits = changes.values().next().unwrap();
+            assert!(
+                edits[0].new_text.contains("function log("),
+                "should stub the correct Logger's 'log' method, got: {}",
+                edits[0].new_text
+            );
+            assert!(
+                !edits[0].new_text.contains("function wrong("),
+                "should NOT stub the wrong Logger's 'wrong' method"
+            );
+        } else {
+            panic!("expected CodeAction");
         }
     }
 }
