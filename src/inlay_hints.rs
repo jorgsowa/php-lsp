@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 
-use php_ast::{ClassMemberKind, EnumMemberKind, Expr, ExprKind, NamespaceBody, Stmt, StmtKind};
+use php_ast::{
+    ClassMemberKind, EnumMemberKind, Expr, ExprKind, NamespaceBody, Param, Stmt, StmtKind,
+};
 use serde_json::json;
 use tower_lsp::lsp_types::{InlayHint, InlayHintKind, InlayHintLabel, Position, Range};
 
@@ -9,6 +11,8 @@ use crate::type_map::TypeMap;
 
 struct FuncDef {
     params: Vec<String>,
+    /// Whether the last parameter is variadic (`...$name`).
+    variadic_last: bool,
     return_type: Option<String>,
 }
 
@@ -37,16 +41,24 @@ fn collect_defs(stmts: &[Stmt<'_, '_>]) -> HashMap<String, FuncDef> {
     map
 }
 
+/// Extract param names and whether the last param is variadic from a param list.
+fn params_from_list(params: &[Param<'_, '_>]) -> (Vec<String>, bool) {
+    let names = params.iter().map(|p| p.name.to_string()).collect();
+    let variadic_last = params.last().map(|p| p.variadic).unwrap_or(false);
+    (names, variadic_last)
+}
+
 fn collect_defs_stmts(stmts: &[Stmt<'_, '_>], map: &mut HashMap<String, FuncDef>) {
     for stmt in stmts {
         match &stmt.kind {
             StmtKind::Function(f) => {
-                let params = f.params.iter().map(|p| p.name.to_string()).collect();
+                let (params, variadic_last) = params_from_list(&f.params);
                 let return_type = f.return_type.as_ref().map(|t| format_type_hint(t));
                 map.insert(
                     f.name.to_string(),
                     FuncDef {
                         params,
+                        variadic_last,
                         return_type,
                     },
                 );
@@ -54,8 +66,7 @@ fn collect_defs_stmts(stmts: &[Stmt<'_, '_>], map: &mut HashMap<String, FuncDef>
             StmtKind::Class(c) => {
                 for member in c.members.iter() {
                     if let ClassMemberKind::Method(m) = &member.kind {
-                        let params: Vec<String> =
-                            m.params.iter().map(|p| p.name.to_string()).collect();
+                        let (params, variadic_last) = params_from_list(&m.params);
                         let return_type = m.return_type.as_ref().map(|t| format_type_hint(t));
                         // Register __construct under the class name so `new ClassName(...)` gets hints.
                         if m.name == "__construct"
@@ -65,6 +76,7 @@ fn collect_defs_stmts(stmts: &[Stmt<'_, '_>], map: &mut HashMap<String, FuncDef>
                                 class_name.to_string(),
                                 FuncDef {
                                     params: params.clone(),
+                                    variadic_last,
                                     return_type: None,
                                 },
                             );
@@ -73,6 +85,7 @@ fn collect_defs_stmts(stmts: &[Stmt<'_, '_>], map: &mut HashMap<String, FuncDef>
                             m.name.to_string(),
                             FuncDef {
                                 params,
+                                variadic_last,
                                 return_type,
                             },
                         );
@@ -82,13 +95,13 @@ fn collect_defs_stmts(stmts: &[Stmt<'_, '_>], map: &mut HashMap<String, FuncDef>
             StmtKind::Trait(t) => {
                 for member in t.members.iter() {
                     if let ClassMemberKind::Method(m) = &member.kind {
-                        let params: Vec<String> =
-                            m.params.iter().map(|p| p.name.to_string()).collect();
+                        let (params, variadic_last) = params_from_list(&m.params);
                         let return_type = m.return_type.as_ref().map(|t| format_type_hint(t));
                         map.insert(
                             m.name.to_string(),
                             FuncDef {
                                 params,
+                                variadic_last,
                                 return_type,
                             },
                         );
@@ -98,13 +111,13 @@ fn collect_defs_stmts(stmts: &[Stmt<'_, '_>], map: &mut HashMap<String, FuncDef>
             StmtKind::Enum(e) => {
                 for member in e.members.iter() {
                     if let EnumMemberKind::Method(m) = &member.kind {
-                        let params: Vec<String> =
-                            m.params.iter().map(|p| p.name.to_string()).collect();
+                        let (params, variadic_last) = params_from_list(&m.params);
                         let return_type = m.return_type.as_ref().map(|t| format_type_hint(t));
                         map.insert(
                             m.name.to_string(),
                             FuncDef {
                                 params,
+                                variadic_last,
                                 return_type,
                             },
                         );
@@ -124,23 +137,25 @@ fn collect_defs_stmts(stmts: &[Stmt<'_, '_>], map: &mut HashMap<String, FuncDef>
                     let key = format!("${var_name}");
                     match &assign.value.kind {
                         ExprKind::Closure(c) => {
-                            let params = c.params.iter().map(|p| p.name.to_string()).collect();
+                            let (params, variadic_last) = params_from_list(&c.params);
                             let return_type = c.return_type.as_ref().map(|t| format_type_hint(t));
                             map.insert(
                                 key,
                                 FuncDef {
                                     params,
+                                    variadic_last,
                                     return_type,
                                 },
                             );
                         }
                         ExprKind::ArrowFunction(a) => {
-                            let params = a.params.iter().map(|p| p.name.to_string()).collect();
+                            let (params, variadic_last) = params_from_list(&a.params);
                             let return_type = a.return_type.as_ref().map(|t| format_type_hint(t));
                             map.insert(
                                 key,
                                 FuncDef {
                                     params,
+                                    variadic_last,
                                     return_type,
                                 },
                             );
@@ -308,7 +323,7 @@ fn hints_in_expr(
             if let Some(k) = key
                 && let Some(def) = defs.get(&k)
             {
-                emit_param_hints(source, &f.args, &def.params, &k, range, out);
+                emit_param_hints(source, &f.args, def, &k, range, out);
             }
             hints_in_expr(source, f.name, defs, type_map, range, out);
             for arg in f.args.iter() {
@@ -319,7 +334,7 @@ fn hints_in_expr(
             if let Some(name) = ident_name(m.method)
                 && let Some(def) = defs.get(name)
             {
-                emit_param_hints(source, &m.args, &def.params, name, range, out);
+                emit_param_hints(source, &m.args, def, name, range, out);
             }
             hints_in_expr(source, m.object, defs, type_map, range, out);
             for arg in m.args.iter() {
@@ -330,7 +345,7 @@ fn hints_in_expr(
             if let Some(class_name) = ident_name(n.class)
                 && let Some(def) = defs.get(class_name)
             {
-                emit_param_hints(source, &n.args, &def.params, class_name, range, out);
+                emit_param_hints(source, &n.args, def, class_name, range, out);
             }
             for arg in n.args.iter() {
                 hints_in_expr(source, &arg.value, defs, type_map, range, out);
@@ -346,8 +361,24 @@ fn hints_in_expr(
         ExprKind::Closure(c) => {
             hints_in_stmts(source, &c.body, defs, type_map, range, out);
         }
-        // Walk into arrow function bodies.
+        // Walk into arrow function bodies and emit an explicit return type hint when
+        // the arrow function carries a declared return type (e.g. `fn(int $x): int => …`).
+        // We only emit here when there is NO explicit annotation already in source
+        // (i.e. the return_type field is None), so we infer nothing — we only surface
+        // what the programmer wrote when they omitted the annotation entirely.
+        // Actually: emit only when return_type IS present (declared by programmer).
+        // This mirrors how regular function return-type hints work: we show what was
+        // declared, not inferred.
         ExprKind::ArrowFunction(a) => {
+            if let Some(ret) = &a.return_type {
+                let ret_str = format_type_hint(ret);
+                if ret_str != "void" {
+                    let pos = offset_to_position(source, expr.span.end);
+                    if pos_in_range(pos, range) {
+                        out.push(make_return_hint(pos, &ret_str, "arrow_fn"));
+                    }
+                }
+            }
             hints_in_expr(source, a.body, defs, type_map, range, out);
         }
         ExprKind::Parenthesized(e) => hints_in_expr(source, e, defs, type_map, range, out),
@@ -373,7 +404,7 @@ fn hints_in_expr(
 fn emit_param_hints(
     source: &str,
     args: &[php_ast::Arg<'_, '_>],
-    params: &[String],
+    def: &FuncDef,
     func_name: &str,
     range: Range,
     out: &mut Vec<InlayHint>,
@@ -383,11 +414,20 @@ fn emit_param_hints(
         if arg.name.is_some() {
             continue;
         }
-        if let Some(param) = params.get(i) {
-            let pos = offset_to_position(source, arg.span.start);
-            if pos_in_range(pos, range) {
-                out.push(make_param_hint(pos, param, func_name));
+        // For a variadic last param, repeat its name for every excess argument.
+        let param = if let Some(p) = def.params.get(i) {
+            p
+        } else if def.variadic_last {
+            match def.params.last() {
+                Some(p) => p,
+                None => continue,
             }
+        } else {
+            continue;
+        };
+        let pos = offset_to_position(source, arg.span.start);
+        if pos_in_range(pos, range) {
+            out.push(make_param_hint(pos, param, func_name));
         }
     }
 }
@@ -977,6 +1017,138 @@ mod tests {
             type_hints.is_empty(),
             "expected no type hints for foreach with unknown element type, got: {:?}",
             type_hints
+        );
+    }
+
+    // ── Variadic parameter hints ─────────────────────────────────────────────
+
+    #[test]
+    fn variadic_param_hints_for_all_extra_args() {
+        let src = concat!(
+            "<?php\n",
+            "function log(string ...$messages): void {}\n",
+            "log('a', 'b', 'c');\n",
+        );
+        let d = doc(src);
+        let hints = inlay_hints(src, &d, full_range());
+        let param_hints: Vec<&str> = hints
+            .iter()
+            .filter(|h| h.kind == Some(InlayHintKind::PARAMETER))
+            .map(|h| label_str(h))
+            .collect();
+        assert_eq!(
+            param_hints.len(),
+            3,
+            "expected 3 'messages:' hints, got: {:?}",
+            param_hints
+        );
+        assert!(
+            param_hints.iter().all(|&l| l == "messages:"),
+            "got: {:?}",
+            param_hints
+        );
+    }
+
+    #[test]
+    fn variadic_param_after_regular_params_hints() {
+        let src = concat!(
+            "<?php\n",
+            "function push(string $key, int ...$values): void {}\n",
+            "push('bucket', 1, 2, 3);\n",
+        );
+        let d = doc(src);
+        let hints = inlay_hints(src, &d, full_range());
+        let param_hints: Vec<&str> = hints
+            .iter()
+            .filter(|h| h.kind == Some(InlayHintKind::PARAMETER))
+            .map(|h| label_str(h))
+            .collect();
+        assert_eq!(
+            param_hints.len(),
+            4,
+            "expected 4 hints, got: {:?}",
+            param_hints
+        );
+        assert_eq!(param_hints[0], "key:");
+        assert!(
+            param_hints[1..].iter().all(|&l| l == "values:"),
+            "got: {:?}",
+            &param_hints[1..]
+        );
+    }
+
+    // ── Arrow function return type hints ────────────────────────────────────
+
+    #[test]
+    fn arrow_function_with_declared_return_type_emits_hint() {
+        let src = "<?php\n$double = fn(int $n): int => $n * 2;\n";
+        let d = doc(src);
+        let hints = inlay_hints(src, &d, full_range());
+        let ret_hints: Vec<&str> = hints
+            .iter()
+            .filter(|h| h.kind == Some(InlayHintKind::TYPE))
+            .map(|h| label_str(h))
+            .collect();
+        assert!(
+            ret_hints.contains(&": int"),
+            "expected ': int' hint, got: {:?}",
+            ret_hints
+        );
+    }
+
+    #[test]
+    fn arrow_function_without_declared_return_type_no_hint() {
+        let src = "<?php\n$double = fn(int $n) => $n * 2;\n";
+        let d = doc(src);
+        let hints = inlay_hints(src, &d, full_range());
+        let ret_hints: Vec<&str> = hints
+            .iter()
+            .filter(|h| h.kind == Some(InlayHintKind::TYPE))
+            .map(|h| label_str(h))
+            .collect();
+        assert!(
+            ret_hints.is_empty(),
+            "expected no hint, got: {:?}",
+            ret_hints
+        );
+    }
+
+    // ── Constructor-promoted property hints ─────────────────────────────────
+
+    #[test]
+    fn constructor_promoted_properties_get_param_hints() {
+        let src = concat!(
+            "<?php\n",
+            "class User {\n",
+            "    public function __construct(\n",
+            "        public readonly string $name,\n",
+            "        public int $age,\n",
+            "    ) {}\n",
+            "}\n",
+            "$u = new User('Alice', 30);\n",
+        );
+        let d = doc(src);
+        let hints = inlay_hints(src, &d, full_range());
+        let param_hints: Vec<&str> = hints
+            .iter()
+            .filter(|h| h.kind == Some(InlayHintKind::PARAMETER))
+            .map(|h| label_str(h))
+            .collect();
+        assert!(
+            param_hints.contains(&"name:"),
+            "expected 'name:', got: {:?}",
+            param_hints
+        );
+        assert!(
+            param_hints.contains(&"age:"),
+            "expected 'age:', got: {:?}",
+            param_hints
+        );
+        assert_eq!(
+            param_hints.len(),
+            2,
+            "expected 2 hints, got: {:?}",
+            param_hints
         );
     }
 }
