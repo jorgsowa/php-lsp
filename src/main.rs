@@ -13,6 +13,7 @@ mod document_link;
 mod document_store;
 mod extract_action;
 mod extract_constant_action;
+mod extract_method_action;
 mod file_rename;
 mod folding;
 mod formatting;
@@ -51,6 +52,13 @@ use tower_lsp::{LspService, Server};
 
 #[tokio::main]
 async fn main() {
+    if let Some(arg) = std::env::args().nth(1)
+        && (arg == "--version" || arg == "-V")
+    {
+        println!("php-lsp {}", env!("CARGO_PKG_VERSION"));
+        std::process::exit(0);
+    }
+
     let stdin = tokio::io::stdin();
     let stdout = tokio::io::stdout();
     let (service, socket) = LspService::new(Backend::new);
