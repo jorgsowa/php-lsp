@@ -29,6 +29,7 @@ mod on_type_format;
 mod organize_imports;
 mod phpdoc_action;
 mod phpstorm_meta;
+mod promote_action;
 mod references;
 mod rename;
 mod selection_range;
