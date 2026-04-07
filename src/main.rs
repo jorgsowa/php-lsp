@@ -13,6 +13,7 @@ mod document_link;
 mod document_store;
 mod extract_action;
 mod extract_constant_action;
+mod extract_method_action;
 mod file_rename;
 mod folding;
 mod formatting;
