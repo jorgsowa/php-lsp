@@ -2837,18 +2837,7 @@ mod tests {
 
     // ── Snapshot tests ───────────────────────────────────────────────────────
 
-    use expect_test::{Expect, expect};
-
-    /// Collect completion labels from a source string (no trigger, no cross-file docs),
-    /// sort them, and compare against the snapshot.
-    #[allow(dead_code)]
-    fn check_completion_labels(src: &str, expect: Expect) {
-        let d = doc(src);
-        let items = filtered_completions_at(&d, &[], None, &CompletionCtx::default());
-        let mut ls: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
-        ls.sort_unstable();
-        expect.assert_eq(&ls.join("\n"));
-    }
+    use expect_test::expect;
 
     #[test]
     fn snapshot_keyword_completions_present() {

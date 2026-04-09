@@ -13,17 +13,14 @@ use crate::ast::{ParsedDoc, offset_to_position, str_offset};
 use crate::docblock::{docblock_before, parse_docblock};
 
 // Token type indices — order must match `legend()` vec order
-#[allow(dead_code)]
-const TT_NAMESPACE: u32 = 0;
+const _TT_NAMESPACE: u32 = 0;
 const TT_CLASS: u32 = 1;
 const TT_INTERFACE: u32 = 2;
 const TT_FUNCTION: u32 = 3;
 const TT_METHOD: u32 = 4;
 const TT_PROPERTY: u32 = 5;
-#[allow(dead_code)]
 const TT_VARIABLE: u32 = 6;
 const TT_PARAMETER: u32 = 7;
-#[allow(dead_code)]
 const TT_TYPE: u32 = 8;
 const TT_STRING: u32 = 9;
 const TT_NUMBER: u32 = 10;
@@ -34,8 +31,7 @@ const TT_KEYWORD: u32 = 12;
 const MOD_DECLARATION: u32 = 1 << 0;
 const MOD_STATIC: u32 = 1 << 1;
 const MOD_ABSTRACT: u32 = 1 << 2;
-#[allow(dead_code)]
-const MOD_READONLY: u32 = 1 << 3;
+const _MOD_READONLY: u32 = 1 << 3;
 const MOD_DEPRECATED: u32 = 1 << 4;
 
 /// Raw token: (line_0based, col_0based, length, token_type, modifiers_bitmask)
