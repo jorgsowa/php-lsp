@@ -13,7 +13,6 @@ use tower_lsp::lsp_types::{
 
 use crate::ast::{ParsedDoc, format_type_hint, offset_to_position};
 use crate::hover::format_params_str;
-use crate::use_resolver::UseMap;
 
 struct MethodStub {
     name: String,
@@ -29,14 +28,14 @@ pub fn implement_missing_actions(
     all_docs: &[(Url, Arc<ParsedDoc>)],
     range: Range,
     uri: &Url,
+    file_imports: &HashMap<String, String>,
 ) -> Vec<CodeActionOrCommand> {
     let mut actions = Vec::new();
-    let use_map = UseMap::from_doc(doc);
     collect_actions(
         &doc.program().stmts,
         source,
         all_docs,
-        &use_map,
+        file_imports,
         range,
         uri,
         &mut actions,
@@ -48,7 +47,7 @@ fn collect_actions(
     stmts: &[Stmt<'_, '_>],
     source: &str,
     all_docs: &[(Url, Arc<ParsedDoc>)],
-    use_map: &UseMap,
+    file_imports: &HashMap<String, String>,
     range: Range,
     uri: &Url,
     out: &mut Vec<CodeActionOrCommand>,
@@ -83,7 +82,7 @@ fn collect_actions(
                     let iface_name = iface.to_string_repr().into_owned();
                     let short = last_segment(&iface_name).to_string();
                     // Try to resolve through `use` imports first; fall back to short-name scan.
-                    let fqn = use_map.resolve(&short).map(|s| s.to_string());
+                    let fqn = file_imports.get(&short).cloned();
                     for stub in abstract_methods_of(&short, fqn.as_deref(), all_docs) {
                         if !existing.contains(&stub.name) {
                             missing.push(stub);
@@ -95,7 +94,7 @@ fn collect_actions(
                 if let Some(parent) = &c.extends {
                     let parent_name = parent.to_string_repr().into_owned();
                     let short = last_segment(&parent_name).to_string();
-                    let fqn = use_map.resolve(&short).map(|s| s.to_string());
+                    let fqn = file_imports.get(&short).cloned();
                     for stub in abstract_methods_of(&short, fqn.as_deref(), all_docs) {
                         if !existing.contains(&stub.name) {
                             missing.push(stub);
@@ -148,7 +147,7 @@ fn collect_actions(
             }
             StmtKind::Namespace(ns) => {
                 if let NamespaceBody::Braced(inner) = &ns.body {
-                    collect_actions(inner, source, all_docs, use_map, range, uri, out);
+                    collect_actions(inner, source, all_docs, file_imports, range, uri, out);
                 }
             }
             _ => {}
@@ -423,6 +422,7 @@ mod tests {
             &all_docs,
             full_range(),
             &uri("/b.php"),
+            &HashMap::new(),
         );
         assert!(!actions.is_empty(), "expected at least one action");
         if let CodeActionOrCommand::CodeAction(action) = &actions[0] {
@@ -457,6 +457,7 @@ mod tests {
             &all_docs,
             full_range(),
             &uri("/b.php"),
+            &HashMap::new(),
         );
         assert!(
             actions.is_empty(),
@@ -477,6 +478,7 @@ mod tests {
             &all_docs,
             full_range(),
             &uri("/b.php"),
+            &HashMap::new(),
         );
         assert!(!actions.is_empty(), "expected action for abstract method");
         if let CodeActionOrCommand::CodeAction(action) = &actions[0] {
@@ -501,6 +503,7 @@ mod tests {
             &all_docs,
             full_range(),
             &uri("/b.php"),
+            &HashMap::new(),
         );
         assert!(!actions.is_empty());
         if let CodeActionOrCommand::CodeAction(action) = &actions[0] {
@@ -541,6 +544,7 @@ mod tests {
             &all_docs,
             full_range(),
             &uri("/View.php"),
+            &HashMap::new(),
         );
         assert!(
             !actions.is_empty(),
@@ -582,12 +586,14 @@ mod tests {
             ),
         ];
         let class_doc = ParsedDoc::parse(class_src.to_string());
+        let imports = HashMap::from([("Logger".to_string(), "App\\Logging\\Logger".to_string())]);
         let actions = implement_missing_actions(
             class_src,
             &class_doc,
             &all_docs,
             full_range(),
             &uri("/FileLogger.php"),
+            &imports,
         );
         assert!(!actions.is_empty(), "expected action");
         if let CodeActionOrCommand::CodeAction(action) = &actions[0] {
