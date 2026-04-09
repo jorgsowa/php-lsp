@@ -2,7 +2,7 @@
 ///
 /// Delegates all analysis to the `mir-analyzer` crate and converts its `Issue`
 /// type into the `tower-lsp` `Diagnostic` type expected by the LSP backend.
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 use php_ast::{ClassMemberKind, EnumMemberKind, ExprKind, NamespaceBody, Stmt, StmtKind};
 use tower_lsp::lsp_types::{Diagnostic, DiagnosticSeverity, NumberOrString, Position, Range, Url};
@@ -11,77 +11,27 @@ use crate::ast::{ParsedDoc, offset_to_position};
 use crate::backend::DiagnosticsConfig;
 use crate::docblock::{docblock_before, parse_docblock};
 
-/// Cached stubs codebase — loaded once and copied into each analysis codebase.
-static STUBS: OnceLock<mir_codebase::Codebase> = OnceLock::new();
-
-fn stubs_codebase() -> &'static mir_codebase::Codebase {
-    STUBS.get_or_init(|| {
-        let cb = mir_codebase::Codebase::new();
-        mir_analyzer::stubs::load_stubs(&cb);
-        cb
-    })
-}
-
-/// Copy all entries from `src` into `dst`.
-fn copy_codebase(src: &mir_codebase::Codebase, dst: &mir_codebase::Codebase) {
-    for entry in src.functions.iter() {
-        dst.functions
-            .insert(entry.key().clone(), entry.value().clone());
-    }
-    for entry in src.classes.iter() {
-        dst.classes
-            .insert(entry.key().clone(), entry.value().clone());
-    }
-    for entry in src.interfaces.iter() {
-        dst.interfaces
-            .insert(entry.key().clone(), entry.value().clone());
-    }
-    for entry in src.traits.iter() {
-        dst.traits
-            .insert(entry.key().clone(), entry.value().clone());
-    }
-    for entry in src.enums.iter() {
-        dst.enums.insert(entry.key().clone(), entry.value().clone());
-    }
-    for entry in src.constants.iter() {
-        dst.constants
-            .insert(entry.key().clone(), entry.value().clone());
-    }
-    for entry in src.file_imports.iter() {
-        dst.file_imports
-            .insert(entry.key().clone(), entry.value().clone());
-    }
-    for entry in src.file_namespaces.iter() {
-        dst.file_namespaces
-            .insert(entry.key().clone(), entry.value().clone());
-    }
-}
-
-/// Run semantic checks on `doc` using the backend's persistent codebase for
-/// cross-file definitions. Returns LSP diagnostics filtered by `cfg`.
+/// Run semantic checks on `doc` using the backend's persistent codebase.
+/// The codebase is updated incrementally: the current file's definitions are
+/// evicted and re-collected, then `finalize()` rebuilds inheritance tables.
 pub fn semantic_diagnostics(
     uri: &Url,
     doc: &ParsedDoc,
-    backend_codebase: &mir_codebase::Codebase,
+    codebase: &mir_codebase::Codebase,
     cfg: &DiagnosticsConfig,
 ) -> Vec<Diagnostic> {
     if !cfg.enabled {
         return vec![];
     }
 
-    // Build a per-call codebase seeded with cached stubs and the backend's
-    // already-collected cross-file definitions, then collect the current doc.
-    let codebase = mir_codebase::Codebase::new();
     let file: Arc<str> = Arc::from(uri.as_str());
 
-    copy_codebase(stubs_codebase(), &codebase);
-    copy_codebase(backend_codebase, &codebase);
-
+    // Incremental update: evict stale definitions for this file, re-collect,
+    // and rebuild inheritance tables.
+    codebase.remove_file_definitions(&file);
     let collector =
-        mir_analyzer::collector::DefinitionCollector::new(&codebase, file.clone(), doc.source());
+        mir_analyzer::collector::DefinitionCollector::new(codebase, file.clone(), doc.source());
     let collector_issues = collector.collect(doc.program());
-
-    // Resolve inheritance, build dispatch tables, etc.
     codebase.finalize();
 
     // Pass 2: analyse function/method bodies in the current document.
@@ -89,7 +39,7 @@ pub fn semantic_diagnostics(
     let source_map = php_ast::source_map::SourceMap::new(doc.source());
     let mut symbols = Vec::new();
     let mut analyzer = mir_analyzer::stmt::StatementsAnalyzer::new(
-        &codebase,
+        codebase,
         file.clone(),
         doc.source(),
         &source_map,
