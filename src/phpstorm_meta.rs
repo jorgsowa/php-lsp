@@ -97,7 +97,7 @@ fn collect_overrides(stmts: &[Stmt<'_, '_>], meta: &mut PhpStormMeta) {
                 // Top-level `override(...)` call.
                 if let ExprKind::FunctionCall(f) = &expr.kind
                     && let ExprKind::Identifier(name) = &f.name.kind
-                    && name.as_ref().eq_ignore_ascii_case("override")
+                    && name.eq_ignore_ascii_case("override")
                     && f.args.len() == 2
                 {
                     parse_override(&f.args[0].value, &f.args[1].value, meta);
@@ -136,7 +136,7 @@ fn extract_static_call_target(expr: &php_ast::Expr<'_, '_>) -> Option<(String, S
         return None;
     };
     let class_name = extract_class_name(s.class)?;
-    let method_name = s.method.as_ref().to_string();
+    let method_name = s.method.to_string();
     Some((class_name, method_name))
 }
 
@@ -145,7 +145,7 @@ fn extract_class_name(expr: &php_ast::Expr<'_, '_>) -> Option<String> {
     match &expr.kind {
         ExprKind::Identifier(name) => {
             // Strip leading `\` and use only the last component.
-            let s = name.as_ref().trim_start_matches('\\');
+            let s = name.trim_start_matches('\\');
             let short = s.rsplit('\\').next().unwrap_or(s);
             Some(short.to_string())
         }
@@ -159,7 +159,7 @@ fn extract_map_pairs(expr: &php_ast::Expr<'_, '_>) -> Option<Vec<(Option<String>
     let ExprKind::FunctionCall(f) = &expr.kind else {
         return None;
     };
-    if !matches!(&f.name.kind, ExprKind::Identifier(n) if n.as_ref().eq_ignore_ascii_case("map")) {
+    if !matches!(&f.name.kind, ExprKind::Identifier(n) if n.eq_ignore_ascii_case("map")) {
         return None;
     }
     let array_arg = f.args.first()?;
@@ -183,7 +183,7 @@ fn extract_map_pairs(expr: &php_ast::Expr<'_, '_>) -> Option<Vec<(Option<String>
 fn extract_string_or_class(expr: &php_ast::Expr<'_, '_>) -> Option<String> {
     match &expr.kind {
         ExprKind::String(s) => {
-            let raw = s.as_ref().trim_start_matches('\\');
+            let raw = s.trim_start_matches('\\');
             // An empty string key is the wildcard; return `None` for that.
             if raw.is_empty() {
                 None
@@ -195,7 +195,7 @@ fn extract_string_or_class(expr: &php_ast::Expr<'_, '_>) -> Option<String> {
         }
         ExprKind::ClassConstAccess(c) => {
             // `Foo::class` — extract `Foo`.
-            if c.member.as_ref() == "class" {
+            if c.member == "class" {
                 extract_class_name(c.class)
             } else {
                 None

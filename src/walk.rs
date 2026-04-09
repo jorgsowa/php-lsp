@@ -867,7 +867,7 @@ fn args(source: &str, arg_list: &[php_ast::Arg<'_, '_>], word: &str, out: &mut V
 pub fn refs_in_expr(source: &str, expr: &Expr<'_, '_>, word: &str, out: &mut Vec<Span>) {
     match &expr.kind {
         ExprKind::Identifier(name) => {
-            if name.as_ref() == word {
+            if *name == word {
                 out.push(expr.span);
             }
         }
@@ -1068,7 +1068,7 @@ fn function_refs_in_expr(expr: &Expr<'_, '_>, name: &str, out: &mut Vec<Span>) {
         // The core match: a free function call whose callee is a bare identifier.
         ExprKind::FunctionCall(f) => {
             if let ExprKind::Identifier(id) = &f.name.kind
-                && id.as_ref() == name
+                && *id == name
             {
                 out.push(f.name.span);
             }
@@ -1259,7 +1259,7 @@ fn method_refs_in_expr(expr: &Expr<'_, '_>, name: &str, out: &mut Vec<Span>) {
             method_refs_in_expr(m.object, name, out);
             // Collect the method name span if it matches.
             if let ExprKind::Identifier(id) = &m.method.kind
-                && id.as_ref() == name
+                && *id == name
             {
                 out.push(m.method.span);
             }
@@ -1270,7 +1270,7 @@ fn method_refs_in_expr(expr: &Expr<'_, '_>, name: &str, out: &mut Vec<Span>) {
         ExprKind::NullsafeMethodCall(m) => {
             method_refs_in_expr(m.object, name, out);
             if let ExprKind::Identifier(id) = &m.method.kind
-                && id.as_ref() == name
+                && *id == name
             {
                 out.push(m.method.span);
             }
@@ -1572,7 +1572,7 @@ fn class_refs_in_expr(expr: &Expr<'_, '_>, class_name: &str, out: &mut Vec<Span>
         // `new ClassName(...)` — the class name is an Identifier child of New.
         ExprKind::New(n) => {
             if let ExprKind::Identifier(id) = &n.class.kind
-                && id.as_ref().rsplit('\\').next().unwrap_or(id.as_ref()) == class_name
+                && id.rsplit('\\').next().unwrap_or(id) == class_name
             {
                 out.push(n.class.span);
             } else {
@@ -1589,7 +1589,7 @@ fn class_refs_in_expr(expr: &Expr<'_, '_>, class_name: &str, out: &mut Vec<Span>
             // We check the RHS regardless — if it is an Identifier and matches, we
             // include it; class names don't normally appear as operands otherwise.
             if let ExprKind::Identifier(id) = &b.right.kind
-                && id.as_ref().rsplit('\\').next().unwrap_or(id.as_ref()) == class_name
+                && id.rsplit('\\').next().unwrap_or(id) == class_name
             {
                 out.push(b.right.span);
             } else {
@@ -1599,7 +1599,7 @@ fn class_refs_in_expr(expr: &Expr<'_, '_>, class_name: &str, out: &mut Vec<Span>
         // `ClassName::method()` or `ClassName::$prop` — class side.
         ExprKind::StaticMethodCall(s) => {
             if let ExprKind::Identifier(id) = &s.class.kind
-                && id.as_ref().rsplit('\\').next().unwrap_or(id.as_ref()) == class_name
+                && id.rsplit('\\').next().unwrap_or(id) == class_name
             {
                 out.push(s.class.span);
             }
@@ -1609,14 +1609,14 @@ fn class_refs_in_expr(expr: &Expr<'_, '_>, class_name: &str, out: &mut Vec<Span>
         }
         ExprKind::StaticPropertyAccess(s) => {
             if let ExprKind::Identifier(id) = &s.class.kind
-                && id.as_ref().rsplit('\\').next().unwrap_or(id.as_ref()) == class_name
+                && id.rsplit('\\').next().unwrap_or(id) == class_name
             {
                 out.push(s.class.span);
             }
         }
         ExprKind::ClassConstAccess(c) => {
             if let ExprKind::Identifier(id) = &c.class.kind
-                && id.as_ref().rsplit('\\').next().unwrap_or(id.as_ref()) == class_name
+                && id.rsplit('\\').next().unwrap_or(id) == class_name
             {
                 out.push(c.class.span);
             }

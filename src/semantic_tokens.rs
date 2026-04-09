@@ -602,7 +602,7 @@ fn collect_expr(source: &str, expr: &php_ast::Expr<'_, '_>, out: &mut Vec<RawTok
         // ── Calls ─────────────────────────────────────────────────────────────
         ExprKind::FunctionCall(f) => {
             if let ExprKind::Identifier(name) = &f.name.kind {
-                let name_str = name.as_ref();
+                let name_str: &str = name;
                 push_at(
                     out,
                     source,
@@ -621,7 +621,7 @@ fn collect_expr(source: &str, expr: &php_ast::Expr<'_, '_>, out: &mut Vec<RawTok
         ExprKind::MethodCall(m) => {
             collect_expr(source, m.object, out);
             if let ExprKind::Identifier(name) = &m.method.kind {
-                let name_str = name.as_ref();
+                let name_str: &str = name;
                 push_at(
                     out,
                     source,
@@ -638,7 +638,7 @@ fn collect_expr(source: &str, expr: &php_ast::Expr<'_, '_>, out: &mut Vec<RawTok
         ExprKind::NullsafeMethodCall(m) => {
             collect_expr(source, m.object, out);
             if let ExprKind::Identifier(name) = &m.method.kind {
-                let name_str = name.as_ref();
+                let name_str: &str = name;
                 push_at(
                     out,
                     source,

@@ -452,7 +452,7 @@ fn calls_in_expr(expr: &php_ast::Expr<'_, '_>, out: &mut Vec<(String, Span)>) {
     match &expr.kind {
         ExprKind::FunctionCall(f) => {
             if let ExprKind::Identifier(name) = &f.name.kind {
-                out.push((name.as_ref().to_string(), f.name.span));
+                out.push((name.to_string(), f.name.span));
             } else {
                 calls_in_expr(f.name, out);
             }
@@ -463,7 +463,7 @@ fn calls_in_expr(expr: &php_ast::Expr<'_, '_>, out: &mut Vec<(String, Span)>) {
         ExprKind::MethodCall(m) => {
             calls_in_expr(m.object, out);
             if let ExprKind::Identifier(name) = &m.method.kind {
-                out.push((name.as_ref().to_string(), m.method.span));
+                out.push((name.to_string(), m.method.span));
             }
             for arg in m.args.iter() {
                 calls_in_expr(&arg.value, out);
@@ -472,7 +472,7 @@ fn calls_in_expr(expr: &php_ast::Expr<'_, '_>, out: &mut Vec<(String, Span)>) {
         ExprKind::NullsafeMethodCall(m) => {
             calls_in_expr(m.object, out);
             if let ExprKind::Identifier(name) = &m.method.kind {
-                out.push((name.as_ref().to_string(), m.method.span));
+                out.push((name.to_string(), m.method.span));
             }
             for arg in m.args.iter() {
                 calls_in_expr(&arg.value, out);

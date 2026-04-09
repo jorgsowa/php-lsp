@@ -86,11 +86,15 @@ pub fn semantic_diagnostics(
 
     // Pass 2: analyse function/method bodies in the current document.
     let mut issue_buffer = mir_issues::IssueBuffer::new();
+    let source_map = php_ast::source_map::SourceMap::new(doc.source());
+    let mut symbols = Vec::new();
     let mut analyzer = mir_analyzer::stmt::StatementsAnalyzer::new(
         &codebase,
         file.clone(),
         doc.source(),
+        &source_map,
         &mut issue_buffer,
+        &mut symbols,
     );
     let mut ctx = mir_analyzer::context::Context::new();
     analyzer.analyze_stmts(&doc.program().stmts, &mut ctx);
@@ -209,7 +213,7 @@ fn check_expr_for_deprecated(
     }
     if let ExprKind::FunctionCall(call) = &expr.kind {
         if let ExprKind::Identifier(name) = &call.name.kind {
-            let func_name = name.as_ref();
+            let func_name = name;
             // Search all docs for this function's declaration
             let all_sources: Vec<(&str, &ParsedDoc)> = std::iter::once((source, doc))
                 .chain(other_docs.iter().map(|d| (d.source(), d.as_ref())))
@@ -256,7 +260,7 @@ fn check_expr_for_deprecated(
     }
     if let ExprKind::MethodCall(call) = &expr.kind {
         if let ExprKind::Identifier(name) = &call.method.kind {
-            let method_name = name.as_ref();
+            let method_name = name;
             let all_sources: Vec<(&str, &ParsedDoc)> = std::iter::once((source, doc))
                 .chain(other_docs.iter().map(|d| (d.source(), d.as_ref())))
                 .collect();

@@ -460,7 +460,7 @@ fn emit_return_type_hint(
 
 fn ident_name<'a>(expr: &'a Expr<'_, '_>) -> Option<&'a str> {
     if let ExprKind::Identifier(name) = &expr.kind {
-        Some(name.as_ref())
+        Some(name)
     } else {
         None
     }
