@@ -357,11 +357,10 @@ fn collect_types_stmts(
                 {
                     let var_key = format!("${}", var_name);
                     let narrowed = class
-                        .as_ref()
                         .trim_start_matches('\\')
                         .rsplit('\\')
                         .next()
-                        .unwrap_or(class.as_ref())
+                        .unwrap_or(class)
                         .to_string();
                     // Insert narrowed type then recurse into then-branch.
                     // The flat map keeps the last write, so code after the if-block
@@ -494,7 +493,7 @@ fn collect_types_expr(
                         (&mc.object.kind, &mc.method.kind)
                     && let Some(obj_class) = map.get(&format!("${}", obj_var)).cloned()
                     && let Some(class_rets) = method_returns.get(&obj_class)
-                    && let Some(ret_type) = class_rets.get(method_name.as_ref())
+                    && let Some(ret_type) = class_rets.get(*method_name)
                 {
                     map.insert(format!("${}", var_name), ret_type.clone());
                 }
@@ -515,8 +514,8 @@ fn collect_types_expr(
         // Closure::bind($fn, $obj) → $this maps to $obj's class
         ExprKind::StaticMethodCall(s) => {
             if let ExprKind::Identifier(class) = &s.class.kind
-                && class.as_ref() == "Closure"
-                && s.method.as_ref() == "bind"
+                && *class == "Closure"
+                && s.method == "bind"
                 && let Some(obj_arg) = s.args.get(1)
                 && let Some(cls) = resolve_var_type_str(&obj_arg.value, map)
             {
@@ -527,7 +526,7 @@ fn collect_types_expr(
         // $fn->bindTo($obj) or $fn->call($obj) → $this maps to $obj's class
         ExprKind::MethodCall(m) => {
             if let ExprKind::Identifier(method) = &m.method.kind {
-                let mname = method.as_ref();
+                let mname: &str = method;
                 if (mname == "bindTo" || mname == "call")
                     && let Some(obj_arg) = m.args.first()
                     && let Some(cls) = resolve_var_type_str(&obj_arg.value, map)
@@ -588,7 +587,7 @@ fn extract_array_callback_return_type(expr: &php_ast::Expr<'_, '_>) -> Option<St
         return None;
     };
     let fn_name = match &call.name.kind {
-        ExprKind::Identifier(n) => n.as_ref(),
+        ExprKind::Identifier(n) => *n,
         _ => return None,
     };
     if fn_name != "array_map" && fn_name != "array_filter" {
@@ -660,20 +659,19 @@ fn infer_from_meta_method_call(
     };
     // Get the method name.
     let method_name = match &m.method.kind {
-        ExprKind::Identifier(n) => n.as_ref().to_string(),
+        ExprKind::Identifier(n) => n.to_string(),
         _ => return None,
     };
     // Get the first argument as a class name string.
     let arg = m.args.first()?;
     let arg_str = match &arg.value.kind {
-        ExprKind::String(s) => s.as_ref().trim_start_matches('\\').to_string(),
-        ExprKind::ClassConstAccess(c) if c.member.as_ref() == "class" => match &c.class.kind {
+        ExprKind::String(s) => s.trim_start_matches('\\').to_string(),
+        ExprKind::ClassConstAccess(c) if c.member == "class" => match &c.class.kind {
             ExprKind::Identifier(n) => n
-                .as_ref()
                 .trim_start_matches('\\')
                 .rsplit('\\')
                 .next()
-                .unwrap_or(n.as_ref())
+                .unwrap_or(n)
                 .to_string(),
             _ => return None,
         },

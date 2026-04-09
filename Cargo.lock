@@ -83,11 +83,11 @@ checksum = "843867be96c8daad0d758b57df9392b6d8d271134fce549de6ce169ff98a92af"
 
 [[package]]
 name = "block-buffer"
-version = "0.10.4"
+version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3078c7629b62d3f0439517fa394996acacc5cbc91c5a20d8c658e77abd503a71"
+checksum = "cdd35008169921d80bc60d3d0ab416eecb028c4cd653352907921d95084790be"
 dependencies = [
- "generic-array",
+ "hybrid-array",
 ]
 
 [[package]]
@@ -109,10 +109,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
 
 [[package]]
-name = "cpufeatures"
-version = "0.2.17"
+name = "const-oid"
+version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "59ed5838eebb26a2bb2e58f6d5b5316989ae9d08bab10e0e6d103e656d1b0280"
+checksum = "a6ef517f0926dd24a1582492c791b6a4818a4d94e789a334894aa15b0d12f55c"
+
+[[package]]
+name = "cpufeatures"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8b2a41393f66f16b0823bb79094d54ac5fbd34ab292ddafb9a0456ac9f87d201"
 dependencies = [
  "libc",
 ]
@@ -144,12 +150,11 @@ checksum = "d0a5c400df2834b80a4c3327b3aad3a4c4cd4de0629063962b03235697506a28"
 
 [[package]]
 name = "crypto-common"
-version = "0.1.7"
+version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "78c8292055d1c1df0cce5d180393dc8cce0abec0a7102adb6c7b1eef6016d60a"
+checksum = "77727bb15fa921304124b128af125e7e3b968275d1b108b379190264f4423710"
 dependencies = [
- "generic-array",
- "typenum",
+ "hybrid-array",
 ]
 
 [[package]]
@@ -181,11 +186,12 @@ dependencies = [
 
 [[package]]
 name = "digest"
-version = "0.10.7"
+version = "0.11.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9ed9a281f7bc9b7576e61468ba615a66a5c8cfdff42420a70aa82701a3b1e292"
+checksum = "4850db49bf08e663084f7fb5c87d202ef91a3907271aff24a94eb97ff039153c"
 dependencies = [
  "block-buffer",
+ "const-oid",
  "crypto-common",
 ]
 
@@ -336,16 +342,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "generic-array"
-version = "0.14.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "85649ca51fd72272d7821adaf274ad91c288277713d9c18820d8499a7ff69e9a"
-dependencies = [
- "typenum",
- "version_check",
-]
-
-[[package]]
 name = "getrandom"
 version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -396,6 +392,15 @@ name = "httparse"
 version = "1.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6dbf3de79e51f3d586ab4cb9d5c3e2c14aa28ed23d180cf89b4df0454a69cc87"
+
+[[package]]
+name = "hybrid-array"
+version = "0.4.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3944cf8cf766b40e2a1a333ee5e9b563f854d5fa49d6a8ca2764e97c6eddb214"
+dependencies = [
+ "typenum",
+]
 
 [[package]]
 name = "icu_collections"
@@ -531,12 +536,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 
 [[package]]
-name = "lazy_static"
-version = "1.5.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
-
-[[package]]
 name = "leb128fmt"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -646,9 +645,9 @@ dependencies = [
 
 [[package]]
 name = "mir-analyzer"
-version = "0.1.0"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c7eb0b262979613f1487e7331384b8fafb2ef94fa76b92d5f1d3853765fd4a6a"
+checksum = "1aa207f2f014c76d3d9ebf8636b096495e97ae86e154d42b2530b54c610940ce"
 dependencies = [
  "bumpalo",
  "indexmap",
@@ -667,9 +666,9 @@ dependencies = [
 
 [[package]]
 name = "mir-codebase"
-version = "0.1.0"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "81d3db4cb9e8ef44e5a13397ca24f49ee58fafd79cfd9108d3c6c0f22803889b"
+checksum = "74eda3d39b0b3db7107ebfa9f8c96765914b088c648f8f1ea1b184a77db72fb0"
 dependencies = [
  "dashmap 6.1.0",
  "indexmap",
@@ -680,9 +679,9 @@ dependencies = [
 
 [[package]]
 name = "mir-issues"
-version = "0.1.0"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "499a530e37ab4685f95fa272b4ed93be3b61efaf2104089b8adeed9999ad24a9"
+checksum = "f8bce51ffe6d55ec77e239e44949e346f8ffaa3fb220169284c0aecbccf0903e"
 dependencies = [
  "mir-types",
  "owo-colors",
@@ -692,9 +691,9 @@ dependencies = [
 
 [[package]]
 name = "mir-types"
-version = "0.1.0"
+version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "76e81c8e9806ecf1d9c3c25184bd97e370a5c112e5a68f8800d53a89d6a8d31c"
+checksum = "ce00d9c350884464da77fd3a65d1a221e8b30e2dda97c4daf68063a8b11a85ef"
 dependencies = [
  "indexmap",
  "serde",
@@ -753,9 +752,9 @@ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 
 [[package]]
 name = "php-ast"
-version = "0.3.2"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3ef35f57f31b36618952c2ae004ff4eb03b4bfdbb77de1a40c9f96d3b2376200"
+checksum = "9c2ba12f9fb7454758848aa054fe9d68f427bba8f411520b476995a1e64416bb"
 dependencies = [
  "bumpalo",
  "serde",
@@ -763,9 +762,9 @@ dependencies = [
 
 [[package]]
 name = "php-lexer"
-version = "0.3.2"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6ecc8b49c656484509ff0eb1dbbd21156aaca81d03e4e47f39e7fed8860a73ad"
+checksum = "ffda679959e34dc202e5cab735bdace205d2201632b34554a136bc210586811a"
 dependencies = [
  "memchr",
  "php-ast",
@@ -792,12 +791,11 @@ dependencies = [
 
 [[package]]
 name = "php-rs-parser"
-version = "0.3.2"
+version = "0.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e47d33893b05565b4640fb9fd52ec882ef9b0b4a1f791d120823cf5a32a25701"
+checksum = "4a7f7db244990e923acce3131537724c15019eafe7dc513ef7e67acc011cd78b"
 dependencies = [
  "bumpalo",
- "lazy_static",
  "miette",
  "php-ast",
  "php-lexer",
@@ -998,9 +996,9 @@ dependencies = [
 
 [[package]]
 name = "sha2"
-version = "0.10.9"
+version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a7507d819769d01a365ab707794a4084392c824f54a7a6a7862f8c3d0892b283"
+checksum = "446ba717509524cb3f22f17ecc096f10f4822d76ab5c0b9822c5f9c284e825f4"
 dependencies = [
  "cfg-if",
  "cpufeatures",
@@ -1340,12 +1338,6 @@ name = "utf8_iter"
 version = "1.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6c140620e7ffbb22c2dee59cafe6084a59b5ffc27a8859a5f0d494b5d52b6be"
-
-[[package]]
-name = "version_check"
-version = "0.9.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "wasi"

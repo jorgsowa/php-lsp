@@ -68,7 +68,7 @@ fn link_from_path_expr(
     let ExprKind::String(s) = &path_expr.kind else {
         return None;
     };
-    let raw = s.as_ref();
+    let raw: &str = s;
     if raw.is_empty() {
         return None;
     }
