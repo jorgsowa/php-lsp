@@ -1470,9 +1470,8 @@ impl LanguageServer for Backend {
                 ));
             }
         };
-        let other_docs = self.docs.other_docs(uri);
         let diag_cfg = self.config.read().unwrap().diagnostics.clone();
-        let sem_diags = semantic_diagnostics(uri, &doc, &other_docs, &diag_cfg);
+        let sem_diags = semantic_diagnostics(uri, &doc, &self.codebase, &diag_cfg);
         let dup_diags = duplicate_declaration_diagnostics(&source, &doc, &diag_cfg);
 
         let mut items = parse_diags;
@@ -1494,7 +1493,6 @@ impl LanguageServer for Backend {
         &self,
         _params: WorkspaceDiagnosticParams,
     ) -> Result<WorkspaceDiagnosticReportResult> {
-        let all_docs = self.docs.all_docs();
         let all_parse_diags = self.docs.all_diagnostics();
         let diag_cfg = self.config.read().unwrap().diagnostics.clone();
 
@@ -1503,15 +1501,8 @@ impl LanguageServer for Backend {
             .filter_map(|(uri, parse_diags, version)| {
                 let doc = self.docs.get_doc(&uri)?;
 
-                // Build other_docs by filtering the current URI out of all_docs.
-                let other_docs: Vec<(Url, Arc<ParsedDoc>)> = all_docs
-                    .iter()
-                    .filter(|(u, _)| u != &uri)
-                    .cloned()
-                    .collect();
-
                 let source = doc.source().to_string();
-                let sem_diags = semantic_diagnostics(&uri, &doc, &other_docs, &diag_cfg);
+                let sem_diags = semantic_diagnostics(&uri, &doc, &self.codebase, &diag_cfg);
                 let dup_diags = duplicate_declaration_diagnostics(&source, &doc, &diag_cfg);
 
                 let mut all_diags = parse_diags;
@@ -1547,7 +1538,7 @@ impl LanguageServer for Backend {
 
         // Semantic diagnostics — collect undefined symbols and offer "Add use import"
         let diag_cfg = self.config.read().unwrap().diagnostics.clone();
-        let sem_diags = semantic_diagnostics(uri, &doc, &other_docs, &diag_cfg);
+        let sem_diags = semantic_diagnostics(uri, &doc, &self.codebase, &diag_cfg);
 
         // Publish semantic diagnostics merged with existing parse diagnostics
         if !sem_diags.is_empty() {
