@@ -1,8 +1,9 @@
 use php_ast::{NamespaceBody, StmtKind};
 use tower_lsp::lsp_types::*;
 
+use std::collections::HashMap;
+
 use crate::ast::ParsedDoc;
-use crate::use_resolver::UseMap;
 use crate::util::word_at;
 
 /// Return a moniker for the symbol at `position`.
@@ -12,13 +13,18 @@ use crate::util::word_at;
 /// `Ns\\ClassName::method`, or bare `functionName`).
 /// Uniqueness: `workspace` (symbols declared in the current file or resolved
 /// via the workspace index).
-pub fn moniker_at(source: &str, doc: &ParsedDoc, position: Position) -> Option<Moniker> {
+pub fn moniker_at(
+    source: &str,
+    doc: &ParsedDoc,
+    position: Position,
+    file_imports: &HashMap<String, String>,
+) -> Option<Moniker> {
     let word = word_at(source, position)?;
     if word.is_empty() || word.starts_with('$') {
         return None;
     }
 
-    let identifier = resolve_fqn(doc, &word);
+    let identifier = resolve_fqn(doc, &word, file_imports);
 
     Some(Moniker {
         scheme: "php".to_string(),
@@ -33,7 +39,7 @@ pub fn moniker_at(source: &str, doc: &ParsedDoc, position: Position) -> Option<M
 /// When the name is not declared in this file, checks `use` statements so that
 /// imported names resolve to their FQN (e.g. `Mailer` → `App\\Services\\Mailer`).
 /// Falls back to returning `name` as-is.
-fn resolve_fqn(doc: &ParsedDoc, name: &str) -> String {
+fn resolve_fqn(doc: &ParsedDoc, name: &str, file_imports: &HashMap<String, String>) -> String {
     // Strip a leading `\` from a fully-qualified reference.
     let bare = name.trim_start_matches('\\');
 
@@ -74,9 +80,8 @@ fn resolve_fqn(doc: &ParsedDoc, name: &str) -> String {
     }
 
     // Not a local declaration — resolve via `use` statements.
-    let use_map = UseMap::from_doc(doc);
-    if let Some(fqn) = use_map.resolve(bare) {
-        return fqn.to_string();
+    if let Some(fqn) = file_imports.get(bare) {
+        return fqn.clone();
     }
 
     bare.to_string()
@@ -94,11 +99,15 @@ mod tests {
         Position { line, character }
     }
 
+    fn empty() -> HashMap<String, String> {
+        HashMap::new()
+    }
+
     #[test]
     fn bare_class_name() {
         let src = "<?php\nclass Foo {}";
         let d = doc(src);
-        let m = moniker_at(src, &d, pos(1, 7)).unwrap();
+        let m = moniker_at(src, &d, pos(1, 7), &empty()).unwrap();
         assert_eq!(m.scheme, "php");
         assert_eq!(m.identifier, "Foo");
         assert_eq!(m.unique, UniquenessLevel::Project);
@@ -109,7 +118,7 @@ mod tests {
     fn namespaced_class() {
         let src = "<?php\nnamespace App\\Services {\n    class FooService {}\n}";
         let d = doc(src);
-        let m = moniker_at(src, &d, pos(2, 10)).unwrap();
+        let m = moniker_at(src, &d, pos(2, 10), &empty()).unwrap();
         assert_eq!(m.identifier, "App\\Services\\FooService");
     }
 
@@ -117,7 +126,7 @@ mod tests {
     fn unknown_word_returns_bare_name() {
         let src = "<?php\n$x = doSomething();";
         let d = doc(src);
-        let m = moniker_at(src, &d, pos(1, 6)).unwrap();
+        let m = moniker_at(src, &d, pos(1, 6), &empty()).unwrap();
         assert_eq!(m.identifier, "doSomething");
     }
 
@@ -125,22 +134,23 @@ mod tests {
     fn empty_position_returns_none() {
         let src = "<?php\n   ";
         let d = doc(src);
-        assert!(moniker_at(src, &d, pos(1, 1)).is_none());
+        assert!(moniker_at(src, &d, pos(1, 1), &empty()).is_none());
     }
 
     #[test]
     fn variable_returns_none() {
         let src = "<?php\n$foo = 1;";
         let d = doc(src);
-        assert!(moniker_at(src, &d, pos(1, 1)).is_none());
+        assert!(moniker_at(src, &d, pos(1, 1), &empty()).is_none());
     }
 
     #[test]
     fn imported_name_resolves_via_use_statement() {
         let src = "<?php\nuse App\\Services\\Mailer;\n$m = new Mailer();";
         let d = doc(src);
+        let imports = HashMap::from([("Mailer".to_string(), "App\\Services\\Mailer".to_string())]);
         // Cursor on `Mailer` in `new Mailer()`
-        let m = moniker_at(src, &d, pos(2, 10)).unwrap();
+        let m = moniker_at(src, &d, pos(2, 10), &imports).unwrap();
         assert_eq!(m.identifier, "App\\Services\\Mailer");
     }
 
@@ -148,7 +158,8 @@ mod tests {
     fn use_alias_resolves_to_fqn() {
         let src = "<?php\nuse App\\Http\\Request as Req;\n$r = new Req();";
         let d = doc(src);
-        let m = moniker_at(src, &d, pos(2, 10)).unwrap();
+        let imports = HashMap::from([("Req".to_string(), "App\\Http\\Request".to_string())]);
+        let m = moniker_at(src, &d, pos(2, 10), &imports).unwrap();
         assert_eq!(m.identifier, "App\\Http\\Request");
     }
 
@@ -156,7 +167,7 @@ mod tests {
     fn uniqueness_is_workspace() {
         let src = "<?php\nclass Foo {}";
         let d = doc(src);
-        let m = moniker_at(src, &d, pos(1, 7)).unwrap();
+        let m = moniker_at(src, &d, pos(1, 7), &empty()).unwrap();
         assert_eq!(m.unique, UniquenessLevel::Project);
     }
 }

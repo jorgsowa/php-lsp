@@ -16,8 +16,8 @@ use crate::type_map::{
     TypeMap, enclosing_class_at, is_backed_enum, is_enum, members_of_class, mixin_classes_of,
     params_of_function, params_of_method, parent_class_name,
 };
-use crate::use_resolver::UseMap;
 use crate::util::{camel_sort_key, fuzzy_camel_match, utf16_offset_to_byte};
+use std::collections::HashMap;
 
 /// Build a `CompletionItem` for a callable (function or method).
 ///
@@ -1181,7 +1181,10 @@ pub fn filtered_completions_at(
     position: Option<Position>,
     meta: Option<&PhpStormMeta>,
     doc_uri: Option<&Url>,
+    file_imports: Option<&HashMap<String, String>>,
 ) -> Vec<CompletionItem> {
+    let empty_imports = HashMap::new();
+    let imports = file_imports.unwrap_or(&empty_imports);
     match trigger_character {
         Some("$") => {
             let mut items = superglobal_completions();
@@ -1239,7 +1242,6 @@ pub fn filtered_completions_at(
                 let before = &line[..col];
                 if before.trim_end_matches('[').trim_end().ends_with('#') {
                     let mut items: Vec<CompletionItem> = Vec::new();
-                    let use_map = UseMap::from_doc(doc);
                     let cur_ns = current_file_namespace(&doc.program().stmts);
                     let mut seen = std::collections::HashSet::new();
 
@@ -1267,7 +1269,7 @@ pub fn filtered_completions_at(
                             let in_same_ns =
                                 !cur_ns.is_empty() && fqn == format!("{}\\{}", cur_ns, label);
                             let is_global = !fqn.contains('\\');
-                            let already = use_map.resolve(&label).is_some();
+                            let already = imports.contains_key(&label);
                             let additional_text_edits = if !in_same_ns && !is_global && !already {
                                 let insert_pos = use_insert_position(src);
                                 Some(vec![TextEdit {
@@ -1445,8 +1447,6 @@ pub fn filtered_completions_at(
             items.extend(sym_items);
             items.extend(magic_items);
 
-            // Pre-compute use-import context for the current file.
-            let use_map = source.map(|_| UseMap::from_doc(doc));
             let cur_ns = current_file_namespace(&doc.program().stmts);
 
             for other in other_docs {
@@ -1454,27 +1454,26 @@ pub fn filtered_completions_at(
                 let mut classes: Vec<(String, CompletionItemKind, String)> = Vec::new();
                 collect_classes_with_ns(&other.program().stmts, "", &mut classes);
                 for (label, kind, fqn) in classes {
-                    let additional_text_edits =
-                        if let (Some(src), Some(umap)) = (source, use_map.as_ref()) {
-                            let in_same_ns =
-                                !cur_ns.is_empty() && fqn == format!("{}\\{}", cur_ns, label);
-                            let is_global = !fqn.contains('\\');
-                            let already = umap.resolve(&label).is_some();
-                            if !in_same_ns && !is_global && !already {
-                                let pos = use_insert_position(src);
-                                Some(vec![TextEdit {
-                                    range: Range {
-                                        start: pos,
-                                        end: pos,
-                                    },
-                                    new_text: format!("use {};\n", fqn),
-                                }])
-                            } else {
-                                None
-                            }
+                    let additional_text_edits = if let Some(src) = source {
+                        let in_same_ns =
+                            !cur_ns.is_empty() && fqn == format!("{}\\{}", cur_ns, label);
+                        let is_global = !fqn.contains('\\');
+                        let already = imports.contains_key(&label);
+                        if !in_same_ns && !is_global && !already {
+                            let pos = use_insert_position(src);
+                            Some(vec![TextEdit {
+                                range: Range {
+                                    start: pos,
+                                    end: pos,
+                                },
+                                new_text: format!("use {};\n", fqn),
+                            }])
                         } else {
                             None
-                        };
+                        }
+                    } else {
+                        None
+                    };
                     items.push(CompletionItem {
                         label,
                         kind: Some(kind),
@@ -2064,7 +2063,7 @@ mod tests {
     #[test]
     fn dollar_trigger_returns_only_variables() {
         let d = doc("<?php\nfunction greet($name) {}\nclass Foo {}\n$bar = 1;");
-        let items = filtered_completions_at(&d, &[], Some("$"), None, None, None, None);
+        let items = filtered_completions_at(&d, &[], Some("$"), None, None, None, None, None);
         assert!(!items.is_empty(), "should have variable items");
         for item in &items {
             assert_eq!(item.kind, Some(CompletionItemKind::VARIABLE));
@@ -2077,7 +2076,7 @@ mod tests {
     #[test]
     fn arrow_trigger_returns_only_methods() {
         let d = doc("<?php\nclass Calc { public function add() {} public function sub() {} }");
-        let items = filtered_completions_at(&d, &[], Some(">"), None, None, None, None);
+        let items = filtered_completions_at(&d, &[], Some(">"), None, None, None, None, None);
         assert!(!items.is_empty(), "should have method items");
         for item in &items {
             assert_eq!(item.kind, Some(CompletionItemKind::METHOD));
@@ -2087,7 +2086,7 @@ mod tests {
     #[test]
     fn none_trigger_returns_keywords_functions_classes() {
         let d = doc("<?php\nfunction greet() {}\nclass MyApp {}");
-        let items = filtered_completions_at(&d, &[], None, None, None, None, None);
+        let items = filtered_completions_at(&d, &[], None, None, None, None, None, None);
         let ls = labels(&items);
         assert!(
             ls.contains(&"function"),
@@ -2100,7 +2099,7 @@ mod tests {
     #[test]
     fn builtins_appear_in_default_completions() {
         let d = doc("<?php");
-        let items = filtered_completions_at(&d, &[], None, None, None, None, None);
+        let items = filtered_completions_at(&d, &[], None, None, None, None, None, None);
         let ls = labels(&items);
         assert!(ls.contains(&"strlen"), "missing strlen");
         assert!(ls.contains(&"array_map"), "missing array_map");
@@ -2115,7 +2114,8 @@ mod tests {
             line: 2,
             character: 5,
         };
-        let items = filtered_completions_at(&d, &[], Some(":"), Some(src), Some(pos), None, None);
+        let items =
+            filtered_completions_at(&d, &[], Some(":"), Some(src), Some(pos), None, None, None);
         let ls = labels(&items);
         assert!(ls.contains(&"load"), "missing static method");
         assert!(ls.contains(&"VERSION"), "missing constant");
@@ -2129,7 +2129,8 @@ mod tests {
             line: 4,
             character: 4,
         };
-        let items = filtered_completions_at(&d, &[], Some(">"), Some(src), Some(pos), None, None);
+        let items =
+            filtered_completions_at(&d, &[], Some(">"), Some(src), Some(pos), None, None, None);
         let ls = labels(&items);
         assert!(ls.contains(&"baseMethod"), "missing inherited baseMethod");
         assert!(ls.contains(&"childMethod"), "missing childMethod");
@@ -2143,7 +2144,8 @@ mod tests {
             line: 2,
             character: 8,
         };
-        let items = filtered_completions_at(&d, &[], Some("("), Some(src), Some(pos), None, None);
+        let items =
+            filtered_completions_at(&d, &[], Some("("), Some(src), Some(pos), None, None, None);
         let ls = labels(&items);
         assert!(ls.contains(&"host:"), "missing host:");
         assert!(ls.contains(&"port:"), "missing port:");
@@ -2155,7 +2157,7 @@ mod tests {
         let other = Arc::new(ParsedDoc::parse(
             "<?php\nclass RemoteService {}\nfunction remoteHelper() {}".to_string(),
         ));
-        let items = filtered_completions_at(&d, &[other], None, None, None, None, None);
+        let items = filtered_completions_at(&d, &[other], None, None, None, None, None, None);
         let ls = labels(&items);
         assert!(ls.contains(&"localFn"), "missing local function");
         assert!(ls.contains(&"RemoteService"), "missing cross-file class");
@@ -2166,7 +2168,7 @@ mod tests {
     fn cross_file_variables_not_included_in_default_completions() {
         let d = doc("<?php\n$localVar = 1;");
         let other = Arc::new(ParsedDoc::parse("<?php\n$remoteVar = 2;".to_string()));
-        let items = filtered_completions_at(&d, &[other], None, None, None, None, None);
+        let items = filtered_completions_at(&d, &[other], None, None, None, None, None, None);
         let ls = labels(&items);
         assert!(
             !ls.contains(&"$remoteVar"),
@@ -2185,8 +2187,16 @@ mod tests {
             line: 3,
             character: 9,
         };
-        let items =
-            filtered_completions_at(&d, &[other], None, Some(current_src), Some(pos), None, None);
+        let items = filtered_completions_at(
+            &d,
+            &[other],
+            None,
+            Some(current_src),
+            Some(pos),
+            None,
+            None,
+            None,
+        );
         let mailer = items.iter().find(|i| i.label == "Mailer");
         assert!(mailer.is_some(), "Mailer should appear in completions");
         let edits = mailer.unwrap().additional_text_edits.as_ref();
@@ -2209,8 +2219,16 @@ mod tests {
             line: 2,
             character: 9,
         };
-        let items =
-            filtered_completions_at(&d, &[other], None, Some(current_src), Some(pos), None, None);
+        let items = filtered_completions_at(
+            &d,
+            &[other],
+            None,
+            Some(current_src),
+            Some(pos),
+            None,
+            None,
+            None,
+        );
         let mailer = items.iter().find(|i| i.label == "Mailer");
         assert!(mailer.is_some(), "Mailer should appear in completions");
         assert!(
@@ -2254,7 +2272,8 @@ mod tests {
             line: 3,
             character: 4,
         };
-        let items = filtered_completions_at(&d, &[], Some(">"), Some(src), Some(pos), None, None);
+        let items =
+            filtered_completions_at(&d, &[], Some(">"), Some(src), Some(pos), None, None, None);
         assert!(
             items.iter().any(|i| i.label == "name"),
             "enum should have ->name"
@@ -2270,7 +2289,8 @@ mod tests {
             line: 3,
             character: 4,
         };
-        let items = filtered_completions_at(&d, &[], Some(">"), Some(src), Some(pos), None, None);
+        let items =
+            filtered_completions_at(&d, &[], Some(">"), Some(src), Some(pos), None, None, None);
         assert!(
             items.iter().any(|i| i.label == "name"),
             "backed enum should have ->name"
@@ -2289,7 +2309,8 @@ mod tests {
             line: 3,
             character: 4,
         };
-        let items = filtered_completions_at(&d, &[], Some(">"), Some(src), Some(pos), None, None);
+        let items =
+            filtered_completions_at(&d, &[], Some(">"), Some(src), Some(pos), None, None, None);
         assert!(
             !items.iter().any(|i| i.label == "value"),
             "pure enum should not have ->value"
@@ -2299,7 +2320,7 @@ mod tests {
     #[test]
     fn superglobals_appear_on_dollar_trigger() {
         let d = doc("<?php\n");
-        let items = filtered_completions_at(&d, &[], Some("$"), None, None, None, None);
+        let items = filtered_completions_at(&d, &[], Some("$"), None, None, None, None, None);
         let ls = labels(&items);
         assert!(ls.contains(&"$_SERVER"), "missing $_SERVER");
         assert!(ls.contains(&"$_GET"), "missing $_GET");
@@ -2311,7 +2332,7 @@ mod tests {
     #[test]
     fn superglobals_appear_in_default_completions() {
         let d = doc("<?php\n");
-        let items = filtered_completions_at(&d, &[], None, None, None, None, None);
+        let items = filtered_completions_at(&d, &[], None, None, None, None, None, None);
         let ls = labels(&items);
         assert!(
             ls.contains(&"$_SERVER"),
@@ -2329,7 +2350,8 @@ mod tests {
             line: 3,
             character: 8,
         };
-        let items = filtered_completions_at(&d, &[], Some(">"), Some(src), Some(pos), None, None);
+        let items =
+            filtered_completions_at(&d, &[], Some(">"), Some(src), Some(pos), None, None, None);
         let ls = labels(&items);
         assert!(
             ls.contains(&"doFoo"),
@@ -2345,7 +2367,8 @@ mod tests {
             line: 2,
             character: 16,
         };
-        let items = filtered_completions_at(&d, &[], Some(">"), Some(src), Some(pos), None, None);
+        let items =
+            filtered_completions_at(&d, &[], Some(">"), Some(src), Some(pos), None, None, None);
         let ls = labels(&items);
         assert!(
             ls.contains(&"build"),
@@ -2376,6 +2399,7 @@ mod tests {
             Some(pos),
             None,
             None,
+            None,
         );
         assert!(
             items.iter().any(|i| i.label.contains("Mailer")),
@@ -2392,7 +2416,8 @@ mod tests {
             line: 7,
             character: 8,
         };
-        let items = filtered_completions_at(&d, &[], Some(">"), Some(src), Some(pos), None, None);
+        let items =
+            filtered_completions_at(&d, &[], Some(">"), Some(src), Some(pos), None, None, None);
         let ls = labels(&items);
         assert!(
             ls.contains(&"fooMethod"),
@@ -2418,6 +2443,7 @@ mod tests {
             Some("["),
             Some("<?php\nclass Route {}\nclass Middleware {}\n#["),
             Some(pos),
+            None,
             None,
             None,
         );
@@ -2446,6 +2472,7 @@ mod tests {
             Some("["),
             Some(current_src),
             Some(pos),
+            None,
             None,
             None,
         );
@@ -2485,6 +2512,7 @@ mod tests {
             Some(pos),
             None,
             None,
+            None,
         );
         let route = items.iter().find(|i| i.label == "Route");
         assert!(
@@ -2506,7 +2534,7 @@ mod tests {
             line: 4,
             character: 4,
         };
-        let items = filtered_completions_at(&d, &[], None, Some(src), Some(pos), None, None);
+        let items = filtered_completions_at(&d, &[], None, Some(src), Some(pos), None, None, None);
         let ls = labels(&items);
         assert!(
             ls.iter().any(|l| l.contains("Active")),
@@ -2523,7 +2551,8 @@ mod tests {
             line: 3,
             character: 4,
         };
-        let items = filtered_completions_at(&d, &[], Some(">"), Some(src), Some(pos), None, None); // trigger ">"
+        let items =
+            filtered_completions_at(&d, &[], Some(">"), Some(src), Some(pos), None, None, None); // trigger ">"
         let name_item = items.iter().find(|i| i.label == "$name");
         assert!(name_item.is_some(), "should have $name in completions");
         assert_eq!(
@@ -2542,7 +2571,7 @@ mod tests {
             line: 2,
             character: 0,
         };
-        let items = filtered_completions_at(&d, &[], None, Some(src), Some(pos), None, None);
+        let items = filtered_completions_at(&d, &[], None, Some(src), Some(pos), None, None, None);
         let ls = labels(&items);
         assert!(ls.contains(&"$early"), "$early should be suggested");
         assert!(
@@ -2570,6 +2599,7 @@ mod tests {
             Some(pos),
             None,
             None,
+            None,
         );
         let ls = labels(&items);
         assert!(
@@ -2587,7 +2617,8 @@ mod tests {
             line: 3,
             character: 5,
         };
-        let items = filtered_completions_at(&d, &[], Some(">"), Some(src), Some(pos), None, None);
+        let items =
+            filtered_completions_at(&d, &[], Some(">"), Some(src), Some(pos), None, None, None);
         let ls = labels(&items);
         assert!(ls.contains(&"run"), "?-> should complete Service::run()");
         assert!(
@@ -2605,7 +2636,7 @@ mod tests {
             line: 2,
             character: 6,
         };
-        let items = filtered_completions_at(&d, &[], None, Some(src), Some(pos), None, None);
+        let items = filtered_completions_at(&d, &[], None, Some(src), Some(pos), None, None, None);
         let ls = labels(&items);
         assert!(ls.contains(&"__construct"), "should suggest __construct");
         assert!(ls.contains(&"__toString"), "should suggest __toString");
@@ -2622,7 +2653,8 @@ mod tests {
             line: 1,
             character: 10,
         };
-        let items = filtered_completions_at(&d, &[], Some(">"), Some(src), Some(pos), None, None);
+        let items =
+            filtered_completions_at(&d, &[], Some(">"), Some(src), Some(pos), None, None, None);
         // No class is defined in this doc, so the fallback method list is empty.
         assert!(
             items.is_empty(),
@@ -2649,7 +2681,8 @@ mod tests {
             line: 7,
             character: 9,
         };
-        let items = filtered_completions_at(&d, &[], Some(":"), Some(src), Some(pos), None, None);
+        let items =
+            filtered_completions_at(&d, &[], Some(":"), Some(src), Some(pos), None, None, None);
         let ls = labels(&items);
         assert!(ls.contains(&"staticMethod"), "should include static method");
         assert!(ls.contains(&"MY_CONST"), "should include constant");
@@ -2669,7 +2702,7 @@ mod tests {
     #[allow(dead_code)]
     fn check_completion_labels(src: &str, expect: Expect) {
         let d = doc(src);
-        let items = filtered_completions_at(&d, &[], None, None, None, None, None);
+        let items = filtered_completions_at(&d, &[], None, None, None, None, None, None);
         let mut ls: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
         ls.sort_unstable();
         expect.assert_eq(&ls.join("\n"));
@@ -2735,7 +2768,8 @@ mod tests {
             line: 3,
             character: 4,
         };
-        let items = filtered_completions_at(&d, &[], Some(">"), Some(src), Some(pos), None, None);
+        let items =
+            filtered_completions_at(&d, &[], Some(">"), Some(src), Some(pos), None, None, None);
         let mut ls: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
         ls.sort_unstable();
         expect![[r#"
@@ -2787,7 +2821,7 @@ mod tests {
             line: 1,
             character: 0,
         };
-        let items = filtered_completions_at(&d, &[], None, Some(src), Some(pos), None, None);
+        let items = filtered_completions_at(&d, &[], None, Some(src), Some(pos), None, None, None);
         let ls = labels(&items);
         assert!(
             !ls.contains(&"$early"),

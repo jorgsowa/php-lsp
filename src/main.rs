@@ -44,7 +44,6 @@ mod type_action;
 mod type_definition;
 mod type_hierarchy;
 mod type_map;
-mod use_resolver;
 mod util;
 mod walk;
 

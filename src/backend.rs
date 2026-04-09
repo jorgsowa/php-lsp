@@ -148,10 +148,13 @@ pub struct Backend {
     psr4: Arc<RwLock<Psr4Map>>,
     meta: Arc<RwLock<PhpStormMeta>>,
     config: Arc<RwLock<LspConfig>>,
+    codebase: Arc<mir_codebase::Codebase>,
 }
 
 impl Backend {
     pub fn new(client: Client) -> Self {
+        let codebase = mir_codebase::Codebase::new();
+        mir_analyzer::stubs::load_stubs(&codebase);
         Backend {
             client,
             docs: Arc::new(DocumentStore::new()),
@@ -159,7 +162,22 @@ impl Backend {
             psr4: Arc::new(RwLock::new(Psr4Map::empty())),
             meta: Arc::new(RwLock::new(PhpStormMeta::default())),
             config: Arc::new(RwLock::new(LspConfig::default())),
+            codebase: Arc::new(codebase),
         }
+    }
+
+    /// Run the definition collector for a single file, updating the persistent codebase.
+    fn collect_definitions_for(&self, uri: &Url, doc: &ParsedDoc) {
+        collect_into_codebase(&self.codebase, uri, doc);
+    }
+
+    /// Look up the import map for a file from the persistent codebase.
+    fn file_imports(&self, uri: &Url) -> std::collections::HashMap<String, String> {
+        self.codebase
+            .file_imports
+            .get(uri.as_str())
+            .map(|r| r.clone())
+            .unwrap_or_default()
     }
 }
 
@@ -375,6 +393,7 @@ impl LanguageServer for Backend {
 
             let docs = Arc::clone(&self.docs);
             let client = self.client.clone();
+            let codebase = Arc::clone(&self.codebase);
             let exclude_paths = self.config.read().unwrap().exclude_paths.clone();
             tokio::spawn(async move {
                 client
@@ -393,7 +412,13 @@ impl LanguageServer for Backend {
 
                 let mut total = 0usize;
                 for root in roots {
-                    total += scan_workspace(root, Arc::clone(&docs), &exclude_paths).await;
+                    total += scan_workspace(
+                        root,
+                        Arc::clone(&docs),
+                        &exclude_paths,
+                        Arc::clone(&codebase),
+                    )
+                    .await;
                 }
 
                 client
@@ -465,8 +490,9 @@ impl LanguageServer for Backend {
                 let ex = exclude_paths.clone();
                 let path_clone = path.clone();
                 let client = self.client.clone();
+                let cb = Arc::clone(&self.codebase);
                 tokio::spawn(async move {
-                    scan_workspace(path_clone, docs, &ex).await;
+                    scan_workspace(path_clone, docs, &ex, cb).await;
                     send_refresh_requests(&client).await;
                 });
             }
@@ -496,6 +522,7 @@ impl LanguageServer for Backend {
         let doc2 = self.docs.get_doc(&uri);
         let mut all_diags = diagnostics;
         if let Some(ref d) = doc2 {
+            self.collect_definitions_for(&uri, d);
             let diag_cfg = self.config.read().unwrap().diagnostics.clone();
             let dup_diags = duplicate_declaration_diagnostics(&stored_source, d, &diag_cfg);
             all_diags.extend(dup_diags);
@@ -517,6 +544,7 @@ impl LanguageServer for Backend {
 
         let docs = Arc::clone(&self.docs);
         let client = self.client.clone();
+        let codebase = Arc::clone(&self.codebase);
         let diag_cfg = self.config.read().unwrap().diagnostics.clone();
         tokio::spawn(async move {
             // 100 ms debounce: if another edit arrives before we parse, the
@@ -532,6 +560,7 @@ impl LanguageServer for Backend {
                 let source = docs.get(&uri).unwrap_or_default();
                 let mut all_diags = diagnostics;
                 if let Some(d) = docs.get_doc(&uri) {
+                    collect_into_codebase(&codebase, &uri, &d);
                     all_diags.extend(duplicate_declaration_diagnostics(&source, &d, &diag_cfg));
                     let other_raw = docs.other_docs(&uri);
                     let other_docs: Vec<Arc<ParsedDoc>> =
@@ -592,7 +621,10 @@ impl LanguageServer for Backend {
                     if let Ok(path) = change.uri.to_file_path()
                         && let Ok(text) = tokio::fs::read_to_string(&path).await
                     {
-                        self.docs.index(change.uri, &text);
+                        self.docs.index(change.uri.clone(), &text);
+                        if let Some(d) = self.docs.get_doc(&change.uri) {
+                            self.collect_definitions_for(&change.uri, &d);
+                        }
                     }
                 }
                 FileChangeType::DELETED => {
@@ -629,6 +661,7 @@ impl LanguageServer for Backend {
         } else {
             Some(&*meta_guard)
         };
+        let imports = self.file_imports(uri);
         Ok(Some(CompletionResponse::Array(filtered_completions_at(
             &doc,
             &other_docs,
@@ -637,6 +670,7 @@ impl LanguageServer for Backend {
             Some(position),
             meta_opt,
             Some(uri),
+            Some(&imports),
         ))))
     }
 
@@ -1394,7 +1428,8 @@ impl LanguageServer for Backend {
             Some(d) => d,
             None => return Ok(None),
         };
-        Ok(moniker_at(&source, &doc, position).map(|m| vec![m]))
+        let imports = self.file_imports(uri);
+        Ok(moniker_at(&source, &doc, position, &imports).map(|m| vec![m]))
     }
 
     // ── Inline values ────────────────────────────────────────────────────────
@@ -1569,7 +1604,14 @@ impl LanguageServer for Backend {
             params.range,
         ));
         actions.extend(defer_actions(
-            implement_missing_actions(&source, &doc, &other_docs, params.range, uri),
+            implement_missing_actions(
+                &source,
+                &doc,
+                &other_docs,
+                params.range,
+                uri,
+                &self.file_imports(uri),
+            ),
             "implement",
             uri,
             params.range,
@@ -1653,7 +1695,8 @@ impl LanguageServer for Backend {
             "phpdoc" => phpdoc_actions(&uri, &doc, &source, range),
             "implement" => {
                 let other_docs = self.docs.other_docs(&uri);
-                implement_missing_actions(&source, &doc, &other_docs, range, &uri)
+                let imports = self.file_imports(&uri);
+                implement_missing_actions(&source, &doc, &other_docs, range, &uri, &imports)
             }
             "constructor" => generate_constructor_actions(&source, &doc, range, &uri),
             "getters_setters" => generate_getters_setters_actions(&source, &doc, range, &uri),
@@ -2035,6 +2078,13 @@ async fn send_refresh_requests(client: &Client) {
         .ok();
 }
 
+/// Run the definition collector for a single file against the persistent codebase.
+fn collect_into_codebase(codebase: &mir_codebase::Codebase, uri: &Url, doc: &ParsedDoc) {
+    let file: Arc<str> = Arc::from(uri.as_str());
+    let collector = mir_analyzer::collector::DefinitionCollector::new(codebase, file, doc.source());
+    collector.collect(doc.program());
+}
+
 /// Maximum number of PHP files indexed during a workspace scan.
 /// Prevents excessive memory use on projects with very large vendor trees.
 const MAX_INDEXED_FILES: usize = 50_000;
@@ -2047,6 +2097,7 @@ async fn scan_workspace(
     root: PathBuf,
     docs: Arc<DocumentStore>,
     exclude_paths: &[String],
+    codebase: Arc<mir_codebase::Codebase>,
 ) -> usize {
     let mut count = 0usize;
     let mut stack = vec![root];
@@ -2087,7 +2138,10 @@ async fn scan_workspace(
                 && let Ok(uri) = Url::from_file_path(&path)
                 && let Ok(text) = tokio::fs::read_to_string(&path).await
             {
-                docs.index(uri, &text);
+                docs.index(uri.clone(), &text);
+                if let Some(d) = docs.get_doc(&uri) {
+                    collect_into_codebase(&codebase, &uri, &d);
+                }
                 count += 1;
             }
         }
