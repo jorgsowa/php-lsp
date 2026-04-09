@@ -14,7 +14,7 @@ use crate::ast::ParsedDoc;
 use crate::autoload::Psr4Map;
 use crate::call_hierarchy::{incoming_calls, outgoing_calls, prepare_call_hierarchy};
 use crate::code_lens::code_lenses;
-use crate::completion::filtered_completions_at;
+use crate::completion::{CompletionCtx, filtered_completions_at};
 use crate::declaration::goto_declaration;
 use crate::definition::{find_declaration_range, goto_definition};
 use crate::diagnostics::parse_document;
@@ -662,15 +662,18 @@ impl LanguageServer for Backend {
             Some(&*meta_guard)
         };
         let imports = self.file_imports(uri);
+        let ctx = CompletionCtx {
+            source: Some(&source),
+            position: Some(position),
+            meta: meta_opt,
+            doc_uri: Some(uri),
+            file_imports: Some(&imports),
+        };
         Ok(Some(CompletionResponse::Array(filtered_completions_at(
             &doc,
             &other_docs,
             trigger,
-            Some(&source),
-            Some(position),
-            meta_opt,
-            Some(uri),
-            Some(&imports),
+            &ctx,
         ))))
     }
 

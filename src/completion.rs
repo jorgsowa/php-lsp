@@ -1171,20 +1171,31 @@ fn magic_method_completions() -> Vec<CompletionItem> {
         .collect()
 }
 
-/// Completions filtered by trigger character, with optional `source` + `position`
+/// Optional context for completion requests that enables richer results
+/// (e.g. auto-import edits, `->` scoping to a class).
+#[derive(Default)]
+pub struct CompletionCtx<'a> {
+    pub source: Option<&'a str>,
+    pub position: Option<Position>,
+    pub meta: Option<&'a PhpStormMeta>,
+    pub doc_uri: Option<&'a Url>,
+    pub file_imports: Option<&'a HashMap<String, String>>,
+}
+
+/// Completions filtered by trigger character, with optional context
 /// so that `->` completions can be scoped to the variable's class.
 pub fn filtered_completions_at(
     doc: &ParsedDoc,
     other_docs: &[Arc<ParsedDoc>],
     trigger_character: Option<&str>,
-    source: Option<&str>,
-    position: Option<Position>,
-    meta: Option<&PhpStormMeta>,
-    doc_uri: Option<&Url>,
-    file_imports: Option<&HashMap<String, String>>,
+    ctx: &CompletionCtx<'_>,
 ) -> Vec<CompletionItem> {
+    let source = ctx.source;
+    let position = ctx.position;
+    let meta = ctx.meta;
+    let doc_uri = ctx.doc_uri;
     let empty_imports = HashMap::new();
-    let imports = file_imports.unwrap_or(&empty_imports);
+    let imports = ctx.file_imports.unwrap_or(&empty_imports);
     match trigger_character {
         Some("$") => {
             let mut items = superglobal_completions();
@@ -2063,7 +2074,7 @@ mod tests {
     #[test]
     fn dollar_trigger_returns_only_variables() {
         let d = doc("<?php\nfunction greet($name) {}\nclass Foo {}\n$bar = 1;");
-        let items = filtered_completions_at(&d, &[], Some("$"), None, None, None, None, None);
+        let items = filtered_completions_at(&d, &[], Some("$"), &CompletionCtx::default());
         assert!(!items.is_empty(), "should have variable items");
         for item in &items {
             assert_eq!(item.kind, Some(CompletionItemKind::VARIABLE));
@@ -2076,7 +2087,7 @@ mod tests {
     #[test]
     fn arrow_trigger_returns_only_methods() {
         let d = doc("<?php\nclass Calc { public function add() {} public function sub() {} }");
-        let items = filtered_completions_at(&d, &[], Some(">"), None, None, None, None, None);
+        let items = filtered_completions_at(&d, &[], Some(">"), &CompletionCtx::default());
         assert!(!items.is_empty(), "should have method items");
         for item in &items {
             assert_eq!(item.kind, Some(CompletionItemKind::METHOD));
@@ -2086,7 +2097,7 @@ mod tests {
     #[test]
     fn none_trigger_returns_keywords_functions_classes() {
         let d = doc("<?php\nfunction greet() {}\nclass MyApp {}");
-        let items = filtered_completions_at(&d, &[], None, None, None, None, None, None);
+        let items = filtered_completions_at(&d, &[], None, &CompletionCtx::default());
         let ls = labels(&items);
         assert!(
             ls.contains(&"function"),
@@ -2099,7 +2110,7 @@ mod tests {
     #[test]
     fn builtins_appear_in_default_completions() {
         let d = doc("<?php");
-        let items = filtered_completions_at(&d, &[], None, None, None, None, None, None);
+        let items = filtered_completions_at(&d, &[], None, &CompletionCtx::default());
         let ls = labels(&items);
         assert!(ls.contains(&"strlen"), "missing strlen");
         assert!(ls.contains(&"array_map"), "missing array_map");
@@ -2114,8 +2125,16 @@ mod tests {
             line: 2,
             character: 5,
         };
-        let items =
-            filtered_completions_at(&d, &[], Some(":"), Some(src), Some(pos), None, None, None);
+        let items = filtered_completions_at(
+            &d,
+            &[],
+            Some(":"),
+            &CompletionCtx {
+                source: Some(src),
+                position: Some(pos),
+                ..Default::default()
+            },
+        );
         let ls = labels(&items);
         assert!(ls.contains(&"load"), "missing static method");
         assert!(ls.contains(&"VERSION"), "missing constant");
@@ -2129,8 +2148,16 @@ mod tests {
             line: 4,
             character: 4,
         };
-        let items =
-            filtered_completions_at(&d, &[], Some(">"), Some(src), Some(pos), None, None, None);
+        let items = filtered_completions_at(
+            &d,
+            &[],
+            Some(">"),
+            &CompletionCtx {
+                source: Some(src),
+                position: Some(pos),
+                ..Default::default()
+            },
+        );
         let ls = labels(&items);
         assert!(ls.contains(&"baseMethod"), "missing inherited baseMethod");
         assert!(ls.contains(&"childMethod"), "missing childMethod");
@@ -2144,8 +2171,16 @@ mod tests {
             line: 2,
             character: 8,
         };
-        let items =
-            filtered_completions_at(&d, &[], Some("("), Some(src), Some(pos), None, None, None);
+        let items = filtered_completions_at(
+            &d,
+            &[],
+            Some("("),
+            &CompletionCtx {
+                source: Some(src),
+                position: Some(pos),
+                ..Default::default()
+            },
+        );
         let ls = labels(&items);
         assert!(ls.contains(&"host:"), "missing host:");
         assert!(ls.contains(&"port:"), "missing port:");
@@ -2157,7 +2192,7 @@ mod tests {
         let other = Arc::new(ParsedDoc::parse(
             "<?php\nclass RemoteService {}\nfunction remoteHelper() {}".to_string(),
         ));
-        let items = filtered_completions_at(&d, &[other], None, None, None, None, None, None);
+        let items = filtered_completions_at(&d, &[other], None, &CompletionCtx::default());
         let ls = labels(&items);
         assert!(ls.contains(&"localFn"), "missing local function");
         assert!(ls.contains(&"RemoteService"), "missing cross-file class");
@@ -2168,7 +2203,7 @@ mod tests {
     fn cross_file_variables_not_included_in_default_completions() {
         let d = doc("<?php\n$localVar = 1;");
         let other = Arc::new(ParsedDoc::parse("<?php\n$remoteVar = 2;".to_string()));
-        let items = filtered_completions_at(&d, &[other], None, None, None, None, None, None);
+        let items = filtered_completions_at(&d, &[other], None, &CompletionCtx::default());
         let ls = labels(&items);
         assert!(
             !ls.contains(&"$remoteVar"),
@@ -2191,11 +2226,11 @@ mod tests {
             &d,
             &[other],
             None,
-            Some(current_src),
-            Some(pos),
-            None,
-            None,
-            None,
+            &CompletionCtx {
+                source: Some(current_src),
+                position: Some(pos),
+                ..Default::default()
+            },
         );
         let mailer = items.iter().find(|i| i.label == "Mailer");
         assert!(mailer.is_some(), "Mailer should appear in completions");
@@ -2223,11 +2258,11 @@ mod tests {
             &d,
             &[other],
             None,
-            Some(current_src),
-            Some(pos),
-            None,
-            None,
-            None,
+            &CompletionCtx {
+                source: Some(current_src),
+                position: Some(pos),
+                ..Default::default()
+            },
         );
         let mailer = items.iter().find(|i| i.label == "Mailer");
         assert!(mailer.is_some(), "Mailer should appear in completions");
@@ -2272,8 +2307,16 @@ mod tests {
             line: 3,
             character: 4,
         };
-        let items =
-            filtered_completions_at(&d, &[], Some(">"), Some(src), Some(pos), None, None, None);
+        let items = filtered_completions_at(
+            &d,
+            &[],
+            Some(">"),
+            &CompletionCtx {
+                source: Some(src),
+                position: Some(pos),
+                ..Default::default()
+            },
+        );
         assert!(
             items.iter().any(|i| i.label == "name"),
             "enum should have ->name"
@@ -2289,8 +2332,16 @@ mod tests {
             line: 3,
             character: 4,
         };
-        let items =
-            filtered_completions_at(&d, &[], Some(">"), Some(src), Some(pos), None, None, None);
+        let items = filtered_completions_at(
+            &d,
+            &[],
+            Some(">"),
+            &CompletionCtx {
+                source: Some(src),
+                position: Some(pos),
+                ..Default::default()
+            },
+        );
         assert!(
             items.iter().any(|i| i.label == "name"),
             "backed enum should have ->name"
@@ -2309,8 +2360,16 @@ mod tests {
             line: 3,
             character: 4,
         };
-        let items =
-            filtered_completions_at(&d, &[], Some(">"), Some(src), Some(pos), None, None, None);
+        let items = filtered_completions_at(
+            &d,
+            &[],
+            Some(">"),
+            &CompletionCtx {
+                source: Some(src),
+                position: Some(pos),
+                ..Default::default()
+            },
+        );
         assert!(
             !items.iter().any(|i| i.label == "value"),
             "pure enum should not have ->value"
@@ -2320,7 +2379,7 @@ mod tests {
     #[test]
     fn superglobals_appear_on_dollar_trigger() {
         let d = doc("<?php\n");
-        let items = filtered_completions_at(&d, &[], Some("$"), None, None, None, None, None);
+        let items = filtered_completions_at(&d, &[], Some("$"), &CompletionCtx::default());
         let ls = labels(&items);
         assert!(ls.contains(&"$_SERVER"), "missing $_SERVER");
         assert!(ls.contains(&"$_GET"), "missing $_GET");
@@ -2332,7 +2391,7 @@ mod tests {
     #[test]
     fn superglobals_appear_in_default_completions() {
         let d = doc("<?php\n");
-        let items = filtered_completions_at(&d, &[], None, None, None, None, None, None);
+        let items = filtered_completions_at(&d, &[], None, &CompletionCtx::default());
         let ls = labels(&items);
         assert!(
             ls.contains(&"$_SERVER"),
@@ -2350,8 +2409,16 @@ mod tests {
             line: 3,
             character: 8,
         };
-        let items =
-            filtered_completions_at(&d, &[], Some(">"), Some(src), Some(pos), None, None, None);
+        let items = filtered_completions_at(
+            &d,
+            &[],
+            Some(">"),
+            &CompletionCtx {
+                source: Some(src),
+                position: Some(pos),
+                ..Default::default()
+            },
+        );
         let ls = labels(&items);
         assert!(
             ls.contains(&"doFoo"),
@@ -2367,8 +2434,16 @@ mod tests {
             line: 2,
             character: 16,
         };
-        let items =
-            filtered_completions_at(&d, &[], Some(">"), Some(src), Some(pos), None, None, None);
+        let items = filtered_completions_at(
+            &d,
+            &[],
+            Some(">"),
+            &CompletionCtx {
+                source: Some(src),
+                position: Some(pos),
+                ..Default::default()
+            },
+        );
         let ls = labels(&items);
         assert!(
             ls.contains(&"build"),
@@ -2395,11 +2470,11 @@ mod tests {
             &d,
             &[other],
             None,
-            Some("<?php\nuse "),
-            Some(pos),
-            None,
-            None,
-            None,
+            &CompletionCtx {
+                source: Some("<?php\nuse "),
+                position: Some(pos),
+                ..Default::default()
+            },
         );
         assert!(
             items.iter().any(|i| i.label.contains("Mailer")),
@@ -2416,8 +2491,16 @@ mod tests {
             line: 7,
             character: 8,
         };
-        let items =
-            filtered_completions_at(&d, &[], Some(">"), Some(src), Some(pos), None, None, None);
+        let items = filtered_completions_at(
+            &d,
+            &[],
+            Some(">"),
+            &CompletionCtx {
+                source: Some(src),
+                position: Some(pos),
+                ..Default::default()
+            },
+        );
         let ls = labels(&items);
         assert!(
             ls.contains(&"fooMethod"),
@@ -2441,11 +2524,11 @@ mod tests {
             &d,
             &[],
             Some("["),
-            Some("<?php\nclass Route {}\nclass Middleware {}\n#["),
-            Some(pos),
-            None,
-            None,
-            None,
+            &CompletionCtx {
+                source: Some("<?php\nclass Route {}\nclass Middleware {}\n#["),
+                position: Some(pos),
+                ..Default::default()
+            },
         );
         let ls = labels(&items);
         assert!(ls.contains(&"Route"), "should suggest Route as attribute");
@@ -2470,11 +2553,11 @@ mod tests {
             &d,
             &[other],
             Some("["),
-            Some(current_src),
-            Some(pos),
-            None,
-            None,
-            None,
+            &CompletionCtx {
+                source: Some(current_src),
+                position: Some(pos),
+                ..Default::default()
+            },
         );
         let route = items.iter().find(|i| i.label == "Route");
         assert!(
@@ -2508,11 +2591,11 @@ mod tests {
             &d,
             &[other],
             Some("["),
-            Some(current_src),
-            Some(pos),
-            None,
-            None,
-            None,
+            &CompletionCtx {
+                source: Some(current_src),
+                position: Some(pos),
+                ..Default::default()
+            },
         );
         let route = items.iter().find(|i| i.label == "Route");
         assert!(
@@ -2534,7 +2617,16 @@ mod tests {
             line: 4,
             character: 4,
         };
-        let items = filtered_completions_at(&d, &[], None, Some(src), Some(pos), None, None, None);
+        let items = filtered_completions_at(
+            &d,
+            &[],
+            None,
+            &CompletionCtx {
+                source: Some(src),
+                position: Some(pos),
+                ..Default::default()
+            },
+        );
         let ls = labels(&items);
         assert!(
             ls.iter().any(|l| l.contains("Active")),
@@ -2551,8 +2643,16 @@ mod tests {
             line: 3,
             character: 4,
         };
-        let items =
-            filtered_completions_at(&d, &[], Some(">"), Some(src), Some(pos), None, None, None); // trigger ">"
+        let items = filtered_completions_at(
+            &d,
+            &[],
+            Some(">"),
+            &CompletionCtx {
+                source: Some(src),
+                position: Some(pos),
+                ..Default::default()
+            },
+        );
         let name_item = items.iter().find(|i| i.label == "$name");
         assert!(name_item.is_some(), "should have $name in completions");
         assert_eq!(
@@ -2571,7 +2671,16 @@ mod tests {
             line: 2,
             character: 0,
         };
-        let items = filtered_completions_at(&d, &[], None, Some(src), Some(pos), None, None, None);
+        let items = filtered_completions_at(
+            &d,
+            &[],
+            None,
+            &CompletionCtx {
+                source: Some(src),
+                position: Some(pos),
+                ..Default::default()
+            },
+        );
         let ls = labels(&items);
         assert!(ls.contains(&"$early"), "$early should be suggested");
         assert!(
@@ -2595,11 +2704,11 @@ mod tests {
             &d,
             &[other],
             None,
-            Some("<?php\n$x = new App\\"),
-            Some(pos),
-            None,
-            None,
-            None,
+            &CompletionCtx {
+                source: Some("<?php\n$x = new App\\"),
+                position: Some(pos),
+                ..Default::default()
+            },
         );
         let ls = labels(&items);
         assert!(
@@ -2617,8 +2726,16 @@ mod tests {
             line: 3,
             character: 5,
         };
-        let items =
-            filtered_completions_at(&d, &[], Some(">"), Some(src), Some(pos), None, None, None);
+        let items = filtered_completions_at(
+            &d,
+            &[],
+            Some(">"),
+            &CompletionCtx {
+                source: Some(src),
+                position: Some(pos),
+                ..Default::default()
+            },
+        );
         let ls = labels(&items);
         assert!(ls.contains(&"run"), "?-> should complete Service::run()");
         assert!(
@@ -2636,7 +2753,16 @@ mod tests {
             line: 2,
             character: 6,
         };
-        let items = filtered_completions_at(&d, &[], None, Some(src), Some(pos), None, None, None);
+        let items = filtered_completions_at(
+            &d,
+            &[],
+            None,
+            &CompletionCtx {
+                source: Some(src),
+                position: Some(pos),
+                ..Default::default()
+            },
+        );
         let ls = labels(&items);
         assert!(ls.contains(&"__construct"), "should suggest __construct");
         assert!(ls.contains(&"__toString"), "should suggest __toString");
@@ -2653,8 +2779,16 @@ mod tests {
             line: 1,
             character: 10,
         };
-        let items =
-            filtered_completions_at(&d, &[], Some(">"), Some(src), Some(pos), None, None, None);
+        let items = filtered_completions_at(
+            &d,
+            &[],
+            Some(">"),
+            &CompletionCtx {
+                source: Some(src),
+                position: Some(pos),
+                ..Default::default()
+            },
+        );
         // No class is defined in this doc, so the fallback method list is empty.
         assert!(
             items.is_empty(),
@@ -2681,8 +2815,16 @@ mod tests {
             line: 7,
             character: 9,
         };
-        let items =
-            filtered_completions_at(&d, &[], Some(":"), Some(src), Some(pos), None, None, None);
+        let items = filtered_completions_at(
+            &d,
+            &[],
+            Some(":"),
+            &CompletionCtx {
+                source: Some(src),
+                position: Some(pos),
+                ..Default::default()
+            },
+        );
         let ls = labels(&items);
         assert!(ls.contains(&"staticMethod"), "should include static method");
         assert!(ls.contains(&"MY_CONST"), "should include constant");
@@ -2702,7 +2844,7 @@ mod tests {
     #[allow(dead_code)]
     fn check_completion_labels(src: &str, expect: Expect) {
         let d = doc(src);
-        let items = filtered_completions_at(&d, &[], None, None, None, None, None, None);
+        let items = filtered_completions_at(&d, &[], None, &CompletionCtx::default());
         let mut ls: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
         ls.sort_unstable();
         expect.assert_eq(&ls.join("\n"));
@@ -2768,8 +2910,16 @@ mod tests {
             line: 3,
             character: 4,
         };
-        let items =
-            filtered_completions_at(&d, &[], Some(">"), Some(src), Some(pos), None, None, None);
+        let items = filtered_completions_at(
+            &d,
+            &[],
+            Some(">"),
+            &CompletionCtx {
+                source: Some(src),
+                position: Some(pos),
+                ..Default::default()
+            },
+        );
         let mut ls: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
         ls.sort_unstable();
         expect![[r#"
@@ -2821,7 +2971,16 @@ mod tests {
             line: 1,
             character: 0,
         };
-        let items = filtered_completions_at(&d, &[], None, Some(src), Some(pos), None, None, None);
+        let items = filtered_completions_at(
+            &d,
+            &[],
+            None,
+            &CompletionCtx {
+                source: Some(src),
+                position: Some(pos),
+                ..Default::default()
+            },
+        );
         let ls = labels(&items);
         assert!(
             !ls.contains(&"$early"),
