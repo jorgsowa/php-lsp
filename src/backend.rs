@@ -1573,8 +1573,8 @@ impl LanguageServer for Backend {
             }
 
             // Find a class with this short name in other indexed documents
-            for (other_uri, other_doc) in &other_docs {
-                if let Some(fqn) = find_fqn_for_class(other_doc, class_name, other_uri) {
+            for (_other_uri, other_doc) in &other_docs {
+                if let Some(fqn) = find_fqn_for_class(other_doc, class_name) {
                     let edit = build_use_import_edit(&source, uri, &fqn);
                     let action = CodeAction {
                         title: format!("Add use {fqn}"),
@@ -1753,7 +1753,7 @@ fn defer_actions(
 
 /// Find the fully-qualified name for a class with the given short `name` by
 /// walking the ParsedDoc AST. Returns `Namespace\ClassName` when inside a namespace.
-fn find_fqn_for_class(doc: &ParsedDoc, name: &str, _uri: &Url) -> Option<String> {
+fn find_fqn_for_class(doc: &ParsedDoc, name: &str) -> Option<String> {
     use php_ast::{NamespaceBody, StmtKind};
     for stmt in doc.program().stmts.iter() {
         match &stmt.kind {

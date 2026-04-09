@@ -14,17 +14,15 @@ pub fn hover_info(
     position: Position,
     other_docs: &[(tower_lsp::lsp_types::Url, Arc<ParsedDoc>)],
 ) -> Option<Hover> {
-    hover_at(source, doc, other_docs, position, None)
+    hover_at(source, doc, other_docs, position)
 }
 
-/// Full hover implementation with optional other-docs slice.
-/// The `other_docs_arc` parameter is used internally for TypeMap construction.
+/// Full hover implementation.
 pub fn hover_at(
     source: &str,
     doc: &ParsedDoc,
     other_docs: &[(tower_lsp::lsp_types::Url, Arc<ParsedDoc>)],
     position: Position,
-    _other_docs_arc: Option<&[Arc<ParsedDoc>]>,
 ) -> Option<Hover> {
     // Feature 6: hover on use statement shows full FQN
     // Check this before word_at since cursor may be past the last word boundary
@@ -942,7 +940,7 @@ mod tests {
     fn hover_on_variable_shows_type() {
         let src = "<?php\n$obj = new Mailer();\n$obj";
         let doc = ParsedDoc::parse(src.to_string());
-        let h = hover_at(src, &doc, &[], pos(2, 2), None);
+        let h = hover_at(src, &doc, &[], pos(2, 2));
         assert!(h.is_some());
         let text = match h.unwrap().contents {
             HoverContents::Markup(m) => m.value,
@@ -955,7 +953,7 @@ mod tests {
     fn hover_on_builtin_class_shows_stub_info() {
         let src = "<?php\n$pdo = new PDO('sqlite::memory:');\n$pdo->query('SELECT 1');";
         let doc = ParsedDoc::parse(src.to_string());
-        let h = hover_at(src, &doc, &[], pos(1, 12), None);
+        let h = hover_at(src, &doc, &[], pos(1, 12));
         assert!(h.is_some(), "should hover on PDO");
         let text = match h.unwrap().contents {
             HoverContents::Markup(m) => m.value,
@@ -969,7 +967,7 @@ mod tests {
         let src = "<?php\nclass User { public string $name; public int $age; }\n$u = new User();\n$u->name";
         let doc = ParsedDoc::parse(src.to_string());
         // "name" in "$u->name" — col 4 in "$u->name"
-        let h = hover_at(src, &doc, &[], pos(3, 5), None);
+        let h = hover_at(src, &doc, &[], pos(3, 5));
         assert!(h.is_some(), "expected hover on property");
         let text = match h.unwrap().contents {
             HoverContents::Markup(m) => m.value,
@@ -985,7 +983,7 @@ mod tests {
         let src = "<?php\nclass Point {\n    public function __construct(\n        public float $x,\n        public float $y,\n    ) {}\n}\n$p = new Point(1.0, 2.0);\n$p->x";
         let doc = ParsedDoc::parse(src.to_string());
         // "x" at the end of "$p->x"
-        let h = hover_at(src, &doc, &[], pos(8, 4), None);
+        let h = hover_at(src, &doc, &[], pos(8, 4));
         assert!(h.is_some(), "expected hover on promoted property");
         let text = match h.unwrap().contents {
             HoverContents::Markup(m) => m.value,
@@ -1007,7 +1005,7 @@ mod tests {
         let src = "<?php\nclass User {\n    /**\n     * Create a user.\n     * @param string $name The user's display name\n     * @param int $age The user's age\n     * @return void\n     * @throws \\InvalidArgumentException\n     */\n    public function __construct(\n        public string $name,\n        public int $age,\n    ) {}\n}\n$u = new User('Alice', 30);\n$u->name";
         let doc = ParsedDoc::parse(src.to_string());
         // hover on "$u->name" — cursor on 'name' (line 15, char 4 after "$u->")
-        let h = hover_at(src, &doc, &[], pos(15, 4), None);
+        let h = hover_at(src, &doc, &[], pos(15, 4));
         assert!(h.is_some(), "expected hover on promoted property");
         let text = match h.unwrap().contents {
             HoverContents::Markup(m) => m.value,
@@ -1041,7 +1039,7 @@ mod tests {
         // hover should still work (showing type) without appending any docblock section.
         let src = "<?php\nclass User {\n    /**\n     * Create a user.\n     * @return void\n     */\n    public function __construct(\n        public string $name,\n    ) {}\n}\n$u = new User('Alice');\n$u->name";
         let doc = ParsedDoc::parse(src.to_string());
-        let h = hover_at(src, &doc, &[], pos(11, 4), None);
+        let h = hover_at(src, &doc, &[], pos(11, 4));
         assert!(h.is_some(), "expected hover on promoted property");
         let text = match h.unwrap().contents {
             HoverContents::Markup(m) => m.value,
@@ -1066,7 +1064,6 @@ mod tests {
                 line: 1,
                 character: 20,
             },
-            None,
         );
         assert!(h.is_some());
         let text = match h.unwrap().contents {
@@ -1115,7 +1112,7 @@ mod tests {
         let src = "<?php\nclass User {\n    /** The user's display name. */\n    public string $name;\n}\n$u = new User();\n$u->name";
         let doc = ParsedDoc::parse(src.to_string());
         // "name" in "$u->name" at the last line
-        let h = hover_at(src, &doc, &[], pos(6, 5), None);
+        let h = hover_at(src, &doc, &[], pos(6, 5));
         assert!(h.is_some(), "expected hover on property with docblock");
         let text = match h.unwrap().contents {
             HoverContents::Markup(m) => m.value,
@@ -1136,7 +1133,7 @@ mod tests {
         let src = "<?php\nclass Counter {\n    public int $count = 0;\n    public function increment(): void {\n        $this->count;\n    }\n}";
         let doc = ParsedDoc::parse(src.to_string());
         // "$this->count" — "count" starts at col 15 in "        $this->count;"
-        let h = hover_at(src, &doc, &[], pos(4, 16), None);
+        let h = hover_at(src, &doc, &[], pos(4, 16));
         assert!(h.is_some(), "expected hover on $this->property");
         let text = match h.unwrap().contents {
             HoverContents::Markup(m) => m.value,
@@ -1152,7 +1149,7 @@ mod tests {
         let src = "<?php\nclass Profile { public string $bio; }\n$p = new Profile();\n$p?->bio";
         let doc = ParsedDoc::parse(src.to_string());
         // "bio" in "$p?->bio" at line 3, col 5
-        let h = hover_at(src, &doc, &[], pos(3, 5), None);
+        let h = hover_at(src, &doc, &[], pos(3, 5));
         assert!(h.is_some(), "expected hover on nullsafe property access");
         let text = match h.unwrap().contents {
             HoverContents::Markup(m) => m.value,
