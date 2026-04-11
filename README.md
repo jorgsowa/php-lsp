@@ -1,8 +1,25 @@
 # php-lsp
 
-A PHP Language Server written in Rust — diagnostics, completions, hover, go-to-definition, rename, refactoring, and more.
+> A high-performance PHP language server written in Rust.
 
-**[Features](docs/features.md)** · **[Editors & AI Clients](docs/editors.md)** · **[Configuration](docs/configuration.md)** · **[Architecture](docs/architecture.md)** · **[Contributing](CONTRIBUTING.md)**
+[![Build](https://github.com/jorgsowa/php-lsp/actions/workflows/release.yml/badge.svg)](https://github.com/jorgsowa/php-lsp/actions/workflows/release.yml)
+[![Crates.io](https://img.shields.io/crates/v/php-lsp.svg)](https://crates.io/crates/php-lsp)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
+**[Getting Started](docs/getting-started.md)** · **[Features](docs/features.md)** · **[Editors & AI Clients](docs/editors.md)** · **[Configuration](docs/configuration.md)** · **[Architecture](docs/architecture.md)** · **[Contributing](CONTRIBUTING.md)**
+
+---
+
+php-lsp is a full-featured LSP implementation for PHP: real-time cross-file diagnostics, type-aware completions, navigation, and refactoring — written in Rust for low memory usage, fast startup, and zero GC pauses.
+
+**Unique strengths:**
+- **Full LSP 3.17 specification support** — call hierarchy, type hierarchy, semantic tokens, inlay hints, selection range, linked editing, and more — features that competing servers lock behind premium tiers or skip entirely
+- **Rich code actions** — 10 actions (extract variable/method/constant, inline variable, generate constructor/getters/setters, implement missing methods, organize imports, add PHPDoc, add return type), all free
+- **Clean separation of concerns** — parsing ([php-rs-parser](https://crates.io/crates/php-rs-parser), [php-ast](https://crates.io/crates/php-ast)) and static analysis ([mir-php](https://github.com/jorgsowa/mir)) are dedicated crates, keeping the LSP layer lightweight and focused purely on protocol features
+- **Rust-native performance** — async-first with tokio, lock-free document store via dashmap, no GC pauses
+- **Completion depth** — type-aware `->` / `::` chains, `match` enum-case completions, auto `use` insertion, fuzzy camel/underscore matching
+
+---
 
 ## Install
 
@@ -10,15 +27,30 @@ A PHP Language Server written in Rust — diagnostics, completions, hover, go-to
 cargo install php-lsp
 ```
 
-Or download a pre-built binary from [Releases](https://github.com/jorgsowa/php-lsp/releases).
+Or download a pre-built binary (macOS, Linux) from [Releases](https://github.com/jorgsowa/php-lsp/releases) and place it on your `PATH`.
+
+Verify:
+```bash
+php-lsp --version
+```
+
+For full installation options see **[docs/getting-started.md](docs/getting-started.md)**.
 
 ---
 
-## Setup
+## Editor Setup
 
-For full setup instructions for all editors and AI clients (Claude Code, Cursor, Zed, VS Code, Neovim, PHPStorm) see **[docs/editors.md](docs/editors.md)**.
+| Editor | Setup |
+|---|---|
+| VS Code | [llllvvuu-lsp-client](https://marketplace.visualstudio.com/items?itemName=llllvvuu.llllvvuu-lsp-client) extension |
+| Neovim 0.11+ | Native `vim.lsp.enable` |
+| Neovim 0.10 | `vim.lsp.start` in a `FileType` autocmd |
+| Zed | `lsp` block in `~/.config/zed/settings.json` |
+| Cursor | Settings → Features → Language Servers |
+| PHPStorm | [LSP4IJ](https://plugins.jetbrains.com/plugin/23257-lsp4ij) plugin |
+| Claude Code | `claude plugin add https://github.com/jorgsowa/claude-php-lsp-plugin` |
 
-The binary path after `cargo install` is `~/.cargo/bin/php-lsp`. Run `which php-lsp` to confirm.
+Config snippets for every editor: **[docs/editors.md](docs/editors.md)**
 
 ---
 
@@ -28,12 +60,15 @@ Pass options via `initializationOptions`:
 
 ```json
 {
-  "phpVersion": "8.1",
-  "excludePaths": ["cache/*", "storage/*"]
+  "phpVersion": "8.2",
+  "excludePaths": ["cache/*", "storage/*"],
+  "diagnostics": {
+    "deprecatedCalls": false
+  }
 }
 ```
 
-See **[docs/configuration.md](docs/configuration.md)** for all options.
+See **[docs/configuration.md](docs/configuration.md)** for all options including per-diagnostic toggles.
 
 ---
 
@@ -81,21 +116,11 @@ See **[docs/configuration.md](docs/configuration.md)** for all options.
 | Debugger | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ |
 | Deep generics / PHPStan types | ⚠️ partial | ⚠️ partial | ✅ | ❌ | ✅ | ✅ |
 
-**Where php-lsp is strong:**
+---
 
-- **Rust-based** — no GC pauses, async-first with `tokio`, lock-free document store via `dashmap`
-- **mir-php static analysis** — two-pass cross-file engine: undefined vars/functions, arity errors, type mismatches, deprecated calls
-- **PhpStorm metadata** — the only open-source LSP that parses `.phpstorm.meta.php` for DI container type inference
-- **Breadth of LSP coverage** — call/type hierarchy, semantic tokens, inlay hints, selection range, and 10 code action types all free
-- **Completion depth** — type-aware chains, `match` enum completions, named args, auto `use` insertion, camel/underscore fuzzy matching
+## Contributing
 
-**Where others are stronger:**
-
-- **Intelephense / DEVSENSE** — embedded HTML/JS/CSS intelligence inside PHP files; more battle-tested on very large codebases
-- **PHPantom** — deeper generics, PHPStan annotations, conditional return types; built-in Laravel Eloquent and Drupal support
-- **Psalm** — strictest type analysis available; best-in-class for type correctness at the cost of IDE feature breadth
-- **DEVSENSE** — integrated debugger, PHPUnit UI, professional support
-- **php-lsp** — newer and has a smaller community than Intelephense or Phpactor
+See **[CONTRIBUTING.md](CONTRIBUTING.md)**. Open an issue before starting non-trivial work. PRs require clean `cargo test` and `cargo clippy -- -D warnings`.
 
 ---
 
