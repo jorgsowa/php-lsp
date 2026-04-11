@@ -180,26 +180,29 @@ vim.api.nvim_create_autocmd('FileType', {
 
 ---
 
-### PHPStorm (2023.2+)
+### PHPStorm
 
-Go to **Settings → Languages & Frameworks → Language Servers → +** and fill in:
+1. Install the [LSP4IJ](https://plugins.jetbrains.com/plugin/23257-lsp4ij) plugin (**Settings → Plugins → Marketplace → "LSP4IJ"**).
+2. Go to **Settings → Languages & Frameworks → LSP → Language Servers → +**, choose **Custom server**, and fill in the **Server** tab:
 
-| Field | Value |
-|---|---|
-| Name | `php-lsp` |
-| Language | `PHP` |
-| Command | `/usr/local/bin/php-lsp` |
+   | Field | Value |
+   |---|---|
+   | Name | `php-lsp` |
+   | Command | `<path-to-php-lsp>` |
 
-To pass `initializationOptions`, PHPStorm does not have a built-in UI for this. Use a wrapper script as the command:
+3. In the **Mappings** tab add file name pattern `*.php`.
+4. In the **Configuration** tab paste your options into the **Initialization options** JSON field:
 
-Create `~/bin/php-lsp-wrapper.sh`:
-
-```bash
-#!/bin/sh
-exec /usr/local/bin/php-lsp
+```json
+{
+  "phpVersion": "8.3",
+  "excludePaths": ["cache/*", "storage/*"]
+}
 ```
 
-PHPStorm reads `initializationOptions` from a JSON file if your LSP client supports it — check your PHPStorm version's Language Server documentation for the exact field name.
+See [configuration.md](configuration.md) for all available options.
+
+> **Known issue:** LSP4IJ throws an `UnsupportedOperationException` on `workspace/inlineValue/refresh` (tracked in [redhat-developer/lsp4ij#1470](https://github.com/redhat-developer/lsp4ij/issues/1470)). Update LSP4IJ to the latest version once a fix is released.
 
 ---
 
