@@ -2,6 +2,44 @@
 
 All notable changes to php-lsp are documented here.
 
+## [0.1.51] — 2026-04-11
+
+### Features
+
+- **Extract method code action**: Added "Extract method" code action — promotes a selected block of statements into a new private method with parameters inferred from used variables.
+- **Promote constructor parameters**: Added code action to promote constructor parameters to class properties.
+- **Inlay hints**: Variadic param hints, arrow function return type hints, and foreach loop variable type hints.
+- **Named argument snippets**: Completion now inserts named argument snippets for PHP 8 call sites.
+- **Organize imports**: `use function` and `use const` statements are now handled by the organize imports action.
+- **Hover**: Enum case backing values, class constant types, constants in interface/trait hover, and type inference for catch-block and static variables.
+- **Signature help**: `@param` descriptions from docblocks are now shown in parameter documentation.
+- **Symbols**: Interface constants listed as children; deprecated symbols carry the `deprecated` flag.
+- **Code lens**: Implementation count lens for traits; `#[Test]` attribute detected for PHPUnit test methods alongside `@test`.
+- **Semantic tokens**: `VARIABLE` and `TYPE` tokens emitted during statement walking for richer highlighting.
+- **Completion**: Improved relative `include`/`require` path completions.
+- **Implement action**: Interface resolved through `use` imports; stub bodies improved.
+- **CLI**: `--version` flag added.
+
+### Bug fixes
+
+- **Type hierarchy**: Traits now use `CLASS` kind and subtype detection correctly identifies trait users.
+
+### Performance
+
+- **Semantic diagnostics**: Incremental analysis — `remove_file_definitions` + `finalize` on the persistent codebase replaces creating a fresh codebase per call, removing 60 lines of copy machinery.
+- **Semantic diagnostics**: Stubs loaded once into a `static OnceLock`; backend's persistent codebase reused across calls.
+
+### Maintenance
+
+- **Release workflow**: Expanded to all 6 targets: `aarch64-apple-darwin`, `x86_64-apple-darwin`, `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu`, `x86_64-unknown-linux-musl`, `x86_64-pc-windows-msvc`.
+- **Dependencies**: Updated `mir-analyzer` to 0.2.0 and `php-ast` to 0.4.0.
+- **Refactor**: Deduplicated AST traversal with `RefVisitor` trait, replacing four near-identical `*_refs_in_stmt` functions.
+- Removed dead code and unused parameters across multiple modules.
+
+### Documentation
+
+- Improved PHPStorm / LSP4IJ setup guide, README, and configuration reference.
+
 ## [0.1.50] — 2026-04-05
 
 ### Features

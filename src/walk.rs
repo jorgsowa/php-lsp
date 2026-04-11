@@ -1745,3 +1745,259 @@ fn collect_class_in_type_hint(th: &TypeHint<'_, '_>, class_name: &str, out: &mut
         TypeHintKind::Keyword(_, _) => {}
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ast::ParsedDoc;
+
+    /// Return all substrings of `source` at the given spans.
+    fn spans_to_strs<'a>(source: &'a str, spans: &[Span]) -> Vec<&'a str> {
+        spans
+            .iter()
+            .map(|s| &source[s.start as usize..s.end as usize])
+            .collect()
+    }
+
+    fn parse(src: &str) -> ParsedDoc {
+        ParsedDoc::parse(src.to_string())
+    }
+
+    // ── refs_in_stmts ────────────────────────────────────────────────────────
+
+    #[test]
+    fn refs_finds_function_declaration_and_call() {
+        let src = "<?php\nfunction greet() {}\ngreet();";
+        let doc = parse(src);
+        let mut out = vec![];
+        refs_in_stmts(src, &doc.program().stmts, "greet", &mut out);
+        let texts = spans_to_strs(src, &out);
+        assert!(texts.contains(&"greet"), "expected function decl name");
+        assert_eq!(texts.iter().filter(|&&t| t == "greet").count(), 2);
+    }
+
+    #[test]
+    fn refs_finds_class_declaration_and_new() {
+        let src = "<?php\nclass Foo {}\n$x = new Foo();";
+        let doc = parse(src);
+        let mut out = vec![];
+        refs_in_stmts(src, &doc.program().stmts, "Foo", &mut out);
+        let texts = spans_to_strs(src, &out);
+        assert!(texts.iter().all(|&t| t == "Foo"));
+        assert_eq!(texts.len(), 2);
+    }
+
+    #[test]
+    fn refs_finds_method_declaration_inside_class() {
+        let src = "<?php\nclass Bar { function run() { $this->run(); } }";
+        let doc = parse(src);
+        let mut out = vec![];
+        refs_in_stmts(src, &doc.program().stmts, "run", &mut out);
+        let texts = spans_to_strs(src, &out);
+        // method decl name + method call name both appear
+        assert!(texts.iter().any(|&t| t == "run"));
+    }
+
+    #[test]
+    fn refs_returns_empty_for_unknown_name() {
+        let src = "<?php\nfunction greet() {}";
+        let doc = parse(src);
+        let mut out = vec![];
+        refs_in_stmts(src, &doc.program().stmts, "nope", &mut out);
+        assert!(out.is_empty());
+    }
+
+    // ── refs_in_stmts_with_use ───────────────────────────────────────────────
+
+    #[test]
+    fn refs_with_use_includes_use_import() {
+        let src = "<?php\nuse Vendor\\Lib\\Foo;\n$x = new Foo();";
+        let doc = parse(src);
+        let mut out = vec![];
+        refs_in_stmts_with_use(src, &doc.program().stmts, "Foo", &mut out);
+        let texts = spans_to_strs(src, &out);
+        // Should see the `Foo` segment in the use statement + the new Foo()
+        assert!(
+            texts.iter().filter(|&&t| t == "Foo").count() >= 2,
+            "got: {texts:?}"
+        );
+    }
+
+    #[test]
+    fn refs_without_use_misses_use_import() {
+        let src = "<?php\nuse Vendor\\Lib\\Foo;\n$x = new Foo();";
+        let doc = parse(src);
+        let mut out = vec![];
+        refs_in_stmts(src, &doc.program().stmts, "Foo", &mut out);
+        let texts = spans_to_strs(src, &out);
+        // refs_in_stmts does NOT walk use statements
+        assert!(
+            texts.iter().filter(|&&t| t == "Foo").count() < 2,
+            "refs_in_stmts should not include use import; got: {texts:?}"
+        );
+    }
+
+    // ── var_refs_in_stmts ────────────────────────────────────────────────────
+
+    #[test]
+    fn var_refs_finds_variable_in_assignment_and_echo() {
+        let src = "<?php\n$x = 1;\necho $x;";
+        let doc = parse(src);
+        let mut out = vec![];
+        var_refs_in_stmts(&doc.program().stmts, "x", &mut out);
+        assert_eq!(out.len(), 2, "expected $x in assignment and echo");
+    }
+
+    #[test]
+    fn var_refs_respects_function_scope_boundary() {
+        // $x inside the nested function is a separate scope — must not be collected.
+        let src = "<?php\n$x = 1;\nfunction inner() { $x = 2; }";
+        let doc = parse(src);
+        let mut out = vec![];
+        var_refs_in_stmts(&doc.program().stmts, "x", &mut out);
+        // Only the top-level $x = 1; should be found (function is a scope boundary).
+        assert_eq!(out.len(), 1, "inner $x must not cross scope boundary");
+    }
+
+    #[test]
+    fn var_refs_traverses_if_while_for_foreach() {
+        let src = "<?php\n$x = 0;\nif ($x) { $x++; }\nwhile ($x > 0) { $x--; }\nfor ($x = 0; $x < 3; $x++) {}\nforeach ([$x] as $v) {}";
+        let doc = parse(src);
+        let mut out = vec![];
+        var_refs_in_stmts(&doc.program().stmts, "x", &mut out);
+        assert!(
+            out.len() >= 5,
+            "expected multiple $x refs, got {}",
+            out.len()
+        );
+    }
+
+    #[test]
+    fn var_refs_does_not_cross_closure_boundary() {
+        let src = "<?php\n$x = 1;\n$f = function() { $x = 2; };";
+        let doc = parse(src);
+        let mut out = vec![];
+        var_refs_in_stmts(&doc.program().stmts, "x", &mut out);
+        // Closure is a scope boundary — inner $x not collected.
+        assert_eq!(
+            out.len(),
+            1,
+            "closure $x must not be collected by outer scope walk"
+        );
+    }
+
+    // ── collect_var_refs_in_scope ────────────────────────────────────────────
+
+    #[test]
+    fn collect_scope_finds_var_inside_function() {
+        let src = "<?php\nfunction foo($x) { return $x + 1; }";
+        let doc = parse(src);
+        // byte_off somewhere inside the function body
+        let byte_off = src.find("return").unwrap();
+        let mut out = vec![];
+        collect_var_refs_in_scope(&doc.program().stmts, "x", byte_off, &mut out);
+        // Should find the param span and the $x in return
+        assert!(
+            out.len() >= 2,
+            "expected param + body ref, got {}",
+            out.len()
+        );
+    }
+
+    #[test]
+    fn collect_scope_top_level_when_no_function() {
+        let src = "<?php\n$x = 1;\necho $x;";
+        let doc = parse(src);
+        let byte_off = src.find("echo").unwrap();
+        let mut out = vec![];
+        collect_var_refs_in_scope(&doc.program().stmts, "x", byte_off, &mut out);
+        assert_eq!(out.len(), 2);
+    }
+
+    // ── property_refs_in_stmts ───────────────────────────────────────────────
+
+    #[test]
+    fn property_refs_finds_declaration_and_access() {
+        let src = "<?php\nclass Baz { public int $val = 0; function get() { return $this->val; } }";
+        let doc = parse(src);
+        let mut out = vec![];
+        property_refs_in_stmts(src, &doc.program().stmts, "val", &mut out);
+        // property declaration + $this->val access
+        assert_eq!(out.len(), 2, "expected decl + access, got {}", out.len());
+    }
+
+    #[test]
+    fn property_refs_finds_nullsafe_access() {
+        let src = "<?php\n$r = $obj?->name;";
+        let doc = parse(src);
+        let mut out = vec![];
+        property_refs_in_stmts(src, &doc.program().stmts, "name", &mut out);
+        assert_eq!(out.len(), 1);
+    }
+
+    // ── function_refs_in_stmts ───────────────────────────────────────────────
+
+    #[test]
+    fn function_refs_only_matches_free_calls_not_methods() {
+        let src = "<?php\nfunction run() {}\nrun();\n$obj->run();";
+        let doc = parse(src);
+        let mut out = vec![];
+        function_refs_in_stmts(&doc.program().stmts, "run", &mut out);
+        // Only the free call `run()` should match; `$obj->run()` must not.
+        assert_eq!(out.len(), 1, "got: {out:?}");
+    }
+
+    // ── method_refs_in_stmts ─────────────────────────────────────────────────
+
+    #[test]
+    fn method_refs_only_matches_method_calls_not_free_functions() {
+        let src = "<?php\nfunction run() {}\nrun();\n$obj->run();";
+        let doc = parse(src);
+        let mut out = vec![];
+        method_refs_in_stmts(&doc.program().stmts, "run", &mut out);
+        // Only `$obj->run()` method name span should match.
+        assert_eq!(out.len(), 1, "got: {out:?}");
+    }
+
+    #[test]
+    fn method_refs_finds_nullsafe_method_call() {
+        let src = "<?php\n$obj?->process();";
+        let doc = parse(src);
+        let mut out = vec![];
+        method_refs_in_stmts(&doc.program().stmts, "process", &mut out);
+        assert_eq!(out.len(), 1);
+    }
+
+    // ── class_refs_in_stmts ──────────────────────────────────────────────────
+
+    #[test]
+    fn class_refs_finds_new_and_extends() {
+        let src = "<?php\nclass Child extends Parent {}\n$x = new Parent();";
+        let doc = parse(src);
+        let mut out = vec![];
+        class_refs_in_stmts(&doc.program().stmts, "Parent", &mut out);
+        assert!(out.len() >= 2, "expected extends + new, got {}", out.len());
+    }
+
+    #[test]
+    fn class_refs_does_not_match_free_function_with_same_name() {
+        let src = "<?php\nfunction Foo() {}\nFoo();";
+        let doc = parse(src);
+        let mut out = vec![];
+        class_refs_in_stmts(&doc.program().stmts, "Foo", &mut out);
+        assert!(
+            out.is_empty(),
+            "free function call must not be a class ref; got: {out:?}"
+        );
+    }
+
+    #[test]
+    fn class_refs_finds_type_hint_in_function_param() {
+        let src = "<?php\nfunction take(MyClass $obj): MyClass { return $obj; }";
+        let doc = parse(src);
+        let mut out = vec![];
+        class_refs_in_stmts(&doc.program().stmts, "MyClass", &mut out);
+        // param type hint + return type hint
+        assert_eq!(out.len(), 2, "got {out:?}");
+    }
+}
