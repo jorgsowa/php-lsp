@@ -341,15 +341,9 @@ impl LanguageServer for Backend {
             Registration {
                 id: "php-lsp-file-watcher".to_string(),
                 method: "workspace/didChangeWatchedFiles".to_string(),
-                register_options: Some(
-                    serde_json::to_value(DidChangeWatchedFilesRegistrationOptions {
-                        watchers: vec![FileSystemWatcher {
-                            glob_pattern: GlobPattern::String("**/*.php".to_string()),
-                            kind: None,
-                        }],
-                    })
-                    .unwrap(),
-                ),
+                register_options: Some(serde_json::json!({
+                    "watchers": [{"globPattern": "**/*.php"}]
+                })),
             },
             // Type hierarchy has no static ServerCapabilities field in lsp-types 0.94,
             // so register it dynamically here.
