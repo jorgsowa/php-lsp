@@ -113,9 +113,9 @@ fn is_declaration_span(source: &str, stmts: &[Stmt<'_, '_>], word: &str, span: &
                     }
                 }
                 StmtKind::Class(c) if c.name == Some(word) => {
-                    // c.name is Some(word) per the guard; unwrap to get the
+                    // c.name is Some(word) per the guard; extract to get the
                     // arena-allocated slice so str_offset uses pointer arithmetic.
-                    let name = c.name.unwrap();
+                    let name = c.name.expect("match guard ensures Some");
                     if spans_equal(&name_span(source, name), span) {
                         return true;
                     }

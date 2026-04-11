@@ -73,7 +73,10 @@ fn find_class_range(source: &str, stmts: &[Stmt<'_, '_>], name: &str) -> Option<
     for stmt in stmts {
         match &stmt.kind {
             StmtKind::Class(c) if c.name == Some(name) => {
-                return Some(name_range(source, c.name.unwrap()));
+                return Some(name_range(
+                    source,
+                    c.name.expect("match guard ensures Some"),
+                ));
             }
             StmtKind::Interface(i) if i.name == name => {
                 return Some(name_range(source, i.name));

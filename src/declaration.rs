@@ -102,7 +102,10 @@ fn find_any_declaration(
                 return Some(name_range(source, f.name));
             }
             StmtKind::Class(c) if c.name == Some(word) => {
-                return Some(name_range(source, c.name.unwrap()));
+                return Some(name_range(
+                    source,
+                    c.name.expect("match guard ensures Some"),
+                ));
             }
             StmtKind::Class(c) => {
                 for member in c.members.iter() {

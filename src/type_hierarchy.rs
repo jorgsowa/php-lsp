@@ -33,7 +33,7 @@ fn find_type_item(
     for stmt in stmts {
         match &stmt.kind {
             StmtKind::Class(c) if c.name == Some(word) => {
-                let name = c.name.unwrap();
+                let name = c.name.expect("match guard ensures Some");
                 return Some(make_item(source, name, SymbolKind::CLASS, uri));
             }
             StmtKind::Interface(i) if i.name == word => {

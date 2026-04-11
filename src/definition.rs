@@ -70,7 +70,7 @@ fn scan_statements(source: &str, stmts: &[Stmt<'_, '_>], word: &str) -> Option<R
                 return Some(name_range(source, f.name));
             }
             StmtKind::Class(c) if c.name == Some(word) => {
-                let name = c.name.unwrap();
+                let name = c.name.expect("match guard ensures Some");
                 return Some(name_range(source, name));
             }
             StmtKind::Class(c) => {
