@@ -1972,10 +1972,10 @@ mod tests {
 
     #[test]
     fn class_refs_finds_new_and_extends() {
-        let src = "<?php\nclass Child extends Parent {}\n$x = new Parent();";
+        let src = "<?php\nclass Child extends Base {}\n$x = new Base();";
         let doc = parse(src);
         let mut out = vec![];
-        class_refs_in_stmts(&doc.program().stmts, "Parent", &mut out);
+        class_refs_in_stmts(&doc.program().stmts, "Base", &mut out);
         assert!(out.len() >= 2, "expected extends + new, got {}", out.len());
     }
 
