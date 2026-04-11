@@ -54,6 +54,7 @@ use crate::symbols::{document_symbols, resolve_workspace_symbol, workspace_symbo
 use crate::type_action::add_return_type_actions;
 use crate::type_definition::goto_type_definition;
 use crate::type_hierarchy::{prepare_type_hierarchy, subtypes_of, supertypes_of};
+use crate::use_import::{build_use_import_edit, find_fqn_for_class};
 use crate::util::word_at;
 
 /// Per-category diagnostic toggle flags.
@@ -1745,75 +1746,6 @@ fn defer_actions(
         .collect()
 }
 
-/// Find the fully-qualified name for a class with the given short `name` by
-/// walking the ParsedDoc AST. Returns `Namespace\ClassName` when inside a namespace.
-fn find_fqn_for_class(doc: &ParsedDoc, name: &str) -> Option<String> {
-    use php_ast::{NamespaceBody, StmtKind};
-    for stmt in doc.program().stmts.iter() {
-        match &stmt.kind {
-            StmtKind::Class(c) if c.name == Some(name) => {
-                return Some(name.to_string());
-            }
-            StmtKind::Namespace(ns) => {
-                let ns_name = ns.name.as_ref().map(|n| n.to_string_repr().to_string());
-                if let NamespaceBody::Braced(inner) = &ns.body {
-                    for inner_stmt in inner.iter() {
-                        if let StmtKind::Class(c) = &inner_stmt.kind
-                            && c.name == Some(name)
-                        {
-                            return Some(match ns_name {
-                                Some(ref ns) => format!("{ns}\\{name}"),
-                                None => name.to_string(),
-                            });
-                        }
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-    None
-}
-
-/// Build a `WorkspaceEdit` that inserts `use FQN;` near the top of the file.
-fn build_use_import_edit(source: &str, uri: &Url, fqn: &str) -> WorkspaceEdit {
-    use std::collections::HashMap;
-    // Insert after the `<?php` line and any existing `use` / `namespace` lines
-    let insert_line = find_use_insert_line(source);
-    let insert_text = format!("use {fqn};\n");
-    let pos = tower_lsp::lsp_types::Position {
-        line: insert_line,
-        character: 0,
-    };
-    let edit = tower_lsp::lsp_types::TextEdit {
-        range: tower_lsp::lsp_types::Range {
-            start: pos,
-            end: pos,
-        },
-        new_text: insert_text,
-    };
-    let mut changes = HashMap::new();
-    changes.insert(uri.clone(), vec![edit]);
-    WorkspaceEdit {
-        changes: Some(changes),
-        ..Default::default()
-    }
-}
-
-fn find_use_insert_line(source: &str) -> u32 {
-    let mut last_use_or_ns: u32 = 0;
-    for (i, line) in source.lines().enumerate() {
-        let trimmed = line.trim();
-        if trimmed.starts_with("<?php")
-            || trimmed.starts_with("namespace ")
-            || trimmed.starts_with("use ")
-        {
-            last_use_or_ns = i as u32 + 1;
-        }
-    }
-    last_use_or_ns
-}
-
 /// Returns `true` when the identifier at `position` is immediately preceded by `->`,
 /// indicating it is a property or method name in an instance access expression.
 fn is_after_arrow(source: &str, position: Position) -> bool {
@@ -2141,6 +2073,7 @@ async fn scan_workspace(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::use_import::find_use_insert_line;
     use tower_lsp::lsp_types::{Position, Range, Url};
 
     // DiagnosticsConfig::from_value tests
