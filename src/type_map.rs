@@ -219,13 +219,13 @@ fn collect_types_stmts(
                     let class_name = base.rsplit('\\').next().unwrap_or(base).to_string();
                     if let Some(vname) = db.var_name {
                         // `@var Foo $obj` — explicit variable name.
-                        map.insert(format!("${vname}"), class_name);
+                        map.insert(format!("${}", vname.as_str()), class_name);
                     } else if let StmtKind::Expression(e) = &stmt.kind {
                         // `@var Foo` above `$obj = ...` — infer from the LHS.
                         if let ExprKind::Assign(a) = &e.kind
                             && let ExprKind::Variable(vn) = &a.target.kind
                         {
-                            map.insert(format!("${vn}"), class_name);
+                            map.insert(format!("${}", vn.as_str()), class_name);
                         }
                     }
                 }
@@ -355,8 +355,9 @@ fn collect_types_stmts(
                     && let (ExprKind::Variable(var_name), ExprKind::Identifier(class)) =
                         (&b.left.kind, &b.right.kind)
                 {
-                    let var_key = format!("${}", var_name);
+                    let var_key = format!("${}", var_name.as_str());
                     let narrowed = class
+                        .as_str()
                         .trim_start_matches('\\')
                         .rsplit('\\')
                         .next()
@@ -398,11 +399,11 @@ fn collect_types_stmts(
             // foreach ($arr as $item) — propagate element type from $arr[] to $item
             StmtKind::Foreach(f) => {
                 if let ExprKind::Variable(arr_name) = &f.expr.kind {
-                    let elem_key = format!("${}[]", arr_name);
+                    let elem_key = format!("${}[]", arr_name.as_str());
                     if let Some(elem_type) = map.get(&elem_key).cloned()
                         && let ExprKind::Variable(val_name) = &f.value.kind
                     {
-                        map.insert(format!("${}", val_name), elem_type);
+                        map.insert(format!("${}", val_name.as_str()), elem_type);
                     }
                 }
                 collect_types_stmts(
@@ -477,7 +478,8 @@ fn collect_types_expr(
                     if let ExprKind::New(new_expr) = &assign.value.kind
                         && let Some(class_name) = extract_class_name(new_expr.class)
                     {
-                        map.entry(format!("${}", var_name)).or_insert(class_name);
+                        map.entry(format!("${}", var_name.as_str()))
+                            .or_insert(class_name);
                     }
                     collect_types_expr(source, assign.value, map, meta, method_returns);
                     return;
@@ -485,27 +487,27 @@ fn collect_types_expr(
                 if let ExprKind::New(new_expr) = &assign.value.kind
                     && let Some(class_name) = extract_class_name(new_expr.class)
                 {
-                    map.insert(format!("${}", var_name), class_name);
+                    map.insert(format!("${}", var_name.as_str()), class_name);
                 }
                 // $result = $obj->method() — infer result type from method's return type
                 if let ExprKind::MethodCall(mc) = &assign.value.kind
                     && let (ExprKind::Variable(obj_var), ExprKind::Identifier(method_name)) =
                         (&mc.object.kind, &mc.method.kind)
-                    && let Some(obj_class) = map.get(&format!("${}", obj_var)).cloned()
+                    && let Some(obj_class) = map.get(&format!("${}", obj_var.as_str())).cloned()
                     && let Some(class_rets) = method_returns.get(&obj_class)
-                    && let Some(ret_type) = class_rets.get(*method_name)
+                    && let Some(ret_type) = class_rets.get(method_name.as_str())
                 {
-                    map.insert(format!("${}", var_name), ret_type.clone());
+                    map.insert(format!("${}", var_name.as_str()), ret_type.clone());
                 }
                 // PHPStorm meta: `$var = $obj->make(SomeClass::class)`
                 if let Some(meta) = meta
                     && let Some(inferred) = infer_from_meta_method_call(assign.value, map, meta)
                 {
-                    map.insert(format!("${}", var_name), inferred);
+                    map.insert(format!("${}", var_name.as_str()), inferred);
                 }
                 // $result = array_map(fn($x): Foo => ..., $arr) → $result[] = Foo
                 if let Some(elem_type) = extract_array_callback_return_type(assign.value) {
-                    map.insert(format!("${}[]", var_name), elem_type);
+                    map.insert(format!("${}[]", var_name.as_str()), elem_type);
                 }
             }
             collect_types_expr(source, assign.value, map, meta, method_returns);
@@ -514,7 +516,7 @@ fn collect_types_expr(
         // Closure::bind($fn, $obj) → $this maps to $obj's class
         ExprKind::StaticMethodCall(s) => {
             if let ExprKind::Identifier(class) = &s.class.kind
-                && *class == "Closure"
+                && class.as_str() == "Closure"
                 && s.method == "bind"
                 && let Some(obj_arg) = s.args.get(1)
                 && let Some(cls) = resolve_var_type_str(&obj_arg.value, map)
@@ -526,7 +528,7 @@ fn collect_types_expr(
         // $fn->bindTo($obj) or $fn->call($obj) → $this maps to $obj's class
         ExprKind::MethodCall(m) => {
             if let ExprKind::Identifier(method) = &m.method.kind {
-                let mname: &str = method;
+                let mname = method.as_str();
                 if (mname == "bindTo" || mname == "call")
                     && let Some(obj_arg) = m.args.first()
                     && let Some(cls) = resolve_var_type_str(&obj_arg.value, map)
@@ -587,7 +589,7 @@ fn extract_array_callback_return_type(expr: &php_ast::Expr<'_, '_>) -> Option<St
         return None;
     };
     let fn_name = match &call.name.kind {
-        ExprKind::Identifier(n) => *n,
+        ExprKind::Identifier(n) => n.as_str(),
         _ => return None,
     };
     if fn_name != "array_map" && fn_name != "array_filter" {
@@ -626,7 +628,7 @@ fn resolve_var_type_str(
     map: &HashMap<String, String>,
 ) -> Option<String> {
     if let ExprKind::Variable(v) = &expr.kind {
-        map.get(&format!("${}", v)).cloned()
+        map.get(&format!("${}", v.as_str())).cloned()
     } else {
         None
     }
@@ -634,7 +636,7 @@ fn resolve_var_type_str(
 
 fn extract_class_name(expr: &php_ast::Expr<'_, '_>) -> Option<String> {
     match &expr.kind {
-        ExprKind::Identifier(name) => Some(name.to_string()),
+        ExprKind::Identifier(name) => Some(name.as_str().to_string()),
         _ => None,
     }
 }
@@ -652,7 +654,7 @@ fn infer_from_meta_method_call(
     // Resolve the receiver's type.
     let receiver_class = match &m.object.kind {
         ExprKind::Variable(v) => {
-            let key = format!("${}", v);
+            let key = format!("${}", v.as_str());
             var_map.get(&key)?.clone()
         }
         _ => return None,

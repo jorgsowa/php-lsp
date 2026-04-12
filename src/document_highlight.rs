@@ -116,7 +116,10 @@ mod tests {
         let highlights = document_highlights(src, &doc, pos(1, 10));
         for h in &highlights {
             let len = h.range.end.character - h.range.start.character;
-            assert_eq!(len, "greet".len() as u32);
+            assert_eq!(
+                len,
+                "greet".chars().map(|c| c.len_utf16() as u32).sum::<u32>()
+            );
         }
     }
 

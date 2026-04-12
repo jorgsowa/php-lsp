@@ -174,7 +174,7 @@ fn collect_from_expression(expr: &php_ast::Expr<'_, '_>, items: &mut Vec<Complet
     if let ExprKind::Assign(assign) = &expr.kind {
         match &assign.target.kind {
             ExprKind::Variable(name) => {
-                let label = format!("${}", name);
+                let label = format!("${}", name.as_str());
                 if label != "$this" {
                     items.push(CompletionItem {
                         label,
@@ -187,7 +187,7 @@ fn collect_from_expression(expr: &php_ast::Expr<'_, '_>, items: &mut Vec<Complet
             ExprKind::Array(elements) => {
                 for elem in elements.iter() {
                     if let ExprKind::Variable(name) = &elem.value.kind {
-                        let label = format!("${}", name);
+                        let label = format!("${}", name.as_str());
                         if label != "$this" {
                             items.push(CompletionItem {
                                 label,

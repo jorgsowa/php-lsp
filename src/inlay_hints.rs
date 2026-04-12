@@ -134,7 +134,7 @@ fn collect_defs_stmts(stmts: &[Stmt<'_, '_>], map: &mut HashMap<String, FuncDef>
                 if let ExprKind::Assign(assign) = &e.kind
                     && let ExprKind::Variable(var_name) = &assign.target.kind
                 {
-                    let key = format!("${var_name}");
+                    let key = format!("${}", var_name.as_str());
                     match &assign.value.kind {
                         ExprKind::Closure(c) => {
                             let (params, variadic_last) = params_from_list(&c.params);
@@ -266,7 +266,7 @@ fn hints_in_stmt(
             hints_in_expr(source, &f.expr, defs, type_map, range, out);
             // Emit type hint after the value variable, e.g. `foreach ($arr as $item /* : Foo */)`.
             if let ExprKind::Variable(val_name) = &f.value.kind {
-                let key = format!("${val_name}");
+                let key = format!("${}", val_name.as_str());
                 if let Some(ty) = type_map.get(&key) {
                     let pos = offset_to_position(source, f.value.span.end);
                     if pos_in_range(pos, range) {
@@ -278,7 +278,7 @@ fn hints_in_stmt(
             if let Some(key_expr) = &f.key
                 && let ExprKind::Variable(key_name) = &key_expr.kind
             {
-                let key = format!("${key_name}");
+                let key = format!("${}", key_name.as_str());
                 if let Some(ty) = type_map.get(&key) {
                     let pos = offset_to_position(source, key_expr.span.end);
                     if pos_in_range(pos, range) {
@@ -315,7 +315,7 @@ fn hints_in_expr(
             // Look up by identifier name or by variable name (for closure vars like `$fn(...)`).
             let key: Option<String> = ident_name(f.name).map(|n| n.to_string()).or_else(|| {
                 if let ExprKind::Variable(n) = &f.name.kind {
-                    Some(format!("${n}"))
+                    Some(format!("${}", n.as_str()))
                 } else {
                     None
                 }

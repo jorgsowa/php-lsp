@@ -378,7 +378,7 @@ fn var_refs_in_stmt(stmt: &Stmt<'_, '_>, var_name: &str, out: &mut Vec<Span>) {
 fn var_refs_in_expr(expr: &Expr<'_, '_>, var_name: &str, out: &mut Vec<Span>) {
     match &expr.kind {
         ExprKind::Variable(name) => {
-            if name.as_ref() == var_name {
+            if name.as_str() == var_name {
                 out.push(expr.span);
             }
         }
@@ -867,7 +867,7 @@ fn args(source: &str, arg_list: &[php_ast::Arg<'_, '_>], word: &str, out: &mut V
 pub fn refs_in_expr(source: &str, expr: &Expr<'_, '_>, word: &str, out: &mut Vec<Span>) {
     match &expr.kind {
         ExprKind::Identifier(name) => {
-            if *name == word {
+            if name.as_str() == word {
                 out.push(expr.span);
             }
         }
@@ -1068,7 +1068,7 @@ fn function_refs_in_expr(expr: &Expr<'_, '_>, name: &str, out: &mut Vec<Span>) {
         // The core match: a free function call whose callee is a bare identifier.
         ExprKind::FunctionCall(f) => {
             if let ExprKind::Identifier(id) = &f.name.kind
-                && *id == name
+                && id.as_str() == name
             {
                 out.push(f.name.span);
             }
@@ -1259,7 +1259,7 @@ fn method_refs_in_expr(expr: &Expr<'_, '_>, name: &str, out: &mut Vec<Span>) {
             method_refs_in_expr(m.object, name, out);
             // Collect the method name span if it matches.
             if let ExprKind::Identifier(id) = &m.method.kind
-                && *id == name
+                && id.as_str() == name
             {
                 out.push(m.method.span);
             }
@@ -1270,7 +1270,7 @@ fn method_refs_in_expr(expr: &Expr<'_, '_>, name: &str, out: &mut Vec<Span>) {
         ExprKind::NullsafeMethodCall(m) => {
             method_refs_in_expr(m.object, name, out);
             if let ExprKind::Identifier(id) = &m.method.kind
-                && *id == name
+                && id.as_str() == name
             {
                 out.push(m.method.span);
             }

@@ -187,7 +187,8 @@ fn push_name(out: &mut Vec<RawToken>, source: &str, name: &str, token_type: u32,
 fn push_attributes(out: &mut Vec<RawToken>, source: &str, attrs: &[Attribute<'_, '_>]) {
     for attr in attrs.iter() {
         let span = attr.name.span();
-        let len = span.end - span.start;
+        let segment = &source[span.start as usize..span.end as usize];
+        let len: u32 = segment.chars().map(|c| c.len_utf16() as u32).sum();
         push_at(out, source, span.start, len, TT_CLASS, 0);
     }
 }
@@ -347,7 +348,8 @@ fn push_type_hint(out: &mut Vec<RawToken>, source: &str, hint: &TypeHint<'_, '_>
     match &hint.kind {
         TypeHintKind::Named(name) => {
             let span = name.span();
-            let len = span.end - span.start;
+            let segment = &source[span.start as usize..span.end as usize];
+            let len: u32 = segment.chars().map(|c| c.len_utf16() as u32).sum();
             push_at(out, source, span.start, len, TT_TYPE, 0);
         }
         TypeHintKind::Keyword(builtin, span) => {
@@ -1178,6 +1180,56 @@ mod tests {
             tokens.iter().any(|t| t.token_type == TT_TYPE),
             "expected TYPE token for method return type, got {:?}",
             tokens
+        );
+    }
+
+    /// `é` (U+00E9) encodes as 2 UTF-8 bytes but 1 UTF-16 code unit.
+    /// A named type hint `Héros` has byte-length 6 but UTF-16 length 5.
+    /// Verify the token's `length` matches the UTF-16 count, not the byte count.
+    #[test]
+    fn named_type_hint_with_multibyte_chars_uses_utf16_length() {
+        // "Héros": H(1) é(2) r(1) o(1) s(1) = 6 bytes, 5 UTF-16 units
+        let src = "<?php\nfunction greet(Héros $h): void {}";
+        let d = doc(src);
+        let tokens = semantic_tokens(src, &d);
+        let type_token = tokens
+            .iter()
+            .find(|t| t.token_type == TT_TYPE)
+            .expect("expected a TT_TYPE token for the named type hint");
+        let name = "Héros";
+        let utf16_len: u32 = name.chars().map(|c| c.len_utf16() as u32).sum();
+        let byte_len = name.len() as u32;
+        assert_ne!(
+            utf16_len, byte_len,
+            "test requires a name where UTF-16 ≠ byte length"
+        );
+        assert_eq!(
+            type_token.length, utf16_len,
+            "token length should be UTF-16 units ({utf16_len}), not byte length ({byte_len})"
+        );
+    }
+
+    /// Same check for attribute names: `#[Routé]` has a multibyte name.
+    /// `Routé`: R(1) o(1) u(1) t(1) é(2) = 6 bytes, 5 UTF-16 units.
+    #[test]
+    fn attribute_name_with_multibyte_chars_uses_utf16_length() {
+        let src = "<?php\n#[Routé(\"/home\")]\nfunction index() {}";
+        let d = doc(src);
+        let tokens = semantic_tokens(src, &d);
+        let attr_token = tokens
+            .iter()
+            .find(|t| t.token_type == TT_CLASS && t.token_modifiers_bitset == 0)
+            .expect("expected a bare TT_CLASS token for the attribute name");
+        let name = "Routé";
+        let utf16_len: u32 = name.chars().map(|c| c.len_utf16() as u32).sum();
+        let byte_len = name.len() as u32;
+        assert_ne!(
+            utf16_len, byte_len,
+            "test requires a name where UTF-16 ≠ byte length"
+        );
+        assert_eq!(
+            attr_token.length, utf16_len,
+            "token length should be UTF-16 units ({utf16_len}), not byte length ({byte_len})"
         );
     }
 }
