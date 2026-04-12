@@ -4,9 +4,11 @@ Options are passed via `initializationOptions` in your editor's LSP configuratio
 
 ## Options
 
+All options are optional.
+
 | Option | Type | Default | Description |
 |---|---|---|---|
-| `phpVersion` | `string` | `"8.3"` | PHP version used for version-gated diagnostics and completions. Accepted values: `"7.4"`, `"8.0"`, `"8.1"`, `"8.2"`, `"8.3"`. |
+| `phpVersion` | `string` | auto-detected | PHP version used for version-gated diagnostics and completions. Accepted values: `"7.4"`, `"8.0"`, `"8.1"`, `"8.2"`, `"8.3"`, `"8.4"`, `"8.5"`. When omitted, the server auto-detects from `composer.json` (`config.platform.php`, then `require.php`), then from the `php` binary on `$PATH`, and falls back to `"8.5"`. |
 | `excludePaths` | `string[]` | `[]` | Glob patterns for paths to skip during workspace indexing. Matched against paths relative to the workspace root. |
 | `diagnostics` | `object` | see below | Per-category diagnostic toggles. |
 

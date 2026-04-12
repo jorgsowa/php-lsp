@@ -71,7 +71,7 @@ Or add to `.cursor/mcp.json` in your project root:
       "command": "/usr/local/bin/php-lsp",
       "filetypes": ["php"],
       "initializationOptions": {
-        "phpVersion": "8.3"
+        "phpVersion": "8.5"
       }
     }
   }
@@ -94,7 +94,7 @@ Add to `~/.config/zed/settings.json`:
         "path": "/usr/local/bin/php-lsp"
       },
       "initialization_options": {
-        "phpVersion": "8.3",
+        "phpVersion": "8.5",
         "excludePaths": []
       }
     }
@@ -124,7 +124,7 @@ Available settings (VS Code `settings.json`):
 | Setting | Default | Description |
 |---|---|---|
 | `php-lsp.serverPath` | *(auto)* | Path to the `php-lsp` binary; leave empty for auto-detection |
-| `php-lsp.phpVersion` | `8.3` | PHP version (`7.4` – `8.3`) |
+| `php-lsp.phpVersion` | `8.5` | PHP version (`7.4` – `8.5`) |
 | `php-lsp.excludePaths` | `[]` | Glob patterns to exclude from the workspace |
 | `php-lsp.diagnostics.*` | `true` | Per-diagnostic toggles (undefined variables/functions/classes, arity errors, type mismatches, deprecated calls, duplicate declarations) |
 
@@ -144,7 +144,7 @@ return {
   root_markers = { 'composer.json', '.git' },
   workspace_required = true,
   init_options = {
-    phpVersion = '8.3',
+    phpVersion = '8.5',
     excludePaths = {},
   },
 }
@@ -171,7 +171,7 @@ vim.api.nvim_create_autocmd('FileType', {
       cmd = { '/usr/local/bin/php-lsp' },
       root_dir = vim.fs.root(0, { 'composer.json', '.git' }),
       init_options = {
-        phpVersion = '8.3',
+        phpVersion = '8.5',
         excludePaths = {},
       },
     })
@@ -198,7 +198,7 @@ vim.api.nvim_create_autocmd('FileType', {
 
 ```json
 {
-  "phpVersion": "8.3",
+  "phpVersion": "8.5",
   "excludePaths": ["cache/*", "storage/*"]
 }
 ```

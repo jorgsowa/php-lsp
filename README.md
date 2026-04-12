@@ -68,6 +68,8 @@ Pass options via `initializationOptions`:
 }
 ```
 
+`phpVersion` is optional — the server auto-detects it from `composer.json` (`config.platform.php`, then `require.php`) and falls back to the `php` binary on `$PATH`. Set it explicitly only to override.
+
 See **[docs/configuration.md](docs/configuration.md)** for all options including per-diagnostic toggles.
 
 ---
