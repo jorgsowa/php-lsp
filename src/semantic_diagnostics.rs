@@ -1,9 +1,19 @@
 /// Semantic diagnostics bridge.
 ///
-/// Delegates all analysis to the `mir-analyzer` crate and converts its `Issue`
-/// type into the `tower-lsp` `Diagnostic` type expected by the LSP backend.
+/// Uses mago (linter + semantics checker) to analyse PHP source and converts
+/// its `Issue` type into the `tower-lsp` `Diagnostic` type expected by the LSP backend.
+use std::borrow::Cow;
 use std::sync::Arc;
 
+use bumpalo::Bump;
+use mago_database::file::{File, FileType};
+use mago_linter::Linter;
+use mago_linter::settings::Settings as LinterSettings;
+use mago_names::resolver::NameResolver;
+use mago_php_version::PHPVersion;
+use mago_reporting::{Issue, Level};
+use mago_semantics::SemanticsChecker;
+use mago_syntax::parser::parse_file;
 use php_ast::{ClassMemberKind, EnumMemberKind, ExprKind, NamespaceBody, Stmt, StmtKind};
 use tower_lsp::lsp_types::{Diagnostic, DiagnosticSeverity, NumberOrString, Position, Range, Url};
 
@@ -11,87 +21,91 @@ use crate::ast::{ParsedDoc, offset_to_position};
 use crate::backend::DiagnosticsConfig;
 use crate::docblock::{docblock_before, parse_docblock};
 
-/// Run semantic checks on `doc` using the backend's persistent codebase.
-/// The codebase is updated incrementally: the current file's definitions are
-/// evicted and re-collected, then `finalize()` rebuilds inheritance tables.
+/// Run semantic checks on `doc` using mago's linter and semantics checker.
 ///
-/// `php_version` is a version string like `"8.1"` sourced from `LspConfig`.
-/// It is threaded through here so callers are already wired correctly once
-/// `mir_analyzer` gains version-gating support.
-///
-/// TODO: pass `php_version` to `mir_analyzer` once it exposes a version API.
+/// `php_version` is an optional version string like `"8.1"` sourced from `LspConfig`.
 pub fn semantic_diagnostics(
     uri: &Url,
     doc: &ParsedDoc,
-    codebase: &mir_codebase::Codebase,
     cfg: &DiagnosticsConfig,
-    _php_version: Option<&str>,
+    php_version: Option<&str>,
 ) -> Vec<Diagnostic> {
     if !cfg.enabled {
         return vec![];
     }
 
-    let file: Arc<str> = Arc::from(uri.as_str());
+    let source = doc.source();
 
-    // Incremental update: evict stale definitions for this file, re-collect,
-    // and rebuild inheritance tables.
-    codebase.remove_file_definitions(&file);
-    let source_map = php_rs_parser::source_map::SourceMap::new(doc.source());
-    let collector = mir_analyzer::collector::DefinitionCollector::new(
-        codebase,
-        file.clone(),
-        doc.source(),
-        &source_map,
-    );
-    let collector_issues = collector.collect(doc.program());
-    codebase.finalize();
+    // Build a mago `File` from the source text (ephemeral — no filesystem path needed).
+    let file_name: Cow<'static, str> = Cow::Owned(uri.as_str().to_string());
+    let contents: Cow<'static, str> = Cow::Owned(source.to_string());
+    let mago_file = File::new(file_name, FileType::Host, None, contents);
 
-    // Pass 2: analyse function/method bodies in the current document.
-    let mut issue_buffer = mir_issues::IssueBuffer::new();
-    let mut symbols = Vec::new();
-    let mut analyzer = mir_analyzer::stmt::StatementsAnalyzer::new(
-        codebase,
-        file.clone(),
-        doc.source(),
-        &source_map,
-        &mut issue_buffer,
-        &mut symbols,
-    );
-    let mut ctx = mir_analyzer::context::Context::new();
-    analyzer.analyze_stmts(&doc.program().stmts, &mut ctx);
+    // Parse with mago's own parser (required by mago-names / mago-semantics / mago-linter).
+    let arena = Bump::new();
+    let program = parse_file(&arena, &mago_file);
 
-    collector_issues
+    // Resolve names (use imports → FQNs).
+    let resolver = NameResolver::new(&arena);
+    let resolved_names = resolver.resolve(program);
+
+    // Determine PHP version from config (default: 8.4).
+    let php_version = parse_php_version(php_version);
+
+    // Run semantics checker.
+    let sem_checker = SemanticsChecker::new(php_version);
+    let sem_issues = sem_checker.check(&mago_file, program, &resolved_names);
+
+    // Run linter with default settings.
+    let linter_settings = LinterSettings::default();
+    let linter = Linter::new(&arena, &linter_settings, None, false);
+    let lint_issues = linter.lint(&mago_file, program, &resolved_names);
+
+    // Merge, filter, and convert to LSP Diagnostics.
+    sem_issues
         .into_iter()
-        .chain(issue_buffer.into_issues())
-        .filter(|i| !i.suppressed)
+        .chain(lint_issues)
         .filter(|i| issue_passes_filter(i, cfg))
-        .map(|i| to_lsp_diagnostic(i, uri))
+        .filter_map(|i| to_lsp_diagnostic(i, source))
         .collect()
 }
 
-/// Returns `true` if the mir-analyzer issue is allowed through by the config.
-fn issue_passes_filter(issue: &mir_issues::Issue, cfg: &DiagnosticsConfig) -> bool {
-    use mir_issues::IssueKind;
-    match &issue.kind {
-        IssueKind::UndefinedVariable { .. } | IssueKind::PossiblyUndefinedVariable { .. } => {
-            cfg.undefined_variables
-        }
-        IssueKind::UndefinedFunction { .. } | IssueKind::UndefinedMethod { .. } => {
-            cfg.undefined_functions
-        }
-        IssueKind::UndefinedClass { .. } => cfg.undefined_classes,
-        IssueKind::InvalidReturnType { .. }
-        | IssueKind::InvalidArgument { .. }
-        | IssueKind::NullMethodCall { .. }
-        | IssueKind::NullPropertyFetch { .. }
-        | IssueKind::NullableReturnStatement { .. }
-        | IssueKind::InvalidPropertyAssignment { .. }
-        | IssueKind::InvalidOperand { .. } => cfg.type_errors,
-        IssueKind::DeprecatedMethod { .. } | IssueKind::DeprecatedClass { .. } => {
-            cfg.deprecated_calls
-        }
-        _ => true,
+/// Parse a PHP version string like `"8.1"` into a `PHPVersion`.
+/// Falls back to `PHPVersion::PHP84` if the string is absent or unrecognised.
+fn parse_php_version(ver: Option<&str>) -> PHPVersion {
+    let Some(s) = ver else {
+        return PHPVersion::PHP84;
+    };
+    let mut parts = s.splitn(2, '.');
+    let major: u32 = parts.next().and_then(|p| p.parse().ok()).unwrap_or(8);
+    let minor: u32 = parts.next().and_then(|p| p.parse().ok()).unwrap_or(4);
+    PHPVersion::new(major, minor, 0)
+}
+
+/// Returns `true` if the mago issue is allowed through by the config.
+fn issue_passes_filter(issue: &Issue, cfg: &DiagnosticsConfig) -> bool {
+    let code = issue.code.as_deref().unwrap_or("");
+    // Map mago issue codes to config flags.
+    if code.contains("undefined_variable") || code.contains("UndefinedVariable") {
+        return cfg.undefined_variables;
     }
+    if code.contains("undefined_function") || code.contains("UndefinedFunction") {
+        return cfg.undefined_functions;
+    }
+    if code.contains("undefined_class") || code.contains("UndefinedClass") {
+        return cfg.undefined_classes;
+    }
+    if code.contains("type_error")
+        || code.contains("TypeError")
+        || code.contains("invalid_return")
+        || code.contains("InvalidReturn")
+    {
+        return cfg.type_errors;
+    }
+    if code.contains("deprecated") || code.contains("Deprecated") {
+        return cfg.deprecated_calls;
+    }
+    true
 }
 
 /// Check for deprecated function/method calls and emit Warning diagnostics.
@@ -461,32 +475,36 @@ fn is_identifier_char(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
 }
 
-fn to_lsp_diagnostic(issue: mir_issues::Issue, _uri: &Url) -> Diagnostic {
-    // mir-analyzer uses 1-based line numbers; LSP uses 0-based.
-    let line = issue.location.line.saturating_sub(1);
-    let col_start = issue.location.col_start as u32;
-    let col_end = issue.location.col_end as u32;
-    Diagnostic {
-        range: Range {
-            start: Position {
-                line,
-                character: col_start,
-            },
-            end: Position {
-                line,
-                character: col_end.max(col_start + 1),
-            },
-        },
-        severity: Some(match issue.severity {
-            mir_issues::Severity::Error => DiagnosticSeverity::ERROR,
-            mir_issues::Severity::Warning => DiagnosticSeverity::WARNING,
-            mir_issues::Severity::Info => DiagnosticSeverity::INFORMATION,
-        }),
-        code: Some(NumberOrString::String(issue.kind.name().to_string())),
+/// Convert a mago `Issue` to an LSP `Diagnostic`.
+/// Returns `None` if the issue has no primary span (can't locate it in source).
+fn to_lsp_diagnostic(issue: Issue, source: &str) -> Option<Diagnostic> {
+    // Use the primary annotation span to get byte offsets.
+    let span = issue.primary_span()?;
+    let start = offset_to_position(source, span.start.offset);
+    let end = offset_to_position(source, span.end.offset);
+    // Ensure end >= start (mago spans are always start < end, but guard anyway).
+    let end =
+        if end.line > start.line || (end.line == start.line && end.character > start.character) {
+            end
+        } else {
+            Position {
+                line: start.line,
+                character: start.character + 1,
+            }
+        };
+    let severity = Some(match issue.level {
+        Level::Error => DiagnosticSeverity::ERROR,
+        Level::Warning => DiagnosticSeverity::WARNING,
+        Level::Help | Level::Note => DiagnosticSeverity::INFORMATION,
+    });
+    Some(Diagnostic {
+        range: Range { start, end },
+        severity,
+        code: issue.code.map(NumberOrString::String),
         source: Some("php-lsp".to_string()),
-        message: issue.kind.message(),
+        message: issue.message,
         ..Default::default()
-    }
+    })
 }
 
 #[cfg(test)]
@@ -881,29 +899,23 @@ mod tests {
     }
 
     #[test]
-    fn to_lsp_diagnostic_sets_code_to_issue_kind_name() {
-        use mir_issues::{Issue, IssueKind, Location};
-        use std::sync::Arc;
-        use tower_lsp::lsp_types::{NumberOrString, Url};
+    fn to_lsp_diagnostic_sets_code_from_mago_issue() {
+        use mago_database::file::FileId;
+        use mago_reporting::{Annotation, Issue, Level};
+        use mago_span::{Position, Span};
+        use tower_lsp::lsp_types::NumberOrString;
 
-        let uri = Url::parse("file:///test.php").unwrap();
-        let location = Location {
-            file: Arc::from("file:///test.php"),
-            line: 1,
-            col_start: 0,
-            col_end: 3,
-        };
-        let issue = Issue::new(
-            IssueKind::UndefinedClass {
-                name: "Foo".to_string(),
-            },
-            location,
-        );
-        let diag = to_lsp_diagnostic(issue, &uri);
+        let source = "<?php\nclass Foo {}";
+        let file_id = FileId::new("test.php");
+        let span = Span::new(file_id, Position::new(6), Position::new(9));
+        let issue = Issue::new(Level::Error, "Undefined class Foo")
+            .with_code("undefined_class")
+            .with_annotation(Annotation::primary(span));
+        let diag = to_lsp_diagnostic(issue, source).expect("expected a diagnostic");
         assert_eq!(
             diag.code,
-            Some(NumberOrString::String("UndefinedClass".to_string())),
-            "diagnostic code must be the IssueKind name so code actions can match by type"
+            Some(NumberOrString::String("undefined_class".to_string())),
+            "diagnostic code must be set from the mago issue code"
         );
         assert!(
             diag.message.contains("Foo"),
