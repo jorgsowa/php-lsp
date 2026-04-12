@@ -584,6 +584,30 @@ mod tests {
     }
 
     #[test]
+    fn param_description_shown_in_parameter_info() {
+        // @param descriptions from docblocks must survive the parse_docblock()
+        // delegation to mir_analyzer and appear in signature-help parameter docs.
+        let src = "<?php\n/**\n * @param string $name The user's name\n * @param int $times How many times to greet\n */\nfunction greet(string $name, int $times): void {}\ngreet(";
+        let doc = ParsedDoc::parse(src.to_string());
+        let result = signature_help(src, &doc, pos(6, 6));
+        let sh = result.expect("expected signature help");
+        let params = sh.signatures[0]
+            .parameters
+            .as_ref()
+            .expect("expected parameters");
+        assert_eq!(params.len(), 2, "expected 2 parameters");
+        let first_doc = params[0]
+            .documentation
+            .as_ref()
+            .expect("first param should have documentation from @param description");
+        assert!(
+            matches!(first_doc, Documentation::String(s) if s.contains("user's name")),
+            "@param description should be forwarded to parameter documentation, got: {:?}",
+            first_doc
+        );
+    }
+
+    #[test]
     fn method_call_signature_via_function_lookup() {
         // A method `process` defined in the current doc should be found by
         // signature_help when the cursor is inside `process(`.
