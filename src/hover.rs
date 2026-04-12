@@ -1129,6 +1129,56 @@ mod tests {
     }
 
     #[test]
+    fn hover_on_property_with_var_tag_shows_type_annotation() {
+        // A property with only `@var TypeHint` (no free-text description) must still
+        // surface the @var annotation in the hover — it was previously swallowed because
+        // to_markdown() never rendered var_type.
+        let src = "<?php\nclass User {\n    /** @var string */\n    public $name;\n}\n$u = new User();\n$u->name";
+        let doc = ParsedDoc::parse(src.to_string());
+        let h = hover_at(src, &doc, &[], pos(6, 5));
+        assert!(h.is_some(), "expected hover on @var-only property");
+        let text = match h.unwrap().contents {
+            HoverContents::Markup(m) => m.value,
+            _ => String::new(),
+        };
+        assert!(
+            text.contains("@var"),
+            "should show @var annotation, got: {}",
+            text
+        );
+        assert!(
+            text.contains("string"),
+            "should show var type, got: {}",
+            text
+        );
+    }
+
+    #[test]
+    fn hover_on_property_with_var_tag_and_description() {
+        let src = "<?php\nclass User {\n    /** @var string The display name. */\n    public $name;\n}\n$u = new User();\n$u->name";
+        let doc = ParsedDoc::parse(src.to_string());
+        let h = hover_at(src, &doc, &[], pos(6, 5));
+        assert!(
+            h.is_some(),
+            "expected hover on property with @var description"
+        );
+        let text = match h.unwrap().contents {
+            HoverContents::Markup(m) => m.value,
+            _ => String::new(),
+        };
+        assert!(
+            text.contains("@var"),
+            "should show @var annotation, got: {}",
+            text
+        );
+        assert!(
+            text.contains("The display name"),
+            "should show @var description, got: {}",
+            text
+        );
+    }
+
+    #[test]
     fn hover_on_this_property_shows_type() {
         let src = "<?php\nclass Counter {\n    public int $count = 0;\n    public function increment(): void {\n        $this->count;\n    }\n}";
         let doc = ParsedDoc::parse(src.to_string());
