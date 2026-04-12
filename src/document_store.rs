@@ -1,7 +1,8 @@
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
 use dashmap::DashMap;
+use php_ast::{NamespaceBody, StmtKind};
 use tower_lsp::lsp_types::{Diagnostic, SemanticToken, Url};
 
 use crate::ast::ParsedDoc;
@@ -30,6 +31,8 @@ pub struct DocumentStore {
     /// Cached semantic tokens per document: (result_id, tokens).
     /// Used to compute incremental deltas for `textDocument/semanticTokens/full/delta`.
     token_cache: DashMap<Url, (String, Vec<SemanticToken>)>,
+    /// Maps file URI → (alias → FQN) built from `use` statements in each parsed document.
+    pub file_imports: DashMap<Url, HashMap<String, String>>,
 }
 
 impl DocumentStore {
@@ -38,6 +41,7 @@ impl DocumentStore {
             map: DashMap::new(),
             indexed_order: Mutex::new(VecDeque::new()),
             token_cache: DashMap::new(),
+            file_imports: DashMap::new(),
         }
     }
 
@@ -66,6 +70,8 @@ impl DocumentStore {
         if let Some(mut entry) = self.map.get_mut(uri)
             && entry.text_version == version
         {
+            let imports = build_file_imports(&doc);
+            self.file_imports.insert(uri.clone(), imports);
             entry.doc = Arc::new(doc);
             entry.diagnostics = diagnostics;
             return true;
@@ -94,6 +100,8 @@ impl DocumentStore {
             return;
         }
         let (doc, diagnostics) = parse_document(text);
+        let imports = build_file_imports(&doc);
+        self.file_imports.insert(uri.clone(), imports);
         self.map.insert(
             uri.clone(),
             Document {
@@ -133,6 +141,7 @@ impl DocumentStore {
     pub fn remove(&self, uri: &Url) {
         self.map.remove(uri);
         self.token_cache.remove(uri);
+        self.file_imports.remove(uri);
     }
 
     /// Cache the semantic tokens computed for a delta response.
@@ -192,6 +201,39 @@ impl DocumentStore {
             .filter(|e| e.key() != uri)
             .map(|e| (e.key().clone(), e.value().doc.clone()))
             .collect()
+    }
+}
+
+/// Build an alias→FQN map from `use` statements in `doc`.
+///
+/// `use App\Services\Mailer;`         → `{"Mailer" => "App\\Services\\Mailer"}`
+/// `use App\Services\Mailer as Mail;` → `{"Mail"   => "App\\Services\\Mailer"}`
+fn build_file_imports(doc: &ParsedDoc) -> HashMap<String, String> {
+    let mut map = HashMap::new();
+    collect_use_stmts(&doc.program().stmts, &mut map);
+    map
+}
+
+fn collect_use_stmts(stmts: &[php_ast::Stmt<'_, '_>], map: &mut HashMap<String, String>) {
+    for stmt in stmts {
+        match &stmt.kind {
+            StmtKind::Use(u) => {
+                for item in u.uses.iter() {
+                    let fqn = item.name.to_string_repr().replace('/', "\\");
+                    let alias = item
+                        .alias
+                        .map(|a| a.to_string())
+                        .unwrap_or_else(|| fqn.rsplit('\\').next().unwrap_or(&fqn).to_string());
+                    map.insert(alias, fqn);
+                }
+            }
+            StmtKind::Namespace(ns) => {
+                if let NamespaceBody::Braced(inner) = &ns.body {
+                    collect_use_stmts(inner, map);
+                }
+            }
+            _ => {}
+        }
     }
 }
 
