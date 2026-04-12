@@ -19,6 +19,8 @@ pub struct Docblock {
     pub var_type: Option<String>,
     /// Variable name from `@var TypeHint $varName`, if present.
     pub var_name: Option<String>,
+    /// Free-text description after the type in `@var TypeHint description`.
+    pub var_description: Option<String>,
     /// `@deprecated  message`  — `Some("")` when present without a message.
     pub deprecated: Option<String>,
     /// `@throws  ClassName  description`
@@ -108,6 +110,15 @@ impl Docblock {
             out.push_str(&self.description);
             out.push_str("\n\n");
         }
+        if let Some(vt) = &self.var_type {
+            out.push_str(&format!("**@var** `{}`", vt));
+            if let Some(vd) = &self.var_description
+                && !vd.is_empty()
+            {
+                out.push_str(&format!(" — {}", vd));
+            }
+            out.push('\n');
+        }
         if let Some(ret) = &self.return_type {
             out.push_str(&format!("**@return** `{}`", ret.type_hint));
             if !ret.description.is_empty() {
@@ -166,6 +177,7 @@ pub fn parse_docblock(raw: &str) -> Docblock {
     let mut param_descs: HashMap<String, String> = HashMap::new();
     let mut return_desc = String::new();
     let mut throws_descs: Vec<String> = Vec::new();
+    let mut var_desc: Option<String> = None;
 
     for tag in &raw_doc.tags {
         match tag {
@@ -195,6 +207,12 @@ pub fn parse_docblock(raw: &str) -> Docblock {
                             .unwrap_or_default(),
                     );
                 }
+            }
+            PhpDocTag::Var {
+                description: Some(d),
+                ..
+            } => {
+                var_desc = Some(d.to_string());
             }
             _ => {}
         }
@@ -278,6 +296,7 @@ pub fn parse_docblock(raw: &str) -> Docblock {
         return_type,
         var_type: mir.var_type.as_ref().map(|u| u.to_string()),
         var_name: mir.var_name.clone(),
+        var_description: var_desc,
         deprecated,
         throws,
         see: mir.see.clone(),
@@ -367,6 +386,58 @@ mod tests {
         let raw = "/** @var string */";
         let db = parse_docblock(raw);
         assert_eq!(db.var_type.as_deref(), Some("string"));
+    }
+
+    #[test]
+    fn parses_var_tag_with_description() {
+        let raw = "/** @var string The user's name */";
+        let db = parse_docblock(raw);
+        assert_eq!(db.var_type.as_deref(), Some("string"));
+        assert_eq!(db.var_description.as_deref(), Some("The user's name"));
+    }
+
+    #[test]
+    fn to_markdown_shows_var_type() {
+        let db = Docblock {
+            var_type: Some("string".to_string()),
+            ..Default::default()
+        };
+        let md = db.to_markdown();
+        assert!(
+            md.contains("@var"),
+            "expected @var in markdown, got: {}",
+            md
+        );
+        assert!(
+            md.contains("string"),
+            "expected type in markdown, got: {}",
+            md
+        );
+    }
+
+    #[test]
+    fn to_markdown_shows_var_type_with_description() {
+        let db = Docblock {
+            var_type: Some("string".to_string()),
+            var_description: Some("The user's name".to_string()),
+            ..Default::default()
+        };
+        let md = db.to_markdown();
+        assert!(
+            md.contains("@var"),
+            "expected @var in markdown, got: {}",
+            md
+        );
+        assert!(
+            md.contains("string"),
+            "expected type in markdown, got: {}",
+            md
+        );
+        assert!(
+            md.contains("The user's name"),
+            "expected description in markdown, got: {}",
+            md
+        );
     }
 
     #[test]
