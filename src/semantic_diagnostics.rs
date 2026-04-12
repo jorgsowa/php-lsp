@@ -398,11 +398,24 @@ fn collect_duplicate_decls(
                 format!("{}\\{}", active_ns, name)
             };
             if seen.insert(key, ()).is_some() {
-                let pos = crate::ast::offset_to_position(source, span_start);
+                // Find the byte offset of the actual name by searching forward from span_start.
+                // The span_start points to keywords like "class", "function", etc.,
+                // so we need to find where the identifier name appears.
+                let name_byte_offset = find_name_offset(&source[span_start as usize..], name)
+                    .map(|off| span_start + off as u32)
+                    .unwrap_or(span_start);
+
+                let start_pos = crate::ast::offset_to_position(source, name_byte_offset);
+                // Calculate end position by converting UTF-8 character length to UTF-16 code units
+                let name_utf16_len = name.chars().map(|c| c.len_utf16() as u32).sum::<u32>();
+                let end_pos = Position {
+                    line: start_pos.line,
+                    character: start_pos.character + name_utf16_len,
+                };
                 diags.push(Diagnostic {
                     range: Range {
-                        start: pos,
-                        end: pos,
+                        start: start_pos,
+                        end: end_pos,
                     },
                     severity: Some(DiagnosticSeverity::WARNING),
                     message: format!(
@@ -414,6 +427,31 @@ fn collect_duplicate_decls(
             }
         }
     }
+}
+
+/// Find the byte offset of an identifier name within a source slice.
+/// Searches for word boundary matches (not substring matches).
+fn find_name_offset(source: &str, name: &str) -> Option<usize> {
+    let bytes = source.as_bytes();
+    for i in 0..source.len() {
+        if source[i..].starts_with(name) {
+            // Check word boundary before
+            let before_ok = i == 0 || !is_identifier_char(bytes[i - 1] as char);
+            // Check word boundary after
+            let after_idx = i + name.len();
+            let after_ok =
+                after_idx >= source.len() || !is_identifier_char(bytes[after_idx] as char);
+            if before_ok && after_ok {
+                return Some(i);
+            }
+        }
+    }
+    None
+}
+
+/// Check if a character is valid in a PHP identifier.
+fn is_identifier_char(c: char) -> bool {
+    c.is_alphanumeric() || c == '_'
 }
 
 fn to_lsp_diagnostic(issue: mir_issues::Issue, _uri: &Url) -> Diagnostic {
@@ -723,6 +761,116 @@ mod tests {
             diags
         );
         assert!(diags[0].message.contains("Foo"));
+    }
+
+    #[test]
+    fn duplicate_declaration_range_spans_full_name() {
+        // Duplicate declaration diagnostic range should span the entire name, not just first character.
+        let src = "<?php\nclass Foo {}\nclass Foo {}";
+        let doc = ParsedDoc::parse(src.to_string());
+        let diags = duplicate_declaration_diagnostics(src, &doc, &DiagnosticsConfig::default());
+        assert_eq!(diags.len(), 1, "expected exactly 1 duplicate diagnostic");
+
+        let d = &diags[0];
+        let range_len = d.range.end.character - d.range.start.character;
+        let expected_len = "Foo".chars().map(|c| c.len_utf16() as u32).sum::<u32>();
+        assert_eq!(
+            range_len, expected_len,
+            "range length {} should match 'Foo' length {}",
+            range_len, expected_len
+        );
+
+        // Verify the range actually points to "Foo", not "class"
+        // "Foo" appears at character position 6 on line 2: "class Foo {}"
+        //                                          012345678...
+        assert_eq!(
+            d.range.start.character, 6,
+            "range should start at 'F' in 'Foo'"
+        );
+        assert_eq!(
+            d.range.end.character, 9,
+            "range should end after 'o' in 'Foo'"
+        );
+    }
+
+    #[test]
+    fn duplicate_function_declaration_range_spans_name() {
+        // Function duplicate should also span the full function name.
+        let src = "<?php\nfunction doWork() {}\nfunction doWork() {}";
+        let doc = ParsedDoc::parse(src.to_string());
+        let diags = duplicate_declaration_diagnostics(src, &doc, &DiagnosticsConfig::default());
+        assert_eq!(diags.len(), 1, "expected exactly 1 duplicate diagnostic");
+
+        let d = &diags[0];
+        let range_len = d.range.end.character - d.range.start.character;
+        let expected_len = "doWork".chars().map(|c| c.len_utf16() as u32).sum::<u32>();
+        assert_eq!(
+            range_len, expected_len,
+            "range length {} should match 'doWork' length {}",
+            range_len, expected_len
+        );
+
+        // Verify the range points to "doWork", not "function"
+        // "doWork" appears at character position 9 on line 2: "function doWork() {}"
+        //                                              0123456789...
+        assert_eq!(
+            d.range.start.character, 9,
+            "range should start at 'd' in 'doWork'"
+        );
+        assert_eq!(
+            d.range.end.character, 15,
+            "range should end after 'k' in 'doWork'"
+        );
+    }
+
+    #[test]
+    fn duplicate_interface_range_spans_name() {
+        // Interface duplicate should span the full interface name.
+        let src = "<?php\ninterface Logger {}\ninterface Logger {}";
+        let doc = ParsedDoc::parse(src.to_string());
+        let diags = duplicate_declaration_diagnostics(src, &doc, &DiagnosticsConfig::default());
+        assert_eq!(diags.len(), 1, "expected exactly 1 duplicate diagnostic");
+
+        let d = &diags[0];
+        let range_len = d.range.end.character - d.range.start.character;
+        let expected_len = "Logger".chars().map(|c| c.len_utf16() as u32).sum::<u32>();
+        assert_eq!(
+            range_len, expected_len,
+            "range length {} should match 'Logger' length {}",
+            range_len, expected_len
+        );
+
+        // Verify the range points to "Logger", not "interface"
+        // "Logger" appears at character position 10 on line 2: "interface Logger {}"
+        //                                               01234567890...
+        assert_eq!(
+            d.range.start.character, 10,
+            "range should start at 'L' in 'Logger'"
+        );
+        assert_eq!(
+            d.range.end.character, 16,
+            "range should end after 'r' in 'Logger'"
+        );
+    }
+
+    #[test]
+    fn duplicate_declaration_range_on_correct_line() {
+        // Diagnostic range should be on the correct line.
+        let src = "<?php\nclass Foo {}\n\nclass Foo {}";
+        let doc = ParsedDoc::parse(src.to_string());
+        let diags = duplicate_declaration_diagnostics(src, &doc, &DiagnosticsConfig::default());
+        assert_eq!(diags.len(), 1, "expected exactly 1 duplicate diagnostic");
+
+        let d = &diags[0];
+        // The second "class Foo" is on line 3 (0-indexed: line 3)
+        assert_eq!(
+            d.range.start.line, 3,
+            "duplicate should be reported on line 3 (0-indexed)"
+        );
+        assert_eq!(
+            d.range.end.line, 3,
+            "range end should be on same line as start"
+        );
     }
 
     #[test]
