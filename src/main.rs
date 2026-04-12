@@ -60,6 +60,10 @@ async fn main() {
         std::process::exit(0);
     }
 
+    eprintln!(
+        "php-lsp {} — listening on stdin/stdout",
+        env!("CARGO_PKG_VERSION")
+    );
     let stdin = tokio::io::stdin();
     let stdout = tokio::io::stdout();
     let (service, socket) = LspService::new(Backend::new);
