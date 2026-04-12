@@ -537,7 +537,8 @@ mod tests {
         );
         assert_eq!(
             refs[0].range.end.character,
-            refs[0].range.start.character + "greet".len() as u32,
+            refs[0].range.start.character
+                + "greet".chars().map(|c| c.len_utf16() as u32).sum::<u32>(),
             "range should span exactly the function name"
         );
     }

@@ -187,13 +187,14 @@ fn find_this_assign(source: &str, stmts: &[Stmt<'_, '_>], param_name: &str) -> O
         {
             // LHS must be `$this->paramName`
             if let ExprKind::PropertyAccess(pa) = &assign.target.kind {
-                let is_this = matches!(&pa.object.kind, ExprKind::Variable(v) if *v == "this");
+                let is_this =
+                    matches!(&pa.object.kind, ExprKind::Variable(v) if v.as_str() == "this");
                 let prop_src = source
                     .get(pa.property.span.start as usize..pa.property.span.end as usize)
                     .unwrap_or("");
                 // RHS must be `$paramName`
                 let rhs_matches =
-                    matches!(&assign.value.kind, ExprKind::Variable(v) if *v == param_name);
+                    matches!(&assign.value.kind, ExprKind::Variable(v) if v.as_str() == param_name);
                 if is_this && prop_src == param_name && rhs_matches {
                     return Some((stmt.span.start, stmt.span.end));
                 }

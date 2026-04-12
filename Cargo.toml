@@ -8,12 +8,12 @@ repository = "https://github.com/jorgsowa/php-lsp"
 readme = "README.md"
 
 [dependencies]
-mir-analyzer = "0.3.0"
-mir-issues = "0.3.0"
-mir-codebase = "0.3.0"
-mir-types = "0.3.0"
-php-rs-parser = "0.5.0"
-php-ast = "0.5.0"
+mir-analyzer = "0.4.1"
+mir-issues = "0.4.1"
+mir-codebase = "0.4.1"
+mir-types = "0.4.1"
+php-rs-parser = "0.6.2"
+php-ast = "0.6.2"
 bumpalo = { version = "3", features = ["collections"] }
 tower-lsp = "0.20"
 tokio = { version = "1", features = ["full"] }

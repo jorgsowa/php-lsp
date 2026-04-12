@@ -29,7 +29,7 @@ pub fn semantic_diagnostics(
     // Incremental update: evict stale definitions for this file, re-collect,
     // and rebuild inheritance tables.
     codebase.remove_file_definitions(&file);
-    let source_map = php_ast::source_map::SourceMap::new(doc.source());
+    let source_map = php_rs_parser::source_map::SourceMap::new(doc.source());
     let collector = mir_analyzer::collector::DefinitionCollector::new(
         codebase,
         file.clone(),
@@ -182,9 +182,9 @@ fn check_expr_for_deprecated(
                         let end_pos = offset_to_position(source, call.name.span.end);
                         let msg = match &db.deprecated {
                             Some(m) if !m.is_empty() => {
-                                format!("Deprecated: {} — {}", func_name, m)
+                                format!("Deprecated: {} — {}", func_name.as_str(), m)
                             }
-                            _ => format!("Deprecated: {}", func_name),
+                            _ => format!("Deprecated: {}", func_name.as_str()),
                         };
                         diags.push(Diagnostic {
                             range: Range {
@@ -228,9 +228,9 @@ fn check_expr_for_deprecated(
                         let end_pos = offset_to_position(source, call.method.span.end);
                         let msg = match &db.deprecated {
                             Some(m) if !m.is_empty() => {
-                                format!("Deprecated: {} — {}", method_name, m)
+                                format!("Deprecated: {} — {}", method_name.as_str(), m)
                             }
-                            _ => format!("Deprecated: {}", method_name),
+                            _ => format!("Deprecated: {}", method_name.as_str()),
                         };
                         diags.push(Diagnostic {
                             range: Range {

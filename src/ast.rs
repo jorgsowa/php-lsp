@@ -76,12 +76,20 @@ impl Default for ParsedDoc {
 // ── Span / position utilities ─────────────────────────────────────────────────
 
 /// Convert a byte offset into `source` to an LSP `Position` (0-based line/char).
+///
+/// Handles both LF-only and CRLF line endings. When the offset lands on or
+/// after a `\r` that immediately precedes `\n`, the `\r` is not counted as a
+/// column so that positions are consistent regardless of line-ending style.
 pub fn offset_to_position(source: &str, offset: u32) -> Position {
     let offset = (offset as usize).min(source.len());
     let prefix = &source[..offset];
     let line = prefix.bytes().filter(|&b| b == b'\n').count() as u32;
     let last_nl = prefix.rfind('\n').map(|i| i + 1).unwrap_or(0);
-    let character = prefix[last_nl..]
+    // Strip a trailing \r so CRLF line endings don't inflate the column count.
+    let line_segment = prefix[last_nl..]
+        .strip_suffix('\r')
+        .unwrap_or(&prefix[last_nl..]);
+    let character = line_segment
         .chars()
         .map(|c| c.len_utf16() as u32)
         .sum::<u32>();
@@ -199,6 +207,55 @@ mod tests {
                 line: 0,
                 character: 3
             }  // UTF-16 col 3
+        );
+    }
+
+    #[test]
+    fn offset_to_position_crlf_start_of_line() {
+        // CRLF: offset pointing to first char of line 1 must give character=0.
+        // "foo\r\nbar": f=0 o=1 o=2 \r=3 \n=4 b=5 a=6 r=7
+        let src = "foo\r\nbar";
+        assert_eq!(
+            offset_to_position(src, 5), // 'b'
+            Position {
+                line: 1,
+                character: 0
+            }
+        );
+    }
+
+    #[test]
+    fn offset_to_position_crlf_does_not_count_cr_in_column() {
+        // Offset pointing to the \r itself must not count it as a column.
+        // "foo\r\nbar": the \r is at offset 3, column must be 3 (length of "foo").
+        let src = "foo\r\nbar";
+        assert_eq!(
+            offset_to_position(src, 3), // '\r'
+            Position {
+                line: 0,
+                character: 3
+            }
+        );
+    }
+
+    #[test]
+    fn offset_to_position_crlf_multiline() {
+        // Multiple CRLF lines: columns must not accumulate stray \r counts.
+        // "a\r\nb\r\nc": a=0 \r=1 \n=2 b=3 \r=4 \n=5 c=6
+        let src = "a\r\nb\r\nc";
+        assert_eq!(
+            offset_to_position(src, 6), // 'c'
+            Position {
+                line: 2,
+                character: 0
+            }
+        );
+        assert_eq!(
+            offset_to_position(src, 3), // 'b'
+            Position {
+                line: 1,
+                character: 0
+            }
         );
     }
 
