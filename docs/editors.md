@@ -182,6 +182,8 @@ vim.api.nvim_create_autocmd('FileType', {
 
 ### PHPStorm
 
+> **Native plugin:** A dedicated php-lsp plugin for PhpStorm is currently [under review on the JetBrains Marketplace](https://plugins.jetbrains.com/plugin/31223-php-lsp). Once approved, it will offer a simpler setup than the LSP4IJ approach below.
+
 1. Install the [LSP4IJ](https://plugins.jetbrains.com/plugin/23257-lsp4ij) plugin (**Settings → Plugins → Marketplace → "LSP4IJ"**).
 2. Go to **Settings → Languages & Frameworks → LSP → Language Servers → +**, choose **Custom server**, and fill in the **Server** tab:
 
