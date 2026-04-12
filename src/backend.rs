@@ -2001,7 +2001,13 @@ async fn send_refresh_requests(client: &Client) {
 /// Run the definition collector for a single file against the persistent codebase.
 fn collect_into_codebase(codebase: &mir_codebase::Codebase, uri: &Url, doc: &ParsedDoc) {
     let file: Arc<str> = Arc::from(uri.as_str());
-    let collector = mir_analyzer::collector::DefinitionCollector::new(codebase, file, doc.source());
+    let source_map = php_ast::source_map::SourceMap::new(doc.source());
+    let collector = mir_analyzer::collector::DefinitionCollector::new(
+        codebase,
+        file,
+        doc.source(),
+        &source_map,
+    );
     collector.collect(doc.program());
 }
 

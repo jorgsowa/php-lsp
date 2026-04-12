@@ -29,14 +29,18 @@ pub fn semantic_diagnostics(
     // Incremental update: evict stale definitions for this file, re-collect,
     // and rebuild inheritance tables.
     codebase.remove_file_definitions(&file);
-    let collector =
-        mir_analyzer::collector::DefinitionCollector::new(codebase, file.clone(), doc.source());
+    let source_map = php_ast::source_map::SourceMap::new(doc.source());
+    let collector = mir_analyzer::collector::DefinitionCollector::new(
+        codebase,
+        file.clone(),
+        doc.source(),
+        &source_map,
+    );
     let collector_issues = collector.collect(doc.program());
     codebase.finalize();
 
     // Pass 2: analyse function/method bodies in the current document.
     let mut issue_buffer = mir_issues::IssueBuffer::new();
-    let source_map = php_ast::source_map::SourceMap::new(doc.source());
     let mut symbols = Vec::new();
     let mut analyzer = mir_analyzer::stmt::StatementsAnalyzer::new(
         codebase,
