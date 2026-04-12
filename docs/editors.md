@@ -111,23 +111,24 @@ Add to `~/.config/zed/settings.json`:
 
 ### VS Code
 
-1. Install an extension that supports custom LSP servers, such as [llllvvuu-lsp-client](https://marketplace.visualstudio.com/items?itemName=llllvvuu.llllvvuu-lsp-client).
-2. Add to your `.vscode/settings.json` (project) or `~/.config/Code/User/settings.json` (global):
+Install the [php-lsp](https://marketplace.visualstudio.com/items?itemName=jorgsowa.php-lsp) extension. It ships a pre-built binary — no separate install required.
 
-```json
-{
-  "llllvvuu-lsp-client.servers": {
-    "php-lsp": {
-      "command": "/usr/local/bin/php-lsp",
-      "filetypes": ["php"],
-      "initializationOptions": {
-        "phpVersion": "8.3",
-        "excludePaths": []
-      }
-    }
-  }
-}
+Via the Quick Open palette (`Ctrl+P` / `Cmd+P`):
+
 ```
+ext install jorgsowa.php-lsp
+```
+
+Available settings (VS Code `settings.json`):
+
+| Setting | Default | Description |
+|---|---|---|
+| `php-lsp.serverPath` | *(auto)* | Path to the `php-lsp` binary; leave empty for auto-detection |
+| `php-lsp.phpVersion` | `8.3` | PHP version (`7.4` – `8.3`) |
+| `php-lsp.excludePaths` | `[]` | Glob patterns to exclude from the workspace |
+| `php-lsp.diagnostics.*` | `true` | Per-diagnostic toggles (undefined variables/functions/classes, arity errors, type mismatches, deprecated calls, duplicate declarations) |
+
+> **Note:** If Intelephense (or another PHP extension) is installed, it will conflict with php-lsp. Disable it via **Extensions → Intelephense → Disable** before using this extension.
 
 ---
 
