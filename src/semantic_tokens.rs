@@ -569,14 +569,16 @@ fn collect_expr(source: &str, expr: &php_ast::Expr<'_, '_>, out: &mut Vec<RawTok
             push_at(out, source, expr.span.start, span_len, TT_NUMBER, 0);
         }
         ExprKind::String(_) | ExprKind::Nowdoc { .. } => {
-            let span_len = expr.span.end - expr.span.start;
-            push_at(out, source, expr.span.start, span_len, TT_STRING, 0);
+            let segment = &source[expr.span.start as usize..expr.span.end as usize];
+            let len: u32 = segment.chars().map(|c| c.len_utf16() as u32).sum();
+            push_at(out, source, expr.span.start, len, TT_STRING, 0);
         }
         ExprKind::InterpolatedString(parts) | ExprKind::ShellExec(parts) => {
             // Emit the whole span as a string; embedded variables are not
             // re-coloured here to keep the implementation simple.
-            let span_len = expr.span.end - expr.span.start;
-            push_at(out, source, expr.span.start, span_len, TT_STRING, 0);
+            let segment = &source[expr.span.start as usize..expr.span.end as usize];
+            let len: u32 = segment.chars().map(|c| c.len_utf16() as u32).sum();
+            push_at(out, source, expr.span.start, len, TT_STRING, 0);
             // Still recurse into embedded expressions so method/function calls
             // inside `"... {$obj->method()} ..."` get proper tokens.
             for part in parts.iter() {
@@ -586,8 +588,9 @@ fn collect_expr(source: &str, expr: &php_ast::Expr<'_, '_>, out: &mut Vec<RawTok
             }
         }
         ExprKind::Heredoc { parts, .. } => {
-            let span_len = expr.span.end - expr.span.start;
-            push_at(out, source, expr.span.start, span_len, TT_STRING, 0);
+            let segment = &source[expr.span.start as usize..expr.span.end as usize];
+            let len: u32 = segment.chars().map(|c| c.len_utf16() as u32).sum();
+            push_at(out, source, expr.span.start, len, TT_STRING, 0);
             for part in parts.iter() {
                 if let php_ast::StringPart::Expr(inner) = part {
                     collect_expr(source, inner, out);
@@ -713,8 +716,9 @@ fn collect_expr(source: &str, expr: &php_ast::Expr<'_, '_>, out: &mut Vec<RawTok
         }
         // ── Variables ─────────────────────────────────────────────────────────
         ExprKind::Variable(_) => {
-            let span_len = expr.span.end - expr.span.start;
-            push_at(out, source, expr.span.start, span_len, TT_VARIABLE, 0);
+            let segment = &source[expr.span.start as usize..expr.span.end as usize];
+            let len: u32 = segment.chars().map(|c| c.len_utf16() as u32).sum();
+            push_at(out, source, expr.span.start, len, TT_VARIABLE, 0);
         }
         _ => {}
     }
@@ -1229,6 +1233,56 @@ mod tests {
         );
         assert_eq!(
             attr_token.length, utf16_len,
+            "token length should be UTF-16 units ({utf16_len}), not byte length ({byte_len})"
+        );
+    }
+
+    /// A string literal `"café"` contains `é` (2 UTF-8 bytes, 1 UTF-16 unit).
+    /// The TT_STRING token length must use UTF-16 units, not byte count.
+    #[test]
+    fn string_literal_with_multibyte_chars_uses_utf16_length() {
+        // "café": " + c(1) + a(1) + f(1) + é(2) + " = 8 bytes, 6 UTF-16 units
+        let src = "<?php\n$s = \"café\";";
+        let d = doc(src);
+        let tokens = semantic_tokens(src, &d);
+        let str_token = tokens
+            .iter()
+            .find(|t| t.token_type == TT_STRING)
+            .expect("expected a TT_STRING token for the string literal");
+        let content = "\"café\"";
+        let utf16_len: u32 = content.chars().map(|c| c.len_utf16() as u32).sum();
+        let byte_len = content.len() as u32;
+        assert_ne!(
+            utf16_len, byte_len,
+            "test requires content where UTF-16 ≠ byte length"
+        );
+        assert_eq!(
+            str_token.length, utf16_len,
+            "token length should be UTF-16 units ({utf16_len}), not byte length ({byte_len})"
+        );
+    }
+
+    /// A variable whose name contains a multibyte character (valid per PHP spec).
+    /// The TT_VARIABLE token length must use UTF-16 units, not byte count.
+    #[test]
+    fn variable_with_multibyte_name_uses_utf16_length() {
+        // $café: $(1) + c(1) + a(1) + f(1) + é(2) = 7 bytes, 6 UTF-16 units
+        let src = "<?php\n$café = 1;";
+        let d = doc(src);
+        let tokens = semantic_tokens(src, &d);
+        let var_token = tokens
+            .iter()
+            .find(|t| t.token_type == TT_VARIABLE)
+            .expect("expected a TT_VARIABLE token");
+        let name = "$café";
+        let utf16_len: u32 = name.chars().map(|c| c.len_utf16() as u32).sum();
+        let byte_len = name.len() as u32;
+        assert_ne!(
+            utf16_len, byte_len,
+            "test requires a name where UTF-16 ≠ byte length"
+        );
+        assert_eq!(
+            var_token.length, utf16_len,
             "token length should be UTF-16 units ({utf16_len}), not byte length ({byte_len})"
         );
     }
