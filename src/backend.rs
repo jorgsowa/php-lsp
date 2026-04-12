@@ -114,8 +114,8 @@ impl DiagnosticsConfig {
 /// Configuration received from the client via `initializationOptions`.
 #[derive(Debug, Default, Clone)]
 pub struct LspConfig {
-    /// PHP version string, e.g. `"8.1"`.  Currently informational; future
-    /// versions of the analyser will gate PHP-version-specific diagnostics.
+    /// PHP version string, e.g. `"8.1"`.  Set explicitly via `initializationOptions`
+    /// or auto-detected from `composer.json` / the `php` binary at startup.
     pub php_version: Option<String>,
     /// Glob patterns for paths to exclude from workspace indexing.
     pub exclude_paths: Vec<String>,
@@ -124,9 +124,14 @@ pub struct LspConfig {
 }
 
 impl LspConfig {
+    /// PHP version used when auto-detection yields no result.
+    const DEFAULT_PHP_VERSION: &str = crate::autoload::PHP_8_5;
+
     fn from_value(v: &serde_json::Value) -> Self {
         let mut cfg = LspConfig::default();
-        if let Some(ver) = v.get("phpVersion").and_then(|x| x.as_str()) {
+        if let Some(ver) = v.get("phpVersion").and_then(|x| x.as_str())
+            && crate::autoload::is_valid_php_version(ver)
+        {
             cfg.php_version = Some(ver.to_string());
         }
         if let Some(arr) = v.get("excludePaths").and_then(|x| x.as_array()) {
@@ -204,8 +209,36 @@ impl LanguageServer for Backend {
         }
 
         // Parse initializationOptions if provided by the client.
-        if let Some(opts) = &params.initialization_options {
-            *self.config.write().unwrap() = LspConfig::from_value(opts);
+        {
+            let opts = params.initialization_options.as_ref();
+            let mut cfg = opts.map(LspConfig::from_value).unwrap_or_default();
+            // Warn if the client supplied an unrecognised phpVersion.
+            if let Some(ver) = opts
+                .and_then(|o| o.get("phpVersion"))
+                .and_then(|v| v.as_str())
+                && !crate::autoload::is_valid_php_version(ver)
+            {
+                self.client
+                    .log_message(
+                        tower_lsp::lsp_types::MessageType::WARNING,
+                        format!(
+                            "php-lsp: unsupported phpVersion {ver:?} — valid values: {}",
+                            crate::autoload::SUPPORTED_PHP_VERSIONS.join(", ")
+                        ),
+                    )
+                    .await;
+            }
+            // Auto-detect PHP version from composer.json / php binary when the
+            // client has not set it explicitly (or set it to an invalid value).
+            if cfg.php_version.is_none() {
+                let roots = self.root_paths.read().unwrap().clone();
+                cfg.php_version = roots
+                    .iter()
+                    .find_map(|root| crate::autoload::detect_php_version_from_composer(root))
+                    .or_else(crate::autoload::detect_php_binary_version)
+                    .or_else(|| Some(LspConfig::DEFAULT_PHP_VERSION.to_string()));
+            }
+            *self.config.write().unwrap() = cfg;
         }
 
         Ok(InitializeResult {
@@ -456,7 +489,29 @@ impl LanguageServer for Backend {
         if let Ok(values) = self.client.configuration(items).await
             && let Some(value) = values.into_iter().next()
         {
-            *self.config.write().unwrap() = LspConfig::from_value(&value);
+            let mut cfg = LspConfig::from_value(&value);
+            if let Some(ver) = value.get("phpVersion").and_then(|v| v.as_str())
+                && !crate::autoload::is_valid_php_version(ver)
+            {
+                self.client
+                    .log_message(
+                        tower_lsp::lsp_types::MessageType::WARNING,
+                        format!(
+                            "php-lsp: unsupported phpVersion {ver:?} — valid values: {}",
+                            crate::autoload::SUPPORTED_PHP_VERSIONS.join(", ")
+                        ),
+                    )
+                    .await;
+            }
+            if cfg.php_version.is_none() {
+                let roots = self.root_paths.read().unwrap().clone();
+                cfg.php_version = roots
+                    .iter()
+                    .find_map(|root| crate::autoload::detect_php_version_from_composer(root))
+                    .or_else(crate::autoload::detect_php_binary_version)
+                    .or_else(|| Some(LspConfig::DEFAULT_PHP_VERSION.to_string()));
+            }
+            *self.config.write().unwrap() = cfg;
         }
     }
 
@@ -2150,8 +2205,9 @@ mod tests {
 
     #[test]
     fn lsp_config_parses_php_version() {
-        let cfg = LspConfig::from_value(&serde_json::json!({"phpVersion": "8.2"}));
-        assert_eq!(cfg.php_version.as_deref(), Some("8.2"));
+        let cfg =
+            LspConfig::from_value(&serde_json::json!({"phpVersion": crate::autoload::PHP_8_2}));
+        assert_eq!(cfg.php_version.as_deref(), Some(crate::autoload::PHP_8_2));
     }
 
     #[test]

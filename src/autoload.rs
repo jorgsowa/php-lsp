@@ -1,6 +1,23 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+/// Supported PHP version strings.
+pub const PHP_7_4: &str = "7.4";
+pub const PHP_8_0: &str = "8.0";
+pub const PHP_8_1: &str = "8.1";
+pub const PHP_8_2: &str = "8.2";
+pub const PHP_8_3: &str = "8.3";
+pub const PHP_8_4: &str = "8.4";
+pub const PHP_8_5: &str = "8.5";
+
+pub const SUPPORTED_PHP_VERSIONS: &[&str] = &[
+    PHP_7_4, PHP_8_0, PHP_8_1, PHP_8_2, PHP_8_3, PHP_8_4, PHP_8_5,
+];
+
+pub fn is_valid_php_version(v: &str) -> bool {
+    SUPPORTED_PHP_VERSIONS.contains(&v)
+}
+
 /// PSR-4 namespace-prefix → base-directory mapping built from `composer.json`
 /// and `vendor/composer/installed.json`.
 ///
@@ -158,6 +175,77 @@ fn load_psr4_section(
     }
 }
 
+/// Detect the PHP version from a project's `composer.json`.
+///
+/// Checks in order:
+/// 1. `config.platform.php` — explicit platform override (e.g. `"8.1.0"`)
+/// 2. `require.php` — version constraint lower bound (e.g. `"^8.1"` → `"8.1"`)
+pub fn detect_php_version_from_composer(root: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(root.join("composer.json")).ok()?;
+    let json: serde_json::Value = serde_json::from_str(&text).ok()?;
+
+    // config.platform.php is the authoritative platform version override.
+    if let Some(platform_php) = json
+        .pointer("/config/platform/php")
+        .and_then(|v| v.as_str())
+        && let Some(ver) = extract_major_minor(platform_php)
+    {
+        return Some(ver);
+    }
+
+    // require.php is the minimum version constraint.
+    if let Some(constraint) = json.pointer("/require/php").and_then(|v| v.as_str())
+        && let Some(ver) = parse_php_version_constraint(constraint)
+    {
+        return Some(ver);
+    }
+
+    None
+}
+
+/// Detect the PHP version by running `php --version`.
+pub fn detect_php_binary_version() -> Option<String> {
+    let output = std::process::Command::new("php")
+        .arg("--version")
+        .output()
+        .ok()?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // First line: "PHP X.Y.Z (cli) ..."
+    let first_line = stdout.lines().next()?;
+    let version_str = first_line.strip_prefix("PHP ")?.split_whitespace().next()?;
+    extract_major_minor(version_str)
+}
+
+/// Extract `"X.Y"` from a full version string like `"8.1.27"` or `"8.2"`.
+fn extract_major_minor(version: &str) -> Option<String> {
+    let mut parts = version.split('.');
+    let major = parts.next()?.trim();
+    let minor = parts.next()?.trim();
+    major.parse::<u32>().ok()?;
+    minor.parse::<u32>().ok()?;
+    Some(format!("{}.{}", major, minor))
+}
+
+/// Extract a `"X.Y"` lower bound from a Composer version constraint like
+/// `"^8.1"`, `">=8.0"`, `"~8.2"`, `"7.4.*"`, or `">=8.0 <9.0"`.
+fn parse_php_version_constraint(constraint: &str) -> Option<String> {
+    // Take the first OR-clause: ">=7.4 || ^8.0" → ">=7.4"
+    let clause = constraint.split("||").next().unwrap_or(constraint).trim();
+    // Strip leading comparison/range operators
+    let stripped = clause.trim_start_matches(['^', '~', '>', '<', '=', ' ']);
+    // Take the first whitespace-delimited token: "8.0 <9.0" → "8.0"
+    let token = stripped.split_whitespace().next().unwrap_or(stripped);
+    // Split on '.' to get major and minor, stripping trailing wildcards
+    let mut parts = token.split('.');
+    let major = parts.next()?;
+    let minor_raw = parts.next().unwrap_or("0");
+    let minor = minor_raw.trim_end_matches('*');
+    let minor = if minor.is_empty() { "0" } else { minor };
+    major.parse::<u32>().ok()?;
+    minor.parse::<u32>().ok()?;
+    Some(format!("{}.{}", major, minor))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -294,5 +382,101 @@ mod tests {
         );
         let m = Psr4Map::load(root);
         assert!(m.resolve("Tests\\FooTest").is_some());
+    }
+
+    // --- PHP version detection ---
+
+    #[test]
+    fn detect_version_from_platform_config() {
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            &dir.path().join("composer.json"),
+            r#"{"config": {"platform": {"php": "8.1.27"}}}"#,
+        );
+        assert_eq!(
+            detect_php_version_from_composer(dir.path()),
+            Some(PHP_8_1.to_string())
+        );
+    }
+
+    #[test]
+    fn detect_version_from_require_caret() {
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            &dir.path().join("composer.json"),
+            r#"{"require": {"php": "^8.2"}}"#,
+        );
+        assert_eq!(
+            detect_php_version_from_composer(dir.path()),
+            Some(PHP_8_2.to_string())
+        );
+    }
+
+    #[test]
+    fn detect_version_from_require_gte() {
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            &dir.path().join("composer.json"),
+            r#"{"require": {"php": ">=8.0"}}"#,
+        );
+        assert_eq!(
+            detect_php_version_from_composer(dir.path()),
+            Some(PHP_8_0.to_string())
+        );
+    }
+
+    #[test]
+    fn detect_version_from_require_range() {
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            &dir.path().join("composer.json"),
+            r#"{"require": {"php": ">=8.1 <9.0"}}"#,
+        );
+        assert_eq!(
+            detect_php_version_from_composer(dir.path()),
+            Some(PHP_8_1.to_string())
+        );
+    }
+
+    #[test]
+    fn detect_version_from_require_wildcard() {
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            &dir.path().join("composer.json"),
+            r#"{"require": {"php": "7.4.*"}}"#,
+        );
+        assert_eq!(
+            detect_php_version_from_composer(dir.path()),
+            Some(PHP_7_4.to_string())
+        );
+    }
+
+    #[test]
+    fn platform_config_takes_priority_over_require() {
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            &dir.path().join("composer.json"),
+            r#"{"config": {"platform": {"php": "8.0.0"}}, "require": {"php": "^8.2"}}"#,
+        );
+        assert_eq!(
+            detect_php_version_from_composer(dir.path()),
+            Some(PHP_8_0.to_string())
+        );
+    }
+
+    #[test]
+    fn detect_version_returns_none_when_no_composer_json() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(detect_php_version_from_composer(dir.path()).is_none());
+    }
+
+    #[test]
+    fn detect_version_returns_none_when_no_php_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            &dir.path().join("composer.json"),
+            r#"{"require": {"some/package": "^1.0"}}"#,
+        );
+        assert!(detect_php_version_from_composer(dir.path()).is_none());
     }
 }
