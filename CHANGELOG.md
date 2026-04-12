@@ -2,6 +2,27 @@
 
 All notable changes to php-lsp are documented here.
 
+## [0.1.52] — 2026-04-12
+
+### Features
+
+- **CLI**: Server now prints a startup message to stderr on launch.
+
+### Bug fixes
+
+- **Safety**: Replaced `unwrap()` calls in production code paths with `expect()` to improve error messages on panic.
+
+### Maintenance
+
+- **Refactor**: Split `completion.rs` and `backend.rs` into focused submodules.
+- **Tests**: Added coverage for all public traversal functions in the `walk` module.
+- **Dependencies**: Updated all dependencies to latest versions.
+
+### Documentation
+
+- Added VS Code extension setup guide.
+- Added PhpStorm native plugin reference.
+
 ## [0.1.51] — 2026-04-11
 
 ### Features
