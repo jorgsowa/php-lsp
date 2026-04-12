@@ -2,6 +2,17 @@
 
 All notable changes to php-lsp are documented here.
 
+## [0.1.53] — 2026-04-12
+
+### Bug fixes
+
+- **Semantic tokens**: Token `length` for named type hints, attribute names, string literals, and variables now uses UTF-16 code units as required by the LSP spec, not raw byte span width. Previously any source containing non-ASCII characters (e.g. `"café"`, `Héros`) would produce incorrect highlight widths.
+- **Positions**: `offset_to_position` no longer counts `\r` as a column on CRLF files. The stray column was inflating the end position of every token on a Windows line-ending line, corrupting ranges for hover, go-to-definition, references, rename, and all other LSP features on CRLF files.
+
+### Maintenance
+
+- **Dependencies**: Upgraded `php-rs-parser` and `php-ast` from 0.5.0 to 0.6.2, and `mir-*` from 0.3.0 to 0.4.1. The 0.6.x parser fixes a span bug where `parse_name()` incorrectly included trailing whitespace in name spans.
+
 ## [0.1.52] — 2026-04-12
 
 ### Features
