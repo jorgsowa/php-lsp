@@ -213,10 +213,14 @@ fn collect_types_stmts(
             let db = parse_docblock(&raw);
             if let Some(type_str) = db.var_type {
                 // Only map object types (starts with uppercase or backslash).
-                let base = type_str.trim_start_matches('\\').trim_start_matches('?');
-                let first_char = base.chars().next().unwrap_or('_');
-                if first_char.is_uppercase() {
-                    let class_name = base.rsplit('\\').next().unwrap_or(base).to_string();
+                // type_str may be a union like "Foo|null"; take the first class part.
+                let class_name = type_str
+                    .split('|')
+                    .map(|p| p.trim().trim_start_matches('\\').trim_start_matches('?'))
+                    .find(|p| p.chars().next().map(|c| c.is_uppercase()).unwrap_or(false))
+                    .and_then(|p| p.rsplit('\\').next())
+                    .map(|p| p.to_string());
+                if let Some(class_name) = class_name {
                     if let Some(vname) = db.var_name {
                         // `@var Foo $obj` — explicit variable name.
                         map.insert(format!("${}", vname.as_str()), class_name);
@@ -1275,6 +1279,33 @@ mod tests {
         assert!(
             tm.get("$name").is_none(),
             "primitive @var should not produce a class mapping"
+        );
+    }
+
+    #[test]
+    fn var_nullable_docblock_maps_to_class() {
+        // `@var ?Foo $x` is now normalised to `Foo|null` by the mir parser.
+        // The type_map must still infer the class name `Foo`, not `Foo|null`.
+        let src = "<?php\n/** @var ?Mailer $mailer */\n$mailer = null;";
+        let doc = ParsedDoc::parse(src.to_string());
+        let tm = TypeMap::from_doc(&doc);
+        assert_eq!(
+            tm.get("$mailer"),
+            Some("Mailer"),
+            "@var ?Foo should map to 'Foo', not 'Foo|null'"
+        );
+    }
+
+    #[test]
+    fn var_union_docblock_maps_first_class() {
+        // `@var Foo|null $x` — first class-type component should be used.
+        let src = "<?php\n/** @var Repository|null $repo */\n$repo = null;";
+        let doc = ParsedDoc::parse(src.to_string());
+        let tm = TypeMap::from_doc(&doc);
+        assert_eq!(
+            tm.get("$repo"),
+            Some("Repository"),
+            "@var Foo|null should map to 'Foo', not 'Foo|null'"
         );
     }
 
