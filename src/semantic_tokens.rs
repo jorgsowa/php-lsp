@@ -25,7 +25,6 @@ const TT_TYPE: u32 = 8;
 const TT_STRING: u32 = 9;
 const TT_NUMBER: u32 = 10;
 const TT_COMMENT: u32 = 11;
-const TT_KEYWORD: u32 = 12;
 
 // Modifier bits — order must match `legend()` modifier vec order
 const MOD_DECLARATION: u32 = 1 << 0;
@@ -52,7 +51,6 @@ pub fn legend() -> SemanticTokensLegend {
             SemanticTokenType::STRING,
             SemanticTokenType::NUMBER,
             SemanticTokenType::COMMENT,
-            SemanticTokenType::KEYWORD,
         ],
         token_modifiers: vec![
             SemanticTokenModifier::DECLARATION,
@@ -320,25 +318,6 @@ fn emit_multiline_comment(source: &str, start: usize, end: usize, out: &mut Vec<
     }
 }
 
-/// Emit a keyword token for `kw` if the source at `offset` literally starts
-/// with that keyword followed by a non-identifier byte (or end-of-input).
-fn push_keyword_at(out: &mut Vec<RawToken>, source: &str, offset: u32, kw: &str) {
-    let start = offset as usize;
-    let src_bytes = source.as_bytes();
-    if src_bytes.get(start..start + kw.len()) == Some(kw.as_bytes()) {
-        // Make sure it is not a prefix of a longer identifier
-        let after = start + kw.len();
-        let boundary = src_bytes
-            .get(after)
-            .map(|&b| !b.is_ascii_alphanumeric() && b != b'_')
-            .unwrap_or(true);
-        if boundary {
-            let len_utf16: u32 = kw.chars().map(|c| c.len_utf16() as u32).sum();
-            push_at(out, source, offset, len_utf16, TT_KEYWORD, 0);
-        }
-    }
-}
-
 /// Emit `TT_TYPE` tokens for each atomic component of a type hint.
 /// Named types (e.g. `Foo`, `\Bar\Baz`) get one token at the name span.
 /// Keyword types (e.g. `int`, `string`, `void`, `null`) get one token at
@@ -377,7 +356,6 @@ fn collect_stmts(source: &str, stmts: &[Stmt<'_, '_>], out: &mut Vec<RawToken>) 
 fn collect_stmt(source: &str, stmt: &Stmt<'_, '_>, out: &mut Vec<RawToken>) {
     match &stmt.kind {
         StmtKind::Function(f) => {
-            push_keyword_at(out, source, stmt.span.start, "function");
             push_attributes(out, source, &f.attributes);
             let mods = MOD_DECLARATION | deprecated_mod(source, stmt.span.start);
             push_name(out, source, f.name, TT_FUNCTION, mods);
@@ -394,7 +372,6 @@ fn collect_stmt(source: &str, stmt: &Stmt<'_, '_>, out: &mut Vec<RawToken>) {
             collect_stmts(source, &f.body, out);
         }
         StmtKind::Class(c) => {
-            push_keyword_at(out, source, stmt.span.start, "class");
             push_attributes(out, source, &c.attributes);
             if let Some(name) = c.name {
                 let mods = MOD_DECLARATION | deprecated_mod(source, stmt.span.start);
@@ -405,13 +382,11 @@ fn collect_stmt(source: &str, stmt: &Stmt<'_, '_>, out: &mut Vec<RawToken>) {
             }
         }
         StmtKind::Interface(i) => {
-            push_keyword_at(out, source, stmt.span.start, "interface");
             push_attributes(out, source, &i.attributes);
             let mods = MOD_DECLARATION | deprecated_mod(source, stmt.span.start);
             push_name(out, source, i.name, TT_INTERFACE, mods);
         }
         StmtKind::Trait(t) => {
-            push_keyword_at(out, source, stmt.span.start, "trait");
             push_attributes(out, source, &t.attributes);
             let mods = MOD_DECLARATION | deprecated_mod(source, stmt.span.start);
             push_name(out, source, t.name, TT_CLASS, mods);
@@ -420,7 +395,6 @@ fn collect_stmt(source: &str, stmt: &Stmt<'_, '_>, out: &mut Vec<RawToken>) {
             }
         }
         StmtKind::Enum(e) => {
-            push_keyword_at(out, source, stmt.span.start, "enum");
             push_attributes(out, source, &e.attributes);
             let mods = MOD_DECLARATION | deprecated_mod(source, stmt.span.start);
             push_name(out, source, e.name, TT_CLASS, mods);
@@ -448,49 +422,35 @@ fn collect_stmt(source: &str, stmt: &Stmt<'_, '_>, out: &mut Vec<RawToken>) {
             }
         }
         StmtKind::Namespace(ns) => {
-            push_keyword_at(out, source, stmt.span.start, "namespace");
             if let NamespaceBody::Braced(inner) = &ns.body {
                 collect_stmts(source, inner, out);
             }
         }
-        StmtKind::Use(_) => {
-            push_keyword_at(out, source, stmt.span.start, "use");
-        }
+        StmtKind::Use(_) => {}
         StmtKind::Expression(e) => collect_expr(source, e, out),
-        StmtKind::Return(v) => {
-            push_keyword_at(out, source, stmt.span.start, "return");
-            if let Some(expr) = v {
-                collect_expr(source, expr, out);
-            }
-        }
+        StmtKind::Return(Some(expr)) => collect_expr(source, expr, out),
+        StmtKind::Return(None) => {}
         StmtKind::Echo(exprs) => {
-            push_keyword_at(out, source, stmt.span.start, "echo");
             for expr in exprs.iter() {
                 collect_expr(source, expr, out);
             }
         }
         StmtKind::If(i) => {
-            push_keyword_at(out, source, stmt.span.start, "if");
             collect_expr(source, &i.condition, out);
             collect_stmt(source, i.then_branch, out);
             for ei in i.elseif_branches.iter() {
-                push_keyword_at(out, source, ei.span.start, "elseif");
                 collect_expr(source, &ei.condition, out);
                 collect_stmt(source, &ei.body, out);
             }
             if let Some(e) = &i.else_branch {
-                // `else` keyword offset: the else branch span should start at `else`
-                push_keyword_at(out, source, e.span.start, "else");
                 collect_stmt(source, e, out);
             }
         }
         StmtKind::While(w) => {
-            push_keyword_at(out, source, stmt.span.start, "while");
             collect_expr(source, &w.condition, out);
             collect_stmt(source, w.body, out);
         }
         StmtKind::For(f) => {
-            push_keyword_at(out, source, stmt.span.start, "for");
             for e in f.init.iter() {
                 collect_expr(source, e, out);
             }
@@ -503,19 +463,15 @@ fn collect_stmt(source: &str, stmt: &Stmt<'_, '_>, out: &mut Vec<RawToken>) {
             collect_stmt(source, f.body, out);
         }
         StmtKind::Foreach(f) => {
-            push_keyword_at(out, source, stmt.span.start, "foreach");
             collect_expr(source, &f.expr, out);
             collect_stmt(source, f.body, out);
         }
         StmtKind::TryCatch(t) => {
-            push_keyword_at(out, source, stmt.span.start, "try");
             collect_stmts(source, &t.body, out);
             for catch in t.catches.iter() {
-                push_keyword_at(out, source, catch.span.start, "catch");
                 collect_stmts(source, &catch.body, out);
             }
             if let Some(finally) = &t.finally {
-                // finally keyword — we don't have a span for it directly, skip
                 collect_stmts(source, finally, out);
             }
         }
@@ -597,9 +553,7 @@ fn collect_expr(source: &str, expr: &php_ast::Expr<'_, '_>, out: &mut Vec<RawTok
                 }
             }
         }
-        // ── Keywords as expressions ───────────────────────────────────────────
         ExprKind::New(n) => {
-            push_keyword_at(out, source, expr.span.start, "new");
             for arg in n.args.iter() {
                 collect_expr(source, &arg.value, out);
             }
@@ -689,7 +643,6 @@ fn collect_expr(source: &str, expr: &php_ast::Expr<'_, '_>, out: &mut Vec<RawTok
         ExprKind::UnaryPrefix(u) => collect_expr(source, u.operand, out),
         ExprKind::UnaryPostfix(u) => collect_expr(source, u.operand, out),
         ExprKind::Closure(c) => {
-            push_keyword_at(out, source, expr.span.start, "function");
             for p in c.params.iter() {
                 if let Some(th) = &p.type_hint {
                     push_type_hint(out, source, th);
@@ -702,7 +655,6 @@ fn collect_expr(source: &str, expr: &php_ast::Expr<'_, '_>, out: &mut Vec<RawTok
             collect_stmts(source, &c.body, out);
         }
         ExprKind::ArrowFunction(af) => {
-            push_keyword_at(out, source, expr.span.start, "fn");
             for p in af.params.iter() {
                 if let Some(th) = &p.type_hint {
                     push_type_hint(out, source, th);
@@ -944,7 +896,7 @@ mod tests {
     #[test]
     fn legend_has_correct_token_count() {
         let l = legend();
-        assert_eq!(l.token_types.len(), 13);
+        assert_eq!(l.token_types.len(), 12);
         assert_eq!(l.token_modifiers.len(), 5);
     }
 
@@ -1074,30 +1026,6 @@ mod tests {
         assert!(
             tokens.iter().any(|t| t.token_type == TT_COMMENT),
             "expected comment token for /* */ block, got {:?}",
-            tokens
-        );
-    }
-
-    #[test]
-    fn function_keyword_emits_keyword_token() {
-        let src = "<?php\nfunction greet() {}";
-        let d = doc(src);
-        let tokens = semantic_tokens(src, &d);
-        assert!(
-            tokens.iter().any(|t| t.token_type == TT_KEYWORD),
-            "expected keyword token for 'function', got {:?}",
-            tokens
-        );
-    }
-
-    #[test]
-    fn return_keyword_emits_keyword_token() {
-        let src = "<?php\nfunction f() { return 1; }";
-        let d = doc(src);
-        let tokens = semantic_tokens(src, &d);
-        assert!(
-            tokens.iter().any(|t| t.token_type == TT_KEYWORD),
-            "expected keyword token for 'return', got {:?}",
             tokens
         );
     }
