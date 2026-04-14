@@ -2726,4 +2726,1006 @@ mod integration {
         );
         assert!(resp["result"].is_null(), "shutdown result should be null");
     }
+
+    /// Open a document and wait for the async parser to finish.
+    async fn open_doc(client: &mut TestClient, uri: &str, text: &str) {
+        client
+            .notify(
+                "textDocument/didOpen",
+                serde_json::json!({
+                    "textDocument": {
+                        "uri": uri,
+                        "languageId": "php",
+                        "version": 1,
+                        "text": text
+                    }
+                }),
+            )
+            .await;
+        // Parser is debounced 100 ms; give it a little extra.
+        tokio::time::sleep(tokio::time::Duration::from_millis(150)).await;
+    }
+
+    // ── go-to-definition ─────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn definition_returns_location_for_function() {
+        let mut client = start_server();
+        initialize(&mut client).await;
+
+        open_doc(
+            &mut client,
+            "file:///def.php",
+            "<?php\nfunction greet(string $name): string { return $name; }\ngreet('world');\n",
+        )
+        .await;
+
+        // Cursor on `greet` in the call on line 2, char 0.
+        let resp = client
+            .request(
+                "textDocument/definition",
+                serde_json::json!({
+                    "textDocument": { "uri": "file:///def.php" },
+                    "position": { "line": 2, "character": 1 }
+                }),
+            )
+            .await;
+
+        assert!(resp["error"].is_null(), "definition error: {:?}", resp);
+        // Result is either a Location object or an array of Locations.
+        let result = &resp["result"];
+        assert!(
+            !result.is_null(),
+            "expected a definition location, got null"
+        );
+        let loc = if result.is_array() {
+            result[0].clone()
+        } else {
+            result.clone()
+        };
+        assert_eq!(
+            loc["uri"].as_str().unwrap(),
+            "file:///def.php",
+            "definition should point to same file"
+        );
+        // `function greet` — `function ` is 9 chars, so `greet` starts at char 9.
+        assert_eq!(
+            loc["range"]["start"]["line"].as_u64().unwrap(),
+            1,
+            "definition should point to line 1 (the declaration)"
+        );
+        assert_eq!(
+            loc["range"]["start"]["character"].as_u64().unwrap(),
+            9,
+            "definition should point to the function name at char 9, not the 'function' keyword"
+        );
+    }
+
+    #[tokio::test]
+    async fn definition_for_class_returns_location() {
+        let mut client = start_server();
+        initialize(&mut client).await;
+
+        open_doc(
+            &mut client,
+            "file:///cls.php",
+            "<?php\nclass Dog {}\n$d = new Dog();\n",
+        )
+        .await;
+
+        // Cursor on `Dog` in `new Dog()` — line 2, char 9 ('D').
+        let resp = client
+            .request(
+                "textDocument/definition",
+                serde_json::json!({
+                    "textDocument": { "uri": "file:///cls.php" },
+                    "position": { "line": 2, "character": 9 }
+                }),
+            )
+            .await;
+
+        assert!(resp["error"].is_null(), "definition error: {:?}", resp);
+        let result = &resp["result"];
+        assert!(!result.is_null(), "expected a location for class Dog");
+        let loc = if result.is_array() {
+            result[0].clone()
+        } else {
+            result.clone()
+        };
+        // `class Dog {}` — `class ` is 6 chars, so `Dog` starts at char 6.
+        assert_eq!(
+            loc["range"]["start"]["line"].as_u64().unwrap(),
+            1,
+            "Dog declared on line 1"
+        );
+        assert_eq!(
+            loc["range"]["start"]["character"].as_u64().unwrap(),
+            6,
+            "Dog name starts at char 6, not at the 'class' keyword"
+        );
+    }
+
+    // ── go-to-declaration ────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn declaration_returns_location_for_abstract_method() {
+        let mut client = start_server();
+        initialize(&mut client).await;
+
+        open_doc(
+            &mut client,
+            "file:///abs.php",
+            "<?php\nabstract class Animal {\n    abstract public function speak(): string;\n}\nclass Cat extends Animal {\n    public function speak(): string { return 'meow'; }\n}\n",
+        )
+        .await;
+
+        // Cursor on concrete `speak` on line 5, char 20.
+        let resp = client
+            .request(
+                "textDocument/declaration",
+                serde_json::json!({
+                    "textDocument": { "uri": "file:///abs.php" },
+                    "position": { "line": 5, "character": 20 }
+                }),
+            )
+            .await;
+
+        assert!(resp["error"].is_null(), "declaration error: {:?}", resp);
+        // go-to-declaration from a concrete override must return the abstract declaration.
+        let result = &resp["result"];
+        assert!(
+            !result.is_null(),
+            "expected a declaration location for concrete speak(), got null"
+        );
+        let loc = if result.is_array() {
+            result[0].clone()
+        } else {
+            result.clone()
+        };
+        assert_eq!(loc["uri"].as_str().unwrap(), "file:///abs.php");
+        // Abstract `speak` is on line 2: `    abstract public function speak()…`
+        // `    abstract public function ` = 4+9+7+9 = 29 chars → char 29.
+        assert_eq!(
+            loc["range"]["start"]["line"].as_u64().unwrap(),
+            2,
+            "should point to the abstract declaration on line 2"
+        );
+        assert_eq!(
+            loc["range"]["start"]["character"].as_u64().unwrap(),
+            29,
+            "should point to the method name, not the 'abstract' keyword"
+        );
+    }
+
+    // ── find references ──────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn references_finds_all_usages_of_function() {
+        let mut client = start_server();
+        initialize(&mut client).await;
+
+        // One declaration (line 1) + two call sites (lines 2, 3).
+        open_doc(
+            &mut client,
+            "file:///refs.php",
+            "<?php\nfunction add(int $a, int $b): int { return $a + $b; }\nadd(1, 2);\nadd(3, 4);\n",
+        )
+        .await;
+
+        // Cursor on `add` declaration — line 1, char 9.
+        let resp = client
+            .request(
+                "textDocument/references",
+                serde_json::json!({
+                    "textDocument": { "uri": "file:///refs.php" },
+                    "position": { "line": 1, "character": 9 },
+                    "context": { "includeDeclaration": true }
+                }),
+            )
+            .await;
+
+        assert!(resp["error"].is_null(), "references error: {:?}", resp);
+        let result = &resp["result"];
+        assert!(
+            result.is_array(),
+            "references should return an array, got: {:?}",
+            result
+        );
+        let locs = result.as_array().unwrap();
+        // Must include the declaration (line 1) AND both call sites (lines 2, 3).
+        assert_eq!(
+            locs.len(),
+            3,
+            "expected 3 references (1 declaration + 2 calls), got: {:?}",
+            locs
+        );
+        let lines: Vec<u64> = locs
+            .iter()
+            .map(|l| l["range"]["start"]["line"].as_u64().unwrap())
+            .collect();
+        assert!(
+            lines.contains(&1),
+            "declaration on line 1 must be included with includeDeclaration=true, got lines: {:?}",
+            lines
+        );
+        assert!(lines.contains(&2), "call on line 2 must be included");
+        assert!(lines.contains(&3), "call on line 3 must be included");
+    }
+
+    #[tokio::test]
+    async fn references_with_exclude_declaration() {
+        let mut client = start_server();
+        initialize(&mut client).await;
+
+        open_doc(
+            &mut client,
+            "file:///refs2.php",
+            "<?php\nfunction sub(int $a, int $b): int { return $a - $b; }\nsub(10, 3);\n",
+        )
+        .await;
+
+        let resp = client
+            .request(
+                "textDocument/references",
+                serde_json::json!({
+                    "textDocument": { "uri": "file:///refs2.php" },
+                    "position": { "line": 1, "character": 9 },
+                    "context": { "includeDeclaration": false }
+                }),
+            )
+            .await;
+
+        assert!(resp["error"].is_null(), "references error: {:?}", resp);
+        let result = &resp["result"];
+        // With includeDeclaration: false, the only result must be the call on line 2.
+        assert!(
+            result.is_array(),
+            "expected an array of references, got: {:?}",
+            result
+        );
+        let locs = result.as_array().unwrap();
+        assert_eq!(
+            locs.len(),
+            1,
+            "expected exactly 1 call-site reference (sub on line 2), got: {:?}",
+            locs
+        );
+        assert_eq!(
+            locs[0]["range"]["start"]["line"].as_u64().unwrap(),
+            2,
+            "call site should be on line 2, not the declaration line 1"
+        );
+        assert_eq!(
+            locs[0]["range"]["start"]["character"].as_u64().unwrap(),
+            0,
+            "call starts at char 0"
+        );
+    }
+
+    // ── go-to-type-definition ────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn type_definition_for_typed_variable() {
+        let mut client = start_server();
+        initialize(&mut client).await;
+
+        open_doc(
+            &mut client,
+            "file:///typedef.php",
+            "<?php\nclass Point { public int $x; public int $y; }\n$p = new Point();\n$p->x;\n",
+        )
+        .await;
+
+        // Cursor on `$p` in `$p->x` — line 3, char 1.
+        let resp = client
+            .request(
+                "textDocument/typeDefinition",
+                serde_json::json!({
+                    "textDocument": { "uri": "file:///typedef.php" },
+                    "position": { "line": 3, "character": 1 }
+                }),
+            )
+            .await;
+
+        assert!(resp["error"].is_null(), "typeDefinition error: {:?}", resp);
+        // Type inference resolves `$p` to `Point`; result must be non-null.
+        let result = &resp["result"];
+        assert!(
+            !result.is_null(),
+            "expected typeDefinition to resolve $p to Point, got null"
+        );
+        let loc = if result.is_array() {
+            result[0].clone()
+        } else {
+            result.clone()
+        };
+        // `class Point` — `class ` is 6 chars, `Point` starts at char 6 on line 1.
+        assert_eq!(
+            loc["range"]["start"]["line"].as_u64().unwrap(),
+            1,
+            "type definition should point to Point class on line 1"
+        );
+        assert_eq!(
+            loc["range"]["start"]["character"].as_u64().unwrap(),
+            6,
+            "type definition should point to the class name, not the 'class' keyword"
+        );
+    }
+
+    // ── implementation ───────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn implementation_finds_concrete_class() {
+        let mut client = start_server();
+        initialize(&mut client).await;
+
+        open_doc(
+            &mut client,
+            "file:///impl.php",
+            "<?php\ninterface Drawable {\n    public function draw(): void;\n}\nclass Circle implements Drawable {\n    public function draw(): void {}\n}\n",
+        )
+        .await;
+
+        // Cursor on `Drawable` interface — line 1, char 10.
+        let resp = client
+            .request(
+                "textDocument/implementation",
+                serde_json::json!({
+                    "textDocument": { "uri": "file:///impl.php" },
+                    "position": { "line": 1, "character": 10 }
+                }),
+            )
+            .await;
+
+        assert!(resp["error"].is_null(), "implementation error: {:?}", resp);
+        let result = &resp["result"];
+        assert!(
+            result.is_array(),
+            "implementation must return an array: {:?}",
+            result
+        );
+        let locs = result.as_array().unwrap();
+        assert!(
+            !locs.is_empty(),
+            "expected at least one implementation (Circle)"
+        );
+        // `class Circle` — `class ` is 6 chars, `Circle` starts at char 6 on line 4.
+        let circle = locs
+            .iter()
+            .find(|l| l["range"]["start"]["line"].as_u64() == Some(4))
+            .expect("expected an implementation result on line 4 (class Circle)");
+        assert_eq!(
+            circle["range"]["start"]["character"].as_u64().unwrap(),
+            6,
+            "Circle class name should start at char 6, not the 'class' keyword"
+        );
+    }
+
+    // ── signature help ───────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn signature_help_inside_function_call() {
+        let mut client = start_server();
+        initialize(&mut client).await;
+
+        open_doc(
+            &mut client,
+            "file:///sig.php",
+            "<?php\nfunction multiply(int $a, int $b): int { return $a * $b; }\nmultiply(2, \n",
+        )
+        .await;
+
+        // Cursor inside the argument list — line 2, char 11 (after the comma).
+        let resp = client
+            .request(
+                "textDocument/signatureHelp",
+                serde_json::json!({
+                    "textDocument": { "uri": "file:///sig.php" },
+                    "position": { "line": 2, "character": 11 }
+                }),
+            )
+            .await;
+
+        assert!(resp["error"].is_null(), "signatureHelp error: {:?}", resp);
+        // Cursor is after the comma in `multiply(2, ` → second parameter (index 1).
+        let result = &resp["result"];
+        assert!(!result.is_null(), "expected signatureHelp result, got null");
+        let sigs = result["signatures"]
+            .as_array()
+            .expect("signatures must be an array");
+        assert!(!sigs.is_empty(), "expected at least one signature");
+        assert_eq!(
+            sigs[0]["label"].as_str().unwrap(),
+            "multiply(int $a, int $b)",
+            "signature label should show the full parameter list"
+        );
+        assert_eq!(
+            result["activeParameter"].as_u64().unwrap(),
+            1,
+            "cursor after first comma → activeParameter should be 1"
+        );
+    }
+
+    // ── document symbols ─────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn document_symbols_lists_functions_and_classes() {
+        let mut client = start_server();
+        initialize(&mut client).await;
+
+        open_doc(
+            &mut client,
+            "file:///syms.php",
+            "<?php\nfunction hello(): void {}\nclass World {}\n",
+        )
+        .await;
+
+        let resp = client
+            .request(
+                "textDocument/documentSymbol",
+                serde_json::json!({
+                    "textDocument": { "uri": "file:///syms.php" }
+                }),
+            )
+            .await;
+
+        assert!(resp["error"].is_null(), "documentSymbol error: {:?}", resp);
+        let result = &resp["result"];
+        assert!(
+            result.is_array(),
+            "documentSymbol should return an array, got: {:?}",
+            result
+        );
+        let syms = result.as_array().unwrap();
+        assert!(
+            syms.len() >= 2,
+            "expected at least 2 symbols (hello, World), got {}",
+            syms.len()
+        );
+        let names: Vec<&str> = syms.iter().filter_map(|s| s["name"].as_str()).collect();
+        assert!(names.contains(&"hello"), "missing symbol 'hello'");
+        assert!(names.contains(&"World"), "missing symbol 'World'");
+    }
+
+    // ── document highlight ────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn document_highlight_marks_occurrences() {
+        let mut client = start_server();
+        initialize(&mut client).await;
+
+        open_doc(
+            &mut client,
+            "file:///hl.php",
+            "<?php\nfunction run(): void {}\nrun();\nrun();\n",
+        )
+        .await;
+
+        // Cursor on `run` declaration — line 1, char 9.
+        let resp = client
+            .request(
+                "textDocument/documentHighlight",
+                serde_json::json!({
+                    "textDocument": { "uri": "file:///hl.php" },
+                    "position": { "line": 1, "character": 9 }
+                }),
+            )
+            .await;
+
+        assert!(
+            resp["error"].is_null(),
+            "documentHighlight error: {:?}",
+            resp
+        );
+        // Declaration on line 1 + two calls on lines 2 and 3 = 3 highlights.
+        let result = &resp["result"];
+        assert!(
+            result.is_array(),
+            "documentHighlight must return an array: {:?}",
+            result
+        );
+        let highlights = result.as_array().unwrap();
+        assert_eq!(
+            highlights.len(),
+            3,
+            "expected 3 highlights (1 declaration + 2 calls), got: {:?}",
+            highlights
+        );
+        let lines: Vec<u64> = highlights
+            .iter()
+            .map(|h| h["range"]["start"]["line"].as_u64().unwrap())
+            .collect();
+        assert!(
+            lines.contains(&1),
+            "declaration highlight missing on line 1"
+        );
+        assert!(lines.contains(&2), "call highlight missing on line 2");
+        assert!(lines.contains(&3), "call highlight missing on line 3");
+    }
+
+    // ── inlay hints ──────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn inlay_hints_returned_for_function_call() {
+        let mut client = start_server();
+        initialize(&mut client).await;
+
+        open_doc(
+            &mut client,
+            "file:///hints.php",
+            "<?php\nfunction divide(int $dividend, int $divisor): float { return $dividend / $divisor; }\ndivide(10, 2);\n",
+        )
+        .await;
+
+        let resp = client
+            .request(
+                "textDocument/inlayHint",
+                serde_json::json!({
+                    "textDocument": { "uri": "file:///hints.php" },
+                    "range": {
+                        "start": { "line": 0, "character": 0 },
+                        "end":   { "line": 3, "character": 0 }
+                    }
+                }),
+            )
+            .await;
+
+        assert!(resp["error"].is_null(), "inlayHint error: {:?}", resp);
+        // `divide(10, 2)` has two named params → expect two hints: `dividend:` and `divisor:`.
+        let result = &resp["result"];
+        assert!(
+            result.is_array(),
+            "expected inlayHint array, got: {:?}",
+            result
+        );
+        let hints = result.as_array().unwrap();
+        assert_eq!(
+            hints.len(),
+            2,
+            "expected 2 inlay hints (dividend and divisor), got: {:?}",
+            hints
+        );
+        let labels: Vec<&str> = hints.iter().filter_map(|h| h["label"].as_str()).collect();
+        assert!(
+            labels.contains(&"dividend:"),
+            "missing hint 'dividend:', got: {:?}",
+            labels
+        );
+        assert!(
+            labels.contains(&"divisor:"),
+            "missing hint 'divisor:', got: {:?}",
+            labels
+        );
+    }
+
+    // ── rename ───────────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn rename_function_produces_workspace_edit() {
+        let mut client = start_server();
+        initialize(&mut client).await;
+
+        open_doc(
+            &mut client,
+            "file:///ren.php",
+            "<?php\nfunction oldName(): void {}\noldName();\n",
+        )
+        .await;
+
+        // Cursor on `oldName` declaration — line 1, char 9.
+        let resp = client
+            .request(
+                "textDocument/rename",
+                serde_json::json!({
+                    "textDocument": { "uri": "file:///ren.php" },
+                    "position": { "line": 1, "character": 9 },
+                    "newName": "newName"
+                }),
+            )
+            .await;
+
+        assert!(resp["error"].is_null(), "rename error: {:?}", resp);
+        let result = &resp["result"];
+        assert!(
+            !result.is_null(),
+            "expected rename to produce a WorkspaceEdit, got null"
+        );
+        // WorkspaceEdit must have either `changes` or `documentChanges`.
+        assert!(
+            result.get("changes").is_some() || result.get("documentChanges").is_some(),
+            "rename result should be a WorkspaceEdit: {:?}",
+            result
+        );
+        // One declaration (line 1) + one call (line 2) = 2 edits in the same file.
+        let file_edits = result["changes"]["file:///ren.php"]
+            .as_array()
+            .expect("expected edits for file:///ren.php");
+        assert_eq!(
+            file_edits.len(),
+            2,
+            "expected 2 edits (declaration + call), got: {:?}",
+            file_edits
+        );
+        let edited_lines: Vec<u64> = file_edits
+            .iter()
+            .map(|e| e["range"]["start"]["line"].as_u64().unwrap())
+            .collect();
+        assert!(
+            edited_lines.contains(&1),
+            "declaration on line 1 must be renamed"
+        );
+        assert!(
+            edited_lines.contains(&2),
+            "call site on line 2 must be renamed"
+        );
+    }
+
+    // ── folding ranges ────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn folding_ranges_returned_for_class() {
+        let mut client = start_server();
+        initialize(&mut client).await;
+
+        open_doc(
+            &mut client,
+            "file:///fold.php",
+            "<?php\nclass Folded {\n    public function method(): void {\n        // body\n    }\n}\n",
+        )
+        .await;
+
+        let resp = client
+            .request(
+                "textDocument/foldingRange",
+                serde_json::json!({
+                    "textDocument": { "uri": "file:///fold.php" }
+                }),
+            )
+            .await;
+
+        assert!(resp["error"].is_null(), "foldingRange error: {:?}", resp);
+        // Class (lines 1–5) + method (lines 2–4) = 2 fold ranges.
+        let result = &resp["result"];
+        assert!(
+            result.is_array(),
+            "foldingRange must return an array: {:?}",
+            result
+        );
+        let ranges = result.as_array().unwrap();
+        assert_eq!(
+            ranges.len(),
+            2,
+            "expected 2 fold ranges (class + method), got: {:?}",
+            ranges
+        );
+        let start_lines: Vec<u64> = ranges
+            .iter()
+            .map(|r| r["startLine"].as_u64().unwrap())
+            .collect();
+        assert!(
+            start_lines.contains(&1),
+            "missing class fold starting at line 1"
+        );
+        assert!(
+            start_lines.contains(&2),
+            "missing method fold starting at line 2"
+        );
+    }
+
+    // ── semantic tokens ───────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn semantic_tokens_full_returned() {
+        let mut client = start_server();
+        initialize(&mut client).await;
+
+        open_doc(
+            &mut client,
+            "file:///tokens.php",
+            "<?php\nfunction tokenized(int $x): int { return $x; }\n",
+        )
+        .await;
+
+        let resp = client
+            .request(
+                "textDocument/semanticTokens/full",
+                serde_json::json!({
+                    "textDocument": { "uri": "file:///tokens.php" }
+                }),
+            )
+            .await;
+
+        assert!(
+            resp["error"].is_null(),
+            "semanticTokens/full error: {:?}",
+            resp
+        );
+        // A file with a function and typed parameters must produce non-empty token data.
+        let result = &resp["result"];
+        assert!(
+            !result.is_null(),
+            "expected semanticTokens result, got null"
+        );
+        let data = result["data"].as_array().expect("data must be an array");
+        assert!(
+            !data.is_empty(),
+            "expected non-empty semantic token data for a file with a typed function"
+        );
+    }
+
+    // ── code lens ─────────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn code_lens_returned_for_function() {
+        let mut client = start_server();
+        initialize(&mut client).await;
+
+        open_doc(
+            &mut client,
+            "file:///lens.php",
+            "<?php\nfunction lensed(): void {}\nlensed();\n",
+        )
+        .await;
+
+        let resp = client
+            .request(
+                "textDocument/codeLens",
+                serde_json::json!({
+                    "textDocument": { "uri": "file:///lens.php" }
+                }),
+            )
+            .await;
+
+        assert!(resp["error"].is_null(), "codeLens error: {:?}", resp);
+        // `lensed` has 1 call site → expect a "1 references" lens on the declaration.
+        let result = &resp["result"];
+        assert!(
+            result.is_array(),
+            "codeLens must return an array: {:?}",
+            result
+        );
+        let lenses = result.as_array().unwrap();
+        assert!(!lenses.is_empty(), "expected at least one code lens");
+        let has_ref_lens = lenses.iter().any(|l| {
+            l["command"]["title"]
+                .as_str()
+                .map(|t| t.contains("reference"))
+                .unwrap_or(false)
+        });
+        assert!(
+            has_ref_lens,
+            "expected a reference-count lens, got: {:?}",
+            lenses
+        );
+    }
+
+    // ── selection range ───────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn selection_range_expands_from_position() {
+        let mut client = start_server();
+        initialize(&mut client).await;
+
+        open_doc(
+            &mut client,
+            "file:///sel.php",
+            "<?php\nfunction select(int $x): int { return $x + 1; }\n",
+        )
+        .await;
+
+        let resp = client
+            .request(
+                "textDocument/selectionRange",
+                serde_json::json!({
+                    "textDocument": { "uri": "file:///sel.php" },
+                    "positions": [{ "line": 1, "character": 30 }]
+                }),
+            )
+            .await;
+
+        assert!(resp["error"].is_null(), "selectionRange error: {:?}", resp);
+        // Cursor is inside the function body — must return at least one range.
+        // The outermost range must NOT use u32::MAX as the end character (Bug #2 fix).
+        let result = &resp["result"];
+        assert!(
+            result.is_array(),
+            "selectionRange must return an array: {:?}",
+            result
+        );
+        let items = result.as_array().unwrap();
+        assert!(
+            !items.is_empty(),
+            "expected at least one selectionRange entry"
+        );
+
+        // Walk to the outermost parent and verify its end character is spec-compliant.
+        let mut node = &items[0];
+        loop {
+            let end_char = node["range"]["end"]["character"].as_u64().unwrap_or(0);
+            assert_ne!(
+                end_char,
+                u32::MAX as u64,
+                "selectionRange end character must not be u32::MAX — use real line length"
+            );
+            if node["parent"].is_null() || !node["parent"].is_object() {
+                break;
+            }
+            node = &node["parent"];
+        }
+    }
+
+    // ── full probe (disabled; restore #[tokio::test] + run with --nocapture to inspect) ──
+
+    #[allow(dead_code)]
+    async fn probe_all_features() {
+        macro_rules! dump {
+            ($label:expr, $r:expr) => {
+                eprintln!(
+                    "\n=== {} ===\n{}",
+                    $label,
+                    serde_json::to_string_pretty(&$r["result"]).unwrap_or_default()
+                );
+            };
+        }
+
+        let mut client = start_server();
+        initialize(&mut client).await;
+
+        // ── definition ──────────────────────────────────────────────────────
+        open_doc(
+            &mut client,
+            "file:///p_def.php",
+            "<?php\nfunction greet(string $name): string { return $name; }\ngreet('world');\n",
+        )
+        .await;
+        dump!("definition/function (cursor on call line 2 char 1)",
+            client.request("textDocument/definition",
+                serde_json::json!({"textDocument":{"uri":"file:///p_def.php"},"position":{"line":2,"character":1}})).await);
+
+        // ── definition on cursor ON the declaration name ─────────────────────
+        dump!("definition/function (cursor on decl line 1 char 9)",
+            client.request("textDocument/definition",
+                serde_json::json!({"textDocument":{"uri":"file:///p_def.php"},"position":{"line":1,"character":9}})).await);
+
+        // ── references (now fixed) ───────────────────────────────────────────
+        dump!("references includeDeclaration=true",
+            client.request("textDocument/references",
+                serde_json::json!({"textDocument":{"uri":"file:///p_def.php"},"position":{"line":1,"character":9},"context":{"includeDeclaration":true}})).await);
+
+        dump!("references includeDeclaration=false",
+            client.request("textDocument/references",
+                serde_json::json!({"textDocument":{"uri":"file:///p_def.php"},"position":{"line":1,"character":9},"context":{"includeDeclaration":false}})).await);
+
+        // ── document symbols ─────────────────────────────────────────────────
+        open_doc(&mut client, "file:///p_syms.php",
+            "<?php\nfunction hello(): void {}\nclass World {}\nenum Color { case Red; }\ninterface Runnable {}\n").await;
+        dump!(
+            "documentSymbol",
+            client
+                .request(
+                    "textDocument/documentSymbol",
+                    serde_json::json!({"textDocument":{"uri":"file:///p_syms.php"}})
+                )
+                .await
+        );
+
+        // ── type definition ──────────────────────────────────────────────────
+        open_doc(
+            &mut client,
+            "file:///p_type.php",
+            "<?php\nclass Point { public int $x; public int $y; }\n$p = new Point();\n$p->x;\n",
+        )
+        .await;
+        dump!("typeDefinition ($p->x, cursor on $p line 3 char 1)",
+            client.request("textDocument/typeDefinition",
+                serde_json::json!({"textDocument":{"uri":"file:///p_type.php"},"position":{"line":3,"character":1}})).await);
+
+        // ── declaration ──────────────────────────────────────────────────────
+        open_doc(&mut client, "file:///p_decl.php",
+            "<?php\nabstract class Animal {\n    abstract public function speak(): string;\n}\nclass Cat extends Animal {\n    public function speak(): string { return 'meow'; }\n}\n").await;
+        dump!("declaration (concrete speak at line 5 char 20 -> abstract)",
+            client.request("textDocument/declaration",
+                serde_json::json!({"textDocument":{"uri":"file:///p_decl.php"},"position":{"line":5,"character":20}})).await);
+
+        // ── implementation ───────────────────────────────────────────────────
+        open_doc(&mut client, "file:///p_impl.php",
+            "<?php\ninterface Drawable {\n    public function draw(): void;\n}\nclass Circle implements Drawable {\n    public function draw(): void {}\n}\nclass Square implements Drawable {\n    public function draw(): void {}\n}\n").await;
+        dump!("implementation (Drawable interface line 1 char 10)",
+            client.request("textDocument/implementation",
+                serde_json::json!({"textDocument":{"uri":"file:///p_impl.php"},"position":{"line":1,"character":10}})).await);
+
+        // ── signature help ───────────────────────────────────────────────────
+        open_doc(&mut client, "file:///p_sig.php",
+            "<?php\nfunction divide(int $dividend, int $divisor): float { return $dividend / $divisor; }\ndivide(10, \n").await;
+        dump!("signatureHelp (inside second arg)",
+            client.request("textDocument/signatureHelp",
+                serde_json::json!({"textDocument":{"uri":"file:///p_sig.php"},"position":{"line":2,"character":10}})).await);
+
+        // ── document highlight ───────────────────────────────────────────────
+        open_doc(
+            &mut client,
+            "file:///p_hl.php",
+            "<?php\nfunction run(): void {}\nrun();\nrun();\n",
+        )
+        .await;
+        dump!("documentHighlight (run decl line 1 char 9)",
+            client.request("textDocument/documentHighlight",
+                serde_json::json!({"textDocument":{"uri":"file:///p_hl.php"},"position":{"line":1,"character":9}})).await);
+
+        // ── rename ───────────────────────────────────────────────────────────
+        open_doc(
+            &mut client,
+            "file:///p_ren.php",
+            "<?php\nfunction oldName(): void {}\noldName();\noldName();\n",
+        )
+        .await;
+        dump!("rename (oldName -> newName, decl at line 1 char 9)",
+            client.request("textDocument/rename",
+                serde_json::json!({"textDocument":{"uri":"file:///p_ren.php"},"position":{"line":1,"character":9},"newName":"newName"})).await);
+
+        // ── folding ranges ────────────────────────────────────────────────────
+        open_doc(&mut client, "file:///p_fold.php",
+            "<?php\nclass Folded {\n    public function method(): void {\n        // body\n    }\n}\n").await;
+        dump!(
+            "foldingRange",
+            client
+                .request(
+                    "textDocument/foldingRange",
+                    serde_json::json!({"textDocument":{"uri":"file:///p_fold.php"}})
+                )
+                .await
+        );
+
+        // ── semantic tokens ───────────────────────────────────────────────────
+        open_doc(
+            &mut client,
+            "file:///p_tok.php",
+            "<?php\nfunction tokenized(int $x): int { return $x; }\n",
+        )
+        .await;
+        dump!(
+            "semanticTokens/full (raw data)",
+            client
+                .request(
+                    "textDocument/semanticTokens/full",
+                    serde_json::json!({"textDocument":{"uri":"file:///p_tok.php"}})
+                )
+                .await
+        );
+
+        // ── code lens ────────────────────────────────────────────────────────
+        open_doc(
+            &mut client,
+            "file:///p_lens.php",
+            "<?php\nfunction lensed(): void {}\nlensed();\nlensed();\n",
+        )
+        .await;
+        dump!(
+            "codeLens",
+            client
+                .request(
+                    "textDocument/codeLens",
+                    serde_json::json!({"textDocument":{"uri":"file:///p_lens.php"}})
+                )
+                .await
+        );
+
+        // ── inlay hints ───────────────────────────────────────────────────────
+        open_doc(&mut client, "file:///p_hints.php",
+            "<?php\nfunction divide2(int $dividend, int $divisor): float { return $dividend / $divisor; }\ndivide2(10, 2);\n").await;
+        dump!("inlayHint",
+            client.request("textDocument/inlayHint",
+                serde_json::json!({"textDocument":{"uri":"file:///p_hints.php"},"range":{"start":{"line":0,"character":0},"end":{"line":3,"character":0}}})).await);
+
+        // ── selection range ───────────────────────────────────────────────────
+        open_doc(
+            &mut client,
+            "file:///p_sel.php",
+            "<?php\nfunction select(int $x): int { return $x + 1; }\n",
+        )
+        .await;
+        dump!("selectionRange (cursor inside return expr)",
+            client.request("textDocument/selectionRange",
+                serde_json::json!({"textDocument":{"uri":"file:///p_sel.php"},"positions":[{"line":1,"character":38}]})).await);
+    }
 }

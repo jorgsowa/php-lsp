@@ -182,6 +182,28 @@ fn push_name(out: &mut Vec<RawToken>, source: &str, name: &str, token_type: u32,
     );
 }
 
+/// Like `push_name` but also includes the leading `$` sigil when one immediately
+/// precedes the name in the source.  PHP parameter names in the AST are stored
+/// without `$`, but the sigil is part of the syntax and must be highlighted
+/// consistently with variable-expression tokens which include it.
+fn push_param(out: &mut Vec<RawToken>, source: &str, name: &str, token_type: u32, modifiers: u32) {
+    let name_offset = str_offset(source, name);
+    let (offset, extra_len) =
+        if name_offset > 0 && source.as_bytes().get(name_offset as usize - 1) == Some(&b'$') {
+            (name_offset - 1, 1u32)
+        } else {
+            (name_offset, 0u32)
+        };
+    push_at(
+        out,
+        source,
+        offset,
+        extra_len + name.chars().map(|c| c.len_utf16() as u32).sum::<u32>(),
+        token_type,
+        modifiers,
+    );
+}
+
 fn push_attributes(out: &mut Vec<RawToken>, source: &str, attrs: &[Attribute<'_, '_>]) {
     for attr in attrs.iter() {
         let span = attr.name.span();
@@ -364,7 +386,7 @@ fn collect_stmt(source: &str, stmt: &Stmt<'_, '_>, out: &mut Vec<RawToken>) {
                 if let Some(th) = &p.type_hint {
                     push_type_hint(out, source, th);
                 }
-                push_name(out, source, p.name, TT_PARAMETER, MOD_DECLARATION);
+                push_param(out, source, p.name, TT_PARAMETER, MOD_DECLARATION);
             }
             if let Some(rt) = &f.return_type {
                 push_type_hint(out, source, rt);
@@ -410,7 +432,7 @@ fn collect_stmt(source: &str, stmt: &Stmt<'_, '_>, out: &mut Vec<RawToken>) {
                         if let Some(th) = &p.type_hint {
                             push_type_hint(out, source, th);
                         }
-                        push_name(out, source, p.name, TT_PARAMETER, MOD_DECLARATION);
+                        push_param(out, source, p.name, TT_PARAMETER, MOD_DECLARATION);
                     }
                     if let Some(rt) = &m.return_type {
                         push_type_hint(out, source, rt);
@@ -500,7 +522,7 @@ fn collect_class_member(
             if let Some(th) = &p.type_hint {
                 push_type_hint(out, source, th);
             }
-            push_name(out, source, p.name, TT_PARAMETER, MOD_DECLARATION);
+            push_param(out, source, p.name, TT_PARAMETER, MOD_DECLARATION);
         }
         if let Some(rt) = &m.return_type {
             push_type_hint(out, source, rt);
@@ -647,7 +669,7 @@ fn collect_expr(source: &str, expr: &php_ast::Expr<'_, '_>, out: &mut Vec<RawTok
                 if let Some(th) = &p.type_hint {
                     push_type_hint(out, source, th);
                 }
-                push_name(out, source, p.name, TT_PARAMETER, MOD_DECLARATION);
+                push_param(out, source, p.name, TT_PARAMETER, MOD_DECLARATION);
             }
             if let Some(rt) = &c.return_type {
                 push_type_hint(out, source, rt);
@@ -659,7 +681,7 @@ fn collect_expr(source: &str, expr: &php_ast::Expr<'_, '_>, out: &mut Vec<RawTok
                 if let Some(th) = &p.type_hint {
                     push_type_hint(out, source, th);
                 }
-                push_name(out, source, p.name, TT_PARAMETER, MOD_DECLARATION);
+                push_param(out, source, p.name, TT_PARAMETER, MOD_DECLARATION);
             }
             if let Some(rt) = &af.return_type {
                 push_type_hint(out, source, rt);
@@ -809,6 +831,53 @@ mod tests {
                 .any(|t| t.token_type == TT_PARAMETER
                     && t.token_modifiers_bitset & MOD_DECLARATION != 0),
             "expected parameter+declaration token"
+        );
+    }
+
+    #[test]
+    fn parameter_token_includes_dollar_sign() {
+        // Parameter tokens must cover `$name` (including the `$`), not just `name`.
+        // Variable-expression tokens already include `$`; parameters must be consistent.
+        //
+        // Source: "<?php\nfunction greet(string $name) {}"
+        // Line 1: "function greet(string $name) {}"
+        //          0         1         2         3
+        //          0123456789012345678901234567890
+        //                                ^ char 22 = '$', char 23 = 'n'
+        let src = "<?php\nfunction greet(string $name) {}";
+        let d = doc(src);
+        let tokens = semantic_tokens(src, &d);
+
+        // Decode delta encoding to find the absolute char of the PARAMETER token.
+        let mut abs_char: u32 = 0;
+        let mut last_line: u32 = 0;
+        let mut param_abs_char: Option<u32> = None;
+        let mut param_len: Option<u32> = None;
+        for t in &tokens {
+            if t.delta_line > 0 {
+                abs_char = 0;
+                last_line += t.delta_line;
+            }
+            abs_char += t.delta_start;
+            if t.token_type == TT_PARAMETER {
+                param_abs_char = Some(abs_char);
+                param_len = Some(t.length);
+                break;
+            }
+        }
+        let _ = last_line; // suppress unused-variable warning
+
+        let abs = param_abs_char.expect("expected a TT_PARAMETER token");
+        // `function greet(string ` = 22 chars → `$` at char 22.
+        assert_eq!(
+            abs, 22,
+            "parameter token must start at `$` (char 22), not at the bare identifier (char 23)"
+        );
+        // `$name` = 5 chars
+        assert_eq!(
+            param_len.unwrap(),
+            5,
+            "parameter token length must cover `$name` (5 chars)"
         );
     }
 
