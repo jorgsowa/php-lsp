@@ -124,9 +124,6 @@ pub struct LspConfig {
 }
 
 impl LspConfig {
-    /// PHP version used when auto-detection yields no result.
-    const DEFAULT_PHP_VERSION: &str = crate::autoload::PHP_8_5;
-
     fn from_value(v: &serde_json::Value) -> Self {
         let mut cfg = LspConfig::default();
         if let Some(ver) = v.get("phpVersion").and_then(|x| x.as_str())
