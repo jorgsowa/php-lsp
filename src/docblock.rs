@@ -1,10 +1,4 @@
 /// Docblock (`/** ... */`) parser.
-///
-/// Delegates to [`mir_analyzer::DocblockParser`] for type parsing and
-/// [`php_rs_parser::phpdoc`] for description extraction.
-use std::collections::HashMap;
-
-use mir_analyzer::DocblockParser;
 use php_rs_parser::phpdoc::{self, PhpDocTag};
 
 #[derive(Debug, Default, PartialEq)]
@@ -166,153 +160,223 @@ impl Docblock {
 
 /// Parse a raw docblock string (the full `/** ... */` text, or just the
 /// inner content — either form is handled).
-///
-/// Delegates to [`mir_analyzer::DocblockParser`] for type resolution and
-/// [`php_rs_parser::phpdoc`] for description fields.
 pub fn parse_docblock(raw: &str) -> Docblock {
-    let mir = DocblockParser::parse(raw);
     let raw_doc = phpdoc::parse(raw);
 
-    // Collect descriptions from the raw tags (mir discards them).
-    let mut param_descs: HashMap<String, String> = HashMap::new();
-    let mut return_desc = String::new();
-    let mut throws_descs: Vec<String> = Vec::new();
-    let mut var_desc: Option<String> = None;
+    let description = match (raw_doc.summary, raw_doc.description) {
+        (Some(s), Some(d)) => format!("{}\n\n{}", s, d),
+        (Some(s), None) => s.to_string(),
+        (None, Some(d)) => d.to_string(),
+        (None, None) => String::new(),
+    };
+
+    let mut params: Vec<DocParam> = Vec::new();
+    let mut return_type: Option<DocReturn> = None;
+    let mut var_type: Option<String> = None;
+    let mut var_name: Option<String> = None;
+    let mut var_description: Option<String> = None;
+    let mut deprecated: Option<String> = None;
+    let mut throws: Vec<DocThrows> = Vec::new();
+    let mut see: Vec<String> = Vec::new();
+    let mut templates: Vec<DocTemplate> = Vec::new();
+    let mut mixins: Vec<String> = Vec::new();
+    let mut type_aliases: Vec<DocTypeAlias> = Vec::new();
+    let mut properties: Vec<DocProperty> = Vec::new();
+    let mut methods: Vec<DocMethod> = Vec::new();
 
     for tag in &raw_doc.tags {
         match tag {
             PhpDocTag::Param {
-                name: Some(n),
-                description: Some(d),
-                ..
-            } => {
-                param_descs.insert(n.trim_start_matches('$').to_string(), d.to_string());
-            }
-            PhpDocTag::Return {
-                description: Some(d),
-                ..
-            } => {
-                return_desc = d.to_string();
-            }
-            PhpDocTag::Throws {
-                type_str: Some(ts),
+                type_str,
+                name,
                 description,
             } => {
-                let class = ts.split_whitespace().next().unwrap_or("");
-                if !class.is_empty() {
-                    throws_descs.push(
-                        description
-                            .as_ref()
-                            .map(|d| d.to_string())
-                            .unwrap_or_default(),
-                    );
+                let type_hint = type_str.map(normalize_type).unwrap_or_default();
+                let name_str = name
+                    .map(|n| {
+                        if n.starts_with('$') {
+                            n.to_string()
+                        } else {
+                            format!("${}", n)
+                        }
+                    })
+                    .unwrap_or_default();
+                let desc = description.as_deref().unwrap_or("").to_string();
+                params.push(DocParam {
+                    type_hint,
+                    name: name_str,
+                    description: desc,
+                });
+            }
+            PhpDocTag::Return {
+                type_str,
+                description,
+            } => {
+                if return_type.is_none() {
+                    let type_hint = type_str.map(normalize_type).unwrap_or_default();
+                    let desc = description.as_deref().unwrap_or("").to_string();
+                    return_type = Some(DocReturn {
+                        type_hint,
+                        description: desc,
+                    });
                 }
             }
             PhpDocTag::Var {
-                description: Some(d),
+                type_str,
+                name,
+                description,
+            } => {
+                var_type = type_str.map(normalize_type);
+                var_name = name.map(|n| n.trim_start_matches('$').to_string());
+                var_description = description.as_deref().map(str::to_string);
+            }
+            PhpDocTag::Throws {
+                type_str,
+                description,
+            } => {
+                let class = type_str
+                    .and_then(|ts| ts.split_whitespace().next())
+                    .unwrap_or("")
+                    .to_string();
+                if !class.is_empty() {
+                    let desc = description.as_deref().unwrap_or("").to_string();
+                    throws.push(DocThrows {
+                        class,
+                        description: desc,
+                    });
+                }
+            }
+            PhpDocTag::Deprecated { description } => {
+                deprecated = Some(description.as_deref().unwrap_or("").to_string());
+            }
+            PhpDocTag::Template { name, bound }
+            | PhpDocTag::TemplateCovariant { name, bound }
+            | PhpDocTag::TemplateContravariant { name, bound } => {
+                templates.push(DocTemplate {
+                    name: name.to_string(),
+                    bound: bound.map(str::to_string),
+                });
+            }
+            PhpDocTag::Mixin { class } => {
+                mixins.push(class.to_string());
+            }
+            PhpDocTag::TypeAlias {
+                name: Some(name),
+                type_str,
+            } => {
+                type_aliases.push(DocTypeAlias {
+                    name: name.to_string(),
+                    type_expr: type_str.unwrap_or("").to_string(),
+                });
+            }
+            PhpDocTag::Property {
+                type_str,
+                name: Some(name),
                 ..
             } => {
-                var_desc = Some(d.to_string());
+                properties.push(DocProperty {
+                    type_hint: type_str.map(normalize_type).unwrap_or_default(),
+                    name: name.trim_start_matches('$').to_string(),
+                    read_only: false,
+                });
             }
+            PhpDocTag::PropertyRead {
+                type_str,
+                name: Some(name),
+                ..
+            } => {
+                properties.push(DocProperty {
+                    type_hint: type_str.map(normalize_type).unwrap_or_default(),
+                    name: name.trim_start_matches('$').to_string(),
+                    read_only: true,
+                });
+            }
+            PhpDocTag::PropertyWrite {
+                type_str,
+                name: Some(name),
+                ..
+            } => {
+                properties.push(DocProperty {
+                    type_hint: type_str.map(normalize_type).unwrap_or_default(),
+                    name: name.trim_start_matches('$').to_string(),
+                    read_only: false,
+                });
+            }
+            PhpDocTag::Method { signature } => {
+                if let Some(m) = parse_method_signature(signature) {
+                    methods.push(m);
+                }
+            }
+            PhpDocTag::See { reference } => see.push(reference.to_string()),
+            PhpDocTag::Link { url } => see.push(url.to_string()),
             _ => {}
         }
     }
 
-    let params: Vec<DocParam> = mir
-        .params
-        .iter()
-        .map(|(name, union)| {
-            let description = param_descs.get(name.as_str()).cloned().unwrap_or_default();
-            DocParam {
-                type_hint: union.to_string(),
-                name: format!("${}", name),
-                description,
-            }
-        })
-        .collect();
-
-    let return_type = mir.return_type.as_ref().map(|union| DocReturn {
-        type_hint: union.to_string(),
-        description: return_desc,
-    });
-
-    let throws: Vec<DocThrows> = mir
-        .throws
-        .iter()
-        .enumerate()
-        .map(|(i, class)| DocThrows {
-            class: class.clone(),
-            description: throws_descs.get(i).cloned().unwrap_or_default(),
-        })
-        .collect();
-
-    let deprecated = if mir.is_deprecated {
-        Some(mir.deprecated.as_deref().unwrap_or("").to_string())
-    } else {
-        None
-    };
-
-    let templates: Vec<DocTemplate> = mir
-        .templates
-        .iter()
-        .map(|(name, bound, _variance)| DocTemplate {
-            name: name.clone(),
-            bound: bound.as_ref().map(|u| u.to_string()),
-        })
-        .collect();
-
-    let properties: Vec<DocProperty> = mir
-        .properties
-        .iter()
-        .map(|p| DocProperty {
-            type_hint: p.type_hint.clone(),
-            name: p.name.clone(),
-            read_only: p.read_only,
-        })
-        .collect();
-
-    let methods: Vec<DocMethod> = mir
-        .methods
-        .iter()
-        .map(|m| DocMethod {
-            return_type: m.return_type.clone(),
-            name: m.name.clone(),
-            is_static: m.is_static,
-        })
-        .collect();
-
-    let type_aliases: Vec<DocTypeAlias> = mir
-        .type_aliases
-        .iter()
-        .map(|ta| DocTypeAlias {
-            name: ta.name.clone(),
-            type_expr: ta.type_expr.clone(),
-        })
-        .collect();
-
     Docblock {
-        description: mir.description.clone(),
+        description,
         params,
         return_type,
-        var_type: mir.var_type.as_ref().map(|u| u.to_string()),
-        var_name: mir.var_name.clone(),
-        var_description: var_desc,
+        var_type,
+        var_name,
+        var_description,
         deprecated,
         throws,
-        see: mir.see.clone(),
+        see,
         templates,
-        mixins: mir.mixins.clone(),
+        mixins,
         type_aliases,
         properties,
         methods,
     }
 }
 
+/// Normalize a PHP type hint string: `?Foo` → `Foo|null`.
+fn normalize_type(type_str: &str) -> String {
+    match type_str.strip_prefix('?') {
+        Some(inner) => format!("{}|null", inner),
+        None => type_str.to_string(),
+    }
+}
+
+/// Parse a `@method` signature: `[static] ReturnType name([params])`.
+fn parse_method_signature(sig: &str) -> Option<DocMethod> {
+    let sig = sig.trim();
+    let (is_static, rest) = match sig.strip_prefix("static ") {
+        Some(r) => (true, r.trim()),
+        None => (false, sig),
+    };
+    let paren = rest.find('(')?;
+    let before_paren = rest[..paren].trim();
+    let name_start = before_paren
+        .rfind(|c: char| c.is_whitespace())
+        .map(|p| p + 1)
+        .unwrap_or(0);
+    let name = before_paren[name_start..].trim();
+    if name.is_empty() {
+        return None;
+    }
+    let return_type = before_paren[..name_start].trim().to_string();
+    Some(DocMethod {
+        return_type,
+        name: name.to_string(),
+        is_static,
+    })
+}
+
 /// Scan `source` for a `/** ... */` docblock that ends immediately before
 /// `node_start` (byte offset). Whitespace between the `*/` and the node is
 /// allowed; non-whitespace text in between disqualifies the block.
 pub fn docblock_before(source: &str, node_start: u32) -> Option<String> {
-    mir_analyzer::parser::find_preceding_docblock(source, node_start)
+    let prefix = source.get(..node_start as usize)?;
+    // Strip trailing whitespace — only whitespace may separate the docblock from
+    // the node. If anything else trails, there is no adjacent docblock.
+    let trimmed = prefix.trim_end_matches(|c: char| c.is_whitespace());
+    // The remaining text must end with `*/`.
+    let without_close = trimmed.strip_suffix("*/")?;
+    // Find the opening `/**` of this docblock.
+    let open = without_close.rfind("/**")?;
+    Some(trimmed[open..].to_string())
 }
 
 /// Walk an AST and return the parsed docblock for the declaration named `word`.
@@ -867,7 +931,7 @@ mod tests {
 
     #[test]
     fn advanced_type_non_empty_string() {
-        // mir resolves psalm/phpstan special types; non-empty-string must round-trip.
+        // psalm/phpstan special types like non-empty-string must round-trip unchanged.
         let raw = "/**\n * @return non-empty-string\n */";
         let db = parse_docblock(raw);
         assert_eq!(
@@ -880,7 +944,7 @@ mod tests {
 
     #[test]
     fn advanced_type_generic_array() {
-        // array<K, V> generic syntax must round-trip through mir's Union display.
+        // array<K, V> generic syntax must round-trip through parse_docblock unchanged.
         let raw = "/**\n * @param array<int, string> $map\n */";
         let db = parse_docblock(raw);
         assert_eq!(db.params.len(), 1);
@@ -893,8 +957,7 @@ mod tests {
 
     #[test]
     fn param_and_return_descriptions_preserved() {
-        // Descriptions from @param and @return are captured via php-rs-parser
-        // (mir discards them). Verify they survive the full parse_docblock() call.
+        // Descriptions from @param and @return must survive the full parse_docblock() call.
         let raw = "/**\n * @param string $name The user name\n * @return int The age\n */";
         let db = parse_docblock(raw);
         assert_eq!(
@@ -910,7 +973,7 @@ mod tests {
 
     #[test]
     fn throws_description_preserved() {
-        // @throws description must survive the adapter (mir only stores the class).
+        // @throws description must survive alongside the class name.
         let raw = "/**\n * @throws RuntimeException When the server is down\n */";
         let db = parse_docblock(raw);
         assert_eq!(db.throws.len(), 1);

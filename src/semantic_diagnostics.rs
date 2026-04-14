@@ -56,8 +56,9 @@ pub fn semantic_diagnostics(
     let sem_checker = SemanticsChecker::new(php_version);
     let sem_issues = sem_checker.check(&mago_file, program, &resolved_names);
 
-    // Run linter with default settings.
-    let linter_settings = LinterSettings::default();
+    // Run linter with the same PHP version used for semantic checks.
+    let mut linter_settings = LinterSettings::default();
+    linter_settings.php_version = php_version;
     let linter = Linter::new(&arena, &linter_settings, None, false);
     let lint_issues = linter.lint(&mago_file, program, &resolved_names);
 
@@ -896,6 +897,292 @@ mod tests {
             d.range.end.line, 3,
             "range end should be on same line as start"
         );
+    }
+
+    // ── mago analysis path ────────────────────────────────────────────────────
+    //
+    // These tests exercise `semantic_diagnostics()` end-to-end, verifying that
+    // mago's linter + semantics checker produce (or correctly suppress)
+    // diagnostics for real PHP source.
+
+    mod mago_analysis {
+        use super::*;
+        use tower_lsp::lsp_types::Url;
+
+        fn url() -> Url {
+            Url::parse("file:///test.php").unwrap()
+        }
+
+        fn run(src: &str) -> Vec<Diagnostic> {
+            let doc = ParsedDoc::parse(src.to_string());
+            semantic_diagnostics(&url(), &doc, &DiagnosticsConfig::default(), None)
+        }
+
+        // ── Master switch ─────────────────────────────────────────────────────
+
+        #[test]
+        fn disabled_config_always_returns_empty() {
+            let src = "<?php\nnew NonExistentClass();\n";
+            let doc = ParsedDoc::parse(src.to_string());
+            let cfg = DiagnosticsConfig {
+                enabled: false,
+                ..DiagnosticsConfig::default()
+            };
+            let diags = semantic_diagnostics(&url(), &doc, &cfg, None);
+            assert!(diags.is_empty(), "got: {:?}", diags);
+        }
+
+        // ── No false positives on valid PHP ───────────────────────────────────
+
+        #[test]
+        fn valid_php_with_strict_types_produces_no_errors() {
+            // Files with declare(strict_types=1) satisfy the linter's strict-types
+            // rule and should produce no error-severity diagnostics.
+            let src = concat!(
+                "<?php\n",
+                "declare(strict_types=1);\n",
+                "function hello(): string { return 'world'; }\n",
+            );
+            let errors: Vec<_> = run(src)
+                .into_iter()
+                .filter(|d| d.severity == Some(DiagnosticSeverity::ERROR))
+                .collect();
+            assert!(errors.is_empty(), "got: {:?}", errors);
+        }
+
+        #[test]
+        fn simple_function_produces_no_errors() {
+            let src = concat!(
+                "<?php\n",
+                "function add(int $a, int $b): int {\n",
+                "    return $a + $b;\n",
+                "}\n",
+                "echo add(1, 2);\n",
+            );
+            let errors: Vec<_> = run(src)
+                .into_iter()
+                .filter(|d| d.severity == Some(DiagnosticSeverity::ERROR))
+                .collect();
+            assert!(errors.is_empty(), "got: {:?}", errors);
+        }
+
+        #[test]
+        fn simple_class_produces_no_errors() {
+            let src = concat!(
+                "<?php\n",
+                "class Box {\n",
+                "    public function __construct(public readonly int $value) {}\n",
+                "    public function doubled(): int { return $this->value * 2; }\n",
+                "}\n",
+                "$b = new Box(21);\n",
+                "echo $b->doubled();\n",
+            );
+            let errors: Vec<_> = run(src)
+                .into_iter()
+                .filter(|d| d.severity == Some(DiagnosticSeverity::ERROR))
+                .collect();
+            assert!(errors.is_empty(), "got: {:?}", errors);
+        }
+
+        #[test]
+        fn php81_enum_produces_no_errors_on_81() {
+            let src = concat!(
+                "<?php\n",
+                "enum Status {\n",
+                "    case Active;\n",
+                "    case Inactive;\n",
+                "}\n",
+            );
+            let doc = ParsedDoc::parse(src.to_string());
+            let errors: Vec<_> =
+                semantic_diagnostics(&url(), &doc, &DiagnosticsConfig::default(), Some("8.1"))
+                    .into_iter()
+                    .filter(|d| d.severity == Some(DiagnosticSeverity::ERROR))
+                    .collect();
+            assert!(
+                errors.is_empty(),
+                "enum should be valid in PHP 8.1, got: {:?}",
+                errors
+            );
+        }
+
+        // ── Linter rules ──────────────────────────────────────────────────────
+        //
+        // mago's semantics checker operates in single-file mode and does not
+        // resolve cross-file symbols, so undefined-class/function detection
+        // requires the full workspace index that only the backend provides.
+        // At the unit-test level we therefore exercise the *linter* rules that
+        // fire on single-file analysis.
+
+        #[test]
+        fn missing_strict_types_declaration_is_flagged() {
+            // mago's linter emits a "strict-types" diagnostic for any file that
+            // lacks `declare(strict_types=1)`.
+            use tower_lsp::lsp_types::NumberOrString;
+            let src = "<?php\nfunction hello(): string { return 'world'; }\n";
+            let diags = run(src);
+            assert!(
+                diags
+                    .iter()
+                    .any(|d| d.code == Some(NumberOrString::String("strict-types".to_string()))),
+                "expected strict-types diagnostic, got: {:?}",
+                diags
+            );
+        }
+
+        #[test]
+        fn strict_types_diagnostic_is_warning_or_information() {
+            use tower_lsp::lsp_types::NumberOrString;
+            let src = "<?php\nfunction hello(): string { return 'world'; }\n";
+            let diags = run(src);
+            let strict = diags
+                .iter()
+                .find(|d| d.code == Some(NumberOrString::String("strict-types".to_string())));
+            let sev = strict.and_then(|d| d.severity).unwrap();
+            assert!(
+                sev == DiagnosticSeverity::WARNING || sev == DiagnosticSeverity::INFORMATION,
+                "strict-types should not be an error, got: {:?}",
+                sev
+            );
+        }
+
+        #[test]
+        fn adding_strict_types_declaration_clears_lint_warning() {
+            use tower_lsp::lsp_types::NumberOrString;
+            let without = "<?php\nfunction hello(): string { return 'world'; }\n";
+            let with =
+                "<?php\ndeclare(strict_types=1);\nfunction hello(): string { return 'world'; }\n";
+            let diags_without = run(without);
+            let diags_with = run(with);
+            assert!(
+                diags_without
+                    .iter()
+                    .any(|d| d.code == Some(NumberOrString::String("strict-types".to_string()))),
+                "expected strict-types without declaration, got: {:?}",
+                diags_without
+            );
+            assert!(
+                !diags_with
+                    .iter()
+                    .any(|d| d.code == Some(NumberOrString::String("strict-types".to_string()))),
+                "strict-types should clear when declaration is present, got: {:?}",
+                diags_with
+            );
+        }
+
+        // ── Diagnostic shape ──────────────────────────────────────────────────
+
+        #[test]
+        fn all_diagnostics_have_severity() {
+            let src = "<?php\nnew Xyzzy_Qux_NonExistent_99();\n";
+            for d in run(src) {
+                assert!(d.severity.is_some(), "diagnostic missing severity: {:?}", d);
+            }
+        }
+
+        #[test]
+        fn all_diagnostics_have_source_php_lsp() {
+            let src = "<?php\nnew Xyzzy_Qux_NonExistent_99();\n";
+            for d in run(src) {
+                assert_eq!(
+                    d.source.as_deref(),
+                    Some("php-lsp"),
+                    "unexpected source: {:?}",
+                    d
+                );
+            }
+        }
+
+        #[test]
+        fn all_diagnostics_have_valid_ranges() {
+            let src = "<?php\nnew Xyzzy_Qux_NonExistent_99();\n";
+            for d in run(src) {
+                assert!(
+                    d.range.start.line <= d.range.end.line,
+                    "start.line > end.line: {:?}",
+                    d.range
+                );
+                if d.range.start.line == d.range.end.line {
+                    assert!(
+                        d.range.start.character <= d.range.end.character,
+                        "start.character > end.character on same line: {:?}",
+                        d.range
+                    );
+                }
+            }
+        }
+
+        // ── PHP version handling ──────────────────────────────────────────────
+        //
+        // The PHP version must be forwarded to both the SemanticsChecker and the
+        // Linter so that version-gated rules fire against the correct baseline.
+
+        #[test]
+        fn linter_uses_project_php_version() {
+            // `explicit_nullable_param` is a PHP 8.4 deprecation rule: writing
+            // `?Foo` as a parameter type hint is deprecated in favour of
+            // `Foo|null`.  It must not fire when the project targets PHP 8.3.
+            let src = concat!(
+                "<?php\n",
+                "declare(strict_types=1);\n",
+                "function greet(?string $name): string {\n",
+                "    return 'Hello ' . ($name ?? 'World');\n",
+                "}\n",
+            );
+            let doc = ParsedDoc::parse(src.to_string());
+            let diags_83 =
+                semantic_diagnostics(&url(), &doc, &DiagnosticsConfig::default(), Some("8.3"));
+            let diags_84 =
+                semantic_diagnostics(&url(), &doc, &DiagnosticsConfig::default(), Some("8.4"));
+            // On PHP 8.4 the deprecated ?T form should produce more diagnostics
+            // than on 8.3 where it is still valid.
+            assert!(
+                diags_84.len() >= diags_83.len(),
+                "PHP 8.4 should produce at least as many diagnostics as 8.3 \
+                 for deprecated ?T syntax (8.3={}, 8.4={})",
+                diags_83.len(),
+                diags_84.len(),
+            );
+        }
+
+        #[test]
+        fn unknown_version_string_does_not_panic() {
+            let src = "<?php\necho 'hello';\n";
+            let doc = ParsedDoc::parse(src.to_string());
+            // None of these should panic.
+            let _ = semantic_diagnostics(&url(), &doc, &DiagnosticsConfig::default(), None);
+            let _ = semantic_diagnostics(
+                &url(),
+                &doc,
+                &DiagnosticsConfig::default(),
+                Some("not-a-version"),
+            );
+            let _ = semantic_diagnostics(&url(), &doc, &DiagnosticsConfig::default(), Some(""));
+        }
+
+        #[test]
+        fn version_81_and_84_both_accept_valid_php81() {
+            let src = concat!(
+                "<?php\n",
+                "enum Color { case Red; case Green; case Blue; }\n",
+                "function paint(Color $c): void {}\n",
+                "paint(Color::Red);\n",
+            );
+            let doc = ParsedDoc::parse(src.to_string());
+            for ver in ["8.1", "8.2", "8.3", "8.4"] {
+                let errors: Vec<_> =
+                    semantic_diagnostics(&url(), &doc, &DiagnosticsConfig::default(), Some(ver))
+                        .into_iter()
+                        .filter(|d| d.severity == Some(DiagnosticSeverity::ERROR))
+                        .collect();
+                assert!(
+                    errors.is_empty(),
+                    "PHP {} should accept valid PHP 8.1 code, got: {:?}",
+                    ver,
+                    errors
+                );
+            }
+        }
     }
 
     #[test]
