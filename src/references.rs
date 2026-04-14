@@ -63,7 +63,14 @@ fn find_references_inner(
         if include_use {
             // Rename path: always use the general walker so `use` imports are included.
             refs_in_stmts_with_use(source, stmts, word, &mut spans);
+        } else if include_declaration {
+            // The typed walkers only collect call sites and never emit declaration spans.
+            // When the caller wants declarations included, use the general walker which
+            // covers both declaration sites and call sites.
+            refs_in_stmts(source, stmts, word, &mut spans);
         } else {
+            // include_declaration=false: use typed walkers for precision.  They never
+            // emit declarations so no post-filtering is required.
             match kind {
                 Some(SymbolKind::Function) => function_refs_in_stmts(stmts, word, &mut spans),
                 Some(SymbolKind::Method) => method_refs_in_stmts(stmts, word, &mut spans),
@@ -73,6 +80,7 @@ fn find_references_inner(
         }
 
         if !include_declaration {
+            // Only reached via the general walker (kind=None) or include_use path.
             spans.retain(|span| !is_declaration_span(source, stmts, word, span));
         }
 
