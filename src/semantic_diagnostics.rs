@@ -14,11 +14,18 @@ use crate::docblock::{docblock_before, parse_docblock};
 /// Run semantic checks on `doc` using the backend's persistent codebase.
 /// The codebase is updated incrementally: the current file's definitions are
 /// evicted and re-collected, then `finalize()` rebuilds inheritance tables.
+///
+/// `php_version` is a version string like `"8.1"` sourced from `LspConfig`.
+/// It is threaded through here so callers are already wired correctly once
+/// `mir_analyzer` gains version-gating support.
+///
+/// TODO: pass `php_version` to `mir_analyzer` once it exposes a version API.
 pub fn semantic_diagnostics(
     uri: &Url,
     doc: &ParsedDoc,
     codebase: &mir_codebase::Codebase,
     cfg: &DiagnosticsConfig,
+    _php_version: Option<&str>,
 ) -> Vec<Diagnostic> {
     if !cfg.enabled {
         return vec![];

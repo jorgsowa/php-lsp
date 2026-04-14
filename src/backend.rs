@@ -185,6 +185,13 @@ impl Backend {
             .map(|r| r.clone())
             .unwrap_or_default()
     }
+
+    /// Resolve the PHP version to use. See `autoload::resolve_php_version_from_roots`
+    /// for the full priority order.
+    fn resolve_php_version(&self, explicit: Option<&str>) -> (String, &'static str) {
+        let roots = self.root_paths.read().unwrap().clone();
+        crate::autoload::resolve_php_version_from_roots(&roots, explicit)
+    }
 }
 
 #[async_trait]
@@ -228,16 +235,29 @@ impl LanguageServer for Backend {
                     )
                     .await;
             }
-            // Auto-detect PHP version from composer.json / php binary when the
-            // client has not set it explicitly (or set it to an invalid value).
-            if cfg.php_version.is_none() {
-                let roots = self.root_paths.read().unwrap().clone();
-                cfg.php_version = roots
-                    .iter()
-                    .find_map(|root| crate::autoload::detect_php_version_from_composer(root))
-                    .or_else(crate::autoload::detect_php_binary_version)
-                    .or_else(|| Some(LspConfig::DEFAULT_PHP_VERSION.to_string()));
+            // Resolve the PHP version and log what was chosen and why.
+            let (ver, source) = self.resolve_php_version(cfg.php_version.as_deref());
+            self.client
+                .log_message(
+                    tower_lsp::lsp_types::MessageType::INFO,
+                    format!("php-lsp: using PHP {ver} ({source})"),
+                )
+                .await;
+            // Show a visible warning when auto-detection yields a version outside
+            // our supported range (e.g. a legacy project with ">=5.6" in composer.json).
+            if source != "set by editor" && !crate::autoload::is_valid_php_version(&ver) {
+                self.client
+                    .show_message(
+                        tower_lsp::lsp_types::MessageType::WARNING,
+                        format!(
+                            "php-lsp: detected PHP {ver} is outside the supported range ({}); \
+                             analysis may be inaccurate",
+                            crate::autoload::SUPPORTED_PHP_VERSIONS.join(", ")
+                        ),
+                    )
+                    .await;
             }
+            cfg.php_version = Some(ver);
             *self.config.write().unwrap() = cfg;
         }
 
@@ -503,14 +523,27 @@ impl LanguageServer for Backend {
                     )
                     .await;
             }
-            if cfg.php_version.is_none() {
-                let roots = self.root_paths.read().unwrap().clone();
-                cfg.php_version = roots
-                    .iter()
-                    .find_map(|root| crate::autoload::detect_php_version_from_composer(root))
-                    .or_else(crate::autoload::detect_php_binary_version)
-                    .or_else(|| Some(LspConfig::DEFAULT_PHP_VERSION.to_string()));
+            // Resolve the PHP version and log what was chosen and why.
+            let (ver, source) = self.resolve_php_version(cfg.php_version.as_deref());
+            self.client
+                .log_message(
+                    tower_lsp::lsp_types::MessageType::INFO,
+                    format!("php-lsp: using PHP {ver} ({source})"),
+                )
+                .await;
+            if source != "set by editor" && !crate::autoload::is_valid_php_version(&ver) {
+                self.client
+                    .show_message(
+                        tower_lsp::lsp_types::MessageType::WARNING,
+                        format!(
+                            "php-lsp: detected PHP {ver} is outside the supported range ({}); \
+                             analysis may be inaccurate",
+                            crate::autoload::SUPPORTED_PHP_VERSIONS.join(", ")
+                        ),
+                    )
+                    .await;
             }
+            cfg.php_version = Some(ver);
             *self.config.write().unwrap() = cfg;
         }
     }
@@ -1520,8 +1553,12 @@ impl LanguageServer for Backend {
                 ));
             }
         };
-        let diag_cfg = self.config.read().unwrap().diagnostics.clone();
-        let sem_diags = semantic_diagnostics(uri, &doc, &self.codebase, &diag_cfg);
+        let (diag_cfg, php_version) = {
+            let cfg = self.config.read().unwrap();
+            (cfg.diagnostics.clone(), cfg.php_version.clone())
+        };
+        let sem_diags =
+            semantic_diagnostics(uri, &doc, &self.codebase, &diag_cfg, php_version.as_deref());
         let dup_diags = duplicate_declaration_diagnostics(&source, &doc, &diag_cfg);
 
         let mut items = parse_diags;
@@ -1544,7 +1581,10 @@ impl LanguageServer for Backend {
         _params: WorkspaceDiagnosticParams,
     ) -> Result<WorkspaceDiagnosticReportResult> {
         let all_parse_diags = self.docs.all_diagnostics();
-        let diag_cfg = self.config.read().unwrap().diagnostics.clone();
+        let (diag_cfg, php_version) = {
+            let cfg = self.config.read().unwrap();
+            (cfg.diagnostics.clone(), cfg.php_version.clone())
+        };
 
         let items: Vec<WorkspaceDocumentDiagnosticReport> = all_parse_diags
             .into_iter()
@@ -1552,7 +1592,13 @@ impl LanguageServer for Backend {
                 let doc = self.docs.get_doc(&uri)?;
 
                 let source = doc.source().to_string();
-                let sem_diags = semantic_diagnostics(&uri, &doc, &self.codebase, &diag_cfg);
+                let sem_diags = semantic_diagnostics(
+                    &uri,
+                    &doc,
+                    &self.codebase,
+                    &diag_cfg,
+                    php_version.as_deref(),
+                );
                 let dup_diags = duplicate_declaration_diagnostics(&source, &doc, &diag_cfg);
 
                 let mut all_diags = parse_diags;
@@ -1587,8 +1633,12 @@ impl LanguageServer for Backend {
         let other_docs = self.docs.other_docs(uri);
 
         // Semantic diagnostics — collect undefined symbols and offer "Add use import"
-        let diag_cfg = self.config.read().unwrap().diagnostics.clone();
-        let sem_diags = semantic_diagnostics(uri, &doc, &self.codebase, &diag_cfg);
+        let (diag_cfg, php_version) = {
+            let cfg = self.config.read().unwrap();
+            (cfg.diagnostics.clone(), cfg.php_version.clone())
+        };
+        let sem_diags =
+            semantic_diagnostics(uri, &doc, &self.codebase, &diag_cfg, php_version.as_deref());
 
         // Publish semantic diagnostics merged with existing parse diagnostics
         if !sem_diags.is_empty() {
