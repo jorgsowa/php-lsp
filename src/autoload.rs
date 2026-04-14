@@ -273,7 +273,11 @@ fn parse_php_version_constraint(constraint: &str) -> Option<String> {
             let stripped = clause
                 .trim()
                 .trim_start_matches(['^', '~', '>', '<', '=', ' ']);
-            // Take the first whitespace-delimited token: "8.0 <9.0" → "8.0"
+            // Take the first whitespace-delimited token: "8.0 <9.0" → "8.0".
+            // TODO: for single-range constraints like ">=7.4 <9.0" this returns the
+            // lower bound (7.4) rather than the actual runtime version. There is no
+            // reliable way to infer the runtime from a range alone; the php binary
+            // (detect_php_binary_version) is a better signal for that case.
             let token = stripped.split_whitespace().next().unwrap_or(stripped);
             // Split on '.' to get major and minor, stripping trailing wildcards.
             let mut parts = token.split('.');

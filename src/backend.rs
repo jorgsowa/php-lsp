@@ -242,6 +242,8 @@ impl LanguageServer for Backend {
                 .await;
             // Show a visible warning when auto-detection yields a version outside
             // our supported range (e.g. a legacy project with ">=5.6" in composer.json).
+            // TODO: instead of storing and using the unsupported version, consider clamping
+            // it to the nearest supported version so analysis stays meaningful.
             if source != "set by editor" && !crate::autoload::is_valid_php_version(&ver) {
                 self.client
                     .show_message(
@@ -528,6 +530,8 @@ impl LanguageServer for Backend {
                     format!("php-lsp: using PHP {ver} ({source})"),
                 )
                 .await;
+            // TODO: instead of storing and using the unsupported version, consider clamping
+            // it to the nearest supported version so analysis stays meaningful.
             if source != "set by editor" && !crate::autoload::is_valid_php_version(&ver) {
                 self.client
                     .show_message(
