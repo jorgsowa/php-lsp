@@ -135,14 +135,18 @@ fn collect_declaration_spans(
 
     for stmt in stmts {
         match &stmt.kind {
-            StmtKind::Function(f) if f.name == word && want_free => {
-                out.push(declaration_name_span(source, f.name));
-            }
-            StmtKind::Class(c) if c.name == Some(word) && want_type => {
-                let name = c.name.expect("match guard ensures Some");
-                out.push(declaration_name_span(source, name));
+            StmtKind::Function(f) => {
+                if want_free && f.name == word {
+                    out.push(declaration_name_span(source, f.name));
+                }
             }
             StmtKind::Class(c) => {
+                if want_type
+                    && let Some(name) = c.name
+                    && name == word
+                {
+                    out.push(declaration_name_span(source, name));
+                }
                 if want_method {
                     for member in c.members.iter() {
                         if let ClassMemberKind::Method(m) = &member.kind
@@ -153,13 +157,15 @@ fn collect_declaration_spans(
                     }
                 }
             }
-            StmtKind::Interface(i) if i.name == word && want_type => {
-                out.push(declaration_name_span(source, i.name));
-            }
-            StmtKind::Trait(t) if t.name == word && want_type => {
-                out.push(declaration_name_span(source, t.name));
+            StmtKind::Interface(i) => {
+                if want_type && i.name == word {
+                    out.push(declaration_name_span(source, i.name));
+                }
             }
             StmtKind::Trait(t) => {
+                if want_type && t.name == word {
+                    out.push(declaration_name_span(source, t.name));
+                }
                 if want_method {
                     for member in t.members.iter() {
                         if let ClassMemberKind::Method(m) = &member.kind
@@ -170,16 +176,16 @@ fn collect_declaration_spans(
                     }
                 }
             }
-            StmtKind::Enum(e) if e.name == word && want_type => {
-                out.push(declaration_name_span(source, e.name));
-            }
             StmtKind::Enum(e) => {
+                if want_type && e.name == word {
+                    out.push(declaration_name_span(source, e.name));
+                }
                 for member in e.members.iter() {
                     match &member.kind {
-                        EnumMemberKind::Method(m) if m.name == word && want_method => {
+                        EnumMemberKind::Method(m) if want_method && m.name == word => {
                             out.push(declaration_name_span(source, m.name));
                         }
-                        EnumMemberKind::Case(c) if c.name == word && want_type => {
+                        EnumMemberKind::Case(c) if want_type && c.name == word => {
                             out.push(declaration_name_span(source, c.name));
                         }
                         _ => {}
@@ -661,6 +667,45 @@ mod tests {
             !lines.contains(&4),
             "method call (line 4) must not appear when kind=Function, got: {:?}",
             lines
+        );
+    }
+
+    #[test]
+    fn declaration_filter_finds_method_inside_same_named_class() {
+        // Edge case: a class named `get` contains a method also named `get`.
+        // collect_declaration_spans(kind=None) must find BOTH the class declaration
+        // and the method declaration so is_declaration_span correctly filters both
+        // when include_declaration=false.
+        //
+        // Line 0: <?php
+        // Line 1: class get { public function get() {} }
+        // Line 2: $obj->get();
+        let src = "<?php\nclass get { public function get() {} }\n$obj->get();";
+        let docs = vec![doc("/a.php", src)];
+
+        // With include_declaration=false, neither the class name nor the method
+        // declaration should appear — only the call site on line 2.
+        let refs = find_references("get", &docs, false, None);
+        let lines: Vec<u32> = refs.iter().map(|r| r.range.start.line).collect();
+        assert!(
+            !lines.contains(&1),
+            "declaration line (1) must not appear when include_declaration=false, got: {:?}",
+            lines
+        );
+        assert!(
+            lines.contains(&2),
+            "call site (line 2) must be present, got: {:?}",
+            lines
+        );
+
+        // With include_declaration=true, the class declaration AND method declaration
+        // are both on line 1; the call site is on line 2.
+        let refs_with = find_references("get", &docs, true, None);
+        assert_eq!(
+            refs_with.len(),
+            3,
+            "expected 3 refs (class decl + method decl + call), got: {:?}",
+            refs_with
         );
     }
 }
