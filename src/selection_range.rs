@@ -19,8 +19,14 @@ pub fn selection_ranges(
 
 /// The entire file as a single range.
 fn file_range(source: &str) -> Range {
-    let total_lines = source.lines().count() as u32;
-    let last_line = total_lines.saturating_sub(1);
+    let lines: Vec<&str> = source.lines().collect();
+    let last_line = lines.len().saturating_sub(1) as u32;
+    // Use the actual UTF-16 length of the last line rather than u32::MAX.
+    // u32::MAX is not LSP-spec-compliant; stricter clients may reject it.
+    let last_char = lines
+        .last()
+        .map(|l| l.chars().map(|c| c.len_utf16() as u32).sum::<u32>())
+        .unwrap_or(0);
     Range {
         start: Position {
             line: 0,
@@ -28,7 +34,7 @@ fn file_range(source: &str) -> Range {
         },
         end: Position {
             line: last_line,
-            character: u32::MAX,
+            character: last_char,
         },
     }
 }
@@ -445,5 +451,28 @@ mod tests {
                 character: 999
             }
         ));
+    }
+
+    #[test]
+    fn file_range_end_character_is_actual_line_length_not_u32_max() {
+        // The outermost range must use the real UTF-16 column length of the last
+        // line, not u32::MAX.  u32::MAX is not LSP-spec-compliant and causes
+        // issues with stricter clients.
+        let src = "<?php\nfunction hello(): void {}";
+        //         line 0             line 1 (30 chars)
+        let d = doc(src);
+        let result = selection_ranges(src, &d, &[pos(1, 10)]);
+        let ranges = chain_ranges(&result[0]);
+        let outermost = ranges.last().expect("should have at least one range");
+        assert_ne!(
+            outermost.end.character,
+            u32::MAX,
+            "end character must not be u32::MAX — use real line length"
+        );
+        // "function hello(): void {}" is 25 chars; the file-level range should end there.
+        assert_eq!(
+            outermost.end.character, 25,
+            "file-level end character should be the actual last-line length"
+        );
     }
 }

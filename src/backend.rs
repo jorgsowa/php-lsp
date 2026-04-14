@@ -2788,10 +2788,16 @@ mod integration {
             "file:///def.php",
             "definition should point to same file"
         );
+        // `function greet` — `function ` is 9 chars, so `greet` starts at char 9.
         assert_eq!(
             loc["range"]["start"]["line"].as_u64().unwrap(),
             1,
             "definition should point to line 1 (the declaration)"
+        );
+        assert_eq!(
+            loc["range"]["start"]["character"].as_u64().unwrap(),
+            9,
+            "definition should point to the function name at char 9, not the 'function' keyword"
         );
     }
 
@@ -2826,10 +2832,16 @@ mod integration {
         } else {
             result.clone()
         };
+        // `class Dog {}` — `class ` is 6 chars, so `Dog` starts at char 6.
         assert_eq!(
             loc["range"]["start"]["line"].as_u64().unwrap(),
             1,
             "Dog declared on line 1"
+        );
+        assert_eq!(
+            loc["range"]["start"]["character"].as_u64().unwrap(),
+            6,
+            "Dog name starts at char 6, not at the 'class' keyword"
         );
     }
 
@@ -2859,17 +2871,30 @@ mod integration {
             .await;
 
         assert!(resp["error"].is_null(), "declaration error: {:?}", resp);
-        // A null result is acceptable (not all LSPs support this); a non-null result
-        // must point at a valid location in the same file.
-        if !resp["result"].is_null() {
-            let result = &resp["result"];
-            let loc = if result.is_array() {
-                result[0].clone()
-            } else {
-                result.clone()
-            };
-            assert_eq!(loc["uri"].as_str().unwrap(), "file:///abs.php");
-        }
+        // go-to-declaration from a concrete override must return the abstract declaration.
+        let result = &resp["result"];
+        assert!(
+            !result.is_null(),
+            "expected a declaration location for concrete speak(), got null"
+        );
+        let loc = if result.is_array() {
+            result[0].clone()
+        } else {
+            result.clone()
+        };
+        assert_eq!(loc["uri"].as_str().unwrap(), "file:///abs.php");
+        // Abstract `speak` is on line 2: `    abstract public function speak()…`
+        // `    abstract public function ` = 4+9+7+9 = 29 chars → char 29.
+        assert_eq!(
+            loc["range"]["start"]["line"].as_u64().unwrap(),
+            2,
+            "should point to the abstract declaration on line 2"
+        );
+        assert_eq!(
+            loc["range"]["start"]["character"].as_u64().unwrap(),
+            29,
+            "should point to the method name, not the 'abstract' keyword"
+        );
     }
 
     // ── find references ──────────────────────────────────────────────────────
@@ -2952,19 +2977,29 @@ mod integration {
 
         assert!(resp["error"].is_null(), "references error: {:?}", resp);
         let result = &resp["result"];
-        // With includeDeclaration: false we should get only call sites.
-        if result.is_array() {
-            let locs = result.as_array().unwrap();
-            for loc in locs {
-                // None of them should be on line 1 (the declaration line).
-                assert_ne!(
-                    loc["range"]["start"]["line"].as_u64().unwrap(),
-                    1,
-                    "declaration line should be excluded: {:?}",
-                    loc
-                );
-            }
-        }
+        // With includeDeclaration: false, the only result must be the call on line 2.
+        assert!(
+            result.is_array(),
+            "expected an array of references, got: {:?}",
+            result
+        );
+        let locs = result.as_array().unwrap();
+        assert_eq!(
+            locs.len(),
+            1,
+            "expected exactly 1 call-site reference (sub on line 2), got: {:?}",
+            locs
+        );
+        assert_eq!(
+            locs[0]["range"]["start"]["line"].as_u64().unwrap(),
+            2,
+            "call site should be on line 2, not the declaration line 1"
+        );
+        assert_eq!(
+            locs[0]["range"]["start"]["character"].as_u64().unwrap(),
+            0,
+            "call starts at char 0"
+        );
     }
 
     // ── go-to-type-definition ────────────────────────────────────────────────
@@ -2993,21 +3028,28 @@ mod integration {
             .await;
 
         assert!(resp["error"].is_null(), "typeDefinition error: {:?}", resp);
-        // Null is acceptable if type inference doesn't resolve here; a location must be valid.
-        if !resp["result"].is_null() {
-            let result = &resp["result"];
-            let loc = if result.is_array() {
-                result[0].clone()
-            } else {
-                result.clone()
-            };
-            // Should point at the `Point` class declaration on line 1.
-            assert_eq!(
-                loc["range"]["start"]["line"].as_u64().unwrap(),
-                1,
-                "type definition should point to Point class"
-            );
-        }
+        // Type inference resolves `$p` to `Point`; result must be non-null.
+        let result = &resp["result"];
+        assert!(
+            !result.is_null(),
+            "expected typeDefinition to resolve $p to Point, got null"
+        );
+        let loc = if result.is_array() {
+            result[0].clone()
+        } else {
+            result.clone()
+        };
+        // `class Point` — `class ` is 6 chars, `Point` starts at char 6 on line 1.
+        assert_eq!(
+            loc["range"]["start"]["line"].as_u64().unwrap(),
+            1,
+            "type definition should point to Point class on line 1"
+        );
+        assert_eq!(
+            loc["range"]["start"]["character"].as_u64().unwrap(),
+            6,
+            "type definition should point to the class name, not the 'class' keyword"
+        );
     }
 
     // ── implementation ───────────────────────────────────────────────────────
@@ -3036,18 +3078,27 @@ mod integration {
             .await;
 
         assert!(resp["error"].is_null(), "implementation error: {:?}", resp);
-        if !resp["result"].is_null() {
-            let result = &resp["result"];
-            let locs = if result.is_array() {
-                result.as_array().unwrap().clone()
-            } else {
-                vec![result.clone()]
-            };
-            assert!(
-                !locs.is_empty(),
-                "expected at least one implementation (Circle)"
-            );
-        }
+        let result = &resp["result"];
+        assert!(
+            result.is_array(),
+            "implementation must return an array: {:?}",
+            result
+        );
+        let locs = result.as_array().unwrap();
+        assert!(
+            !locs.is_empty(),
+            "expected at least one implementation (Circle)"
+        );
+        // `class Circle` — `class ` is 6 chars, `Circle` starts at char 6 on line 4.
+        let circle = locs
+            .iter()
+            .find(|l| l["range"]["start"]["line"].as_u64() == Some(4))
+            .expect("expected an implementation result on line 4 (class Circle)");
+        assert_eq!(
+            circle["range"]["start"]["character"].as_u64().unwrap(),
+            6,
+            "Circle class name should start at char 6, not the 'class' keyword"
+        );
     }
 
     // ── signature help ───────────────────────────────────────────────────────
@@ -3076,13 +3127,23 @@ mod integration {
             .await;
 
         assert!(resp["error"].is_null(), "signatureHelp error: {:?}", resp);
-        if !resp["result"].is_null() {
-            let sigs = &resp["result"]["signatures"];
-            assert!(
-                sigs.is_array() && !sigs.as_array().unwrap().is_empty(),
-                "expected at least one signature"
-            );
-        }
+        // Cursor is after the comma in `multiply(2, ` → second parameter (index 1).
+        let result = &resp["result"];
+        assert!(!result.is_null(), "expected signatureHelp result, got null");
+        let sigs = result["signatures"]
+            .as_array()
+            .expect("signatures must be an array");
+        assert!(!sigs.is_empty(), "expected at least one signature");
+        assert_eq!(
+            sigs[0]["label"].as_str().unwrap(),
+            "multiply(int $a, int $b)",
+            "signature label should show the full parameter list"
+        );
+        assert_eq!(
+            result["activeParameter"].as_u64().unwrap(),
+            1,
+            "cursor after first comma → activeParameter should be 1"
+        );
     }
 
     // ── document symbols ─────────────────────────────────────────────────────
@@ -3156,16 +3217,30 @@ mod integration {
             "documentHighlight error: {:?}",
             resp
         );
-        if !resp["result"].is_null() {
-            let result = &resp["result"];
-            let empty = vec![];
-            let highlights = result.as_array().unwrap_or(&empty);
-            assert!(
-                highlights.len() >= 2,
-                "expected at least 2 highlights (declaration + 2 calls), got {}",
-                highlights.len()
-            );
-        }
+        // Declaration on line 1 + two calls on lines 2 and 3 = 3 highlights.
+        let result = &resp["result"];
+        assert!(
+            result.is_array(),
+            "documentHighlight must return an array: {:?}",
+            result
+        );
+        let highlights = result.as_array().unwrap();
+        assert_eq!(
+            highlights.len(),
+            3,
+            "expected 3 highlights (1 declaration + 2 calls), got: {:?}",
+            highlights
+        );
+        let lines: Vec<u64> = highlights
+            .iter()
+            .map(|h| h["range"]["start"]["line"].as_u64().unwrap())
+            .collect();
+        assert!(
+            lines.contains(&1),
+            "declaration highlight missing on line 1"
+        );
+        assert!(lines.contains(&2), "call highlight missing on line 2");
+        assert!(lines.contains(&3), "call highlight missing on line 3");
     }
 
     // ── inlay hints ──────────────────────────────────────────────────────────
@@ -3196,12 +3271,30 @@ mod integration {
             .await;
 
         assert!(resp["error"].is_null(), "inlayHint error: {:?}", resp);
-        // Result is either null or an array — both are valid.
+        // `divide(10, 2)` has two named params → expect two hints: `dividend:` and `divisor:`.
         let result = &resp["result"];
         assert!(
-            result.is_null() || result.is_array(),
-            "unexpected inlayHint result shape: {:?}",
+            result.is_array(),
+            "expected inlayHint array, got: {:?}",
             result
+        );
+        let hints = result.as_array().unwrap();
+        assert_eq!(
+            hints.len(),
+            2,
+            "expected 2 inlay hints (dividend and divisor), got: {:?}",
+            hints
+        );
+        let labels: Vec<&str> = hints.iter().filter_map(|h| h["label"].as_str()).collect();
+        assert!(
+            labels.contains(&"dividend:"),
+            "missing hint 'dividend:', got: {:?}",
+            labels
+        );
+        assert!(
+            labels.contains(&"divisor:"),
+            "missing hint 'divisor:', got: {:?}",
+            labels
         );
     }
 
@@ -3232,15 +3325,39 @@ mod integration {
             .await;
 
         assert!(resp["error"].is_null(), "rename error: {:?}", resp);
-        if !resp["result"].is_null() {
-            // WorkspaceEdit must have either `changes` or `documentChanges`.
-            let result = &resp["result"];
-            assert!(
-                result.get("changes").is_some() || result.get("documentChanges").is_some(),
-                "rename result should be a WorkspaceEdit: {:?}",
-                result
-            );
-        }
+        let result = &resp["result"];
+        assert!(
+            !result.is_null(),
+            "expected rename to produce a WorkspaceEdit, got null"
+        );
+        // WorkspaceEdit must have either `changes` or `documentChanges`.
+        assert!(
+            result.get("changes").is_some() || result.get("documentChanges").is_some(),
+            "rename result should be a WorkspaceEdit: {:?}",
+            result
+        );
+        // One declaration (line 1) + one call (line 2) = 2 edits in the same file.
+        let file_edits = result["changes"]["file:///ren.php"]
+            .as_array()
+            .expect("expected edits for file:///ren.php");
+        assert_eq!(
+            file_edits.len(),
+            2,
+            "expected 2 edits (declaration + call), got: {:?}",
+            file_edits
+        );
+        let edited_lines: Vec<u64> = file_edits
+            .iter()
+            .map(|e| e["range"]["start"]["line"].as_u64().unwrap())
+            .collect();
+        assert!(
+            edited_lines.contains(&1),
+            "declaration on line 1 must be renamed"
+        );
+        assert!(
+            edited_lines.contains(&2),
+            "call site on line 2 must be renamed"
+        );
     }
 
     // ── folding ranges ────────────────────────────────────────────────────────
@@ -3267,18 +3384,32 @@ mod integration {
             .await;
 
         assert!(resp["error"].is_null(), "foldingRange error: {:?}", resp);
+        // Class (lines 1–5) + method (lines 2–4) = 2 fold ranges.
         let result = &resp["result"];
         assert!(
-            result.is_null() || result.is_array(),
-            "foldingRange should return an array or null: {:?}",
+            result.is_array(),
+            "foldingRange must return an array: {:?}",
             result
         );
-        if result.is_array() {
-            assert!(
-                !result.as_array().unwrap().is_empty(),
-                "expected at least one fold range for class/method"
-            );
-        }
+        let ranges = result.as_array().unwrap();
+        assert_eq!(
+            ranges.len(),
+            2,
+            "expected 2 fold ranges (class + method), got: {:?}",
+            ranges
+        );
+        let start_lines: Vec<u64> = ranges
+            .iter()
+            .map(|r| r["startLine"].as_u64().unwrap())
+            .collect();
+        assert!(
+            start_lines.contains(&1),
+            "missing class fold starting at line 1"
+        );
+        assert!(
+            start_lines.contains(&2),
+            "missing method fold starting at line 2"
+        );
     }
 
     // ── semantic tokens ───────────────────────────────────────────────────────
@@ -3309,14 +3440,17 @@ mod integration {
             "semanticTokens/full error: {:?}",
             resp
         );
-        if !resp["result"].is_null() {
-            let data = &resp["result"]["data"];
-            assert!(
-                data.is_array(),
-                "semantic tokens data should be an array: {:?}",
-                data
-            );
-        }
+        // A file with a function and typed parameters must produce non-empty token data.
+        let result = &resp["result"];
+        assert!(
+            !result.is_null(),
+            "expected semanticTokens result, got null"
+        );
+        let data = result["data"].as_array().expect("data must be an array");
+        assert!(
+            !data.is_empty(),
+            "expected non-empty semantic token data for a file with a typed function"
+        );
     }
 
     // ── code lens ─────────────────────────────────────────────────────────────
@@ -3343,11 +3477,25 @@ mod integration {
             .await;
 
         assert!(resp["error"].is_null(), "codeLens error: {:?}", resp);
+        // `lensed` has 1 call site → expect a "1 references" lens on the declaration.
         let result = &resp["result"];
         assert!(
-            result.is_null() || result.is_array(),
-            "codeLens should return an array or null: {:?}",
+            result.is_array(),
+            "codeLens must return an array: {:?}",
             result
+        );
+        let lenses = result.as_array().unwrap();
+        assert!(!lenses.is_empty(), "expected at least one code lens");
+        let has_ref_lens = lenses.iter().any(|l| {
+            l["command"]["title"]
+                .as_str()
+                .map(|t| t.contains("reference"))
+                .unwrap_or(false)
+        });
+        assert!(
+            has_ref_lens,
+            "expected a reference-count lens, got: {:?}",
+            lenses
         );
     }
 
@@ -3376,11 +3524,208 @@ mod integration {
             .await;
 
         assert!(resp["error"].is_null(), "selectionRange error: {:?}", resp);
+        // Cursor is inside the function body — must return at least one range.
+        // The outermost range must NOT use u32::MAX as the end character (Bug #2 fix).
         let result = &resp["result"];
         assert!(
-            result.is_null() || result.is_array(),
-            "selectionRange should return an array or null: {:?}",
+            result.is_array(),
+            "selectionRange must return an array: {:?}",
             result
         );
+        let items = result.as_array().unwrap();
+        assert!(
+            !items.is_empty(),
+            "expected at least one selectionRange entry"
+        );
+
+        // Walk to the outermost parent and verify its end character is spec-compliant.
+        let mut node = &items[0];
+        loop {
+            let end_char = node["range"]["end"]["character"].as_u64().unwrap_or(0);
+            assert_ne!(
+                end_char,
+                u32::MAX as u64,
+                "selectionRange end character must not be u32::MAX — use real line length"
+            );
+            if node["parent"].is_null() || !node["parent"].is_object() {
+                break;
+            }
+            node = &node["parent"];
+        }
+    }
+
+    // ── full probe (disabled; restore #[tokio::test] + run with --nocapture to inspect) ──
+
+    #[allow(dead_code)]
+    async fn probe_all_features() {
+        macro_rules! dump {
+            ($label:expr, $r:expr) => {
+                eprintln!(
+                    "\n=== {} ===\n{}",
+                    $label,
+                    serde_json::to_string_pretty(&$r["result"]).unwrap_or_default()
+                );
+            };
+        }
+
+        let mut client = start_server();
+        initialize(&mut client).await;
+
+        // ── definition ──────────────────────────────────────────────────────
+        open_doc(
+            &mut client,
+            "file:///p_def.php",
+            "<?php\nfunction greet(string $name): string { return $name; }\ngreet('world');\n",
+        )
+        .await;
+        dump!("definition/function (cursor on call line 2 char 1)",
+            client.request("textDocument/definition",
+                serde_json::json!({"textDocument":{"uri":"file:///p_def.php"},"position":{"line":2,"character":1}})).await);
+
+        // ── definition on cursor ON the declaration name ─────────────────────
+        dump!("definition/function (cursor on decl line 1 char 9)",
+            client.request("textDocument/definition",
+                serde_json::json!({"textDocument":{"uri":"file:///p_def.php"},"position":{"line":1,"character":9}})).await);
+
+        // ── references (now fixed) ───────────────────────────────────────────
+        dump!("references includeDeclaration=true",
+            client.request("textDocument/references",
+                serde_json::json!({"textDocument":{"uri":"file:///p_def.php"},"position":{"line":1,"character":9},"context":{"includeDeclaration":true}})).await);
+
+        dump!("references includeDeclaration=false",
+            client.request("textDocument/references",
+                serde_json::json!({"textDocument":{"uri":"file:///p_def.php"},"position":{"line":1,"character":9},"context":{"includeDeclaration":false}})).await);
+
+        // ── document symbols ─────────────────────────────────────────────────
+        open_doc(&mut client, "file:///p_syms.php",
+            "<?php\nfunction hello(): void {}\nclass World {}\nenum Color { case Red; }\ninterface Runnable {}\n").await;
+        dump!(
+            "documentSymbol",
+            client
+                .request(
+                    "textDocument/documentSymbol",
+                    serde_json::json!({"textDocument":{"uri":"file:///p_syms.php"}})
+                )
+                .await
+        );
+
+        // ── type definition ──────────────────────────────────────────────────
+        open_doc(
+            &mut client,
+            "file:///p_type.php",
+            "<?php\nclass Point { public int $x; public int $y; }\n$p = new Point();\n$p->x;\n",
+        )
+        .await;
+        dump!("typeDefinition ($p->x, cursor on $p line 3 char 1)",
+            client.request("textDocument/typeDefinition",
+                serde_json::json!({"textDocument":{"uri":"file:///p_type.php"},"position":{"line":3,"character":1}})).await);
+
+        // ── declaration ──────────────────────────────────────────────────────
+        open_doc(&mut client, "file:///p_decl.php",
+            "<?php\nabstract class Animal {\n    abstract public function speak(): string;\n}\nclass Cat extends Animal {\n    public function speak(): string { return 'meow'; }\n}\n").await;
+        dump!("declaration (concrete speak at line 5 char 20 -> abstract)",
+            client.request("textDocument/declaration",
+                serde_json::json!({"textDocument":{"uri":"file:///p_decl.php"},"position":{"line":5,"character":20}})).await);
+
+        // ── implementation ───────────────────────────────────────────────────
+        open_doc(&mut client, "file:///p_impl.php",
+            "<?php\ninterface Drawable {\n    public function draw(): void;\n}\nclass Circle implements Drawable {\n    public function draw(): void {}\n}\nclass Square implements Drawable {\n    public function draw(): void {}\n}\n").await;
+        dump!("implementation (Drawable interface line 1 char 10)",
+            client.request("textDocument/implementation",
+                serde_json::json!({"textDocument":{"uri":"file:///p_impl.php"},"position":{"line":1,"character":10}})).await);
+
+        // ── signature help ───────────────────────────────────────────────────
+        open_doc(&mut client, "file:///p_sig.php",
+            "<?php\nfunction divide(int $dividend, int $divisor): float { return $dividend / $divisor; }\ndivide(10, \n").await;
+        dump!("signatureHelp (inside second arg)",
+            client.request("textDocument/signatureHelp",
+                serde_json::json!({"textDocument":{"uri":"file:///p_sig.php"},"position":{"line":2,"character":10}})).await);
+
+        // ── document highlight ───────────────────────────────────────────────
+        open_doc(
+            &mut client,
+            "file:///p_hl.php",
+            "<?php\nfunction run(): void {}\nrun();\nrun();\n",
+        )
+        .await;
+        dump!("documentHighlight (run decl line 1 char 9)",
+            client.request("textDocument/documentHighlight",
+                serde_json::json!({"textDocument":{"uri":"file:///p_hl.php"},"position":{"line":1,"character":9}})).await);
+
+        // ── rename ───────────────────────────────────────────────────────────
+        open_doc(
+            &mut client,
+            "file:///p_ren.php",
+            "<?php\nfunction oldName(): void {}\noldName();\noldName();\n",
+        )
+        .await;
+        dump!("rename (oldName -> newName, decl at line 1 char 9)",
+            client.request("textDocument/rename",
+                serde_json::json!({"textDocument":{"uri":"file:///p_ren.php"},"position":{"line":1,"character":9},"newName":"newName"})).await);
+
+        // ── folding ranges ────────────────────────────────────────────────────
+        open_doc(&mut client, "file:///p_fold.php",
+            "<?php\nclass Folded {\n    public function method(): void {\n        // body\n    }\n}\n").await;
+        dump!(
+            "foldingRange",
+            client
+                .request(
+                    "textDocument/foldingRange",
+                    serde_json::json!({"textDocument":{"uri":"file:///p_fold.php"}})
+                )
+                .await
+        );
+
+        // ── semantic tokens ───────────────────────────────────────────────────
+        open_doc(
+            &mut client,
+            "file:///p_tok.php",
+            "<?php\nfunction tokenized(int $x): int { return $x; }\n",
+        )
+        .await;
+        dump!(
+            "semanticTokens/full (raw data)",
+            client
+                .request(
+                    "textDocument/semanticTokens/full",
+                    serde_json::json!({"textDocument":{"uri":"file:///p_tok.php"}})
+                )
+                .await
+        );
+
+        // ── code lens ────────────────────────────────────────────────────────
+        open_doc(
+            &mut client,
+            "file:///p_lens.php",
+            "<?php\nfunction lensed(): void {}\nlensed();\nlensed();\n",
+        )
+        .await;
+        dump!(
+            "codeLens",
+            client
+                .request(
+                    "textDocument/codeLens",
+                    serde_json::json!({"textDocument":{"uri":"file:///p_lens.php"}})
+                )
+                .await
+        );
+
+        // ── inlay hints ───────────────────────────────────────────────────────
+        open_doc(&mut client, "file:///p_hints.php",
+            "<?php\nfunction divide2(int $dividend, int $divisor): float { return $dividend / $divisor; }\ndivide2(10, 2);\n").await;
+        dump!("inlayHint",
+            client.request("textDocument/inlayHint",
+                serde_json::json!({"textDocument":{"uri":"file:///p_hints.php"},"range":{"start":{"line":0,"character":0},"end":{"line":3,"character":0}}})).await);
+
+        // ── selection range ───────────────────────────────────────────────────
+        open_doc(
+            &mut client,
+            "file:///p_sel.php",
+            "<?php\nfunction select(int $x): int { return $x + 1; }\n",
+        )
+        .await;
+        dump!("selectionRange (cursor inside return expr)",
+            client.request("textDocument/selectionRange",
+                serde_json::json!({"textDocument":{"uri":"file:///p_sel.php"},"positions":[{"line":1,"character":38}]})).await);
     }
 }
