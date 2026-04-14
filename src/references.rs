@@ -81,8 +81,10 @@ fn find_references_inner(
                 }
             }
             // Typed walkers never emit declaration spans, so add them separately when wanted.
+            // Pass `kind` so only declarations of the matching category are appended —
+            // a Method search must not return a free-function declaration with the same name.
             if include_declaration && kind.is_some() {
-                collect_declaration_spans(source, stmts, word, &mut spans);
+                collect_declaration_spans(source, stmts, word, kind, &mut spans);
             }
         }
 
@@ -112,59 +114,72 @@ fn declaration_name_span(source: &str, name: &str) -> Span {
     }
 }
 
-/// Collect every span where `word` is *declared* within `stmts` (function/class/
-/// interface/trait/enum name, or method name inside those).  The typed walkers
-/// (`function_refs_in_stmts`, etc.) never emit declaration spans, so callers that
-/// need declarations can call this separately and append the results.
+/// Collect every span where `word` is *declared* within `stmts`.
+///
+/// When `kind` is `Some`, only declarations of the matching category are collected:
+/// - `Function` → free (`StmtKind::Function`) declarations only
+/// - `Method`   → method declarations inside classes / traits / enums only
+/// - `Class`    → class / interface / trait / enum type declarations only
+///
+/// `None` collects every declaration kind (used by `is_declaration_span`).
 fn collect_declaration_spans(
     source: &str,
     stmts: &[Stmt<'_, '_>],
     word: &str,
+    kind: Option<SymbolKind>,
     out: &mut Vec<Span>,
 ) {
+    let want_free = matches!(kind, None | Some(SymbolKind::Function));
+    let want_method = matches!(kind, None | Some(SymbolKind::Method));
+    let want_type = matches!(kind, None | Some(SymbolKind::Class));
+
     for stmt in stmts {
         match &stmt.kind {
-            StmtKind::Function(f) if f.name == word => {
+            StmtKind::Function(f) if f.name == word && want_free => {
                 out.push(declaration_name_span(source, f.name));
             }
-            StmtKind::Class(c) if c.name == Some(word) => {
+            StmtKind::Class(c) if c.name == Some(word) && want_type => {
                 let name = c.name.expect("match guard ensures Some");
                 out.push(declaration_name_span(source, name));
             }
             StmtKind::Class(c) => {
-                for member in c.members.iter() {
-                    if let ClassMemberKind::Method(m) = &member.kind
-                        && m.name == word
-                    {
-                        out.push(declaration_name_span(source, m.name));
+                if want_method {
+                    for member in c.members.iter() {
+                        if let ClassMemberKind::Method(m) = &member.kind
+                            && m.name == word
+                        {
+                            out.push(declaration_name_span(source, m.name));
+                        }
                     }
                 }
             }
-            StmtKind::Interface(i) if i.name == word => {
+            StmtKind::Interface(i) if i.name == word && want_type => {
                 out.push(declaration_name_span(source, i.name));
             }
-            StmtKind::Trait(t) if t.name == word => {
+            StmtKind::Trait(t) if t.name == word && want_type => {
                 out.push(declaration_name_span(source, t.name));
             }
             StmtKind::Trait(t) => {
-                for member in t.members.iter() {
-                    if let ClassMemberKind::Method(m) = &member.kind
-                        && m.name == word
-                    {
-                        out.push(declaration_name_span(source, m.name));
+                if want_method {
+                    for member in t.members.iter() {
+                        if let ClassMemberKind::Method(m) = &member.kind
+                            && m.name == word
+                        {
+                            out.push(declaration_name_span(source, m.name));
+                        }
                     }
                 }
             }
-            StmtKind::Enum(e) if e.name == word => {
+            StmtKind::Enum(e) if e.name == word && want_type => {
                 out.push(declaration_name_span(source, e.name));
             }
             StmtKind::Enum(e) => {
                 for member in e.members.iter() {
                     match &member.kind {
-                        EnumMemberKind::Method(m) if m.name == word => {
+                        EnumMemberKind::Method(m) if m.name == word && want_method => {
                             out.push(declaration_name_span(source, m.name));
                         }
-                        EnumMemberKind::Case(c) if c.name == word => {
+                        EnumMemberKind::Case(c) if c.name == word && want_type => {
                             out.push(declaration_name_span(source, c.name));
                         }
                         _ => {}
@@ -173,7 +188,7 @@ fn collect_declaration_spans(
             }
             StmtKind::Namespace(ns) => {
                 if let NamespaceBody::Braced(inner) = &ns.body {
-                    collect_declaration_spans(source, inner, word, out);
+                    collect_declaration_spans(source, inner, word, kind, out);
                 }
             }
             _ => {}
@@ -185,7 +200,7 @@ fn collect_declaration_spans(
 /// Compares against the name's own span (not the whole statement span).
 fn is_declaration_span(source: &str, stmts: &[Stmt<'_, '_>], word: &str, span: &Span) -> bool {
     let mut decl_spans = Vec::new();
-    collect_declaration_spans(source, stmts, word, &mut decl_spans);
+    collect_declaration_spans(source, stmts, word, None, &mut decl_spans);
     decl_spans.iter().any(|s| spans_equal(s, span))
 }
 
@@ -576,16 +591,20 @@ mod tests {
 
     #[test]
     fn method_kind_with_include_declaration_does_not_return_free_function() {
-        // Regression: the old fix used the general walker when include_declaration=true,
-        // losing the precision of the typed walker.  A free function `get` and a method
-        // `get` coexist; searching with SymbolKind::Method + include_declaration=true must
-        // NOT return the free function call.
+        // Regression: kind precision must be preserved even when include_declaration=true.
+        // A free function `get` and a method `get` coexist; searching with
+        // SymbolKind::Method must NOT return either the free function call or its declaration.
+        //
+        // Line 0: <?php
+        // Line 1: function get() {}          ← free function declaration
+        // Line 2: get();                     ← free function call
+        // Line 3: class C { public function get() {} }  ← method declaration
+        // Line 4: $c->get();                 ← method call
         let src =
             "<?php\nfunction get() {}\nget();\nclass C { public function get() {} }\n$c->get();";
         let docs = vec![doc("/a.php", src)];
         let refs = find_references("get", &docs, true, Some(SymbolKind::Method));
         let lines: Vec<u32> = refs.iter().map(|r| r.range.start.line).collect();
-        // Method declaration on line 3, method call on line 4 — both expected.
         assert!(
             lines.contains(&3),
             "method declaration (line 3) must be present, got: {:?}",
@@ -593,10 +612,14 @@ mod tests {
         );
         assert!(
             lines.contains(&4),
-            "method call site (line 4) must be present, got: {:?}",
+            "method call (line 4) must be present, got: {:?}",
             lines
         );
-        // Free function call on line 2 must NOT appear.
+        assert!(
+            !lines.contains(&1),
+            "free function declaration (line 1) must not appear when kind=Method, got: {:?}",
+            lines
+        );
         assert!(
             !lines.contains(&2),
             "free function call (line 2) must not appear when kind=Method, got: {:?}",
@@ -606,14 +629,19 @@ mod tests {
 
     #[test]
     fn function_kind_with_include_declaration_does_not_return_method_call() {
-        // Symmetric regression test: SymbolKind::Function + include_declaration=true must
-        // not return method calls with the same name.
+        // Symmetric: SymbolKind::Function + include_declaration=true must not return method
+        // calls or method declarations with the same name.
+        //
+        // Line 0: <?php
+        // Line 1: function add() {}          ← free function declaration
+        // Line 2: add();                     ← free function call
+        // Line 3: class C { public function add() {} }  ← method declaration
+        // Line 4: $c->add();                 ← method call
         let src =
             "<?php\nfunction add() {}\nadd();\nclass C { public function add() {} }\n$c->add();";
         let docs = vec![doc("/a.php", src)];
         let refs = find_references("add", &docs, true, Some(SymbolKind::Function));
         let lines: Vec<u32> = refs.iter().map(|r| r.range.start.line).collect();
-        // Free function declaration on line 1, free call on line 2 — both expected.
         assert!(
             lines.contains(&1),
             "function declaration (line 1) must be present, got: {:?}",
@@ -621,10 +649,14 @@ mod tests {
         );
         assert!(
             lines.contains(&2),
-            "function call site (line 2) must be present, got: {:?}",
+            "function call (line 2) must be present, got: {:?}",
             lines
         );
-        // Method call on line 4 must NOT appear.
+        assert!(
+            !lines.contains(&3),
+            "method declaration (line 3) must not appear when kind=Function, got: {:?}",
+            lines
+        );
         assert!(
             !lines.contains(&4),
             "method call (line 4) must not appear when kind=Function, got: {:?}",
