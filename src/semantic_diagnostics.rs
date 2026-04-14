@@ -57,8 +57,10 @@ pub fn semantic_diagnostics(
     let sem_issues = sem_checker.check(&mago_file, program, &resolved_names);
 
     // Run linter with the same PHP version used for semantic checks.
-    let mut linter_settings = LinterSettings::default();
-    linter_settings.php_version = php_version;
+    let linter_settings = LinterSettings {
+        php_version,
+        ..LinterSettings::default()
+    };
     let linter = Linter::new(&arena, &linter_settings, None, false);
     let lint_issues = linter.lint(&mago_file, program, &resolved_names);
 
