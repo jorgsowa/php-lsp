@@ -2239,27 +2239,25 @@ const MAX_INDEXED_FILES: usize = 50_000;
 /// Skips hidden directories (names starting with `.`) and any path whose string
 /// representation contains a segment matching one of the `exclude_paths` patterns.
 /// Returns the number of files indexed.
+///
+/// Phase 1 — directory traversal: async, serial (I/O-bound; tokio handles it well).
+/// Phase 2 — file reading + parsing: concurrent, bounded by available CPU cores.
 async fn scan_workspace(
     root: PathBuf,
     docs: Arc<DocumentStore>,
     exclude_paths: &[String],
     codebase: Arc<mir_codebase::Codebase>,
 ) -> usize {
-    let mut count = 0usize;
+    // Phase 1: collect PHP file paths via async directory walk.
+    let mut php_files: Vec<PathBuf> = Vec::new();
     let mut stack = vec![root];
 
-    while let Some(dir) = stack.pop() {
-        if count >= MAX_INDEXED_FILES {
-            break;
-        }
+    'walk: while let Some(dir) = stack.pop() {
         let mut entries = match tokio::fs::read_dir(&dir).await {
             Ok(e) => e,
             Err(_) => continue,
         };
         while let Ok(Some(entry)) = entries.next_entry().await {
-            if count >= MAX_INDEXED_FILES {
-                break;
-            }
             let path = entry.path();
             let path_str = path.to_string_lossy();
             // Check user-configured exclude patterns (simple substring/prefix match).
@@ -2279,21 +2277,51 @@ async fn scan_workspace(
                 if !name.starts_with('.') {
                     stack.push(path);
                 }
-            } else if file_type.is_file()
-                && path.extension().is_some_and(|e| e == "php")
-                && let Ok(uri) = Url::from_file_path(&path)
-                && let Ok(text) = tokio::fs::read_to_string(&path).await
-            {
-                docs.index(uri.clone(), &text);
-                if let Some(d) = docs.get_doc(&uri) {
-                    collect_into_codebase(&codebase, &uri, &d);
+            } else if file_type.is_file() && path.extension().is_some_and(|e| e == "php") {
+                php_files.push(path);
+                if php_files.len() >= MAX_INDEXED_FILES {
+                    break 'walk;
                 }
-                count += 1;
             }
         }
     }
 
-    count
+    // Phase 2: read and parse files concurrently, bounded by available CPU cores.
+    let parallelism = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4);
+    let sem = Arc::new(tokio::sync::Semaphore::new(parallelism));
+    let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let mut set: tokio::task::JoinSet<()> = tokio::task::JoinSet::new();
+
+    for path in php_files {
+        let permit = Arc::clone(&sem).acquire_owned().await.unwrap();
+        let docs = Arc::clone(&docs);
+        let codebase = Arc::clone(&codebase);
+        let count = Arc::clone(&count);
+        set.spawn(async move {
+            let _permit = permit;
+            let Ok(text) = tokio::fs::read_to_string(&path).await else {
+                return;
+            };
+            let Ok(uri) = Url::from_file_path(&path) else {
+                return;
+            };
+            tokio::task::spawn_blocking(move || {
+                docs.index(uri.clone(), &text);
+                if let Some(d) = docs.get_doc(&uri) {
+                    collect_into_codebase(&codebase, &uri, &d);
+                }
+                count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            })
+            .await
+            .ok();
+        });
+    }
+
+    while set.join_next().await.is_some() {}
+
+    count.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 #[cfg(test)]
