@@ -1,4 +1,4 @@
-use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
+use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use tower_lsp::lsp_types::Url;
 
 use php_lsp::document_store::DocumentStore;
@@ -16,11 +16,11 @@ fn bench_index_single(c: &mut Criterion) {
         ("medium_class", MEDIUM),
         ("interface_large", LARGE_IFACE),
     ] {
+        let uri = Url::parse("file:///bench/file.php").unwrap();
         group.bench_with_input(BenchmarkId::from_parameter(name), source, |b, src| {
             b.iter(|| {
                 let store = DocumentStore::new();
-                let uri = Url::parse("file:///bench/file.php").unwrap();
-                store.index(uri, src);
+                store.index(uri.clone(), src);
             });
         });
     }
@@ -34,9 +34,7 @@ fn bench_get_doc(c: &mut Criterion) {
     store.index(uri.clone(), MEDIUM);
 
     c.bench_function("index/get_doc", |b| {
-        b.iter(|| {
-            let _ = store.get_doc(&uri);
-        });
+        b.iter(|| black_box(store.get_doc(&uri)));
     });
 }
 
@@ -49,7 +47,7 @@ fn bench_all_docs(c: &mut Criterion) {
     }
 
     c.bench_function("index/all_docs_10", |b| {
-        b.iter(|| store.all_docs());
+        b.iter(|| black_box(store.all_docs()));
     });
 }
 
@@ -67,6 +65,11 @@ fn bench_workspace_scan(c: &mut Criterion) {
     let mut group = c.benchmark_group("index/workspace_scan");
 
     for &n in &[1usize, 10, 50] {
+        // Pre-generate URIs so URL parsing doesn't inflate the measurement.
+        let uris: Vec<Url> = (0..n)
+            .map(|i| Url::parse(&format!("file:///bench/scan_{i}.php")).unwrap())
+            .collect();
+
         group.bench_with_input(
             BenchmarkId::from_parameter(format!("{n}_files")),
             &n,
@@ -75,8 +78,7 @@ fn bench_workspace_scan(c: &mut Criterion) {
                     let store = DocumentStore::new();
                     for i in 0..n {
                         let (_, src) = fixtures[i % fixtures.len()];
-                        let uri = Url::parse(&format!("file:///bench/scan_{i}.php")).unwrap();
-                        store.index(uri, src);
+                        store.index(uris[i].clone(), src);
                     }
                 });
             },

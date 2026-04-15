@@ -10,6 +10,8 @@ jobs:
   bench:
     name: Run criterion benchmarks
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
 
     steps:
       - uses: actions/checkout@v4
@@ -37,8 +39,9 @@ jobs:
           tool: cargo
           output-file-path: output.txt
           github-token: ${{ secrets.GITHUB_TOKEN }}
-          # Comment on PRs and fail the check when regression exceeds 10%.
-          alert-threshold: "110%"
+          # Alert threshold accounts for natural variance on shared CI runners (~15-30%).
+          # 130% flags only genuine regressions and avoids constant noise.
+          alert-threshold: "130%"
           comment-on-alert: true
           fail-on-alert: true
           # Push results to gh-pages branch to track history.

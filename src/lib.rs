@@ -1,4 +1,7 @@
-// Functions in private modules are used via main.rs/backend.rs, not the lib entry point.
+// Private items in the modules below are only reachable through main.rs/backend.rs,
+// not through this lib entry point, so rustc would flag them as dead. Pub items in
+// a lib crate are never subject to dead_code, so only genuinely-internal items are
+// suppressed — real dead code within public API surfaces will still be caught.
 #![allow(dead_code)]
 
 // Public modules exposed for benchmark crates.

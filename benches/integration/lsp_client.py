@@ -121,11 +121,7 @@ def rss_kb(pid: int) -> int | None:
     except FileNotFoundError:
         pass
     try:
-        # macOS
-        import resource
-        usage = resource.getrusage(resource.RUSAGE_CHILDREN)
-        # ru_maxrss is bytes on Linux, bytes on macOS (but already sampled at wait)
-        # Fall back to ps for a live reading.
+        # macOS — use ps for a live RSS reading.
         import subprocess as sp
         result = sp.run(["ps", "-o", "rss=", "-p", str(pid)], capture_output=True, text=True)
         if result.returncode == 0 and result.stdout.strip():
@@ -152,10 +148,13 @@ def main() -> None:
     with open(fixture_path, encoding="utf-8") as fh:
         fixture_text = fh.read()
 
+    # Pin the hover position to a known method name in medium_class.php so the
+    # server exercises symbol resolution rather than returning an empty response.
+    # medium_class.php line 110 (LSP line 109), char 19 → `getTitle`.
+    # Falls back to mid-file if the fixture is shorter than expected.
     lines = fixture_text.splitlines()
-    # Pick a hover position in the middle of the file.
-    hover_line = min(40, len(lines) - 1)
-    hover_char = len(lines[hover_line]) // 2
+    hover_line = min(109, len(lines) - 1)
+    hover_char = 19
 
     # Spawn the server and record wall time immediately.
     spawn_t0 = time.perf_counter()

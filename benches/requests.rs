@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
+use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use tower_lsp::lsp_types::{Position, Url};
 
 use php_lsp::ast::ParsedDoc;
@@ -68,6 +68,11 @@ fn cross_file_docs() -> OtherDocs {
     .collect()
 }
 
+/// Returns only the parsed docs from `cross_file_docs`, for callers that don't need URLs.
+fn parsed_docs() -> Vec<Arc<ParsedDoc>> {
+    cross_file_docs().into_iter().map(|(_, p)| p).collect()
+}
+
 fn bench_hover(c: &mut Criterion) {
     let medium_doc = Arc::new(ParsedDoc::parse(MEDIUM.to_owned()));
     let ctrl_doc = Arc::new(ParsedDoc::parse(CONTROLLER.to_owned()));
@@ -75,16 +80,30 @@ fn bench_hover(c: &mut Criterion) {
 
     let mut group = c.benchmark_group("hover");
     group.bench_function("single_method", |b| {
-        b.iter(|| hover_info(MEDIUM, &medium_doc, POS_METHOD, &[]));
+        b.iter(|| black_box(hover_info(MEDIUM, &medium_doc, POS_METHOD, &[])));
     });
     group.bench_function("single_member", |b| {
-        b.iter(|| hover_info(MEDIUM, &medium_doc, POS_MEMBER, &[]));
+        b.iter(|| black_box(hover_info(MEDIUM, &medium_doc, POS_MEMBER, &[])));
     });
     group.bench_function("cross_file_service_type", |b| {
-        b.iter(|| hover_info(CONTROLLER, &ctrl_doc, POS_SERVICE_TYPE, &other_docs));
+        b.iter(|| {
+            black_box(hover_info(
+                CONTROLLER,
+                &ctrl_doc,
+                POS_SERVICE_TYPE,
+                &other_docs,
+            ))
+        });
     });
     group.bench_function("cross_file_ctor_param", |b| {
-        b.iter(|| hover_info(CONTROLLER, &ctrl_doc, POS_SERVICE_CTOR, &other_docs));
+        b.iter(|| {
+            black_box(hover_info(
+                CONTROLLER,
+                &ctrl_doc,
+                POS_SERVICE_CTOR,
+                &other_docs,
+            ))
+        });
     });
     group.finish();
 }
@@ -107,33 +126,49 @@ fn bench_definition(c: &mut Criterion) {
 
     let mut group = c.benchmark_group("definition");
     group.bench_function("single_method", |b| {
-        b.iter(|| goto_definition(&medium_uri, MEDIUM, &medium_doc, &[], POS_METHOD));
+        b.iter(|| {
+            black_box(goto_definition(
+                &medium_uri,
+                MEDIUM,
+                &medium_doc,
+                &[],
+                POS_METHOD,
+            ))
+        });
     });
     group.bench_function("cross_file_service_type", |b| {
         b.iter(|| {
-            goto_definition(
+            black_box(goto_definition(
                 &ctrl_uri,
                 CONTROLLER,
                 &ctrl_doc,
                 &other_docs,
                 POS_SERVICE_TYPE,
-            )
+            ))
         });
     });
     group.bench_function("cross_file_ctor_param", |b| {
         b.iter(|| {
-            goto_definition(
+            black_box(goto_definition(
                 &ctrl_uri,
                 CONTROLLER,
                 &ctrl_doc,
                 &other_docs,
                 POS_SERVICE_CTOR,
-            )
+            ))
         });
     });
     for &n in &[1usize, 5, 10] {
         group.bench_with_input(BenchmarkId::new("scale", n), &ten_docs[..n], |b, docs| {
-            b.iter(|| goto_definition(&ctrl_uri, CONTROLLER, &ctrl_doc, docs, POS_SERVICE_TYPE));
+            b.iter(|| {
+                black_box(goto_definition(
+                    &ctrl_uri,
+                    CONTROLLER,
+                    &ctrl_doc,
+                    docs,
+                    POS_SERVICE_TYPE,
+                ))
+            });
         });
     }
     group.finish();
@@ -141,7 +176,7 @@ fn bench_definition(c: &mut Criterion) {
 
 fn bench_completion(c: &mut Criterion) {
     let ctrl_doc = Arc::new(ParsedDoc::parse(CONTROLLER.to_owned()));
-    let other_parsed: Vec<Arc<ParsedDoc>> = cross_file_docs().into_iter().map(|(_, p)| p).collect();
+    let other_parsed = parsed_docs();
 
     let ctx = CompletionCtx {
         source: Some(CONTROLLER),
@@ -152,7 +187,14 @@ fn bench_completion(c: &mut Criterion) {
     };
 
     c.bench_function("completion/cross_file_arrow", |b| {
-        b.iter(|| filtered_completions_at(&ctrl_doc, &other_parsed, Some(">"), &ctx));
+        b.iter(|| {
+            black_box(filtered_completions_at(
+                &ctrl_doc,
+                &other_parsed,
+                Some(">"),
+                &ctx,
+            ))
+        });
     });
 }
 
