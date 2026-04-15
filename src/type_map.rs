@@ -167,7 +167,7 @@ fn extract_method_return_class(
     None
 }
 
-/// Extract a class-name string from a type hint using mir's type resolver.
+/// Extract a class-name string from a type hint using php_ast TypeHintKind directly.
 /// - `Named(Foo)` → `"Foo"`, `Named(\App\Foo)` → `"Foo"` (short name)
 /// - `Nullable(Named(Foo))` → `"Foo"` (strips the nullable wrapper)
 /// - `Union([Named(Foo), Named(Bar)])` → `"Foo|Bar"`
@@ -177,27 +177,44 @@ fn type_hint_to_class_string(
     hint: &TypeHint<'_, '_>,
     enclosing_class: Option<&str>,
 ) -> Option<String> {
-    use mir_types::Atomic;
-    let union = mir_analyzer::parser::type_from_hint(hint, enclosing_class);
-    let classes: Vec<String> = union
-        .types
-        .iter()
-        .filter_map(|a| match a {
-            Atomic::TNamedObject { fqcn, .. }
-            | Atomic::TSelf { fqcn }
-            | Atomic::TStaticObject { fqcn }
-            | Atomic::TParent { fqcn } => {
-                let short = fqcn.rsplit('\\').next().unwrap_or(fqcn.as_ref());
-                Some(short.to_string())
+    fn extract_class(kind: &TypeHintKind<'_, '_>, enclosing: Option<&str>) -> Option<String> {
+        match kind {
+            TypeHintKind::Named(n) => {
+                let s = n.to_string_repr();
+                let short = s.rsplit('\\').next().unwrap_or(s.as_ref()).to_string();
+                // Filter out primitive-looking names (lowercase, or known keywords)
+                let first = short.chars().next().unwrap_or('_');
+                if first.is_uppercase() {
+                    Some(short)
+                } else {
+                    None
+                }
+            }
+            TypeHintKind::Nullable(inner) => extract_class(&inner.kind, enclosing),
+            TypeHintKind::Union(types) => {
+                let classes: Vec<String> = types
+                    .iter()
+                    .filter_map(|t| extract_class(&t.kind, enclosing))
+                    .collect();
+                if classes.is_empty() {
+                    None
+                } else {
+                    Some(classes.join("|"))
+                }
+            }
+            TypeHintKind::Keyword(builtin, _) => {
+                use php_ast::BuiltinType;
+                match builtin {
+                    BuiltinType::Self_ | BuiltinType::Static => {
+                        enclosing.map(|c| c.rsplit('\\').next().unwrap_or(c).to_string())
+                    }
+                    _ => None,
+                }
             }
             _ => None,
-        })
-        .collect();
-    if classes.is_empty() {
-        None
-    } else {
-        Some(classes.join("|"))
+        }
     }
+    extract_class(&hint.kind, enclosing_class)
 }
 
 fn collect_types_stmts(

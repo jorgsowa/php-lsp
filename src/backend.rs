@@ -151,13 +151,10 @@ pub struct Backend {
     psr4: Arc<RwLock<Psr4Map>>,
     meta: Arc<RwLock<PhpStormMeta>>,
     config: Arc<RwLock<LspConfig>>,
-    codebase: Arc<mir_codebase::Codebase>,
 }
 
 impl Backend {
     pub fn new(client: Client) -> Self {
-        let codebase = mir_codebase::Codebase::new();
-        mir_analyzer::stubs::load_stubs(&codebase);
         Backend {
             client,
             docs: Arc::new(DocumentStore::new()),
@@ -165,20 +162,14 @@ impl Backend {
             psr4: Arc::new(RwLock::new(Psr4Map::empty())),
             meta: Arc::new(RwLock::new(PhpStormMeta::default())),
             config: Arc::new(RwLock::new(LspConfig::default())),
-            codebase: Arc::new(codebase),
         }
     }
 
-    /// Run the definition collector for a single file, updating the persistent codebase.
-    fn collect_definitions_for(&self, uri: &Url, doc: &ParsedDoc) {
-        collect_into_codebase(&self.codebase, uri, doc);
-    }
-
-    /// Look up the import map for a file from the persistent codebase.
+    /// Look up the import map for a file from the document store.
     fn file_imports(&self, uri: &Url) -> std::collections::HashMap<String, String> {
-        self.codebase
+        self.docs
             .file_imports
-            .get(uri.as_str())
+            .get(uri)
             .map(|r| r.clone())
             .unwrap_or_default()
     }
@@ -440,7 +431,6 @@ impl LanguageServer for Backend {
 
             let docs = Arc::clone(&self.docs);
             let client = self.client.clone();
-            let codebase = Arc::clone(&self.codebase);
             let exclude_paths = self.config.read().unwrap().exclude_paths.clone();
             tokio::spawn(async move {
                 client
@@ -459,13 +449,7 @@ impl LanguageServer for Backend {
 
                 let mut total = 0usize;
                 for root in roots {
-                    total += scan_workspace(
-                        root,
-                        Arc::clone(&docs),
-                        &exclude_paths,
-                        Arc::clone(&codebase),
-                    )
-                    .await;
+                    total += scan_workspace(root, Arc::clone(&docs), &exclude_paths).await;
                 }
 
                 client
@@ -574,9 +558,8 @@ impl LanguageServer for Backend {
                 let ex = exclude_paths.clone();
                 let path_clone = path.clone();
                 let client = self.client.clone();
-                let cb = Arc::clone(&self.codebase);
                 tokio::spawn(async move {
-                    scan_workspace(path_clone, docs, &ex, cb).await;
+                    scan_workspace(path_clone, docs, &ex).await;
                     send_refresh_requests(&client).await;
                 });
             }
@@ -606,7 +589,6 @@ impl LanguageServer for Backend {
         let doc2 = self.docs.get_doc(&uri);
         let mut all_diags = diagnostics;
         if let Some(ref d) = doc2 {
-            self.collect_definitions_for(&uri, d);
             let diag_cfg = self.config.read().unwrap().diagnostics.clone();
             let dup_diags = duplicate_declaration_diagnostics(&stored_source, d, &diag_cfg);
             all_diags.extend(dup_diags);
@@ -628,7 +610,6 @@ impl LanguageServer for Backend {
 
         let docs = Arc::clone(&self.docs);
         let client = self.client.clone();
-        let codebase = Arc::clone(&self.codebase);
         let diag_cfg = self.config.read().unwrap().diagnostics.clone();
         tokio::spawn(async move {
             // 100 ms debounce: if another edit arrives before we parse, the
@@ -644,7 +625,6 @@ impl LanguageServer for Backend {
                 let source = docs.get(&uri).unwrap_or_default();
                 let mut all_diags = diagnostics;
                 if let Some(d) = docs.get_doc(&uri) {
-                    collect_into_codebase(&codebase, &uri, &d);
                     all_diags.extend(duplicate_declaration_diagnostics(&source, &d, &diag_cfg));
                     let other_raw = docs.other_docs(&uri);
                     let other_docs: Vec<Arc<ParsedDoc>> =
@@ -706,9 +686,6 @@ impl LanguageServer for Backend {
                         && let Ok(text) = tokio::fs::read_to_string(&path).await
                     {
                         self.docs.index(change.uri.clone(), &text);
-                        if let Some(d) = self.docs.get_doc(&change.uri) {
-                            self.collect_definitions_for(&change.uri, &d);
-                        }
                     }
                 }
                 FileChangeType::DELETED => {
@@ -1554,12 +1531,11 @@ impl LanguageServer for Backend {
                 ));
             }
         };
-        let (diag_cfg, php_version) = {
-            let cfg = self.config.read().unwrap();
-            (cfg.diagnostics.clone(), cfg.php_version.clone())
-        };
-        let sem_diags =
-            semantic_diagnostics(uri, &doc, &self.codebase, &diag_cfg, php_version.as_deref());
+        let cfg = self.config.read().unwrap();
+        let diag_cfg = cfg.diagnostics.clone();
+        let php_ver = cfg.php_version.clone();
+        drop(cfg);
+        let sem_diags = semantic_diagnostics(uri, &doc, &diag_cfg, php_ver.as_deref());
         let dup_diags = duplicate_declaration_diagnostics(&source, &doc, &diag_cfg);
 
         let mut items = parse_diags;
@@ -1582,10 +1558,10 @@ impl LanguageServer for Backend {
         _params: WorkspaceDiagnosticParams,
     ) -> Result<WorkspaceDiagnosticReportResult> {
         let all_parse_diags = self.docs.all_diagnostics();
-        let (diag_cfg, php_version) = {
-            let cfg = self.config.read().unwrap();
-            (cfg.diagnostics.clone(), cfg.php_version.clone())
-        };
+        let cfg = self.config.read().unwrap();
+        let diag_cfg = cfg.diagnostics.clone();
+        let php_ver = cfg.php_version.clone();
+        drop(cfg);
 
         let items: Vec<WorkspaceDocumentDiagnosticReport> = all_parse_diags
             .into_iter()
@@ -1593,13 +1569,7 @@ impl LanguageServer for Backend {
                 let doc = self.docs.get_doc(&uri)?;
 
                 let source = doc.source().to_string();
-                let sem_diags = semantic_diagnostics(
-                    &uri,
-                    &doc,
-                    &self.codebase,
-                    &diag_cfg,
-                    php_version.as_deref(),
-                );
+                let sem_diags = semantic_diagnostics(&uri, &doc, &diag_cfg, php_ver.as_deref());
                 let dup_diags = duplicate_declaration_diagnostics(&source, &doc, &diag_cfg);
 
                 let mut all_diags = parse_diags;
@@ -1634,12 +1604,11 @@ impl LanguageServer for Backend {
         let other_docs = self.docs.other_docs(uri);
 
         // Semantic diagnostics — collect undefined symbols and offer "Add use import"
-        let (diag_cfg, php_version) = {
+        let (diag_cfg, php_ver) = {
             let cfg = self.config.read().unwrap();
             (cfg.diagnostics.clone(), cfg.php_version.clone())
         };
-        let sem_diags =
-            semantic_diagnostics(uri, &doc, &self.codebase, &diag_cfg, php_version.as_deref());
+        let sem_diags = semantic_diagnostics(uri, &doc, &diag_cfg, php_ver.as_deref());
 
         // Publish semantic diagnostics merged with existing parse diagnostics
         if !sem_diags.is_empty() {
@@ -2104,19 +2073,6 @@ async fn send_refresh_requests(client: &Client) {
         .ok();
 }
 
-/// Run the definition collector for a single file against the persistent codebase.
-fn collect_into_codebase(codebase: &mir_codebase::Codebase, uri: &Url, doc: &ParsedDoc) {
-    let file: Arc<str> = Arc::from(uri.as_str());
-    let source_map = php_rs_parser::source_map::SourceMap::new(doc.source());
-    let collector = mir_analyzer::collector::DefinitionCollector::new(
-        codebase,
-        file,
-        doc.source(),
-        &source_map,
-    );
-    collector.collect(doc.program());
-}
-
 /// Maximum number of PHP files indexed during a workspace scan.
 /// Prevents excessive memory use on projects with very large vendor trees.
 const MAX_INDEXED_FILES: usize = 50_000;
@@ -2129,7 +2085,6 @@ async fn scan_workspace(
     root: PathBuf,
     docs: Arc<DocumentStore>,
     exclude_paths: &[String],
-    codebase: Arc<mir_codebase::Codebase>,
 ) -> usize {
     let mut count = 0usize;
     let mut stack = vec![root];
@@ -2171,9 +2126,6 @@ async fn scan_workspace(
                 && let Ok(text) = tokio::fs::read_to_string(&path).await
             {
                 docs.index(uri.clone(), &text);
-                if let Some(d) = docs.get_doc(&uri) {
-                    collect_into_codebase(&codebase, &uri, &d);
-                }
                 count += 1;
             }
         }
