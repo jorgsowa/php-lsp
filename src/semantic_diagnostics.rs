@@ -69,6 +69,52 @@ pub fn semantic_diagnostics(
         .collect()
 }
 
+/// Run semantic body analysis on `doc` assuming the codebase is already
+/// finalized (all definitions collected, `finalize()` already called).
+///
+/// Unlike [`semantic_diagnostics`], this function does **not** mutate the
+/// codebase — it skips the `remove_file_definitions` / re-collect / `finalize`
+/// cycle. Intended for workspace diagnostic batch passes where the codebase is
+/// built once upfront and `finalize()` is called a single time before the loop.
+pub fn semantic_diagnostics_no_rebuild(
+    uri: &Url,
+    doc: &ParsedDoc,
+    codebase: &mir_codebase::Codebase,
+    cfg: &DiagnosticsConfig,
+    _php_version: Option<&str>,
+) -> Vec<Diagnostic> {
+    if !cfg.enabled {
+        return vec![];
+    }
+
+    let file: Arc<str> = Arc::from(uri.as_str());
+    let source_map = php_rs_parser::source_map::SourceMap::new(doc.source());
+
+    // Pass 2 only: analyse function/method bodies.
+    // The codebase is already finalized — skip remove/re-collect/finalize so
+    // that inheritance tables are not torn down and rebuilt for every file.
+    let mut issue_buffer = mir_issues::IssueBuffer::new();
+    let mut symbols = Vec::new();
+    let mut analyzer = mir_analyzer::stmt::StatementsAnalyzer::new(
+        codebase,
+        file,
+        doc.source(),
+        &source_map,
+        &mut issue_buffer,
+        &mut symbols,
+    );
+    let mut ctx = mir_analyzer::context::Context::new();
+    analyzer.analyze_stmts(&doc.program().stmts, &mut ctx);
+
+    issue_buffer
+        .into_issues()
+        .into_iter()
+        .filter(|i| !i.suppressed)
+        .filter(|i| issue_passes_filter(i, cfg))
+        .map(|i| to_lsp_diagnostic(i, uri))
+        .collect()
+}
+
 /// Returns `true` if the mir-analyzer issue is allowed through by the config.
 fn issue_passes_filter(issue: &mir_issues::Issue, cfg: &DiagnosticsConfig) -> bool {
     use mir_issues::IssueKind;
