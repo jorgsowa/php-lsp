@@ -9,7 +9,10 @@ on:
 jobs:
   bench:
     name: Run criterion benchmarks
-    runs-on: ubuntu-latest
+    # ubuntu-latest-4-cores gives a dedicated 4-core instance which reduces
+    # run-to-run variance compared to the shared 2-core ubuntu-latest runners.
+    # The alert threshold is kept at 130 % to absorb remaining CI noise.
+    runs-on: ubuntu-latest-4-cores
     permissions:
       contents: write
 

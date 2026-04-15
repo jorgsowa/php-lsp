@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
-# bench_lsp.sh — build php-lsp, send 100 hover requests, report latency + RSS.
+# bench_lsp.sh — build php-lsp, send N requests, report latency + RSS.
+#
+# Usage:
+#   ./bench_lsp.sh [--method hover|definition|references] [--requests N]
+#
+# Defaults: method=hover, requests=100
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -9,6 +14,21 @@ CLIENT="$SCRIPT_DIR/lsp_client.py"
 FIXTURE="$ROOT_DIR/benches/fixtures/medium_class.php"
 RESULTS_FILE="$(mktemp /tmp/bench_lsp_results.XXXXXX.jsonl)"
 
+# ── Argument parsing ───────────────────────────────────────────────────────────
+LSP_METHOD="hover"
+NUM_REQUESTS=100
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --method)
+            LSP_METHOD="$2"; shift 2 ;;
+        --requests)
+            NUM_REQUESTS="$2"; shift 2 ;;
+        *)
+            echo "Unknown argument: $1" >&2; exit 1 ;;
+    esac
+done
+
 # ── Build ──────────────────────────────────────────────────────────────────────
 echo "==> Building php-lsp (release)..."
 BUILD_START=$(date +%s%3N)
@@ -17,27 +37,31 @@ BUILD_END=$(date +%s%3N)
 BUILD_MS=$(( BUILD_END - BUILD_START ))
 echo "    Build time: ${BUILD_MS} ms"
 
-# ── Startup latency ────────────────────────────────────────────────────────────
-echo "==> Measuring startup + initialize latency..."
+# ── Run client ────────────────────────────────────────────────────────────────
+echo "==> Benchmarking textDocument/${LSP_METHOD} (${NUM_REQUESTS} requests)..."
 START_MS=$(date +%s%3N)
 python3 "$CLIENT" \
     --binary "$BINARY" \
     --fixture "$FIXTURE" \
-    --requests 100 \
+    --requests "$NUM_REQUESTS" \
+    --lsp-method "$LSP_METHOD" \
     --output "$RESULTS_FILE"
 END_MS=$(date +%s%3N)
 TOTAL_MS=$(( END_MS - START_MS ))
-echo "    Total wall time for 100 requests: ${TOTAL_MS} ms"
+echo "    Total wall time: ${TOTAL_MS} ms"
 
 # ── Parse results ──────────────────────────────────────────────────────────────
-python3 - "$RESULTS_FILE" <<'EOF'
+python3 - "$RESULTS_FILE" "$LSP_METHOD" <<'EOF'
 import json, sys, statistics
+
+results_path = sys.argv[1]
+lsp_method   = sys.argv[2]
 
 startup_ms = None
 rss_kb = None
 latencies = []
 
-with open(sys.argv[1]) as f:
+with open(results_path) as f:
     for line in f:
         line = line.strip()
         if not line:
@@ -66,7 +90,7 @@ if rss_kb is not None:
 else:
     print("    N/A")
 
-print("==> Hover latency statistics (ms):")
+print(f"==> textDocument/{lsp_method} latency statistics (ms):")
 if not latencies:
     print("    No latency records found.")
     sys.exit(0)
