@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use php_ast::{ClassMemberKind, EnumMemberKind, ExprKind, NamespaceBody, Span, Stmt, StmtKind};
@@ -29,35 +30,32 @@ pub fn incoming_calls(
     all_docs: &[(Url, Arc<ParsedDoc>)],
 ) -> Vec<CallHierarchyIncomingCall> {
     let call_sites = find_references(&item.name, all_docs, false, None);
+    // Build O(1) URI → doc map to avoid scanning all_docs for each call site.
+    let doc_map: HashMap<&Url, &Arc<ParsedDoc>> = all_docs.iter().map(|(u, d)| (u, d)).collect();
     let mut result: Vec<CallHierarchyIncomingCall> = Vec::new();
+    // Track (caller_name, caller_uri) → index in `result` for O(1) dedup.
+    let mut index: HashMap<(String, Url), usize> = HashMap::new();
 
     for loc in call_sites {
-        let caller = all_docs
-            .iter()
-            .find(|(u, _)| *u == loc.uri)
-            .and_then(|(_, doc)| {
-                enclosing_function(
-                    doc.source(),
-                    &doc.program().stmts,
-                    loc.range.start,
-                    &loc.uri,
-                )
-            });
+        let caller = doc_map.get(&loc.uri).and_then(|doc| {
+            enclosing_function(
+                doc.source(),
+                &doc.program().stmts,
+                loc.range.start,
+                &loc.uri,
+            )
+        });
 
-        if let Some(caller_item) = caller {
-            if let Some(entry) = result
-                .iter_mut()
-                .find(|e| e.from.name == caller_item.name && e.from.uri == caller_item.uri)
-            {
-                entry.from_ranges.push(loc.range);
-            } else {
-                result.push(CallHierarchyIncomingCall {
-                    from: caller_item,
-                    from_ranges: vec![loc.range],
-                });
-            }
+        let key = if let Some(ref ci) = caller {
+            (ci.name.clone(), ci.uri.clone())
         } else {
-            let synthetic = CallHierarchyItem {
+            ("<file scope>".to_string(), loc.uri.clone())
+        };
+
+        if let Some(&idx) = index.get(&key) {
+            result[idx].from_ranges.push(loc.range);
+        } else {
+            let from = caller.unwrap_or_else(|| CallHierarchyItem {
                 name: "<file scope>".to_string(),
                 kind: SymbolKind::FILE,
                 tags: None,
@@ -66,18 +64,13 @@ pub fn incoming_calls(
                 range: loc.range,
                 selection_range: loc.range,
                 data: None,
-            };
-            if let Some(entry) = result
-                .iter_mut()
-                .find(|e| e.from.name == synthetic.name && e.from.uri == synthetic.uri)
-            {
-                entry.from_ranges.push(loc.range);
-            } else {
-                result.push(CallHierarchyIncomingCall {
-                    from: synthetic,
-                    from_ranges: vec![loc.range],
-                });
-            }
+            });
+            let idx = result.len();
+            index.insert(key, idx);
+            result.push(CallHierarchyIncomingCall {
+                from,
+                from_ranges: vec![loc.range],
+            });
         }
     }
 
@@ -89,23 +82,24 @@ pub fn outgoing_calls(
     item: &CallHierarchyItem,
     all_docs: &[(Url, Arc<ParsedDoc>)],
 ) -> Vec<CallHierarchyOutgoingCall> {
+    let Some((_, doc)) = all_docs.iter().find(|(uri, _)| *uri == item.uri) else {
+        return Vec::new();
+    };
+    // Borrow source directly from the Arc to avoid cloning the whole file.
+    let item_source = doc.source();
     let mut calls: Vec<(String, Span)> = Vec::new();
-    let mut item_source = String::new();
-
-    for (uri, doc) in all_docs {
-        if *uri == item.uri {
-            item_source = doc.source().to_string();
-            collect_calls_for(&item.name, &doc.program().stmts, &mut calls);
-            break;
-        }
-    }
+    collect_calls_for(&item.name, &doc.program().stmts, &mut calls);
 
     let mut result: Vec<CallHierarchyOutgoingCall> = Vec::new();
+    // Track callee_name → index in `result` for O(1) dedup.
+    let mut index: HashMap<String, usize> = HashMap::new();
     for (callee_name, span) in calls {
-        let call_range = span_to_range(&item_source, span);
-        if let Some(existing) = result.iter_mut().find(|e| e.to.name == callee_name) {
-            existing.from_ranges.push(call_range);
+        let call_range = span_to_range(item_source, span);
+        if let Some(&idx) = index.get(&callee_name) {
+            result[idx].from_ranges.push(call_range);
         } else if let Some(callee_item) = prepare_call_hierarchy(&callee_name, all_docs) {
+            let idx = result.len();
+            index.insert(callee_name, idx);
             result.push(CallHierarchyOutgoingCall {
                 to: callee_item,
                 from_ranges: vec![call_range],
