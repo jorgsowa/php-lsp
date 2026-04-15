@@ -183,29 +183,11 @@ vim.api.nvim_create_autocmd('FileType', {
 
 ### PHPStorm
 
-> **Native plugin:** A dedicated php-lsp plugin for PhpStorm is currently [under review on the JetBrains Marketplace](https://plugins.jetbrains.com/plugin/31223-php-lsp). Once approved, it will offer a simpler setup than the LSP4IJ approach below.
+Install the [php-lsp](https://plugins.jetbrains.com/plugin/31223-php-lsp) plugin from the JetBrains Marketplace (**Settings → Plugins → Marketplace → "php-lsp"**).
 
-1. Install the [LSP4IJ](https://plugins.jetbrains.com/plugin/23257-lsp4ij) plugin (**Settings → Plugins → Marketplace → "LSP4IJ"**).
-2. Go to **Settings → Languages & Frameworks → LSP → Language Servers → +**, choose **Custom server**, and fill in the **Server** tab:
-
-   | Field | Value |
-   |---|---|
-   | Name | `php-lsp` |
-   | Command | `<path-to-php-lsp>` |
-
-3. In the **Mappings** tab add file name pattern `*.php`.
-4. In the **Configuration** tab paste your options into the **Initialization options** JSON field:
-
-```json
-{
-  "phpVersion": "8.5",
-  "excludePaths": ["cache/*", "storage/*"]
-}
-```
+The plugin handles everything automatically — no manual server configuration required. Source is available at [jorgsowa/php-lsp-phpstorm-plugin](https://github.com/jorgsowa/php-lsp-phpstorm-plugin).
 
 See [configuration.md](configuration.md) for all available options.
-
-> **Known issue:** LSP4IJ throws an `UnsupportedOperationException` on `workspace/inlineValue/refresh` (tracked in [redhat-developer/lsp4ij#1470](https://github.com/redhat-developer/lsp4ij/issues/1470)). Update LSP4IJ to the latest version once a fix is released.
 
 ---
 
