@@ -65,7 +65,9 @@ fn find_references_inner(
             // Rename path: general walker covers call sites, `use` imports, and declarations.
             refs_in_stmts_with_use(source, stmts, word, &mut spans);
             if !include_declaration {
-                spans.retain(|span| !is_declaration_span(source, stmts, word, span));
+                let mut decl_spans = Vec::new();
+                collect_declaration_spans(source, stmts, word, None, &mut decl_spans);
+                spans.retain(|span| !decl_spans.iter().any(|s| spans_equal(s, span)));
             }
         } else {
             match kind {
@@ -76,7 +78,9 @@ fn find_references_inner(
                 None => {
                     refs_in_stmts(source, stmts, word, &mut spans);
                     if !include_declaration {
-                        spans.retain(|span| !is_declaration_span(source, stmts, word, span));
+                        let mut decl_spans = Vec::new();
+                        collect_declaration_spans(source, stmts, word, None, &mut decl_spans);
+                        spans.retain(|span| !decl_spans.iter().any(|s| spans_equal(s, span)));
                     }
                 }
             }
@@ -209,14 +213,6 @@ fn collect_declaration_spans(
             _ => {}
         }
     }
-}
-
-/// Returns true if this span is the declaration site (function/class/method name).
-/// Compares against the name's own span (not the whole statement span).
-fn is_declaration_span(source: &str, stmts: &[Stmt<'_, '_>], word: &str, span: &Span) -> bool {
-    let mut decl_spans = Vec::new();
-    collect_declaration_spans(source, stmts, word, None, &mut decl_spans);
-    decl_spans.iter().any(|s| spans_equal(s, span))
 }
 
 fn spans_equal(a: &Span, b: &Span) -> bool {
