@@ -196,6 +196,17 @@ impl RefVisitor for AllRefsVisitor<'_> {
                         end: start + i.name.len() as u32,
                     });
                 }
+                for member in i.members.iter() {
+                    if let ClassMemberKind::Method(m) = &member.kind
+                        && m.name == self.word
+                    {
+                        let start = str_offset(self.source, m.name);
+                        out.push(Span {
+                            start,
+                            end: start + m.name.len() as u32,
+                        });
+                    }
+                }
                 true
             }
             StmtKind::Trait(t) => {
