@@ -3208,6 +3208,91 @@ mod integration {
         );
     }
 
+    /// Multi-file variant of the regression test for issue #125.
+    ///
+    /// When the cursor is on a method *declaration* the server must scan all
+    /// indexed files for method references and must not bleed into free-function
+    /// references in a different file that share the same name.
+    ///
+    /// Document layout
+    /// ───────────────
+    /// file:///a.php   — contains the class with the method declaration (cursor file)
+    ///   Line 0: <?php
+    ///   Line 1: class C {
+    ///   Line 2:     public function add() {}   ← cursor here (character 20)
+    ///   Line 3: }
+    ///
+    /// file:///b.php   — contains a free function with the same name AND a method call
+    ///   Line 0: <?php
+    ///   Line 1: function add() {}              ← free-function decl — must be excluded
+    ///   Line 2: add();                         ← free-function call — must be excluded
+    ///   Line 3: $c->add();                     ← method call — must be included
+    #[tokio::test]
+    async fn references_on_method_decl_excludes_cross_file_free_function() {
+        let src_a = "<?php\nclass C {\n    public function add() {}\n}";
+        let src_b = "<?php\nfunction add() {}\nadd();\n$c->add();";
+
+        let mut client = start_server();
+        initialize(&mut client).await;
+
+        open_doc(&mut client, "file:///a.php", src_a).await;
+        open_doc(&mut client, "file:///b.php", src_b).await;
+
+        // Cursor on "add" in "    public function add() {}" — line 2, character 20.
+        let resp = client
+            .request(
+                "textDocument/references",
+                serde_json::json!({
+                    "textDocument": { "uri": "file:///a.php" },
+                    "position": { "line": 2, "character": 20 },
+                    "context": { "includeDeclaration": true }
+                }),
+            )
+            .await;
+
+        assert!(
+            resp["error"].is_null(),
+            "references should not error: {:?}",
+            resp
+        );
+
+        let locs = resp["result"]
+            .as_array()
+            .expect("expected array of locations");
+
+        // Helper: collect (uri, line) pairs so failures are easy to read.
+        let hits: Vec<(&str, u32)> = locs
+            .iter()
+            .map(|l| {
+                (
+                    l["uri"].as_str().unwrap(),
+                    l["range"]["start"]["line"].as_u64().unwrap() as u32,
+                )
+            })
+            .collect();
+
+        assert!(
+            hits.contains(&("file:///a.php", 2)),
+            "method declaration (a.php line 2) must be included, got: {:?}",
+            hits
+        );
+        assert!(
+            hits.contains(&("file:///b.php", 3)),
+            "method call (b.php line 3) must be included, got: {:?}",
+            hits
+        );
+        assert!(
+            !hits.contains(&("file:///b.php", 1)),
+            "free-function declaration (b.php line 1) must be excluded, got: {:?}",
+            hits
+        );
+        assert!(
+            !hits.contains(&("file:///b.php", 2)),
+            "free-function call (b.php line 2) must be excluded, got: {:?}",
+            hits
+        );
+    }
+
     #[tokio::test]
     async fn shutdown_responds_correctly() {
         let mut client = start_server();
