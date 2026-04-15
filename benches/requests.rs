@@ -16,31 +16,36 @@ const REPOSITORY: &str = include_str!("fixtures/repository.php");
 const EVENTS: &str = include_str!("fixtures/events.php");
 const VALIDATOR: &str = include_str!("fixtures/validator.php");
 
-// medium_class.php — line 97, char 20: `getTitle` method declaration
+// medium_class.php — LSP line 109 (file line 110), char 19: on `getTitle` in
+//   `    public function getTitle(): string`
 const POS_METHOD: Position = Position {
-    line: 97,
+    line: 109,
+    character: 19,
+};
+// medium_class.php — LSP line 94 (file line 95), char 20: on `title` in
+//   `   private string $title;`
+const POS_MEMBER: Position = Position {
+    line: 94,
     character: 20,
 };
-// medium_class.php — line 95, char 16: `Article` property block
-const POS_MEMBER: Position = Position {
-    line: 95,
-    character: 16,
-};
 
-// controller.php — line 17, char 14: `UserService` property type (defined in service.php)
+// controller.php — LSP line 17 (file line 18), char 13: on `UserService` in
+//   `    private UserService $service;`
 const POS_SERVICE_TYPE: Position = Position {
     line: 17,
-    character: 14,
+    character: 13,
 };
-// controller.php — line 25, char 35: `UserService` constructor param (defined in service.php)
+// controller.php — LSP line 25 (file line 26), char 32: on `UserService` in
+//   `    public function __construct(UserService $service, …)`
 const POS_SERVICE_CTOR: Position = Position {
     line: 25,
-    character: 35,
+    character: 32,
 };
-// controller.php — line 38, char 24: `->` arrow trigger on `$this->service->`
+// controller.php — LSP line 38 (file line 39), char 31: after `->` in
+//   `        return $this->service->listAll();`
 const POS_ARROW: Position = Position {
     line: 38,
-    character: 24,
+    character: 31,
 };
 
 type OtherDocs = Vec<(Url, Arc<ParsedDoc>)>;

@@ -30,51 +30,57 @@ TOTAL_MS=$(( END_MS - START_MS ))
 echo "    Total wall time for 100 requests: ${TOTAL_MS} ms"
 
 # ── Parse results ──────────────────────────────────────────────────────────────
-echo "==> Latency statistics (ms):"
 python3 - "$RESULTS_FILE" <<'EOF'
 import json, sys, statistics
 
-records = []
+startup_ms = None
+rss_kb = None
+latencies = []
+
 with open(sys.argv[1]) as f:
     for line in f:
         line = line.strip()
-        if line:
-            try:
-                obj = json.loads(line)
-                if "latency_ms" in obj:
-                    records.append(obj["latency_ms"])
-            except json.JSONDecodeError:
-                pass
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        method = obj.get("method", "")
+        if method == "startup":
+            startup_ms = obj["latency_ms"]
+        elif method == "rss":
+            rss_kb = obj.get("rss_kb")
+        elif "latency_ms" in obj:
+            latencies.append(obj["latency_ms"])
 
-if not records:
-    print("  No latency records found.")
+print("==> Startup time (spawn → initialize response):")
+if startup_ms is not None:
+    print(f"    {startup_ms:.1f} ms")
+else:
+    print("    N/A")
+
+print("==> RSS after workspace index:")
+if rss_kb is not None:
+    print(f"    {rss_kb} KB ({rss_kb / 1024:.1f} MB)")
+else:
+    print("    N/A")
+
+print("==> Hover latency statistics (ms):")
+if not latencies:
+    print("    No latency records found.")
     sys.exit(0)
 
-records_sorted = sorted(records)
-n = len(records_sorted)
-p50 = records_sorted[int(n * 0.50)]
-p95 = records_sorted[int(n * 0.95)]
-p99 = records_sorted[min(int(n * 0.99), n - 1)]
-mean = statistics.mean(records)
-
-print(f"  count : {n}")
-print(f"  mean  : {mean:.2f} ms")
-print(f"  p50   : {p50:.2f} ms")
-print(f"  p95   : {p95:.2f} ms")
-print(f"  p99   : {p99:.2f} ms")
-print(f"  min   : {min(records):.2f} ms")
-print(f"  max   : {max(records):.2f} ms")
+s = sorted(latencies)
+n = len(s)
+print(f"    count : {n}")
+print(f"    mean  : {statistics.mean(latencies):.2f}")
+print(f"    p50   : {s[int(n * 0.50)]:.2f}")
+print(f"    p95   : {s[int(n * 0.95)]:.2f}")
+print(f"    p99   : {s[min(int(n * 0.99), n - 1)]:.2f}")
+print(f"    min   : {s[0]:.2f}")
+print(f"    max   : {s[-1]:.2f}")
 EOF
-
-# ── RSS check ─────────────────────────────────────────────────────────────────
-# Spawn once more just to sample RSS at idle (after initialize).
-echo "==> Sampling server RSS (KB)..."
-"$BINARY" &
-SERVER_PID=$!
-sleep 0.5
-RSS_KB=$(ps -o rss= -p "$SERVER_PID" 2>/dev/null | tr -d ' ' || echo "N/A")
-kill "$SERVER_PID" 2>/dev/null || true
-echo "    RSS at idle: ${RSS_KB} KB"
 
 rm -f "$RESULTS_FILE"
 echo "==> Done."

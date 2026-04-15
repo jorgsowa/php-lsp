@@ -110,12 +110,39 @@ def req_hover(req_id: int, uri: str, line: int, character: int) -> dict:
 
 # ── Main ───────────────────────────────────────────────────────────────────────
 
+def rss_kb(pid: int) -> int | None:
+    """Return RSS in KB for the given PID, or None if unavailable."""
+    try:
+        # Linux
+        with open(f"/proc/{pid}/status") as fh:
+            for line in fh:
+                if line.startswith("VmRSS:"):
+                    return int(line.split()[1])
+    except FileNotFoundError:
+        pass
+    try:
+        # macOS
+        import resource
+        usage = resource.getrusage(resource.RUSAGE_CHILDREN)
+        # ru_maxrss is bytes on Linux, bytes on macOS (but already sampled at wait)
+        # Fall back to ps for a live reading.
+        import subprocess as sp
+        result = sp.run(["ps", "-o", "rss=", "-p", str(pid)], capture_output=True, text=True)
+        if result.returncode == 0 and result.stdout.strip():
+            return int(result.stdout.strip())
+    except Exception:
+        pass
+    return None
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Minimal LSP benchmark client")
     parser.add_argument("--binary", required=True, help="Path to php-lsp binary")
     parser.add_argument("--fixture", required=True, help="Path to PHP fixture file")
     parser.add_argument("--requests", type=int, default=100, help="Number of hover requests")
     parser.add_argument("--output", default="-", help="Output JSONL file (- for stdout)")
+    parser.add_argument("--index-wait", type=float, default=2.0,
+                        help="Seconds to wait for workspace index before sampling RSS (default: 2)")
     args = parser.parse_args()
 
     fixture_path = os.path.abspath(args.fixture)
@@ -130,7 +157,8 @@ def main() -> None:
     hover_line = min(40, len(lines) - 1)
     hover_char = len(lines[hover_line]) // 2
 
-    # Spawn the server.
+    # Spawn the server and record wall time immediately.
+    spawn_t0 = time.perf_counter()
     proc = subprocess.Popen(
         [args.binary],
         stdin=subprocess.PIPE,
@@ -141,10 +169,17 @@ def main() -> None:
     output_fh = open(args.output, "w", encoding="utf-8") if args.output != "-" else sys.stdout
 
     try:
-        # Handshake.
+        # ── Startup: measure time from spawn to initialize response ──────────
         proc.stdin.write(encode_message(req_initialize(root_uri)))
         proc.stdin.flush()
         _init_resp = read_message(proc)
+        startup_ms = (time.perf_counter() - spawn_t0) * 1000.0
+
+        output_fh.write(json.dumps({
+            "method": "startup",
+            "latency_ms": round(startup_ms, 3),
+        }) + "\n")
+        output_fh.flush()
 
         proc.stdin.write(encode_message(notif_initialized()))
         proc.stdin.flush()
@@ -153,7 +188,16 @@ def main() -> None:
         proc.stdin.write(encode_message(req_did_open(fixture_uri, fixture_text)))
         proc.stdin.flush()
 
-        # Send N hover requests sequentially, measuring round-trip latency.
+        # ── RSS: wait for workspace index, then sample from outside the process ──
+        time.sleep(args.index_wait)
+        rss = rss_kb(proc.pid)
+        output_fh.write(json.dumps({
+            "method": "rss",
+            "rss_kb": rss,
+        }) + "\n")
+        output_fh.flush()
+
+        # ── Request latency ───────────────────────────────────────────────────
         for i in range(args.requests):
             rid = next_id()
             msg = req_hover(rid, fixture_uri, hover_line, hover_char)
@@ -162,13 +206,11 @@ def main() -> None:
             proc.stdin.flush()
             _resp = read_message(proc)
             t1 = time.perf_counter()
-            latency_ms = (t1 - t0) * 1000.0
-            record = {
+            output_fh.write(json.dumps({
                 "method": "textDocument/hover",
                 "request_index": i,
-                "latency_ms": round(latency_ms, 3),
-            }
-            output_fh.write(json.dumps(record) + "\n")
+                "latency_ms": round((t1 - t0) * 1000.0, 3),
+            }) + "\n")
             output_fh.flush()
 
     finally:

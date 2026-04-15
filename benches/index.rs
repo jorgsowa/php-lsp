@@ -44,7 +44,7 @@ fn bench_get_doc(c: &mut Criterion) {
 fn bench_all_docs(c: &mut Criterion) {
     let store = DocumentStore::new();
     for i in 0..10 {
-        let uri = Url::parse(&format!("file:///bench/file{}.php", i)).unwrap();
+        let uri = Url::parse(&format!("file:///bench/file{i}.php")).unwrap();
         store.index(uri, SMALL);
     }
 
@@ -53,5 +53,44 @@ fn bench_all_docs(c: &mut Criterion) {
     });
 }
 
-criterion_group!(benches, bench_index_single, bench_get_doc, bench_all_docs);
+/// Benchmark a simulated workspace scan: index N files sequentially into a fresh store.
+/// Models "workspace indexing time" from the issue — how long it takes to build an index
+/// from scratch for a codebase of a given size.
+fn bench_workspace_scan(c: &mut Criterion) {
+    // Round-robin across the three fixture files so the content is realistic.
+    let fixtures: &[(&str, &str)] = &[
+        ("small_class", SMALL),
+        ("medium_class", MEDIUM),
+        ("interface_large", LARGE_IFACE),
+    ];
+
+    let mut group = c.benchmark_group("index/workspace_scan");
+
+    for &n in &[1usize, 10, 50] {
+        group.bench_with_input(
+            BenchmarkId::from_parameter(format!("{n}_files")),
+            &n,
+            |b, &n| {
+                b.iter(|| {
+                    let store = DocumentStore::new();
+                    for i in 0..n {
+                        let (_, src) = fixtures[i % fixtures.len()];
+                        let uri = Url::parse(&format!("file:///bench/scan_{i}.php")).unwrap();
+                        store.index(uri, src);
+                    }
+                });
+            },
+        );
+    }
+
+    group.finish();
+}
+
+criterion_group!(
+    benches,
+    bench_index_single,
+    bench_get_doc,
+    bench_all_docs,
+    bench_workspace_scan
+);
 criterion_main!(benches);

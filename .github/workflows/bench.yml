@@ -31,11 +31,22 @@ jobs:
       - name: Run benchmarks
         run: cargo bench -- --output-format bencher | tee output.txt
 
-      - name: Upload benchmark results
+      - name: Store benchmark result
+        uses: benchmark-action/github-action-benchmark@v1
+        with:
+          tool: cargo
+          output-file-path: output.txt
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          # Comment on PRs and fail the check when regression exceeds 10%.
+          alert-threshold: "110%"
+          comment-on-alert: true
+          fail-on-alert: true
+          # Push results to gh-pages branch to track history.
+          auto-push: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Upload criterion HTML reports
         uses: actions/upload-artifact@v4
         with:
-          name: bench-results-${{ github.sha }}
-          path: |
-            output.txt
-            target/criterion/
+          name: criterion-${{ github.sha }}
+          path: target/criterion/
           retention-days: 90
