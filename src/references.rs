@@ -66,7 +66,15 @@ fn find_references_inner(
         } else {
             match kind {
                 Some(SymbolKind::Function) => function_refs_in_stmts(stmts, word, &mut spans),
-                Some(SymbolKind::Method) => method_refs_in_stmts(stmts, word, &mut spans),
+                Some(SymbolKind::Method) => {
+                    method_refs_in_stmts(stmts, word, &mut spans);
+                    // The method walker only emits call sites. When the declaration is
+                    // requested, also collect the method name spans from class/trait/enum
+                    // declarations so they appear in the results.
+                    if include_declaration {
+                        method_decl_spans(source, stmts, word, &mut spans);
+                    }
+                }
                 Some(SymbolKind::Class) => class_refs_in_stmts(stmts, word, &mut spans),
                 None => refs_in_stmts(source, stmts, word, &mut spans),
             }
@@ -91,6 +99,74 @@ fn find_references_inner(
     }
 
     locations
+}
+
+/// Collect the name spans of every method named `word` declared inside a class,
+/// interface, trait, or enum in `stmts`. Used to include declaration sites in
+/// method reference results, since the method call walker only emits call sites.
+fn method_decl_spans(source: &str, stmts: &[Stmt<'_, '_>], word: &str, out: &mut Vec<Span>) {
+    for stmt in stmts {
+        match &stmt.kind {
+            StmtKind::Class(c) => {
+                for member in c.members.iter() {
+                    if let ClassMemberKind::Method(m) = &member.kind
+                        && m.name == word
+                    {
+                        let start = str_offset(source, m.name);
+                        out.push(Span {
+                            start,
+                            end: start + m.name.len() as u32,
+                        });
+                    }
+                }
+            }
+            StmtKind::Trait(t) => {
+                for member in t.members.iter() {
+                    if let ClassMemberKind::Method(m) = &member.kind
+                        && m.name == word
+                    {
+                        let start = str_offset(source, m.name);
+                        out.push(Span {
+                            start,
+                            end: start + m.name.len() as u32,
+                        });
+                    }
+                }
+            }
+            StmtKind::Interface(i) => {
+                for member in i.members.iter() {
+                    if let ClassMemberKind::Method(m) = &member.kind
+                        && m.name == word
+                    {
+                        let start = str_offset(source, m.name);
+                        out.push(Span {
+                            start,
+                            end: start + m.name.len() as u32,
+                        });
+                    }
+                }
+            }
+            StmtKind::Enum(e) => {
+                for member in e.members.iter() {
+                    if let EnumMemberKind::Method(m) = &member.kind
+                        && m.name == word
+                    {
+                        let start = str_offset(source, m.name);
+                        out.push(Span {
+                            start,
+                            end: start + m.name.len() as u32,
+                        });
+                    }
+                }
+            }
+            StmtKind::Namespace(ns) => {
+                if let NamespaceBody::Braced(inner) = &ns.body {
+                    method_decl_spans(source, inner, word, out);
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 /// Returns true if this span is the declaration site (function/class/method name).
@@ -133,6 +209,16 @@ fn is_declaration_span(source: &str, stmts: &[Stmt<'_, '_>], word: &str, span: &
                 StmtKind::Interface(i) if i.name == word => {
                     if spans_equal(&name_span(source, i.name), span) {
                         return true;
+                    }
+                }
+                StmtKind::Interface(i) => {
+                    for member in i.members.iter() {
+                        if let ClassMemberKind::Method(m) = &member.kind
+                            && m.name == word
+                            && spans_equal(&name_span(source, m.name), span)
+                        {
+                            return true;
+                        }
                     }
                 }
                 StmtKind::Trait(t) if t.name == word => {
@@ -572,6 +658,45 @@ mod tests {
         assert_eq!(
             decl_ref.range.start.character, 20,
             "method declaration should start at the method name, not 'public function'"
+        );
+    }
+
+    #[test]
+    fn method_kind_with_declaration_excludes_free_function() {
+        // Reproduces issue #125: cursor on a method *declaration* must return
+        // only method-related refs, not free-function refs of the same name.
+        let src = "<?php\nfunction add() {}\nclass C {\n    public function add() {}\n}\nadd();\n$c->add();";
+        let docs = vec![doc("/a.php", src)];
+        // Searching with SymbolKind::Method (as the fixed code would produce) must:
+        //  - Include the method declaration on line 3 (include_declaration=true)
+        //  - Include the method call on line 6
+        //  - Exclude the free-function declaration on line 1
+        //  - Exclude the free-function call on line 5
+        let refs = find_references("add", &docs, true, Some(SymbolKind::Method));
+        let lines: Vec<u32> = {
+            let mut v: Vec<u32> = refs.iter().map(|r| r.range.start.line).collect();
+            v.sort_unstable();
+            v
+        };
+        assert!(
+            lines.contains(&3),
+            "method declaration on line 3 must be included, got: {:?}",
+            lines
+        );
+        assert!(
+            lines.contains(&6),
+            "method call on line 6 must be included, got: {:?}",
+            lines
+        );
+        assert!(
+            !lines.contains(&1),
+            "free-function declaration on line 1 must be excluded, got: {:?}",
+            lines
+        );
+        assert!(
+            !lines.contains(&5),
+            "free-function call on line 5 must be excluded, got: {:?}",
+            lines
         );
     }
 }
