@@ -1,3 +1,6 @@
+// Functions in private modules are used via main.rs/backend.rs, not the lib entry point.
+#![allow(dead_code)]
+
 // Public modules exposed for benchmark crates.
 pub mod ast;
 pub mod completion;

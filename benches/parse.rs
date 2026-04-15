@@ -1,32 +1,24 @@
-use criterion::{Criterion, criterion_group, criterion_main};
+use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use php_lsp::ast::ParsedDoc;
 
-const SMALL: &str = include_str!("fixtures/small_class.php");
-const MEDIUM: &str = include_str!("fixtures/medium_class.php");
-const LARGE_IFACE: &str = include_str!("fixtures/interface_large.php");
+const FIXTURES: &[(&str, &str)] = &[
+    ("small_class", include_str!("fixtures/small_class.php")),
+    ("medium_class", include_str!("fixtures/medium_class.php")),
+    (
+        "interface_large",
+        include_str!("fixtures/interface_large.php"),
+    ),
+];
 
-fn bench_parse_small(c: &mut Criterion) {
-    c.bench_function("parse/small_class", |b| {
-        b.iter(|| ParsedDoc::parse(SMALL.to_owned()))
-    });
+fn bench_parse(c: &mut Criterion) {
+    let mut group = c.benchmark_group("parse");
+    for (name, src) in FIXTURES {
+        group.bench_with_input(BenchmarkId::from_parameter(name), src, |b, s| {
+            b.iter(|| ParsedDoc::parse((*s).to_owned()));
+        });
+    }
+    group.finish();
 }
 
-fn bench_parse_medium(c: &mut Criterion) {
-    c.bench_function("parse/medium_class", |b| {
-        b.iter(|| ParsedDoc::parse(MEDIUM.to_owned()))
-    });
-}
-
-fn bench_parse_interface_large(c: &mut Criterion) {
-    c.bench_function("parse/interface_large", |b| {
-        b.iter(|| ParsedDoc::parse(LARGE_IFACE.to_owned()))
-    });
-}
-
-criterion_group!(
-    benches,
-    bench_parse_small,
-    bench_parse_medium,
-    bench_parse_interface_large
-);
+criterion_group!(benches, bench_parse);
 criterion_main!(benches);
