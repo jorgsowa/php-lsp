@@ -1,0 +1,58 @@
+name: Benchmarks
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+jobs:
+  bench:
+    name: Run criterion benchmarks
+    # ubuntu-latest-4-cores gives a dedicated 4-core instance which reduces
+    # run-to-run variance compared to the shared 2-core ubuntu-latest runners.
+    # The alert threshold is kept at 130 % to absorb remaining CI noise.
+    runs-on: ubuntu-latest-4-cores
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-bench-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-bench-
+
+      - name: Run benchmarks
+        run: cargo bench -- --output-format bencher | tee output.txt
+
+      - name: Store benchmark result
+        uses: benchmark-action/github-action-benchmark@v1
+        with:
+          tool: cargo
+          output-file-path: output.txt
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          # Alert threshold accounts for natural variance on shared CI runners (~15-30%).
+          # 130% flags only genuine regressions and avoids constant noise.
+          alert-threshold: "130%"
+          comment-on-alert: true
+          fail-on-alert: true
+          # Push results to gh-pages branch to track history.
+          auto-push: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Upload criterion HTML reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: criterion-${{ github.sha }}
+          path: target/criterion/
+          retention-days: 90

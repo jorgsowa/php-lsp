@@ -32,6 +32,12 @@ pub struct DocumentStore {
     token_cache: DashMap<Url, (String, Vec<SemanticToken>)>,
 }
 
+impl Default for DocumentStore {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl DocumentStore {
     pub fn new() -> Self {
         DocumentStore {

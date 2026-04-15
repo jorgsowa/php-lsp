@@ -1,3 +1,4 @@
 /target
 .php-cs-fixer.cache
 .claude/
+benches/fixtures/laravel/
