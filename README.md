@@ -47,7 +47,7 @@ For full installation options see **[docs/getting-started.md](docs/getting-start
 | Neovim 0.10 | `vim.lsp.start` in a `FileType` autocmd |
 | Zed | `lsp` block in `~/.config/zed/settings.json` |
 | Cursor | Settings → Features → Language Servers |
-| PHPStorm | [LSP4IJ](https://plugins.jetbrains.com/plugin/23257-lsp4ij) plugin |
+| PHPStorm | [php-lsp-phpstorm-plugin](https://github.com/jorgsowa/php-lsp-phpstorm-plugin) |
 | Claude Code | `claude plugin add https://github.com/jorgsowa/claude-php-lsp-plugin` |
 
 Config snippets for every editor: **[docs/editors.md](docs/editors.md)**
