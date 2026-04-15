@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use php_ast::{ClassMemberKind, EnumMemberKind, NamespaceBody, Span, Stmt, StmtKind};
@@ -67,7 +68,9 @@ fn find_references_inner(
             if !include_declaration {
                 let mut decl_spans = Vec::new();
                 collect_declaration_spans(source, stmts, word, None, &mut decl_spans);
-                spans.retain(|span| !decl_spans.iter().any(|s| spans_equal(s, span)));
+                let decl_set: HashSet<(u32, u32)> =
+                    decl_spans.iter().map(|s| (s.start, s.end)).collect();
+                spans.retain(|span| !decl_set.contains(&(span.start, span.end)));
             }
         } else {
             match kind {
@@ -80,7 +83,9 @@ fn find_references_inner(
                     if !include_declaration {
                         let mut decl_spans = Vec::new();
                         collect_declaration_spans(source, stmts, word, None, &mut decl_spans);
-                        spans.retain(|span| !decl_spans.iter().any(|s| spans_equal(s, span)));
+                        let decl_set: HashSet<(u32, u32)> =
+                            decl_spans.iter().map(|s| (s.start, s.end)).collect();
+                        spans.retain(|span| !decl_set.contains(&(span.start, span.end)));
                     }
                 }
             }
@@ -213,10 +218,6 @@ fn collect_declaration_spans(
             _ => {}
         }
     }
-}
-
-fn spans_equal(a: &Span, b: &Span) -> bool {
-    a.start == b.start && a.end == b.end
 }
 
 #[cfg(test)]
