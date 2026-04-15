@@ -161,6 +161,15 @@ fn collect_declaration_spans(
                 if want_type && i.name == word {
                     out.push(declaration_name_span(source, i.name));
                 }
+                if want_method {
+                    for member in i.members.iter() {
+                        if let ClassMemberKind::Method(m) = &member.kind
+                            && m.name == word
+                        {
+                            out.push(declaration_name_span(source, m.name));
+                        }
+                    }
+                }
             }
             StmtKind::Trait(t) => {
                 if want_type && t.name == word {
@@ -671,6 +680,43 @@ mod tests {
     }
 
     #[test]
+    fn interface_method_declaration_included_when_flag_true() {
+        // Regression: collect_declaration_spans must cover interface members, not only
+        // classes/traits/enums. When include_declaration=true and kind=Method the
+        // abstract method stub inside the interface must appear.
+        //
+        // Line 0: <?php
+        // Line 1: interface I {
+        // Line 2:     public function add(): void;   ← interface method declaration
+        // Line 3: }
+        // Line 4: $obj->add();                        ← call site
+        let src = "<?php\ninterface I {\n    public function add(): void;\n}\n$obj->add();";
+        let docs = vec![doc("/a.php", src)];
+
+        let refs = find_references("add", &docs, true, Some(SymbolKind::Method));
+        let lines: Vec<u32> = refs.iter().map(|r| r.range.start.line).collect();
+        assert!(
+            lines.contains(&2),
+            "interface method declaration (line 2) must appear with include_declaration=true, got: {:?}",
+            lines
+        );
+        assert!(
+            lines.contains(&4),
+            "call site (line 4) must appear, got: {:?}",
+            lines
+        );
+
+        // With include_declaration=false only the call site should remain.
+        let refs_no_decl = find_references("add", &docs, false, Some(SymbolKind::Method));
+        let lines_no_decl: Vec<u32> = refs_no_decl.iter().map(|r| r.range.start.line).collect();
+        assert!(
+            !lines_no_decl.contains(&2),
+            "interface method declaration must be excluded when include_declaration=false, got: {:?}",
+            lines_no_decl
+        );
+    }
+
+    #[test]
     fn declaration_filter_finds_method_inside_same_named_class() {
         // Edge case: a class named `get` contains a method also named `get`.
         // collect_declaration_spans(kind=None) must find BOTH the class declaration
@@ -706,6 +752,93 @@ mod tests {
             3,
             "expected 3 refs (class decl + method decl + call), got: {:?}",
             refs_with
+        );
+    }
+
+    #[test]
+    fn interface_method_declaration_included_with_kind_none() {
+        // Regression: the general walker must emit interface method name spans so that
+        // kind=None + include_declaration=true returns the declaration, matching the
+        // behaviour already present for class and trait methods.
+        //
+        // Line 0: <?php
+        // Line 1: interface I {
+        // Line 2:     public function add(): void;   ← declaration
+        // Line 3: }
+        // Line 4: $obj->add();                        ← call site
+        let src = "<?php\ninterface I {\n    public function add(): void;\n}\n$obj->add();";
+        let docs = vec![doc("/a.php", src)];
+
+        let refs = find_references("add", &docs, true, None);
+        let lines: Vec<u32> = refs.iter().map(|r| r.range.start.line).collect();
+        assert!(
+            lines.contains(&2),
+            "interface method declaration (line 2) must appear with kind=None + include_declaration=true, got: {:?}",
+            lines
+        );
+    }
+
+    #[test]
+    fn interface_method_declaration_excluded_with_kind_none_flag_false() {
+        // Counterpart to interface_method_declaration_included_with_kind_none.
+        // is_declaration_span calls collect_declaration_spans(kind=None), which after
+        // the fix now emits interface method name spans. Verify that
+        // include_declaration=false correctly suppresses the declaration.
+        //
+        // Line 0: <?php
+        // Line 1: interface I {
+        // Line 2:     public function add(): void;   ← declaration — must be absent
+        // Line 3: }
+        // Line 4: $obj->add();                        ← call site — must be present
+        let src = "<?php\ninterface I {\n    public function add(): void;\n}\n$obj->add();";
+        let docs = vec![doc("/a.php", src)];
+
+        let refs = find_references("add", &docs, false, None);
+        let lines: Vec<u32> = refs.iter().map(|r| r.range.start.line).collect();
+        assert!(
+            !lines.contains(&2),
+            "interface method declaration (line 2) must be excluded with kind=None + include_declaration=false, got: {:?}",
+            lines
+        );
+        assert!(
+            lines.contains(&4),
+            "call site (line 4) must be present, got: {:?}",
+            lines
+        );
+    }
+
+    #[test]
+    fn function_kind_does_not_include_interface_method_declaration() {
+        // kind=Function must not return interface method declarations. The existing
+        // function_kind_with_include_declaration_does_not_return_method_call test
+        // covers class methods; this covers the interface case specifically.
+        //
+        // Line 0: <?php
+        // Line 1: function add() {}              ← free function declaration
+        // Line 2: add();                         ← free function call
+        // Line 3: interface I {
+        // Line 4:     public function add(): void;  ← interface method — must be absent
+        // Line 5: }
+        let src =
+            "<?php\nfunction add() {}\nadd();\ninterface I {\n    public function add(): void;\n}";
+        let docs = vec![doc("/a.php", src)];
+
+        let refs = find_references("add", &docs, true, Some(SymbolKind::Function));
+        let lines: Vec<u32> = refs.iter().map(|r| r.range.start.line).collect();
+        assert!(
+            lines.contains(&1),
+            "free function declaration (line 1) must be present, got: {:?}",
+            lines
+        );
+        assert!(
+            lines.contains(&2),
+            "free function call (line 2) must be present, got: {:?}",
+            lines
+        );
+        assert!(
+            !lines.contains(&4),
+            "interface method declaration (line 4) must not appear with kind=Function, got: {:?}",
+            lines
         );
     }
 }
