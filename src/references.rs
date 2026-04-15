@@ -161,6 +161,15 @@ fn collect_declaration_spans(
                 if want_type && i.name == word {
                     out.push(declaration_name_span(source, i.name));
                 }
+                if want_method {
+                    for member in i.members.iter() {
+                        if let ClassMemberKind::Method(m) = &member.kind
+                            && m.name == word
+                        {
+                            out.push(declaration_name_span(source, m.name));
+                        }
+                    }
+                }
             }
             StmtKind::Trait(t) => {
                 if want_type && t.name == word {
