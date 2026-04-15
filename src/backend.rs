@@ -2792,6 +2792,63 @@ mod tests {
             }
         ));
     }
+
+    #[test]
+    fn cursor_on_method_decl_in_unbraced_namespace_returns_true() {
+        // Unbraced (Simple) namespace: the class is a top-level sibling of the
+        // namespace statement, not nested inside it.
+        //
+        // Line 0: <?php
+        // Line 1: namespace App;
+        // Line 2: class C {
+        // Line 3:     public function add() {}   ← "add" starts at col 20
+        // Line 4: }
+        let doc = ParsedDoc::parse(
+            "<?php\nnamespace App;\nclass C {\n    public function add() {}\n}".to_string(),
+        );
+        let source = doc.source();
+        let stmts = &doc.program().stmts;
+        assert!(
+            cursor_is_on_method_decl(
+                source,
+                stmts,
+                Position {
+                    line: 3,
+                    character: 20
+                }
+            ),
+            "method in unbraced namespace must be detected"
+        );
+    }
+
+    #[test]
+    fn cursor_on_method_decl_in_braced_namespace_returns_true() {
+        // Braced namespace: the class is nested inside NamespaceBody::Braced.
+        //
+        // Line 0: <?php
+        // Line 1: namespace App {
+        // Line 2:     class C {
+        // Line 3:         public function add() {}   ← "add" starts at col 24
+        // Line 4:     }
+        // Line 5: }
+        let doc = ParsedDoc::parse(
+            "<?php\nnamespace App {\n    class C {\n        public function add() {}\n    }\n}"
+                .to_string(),
+        );
+        let source = doc.source();
+        let stmts = &doc.program().stmts;
+        assert!(
+            cursor_is_on_method_decl(
+                source,
+                stmts,
+                Position {
+                    line: 3,
+                    character: 24
+                }
+            ),
+            "method in braced namespace must be detected"
+        );
+    }
 }
 
 #[cfg(test)]
