@@ -10,7 +10,9 @@ use tower_lsp::lsp_types::request::{
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer, async_trait};
 
-use crate::ast::ParsedDoc;
+use php_ast::{ClassMemberKind, EnumMemberKind, NamespaceBody, Stmt, StmtKind};
+
+use crate::ast::{ParsedDoc, str_offset};
 use crate::autoload::Psr4Map;
 use crate::call_hierarchy::{incoming_calls, outgoing_calls, prepare_call_hierarchy};
 use crate::code_lens::code_lenses;
@@ -821,7 +823,16 @@ impl LanguageServer for Backend {
             Some(w) => w,
             None => return Ok(None),
         };
-        let kind = symbol_kind_at(&source, position, &word);
+        let kind = if let Some(doc) = self.docs.get_doc(uri) {
+            let stmts = &doc.program().stmts;
+            if cursor_is_on_method_decl(doc.source(), stmts, position) {
+                Some(SymbolKind::Method)
+            } else {
+                symbol_kind_at(&source, position, &word)
+            }
+        } else {
+            symbol_kind_at(&source, position, &word)
+        };
         let all_docs = self.docs.all_docs();
         let include_declaration = params.context.include_declaration;
         let locations = find_references(&word, &all_docs, include_declaration, kind);
@@ -1945,6 +1956,102 @@ fn symbol_kind_at(source: &str, position: Position, word: &str) -> Option<Symbol
     Some(SymbolKind::Function)
 }
 
+/// Convert an LSP `Position` to a byte offset within `source`.
+/// Returns `None` if the position is beyond the end of the source.
+fn position_to_offset(source: &str, position: Position) -> Option<u32> {
+    let mut byte_offset = 0usize;
+    for (idx, line) in source.split('\n').enumerate() {
+        if idx as u32 == position.line {
+            // Strip trailing \r so CRLF lines don't affect column counting.
+            let line_content = line.trim_end_matches('\r');
+            let mut col = 0u32;
+            for (byte_idx, ch) in line_content.char_indices() {
+                if col >= position.character {
+                    return Some((byte_offset + byte_idx) as u32);
+                }
+                col += ch.len_utf16() as u32;
+            }
+            return Some((byte_offset + line_content.len()) as u32);
+        }
+        byte_offset += line.len() + 1; // +1 for the '\n'
+    }
+    None
+}
+
+/// Returns `true` if the cursor is positioned on a method name inside a class,
+/// interface, trait, or enum declaration in the AST.
+///
+/// This is a pre-pass used before the character-based `symbol_kind_at` heuristic
+/// so that method *declarations* (`public function add() {}`) are classified as
+/// `SymbolKind::Method` rather than falling through to `SymbolKind::Function`.
+fn cursor_is_on_method_decl(source: &str, stmts: &[Stmt<'_, '_>], position: Position) -> bool {
+    let Some(cursor) = position_to_offset(source, position) else {
+        return false;
+    };
+
+    fn check(source: &str, stmts: &[Stmt<'_, '_>], cursor: u32) -> bool {
+        for stmt in stmts {
+            match &stmt.kind {
+                StmtKind::Class(c) => {
+                    for member in c.members.iter() {
+                        if let ClassMemberKind::Method(m) = &member.kind {
+                            let start = str_offset(source, m.name);
+                            let end = start + m.name.len() as u32;
+                            if cursor >= start && cursor < end {
+                                return true;
+                            }
+                        }
+                    }
+                }
+                StmtKind::Interface(i) => {
+                    for member in i.members.iter() {
+                        if let ClassMemberKind::Method(m) = &member.kind {
+                            let start = str_offset(source, m.name);
+                            let end = start + m.name.len() as u32;
+                            if cursor >= start && cursor < end {
+                                return true;
+                            }
+                        }
+                    }
+                }
+                StmtKind::Trait(t) => {
+                    for member in t.members.iter() {
+                        if let ClassMemberKind::Method(m) = &member.kind {
+                            let start = str_offset(source, m.name);
+                            let end = start + m.name.len() as u32;
+                            if cursor >= start && cursor < end {
+                                return true;
+                            }
+                        }
+                    }
+                }
+                StmtKind::Enum(e) => {
+                    for member in e.members.iter() {
+                        if let EnumMemberKind::Method(m) = &member.kind {
+                            let start = str_offset(source, m.name);
+                            let end = start + m.name.len() as u32;
+                            if cursor >= start && cursor < end {
+                                return true;
+                            }
+                        }
+                    }
+                }
+                StmtKind::Namespace(ns) => {
+                    if let NamespaceBody::Braced(inner) = &ns.body
+                        && check(source, inner, cursor)
+                    {
+                        return true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        false
+    }
+
+    check(source, stmts, cursor)
+}
+
 impl Backend {
     /// Try to resolve a fully-qualified name via the PSR-4 map.
     /// Indexes the file on-demand if it is not already in the document store.
@@ -2463,6 +2570,140 @@ mod tests {
             "function diagnostic should not extract a class name"
         );
     }
+
+    // ── position_to_offset ───────────────────────────────────────────────────
+
+    #[test]
+    fn position_to_offset_first_line() {
+        let src = "<?php\nfoo();";
+        assert_eq!(
+            position_to_offset(
+                src,
+                Position {
+                    line: 0,
+                    character: 0
+                }
+            ),
+            Some(0)
+        );
+        assert_eq!(
+            position_to_offset(
+                src,
+                Position {
+                    line: 0,
+                    character: 5
+                }
+            ),
+            Some(5)
+        );
+    }
+
+    #[test]
+    fn position_to_offset_second_line() {
+        let src = "<?php\nfoo();";
+        assert_eq!(
+            position_to_offset(
+                src,
+                Position {
+                    line: 1,
+                    character: 0
+                }
+            ),
+            Some(6)
+        );
+        assert_eq!(
+            position_to_offset(
+                src,
+                Position {
+                    line: 1,
+                    character: 3
+                }
+            ),
+            Some(9)
+        );
+    }
+
+    #[test]
+    fn position_to_offset_beyond_source_returns_none() {
+        let src = "<?php";
+        assert_eq!(
+            position_to_offset(
+                src,
+                Position {
+                    line: 5,
+                    character: 0
+                }
+            ),
+            None
+        );
+    }
+
+    // ── cursor_is_on_method_decl ─────────────────────────────────────────────
+
+    #[test]
+    fn cursor_on_method_decl_name_returns_true() {
+        // "    public function add() {}" — "add" starts at col 20 on line 2
+        let src = "<?php\nclass C {\n    public function add() {}\n}";
+        let doc = ParsedDoc::parse(src.to_string());
+        let stmts = &doc.program().stmts;
+        assert!(cursor_is_on_method_decl(
+            src,
+            stmts,
+            Position {
+                line: 2,
+                character: 20
+            }
+        ));
+        assert!(cursor_is_on_method_decl(
+            src,
+            stmts,
+            Position {
+                line: 2,
+                character: 21
+            }
+        ));
+        // Just past the end of the name must not match.
+        assert!(!cursor_is_on_method_decl(
+            src,
+            stmts,
+            Position {
+                line: 2,
+                character: 23
+            }
+        ));
+    }
+
+    #[test]
+    fn cursor_on_free_function_decl_returns_false() {
+        let src = "<?php\nfunction add() {}";
+        let doc = ParsedDoc::parse(src.to_string());
+        let stmts = &doc.program().stmts;
+        // "add" starts at col 9 on line 1 — free function, not a method
+        assert!(!cursor_is_on_method_decl(
+            src,
+            stmts,
+            Position {
+                line: 1,
+                character: 9
+            }
+        ));
+    }
+
+    #[test]
+    fn cursor_on_method_call_site_returns_false() {
+        let src = "<?php\nclass C { public function add() {} }\n$c = new C();\n$c->add();";
+        let doc = ParsedDoc::parse(src.to_string());
+        let stmts = &doc.program().stmts;
+        // "$c->add()" — "add" at col 4 on line 3 is a call, not a declaration
+        assert!(!cursor_is_on_method_decl(
+            src,
+            stmts,
+            Position {
+                line: 3,
+                character: 4
+            }
+        ));
+    }
 }
 
 #[cfg(test)]
@@ -2760,6 +3001,86 @@ mod integration {
         assert!(
             resp["error"].is_null(),
             "hover after change should not error"
+        );
+    }
+
+    /// Regression test for issue #125: cursor on a method *declaration* must
+    /// return method references, not free-function references with the same name.
+    #[tokio::test]
+    async fn references_on_method_decl_returns_method_refs_not_function_refs() {
+        // Line 0: <?php
+        // Line 1: function add() {}          ← free function declaration
+        // Line 2: class C {
+        // Line 3:     public function add() {} ← method declaration — cursor here
+        // Line 4: }
+        // Line 5: add();                     ← free function call
+        // Line 6: $c->add();                 ← method call
+        let src = "<?php\nfunction add() {}\nclass C {\n    public function add() {}\n}\nadd();\n$c->add();";
+
+        let mut client = start_server();
+        initialize(&mut client).await;
+
+        client
+            .notify(
+                "textDocument/didOpen",
+                serde_json::json!({
+                    "textDocument": {
+                        "uri": "file:///refs_test.php",
+                        "languageId": "php",
+                        "version": 1,
+                        "text": src
+                    }
+                }),
+            )
+            .await;
+
+        tokio::time::sleep(tokio::time::Duration::from_millis(150)).await;
+
+        // Cursor on "add" in "    public function add() {}" — line 3, character 20.
+        let resp = client
+            .request(
+                "textDocument/references",
+                serde_json::json!({
+                    "textDocument": { "uri": "file:///refs_test.php" },
+                    "position": { "line": 3, "character": 20 },
+                    "context": { "includeDeclaration": true }
+                }),
+            )
+            .await;
+
+        assert!(
+            resp["error"].is_null(),
+            "references should not error: {:?}",
+            resp
+        );
+
+        let locs = resp["result"]
+            .as_array()
+            .expect("expected array of locations");
+        let lines: Vec<u32> = locs
+            .iter()
+            .map(|l| l["range"]["start"]["line"].as_u64().unwrap() as u32)
+            .collect();
+
+        assert!(
+            lines.contains(&3),
+            "method declaration (line 3) must be included, got: {:?}",
+            lines
+        );
+        assert!(
+            lines.contains(&6),
+            "method call (line 6) must be included, got: {:?}",
+            lines
+        );
+        assert!(
+            !lines.contains(&1),
+            "free-function declaration (line 1) must be excluded, got: {:?}",
+            lines
+        );
+        assert!(
+            !lines.contains(&5),
+            "free-function call (line 5) must be excluded, got: {:?}",
+            lines
         );
     }
 
