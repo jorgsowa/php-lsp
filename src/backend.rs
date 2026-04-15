@@ -2576,6 +2576,7 @@ mod tests {
     #[test]
     fn position_to_offset_first_line() {
         let src = "<?php\nfoo();";
+        // Character 0 → byte 0.
         assert_eq!(
             position_to_offset(
                 src,
@@ -2586,6 +2587,18 @@ mod tests {
             ),
             Some(0)
         );
+        // Character 4 → byte 4 (last char 'p' of "<?php").
+        assert_eq!(
+            position_to_offset(
+                src,
+                Position {
+                    line: 0,
+                    character: 4
+                }
+            ),
+            Some(4)
+        );
+        // Character 5 is past the end of "<?php" (5 chars) — clamps to line_content.len().
         assert_eq!(
             position_to_offset(
                 src,
@@ -2601,6 +2614,7 @@ mod tests {
     #[test]
     fn position_to_offset_second_line() {
         let src = "<?php\nfoo();";
+        // Start of line 1 is byte 6 (after "<?php\n").
         assert_eq!(
             position_to_offset(
                 src,
@@ -2611,6 +2625,7 @@ mod tests {
             ),
             Some(6)
         );
+        // "foo" ends at character 3 → byte 9.
         assert_eq!(
             position_to_offset(
                 src,
@@ -2624,8 +2639,19 @@ mod tests {
     }
 
     #[test]
-    fn position_to_offset_beyond_source_returns_none() {
+    fn position_to_offset_line_boundary_returns_none() {
+        // A source with exactly one line has only line 0; line 1 must return None.
         let src = "<?php";
+        assert_eq!(
+            position_to_offset(
+                src,
+                Position {
+                    line: 1,
+                    character: 0
+                }
+            ),
+            None
+        );
         assert_eq!(
             position_to_offset(
                 src,
@@ -2642,29 +2668,36 @@ mod tests {
 
     #[test]
     fn cursor_on_method_decl_name_returns_true() {
-        // "    public function add() {}" — "add" starts at col 20 on line 2
-        let src = "<?php\nclass C {\n    public function add() {}\n}";
-        let doc = ParsedDoc::parse(src.to_string());
+        // "    public function add() {}" — "add" is cols 20-22 on line 2.
+        // Use doc.source() so str_offset uses pointer arithmetic (production path).
+        let doc = ParsedDoc::parse("<?php\nclass C {\n    public function add() {}\n}".to_string());
+        let source = doc.source();
         let stmts = &doc.program().stmts;
-        assert!(cursor_is_on_method_decl(
-            src,
-            stmts,
-            Position {
-                line: 2,
-                character: 20
-            }
-        ));
-        assert!(cursor_is_on_method_decl(
-            src,
-            stmts,
-            Position {
-                line: 2,
-                character: 21
-            }
-        ));
-        // Just past the end of the name must not match.
+        // All three characters of "add" must match.
+        for col in 20u32..=22 {
+            assert!(
+                cursor_is_on_method_decl(
+                    source,
+                    stmts,
+                    Position {
+                        line: 2,
+                        character: col
+                    }
+                ),
+                "expected true at col {col}"
+            );
+        }
+        // One before and one after must not match.
         assert!(!cursor_is_on_method_decl(
-            src,
+            source,
+            stmts,
+            Position {
+                line: 2,
+                character: 19
+            }
+        ));
+        assert!(!cursor_is_on_method_decl(
+            source,
             stmts,
             Position {
                 line: 2,
@@ -2675,12 +2708,12 @@ mod tests {
 
     #[test]
     fn cursor_on_free_function_decl_returns_false() {
-        let src = "<?php\nfunction add() {}";
-        let doc = ParsedDoc::parse(src.to_string());
+        // "add" at col 9 on line 1 is a free function — not a method.
+        let doc = ParsedDoc::parse("<?php\nfunction add() {}".to_string());
+        let source = doc.source();
         let stmts = &doc.program().stmts;
-        // "add" starts at col 9 on line 1 — free function, not a method
         assert!(!cursor_is_on_method_decl(
-            src,
+            source,
             stmts,
             Position {
                 line: 1,
@@ -2691,16 +2724,71 @@ mod tests {
 
     #[test]
     fn cursor_on_method_call_site_returns_false() {
-        let src = "<?php\nclass C { public function add() {} }\n$c = new C();\n$c->add();";
-        let doc = ParsedDoc::parse(src.to_string());
+        // "$c->add()" — "add" at col 4 on line 3 is a call site, not a declaration.
+        let doc = ParsedDoc::parse(
+            "<?php\nclass C { public function add() {} }\n$c = new C();\n$c->add();".to_string(),
+        );
+        let source = doc.source();
         let stmts = &doc.program().stmts;
-        // "$c->add()" — "add" at col 4 on line 3 is a call, not a declaration
         assert!(!cursor_is_on_method_decl(
-            src,
+            source,
             stmts,
             Position {
                 line: 3,
                 character: 4
+            }
+        ));
+    }
+
+    #[test]
+    fn cursor_on_interface_method_decl_returns_true() {
+        // "    public function add(): void;" — "add" starts at col 20 on line 2.
+        let doc = ParsedDoc::parse(
+            "<?php\ninterface I {\n    public function add(): void;\n}".to_string(),
+        );
+        let source = doc.source();
+        let stmts = &doc.program().stmts;
+        assert!(cursor_is_on_method_decl(
+            source,
+            stmts,
+            Position {
+                line: 2,
+                character: 20
+            }
+        ));
+    }
+
+    #[test]
+    fn cursor_on_trait_method_decl_returns_true() {
+        // "    public function add() {}" — "add" starts at col 20 on line 2.
+        let doc = ParsedDoc::parse("<?php\ntrait T {\n    public function add() {}\n}".to_string());
+        let source = doc.source();
+        let stmts = &doc.program().stmts;
+        assert!(cursor_is_on_method_decl(
+            source,
+            stmts,
+            Position {
+                line: 2,
+                character: 20
+            }
+        ));
+    }
+
+    #[test]
+    fn cursor_on_enum_method_decl_returns_true() {
+        // "    public function label(): string {}" — "label" starts at col 20 on line 2.
+        let doc = ParsedDoc::parse(
+            "<?php\nenum Status {\n    public function label(): string { return 'x'; }\n}"
+                .to_string(),
+        );
+        let source = doc.source();
+        let stmts = &doc.program().stmts;
+        assert!(cursor_is_on_method_decl(
+            source,
+            stmts,
+            Position {
+                line: 2,
+                character: 20
             }
         ));
     }
@@ -3081,6 +3169,42 @@ mod integration {
             !lines.contains(&5),
             "free-function call (line 5) must be excluded, got: {:?}",
             lines
+        );
+
+        // Same cursor, includeDeclaration: false — only the method call should appear.
+        let resp2 = client
+            .request(
+                "textDocument/references",
+                serde_json::json!({
+                    "textDocument": { "uri": "file:///refs_test.php" },
+                    "position": { "line": 3, "character": 20 },
+                    "context": { "includeDeclaration": false }
+                }),
+            )
+            .await;
+
+        assert!(
+            resp2["error"].is_null(),
+            "references (no decl) should not error: {:?}",
+            resp2
+        );
+
+        let lines2: Vec<u32> = resp2["result"]
+            .as_array()
+            .expect("expected array of locations")
+            .iter()
+            .map(|l| l["range"]["start"]["line"].as_u64().unwrap() as u32)
+            .collect();
+
+        assert!(
+            lines2.contains(&6),
+            "method call (line 6) must be included when includeDeclaration=false, got: {:?}",
+            lines2
+        );
+        assert!(
+            !lines2.contains(&3),
+            "method declaration (line 3) must be excluded when includeDeclaration=false, got: {:?}",
+            lines2
         );
     }
 
