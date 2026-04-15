@@ -47,6 +47,7 @@ use crate::rename::{prepare_rename, rename, rename_property, rename_variable};
 use crate::selection_range::selection_ranges;
 use crate::semantic_diagnostics::{
     deprecated_call_diagnostics, duplicate_declaration_diagnostics, semantic_diagnostics,
+    semantic_diagnostics_no_rebuild,
 };
 use crate::semantic_tokens::{
     compute_token_delta, legend, semantic_tokens, semantic_tokens_range, token_hash,
@@ -1598,13 +1599,19 @@ impl LanguageServer for Backend {
             (cfg.diagnostics.clone(), cfg.php_version.clone())
         };
 
+        // Build inheritance tables once for the entire workspace.
+        // The persistent codebase already has all file definitions collected
+        // incrementally via collect_into_codebase(). A single finalize() call
+        // here is O(N); the old approach called finalize() per file → O(N²).
+        self.codebase.finalize();
+
         let items: Vec<WorkspaceDocumentDiagnosticReport> = all_parse_diags
             .into_iter()
             .filter_map(|(uri, parse_diags, version)| {
                 let doc = self.docs.get_doc(&uri)?;
 
                 let source = doc.source().to_string();
-                let sem_diags = semantic_diagnostics(
+                let sem_diags = semantic_diagnostics_no_rebuild(
                     &uri,
                     &doc,
                     &self.codebase,
