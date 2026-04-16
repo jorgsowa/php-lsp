@@ -51,7 +51,7 @@ fn collect_lenses(
 
                     // Implementations count for abstract classes (classes extending this).
                     if c.modifiers.is_abstract {
-                        let impl_count = find_implementations(class_name, all_docs).len();
+                        let impl_count = find_implementations(class_name, None, all_docs).len();
                         out.push(impl_count_lens(class_range, impl_count));
                     }
 
@@ -81,7 +81,7 @@ fn collect_lenses(
                 let range = name_range(source, i.name);
                 out.push(ref_count_lens(range, i.name, all_docs));
                 // Implementations count lens.
-                let impl_count = find_implementations(i.name, all_docs).len();
+                let impl_count = find_implementations(i.name, None, all_docs).len();
                 out.push(impl_count_lens(range, impl_count));
             }
             StmtKind::Trait(t) => {
