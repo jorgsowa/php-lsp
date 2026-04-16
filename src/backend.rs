@@ -1160,7 +1160,8 @@ impl LanguageServer for Backend {
         let position = params.text_document_position_params.position;
         let source = self.docs.get(uri).unwrap_or_default();
         let all_docs = self.docs.all_docs();
-        let locs = goto_implementation(&source, &all_docs, position);
+        let imports = self.file_imports(uri);
+        let locs = goto_implementation(&source, &all_docs, position, &imports);
         if locs.is_empty() {
             Ok(None)
         } else {
