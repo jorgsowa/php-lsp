@@ -82,13 +82,22 @@ pub fn outgoing_calls(
     item: &CallHierarchyItem,
     all_docs: &[(Url, Arc<ParsedDoc>)],
 ) -> Vec<CallHierarchyOutgoingCall> {
-    let Some((_, doc)) = all_docs.iter().find(|(uri, _)| *uri == item.uri) else {
+    // Build O(1) URI → doc map to avoid scanning all_docs for item.uri.
+    let doc_map: HashMap<&Url, &Arc<ParsedDoc>> = all_docs.iter().map(|(u, d)| (u, d)).collect();
+    let Some(doc) = doc_map.get(&item.uri) else {
         return Vec::new();
     };
-    // Borrow source directly from the Arc to avoid cloning the whole file.
     let item_source = doc.source();
     let mut calls: Vec<(String, Span)> = Vec::new();
     collect_calls_for(&item.name, &doc.program().stmts, &mut calls);
+
+    // Build name → CallHierarchyItem index in a single pass over all docs so
+    // each unique callee is resolved in O(1) instead of O(docs) per callee.
+    let mut decl_index: HashMap<String, CallHierarchyItem> = HashMap::new();
+    for (uri, doc) in all_docs {
+        let source = doc.source();
+        collect_declaration_items(&doc.program().stmts, source, uri, &mut decl_index);
+    }
 
     let mut result: Vec<CallHierarchyOutgoingCall> = Vec::new();
     // Track callee_name → index in `result` for O(1) dedup.
@@ -97,7 +106,7 @@ pub fn outgoing_calls(
         let call_range = span_to_range(item_source, span);
         if let Some(&idx) = index.get(&callee_name) {
             result[idx].from_ranges.push(call_range);
-        } else if let Some(callee_item) = prepare_call_hierarchy(&callee_name, all_docs) {
+        } else if let Some(callee_item) = decl_index.remove(&callee_name) {
             let idx = result.len();
             index.insert(callee_name, idx);
             result.push(CallHierarchyOutgoingCall {
@@ -111,6 +120,95 @@ pub fn outgoing_calls(
 }
 
 // === Internal helpers ===
+
+/// Populate `out` with every callable declaration in `stmts`, keyed by name.
+/// Uses `entry().or_insert()` so the first occurrence wins, matching the
+/// search-order semantics of `prepare_call_hierarchy`.
+fn collect_declaration_items(
+    stmts: &[Stmt<'_, '_>],
+    source: &str,
+    uri: &Url,
+    out: &mut HashMap<String, CallHierarchyItem>,
+) {
+    for stmt in stmts {
+        match &stmt.kind {
+            StmtKind::Function(f) => {
+                let range = span_to_range(source, stmt.span);
+                let sel = name_range(source, f.name);
+                out.entry(f.name.to_string()).or_insert(CallHierarchyItem {
+                    name: f.name.to_string(),
+                    kind: SymbolKind::FUNCTION,
+                    tags: None,
+                    detail: None,
+                    uri: uri.clone(),
+                    range,
+                    selection_range: sel,
+                    data: None,
+                });
+            }
+            StmtKind::Class(c) => {
+                for member in c.members.iter() {
+                    if let ClassMemberKind::Method(m) = &member.kind {
+                        let range = span_to_range(source, member.span);
+                        let sel = name_range(source, m.name);
+                        out.entry(m.name.to_string()).or_insert(CallHierarchyItem {
+                            name: m.name.to_string(),
+                            kind: SymbolKind::METHOD,
+                            tags: None,
+                            detail: c.name.map(|n| n.to_string()),
+                            uri: uri.clone(),
+                            range,
+                            selection_range: sel,
+                            data: None,
+                        });
+                    }
+                }
+            }
+            StmtKind::Trait(t) => {
+                for member in t.members.iter() {
+                    if let ClassMemberKind::Method(m) = &member.kind {
+                        let range = span_to_range(source, member.span);
+                        let sel = name_range(source, m.name);
+                        out.entry(m.name.to_string()).or_insert(CallHierarchyItem {
+                            name: m.name.to_string(),
+                            kind: SymbolKind::METHOD,
+                            tags: None,
+                            detail: Some(t.name.to_string()),
+                            uri: uri.clone(),
+                            range,
+                            selection_range: sel,
+                            data: None,
+                        });
+                    }
+                }
+            }
+            StmtKind::Enum(e) => {
+                for member in e.members.iter() {
+                    if let EnumMemberKind::Method(m) = &member.kind {
+                        let range = span_to_range(source, member.span);
+                        let sel = name_range(source, m.name);
+                        out.entry(m.name.to_string()).or_insert(CallHierarchyItem {
+                            name: m.name.to_string(),
+                            kind: SymbolKind::METHOD,
+                            tags: None,
+                            detail: Some(e.name.to_string()),
+                            uri: uri.clone(),
+                            range,
+                            selection_range: sel,
+                            data: None,
+                        });
+                    }
+                }
+            }
+            StmtKind::Namespace(ns) => {
+                if let NamespaceBody::Braced(inner) = &ns.body {
+                    collect_declaration_items(inner, source, uri, out);
+                }
+            }
+            _ => {}
+        }
+    }
+}
 
 fn find_declaration_item(
     name: &str,
