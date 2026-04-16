@@ -23,9 +23,7 @@ pub fn goto_declaration(
 ) -> Option<Location> {
     let word = word_at(source, position)?;
 
-    // Single pass: prefer abstract/interface declarations globally; save the
-    // first concrete declaration as a fallback in case none is found.
-    let mut fallback: Option<Location> = None;
+    // First pass: look for an abstract or interface declaration
     for (uri, doc) in all_docs {
         let doc_source = doc.source();
         if let Some(range) = find_abstract_declaration(doc_source, &doc.program().stmts, &word) {
@@ -34,16 +32,20 @@ pub fn goto_declaration(
                 range,
             });
         }
-        if fallback.is_none()
-            && let Some(range) = find_any_declaration(doc_source, &doc.program().stmts, &word)
-        {
-            fallback = Some(Location {
+    }
+
+    // Second pass: any declaration (same as goto_definition)
+    for (uri, doc) in all_docs {
+        let doc_source = doc.source();
+        if let Some(range) = find_any_declaration(doc_source, &doc.program().stmts, &word) {
+            return Some(Location {
                 uri: uri.clone(),
                 range,
             });
         }
     }
-    fallback
+
+    None
 }
 
 fn find_abstract_declaration(
