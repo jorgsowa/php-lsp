@@ -111,7 +111,7 @@ Add to `~/.config/zed/settings.json`:
 
 ### VS Code
 
-Install the [php-lsp](https://marketplace.visualstudio.com/items?itemName=jorgsowa.php-lsp) extension. It ships a pre-built binary — no separate install required.
+Install the [php-lsp](https://marketplace.visualstudio.com/items?itemName=jorgsowa.php-lsp) extension ([source](https://github.com/jorgsowa/php-lsp-vscode-plugin)). It ships a pre-built binary — no separate install required.
 
 Via the Quick Open palette (`Ctrl+P` / `Cmd+P`):
 

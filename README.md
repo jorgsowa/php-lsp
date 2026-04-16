@@ -42,7 +42,7 @@ For full installation options see **[docs/getting-started.md](docs/getting-start
 
 | Editor | Setup |
 |---|---|
-| VS Code | [php-lsp](https://marketplace.visualstudio.com/items?itemName=jorgsowa.php-lsp) extension |
+| VS Code | [php-lsp](https://marketplace.visualstudio.com/items?itemName=jorgsowa.php-lsp) extension ([source](https://github.com/jorgsowa/php-lsp-vscode-plugin)) |
 | Neovim 0.11+ | Native `vim.lsp.enable` |
 | Neovim 0.10 | `vim.lsp.start` in a `FileType` autocmd |
 | Zed | `lsp` block in `~/.config/zed/settings.json` |
