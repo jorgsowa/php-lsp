@@ -898,7 +898,7 @@ pub fn refs_in_expr(source: &str, expr: &Expr<'_, '_>, word: &str, out: &mut Vec
         }
         ExprKind::StaticMethodCall(s) => {
             refs_in_expr(source, s.class, word, out);
-            if s.method.as_ref() == word {
+            if s.method.name_str() == Some(word) {
                 out.push(expr.span);
             }
             args(source, &s.args, word, out);
@@ -955,7 +955,7 @@ pub fn refs_in_expr(source: &str, expr: &Expr<'_, '_>, word: &str, out: &mut Vec
         ExprKind::StaticPropertyAccess(s) => refs_in_expr(source, s.class, word, out),
         ExprKind::ClassConstAccess(c) => {
             refs_in_expr(source, c.class, word, out);
-            if c.member.as_ref() == word {
+            if c.member.name_str() == Some(word) {
                 out.push(expr.span);
             }
         }
@@ -1291,7 +1291,7 @@ fn method_refs_in_expr(expr: &Expr<'_, '_>, name: &str, out: &mut Vec<Span>) {
         }
         ExprKind::StaticMethodCall(s) => {
             method_refs_in_expr(s.class, name, out);
-            if s.method.as_ref() == name {
+            if s.method.name_str() == Some(name) {
                 // For static calls, the span covers the whole expression; we need the
                 // method-name portion. Use the existing refs_in_expr behaviour which
                 // pushed expr.span for static methods — replicate that here.

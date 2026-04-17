@@ -521,7 +521,7 @@ fn collect_types_expr(
         ExprKind::StaticMethodCall(s) => {
             if let ExprKind::Identifier(class) = &s.class.kind
                 && class.as_str() == "Closure"
-                && s.method == "bind"
+                && s.method.name_str() == Some("bind")
                 && let Some(obj_arg) = s.args.get(1)
                 && let Some(cls) = resolve_var_type_str(&obj_arg.value, map)
             {
@@ -672,15 +672,17 @@ fn infer_from_meta_method_call(
     let arg = m.args.first()?;
     let arg_str = match &arg.value.kind {
         ExprKind::String(s) => s.trim_start_matches('\\').to_string(),
-        ExprKind::ClassConstAccess(c) if c.member == "class" => match &c.class.kind {
-            ExprKind::Identifier(n) => n
-                .trim_start_matches('\\')
-                .rsplit('\\')
-                .next()
-                .unwrap_or(n)
-                .to_string(),
-            _ => return None,
-        },
+        ExprKind::ClassConstAccess(c) if c.member.name_str() == Some("class") => {
+            match &c.class.kind {
+                ExprKind::Identifier(n) => n
+                    .trim_start_matches('\\')
+                    .rsplit('\\')
+                    .next()
+                    .unwrap_or(n)
+                    .to_string(),
+                _ => return None,
+            }
+        }
         _ => return None,
     };
     meta.resolve_return_type(&receiver_class, &method_name, &arg_str)

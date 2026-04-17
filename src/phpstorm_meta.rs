@@ -136,7 +136,7 @@ fn extract_static_call_target(expr: &php_ast::Expr<'_, '_>) -> Option<(String, S
         return None;
     };
     let class_name = extract_class_name(s.class)?;
-    let method_name = s.method.to_string();
+    let method_name = s.method.name_str()?.to_string();
     Some((class_name, method_name))
 }
 
@@ -195,7 +195,7 @@ fn extract_string_or_class(expr: &php_ast::Expr<'_, '_>) -> Option<String> {
         }
         ExprKind::ClassConstAccess(c) => {
             // `Foo::class` — extract `Foo`.
-            if c.member == "class" {
+            if c.member.name_str() == Some("class") {
                 extract_class_name(c.class)
             } else {
                 None

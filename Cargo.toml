@@ -28,12 +28,12 @@ name = "requests"
 harness = false
 
 [dependencies]
-mir-analyzer = "0.4.1"
-mir-issues = "0.4.1"
-mir-codebase = "0.4.1"
-mir-types = "0.4.1"
-php-rs-parser = "0.6.2"
-php-ast = "0.6.2"
+mir-analyzer = "0.5.0"
+mir-issues = "0.5.0"
+mir-codebase = "0.5.0"
+mir-types = "0.5.0"
+php-rs-parser = "0.7.0"
+php-ast = "0.7.0"
 bumpalo = { version = "3", features = ["collections"] }
 tower-lsp = "0.20"
 tokio = { version = "1", features = ["full"] }
@@ -43,4 +43,4 @@ dashmap = "6"
 [dev-dependencies]
 tempfile = "3"
 expect-test = "1"
-criterion = { version = "0.5", features = ["html_reports"] }
+criterion = { version = "0.8", features = ["html_reports"] }
