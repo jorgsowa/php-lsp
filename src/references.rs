@@ -232,6 +232,12 @@ fn find_references_inner(
             }
         }
 
+        // Deduplicate spans before converting — multiple walk paths can emit
+        // the same byte offset (e.g. a declaration that also appears as an
+        // identifier reference in the general walker).
+        spans.sort_unstable_by_key(|s| s.start);
+        spans.dedup_by_key(|s| s.start);
+
         let sv = doc.view();
         for span in spans {
             let start = sv.position_of(span.start);
@@ -1025,5 +1031,244 @@ mod tests {
             "interface method declaration (line 4) must not appear with kind=Function, got: {:?}",
             lines
         );
+    }
+
+    // ── switch / throw / unset statement coverage ────────────────────────────
+
+    #[test]
+    fn finds_function_call_inside_switch_case() {
+        // Line 0: <?php
+        // Line 1: function tick() {}
+        // Line 2: switch ($x) {
+        // Line 3:     case 1: tick(); break;
+        // Line 4: }
+        let src = "<?php\nfunction tick() {}\nswitch ($x) {\n    case 1: tick(); break;\n}";
+        let docs = vec![doc("/a.php", src)];
+        let refs = find_references("tick", &docs, false, Some(SymbolKind::Function));
+        assert_eq!(
+            refs.len(),
+            1,
+            "expected exactly 1 reference to tick() inside switch case, got: {:?}",
+            refs
+        );
+        assert_eq!(
+            refs[0].range.start.line, 3,
+            "tick() call should be on line 3"
+        );
+    }
+
+    #[test]
+    fn finds_method_call_inside_switch_case() {
+        // Line 0: <?php
+        // Line 1: switch ($x) {
+        // Line 2:     case 1: $obj->process(); break;
+        // Line 3: }
+        let src = "<?php\nswitch ($x) {\n    case 1: $obj->process(); break;\n}";
+        let docs = vec![doc("/a.php", src)];
+        let refs = find_references("process", &docs, false, Some(SymbolKind::Method));
+        assert_eq!(
+            refs.len(),
+            1,
+            "expected exactly 1 method reference inside switch case, got: {:?}",
+            refs
+        );
+        assert_eq!(refs[0].range.start.line, 2);
+    }
+
+    #[test]
+    fn finds_function_call_inside_switch_condition() {
+        // The switch subject expression itself should also be walked.
+        // Line 0: <?php
+        // Line 1: function classify() {}
+        // Line 2: switch (classify()) { default: break; }
+        let src = "<?php\nfunction classify() {}\nswitch (classify()) { default: break; }";
+        let docs = vec![doc("/a.php", src)];
+        let refs = find_references("classify", &docs, false, Some(SymbolKind::Function));
+        assert_eq!(
+            refs.len(),
+            1,
+            "expected 1 reference in switch subject, got: {:?}",
+            refs
+        );
+        assert_eq!(refs[0].range.start.line, 2);
+    }
+
+    #[test]
+    fn finds_function_call_inside_throw() {
+        // Line 0: <?php
+        // Line 1: function makeException() {}
+        // Line 2: throw makeException();
+        let src = "<?php\nfunction makeException() {}\nthrow makeException();";
+        let docs = vec![doc("/a.php", src)];
+        let refs = find_references("makeException", &docs, false, Some(SymbolKind::Function));
+        assert_eq!(
+            refs.len(),
+            1,
+            "expected 1 reference inside throw, got: {:?}",
+            refs
+        );
+        assert_eq!(refs[0].range.start.line, 2);
+    }
+
+    #[test]
+    fn finds_method_call_inside_throw() {
+        // Line 0: <?php
+        // Line 1: throw $factory->create();
+        let src = "<?php\nthrow $factory->create();";
+        let docs = vec![doc("/a.php", src)];
+        let refs = find_references("create", &docs, false, Some(SymbolKind::Method));
+        assert_eq!(
+            refs.len(),
+            1,
+            "expected 1 method reference inside throw, got: {:?}",
+            refs
+        );
+        assert_eq!(refs[0].range.start.line, 1);
+    }
+
+    #[test]
+    fn finds_method_call_inside_unset() {
+        // unset() can receive any assignable expression; a method call chained
+        // to produce a reference is unusual but the walker should still descend.
+        // More practically: unset($obj->getProp()) where getProp is searched.
+        // Line 0: <?php
+        // Line 1: unset($obj->getProp());
+        let src = "<?php\nunset($obj->getProp());";
+        let docs = vec![doc("/a.php", src)];
+        let refs = find_references("getProp", &docs, false, Some(SymbolKind::Method));
+        assert_eq!(
+            refs.len(),
+            1,
+            "expected 1 method reference inside unset(), got: {:?}",
+            refs
+        );
+        assert_eq!(refs[0].range.start.line, 1);
+    }
+
+    // ── MethodRefsVisitor: property default ──────────────────────────────────
+
+    #[test]
+    fn finds_static_method_call_in_class_property_default() {
+        // Line 0: <?php
+        // Line 1: class Config {
+        // Line 2:     public array $data = self::defaults();
+        // Line 3:     public static function defaults(): array { return []; }
+        // Line 4: }
+        let src = "<?php\nclass Config {\n    public array $data = self::defaults();\n    public static function defaults(): array { return []; }\n}";
+        let docs = vec![doc("/a.php", src)];
+        let refs = find_references("defaults", &docs, false, Some(SymbolKind::Method));
+        assert_eq!(
+            refs.len(),
+            1,
+            "expected 1 method reference in property default, got: {:?}",
+            refs
+        );
+        assert_eq!(refs[0].range.start.line, 2, "reference should be on line 2");
+    }
+
+    #[test]
+    fn finds_static_method_call_in_trait_property_default() {
+        // Line 0: <?php
+        // Line 1: trait T {
+        // Line 2:     public int $x = self::init();
+        // Line 3:     public static function init(): int { return 0; }
+        // Line 4: }
+        let src = "<?php\ntrait T {\n    public int $x = self::init();\n    public static function init(): int { return 0; }\n}";
+        let docs = vec![doc("/a.php", src)];
+        let refs = find_references("init", &docs, false, Some(SymbolKind::Method));
+        assert_eq!(
+            refs.len(),
+            1,
+            "expected 1 method reference in trait property default, got: {:?}",
+            refs
+        );
+        assert_eq!(refs[0].range.start.line, 2);
+    }
+
+    // ── Deduplication ────────────────────────────────────────────────────────
+
+    #[test]
+    fn no_duplicate_references_for_general_walker() {
+        // With kind=None and include_declaration=true the general walker emits
+        // the declaration and every call site exactly once each — no duplicates.
+        // Line 0: <?php
+        // Line 1: function helper() {}
+        // Line 2: helper();
+        // Line 3: helper();
+        let src = "<?php\nfunction helper() {}\nhelper();\nhelper();";
+        let docs = vec![doc("/a.php", src)];
+
+        let refs_with = find_references("helper", &docs, true, None);
+        let refs_without = find_references("helper", &docs, false, None);
+
+        // With declaration: declaration (line 1) + 2 call sites (lines 2, 3)
+        assert_eq!(
+            refs_with.len(),
+            3,
+            "expected exactly 3 refs (1 decl + 2 calls), got: {:?}",
+            refs_with
+        );
+
+        // Without declaration: 2 call sites only
+        assert_eq!(
+            refs_without.len(),
+            2,
+            "expected exactly 2 refs (calls only), got: {:?}",
+            refs_without
+        );
+
+        // No duplicate positions in either result set.
+        let positions_with: Vec<_> = refs_with
+            .iter()
+            .map(|r| (r.range.start.line, r.range.start.character))
+            .collect();
+        let unique_with: std::collections::HashSet<_> = positions_with.iter().collect();
+        assert_eq!(
+            positions_with.len(),
+            unique_with.len(),
+            "duplicate positions found with include_declaration=true: {:?}",
+            refs_with
+        );
+
+        let positions_without: Vec<_> = refs_without
+            .iter()
+            .map(|r| (r.range.start.line, r.range.start.character))
+            .collect();
+        let unique_without: std::collections::HashSet<_> = positions_without.iter().collect();
+        assert_eq!(
+            positions_without.len(),
+            unique_without.len(),
+            "duplicate positions found with include_declaration=false: {:?}",
+            refs_without
+        );
+    }
+
+    #[test]
+    fn no_duplicate_method_references() {
+        // Searching for a method with kind=Method must not produce duplicate
+        // results even when the method appears in both the declaration and a
+        // call site in the same file.
+        // Line 0: <?php
+        // Line 1: class Calc { public function add() {} }
+        // Line 2: $c = new Calc();
+        // Line 3: $c->add();
+        // Line 4: $c->add();
+        let src = "<?php\nclass Calc { public function add() {} }\n$c = new Calc();\n$c->add();\n$c->add();";
+        let docs = vec![doc("/a.php", src)];
+
+        let refs = find_references("add", &docs, true, Some(SymbolKind::Method));
+        let positions: Vec<_> = refs
+            .iter()
+            .map(|r| (r.range.start.line, r.range.start.character))
+            .collect();
+        let unique: std::collections::HashSet<_> = positions.iter().collect();
+        assert_eq!(
+            positions.len(),
+            unique.len(),
+            "duplicate positions found: {:?}",
+            refs
+        );
+        // declaration (line 1) + 2 call sites (lines 3 and 4)
+        assert_eq!(refs.len(), 3, "expected 3 refs, got: {:?}", refs);
     }
 }
