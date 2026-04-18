@@ -501,7 +501,7 @@ impl LanguageServer for Backend {
                 send_refresh_requests(&client).await;
 
                 // Phase 3: build the reference index in the background so that
-                // find_references_codebase can serve O(1) lookups instead of
+                // find_references_codebase can serve O(k) lookups instead of
                 // scanning every file's AST. Runs after the progress notification
                 // so the editor considers indexing "done" while this completes.
                 build_reference_index(docs, codebase, ref_index_ready).await;
@@ -2353,15 +2353,17 @@ async fn scan_workspace(
 /// This is deliberately run *after* the progress notification is sent so the
 /// editor considers indexing finished while this background work completes.
 /// Once done, `ref_index_ready` is set to `true` so the `references` handler
-/// can switch to O(1) codebase lookups instead of scanning every AST.
+/// can switch to O(k) codebase lookups instead of scanning every AST.
 async fn build_reference_index(
     docs: Arc<DocumentStore>,
     codebase: Arc<mir_codebase::Codebase>,
     ready: Arc<AtomicBool>,
 ) {
-    // Finalize inheritance tables once before analysing any file body.
-    codebase.finalize();
-
+    // The codebase was already finalized at the end of the workspace scan
+    // (Phase 2). Calling finalize() again here would race with concurrent
+    // semantic_diagnostics calls that reset the finalized flag via
+    // remove_file_definitions(), causing method-inheritance lookups to
+    // transiently return None and silently drop those references from the index.
     let all_docs = docs.all_docs();
     let parallelism = std::thread::available_parallelism()
         .map(|n| n.get())
