@@ -59,8 +59,8 @@ pub fn hover_at(
 
     // Feature 2: hover on $variable shows its type
     if word.starts_with('$') {
-        let arc_docs: Vec<Arc<ParsedDoc>> = other_docs.iter().map(|(_, d)| d.clone()).collect();
-        let type_map = TypeMap::from_docs_with_meta(doc, &arc_docs, None);
+        let type_map =
+            TypeMap::from_docs_with_meta(doc, other_docs.iter().map(|(_, d)| d.as_ref()), None);
         if let Some(class_name) = type_map.get(&word) {
             return Some(Hover {
                 contents: HoverContents::Markup(MarkupContent {
@@ -140,9 +140,11 @@ pub fn hover_at(
                 let before_arrow = &line_text[..apos];
                 let receiver_var = extract_receiver_var_from_end(before_arrow);
                 if let Some(var_name) = receiver_var {
-                    let arc_docs: Vec<Arc<ParsedDoc>> =
-                        other_docs.iter().map(|(_, d)| d.clone()).collect();
-                    let type_map = TypeMap::from_docs_with_meta(doc, &arc_docs, None);
+                    let type_map = TypeMap::from_docs_with_meta(
+                        doc,
+                        other_docs.iter().map(|(_, d)| d.as_ref()),
+                        None,
+                    );
                     let class_name = if var_name == "$this" {
                         crate::type_map::enclosing_class_at(source, doc, position)
                             .or_else(|| type_map.get("$this").map(|s| s.to_string()))
@@ -150,11 +152,9 @@ pub fn hover_at(
                         type_map.get(&var_name).map(|s| s.to_string())
                     };
                     if let Some(cls) = class_name {
-                        // Search current doc + other docs for the property type
-                        let all_docs_search: Vec<&ParsedDoc> = std::iter::once(doc)
-                            .chain(other_docs.iter().map(|(_, d)| d.as_ref()))
-                            .collect();
-                        for d in &all_docs_search {
+                        for d in
+                            std::iter::once(doc).chain(other_docs.iter().map(|(_, d)| d.as_ref()))
+                        {
                             if let Some((type_str, db)) = find_property_info(d, &cls, &word) {
                                 let sig = format!(
                                     "(property) {}::${}{}",

@@ -87,20 +87,20 @@ pub fn rename_variable(
     let mut spans = Vec::new();
     collect_var_refs_in_scope(stmts, bare, byte_off, &mut spans);
 
+    let mut seen = std::collections::HashSet::new();
     let mut edits: Vec<TextEdit> = spans
         .into_iter()
-        .map(|span| {
+        .filter_map(|span| {
             let start = offset_to_position(source, span.start);
             let end = offset_to_position(source, span.end);
-            TextEdit {
-                range: Range { start, end },
-                new_text: new_text.clone(),
-            }
+            seen.insert((start.line, start.character))
+                .then_some(TextEdit {
+                    range: Range { start, end },
+                    new_text: new_text.clone(),
+                })
         })
         .collect();
-
     edits.sort_by_key(|e| (e.range.start.line, e.range.start.character));
-    edits.dedup_by_key(|e| (e.range.start.line, e.range.start.character));
 
     let mut changes = HashMap::new();
     if !edits.is_empty() {
@@ -131,19 +131,20 @@ pub fn rename_property(
         let mut spans = Vec::new();
         property_refs_in_stmts(source, &doc.program().stmts, prop_name, &mut spans);
         if !spans.is_empty() {
+            let mut seen = std::collections::HashSet::new();
             let mut edits: Vec<TextEdit> = spans
                 .into_iter()
-                .map(|span| {
+                .filter_map(|span| {
                     let start = offset_to_position(source, span.start);
                     let end = offset_to_position(source, span.end);
-                    TextEdit {
-                        range: Range { start, end },
-                        new_text: new_name.to_string(),
-                    }
+                    seen.insert((start.line, start.character))
+                        .then_some(TextEdit {
+                            range: Range { start, end },
+                            new_text: new_name.to_string(),
+                        })
                 })
                 .collect();
             edits.sort_by_key(|e| (e.range.start.line, e.range.start.character));
-            edits.dedup_by_key(|e| (e.range.start.line, e.range.start.character));
             changes.insert(uri.clone(), edits);
         }
     }

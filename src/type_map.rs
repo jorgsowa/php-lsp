@@ -40,10 +40,10 @@ impl TypeMap {
 
     /// Build from a parsed document plus cross-file docs, optionally enriched
     /// by PHPStorm metadata. Method-return-type inference spans all provided docs.
-    pub fn from_docs_with_meta(
+    pub fn from_docs_with_meta<'a>(
         doc: &ParsedDoc,
-        other_docs: &[std::sync::Arc<ParsedDoc>],
-        meta: Option<&PhpStormMeta>,
+        other_docs: impl IntoIterator<Item = &'a ParsedDoc>,
+        meta: Option<&'a PhpStormMeta>,
     ) -> Self {
         let mut method_returns = build_method_returns(doc);
         for other in other_docs {
