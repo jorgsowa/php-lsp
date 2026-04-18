@@ -224,7 +224,8 @@ pub fn filtered_completions_at(
         Some(">") => {
             // Arrow: $obj->  or  $this->
             if let (Some(src), Some(pos)) = (source, position) {
-                let type_map = TypeMap::from_docs_with_meta(doc, other_docs, meta);
+                let type_map =
+                    TypeMap::from_docs_with_meta(doc, other_docs.iter().map(|d| d.as_ref()), meta);
                 if let Some(class_names) = resolve_receiver_class(src, doc, pos, &type_map) {
                     // Feature 5: support union types (Foo|Bar)
                     let mut items = Vec::new();
@@ -558,7 +559,8 @@ fn match_arm_completions(
     for line_idx in (end_line..=start_line).rev() {
         let line = source.lines().nth(line_idx)?;
         if let Some(cap) = extract_match_subject(line) {
-            let type_map = TypeMap::from_docs_with_meta(doc, other_docs, meta);
+            let type_map =
+                TypeMap::from_docs_with_meta(doc, other_docs.iter().map(|d| d.as_ref()), meta);
             let class_name = if cap == "this" {
                 enclosing_class_at(source, doc, position)?
             } else {
