@@ -899,7 +899,7 @@ pub fn refs_in_expr(source: &str, expr: &Expr<'_, '_>, word: &str, out: &mut Vec
         ExprKind::StaticMethodCall(s) => {
             refs_in_expr(source, s.class, word, out);
             if s.method.name_str() == Some(word) {
-                out.push(expr.span);
+                out.push(s.method.span);
             }
             args(source, &s.args, word, out);
         }
@@ -1292,10 +1292,7 @@ fn method_refs_in_expr(expr: &Expr<'_, '_>, name: &str, out: &mut Vec<Span>) {
         ExprKind::StaticMethodCall(s) => {
             method_refs_in_expr(s.class, name, out);
             if s.method.name_str() == Some(name) {
-                // For static calls, the span covers the whole expression; we need the
-                // method-name portion. Use the existing refs_in_expr behaviour which
-                // pushed expr.span for static methods — replicate that here.
-                out.push(expr.span);
+                out.push(s.method.span);
             }
             for a in s.args.iter() {
                 method_refs_in_expr(&a.value, name, out);
