@@ -402,12 +402,13 @@ pub fn filtered_completions_at(
                 // Check we're NOT in a use statement
                 let is_use = use_completion_prefix(src, pos).is_some();
                 if !is_use {
+                    let prefix_lc = prefix.to_lowercase();
                     let mut ns_items: Vec<CompletionItem> = Vec::new();
                     for other in other_docs {
                         let mut classes = Vec::new();
                         collect_classes_with_ns(&other.program().stmts, "", &mut classes);
                         for (label, kind, fqn) in classes {
-                            if fqn.to_lowercase().starts_with(&prefix.to_lowercase()) {
+                            if fqn.to_lowercase().starts_with(&prefix_lc) {
                                 ns_items.push(CompletionItem {
                                     label: label.clone(),
                                     kind: Some(kind),
@@ -421,7 +422,7 @@ pub fn filtered_completions_at(
                     let mut classes = Vec::new();
                     collect_classes_with_ns(&doc.program().stmts, "", &mut classes);
                     for (label, kind, fqn) in classes {
-                        if fqn.to_lowercase().starts_with(&prefix.to_lowercase()) {
+                        if fqn.to_lowercase().starts_with(&prefix_lc) {
                             ns_items.push(CompletionItem {
                                 label: label.clone(),
                                 kind: Some(kind),
@@ -556,8 +557,9 @@ fn match_arm_completions(
 ) -> Option<Vec<CompletionItem>> {
     let start_line = position.line as usize;
     let end_line = start_line.saturating_sub(5);
+    let all_lines: Vec<&str> = source.lines().collect();
     for line_idx in (end_line..=start_line).rev() {
-        let line = source.lines().nth(line_idx)?;
+        let line = all_lines.get(line_idx).copied()?;
         if let Some(cap) = extract_match_subject(line) {
             let type_map =
                 TypeMap::from_docs_with_meta(doc, other_docs.iter().map(|d| d.as_ref()), meta);
