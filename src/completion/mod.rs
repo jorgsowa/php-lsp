@@ -408,7 +408,10 @@ pub fn filtered_completions_at(
                         let mut classes = Vec::new();
                         collect_classes_with_ns(&other.program().stmts, "", &mut classes);
                         for (label, kind, fqn) in classes {
-                            if fqn.to_lowercase().starts_with(&prefix_lc) {
+                            if fqn
+                                .get(..prefix_lc.len())
+                                .is_some_and(|s| s.eq_ignore_ascii_case(&prefix_lc))
+                            {
                                 ns_items.push(CompletionItem {
                                     label: label.clone(),
                                     kind: Some(kind),
@@ -422,7 +425,10 @@ pub fn filtered_completions_at(
                     let mut classes = Vec::new();
                     collect_classes_with_ns(&doc.program().stmts, "", &mut classes);
                     for (label, kind, fqn) in classes {
-                        if fqn.to_lowercase().starts_with(&prefix_lc) {
+                        if fqn
+                            .get(..prefix_lc.len())
+                            .is_some_and(|s| s.eq_ignore_ascii_case(&prefix_lc))
+                        {
                             ns_items.push(CompletionItem {
                                 label: label.clone(),
                                 kind: Some(kind),
@@ -534,7 +540,8 @@ pub fn filtered_completions_at(
                 let ns_prefix = prefix.trim_start_matches('\\').to_lowercase();
                 items.retain(|i| {
                     let fqn = i.detail.as_deref().unwrap_or(&i.label);
-                    fqn.to_lowercase().starts_with(&ns_prefix)
+                    fqn.get(..ns_prefix.len())
+                        .is_some_and(|s| s.eq_ignore_ascii_case(&ns_prefix))
                 });
             } else if !prefix.is_empty() {
                 items.retain(|i| fuzzy_camel_match(&prefix, &i.label));

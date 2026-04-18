@@ -102,8 +102,8 @@ fn render_group(stmts: &[UseStatement], indent: &str, keyword: Option<&str>) -> 
 
 /// Sort a group alphabetically (case-insensitive) and deduplicate by FQN.
 fn sort_and_dedup(group: &mut Vec<UseStatement>) {
-    group.sort_by(|a, b| a.fqn.to_lowercase().cmp(&b.fqn.to_lowercase()));
-    group.dedup_by(|a, b| a.fqn.to_lowercase() == b.fqn.to_lowercase());
+    group.sort_by_cached_key(|u| u.fqn.to_lowercase());
+    group.dedup_by(|a, b| a.fqn.eq_ignore_ascii_case(&b.fqn));
 }
 
 fn make_action(uri: &Url, edit: TextEdit) -> CodeActionOrCommand {
