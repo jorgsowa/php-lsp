@@ -1,6 +1,6 @@
 use tower_lsp::lsp_types::{DocumentHighlight, DocumentHighlightKind, Position, Range};
 
-use crate::ast::{ParsedDoc, offset_to_position};
+use crate::ast::ParsedDoc;
 use crate::util::{utf16_pos_to_byte, word_at};
 use crate::walk::{collect_var_refs_in_scope, refs_in_stmts};
 
@@ -29,11 +29,11 @@ pub fn document_highlights(
         refs_in_stmts(source, &doc.program().stmts, &word, &mut spans);
     }
 
-    let line_starts = doc.line_starts();
+    let sv = doc.view();
     spans
         .into_iter()
         .map(|span| {
-            let start = offset_to_position(source, line_starts, span.start);
+            let start = sv.position_of(span.start);
             let end = Position {
                 line: start.line,
                 character: start.character + word_utf16_len,

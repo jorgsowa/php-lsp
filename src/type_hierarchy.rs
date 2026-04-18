@@ -4,7 +4,7 @@ use std::sync::Arc;
 use php_ast::{ClassMemberKind, NamespaceBody, Stmt, StmtKind};
 use tower_lsp::lsp_types::{Position, SymbolKind, TypeHierarchyItem, Url};
 
-use crate::ast::{ParsedDoc, name_range};
+use crate::ast::{ParsedDoc, SourceView};
 use crate::util::word_at;
 
 // ── Prepare ───────────────────────────────────────────────────────────────────
@@ -16,11 +16,8 @@ pub fn prepare_type_hierarchy(
 ) -> Option<TypeHierarchyItem> {
     let word = word_at(source, position)?;
     for (uri, doc) in all_docs {
-        let doc_source = doc.source();
-        let line_starts = doc.line_starts();
-        if let Some(item) =
-            find_type_item(doc_source, line_starts, &doc.program().stmts, &word, uri)
-        {
+        let sv = doc.view();
+        if let Some(item) = find_type_item(sv, &doc.program().stmts, &word, uri) {
             return Some(item);
         }
     }
@@ -28,8 +25,7 @@ pub fn prepare_type_hierarchy(
 }
 
 fn find_type_item(
-    source: &str,
-    line_starts: &[u32],
+    sv: SourceView<'_>,
     stmts: &[Stmt<'_, '_>],
     word: &str,
     uri: &Url,
@@ -38,38 +34,20 @@ fn find_type_item(
         match &stmt.kind {
             StmtKind::Class(c) if c.name == Some(word) => {
                 let name = c.name.expect("match guard ensures Some");
-                return Some(make_item(source, line_starts, name, SymbolKind::CLASS, uri));
+                return Some(make_item(sv, name, SymbolKind::CLASS, uri));
             }
             StmtKind::Interface(i) if i.name == word => {
-                return Some(make_item(
-                    source,
-                    line_starts,
-                    i.name,
-                    SymbolKind::INTERFACE,
-                    uri,
-                ));
+                return Some(make_item(sv, i.name, SymbolKind::INTERFACE, uri));
             }
             StmtKind::Trait(t) if t.name == word => {
-                return Some(make_item(
-                    source,
-                    line_starts,
-                    t.name,
-                    SymbolKind::CLASS,
-                    uri,
-                ));
+                return Some(make_item(sv, t.name, SymbolKind::CLASS, uri));
             }
             StmtKind::Enum(e) if e.name == word => {
-                return Some(make_item(
-                    source,
-                    line_starts,
-                    e.name,
-                    SymbolKind::ENUM,
-                    uri,
-                ));
+                return Some(make_item(sv, e.name, SymbolKind::ENUM, uri));
             }
             StmtKind::Namespace(ns) => {
                 if let NamespaceBody::Braced(inner) = &ns.body
-                    && let Some(item) = find_type_item(source, line_starts, inner, word, uri)
+                    && let Some(item) = find_type_item(sv, inner, word, uri)
                 {
                     return Some(item);
                 }
@@ -80,14 +58,8 @@ fn find_type_item(
     None
 }
 
-fn make_item(
-    source: &str,
-    line_starts: &[u32],
-    name: &str,
-    kind: SymbolKind,
-    uri: &Url,
-) -> TypeHierarchyItem {
-    let range = name_range(source, line_starts, name);
+fn make_item(sv: SourceView<'_>, name: &str, kind: SymbolKind, uri: &Url) -> TypeHierarchyItem {
+    let range = sv.name_range(name);
     TypeHierarchyItem {
         name: name.to_string(),
         kind,
@@ -115,11 +87,8 @@ pub fn supertypes_of(
     let mut result = Vec::new();
     for name in super_names {
         for (uri, doc) in all_docs {
-            let doc_source = doc.source();
-            let line_starts = doc.line_starts();
-            if let Some(super_item) =
-                find_type_item(doc_source, line_starts, &doc.program().stmts, &name, uri)
-            {
+            let sv = doc.view();
+            if let Some(super_item) = find_type_item(sv, &doc.program().stmts, &name, uri) {
                 result.push(super_item);
                 break;
             }
@@ -167,23 +136,14 @@ pub fn subtypes_of(
 ) -> Vec<TypeHierarchyItem> {
     let mut result = Vec::new();
     for (uri, doc) in all_docs {
-        let doc_source = doc.source();
-        let line_starts = doc.line_starts();
-        collect_subtypes(
-            doc_source,
-            line_starts,
-            &doc.program().stmts,
-            &item.name,
-            uri,
-            &mut result,
-        );
+        let sv = doc.view();
+        collect_subtypes(sv, &doc.program().stmts, &item.name, uri, &mut result);
     }
     result
 }
 
 fn collect_subtypes(
-    source: &str,
-    line_starts: &[u32],
+    sv: SourceView<'_>,
     stmts: &[Stmt<'_, '_>],
     parent_name: &str,
     uri: &Url,
@@ -213,7 +173,7 @@ fn collect_subtypes(
                 if (extends_match || implements_match || trait_use_match)
                     && let Some(name) = c.name
                 {
-                    out.push(make_item(source, line_starts, name, SymbolKind::CLASS, uri));
+                    out.push(make_item(sv, name, SymbolKind::CLASS, uri));
                 }
             }
             StmtKind::Interface(i) => {
@@ -222,13 +182,7 @@ fn collect_subtypes(
                     .iter()
                     .any(|p| p.to_string_repr().as_ref() == parent_name);
                 if extends_match {
-                    out.push(make_item(
-                        source,
-                        line_starts,
-                        i.name,
-                        SymbolKind::INTERFACE,
-                        uri,
-                    ));
+                    out.push(make_item(sv, i.name, SymbolKind::INTERFACE, uri));
                 }
             }
             StmtKind::Enum(e) => {
@@ -237,18 +191,12 @@ fn collect_subtypes(
                     .iter()
                     .any(|i| i.to_string_repr().as_ref() == parent_name);
                 if implements_match {
-                    out.push(make_item(
-                        source,
-                        line_starts,
-                        e.name,
-                        SymbolKind::ENUM,
-                        uri,
-                    ));
+                    out.push(make_item(sv, e.name, SymbolKind::ENUM, uri));
                 }
             }
             StmtKind::Namespace(ns) => {
                 if let NamespaceBody::Braced(inner) = &ns.body {
-                    collect_subtypes(source, line_starts, inner, parent_name, uri, out);
+                    collect_subtypes(sv, inner, parent_name, uri, out);
                 }
             }
             _ => {}

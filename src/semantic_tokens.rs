@@ -9,7 +9,7 @@ use tower_lsp::lsp_types::{
     SemanticTokensLegend,
 };
 
-use crate::ast::{ParsedDoc, offset_to_position, str_offset};
+use crate::ast::{ParsedDoc, SourceView, str_offset};
 use crate::docblock::{docblock_before, parse_docblock};
 
 // Token type indices — order must match `legend()` vec order
@@ -62,22 +62,22 @@ pub fn legend() -> SemanticTokensLegend {
     }
 }
 
-pub fn semantic_tokens(source: &str, doc: &ParsedDoc) -> Vec<SemanticToken> {
-    let line_starts = doc.line_starts();
+pub fn semantic_tokens(_source: &str, doc: &ParsedDoc) -> Vec<SemanticToken> {
+    let sv = doc.view();
     let mut raw: Vec<RawToken> = Vec::new();
-    collect_comments(source, line_starts, &mut raw);
-    collect_stmts(source, line_starts, &doc.program().stmts, &mut raw);
+    collect_comments(sv, &mut raw);
+    collect_stmts(sv, &doc.program().stmts, &mut raw);
     raw.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
     delta_encode(raw)
 }
 
-/// Return semantic tokens restricted to the given source range.
+/// Return semantic tokens restricted to the given sv.source() range.
 /// Useful for editors that only request tokens for the visible viewport.
-pub fn semantic_tokens_range(source: &str, doc: &ParsedDoc, range: Range) -> Vec<SemanticToken> {
-    let line_starts = doc.line_starts();
+pub fn semantic_tokens_range(_source: &str, doc: &ParsedDoc, range: Range) -> Vec<SemanticToken> {
+    let sv = doc.view();
     let mut raw: Vec<RawToken> = Vec::new();
-    collect_comments(source, line_starts, &mut raw);
-    collect_stmts(source, line_starts, &doc.program().stmts, &mut raw);
+    collect_comments(sv, &mut raw);
+    collect_stmts(sv, &doc.program().stmts, &mut raw);
     raw.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
 
     let filtered: Vec<RawToken> = raw
@@ -162,30 +162,27 @@ pub fn compute_token_delta(
 
 fn push_at(
     out: &mut Vec<RawToken>,
-    source: &str,
-    line_starts: &[u32],
+    sv: SourceView<'_>,
     offset: u32,
     len: u32,
     token_type: u32,
     modifiers: u32,
 ) {
-    let pos = offset_to_position(source, line_starts, offset);
+    let pos = sv.position_of(offset);
     out.push((pos.line, pos.character, len, token_type, modifiers));
 }
 
 fn push_name(
     out: &mut Vec<RawToken>,
-    source: &str,
-    line_starts: &[u32],
+    sv: SourceView<'_>,
     name: &str,
     token_type: u32,
     modifiers: u32,
 ) {
-    let offset = str_offset(source, name);
+    let offset = str_offset(sv.source(), name);
     push_at(
         out,
-        source,
-        line_starts,
+        sv,
         offset,
         name.chars().map(|c| c.len_utf16() as u32).sum::<u32>(),
         token_type,
@@ -194,28 +191,26 @@ fn push_name(
 }
 
 /// Like `push_name` but also includes the leading `$` sigil when one immediately
-/// precedes the name in the source.  PHP parameter names in the AST are stored
+/// precedes the name in the sv.source().  PHP parameter names in the AST are stored
 /// without `$`, but the sigil is part of the syntax and must be highlighted
 /// consistently with variable-expression tokens which include it.
 fn push_param(
     out: &mut Vec<RawToken>,
-    source: &str,
-    line_starts: &[u32],
+    sv: SourceView<'_>,
     name: &str,
     token_type: u32,
     modifiers: u32,
 ) {
-    let name_offset = str_offset(source, name);
+    let name_offset = str_offset(sv.source(), name);
     let (offset, extra_len) =
-        if name_offset > 0 && source.as_bytes().get(name_offset as usize - 1) == Some(&b'$') {
+        if name_offset > 0 && sv.source().as_bytes().get(name_offset as usize - 1) == Some(&b'$') {
             (name_offset - 1, 1u32)
         } else {
             (name_offset, 0u32)
         };
     push_at(
         out,
-        source,
-        line_starts,
+        sv,
         offset,
         extra_len + name.chars().map(|c| c.len_utf16() as u32).sum::<u32>(),
         token_type,
@@ -223,17 +218,12 @@ fn push_param(
     );
 }
 
-fn push_attributes(
-    out: &mut Vec<RawToken>,
-    source: &str,
-    line_starts: &[u32],
-    attrs: &[Attribute<'_, '_>],
-) {
+fn push_attributes(out: &mut Vec<RawToken>, sv: SourceView<'_>, attrs: &[Attribute<'_, '_>]) {
     for attr in attrs.iter() {
         let span = attr.name.span();
-        let segment = &source[span.start as usize..span.end as usize];
+        let segment = &sv.source()[span.start as usize..span.end as usize];
         let len: u32 = segment.chars().map(|c| c.len_utf16() as u32).sum();
-        push_at(out, source, line_starts, span.start, len, TT_CLASS, 0);
+        push_at(out, sv, span.start, len, TT_CLASS, 0);
     }
 }
 
@@ -249,12 +239,12 @@ fn deprecated_mod(source: &str, node_start: u32) -> u32 {
         .unwrap_or(0)
 }
 
-/// Scan `source` for PHP comments (single-line `//` and `#`, multi-line `/* */`)
+/// Scan `sv.source()` for PHP comments (single-line `//` and `#`, multi-line `/* */`)
 /// and emit `TT_COMMENT` tokens.  Each physical line of a multi-line comment
 /// is emitted as a separate token because the LSP protocol requires tokens to
 /// fit on a single line.
-fn collect_comments(source: &str, line_starts: &[u32], out: &mut Vec<RawToken>) {
-    let bytes = source.as_bytes();
+fn collect_comments(sv: SourceView<'_>, out: &mut Vec<RawToken>) {
+    let bytes = sv.source().as_bytes();
     let len = bytes.len();
     let mut i = 0usize;
 
@@ -298,17 +288,9 @@ fn collect_comments(source: &str, line_starts: &[u32], out: &mut Vec<RawToken>) 
                     while i < len && bytes[i] != b'\n' {
                         i += 1;
                     }
-                    let text = &source[start..i];
+                    let text = &sv.source()[start..i];
                     let len_utf16: u32 = text.chars().map(|c| c.len_utf16() as u32).sum();
-                    push_at(
-                        out,
-                        source,
-                        line_starts,
-                        start as u32,
-                        len_utf16,
-                        TT_COMMENT,
-                        0,
-                    );
+                    push_at(out, sv, start as u32, len_utf16, TT_COMMENT, 0);
                 } else if bytes[i + 1] == b'*' {
                     // Multi-line comment: `/* ... */`
                     let start = i;
@@ -321,7 +303,7 @@ fn collect_comments(source: &str, line_starts: &[u32], out: &mut Vec<RawToken>) 
                         i += 2;
                     }
                     // Emit per-line so the LSP single-line constraint is met
-                    emit_multiline_comment(source, line_starts, start, i, out);
+                    emit_multiline_comment(sv, start, i, out);
                 } else {
                     i += 1;
                 }
@@ -333,17 +315,9 @@ fn collect_comments(source: &str, line_starts: &[u32], out: &mut Vec<RawToken>) 
                 while i < len && bytes[i] != b'\n' {
                     i += 1;
                 }
-                let text = &source[start..i];
+                let text = &sv.source()[start..i];
                 let len_utf16: u32 = text.chars().map(|c| c.len_utf16() as u32).sum();
-                push_at(
-                    out,
-                    source,
-                    line_starts,
-                    start as u32,
-                    len_utf16,
-                    TT_COMMENT,
-                    0,
-                );
+                push_at(out, sv, start as u32, len_utf16, TT_COMMENT, 0);
             }
             _ => {
                 i += 1;
@@ -353,32 +327,18 @@ fn collect_comments(source: &str, line_starts: &[u32], out: &mut Vec<RawToken>) 
 }
 
 /// Emit a `TT_COMMENT` raw token for each line within a block comment
-/// `source[start..end]`.  Multi-line tokens are not allowed by the LSP spec.
-fn emit_multiline_comment(
-    source: &str,
-    line_starts: &[u32],
-    start: usize,
-    end: usize,
-    out: &mut Vec<RawToken>,
-) {
-    let text = &source[start..end];
+/// `sv.source()[start..end]`.  Multi-line tokens are not allowed by the LSP spec.
+fn emit_multiline_comment(sv: SourceView<'_>, start: usize, end: usize, out: &mut Vec<RawToken>) {
+    let text = &sv.source()[start..end];
     let mut line_start = start;
     for (rel, ch) in text.char_indices() {
         if ch == '\n' {
             let line_end = start + rel; // byte index of newline
             if line_end > line_start {
-                let segment = &source[line_start..line_end];
+                let segment = &sv.source()[line_start..line_end];
                 let len_utf16: u32 = segment.chars().map(|c| c.len_utf16() as u32).sum();
                 if len_utf16 > 0 {
-                    push_at(
-                        out,
-                        source,
-                        line_starts,
-                        line_start as u32,
-                        len_utf16,
-                        TT_COMMENT,
-                        0,
-                    );
+                    push_at(out, sv, line_start as u32, len_utf16, TT_COMMENT, 0);
                 }
             }
             line_start = start + rel + 1; // byte after '\n'
@@ -386,18 +346,10 @@ fn emit_multiline_comment(
     }
     // Last (or only) line
     if line_start < end {
-        let segment = &source[line_start..end];
+        let segment = &sv.source()[line_start..end];
         let len_utf16: u32 = segment.chars().map(|c| c.len_utf16() as u32).sum();
         if len_utf16 > 0 {
-            push_at(
-                out,
-                source,
-                line_starts,
-                line_start as u32,
-                len_utf16,
-                TT_COMMENT,
-                0,
-            );
+            push_at(out, sv, line_start as u32, len_utf16, TT_COMMENT, 0);
         }
     }
 }
@@ -407,291 +359,240 @@ fn emit_multiline_comment(
 /// Keyword types (e.g. `int`, `string`, `void`, `null`) get one token at
 /// the keyword span.  Union/intersection/nullable are recursed into so
 /// every component is covered.
-fn push_type_hint(
-    out: &mut Vec<RawToken>,
-    source: &str,
-    line_starts: &[u32],
-    hint: &TypeHint<'_, '_>,
-) {
+fn push_type_hint(out: &mut Vec<RawToken>, sv: SourceView<'_>, hint: &TypeHint<'_, '_>) {
     match &hint.kind {
         TypeHintKind::Named(name) => {
             let span = name.span();
-            let segment = &source[span.start as usize..span.end as usize];
+            let segment = &sv.source()[span.start as usize..span.end as usize];
             let len: u32 = segment.chars().map(|c| c.len_utf16() as u32).sum();
-            push_at(out, source, line_starts, span.start, len, TT_TYPE, 0);
+            push_at(out, sv, span.start, len, TT_TYPE, 0);
         }
         TypeHintKind::Keyword(builtin, span) => {
             let text = builtin.as_str();
             let len_utf16: u32 = text.chars().map(|c| c.len_utf16() as u32).sum();
-            push_at(out, source, line_starts, span.start, len_utf16, TT_TYPE, 0);
+            push_at(out, sv, span.start, len_utf16, TT_TYPE, 0);
         }
         TypeHintKind::Nullable(inner) => {
-            push_type_hint(out, source, line_starts, inner);
+            push_type_hint(out, sv, inner);
         }
         TypeHintKind::Union(types) | TypeHintKind::Intersection(types) => {
             for t in types.iter() {
-                push_type_hint(out, source, line_starts, t);
+                push_type_hint(out, sv, t);
             }
         }
     }
 }
 
-fn collect_stmts(
-    source: &str,
-    line_starts: &[u32],
-    stmts: &[Stmt<'_, '_>],
-    out: &mut Vec<RawToken>,
-) {
+fn collect_stmts(sv: SourceView<'_>, stmts: &[Stmt<'_, '_>], out: &mut Vec<RawToken>) {
     for stmt in stmts {
-        collect_stmt(source, line_starts, stmt, out);
+        collect_stmt(sv, stmt, out);
     }
 }
 
-fn collect_stmt(source: &str, line_starts: &[u32], stmt: &Stmt<'_, '_>, out: &mut Vec<RawToken>) {
+fn collect_stmt(sv: SourceView<'_>, stmt: &Stmt<'_, '_>, out: &mut Vec<RawToken>) {
     match &stmt.kind {
         StmtKind::Function(f) => {
-            push_attributes(out, source, line_starts, &f.attributes);
-            let mods = MOD_DECLARATION | deprecated_mod(source, stmt.span.start);
-            push_name(out, source, line_starts, f.name, TT_FUNCTION, mods);
+            push_attributes(out, sv, &f.attributes);
+            let mods = MOD_DECLARATION | deprecated_mod(sv.source(), stmt.span.start);
+            push_name(out, sv, f.name, TT_FUNCTION, mods);
             for p in f.params.iter() {
-                push_attributes(out, source, line_starts, &p.attributes);
+                push_attributes(out, sv, &p.attributes);
                 if let Some(th) = &p.type_hint {
-                    push_type_hint(out, source, line_starts, th);
+                    push_type_hint(out, sv, th);
                 }
-                push_param(
-                    out,
-                    source,
-                    line_starts,
-                    p.name,
-                    TT_PARAMETER,
-                    MOD_DECLARATION,
-                );
+                push_param(out, sv, p.name, TT_PARAMETER, MOD_DECLARATION);
             }
             if let Some(rt) = &f.return_type {
-                push_type_hint(out, source, line_starts, rt);
+                push_type_hint(out, sv, rt);
             }
-            collect_stmts(source, line_starts, &f.body, out);
+            collect_stmts(sv, &f.body, out);
         }
         StmtKind::Class(c) => {
-            push_attributes(out, source, line_starts, &c.attributes);
+            push_attributes(out, sv, &c.attributes);
             if let Some(name) = c.name {
-                let mods = MOD_DECLARATION | deprecated_mod(source, stmt.span.start);
-                push_name(out, source, line_starts, name, TT_CLASS, mods);
+                let mods = MOD_DECLARATION | deprecated_mod(sv.source(), stmt.span.start);
+                push_name(out, sv, name, TT_CLASS, mods);
             }
             for member in c.members.iter() {
-                collect_class_member(source, line_starts, member, out);
+                collect_class_member(sv, member, out);
             }
         }
         StmtKind::Interface(i) => {
-            push_attributes(out, source, line_starts, &i.attributes);
-            let mods = MOD_DECLARATION | deprecated_mod(source, stmt.span.start);
-            push_name(out, source, line_starts, i.name, TT_INTERFACE, mods);
+            push_attributes(out, sv, &i.attributes);
+            let mods = MOD_DECLARATION | deprecated_mod(sv.source(), stmt.span.start);
+            push_name(out, sv, i.name, TT_INTERFACE, mods);
         }
         StmtKind::Trait(t) => {
-            push_attributes(out, source, line_starts, &t.attributes);
-            let mods = MOD_DECLARATION | deprecated_mod(source, stmt.span.start);
-            push_name(out, source, line_starts, t.name, TT_CLASS, mods);
+            push_attributes(out, sv, &t.attributes);
+            let mods = MOD_DECLARATION | deprecated_mod(sv.source(), stmt.span.start);
+            push_name(out, sv, t.name, TT_CLASS, mods);
             for member in t.members.iter() {
-                collect_class_member(source, line_starts, member, out);
+                collect_class_member(sv, member, out);
             }
         }
         StmtKind::Enum(e) => {
-            push_attributes(out, source, line_starts, &e.attributes);
-            let mods = MOD_DECLARATION | deprecated_mod(source, stmt.span.start);
-            push_name(out, source, line_starts, e.name, TT_CLASS, mods);
+            push_attributes(out, sv, &e.attributes);
+            let mods = MOD_DECLARATION | deprecated_mod(sv.source(), stmt.span.start);
+            push_name(out, sv, e.name, TT_CLASS, mods);
             for member in e.members.iter() {
                 if let EnumMemberKind::Method(m) = &member.kind {
-                    push_attributes(out, source, line_starts, &m.attributes);
-                    let mut mmods = MOD_DECLARATION | deprecated_mod(source, member.span.start);
+                    push_attributes(out, sv, &m.attributes);
+                    let mut mmods =
+                        MOD_DECLARATION | deprecated_mod(sv.source(), member.span.start);
                     if m.is_static {
                         mmods |= MOD_STATIC;
                     }
-                    push_name(out, source, line_starts, m.name, TT_METHOD, mmods);
+                    push_name(out, sv, m.name, TT_METHOD, mmods);
                     for p in m.params.iter() {
                         if let Some(th) = &p.type_hint {
-                            push_type_hint(out, source, line_starts, th);
+                            push_type_hint(out, sv, th);
                         }
-                        push_param(
-                            out,
-                            source,
-                            line_starts,
-                            p.name,
-                            TT_PARAMETER,
-                            MOD_DECLARATION,
-                        );
+                        push_param(out, sv, p.name, TT_PARAMETER, MOD_DECLARATION);
                     }
                     if let Some(rt) = &m.return_type {
-                        push_type_hint(out, source, line_starts, rt);
+                        push_type_hint(out, sv, rt);
                     }
                     if let Some(body) = &m.body {
-                        collect_stmts(source, line_starts, body, out);
+                        collect_stmts(sv, body, out);
                     }
                 }
             }
         }
         StmtKind::Namespace(ns) => {
             if let NamespaceBody::Braced(inner) = &ns.body {
-                collect_stmts(source, line_starts, inner, out);
+                collect_stmts(sv, inner, out);
             }
         }
         StmtKind::Use(_) => {}
-        StmtKind::Expression(e) => collect_expr(source, line_starts, e, out),
-        StmtKind::Return(Some(expr)) => collect_expr(source, line_starts, expr, out),
+        StmtKind::Expression(e) => collect_expr(sv, e, out),
+        StmtKind::Return(Some(expr)) => collect_expr(sv, expr, out),
         StmtKind::Return(None) => {}
         StmtKind::Echo(exprs) => {
             for expr in exprs.iter() {
-                collect_expr(source, line_starts, expr, out);
+                collect_expr(sv, expr, out);
             }
         }
         StmtKind::If(i) => {
-            collect_expr(source, line_starts, &i.condition, out);
-            collect_stmt(source, line_starts, i.then_branch, out);
+            collect_expr(sv, &i.condition, out);
+            collect_stmt(sv, i.then_branch, out);
             for ei in i.elseif_branches.iter() {
-                collect_expr(source, line_starts, &ei.condition, out);
-                collect_stmt(source, line_starts, &ei.body, out);
+                collect_expr(sv, &ei.condition, out);
+                collect_stmt(sv, &ei.body, out);
             }
             if let Some(e) = &i.else_branch {
-                collect_stmt(source, line_starts, e, out);
+                collect_stmt(sv, e, out);
             }
         }
         StmtKind::While(w) => {
-            collect_expr(source, line_starts, &w.condition, out);
-            collect_stmt(source, line_starts, w.body, out);
+            collect_expr(sv, &w.condition, out);
+            collect_stmt(sv, w.body, out);
         }
         StmtKind::For(f) => {
             for e in f.init.iter() {
-                collect_expr(source, line_starts, e, out);
+                collect_expr(sv, e, out);
             }
             for cond in f.condition.iter() {
-                collect_expr(source, line_starts, cond, out);
+                collect_expr(sv, cond, out);
             }
             for e in f.update.iter() {
-                collect_expr(source, line_starts, e, out);
+                collect_expr(sv, e, out);
             }
-            collect_stmt(source, line_starts, f.body, out);
+            collect_stmt(sv, f.body, out);
         }
         StmtKind::Foreach(f) => {
-            collect_expr(source, line_starts, &f.expr, out);
-            collect_stmt(source, line_starts, f.body, out);
+            collect_expr(sv, &f.expr, out);
+            collect_stmt(sv, f.body, out);
         }
         StmtKind::TryCatch(t) => {
-            collect_stmts(source, line_starts, &t.body, out);
+            collect_stmts(sv, &t.body, out);
             for catch in t.catches.iter() {
-                collect_stmts(source, line_starts, &catch.body, out);
+                collect_stmts(sv, &catch.body, out);
             }
             if let Some(finally) = &t.finally {
-                collect_stmts(source, line_starts, finally, out);
+                collect_stmts(sv, finally, out);
             }
         }
-        StmtKind::Block(stmts) => collect_stmts(source, line_starts, stmts, out),
+        StmtKind::Block(stmts) => collect_stmts(sv, stmts, out),
         _ => {}
     }
 }
 
 fn collect_class_member(
-    source: &str,
-    line_starts: &[u32],
+    sv: SourceView<'_>,
     member: &php_ast::ClassMember<'_, '_>,
     out: &mut Vec<RawToken>,
 ) {
     if let ClassMemberKind::Method(m) = &member.kind {
-        push_attributes(out, source, line_starts, &m.attributes);
-        let mut mods = MOD_DECLARATION | deprecated_mod(source, member.span.start);
+        push_attributes(out, sv, &m.attributes);
+        let mut mods = MOD_DECLARATION | deprecated_mod(sv.source(), member.span.start);
         if m.is_static {
             mods |= MOD_STATIC;
         }
         if m.is_abstract {
             mods |= MOD_ABSTRACT;
         }
-        push_name(out, source, line_starts, m.name, TT_METHOD, mods);
+        push_name(out, sv, m.name, TT_METHOD, mods);
         for p in m.params.iter() {
-            push_attributes(out, source, line_starts, &p.attributes);
+            push_attributes(out, sv, &p.attributes);
             if let Some(th) = &p.type_hint {
-                push_type_hint(out, source, line_starts, th);
+                push_type_hint(out, sv, th);
             }
-            push_param(
-                out,
-                source,
-                line_starts,
-                p.name,
-                TT_PARAMETER,
-                MOD_DECLARATION,
-            );
+            push_param(out, sv, p.name, TT_PARAMETER, MOD_DECLARATION);
         }
         if let Some(rt) = &m.return_type {
-            push_type_hint(out, source, line_starts, rt);
+            push_type_hint(out, sv, rt);
         }
         if let Some(body) = &m.body {
-            collect_stmts(source, line_starts, body, out);
+            collect_stmts(sv, body, out);
         }
     } else if let ClassMemberKind::Property(p) = &member.kind {
-        push_attributes(out, source, line_starts, &p.attributes);
+        push_attributes(out, sv, &p.attributes);
         if let Some(th) = &p.type_hint {
-            push_type_hint(out, source, line_starts, th);
+            push_type_hint(out, sv, th);
         }
-        push_name(
-            out,
-            source,
-            line_starts,
-            p.name,
-            TT_PROPERTY,
-            MOD_DECLARATION,
-        );
+        push_name(out, sv, p.name, TT_PROPERTY, MOD_DECLARATION);
     }
 }
 
-fn collect_expr(
-    source: &str,
-    line_starts: &[u32],
-    expr: &php_ast::Expr<'_, '_>,
-    out: &mut Vec<RawToken>,
-) {
+fn collect_expr(sv: SourceView<'_>, expr: &php_ast::Expr<'_, '_>, out: &mut Vec<RawToken>) {
     match &expr.kind {
         // ── Literals ──────────────────────────────────────────────────────────
         ExprKind::Int(_) | ExprKind::Float(_) => {
             let span_len = expr.span.end - expr.span.start;
-            push_at(
-                out,
-                source,
-                line_starts,
-                expr.span.start,
-                span_len,
-                TT_NUMBER,
-                0,
-            );
+            push_at(out, sv, expr.span.start, span_len, TT_NUMBER, 0);
         }
         ExprKind::String(_) | ExprKind::Nowdoc { .. } => {
-            let segment = &source[expr.span.start as usize..expr.span.end as usize];
+            let segment = &sv.source()[expr.span.start as usize..expr.span.end as usize];
             let len: u32 = segment.chars().map(|c| c.len_utf16() as u32).sum();
-            push_at(out, source, line_starts, expr.span.start, len, TT_STRING, 0);
+            push_at(out, sv, expr.span.start, len, TT_STRING, 0);
         }
         ExprKind::InterpolatedString(parts) | ExprKind::ShellExec(parts) => {
             // Emit the whole span as a string; embedded variables are not
             // re-coloured here to keep the implementation simple.
-            let segment = &source[expr.span.start as usize..expr.span.end as usize];
+            let segment = &sv.source()[expr.span.start as usize..expr.span.end as usize];
             let len: u32 = segment.chars().map(|c| c.len_utf16() as u32).sum();
-            push_at(out, source, line_starts, expr.span.start, len, TT_STRING, 0);
+            push_at(out, sv, expr.span.start, len, TT_STRING, 0);
             // Still recurse into embedded expressions so method/function calls
             // inside `"... {$obj->method()} ..."` get proper tokens.
             for part in parts.iter() {
                 if let php_ast::StringPart::Expr(inner) = part {
-                    collect_expr(source, line_starts, inner, out);
+                    collect_expr(sv, inner, out);
                 }
             }
         }
         ExprKind::Heredoc { parts, .. } => {
-            let segment = &source[expr.span.start as usize..expr.span.end as usize];
+            let segment = &sv.source()[expr.span.start as usize..expr.span.end as usize];
             let len: u32 = segment.chars().map(|c| c.len_utf16() as u32).sum();
-            push_at(out, source, line_starts, expr.span.start, len, TT_STRING, 0);
+            push_at(out, sv, expr.span.start, len, TT_STRING, 0);
             for part in parts.iter() {
                 if let php_ast::StringPart::Expr(inner) = part {
-                    collect_expr(source, line_starts, inner, out);
+                    collect_expr(sv, inner, out);
                 }
             }
         }
         ExprKind::New(n) => {
             for arg in n.args.iter() {
-                collect_expr(source, line_starts, &arg.value, out);
+                collect_expr(sv, &arg.value, out);
             }
         }
         // ── Calls ─────────────────────────────────────────────────────────────
@@ -700,28 +601,26 @@ fn collect_expr(
                 let name_str: &str = name;
                 push_at(
                     out,
-                    source,
-                    line_starts,
+                    sv,
                     f.name.span.start,
                     name_str.chars().map(|c| c.len_utf16() as u32).sum::<u32>(),
                     TT_FUNCTION,
                     0,
                 );
             } else {
-                collect_expr(source, line_starts, f.name, out);
+                collect_expr(sv, f.name, out);
             }
             for arg in f.args.iter() {
-                collect_expr(source, line_starts, &arg.value, out);
+                collect_expr(sv, &arg.value, out);
             }
         }
         ExprKind::MethodCall(m) => {
-            collect_expr(source, line_starts, m.object, out);
+            collect_expr(sv, m.object, out);
             if let ExprKind::Identifier(name) = &m.method.kind {
                 let name_str: &str = name;
                 push_at(
                     out,
-                    source,
-                    line_starts,
+                    sv,
                     m.method.span.start,
                     name_str.chars().map(|c| c.len_utf16() as u32).sum::<u32>(),
                     TT_METHOD,
@@ -729,17 +628,16 @@ fn collect_expr(
                 );
             }
             for arg in m.args.iter() {
-                collect_expr(source, line_starts, &arg.value, out);
+                collect_expr(sv, &arg.value, out);
             }
         }
         ExprKind::NullsafeMethodCall(m) => {
-            collect_expr(source, line_starts, m.object, out);
+            collect_expr(sv, m.object, out);
             if let ExprKind::Identifier(name) = &m.method.kind {
                 let name_str: &str = name;
                 push_at(
                     out,
-                    source,
-                    line_starts,
+                    sv,
                     m.method.span.start,
                     name_str.chars().map(|c| c.len_utf16() as u32).sum::<u32>(),
                     TT_METHOD,
@@ -747,91 +645,69 @@ fn collect_expr(
                 );
             }
             for arg in m.args.iter() {
-                collect_expr(source, line_starts, &arg.value, out);
+                collect_expr(sv, &arg.value, out);
             }
         }
         // ── Compound expressions ──────────────────────────────────────────────
         ExprKind::Assign(a) => {
-            collect_expr(source, line_starts, a.target, out);
-            collect_expr(source, line_starts, a.value, out);
+            collect_expr(sv, a.target, out);
+            collect_expr(sv, a.value, out);
         }
         ExprKind::Ternary(t) => {
-            collect_expr(source, line_starts, t.condition, out);
+            collect_expr(sv, t.condition, out);
             if let Some(then_expr) = t.then_expr {
-                collect_expr(source, line_starts, then_expr, out);
+                collect_expr(sv, then_expr, out);
             }
-            collect_expr(source, line_starts, t.else_expr, out);
+            collect_expr(sv, t.else_expr, out);
         }
         ExprKind::NullCoalesce(n) => {
-            collect_expr(source, line_starts, n.left, out);
-            collect_expr(source, line_starts, n.right, out);
+            collect_expr(sv, n.left, out);
+            collect_expr(sv, n.right, out);
         }
         ExprKind::Binary(b) => {
-            collect_expr(source, line_starts, b.left, out);
-            collect_expr(source, line_starts, b.right, out);
+            collect_expr(sv, b.left, out);
+            collect_expr(sv, b.right, out);
         }
-        ExprKind::Parenthesized(e) => collect_expr(source, line_starts, e, out),
+        ExprKind::Parenthesized(e) => collect_expr(sv, e, out),
         ExprKind::Array(elements) => {
             for elem in elements.iter() {
                 if let Some(key) = &elem.key {
-                    collect_expr(source, line_starts, key, out);
+                    collect_expr(sv, key, out);
                 }
-                collect_expr(source, line_starts, &elem.value, out);
+                collect_expr(sv, &elem.value, out);
             }
         }
-        ExprKind::UnaryPrefix(u) => collect_expr(source, line_starts, u.operand, out),
-        ExprKind::UnaryPostfix(u) => collect_expr(source, line_starts, u.operand, out),
+        ExprKind::UnaryPrefix(u) => collect_expr(sv, u.operand, out),
+        ExprKind::UnaryPostfix(u) => collect_expr(sv, u.operand, out),
         ExprKind::Closure(c) => {
             for p in c.params.iter() {
                 if let Some(th) = &p.type_hint {
-                    push_type_hint(out, source, line_starts, th);
+                    push_type_hint(out, sv, th);
                 }
-                push_param(
-                    out,
-                    source,
-                    line_starts,
-                    p.name,
-                    TT_PARAMETER,
-                    MOD_DECLARATION,
-                );
+                push_param(out, sv, p.name, TT_PARAMETER, MOD_DECLARATION);
             }
             if let Some(rt) = &c.return_type {
-                push_type_hint(out, source, line_starts, rt);
+                push_type_hint(out, sv, rt);
             }
-            collect_stmts(source, line_starts, &c.body, out);
+            collect_stmts(sv, &c.body, out);
         }
         ExprKind::ArrowFunction(af) => {
             for p in af.params.iter() {
                 if let Some(th) = &p.type_hint {
-                    push_type_hint(out, source, line_starts, th);
+                    push_type_hint(out, sv, th);
                 }
-                push_param(
-                    out,
-                    source,
-                    line_starts,
-                    p.name,
-                    TT_PARAMETER,
-                    MOD_DECLARATION,
-                );
+                push_param(out, sv, p.name, TT_PARAMETER, MOD_DECLARATION);
             }
             if let Some(rt) = &af.return_type {
-                push_type_hint(out, source, line_starts, rt);
+                push_type_hint(out, sv, rt);
             }
-            collect_expr(source, line_starts, af.body, out);
+            collect_expr(sv, af.body, out);
         }
         // ── Variables ─────────────────────────────────────────────────────────
         ExprKind::Variable(_) => {
-            let segment = &source[expr.span.start as usize..expr.span.end as usize];
+            let segment = &sv.source()[expr.span.start as usize..expr.span.end as usize];
             let len: u32 = segment.chars().map(|c| c.len_utf16() as u32).sum();
-            push_at(
-                out,
-                source,
-                line_starts,
-                expr.span.start,
-                len,
-                TT_VARIABLE,
-                0,
-            );
+            push_at(out, sv, expr.span.start, len, TT_VARIABLE, 0);
         }
         _ => {}
     }

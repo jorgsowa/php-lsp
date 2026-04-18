@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use tower_lsp::lsp_types::{Position, Range, TextEdit, Url, WorkspaceEdit};
 
-use crate::ast::{ParsedDoc, offset_to_position};
+use crate::ast::ParsedDoc;
 use crate::references::find_references_with_use;
 use crate::util::utf16_pos_to_byte;
 use crate::walk::{collect_var_refs_in_scope, property_refs_in_stmts};
@@ -83,7 +83,7 @@ pub fn rename_variable(
 
     let byte_off = utf16_pos_to_byte(source, position);
     let stmts = &doc.program().stmts;
-    let line_starts = doc.line_starts();
+    let sv = doc.view();
 
     let mut spans = Vec::new();
     collect_var_refs_in_scope(stmts, bare, byte_off, &mut spans);
@@ -92,8 +92,8 @@ pub fn rename_variable(
     let mut edits: Vec<TextEdit> = spans
         .into_iter()
         .filter_map(|span| {
-            let start = offset_to_position(source, line_starts, span.start);
-            let end = offset_to_position(source, line_starts, span.end);
+            let start = sv.position_of(span.start);
+            let end = sv.position_of(span.end);
             seen.insert((start.line, start.character))
                 .then_some(TextEdit {
                     range: Range { start, end },
@@ -128,17 +128,16 @@ pub fn rename_property(
 ) -> WorkspaceEdit {
     let mut changes: HashMap<Url, Vec<TextEdit>> = HashMap::new();
     for (uri, doc) in all_docs {
-        let source = doc.source();
-        let line_starts = doc.line_starts();
+        let sv = doc.view();
         let mut spans = Vec::new();
-        property_refs_in_stmts(source, &doc.program().stmts, prop_name, &mut spans);
+        property_refs_in_stmts(sv.source(), &doc.program().stmts, prop_name, &mut spans);
         if !spans.is_empty() {
             let mut seen = std::collections::HashSet::new();
             let mut edits: Vec<TextEdit> = spans
                 .into_iter()
                 .filter_map(|span| {
-                    let start = offset_to_position(source, line_starts, span.start);
-                    let end = offset_to_position(source, line_starts, span.end);
+                    let start = sv.position_of(span.start);
+                    let end = sv.position_of(span.end);
                     seen.insert((start.line, start.character))
                         .then_some(TextEdit {
                             range: Range { start, end },

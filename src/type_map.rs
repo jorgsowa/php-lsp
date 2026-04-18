@@ -9,7 +9,7 @@ use php_ast::{
 };
 use tower_lsp::lsp_types::Position;
 
-use crate::ast::{ParsedDoc, offset_to_position};
+use crate::ast::{ParsedDoc, SourceView};
 use crate::docblock::{docblock_before, parse_docblock};
 use crate::phpstorm_meta::PhpStormMeta;
 
@@ -890,36 +890,35 @@ fn mixin_classes_in_stmts(source: &str, stmts: &[Stmt<'_, '_>], class_name: &str
 }
 
 /// Return the name of the class whose body contains `position`, or `None`.
-pub fn enclosing_class_at(source: &str, doc: &ParsedDoc, position: Position) -> Option<String> {
-    let line_starts = doc.line_starts();
-    enclosing_class_in_stmts(source, line_starts, &doc.program().stmts, position)
+pub fn enclosing_class_at(_source: &str, doc: &ParsedDoc, position: Position) -> Option<String> {
+    let sv = doc.view();
+    enclosing_class_in_stmts(sv, &doc.program().stmts, position)
 }
 
 fn enclosing_class_in_stmts(
-    source: &str,
-    line_starts: &[u32],
+    sv: SourceView<'_>,
     stmts: &[Stmt<'_, '_>],
     pos: Position,
 ) -> Option<String> {
     for stmt in stmts {
         match &stmt.kind {
             StmtKind::Class(c) => {
-                let start = offset_to_position(source, line_starts, stmt.span.start).line;
-                let end = offset_to_position(source, line_starts, stmt.span.end).line;
+                let start = sv.position_of(stmt.span.start).line;
+                let end = sv.position_of(stmt.span.end).line;
                 if pos.line >= start && pos.line <= end {
                     return c.name.map(|n| n.to_string());
                 }
             }
             StmtKind::Enum(e) => {
-                let start = offset_to_position(source, line_starts, stmt.span.start).line;
-                let end = offset_to_position(source, line_starts, stmt.span.end).line;
+                let start = sv.position_of(stmt.span.start).line;
+                let end = sv.position_of(stmt.span.end).line;
                 if pos.line >= start && pos.line <= end {
                     return Some(e.name.to_string());
                 }
             }
             StmtKind::Namespace(ns) => {
                 if let NamespaceBody::Braced(inner) = &ns.body
-                    && let Some(found) = enclosing_class_in_stmts(source, line_starts, inner, pos)
+                    && let Some(found) = enclosing_class_in_stmts(sv, inner, pos)
                 {
                     return Some(found);
                 }

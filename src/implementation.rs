@@ -6,7 +6,7 @@ use std::sync::Arc;
 use php_ast::{NamespaceBody, Stmt, StmtKind};
 use tower_lsp::lsp_types::{Location, Position, Url};
 
-use crate::ast::{ParsedDoc, name_range};
+use crate::ast::{ParsedDoc, SourceView};
 use crate::util::word_at;
 
 /// Returns `true` when the name written in an `extends`/`implements` clause
@@ -39,17 +39,8 @@ pub fn find_implementations(
 ) -> Vec<Location> {
     let mut locations = Vec::new();
     for (uri, doc) in all_docs {
-        let source = doc.source();
-        let line_starts = doc.line_starts();
-        collect_implementations(
-            &doc.program().stmts,
-            word,
-            fqn,
-            source,
-            line_starts,
-            uri,
-            &mut locations,
-        );
+        let sv = doc.view();
+        collect_implementations(&doc.program().stmts, word, fqn, sv, uri, &mut locations);
     }
     locations
 }
@@ -79,8 +70,7 @@ fn collect_implementations(
     stmts: &[Stmt<'_, '_>],
     word: &str,
     fqn: Option<&str>,
-    source: &str,
-    line_starts: &[u32],
+    sv: SourceView<'_>,
     uri: &Url,
     out: &mut Vec<Location>,
 ) {
@@ -103,7 +93,7 @@ fn collect_implementations(
                 {
                     out.push(Location {
                         uri: uri.clone(),
-                        range: name_range(source, line_starts, class_name),
+                        range: sv.name_range(class_name),
                     });
                 }
             }
@@ -115,13 +105,13 @@ fn collect_implementations(
                 if implements_match {
                     out.push(Location {
                         uri: uri.clone(),
-                        range: name_range(source, line_starts, e.name),
+                        range: sv.name_range(e.name),
                     });
                 }
             }
             StmtKind::Namespace(ns) => {
                 if let NamespaceBody::Braced(inner) = &ns.body {
-                    collect_implementations(inner, word, fqn, source, line_starts, uri, out);
+                    collect_implementations(inner, word, fqn, sv, uri, out);
                 }
             }
             _ => {}

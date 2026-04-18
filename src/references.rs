@@ -4,8 +4,7 @@ use std::sync::Arc;
 use php_ast::{ClassMemberKind, EnumMemberKind, NamespaceBody, Span, Stmt, StmtKind};
 use tower_lsp::lsp_types::{Location, Position, Range, Url};
 
-use crate::ast::str_offset;
-use crate::ast::{ParsedDoc, offset_to_position};
+use crate::ast::{ParsedDoc, str_offset};
 use crate::walk::{
     class_refs_in_stmts, function_refs_in_stmts, method_refs_in_stmts, refs_in_stmts,
     refs_in_stmts_with_use,
@@ -72,10 +71,9 @@ pub fn find_references_codebase(
 
     let spans_to_location = |file: &str, start: u32, end: u32| -> Option<Location> {
         let (url, doc) = doc_map.get(file)?;
-        let source = doc.source();
-        let line_starts = doc.line_starts();
-        let start_pos = offset_to_position(source, line_starts, start);
-        let end_pos = offset_to_position(source, line_starts, end);
+        let sv = doc.view();
+        let start_pos = sv.position_of(start);
+        let end_pos = sv.position_of(end);
         Some(Location {
             uri: (*url).clone(),
             range: Range {
@@ -234,9 +232,9 @@ fn find_references_inner(
             }
         }
 
-        let line_starts = doc.line_starts();
+        let sv = doc.view();
         for span in spans {
-            let start = offset_to_position(source, line_starts, span.start);
+            let start = sv.position_of(span.start);
             let end = Position {
                 line: start.line,
                 character: start.character

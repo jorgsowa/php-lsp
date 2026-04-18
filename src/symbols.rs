@@ -8,16 +8,16 @@ use tower_lsp::lsp_types::{
     WorkspaceSymbol,
 };
 
-use crate::ast::{ParsedDoc, name_range, offset_to_position};
+use crate::ast::{ParsedDoc, SourceView, name_range};
 use crate::docblock::{docblock_before, parse_docblock};
 use crate::util::fuzzy_camel_match;
 
-pub fn document_symbols(source: &str, doc: &ParsedDoc) -> Vec<DocumentSymbol> {
-    let line_starts = doc.line_starts();
-    symbols_from_statements(source, line_starts, &doc.program().stmts)
+pub fn document_symbols(_source: &str, doc: &ParsedDoc) -> Vec<DocumentSymbol> {
+    let sv = doc.view();
+    symbols_from_statements(sv, &doc.program().stmts)
 }
 
-/// Fill in the source range for a `WorkspaceSymbol` whose `location` carries only a URI
+/// Fill in the sv.source() range for a `WorkspaceSymbol` whose `location` carries only a URI
 /// (i.e. `OneOf::Right(WorkspaceLocation)`).  If the range is already present, or if the
 /// document cannot be found, the symbol is returned unchanged.
 pub fn resolve_workspace_symbol(
@@ -80,11 +80,9 @@ pub fn workspace_symbols(query: &str, docs: &[(Url, Arc<ParsedDoc>)]) -> Vec<Sym
     let (kind_filter, term) = parse_kind_filter(query);
     let mut results = Vec::new();
     for (uri, doc) in docs {
-        let source = doc.source();
-        let line_starts = doc.line_starts();
+        let sv = doc.view();
         collect_symbol_info(
-            source,
-            line_starts,
+            sv,
             &doc.program().stmts,
             term,
             kind_filter,
@@ -97,8 +95,7 @@ pub fn workspace_symbols(query: &str, docs: &[(Url, Arc<ParsedDoc>)]) -> Vec<Sym
 
 #[allow(deprecated)]
 fn collect_symbol_info(
-    source: &str,
-    line_starts: &[u32],
+    sv: SourceView<'_>,
     stmts: &[Stmt<'_, '_>],
     query: &str,
     kind_filter: Option<SymbolKind>,
@@ -117,7 +114,7 @@ fn collect_symbol_info(
                         kind: SymbolKind::FUNCTION,
                         location: Location {
                             uri: uri.clone(),
-                            range: name_range(source, line_starts, name),
+                            range: sv.name_range(name),
                         },
                         tags: None,
                         deprecated: None,
@@ -136,7 +133,7 @@ fn collect_symbol_info(
                         kind: SymbolKind::CLASS,
                         location: Location {
                             uri: uri.clone(),
-                            range: name_range(source, line_starts, name),
+                            range: sv.name_range(name),
                         },
                         tags: None,
                         deprecated: None,
@@ -153,7 +150,7 @@ fn collect_symbol_info(
                             kind: SymbolKind::METHOD,
                             location: Location {
                                 uri: uri.clone(),
-                                range: name_range(source, line_starts, m.name),
+                                range: sv.name_range(m.name),
                             },
                             tags: None,
                             deprecated: None,
@@ -173,7 +170,7 @@ fn collect_symbol_info(
                         kind: SymbolKind::INTERFACE,
                         location: Location {
                             uri: uri.clone(),
-                            range: name_range(source, line_starts, i.name),
+                            range: sv.name_range(i.name),
                         },
                         tags: None,
                         deprecated: None,
@@ -188,7 +185,7 @@ fn collect_symbol_info(
                         kind: SymbolKind::CLASS,
                         location: Location {
                             uri: uri.clone(),
-                            range: name_range(source, line_starts, t.name),
+                            range: sv.name_range(t.name),
                         },
                         tags: None,
                         deprecated: None,
@@ -203,7 +200,7 @@ fn collect_symbol_info(
                         kind: SymbolKind::ENUM,
                         location: Location {
                             uri: uri.clone(),
-                            range: name_range(source, line_starts, e.name),
+                            range: sv.name_range(e.name),
                         },
                         tags: None,
                         deprecated: None,
@@ -220,7 +217,7 @@ fn collect_symbol_info(
                             kind: SymbolKind::ENUM_MEMBER,
                             location: Location {
                                 uri: uri.clone(),
-                                range: name_range(source, line_starts, c.name),
+                                range: sv.name_range(c.name),
                             },
                             tags: None,
                             deprecated: None,
@@ -231,7 +228,7 @@ fn collect_symbol_info(
             }
             StmtKind::Namespace(ns) => {
                 if let NamespaceBody::Braced(inner) = &ns.body {
-                    collect_symbol_info(source, line_starts, inner, query, kind_filter, uri, out);
+                    collect_symbol_info(sv, inner, query, kind_filter, uri, out);
                 }
             }
             _ => {}
@@ -239,21 +236,17 @@ fn collect_symbol_info(
     }
 }
 
-fn symbols_from_statements(
-    source: &str,
-    line_starts: &[u32],
-    stmts: &[Stmt<'_, '_>],
-) -> Vec<DocumentSymbol> {
+fn symbols_from_statements(sv: SourceView<'_>, stmts: &[Stmt<'_, '_>]) -> Vec<DocumentSymbol> {
     let mut symbols = Vec::new();
     for stmt in stmts {
         match &stmt.kind {
             StmtKind::Namespace(ns) => {
                 if let NamespaceBody::Braced(inner) = &ns.body {
-                    symbols.extend(symbols_from_statements(source, line_starts, inner));
+                    symbols.extend(symbols_from_statements(sv, inner));
                 }
             }
             _ => {
-                if let Some(sym) = statement_to_symbol(source, line_starts, stmt) {
+                if let Some(sym) = statement_to_symbol(sv, stmt) {
                     symbols.push(sym);
                 }
             }
@@ -262,35 +255,31 @@ fn symbols_from_statements(
     symbols
 }
 
-fn stmt_range(source: &str, line_starts: &[u32], stmt: &Stmt<'_, '_>) -> Range {
-    let start = offset_to_position(source, line_starts, stmt.span.start);
-    let end = offset_to_position(source, line_starts, stmt.span.end);
+fn stmt_range(sv: SourceView<'_>, stmt: &Stmt<'_, '_>) -> Range {
+    let start = sv.position_of(stmt.span.start);
+    let end = sv.position_of(stmt.span.end);
     Range { start, end }
 }
 
-fn member_range(source: &str, line_starts: &[u32], member: &php_ast::ClassMember<'_, '_>) -> Range {
-    let start = offset_to_position(source, line_starts, member.span.start);
-    let end = offset_to_position(source, line_starts, member.span.end);
+fn member_range(sv: SourceView<'_>, member: &php_ast::ClassMember<'_, '_>) -> Range {
+    let start = sv.position_of(member.span.start);
+    let end = sv.position_of(member.span.end);
     Range { start, end }
 }
 
-fn param_range(source: &str, line_starts: &[u32], param: &php_ast::Param<'_, '_>) -> Range {
-    let start = offset_to_position(source, line_starts, param.span.start);
-    let end = offset_to_position(source, line_starts, param.span.end);
+fn param_range(sv: SourceView<'_>, param: &php_ast::Param<'_, '_>) -> Range {
+    let start = sv.position_of(param.span.start);
+    let end = sv.position_of(param.span.end);
     Range { start, end }
 }
 
-fn statement_to_symbol(
-    source: &str,
-    line_starts: &[u32],
-    stmt: &Stmt<'_, '_>,
-) -> Option<DocumentSymbol> {
+fn statement_to_symbol(sv: SourceView<'_>, stmt: &Stmt<'_, '_>) -> Option<DocumentSymbol> {
     match &stmt.kind {
         StmtKind::Function(f) => {
-            let range = stmt_range(source, line_starts, stmt);
-            let selection_range = name_range(source, line_starts, f.name);
+            let range = stmt_range(sv, stmt);
+            let selection_range = sv.name_range(f.name);
             let detail = Some(format_fn_signature(&f.params, f.return_type.as_ref()));
-            let is_deprecated = docblock_before(source, stmt.span.start)
+            let is_deprecated = docblock_before(sv.source(), stmt.span.start)
                 .filter(|raw| parse_docblock(raw).deprecated.is_some())
                 .map(|_| true);
 
@@ -298,8 +287,8 @@ fn statement_to_symbol(
                 .params
                 .iter()
                 .map(|p| {
-                    let prange = param_range(source, line_starts, p);
-                    let psel = name_range(source, line_starts, p.name);
+                    let prange = param_range(sv, p);
+                    let psel = sv.name_range(p.name);
                     DocumentSymbol {
                         name: format!("${}", p.name),
                         detail: None,
@@ -331,9 +320,9 @@ fn statement_to_symbol(
 
         StmtKind::Class(c) => {
             let name = c.name?;
-            let range = stmt_range(source, line_starts, stmt);
-            let selection_range = name_range(source, line_starts, name);
-            let class_deprecated = docblock_before(source, stmt.span.start)
+            let range = stmt_range(sv, stmt);
+            let selection_range = sv.name_range(name);
+            let class_deprecated = docblock_before(sv.source(), stmt.span.start)
                 .filter(|raw| parse_docblock(raw).deprecated.is_some())
                 .map(|_| true);
 
@@ -343,11 +332,11 @@ fn statement_to_symbol(
                 .flat_map(|member| -> Vec<DocumentSymbol> {
                     match &member.kind {
                         ClassMemberKind::Method(m) => {
-                            let mrange = member_range(source, line_starts, member);
-                            let msel = name_range(source, line_starts, m.name);
+                            let mrange = member_range(sv, member);
+                            let msel = sv.name_range(m.name);
                             let detail =
                                 Some(format_fn_signature(&m.params, m.return_type.as_ref()));
-                            let method_deprecated = docblock_before(source, member.span.start)
+                            let method_deprecated = docblock_before(sv.source(), member.span.start)
                                 .filter(|raw| parse_docblock(raw).deprecated.is_some())
                                 .map(|_| true);
                             vec![DocumentSymbol {
@@ -362,9 +351,9 @@ fn statement_to_symbol(
                             }]
                         }
                         ClassMemberKind::Property(p) => {
-                            let prange = member_range(source, line_starts, member);
-                            let psel = name_range(source, line_starts, p.name);
-                            let prop_deprecated = docblock_before(source, member.span.start)
+                            let prange = member_range(sv, member);
+                            let psel = sv.name_range(p.name);
+                            let prop_deprecated = docblock_before(sv.source(), member.span.start)
                                 .filter(|raw| parse_docblock(raw).deprecated.is_some())
                                 .map(|_| true);
                             vec![DocumentSymbol {
@@ -379,9 +368,9 @@ fn statement_to_symbol(
                             }]
                         }
                         ClassMemberKind::ClassConst(cc) => {
-                            let crange = member_range(source, line_starts, member);
-                            let csel = name_range(source, line_starts, cc.name);
-                            let const_deprecated = docblock_before(source, member.span.start)
+                            let crange = member_range(sv, member);
+                            let csel = sv.name_range(cc.name);
+                            let const_deprecated = docblock_before(sv.source(), member.span.start)
                                 .filter(|raw| parse_docblock(raw).deprecated.is_some())
                                 .map(|_| true);
                             vec![DocumentSymbol {
@@ -417,9 +406,9 @@ fn statement_to_symbol(
         }
 
         StmtKind::Interface(i) => {
-            let range = stmt_range(source, line_starts, stmt);
-            let selection_range = name_range(source, line_starts, i.name);
-            let iface_deprecated = docblock_before(source, stmt.span.start)
+            let range = stmt_range(sv, stmt);
+            let selection_range = sv.name_range(i.name);
+            let iface_deprecated = docblock_before(sv.source(), stmt.span.start)
                 .filter(|raw| parse_docblock(raw).deprecated.is_some())
                 .map(|_| true);
             let children: Vec<DocumentSymbol> = i
@@ -427,9 +416,9 @@ fn statement_to_symbol(
                 .iter()
                 .filter_map(|member| {
                     if let ClassMemberKind::ClassConst(cc) = &member.kind {
-                        let crange = member_range(source, line_starts, member);
-                        let csel = name_range(source, line_starts, cc.name);
-                        let const_deprecated = docblock_before(source, member.span.start)
+                        let crange = member_range(sv, member);
+                        let csel = sv.name_range(cc.name);
+                        let const_deprecated = docblock_before(sv.source(), member.span.start)
                             .filter(|raw| parse_docblock(raw).deprecated.is_some())
                             .map(|_| true);
                         Some(DocumentSymbol {
@@ -464,9 +453,9 @@ fn statement_to_symbol(
         }
 
         StmtKind::Trait(t) => {
-            let range = stmt_range(source, line_starts, stmt);
-            let selection_range = name_range(source, line_starts, t.name);
-            let trait_deprecated = docblock_before(source, stmt.span.start)
+            let range = stmt_range(sv, stmt);
+            let selection_range = sv.name_range(t.name);
+            let trait_deprecated = docblock_before(sv.source(), stmt.span.start)
                 .filter(|raw| parse_docblock(raw).deprecated.is_some())
                 .map(|_| true);
             let children: Vec<DocumentSymbol> = t
@@ -474,9 +463,9 @@ fn statement_to_symbol(
                 .iter()
                 .filter_map(|member| {
                     if let ClassMemberKind::Method(m) = &member.kind {
-                        let mrange = member_range(source, line_starts, member);
-                        let msel = name_range(source, line_starts, m.name);
-                        let method_deprecated = docblock_before(source, member.span.start)
+                        let mrange = member_range(sv, member);
+                        let msel = sv.name_range(m.name);
+                        let method_deprecated = docblock_before(sv.source(), member.span.start)
                             .filter(|raw| parse_docblock(raw).deprecated.is_some())
                             .map(|_| true);
                         Some(DocumentSymbol {
@@ -512,9 +501,9 @@ fn statement_to_symbol(
         }
 
         StmtKind::Enum(e) => {
-            let range = stmt_range(source, line_starts, stmt);
-            let selection_range = name_range(source, line_starts, e.name);
-            let enum_deprecated = docblock_before(source, stmt.span.start)
+            let range = stmt_range(sv, stmt);
+            let selection_range = sv.name_range(e.name);
+            let enum_deprecated = docblock_before(sv.source(), stmt.span.start)
                 .filter(|raw| parse_docblock(raw).deprecated.is_some())
                 .map(|_| true);
             let children: Vec<DocumentSymbol> = e
@@ -523,10 +512,10 @@ fn statement_to_symbol(
                 .filter_map(|member| match &member.kind {
                     EnumMemberKind::Case(c) => {
                         let crange = Range {
-                            start: offset_to_position(source, line_starts, member.span.start),
-                            end: offset_to_position(source, line_starts, member.span.end),
+                            start: sv.position_of(member.span.start),
+                            end: sv.position_of(member.span.end),
                         };
-                        let csel = name_range(source, line_starts, c.name);
+                        let csel = sv.name_range(c.name);
                         Some(DocumentSymbol {
                             name: c.name.to_string(),
                             detail: None,
@@ -540,11 +529,11 @@ fn statement_to_symbol(
                     }
                     EnumMemberKind::Method(m) => {
                         let mrange = Range {
-                            start: offset_to_position(source, line_starts, member.span.start),
-                            end: offset_to_position(source, line_starts, member.span.end),
+                            start: sv.position_of(member.span.start),
+                            end: sv.position_of(member.span.end),
                         };
-                        let msel = name_range(source, line_starts, m.name);
-                        let method_deprecated = docblock_before(source, member.span.start)
+                        let msel = sv.name_range(m.name);
+                        let method_deprecated = docblock_before(sv.source(), member.span.start)
                             .filter(|raw| parse_docblock(raw).deprecated.is_some())
                             .map(|_| true);
                         Some(DocumentSymbol {
@@ -611,8 +600,8 @@ fn format_fn_signature(
     format!("({}){}", params_str, ret_str)
 }
 
-fn _pos_from_offset(source: &str, line_starts: &[u32], offset: u32) -> Position {
-    offset_to_position(source, line_starts, offset)
+fn _pos_from_offset(sv: SourceView<'_>, offset: u32) -> Position {
+    sv.position_of(offset)
 }
 
 #[cfg(test)]

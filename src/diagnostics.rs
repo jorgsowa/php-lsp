@@ -1,24 +1,24 @@
 use tower_lsp::lsp_types::{Diagnostic, DiagnosticSeverity, Position, Range};
 
-use crate::ast::{ParsedDoc, offset_to_position};
+use crate::ast::ParsedDoc;
 
 /// Parse `source` and return the (owned) `ParsedDoc` plus any parse diagnostics.
 pub fn parse_document(source: &str) -> (ParsedDoc, Vec<Diagnostic>) {
     let doc = ParsedDoc::parse(source.to_string());
-    let line_starts = doc.line_starts();
+    let sv = doc.view();
     let diagnostics = doc
         .errors
         .iter()
         .map(|e| {
             let span = e.span();
-            let start = offset_to_position(source, line_starts, span.start);
+            let start = sv.position_of(span.start);
             let end = if span.end > span.start {
-                offset_to_position(source, line_starts, span.end)
+                sv.position_of(span.end)
             } else {
                 // Zero-width span: advance by the UTF-16 width of the character
                 // at the error position so the range is never a mid-surrogate
                 // slice (characters outside the BMP take 2 UTF-16 code units).
-                let ch_width = source[span.start as usize..]
+                let ch_width = sv.source()[span.start as usize..]
                     .chars()
                     .next()
                     .map(|c| c.len_utf16() as u32)

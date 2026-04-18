@@ -1,20 +1,20 @@
 use php_ast::{ClassMemberKind, EnumMemberKind, NamespaceBody, Stmt, StmtKind};
 use tower_lsp::lsp_types::{Position, Range, SelectionRange};
 
-use crate::ast::{ParsedDoc, offset_to_position};
+use crate::ast::{ParsedDoc, SourceView};
 
 /// Build a selection-range chain for each cursor position.
 /// Levels go from innermost to outermost via `parent` links.
 pub fn selection_ranges(
-    source: &str,
+    _source: &str,
     doc: &ParsedDoc,
     positions: &[Position],
 ) -> Vec<SelectionRange> {
-    let line_starts = doc.line_starts();
-    let fr = file_range(source);
+    let sv = doc.view();
+    let fr = file_range(sv.source());
     positions
         .iter()
-        .map(|pos| build_chain(source, line_starts, &doc.program().stmts, *pos, fr))
+        .map(|pos| build_chain(sv, &doc.program().stmts, *pos, fr))
         .collect()
 }
 
@@ -42,14 +42,13 @@ fn file_range(source: &str) -> Range {
 
 /// Build the innermost-to-outermost chain for a cursor position.
 fn build_chain(
-    source: &str,
-    line_starts: &[u32],
+    sv: SourceView<'_>,
     stmts: &[Stmt<'_, '_>],
     pos: Position,
     fr: Range,
 ) -> SelectionRange {
     let mut ranges: Vec<Range> = Vec::new();
-    collect_ranges_stmts(source, line_starts, stmts, pos, &mut ranges);
+    collect_ranges_stmts(sv, stmts, pos, &mut ranges);
 
     // Sort from smallest span to largest (innermost first)
     ranges.sort_by_key(|r| {
@@ -97,40 +96,38 @@ fn contains(range: Range, pos: Position) -> bool {
     true
 }
 
-fn span_range(source: &str, line_starts: &[u32], start: u32, end: u32) -> Range {
+fn span_range(sv: SourceView<'_>, start: u32, end: u32) -> Range {
     Range {
-        start: offset_to_position(source, line_starts, start),
-        end: offset_to_position(source, line_starts, end),
+        start: sv.position_of(start),
+        end: sv.position_of(end),
     }
 }
 
 fn collect_ranges_stmts(
-    source: &str,
-    line_starts: &[u32],
+    sv: SourceView<'_>,
     stmts: &[Stmt<'_, '_>],
     pos: Position,
     out: &mut Vec<Range>,
 ) {
     for stmt in stmts {
-        collect_ranges_stmt(source, line_starts, stmt, pos, out);
+        collect_ranges_stmt(sv, stmt, pos, out);
     }
 }
 
 fn collect_ranges_stmt(
-    source: &str,
-    line_starts: &[u32],
+    sv: SourceView<'_>,
     stmt: &Stmt<'_, '_>,
     pos: Position,
     out: &mut Vec<Range>,
 ) {
-    let range = span_range(source, line_starts, stmt.span.start, stmt.span.end);
+    let range = span_range(sv, stmt.span.start, stmt.span.end);
     match &stmt.kind {
         StmtKind::Function(f) => {
             if !contains(range, pos) {
                 return;
             }
             out.push(range);
-            collect_ranges_stmts(source, line_starts, &f.body, pos, out);
+            collect_ranges_stmts(sv, &f.body, pos, out);
         }
         StmtKind::Class(c) => {
             if !contains(range, pos) {
@@ -138,7 +135,7 @@ fn collect_ranges_stmt(
             }
             out.push(range);
             for member in c.members.iter() {
-                let m_range = span_range(source, line_starts, member.span.start, member.span.end);
+                let m_range = span_range(sv, member.span.start, member.span.end);
                 if !contains(m_range, pos) {
                     continue;
                 }
@@ -146,7 +143,7 @@ fn collect_ranges_stmt(
                 if let ClassMemberKind::Method(m) = &member.kind
                     && let Some(body) = &m.body
                 {
-                    collect_ranges_stmts(source, line_starts, body, pos, out);
+                    collect_ranges_stmts(sv, body, pos, out);
                 }
             }
         }
@@ -154,8 +151,7 @@ fn collect_ranges_stmt(
             if contains(range, pos) {
                 out.push(range);
                 for member in i.members.iter() {
-                    let m_range =
-                        span_range(source, line_starts, member.span.start, member.span.end);
+                    let m_range = span_range(sv, member.span.start, member.span.end);
                     if contains(m_range, pos) {
                         out.push(m_range);
                     }
@@ -168,7 +164,7 @@ fn collect_ranges_stmt(
             }
             out.push(range);
             for member in t.members.iter() {
-                let m_range = span_range(source, line_starts, member.span.start, member.span.end);
+                let m_range = span_range(sv, member.span.start, member.span.end);
                 if !contains(m_range, pos) {
                     continue;
                 }
@@ -176,7 +172,7 @@ fn collect_ranges_stmt(
                 if let ClassMemberKind::Method(m) = &member.kind
                     && let Some(body) = &m.body
                 {
-                    collect_ranges_stmts(source, line_starts, body, pos, out);
+                    collect_ranges_stmts(sv, body, pos, out);
                 }
             }
         }
@@ -186,7 +182,7 @@ fn collect_ranges_stmt(
             }
             out.push(range);
             for member in e.members.iter() {
-                let m_range = span_range(source, line_starts, member.span.start, member.span.end);
+                let m_range = span_range(sv, member.span.start, member.span.end);
                 if !contains(m_range, pos) {
                     continue;
                 }
@@ -194,7 +190,7 @@ fn collect_ranges_stmt(
                 if let EnumMemberKind::Method(m) = &member.kind
                     && let Some(body) = &m.body
                 {
-                    collect_ranges_stmts(source, line_starts, body, pos, out);
+                    collect_ranges_stmts(sv, body, pos, out);
                 }
             }
         }
@@ -204,7 +200,7 @@ fn collect_ranges_stmt(
             }
             out.push(range);
             if let NamespaceBody::Braced(inner) = &ns.body {
-                collect_ranges_stmts(source, line_starts, inner, pos, out);
+                collect_ranges_stmts(sv, inner, pos, out);
             }
         }
         StmtKind::If(i) => {
@@ -212,36 +208,36 @@ fn collect_ranges_stmt(
                 return;
             }
             out.push(range);
-            collect_ranges_stmt(source, line_starts, i.then_branch, pos, out);
+            collect_ranges_stmt(sv, i.then_branch, pos, out);
             for ei in i.elseif_branches.iter() {
-                collect_ranges_stmt(source, line_starts, &ei.body, pos, out);
+                collect_ranges_stmt(sv, &ei.body, pos, out);
             }
             if let Some(e) = &i.else_branch {
-                collect_ranges_stmt(source, line_starts, e, pos, out);
+                collect_ranges_stmt(sv, e, pos, out);
             }
         }
         StmtKind::While(w) => {
             if contains(range, pos) {
                 out.push(range);
-                collect_ranges_stmt(source, line_starts, w.body, pos, out);
+                collect_ranges_stmt(sv, w.body, pos, out);
             }
         }
         StmtKind::For(f) => {
             if contains(range, pos) {
                 out.push(range);
-                collect_ranges_stmt(source, line_starts, f.body, pos, out);
+                collect_ranges_stmt(sv, f.body, pos, out);
             }
         }
         StmtKind::Foreach(f) => {
             if contains(range, pos) {
                 out.push(range);
-                collect_ranges_stmt(source, line_starts, f.body, pos, out);
+                collect_ranges_stmt(sv, f.body, pos, out);
             }
         }
         StmtKind::DoWhile(d) => {
             if contains(range, pos) {
                 out.push(range);
-                collect_ranges_stmt(source, line_starts, d.body, pos, out);
+                collect_ranges_stmt(sv, d.body, pos, out);
             }
         }
         StmtKind::TryCatch(t) => {
@@ -249,18 +245,18 @@ fn collect_ranges_stmt(
                 return;
             }
             out.push(range);
-            collect_ranges_stmts(source, line_starts, &t.body, pos, out);
+            collect_ranges_stmts(sv, &t.body, pos, out);
             for catch in t.catches.iter() {
-                collect_ranges_stmts(source, line_starts, &catch.body, pos, out);
+                collect_ranges_stmts(sv, &catch.body, pos, out);
             }
             if let Some(finally) = &t.finally {
-                collect_ranges_stmts(source, line_starts, finally, pos, out);
+                collect_ranges_stmts(sv, finally, pos, out);
             }
         }
         StmtKind::Block(stmts) => {
             if contains(range, pos) {
                 out.push(range);
-                collect_ranges_stmts(source, line_starts, stmts, pos, out);
+                collect_ranges_stmts(sv, stmts, pos, out);
             }
         }
         _ => {}

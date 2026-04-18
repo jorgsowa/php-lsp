@@ -75,6 +75,14 @@ impl ParsedDoc {
     pub fn line_starts(&self) -> &[u32] {
         &self.line_starts
     }
+
+    /// Bundle source and line index for position lookups.
+    pub fn view(&self) -> SourceView<'_> {
+        SourceView {
+            source: self.source(),
+            line_starts: self.line_starts(),
+        }
+    }
 }
 
 impl Default for ParsedDoc {
@@ -95,6 +103,40 @@ fn build_line_starts(source: &str) -> Vec<u32> {
         }
     }
     starts
+}
+
+/// Bundles source text with its precomputed line-start table.
+/// `Copy` so inner functions can pass it by value without lifetime annotation churn.
+#[derive(Copy, Clone)]
+pub struct SourceView<'a> {
+    source: &'a str,
+    line_starts: &'a [u32],
+}
+
+impl<'a> SourceView<'a> {
+    #[inline]
+    pub fn source(self) -> &'a str {
+        self.source
+    }
+
+    pub fn position_of(self, offset: u32) -> Position {
+        offset_to_position(self.source, self.line_starts, offset)
+    }
+
+    pub fn range_of(self, span: Span) -> Range {
+        Range {
+            start: self.position_of(span.start),
+            end: self.position_of(span.end),
+        }
+    }
+
+    pub fn name_range(self, name: &str) -> Range {
+        let start = str_offset(self.source, name);
+        Range {
+            start: self.position_of(start),
+            end: self.position_of(start + name.len() as u32),
+        }
+    }
 }
 
 /// Convert a byte offset into `source` to an LSP `Position` (0-based line/char).
