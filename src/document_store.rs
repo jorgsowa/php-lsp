@@ -88,6 +88,7 @@ impl DocumentStore {
                 q.push_back(uri.clone());
             }
         }
+        self.token_cache.remove(uri);
     }
 
     pub fn index(&self, uri: Url, text: &str) {
@@ -377,6 +378,17 @@ mod tests {
             store.get_doc(&uri("/1.php")).is_none(),
             "/1.php must have been evicted as the oldest indexed-only file"
         );
+    }
+
+    #[test]
+    fn close_evicts_token_cache() {
+        let store = DocumentStore::new();
+        let u = uri("/a.php");
+        open(&store, u.clone(), "<?php".to_string());
+        store.store_token_cache(&u, "id1".to_string(), vec![]);
+        assert!(store.get_token_cache(&u, "id1").is_some());
+        store.close(&u);
+        assert!(store.get_token_cache(&u, "id1").is_none());
     }
 
     #[test]
