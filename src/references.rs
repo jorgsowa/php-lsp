@@ -48,6 +48,142 @@ pub fn find_references_with_use(
     find_references_inner(word, all_docs, include_declaration, true, None)
 }
 
+/// Fast path: look up pre-computed reference locations from the mir codebase index.
+///
+/// Only handles `Function` and `Class` kinds — for those the mir analyzer records every
+/// call-site / instantiation with a precise name-only span via `mark_*_referenced_at`.
+/// Returns `None` for `Method` (type-unaware callers would be missed) and for `None`
+/// kind (caller should use the general AST walker instead).
+///
+/// Returns `None` also when the symbol is not found in the codebase, signalling the
+/// caller to fall back to the AST scan.
+pub fn find_references_codebase(
+    word: &str,
+    all_docs: &[(Url, Arc<ParsedDoc>)],
+    include_declaration: bool,
+    kind: Option<SymbolKind>,
+    codebase: &mir_codebase::Codebase,
+) -> Option<Vec<Location>> {
+    // Build a URI-string → (Url, ParsedDoc) map for O(1) lookup.
+    let doc_map: std::collections::HashMap<&str, (&Url, &Arc<ParsedDoc>)> = all_docs
+        .iter()
+        .map(|(url, doc)| (url.as_str(), (url, doc)))
+        .collect();
+
+    let spans_to_location = |file: &str, start: u32, end: u32| -> Option<Location> {
+        let (url, doc) = doc_map.get(file)?;
+        let source = doc.source();
+        let start_pos = offset_to_position(source, start);
+        let end_pos = offset_to_position(source, end);
+        Some(Location {
+            uri: (*url).clone(),
+            range: Range {
+                start: start_pos,
+                end: end_pos,
+            },
+        })
+    };
+
+    match kind {
+        Some(SymbolKind::Function) => {
+            // Collect all FQNs whose short name (last `\`-segment) matches `word`.
+            let fqns: Vec<Arc<str>> = codebase
+                .functions
+                .iter()
+                .filter_map(|e| {
+                    let fqn = e.key();
+                    let short = fqn.rsplit('\\').next().unwrap_or(fqn.as_ref());
+                    if short == word {
+                        Some(fqn.clone())
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+
+            if fqns.is_empty() {
+                return None;
+            }
+
+            let mut locations: Vec<Location> = Vec::new();
+            for fqn in &fqns {
+                for (file, start, end) in codebase.get_reference_locations(fqn) {
+                    if let Some(loc) = spans_to_location(&file, start, end) {
+                        locations.push(loc);
+                    }
+                }
+                if include_declaration
+                    && let Some(func) = codebase.functions.get(fqn.as_ref())
+                    && let Some(decl) = &func.location
+                    && let Some(loc) = spans_to_location(&decl.file, decl.start, decl.end)
+                {
+                    locations.push(loc);
+                }
+            }
+            if locations.is_empty() {
+                None
+            } else {
+                Some(locations)
+            }
+        }
+
+        Some(SymbolKind::Class) => {
+            // Collect all FQCNs whose short name matches `word` across all type maps.
+            let mut fqcns: Vec<Arc<str>> = Vec::new();
+            let short_matches =
+                |fqcn: &Arc<str>| fqcn.rsplit('\\').next().unwrap_or(fqcn.as_ref()) == word;
+            for e in codebase.classes.iter() {
+                if short_matches(e.key()) {
+                    fqcns.push(e.key().clone());
+                }
+            }
+            for e in codebase.interfaces.iter() {
+                if short_matches(e.key()) {
+                    fqcns.push(e.key().clone());
+                }
+            }
+            for e in codebase.traits.iter() {
+                if short_matches(e.key()) {
+                    fqcns.push(e.key().clone());
+                }
+            }
+            for e in codebase.enums.iter() {
+                if short_matches(e.key()) {
+                    fqcns.push(e.key().clone());
+                }
+            }
+
+            if fqcns.is_empty() {
+                return None;
+            }
+
+            let mut locations: Vec<Location> = Vec::new();
+            for fqcn in &fqcns {
+                for (file, start, end) in codebase.get_reference_locations(fqcn) {
+                    if let Some(loc) = spans_to_location(&file, start, end) {
+                        locations.push(loc);
+                    }
+                }
+                if include_declaration
+                    && let Some(decl) = codebase.get_symbol_location(fqcn)
+                    && let Some(loc) = spans_to_location(&decl.file, decl.start, decl.end)
+                {
+                    locations.push(loc);
+                }
+            }
+            if locations.is_empty() {
+                None
+            } else {
+                Some(locations)
+            }
+        }
+
+        // Method references: mir only tracks calls on known types; fall back to
+        // the AST walker so dynamic / unknown-type call sites are included.
+        Some(SymbolKind::Method) | None => None,
+    }
+}
+
 fn find_references_inner(
     word: &str,
     all_docs: &[(Url, Arc<ParsedDoc>)],

@@ -140,6 +140,32 @@ fn issue_passes_filter(issue: &mir_issues::Issue, cfg: &DiagnosticsConfig) -> bo
     }
 }
 
+/// Run Pass 2 analysis on `doc` to populate `codebase.symbol_reference_locations`.
+///
+/// Unlike [`semantic_diagnostics`] and [`semantic_diagnostics_no_rebuild`], this
+/// function discards all emitted issues — its only purpose is the side-effect of
+/// calling `mark_*_referenced_at` on the codebase so that `get_reference_locations`
+/// returns complete results for `find_references`.
+///
+/// The codebase must already be finalized (all definitions collected, `finalize()`
+/// called) before this is invoked.
+pub fn index_file_references(uri: &Url, doc: &ParsedDoc, codebase: &mir_codebase::Codebase) {
+    let file: Arc<str> = Arc::from(uri.as_str());
+    let source_map = php_rs_parser::source_map::SourceMap::new(doc.source());
+    let mut issue_buffer = mir_issues::IssueBuffer::new();
+    let mut symbols = Vec::new();
+    let mut analyzer = mir_analyzer::stmt::StatementsAnalyzer::new(
+        codebase,
+        file,
+        doc.source(),
+        &source_map,
+        &mut issue_buffer,
+        &mut symbols,
+    );
+    let mut ctx = mir_analyzer::context::Context::new();
+    analyzer.analyze_stmts(&doc.program().stmts, &mut ctx);
+}
+
 /// Check for deprecated function/method calls and emit Warning diagnostics.
 pub fn deprecated_call_diagnostics(
     source: &str,

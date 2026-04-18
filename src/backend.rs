@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 
 use tower_lsp::jsonrpc::Result;
@@ -42,12 +43,12 @@ use crate::organize_imports::organize_imports_action;
 use crate::phpdoc_action::phpdoc_actions;
 use crate::phpstorm_meta::PhpStormMeta;
 use crate::promote_action::promote_constructor_actions;
-use crate::references::{SymbolKind, find_references};
+use crate::references::{SymbolKind, find_references, find_references_codebase};
 use crate::rename::{prepare_rename, rename, rename_property, rename_variable};
 use crate::selection_range::selection_ranges;
 use crate::semantic_diagnostics::{
-    deprecated_call_diagnostics, duplicate_declaration_diagnostics, semantic_diagnostics,
-    semantic_diagnostics_no_rebuild,
+    deprecated_call_diagnostics, duplicate_declaration_diagnostics, index_file_references,
+    semantic_diagnostics, semantic_diagnostics_no_rebuild,
 };
 use crate::semantic_tokens::{
     compute_token_delta, legend, semantic_tokens, semantic_tokens_range, token_hash,
@@ -155,6 +156,9 @@ pub struct Backend {
     meta: Arc<RwLock<PhpStormMeta>>,
     config: Arc<RwLock<LspConfig>>,
     codebase: Arc<mir_codebase::Codebase>,
+    /// Set to `true` once the post-scan reference-indexing pass completes.
+    /// `find_references_codebase` is only used when this is `true`.
+    ref_index_ready: Arc<AtomicBool>,
 }
 
 impl Backend {
@@ -169,6 +173,7 @@ impl Backend {
             meta: Arc::new(RwLock::new(PhpStormMeta::default())),
             config: Arc::new(RwLock::new(LspConfig::default())),
             codebase: Arc::new(codebase),
+            ref_index_ready: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -444,6 +449,7 @@ impl LanguageServer for Backend {
             let docs = Arc::clone(&self.docs);
             let client = self.client.clone();
             let codebase = Arc::clone(&self.codebase);
+            let ref_index_ready = Arc::clone(&self.ref_index_ready);
             let exclude_paths = self.config.read().unwrap().exclude_paths.clone();
             tokio::spawn(async move {
                 client
@@ -493,6 +499,12 @@ impl LanguageServer for Backend {
                 // that the index is populated. Without this, editors that opened
                 // files before indexing finished would show stale information.
                 send_refresh_requests(&client).await;
+
+                // Phase 3: build the reference index in the background so that
+                // find_references_codebase can serve O(k) lookups instead of
+                // scanning every file's AST. Runs after the progress notification
+                // so the editor considers indexing "done" while this completes.
+                build_reference_index(docs, codebase, ref_index_ready).await;
             });
         }
 
@@ -632,6 +644,7 @@ impl LanguageServer for Backend {
         let docs = Arc::clone(&self.docs);
         let client = self.client.clone();
         let codebase = Arc::clone(&self.codebase);
+        let ref_index_ready = Arc::clone(&self.ref_index_ready);
         let diag_cfg = self.config.read().unwrap().diagnostics.clone();
         tokio::spawn(async move {
             // 100 ms debounce: if another edit arrives before we parse, the
@@ -647,7 +660,15 @@ impl LanguageServer for Backend {
                 let source = docs.get(&uri).unwrap_or_default();
                 let mut all_diags = diagnostics;
                 if let Some(d) = docs.get_doc(&uri) {
+                    // Full incremental update: evict stale definitions and
+                    // reference locations, re-collect, and rebuild inheritance
+                    // so the reference index is always consistent after an edit.
+                    codebase.remove_file_definitions(uri.as_str());
                     collect_into_codebase(&codebase, &uri, &d);
+                    codebase.finalize();
+                    if ref_index_ready.load(Ordering::Acquire) {
+                        index_file_references(&uri, &d, &codebase);
+                    }
                     all_diags.extend(duplicate_declaration_diagnostics(&source, &d, &diag_cfg));
                     let other_raw = docs.other_docs(&uri);
                     let other_docs: Vec<Arc<ParsedDoc>> =
@@ -710,7 +731,12 @@ impl LanguageServer for Backend {
                     {
                         self.docs.index(change.uri.clone(), &text);
                         if let Some(d) = self.docs.get_doc(&change.uri) {
+                            self.codebase.remove_file_definitions(change.uri.as_str());
                             self.collect_definitions_for(&change.uri, &d);
+                            self.codebase.finalize();
+                            if self.ref_index_ready.load(Ordering::Acquire) {
+                                index_file_references(&change.uri, &d, &self.codebase);
+                            }
                         }
                     }
                 }
@@ -836,7 +862,17 @@ impl LanguageServer for Backend {
         };
         let all_docs = self.docs.all_docs();
         let include_declaration = params.context.include_declaration;
-        let locations = find_references(&word, &all_docs, include_declaration, kind);
+
+        // Fast path: use the pre-computed reference index once it is ready.
+        // Falls back to the full AST scan for Method / None kinds, and whenever
+        // the symbol is not found in the codebase (returns None).
+        let locations = if self.ref_index_ready.load(Ordering::Acquire) {
+            find_references_codebase(&word, &all_docs, include_declaration, kind, &self.codebase)
+                .unwrap_or_else(|| find_references(&word, &all_docs, include_declaration, kind))
+        } else {
+            find_references(&word, &all_docs, include_declaration, kind)
+        };
+
         Ok(if locations.is_empty() {
             None
         } else {
@@ -2323,6 +2359,47 @@ async fn scan_workspace(
     while set.join_next().await.is_some() {}
 
     count.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Phase 3 of workspace initialisation: run `StatementsAnalyzer` on every
+/// indexed file to populate `codebase.symbol_reference_locations`.
+///
+/// This is deliberately run *after* the progress notification is sent so the
+/// editor considers indexing finished while this background work completes.
+/// Once done, `ref_index_ready` is set to `true` so the `references` handler
+/// can switch to O(k) codebase lookups instead of scanning every AST.
+async fn build_reference_index(
+    docs: Arc<DocumentStore>,
+    codebase: Arc<mir_codebase::Codebase>,
+    ready: Arc<AtomicBool>,
+) {
+    // The codebase was already finalized at the end of the workspace scan
+    // (Phase 2). Calling finalize() again here would race with concurrent
+    // semantic_diagnostics calls that reset the finalized flag via
+    // remove_file_definitions(), causing method-inheritance lookups to
+    // transiently return None and silently drop those references from the index.
+    let all_docs = docs.all_docs();
+    let parallelism = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4);
+    let sem = Arc::new(tokio::sync::Semaphore::new(parallelism));
+    let mut set: tokio::task::JoinSet<()> = tokio::task::JoinSet::new();
+
+    for (uri, doc) in all_docs {
+        let permit = Arc::clone(&sem).acquire_owned().await.unwrap();
+        let codebase = Arc::clone(&codebase);
+        set.spawn(async move {
+            let _permit = permit;
+            tokio::task::spawn_blocking(move || {
+                index_file_references(&uri, &doc, &codebase);
+            })
+            .await
+            .ok();
+        });
+    }
+
+    while set.join_next().await.is_some() {}
+    ready.store(true, Ordering::Release);
 }
 
 #[cfg(test)]
