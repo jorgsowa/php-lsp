@@ -2361,6 +2361,7 @@ async fn scan_workspace(
 /// editor considers indexing finished while this background work completes.
 /// Once done, `ref_index_ready` is set to `true` so the `references` handler
 /// can switch to O(k) codebase lookups instead of scanning every AST.
+#[allow(dead_code)]
 async fn build_reference_index(
     docs: Arc<DocumentStore>,
     codebase: Arc<mir_codebase::Codebase>,
