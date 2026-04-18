@@ -16,8 +16,16 @@ pub fn generate_constructor_actions(
     range: Range,
     uri: &Url,
 ) -> Vec<CodeActionOrCommand> {
+    let line_starts = doc.line_starts();
     let mut out = Vec::new();
-    collect_constructor(&doc.program().stmts, source, range, uri, &mut out);
+    collect_constructor(
+        &doc.program().stmts,
+        source,
+        line_starts,
+        range,
+        uri,
+        &mut out,
+    );
     out
 }
 
@@ -27,8 +35,16 @@ pub fn generate_getters_setters_actions(
     range: Range,
     uri: &Url,
 ) -> Vec<CodeActionOrCommand> {
+    let line_starts = doc.line_starts();
     let mut out = Vec::new();
-    collect_getters_setters(&doc.program().stmts, source, range, uri, &mut out);
+    collect_getters_setters(
+        &doc.program().stmts,
+        source,
+        line_starts,
+        range,
+        uri,
+        &mut out,
+    );
     out
 }
 
@@ -42,6 +58,7 @@ struct Prop {
 fn collect_constructor<'a>(
     stmts: &[Stmt<'a, 'a>],
     source: &str,
+    line_starts: &[u32],
     range: Range,
     uri: &Url,
     out: &mut Vec<CodeActionOrCommand>,
@@ -49,8 +66,8 @@ fn collect_constructor<'a>(
     for stmt in stmts {
         match &stmt.kind {
             StmtKind::Class(c) => {
-                let class_start = offset_to_position(source, stmt.span.start).line;
-                let class_end = offset_to_position(source, stmt.span.end).line;
+                let class_start = offset_to_position(source, line_starts, stmt.span.start).line;
+                let class_end = offset_to_position(source, line_starts, stmt.span.end).line;
                 if class_start > range.end.line || class_end < range.start.line {
                     continue;
                 }
@@ -71,6 +88,7 @@ fn collect_constructor<'a>(
                 let text = generate_constructor_text(&props);
                 push_action(
                     source,
+                    line_starts,
                     stmt.span.end,
                     text,
                     "Generate constructor",
@@ -80,7 +98,7 @@ fn collect_constructor<'a>(
             }
             StmtKind::Namespace(ns) => {
                 if let NamespaceBody::Braced(inner) = &ns.body {
-                    collect_constructor(inner, source, range, uri, out);
+                    collect_constructor(inner, source, line_starts, range, uri, out);
                 }
             }
             _ => {}
@@ -91,6 +109,7 @@ fn collect_constructor<'a>(
 fn collect_getters_setters<'a>(
     stmts: &[Stmt<'a, 'a>],
     source: &str,
+    line_starts: &[u32],
     range: Range,
     uri: &Url,
     out: &mut Vec<CodeActionOrCommand>,
@@ -98,8 +117,8 @@ fn collect_getters_setters<'a>(
     for stmt in stmts {
         match &stmt.kind {
             StmtKind::Class(c) => {
-                let class_start = offset_to_position(source, stmt.span.start).line;
-                let class_end = offset_to_position(source, stmt.span.end).line;
+                let class_start = offset_to_position(source, line_starts, stmt.span.start).line;
+                let class_end = offset_to_position(source, line_starts, stmt.span.end).line;
                 if class_start > range.end.line || class_end < range.start.line {
                     continue;
                 }
@@ -163,11 +182,11 @@ fn collect_getters_setters<'a>(
                 } else {
                     format!("Generate {count} getters/setters")
                 };
-                push_action(source, stmt.span.end, text, &title, uri, out);
+                push_action(source, line_starts, stmt.span.end, text, &title, uri, out);
             }
             StmtKind::Namespace(ns) => {
                 if let NamespaceBody::Braced(inner) = &ns.body {
-                    collect_getters_setters(inner, source, range, uri, out);
+                    collect_getters_setters(inner, source, line_starts, range, uri, out);
                 }
             }
             _ => {}
@@ -235,13 +254,15 @@ fn generate_constructor_text(props: &[Prop]) -> String {
 
 fn push_action(
     source: &str,
+    line_starts: &[u32],
     class_end_offset: u32,
     new_text: String,
     title: &str,
     uri: &Url,
     out: &mut Vec<CodeActionOrCommand>,
 ) {
-    let closing_line = offset_to_position(source, class_end_offset.saturating_sub(1)).line;
+    let closing_line =
+        offset_to_position(source, line_starts, class_end_offset.saturating_sub(1)).line;
     let pos = Position {
         line: closing_line,
         character: 0,

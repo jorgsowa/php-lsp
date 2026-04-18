@@ -5,14 +5,15 @@ use crate::ast::{ParsedDoc, offset_to_position};
 /// Parse `source` and return the (owned) `ParsedDoc` plus any parse diagnostics.
 pub fn parse_document(source: &str) -> (ParsedDoc, Vec<Diagnostic>) {
     let doc = ParsedDoc::parse(source.to_string());
+    let line_starts = doc.line_starts();
     let diagnostics = doc
         .errors
         .iter()
         .map(|e| {
             let span = e.span();
-            let start = offset_to_position(source, span.start);
+            let start = offset_to_position(source, line_starts, span.start);
             let end = if span.end > span.start {
-                offset_to_position(source, span.end)
+                offset_to_position(source, line_starts, span.end)
             } else {
                 // Zero-width span: advance by the UTF-16 width of the character
                 // at the error position so the range is never a mid-surrogate

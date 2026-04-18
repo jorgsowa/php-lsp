@@ -73,8 +73,9 @@ pub fn find_references_codebase(
     let spans_to_location = |file: &str, start: u32, end: u32| -> Option<Location> {
         let (url, doc) = doc_map.get(file)?;
         let source = doc.source();
-        let start_pos = offset_to_position(source, start);
-        let end_pos = offset_to_position(source, end);
+        let line_starts = doc.line_starts();
+        let start_pos = offset_to_position(source, line_starts, start);
+        let end_pos = offset_to_position(source, line_starts, end);
         Some(Location {
             uri: (*url).clone(),
             range: Range {
@@ -233,8 +234,9 @@ fn find_references_inner(
             }
         }
 
+        let line_starts = doc.line_starts();
         for span in spans {
-            let start = offset_to_position(source, span.start);
+            let start = offset_to_position(source, line_starts, span.start);
             let end = Position {
                 line: start.line,
                 character: start.character

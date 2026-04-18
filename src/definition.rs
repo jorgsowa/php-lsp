@@ -19,6 +19,7 @@ pub fn goto_definition(
     let word = word_at(source, position)?;
 
     // For $variable, find the first occurrence in scope (= the definition/assignment).
+    let line_starts = doc.line_starts();
     if word.starts_with('$') {
         let bare = word.trim_start_matches('$');
         let byte_off = utf16_pos_to_byte(source, position);
@@ -28,14 +29,14 @@ pub fn goto_definition(
             return Some(Location {
                 uri: uri.clone(),
                 range: Range {
-                    start: offset_to_position(source, span.start),
-                    end: offset_to_position(source, span.end),
+                    start: offset_to_position(source, line_starts, span.start),
+                    end: offset_to_position(source, line_starts, span.end),
                 },
             });
         }
     }
 
-    if let Some(range) = scan_statements(source, &doc.program().stmts, &word) {
+    if let Some(range) = scan_statements(source, line_starts, &doc.program().stmts, &word) {
         return Some(Location {
             uri: uri.clone(),
             range,
@@ -44,7 +45,13 @@ pub fn goto_definition(
 
     for (other_uri, other_doc) in other_docs {
         let other_source = other_doc.source();
-        if let Some(range) = scan_statements(other_source, &other_doc.program().stmts, &word) {
+        let other_line_starts = other_doc.line_starts();
+        if let Some(range) = scan_statements(
+            other_source,
+            other_line_starts,
+            &other_doc.program().stmts,
+            &word,
+        ) {
             return Some(Location {
                 uri: other_uri.clone(),
                 range,
@@ -58,54 +65,60 @@ pub fn goto_definition(
 /// Search an AST for a declaration named `name`, returning its selection range.
 /// Used by the PSR-4 fallback in the backend after resolving a class to a file.
 pub fn find_declaration_range(source: &str, doc: &ParsedDoc, name: &str) -> Option<Range> {
-    scan_statements(source, &doc.program().stmts, name)
+    let line_starts = doc.line_starts();
+    scan_statements(source, line_starts, &doc.program().stmts, name)
 }
 
-fn scan_statements(source: &str, stmts: &[Stmt<'_, '_>], word: &str) -> Option<Range> {
+fn scan_statements(
+    source: &str,
+    line_starts: &[u32],
+    stmts: &[Stmt<'_, '_>],
+    word: &str,
+) -> Option<Range> {
     // Strip a leading `$` so that `$name` matches property names stored without `$`.
     let bare = word.strip_prefix('$').unwrap_or(word);
     for stmt in stmts {
         match &stmt.kind {
             StmtKind::Function(f) if f.name == word => {
-                return Some(name_range(source, f.name));
+                return Some(name_range(source, line_starts, f.name));
             }
             StmtKind::Class(c) if c.name == Some(word) => {
                 let name = c.name.expect("match guard ensures Some");
-                return Some(name_range(source, name));
+                return Some(name_range(source, line_starts, name));
             }
             StmtKind::Class(c) => {
                 for member in c.members.iter() {
                     match &member.kind {
                         ClassMemberKind::Method(m) if m.name == word => {
-                            return Some(name_range(source, m.name));
+                            return Some(name_range(source, line_starts, m.name));
                         }
                         ClassMemberKind::ClassConst(cc) if cc.name == word => {
-                            return Some(name_range(source, cc.name));
+                            return Some(name_range(source, line_starts, cc.name));
                         }
                         ClassMemberKind::Property(p) if p.name == bare => {
-                            return Some(name_range(source, p.name));
+                            return Some(name_range(source, line_starts, p.name));
                         }
                         _ => {}
                     }
                 }
             }
             StmtKind::Interface(i) if i.name == word => {
-                return Some(name_range(source, i.name));
+                return Some(name_range(source, line_starts, i.name));
             }
             StmtKind::Trait(t) if t.name == word => {
-                return Some(name_range(source, t.name));
+                return Some(name_range(source, line_starts, t.name));
             }
             StmtKind::Enum(e) if e.name == word => {
-                return Some(name_range(source, e.name));
+                return Some(name_range(source, line_starts, e.name));
             }
             StmtKind::Enum(e) => {
                 for member in e.members.iter() {
                     match &member.kind {
                         EnumMemberKind::Method(m) if m.name == word => {
-                            return Some(name_range(source, m.name));
+                            return Some(name_range(source, line_starts, m.name));
                         }
                         EnumMemberKind::Case(c) if c.name == word => {
-                            return Some(name_range(source, c.name));
+                            return Some(name_range(source, line_starts, c.name));
                         }
                         _ => {}
                     }
@@ -113,7 +126,7 @@ fn scan_statements(source: &str, stmts: &[Stmt<'_, '_>], word: &str) -> Option<R
             }
             StmtKind::Namespace(ns) => {
                 if let NamespaceBody::Braced(inner) = &ns.body
-                    && let Some(range) = scan_statements(source, inner, word)
+                    && let Some(range) = scan_statements(source, line_starts, inner, word)
                 {
                     return Some(range);
                 }
@@ -124,9 +137,9 @@ fn scan_statements(source: &str, stmts: &[Stmt<'_, '_>], word: &str) -> Option<R
     None
 }
 
-fn _name_range_from_offset(source: &str, name: &str) -> Range {
+fn _name_range_from_offset(source: &str, line_starts: &[u32], name: &str) -> Range {
     let start_offset = str_offset(source, name);
-    let start = offset_to_position(source, start_offset);
+    let start = offset_to_position(source, line_starts, start_offset);
     Range {
         start,
         end: Position {

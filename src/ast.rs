@@ -21,6 +21,7 @@ pub struct ParsedDoc {
     _arena: Box<bumpalo::Bump>,
     #[allow(clippy::box_collection)]
     _source: Box<String>,
+    line_starts: Vec<u32>,
 }
 
 // SAFETY: Program nodes contain only data; no thread-local state.
@@ -43,11 +44,14 @@ impl ParsedDoc {
 
         let result = php_rs_parser::parse(arena_ref, src_ref);
 
+        let line_starts = build_line_starts(src_ref);
+
         ParsedDoc {
             program: Box::new(result.program),
             errors: result.errors,
             _arena: arena_box,
             _source: source_box,
+            line_starts,
         }
     }
 
@@ -65,6 +69,12 @@ impl ParsedDoc {
     pub fn source(&self) -> &str {
         &self._source
     }
+
+    /// Borrow the precomputed line-start byte offsets.
+    /// `line_starts[i]` is the byte offset of the first character on line `i`.
+    pub fn line_starts(&self) -> &[u32] {
+        &self.line_starts
+    }
 }
 
 impl Default for ParsedDoc {
@@ -75,32 +85,44 @@ impl Default for ParsedDoc {
 
 // ── Span / position utilities ─────────────────────────────────────────────────
 
+/// Build a table of byte offsets for the start of each line.
+/// `result[i]` is the byte offset of the first character on line `i`.
+fn build_line_starts(source: &str) -> Vec<u32> {
+    let mut starts = vec![0u32];
+    for (i, b) in source.bytes().enumerate() {
+        if b == b'\n' {
+            starts.push(i as u32 + 1);
+        }
+    }
+    starts
+}
+
 /// Convert a byte offset into `source` to an LSP `Position` (0-based line/char).
 ///
-/// Handles both LF-only and CRLF line endings. When the offset lands on or
-/// after a `\r` that immediately precedes `\n`, the `\r` is not counted as a
-/// column so that positions are consistent regardless of line-ending style.
-pub fn offset_to_position(source: &str, offset: u32) -> Position {
-    let offset = (offset as usize).min(source.len());
-    let prefix = &source[..offset];
-    let line = prefix.bytes().filter(|&b| b == b'\n').count() as u32;
-    let last_nl = prefix.rfind('\n').map(|i| i + 1).unwrap_or(0);
-    // Strip a trailing \r so CRLF line endings don't inflate the column count.
-    let line_segment = prefix[last_nl..]
-        .strip_suffix('\r')
-        .unwrap_or(&prefix[last_nl..]);
-    let character = line_segment
-        .chars()
-        .map(|c| c.len_utf16() as u32)
-        .sum::<u32>();
+/// Uses a precomputed `line_starts` table for O(log n) binary search.
+/// Handles both LF-only and CRLF line endings: a trailing `\r` before `\n` is
+/// not counted as a column so that positions are consistent regardless of
+/// line-ending style.
+pub fn offset_to_position(source: &str, line_starts: &[u32], offset: u32) -> Position {
+    let offset_usize = (offset as usize).min(source.len());
+    // Binary search: find the last line_start ≤ offset.
+    let line = match line_starts.partition_point(|&s| s <= offset) {
+        0 => 0u32,
+        i => (i - 1) as u32,
+    };
+    let line_start = line_starts.get(line as usize).copied().unwrap_or(0) as usize;
+    let segment = &source[line_start..offset_usize];
+    // Strip trailing \r to handle CRLF: don't count \r as a column.
+    let segment = segment.strip_suffix('\r').unwrap_or(segment);
+    let character = segment.chars().map(|c| c.len_utf16() as u32).sum::<u32>();
     Position { line, character }
 }
 
 /// Convert a `Span` (byte-offset pair) to an LSP `Range`.
-pub fn span_to_range(source: &str, span: Span) -> Range {
+pub fn span_to_range(source: &str, line_starts: &[u32], span: Span) -> Range {
     Range {
-        start: offset_to_position(source, span.start),
-        end: offset_to_position(source, span.end),
+        start: offset_to_position(source, line_starts, span.start),
+        end: offset_to_position(source, line_starts, span.end),
     }
 }
 
@@ -121,11 +143,11 @@ pub fn str_offset(source: &str, substr: &str) -> u32 {
 }
 
 /// Build an LSP `Range` for a name that is a sub-slice of `source`.
-pub fn name_range(source: &str, name: &str) -> Range {
+pub fn name_range(source: &str, line_starts: &[u32], name: &str) -> Range {
     let start = str_offset(source, name);
     Range {
-        start: offset_to_position(source, start),
-        end: offset_to_position(source, start + name.len() as u32),
+        start: offset_to_position(source, line_starts, start),
+        end: offset_to_position(source, line_starts, start + name.len() as u32),
     }
 }
 
@@ -173,8 +195,10 @@ mod tests {
 
     #[test]
     fn offset_to_position_first_line() {
+        let src = "<?php\nfoo";
+        let doc = ParsedDoc::parse(src.to_string());
         assert_eq!(
-            offset_to_position("<?php\nfoo", 0),
+            offset_to_position(src, doc.line_starts(), 0),
             Position {
                 line: 0,
                 character: 0
@@ -185,8 +209,10 @@ mod tests {
     #[test]
     fn offset_to_position_second_line() {
         // "<?php\n" — offset 6 is start of line 1
+        let src = "<?php\nfoo";
+        let doc = ParsedDoc::parse(src.to_string());
         assert_eq!(
-            offset_to_position("<?php\nfoo", 6),
+            offset_to_position(src, doc.line_starts(), 6),
             Position {
                 line: 1,
                 character: 0
@@ -201,8 +227,9 @@ mod tests {
         // source: "a😀b" — byte offsets: a=0, 😀=1..5, b=5
         // UTF-16:            a=col 0, 😀=col 1..3, b=col 3
         let src = "a\u{1F600}b";
+        let doc = ParsedDoc::parse(src.to_string());
         assert_eq!(
-            offset_to_position(src, 5), // byte offset of 'b'
+            offset_to_position(src, doc.line_starts(), 5), // byte offset of 'b'
             Position {
                 line: 0,
                 character: 3
@@ -215,8 +242,9 @@ mod tests {
         // CRLF: offset pointing to first char of line 1 must give character=0.
         // "foo\r\nbar": f=0 o=1 o=2 \r=3 \n=4 b=5 a=6 r=7
         let src = "foo\r\nbar";
+        let doc = ParsedDoc::parse(src.to_string());
         assert_eq!(
-            offset_to_position(src, 5), // 'b'
+            offset_to_position(src, doc.line_starts(), 5), // 'b'
             Position {
                 line: 1,
                 character: 0
@@ -229,8 +257,9 @@ mod tests {
         // Offset pointing to the \r itself must not count it as a column.
         // "foo\r\nbar": the \r is at offset 3, column must be 3 (length of "foo").
         let src = "foo\r\nbar";
+        let doc = ParsedDoc::parse(src.to_string());
         assert_eq!(
-            offset_to_position(src, 3), // '\r'
+            offset_to_position(src, doc.line_starts(), 3), // '\r'
             Position {
                 line: 0,
                 character: 3
@@ -243,15 +272,16 @@ mod tests {
         // Multiple CRLF lines: columns must not accumulate stray \r counts.
         // "a\r\nb\r\nc": a=0 \r=1 \n=2 b=3 \r=4 \n=5 c=6
         let src = "a\r\nb\r\nc";
+        let doc = ParsedDoc::parse(src.to_string());
         assert_eq!(
-            offset_to_position(src, 6), // 'c'
+            offset_to_position(src, doc.line_starts(), 6), // 'c'
             Position {
                 line: 2,
                 character: 0
             }
         );
         assert_eq!(
-            offset_to_position(src, 3), // 'b'
+            offset_to_position(src, doc.line_starts(), 3), // 'b'
             Position {
                 line: 1,
                 character: 0

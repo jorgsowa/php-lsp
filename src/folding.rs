@@ -4,160 +4,174 @@ use tower_lsp::lsp_types::{FoldingRange, FoldingRangeKind};
 use crate::ast::{ParsedDoc, offset_to_position};
 
 pub fn folding_ranges(source: &str, doc: &ParsedDoc) -> Vec<FoldingRange> {
+    let line_starts = doc.line_starts();
     let mut ranges = Vec::new();
-    fold_stmts(&doc.program().stmts, source, &mut ranges);
-    fold_use_groups(&doc.program().stmts, source, &mut ranges);
-    fold_comments(source, &mut ranges);
+    fold_stmts(&doc.program().stmts, source, line_starts, &mut ranges);
+    fold_use_groups(&doc.program().stmts, source, line_starts, &mut ranges);
+    fold_comments(source, line_starts, &mut ranges);
     fold_regions(source, &mut ranges);
     ranges
 }
 
-fn fold_stmts(stmts: &[Stmt<'_, '_>], source: &str, out: &mut Vec<FoldingRange>) {
+fn fold_stmts(
+    stmts: &[Stmt<'_, '_>],
+    source: &str,
+    line_starts: &[u32],
+    out: &mut Vec<FoldingRange>,
+) {
     for stmt in stmts {
-        fold_stmt(stmt, source, out);
+        fold_stmt(stmt, source, line_starts, out);
     }
 }
 
 /// Fold the contents of a block body without emitting a fold for the block itself.
 /// Used for control-flow statements (`if`, `while`, `for`, `foreach`, `do-while`)
 /// where the outer statement already covers the same span as the inner `Block`.
-fn fold_body(body: &Stmt<'_, '_>, source: &str, out: &mut Vec<FoldingRange>) {
+fn fold_body(body: &Stmt<'_, '_>, source: &str, line_starts: &[u32], out: &mut Vec<FoldingRange>) {
     if let StmtKind::Block(stmts) = &body.kind {
-        fold_stmts(stmts, source, out);
+        fold_stmts(stmts, source, line_starts, out);
     }
 }
 
-fn fold_stmt(stmt: &Stmt<'_, '_>, source: &str, out: &mut Vec<FoldingRange>) {
+fn fold_stmt(stmt: &Stmt<'_, '_>, source: &str, line_starts: &[u32], out: &mut Vec<FoldingRange>) {
     match &stmt.kind {
         StmtKind::Function(f) => {
-            let start_line = offset_to_position(source, stmt.span.start).line;
-            let end_line = offset_to_position(source, stmt.span.end).line;
+            let start_line = offset_to_position(source, line_starts, stmt.span.start).line;
+            let end_line = offset_to_position(source, line_starts, stmt.span.end).line;
             push(out, start_line, end_line, None);
-            fold_stmts(&f.body, source, out);
+            fold_stmts(&f.body, source, line_starts, out);
         }
         StmtKind::Class(c) => {
-            let start_line = offset_to_position(source, stmt.span.start).line;
-            let end_line = offset_to_position(source, stmt.span.end).line;
+            let start_line = offset_to_position(source, line_starts, stmt.span.start).line;
+            let end_line = offset_to_position(source, line_starts, stmt.span.end).line;
             push(out, start_line, end_line, None);
             for member in c.members.iter() {
                 if let ClassMemberKind::Method(m) = &member.kind {
-                    let m_start = offset_to_position(source, member.span.start).line;
+                    let m_start = offset_to_position(source, line_starts, member.span.start).line;
                     // member.span.end is exclusive and includes the trailing newline;
                     // subtract 1 so the end line is the line containing the closing `}`.
-                    let m_end = offset_to_position(source, member.span.end.saturating_sub(1)).line;
+                    let m_end =
+                        offset_to_position(source, line_starts, member.span.end.saturating_sub(1))
+                            .line;
                     push(out, m_start, m_end, None);
                     if let Some(body) = &m.body {
-                        fold_stmts(body, source, out);
+                        fold_stmts(body, source, line_starts, out);
                     }
                 }
             }
         }
         StmtKind::Interface(i) => {
-            let start_line = offset_to_position(source, stmt.span.start).line;
-            let end_line = offset_to_position(source, stmt.span.end).line;
+            let start_line = offset_to_position(source, line_starts, stmt.span.start).line;
+            let end_line = offset_to_position(source, line_starts, stmt.span.end).line;
             push(out, start_line, end_line, None);
             // Interface methods are abstract (no body) — nothing to fold per method.
             for member in i.members.iter() {
                 if let ClassMemberKind::Method(m) = &member.kind
                     && let Some(body) = &m.body
                 {
-                    let m_start = offset_to_position(source, member.span.start).line;
-                    let m_end = offset_to_position(source, member.span.end.saturating_sub(1)).line;
+                    let m_start = offset_to_position(source, line_starts, member.span.start).line;
+                    let m_end =
+                        offset_to_position(source, line_starts, member.span.end.saturating_sub(1))
+                            .line;
                     push(out, m_start, m_end, None);
-                    fold_stmts(body, source, out);
+                    fold_stmts(body, source, line_starts, out);
                 }
             }
         }
         StmtKind::Trait(t) => {
-            let start_line = offset_to_position(source, stmt.span.start).line;
-            let end_line = offset_to_position(source, stmt.span.end).line;
+            let start_line = offset_to_position(source, line_starts, stmt.span.start).line;
+            let end_line = offset_to_position(source, line_starts, stmt.span.end).line;
             push(out, start_line, end_line, None);
             for member in t.members.iter() {
                 if let ClassMemberKind::Method(m) = &member.kind {
-                    let m_start = offset_to_position(source, member.span.start).line;
-                    let m_end = offset_to_position(source, member.span.end.saturating_sub(1)).line;
+                    let m_start = offset_to_position(source, line_starts, member.span.start).line;
+                    let m_end =
+                        offset_to_position(source, line_starts, member.span.end.saturating_sub(1))
+                            .line;
                     push(out, m_start, m_end, None);
                     if let Some(body) = &m.body {
-                        fold_stmts(body, source, out);
+                        fold_stmts(body, source, line_starts, out);
                     }
                 }
             }
         }
         StmtKind::Enum(e) => {
-            let start_line = offset_to_position(source, stmt.span.start).line;
-            let end_line = offset_to_position(source, stmt.span.end).line;
+            let start_line = offset_to_position(source, line_starts, stmt.span.start).line;
+            let end_line = offset_to_position(source, line_starts, stmt.span.end).line;
             push(out, start_line, end_line, None);
             for member in e.members.iter() {
                 if let EnumMemberKind::Method(m) = &member.kind {
-                    let m_start = offset_to_position(source, member.span.start).line;
-                    let m_end = offset_to_position(source, member.span.end.saturating_sub(1)).line;
+                    let m_start = offset_to_position(source, line_starts, member.span.start).line;
+                    let m_end =
+                        offset_to_position(source, line_starts, member.span.end.saturating_sub(1))
+                            .line;
                     push(out, m_start, m_end, None);
                     if let Some(body) = &m.body {
-                        fold_stmts(body, source, out);
+                        fold_stmts(body, source, line_starts, out);
                     }
                 }
             }
         }
         StmtKind::If(i) => {
-            let start_line = offset_to_position(source, stmt.span.start).line;
-            let end_line = offset_to_position(source, stmt.span.end).line;
+            let start_line = offset_to_position(source, line_starts, stmt.span.start).line;
+            let end_line = offset_to_position(source, line_starts, stmt.span.end).line;
             push(out, start_line, end_line, None);
-            fold_body(i.then_branch, source, out);
+            fold_body(i.then_branch, source, line_starts, out);
             for ei in i.elseif_branches.iter() {
-                fold_body(&ei.body, source, out);
+                fold_body(&ei.body, source, line_starts, out);
             }
             if let Some(e) = &i.else_branch {
-                fold_body(e, source, out);
+                fold_body(e, source, line_starts, out);
             }
         }
         StmtKind::While(w) => {
-            let start_line = offset_to_position(source, stmt.span.start).line;
-            let end_line = offset_to_position(source, stmt.span.end).line;
+            let start_line = offset_to_position(source, line_starts, stmt.span.start).line;
+            let end_line = offset_to_position(source, line_starts, stmt.span.end).line;
             push(out, start_line, end_line, None);
-            fold_body(w.body, source, out);
+            fold_body(w.body, source, line_starts, out);
         }
         StmtKind::For(f) => {
-            let start_line = offset_to_position(source, stmt.span.start).line;
-            let end_line = offset_to_position(source, stmt.span.end).line;
+            let start_line = offset_to_position(source, line_starts, stmt.span.start).line;
+            let end_line = offset_to_position(source, line_starts, stmt.span.end).line;
             push(out, start_line, end_line, None);
-            fold_body(f.body, source, out);
+            fold_body(f.body, source, line_starts, out);
         }
         StmtKind::Foreach(f) => {
-            let start_line = offset_to_position(source, stmt.span.start).line;
-            let end_line = offset_to_position(source, stmt.span.end).line;
+            let start_line = offset_to_position(source, line_starts, stmt.span.start).line;
+            let end_line = offset_to_position(source, line_starts, stmt.span.end).line;
             push(out, start_line, end_line, None);
-            fold_body(f.body, source, out);
+            fold_body(f.body, source, line_starts, out);
         }
         StmtKind::DoWhile(d) => {
-            let start_line = offset_to_position(source, stmt.span.start).line;
-            let end_line = offset_to_position(source, stmt.span.end).line;
+            let start_line = offset_to_position(source, line_starts, stmt.span.start).line;
+            let end_line = offset_to_position(source, line_starts, stmt.span.end).line;
             push(out, start_line, end_line, None);
-            fold_body(d.body, source, out);
+            fold_body(d.body, source, line_starts, out);
         }
         StmtKind::TryCatch(t) => {
-            let start_line = offset_to_position(source, stmt.span.start).line;
-            let end_line = offset_to_position(source, stmt.span.end).line;
+            let start_line = offset_to_position(source, line_starts, stmt.span.start).line;
+            let end_line = offset_to_position(source, line_starts, stmt.span.end).line;
             push(out, start_line, end_line, None);
-            fold_stmts(&t.body, source, out);
+            fold_stmts(&t.body, source, line_starts, out);
             for catch in t.catches.iter() {
-                fold_stmts(&catch.body, source, out);
+                fold_stmts(&catch.body, source, line_starts, out);
             }
             if let Some(finally) = &t.finally {
-                fold_stmts(finally, source, out);
+                fold_stmts(finally, source, line_starts, out);
             }
         }
         StmtKind::Block(stmts) => {
-            let start_line = offset_to_position(source, stmt.span.start).line;
-            let end_line = offset_to_position(source, stmt.span.end).line;
+            let start_line = offset_to_position(source, line_starts, stmt.span.start).line;
+            let end_line = offset_to_position(source, line_starts, stmt.span.end).line;
             push(out, start_line, end_line, None);
-            fold_stmts(stmts, source, out);
+            fold_stmts(stmts, source, line_starts, out);
         }
         StmtKind::Namespace(ns) => {
-            let start_line = offset_to_position(source, stmt.span.start).line;
-            let end_line = offset_to_position(source, stmt.span.end).line;
+            let start_line = offset_to_position(source, line_starts, stmt.span.start).line;
+            let end_line = offset_to_position(source, line_starts, stmt.span.end).line;
             push(out, start_line, end_line, None);
             if let NamespaceBody::Braced(inner) = &ns.body {
-                fold_stmts(inner, source, out);
+                fold_stmts(inner, source, line_starts, out);
             }
         }
         _ => {}
@@ -165,16 +179,21 @@ fn fold_stmt(stmt: &Stmt<'_, '_>, source: &str, out: &mut Vec<FoldingRange>) {
 }
 
 /// Fold consecutive top-level `use` statements into a single range.
-fn fold_use_groups(stmts: &[Stmt<'_, '_>], source: &str, out: &mut Vec<FoldingRange>) {
+fn fold_use_groups(
+    stmts: &[Stmt<'_, '_>],
+    source: &str,
+    line_starts: &[u32],
+    out: &mut Vec<FoldingRange>,
+) {
     let mut group_start: Option<u32> = None;
     let mut group_end: u32 = 0;
     for stmt in stmts {
         if matches!(stmt.kind, StmtKind::Use(_)) {
-            let line = offset_to_position(source, stmt.span.start).line;
+            let line = offset_to_position(source, line_starts, stmt.span.start).line;
             if group_start.is_none() {
                 group_start = Some(line);
             }
-            group_end = offset_to_position(source, stmt.span.end).line;
+            group_end = offset_to_position(source, line_starts, stmt.span.end).line;
         } else {
             if let Some(start) = group_start.take() {
                 push(out, start, group_end, Some(FoldingRangeKind::Imports));
@@ -187,18 +206,18 @@ fn fold_use_groups(stmts: &[Stmt<'_, '_>], source: &str, out: &mut Vec<FoldingRa
 }
 
 /// Fold `/* ... */` and `/** ... */` multi-line block comments.
-fn fold_comments(source: &str, out: &mut Vec<FoldingRange>) {
+fn fold_comments(source: &str, line_starts: &[u32], out: &mut Vec<FoldingRange>) {
     let bytes = source.as_bytes();
     let len = bytes.len();
     let mut i = 0;
     while i + 1 < len {
         if bytes[i] == b'/' && bytes[i + 1] == b'*' {
-            let start_line = line_at(source, i);
+            let start_line = line_at(source, line_starts, i);
             // find closing */
             let mut j = i + 2;
             while j + 1 < len {
                 if bytes[j] == b'*' && bytes[j + 1] == b'/' {
-                    let end_line = line_at(source, j + 1);
+                    let end_line = line_at(source, line_starts, j + 1);
                     push(out, start_line, end_line, Some(FoldingRangeKind::Comment));
                     i = j + 2;
                     break;
@@ -229,11 +248,12 @@ fn fold_regions(source: &str, out: &mut Vec<FoldingRange>) {
     }
 }
 
-fn line_at(source: &str, byte_offset: usize) -> u32 {
-    source[..byte_offset]
-        .bytes()
-        .filter(|&b| b == b'\n')
-        .count() as u32
+fn line_at(source: &str, line_starts: &[u32], byte_offset: usize) -> u32 {
+    let _ = source;
+    match line_starts.partition_point(|&s| s <= byte_offset as u32) {
+        0 => 0,
+        i => (i - 1) as u32,
+    }
 }
 
 fn push(

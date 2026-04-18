@@ -35,8 +35,16 @@ pub fn promote_constructor_actions(
     range: Range,
     uri: &Url,
 ) -> Vec<CodeActionOrCommand> {
+    let line_starts = doc.line_starts();
     let mut out = Vec::new();
-    collect_promote(&doc.program().stmts, source, range, uri, &mut out);
+    collect_promote(
+        &doc.program().stmts,
+        source,
+        line_starts,
+        range,
+        uri,
+        &mut out,
+    );
     out
 }
 
@@ -61,6 +69,7 @@ struct Promotion {
 fn collect_promote<'a>(
     stmts: &[Stmt<'a, 'a>],
     source: &str,
+    line_starts: &[u32],
     range: Range,
     uri: &Url,
     out: &mut Vec<CodeActionOrCommand>,
@@ -68,8 +77,8 @@ fn collect_promote<'a>(
     for stmt in stmts {
         match &stmt.kind {
             StmtKind::Class(c) => {
-                let class_start = offset_to_position(source, stmt.span.start).line;
-                let class_end = offset_to_position(source, stmt.span.end).line;
+                let class_start = offset_to_position(source, line_starts, stmt.span.start).line;
+                let class_end = offset_to_position(source, line_starts, stmt.span.end).line;
                 if class_start > range.end.line || class_end < range.start.line {
                     continue;
                 }
@@ -163,13 +172,13 @@ fn collect_promote<'a>(
                     format!("Promote {count} constructor parameters")
                 };
 
-                if let Some(action) = build_action(source, uri, &promotions, &title) {
+                if let Some(action) = build_action(source, line_starts, uri, &promotions, &title) {
                     out.push(action);
                 }
             }
             StmtKind::Namespace(ns) => {
                 if let NamespaceBody::Braced(inner) = &ns.body {
-                    collect_promote(inner, source, range, uri, out);
+                    collect_promote(inner, source, line_starts, range, uri, out);
                 }
             }
             _ => {}
@@ -207,6 +216,7 @@ fn find_this_assign(source: &str, stmts: &[Stmt<'_, '_>], param_name: &str) -> O
 /// Build the code action with text edits.
 fn build_action(
     source: &str,
+    line_starts: &[u32],
     uri: &Url,
     promotions: &[Promotion],
     title: &str,
@@ -215,14 +225,15 @@ fn build_action(
 
     for p in promotions {
         // 1. Remove the property declaration (the whole line including newline).
-        let prop_remove_range = whole_line_range(source, p.prop_span_start, p.prop_span_end);
+        let prop_remove_range =
+            whole_line_range(source, line_starts, p.prop_span_start, p.prop_span_end);
         edits.push(TextEdit {
             range: prop_remove_range,
             new_text: String::new(),
         });
 
         // 2. Insert `visibility ` (and optionally `readonly `) before the param.
-        let insert_pos = offset_to_position(source, p.param_span_start);
+        let insert_pos = offset_to_position(source, line_starts, p.param_span_start);
         let prefix = if p.is_readonly {
             format!("{} readonly ", p.visibility)
         } else {
@@ -237,7 +248,8 @@ fn build_action(
         });
 
         // 3. Remove the `$this->prop = $param;` assignment (whole line including newline).
-        let assign_remove_range = whole_line_range(source, p.assign_span_start, p.assign_span_end);
+        let assign_remove_range =
+            whole_line_range(source, line_starts, p.assign_span_start, p.assign_span_end);
         edits.push(TextEdit {
             range: assign_remove_range,
             new_text: String::new(),
@@ -270,7 +282,7 @@ fn build_action(
 
 /// Return a `Range` that covers the full line(s) containing `[span_start, span_end]`,
 /// including the trailing newline so the blank line is removed entirely.
-fn whole_line_range(source: &str, span_start: u32, span_end: u32) -> Range {
+fn whole_line_range(source: &str, line_starts: &[u32], span_start: u32, span_end: u32) -> Range {
     let start_off = span_start as usize;
     let end_off = (span_end as usize).min(source.len());
 
@@ -289,8 +301,8 @@ fn whole_line_range(source: &str, span_start: u32, span_end: u32) -> Range {
     };
 
     Range {
-        start: offset_to_position(source, line_start as u32),
-        end: offset_to_position(source, line_end as u32),
+        start: offset_to_position(source, line_starts, line_start as u32),
+        end: offset_to_position(source, line_starts, line_end as u32),
     }
 }
 

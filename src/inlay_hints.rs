@@ -19,11 +19,13 @@ struct FuncDef {
 /// Returns parameter-name inlay hints AND return-type hints for all
 /// function/method declarations and calls in `doc`.
 pub fn inlay_hints(source: &str, doc: &ParsedDoc, range: Range) -> Vec<InlayHint> {
+    let line_starts = doc.line_starts();
     let defs = collect_defs(&doc.program().stmts);
     let type_map = TypeMap::from_doc(doc);
     let mut hints = Vec::new();
     hints_in_stmts(
         source,
+        line_starts,
         &doc.program().stmts,
         &defs,
         &type_map,
@@ -173,6 +175,7 @@ fn collect_defs_stmts(stmts: &[Stmt<'_, '_>], map: &mut HashMap<String, FuncDef>
 
 fn hints_in_stmts(
     source: &str,
+    line_starts: &[u32],
     stmts: &[Stmt<'_, '_>],
     defs: &HashMap<String, FuncDef>,
     type_map: &TypeMap,
@@ -180,12 +183,13 @@ fn hints_in_stmts(
     out: &mut Vec<InlayHint>,
 ) {
     for stmt in stmts {
-        hints_in_stmt(source, stmt, defs, type_map, range, out);
+        hints_in_stmt(source, line_starts, stmt, defs, type_map, range, out);
     }
 }
 
 fn hints_in_stmt(
     source: &str,
+    line_starts: &[u32],
     stmt: &Stmt<'_, '_>,
     defs: &HashMap<String, FuncDef>,
     type_map: &TypeMap,
@@ -193,22 +197,26 @@ fn hints_in_stmt(
     out: &mut Vec<InlayHint>,
 ) {
     match &stmt.kind {
-        StmtKind::Expression(e) => hints_in_expr(source, e, defs, type_map, range, out),
-        StmtKind::Return(Some(v)) => hints_in_expr(source, v, defs, type_map, range, out),
+        StmtKind::Expression(e) => {
+            hints_in_expr(source, line_starts, e, defs, type_map, range, out)
+        }
+        StmtKind::Return(Some(v)) => {
+            hints_in_expr(source, line_starts, v, defs, type_map, range, out)
+        }
         StmtKind::Echo(exprs) => {
             for expr in exprs.iter() {
-                hints_in_expr(source, expr, defs, type_map, range, out);
+                hints_in_expr(source, line_starts, expr, defs, type_map, range, out);
             }
         }
         StmtKind::Function(f) => {
-            hints_in_stmts(source, &f.body, defs, type_map, range, out);
+            hints_in_stmts(source, line_starts, &f.body, defs, type_map, range, out);
         }
         StmtKind::Class(c) => {
             for member in c.members.iter() {
                 if let ClassMemberKind::Method(m) = &member.kind
                     && let Some(body) = &m.body
                 {
-                    hints_in_stmts(source, body, defs, type_map, range, out);
+                    hints_in_stmts(source, line_starts, body, defs, type_map, range, out);
                 }
             }
         }
@@ -217,7 +225,7 @@ fn hints_in_stmt(
                 if let ClassMemberKind::Method(m) = &member.kind
                     && let Some(body) = &m.body
                 {
-                    hints_in_stmts(source, body, defs, type_map, range, out);
+                    hints_in_stmts(source, line_starts, body, defs, type_map, range, out);
                 }
             }
         }
@@ -226,49 +234,81 @@ fn hints_in_stmt(
                 if let EnumMemberKind::Method(m) = &member.kind
                     && let Some(body) = &m.body
                 {
-                    hints_in_stmts(source, body, defs, type_map, range, out);
+                    hints_in_stmts(source, line_starts, body, defs, type_map, range, out);
                 }
             }
         }
         StmtKind::Namespace(ns) => {
             if let NamespaceBody::Braced(inner) = &ns.body {
-                hints_in_stmts(source, inner, defs, type_map, range, out);
+                hints_in_stmts(source, line_starts, inner, defs, type_map, range, out);
             }
         }
         StmtKind::If(i) => {
-            hints_in_expr(source, &i.condition, defs, type_map, range, out);
-            hints_in_stmt(source, i.then_branch, defs, type_map, range, out);
+            hints_in_expr(
+                source,
+                line_starts,
+                &i.condition,
+                defs,
+                type_map,
+                range,
+                out,
+            );
+            hints_in_stmt(
+                source,
+                line_starts,
+                i.then_branch,
+                defs,
+                type_map,
+                range,
+                out,
+            );
             for ei in i.elseif_branches.iter() {
-                hints_in_expr(source, &ei.condition, defs, type_map, range, out);
-                hints_in_stmt(source, &ei.body, defs, type_map, range, out);
+                hints_in_expr(
+                    source,
+                    line_starts,
+                    &ei.condition,
+                    defs,
+                    type_map,
+                    range,
+                    out,
+                );
+                hints_in_stmt(source, line_starts, &ei.body, defs, type_map, range, out);
             }
             if let Some(e) = &i.else_branch {
-                hints_in_stmt(source, e, defs, type_map, range, out);
+                hints_in_stmt(source, line_starts, e, defs, type_map, range, out);
             }
         }
         StmtKind::While(w) => {
-            hints_in_expr(source, &w.condition, defs, type_map, range, out);
-            hints_in_stmt(source, w.body, defs, type_map, range, out);
+            hints_in_expr(
+                source,
+                line_starts,
+                &w.condition,
+                defs,
+                type_map,
+                range,
+                out,
+            );
+            hints_in_stmt(source, line_starts, w.body, defs, type_map, range, out);
         }
         StmtKind::For(f) => {
             for e in f.init.iter() {
-                hints_in_expr(source, e, defs, type_map, range, out);
+                hints_in_expr(source, line_starts, e, defs, type_map, range, out);
             }
             for cond in f.condition.iter() {
-                hints_in_expr(source, cond, defs, type_map, range, out);
+                hints_in_expr(source, line_starts, cond, defs, type_map, range, out);
             }
             for e in f.update.iter() {
-                hints_in_expr(source, e, defs, type_map, range, out);
+                hints_in_expr(source, line_starts, e, defs, type_map, range, out);
             }
-            hints_in_stmt(source, f.body, defs, type_map, range, out);
+            hints_in_stmt(source, line_starts, f.body, defs, type_map, range, out);
         }
         StmtKind::Foreach(f) => {
-            hints_in_expr(source, &f.expr, defs, type_map, range, out);
+            hints_in_expr(source, line_starts, &f.expr, defs, type_map, range, out);
             // Emit type hint after the value variable, e.g. `foreach ($arr as $item /* : Foo */)`.
             if let ExprKind::Variable(val_name) = &f.value.kind {
                 let key = format!("${}", val_name.as_str());
                 if let Some(ty) = type_map.get(&key) {
-                    let pos = offset_to_position(source, f.value.span.end);
+                    let pos = offset_to_position(source, line_starts, f.value.span.end);
                     if pos_in_range(pos, range) {
                         out.push(make_foreach_type_hint(pos, ty));
                     }
@@ -280,30 +320,33 @@ fn hints_in_stmt(
             {
                 let key = format!("${}", key_name.as_str());
                 if let Some(ty) = type_map.get(&key) {
-                    let pos = offset_to_position(source, key_expr.span.end);
+                    let pos = offset_to_position(source, line_starts, key_expr.span.end);
                     if pos_in_range(pos, range) {
                         out.push(make_foreach_type_hint(pos, ty));
                     }
                 }
             }
-            hints_in_stmt(source, f.body, defs, type_map, range, out);
+            hints_in_stmt(source, line_starts, f.body, defs, type_map, range, out);
         }
         StmtKind::TryCatch(t) => {
-            hints_in_stmts(source, &t.body, defs, type_map, range, out);
+            hints_in_stmts(source, line_starts, &t.body, defs, type_map, range, out);
             for catch in t.catches.iter() {
-                hints_in_stmts(source, &catch.body, defs, type_map, range, out);
+                hints_in_stmts(source, line_starts, &catch.body, defs, type_map, range, out);
             }
             if let Some(finally) = &t.finally {
-                hints_in_stmts(source, finally, defs, type_map, range, out);
+                hints_in_stmts(source, line_starts, finally, defs, type_map, range, out);
             }
         }
-        StmtKind::Block(stmts) => hints_in_stmts(source, stmts, defs, type_map, range, out),
+        StmtKind::Block(stmts) => {
+            hints_in_stmts(source, line_starts, stmts, defs, type_map, range, out)
+        }
         _ => {}
     }
 }
 
 fn hints_in_expr(
     source: &str,
+    line_starts: &[u32],
     expr: &Expr<'_, '_>,
     defs: &HashMap<String, FuncDef>,
     type_map: &TypeMap,
@@ -323,43 +366,43 @@ fn hints_in_expr(
             if let Some(k) = key
                 && let Some(def) = defs.get(&k)
             {
-                emit_param_hints(source, &f.args, def, &k, range, out);
+                emit_param_hints(source, line_starts, &f.args, def, &k, range, out);
             }
-            hints_in_expr(source, f.name, defs, type_map, range, out);
+            hints_in_expr(source, line_starts, f.name, defs, type_map, range, out);
             for arg in f.args.iter() {
-                hints_in_expr(source, &arg.value, defs, type_map, range, out);
+                hints_in_expr(source, line_starts, &arg.value, defs, type_map, range, out);
             }
         }
         ExprKind::MethodCall(m) => {
             if let Some(name) = ident_name(m.method)
                 && let Some(def) = defs.get(name)
             {
-                emit_param_hints(source, &m.args, def, name, range, out);
+                emit_param_hints(source, line_starts, &m.args, def, name, range, out);
             }
-            hints_in_expr(source, m.object, defs, type_map, range, out);
+            hints_in_expr(source, line_starts, m.object, defs, type_map, range, out);
             for arg in m.args.iter() {
-                hints_in_expr(source, &arg.value, defs, type_map, range, out);
+                hints_in_expr(source, line_starts, &arg.value, defs, type_map, range, out);
             }
         }
         ExprKind::New(n) => {
             if let Some(class_name) = ident_name(n.class)
                 && let Some(def) = defs.get(class_name)
             {
-                emit_param_hints(source, &n.args, def, class_name, range, out);
+                emit_param_hints(source, line_starts, &n.args, def, class_name, range, out);
             }
             for arg in n.args.iter() {
-                hints_in_expr(source, &arg.value, defs, type_map, range, out);
+                hints_in_expr(source, line_starts, &arg.value, defs, type_map, range, out);
             }
         }
         ExprKind::Assign(a) => {
             // Emit return-type hint after a function call on the RHS
-            emit_return_type_hint(source, a.value, defs, range, out);
-            hints_in_expr(source, a.target, defs, type_map, range, out);
-            hints_in_expr(source, a.value, defs, type_map, range, out);
+            emit_return_type_hint(source, line_starts, a.value, defs, range, out);
+            hints_in_expr(source, line_starts, a.target, defs, type_map, range, out);
+            hints_in_expr(source, line_starts, a.value, defs, type_map, range, out);
         }
         // Walk into closure bodies so nested function calls get hints.
         ExprKind::Closure(c) => {
-            hints_in_stmts(source, &c.body, defs, type_map, range, out);
+            hints_in_stmts(source, line_starts, &c.body, defs, type_map, range, out);
         }
         // Walk into arrow function bodies and emit an explicit return type hint when
         // the arrow function carries a declared return type (e.g. `fn(int $x): int => …`).
@@ -373,29 +416,31 @@ fn hints_in_expr(
             if let Some(ret) = &a.return_type {
                 let ret_str = format_type_hint(ret);
                 if ret_str != "void" {
-                    let pos = offset_to_position(source, expr.span.end);
+                    let pos = offset_to_position(source, line_starts, expr.span.end);
                     if pos_in_range(pos, range) {
                         out.push(make_return_hint(pos, &ret_str, "arrow_fn"));
                     }
                 }
             }
-            hints_in_expr(source, a.body, defs, type_map, range, out);
+            hints_in_expr(source, line_starts, a.body, defs, type_map, range, out);
         }
-        ExprKind::Parenthesized(e) => hints_in_expr(source, e, defs, type_map, range, out),
+        ExprKind::Parenthesized(e) => {
+            hints_in_expr(source, line_starts, e, defs, type_map, range, out)
+        }
         ExprKind::Ternary(t) => {
-            hints_in_expr(source, t.condition, defs, type_map, range, out);
+            hints_in_expr(source, line_starts, t.condition, defs, type_map, range, out);
             if let Some(then_expr) = t.then_expr {
-                hints_in_expr(source, then_expr, defs, type_map, range, out);
+                hints_in_expr(source, line_starts, then_expr, defs, type_map, range, out);
             }
-            hints_in_expr(source, t.else_expr, defs, type_map, range, out);
+            hints_in_expr(source, line_starts, t.else_expr, defs, type_map, range, out);
         }
         ExprKind::NullCoalesce(n) => {
-            hints_in_expr(source, n.left, defs, type_map, range, out);
-            hints_in_expr(source, n.right, defs, type_map, range, out);
+            hints_in_expr(source, line_starts, n.left, defs, type_map, range, out);
+            hints_in_expr(source, line_starts, n.right, defs, type_map, range, out);
         }
         ExprKind::Binary(b) => {
-            hints_in_expr(source, b.left, defs, type_map, range, out);
-            hints_in_expr(source, b.right, defs, type_map, range, out);
+            hints_in_expr(source, line_starts, b.left, defs, type_map, range, out);
+            hints_in_expr(source, line_starts, b.right, defs, type_map, range, out);
         }
         _ => {}
     }
@@ -403,6 +448,7 @@ fn hints_in_expr(
 
 fn emit_param_hints(
     source: &str,
+    line_starts: &[u32],
     args: &[php_ast::Arg<'_, '_>],
     def: &FuncDef,
     func_name: &str,
@@ -425,7 +471,7 @@ fn emit_param_hints(
         } else {
             continue;
         };
-        let pos = offset_to_position(source, arg.span.start);
+        let pos = offset_to_position(source, line_starts, arg.span.start);
         if pos_in_range(pos, range) {
             out.push(make_param_hint(pos, param, func_name));
         }
@@ -434,6 +480,7 @@ fn emit_param_hints(
 
 fn emit_return_type_hint(
     source: &str,
+    line_starts: &[u32],
     expr: &Expr<'_, '_>,
     defs: &HashMap<String, FuncDef>,
     range: Range,
@@ -451,7 +498,7 @@ fn emit_return_type_hint(
         if ret_type == "void" {
             return;
         }
-        let pos = offset_to_position(source, expr.span.end);
+        let pos = offset_to_position(source, line_starts, expr.span.end);
         if pos_in_range(pos, range) {
             out.push(make_return_hint(pos, ret_type, name));
         }

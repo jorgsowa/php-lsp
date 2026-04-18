@@ -891,29 +891,35 @@ fn mixin_classes_in_stmts(source: &str, stmts: &[Stmt<'_, '_>], class_name: &str
 
 /// Return the name of the class whose body contains `position`, or `None`.
 pub fn enclosing_class_at(source: &str, doc: &ParsedDoc, position: Position) -> Option<String> {
-    enclosing_class_in_stmts(source, &doc.program().stmts, position)
+    let line_starts = doc.line_starts();
+    enclosing_class_in_stmts(source, line_starts, &doc.program().stmts, position)
 }
 
-fn enclosing_class_in_stmts(source: &str, stmts: &[Stmt<'_, '_>], pos: Position) -> Option<String> {
+fn enclosing_class_in_stmts(
+    source: &str,
+    line_starts: &[u32],
+    stmts: &[Stmt<'_, '_>],
+    pos: Position,
+) -> Option<String> {
     for stmt in stmts {
         match &stmt.kind {
             StmtKind::Class(c) => {
-                let start = offset_to_position(source, stmt.span.start).line;
-                let end = offset_to_position(source, stmt.span.end).line;
+                let start = offset_to_position(source, line_starts, stmt.span.start).line;
+                let end = offset_to_position(source, line_starts, stmt.span.end).line;
                 if pos.line >= start && pos.line <= end {
                     return c.name.map(|n| n.to_string());
                 }
             }
             StmtKind::Enum(e) => {
-                let start = offset_to_position(source, stmt.span.start).line;
-                let end = offset_to_position(source, stmt.span.end).line;
+                let start = offset_to_position(source, line_starts, stmt.span.start).line;
+                let end = offset_to_position(source, line_starts, stmt.span.end).line;
                 if pos.line >= start && pos.line <= end {
                     return Some(e.name.to_string());
                 }
             }
             StmtKind::Namespace(ns) => {
                 if let NamespaceBody::Braced(inner) = &ns.body
-                    && let Some(found) = enclosing_class_in_stmts(source, inner, pos)
+                    && let Some(found) = enclosing_class_in_stmts(source, line_starts, inner, pos)
                 {
                     return Some(found);
                 }

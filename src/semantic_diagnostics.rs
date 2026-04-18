@@ -176,16 +176,24 @@ pub fn deprecated_call_diagnostics(
     if !cfg.enabled || !cfg.deprecated_calls {
         return vec![];
     }
+    let line_starts = doc.line_starts();
     let mut diags = Vec::new();
     let all_sources: Vec<(&str, &ParsedDoc)> = std::iter::once((source, doc))
         .chain(other_docs.iter().map(|d| (d.source(), d.as_ref())))
         .collect();
-    collect_deprecated_calls(source, &doc.program().stmts, &all_sources, &mut diags);
+    collect_deprecated_calls(
+        source,
+        line_starts,
+        &doc.program().stmts,
+        &all_sources,
+        &mut diags,
+    );
     diags
 }
 
 fn collect_deprecated_calls(
     source: &str,
+    line_starts: &[u32],
     stmts: &[Stmt<'_, '_>],
     all_sources: &[(&str, &ParsedDoc)],
     diags: &mut Vec<Diagnostic>,
@@ -193,22 +201,22 @@ fn collect_deprecated_calls(
     for stmt in stmts {
         match &stmt.kind {
             StmtKind::Expression(e) => {
-                check_expr_for_deprecated(source, e, all_sources, diags);
+                check_expr_for_deprecated(source, line_starts, e, all_sources, diags);
             }
             StmtKind::Namespace(ns) => {
                 if let NamespaceBody::Braced(inner) = &ns.body {
-                    collect_deprecated_calls(source, inner, all_sources, diags);
+                    collect_deprecated_calls(source, line_starts, inner, all_sources, diags);
                 }
             }
             StmtKind::Function(f) => {
-                collect_deprecated_calls(source, &f.body, all_sources, diags);
+                collect_deprecated_calls(source, line_starts, &f.body, all_sources, diags);
             }
             StmtKind::Class(c) => {
                 for member in c.members.iter() {
                     if let ClassMemberKind::Method(m) = &member.kind
                         && let Some(body) = &m.body
                     {
-                        collect_deprecated_calls(source, body, all_sources, diags);
+                        collect_deprecated_calls(source, line_starts, body, all_sources, diags);
                     }
                 }
             }
@@ -217,7 +225,7 @@ fn collect_deprecated_calls(
                     if let ClassMemberKind::Method(m) = &member.kind
                         && let Some(body) = &m.body
                     {
-                        collect_deprecated_calls(source, body, all_sources, diags);
+                        collect_deprecated_calls(source, line_starts, body, all_sources, diags);
                     }
                 }
             }
@@ -226,7 +234,7 @@ fn collect_deprecated_calls(
                     if let EnumMemberKind::Method(m) = &member.kind
                         && let Some(body) = &m.body
                     {
-                        collect_deprecated_calls(source, body, all_sources, diags);
+                        collect_deprecated_calls(source, line_starts, body, all_sources, diags);
                     }
                 }
             }
@@ -237,12 +245,13 @@ fn collect_deprecated_calls(
 
 fn check_expr_for_deprecated(
     source: &str,
+    line_starts: &[u32],
     expr: &php_ast::Expr<'_, '_>,
     all_sources: &[(&str, &ParsedDoc)],
     diags: &mut Vec<Diagnostic>,
 ) {
     if let ExprKind::Assign(a) = &expr.kind {
-        check_expr_for_deprecated(source, a.value, all_sources, diags);
+        check_expr_for_deprecated(source, line_starts, a.value, all_sources, diags);
         return;
     }
     if let ExprKind::FunctionCall(call) = &expr.kind {
@@ -255,8 +264,9 @@ fn check_expr_for_deprecated(
                 {
                     let db = parse_docblock(&raw);
                     if db.is_deprecated() {
-                        let start_pos = offset_to_position(source, call.name.span.start);
-                        let end_pos = offset_to_position(source, call.name.span.end);
+                        let start_pos =
+                            offset_to_position(source, line_starts, call.name.span.start);
+                        let end_pos = offset_to_position(source, line_starts, call.name.span.end);
                         let msg = match &db.deprecated {
                             Some(m) if !m.is_empty() => {
                                 format!("Deprecated: {} — {}", func_name.as_str(), m)
@@ -286,7 +296,7 @@ fn check_expr_for_deprecated(
         }
         // Recurse into arguments so nested calls are also checked.
         for arg in call.args.iter() {
-            check_expr_for_deprecated(source, &arg.value, all_sources, diags);
+            check_expr_for_deprecated(source, line_starts, &arg.value, all_sources, diags);
         }
     }
     if let ExprKind::MethodCall(call) = &expr.kind {
@@ -298,8 +308,9 @@ fn check_expr_for_deprecated(
                 {
                     let db = parse_docblock(&raw);
                     if db.is_deprecated() {
-                        let start_pos = offset_to_position(source, call.method.span.start);
-                        let end_pos = offset_to_position(source, call.method.span.end);
+                        let start_pos =
+                            offset_to_position(source, line_starts, call.method.span.start);
+                        let end_pos = offset_to_position(source, line_starts, call.method.span.end);
                         let msg = match &db.deprecated {
                             Some(m) if !m.is_empty() => {
                                 format!("Deprecated: {} — {}", method_name.as_str(), m)
@@ -328,9 +339,9 @@ fn check_expr_for_deprecated(
             }
         }
         // Recurse into object and arguments so nested calls are also checked.
-        check_expr_for_deprecated(source, call.object, all_sources, diags);
+        check_expr_for_deprecated(source, line_starts, call.object, all_sources, diags);
         for arg in call.args.iter() {
-            check_expr_for_deprecated(source, &arg.value, all_sources, diags);
+            check_expr_for_deprecated(source, line_starts, &arg.value, all_sources, diags);
         }
     }
 }
@@ -414,14 +425,23 @@ pub fn duplicate_declaration_diagnostics(
     if !cfg.enabled || !cfg.duplicate_declarations {
         return vec![];
     }
+    let line_starts = doc.line_starts();
     let mut seen: std::collections::HashMap<String, ()> = std::collections::HashMap::new();
     let mut diags = Vec::new();
-    collect_duplicate_decls(source, &doc.program().stmts, "", &mut seen, &mut diags);
+    collect_duplicate_decls(
+        source,
+        line_starts,
+        &doc.program().stmts,
+        "",
+        &mut seen,
+        &mut diags,
+    );
     diags
 }
 
 fn collect_duplicate_decls(
     source: &str,
+    line_starts: &[u32],
     stmts: &[php_ast::Stmt<'_, '_>],
     current_ns: &str,
     seen: &mut std::collections::HashMap<String, ()>,
@@ -450,7 +470,7 @@ fn collect_duplicate_decls(
                         } else {
                             format!("{}\\{}", current_ns, ns_name)
                         };
-                        collect_duplicate_decls(source, inner, &child_ns, seen, diags);
+                        collect_duplicate_decls(source, line_starts, inner, &child_ns, seen, diags);
                     }
                     php_ast::NamespaceBody::Simple => {
                         // Unbraced namespace: subsequent siblings belong to this namespace.
@@ -479,7 +499,8 @@ fn collect_duplicate_decls(
                     .map(|off| span_start + off as u32)
                     .unwrap_or(span_start);
 
-                let start_pos = crate::ast::offset_to_position(source, name_byte_offset);
+                let start_pos =
+                    crate::ast::offset_to_position(source, line_starts, name_byte_offset);
                 // Calculate end position by converting UTF-8 character length to UTF-16 code units
                 let name_utf16_len = name.chars().map(|c| c.len_utf16() as u32).sum::<u32>();
                 let end_pos = Position {

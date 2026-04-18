@@ -26,14 +26,23 @@ pub fn code_lenses(
     all_docs: &[(Url, Arc<ParsedDoc>)],
 ) -> Vec<CodeLens> {
     let source = doc.source();
+    let line_starts = doc.line_starts();
     let mut lenses = Vec::new();
-    collect_lenses(&doc.program().stmts, source, uri, all_docs, &mut lenses);
+    collect_lenses(
+        &doc.program().stmts,
+        source,
+        line_starts,
+        uri,
+        all_docs,
+        &mut lenses,
+    );
     lenses
 }
 
 fn collect_lenses(
     stmts: &[Stmt<'_, '_>],
     source: &str,
+    line_starts: &[u32],
     uri: &Url,
     all_docs: &[(Url, Arc<ParsedDoc>)],
     out: &mut Vec<CodeLens>,
@@ -41,12 +50,12 @@ fn collect_lenses(
     for stmt in stmts {
         match &stmt.kind {
             StmtKind::Function(f) => {
-                let range = name_range(source, f.name);
+                let range = name_range(source, line_starts, f.name);
                 out.push(ref_count_lens(range, f.name, all_docs));
             }
             StmtKind::Class(c) => {
                 if let Some(class_name) = c.name {
-                    let class_range = name_range(source, class_name);
+                    let class_range = name_range(source, line_starts, class_name);
                     out.push(ref_count_lens(class_range, class_name, all_docs));
 
                     // Implementations count for abstract classes (classes extending this).
@@ -60,7 +69,7 @@ fn collect_lenses(
 
                     for member in c.members.iter() {
                         if let ClassMemberKind::Method(m) = &member.kind {
-                            let method_range = name_range(source, m.name);
+                            let method_range = name_range(source, line_starts, m.name);
                             out.push(ref_count_lens(method_range, m.name, all_docs));
 
                             if is_test_method(source, m, member.span.start) {
@@ -78,38 +87,38 @@ fn collect_lenses(
                 }
             }
             StmtKind::Interface(i) => {
-                let range = name_range(source, i.name);
+                let range = name_range(source, line_starts, i.name);
                 out.push(ref_count_lens(range, i.name, all_docs));
                 // Implementations count lens.
                 let impl_count = find_implementations(i.name, None, all_docs).len();
                 out.push(impl_count_lens(range, impl_count));
             }
             StmtKind::Trait(t) => {
-                let range = name_range(source, t.name);
+                let range = name_range(source, line_starts, t.name);
                 out.push(ref_count_lens(range, t.name, all_docs));
                 // Usages count: how many classes use this trait.
                 let usage_count = count_trait_usages(t.name, all_docs);
                 out.push(impl_count_lens(range, usage_count));
                 for member in t.members.iter() {
                     if let ClassMemberKind::Method(m) = &member.kind {
-                        let method_range = name_range(source, m.name);
+                        let method_range = name_range(source, line_starts, m.name);
                         out.push(ref_count_lens(method_range, m.name, all_docs));
                     }
                 }
             }
             StmtKind::Enum(e) => {
-                let range = name_range(source, e.name);
+                let range = name_range(source, line_starts, e.name);
                 out.push(ref_count_lens(range, e.name, all_docs));
                 for member in e.members.iter() {
                     if let EnumMemberKind::Method(m) = &member.kind {
-                        let method_range = name_range(source, m.name);
+                        let method_range = name_range(source, line_starts, m.name);
                         out.push(ref_count_lens(method_range, m.name, all_docs));
                     }
                 }
             }
             StmtKind::Namespace(ns) => {
                 if let NamespaceBody::Braced(inner) = &ns.body {
-                    collect_lenses(inner, source, uri, all_docs, out);
+                    collect_lenses(inner, source, line_starts, uri, all_docs, out);
                 }
             }
             _ => {}

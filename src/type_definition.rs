@@ -31,8 +31,13 @@ pub fn goto_type_definition(
 
     for (uri, other_doc) in all_docs {
         let other_source = other_doc.source();
-        if let Some(range) = find_class_range(other_source, &other_doc.program().stmts, &class_name)
-        {
+        let other_line_starts = other_doc.line_starts();
+        if let Some(range) = find_class_range(
+            other_source,
+            other_line_starts,
+            &other_doc.program().stmts,
+            &class_name,
+        ) {
             return Some(Location {
                 uri: uri.clone(),
                 range,
@@ -69,27 +74,33 @@ fn param_type_for(stmts: &[Stmt<'_, '_>], word: &str) -> Option<String> {
 }
 
 /// Find the range of the class or interface declaration named `name`.
-fn find_class_range(source: &str, stmts: &[Stmt<'_, '_>], name: &str) -> Option<Range> {
+fn find_class_range(
+    source: &str,
+    line_starts: &[u32],
+    stmts: &[Stmt<'_, '_>],
+    name: &str,
+) -> Option<Range> {
     for stmt in stmts {
         match &stmt.kind {
             StmtKind::Class(c) if c.name == Some(name) => {
                 return Some(name_range(
                     source,
+                    line_starts,
                     c.name.expect("match guard ensures Some"),
                 ));
             }
             StmtKind::Interface(i) if i.name == name => {
-                return Some(name_range(source, i.name));
+                return Some(name_range(source, line_starts, i.name));
             }
             StmtKind::Trait(t) if t.name == name => {
-                return Some(name_range(source, t.name));
+                return Some(name_range(source, line_starts, t.name));
             }
             StmtKind::Enum(e) if e.name == name => {
-                return Some(name_range(source, e.name));
+                return Some(name_range(source, line_starts, e.name));
             }
             StmtKind::Namespace(ns) => {
                 if let NamespaceBody::Braced(inner) = &ns.body
-                    && let Some(r) = find_class_range(source, inner, name)
+                    && let Some(r) = find_class_range(source, line_starts, inner, name)
                 {
                     return Some(r);
                 }
@@ -100,8 +111,13 @@ fn find_class_range(source: &str, stmts: &[Stmt<'_, '_>], name: &str) -> Option<
     None
 }
 
-fn _offset_to_position_range(source: &str, name_str: &str, _name: &str) -> Range {
-    let start = offset_to_position(source, 0);
+fn _offset_to_position_range(
+    source: &str,
+    line_starts: &[u32],
+    name_str: &str,
+    _name: &str,
+) -> Range {
+    let start = offset_to_position(source, line_starts, 0);
     Range {
         start,
         end: Position {

@@ -14,12 +14,14 @@ pub fn symbol_completions(doc: &ParsedDoc) -> Vec<CompletionItem> {
 /// Like `symbol_completions` but only includes variables declared at or before `line`.
 /// Non-variable items (functions, classes, etc.) are always included.
 pub fn symbol_completions_before(doc: &ParsedDoc, line: u32) -> Vec<CompletionItem> {
+    let line_starts = doc.line_starts();
     let mut items = Vec::new();
     collect_from_statements_before(
         &doc.program().stmts,
         &mut items,
         line,
         doc.source(),
+        line_starts,
         Some(doc),
     );
     items
@@ -30,20 +32,21 @@ fn collect_from_statements_before(
     items: &mut Vec<CompletionItem>,
     line: u32,
     source: &str,
+    line_starts: &[u32],
     doc: Option<&ParsedDoc>,
 ) {
     for stmt in stmts {
         match &stmt.kind {
             StmtKind::Expression(e) => {
                 // Only add variables if they appear at or before the cursor line
-                let stmt_line = offset_to_position(source, stmt.span.start).line;
+                let stmt_line = offset_to_position(source, line_starts, stmt.span.start).line;
                 if stmt_line <= line {
                     collect_from_expression(e, items);
                 }
             }
             StmtKind::Namespace(ns) => {
                 if let NamespaceBody::Braced(inner) = &ns.body {
-                    collect_from_statements_before(inner, items, line, source, doc);
+                    collect_from_statements_before(inner, items, line, source, line_starts, doc);
                 }
             }
             // Non-variable items: always include

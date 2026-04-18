@@ -6,41 +6,54 @@ use crate::ast::{ParsedDoc, offset_to_position};
 use crate::util::byte_to_utf16;
 
 pub fn document_links(uri: &Url, doc: &ParsedDoc, source: &str) -> Vec<DocumentLink> {
+    let line_starts = doc.line_starts();
     let mut links = Vec::new();
-    collect_in_stmts(&doc.program().stmts, source, uri, &mut links);
+    collect_in_stmts(&doc.program().stmts, source, line_starts, uri, &mut links);
     collect_docblock_links(source, &mut links);
     links
 }
 
-fn collect_in_stmts(stmts: &[Stmt<'_, '_>], source: &str, uri: &Url, out: &mut Vec<DocumentLink>) {
+fn collect_in_stmts(
+    stmts: &[Stmt<'_, '_>],
+    source: &str,
+    line_starts: &[u32],
+    uri: &Url,
+    out: &mut Vec<DocumentLink>,
+) {
     for stmt in stmts {
-        collect_in_stmt(stmt, source, uri, out);
+        collect_in_stmt(stmt, source, line_starts, uri, out);
     }
 }
 
-fn collect_in_stmt(stmt: &Stmt<'_, '_>, source: &str, uri: &Url, out: &mut Vec<DocumentLink>) {
+fn collect_in_stmt(
+    stmt: &Stmt<'_, '_>,
+    source: &str,
+    line_starts: &[u32],
+    uri: &Url,
+    out: &mut Vec<DocumentLink>,
+) {
     match &stmt.kind {
-        StmtKind::Expression(e) => collect_in_expr(e, source, uri, out),
-        StmtKind::Return(Some(v)) => collect_in_expr(v, source, uri, out),
+        StmtKind::Expression(e) => collect_in_expr(e, source, line_starts, uri, out),
+        StmtKind::Return(Some(v)) => collect_in_expr(v, source, line_starts, uri, out),
         StmtKind::Echo(exprs) => {
             for expr in exprs.iter() {
-                collect_in_expr(expr, source, uri, out);
+                collect_in_expr(expr, source, line_starts, uri, out);
             }
         }
-        StmtKind::Function(f) => collect_in_stmts(&f.body, source, uri, out),
+        StmtKind::Function(f) => collect_in_stmts(&f.body, source, line_starts, uri, out),
         StmtKind::Class(c) => {
             use php_ast::ClassMemberKind;
             for member in c.members.iter() {
                 if let ClassMemberKind::Method(m) = &member.kind
                     && let Some(body) = &m.body
                 {
-                    collect_in_stmts(body, source, uri, out);
+                    collect_in_stmts(body, source, line_starts, uri, out);
                 }
             }
         }
         StmtKind::Namespace(ns) => {
             if let NamespaceBody::Braced(inner) = &ns.body {
-                collect_in_stmts(inner, source, uri, out);
+                collect_in_stmts(inner, source, line_starts, uri, out);
             }
         }
         _ => {}
@@ -50,11 +63,12 @@ fn collect_in_stmt(stmt: &Stmt<'_, '_>, source: &str, uri: &Url, out: &mut Vec<D
 fn collect_in_expr(
     expr: &php_ast::Expr<'_, '_>,
     source: &str,
+    line_starts: &[u32],
     uri: &Url,
     out: &mut Vec<DocumentLink>,
 ) {
     if let ExprKind::Include(_, path_expr) = &expr.kind
-        && let Some(link) = link_from_path_expr(path_expr, source, uri)
+        && let Some(link) = link_from_path_expr(path_expr, source, line_starts, uri)
     {
         out.push(link);
     }
@@ -63,6 +77,7 @@ fn collect_in_expr(
 fn link_from_path_expr(
     path_expr: &php_ast::Expr<'_, '_>,
     source: &str,
+    line_starts: &[u32],
     uri: &Url,
 ) -> Option<DocumentLink> {
     let ExprKind::String(s) = &path_expr.kind else {
@@ -75,7 +90,7 @@ fn link_from_path_expr(
     // span.start points to the opening quote; content starts one byte after
     let quote_offset = path_expr.span.start;
     let content_offset = quote_offset + 1;
-    let start = offset_to_position(source, content_offset);
+    let start = offset_to_position(source, line_starts, content_offset);
     let end = Position {
         line: start.line,
         character: start.character + raw.chars().map(|c| c.len_utf16() as u32).sum::<u32>(),

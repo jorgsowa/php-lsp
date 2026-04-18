@@ -15,8 +15,16 @@ pub fn phpdoc_actions(
     source: &str,
     range: Range,
 ) -> Vec<CodeActionOrCommand> {
+    let line_starts = doc.line_starts();
     let mut actions = Vec::new();
-    collect(&doc.program().stmts, uri, source, range, &mut actions);
+    collect(
+        &doc.program().stmts,
+        uri,
+        source,
+        line_starts,
+        range,
+        &mut actions,
+    );
     actions
 }
 
@@ -24,13 +32,14 @@ fn collect(
     stmts: &[Stmt<'_, '_>],
     uri: &Url,
     source: &str,
+    line_starts: &[u32],
     range: Range,
     out: &mut Vec<CodeActionOrCommand>,
 ) {
     for stmt in stmts {
         match &stmt.kind {
             StmtKind::Function(f) => {
-                let fn_line = offset_to_position(source, stmt.span.start).line;
+                let fn_line = offset_to_position(source, line_starts, stmt.span.start).line;
                 if line_in_range(fn_line, range)
                     && docblock_before(source, stmt.span.start).is_none()
                 {
@@ -43,7 +52,8 @@ fn collect(
             StmtKind::Class(c) => {
                 for member in c.members.iter() {
                     if let ClassMemberKind::Method(m) = &member.kind {
-                        let fn_line = offset_to_position(source, member.span.start).line;
+                        let fn_line =
+                            offset_to_position(source, line_starts, member.span.start).line;
                         if line_in_range(fn_line, range)
                             && docblock_before(source, member.span.start).is_none()
                         {
@@ -59,7 +69,8 @@ fn collect(
             StmtKind::Trait(t) => {
                 for member in t.members.iter() {
                     if let ClassMemberKind::Method(m) = &member.kind {
-                        let fn_line = offset_to_position(source, member.span.start).line;
+                        let fn_line =
+                            offset_to_position(source, line_starts, member.span.start).line;
                         if line_in_range(fn_line, range)
                             && docblock_before(source, member.span.start).is_none()
                         {
@@ -75,7 +86,8 @@ fn collect(
             StmtKind::Enum(e) => {
                 for member in e.members.iter() {
                     if let EnumMemberKind::Method(m) = &member.kind {
-                        let fn_line = offset_to_position(source, member.span.start).line;
+                        let fn_line =
+                            offset_to_position(source, line_starts, member.span.start).line;
                         if line_in_range(fn_line, range)
                             && docblock_before(source, member.span.start).is_none()
                         {
@@ -90,7 +102,7 @@ fn collect(
             }
             StmtKind::Namespace(ns) => {
                 if let NamespaceBody::Braced(inner) = &ns.body {
-                    collect(inner, uri, source, range, out);
+                    collect(inner, uri, source, line_starts, range, out);
                 }
             }
             _ => {}

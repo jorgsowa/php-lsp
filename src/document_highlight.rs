@@ -29,10 +29,11 @@ pub fn document_highlights(
         refs_in_stmts(source, &doc.program().stmts, &word, &mut spans);
     }
 
+    let line_starts = doc.line_starts();
     spans
         .into_iter()
         .map(|span| {
-            let start = offset_to_position(source, span.start);
+            let start = offset_to_position(source, line_starts, span.start);
             let end = Position {
                 line: start.line,
                 character: start.character + word_utf16_len,

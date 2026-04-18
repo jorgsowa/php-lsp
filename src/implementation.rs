@@ -40,7 +40,16 @@ pub fn find_implementations(
     let mut locations = Vec::new();
     for (uri, doc) in all_docs {
         let source = doc.source();
-        collect_implementations(&doc.program().stmts, word, fqn, source, uri, &mut locations);
+        let line_starts = doc.line_starts();
+        collect_implementations(
+            &doc.program().stmts,
+            word,
+            fqn,
+            source,
+            line_starts,
+            uri,
+            &mut locations,
+        );
     }
     locations
 }
@@ -71,6 +80,7 @@ fn collect_implementations(
     word: &str,
     fqn: Option<&str>,
     source: &str,
+    line_starts: &[u32],
     uri: &Url,
     out: &mut Vec<Location>,
 ) {
@@ -93,7 +103,7 @@ fn collect_implementations(
                 {
                     out.push(Location {
                         uri: uri.clone(),
-                        range: name_range(source, class_name),
+                        range: name_range(source, line_starts, class_name),
                     });
                 }
             }
@@ -105,13 +115,13 @@ fn collect_implementations(
                 if implements_match {
                     out.push(Location {
                         uri: uri.clone(),
-                        range: name_range(source, e.name),
+                        range: name_range(source, line_starts, e.name),
                     });
                 }
             }
             StmtKind::Namespace(ns) => {
                 if let NamespaceBody::Braced(inner) = &ns.body {
-                    collect_implementations(inner, word, fqn, source, uri, out);
+                    collect_implementations(inner, word, fqn, source, line_starts, uri, out);
                 }
             }
             _ => {}

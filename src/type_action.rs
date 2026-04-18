@@ -16,14 +16,23 @@ pub fn add_return_type_actions(
     range: Range,
     uri: &Url,
 ) -> Vec<CodeActionOrCommand> {
+    let line_starts = doc.line_starts();
     let mut out = Vec::new();
-    collect(&doc.program().stmts, source, range, uri, &mut out);
+    collect(
+        &doc.program().stmts,
+        source,
+        line_starts,
+        range,
+        uri,
+        &mut out,
+    );
     out
 }
 
 fn collect(
     stmts: &[Stmt<'_, '_>],
     source: &str,
+    line_starts: &[u32],
     range: Range,
     uri: &Url,
     out: &mut Vec<CodeActionOrCommand>,
@@ -31,17 +40,17 @@ fn collect(
     for stmt in stmts {
         match &stmt.kind {
             StmtKind::Function(f) => {
-                let fn_line = offset_to_position(source, stmt.span.start).line;
+                let fn_line = offset_to_position(source, line_starts, stmt.span.start).line;
                 if line_in_range(fn_line, range) && f.return_type.is_none() {
                     let returns_value = body_has_value_return(&f.body);
                     let type_str = if returns_value { "mixed" } else { "void" };
                     if let Some(insert) = find_close_paren_offset(source, stmt.span.start as usize)
                     {
-                        push_action(source, insert, type_str, uri, out);
+                        push_action(source, line_starts, insert, type_str, uri, out);
                     }
                 }
                 // Recurse into nested functions
-                collect_in_stmts(&f.body, source, range, uri, out);
+                collect_in_stmts(&f.body, source, line_starts, range, uri, out);
             }
             StmtKind::Class(c) => {
                 for member in c.members.iter() {
@@ -49,7 +58,8 @@ fn collect(
                         if m.name == "__construct" {
                             continue;
                         }
-                        let fn_line = offset_to_position(source, member.span.start).line;
+                        let fn_line =
+                            offset_to_position(source, line_starts, member.span.start).line;
                         if line_in_range(fn_line, range)
                             && m.return_type.is_none()
                             && let Some(body) = &m.body
@@ -61,7 +71,7 @@ fn collect(
                             } else {
                                 "void"
                             };
-                            push_action(source, insert, type_str, uri, out);
+                            push_action(source, line_starts, insert, type_str, uri, out);
                         }
                     }
                 }
@@ -69,7 +79,8 @@ fn collect(
             StmtKind::Trait(t) => {
                 for member in t.members.iter() {
                     if let ClassMemberKind::Method(m) = &member.kind
-                        && let fn_line = offset_to_position(source, member.span.start).line
+                        && let fn_line =
+                            offset_to_position(source, line_starts, member.span.start).line
                         && line_in_range(fn_line, range)
                         && m.return_type.is_none()
                         && let Some(body) = &m.body
@@ -81,14 +92,15 @@ fn collect(
                         } else {
                             "void"
                         };
-                        push_action(source, insert, type_str, uri, out);
+                        push_action(source, line_starts, insert, type_str, uri, out);
                     }
                 }
             }
             StmtKind::Enum(e) => {
                 for member in e.members.iter() {
                     if let EnumMemberKind::Method(m) = &member.kind
-                        && let fn_line = offset_to_position(source, member.span.start).line
+                        && let fn_line =
+                            offset_to_position(source, line_starts, member.span.start).line
                         && line_in_range(fn_line, range)
                         && m.return_type.is_none()
                         && let Some(body) = &m.body
@@ -100,13 +112,13 @@ fn collect(
                         } else {
                             "void"
                         };
-                        push_action(source, insert, type_str, uri, out);
+                        push_action(source, line_starts, insert, type_str, uri, out);
                     }
                 }
             }
             StmtKind::Namespace(ns) => {
                 if let NamespaceBody::Braced(inner) = &ns.body {
-                    collect(inner, source, range, uri, out);
+                    collect(inner, source, line_starts, range, uri, out);
                 }
             }
             _ => {}
@@ -117,11 +129,12 @@ fn collect(
 fn collect_in_stmts(
     stmts: &[Stmt<'_, '_>],
     source: &str,
+    line_starts: &[u32],
     range: Range,
     uri: &Url,
     out: &mut Vec<CodeActionOrCommand>,
 ) {
-    collect(stmts, source, range, uri, out);
+    collect(stmts, source, line_starts, range, uri, out);
 }
 
 fn line_in_range(line: u32, range: Range) -> bool {
@@ -224,12 +237,13 @@ fn find_close_paren_offset(source: &str, from: usize) -> Option<usize> {
 
 fn push_action(
     source: &str,
+    line_starts: &[u32],
     after_close_paren: usize,
     type_str: &str,
     uri: &Url,
     out: &mut Vec<CodeActionOrCommand>,
 ) {
-    let pos = offset_to_position(source, after_close_paren as u32);
+    let pos = offset_to_position(source, line_starts, after_close_paren as u32);
     let insert_pos = Position {
         line: pos.line,
         character: pos.character,
