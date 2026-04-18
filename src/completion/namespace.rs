@@ -122,7 +122,7 @@ pub(super) fn collect_fqns_with_prefix(
                     } else {
                         format!("{ns}\\{name}")
                     };
-                    if fqn.to_lowercase().contains(&prefix_lc) || prefix.is_empty() {
+                    if prefix.is_empty() || fqn.to_lowercase().contains(&prefix_lc) {
                         out.push(CompletionItem {
                             label: fqn.clone(),
                             kind: Some(CompletionItemKind::CLASS),
@@ -138,7 +138,7 @@ pub(super) fn collect_fqns_with_prefix(
                 } else {
                     format!("{ns}\\{}", i.name)
                 };
-                if fqn.to_lowercase().contains(&prefix_lc) || prefix.is_empty() {
+                if prefix.is_empty() || fqn.to_lowercase().contains(&prefix_lc) {
                     out.push(CompletionItem {
                         label: fqn.clone(),
                         kind: Some(CompletionItemKind::INTERFACE),
