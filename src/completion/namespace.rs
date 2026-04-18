@@ -112,6 +112,7 @@ pub(super) fn collect_fqns_with_prefix(
     prefix: &str,
     out: &mut Vec<CompletionItem>,
 ) {
+    let prefix_lc = prefix.to_lowercase();
     for stmt in stmts {
         match &stmt.kind {
             StmtKind::Class(c) => {
@@ -121,7 +122,7 @@ pub(super) fn collect_fqns_with_prefix(
                     } else {
                         format!("{ns}\\{name}")
                     };
-                    if fqn.to_lowercase().contains(&prefix.to_lowercase()) || prefix.is_empty() {
+                    if fqn.to_lowercase().contains(&prefix_lc) || prefix.is_empty() {
                         out.push(CompletionItem {
                             label: fqn.clone(),
                             kind: Some(CompletionItemKind::CLASS),
@@ -137,7 +138,7 @@ pub(super) fn collect_fqns_with_prefix(
                 } else {
                     format!("{ns}\\{}", i.name)
                 };
-                if fqn.to_lowercase().contains(&prefix.to_lowercase()) || prefix.is_empty() {
+                if fqn.to_lowercase().contains(&prefix_lc) || prefix.is_empty() {
                     out.push(CompletionItem {
                         label: fqn.clone(),
                         kind: Some(CompletionItemKind::INTERFACE),
