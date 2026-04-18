@@ -3,7 +3,7 @@ use std::sync::Arc;
 use php_ast::{ClassMemberKind, EnumMemberKind, NamespaceBody, Stmt, StmtKind};
 use tower_lsp::lsp_types::{Location, Position, Range, Url};
 
-use crate::ast::{ParsedDoc, name_range, offset_to_position, str_offset};
+use crate::ast::{ParsedDoc, SourceView, str_offset};
 use crate::util::{utf16_pos_to_byte, word_at};
 use crate::walk::collect_var_refs_in_scope;
 
@@ -19,23 +19,24 @@ pub fn goto_definition(
     let word = word_at(source, position)?;
 
     // For $variable, find the first occurrence in scope (= the definition/assignment).
+    let sv = doc.view();
     if word.starts_with('$') {
         let bare = word.trim_start_matches('$');
-        let byte_off = utf16_pos_to_byte(source, position);
+        let byte_off = utf16_pos_to_byte(sv.source(), position);
         let mut spans = Vec::new();
         collect_var_refs_in_scope(&doc.program().stmts, bare, byte_off, &mut spans);
         if let Some(span) = spans.into_iter().min_by_key(|s| s.start) {
             return Some(Location {
                 uri: uri.clone(),
                 range: Range {
-                    start: offset_to_position(source, span.start),
-                    end: offset_to_position(source, span.end),
+                    start: sv.position_of(span.start),
+                    end: sv.position_of(span.end),
                 },
             });
         }
     }
 
-    if let Some(range) = scan_statements(source, &doc.program().stmts, &word) {
+    if let Some(range) = scan_statements(sv, &doc.program().stmts, &word) {
         return Some(Location {
             uri: uri.clone(),
             range,
@@ -43,8 +44,8 @@ pub fn goto_definition(
     }
 
     for (other_uri, other_doc) in other_docs {
-        let other_source = other_doc.source();
-        if let Some(range) = scan_statements(other_source, &other_doc.program().stmts, &word) {
+        let other_sv = other_doc.view();
+        if let Some(range) = scan_statements(other_sv, &other_doc.program().stmts, &word) {
             return Some(Location {
                 uri: other_uri.clone(),
                 range,
@@ -57,55 +58,56 @@ pub fn goto_definition(
 
 /// Search an AST for a declaration named `name`, returning its selection range.
 /// Used by the PSR-4 fallback in the backend after resolving a class to a file.
-pub fn find_declaration_range(source: &str, doc: &ParsedDoc, name: &str) -> Option<Range> {
-    scan_statements(source, &doc.program().stmts, name)
+pub fn find_declaration_range(_source: &str, doc: &ParsedDoc, name: &str) -> Option<Range> {
+    let sv = doc.view();
+    scan_statements(sv, &doc.program().stmts, name)
 }
 
-fn scan_statements(source: &str, stmts: &[Stmt<'_, '_>], word: &str) -> Option<Range> {
+fn scan_statements(sv: SourceView<'_>, stmts: &[Stmt<'_, '_>], word: &str) -> Option<Range> {
     // Strip a leading `$` so that `$name` matches property names stored without `$`.
     let bare = word.strip_prefix('$').unwrap_or(word);
     for stmt in stmts {
         match &stmt.kind {
             StmtKind::Function(f) if f.name == word => {
-                return Some(name_range(source, f.name));
+                return Some(sv.name_range(f.name));
             }
             StmtKind::Class(c) if c.name == Some(word) => {
                 let name = c.name.expect("match guard ensures Some");
-                return Some(name_range(source, name));
+                return Some(sv.name_range(name));
             }
             StmtKind::Class(c) => {
                 for member in c.members.iter() {
                     match &member.kind {
                         ClassMemberKind::Method(m) if m.name == word => {
-                            return Some(name_range(source, m.name));
+                            return Some(sv.name_range(m.name));
                         }
                         ClassMemberKind::ClassConst(cc) if cc.name == word => {
-                            return Some(name_range(source, cc.name));
+                            return Some(sv.name_range(cc.name));
                         }
                         ClassMemberKind::Property(p) if p.name == bare => {
-                            return Some(name_range(source, p.name));
+                            return Some(sv.name_range(p.name));
                         }
                         _ => {}
                     }
                 }
             }
             StmtKind::Interface(i) if i.name == word => {
-                return Some(name_range(source, i.name));
+                return Some(sv.name_range(i.name));
             }
             StmtKind::Trait(t) if t.name == word => {
-                return Some(name_range(source, t.name));
+                return Some(sv.name_range(t.name));
             }
             StmtKind::Enum(e) if e.name == word => {
-                return Some(name_range(source, e.name));
+                return Some(sv.name_range(e.name));
             }
             StmtKind::Enum(e) => {
                 for member in e.members.iter() {
                     match &member.kind {
                         EnumMemberKind::Method(m) if m.name == word => {
-                            return Some(name_range(source, m.name));
+                            return Some(sv.name_range(m.name));
                         }
                         EnumMemberKind::Case(c) if c.name == word => {
-                            return Some(name_range(source, c.name));
+                            return Some(sv.name_range(c.name));
                         }
                         _ => {}
                     }
@@ -113,7 +115,7 @@ fn scan_statements(source: &str, stmts: &[Stmt<'_, '_>], word: &str) -> Option<R
             }
             StmtKind::Namespace(ns) => {
                 if let NamespaceBody::Braced(inner) = &ns.body
-                    && let Some(range) = scan_statements(source, inner, word)
+                    && let Some(range) = scan_statements(sv, inner, word)
                 {
                     return Some(range);
                 }
@@ -124,9 +126,9 @@ fn scan_statements(source: &str, stmts: &[Stmt<'_, '_>], word: &str) -> Option<R
     None
 }
 
-fn _name_range_from_offset(source: &str, name: &str) -> Range {
-    let start_offset = str_offset(source, name);
-    let start = offset_to_position(source, start_offset);
+fn _name_range_from_offset(sv: SourceView<'_>, name: &str) -> Range {
+    let start_offset = str_offset(sv.source(), name);
+    let start = sv.position_of(start_offset);
     Range {
         start,
         end: Position {

@@ -8,7 +8,7 @@ use std::sync::Arc;
 use php_ast::{NamespaceBody, Stmt, StmtKind};
 use tower_lsp::lsp_types::{Location, Position, Range, Url};
 
-use crate::ast::{ParsedDoc, format_type_hint, name_range, offset_to_position};
+use crate::ast::{ParsedDoc, SourceView, format_type_hint};
 use crate::type_map::TypeMap;
 use crate::util::word_at;
 
@@ -30,9 +30,8 @@ pub fn goto_type_definition(
     };
 
     for (uri, other_doc) in all_docs {
-        let other_source = other_doc.source();
-        if let Some(range) = find_class_range(other_source, &other_doc.program().stmts, &class_name)
-        {
+        let other_sv = other_doc.view();
+        if let Some(range) = find_class_range(other_sv, &other_doc.program().stmts, &class_name) {
             return Some(Location {
                 uri: uri.clone(),
                 range,
@@ -69,27 +68,24 @@ fn param_type_for(stmts: &[Stmt<'_, '_>], word: &str) -> Option<String> {
 }
 
 /// Find the range of the class or interface declaration named `name`.
-fn find_class_range(source: &str, stmts: &[Stmt<'_, '_>], name: &str) -> Option<Range> {
+fn find_class_range(sv: SourceView<'_>, stmts: &[Stmt<'_, '_>], name: &str) -> Option<Range> {
     for stmt in stmts {
         match &stmt.kind {
             StmtKind::Class(c) if c.name == Some(name) => {
-                return Some(name_range(
-                    source,
-                    c.name.expect("match guard ensures Some"),
-                ));
+                return Some(sv.name_range(c.name.expect("match guard ensures Some")));
             }
             StmtKind::Interface(i) if i.name == name => {
-                return Some(name_range(source, i.name));
+                return Some(sv.name_range(i.name));
             }
             StmtKind::Trait(t) if t.name == name => {
-                return Some(name_range(source, t.name));
+                return Some(sv.name_range(t.name));
             }
             StmtKind::Enum(e) if e.name == name => {
-                return Some(name_range(source, e.name));
+                return Some(sv.name_range(e.name));
             }
             StmtKind::Namespace(ns) => {
                 if let NamespaceBody::Braced(inner) = &ns.body
-                    && let Some(r) = find_class_range(source, inner, name)
+                    && let Some(r) = find_class_range(sv, inner, name)
                 {
                     return Some(r);
                 }
@@ -100,8 +96,8 @@ fn find_class_range(source: &str, stmts: &[Stmt<'_, '_>], name: &str) -> Option<
     None
 }
 
-fn _offset_to_position_range(source: &str, name_str: &str, _name: &str) -> Range {
-    let start = offset_to_position(source, 0);
+fn _offset_to_position_range(sv: SourceView<'_>, name_str: &str, _name: &str) -> Range {
+    let start = sv.position_of(0);
     Range {
         start,
         end: Position {

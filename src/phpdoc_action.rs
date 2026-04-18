@@ -4,7 +4,7 @@ use tower_lsp::lsp_types::{
     CodeAction, CodeActionKind, CodeActionOrCommand, Position, Range, TextEdit, Url, WorkspaceEdit,
 };
 
-use crate::ast::{ParsedDoc, format_type_hint, offset_to_position};
+use crate::ast::{ParsedDoc, SourceView, format_type_hint};
 use crate::docblock::docblock_before;
 
 /// Return "Generate PHPDoc" code actions for any function/method whose declaration line
@@ -12,30 +12,31 @@ use crate::docblock::docblock_before;
 pub fn phpdoc_actions(
     uri: &Url,
     doc: &ParsedDoc,
-    source: &str,
+    _source: &str,
     range: Range,
 ) -> Vec<CodeActionOrCommand> {
+    let sv = doc.view();
     let mut actions = Vec::new();
-    collect(&doc.program().stmts, uri, source, range, &mut actions);
+    collect(&doc.program().stmts, uri, sv, range, &mut actions);
     actions
 }
 
 fn collect(
     stmts: &[Stmt<'_, '_>],
     uri: &Url,
-    source: &str,
+    sv: SourceView<'_>,
     range: Range,
     out: &mut Vec<CodeActionOrCommand>,
 ) {
     for stmt in stmts {
         match &stmt.kind {
             StmtKind::Function(f) => {
-                let fn_line = offset_to_position(source, stmt.span.start).line;
+                let fn_line = sv.position_of(stmt.span.start).line;
                 if line_in_range(fn_line, range)
-                    && docblock_before(source, stmt.span.start).is_none()
+                    && docblock_before(sv.source(), stmt.span.start).is_none()
                 {
                     let ret = f.return_type.as_ref().map(|t| format_type_hint(t));
-                    if let Some(action) = make_action(uri, source, fn_line, &f.params, ret) {
+                    if let Some(action) = make_action(uri, sv.source(), fn_line, &f.params, ret) {
                         out.push(action);
                     }
                 }
@@ -43,12 +44,13 @@ fn collect(
             StmtKind::Class(c) => {
                 for member in c.members.iter() {
                     if let ClassMemberKind::Method(m) = &member.kind {
-                        let fn_line = offset_to_position(source, member.span.start).line;
+                        let fn_line = sv.position_of(member.span.start).line;
                         if line_in_range(fn_line, range)
-                            && docblock_before(source, member.span.start).is_none()
+                            && docblock_before(sv.source(), member.span.start).is_none()
                         {
                             let ret = m.return_type.as_ref().map(|t| format_type_hint(t));
-                            if let Some(action) = make_action(uri, source, fn_line, &m.params, ret)
+                            if let Some(action) =
+                                make_action(uri, sv.source(), fn_line, &m.params, ret)
                             {
                                 out.push(action);
                             }
@@ -59,12 +61,13 @@ fn collect(
             StmtKind::Trait(t) => {
                 for member in t.members.iter() {
                     if let ClassMemberKind::Method(m) = &member.kind {
-                        let fn_line = offset_to_position(source, member.span.start).line;
+                        let fn_line = sv.position_of(member.span.start).line;
                         if line_in_range(fn_line, range)
-                            && docblock_before(source, member.span.start).is_none()
+                            && docblock_before(sv.source(), member.span.start).is_none()
                         {
                             let ret = m.return_type.as_ref().map(|t| format_type_hint(t));
-                            if let Some(action) = make_action(uri, source, fn_line, &m.params, ret)
+                            if let Some(action) =
+                                make_action(uri, sv.source(), fn_line, &m.params, ret)
                             {
                                 out.push(action);
                             }
@@ -75,12 +78,13 @@ fn collect(
             StmtKind::Enum(e) => {
                 for member in e.members.iter() {
                     if let EnumMemberKind::Method(m) = &member.kind {
-                        let fn_line = offset_to_position(source, member.span.start).line;
+                        let fn_line = sv.position_of(member.span.start).line;
                         if line_in_range(fn_line, range)
-                            && docblock_before(source, member.span.start).is_none()
+                            && docblock_before(sv.source(), member.span.start).is_none()
                         {
                             let ret = m.return_type.as_ref().map(|t| format_type_hint(t));
-                            if let Some(action) = make_action(uri, source, fn_line, &m.params, ret)
+                            if let Some(action) =
+                                make_action(uri, sv.source(), fn_line, &m.params, ret)
                             {
                                 out.push(action);
                             }
@@ -90,7 +94,7 @@ fn collect(
             }
             StmtKind::Namespace(ns) => {
                 if let NamespaceBody::Braced(inner) = &ns.body {
-                    collect(inner, uri, source, range, out);
+                    collect(inner, uri, sv, range, out);
                 }
             }
             _ => {}

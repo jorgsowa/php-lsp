@@ -7,7 +7,7 @@ use std::sync::Arc;
 use php_ast::{ClassMemberKind, EnumMemberKind, ExprKind, NamespaceBody, Stmt, StmtKind};
 use tower_lsp::lsp_types::{Diagnostic, DiagnosticSeverity, NumberOrString, Position, Range, Url};
 
-use crate::ast::{ParsedDoc, offset_to_position};
+use crate::ast::{ParsedDoc, SourceView};
 use crate::backend::DiagnosticsConfig;
 use crate::docblock::{docblock_before, parse_docblock};
 
@@ -168,7 +168,7 @@ pub fn index_file_references(uri: &Url, doc: &ParsedDoc, codebase: &mir_codebase
 
 /// Check for deprecated function/method calls and emit Warning diagnostics.
 pub fn deprecated_call_diagnostics(
-    source: &str,
+    _source: &str,
     doc: &ParsedDoc,
     other_docs: &[Arc<ParsedDoc>],
     cfg: &DiagnosticsConfig,
@@ -176,16 +176,17 @@ pub fn deprecated_call_diagnostics(
     if !cfg.enabled || !cfg.deprecated_calls {
         return vec![];
     }
+    let sv = doc.view();
     let mut diags = Vec::new();
-    let all_sources: Vec<(&str, &ParsedDoc)> = std::iter::once((source, doc))
+    let all_sources: Vec<(&str, &ParsedDoc)> = std::iter::once((sv.source(), doc))
         .chain(other_docs.iter().map(|d| (d.source(), d.as_ref())))
         .collect();
-    collect_deprecated_calls(source, &doc.program().stmts, &all_sources, &mut diags);
+    collect_deprecated_calls(sv, &doc.program().stmts, &all_sources, &mut diags);
     diags
 }
 
 fn collect_deprecated_calls(
-    source: &str,
+    sv: SourceView<'_>,
     stmts: &[Stmt<'_, '_>],
     all_sources: &[(&str, &ParsedDoc)],
     diags: &mut Vec<Diagnostic>,
@@ -193,22 +194,22 @@ fn collect_deprecated_calls(
     for stmt in stmts {
         match &stmt.kind {
             StmtKind::Expression(e) => {
-                check_expr_for_deprecated(source, e, all_sources, diags);
+                check_expr_for_deprecated(sv, e, all_sources, diags);
             }
             StmtKind::Namespace(ns) => {
                 if let NamespaceBody::Braced(inner) = &ns.body {
-                    collect_deprecated_calls(source, inner, all_sources, diags);
+                    collect_deprecated_calls(sv, inner, all_sources, diags);
                 }
             }
             StmtKind::Function(f) => {
-                collect_deprecated_calls(source, &f.body, all_sources, diags);
+                collect_deprecated_calls(sv, &f.body, all_sources, diags);
             }
             StmtKind::Class(c) => {
                 for member in c.members.iter() {
                     if let ClassMemberKind::Method(m) = &member.kind
                         && let Some(body) = &m.body
                     {
-                        collect_deprecated_calls(source, body, all_sources, diags);
+                        collect_deprecated_calls(sv, body, all_sources, diags);
                     }
                 }
             }
@@ -217,7 +218,7 @@ fn collect_deprecated_calls(
                     if let ClassMemberKind::Method(m) = &member.kind
                         && let Some(body) = &m.body
                     {
-                        collect_deprecated_calls(source, body, all_sources, diags);
+                        collect_deprecated_calls(sv, body, all_sources, diags);
                     }
                 }
             }
@@ -226,7 +227,7 @@ fn collect_deprecated_calls(
                     if let EnumMemberKind::Method(m) = &member.kind
                         && let Some(body) = &m.body
                     {
-                        collect_deprecated_calls(source, body, all_sources, diags);
+                        collect_deprecated_calls(sv, body, all_sources, diags);
                     }
                 }
             }
@@ -236,13 +237,13 @@ fn collect_deprecated_calls(
 }
 
 fn check_expr_for_deprecated(
-    source: &str,
+    sv: SourceView<'_>,
     expr: &php_ast::Expr<'_, '_>,
     all_sources: &[(&str, &ParsedDoc)],
     diags: &mut Vec<Diagnostic>,
 ) {
     if let ExprKind::Assign(a) = &expr.kind {
-        check_expr_for_deprecated(source, a.value, all_sources, diags);
+        check_expr_for_deprecated(sv, a.value, all_sources, diags);
         return;
     }
     if let ExprKind::FunctionCall(call) = &expr.kind {
@@ -255,8 +256,8 @@ fn check_expr_for_deprecated(
                 {
                     let db = parse_docblock(&raw);
                     if db.is_deprecated() {
-                        let start_pos = offset_to_position(source, call.name.span.start);
-                        let end_pos = offset_to_position(source, call.name.span.end);
+                        let start_pos = sv.position_of(call.name.span.start);
+                        let end_pos = sv.position_of(call.name.span.end);
                         let msg = match &db.deprecated {
                             Some(m) if !m.is_empty() => {
                                 format!("Deprecated: {} — {}", func_name.as_str(), m)
@@ -286,7 +287,7 @@ fn check_expr_for_deprecated(
         }
         // Recurse into arguments so nested calls are also checked.
         for arg in call.args.iter() {
-            check_expr_for_deprecated(source, &arg.value, all_sources, diags);
+            check_expr_for_deprecated(sv, &arg.value, all_sources, diags);
         }
     }
     if let ExprKind::MethodCall(call) = &expr.kind {
@@ -298,8 +299,8 @@ fn check_expr_for_deprecated(
                 {
                     let db = parse_docblock(&raw);
                     if db.is_deprecated() {
-                        let start_pos = offset_to_position(source, call.method.span.start);
-                        let end_pos = offset_to_position(source, call.method.span.end);
+                        let start_pos = sv.position_of(call.method.span.start);
+                        let end_pos = sv.position_of(call.method.span.end);
                         let msg = match &db.deprecated {
                             Some(m) if !m.is_empty() => {
                                 format!("Deprecated: {} — {}", method_name.as_str(), m)
@@ -328,9 +329,9 @@ fn check_expr_for_deprecated(
             }
         }
         // Recurse into object and arguments so nested calls are also checked.
-        check_expr_for_deprecated(source, call.object, all_sources, diags);
+        check_expr_for_deprecated(sv, call.object, all_sources, diags);
         for arg in call.args.iter() {
-            check_expr_for_deprecated(source, &arg.value, all_sources, diags);
+            check_expr_for_deprecated(sv, &arg.value, all_sources, diags);
         }
     }
 }
@@ -407,21 +408,22 @@ fn find_method_span_in_stmts(stmts: &[Stmt<'_, '_>], method_name: &str) -> Optio
 
 /// Check for duplicate class/function/interface/trait/enum declarations.
 pub fn duplicate_declaration_diagnostics(
-    source: &str,
+    _source: &str,
     doc: &ParsedDoc,
     cfg: &DiagnosticsConfig,
 ) -> Vec<Diagnostic> {
     if !cfg.enabled || !cfg.duplicate_declarations {
         return vec![];
     }
+    let sv = doc.view();
     let mut seen: std::collections::HashMap<String, ()> = std::collections::HashMap::new();
     let mut diags = Vec::new();
-    collect_duplicate_decls(source, &doc.program().stmts, "", &mut seen, &mut diags);
+    collect_duplicate_decls(sv, &doc.program().stmts, "", &mut seen, &mut diags);
     diags
 }
 
 fn collect_duplicate_decls(
-    source: &str,
+    sv: SourceView<'_>,
     stmts: &[php_ast::Stmt<'_, '_>],
     current_ns: &str,
     seen: &mut std::collections::HashMap<String, ()>,
@@ -450,7 +452,7 @@ fn collect_duplicate_decls(
                         } else {
                             format!("{}\\{}", current_ns, ns_name)
                         };
-                        collect_duplicate_decls(source, inner, &child_ns, seen, diags);
+                        collect_duplicate_decls(sv, inner, &child_ns, seen, diags);
                     }
                     php_ast::NamespaceBody::Simple => {
                         // Unbraced namespace: subsequent siblings belong to this namespace.
@@ -475,11 +477,11 @@ fn collect_duplicate_decls(
                 // Find the byte offset of the actual name by searching forward from span_start.
                 // The span_start points to keywords like "class", "function", etc.,
                 // so we need to find where the identifier name appears.
-                let name_byte_offset = find_name_offset(&source[span_start as usize..], name)
+                let name_byte_offset = find_name_offset(&sv.source()[span_start as usize..], name)
                     .map(|off| span_start + off as u32)
                     .unwrap_or(span_start);
 
-                let start_pos = crate::ast::offset_to_position(source, name_byte_offset);
+                let start_pos = sv.position_of(name_byte_offset);
                 // Calculate end position by converting UTF-8 character length to UTF-16 code units
                 let name_utf16_len = name.chars().map(|c| c.len_utf16() as u32).sum::<u32>();
                 let end_pos = Position {
@@ -503,7 +505,7 @@ fn collect_duplicate_decls(
     }
 }
 
-/// Find the byte offset of an identifier name within a source slice.
+/// Find the byte offset of an identifier name within a sv.source() slice.
 /// Searches for word boundary matches (not substring matches).
 fn find_name_offset(source: &str, name: &str) -> Option<usize> {
     let bytes = source.as_bytes();

@@ -11,7 +11,7 @@ use std::sync::Arc;
 use php_ast::{ClassMemberKind, EnumMemberKind, NamespaceBody, Stmt, StmtKind};
 use tower_lsp::lsp_types::{Location, Position, Url};
 
-use crate::ast::{ParsedDoc, name_range};
+use crate::ast::{ParsedDoc, SourceView};
 use crate::util::word_at;
 
 /// Find the abstract or interface declaration of `word`.
@@ -25,8 +25,8 @@ pub fn goto_declaration(
 
     // First pass: look for an abstract or interface declaration
     for (uri, doc) in all_docs {
-        let doc_source = doc.source();
-        if let Some(range) = find_abstract_declaration(doc_source, &doc.program().stmts, &word) {
+        let sv = doc.view();
+        if let Some(range) = find_abstract_declaration(sv, &doc.program().stmts, &word) {
             return Some(Location {
                 uri: uri.clone(),
                 range,
@@ -36,8 +36,8 @@ pub fn goto_declaration(
 
     // Second pass: any declaration (same as goto_definition)
     for (uri, doc) in all_docs {
-        let doc_source = doc.source();
-        if let Some(range) = find_any_declaration(doc_source, &doc.program().stmts, &word) {
+        let sv = doc.view();
+        if let Some(range) = find_any_declaration(sv, &doc.program().stmts, &word) {
             return Some(Location {
                 uri: uri.clone(),
                 range,
@@ -49,7 +49,7 @@ pub fn goto_declaration(
 }
 
 fn find_abstract_declaration(
-    source: &str,
+    sv: SourceView<'_>,
     stmts: &[Stmt<'_, '_>],
     word: &str,
 ) -> Option<tower_lsp::lsp_types::Range> {
@@ -61,11 +61,11 @@ fn find_abstract_declaration(
                     if let ClassMemberKind::Method(m) = &member.kind
                         && m.name == word
                     {
-                        return Some(name_range(source, m.name));
+                        return Some(sv.name_range(m.name));
                     }
                 }
                 if i.name == word {
-                    return Some(name_range(source, i.name));
+                    return Some(sv.name_range(i.name));
                 }
             }
             StmtKind::Class(c) => {
@@ -74,13 +74,13 @@ fn find_abstract_declaration(
                         && m.is_abstract
                         && m.name == word
                     {
-                        return Some(name_range(source, m.name));
+                        return Some(sv.name_range(m.name));
                     }
                 }
             }
             StmtKind::Namespace(ns) => {
                 if let NamespaceBody::Braced(inner) = &ns.body
-                    && let Some(r) = find_abstract_declaration(source, inner, word)
+                    && let Some(r) = find_abstract_declaration(sv, inner, word)
                 {
                     return Some(r);
                 }
@@ -92,51 +92,48 @@ fn find_abstract_declaration(
 }
 
 fn find_any_declaration(
-    source: &str,
+    sv: SourceView<'_>,
     stmts: &[Stmt<'_, '_>],
     word: &str,
 ) -> Option<tower_lsp::lsp_types::Range> {
     for stmt in stmts {
         match &stmt.kind {
             StmtKind::Function(f) if f.name == word => {
-                return Some(name_range(source, f.name));
+                return Some(sv.name_range(f.name));
             }
             StmtKind::Class(c) if c.name == Some(word) => {
-                return Some(name_range(
-                    source,
-                    c.name.expect("match guard ensures Some"),
-                ));
+                return Some(sv.name_range(c.name.expect("match guard ensures Some")));
             }
             StmtKind::Class(c) => {
                 for member in c.members.iter() {
                     if let ClassMemberKind::Method(m) = &member.kind
                         && m.name == word
                     {
-                        return Some(name_range(source, m.name));
+                        return Some(sv.name_range(m.name));
                     }
                 }
             }
             StmtKind::Interface(i) if i.name == word => {
-                return Some(name_range(source, i.name));
+                return Some(sv.name_range(i.name));
             }
             StmtKind::Trait(t) if t.name == word => {
-                return Some(name_range(source, t.name));
+                return Some(sv.name_range(t.name));
             }
             StmtKind::Enum(e) if e.name == word => {
-                return Some(name_range(source, e.name));
+                return Some(sv.name_range(e.name));
             }
             StmtKind::Enum(e) => {
                 for member in e.members.iter() {
                     if let EnumMemberKind::Method(m) = &member.kind
                         && m.name == word
                     {
-                        return Some(name_range(source, m.name));
+                        return Some(sv.name_range(m.name));
                     }
                 }
             }
             StmtKind::Namespace(ns) => {
                 if let NamespaceBody::Braced(inner) = &ns.body
-                    && let Some(r) = find_any_declaration(source, inner, word)
+                    && let Some(r) = find_any_declaration(sv, inner, word)
                 {
                     return Some(r);
                 }

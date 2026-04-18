@@ -7,7 +7,7 @@ use tower_lsp::lsp_types::{
     SymbolKind, Url,
 };
 
-use crate::ast::{ParsedDoc, name_range, span_to_range};
+use crate::ast::{ParsedDoc, SourceView, span_to_range};
 use crate::references::find_references;
 
 /// Find the declaration matching `name` and return a `CallHierarchyItem`.
@@ -16,8 +16,8 @@ pub fn prepare_call_hierarchy(
     all_docs: &[(Url, Arc<ParsedDoc>)],
 ) -> Option<CallHierarchyItem> {
     for (uri, doc) in all_docs {
-        let source = doc.source();
-        if let Some(item) = find_declaration_item(name, &doc.program().stmts, source, uri) {
+        let sv = doc.view();
+        if let Some(item) = find_declaration_item(name, &doc.program().stmts, sv, uri) {
             return Some(item);
         }
     }
@@ -38,12 +38,7 @@ pub fn incoming_calls(
 
     for loc in call_sites {
         let caller = doc_map.get(&loc.uri).and_then(|doc| {
-            enclosing_function(
-                doc.source(),
-                &doc.program().stmts,
-                loc.range.start,
-                &loc.uri,
-            )
+            enclosing_function(doc.view(), &doc.program().stmts, loc.range.start, &loc.uri)
         });
 
         let key = if let Some(ref ci) = caller {
@@ -85,7 +80,7 @@ pub fn outgoing_calls(
     let Some((_, doc)) = all_docs.iter().find(|(uri, _)| *uri == item.uri) else {
         return Vec::new();
     };
-    // Borrow source directly from the Arc to avoid cloning the whole file.
+    // Borrow sv.source() directly from the Arc to avoid cloning the whole file.
     let item_source = doc.source();
     let mut calls: Vec<(String, Span)> = Vec::new();
     collect_calls_for(&item.name, &doc.program().stmts, &mut calls);
@@ -93,8 +88,9 @@ pub fn outgoing_calls(
     let mut result: Vec<CallHierarchyOutgoingCall> = Vec::new();
     // Track callee_name → index in `result` for O(1) dedup.
     let mut index: HashMap<String, usize> = HashMap::new();
+    let item_line_starts = doc.line_starts();
     for (callee_name, span) in calls {
-        let call_range = span_to_range(item_source, span);
+        let call_range = span_to_range(item_source, item_line_starts, span);
         if let Some(&idx) = index.get(&callee_name) {
             result[idx].from_ranges.push(call_range);
         } else if let Some(callee_item) = prepare_call_hierarchy(&callee_name, all_docs) {
@@ -115,14 +111,14 @@ pub fn outgoing_calls(
 fn find_declaration_item(
     name: &str,
     stmts: &[Stmt<'_, '_>],
-    source: &str,
+    sv: SourceView<'_>,
     uri: &Url,
 ) -> Option<CallHierarchyItem> {
     for stmt in stmts {
         match &stmt.kind {
             StmtKind::Function(f) if f.name == name => {
-                let range = span_to_range(source, stmt.span);
-                let sel = name_range(source, f.name);
+                let range = sv.range_of(stmt.span);
+                let sel = sv.name_range(f.name);
                 return Some(CallHierarchyItem {
                     name: name.to_string(),
                     kind: SymbolKind::FUNCTION,
@@ -139,8 +135,8 @@ fn find_declaration_item(
                     if let ClassMemberKind::Method(m) = &member.kind
                         && m.name == name
                     {
-                        let range = span_to_range(source, member.span);
-                        let sel = name_range(source, m.name);
+                        let range = sv.range_of(member.span);
+                        let sel = sv.name_range(m.name);
                         return Some(CallHierarchyItem {
                             name: name.to_string(),
                             kind: SymbolKind::METHOD,
@@ -159,8 +155,8 @@ fn find_declaration_item(
                     if let ClassMemberKind::Method(m) = &member.kind
                         && m.name == name
                     {
-                        let range = span_to_range(source, member.span);
-                        let sel = name_range(source, m.name);
+                        let range = sv.range_of(member.span);
+                        let sel = sv.name_range(m.name);
                         return Some(CallHierarchyItem {
                             name: name.to_string(),
                             kind: SymbolKind::METHOD,
@@ -179,8 +175,8 @@ fn find_declaration_item(
                     if let EnumMemberKind::Method(m) = &member.kind
                         && m.name == name
                     {
-                        let range = span_to_range(source, member.span);
-                        let sel = name_range(source, m.name);
+                        let range = sv.range_of(member.span);
+                        let sel = sv.name_range(m.name);
                         return Some(CallHierarchyItem {
                             name: name.to_string(),
                             kind: SymbolKind::METHOD,
@@ -196,7 +192,7 @@ fn find_declaration_item(
             }
             StmtKind::Namespace(ns) => {
                 if let NamespaceBody::Braced(inner) = &ns.body
-                    && let Some(item) = find_declaration_item(name, inner, source, uri)
+                    && let Some(item) = find_declaration_item(name, inner, sv, uri)
                 {
                     return Some(item);
                 }
@@ -208,13 +204,13 @@ fn find_declaration_item(
 }
 
 fn enclosing_function(
-    source: &str,
+    sv: SourceView<'_>,
     stmts: &[Stmt<'_, '_>],
     pos: Position,
     uri: &Url,
 ) -> Option<CallHierarchyItem> {
     for stmt in stmts {
-        if let Some(item) = enclosing_in_stmt(source, stmt, pos, uri) {
+        if let Some(item) = enclosing_in_stmt(sv, stmt, pos, uri) {
             return Some(item);
         }
     }
@@ -222,18 +218,18 @@ fn enclosing_function(
 }
 
 fn enclosing_in_stmt(
-    source: &str,
+    sv: SourceView<'_>,
     stmt: &Stmt<'_, '_>,
     pos: Position,
     uri: &Url,
 ) -> Option<CallHierarchyItem> {
-    let range = span_to_range(source, stmt.span);
+    let range = sv.range_of(stmt.span);
     if !range_contains(range, pos) {
         return None;
     }
     match &stmt.kind {
         StmtKind::Function(f) => {
-            let sel = name_range(source, f.name);
+            let sel = sv.name_range(f.name);
             Some(CallHierarchyItem {
                 name: f.name.to_string(),
                 kind: SymbolKind::FUNCTION,
@@ -247,11 +243,11 @@ fn enclosing_in_stmt(
         }
         StmtKind::Class(c) => {
             for member in c.members.iter() {
-                let m_range = span_to_range(source, member.span);
+                let m_range = sv.range_of(member.span);
                 if range_contains(m_range, pos)
                     && let ClassMemberKind::Method(m) = &member.kind
                 {
-                    let sel = name_range(source, m.name);
+                    let sel = sv.name_range(m.name);
                     return Some(CallHierarchyItem {
                         name: m.name.to_string(),
                         kind: SymbolKind::METHOD,
@@ -268,11 +264,11 @@ fn enclosing_in_stmt(
         }
         StmtKind::Trait(t) => {
             for member in t.members.iter() {
-                let m_range = span_to_range(source, member.span);
+                let m_range = sv.range_of(member.span);
                 if range_contains(m_range, pos)
                     && let ClassMemberKind::Method(m) = &member.kind
                 {
-                    let sel = name_range(source, m.name);
+                    let sel = sv.name_range(m.name);
                     return Some(CallHierarchyItem {
                         name: m.name.to_string(),
                         kind: SymbolKind::METHOD,
@@ -289,11 +285,11 @@ fn enclosing_in_stmt(
         }
         StmtKind::Enum(e) => {
             for member in e.members.iter() {
-                let m_range = span_to_range(source, member.span);
+                let m_range = sv.range_of(member.span);
                 if range_contains(m_range, pos)
                     && let EnumMemberKind::Method(m) = &member.kind
                 {
-                    let sel = name_range(source, m.name);
+                    let sel = sv.name_range(m.name);
                     return Some(CallHierarchyItem {
                         name: m.name.to_string(),
                         kind: SymbolKind::METHOD,
@@ -310,7 +306,7 @@ fn enclosing_in_stmt(
         }
         StmtKind::Namespace(ns) => {
             if let NamespaceBody::Braced(inner) = &ns.body {
-                return enclosing_function(source, inner, pos, uri);
+                return enclosing_function(sv, inner, pos, uri);
             }
             None
         }

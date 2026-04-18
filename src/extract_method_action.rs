@@ -13,7 +13,7 @@ use tower_lsp::lsp_types::{
     CodeAction, CodeActionKind, CodeActionOrCommand, Position, Range, TextEdit, Url, WorkspaceEdit,
 };
 
-use crate::ast::{ParsedDoc, offset_to_position};
+use crate::ast::{ParsedDoc, SourceView};
 use crate::util::utf16_offset_to_byte;
 
 // ── Public entry point ────────────────────────────────────────────────────────
@@ -32,8 +32,9 @@ pub fn extract_method_actions(
     }
 
     // Find the enclosing class and method.
+    let sv = doc.view();
     let stmts = &doc.program().stmts;
-    let (class_end_offset, method_is_static) = match find_enclosing_class(stmts, source, range) {
+    let (class_end_offset, method_is_static) = match find_enclosing_class(stmts, sv, range) {
         Some(info) => info,
         None => return vec![],
     };
@@ -103,7 +104,7 @@ pub fn extract_method_actions(
     );
 
     // Insert the new method just before the closing brace of the class.
-    let closing_line = offset_to_position(source, class_end_offset.saturating_sub(1)).line;
+    let closing_line = sv.position_of(class_end_offset.saturating_sub(1)).line;
     let insert_pos = Position {
         line: closing_line,
         character: 0,
@@ -146,21 +147,21 @@ pub fn extract_method_actions(
 /// class method body, walking into namespaced blocks as needed.
 fn find_enclosing_class(
     stmts: &[php_ast::Stmt<'_, '_>],
-    source: &str,
+    sv: SourceView<'_>,
     range: Range,
 ) -> Option<(u32, bool)> {
     for stmt in stmts {
         match &stmt.kind {
             StmtKind::Class(c) => {
-                let class_start = offset_to_position(source, stmt.span.start).line;
-                let class_end = offset_to_position(source, stmt.span.end).line;
+                let class_start = sv.position_of(stmt.span.start).line;
+                let class_end = sv.position_of(stmt.span.end).line;
                 if range.start.line < class_start || range.end.line > class_end {
                     continue;
                 }
                 for member in c.members.iter() {
                     if let ClassMemberKind::Method(m) = &member.kind {
-                        let method_start = offset_to_position(source, member.span.start).line;
-                        let method_end = offset_to_position(source, member.span.end).line;
+                        let method_start = sv.position_of(member.span.start).line;
+                        let method_end = sv.position_of(member.span.end).line;
                         if range.start.line >= method_start && range.end.line <= method_end {
                             return Some((stmt.span.end, m.is_static));
                         }
@@ -169,7 +170,7 @@ fn find_enclosing_class(
             }
             StmtKind::Namespace(ns) => {
                 if let NamespaceBody::Braced(inner) = &ns.body
-                    && let Some(r) = find_enclosing_class(inner, source, range)
+                    && let Some(r) = find_enclosing_class(inner, sv, range)
                 {
                     return Some(r);
                 }

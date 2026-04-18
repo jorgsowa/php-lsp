@@ -1,7 +1,7 @@
 use php_ast::{ClassMemberKind, EnumMemberKind, ExprKind, NamespaceBody, Stmt, StmtKind};
 use tower_lsp::lsp_types::{CompletionItem, CompletionItemKind};
 
-use crate::ast::{ParsedDoc, offset_to_position};
+use crate::ast::{ParsedDoc, SourceView};
 
 use super::{build_function_sig, callable_item, docblock_docs, named_arg_item};
 
@@ -14,14 +14,9 @@ pub fn symbol_completions(doc: &ParsedDoc) -> Vec<CompletionItem> {
 /// Like `symbol_completions` but only includes variables declared at or before `line`.
 /// Non-variable items (functions, classes, etc.) are always included.
 pub fn symbol_completions_before(doc: &ParsedDoc, line: u32) -> Vec<CompletionItem> {
+    let sv = doc.view();
     let mut items = Vec::new();
-    collect_from_statements_before(
-        &doc.program().stmts,
-        &mut items,
-        line,
-        doc.source(),
-        Some(doc),
-    );
+    collect_from_statements_before(&doc.program().stmts, &mut items, line, sv, Some(doc));
     items
 }
 
@@ -29,21 +24,21 @@ fn collect_from_statements_before(
     stmts: &[Stmt<'_, '_>],
     items: &mut Vec<CompletionItem>,
     line: u32,
-    source: &str,
+    sv: SourceView<'_>,
     doc: Option<&ParsedDoc>,
 ) {
     for stmt in stmts {
         match &stmt.kind {
             StmtKind::Expression(e) => {
                 // Only add variables if they appear at or before the cursor line
-                let stmt_line = offset_to_position(source, stmt.span.start).line;
+                let stmt_line = sv.position_of(stmt.span.start).line;
                 if stmt_line <= line {
                     collect_from_expression(e, items);
                 }
             }
             StmtKind::Namespace(ns) => {
                 if let NamespaceBody::Braced(inner) = &ns.body {
-                    collect_from_statements_before(inner, items, line, source, doc);
+                    collect_from_statements_before(inner, items, line, sv, doc);
                 }
             }
             // Non-variable items: always include

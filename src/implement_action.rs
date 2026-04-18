@@ -11,7 +11,7 @@ use tower_lsp::lsp_types::{
     CodeAction, CodeActionKind, CodeActionOrCommand, Position, Range, TextEdit, Url, WorkspaceEdit,
 };
 
-use crate::ast::{ParsedDoc, format_type_hint, offset_to_position};
+use crate::ast::{ParsedDoc, SourceView, format_type_hint};
 use crate::hover::format_params_str;
 
 struct MethodStub {
@@ -23,17 +23,18 @@ struct MethodStub {
 }
 
 pub fn implement_missing_actions(
-    source: &str,
+    _source: &str,
     doc: &ParsedDoc,
     all_docs: &[(Url, Arc<ParsedDoc>)],
     range: Range,
     uri: &Url,
     file_imports: &HashMap<String, String>,
 ) -> Vec<CodeActionOrCommand> {
+    let sv = doc.view();
     let mut actions = Vec::new();
     collect_actions(
         &doc.program().stmts,
-        source,
+        sv,
         all_docs,
         file_imports,
         range,
@@ -45,7 +46,7 @@ pub fn implement_missing_actions(
 
 fn collect_actions(
     stmts: &[Stmt<'_, '_>],
-    source: &str,
+    sv: SourceView<'_>,
     all_docs: &[(Url, Arc<ParsedDoc>)],
     file_imports: &HashMap<String, String>,
     range: Range,
@@ -56,8 +57,8 @@ fn collect_actions(
         match &stmt.kind {
             StmtKind::Class(c) => {
                 // Only consider classes whose declaration overlaps the requested range.
-                let class_start = offset_to_position(source, stmt.span.start).line;
-                let class_end = offset_to_position(source, stmt.span.end).line;
+                let class_start = sv.position_of(stmt.span.start).line;
+                let class_end = sv.position_of(stmt.span.end).line;
                 if class_start > range.end.line || class_end < range.start.line {
                     continue;
                 }
@@ -114,7 +115,7 @@ fn collect_actions(
 
                 let stub_text = generate_stub_text(&missing);
                 // Insert just before the closing `}` of the class.
-                let closing_line = offset_to_position(source, stmt.span.end.saturating_sub(1)).line;
+                let closing_line = sv.position_of(stmt.span.end.saturating_sub(1)).line;
                 let insert_pos = Position {
                     line: closing_line,
                     character: 0,
@@ -147,7 +148,7 @@ fn collect_actions(
             }
             StmtKind::Namespace(ns) => {
                 if let NamespaceBody::Braced(inner) = &ns.body {
-                    collect_actions(inner, source, all_docs, file_imports, range, uri, out);
+                    collect_actions(inner, sv, all_docs, file_imports, range, uri, out);
                 }
             }
             _ => {}
