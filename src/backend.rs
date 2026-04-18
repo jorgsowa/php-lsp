@@ -156,7 +156,7 @@ pub struct Backend {
     meta: Arc<RwLock<PhpStormMeta>>,
     config: Arc<RwLock<LspConfig>>,
     codebase: Arc<mir_codebase::Codebase>,
-    /// Set to `true` once the post-scan reference-indexing pass completes.
+    /// Set to `true` once the reference-indexing pass completes.
     /// `find_references_codebase` is only used when this is `true`.
     ref_index_ready: Arc<AtomicBool>,
 }
@@ -449,7 +449,6 @@ impl LanguageServer for Backend {
             let docs = Arc::clone(&self.docs);
             let client = self.client.clone();
             let codebase = Arc::clone(&self.codebase);
-            let ref_index_ready = Arc::clone(&self.ref_index_ready);
             let exclude_paths = self.config.read().unwrap().exclude_paths.clone();
             tokio::spawn(async move {
                 client
@@ -499,12 +498,6 @@ impl LanguageServer for Backend {
                 // that the index is populated. Without this, editors that opened
                 // files before indexing finished would show stale information.
                 send_refresh_requests(&client).await;
-
-                // Phase 3: build the reference index in the background so that
-                // find_references_codebase can serve O(k) lookups instead of
-                // scanning every file's AST. Runs after the progress notification
-                // so the editor considers indexing "done" while this completes.
-                build_reference_index(docs, codebase, ref_index_ready).await;
             });
         }
 
