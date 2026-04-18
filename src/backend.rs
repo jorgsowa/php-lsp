@@ -660,7 +660,12 @@ impl LanguageServer for Backend {
                 let source = docs.get(&uri).unwrap_or_default();
                 let mut all_diags = diagnostics;
                 if let Some(d) = docs.get_doc(&uri) {
+                    // Full incremental update: evict stale definitions and
+                    // reference locations, re-collect, and rebuild inheritance
+                    // so the reference index is always consistent after an edit.
+                    codebase.remove_file_definitions(uri.as_str());
                     collect_into_codebase(&codebase, &uri, &d);
+                    codebase.finalize();
                     if ref_index_ready.load(Ordering::Acquire) {
                         index_file_references(&uri, &d, &codebase);
                     }
@@ -726,7 +731,9 @@ impl LanguageServer for Backend {
                     {
                         self.docs.index(change.uri.clone(), &text);
                         if let Some(d) = self.docs.get_doc(&change.uri) {
+                            self.codebase.remove_file_definitions(change.uri.as_str());
                             self.collect_definitions_for(&change.uri, &d);
+                            self.codebase.finalize();
                             if self.ref_index_ready.load(Ordering::Acquire) {
                                 index_file_references(&change.uri, &d, &self.codebase);
                             }
