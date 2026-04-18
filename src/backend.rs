@@ -644,6 +644,7 @@ impl LanguageServer for Backend {
         let docs = Arc::clone(&self.docs);
         let client = self.client.clone();
         let codebase = Arc::clone(&self.codebase);
+        let ref_index_ready = Arc::clone(&self.ref_index_ready);
         let diag_cfg = self.config.read().unwrap().diagnostics.clone();
         tokio::spawn(async move {
             // 100 ms debounce: if another edit arrives before we parse, the
@@ -660,6 +661,9 @@ impl LanguageServer for Backend {
                 let mut all_diags = diagnostics;
                 if let Some(d) = docs.get_doc(&uri) {
                     collect_into_codebase(&codebase, &uri, &d);
+                    if ref_index_ready.load(Ordering::Acquire) {
+                        index_file_references(&uri, &d, &codebase);
+                    }
                     all_diags.extend(duplicate_declaration_diagnostics(&source, &d, &diag_cfg));
                     let other_raw = docs.other_docs(&uri);
                     let other_docs: Vec<Arc<ParsedDoc>> =
@@ -723,6 +727,9 @@ impl LanguageServer for Backend {
                         self.docs.index(change.uri.clone(), &text);
                         if let Some(d) = self.docs.get_doc(&change.uri) {
                             self.collect_definitions_for(&change.uri, &d);
+                            if self.ref_index_ready.load(Ordering::Acquire) {
+                                index_file_references(&change.uri, &d, &self.codebase);
+                            }
                         }
                     }
                 }
@@ -852,7 +859,7 @@ impl LanguageServer for Backend {
         // Fast path: use the pre-computed reference index once it is ready.
         // Falls back to the full AST scan for Method / None kinds, and whenever
         // the symbol is not found in the codebase (returns None).
-        let locations = if self.ref_index_ready.load(Ordering::SeqCst) {
+        let locations = if self.ref_index_ready.load(Ordering::Acquire) {
             find_references_codebase(&word, &all_docs, include_declaration, kind, &self.codebase)
                 .unwrap_or_else(|| find_references(&word, &all_docs, include_declaration, kind))
         } else {
@@ -2385,7 +2392,7 @@ async fn build_reference_index(
     }
 
     while set.join_next().await.is_some() {}
-    ready.store(true, Ordering::SeqCst);
+    ready.store(true, Ordering::Release);
 }
 
 #[cfg(test)]

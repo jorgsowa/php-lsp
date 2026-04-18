@@ -92,7 +92,7 @@ pub fn find_references_codebase(
                 .iter()
                 .filter_map(|e| {
                     let fqn = e.key();
-                    let short = fqn.rsplit('\\').next().unwrap_or(fqn);
+                    let short = fqn.rsplit('\\').next().unwrap_or(fqn.as_ref());
                     if short == word {
                         Some(fqn.clone())
                     } else {
@@ -120,13 +120,18 @@ pub fn find_references_codebase(
                     locations.push(loc);
                 }
             }
-            Some(locations)
+            if locations.is_empty() {
+                None
+            } else {
+                Some(locations)
+            }
         }
 
         Some(SymbolKind::Class) => {
             // Collect all FQCNs whose short name matches `word` across all type maps.
             let mut fqcns: Vec<Arc<str>> = Vec::new();
-            let short_matches = |fqcn: &Arc<str>| fqcn.rsplit('\\').next().unwrap_or(fqcn) == word;
+            let short_matches =
+                |fqcn: &Arc<str>| fqcn.rsplit('\\').next().unwrap_or(fqcn.as_ref()) == word;
             for e in codebase.classes.iter() {
                 if short_matches(e.key()) {
                     fqcns.push(e.key().clone());
@@ -166,7 +171,11 @@ pub fn find_references_codebase(
                     locations.push(loc);
                 }
             }
-            Some(locations)
+            if locations.is_empty() {
+                None
+            } else {
+                Some(locations)
+            }
         }
 
         // Method references: mir only tracks calls on known types; fall back to
