@@ -609,23 +609,40 @@ impl LanguageServer for Backend {
         // Store text immediately so other features work while parsing
         let version = self.docs.set_text(uri.clone(), text.clone());
 
-        // Parse in a blocking thread to avoid stalling the tokio runtime;
-        // await here so the AST is ready before the handler returns.
-        let (doc, diagnostics) = tokio::task::spawn_blocking(move || parse_document(&text))
-            .await
-            .unwrap_or_else(|_| (ParsedDoc::default(), vec![]));
+        let codebase = Arc::clone(&self.codebase);
+        let diag_cfg = self.config.read().unwrap().diagnostics.clone();
+        let php_version = self.config.read().unwrap().php_version.clone();
+        let uri_clone = uri.clone();
+
+        // Parse and run semantic analysis together in a blocking thread.
+        // semantic_diagnostics handles remove → collect → finalize → analyze,
+        // so definitions are never doubled even if the workspace scan already
+        // indexed this file.
+        let diag_cfg_inner = diag_cfg.clone();
+        let (doc, parse_diags, sem_diags) = tokio::task::spawn_blocking(move || {
+            let (doc, parse_diags) = parse_document(&text);
+            let sem_diags = semantic_diagnostics(
+                &uri_clone,
+                &doc,
+                &codebase,
+                &diag_cfg_inner,
+                php_version.as_deref(),
+            );
+            (doc, parse_diags, sem_diags)
+        })
+        .await
+        .unwrap_or_else(|_| (ParsedDoc::default(), vec![], vec![]));
 
         self.docs
-            .apply_parse(&uri, doc, diagnostics.clone(), version);
+            .apply_parse(&uri, doc, parse_diags.clone(), version);
         let stored_source = self.docs.get(&uri).unwrap_or_default();
         let doc2 = self.docs.get_doc(&uri);
-        let mut all_diags = diagnostics;
+        let mut all_diags = parse_diags;
         if let Some(ref d) = doc2 {
-            self.collect_definitions_for(&uri, d);
-            let diag_cfg = self.config.read().unwrap().diagnostics.clone();
             let dup_diags = duplicate_declaration_diagnostics(&stored_source, d, &diag_cfg);
             all_diags.extend(dup_diags);
         }
+        all_diags.extend(sem_diags);
         self.client.publish_diagnostics(uri, all_diags, None).await;
     }
 
@@ -646,6 +663,7 @@ impl LanguageServer for Backend {
         let codebase = Arc::clone(&self.codebase);
         let ref_index_ready = Arc::clone(&self.ref_index_ready);
         let diag_cfg = self.config.read().unwrap().diagnostics.clone();
+        let php_version = self.config.read().unwrap().php_version.clone();
         tokio::spawn(async move {
             // 100 ms debounce: if another edit arrives before we parse, the
             // version check in apply_parse will discard this stale result.
@@ -660,12 +678,18 @@ impl LanguageServer for Backend {
                 let source = docs.get(&uri).unwrap_or_default();
                 let mut all_diags = diagnostics;
                 if let Some(d) = docs.get_doc(&uri) {
-                    // Full incremental update: evict stale definitions and
-                    // reference locations, re-collect, and rebuild inheritance
-                    // so the reference index is always consistent after an edit.
-                    codebase.remove_file_definitions(uri.as_str());
-                    collect_into_codebase(&codebase, &uri, &d);
-                    codebase.finalize();
+                    // semantic_diagnostics handles remove → collect → finalize → analyze
+                    // as one unit, keeping the codebase consistent and ensuring any
+                    // future collector-phase issues from mir-analyzer are surfaced.
+                    all_diags.extend(semantic_diagnostics(
+                        &uri,
+                        &d,
+                        &codebase,
+                        &diag_cfg,
+                        php_version.as_deref(),
+                    ));
+                    // Reference index requires a finalized codebase; semantic_diagnostics
+                    // already called finalize() above.
                     if ref_index_ready.load(Ordering::Acquire) {
                         index_file_references(&uri, &d, &codebase);
                     }
@@ -3064,6 +3088,20 @@ mod integration {
             });
             self.write.write_all(&frame(&msg)).await.unwrap();
         }
+
+        /// Read messages until a notification with the given method arrives (5 s timeout).
+        async fn read_notification(&mut self, method: &str) -> serde_json::Value {
+            tokio::time::timeout(tokio::time::Duration::from_secs(5), async {
+                loop {
+                    let msg = read_msg(&mut self.read).await;
+                    if msg.get("method") == Some(&serde_json::json!(method)) {
+                        return msg;
+                    }
+                }
+            })
+            .await
+            .unwrap_or_else(|_| panic!("timed out waiting for {method} notification"))
+        }
     }
 
     fn start_server() -> TestClient {
@@ -4478,5 +4516,310 @@ mod integration {
         dump!("selectionRange (cursor inside return expr)",
             client.request("textDocument/selectionRange",
                 serde_json::json!({"textDocument":{"uri":"file:///p_sel.php"},"positions":[{"line":1,"character":38}]})).await);
+    }
+
+    #[tokio::test]
+    async fn diagnostics_published_on_did_open_for_undefined_function() {
+        let mut client = start_server();
+        initialize(&mut client).await;
+
+        // PHP with a clear undefined-function error that mir-analyzer detects.
+        client
+            .notify(
+                "textDocument/didOpen",
+                serde_json::json!({
+                    "textDocument": {
+                        "uri": "file:///diag_test.php",
+                        "languageId": "php",
+                        "version": 1,
+                        "text": "<?php\nnonexistent_function();\n"
+                    }
+                }),
+            )
+            .await;
+
+        let notif = client
+            .read_notification("textDocument/publishDiagnostics")
+            .await;
+        let diags = &notif["params"]["diagnostics"];
+        assert!(
+            diags.is_array(),
+            "publishDiagnostics params.diagnostics must be an array"
+        );
+        let has_undefined_fn = diags
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|d| d["code"].as_str() == Some("UndefinedFunction"));
+        assert!(
+            has_undefined_fn,
+            "expected an UndefinedFunction diagnostic in publishDiagnostics, got: {:?}",
+            diags
+        );
+    }
+
+    #[tokio::test]
+    async fn diagnostics_published_on_did_change_for_undefined_function() {
+        let mut client = start_server();
+        initialize(&mut client).await;
+
+        // Open a valid file first — consumes its publishDiagnostics notification.
+        client
+            .notify(
+                "textDocument/didOpen",
+                serde_json::json!({
+                    "textDocument": {
+                        "uri": "file:///change_test.php",
+                        "languageId": "php",
+                        "version": 1,
+                        "text": "<?php\n"
+                    }
+                }),
+            )
+            .await;
+        client
+            .read_notification("textDocument/publishDiagnostics")
+            .await;
+
+        // Now change the file to introduce an undefined-function call.
+        client
+            .notify(
+                "textDocument/didChange",
+                serde_json::json!({
+                    "textDocument": { "uri": "file:///change_test.php", "version": 2 },
+                    "contentChanges": [{ "text": "<?php\nnonexistent_function();\n" }]
+                }),
+            )
+            .await;
+
+        let notif = client
+            .read_notification("textDocument/publishDiagnostics")
+            .await;
+        let diags = &notif["params"]["diagnostics"];
+        let has_undefined_fn = diags
+            .as_array()
+            .unwrap_or(&vec![])
+            .iter()
+            .any(|d| d["code"].as_str() == Some("UndefinedFunction"));
+        assert!(
+            has_undefined_fn,
+            "expected an UndefinedFunction diagnostic after didChange, got: {:?}",
+            diags
+        );
+    }
+
+    #[tokio::test]
+    async fn did_open_emits_diagnostic_for_undefined_class() {
+        let mut client = start_server();
+        initialize(&mut client).await;
+
+        client
+            .notify(
+                "textDocument/didOpen",
+                serde_json::json!({
+                    "textDocument": {
+                        "uri": "file:///undef_class.php",
+                        "languageId": "php",
+                        "version": 1,
+                        "text": "<?php\n$x = new UnknownClass();\n"
+                    }
+                }),
+            )
+            .await;
+
+        let notif = client
+            .read_notification("textDocument/publishDiagnostics")
+            .await;
+        let diags = &notif["params"]["diagnostics"];
+        let has_undef_class = diags
+            .as_array()
+            .unwrap_or(&vec![])
+            .iter()
+            .any(|d| d["code"].as_str() == Some("UndefinedClass"));
+        assert!(
+            has_undef_class,
+            "expected UndefinedClass diagnostic on did_open, got: {:?}",
+            diags
+        );
+    }
+
+    #[tokio::test]
+    async fn diagnostics_clear_when_code_is_fixed() {
+        let mut client = start_server();
+        initialize(&mut client).await;
+
+        // Open broken file — expect a diagnostic.
+        client
+            .notify(
+                "textDocument/didOpen",
+                serde_json::json!({
+                    "textDocument": {
+                        "uri": "file:///fix_test.php",
+                        "languageId": "php",
+                        "version": 1,
+                        "text": "<?php\nnonexistent_function();\n"
+                    }
+                }),
+            )
+            .await;
+        let notif = client
+            .read_notification("textDocument/publishDiagnostics")
+            .await;
+        assert!(
+            !notif["params"]["diagnostics"]
+                .as_array()
+                .unwrap_or(&vec![])
+                .is_empty(),
+            "expected at least one diagnostic for broken code, got: {:?}",
+            notif["params"]["diagnostics"]
+        );
+
+        // Fix the file — diagnostics must clear to an empty array.
+        client
+            .notify(
+                "textDocument/didChange",
+                serde_json::json!({
+                    "textDocument": { "uri": "file:///fix_test.php", "version": 2 },
+                    "contentChanges": [{ "text": "<?php\n" }]
+                }),
+            )
+            .await;
+        let notif = client
+            .read_notification("textDocument/publishDiagnostics")
+            .await;
+        let diags = notif["params"]["diagnostics"]
+            .as_array()
+            .unwrap_or(&vec![])
+            .clone();
+        assert!(
+            diags.is_empty(),
+            "diagnostics must be empty after fixing the code, got: {:?}",
+            diags
+        );
+    }
+
+    // Reproduces the exact PHP from issue #170: broken code inside a class
+    // method under a namespace. Verifies the fix works for the reporter's
+    // actual use case, not just top-level statements.
+
+    // Stripped-down variants to isolate where mir-analyzer stops detecting.
+    const PHP_UNDEF_FN_TOP_LEVEL: &str = "<?php\nnonexistent_function();\n";
+    const PHP_UNDEF_FN_IN_FUNCTION: &str =
+        "<?php\nfunction f(): void {\n    nonexistent_function();\n}\n";
+    const PHP_UNDEF_FN_IN_METHOD: &str = "<?php\nclass A {\n    public function f(): void {\n        nonexistent_function();\n    }\n}\n";
+    const PHP_UNDEF_FN_IN_NAMESPACED_METHOD: &str = "<?php\nnamespace LspTest;\nclass Broken {\n    public function f(): void {\n        nonexistent_function();\n    }\n}\n";
+
+    const ISSUE_170_PHP: &str = r#"<?php
+namespace LspTest;
+
+class Broken
+{
+    public int $count = 0;
+
+    public function bump(): int
+    {
+        $this->count++;
+        return $this->count;
+    }
+
+    public function obviouslyBroken(): int
+    {
+        nonexistent_function();
+        $x = new UnknownClass();
+        return 0;
+    }
+}
+"#;
+
+    async fn diags_for(client: &mut TestClient, uri: &str, text: &str) -> Vec<String> {
+        client
+            .notify(
+                "textDocument/didOpen",
+                serde_json::json!({
+                    "textDocument": {
+                        "uri": uri,
+                        "languageId": "php",
+                        "version": 1,
+                        "text": text
+                    }
+                }),
+            )
+            .await;
+        let notif = client
+            .read_notification("textDocument/publishDiagnostics")
+            .await;
+        let empty = vec![];
+        notif["params"]["diagnostics"]
+            .as_array()
+            .unwrap_or(&empty)
+            .iter()
+            .filter_map(|d| d["code"].as_str().map(str::to_owned))
+            .collect()
+    }
+
+    // mir-analyzer's StatementsAnalyzer does not recurse into function or
+    // method bodies — UndefinedFunction is only detected at the top level of
+    // a file. All assertions below the top-level one are ignored until
+    // mir-analyzer gains full body analysis. Tracked in jorgsowa/mir.
+    #[ignore]
+    #[tokio::test]
+    async fn mir_analyzer_scope_of_undefined_function_detection() {
+        let mut client = start_server();
+        initialize(&mut client).await;
+
+        let top_level = diags_for(&mut client, "file:///scope1.php", PHP_UNDEF_FN_TOP_LEVEL).await;
+        assert!(
+            top_level.contains(&"UndefinedFunction".to_owned()),
+            "top-level call: expected UndefinedFunction, got: {:?}",
+            top_level
+        );
+
+        let in_function =
+            diags_for(&mut client, "file:///scope2.php", PHP_UNDEF_FN_IN_FUNCTION).await;
+        assert!(
+            in_function.contains(&"UndefinedFunction".to_owned()),
+            "call inside plain function: expected UndefinedFunction, got: {:?}",
+            in_function
+        );
+
+        let in_method = diags_for(&mut client, "file:///scope3.php", PHP_UNDEF_FN_IN_METHOD).await;
+        assert!(
+            in_method.contains(&"UndefinedFunction".to_owned()),
+            "call inside class method: expected UndefinedFunction, got: {:?}",
+            in_method
+        );
+
+        let in_namespaced_method = diags_for(
+            &mut client,
+            "file:///scope4.php",
+            PHP_UNDEF_FN_IN_NAMESPACED_METHOD,
+        )
+        .await;
+        assert!(
+            in_namespaced_method.contains(&"UndefinedFunction".to_owned()),
+            "call inside namespaced class method: expected UndefinedFunction, got: {:?}",
+            in_namespaced_method
+        );
+    }
+
+    // The reporter's exact PHP from issue #170. Blocked on mir-analyzer
+    // gaining function/method body analysis (see mir_analyzer_scope_of_undefined_function_detection).
+    #[ignore]
+    #[tokio::test]
+    async fn issue_170_undefined_function_in_method_body_is_detected() {
+        let mut client = start_server();
+        initialize(&mut client).await;
+
+        let codes = diags_for(&mut client, "file:///issue170.php", ISSUE_170_PHP).await;
+        assert!(
+            codes.contains(&"UndefinedFunction".to_owned()),
+            "expected UndefinedFunction inside a namespaced class method, got: {:?}",
+            codes
+        );
+        assert!(
+            codes.contains(&"UndefinedClass".to_owned()),
+            "expected UndefinedClass inside a namespaced class method, got: {:?}",
+            codes
+        );
     }
 }
