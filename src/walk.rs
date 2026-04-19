@@ -956,7 +956,7 @@ pub fn refs_in_expr(source: &str, expr: &Expr<'_, '_>, word: &str, out: &mut Vec
         ExprKind::ClassConstAccess(c) => {
             refs_in_expr(source, c.class, word, out);
             if c.member.name_str() == Some(word) {
-                out.push(expr.span);
+                out.push(c.member.span);
             }
         }
         ExprKind::Closure(c) => refs_in_stmts(source, &c.body, word, out),

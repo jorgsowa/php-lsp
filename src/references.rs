@@ -562,6 +562,57 @@ mod tests {
     }
 
     #[test]
+    fn class_const_access_span_covers_only_member_name() {
+        // Searching for the constant name `ACTIVE` in `Status::ACTIVE` must highlight
+        // only `ACTIVE`, not the whole `Status::ACTIVE` expression.
+        // Line 0: <?php
+        // Line 1: $x = Status::ACTIVE;
+        let src = "<?php\n$x = Status::ACTIVE;";
+        let docs = vec![doc("/a.php", src)];
+        let refs = find_references("ACTIVE", &docs, false, None);
+        assert_eq!(refs.len(), 1, "expected 1 reference, got: {:?}", refs);
+        // The range must span exactly "ACTIVE" (6 chars), starting after "Status::".
+        let r = &refs[0].range;
+        assert_eq!(r.start.line, 1);
+        let span_len = r.end.character - r.start.character;
+        assert_eq!(
+            span_len, 6,
+            "range must cover only 'ACTIVE' (6 chars), got {} chars at {:?}",
+            span_len, r
+        );
+        // "$x = Status::" is 13 chars; "ACTIVE" starts at character 13.
+        assert_eq!(
+            r.start.character, 13,
+            "range must start at 'ACTIVE', not at 'Status'"
+        );
+    }
+
+    #[test]
+    fn class_const_access_no_duplicate_when_name_equals_class() {
+        // Edge case: enum case named the same as the enum itself — `Status::Status`.
+        // Searching for `Status` must not produce a duplicate span from the member match.
+        // Line 0: <?php
+        // Line 1: $x = Status::Status;
+        let src = "<?php\n$x = Status::Status;";
+        let docs = vec![doc("/a.php", src)];
+        let refs = find_references("Status", &docs, false, None);
+        // Both the class part (`Status`) and the member part (`Status`) are at different
+        // byte offsets after the fix, so dedup is not needed — but we must not get
+        // duplicate positions.
+        let positions: Vec<_> = refs
+            .iter()
+            .map(|r| (r.range.start.line, r.range.start.character))
+            .collect();
+        let unique: std::collections::HashSet<_> = positions.iter().collect();
+        assert_eq!(
+            positions.len(),
+            unique.len(),
+            "duplicate positions found for Status::Status: {:?}",
+            refs
+        );
+    }
+
+    #[test]
     fn finds_reference_inside_enum_method_body() {
         // A function call inside an enum method body should be found by find_references.
         let src = "<?php\nfunction helper() {}\nenum Status {\n    public function label(): string { return helper(); }\n}";
