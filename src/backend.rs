@@ -4697,4 +4697,129 @@ mod integration {
             diags
         );
     }
+
+    // Reproduces the exact PHP from issue #170: broken code inside a class
+    // method under a namespace. Verifies the fix works for the reporter's
+    // actual use case, not just top-level statements.
+
+    // Stripped-down variants to isolate where mir-analyzer stops detecting.
+    const PHP_UNDEF_FN_TOP_LEVEL: &str = "<?php\nnonexistent_function();\n";
+    const PHP_UNDEF_FN_IN_FUNCTION: &str =
+        "<?php\nfunction f(): void {\n    nonexistent_function();\n}\n";
+    const PHP_UNDEF_FN_IN_METHOD: &str = "<?php\nclass A {\n    public function f(): void {\n        nonexistent_function();\n    }\n}\n";
+    const PHP_UNDEF_FN_IN_NAMESPACED_METHOD: &str = "<?php\nnamespace LspTest;\nclass Broken {\n    public function f(): void {\n        nonexistent_function();\n    }\n}\n";
+
+    const ISSUE_170_PHP: &str = r#"<?php
+namespace LspTest;
+
+class Broken
+{
+    public int $count = 0;
+
+    public function bump(): int
+    {
+        $this->count++;
+        return $this->count;
+    }
+
+    public function obviouslyBroken(): int
+    {
+        nonexistent_function();
+        $x = new UnknownClass();
+        return 0;
+    }
+}
+"#;
+
+    async fn diags_for(client: &mut TestClient, uri: &str, text: &str) -> Vec<String> {
+        client
+            .notify(
+                "textDocument/didOpen",
+                serde_json::json!({
+                    "textDocument": {
+                        "uri": uri,
+                        "languageId": "php",
+                        "version": 1,
+                        "text": text
+                    }
+                }),
+            )
+            .await;
+        let notif = client
+            .read_notification("textDocument/publishDiagnostics")
+            .await;
+        let empty = vec![];
+        notif["params"]["diagnostics"]
+            .as_array()
+            .unwrap_or(&empty)
+            .iter()
+            .filter_map(|d| d["code"].as_str().map(str::to_owned))
+            .collect()
+    }
+
+    // mir-analyzer's StatementsAnalyzer does not recurse into function or
+    // method bodies — UndefinedFunction is only detected at the top level of
+    // a file. All assertions below the top-level one are ignored until
+    // mir-analyzer gains full body analysis. Tracked in jorgsowa/mir.
+    #[ignore]
+    #[tokio::test]
+    async fn mir_analyzer_scope_of_undefined_function_detection() {
+        let mut client = start_server();
+        initialize(&mut client).await;
+
+        let top_level = diags_for(&mut client, "file:///scope1.php", PHP_UNDEF_FN_TOP_LEVEL).await;
+        assert!(
+            top_level.contains(&"UndefinedFunction".to_owned()),
+            "top-level call: expected UndefinedFunction, got: {:?}",
+            top_level
+        );
+
+        let in_function =
+            diags_for(&mut client, "file:///scope2.php", PHP_UNDEF_FN_IN_FUNCTION).await;
+        assert!(
+            in_function.contains(&"UndefinedFunction".to_owned()),
+            "call inside plain function: expected UndefinedFunction, got: {:?}",
+            in_function
+        );
+
+        let in_method = diags_for(&mut client, "file:///scope3.php", PHP_UNDEF_FN_IN_METHOD).await;
+        assert!(
+            in_method.contains(&"UndefinedFunction".to_owned()),
+            "call inside class method: expected UndefinedFunction, got: {:?}",
+            in_method
+        );
+
+        let in_namespaced_method = diags_for(
+            &mut client,
+            "file:///scope4.php",
+            PHP_UNDEF_FN_IN_NAMESPACED_METHOD,
+        )
+        .await;
+        assert!(
+            in_namespaced_method.contains(&"UndefinedFunction".to_owned()),
+            "call inside namespaced class method: expected UndefinedFunction, got: {:?}",
+            in_namespaced_method
+        );
+    }
+
+    // The reporter's exact PHP from issue #170. Blocked on mir-analyzer
+    // gaining function/method body analysis (see mir_analyzer_scope_of_undefined_function_detection).
+    #[ignore]
+    #[tokio::test]
+    async fn issue_170_undefined_function_in_method_body_is_detected() {
+        let mut client = start_server();
+        initialize(&mut client).await;
+
+        let codes = diags_for(&mut client, "file:///issue170.php", ISSUE_170_PHP).await;
+        assert!(
+            codes.contains(&"UndefinedFunction".to_owned()),
+            "expected UndefinedFunction inside a namespaced class method, got: {:?}",
+            codes
+        );
+        assert!(
+            codes.contains(&"UndefinedClass".to_owned()),
+            "expected UndefinedClass inside a namespaced class method, got: {:?}",
+            codes
+        );
+    }
 }
