@@ -665,7 +665,8 @@ impl LanguageServer for Backend {
             let dup_diags = duplicate_declaration_diagnostics(&stored_source, d, &diag_cfg);
             all_diags.extend(dup_diags);
         }
-        all_diags.extend(sem_diags);
+        all_diags.extend(sem_diags.clone());
+        self.docs.set_sem_diagnostics(&uri, sem_diags);
         self.client.publish_diagnostics(uri, all_diags, None).await;
     }
 
@@ -704,13 +705,16 @@ impl LanguageServer for Backend {
                     // semantic_diagnostics handles remove → collect → finalize → analyze
                     // as one unit, keeping the codebase consistent and ensuring any
                     // future collector-phase issues from mir-analyzer are surfaced.
-                    all_diags.extend(semantic_diagnostics(
+                    let sem_diags = semantic_diagnostics(
                         &uri,
                         &d,
                         &codebase,
                         &diag_cfg,
                         php_version.as_deref(),
-                    ));
+                    );
+                    // Cache so code_action can read them without rerunning the rebuild.
+                    docs.set_sem_diagnostics(&uri, sem_diags.clone());
+                    all_diags.extend(sem_diags);
                     // Reference index requires a finalized codebase; semantic_diagnostics
                     // already called finalize() above.
                     if ref_index_ready.load(Ordering::Acquire) {
@@ -1735,22 +1739,10 @@ impl LanguageServer for Backend {
         };
         let other_docs = self.docs.other_docs(uri);
 
-        // Semantic diagnostics — collect undefined symbols and offer "Add use import"
-        let (diag_cfg, php_version) = {
-            let cfg = self.config.read().unwrap();
-            (cfg.diagnostics.clone(), cfg.php_version.clone())
-        };
-        let sem_diags =
-            semantic_diagnostics(uri, &doc, &self.codebase, &diag_cfg, php_version.as_deref());
-
-        // Publish semantic diagnostics merged with existing parse diagnostics
-        if !sem_diags.is_empty() {
-            let mut all_diags = self.docs.get_diagnostics(uri).unwrap_or_default();
-            all_diags.extend(sem_diags.clone());
-            self.client
-                .publish_diagnostics(uri.clone(), all_diags, None)
-                .await;
-        }
+        // Reuse semantic diagnostics cached by did_open/did_change rather than
+        // running a full codebase rebuild here — that rebuild takes write locks
+        // which stall concurrent requests for ~1-2 s.
+        let sem_diags = self.docs.get_sem_diagnostics(uri);
 
         // Build "Add use import" code actions for undefined class names in range
         let mut actions: Vec<CodeActionOrCommand> = Vec::new();
