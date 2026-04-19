@@ -20,6 +20,10 @@ struct Document {
     text: Option<String>,
     doc: Arc<ParsedDoc>,
     diagnostics: Vec<Diagnostic>,
+    /// Semantic diagnostics computed by `did_open`/`did_change`.
+    /// Stored separately so callers like `code_action` can read them without
+    /// rerunning the full codebase rebuild that produces them.
+    sem_diagnostics: Vec<Diagnostic>,
     /// Incremented on every `set_text` call; used to discard stale async parse results.
     text_version: u64,
 }
@@ -80,6 +84,7 @@ impl DocumentStore {
             text: None,
             doc: Arc::new(ParsedDoc::default()),
             diagnostics: vec![],
+            sem_diagnostics: vec![],
             text_version: 0,
         });
         entry.text_version += 1;
@@ -134,6 +139,7 @@ impl DocumentStore {
                 text: None,
                 doc: Arc::new(doc),
                 diagnostics,
+                sem_diagnostics: vec![],
                 text_version: 0,
             },
         );
@@ -197,6 +203,21 @@ impl DocumentStore {
 
     pub fn get_diagnostics(&self, uri: &Url) -> Option<Vec<Diagnostic>> {
         self.map.get(uri).map(|d| d.diagnostics.clone())
+    }
+
+    /// Cache the semantic diagnostics computed by `did_open`/`did_change` so that
+    /// `code_action` can read them without holding codebase write locks.
+    pub fn set_sem_diagnostics(&self, uri: &Url, diagnostics: Vec<Diagnostic>) {
+        if let Some(mut entry) = self.map.get_mut(uri) {
+            entry.sem_diagnostics = diagnostics;
+        }
+    }
+
+    pub fn get_sem_diagnostics(&self, uri: &Url) -> Vec<Diagnostic> {
+        self.map
+            .get(uri)
+            .map(|d| d.sem_diagnostics.clone())
+            .unwrap_or_default()
     }
 
     pub fn all_docs(&self) -> Vec<(Url, Arc<ParsedDoc>)> {
