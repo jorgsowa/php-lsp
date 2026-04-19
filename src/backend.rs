@@ -3102,6 +3102,24 @@ mod integration {
             .await
             .unwrap_or_else(|_| panic!("timed out waiting for {method} notification"))
         }
+
+        /// Read `textDocument/publishDiagnostics` notifications until one arrives for `uri`.
+        async fn read_diagnostics_for(&mut self, uri: &str) -> serde_json::Value {
+            let uri_val = serde_json::json!(uri);
+            tokio::time::timeout(tokio::time::Duration::from_secs(5), async {
+                loop {
+                    let msg = read_msg(&mut self.read).await;
+                    if msg.get("method")
+                        == Some(&serde_json::json!("textDocument/publishDiagnostics"))
+                        && msg["params"]["uri"] == uri_val
+                    {
+                        return msg;
+                    }
+                }
+            })
+            .await
+            .unwrap_or_else(|_| panic!("timed out waiting for publishDiagnostics for {uri}"))
+        }
     }
 
     fn start_server() -> TestClient {
@@ -4032,6 +4050,55 @@ mod integration {
         assert!(lines.contains(&3), "call highlight missing on line 3");
     }
 
+    #[tokio::test]
+    async fn document_highlight_variable_inside_enum_method() {
+        // Regression: collect_in_fn_at previously had no arm for StmtKind::Enum,
+        // so variables inside enum methods were never scoped correctly.
+        let mut client = start_server();
+        initialize(&mut client).await;
+
+        open_doc(
+            &mut client,
+            "file:///enum_hl.php",
+            "<?php\nenum Status {\n    public function label($arg) { return $arg + 1; }\n}\n",
+        )
+        .await;
+
+        // Cursor on `arg` of `$arg` param — line 2, char 27.
+        let resp = client
+            .request(
+                "textDocument/documentHighlight",
+                serde_json::json!({
+                    "textDocument": { "uri": "file:///enum_hl.php" },
+                    "position": { "line": 2, "character": 27 }
+                }),
+            )
+            .await;
+
+        assert!(
+            resp["error"].is_null(),
+            "documentHighlight error: {:?}",
+            resp
+        );
+        let highlights = resp["result"].as_array().expect("expected array");
+        // param declaration + body usage = 2 highlights, both on line 2
+        assert_eq!(
+            highlights.len(),
+            2,
+            "expected 2 highlights (param + body ref in enum method), got: {:?}",
+            highlights
+        );
+        let lines: Vec<u64> = highlights
+            .iter()
+            .map(|h| h["range"]["start"]["line"].as_u64().unwrap())
+            .collect();
+        assert!(
+            lines.iter().all(|&l| l == 2),
+            "both highlights must be on line 2 (inside enum method), got: {:?}",
+            lines
+        );
+    }
+
     // ── inlay hints ──────────────────────────────────────────────────────────
 
     #[tokio::test]
@@ -4146,6 +4213,108 @@ mod integration {
         assert!(
             edited_lines.contains(&2),
             "call site on line 2 must be renamed"
+        );
+    }
+
+    #[tokio::test]
+    async fn rename_variable_inside_enum_method() {
+        // Regression: collect_in_fn_at previously had no arm for StmtKind::Enum,
+        // so renaming a variable inside an enum method produced zero edits.
+        let mut client = start_server();
+        initialize(&mut client).await;
+
+        open_doc(
+            &mut client,
+            "file:///enum_ren.php",
+            "<?php\nenum Status {\n    public function label($arg) { return $arg + 1; }\n}\n",
+        )
+        .await;
+
+        // Cursor on `arg` of `$arg` param — line 2, char 27.
+        let resp = client
+            .request(
+                "textDocument/rename",
+                serde_json::json!({
+                    "textDocument": { "uri": "file:///enum_ren.php" },
+                    "position": { "line": 2, "character": 27 },
+                    "newName": "value"
+                }),
+            )
+            .await;
+
+        assert!(resp["error"].is_null(), "rename error: {:?}", resp);
+        let result = &resp["result"];
+        assert!(
+            !result.is_null(),
+            "expected rename to produce a WorkspaceEdit, got null"
+        );
+        let file_edits = result["changes"]["file:///enum_ren.php"]
+            .as_array()
+            .expect("expected edits for file:///enum_ren.php");
+        // param declaration + body usage = 2 edits, both on line 2
+        assert_eq!(
+            file_edits.len(),
+            2,
+            "expected 2 edits (param + body ref in enum method), got: {:?}",
+            file_edits
+        );
+        let edited_lines: Vec<u64> = file_edits
+            .iter()
+            .map(|e| e["range"]["start"]["line"].as_u64().unwrap())
+            .collect();
+        assert!(
+            edited_lines.iter().all(|&l| l == 2),
+            "both edits must be on line 2 (inside enum method), got: {:?}",
+            edited_lines
+        );
+    }
+
+    #[tokio::test]
+    async fn document_highlight_enum_method_does_not_bleed_outer_scope() {
+        // Regression guard: cursor on $arg inside enum method must NOT highlight
+        // an outer $arg defined at file scope.
+        let mut client = start_server();
+        initialize(&mut client).await;
+
+        open_doc(
+            &mut client,
+            "file:///enum_scope.php",
+            "<?php\n$arg = 0;\nenum Status {\n    public function label($arg) { return $arg + 1; }\n}\n",
+        )
+        .await;
+
+        // Cursor on `arg` of `$arg` param — line 3, char 27.
+        let resp = client
+            .request(
+                "textDocument/documentHighlight",
+                serde_json::json!({
+                    "textDocument": { "uri": "file:///enum_scope.php" },
+                    "position": { "line": 3, "character": 27 }
+                }),
+            )
+            .await;
+
+        assert!(
+            resp["error"].is_null(),
+            "documentHighlight error: {:?}",
+            resp
+        );
+        let highlights = resp["result"].as_array().expect("expected array");
+        // Only the param + body reference inside the enum method (line 3); outer $arg on line 1 must be excluded.
+        assert_eq!(
+            highlights.len(),
+            2,
+            "expected exactly 2 highlights (param + body ref), got: {:?}",
+            highlights
+        );
+        let lines: Vec<u64> = highlights
+            .iter()
+            .map(|h| h["range"]["start"]["line"].as_u64().unwrap())
+            .collect();
+        assert!(
+            lines.iter().all(|&l| l == 3),
+            "all highlights must be on line 3 (inside enum method), outer $arg must not appear: {:?}",
+            lines
         );
     }
 
@@ -4538,17 +4707,11 @@ mod integration {
             )
             .await;
 
-        let notif = client
-            .read_notification("textDocument/publishDiagnostics")
-            .await;
+        let notif = client.read_diagnostics_for("file:///diag_test.php").await;
         let diags = &notif["params"]["diagnostics"];
-        assert!(
-            diags.is_array(),
-            "publishDiagnostics params.diagnostics must be an array"
-        );
         let has_undefined_fn = diags
             .as_array()
-            .unwrap()
+            .unwrap_or(&vec![])
             .iter()
             .any(|d| d["code"].as_str() == Some("UndefinedFunction"));
         assert!(
@@ -4577,9 +4740,7 @@ mod integration {
                 }),
             )
             .await;
-        client
-            .read_notification("textDocument/publishDiagnostics")
-            .await;
+        client.read_diagnostics_for("file:///change_test.php").await;
 
         // Now change the file to introduce an undefined-function call.
         client
@@ -4592,9 +4753,7 @@ mod integration {
             )
             .await;
 
-        let notif = client
-            .read_notification("textDocument/publishDiagnostics")
-            .await;
+        let notif = client.read_diagnostics_for("file:///change_test.php").await;
         let diags = &notif["params"]["diagnostics"];
         let has_undefined_fn = diags
             .as_array()
@@ -4627,9 +4786,7 @@ mod integration {
             )
             .await;
 
-        let notif = client
-            .read_notification("textDocument/publishDiagnostics")
-            .await;
+        let notif = client.read_diagnostics_for("file:///undef_class.php").await;
         let diags = &notif["params"]["diagnostics"];
         let has_undef_class = diags
             .as_array()
@@ -4662,9 +4819,7 @@ mod integration {
                 }),
             )
             .await;
-        let notif = client
-            .read_notification("textDocument/publishDiagnostics")
-            .await;
+        let notif = client.read_diagnostics_for("file:///fix_test.php").await;
         assert!(
             !notif["params"]["diagnostics"]
                 .as_array()
@@ -4684,9 +4839,7 @@ mod integration {
                 }),
             )
             .await;
-        let notif = client
-            .read_notification("textDocument/publishDiagnostics")
-            .await;
+        let notif = client.read_diagnostics_for("file:///fix_test.php").await;
         let diags = notif["params"]["diagnostics"]
             .as_array()
             .unwrap_or(&vec![])
@@ -4745,9 +4898,7 @@ class Broken
                 }),
             )
             .await;
-        let notif = client
-            .read_notification("textDocument/publishDiagnostics")
-            .await;
+        let notif = client.read_diagnostics_for(uri).await;
         let empty = vec![];
         notif["params"]["diagnostics"]
             .as_array()
