@@ -518,6 +518,136 @@ pub(crate) fn format_params_str(params: &[Param<'_, '_>]) -> String {
     format_params(params)
 }
 
+// ── Index-based variants ──────────────────────────────────────────────────────
+
+/// Return a function/method signature string from a `FileIndex` slice.
+/// Falls back to built-in doc URL for built-in functions.
+pub fn signature_for_symbol_from_index(
+    name: &str,
+    indexes: &[(
+        tower_lsp::lsp_types::Url,
+        std::sync::Arc<crate::file_index::FileIndex>,
+    )],
+) -> Option<String> {
+    for (_, idx) in indexes {
+        for f in &idx.functions {
+            if f.name == name {
+                let params_str = f
+                    .params
+                    .iter()
+                    .map(|p| {
+                        let mut s = String::new();
+                        if p.variadic {
+                            s.push_str("...");
+                        }
+                        if let Some(t) = &p.type_hint {
+                            s.push_str(&format!("{} ", t));
+                        }
+                        s.push_str(&format!("${}", p.name));
+                        s
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let ret = f
+                    .return_type
+                    .as_deref()
+                    .map(|r| format!(": {}", r))
+                    .unwrap_or_default();
+                return Some(format!("function {}({}){}", name, params_str, ret));
+            }
+        }
+        for cls in &idx.classes {
+            for m in &cls.methods {
+                if m.name == name {
+                    let params_str = m
+                        .params
+                        .iter()
+                        .map(|p| {
+                            let mut s = String::new();
+                            if p.variadic {
+                                s.push_str("...");
+                            }
+                            if let Some(t) = &p.type_hint {
+                                s.push_str(&format!("{} ", t));
+                            }
+                            s.push_str(&format!("${}", p.name));
+                            s
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    let ret = m
+                        .return_type
+                        .as_deref()
+                        .map(|r| format!(": {}", r))
+                        .unwrap_or_default();
+                    return Some(format!("function {}({}){}", name, params_str, ret));
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Return hover documentation for a symbol from a `FileIndex` slice.
+pub fn docs_for_symbol_from_index(
+    name: &str,
+    indexes: &[(
+        tower_lsp::lsp_types::Url,
+        std::sync::Arc<crate::file_index::FileIndex>,
+    )],
+) -> Option<String> {
+    if let Some(sig) = signature_for_symbol_from_index(name, indexes) {
+        let mut value = wrap_php(&sig);
+        // Look for docblock text in the index.
+        for (_, idx) in indexes {
+            for f in &idx.functions {
+                if f.name == name {
+                    if let Some(raw) = &f.doc {
+                        let db = crate::docblock::parse_docblock(raw);
+                        let md = db.to_markdown();
+                        if !md.is_empty() {
+                            value.push_str("\n\n---\n\n");
+                            value.push_str(&md);
+                        }
+                    }
+                    break;
+                }
+            }
+            for cls in &idx.classes {
+                for m in &cls.methods {
+                    if m.name == name {
+                        if let Some(raw) = &m.doc {
+                            let db = crate::docblock::parse_docblock(raw);
+                            let md = db.to_markdown();
+                            if !md.is_empty() {
+                                value.push_str("\n\n---\n\n");
+                                value.push_str(&md);
+                            }
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+        if is_php_builtin(name) {
+            value.push_str(&format!(
+                "\n\n[php.net documentation]({})",
+                php_doc_url(name)
+            ));
+        }
+        return Some(value);
+    }
+    // Fallback: built-in.
+    if is_php_builtin(name) {
+        return Some(format!(
+            "```php\nfunction {}()\n```\n\n[php.net documentation]({})",
+            name,
+            php_doc_url(name)
+        ));
+    }
+    None
+}
+
 /// Return the plain-text signature for a symbol (function or method) found in
 /// any of the supplied documents, or `None` if not found.
 ///

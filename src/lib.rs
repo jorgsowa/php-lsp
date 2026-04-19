@@ -16,6 +16,9 @@ pub mod type_map;
 pub mod util;
 pub mod walk;
 
+// Public module: compact symbol index for background-indexed files.
+pub mod file_index;
+
 // Private modules needed transitively by the public ones.
 mod autoload;
 mod backend;

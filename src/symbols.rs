@@ -604,6 +604,107 @@ fn _pos_from_offset(sv: SourceView<'_>, offset: u32) -> Position {
     sv.position_of(offset)
 }
 
+// ── Index-based variants ──────────────────────────────────────────────────────
+
+/// `workspace_symbols` variant that queries `FileIndex` entries instead of
+/// full `ParsedDoc` ASTs.  Used by the backend for cross-file symbol search
+/// when background files only retain a compact index.
+#[allow(deprecated)]
+pub fn workspace_symbols_from_index(
+    query: &str,
+    indexes: &[(Url, Arc<crate::file_index::FileIndex>)],
+) -> Vec<SymbolInformation> {
+    use crate::file_index::ClassKind;
+    use crate::util::fuzzy_camel_match;
+
+    let (kind_filter, term) = parse_kind_filter(query);
+    let matches_kind = |k: SymbolKind| kind_filter.is_none_or(|f| f == k);
+
+    let line_range = |line: u32| -> Range {
+        let pos = Position { line, character: 0 };
+        Range {
+            start: pos,
+            end: pos,
+        }
+    };
+
+    let mut results = Vec::new();
+    for (uri, idx) in indexes {
+        if matches_kind(SymbolKind::FUNCTION) {
+            for f in &idx.functions {
+                if fuzzy_camel_match(term, &f.name) {
+                    results.push(SymbolInformation {
+                        name: f.name.clone(),
+                        kind: SymbolKind::FUNCTION,
+                        location: Location {
+                            uri: uri.clone(),
+                            range: line_range(f.start_line),
+                        },
+                        tags: None,
+                        deprecated: None,
+                        container_name: None,
+                    });
+                }
+            }
+        }
+        for cls in &idx.classes {
+            let class_kind = match cls.kind {
+                ClassKind::Class | ClassKind::Trait => SymbolKind::CLASS,
+                ClassKind::Interface => SymbolKind::INTERFACE,
+                ClassKind::Enum => SymbolKind::ENUM,
+            };
+            if matches_kind(class_kind) && fuzzy_camel_match(term, &cls.name) {
+                results.push(SymbolInformation {
+                    name: cls.name.clone(),
+                    kind: class_kind,
+                    location: Location {
+                        uri: uri.clone(),
+                        range: line_range(cls.start_line),
+                    },
+                    tags: None,
+                    deprecated: None,
+                    container_name: None,
+                });
+            }
+            if matches_kind(SymbolKind::METHOD) {
+                for m in &cls.methods {
+                    if fuzzy_camel_match(term, &m.name) {
+                        results.push(SymbolInformation {
+                            name: m.name.clone(),
+                            kind: SymbolKind::METHOD,
+                            location: Location {
+                                uri: uri.clone(),
+                                range: line_range(m.start_line),
+                            },
+                            tags: None,
+                            deprecated: None,
+                            container_name: Some(cls.name.clone()),
+                        });
+                    }
+                }
+            }
+            if matches_kind(SymbolKind::ENUM_MEMBER) && cls.kind == ClassKind::Enum {
+                for case in &cls.cases {
+                    if fuzzy_camel_match(term, case) {
+                        results.push(SymbolInformation {
+                            name: case.clone(),
+                            kind: SymbolKind::ENUM_MEMBER,
+                            location: Location {
+                                uri: uri.clone(),
+                                range: line_range(cls.start_line),
+                            },
+                            tags: None,
+                            deprecated: None,
+                            container_name: Some(cls.name.clone()),
+                        });
+                    }
+                }
+            }
+        }
+    }
+    results
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

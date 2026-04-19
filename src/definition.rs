@@ -126,6 +126,117 @@ fn scan_statements(sv: SourceView<'_>, stmts: &[Stmt<'_, '_>], word: &str) -> Op
     None
 }
 
+/// Find a class/function declaration by name in a slice of `FileIndex` entries.
+/// Returns the URI and a line-level `Range`.
+pub fn find_in_indexes(
+    name: &str,
+    indexes: &[(
+        tower_lsp::lsp_types::Url,
+        std::sync::Arc<crate::file_index::FileIndex>,
+    )],
+) -> Option<Location> {
+    let bare = name.strip_prefix('$').unwrap_or(name);
+    for (uri, idx) in indexes {
+        // Check top-level functions.
+        for f in &idx.functions {
+            if f.name == bare || f.name == name {
+                let pos = tower_lsp::lsp_types::Position {
+                    line: f.start_line,
+                    character: 0,
+                };
+                return Some(Location {
+                    uri: uri.clone(),
+                    range: Range {
+                        start: pos,
+                        end: pos,
+                    },
+                });
+            }
+        }
+        // Check classes / interfaces / traits / enums and their members.
+        for cls in &idx.classes {
+            if cls.name == bare || cls.name == name {
+                let pos = tower_lsp::lsp_types::Position {
+                    line: cls.start_line,
+                    character: 0,
+                };
+                return Some(Location {
+                    uri: uri.clone(),
+                    range: Range {
+                        start: pos,
+                        end: pos,
+                    },
+                });
+            }
+            // Methods.
+            for m in &cls.methods {
+                if m.name == name {
+                    let pos = tower_lsp::lsp_types::Position {
+                        line: m.start_line,
+                        character: 0,
+                    };
+                    return Some(Location {
+                        uri: uri.clone(),
+                        range: Range {
+                            start: pos,
+                            end: pos,
+                        },
+                    });
+                }
+            }
+            // Properties (stored without `$`).
+            for p in &cls.properties {
+                if p.name == bare {
+                    let pos = tower_lsp::lsp_types::Position {
+                        line: cls.start_line,
+                        character: 0,
+                    };
+                    return Some(Location {
+                        uri: uri.clone(),
+                        range: Range {
+                            start: pos,
+                            end: pos,
+                        },
+                    });
+                }
+            }
+            // Class constants.
+            for cc in &cls.constants {
+                if cc.as_str() == name {
+                    let pos = tower_lsp::lsp_types::Position {
+                        line: cls.start_line,
+                        character: 0,
+                    };
+                    return Some(Location {
+                        uri: uri.clone(),
+                        range: Range {
+                            start: pos,
+                            end: pos,
+                        },
+                    });
+                }
+            }
+            // Enum cases.
+            for case in &cls.cases {
+                if case.as_str() == name {
+                    let pos = tower_lsp::lsp_types::Position {
+                        line: cls.start_line,
+                        character: 0,
+                    };
+                    return Some(Location {
+                        uri: uri.clone(),
+                        range: Range {
+                            start: pos,
+                            end: pos,
+                        },
+                    });
+                }
+            }
+        }
+    }
+    None
+}
+
 fn _name_range_from_offset(sv: SourceView<'_>, name: &str) -> Range {
     let start_offset = str_offset(sv.source(), name);
     let start = sv.position_of(start_offset);

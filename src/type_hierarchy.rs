@@ -204,6 +204,122 @@ fn collect_subtypes(
     }
 }
 
+// ── Index-based variants ──────────────────────────────────────────────────────
+
+fn line_range(line: u32) -> tower_lsp::lsp_types::Range {
+    let pos = Position { line, character: 0 };
+    tower_lsp::lsp_types::Range {
+        start: pos,
+        end: pos,
+    }
+}
+
+fn make_item_from_index(
+    name: &str,
+    kind: SymbolKind,
+    uri: &Url,
+    start_line: u32,
+) -> TypeHierarchyItem {
+    let range = line_range(start_line);
+    TypeHierarchyItem {
+        name: name.to_string(),
+        kind,
+        tags: None,
+        detail: None,
+        uri: uri.clone(),
+        range,
+        selection_range: range,
+        data: None,
+    }
+}
+
+/// Prepare type hierarchy from a FileIndex slice.
+pub fn prepare_type_hierarchy_from_index(
+    source: &str,
+    indexes: &[(Url, std::sync::Arc<crate::file_index::FileIndex>)],
+    position: Position,
+) -> Option<TypeHierarchyItem> {
+    use crate::file_index::ClassKind;
+    use crate::util::word_at;
+    let word = word_at(source, position)?;
+    for (uri, idx) in indexes {
+        for cls in &idx.classes {
+            if cls.name == word {
+                let kind = match cls.kind {
+                    ClassKind::Class | ClassKind::Trait => SymbolKind::CLASS,
+                    ClassKind::Interface => SymbolKind::INTERFACE,
+                    ClassKind::Enum => SymbolKind::ENUM,
+                };
+                return Some(make_item_from_index(&cls.name, kind, uri, cls.start_line));
+            }
+        }
+    }
+    None
+}
+
+/// Supertypes from FileIndex.
+pub fn supertypes_of_from_index(
+    item: &TypeHierarchyItem,
+    indexes: &[(Url, std::sync::Arc<crate::file_index::FileIndex>)],
+) -> Vec<TypeHierarchyItem> {
+    use crate::file_index::ClassKind;
+    let mut super_names: Vec<String> = Vec::new();
+
+    for (_, idx) in indexes {
+        for cls in &idx.classes {
+            if cls.name == item.name {
+                if let Some(p) = &cls.parent {
+                    super_names.push(p.clone());
+                }
+                for iface in &cls.implements {
+                    super_names.push(iface.clone());
+                }
+            }
+        }
+    }
+
+    let mut result = Vec::new();
+    for name in super_names {
+        for (uri, idx) in indexes {
+            if let Some(cls) = idx.classes.iter().find(|c| c.name == name) {
+                let kind = match cls.kind {
+                    ClassKind::Class | ClassKind::Trait => SymbolKind::CLASS,
+                    ClassKind::Interface => SymbolKind::INTERFACE,
+                    ClassKind::Enum => SymbolKind::ENUM,
+                };
+                result.push(make_item_from_index(&cls.name, kind, uri, cls.start_line));
+                break;
+            }
+        }
+    }
+    result
+}
+
+/// Subtypes from FileIndex.
+pub fn subtypes_of_from_index(
+    item: &TypeHierarchyItem,
+    indexes: &[(Url, std::sync::Arc<crate::file_index::FileIndex>)],
+) -> Vec<TypeHierarchyItem> {
+    use crate::file_index::ClassKind;
+    let mut result = Vec::new();
+    for (uri, idx) in indexes {
+        for cls in &idx.classes {
+            let extends_match = cls.parent.as_deref() == Some(&item.name as &str);
+            let implements_match = cls.implements.iter().any(|i| i == &item.name);
+            let trait_use_match = cls.traits.iter().any(|t| t == &item.name);
+            if extends_match || implements_match || trait_use_match {
+                let kind = match cls.kind {
+                    ClassKind::Class | ClassKind::Trait => SymbolKind::CLASS,
+                    ClassKind::Interface => SymbolKind::INTERFACE,
+                    ClassKind::Enum => SymbolKind::ENUM,
+                };
+                result.push(make_item_from_index(&cls.name, kind, uri, cls.start_line));
+            }
+        }
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

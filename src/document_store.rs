@@ -7,6 +7,7 @@ use tower_lsp::lsp_types::{Diagnostic, SemanticToken, Url};
 
 use crate::ast::ParsedDoc;
 use crate::diagnostics::parse_document;
+use crate::file_index::FileIndex;
 
 /// Default limit used in tests so eviction can be exercised without many files.
 #[cfg(test)]
@@ -18,7 +19,10 @@ pub(crate) const DEFAULT_MAX_INDEXED: usize = 1_000;
 struct Document {
     /// `Some` when the file is open in the editor; `None` for workspace-indexed files.
     text: Option<String>,
-    doc: Arc<ParsedDoc>,
+    /// `Some` for open files; `None` for background-indexed files (they use `index` instead).
+    doc: Option<Arc<ParsedDoc>>,
+    /// Always present; compact symbol index extracted after parsing.
+    index: Arc<FileIndex>,
     diagnostics: Vec<Diagnostic>,
     /// Semantic diagnostics computed by `did_open`/`did_change`.
     /// Stored separately so callers like `code_action` can read them without
@@ -82,7 +86,8 @@ impl DocumentStore {
     pub fn set_text(&self, uri: Url, text: String) -> u64 {
         let mut entry = self.map.entry(uri).or_insert_with(|| Document {
             text: None,
-            doc: Arc::new(ParsedDoc::default()),
+            doc: None,
+            index: Arc::new(FileIndex::default()),
             diagnostics: vec![],
             sem_diagnostics: vec![],
             text_version: 0,
@@ -104,7 +109,8 @@ impl DocumentStore {
         if let Some(mut entry) = self.map.get_mut(uri)
             && entry.text_version == version
         {
-            entry.doc = Arc::new(doc);
+            entry.index = Arc::new(FileIndex::extract(uri, &doc));
+            entry.doc = Some(Arc::new(doc));
             entry.diagnostics = diagnostics;
             return true;
         }
@@ -114,6 +120,8 @@ impl DocumentStore {
     pub fn close(&self, uri: &Url) {
         if let Some(mut entry) = self.map.get_mut(uri) {
             entry.text = None;
+            // Drop the full ParsedDoc for closed files — the FileIndex is retained.
+            entry.doc = None;
             entry.text_version += 1;
             let mut q = self.indexed_order.lock().unwrap();
             if !q.contains(uri) {
@@ -132,12 +140,20 @@ impl DocumentStore {
         {
             return;
         }
-        let (doc, diagnostics) = parse_document(text);
+        // Parse → extract compact index → drop ParsedDoc + text immediately.
+        let (index, diagnostics) = {
+            let (doc, diagnostics) = parse_document(text);
+            let idx = FileIndex::extract(&uri, &doc);
+            // `doc` is dropped here — arena freed / returned to pool.
+            (Arc::new(idx), diagnostics)
+        };
+
         self.map.insert(
             uri.clone(),
             Document {
                 text: None,
-                doc: Arc::new(doc),
+                doc: None,
+                index,
                 diagnostics,
                 sem_diagnostics: vec![],
                 text_version: 0,
@@ -196,9 +212,15 @@ impl DocumentStore {
         self.map.get(uri).and_then(|d| d.text.clone())
     }
 
-    /// Returns the parsed document (cheap Arc clone). Always present once indexed.
+    /// Returns the parsed document (cheap Arc clone).
+    /// Only `Some` for files currently open in the editor.
     pub fn get_doc(&self, uri: &Url) -> Option<Arc<ParsedDoc>> {
-        self.map.get(uri).map(|d| d.doc.clone())
+        self.map.get(uri).and_then(|d| d.doc.clone())
+    }
+
+    /// Returns the compact symbol index for a file.
+    pub fn get_index(&self, uri: &Url) -> Option<Arc<FileIndex>> {
+        self.map.get(uri).map(|d| d.index.clone())
     }
 
     pub fn get_diagnostics(&self, uri: &Url) -> Option<Vec<Diagnostic>> {
@@ -220,10 +242,14 @@ impl DocumentStore {
             .unwrap_or_default()
     }
 
+    /// Returns `(uri, doc)` for files currently open in the editor.
+    ///
+    /// Background-indexed files no longer retain a `ParsedDoc`; use
+    /// [`all_docs_for_scan`] when you need to traverse every file's AST.
     pub fn all_docs(&self) -> Vec<(Url, Arc<ParsedDoc>)> {
         self.map
             .iter()
-            .map(|e| (e.key().clone(), e.value().doc.clone()))
+            .filter_map(|e| e.value().doc.as_ref().map(|d| (e.key().clone(), d.clone())))
             .collect()
     }
 
@@ -243,13 +269,81 @@ impl DocumentStore {
             .collect()
     }
 
+    /// Returns `(uri, doc)` for open files excluding `uri`.
     pub fn other_docs(&self, uri: &Url) -> Vec<(Url, Arc<ParsedDoc>)> {
         self.map
             .iter()
             .filter(|e| e.key() != uri)
-            .map(|e| (e.key().clone(), e.value().doc.clone()))
+            .filter_map(|e| e.value().doc.as_ref().map(|d| (e.key().clone(), d.clone())))
             .collect()
     }
+
+    /// Returns the compact symbol index for every indexed file.
+    pub fn all_indexes(&self) -> Vec<(Url, Arc<FileIndex>)> {
+        self.map
+            .iter()
+            .map(|e| (e.key().clone(), e.value().index.clone()))
+            .collect()
+    }
+
+    /// Returns indexes for every file except `uri`.
+    pub fn other_indexes(&self, uri: &Url) -> Vec<(Url, Arc<FileIndex>)> {
+        self.map
+            .iter()
+            .filter(|e| e.key() != uri)
+            .map(|e| (e.key().clone(), e.value().index.clone()))
+            .collect()
+    }
+
+    /// Returns parsed documents for every file, suitable for full-scan operations
+    /// (find-references, rename, call_hierarchy, code_lens).
+    ///
+    /// - For open files: returns the in-memory `ParsedDoc` (cheap Arc clone).
+    /// - For background-indexed files: re-reads the file from disk and parses it.
+    ///   The resulting `ParsedDoc` is **not** stored — callers hold it temporarily.
+    pub fn all_docs_for_scan(&self) -> Vec<(Url, Arc<ParsedDoc>)> {
+        let mut result = Vec::new();
+        for entry in self.map.iter() {
+            let uri = entry.key().clone();
+            if let Some(doc) = entry.value().doc.as_ref() {
+                // Open file: use in-memory doc.
+                result.push((uri, doc.clone()));
+            } else {
+                // Background file: read from disk.
+                if let Some(doc) = read_and_parse_from_disk(&uri) {
+                    result.push((uri, Arc::new(doc)));
+                }
+            }
+        }
+        result
+    }
+
+    /// Same as `all_docs_for_scan` but excludes `uri`.
+    pub fn other_docs_for_scan(&self, uri: &Url) -> Vec<(Url, Arc<ParsedDoc>)> {
+        let mut result = Vec::new();
+        for entry in self.map.iter() {
+            let entry_uri = entry.key().clone();
+            if &entry_uri == uri {
+                continue;
+            }
+            if let Some(doc) = entry.value().doc.as_ref() {
+                result.push((entry_uri, doc.clone()));
+            } else {
+                if let Some(doc) = read_and_parse_from_disk(&entry_uri) {
+                    result.push((entry_uri, Arc::new(doc)));
+                }
+            }
+        }
+        result
+    }
+}
+
+/// Read a file from disk and parse it. Returns `None` if the file cannot be read.
+fn read_and_parse_from_disk(uri: &Url) -> Option<ParsedDoc> {
+    let path = uri.to_file_path().ok()?;
+    let text = std::fs::read_to_string(&path).ok()?;
+    let (doc, _) = parse_document(&text);
+    Some(doc)
 }
 
 #[cfg(test)]
@@ -289,7 +383,7 @@ mod tests {
     }
 
     #[test]
-    fn close_clears_text_but_keeps_doc() {
+    fn close_clears_text_but_keeps_index() {
         let store = DocumentStore::new();
         open(
             &store,
@@ -298,7 +392,9 @@ mod tests {
         );
         store.close(&uri("/a.php"));
         assert!(store.get(&uri("/a.php")).is_none());
-        assert!(store.get_doc(&uri("/a.php")).is_some());
+        // After close, ParsedDoc is gone but FileIndex is retained.
+        assert!(store.get_doc(&uri("/a.php")).is_none());
+        assert!(store.get_index(&uri("/a.php")).is_some());
     }
 
     #[test]
@@ -308,11 +404,13 @@ mod tests {
     }
 
     #[test]
-    fn index_stores_doc_without_text() {
+    fn index_stores_index_without_doc() {
         let store = DocumentStore::new();
         store.index(uri("/lib.php"), "<?php\nfunction lib_fn() {}");
         assert!(store.get(&uri("/lib.php")).is_none());
-        assert!(store.get_doc(&uri("/lib.php")).is_some());
+        // Background-indexed files have no ParsedDoc, only FileIndex.
+        assert!(store.get_doc(&uri("/lib.php")).is_none());
+        assert!(store.get_index(&uri("/lib.php")).is_some());
     }
 
     #[test]
@@ -328,15 +426,32 @@ mod tests {
         let store = DocumentStore::new();
         store.index(uri("/lib.php"), "<?php");
         store.remove(&uri("/lib.php"));
-        assert!(store.get_doc(&uri("/lib.php")).is_none());
+        assert!(store.get_index(&uri("/lib.php")).is_none());
     }
 
     #[test]
-    fn all_docs_includes_indexed_files() {
+    fn all_docs_only_includes_open_files() {
         let store = DocumentStore::new();
         open(&store, uri("/a.php"), "<?php\nfunction a() {}".to_string());
         store.index(uri("/b.php"), "<?php\nfunction b() {}");
-        assert_eq!(store.all_docs().len(), 2);
+        // only open files have docs
+        assert_eq!(store.all_docs().len(), 1);
+    }
+
+    #[test]
+    fn all_indexes_includes_all_files() {
+        let store = DocumentStore::new();
+        open(&store, uri("/a.php"), "<?php\nfunction a() {}".to_string());
+        store.index(uri("/b.php"), "<?php\nfunction b() {}");
+        assert_eq!(store.all_indexes().len(), 2);
+    }
+
+    #[test]
+    fn other_indexes_excludes_current_uri() {
+        let store = DocumentStore::new();
+        open(&store, uri("/a.php"), "<?php\nfunction a() {}".to_string());
+        open(&store, uri("/b.php"), "<?php\nfunction b() {}".to_string());
+        assert_eq!(store.other_indexes(&uri("/a.php")).len(), 1);
     }
 
     #[test]
@@ -368,16 +483,16 @@ mod tests {
         store.index(uri("/overflow.php"), "<?php");
 
         assert_eq!(
-            store.all_docs().len(),
+            store.all_indexes().len(),
             DEFAULT_MAX_INDEXED,
             "map must not exceed DEFAULT_MAX_INDEXED after overflow"
         );
         assert!(
-            store.get_doc(&uri("/overflow.php")).is_some(),
+            store.get_index(&uri("/overflow.php")).is_some(),
             "newly indexed file must be present"
         );
         assert!(
-            store.get_doc(&uri("/0.php")).is_none(),
+            store.get_index(&uri("/0.php")).is_none(),
             "oldest file must have been evicted"
         );
     }
@@ -385,13 +500,7 @@ mod tests {
     #[test]
     fn eviction_skips_open_files_and_evicts_next_indexed() {
         // Regression test for the bug where an open file at the front of the
-        // eviction queue caused the loop to exit without evicting anything:
-        //
-        //   order.len() was DEFAULT_MAX_INDEXED+1 → pop open file → order.len() drops
-        //   to DEFAULT_MAX_INDEXED → while condition false → loop exits → no eviction.
-        //
-        // After the fix the loop tracks `need_to_evict` independently of
-        // order.len(), so it keeps looking until it finds an indexed file.
+        // eviction queue caused the loop to exit without evicting anything.
         let store = DocumentStore::new();
 
         // Index DEFAULT_MAX_INDEXED files; /0.php will be the oldest in the queue.
@@ -408,24 +517,24 @@ mod tests {
 
         // The open file must still be present.
         assert!(
-            store.get_doc(&uri("/0.php")).is_some(),
+            store.get_index(&uri("/0.php")).is_some(),
             "/0.php is open and must not be evicted"
         );
         // The overflow file must have been indexed.
         assert!(
-            store.get_doc(&uri("/overflow.php")).is_some(),
+            store.get_index(&uri("/overflow.php")).is_some(),
             "overflow file must be present"
         );
         // The eviction must have brought the map back to DEFAULT_MAX_INDEXED total
-        // entries: /0.php (open) + the remaining indexed files + /overflow.php.
+        // entries.
         assert_eq!(
-            store.all_docs().len(),
+            store.all_indexes().len(),
             DEFAULT_MAX_INDEXED,
             "total docs must equal DEFAULT_MAX_INDEXED after eviction"
         );
         // /1.php should have been evicted (oldest indexed-only file after /0.php).
         assert!(
-            store.get_doc(&uri("/1.php")).is_none(),
+            store.get_index(&uri("/1.php")).is_none(),
             "/1.php must have been evicted as the oldest indexed-only file"
         );
     }
@@ -456,5 +565,23 @@ mod tests {
             len_after_first, len_after_second,
             "second close must not add a duplicate entry to indexed_order"
         );
+    }
+
+    #[test]
+    fn index_populates_file_index_with_symbols() {
+        let store = DocumentStore::new();
+        store.index(uri("/a.php"), "<?php\nfunction hello() {}");
+        let idx = store.get_index(&uri("/a.php")).unwrap();
+        assert_eq!(idx.functions.len(), 1);
+        assert_eq!(idx.functions[0].name, "hello");
+    }
+
+    #[test]
+    fn open_populates_file_index_with_symbols() {
+        let store = DocumentStore::new();
+        open(&store, uri("/a.php"), "<?php\nclass Foo {}".to_string());
+        let idx = store.get_index(&uri("/a.php")).unwrap();
+        assert_eq!(idx.classes.len(), 1);
+        assert_eq!(idx.classes[0].name, "Foo");
     }
 }

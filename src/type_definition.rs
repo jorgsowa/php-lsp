@@ -96,6 +96,44 @@ fn find_class_range(sv: SourceView<'_>, stmts: &[Stmt<'_, '_>], name: &str) -> O
     None
 }
 
+/// Find a type definition using `FileIndex` entries.
+pub fn goto_type_definition_from_index(
+    source: &str,
+    doc: &ParsedDoc,
+    indexes: &[(Url, std::sync::Arc<crate::file_index::FileIndex>)],
+    position: Position,
+) -> Option<Location> {
+    use crate::util::word_at;
+    let word = word_at(source, position)?;
+
+    let type_map = TypeMap::from_doc(doc);
+    let class_name = if word.starts_with('$') {
+        type_map.get(&word)?.to_string()
+    } else {
+        param_type_for(&doc.program().stmts, &word)?
+    };
+
+    let line_range = |line: u32| -> Range {
+        let p = Position { line, character: 0 };
+        Range { start: p, end: p }
+    };
+
+    for (uri, idx) in indexes {
+        for cls in &idx.classes {
+            // Match by short name (last segment after `\`).
+            let short = cls.name.rsplit('\\').next().unwrap_or(&cls.name);
+            let cn_short = class_name.rsplit('\\').next().unwrap_or(&class_name);
+            if cls.name == class_name || short == cn_short {
+                return Some(Location {
+                    uri: uri.clone(),
+                    range: line_range(cls.start_line),
+                });
+            }
+        }
+    }
+    None
+}
+
 fn _offset_to_position_range(sv: SourceView<'_>, name_str: &str, _name: &str) -> Range {
     let start = sv.position_of(0);
     Range {
