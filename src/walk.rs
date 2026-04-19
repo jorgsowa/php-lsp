@@ -1,16 +1,30 @@
-/// Deep AST walker — collects all spans where `word` appears as a name reference
-/// (function calls, `new Foo`, method calls, bare identifiers, static calls).
+/// AST walkers — collect all spans where a name, variable, property, function,
+/// method, or class reference appears in the given statements.
+use std::ops::ControlFlow;
+
 use php_ast::{
-    ClassMemberKind, EnumMemberKind, Expr, ExprKind, NamespaceBody, Span, Stmt, StmtKind, TypeHint,
-    TypeHintKind,
+    CatchClause, ClassMember, ClassMemberKind, EnumMember, EnumMemberKind, Expr, ExprKind, Name,
+    NamespaceBody, Span, Stmt, StmtKind, TypeHint, TypeHintKind,
+    visitor::{
+        Visitor, walk_catch_clause, walk_class_member, walk_enum_member, walk_expr, walk_stmt,
+        walk_type_hint,
+    },
 };
 
 use crate::ast::str_offset;
 
+// ── Public entry points ───────────────────────────────────────────────────────
+
 pub fn refs_in_stmts(source: &str, stmts: &[Stmt<'_, '_>], word: &str, out: &mut Vec<Span>) {
+    let mut v = AllRefsVisitor {
+        source,
+        word,
+        out: Vec::new(),
+    };
     for stmt in stmts {
-        refs_in_stmt(source, stmt, word, out);
+        let _ = v.visit_stmt(stmt);
     }
+    out.append(&mut v.out);
 }
 
 /// Like `refs_in_stmts`, but also matches spans inside `use` statements.
@@ -54,450 +68,125 @@ fn use_refs(stmts: &[Stmt<'_, '_>], word: &str, out: &mut Vec<Span>) {
     }
 }
 
-// ── RefVisitor trait + shared walker ──────────────────────────────────────────
-
-trait RefVisitor {
-    fn visit_expr(&self, expr: &Expr<'_, '_>, out: &mut Vec<Span>);
-    /// Return true if handled (skip shared control-flow dispatch).
-    fn visit_stmt(&self, stmt: &Stmt<'_, '_>, out: &mut Vec<Span>) -> bool;
+pub fn refs_in_expr(source: &str, expr: &Expr<'_, '_>, word: &str, out: &mut Vec<Span>) {
+    let mut v = AllRefsVisitor {
+        source,
+        word,
+        out: Vec::new(),
+    };
+    let _ = v.visit_expr(expr);
+    out.append(&mut v.out);
 }
 
-fn walk_refs(v: &impl RefVisitor, stmts: &[Stmt<'_, '_>], out: &mut Vec<Span>) {
-    for stmt in stmts {
-        walk_ref_stmt(v, stmt, out);
-    }
-}
-
-fn walk_ref_stmt(v: &impl RefVisitor, stmt: &Stmt<'_, '_>, out: &mut Vec<Span>) {
-    if v.visit_stmt(stmt, out) {
-        return;
-    }
-    match &stmt.kind {
-        StmtKind::Expression(e) => v.visit_expr(e, out),
-        StmtKind::Return(Some(e)) => v.visit_expr(e, out),
-        StmtKind::Echo(exprs) => {
-            for expr in exprs.iter() {
-                v.visit_expr(expr, out);
-            }
-        }
-        StmtKind::If(i) => {
-            v.visit_expr(&i.condition, out);
-            walk_ref_stmt(v, i.then_branch, out);
-            for ei in i.elseif_branches.iter() {
-                v.visit_expr(&ei.condition, out);
-                walk_ref_stmt(v, &ei.body, out);
-            }
-            if let Some(e) = &i.else_branch {
-                walk_ref_stmt(v, e, out);
-            }
-        }
-        StmtKind::While(w) => {
-            v.visit_expr(&w.condition, out);
-            walk_ref_stmt(v, w.body, out);
-        }
-        StmtKind::DoWhile(d) => {
-            walk_ref_stmt(v, d.body, out);
-            v.visit_expr(&d.condition, out);
-        }
-        StmtKind::Foreach(f) => {
-            v.visit_expr(&f.expr, out);
-            walk_ref_stmt(v, f.body, out);
-        }
-        StmtKind::For(f) => {
-            for e in f.init.iter() {
-                v.visit_expr(e, out);
-            }
-            for cond in f.condition.iter() {
-                v.visit_expr(cond, out);
-            }
-            for e in f.update.iter() {
-                v.visit_expr(e, out);
-            }
-            walk_ref_stmt(v, f.body, out);
-        }
-        StmtKind::TryCatch(t) => {
-            walk_refs(v, &t.body, out);
-            for catch in t.catches.iter() {
-                walk_refs(v, &catch.body, out);
-            }
-            if let Some(finally) = &t.finally {
-                walk_refs(v, finally, out);
-            }
-        }
-        StmtKind::Block(stmts) => walk_refs(v, stmts, out),
-        _ => {}
-    }
-}
-
-// ── AllRefsVisitor ───────────────────────────────────────────────────────────
+// ── AllRefsVisitor ────────────────────────────────────────────────────────────
 
 struct AllRefsVisitor<'a> {
     source: &'a str,
     word: &'a str,
+    out: Vec<Span>,
 }
 
-impl RefVisitor for AllRefsVisitor<'_> {
-    fn visit_expr(&self, expr: &Expr<'_, '_>, out: &mut Vec<Span>) {
-        refs_in_expr(self.source, expr, self.word, out);
-    }
-
-    fn visit_stmt(&self, stmt: &Stmt<'_, '_>, out: &mut Vec<Span>) -> bool {
-        match &stmt.kind {
-            StmtKind::Function(f) => {
-                if f.name == self.word {
-                    let start = str_offset(self.source, f.name);
-                    out.push(Span {
-                        start,
-                        end: start + f.name.len() as u32,
-                    });
-                }
-                walk_refs(self, &f.body, out);
-                true
-            }
-            StmtKind::Class(c) => {
-                if let Some(name) = c.name
-                    && name == self.word
-                {
-                    let start = str_offset(self.source, name);
-                    out.push(Span {
-                        start,
-                        end: start + name.len() as u32,
-                    });
-                }
-                for member in c.members.iter() {
-                    match &member.kind {
-                        ClassMemberKind::Method(m) => {
-                            if m.name == self.word {
-                                let start = str_offset(self.source, m.name);
-                                out.push(Span {
-                                    start,
-                                    end: start + m.name.len() as u32,
-                                });
-                            }
-                            if let Some(body) = &m.body {
-                                walk_refs(self, body, out);
-                            }
-                        }
-                        ClassMemberKind::Property(p) => {
-                            if let Some(default) = &p.default {
-                                refs_in_expr(self.source, default, self.word, out);
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-                true
-            }
-            StmtKind::Interface(i) => {
-                if i.name == self.word {
-                    let start = str_offset(self.source, i.name);
-                    out.push(Span {
-                        start,
-                        end: start + i.name.len() as u32,
-                    });
-                }
-                for member in i.members.iter() {
-                    if let ClassMemberKind::Method(m) = &member.kind
-                        && m.name == self.word
-                    {
-                        let start = str_offset(self.source, m.name);
-                        out.push(Span {
-                            start,
-                            end: start + m.name.len() as u32,
-                        });
-                    }
-                }
-                true
-            }
-            StmtKind::Trait(t) => {
-                if t.name == self.word {
-                    let start = str_offset(self.source, t.name);
-                    out.push(Span {
-                        start,
-                        end: start + t.name.len() as u32,
-                    });
-                }
-                for member in t.members.iter() {
-                    match &member.kind {
-                        ClassMemberKind::Method(m) => {
-                            if m.name == self.word {
-                                let start = str_offset(self.source, m.name);
-                                out.push(Span {
-                                    start,
-                                    end: start + m.name.len() as u32,
-                                });
-                            }
-                            if let Some(body) = &m.body {
-                                walk_refs(self, body, out);
-                            }
-                        }
-                        ClassMemberKind::Property(p) => {
-                            if let Some(default) = &p.default {
-                                refs_in_expr(self.source, default, self.word, out);
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-                true
-            }
-            StmtKind::Enum(e) => {
-                if e.name == self.word {
-                    let start = str_offset(self.source, e.name);
-                    out.push(Span {
-                        start,
-                        end: start + e.name.len() as u32,
-                    });
-                }
-                for member in e.members.iter() {
-                    match &member.kind {
-                        EnumMemberKind::Method(m) => {
-                            if m.name == self.word {
-                                let start = str_offset(self.source, m.name);
-                                out.push(Span {
-                                    start,
-                                    end: start + m.name.len() as u32,
-                                });
-                            }
-                            if let Some(body) = &m.body {
-                                walk_refs(self, body, out);
-                            }
-                        }
-                        EnumMemberKind::Case(c) => {
-                            if let Some(value) = &c.value {
-                                refs_in_expr(self.source, value, self.word, out);
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-                true
-            }
-            StmtKind::Namespace(ns) => {
-                if let NamespaceBody::Braced(inner) = &ns.body {
-                    walk_refs(self, inner, out);
-                }
-                true
-            }
-            StmtKind::StaticVar(vars) => {
-                for var in vars.iter() {
-                    if let Some(v) = &var.default {
-                        refs_in_expr(self.source, v, self.word, out);
-                    }
-                }
-                true
-            }
-            _ => false,
+impl AllRefsVisitor<'_> {
+    fn push_name_str(&mut self, name: &str) {
+        if name == self.word {
+            let start = str_offset(self.source, name);
+            self.out.push(Span {
+                start,
+                end: start + name.len() as u32,
+            });
         }
     }
 }
 
-fn refs_in_stmt(source: &str, stmt: &Stmt<'_, '_>, word: &str, out: &mut Vec<Span>) {
-    let v = AllRefsVisitor { source, word };
-    walk_ref_stmt(&v, stmt, out);
+impl<'arena, 'src> Visitor<'arena, 'src> for AllRefsVisitor<'_> {
+    fn visit_stmt(&mut self, stmt: &Stmt<'arena, 'src>) -> ControlFlow<()> {
+        match &stmt.kind {
+            StmtKind::Function(f) => self.push_name_str(f.name),
+            StmtKind::Class(c) => {
+                if let Some(name) = c.name {
+                    self.push_name_str(name);
+                }
+            }
+            StmtKind::Interface(i) => self.push_name_str(i.name),
+            StmtKind::Trait(t) => self.push_name_str(t.name),
+            StmtKind::Enum(e) => self.push_name_str(e.name),
+            _ => {}
+        }
+        walk_stmt(self, stmt)
+    }
+
+    fn visit_class_member(&mut self, member: &ClassMember<'arena, 'src>) -> ControlFlow<()> {
+        if let ClassMemberKind::Method(m) = &member.kind {
+            self.push_name_str(m.name);
+        }
+        walk_class_member(self, member)
+    }
+
+    fn visit_enum_member(&mut self, member: &EnumMember<'arena, 'src>) -> ControlFlow<()> {
+        if let EnumMemberKind::Method(m) = &member.kind {
+            self.push_name_str(m.name);
+        }
+        walk_enum_member(self, member)
+    }
+
+    fn visit_expr(&mut self, expr: &Expr<'arena, 'src>) -> ControlFlow<()> {
+        if let ExprKind::Identifier(name) = &expr.kind
+            && name.as_str() == self.word
+        {
+            self.out.push(expr.span);
+        }
+        walk_expr(self, expr)
+    }
 }
 
 // ── Variable rename helpers ───────────────────────────────────────────────────
 
 /// Collect all spans where `$var_name` (the variable name WITHOUT `$`) appears as an
-/// ExprKind::Variable within `stmts`. Stops at nested function/closure/arrow-function
+/// `ExprKind::Variable` within `stmts`. Stops at nested function/closure/arrow-function
 /// scope boundaries so that `$x` in an inner function is not conflated with `$x` in
 /// the outer function.
 pub fn var_refs_in_stmts(stmts: &[Stmt<'_, '_>], var_name: &str, out: &mut Vec<Span>) {
+    let mut v = VarRefsVisitor {
+        var_name,
+        out: Vec::new(),
+    };
     for stmt in stmts {
-        var_refs_in_stmt(stmt, var_name, out);
+        let _ = v.visit_stmt(stmt);
     }
+    out.append(&mut v.out);
 }
 
-fn var_refs_in_stmt(stmt: &Stmt<'_, '_>, var_name: &str, out: &mut Vec<Span>) {
-    match &stmt.kind {
-        // Scope boundaries — do NOT recurse into these
-        StmtKind::Function(_) | StmtKind::Class(_) | StmtKind::Trait(_) | StmtKind::Enum(_) => {}
-        StmtKind::Expression(e) => var_refs_in_expr(e, var_name, out),
-        StmtKind::Return(Some(e)) => var_refs_in_expr(e, var_name, out),
-        StmtKind::Return(None) | StmtKind::Break(_) | StmtKind::Continue(_) => {}
-        StmtKind::Echo(exprs) => {
-            for e in exprs.iter() {
-                var_refs_in_expr(e, var_name, out);
-            }
-        }
-        StmtKind::If(i) => {
-            var_refs_in_expr(&i.condition, var_name, out);
-            var_refs_in_stmt(i.then_branch, var_name, out);
-            for ei in i.elseif_branches.iter() {
-                var_refs_in_expr(&ei.condition, var_name, out);
-                var_refs_in_stmt(&ei.body, var_name, out);
-            }
-            if let Some(e) = &i.else_branch {
-                var_refs_in_stmt(e, var_name, out);
-            }
-        }
-        StmtKind::While(w) => {
-            var_refs_in_expr(&w.condition, var_name, out);
-            var_refs_in_stmt(w.body, var_name, out);
-        }
-        StmtKind::DoWhile(d) => {
-            var_refs_in_stmt(d.body, var_name, out);
-            var_refs_in_expr(&d.condition, var_name, out);
-        }
-        StmtKind::Foreach(f) => {
-            var_refs_in_expr(&f.expr, var_name, out);
-            if let Some(k) = &f.key {
-                var_refs_in_expr(k, var_name, out);
-            }
-            var_refs_in_expr(&f.value, var_name, out);
-            var_refs_in_stmt(f.body, var_name, out);
-        }
-        StmtKind::For(f) => {
-            for e in f.init.iter() {
-                var_refs_in_expr(e, var_name, out);
-            }
-            for cond in f.condition.iter() {
-                var_refs_in_expr(cond, var_name, out);
-            }
-            for e in f.update.iter() {
-                var_refs_in_expr(e, var_name, out);
-            }
-            var_refs_in_stmt(f.body, var_name, out);
-        }
-        StmtKind::TryCatch(t) => {
-            var_refs_in_stmts(&t.body, var_name, out);
-            for catch in t.catches.iter() {
-                var_refs_in_stmts(&catch.body, var_name, out);
-            }
-            if let Some(finally) = &t.finally {
-                var_refs_in_stmts(finally, var_name, out);
-            }
-        }
-        StmtKind::Block(inner) => var_refs_in_stmts(inner, var_name, out),
-        StmtKind::StaticVar(vars) => {
-            for v in vars.iter() {
-                if let Some(def) = &v.default {
-                    var_refs_in_expr(def, var_name, out);
-                }
-            }
-        }
-        StmtKind::Namespace(ns) => {
-            if let NamespaceBody::Braced(inner) = &ns.body {
-                var_refs_in_stmts(inner, var_name, out);
-            }
-        }
-        _ => {}
-    }
+struct VarRefsVisitor<'a> {
+    var_name: &'a str,
+    out: Vec<Span>,
 }
 
-fn var_refs_in_expr(expr: &Expr<'_, '_>, var_name: &str, out: &mut Vec<Span>) {
-    match &expr.kind {
-        ExprKind::Variable(name) => {
-            if name.as_str() == var_name {
-                out.push(expr.span);
-            }
+impl<'arena, 'src> Visitor<'arena, 'src> for VarRefsVisitor<'_> {
+    fn visit_stmt(&mut self, stmt: &Stmt<'arena, 'src>) -> ControlFlow<()> {
+        // Stop at scope-defining statement boundaries.
+        match &stmt.kind {
+            StmtKind::Function(_)
+            | StmtKind::Class(_)
+            | StmtKind::Trait(_)
+            | StmtKind::Enum(_)
+            | StmtKind::Interface(_) => ControlFlow::Continue(()),
+            _ => walk_stmt(self, stmt),
         }
-        ExprKind::Assign(a) => {
-            var_refs_in_expr(a.target, var_name, out);
-            var_refs_in_expr(a.value, var_name, out);
-        }
-        ExprKind::Binary(b) => {
-            var_refs_in_expr(b.left, var_name, out);
-            var_refs_in_expr(b.right, var_name, out);
-        }
-        ExprKind::UnaryPrefix(u) => var_refs_in_expr(u.operand, var_name, out),
-        ExprKind::UnaryPostfix(u) => var_refs_in_expr(u.operand, var_name, out),
-        ExprKind::Ternary(t) => {
-            var_refs_in_expr(t.condition, var_name, out);
-            if let Some(then_expr) = t.then_expr {
-                var_refs_in_expr(then_expr, var_name, out);
-            }
-            var_refs_in_expr(t.else_expr, var_name, out);
-        }
-        ExprKind::NullCoalesce(n) => {
-            var_refs_in_expr(n.left, var_name, out);
-            var_refs_in_expr(n.right, var_name, out);
-        }
-        ExprKind::Parenthesized(e) => var_refs_in_expr(e, var_name, out),
-        ExprKind::ErrorSuppress(e) => var_refs_in_expr(e, var_name, out),
-        ExprKind::Cast(_, e) => var_refs_in_expr(e, var_name, out),
-        ExprKind::Clone(e) => var_refs_in_expr(e, var_name, out),
-        ExprKind::ThrowExpr(e) => var_refs_in_expr(e, var_name, out),
-        ExprKind::Print(e) => var_refs_in_expr(e, var_name, out),
-        ExprKind::Empty(e) => var_refs_in_expr(e, var_name, out),
-        ExprKind::Eval(e) => var_refs_in_expr(e, var_name, out),
-        ExprKind::FunctionCall(f) => {
-            var_refs_in_expr(f.name, var_name, out);
-            for a in f.args.iter() {
-                var_refs_in_expr(&a.value, var_name, out);
-            }
-        }
-        ExprKind::MethodCall(m) => {
-            var_refs_in_expr(m.object, var_name, out);
-            for a in m.args.iter() {
-                var_refs_in_expr(&a.value, var_name, out);
-            }
-        }
-        ExprKind::NullsafeMethodCall(m) => {
-            var_refs_in_expr(m.object, var_name, out);
-            for a in m.args.iter() {
-                var_refs_in_expr(&a.value, var_name, out);
-            }
-        }
-        ExprKind::StaticMethodCall(s) => {
-            var_refs_in_expr(s.class, var_name, out);
-            for a in s.args.iter() {
-                var_refs_in_expr(&a.value, var_name, out);
-            }
-        }
-        ExprKind::New(n) => {
-            var_refs_in_expr(n.class, var_name, out);
-            for a in n.args.iter() {
-                var_refs_in_expr(&a.value, var_name, out);
-            }
-        }
-        ExprKind::ArrayAccess(a) => {
-            var_refs_in_expr(a.array, var_name, out);
-            if let Some(idx) = a.index {
-                var_refs_in_expr(idx, var_name, out);
-            }
-        }
-        ExprKind::PropertyAccess(p) => var_refs_in_expr(p.object, var_name, out),
-        ExprKind::NullsafePropertyAccess(p) => var_refs_in_expr(p.object, var_name, out),
-        ExprKind::StaticPropertyAccess(s) => var_refs_in_expr(s.class, var_name, out),
-        ExprKind::Yield(y) => {
-            if let Some(k) = y.key {
-                var_refs_in_expr(k, var_name, out);
-            }
-            if let Some(v) = y.value {
-                var_refs_in_expr(v, var_name, out);
-            }
-        }
-        ExprKind::Match(m) => {
-            var_refs_in_expr(m.subject, var_name, out);
-            for arm in m.arms.iter() {
-                if let Some(conds) = &arm.conditions {
-                    for c in conds.iter() {
-                        var_refs_in_expr(c, var_name, out);
-                    }
+    }
+
+    fn visit_expr(&mut self, expr: &Expr<'arena, 'src>) -> ControlFlow<()> {
+        match &expr.kind {
+            // Collect matching variable references.
+            ExprKind::Variable(name) => {
+                if name.as_str() == self.var_name {
+                    self.out.push(expr.span);
                 }
-                var_refs_in_expr(&arm.body, var_name, out);
+                ControlFlow::Continue(())
             }
+            // Stop at expression-level scope boundaries.
+            ExprKind::Closure(_) | ExprKind::ArrowFunction(_) => ControlFlow::Continue(()),
+            _ => walk_expr(self, expr),
         }
-        ExprKind::Array(elems) => {
-            for el in elems.iter() {
-                if let Some(k) = &el.key {
-                    var_refs_in_expr(k, var_name, out);
-                }
-                var_refs_in_expr(&el.value, var_name, out);
-            }
-        }
-        ExprKind::Isset(exprs) => {
-            for e in exprs.iter() {
-                var_refs_in_expr(e, var_name, out);
-            }
-        }
-        ExprKind::Include(_, e) => var_refs_in_expr(e, var_name, out),
-        ExprKind::Exit(Some(e)) => var_refs_in_expr(e, var_name, out),
-        // Scope boundaries within expressions — do NOT recurse into these
-        ExprKind::Closure(_) | ExprKind::ArrowFunction(_) => {}
-        _ => {}
     }
 }
 
@@ -598,6 +287,56 @@ fn collect_in_fn_at(
             }
             false
         }
+        StmtKind::Enum(e) => {
+            for member in e.members.iter() {
+                if let EnumMemberKind::Method(m) = &member.kind {
+                    if byte_off < member.span.start as usize || byte_off >= member.span.end as usize
+                    {
+                        continue;
+                    }
+                    if let Some(body) = &m.body {
+                        for inner in body.iter() {
+                            if collect_in_fn_at(inner, var_name, byte_off, out) {
+                                return true;
+                            }
+                        }
+                        for p in m.params.iter() {
+                            if p.name == var_name {
+                                out.push(p.span);
+                            }
+                        }
+                        var_refs_in_stmts(body, var_name, out);
+                    }
+                    return true;
+                }
+            }
+            false
+        }
+        StmtKind::Interface(i) => {
+            for member in i.members.iter() {
+                if let ClassMemberKind::Method(m) = &member.kind {
+                    if byte_off < member.span.start as usize || byte_off >= member.span.end as usize
+                    {
+                        continue;
+                    }
+                    if let Some(body) = &m.body {
+                        for inner in body.iter() {
+                            if collect_in_fn_at(inner, var_name, byte_off, out) {
+                                return true;
+                            }
+                        }
+                        for p in m.params.iter() {
+                            if p.name == var_name {
+                                out.push(p.span);
+                            }
+                        }
+                        var_refs_in_stmts(body, var_name, out);
+                    }
+                    return true;
+                }
+            }
+            false
+        }
         StmtKind::Namespace(ns) => {
             if let NamespaceBody::Braced(inner) = &ns.body {
                 for s in inner.iter() {
@@ -616,1141 +355,248 @@ fn collect_in_fn_at(
 
 /// Collect all spans where `prop_name` is accessed (`->prop`, `?->prop`) or
 /// declared as a class/trait property, across all statements.
-/// Because `PropertyAccess.property` is a `&'src str` sub-slice of `source`,
-/// we use `str_offset` (pointer arithmetic) to obtain its byte offset.
 pub fn property_refs_in_stmts(
     source: &str,
     stmts: &[Stmt<'_, '_>],
     prop_name: &str,
     out: &mut Vec<Span>,
 ) {
+    let mut v = PropertyRefsVisitor {
+        source,
+        prop_name,
+        out: Vec::new(),
+    };
     for stmt in stmts {
-        property_refs_in_stmt(source, stmt, prop_name, out);
+        let _ = v.visit_stmt(stmt);
+    }
+    out.append(&mut v.out);
+}
+
+struct PropertyRefsVisitor<'a> {
+    source: &'a str,
+    prop_name: &'a str,
+    out: Vec<Span>,
+}
+
+impl<'arena, 'src> Visitor<'arena, 'src> for PropertyRefsVisitor<'_> {
+    fn visit_expr(&mut self, expr: &Expr<'arena, 'src>) -> ControlFlow<()> {
+        match &expr.kind {
+            ExprKind::PropertyAccess(p) | ExprKind::NullsafePropertyAccess(p) => {
+                let span = p.property.span;
+                let name_in_src = self
+                    .source
+                    .get(span.start as usize..span.end as usize)
+                    .unwrap_or("");
+                if name_in_src == self.prop_name {
+                    self.out.push(span);
+                }
+            }
+            _ => {}
+        }
+        walk_expr(self, expr)
+    }
+
+    fn visit_class_member(&mut self, member: &ClassMember<'arena, 'src>) -> ControlFlow<()> {
+        if let ClassMemberKind::Property(p) = &member.kind
+            && p.name == self.prop_name
+        {
+            let offset = str_offset(self.source, p.name);
+            self.out.push(Span {
+                start: offset,
+                end: offset + p.name.len() as u32,
+            });
+        }
+        walk_class_member(self, member)
     }
 }
 
-fn property_refs_in_stmt(source: &str, stmt: &Stmt<'_, '_>, prop_name: &str, out: &mut Vec<Span>) {
-    match &stmt.kind {
-        StmtKind::Expression(e) => property_refs_in_expr(source, e, prop_name, out),
-        StmtKind::Return(Some(e)) => property_refs_in_expr(source, e, prop_name, out),
-        StmtKind::Echo(exprs) => {
-            for e in exprs.iter() {
-                property_refs_in_expr(source, e, prop_name, out);
-            }
-        }
-        StmtKind::Function(f) => {
-            property_refs_in_stmts(source, &f.body, prop_name, out);
-        }
-        StmtKind::Class(c) => {
-            for member in c.members.iter() {
-                match &member.kind {
-                    ClassMemberKind::Property(p) if p.name == prop_name => {
-                        let offset = str_offset(source, p.name);
-                        out.push(Span {
-                            start: offset,
-                            end: offset + p.name.len() as u32,
-                        });
-                    }
-                    ClassMemberKind::Method(m) => {
-                        if let Some(body) = &m.body {
-                            property_refs_in_stmts(source, body, prop_name, out);
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-        StmtKind::Trait(t) => {
-            for member in t.members.iter() {
-                match &member.kind {
-                    ClassMemberKind::Property(p) if p.name == prop_name => {
-                        let offset = str_offset(source, p.name);
-                        out.push(Span {
-                            start: offset,
-                            end: offset + p.name.len() as u32,
-                        });
-                    }
-                    ClassMemberKind::Method(m) => {
-                        if let Some(body) = &m.body {
-                            property_refs_in_stmts(source, body, prop_name, out);
-                        }
-                    }
-                    _ => {}
-                }
-            }
-        }
-        StmtKind::Enum(e) => {
-            for member in e.members.iter() {
-                if let EnumMemberKind::Method(m) = &member.kind
-                    && let Some(body) = &m.body
-                {
-                    property_refs_in_stmts(source, body, prop_name, out);
-                }
-            }
-        }
-        StmtKind::Namespace(ns) => {
-            if let NamespaceBody::Braced(inner) = &ns.body {
-                property_refs_in_stmts(source, inner, prop_name, out);
-            }
-        }
-        StmtKind::If(i) => {
-            property_refs_in_expr(source, &i.condition, prop_name, out);
-            property_refs_in_stmt(source, i.then_branch, prop_name, out);
-            for ei in i.elseif_branches.iter() {
-                property_refs_in_expr(source, &ei.condition, prop_name, out);
-                property_refs_in_stmt(source, &ei.body, prop_name, out);
-            }
-            if let Some(e) = &i.else_branch {
-                property_refs_in_stmt(source, e, prop_name, out);
-            }
-        }
-        StmtKind::While(w) => {
-            property_refs_in_expr(source, &w.condition, prop_name, out);
-            property_refs_in_stmt(source, w.body, prop_name, out);
-        }
-        StmtKind::DoWhile(d) => {
-            property_refs_in_stmt(source, d.body, prop_name, out);
-            property_refs_in_expr(source, &d.condition, prop_name, out);
-        }
-        StmtKind::Foreach(f) => {
-            property_refs_in_expr(source, &f.expr, prop_name, out);
-            property_refs_in_stmt(source, f.body, prop_name, out);
-        }
-        StmtKind::For(f) => {
-            for e in f.init.iter() {
-                property_refs_in_expr(source, e, prop_name, out);
-            }
-            for cond in f.condition.iter() {
-                property_refs_in_expr(source, cond, prop_name, out);
-            }
-            for e in f.update.iter() {
-                property_refs_in_expr(source, e, prop_name, out);
-            }
-            property_refs_in_stmt(source, f.body, prop_name, out);
-        }
-        StmtKind::TryCatch(t) => {
-            property_refs_in_stmts(source, &t.body, prop_name, out);
-            for catch in t.catches.iter() {
-                property_refs_in_stmts(source, &catch.body, prop_name, out);
-            }
-            if let Some(finally) = &t.finally {
-                property_refs_in_stmts(source, finally, prop_name, out);
-            }
-        }
-        StmtKind::Block(inner) => property_refs_in_stmts(source, inner, prop_name, out),
-        _ => {}
-    }
-}
-
-fn property_refs_in_expr(source: &str, expr: &Expr<'_, '_>, prop_name: &str, out: &mut Vec<Span>) {
-    match &expr.kind {
-        ExprKind::PropertyAccess(p) => {
-            property_refs_in_expr(source, p.object, prop_name, out);
-            let span = p.property.span;
-            let name_in_src = source
-                .get(span.start as usize..span.end as usize)
-                .unwrap_or("");
-            if name_in_src == prop_name {
-                out.push(span);
-            }
-        }
-        ExprKind::NullsafePropertyAccess(p) => {
-            property_refs_in_expr(source, p.object, prop_name, out);
-            let span = p.property.span;
-            let name_in_src = source
-                .get(span.start as usize..span.end as usize)
-                .unwrap_or("");
-            if name_in_src == prop_name {
-                out.push(span);
-            }
-        }
-        ExprKind::Assign(a) => {
-            property_refs_in_expr(source, a.target, prop_name, out);
-            property_refs_in_expr(source, a.value, prop_name, out);
-        }
-        ExprKind::Binary(b) => {
-            property_refs_in_expr(source, b.left, prop_name, out);
-            property_refs_in_expr(source, b.right, prop_name, out);
-        }
-        ExprKind::UnaryPrefix(u) => property_refs_in_expr(source, u.operand, prop_name, out),
-        ExprKind::UnaryPostfix(u) => property_refs_in_expr(source, u.operand, prop_name, out),
-        ExprKind::Ternary(t) => {
-            property_refs_in_expr(source, t.condition, prop_name, out);
-            if let Some(then_expr) = t.then_expr {
-                property_refs_in_expr(source, then_expr, prop_name, out);
-            }
-            property_refs_in_expr(source, t.else_expr, prop_name, out);
-        }
-        ExprKind::NullCoalesce(n) => {
-            property_refs_in_expr(source, n.left, prop_name, out);
-            property_refs_in_expr(source, n.right, prop_name, out);
-        }
-        ExprKind::Parenthesized(e) => property_refs_in_expr(source, e, prop_name, out),
-        ExprKind::ErrorSuppress(e) => property_refs_in_expr(source, e, prop_name, out),
-        ExprKind::Cast(_, e) => property_refs_in_expr(source, e, prop_name, out),
-        ExprKind::Clone(e) => property_refs_in_expr(source, e, prop_name, out),
-        ExprKind::ThrowExpr(e) => property_refs_in_expr(source, e, prop_name, out),
-        ExprKind::Print(e) => property_refs_in_expr(source, e, prop_name, out),
-        ExprKind::Empty(e) => property_refs_in_expr(source, e, prop_name, out),
-        ExprKind::Eval(e) => property_refs_in_expr(source, e, prop_name, out),
-        ExprKind::FunctionCall(f) => {
-            property_refs_in_expr(source, f.name, prop_name, out);
-            for a in f.args.iter() {
-                property_refs_in_expr(source, &a.value, prop_name, out);
-            }
-        }
-        ExprKind::MethodCall(m) => {
-            property_refs_in_expr(source, m.object, prop_name, out);
-            for a in m.args.iter() {
-                property_refs_in_expr(source, &a.value, prop_name, out);
-            }
-        }
-        ExprKind::NullsafeMethodCall(m) => {
-            property_refs_in_expr(source, m.object, prop_name, out);
-            for a in m.args.iter() {
-                property_refs_in_expr(source, &a.value, prop_name, out);
-            }
-        }
-        ExprKind::StaticMethodCall(s) => {
-            property_refs_in_expr(source, s.class, prop_name, out);
-            for a in s.args.iter() {
-                property_refs_in_expr(source, &a.value, prop_name, out);
-            }
-        }
-        ExprKind::New(n) => {
-            property_refs_in_expr(source, n.class, prop_name, out);
-            for a in n.args.iter() {
-                property_refs_in_expr(source, &a.value, prop_name, out);
-            }
-        }
-        ExprKind::ArrayAccess(a) => {
-            property_refs_in_expr(source, a.array, prop_name, out);
-            if let Some(idx) = a.index {
-                property_refs_in_expr(source, idx, prop_name, out);
-            }
-        }
-        ExprKind::Yield(y) => {
-            if let Some(k) = y.key {
-                property_refs_in_expr(source, k, prop_name, out);
-            }
-            if let Some(v) = y.value {
-                property_refs_in_expr(source, v, prop_name, out);
-            }
-        }
-        ExprKind::Match(m) => {
-            property_refs_in_expr(source, m.subject, prop_name, out);
-            for arm in m.arms.iter() {
-                if let Some(conds) = &arm.conditions {
-                    for c in conds.iter() {
-                        property_refs_in_expr(source, c, prop_name, out);
-                    }
-                }
-                property_refs_in_expr(source, &arm.body, prop_name, out);
-            }
-        }
-        ExprKind::Array(elems) => {
-            for el in elems.iter() {
-                if let Some(k) = &el.key {
-                    property_refs_in_expr(source, k, prop_name, out);
-                }
-                property_refs_in_expr(source, &el.value, prop_name, out);
-            }
-        }
-        ExprKind::Isset(exprs) => {
-            for e in exprs.iter() {
-                property_refs_in_expr(source, e, prop_name, out);
-            }
-        }
-        ExprKind::Include(_, e) => property_refs_in_expr(source, e, prop_name, out),
-        ExprKind::Exit(Some(e)) => property_refs_in_expr(source, e, prop_name, out),
-        ExprKind::Closure(c) => property_refs_in_stmts(source, &c.body, prop_name, out),
-        ExprKind::ArrowFunction(a) => property_refs_in_expr(source, a.body, prop_name, out),
-        _ => {}
-    }
-}
-
-fn args(source: &str, arg_list: &[php_ast::Arg<'_, '_>], word: &str, out: &mut Vec<Span>) {
-    for a in arg_list.iter() {
-        refs_in_expr(source, &a.value, word, out);
-    }
-}
-
-pub fn refs_in_expr(source: &str, expr: &Expr<'_, '_>, word: &str, out: &mut Vec<Span>) {
-    match &expr.kind {
-        ExprKind::Identifier(name) => {
-            if name.as_str() == word {
-                out.push(expr.span);
-            }
-        }
-        ExprKind::FunctionCall(f) => {
-            refs_in_expr(source, f.name, word, out);
-            args(source, &f.args, word, out);
-        }
-        ExprKind::MethodCall(m) => {
-            refs_in_expr(source, m.object, word, out);
-            refs_in_expr(source, m.method, word, out);
-            args(source, &m.args, word, out);
-        }
-        ExprKind::NullsafeMethodCall(m) => {
-            refs_in_expr(source, m.object, word, out);
-            refs_in_expr(source, m.method, word, out);
-            args(source, &m.args, word, out);
-        }
-        ExprKind::StaticMethodCall(s) => {
-            refs_in_expr(source, s.class, word, out);
-            if s.method.name_str() == Some(word) {
-                out.push(s.method.span);
-            }
-            args(source, &s.args, word, out);
-        }
-        ExprKind::New(n) => {
-            refs_in_expr(source, n.class, word, out);
-            args(source, &n.args, word, out);
-        }
-        ExprKind::Assign(a) => {
-            refs_in_expr(source, a.target, word, out);
-            refs_in_expr(source, a.value, word, out);
-        }
-        ExprKind::Binary(b) => {
-            refs_in_expr(source, b.left, word, out);
-            refs_in_expr(source, b.right, word, out);
-        }
-        ExprKind::UnaryPrefix(u) => refs_in_expr(source, u.operand, word, out),
-        ExprKind::UnaryPostfix(u) => refs_in_expr(source, u.operand, word, out),
-        ExprKind::Ternary(t) => {
-            refs_in_expr(source, t.condition, word, out);
-            if let Some(then_expr) = t.then_expr {
-                refs_in_expr(source, then_expr, word, out);
-            }
-            refs_in_expr(source, t.else_expr, word, out);
-        }
-        ExprKind::NullCoalesce(n) => {
-            refs_in_expr(source, n.left, word, out);
-            refs_in_expr(source, n.right, word, out);
-        }
-        ExprKind::Parenthesized(e) => refs_in_expr(source, e, word, out),
-        ExprKind::ErrorSuppress(e) => refs_in_expr(source, e, word, out),
-        ExprKind::Cast(_, e) => refs_in_expr(source, e, word, out),
-        ExprKind::Clone(e) => refs_in_expr(source, e, word, out),
-        ExprKind::ThrowExpr(e) => refs_in_expr(source, e, word, out),
-        ExprKind::Print(e) => refs_in_expr(source, e, word, out),
-        ExprKind::Empty(e) => refs_in_expr(source, e, word, out),
-        ExprKind::Eval(e) => refs_in_expr(source, e, word, out),
-        ExprKind::Yield(y) => {
-            if let Some(k) = y.key {
-                refs_in_expr(source, k, word, out);
-            }
-            if let Some(v) = y.value {
-                refs_in_expr(source, v, word, out);
-            }
-        }
-        ExprKind::ArrayAccess(a) => {
-            refs_in_expr(source, a.array, word, out);
-            if let Some(idx) = a.index {
-                refs_in_expr(source, idx, word, out);
-            }
-        }
-        ExprKind::PropertyAccess(p) => refs_in_expr(source, p.object, word, out),
-        ExprKind::NullsafePropertyAccess(p) => refs_in_expr(source, p.object, word, out),
-        ExprKind::StaticPropertyAccess(s) => refs_in_expr(source, s.class, word, out),
-        ExprKind::ClassConstAccess(c) => {
-            refs_in_expr(source, c.class, word, out);
-            if c.member.name_str() == Some(word) {
-                out.push(c.member.span);
-            }
-        }
-        ExprKind::Closure(c) => refs_in_stmts(source, &c.body, word, out),
-        ExprKind::ArrowFunction(a) => refs_in_expr(source, a.body, word, out),
-        ExprKind::Match(m) => {
-            refs_in_expr(source, m.subject, word, out);
-            for arm in m.arms.iter() {
-                if let Some(conds) = &arm.conditions {
-                    for cond in conds.iter() {
-                        refs_in_expr(source, cond, word, out);
-                    }
-                }
-                refs_in_expr(source, &arm.body, word, out);
-            }
-        }
-        ExprKind::Array(elements) => {
-            for elem in elements.iter() {
-                if let Some(key) = &elem.key {
-                    refs_in_expr(source, key, word, out);
-                }
-                refs_in_expr(source, &elem.value, word, out);
-            }
-        }
-        ExprKind::Isset(exprs) => {
-            for e in exprs.iter() {
-                refs_in_expr(source, e, word, out);
-            }
-        }
-        ExprKind::Include(_, e) => refs_in_expr(source, e, word, out),
-        ExprKind::Exit(Some(e)) => refs_in_expr(source, e, word, out),
-        ExprKind::AnonymousClass(c) => {
-            for member in c.members.iter() {
-                if let ClassMemberKind::Method(m) = &member.kind
-                    && let Some(body) = &m.body
-                {
-                    refs_in_stmts(source, body, word, out);
-                }
-            }
-        }
-        _ => {}
-    }
-}
-
-// ── Semantic (context-aware) reference walkers ────────────────────────────────
+// ── Function-reference walker ─────────────────────────────────────────────────
 
 /// Collect spans where `name` is called as a free function (not a method).
 /// Only matches `name(...)` calls where the callee is a bare identifier, not
 /// `$obj->name()` or `Class::name()`.
 pub fn function_refs_in_stmts(stmts: &[Stmt<'_, '_>], name: &str, out: &mut Vec<Span>) {
-    let v = FunctionRefsVisitor { name };
-    walk_refs(&v, stmts, out);
+    let mut v = FunctionRefsVisitor {
+        name,
+        out: Vec::new(),
+    };
+    for stmt in stmts {
+        let _ = v.visit_stmt(stmt);
+    }
+    out.append(&mut v.out);
 }
 
 struct FunctionRefsVisitor<'a> {
     name: &'a str,
+    out: Vec<Span>,
 }
 
-impl RefVisitor for FunctionRefsVisitor<'_> {
-    fn visit_expr(&self, expr: &Expr<'_, '_>, out: &mut Vec<Span>) {
-        function_refs_in_expr(expr, self.name, out);
-    }
-
-    fn visit_stmt(&self, stmt: &Stmt<'_, '_>, out: &mut Vec<Span>) -> bool {
-        match &stmt.kind {
-            StmtKind::Function(f) => {
-                walk_refs(self, &f.body, out);
-                true
-            }
-            StmtKind::Class(c) => {
-                for member in c.members.iter() {
-                    match &member.kind {
-                        ClassMemberKind::Method(m) => {
-                            if let Some(body) = &m.body {
-                                walk_refs(self, body, out);
-                            }
-                        }
-                        ClassMemberKind::Property(p) => {
-                            if let Some(default) = &p.default {
-                                function_refs_in_expr(default, self.name, out);
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-                true
-            }
-            StmtKind::Trait(t) => {
-                for member in t.members.iter() {
-                    if let ClassMemberKind::Method(m) = &member.kind
-                        && let Some(body) = &m.body
-                    {
-                        walk_refs(self, body, out);
-                    }
-                }
-                true
-            }
-            StmtKind::Enum(e) => {
-                for member in e.members.iter() {
-                    if let EnumMemberKind::Method(m) = &member.kind
-                        && let Some(body) = &m.body
-                    {
-                        walk_refs(self, body, out);
-                    }
-                }
-                true
-            }
-            StmtKind::Namespace(ns) => {
-                if let NamespaceBody::Braced(inner) = &ns.body {
-                    walk_refs(self, inner, out);
-                }
-                true
-            }
-            _ => false,
+impl<'arena, 'src> Visitor<'arena, 'src> for FunctionRefsVisitor<'_> {
+    fn visit_expr(&mut self, expr: &Expr<'arena, 'src>) -> ControlFlow<()> {
+        if let ExprKind::FunctionCall(f) = &expr.kind
+            && let ExprKind::Identifier(id) = &f.name.kind
+            && id.as_str() == self.name
+        {
+            self.out.push(f.name.span);
         }
+        walk_expr(self, expr)
     }
 }
 
-fn function_refs_in_expr(expr: &Expr<'_, '_>, name: &str, out: &mut Vec<Span>) {
-    match &expr.kind {
-        // The core match: a free function call whose callee is a bare identifier.
-        ExprKind::FunctionCall(f) => {
-            if let ExprKind::Identifier(id) = &f.name.kind
-                && id.as_str() == name
-            {
-                out.push(f.name.span);
-            }
-            // Still recurse into args and a dynamic callee.
-            function_refs_in_expr(f.name, name, out);
-            for a in f.args.iter() {
-                function_refs_in_expr(&a.value, name, out);
-            }
-        }
-        // Recurse into all expression sub-nodes (but skip method/static call names).
-        ExprKind::MethodCall(m) => {
-            function_refs_in_expr(m.object, name, out);
-            // do NOT check m.method — that is a method name, not a function name
-            for a in m.args.iter() {
-                function_refs_in_expr(&a.value, name, out);
-            }
-        }
-        ExprKind::NullsafeMethodCall(m) => {
-            function_refs_in_expr(m.object, name, out);
-            for a in m.args.iter() {
-                function_refs_in_expr(&a.value, name, out);
-            }
-        }
-        ExprKind::StaticMethodCall(s) => {
-            function_refs_in_expr(s.class, name, out);
-            for a in s.args.iter() {
-                function_refs_in_expr(&a.value, name, out);
-            }
-        }
-        ExprKind::New(n) => {
-            for a in n.args.iter() {
-                function_refs_in_expr(&a.value, name, out);
-            }
-        }
-        ExprKind::Assign(a) => {
-            function_refs_in_expr(a.target, name, out);
-            function_refs_in_expr(a.value, name, out);
-        }
-        ExprKind::Binary(b) => {
-            function_refs_in_expr(b.left, name, out);
-            function_refs_in_expr(b.right, name, out);
-        }
-        ExprKind::UnaryPrefix(u) => function_refs_in_expr(u.operand, name, out),
-        ExprKind::UnaryPostfix(u) => function_refs_in_expr(u.operand, name, out),
-        ExprKind::Ternary(t) => {
-            function_refs_in_expr(t.condition, name, out);
-            if let Some(e) = t.then_expr {
-                function_refs_in_expr(e, name, out);
-            }
-            function_refs_in_expr(t.else_expr, name, out);
-        }
-        ExprKind::NullCoalesce(n) => {
-            function_refs_in_expr(n.left, name, out);
-            function_refs_in_expr(n.right, name, out);
-        }
-        ExprKind::Parenthesized(e) => function_refs_in_expr(e, name, out),
-        ExprKind::ErrorSuppress(e) => function_refs_in_expr(e, name, out),
-        ExprKind::Cast(_, e) => function_refs_in_expr(e, name, out),
-        ExprKind::Clone(e) => function_refs_in_expr(e, name, out),
-        ExprKind::ThrowExpr(e) => function_refs_in_expr(e, name, out),
-        ExprKind::Print(e) => function_refs_in_expr(e, name, out),
-        ExprKind::Empty(e) => function_refs_in_expr(e, name, out),
-        ExprKind::Eval(e) => function_refs_in_expr(e, name, out),
-        ExprKind::Yield(y) => {
-            if let Some(k) = y.key {
-                function_refs_in_expr(k, name, out);
-            }
-            if let Some(v) = y.value {
-                function_refs_in_expr(v, name, out);
-            }
-        }
-        ExprKind::ArrayAccess(a) => {
-            function_refs_in_expr(a.array, name, out);
-            if let Some(idx) = a.index {
-                function_refs_in_expr(idx, name, out);
-            }
-        }
-        ExprKind::PropertyAccess(p) => function_refs_in_expr(p.object, name, out),
-        ExprKind::NullsafePropertyAccess(p) => function_refs_in_expr(p.object, name, out),
-        ExprKind::StaticPropertyAccess(s) => function_refs_in_expr(s.class, name, out),
-        ExprKind::Match(m) => {
-            function_refs_in_expr(m.subject, name, out);
-            for arm in m.arms.iter() {
-                if let Some(conds) = &arm.conditions {
-                    for c in conds.iter() {
-                        function_refs_in_expr(c, name, out);
-                    }
-                }
-                function_refs_in_expr(&arm.body, name, out);
-            }
-        }
-        ExprKind::Array(elements) => {
-            for elem in elements.iter() {
-                if let Some(key) = &elem.key {
-                    function_refs_in_expr(key, name, out);
-                }
-                function_refs_in_expr(&elem.value, name, out);
-            }
-        }
-        ExprKind::Isset(exprs) => {
-            for e in exprs.iter() {
-                function_refs_in_expr(e, name, out);
-            }
-        }
-        ExprKind::Include(_, e) => function_refs_in_expr(e, name, out),
-        ExprKind::Exit(Some(e)) => function_refs_in_expr(e, name, out),
-        ExprKind::Closure(c) => function_refs_in_stmts(&c.body, name, out),
-        ExprKind::ArrowFunction(a) => function_refs_in_expr(a.body, name, out),
-        ExprKind::AnonymousClass(c) => {
-            for member in c.members.iter() {
-                if let ClassMemberKind::Method(m) = &member.kind
-                    && let Some(body) = &m.body
-                {
-                    function_refs_in_stmts(body, name, out);
-                }
-            }
-        }
-        _ => {}
-    }
-}
+// ── Method-reference walker ───────────────────────────────────────────────────
 
 /// Collect spans where `name` is used as a method: `->name()`, `?->name()`, `::name()`.
 /// Does NOT match free function calls or class-name identifiers.
 pub fn method_refs_in_stmts(stmts: &[Stmt<'_, '_>], name: &str, out: &mut Vec<Span>) {
-    let v = MethodRefsVisitor { name };
-    walk_refs(&v, stmts, out);
+    let mut v = MethodRefsVisitor {
+        name,
+        out: Vec::new(),
+    };
+    for stmt in stmts {
+        let _ = v.visit_stmt(stmt);
+    }
+    out.append(&mut v.out);
 }
 
 struct MethodRefsVisitor<'a> {
     name: &'a str,
+    out: Vec<Span>,
 }
 
-impl RefVisitor for MethodRefsVisitor<'_> {
-    fn visit_expr(&self, expr: &Expr<'_, '_>, out: &mut Vec<Span>) {
-        method_refs_in_expr(expr, self.name, out);
-    }
-
-    fn visit_stmt(&self, stmt: &Stmt<'_, '_>, out: &mut Vec<Span>) -> bool {
-        match &stmt.kind {
-            StmtKind::Function(f) => {
-                walk_refs(self, &f.body, out);
-                true
-            }
-            StmtKind::Class(c) => {
-                for member in c.members.iter() {
-                    if let ClassMemberKind::Method(m) = &member.kind
-                        && let Some(body) = &m.body
-                    {
-                        walk_refs(self, body, out);
-                    }
-                }
-                true
-            }
-            StmtKind::Trait(t) => {
-                for member in t.members.iter() {
-                    if let ClassMemberKind::Method(m) = &member.kind
-                        && let Some(body) = &m.body
-                    {
-                        walk_refs(self, body, out);
-                    }
-                }
-                true
-            }
-            StmtKind::Enum(e) => {
-                for member in e.members.iter() {
-                    if let EnumMemberKind::Method(m) = &member.kind
-                        && let Some(body) = &m.body
-                    {
-                        walk_refs(self, body, out);
-                    }
-                }
-                true
-            }
-            StmtKind::Namespace(ns) => {
-                if let NamespaceBody::Braced(inner) = &ns.body {
-                    walk_refs(self, inner, out);
-                }
-                true
-            }
-            _ => false,
-        }
-    }
-}
-
-fn method_refs_in_expr(expr: &Expr<'_, '_>, name: &str, out: &mut Vec<Span>) {
-    match &expr.kind {
-        ExprKind::MethodCall(m) => {
-            method_refs_in_expr(m.object, name, out);
-            // Collect the method name span if it matches.
-            if let ExprKind::Identifier(id) = &m.method.kind
-                && id.as_str() == name
-            {
-                out.push(m.method.span);
-            }
-            for a in m.args.iter() {
-                method_refs_in_expr(&a.value, name, out);
-            }
-        }
-        ExprKind::NullsafeMethodCall(m) => {
-            method_refs_in_expr(m.object, name, out);
-            if let ExprKind::Identifier(id) = &m.method.kind
-                && id.as_str() == name
-            {
-                out.push(m.method.span);
-            }
-            for a in m.args.iter() {
-                method_refs_in_expr(&a.value, name, out);
-            }
-        }
-        ExprKind::StaticMethodCall(s) => {
-            method_refs_in_expr(s.class, name, out);
-            if s.method.name_str() == Some(name) {
-                out.push(s.method.span);
-            }
-            for a in s.args.iter() {
-                method_refs_in_expr(&a.value, name, out);
-            }
-        }
-        ExprKind::FunctionCall(f) => {
-            method_refs_in_expr(f.name, name, out);
-            for a in f.args.iter() {
-                method_refs_in_expr(&a.value, name, out);
-            }
-        }
-        ExprKind::New(n) => {
-            for a in n.args.iter() {
-                method_refs_in_expr(&a.value, name, out);
-            }
-        }
-        ExprKind::Assign(a) => {
-            method_refs_in_expr(a.target, name, out);
-            method_refs_in_expr(a.value, name, out);
-        }
-        ExprKind::Binary(b) => {
-            method_refs_in_expr(b.left, name, out);
-            method_refs_in_expr(b.right, name, out);
-        }
-        ExprKind::UnaryPrefix(u) => method_refs_in_expr(u.operand, name, out),
-        ExprKind::UnaryPostfix(u) => method_refs_in_expr(u.operand, name, out),
-        ExprKind::Ternary(t) => {
-            method_refs_in_expr(t.condition, name, out);
-            if let Some(e) = t.then_expr {
-                method_refs_in_expr(e, name, out);
-            }
-            method_refs_in_expr(t.else_expr, name, out);
-        }
-        ExprKind::NullCoalesce(n) => {
-            method_refs_in_expr(n.left, name, out);
-            method_refs_in_expr(n.right, name, out);
-        }
-        ExprKind::Parenthesized(e) => method_refs_in_expr(e, name, out),
-        ExprKind::ErrorSuppress(e) => method_refs_in_expr(e, name, out),
-        ExprKind::Cast(_, e) => method_refs_in_expr(e, name, out),
-        ExprKind::Clone(e) => method_refs_in_expr(e, name, out),
-        ExprKind::ThrowExpr(e) => method_refs_in_expr(e, name, out),
-        ExprKind::Print(e) => method_refs_in_expr(e, name, out),
-        ExprKind::Empty(e) => method_refs_in_expr(e, name, out),
-        ExprKind::Eval(e) => method_refs_in_expr(e, name, out),
-        ExprKind::Yield(y) => {
-            if let Some(k) = y.key {
-                method_refs_in_expr(k, name, out);
-            }
-            if let Some(v) = y.value {
-                method_refs_in_expr(v, name, out);
-            }
-        }
-        ExprKind::ArrayAccess(a) => {
-            method_refs_in_expr(a.array, name, out);
-            if let Some(idx) = a.index {
-                method_refs_in_expr(idx, name, out);
-            }
-        }
-        ExprKind::PropertyAccess(p) => method_refs_in_expr(p.object, name, out),
-        ExprKind::NullsafePropertyAccess(p) => method_refs_in_expr(p.object, name, out),
-        ExprKind::StaticPropertyAccess(s) => method_refs_in_expr(s.class, name, out),
-        ExprKind::Match(m) => {
-            method_refs_in_expr(m.subject, name, out);
-            for arm in m.arms.iter() {
-                if let Some(conds) = &arm.conditions {
-                    for c in conds.iter() {
-                        method_refs_in_expr(c, name, out);
-                    }
-                }
-                method_refs_in_expr(&arm.body, name, out);
-            }
-        }
-        ExprKind::Array(elements) => {
-            for elem in elements.iter() {
-                if let Some(key) = &elem.key {
-                    method_refs_in_expr(key, name, out);
-                }
-                method_refs_in_expr(&elem.value, name, out);
-            }
-        }
-        ExprKind::Isset(exprs) => {
-            for e in exprs.iter() {
-                method_refs_in_expr(e, name, out);
-            }
-        }
-        ExprKind::Include(_, e) => method_refs_in_expr(e, name, out),
-        ExprKind::Exit(Some(e)) => method_refs_in_expr(e, name, out),
-        ExprKind::Closure(c) => method_refs_in_stmts(&c.body, name, out),
-        ExprKind::ArrowFunction(a) => method_refs_in_expr(a.body, name, out),
-        ExprKind::AnonymousClass(c) => {
-            for member in c.members.iter() {
-                if let ClassMemberKind::Method(m) = &member.kind
-                    && let Some(body) = &m.body
+impl<'arena, 'src> Visitor<'arena, 'src> for MethodRefsVisitor<'_> {
+    fn visit_expr(&mut self, expr: &Expr<'arena, 'src>) -> ControlFlow<()> {
+        match &expr.kind {
+            ExprKind::MethodCall(m) | ExprKind::NullsafeMethodCall(m) => {
+                if let ExprKind::Identifier(id) = &m.method.kind
+                    && id.as_str() == self.name
                 {
-                    method_refs_in_stmts(body, name, out);
+                    self.out.push(m.method.span);
                 }
             }
+            ExprKind::StaticMethodCall(s) => {
+                if s.method.name_str() == Some(self.name) {
+                    self.out.push(s.method.span);
+                }
+            }
+            _ => {}
         }
-        _ => {}
+        walk_expr(self, expr)
     }
 }
+
+// ── Class-reference walker ────────────────────────────────────────────────────
 
 /// Collect spans where `class_name` is used as a class-type reference:
 /// `new ClassName`, `extends ClassName`, `implements ClassName`, type hints,
-/// and `$x instanceof ClassName`.  Does NOT match free function calls or
+/// and `$x instanceof ClassName`. Does NOT match free function calls or
 /// method names with the same spelling.
 pub fn class_refs_in_stmts(stmts: &[Stmt<'_, '_>], class_name: &str, out: &mut Vec<Span>) {
-    let v = ClassRefsVisitor { class_name };
-    walk_refs(&v, stmts, out);
+    let mut v = ClassRefsVisitor {
+        class_name,
+        out: Vec::new(),
+    };
+    for stmt in stmts {
+        let _ = v.visit_stmt(stmt);
+    }
+    out.append(&mut v.out);
 }
 
 struct ClassRefsVisitor<'a> {
     class_name: &'a str,
+    out: Vec<Span>,
 }
 
-impl RefVisitor for ClassRefsVisitor<'_> {
-    fn visit_expr(&self, expr: &Expr<'_, '_>, out: &mut Vec<Span>) {
-        class_refs_in_expr(expr, self.class_name, out);
+impl ClassRefsVisitor<'_> {
+    /// Push the span of the last segment of `name` if it matches `class_name`.
+    fn collect_name<'a, 'b>(&mut self, name: &Name<'a, 'b>) {
+        let repr = name.to_string_repr();
+        let last = repr.rsplit('\\').next().unwrap_or(repr.as_ref());
+        if last == self.class_name {
+            let span = name.span();
+            let offset = (repr.len() - last.len()) as u32;
+            self.out.push(Span {
+                start: span.start + offset,
+                end: span.end,
+            });
+        }
     }
+}
 
-    fn visit_stmt(&self, stmt: &Stmt<'_, '_>, out: &mut Vec<Span>) -> bool {
+impl<'arena, 'src> Visitor<'arena, 'src> for ClassRefsVisitor<'_> {
+    fn visit_stmt(&mut self, stmt: &Stmt<'arena, 'src>) -> ControlFlow<()> {
         match &stmt.kind {
-            StmtKind::Function(f) => {
-                for p in f.params.iter() {
-                    if let Some(th) = &p.type_hint {
-                        collect_class_in_type_hint(th, self.class_name, out);
-                    }
-                }
-                if let Some(rt) = &f.return_type {
-                    collect_class_in_type_hint(rt, self.class_name, out);
-                }
-                walk_refs(self, &f.body, out);
-                true
-            }
             StmtKind::Class(c) => {
-                // `extends ClassName`
                 if let Some(ext) = &c.extends {
-                    let last = ext
-                        .to_string_repr()
-                        .rsplit('\\')
-                        .next()
-                        .unwrap_or("")
-                        .to_string();
-                    if last == self.class_name {
-                        let span = ext.span();
-                        let offset = (ext.to_string_repr().len() - last.len()) as u32;
-                        out.push(Span {
-                            start: span.start + offset,
-                            end: span.end,
-                        });
-                    }
+                    self.collect_name(ext);
                 }
-                // `implements ClassName, ...`
                 for iface in c.implements.iter() {
-                    let last = iface
-                        .to_string_repr()
-                        .rsplit('\\')
-                        .next()
-                        .unwrap_or("")
-                        .to_string();
-                    if last == self.class_name {
-                        let span = iface.span();
-                        let offset = (iface.to_string_repr().len() - last.len()) as u32;
-                        out.push(Span {
-                            start: span.start + offset,
-                            end: span.end,
-                        });
-                    }
+                    self.collect_name(iface);
                 }
-                for member in c.members.iter() {
-                    match &member.kind {
-                        ClassMemberKind::Method(m) => {
-                            for p in m.params.iter() {
-                                if let Some(th) = &p.type_hint {
-                                    collect_class_in_type_hint(th, self.class_name, out);
-                                }
-                            }
-                            if let Some(rt) = &m.return_type {
-                                collect_class_in_type_hint(rt, self.class_name, out);
-                            }
-                            if let Some(body) = &m.body {
-                                walk_refs(self, body, out);
-                            }
-                        }
-                        ClassMemberKind::Property(p) => {
-                            if let Some(th) = &p.type_hint {
-                                collect_class_in_type_hint(th, self.class_name, out);
-                            }
-                            if let Some(default) = &p.default {
-                                class_refs_in_expr(default, self.class_name, out);
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-                true
             }
             StmtKind::Interface(i) => {
                 for parent in i.extends.iter() {
-                    let last = parent
-                        .to_string_repr()
-                        .rsplit('\\')
-                        .next()
-                        .unwrap_or("")
-                        .to_string();
-                    if last == self.class_name {
-                        let span = parent.span();
-                        let offset = (parent.to_string_repr().len() - last.len()) as u32;
-                        out.push(Span {
-                            start: span.start + offset,
-                            end: span.end,
-                        });
-                    }
+                    self.collect_name(parent);
                 }
-                true
             }
-            StmtKind::Trait(t) => {
-                for member in t.members.iter() {
-                    if let ClassMemberKind::Method(m) = &member.kind {
-                        for p in m.params.iter() {
-                            if let Some(th) = &p.type_hint {
-                                collect_class_in_type_hint(th, self.class_name, out);
-                            }
-                        }
-                        if let Some(rt) = &m.return_type {
-                            collect_class_in_type_hint(rt, self.class_name, out);
-                        }
-                        if let Some(body) = &m.body {
-                            walk_refs(self, body, out);
-                        }
-                    }
-                }
-                true
-            }
-            StmtKind::Enum(e) => {
-                for member in e.members.iter() {
-                    if let EnumMemberKind::Method(m) = &member.kind
-                        && let Some(body) = &m.body
-                    {
-                        walk_refs(self, body, out);
-                    }
-                }
-                true
-            }
-            StmtKind::Namespace(ns) => {
-                if let NamespaceBody::Braced(inner) = &ns.body {
-                    walk_refs(self, inner, out);
-                }
-                true
-            }
-            StmtKind::TryCatch(t) => {
-                walk_refs(self, &t.body, out);
-                for catch in t.catches.iter() {
-                    for ty in catch.types.iter() {
-                        let last = ty
-                            .to_string_repr()
-                            .rsplit('\\')
-                            .next()
-                            .unwrap_or("")
-                            .to_string();
-                        if last == self.class_name {
-                            let span = ty.span();
-                            let offset = (ty.to_string_repr().len() - last.len()) as u32;
-                            out.push(Span {
-                                start: span.start + offset,
-                                end: span.end,
-                            });
-                        }
-                    }
-                    walk_refs(self, &catch.body, out);
-                }
-                if let Some(finally) = &t.finally {
-                    walk_refs(self, finally, out);
-                }
-                true
-            }
-            _ => false,
+            _ => {}
         }
+        walk_stmt(self, stmt)
     }
-}
 
-fn class_refs_in_expr(expr: &Expr<'_, '_>, class_name: &str, out: &mut Vec<Span>) {
-    match &expr.kind {
-        // `new ClassName(...)` — the class name is an Identifier child of New.
-        ExprKind::New(n) => {
-            if let ExprKind::Identifier(id) = &n.class.kind
-                && id.rsplit('\\').next().unwrap_or(id) == class_name
-            {
-                out.push(n.class.span);
-            } else {
-                // Dynamic `new $var()` etc. — no match but still recurse into args.
-            }
-            for a in n.args.iter() {
-                class_refs_in_expr(&a.value, class_name, out);
-            }
-        }
-        // `$x instanceof ClassName` — right operand is an Identifier.
-        ExprKind::Binary(b) => {
-            class_refs_in_expr(b.left, class_name, out);
-            // For instanceof, the RHS is a class name; for other operators it is not.
-            // We check the RHS regardless — if it is an Identifier and matches, we
-            // include it; class names don't normally appear as operands otherwise.
-            if let ExprKind::Identifier(id) = &b.right.kind
-                && id.rsplit('\\').next().unwrap_or(id) == class_name
-            {
-                out.push(b.right.span);
-            } else {
-                class_refs_in_expr(b.right, class_name, out);
-            }
-        }
-        // `ClassName::method()` or `ClassName::$prop` — class side.
-        ExprKind::StaticMethodCall(s) => {
-            if let ExprKind::Identifier(id) = &s.class.kind
-                && id.rsplit('\\').next().unwrap_or(id) == class_name
-            {
-                out.push(s.class.span);
-            }
-            for a in s.args.iter() {
-                class_refs_in_expr(&a.value, class_name, out);
-            }
-        }
-        ExprKind::StaticPropertyAccess(s) => {
-            if let ExprKind::Identifier(id) = &s.class.kind
-                && id.rsplit('\\').next().unwrap_or(id) == class_name
-            {
-                out.push(s.class.span);
-            }
-        }
-        ExprKind::ClassConstAccess(c) => {
-            if let ExprKind::Identifier(id) = &c.class.kind
-                && id.rsplit('\\').next().unwrap_or(id) == class_name
-            {
-                out.push(c.class.span);
-            }
-        }
-        // Recurse into other expression kinds.
-        ExprKind::FunctionCall(f) => {
-            for a in f.args.iter() {
-                class_refs_in_expr(&a.value, class_name, out);
-            }
-        }
-        ExprKind::MethodCall(m) => {
-            class_refs_in_expr(m.object, class_name, out);
-            for a in m.args.iter() {
-                class_refs_in_expr(&a.value, class_name, out);
-            }
-        }
-        ExprKind::NullsafeMethodCall(m) => {
-            class_refs_in_expr(m.object, class_name, out);
-            for a in m.args.iter() {
-                class_refs_in_expr(&a.value, class_name, out);
-            }
-        }
-        ExprKind::Assign(a) => {
-            class_refs_in_expr(a.target, class_name, out);
-            class_refs_in_expr(a.value, class_name, out);
-        }
-        ExprKind::UnaryPrefix(u) => class_refs_in_expr(u.operand, class_name, out),
-        ExprKind::UnaryPostfix(u) => class_refs_in_expr(u.operand, class_name, out),
-        ExprKind::Ternary(t) => {
-            class_refs_in_expr(t.condition, class_name, out);
-            if let Some(e) = t.then_expr {
-                class_refs_in_expr(e, class_name, out);
-            }
-            class_refs_in_expr(t.else_expr, class_name, out);
-        }
-        ExprKind::NullCoalesce(n) => {
-            class_refs_in_expr(n.left, class_name, out);
-            class_refs_in_expr(n.right, class_name, out);
-        }
-        ExprKind::Parenthesized(e) => class_refs_in_expr(e, class_name, out),
-        ExprKind::ErrorSuppress(e) => class_refs_in_expr(e, class_name, out),
-        ExprKind::Cast(_, e) => class_refs_in_expr(e, class_name, out),
-        ExprKind::Clone(e) => class_refs_in_expr(e, class_name, out),
-        ExprKind::ThrowExpr(e) => class_refs_in_expr(e, class_name, out),
-        ExprKind::Print(e) => class_refs_in_expr(e, class_name, out),
-        ExprKind::Empty(e) => class_refs_in_expr(e, class_name, out),
-        ExprKind::Eval(e) => class_refs_in_expr(e, class_name, out),
-        ExprKind::Yield(y) => {
-            if let Some(k) = y.key {
-                class_refs_in_expr(k, class_name, out);
-            }
-            if let Some(v) = y.value {
-                class_refs_in_expr(v, class_name, out);
-            }
-        }
-        ExprKind::ArrayAccess(a) => {
-            class_refs_in_expr(a.array, class_name, out);
-            if let Some(idx) = a.index {
-                class_refs_in_expr(idx, class_name, out);
-            }
-        }
-        ExprKind::PropertyAccess(p) => class_refs_in_expr(p.object, class_name, out),
-        ExprKind::NullsafePropertyAccess(p) => class_refs_in_expr(p.object, class_name, out),
-        ExprKind::Match(m) => {
-            class_refs_in_expr(m.subject, class_name, out);
-            for arm in m.arms.iter() {
-                if let Some(conds) = &arm.conditions {
-                    for c in conds.iter() {
-                        class_refs_in_expr(c, class_name, out);
-                    }
-                }
-                class_refs_in_expr(&arm.body, class_name, out);
-            }
-        }
-        ExprKind::Array(elements) => {
-            for elem in elements.iter() {
-                if let Some(key) = &elem.key {
-                    class_refs_in_expr(key, class_name, out);
-                }
-                class_refs_in_expr(&elem.value, class_name, out);
-            }
-        }
-        ExprKind::Isset(exprs) => {
-            for e in exprs.iter() {
-                class_refs_in_expr(e, class_name, out);
-            }
-        }
-        ExprKind::Include(_, e) => class_refs_in_expr(e, class_name, out),
-        ExprKind::Exit(Some(e)) => class_refs_in_expr(e, class_name, out),
-        ExprKind::Closure(c) => class_refs_in_stmts(&c.body, class_name, out),
-        ExprKind::ArrowFunction(a) => class_refs_in_expr(a.body, class_name, out),
-        ExprKind::AnonymousClass(c) => {
-            for member in c.members.iter() {
-                if let ClassMemberKind::Method(m) = &member.kind
-                    && let Some(body) = &m.body
+    fn visit_expr(&mut self, expr: &Expr<'arena, 'src>) -> ControlFlow<()> {
+        match &expr.kind {
+            ExprKind::New(n) => {
+                if let ExprKind::Identifier(id) = &n.class.kind
+                    && id.rsplit('\\').next().unwrap_or(id) == self.class_name
                 {
-                    class_refs_in_stmts(body, class_name, out);
+                    self.out.push(n.class.span);
                 }
             }
+            ExprKind::Binary(b) => {
+                if let ExprKind::Identifier(id) = &b.right.kind
+                    && id.rsplit('\\').next().unwrap_or(id) == self.class_name
+                {
+                    self.out.push(b.right.span);
+                }
+            }
+            ExprKind::StaticMethodCall(s) => {
+                if let ExprKind::Identifier(id) = &s.class.kind
+                    && id.rsplit('\\').next().unwrap_or(id) == self.class_name
+                {
+                    self.out.push(s.class.span);
+                }
+            }
+            ExprKind::StaticPropertyAccess(s) => {
+                if let ExprKind::Identifier(id) = &s.class.kind
+                    && id.rsplit('\\').next().unwrap_or(id) == self.class_name
+                {
+                    self.out.push(s.class.span);
+                }
+            }
+            ExprKind::ClassConstAccess(c) => {
+                if let ExprKind::Identifier(id) = &c.class.kind
+                    && id.rsplit('\\').next().unwrap_or(id) == self.class_name
+                {
+                    self.out.push(c.class.span);
+                }
+            }
+            _ => {}
         }
-        _ => {}
+        walk_expr(self, expr)
     }
-}
 
-/// Walk a type hint and emit a span for any `Named` component that matches `class_name`.
-fn collect_class_in_type_hint(th: &TypeHint<'_, '_>, class_name: &str, out: &mut Vec<Span>) {
-    match &th.kind {
-        TypeHintKind::Named(name) => {
-            let repr = name.to_string_repr();
-            let last = repr.rsplit('\\').next().unwrap_or(repr.as_ref());
-            if last == class_name {
-                let span = name.span();
-                let offset = (repr.len() - last.len()) as u32;
-                out.push(Span {
-                    start: span.start + offset,
-                    end: span.end,
-                });
-            }
+    fn visit_type_hint(&mut self, type_hint: &TypeHint<'arena, 'src>) -> ControlFlow<()> {
+        if let TypeHintKind::Named(name) = &type_hint.kind {
+            self.collect_name(name);
         }
-        TypeHintKind::Nullable(inner) => collect_class_in_type_hint(inner, class_name, out),
-        TypeHintKind::Union(types) | TypeHintKind::Intersection(types) => {
-            for t in types.iter() {
-                collect_class_in_type_hint(t, class_name, out);
-            }
+        walk_type_hint(self, type_hint)
+    }
+
+    fn visit_catch_clause(&mut self, catch: &CatchClause<'arena, 'src>) -> ControlFlow<()> {
+        for ty in catch.types.iter() {
+            self.collect_name(ty);
         }
-        TypeHintKind::Keyword(_, _) => {}
+        walk_catch_clause(self, catch)
     }
 }
 
@@ -1920,6 +766,37 @@ mod tests {
         let mut out = vec![];
         collect_var_refs_in_scope(&doc.program().stmts, "x", byte_off, &mut out);
         assert_eq!(out.len(), 2);
+    }
+
+    #[test]
+    fn collect_scope_finds_var_inside_enum_method() {
+        let src = "<?php\nenum Status {\n    public function label($arg) { return $arg; }\n}";
+        let doc = parse(src);
+        let byte_off = src.find("return").unwrap();
+        let mut out = vec![];
+        collect_var_refs_in_scope(&doc.program().stmts, "arg", byte_off, &mut out);
+        assert!(
+            out.len() >= 2,
+            "expected param + body ref in enum method, got {}",
+            out.len()
+        );
+    }
+
+    #[test]
+    fn collect_scope_does_not_bleed_enum_method_into_outer_scope() {
+        let src =
+            "<?php\n$arg = 1;\nenum Status {\n    public function label($arg) { return $arg; }\n}";
+        let doc = parse(src);
+        // cursor is at the top-level $arg = 1, outside the enum
+        let byte_off = src.find("$arg").unwrap();
+        let mut out = vec![];
+        collect_var_refs_in_scope(&doc.program().stmts, "arg", byte_off, &mut out);
+        // only the top-level $arg should be found, not the enum method param
+        assert_eq!(
+            out.len(),
+            1,
+            "enum method $arg must not bleed into outer scope"
+        );
     }
 
     // ── property_refs_in_stmts ───────────────────────────────────────────────
