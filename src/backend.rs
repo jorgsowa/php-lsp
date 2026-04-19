@@ -678,12 +678,18 @@ impl LanguageServer for Backend {
                 let source = docs.get(&uri).unwrap_or_default();
                 let mut all_diags = diagnostics;
                 if let Some(d) = docs.get_doc(&uri) {
-                    // Full incremental update: evict stale definitions and
-                    // reference locations, re-collect, and rebuild inheritance
-                    // so the reference index is always consistent after an edit.
-                    codebase.remove_file_definitions(uri.as_str());
-                    collect_into_codebase(&codebase, &uri, &d);
-                    codebase.finalize();
+                    // semantic_diagnostics handles remove → collect → finalize → analyze
+                    // as one unit, so the codebase stays consistent and collector-phase
+                    // issues (e.g. class extends unknown base) are never dropped.
+                    all_diags.extend(semantic_diagnostics(
+                        &uri,
+                        &d,
+                        &codebase,
+                        &diag_cfg,
+                        php_version.as_deref(),
+                    ));
+                    // Reference index requires a finalized codebase; semantic_diagnostics
+                    // already called finalize() above.
                     if ref_index_ready.load(Ordering::Acquire) {
                         index_file_references(&uri, &d, &codebase);
                     }
@@ -696,13 +702,6 @@ impl LanguageServer for Backend {
                         &d,
                         &other_docs,
                         &diag_cfg,
-                    ));
-                    all_diags.extend(semantic_diagnostics_no_rebuild(
-                        &uri,
-                        &d,
-                        &codebase,
-                        &diag_cfg,
-                        php_version.as_deref(),
                     ));
                 }
                 client.publish_diagnostics(uri, all_diags, None).await;
