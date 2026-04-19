@@ -1078,13 +1078,16 @@ fn function_refs_in_expr(expr: &Expr<'_, '_>, name: &str, out: &mut Vec<Span>) {
     match &expr.kind {
         // The core match: a free function call whose callee is a bare identifier.
         ExprKind::FunctionCall(f) => {
-            if let ExprKind::Identifier(id) = &f.name.kind
-                && id.as_str() == name
-            {
-                out.push(f.name.span);
+            if let ExprKind::Identifier(id) = &f.name.kind {
+                if id.as_str() == name {
+                    out.push(f.name.span);
+                }
+                // Plain identifier callee already handled above — do not recurse
+                // into it, or adding an Identifier arm later would double-push.
+            } else {
+                // Dynamic callee: $fn(), get_fn()(), etc.
+                function_refs_in_expr(f.name, name, out);
             }
-            // Still recurse into args and a dynamic callee.
-            function_refs_in_expr(f.name, name, out);
             for a in f.args.iter() {
                 function_refs_in_expr(&a.value, name, out);
             }
