@@ -3318,6 +3318,144 @@ mod integration {
         );
     }
 
+    /// Gap 1: variable type from one method body must not appear in hover for the same
+    /// variable name in a different method body (scope pollution via flat TypeMap).
+    #[tokio::test]
+    async fn hover_variable_type_is_scoped_to_enclosing_method() {
+        // $result = new Widget() in methodA; $result = new Invoice() in methodB.
+        // Hovering $result while inside methodB must show Invoice, not Widget.
+        let src = concat!(
+            "<?php\n",
+            "class Widget {}\n",
+            "class Invoice {}\n",
+            "class Service {\n",
+            "    public function methodA(): void { $result = new Widget(); }\n",
+            "    public function methodB(): void { $result = new Invoice(); }\n",
+            "}\n",
+        );
+        // Line 5 = "    public function methodB(): void { $result = new Invoice(); }"
+        // "$result" starts at col 38 inside methodB
+        let mut client = start_server();
+        initialize(&mut client).await;
+        client
+            .notify(
+                "textDocument/didOpen",
+                serde_json::json!({
+                    "textDocument": {
+                        "uri": "file:///scope_test.php",
+                        "languageId": "php",
+                        "version": 1,
+                        "text": src
+                    }
+                }),
+            )
+            .await;
+        // Wait for publishDiagnostics — guarantees the async parser has finished
+        // and the document is fully indexed before we send the hover request.
+        client.read_diagnostics_for("file:///scope_test.php").await;
+
+        let resp = client
+            .request(
+                "textDocument/hover",
+                serde_json::json!({
+                    "textDocument": { "uri": "file:///scope_test.php" },
+                    "position": { "line": 5, "character": 40 }
+                }),
+            )
+            .await;
+
+        assert!(
+            resp["error"].is_null(),
+            "hover should not error: {:?}",
+            resp
+        );
+        assert!(
+            !resp["result"].is_null(),
+            "expected hover result, got null — document may not have been parsed yet"
+        );
+        let value = resp["result"]["contents"]["value"]
+            .as_str()
+            .unwrap_or_default();
+        assert!(
+            !value.contains("Widget"),
+            "Widget from methodA must not appear in methodB hover, got: {}",
+            value
+        );
+        assert!(
+            value.contains("Invoice"),
+            "Invoice from methodB should appear, got: {}",
+            value
+        );
+    }
+
+    /// Gap 2: hovering a method call site `$obj->method()` must show the signature
+    /// from the receiver's resolved class, not the first class with that method name.
+    #[tokio::test]
+    async fn hover_method_call_resolves_receiver_class() {
+        // Both Mailer and Queue have `process()` with different signatures.
+        // Hovering on $mailer->process() must show Mailer::process, not Queue::process.
+        let src = concat!(
+            "<?php\n",
+            "class Mailer { public function process(string $to): bool {} }\n",
+            "class Queue  { public function process(int $id): void {} }\n",
+            "$mailer = new Mailer();\n",
+            "$mailer->process('');\n",
+        );
+        // Line 4 = "$mailer->process('');" — "process" starts at col 9
+        let mut client = start_server();
+        initialize(&mut client).await;
+        client
+            .notify(
+                "textDocument/didOpen",
+                serde_json::json!({
+                    "textDocument": {
+                        "uri": "file:///method_hover.php",
+                        "languageId": "php",
+                        "version": 1,
+                        "text": src
+                    }
+                }),
+            )
+            .await;
+        // Wait for publishDiagnostics to confirm the document is fully parsed.
+        client
+            .read_diagnostics_for("file:///method_hover.php")
+            .await;
+
+        let resp = client
+            .request(
+                "textDocument/hover",
+                serde_json::json!({
+                    "textDocument": { "uri": "file:///method_hover.php" },
+                    "position": { "line": 4, "character": 12 }
+                }),
+            )
+            .await;
+
+        assert!(
+            resp["error"].is_null(),
+            "hover should not error: {:?}",
+            resp
+        );
+        assert!(
+            !resp["result"].is_null(),
+            "expected hover result on method call, got null"
+        );
+        let value = resp["result"]["contents"]["value"]
+            .as_str()
+            .unwrap_or_default();
+        assert!(
+            value.contains("Mailer"),
+            "hover should show Mailer::process, got: {}",
+            value
+        );
+        assert!(
+            !value.contains("int $id"),
+            "must NOT show Queue::process params, got: {}",
+            value
+        );
+    }
+
     /// Regression test for issue #125: cursor on a method *declaration* must
     /// return method references, not free-function references with the same name.
     #[tokio::test]
@@ -4908,11 +5046,6 @@ class Broken
             .collect()
     }
 
-    // mir-analyzer's StatementsAnalyzer does not recurse into function or
-    // method bodies — UndefinedFunction is only detected at the top level of
-    // a file. All assertions below the top-level one are ignored until
-    // mir-analyzer gains full body analysis. Tracked in jorgsowa/mir.
-    #[ignore]
     #[tokio::test]
     async fn mir_analyzer_scope_of_undefined_function_detection() {
         let mut client = start_server();
@@ -4953,9 +5086,8 @@ class Broken
         );
     }
 
-    // The reporter's exact PHP from issue #170. Blocked on mir-analyzer
-    // gaining function/method body analysis (see mir_analyzer_scope_of_undefined_function_detection).
-    #[ignore]
+    // The reporter's exact PHP from issue #170 — verifies that mir-analyzer
+    // detects errors inside namespaced class method bodies.
     #[tokio::test]
     async fn issue_170_undefined_function_in_method_body_is_detected() {
         let mut client = start_server();

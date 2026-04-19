@@ -59,8 +59,12 @@ pub fn hover_at(
 
     // Feature 2: hover on $variable shows its type
     if word.starts_with('$') {
-        let type_map =
-            TypeMap::from_docs_with_meta(doc, other_docs.iter().map(|(_, d)| d.as_ref()), None);
+        let type_map = TypeMap::from_docs_at_position(
+            doc,
+            other_docs.iter().map(|(_, d)| d.as_ref()),
+            None,
+            position,
+        );
         if let Some(class_name) = type_map.get(&word) {
             return Some(Hover {
                 contents: HoverContents::Markup(MarkupContent {
@@ -69,6 +73,63 @@ pub fn hover_at(
                 }),
                 range: None,
             });
+        }
+    }
+
+    // Class-specific method lookup: when the cursor is on a method call after `->`,
+    // resolve the receiver class and look up the method there to show the right signature.
+    if !word.starts_with('$')
+        && let Some(line_text) = source.lines().nth(position.line as usize)
+    {
+        let arrow_word = format!("->{}", word);
+        let nullsafe_arrow_word = format!("?->{}", word);
+        if line_text.contains(&arrow_word) || line_text.contains(&nullsafe_arrow_word) {
+            let arrow_pos = line_text
+                .find(&nullsafe_arrow_word)
+                .or_else(|| line_text.find(&arrow_word));
+            if let Some(apos) = arrow_pos {
+                let before_arrow = &line_text[..apos];
+                if let Some(var_name) = extract_receiver_var_from_end(before_arrow) {
+                    let type_map = TypeMap::from_docs_at_position(
+                        doc,
+                        other_docs.iter().map(|(_, d)| d.as_ref()),
+                        None,
+                        position,
+                    );
+                    let class_name = if var_name == "$this" {
+                        crate::type_map::enclosing_class_at(source, doc, position)
+                            .or_else(|| type_map.get("$this").map(|s| s.to_string()))
+                    } else {
+                        type_map.get(&var_name).map(|s| s.to_string())
+                    };
+                    if let Some(cls) = class_name {
+                        let first_cls = cls.split('|').next().unwrap_or(&cls);
+                        for d in
+                            std::iter::once(doc).chain(other_docs.iter().map(|(_, d)| d.as_ref()))
+                        {
+                            if let Some(sig) =
+                                scan_method_of_class(&d.program().stmts, first_cls, &word)
+                            {
+                                let mut value = wrap_php(&sig);
+                                if let Some(db) = find_method_docblock(d, first_cls, &word) {
+                                    let md = db.to_markdown();
+                                    if !md.is_empty() {
+                                        value.push_str("\n\n---\n\n");
+                                        value.push_str(&md);
+                                    }
+                                }
+                                return Some(Hover {
+                                    contents: HoverContents::Markup(MarkupContent {
+                                        kind: MarkupKind::Markdown,
+                                        value,
+                                    }),
+                                    range: None,
+                                });
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -140,10 +201,11 @@ pub fn hover_at(
                 let before_arrow = &line_text[..apos];
                 let receiver_var = extract_receiver_var_from_end(before_arrow);
                 if let Some(var_name) = receiver_var {
-                    let type_map = TypeMap::from_docs_with_meta(
+                    let type_map = TypeMap::from_docs_at_position(
                         doc,
                         other_docs.iter().map(|(_, d)| d.as_ref()),
                         None,
+                        position,
                     );
                     let class_name = if var_name == "$this" {
                         crate::type_map::enclosing_class_at(source, doc, position)
@@ -631,6 +693,150 @@ fn find_property_info_in_stmts<'a>(
                         find_property_info_in_stmts(source, inner, class_name, prop_name)
                 {
                     return Some(t);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Find the signature of `method_name` specifically within `class_name`, formatted as
+/// `ClassName::methodName(params): ReturnType`.
+fn scan_method_of_class(
+    stmts: &[Stmt<'_, '_>],
+    class_name: &str,
+    method_name: &str,
+) -> Option<String> {
+    for stmt in stmts {
+        match &stmt.kind {
+            StmtKind::Class(c) if c.name == Some(class_name) => {
+                for member in c.members.iter() {
+                    if let ClassMemberKind::Method(m) = &member.kind
+                        && m.name == method_name
+                    {
+                        let params = format_params(&m.params);
+                        let ret = m
+                            .return_type
+                            .as_ref()
+                            .map(|r| format!(": {}", format_type_hint(r)))
+                            .unwrap_or_default();
+                        return Some(format!(
+                            "{}::{}({}){}",
+                            class_name, method_name, params, ret
+                        ));
+                    }
+                }
+                return None;
+            }
+            StmtKind::Trait(t) if t.name == class_name => {
+                for member in t.members.iter() {
+                    if let ClassMemberKind::Method(m) = &member.kind
+                        && m.name == method_name
+                    {
+                        let params = format_params(&m.params);
+                        let ret = m
+                            .return_type
+                            .as_ref()
+                            .map(|r| format!(": {}", format_type_hint(r)))
+                            .unwrap_or_default();
+                        return Some(format!(
+                            "{}::{}({}){}",
+                            class_name, method_name, params, ret
+                        ));
+                    }
+                }
+                return None;
+            }
+            StmtKind::Enum(e) if e.name == class_name => {
+                for member in e.members.iter() {
+                    if let EnumMemberKind::Method(m) = &member.kind
+                        && m.name == method_name
+                    {
+                        let params = format_params(&m.params);
+                        let ret = m
+                            .return_type
+                            .as_ref()
+                            .map(|r| format!(": {}", format_type_hint(r)))
+                            .unwrap_or_default();
+                        return Some(format!(
+                            "{}::{}({}){}",
+                            class_name, method_name, params, ret
+                        ));
+                    }
+                }
+                return None;
+            }
+            StmtKind::Namespace(ns) => {
+                if let NamespaceBody::Braced(inner) = &ns.body {
+                    let result = scan_method_of_class(inner, class_name, method_name);
+                    if result.is_some() {
+                        return result;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn find_method_docblock(
+    doc: &ParsedDoc,
+    class_name: &str,
+    method_name: &str,
+) -> Option<crate::docblock::Docblock> {
+    find_method_docblock_in_stmts(doc.source(), &doc.program().stmts, class_name, method_name)
+}
+
+fn find_method_docblock_in_stmts(
+    source: &str,
+    stmts: &[Stmt<'_, '_>],
+    class_name: &str,
+    method_name: &str,
+) -> Option<crate::docblock::Docblock> {
+    for stmt in stmts {
+        match &stmt.kind {
+            StmtKind::Class(c) if c.name == Some(class_name) => {
+                for member in c.members.iter() {
+                    if let ClassMemberKind::Method(m) = &member.kind
+                        && m.name == method_name
+                    {
+                        return docblock_before(source, member.span.start)
+                            .map(|raw| parse_docblock(&raw));
+                    }
+                }
+                return None;
+            }
+            StmtKind::Trait(t) if t.name == class_name => {
+                for member in t.members.iter() {
+                    if let ClassMemberKind::Method(m) = &member.kind
+                        && m.name == method_name
+                    {
+                        return docblock_before(source, member.span.start)
+                            .map(|raw| parse_docblock(&raw));
+                    }
+                }
+                return None;
+            }
+            StmtKind::Enum(e) if e.name == class_name => {
+                for member in e.members.iter() {
+                    if let EnumMemberKind::Method(m) = &member.kind
+                        && m.name == method_name
+                    {
+                        return docblock_before(source, member.span.start)
+                            .map(|raw| parse_docblock(&raw));
+                    }
+                }
+                return None;
+            }
+            StmtKind::Namespace(ns) => {
+                if let NamespaceBody::Braced(inner) = &ns.body {
+                    let result =
+                        find_method_docblock_in_stmts(source, inner, class_name, method_name);
+                    if result.is_some() {
+                        return result;
+                    }
                 }
             }
             _ => {}
@@ -1433,6 +1639,76 @@ mod tests {
             assert!(
                 mc.value.contains("MyService"),
                 "expected MyService in hover, got: {}",
+                mc.value
+            );
+        }
+    }
+
+    // Gap 1: variables defined in one method must not pollute hover in another method.
+    #[test]
+    fn hover_variable_in_method_does_not_leak_across_methods() {
+        // $result is defined as Widget in methodA but the cursor is in methodB.
+        // Before the fix, $result from methodA would appear in methodB's hover.
+        let (src, p) = cursor(concat!(
+            "<?php\n",
+            "class Service {\n",
+            "    public function methodA(): void { $result = new Widget(); }\n",
+            "    public function methodB(): void { $res$0ult = new Invoice(); }\n",
+            "}\n",
+        ));
+        let doc = ParsedDoc::parse(src.clone());
+        let result = hover_info(&src, &doc, p, &[]);
+        if let Some(Hover {
+            contents: HoverContents::Markup(mc),
+            ..
+        }) = result
+        {
+            assert!(
+                !mc.value.contains("Widget"),
+                "Widget from methodA must not appear in methodB hover, got: {}",
+                mc.value
+            );
+            assert!(
+                mc.value.contains("Invoice"),
+                "Invoice from methodB should appear in hover, got: {}",
+                mc.value
+            );
+        }
+    }
+
+    // Gap 2: hovering `->method()` should show the signature for the correct class.
+    #[test]
+    fn hover_method_call_shows_correct_class_signature() {
+        // Two classes both have a method named `process`. Hovering on `$mailer->process()`
+        // should show Mailer::process, not Queue::process.
+        let (src, p) = cursor(concat!(
+            "<?php\n",
+            "class Mailer { public function process(string $to): bool {} }\n",
+            "class Queue  { public function process(int $id): void {} }\n",
+            "$mailer = new Mailer();\n",
+            "$mailer->proc$0ess();\n",
+        ));
+        let doc = ParsedDoc::parse(src.clone());
+        let result = hover_info(&src, &doc, p, &[]);
+        assert!(result.is_some(), "expected hover on method call");
+        if let Some(Hover {
+            contents: HoverContents::Markup(mc),
+            ..
+        }) = result
+        {
+            assert!(
+                mc.value.contains("Mailer::process"),
+                "should show Mailer::process, got: {}",
+                mc.value
+            );
+            assert!(
+                mc.value.contains("string $to"),
+                "should show Mailer's params, got: {}",
+                mc.value
+            );
+            assert!(
+                !mc.value.contains("int $id"),
+                "must NOT show Queue::process params, got: {}",
                 mc.value
             );
         }

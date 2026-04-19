@@ -126,8 +126,10 @@ fn issue_passes_filter(issue: &mir_issues::Issue, cfg: &DiagnosticsConfig) -> bo
             cfg.undefined_functions
         }
         IssueKind::UndefinedClass { .. } => cfg.undefined_classes,
+        // InvalidArgument covers both arity errors and type mismatches in mir-analyzer;
+        // show it if either toggle is on.
+        IssueKind::InvalidArgument { .. } => cfg.arity_errors || cfg.type_errors,
         IssueKind::InvalidReturnType { .. }
-        | IssueKind::InvalidArgument { .. }
         | IssueKind::NullMethodCall { .. }
         | IssueKind::NullPropertyFetch { .. }
         | IssueKind::NullableReturnStatement { .. }

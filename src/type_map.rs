@@ -34,6 +34,7 @@ impl TypeMap {
             &mut map,
             meta,
             &method_returns,
+            None,
         );
         TypeMap(map)
     }
@@ -59,6 +60,51 @@ impl TypeMap {
             &mut map,
             meta,
             &method_returns,
+            None,
+        );
+        TypeMap(map)
+    }
+
+    /// Like [`from_docs_with_meta`] but scopes method-body variable collection
+    /// to the method (or function) containing `position`. Variables local to
+    /// other method bodies are excluded so they cannot pollute the map with
+    /// wrong types at the cursor site. Sets `$this` when the position is inside
+    /// an instance method.
+    pub fn from_docs_at_position<'a>(
+        doc: &ParsedDoc,
+        other_docs: impl IntoIterator<Item = &'a ParsedDoc>,
+        meta: Option<&'a PhpStormMeta>,
+        position: Position,
+    ) -> Self {
+        let cursor_byte = {
+            let line_starts = doc.line_starts();
+            let line = position.line as usize;
+            if line < line_starts.len() {
+                let line_start = line_starts[line] as usize;
+                let col_byte = crate::util::utf16_offset_to_byte(
+                    &doc.source()[line_start..],
+                    position.character as usize,
+                );
+                Some((line_start + col_byte) as u32)
+            } else {
+                None
+            }
+        };
+        let mut method_returns = build_method_returns(doc);
+        for other in other_docs {
+            let other_returns = build_method_returns(other);
+            for (class, methods) in other_returns {
+                method_returns.entry(class).or_default().extend(methods);
+            }
+        }
+        let mut map = HashMap::new();
+        collect_types_stmts(
+            doc.source(),
+            &doc.program().stmts,
+            &mut map,
+            meta,
+            &method_returns,
+            cursor_byte,
         );
         TypeMap(map)
     }
@@ -206,6 +252,7 @@ fn collect_types_stmts(
     map: &mut HashMap<String, String>,
     meta: Option<&PhpStormMeta>,
     method_returns: &HashMap<String, HashMap<String, String>>,
+    cursor_byte: Option<u32>,
 ) {
     for stmt in stmts {
         // Check for `/** @var ClassName $varName */` docblock before this statement.
@@ -237,8 +284,16 @@ fn collect_types_stmts(
         }
 
         match &stmt.kind {
-            StmtKind::Expression(e) => collect_types_expr(source, e, map, meta, method_returns),
+            StmtKind::Expression(e) => {
+                collect_types_expr(source, e, map, meta, method_returns, cursor_byte)
+            }
             StmtKind::Function(f) => {
+                // Only collect params/body when cursor is inside this function (or no cursor).
+                let in_scope =
+                    cursor_byte.is_none_or(|c| stmt.span.start <= c && c <= stmt.span.end);
+                if !in_scope {
+                    continue;
+                }
                 // Read @param docblock hints — fills in types for untyped params
                 if let Some(raw) = docblock_before(source, stmt.span.start) {
                     let db = parse_docblock(&raw);
@@ -268,12 +323,18 @@ fn collect_types_stmts(
                         map.insert(format!("${}", p.name), class_str);
                     }
                 }
-                collect_types_stmts(source, &f.body, map, meta, method_returns);
+                collect_types_stmts(source, &f.body, map, meta, method_returns, cursor_byte);
             }
             StmtKind::Class(c) => {
                 let class_name = c.name.map(|n| n.to_string());
                 for member in c.members.iter() {
                     if let ClassMemberKind::Method(m) = &member.kind {
+                        // Only collect params/body when cursor is inside this method (or no cursor).
+                        let in_scope = cursor_byte
+                            .is_none_or(|cb| member.span.start <= cb && cb <= member.span.end);
+                        if !in_scope {
+                            continue;
+                        }
                         // Read @param docblock hints — fills in types for untyped params
                         if let Some(raw) = docblock_before(source, member.span.start) {
                             let db = parse_docblock(&raw);
@@ -308,8 +369,21 @@ fn collect_types_stmts(
                                 map.insert(format!("${}", p.name), class_str);
                             }
                         }
+                        // Set $this to the enclosing class for instance methods.
+                        if !m.is_static
+                            && let Some(ref cname) = class_name
+                        {
+                            map.insert("$this".to_string(), cname.clone());
+                        }
                         if let Some(body) = &m.body {
-                            collect_types_stmts(source, body, map, meta, method_returns);
+                            collect_types_stmts(
+                                source,
+                                body,
+                                map,
+                                meta,
+                                method_returns,
+                                cursor_byte,
+                            );
                         }
                     }
                 }
@@ -317,6 +391,11 @@ fn collect_types_stmts(
             StmtKind::Trait(t) => {
                 for member in t.members.iter() {
                     if let ClassMemberKind::Method(m) = &member.kind {
+                        let in_scope = cursor_byte
+                            .is_none_or(|cb| member.span.start <= cb && cb <= member.span.end);
+                        if !in_scope {
+                            continue;
+                        }
                         for p in m.params.iter() {
                             if let Some(hint) = &p.type_hint
                                 && let Some(class_str) = type_hint_to_class_string(hint, None)
@@ -325,7 +404,14 @@ fn collect_types_stmts(
                             }
                         }
                         if let Some(body) = &m.body {
-                            collect_types_stmts(source, body, map, meta, method_returns);
+                            collect_types_stmts(
+                                source,
+                                body,
+                                map,
+                                meta,
+                                method_returns,
+                                cursor_byte,
+                            );
                         }
                     }
                 }
@@ -333,6 +419,11 @@ fn collect_types_stmts(
             StmtKind::Enum(e) => {
                 for member in e.members.iter() {
                     if let EnumMemberKind::Method(m) = &member.kind {
+                        let in_scope = cursor_byte
+                            .is_none_or(|cb| member.span.start <= cb && cb <= member.span.end);
+                        if !in_scope {
+                            continue;
+                        }
                         for p in m.params.iter() {
                             if let Some(hint) = &p.type_hint
                                 && let Some(class_str) = type_hint_to_class_string(hint, None)
@@ -341,14 +432,21 @@ fn collect_types_stmts(
                             }
                         }
                         if let Some(body) = &m.body {
-                            collect_types_stmts(source, body, map, meta, method_returns);
+                            collect_types_stmts(
+                                source,
+                                body,
+                                map,
+                                meta,
+                                method_returns,
+                                cursor_byte,
+                            );
                         }
                     }
                 }
             }
             StmtKind::Namespace(ns) => {
                 if let NamespaceBody::Braced(inner) = &ns.body {
-                    collect_types_stmts(source, inner, map, meta, method_returns);
+                    collect_types_stmts(source, inner, map, meta, method_returns, cursor_byte);
                 }
             }
             // if ($x instanceof Foo) — narrow $x to Foo inside the then-branch
@@ -379,6 +477,7 @@ fn collect_types_stmts(
                     map,
                     meta,
                     method_returns,
+                    cursor_byte,
                 );
                 for elseif in if_stmt.elseif_branches.iter() {
                     collect_types_stmts(
@@ -387,6 +486,7 @@ fn collect_types_stmts(
                         map,
                         meta,
                         method_returns,
+                        cursor_byte,
                     );
                 }
                 if let Some(else_branch) = if_stmt.else_branch {
@@ -396,6 +496,7 @@ fn collect_types_stmts(
                         map,
                         meta,
                         method_returns,
+                        cursor_byte,
                     );
                 }
             }
@@ -416,12 +517,13 @@ fn collect_types_stmts(
                     map,
                     meta,
                     method_returns,
+                    cursor_byte,
                 );
             }
             // try { ... } catch (FooException $e) { ... }
             // Map the catch variable to the first caught exception class.
             StmtKind::TryCatch(t) => {
-                collect_types_stmts(source, &t.body, map, meta, method_returns);
+                collect_types_stmts(source, &t.body, map, meta, method_returns, cursor_byte);
                 for catch in t.catches.iter() {
                     if let Some(var_name) = &catch.var
                         && let Some(first_type) = catch.types.first()
@@ -437,10 +539,17 @@ fn collect_types_stmts(
                             map.insert(format!("${}", var_name), class_name);
                         }
                     }
-                    collect_types_stmts(source, &catch.body, map, meta, method_returns);
+                    collect_types_stmts(
+                        source,
+                        &catch.body,
+                        map,
+                        meta,
+                        method_returns,
+                        cursor_byte,
+                    );
                 }
                 if let Some(finally) = &t.finally {
-                    collect_types_stmts(source, finally, map, meta, method_returns);
+                    collect_types_stmts(source, finally, map, meta, method_returns, cursor_byte);
                 }
             }
 
@@ -472,6 +581,7 @@ fn collect_types_expr(
     map: &mut HashMap<String, String>,
     meta: Option<&PhpStormMeta>,
     method_returns: &HashMap<String, HashMap<String, String>>,
+    cursor_byte: Option<u32>,
 ) {
     match &expr.kind {
         ExprKind::Assign(assign) => {
@@ -485,7 +595,14 @@ fn collect_types_expr(
                         map.entry(format!("${}", var_name.as_str()))
                             .or_insert(class_name);
                     }
-                    collect_types_expr(source, assign.value, map, meta, method_returns);
+                    collect_types_expr(
+                        source,
+                        assign.value,
+                        map,
+                        meta,
+                        method_returns,
+                        cursor_byte,
+                    );
                     return;
                 }
                 if let ExprKind::New(new_expr) = &assign.value.kind
@@ -514,7 +631,7 @@ fn collect_types_expr(
                     map.insert(format!("${}[]", var_name.as_str()), elem_type);
                 }
             }
-            collect_types_expr(source, assign.value, map, meta, method_returns);
+            collect_types_expr(source, assign.value, map, meta, method_returns, cursor_byte);
         }
 
         // Closure::bind($fn, $obj) → $this maps to $obj's class
@@ -562,7 +679,7 @@ fn collect_types_expr(
                     map.get(&key).map(|ty| (key, ty.clone()))
                 })
                 .collect();
-            collect_types_stmts(source, &c.body, map, meta, method_returns);
+            collect_types_stmts(source, &c.body, map, meta, method_returns, cursor_byte);
             // Restore captured variable types: inner assignments inside the closure
             // body should not affect the outer scope's type for completions.
             for (key, ty) in use_var_snapshot {
@@ -578,7 +695,7 @@ fn collect_types_expr(
                     map.insert(format!("${}", p.name), name.to_string_repr().to_string());
                 }
             }
-            collect_types_expr(source, af.body, map, meta, method_returns);
+            collect_types_expr(source, af.body, map, meta, method_returns, cursor_byte);
         }
 
         _ => {}
