@@ -609,32 +609,40 @@ impl LanguageServer for Backend {
         // Store text immediately so other features work while parsing
         let version = self.docs.set_text(uri.clone(), text.clone());
 
-        // Parse in a blocking thread to avoid stalling the tokio runtime;
-        // await here so the AST is ready before the handler returns.
-        let (doc, diagnostics) = tokio::task::spawn_blocking(move || parse_document(&text))
-            .await
-            .unwrap_or_else(|_| (ParsedDoc::default(), vec![]));
+        let codebase = Arc::clone(&self.codebase);
+        let diag_cfg = self.config.read().unwrap().diagnostics.clone();
+        let php_version = self.config.read().unwrap().php_version.clone();
+        let uri_clone = uri.clone();
+
+        // Parse and run semantic analysis together in a blocking thread.
+        // semantic_diagnostics handles remove → collect → finalize → analyze,
+        // so definitions are never doubled even if the workspace scan already
+        // indexed this file.
+        let diag_cfg_inner = diag_cfg.clone();
+        let (doc, parse_diags, sem_diags) = tokio::task::spawn_blocking(move || {
+            let (doc, parse_diags) = parse_document(&text);
+            let sem_diags = semantic_diagnostics(
+                &uri_clone,
+                &doc,
+                &codebase,
+                &diag_cfg_inner,
+                php_version.as_deref(),
+            );
+            (doc, parse_diags, sem_diags)
+        })
+        .await
+        .unwrap_or_else(|_| (ParsedDoc::default(), vec![], vec![]));
 
         self.docs
-            .apply_parse(&uri, doc, diagnostics.clone(), version);
+            .apply_parse(&uri, doc, parse_diags.clone(), version);
         let stored_source = self.docs.get(&uri).unwrap_or_default();
         let doc2 = self.docs.get_doc(&uri);
-        let mut all_diags = diagnostics;
+        let mut all_diags = parse_diags;
         if let Some(ref d) = doc2 {
-            self.collect_definitions_for(&uri, d);
-            self.codebase.finalize();
-            let diag_cfg = self.config.read().unwrap().diagnostics.clone();
-            let php_version = self.config.read().unwrap().php_version.clone();
             let dup_diags = duplicate_declaration_diagnostics(&stored_source, d, &diag_cfg);
             all_diags.extend(dup_diags);
-            all_diags.extend(semantic_diagnostics_no_rebuild(
-                &uri,
-                d,
-                &self.codebase,
-                &diag_cfg,
-                php_version.as_deref(),
-            ));
         }
+        all_diags.extend(sem_diags);
         self.client.publish_diagnostics(uri, all_diags, None).await;
     }
 
@@ -4547,6 +4555,56 @@ mod integration {
         assert!(
             has_undefined_fn,
             "expected an UndefinedFunction diagnostic in publishDiagnostics, got: {:?}",
+            diags
+        );
+    }
+
+    #[tokio::test]
+    async fn diagnostics_published_on_did_change_for_undefined_function() {
+        let mut client = start_server();
+        initialize(&mut client).await;
+
+        // Open a valid file first — consumes its publishDiagnostics notification.
+        client
+            .notify(
+                "textDocument/didOpen",
+                serde_json::json!({
+                    "textDocument": {
+                        "uri": "file:///change_test.php",
+                        "languageId": "php",
+                        "version": 1,
+                        "text": "<?php\n"
+                    }
+                }),
+            )
+            .await;
+        client
+            .read_notification("textDocument/publishDiagnostics")
+            .await;
+
+        // Now change the file to introduce an undefined-function call.
+        client
+            .notify(
+                "textDocument/didChange",
+                serde_json::json!({
+                    "textDocument": { "uri": "file:///change_test.php", "version": 2 },
+                    "contentChanges": [{ "text": "<?php\nnonexistent_function();\n" }]
+                }),
+            )
+            .await;
+
+        let notif = client
+            .read_notification("textDocument/publishDiagnostics")
+            .await;
+        let diags = &notif["params"]["diagnostics"];
+        let has_undefined_fn = diags
+            .as_array()
+            .unwrap_or(&vec![])
+            .iter()
+            .any(|d| d["code"].as_str() == Some("UndefinedFunction"));
+        assert!(
+            has_undefined_fn,
+            "expected an UndefinedFunction diagnostic after didChange, got: {:?}",
             diags
         );
     }
