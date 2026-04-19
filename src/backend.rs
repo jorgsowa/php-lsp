@@ -619,6 +619,7 @@ impl LanguageServer for Backend {
         // so definitions are never doubled even if the workspace scan already
         // indexed this file.
         let diag_cfg_inner = diag_cfg.clone();
+        let php_version_inner = php_version.clone();
         let (doc, parse_diags, sem_diags) = tokio::task::spawn_blocking(move || {
             let (doc, parse_diags) = parse_document(&text);
             let sem_diags = semantic_diagnostics(
@@ -626,7 +627,7 @@ impl LanguageServer for Backend {
                 &doc,
                 &codebase,
                 &diag_cfg_inner,
-                php_version.as_deref(),
+                php_version_inner.as_deref(),
             );
             (doc, parse_diags, sem_diags)
         })
@@ -641,6 +642,13 @@ impl LanguageServer for Backend {
         if let Some(ref d) = doc2 {
             let dup_diags = duplicate_declaration_diagnostics(&stored_source, d, &diag_cfg);
             all_diags.extend(dup_diags);
+            all_diags.extend(semantic_diagnostics_no_rebuild(
+                &uri,
+                d,
+                &self.codebase,
+                &diag_cfg,
+                php_version.as_deref(),
+            ));
         }
         all_diags.extend(sem_diags);
         self.client.publish_diagnostics(uri, all_diags, None).await;
@@ -702,6 +710,13 @@ impl LanguageServer for Backend {
                         &d,
                         &other_docs,
                         &diag_cfg,
+                    ));
+                    all_diags.extend(semantic_diagnostics_no_rebuild(
+                        &uri,
+                        &d,
+                        &codebase,
+                        &diag_cfg,
+                        php_version.as_deref(),
                     ));
                 }
                 client.publish_diagnostics(uri, all_diags, None).await;
