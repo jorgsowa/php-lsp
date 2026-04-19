@@ -68,16 +68,6 @@ fn use_refs(stmts: &[Stmt<'_, '_>], word: &str, out: &mut Vec<Span>) {
     }
 }
 
-pub fn refs_in_expr(source: &str, expr: &Expr<'_, '_>, word: &str, out: &mut Vec<Span>) {
-    let mut v = AllRefsVisitor {
-        source,
-        word,
-        out: Vec::new(),
-    };
-    let _ = v.visit_expr(expr);
-    out.append(&mut v.out);
-}
-
 // ── AllRefsVisitor ────────────────────────────────────────────────────────────
 
 struct AllRefsVisitor<'a> {
