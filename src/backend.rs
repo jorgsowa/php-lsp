@@ -679,8 +679,8 @@ impl LanguageServer for Backend {
                 let mut all_diags = diagnostics;
                 if let Some(d) = docs.get_doc(&uri) {
                     // semantic_diagnostics handles remove → collect → finalize → analyze
-                    // as one unit, so the codebase stays consistent and collector-phase
-                    // issues (e.g. class extends unknown base) are never dropped.
+                    // as one unit, keeping the codebase consistent and ensuring any
+                    // future collector-phase issues from mir-analyzer are surfaced.
                     all_diags.extend(semantic_diagnostics(
                         &uri,
                         &d,
