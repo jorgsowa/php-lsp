@@ -979,4 +979,63 @@ mod tests {
             "diagnostic message should mention the class name"
         );
     }
+
+    fn make_codebase() -> mir_codebase::Codebase {
+        let cb = mir_codebase::Codebase::new();
+        mir_analyzer::stubs::load_stubs(&cb);
+        cb
+    }
+
+    fn sem_diags(src: &str) -> Vec<Diagnostic> {
+        let uri = tower_lsp::lsp_types::Url::parse("file:///test.php").unwrap();
+        let doc = ParsedDoc::parse(src.to_string());
+        let cb = make_codebase();
+        semantic_diagnostics(&uri, &doc, &cb, &DiagnosticsConfig::default(), None)
+    }
+
+    // mir-analyzer does not yet emit UndefinedVariable for `$countt` used in an
+    // arithmetic expression inside a function body. Ignored until mir-analyzer
+    // gains this detection.
+    #[ignore]
+    #[test]
+    fn undefined_variable_emits_diagnostic() {
+        let src = "<?php\nfunction f(): int {\n    $total = $countt + 1;\n    return $total;\n}\n";
+        let diags = sem_diags(src);
+        assert!(
+            diags.iter().any(|d| matches!(
+                &d.code,
+                Some(NumberOrString::String(s)) if s == "UndefinedVariable"
+            )),
+            "expected UndefinedVariable diagnostic, got: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn undefined_function_emits_diagnostic() {
+        let src = "<?php\nnonexistent_function();\n";
+        let diags = sem_diags(src);
+        assert!(
+            diags.iter().any(|d| matches!(
+                &d.code,
+                Some(NumberOrString::String(s)) if s == "UndefinedFunction"
+            )),
+            "expected UndefinedFunction diagnostic, got: {:?}",
+            diags
+        );
+    }
+
+    #[test]
+    fn undefined_class_emits_diagnostic() {
+        let src = "<?php\n$x = new UnknownClass();\n";
+        let diags = sem_diags(src);
+        assert!(
+            diags.iter().any(|d| matches!(
+                &d.code,
+                Some(NumberOrString::String(s)) if s == "UndefinedClass"
+            )),
+            "expected UndefinedClass diagnostic, got: {:?}",
+            diags
+        );
+    }
 }

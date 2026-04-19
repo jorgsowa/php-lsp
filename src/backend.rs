@@ -622,9 +622,18 @@ impl LanguageServer for Backend {
         let mut all_diags = diagnostics;
         if let Some(ref d) = doc2 {
             self.collect_definitions_for(&uri, d);
+            self.codebase.finalize();
             let diag_cfg = self.config.read().unwrap().diagnostics.clone();
+            let php_version = self.config.read().unwrap().php_version.clone();
             let dup_diags = duplicate_declaration_diagnostics(&stored_source, d, &diag_cfg);
             all_diags.extend(dup_diags);
+            all_diags.extend(semantic_diagnostics_no_rebuild(
+                &uri,
+                d,
+                &self.codebase,
+                &diag_cfg,
+                php_version.as_deref(),
+            ));
         }
         self.client.publish_diagnostics(uri, all_diags, None).await;
     }
@@ -646,6 +655,7 @@ impl LanguageServer for Backend {
         let codebase = Arc::clone(&self.codebase);
         let ref_index_ready = Arc::clone(&self.ref_index_ready);
         let diag_cfg = self.config.read().unwrap().diagnostics.clone();
+        let php_version = self.config.read().unwrap().php_version.clone();
         tokio::spawn(async move {
             // 100 ms debounce: if another edit arrives before we parse, the
             // version check in apply_parse will discard this stale result.
@@ -678,6 +688,13 @@ impl LanguageServer for Backend {
                         &d,
                         &other_docs,
                         &diag_cfg,
+                    ));
+                    all_diags.extend(semantic_diagnostics_no_rebuild(
+                        &uri,
+                        &d,
+                        &codebase,
+                        &diag_cfg,
+                        php_version.as_deref(),
                     ));
                 }
                 client.publish_diagnostics(uri, all_diags, None).await;
@@ -3064,6 +3081,20 @@ mod integration {
             });
             self.write.write_all(&frame(&msg)).await.unwrap();
         }
+
+        /// Read messages until a notification with the given method arrives (5 s timeout).
+        async fn read_notification(&mut self, method: &str) -> serde_json::Value {
+            tokio::time::timeout(tokio::time::Duration::from_secs(5), async {
+                loop {
+                    let msg = read_msg(&mut self.read).await;
+                    if msg.get("method") == Some(&serde_json::json!(method)) {
+                        return msg;
+                    }
+                }
+            })
+            .await
+            .unwrap_or_else(|_| panic!("timed out waiting for {method} notification"))
+        }
     }
 
     fn start_server() -> TestClient {
@@ -4478,5 +4509,45 @@ mod integration {
         dump!("selectionRange (cursor inside return expr)",
             client.request("textDocument/selectionRange",
                 serde_json::json!({"textDocument":{"uri":"file:///p_sel.php"},"positions":[{"line":1,"character":38}]})).await);
+    }
+
+    #[tokio::test]
+    async fn diagnostics_published_on_did_open_for_undefined_function() {
+        let mut client = start_server();
+        initialize(&mut client).await;
+
+        // PHP with a clear undefined-function error that mir-analyzer detects.
+        client
+            .notify(
+                "textDocument/didOpen",
+                serde_json::json!({
+                    "textDocument": {
+                        "uri": "file:///diag_test.php",
+                        "languageId": "php",
+                        "version": 1,
+                        "text": "<?php\nnonexistent_function();\n"
+                    }
+                }),
+            )
+            .await;
+
+        let notif = client
+            .read_notification("textDocument/publishDiagnostics")
+            .await;
+        let diags = &notif["params"]["diagnostics"];
+        assert!(
+            diags.is_array(),
+            "publishDiagnostics params.diagnostics must be an array"
+        );
+        let has_undefined_fn = diags
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|d| d["code"].as_str() == Some("UndefinedFunction"));
+        assert!(
+            has_undefined_fn,
+            "expected an UndefinedFunction diagnostic in publishDiagnostics, got: {:?}",
+            diags
+        );
     }
 }
