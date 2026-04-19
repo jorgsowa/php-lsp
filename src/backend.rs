@@ -4607,4 +4607,94 @@ mod integration {
             diags
         );
     }
+
+    #[tokio::test]
+    async fn did_open_emits_diagnostic_for_undefined_class() {
+        let mut client = start_server();
+        initialize(&mut client).await;
+
+        client
+            .notify(
+                "textDocument/didOpen",
+                serde_json::json!({
+                    "textDocument": {
+                        "uri": "file:///undef_class.php",
+                        "languageId": "php",
+                        "version": 1,
+                        "text": "<?php\n$x = new UnknownClass();\n"
+                    }
+                }),
+            )
+            .await;
+
+        let notif = client
+            .read_notification("textDocument/publishDiagnostics")
+            .await;
+        let diags = &notif["params"]["diagnostics"];
+        let has_undef_class = diags
+            .as_array()
+            .unwrap_or(&vec![])
+            .iter()
+            .any(|d| d["code"].as_str() == Some("UndefinedClass"));
+        assert!(
+            has_undef_class,
+            "expected UndefinedClass diagnostic on did_open, got: {:?}",
+            diags
+        );
+    }
+
+    #[tokio::test]
+    async fn diagnostics_clear_when_code_is_fixed() {
+        let mut client = start_server();
+        initialize(&mut client).await;
+
+        // Open broken file — expect a diagnostic.
+        client
+            .notify(
+                "textDocument/didOpen",
+                serde_json::json!({
+                    "textDocument": {
+                        "uri": "file:///fix_test.php",
+                        "languageId": "php",
+                        "version": 1,
+                        "text": "<?php\nnonexistent_function();\n"
+                    }
+                }),
+            )
+            .await;
+        let notif = client
+            .read_notification("textDocument/publishDiagnostics")
+            .await;
+        assert!(
+            !notif["params"]["diagnostics"]
+                .as_array()
+                .unwrap_or(&vec![])
+                .is_empty(),
+            "expected at least one diagnostic for broken code, got: {:?}",
+            notif["params"]["diagnostics"]
+        );
+
+        // Fix the file — diagnostics must clear to an empty array.
+        client
+            .notify(
+                "textDocument/didChange",
+                serde_json::json!({
+                    "textDocument": { "uri": "file:///fix_test.php", "version": 2 },
+                    "contentChanges": [{ "text": "<?php\n" }]
+                }),
+            )
+            .await;
+        let notif = client
+            .read_notification("textDocument/publishDiagnostics")
+            .await;
+        let diags = notif["params"]["diagnostics"]
+            .as_array()
+            .unwrap_or(&vec![])
+            .clone();
+        assert!(
+            diags.is_empty(),
+            "diagnostics must be empty after fixing the code, got: {:?}",
+            diags
+        );
+    }
 }
