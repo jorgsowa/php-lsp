@@ -1,4 +1,5 @@
 use std::collections::VecDeque;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use dashmap::DashMap;
@@ -7,12 +8,12 @@ use tower_lsp::lsp_types::{Diagnostic, SemanticToken, Url};
 use crate::ast::ParsedDoc;
 use crate::diagnostics::parse_document;
 
-/// Maximum number of indexed-only (not open in editor) files kept in memory.
-#[cfg(not(test))]
-const MAX_INDEXED: usize = 10_000;
-/// Reduced limit used in tests so eviction can be exercised without 10 k files.
+/// Default limit used in tests so eviction can be exercised without many files.
 #[cfg(test)]
-const MAX_INDEXED: usize = 3;
+pub(crate) const DEFAULT_MAX_INDEXED: usize = 3;
+/// Default maximum number of indexed-only (not open in editor) files kept in memory.
+#[cfg(not(test))]
+pub(crate) const DEFAULT_MAX_INDEXED: usize = 1_000;
 
 struct Document {
     /// `Some` when the file is open in the editor; `None` for workspace-indexed files.
@@ -30,6 +31,8 @@ pub struct DocumentStore {
     /// Cached semantic tokens per document: (result_id, tokens).
     /// Used to compute incremental deltas for `textDocument/semanticTokens/full/delta`.
     token_cache: DashMap<Url, (String, Vec<SemanticToken>)>,
+    /// Maximum number of indexed-only files to keep in memory.
+    max_indexed: AtomicUsize,
 }
 
 impl Default for DocumentStore {
@@ -44,6 +47,30 @@ impl DocumentStore {
             map: DashMap::new(),
             indexed_order: Mutex::new(VecDeque::new()),
             token_cache: DashMap::new(),
+            max_indexed: AtomicUsize::new(DEFAULT_MAX_INDEXED),
+        }
+    }
+
+    /// Update the maximum number of indexed-only files kept in memory.
+    /// Excess entries are evicted immediately.
+    pub fn set_max_indexed(&self, limit: usize) {
+        self.max_indexed.store(limit, Ordering::Relaxed);
+        let mut order = self.indexed_order.lock().unwrap();
+        let need_to_evict = order.len().saturating_sub(limit);
+        let mut evicted = 0;
+        while evicted < need_to_evict {
+            let Some(oldest) = order.pop_front() else {
+                break;
+            };
+            if self
+                .map
+                .get(&oldest)
+                .map(|d| d.text.is_none())
+                .unwrap_or(false)
+            {
+                self.map.remove(&oldest);
+                evicted += 1;
+            }
         }
     }
 
@@ -113,12 +140,14 @@ impl DocumentStore {
 
         let mut order = self.indexed_order.lock().unwrap();
         order.push_back(uri);
-        // Evict enough indexed-only entries to bring the queue back to MAX_INDEXED.
+        // Evict enough indexed-only entries to bring the queue back to DEFAULT_MAX_INDEXED.
         // A file that became open after being indexed must be skipped — it will be
         // re-queued when it is eventually closed.  We must not stop early just
-        // because popping an open file decremented order.len() to MAX_INDEXED;
+        // because popping an open file decremented order.len() to DEFAULT_MAX_INDEXED;
         // that would leave the map with too many entries.
-        let need_to_evict = order.len().saturating_sub(MAX_INDEXED);
+        let need_to_evict = order
+            .len()
+            .saturating_sub(self.max_indexed.load(Ordering::Relaxed));
         let mut evicted = 0;
         while evicted < need_to_evict {
             let Some(oldest) = order.pop_front() else {
@@ -309,18 +338,18 @@ mod tests {
 
     #[test]
     fn eviction_removes_oldest_indexed_file() {
-        // Fill the store to exactly MAX_INDEXED, then add one more.
-        // The oldest entry must be evicted so the map stays at MAX_INDEXED.
+        // Fill the store to exactly DEFAULT_MAX_INDEXED, then add one more.
+        // The oldest entry must be evicted so the map stays at DEFAULT_MAX_INDEXED.
         let store = DocumentStore::new();
-        for i in 0..MAX_INDEXED {
+        for i in 0..DEFAULT_MAX_INDEXED {
             store.index(uri(&format!("/{i}.php")), "<?php");
         }
         store.index(uri("/overflow.php"), "<?php");
 
         assert_eq!(
             store.all_docs().len(),
-            MAX_INDEXED,
-            "map must not exceed MAX_INDEXED after overflow"
+            DEFAULT_MAX_INDEXED,
+            "map must not exceed DEFAULT_MAX_INDEXED after overflow"
         );
         assert!(
             store.get_doc(&uri("/overflow.php")).is_some(),
@@ -337,15 +366,15 @@ mod tests {
         // Regression test for the bug where an open file at the front of the
         // eviction queue caused the loop to exit without evicting anything:
         //
-        //   order.len() was MAX_INDEXED+1 → pop open file → order.len() drops
-        //   to MAX_INDEXED → while condition false → loop exits → no eviction.
+        //   order.len() was DEFAULT_MAX_INDEXED+1 → pop open file → order.len() drops
+        //   to DEFAULT_MAX_INDEXED → while condition false → loop exits → no eviction.
         //
         // After the fix the loop tracks `need_to_evict` independently of
         // order.len(), so it keeps looking until it finds an indexed file.
         let store = DocumentStore::new();
 
-        // Index MAX_INDEXED files; /0.php will be the oldest in the queue.
-        for i in 0..MAX_INDEXED {
+        // Index DEFAULT_MAX_INDEXED files; /0.php will be the oldest in the queue.
+        for i in 0..DEFAULT_MAX_INDEXED {
             store.index(uri(&format!("/{i}.php")), "<?php");
         }
 
@@ -366,12 +395,12 @@ mod tests {
             store.get_doc(&uri("/overflow.php")).is_some(),
             "overflow file must be present"
         );
-        // The eviction must have brought the map back to MAX_INDEXED total
+        // The eviction must have brought the map back to DEFAULT_MAX_INDEXED total
         // entries: /0.php (open) + the remaining indexed files + /overflow.php.
         assert_eq!(
             store.all_docs().len(),
-            MAX_INDEXED,
-            "total docs must equal MAX_INDEXED after eviction"
+            DEFAULT_MAX_INDEXED,
+            "total docs must equal DEFAULT_MAX_INDEXED after eviction"
         );
         // /1.php should have been evicted (oldest indexed-only file after /0.php).
         assert!(

@@ -116,7 +116,7 @@ impl DiagnosticsConfig {
 }
 
 /// Configuration received from the client via `initializationOptions`.
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Clone)]
 pub struct LspConfig {
     /// PHP version string, e.g. `"8.1"`.  Set explicitly via `initializationOptions`
     /// or auto-detected from `composer.json` / the `php` binary at startup.
@@ -125,6 +125,20 @@ pub struct LspConfig {
     pub exclude_paths: Vec<String>,
     /// Per-category diagnostic toggles.
     pub diagnostics: DiagnosticsConfig,
+    /// Maximum number of background-indexed files kept in memory (default: 1000).
+    /// Lower this to reduce memory usage on large projects.
+    pub max_indexed_files: usize,
+}
+
+impl Default for LspConfig {
+    fn default() -> Self {
+        LspConfig {
+            php_version: None,
+            exclude_paths: vec![],
+            diagnostics: DiagnosticsConfig::default(),
+            max_indexed_files: 1_000,
+        }
+    }
 }
 
 impl LspConfig {
@@ -143,6 +157,13 @@ impl LspConfig {
         }
         if let Some(diag_val) = v.get("diagnostics") {
             cfg.diagnostics = DiagnosticsConfig::from_value(diag_val);
+        }
+        if let Some(n) = v
+            .get("maxIndexedFiles")
+            .and_then(|x| x.as_u64())
+            .map(|x| x as usize)
+        {
+            cfg.max_indexed_files = n;
         }
         cfg
     }
@@ -265,6 +286,7 @@ impl LanguageServer for Backend {
                     .await;
             }
             cfg.php_version = Some(ver);
+            self.docs.set_max_indexed(cfg.max_indexed_files);
             *self.config.write().unwrap() = cfg;
         }
 
@@ -560,6 +582,7 @@ impl LanguageServer for Backend {
                     .await;
             }
             cfg.php_version = Some(ver);
+            self.docs.set_max_indexed(cfg.max_indexed_files);
             *self.config.write().unwrap() = cfg;
         }
     }
@@ -2526,6 +2549,24 @@ mod tests {
         let cfg = LspConfig::from_value(&serde_json::json!({}));
         assert!(cfg.php_version.is_none());
         assert!(cfg.exclude_paths.is_empty());
+    }
+
+    #[test]
+    fn lsp_config_default_max_indexed_files() {
+        let cfg = LspConfig::default();
+        assert_eq!(cfg.max_indexed_files, 1_000);
+    }
+
+    #[test]
+    fn lsp_config_parses_max_indexed_files() {
+        let cfg = LspConfig::from_value(&serde_json::json!({"maxIndexedFiles": 500}));
+        assert_eq!(cfg.max_indexed_files, 500);
+    }
+
+    #[test]
+    fn lsp_config_ignores_invalid_max_indexed_files() {
+        let cfg = LspConfig::from_value(&serde_json::json!({"maxIndexedFiles": "bad"}));
+        assert_eq!(cfg.max_indexed_files, 1_000);
     }
 
     // find_use_insert_line tests
