@@ -703,13 +703,6 @@ impl LanguageServer for Backend {
                         &other_docs,
                         &diag_cfg,
                     ));
-                    all_diags.extend(semantic_diagnostics_no_rebuild(
-                        &uri,
-                        &d,
-                        &codebase,
-                        &diag_cfg,
-                        php_version.as_deref(),
-                    ));
                 }
                 client.publish_diagnostics(uri, all_diags, None).await;
             }
