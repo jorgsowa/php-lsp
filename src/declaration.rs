@@ -144,6 +144,87 @@ fn find_any_declaration(
     None
 }
 
+/// Find abstract or interface declaration using `FileIndex` entries.
+pub fn goto_declaration_from_index(
+    source: &str,
+    indexes: &[(
+        tower_lsp::lsp_types::Url,
+        std::sync::Arc<crate::file_index::FileIndex>,
+    )],
+    position: tower_lsp::lsp_types::Position,
+) -> Option<Location> {
+    use crate::file_index::ClassKind;
+    use crate::util::word_at;
+    let word = word_at(source, position)?;
+
+    let line_range = |line: u32| -> tower_lsp::lsp_types::Range {
+        let p = tower_lsp::lsp_types::Position { line, character: 0 };
+        tower_lsp::lsp_types::Range { start: p, end: p }
+    };
+
+    // First pass: abstract/interface declarations.
+    for (uri, idx) in indexes {
+        for cls in &idx.classes {
+            if cls.kind == ClassKind::Interface {
+                // Interface itself.
+                if cls.name == word {
+                    return Some(Location {
+                        uri: uri.clone(),
+                        range: line_range(cls.start_line),
+                    });
+                }
+                // Abstract method in interface.
+                for m in &cls.methods {
+                    if m.name == word {
+                        return Some(Location {
+                            uri: uri.clone(),
+                            range: line_range(m.start_line),
+                        });
+                    }
+                }
+            } else if cls.is_abstract {
+                for m in &cls.methods {
+                    if m.is_abstract && m.name == word {
+                        return Some(Location {
+                            uri: uri.clone(),
+                            range: line_range(m.start_line),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    // Second pass: any declaration.
+    for (uri, idx) in indexes {
+        for f in &idx.functions {
+            if f.name == word {
+                return Some(Location {
+                    uri: uri.clone(),
+                    range: line_range(f.start_line),
+                });
+            }
+        }
+        for cls in &idx.classes {
+            if cls.name == word {
+                return Some(Location {
+                    uri: uri.clone(),
+                    range: line_range(cls.start_line),
+                });
+            }
+            for m in &cls.methods {
+                if m.name == word {
+                    return Some(Location {
+                        uri: uri.clone(),
+                        range: line_range(m.start_line),
+                    });
+                }
+            }
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

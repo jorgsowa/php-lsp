@@ -66,6 +66,45 @@ pub fn goto_implementation(
     find_implementations(&word, fqn, all_docs)
 }
 
+/// Find implementations using `FileIndex` entries (memory-efficient cross-file search).
+pub fn find_implementations_from_index(
+    word: &str,
+    fqn: Option<&str>,
+    indexes: &[(
+        tower_lsp::lsp_types::Url,
+        std::sync::Arc<crate::file_index::FileIndex>,
+    )],
+) -> Vec<Location> {
+    let mut locations = Vec::new();
+    for (uri, idx) in indexes {
+        for cls in &idx.classes {
+            let extends_match = cls
+                .parent
+                .as_deref()
+                .map(|p| name_matches(p, word, fqn))
+                .unwrap_or(false);
+            let implements_match = cls
+                .implements
+                .iter()
+                .any(|iface| name_matches(iface, word, fqn));
+            if extends_match || implements_match {
+                let pos = tower_lsp::lsp_types::Position {
+                    line: cls.start_line,
+                    character: 0,
+                };
+                locations.push(Location {
+                    uri: uri.clone(),
+                    range: tower_lsp::lsp_types::Range {
+                        start: pos,
+                        end: pos,
+                    },
+                });
+            }
+        }
+    }
+    locations
+}
+
 fn collect_implementations(
     stmts: &[Stmt<'_, '_>],
     word: &str,

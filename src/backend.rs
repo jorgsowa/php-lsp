@@ -18,8 +18,8 @@ use crate::autoload::Psr4Map;
 use crate::call_hierarchy::{incoming_calls, outgoing_calls, prepare_call_hierarchy};
 use crate::code_lens::code_lenses;
 use crate::completion::{CompletionCtx, filtered_completions_at};
-use crate::declaration::goto_declaration;
-use crate::definition::{find_declaration_range, goto_definition};
+use crate::declaration::{goto_declaration, goto_declaration_from_index};
+use crate::definition::{find_declaration_range, find_in_indexes, goto_definition};
 use crate::diagnostics::parse_document;
 use crate::document_highlight::document_highlights;
 use crate::document_link::document_links;
@@ -31,9 +31,9 @@ use crate::file_rename::{use_edits_for_delete, use_edits_for_rename};
 use crate::folding::folding_ranges;
 use crate::formatting::{format_document, format_range};
 use crate::generate_action::{generate_constructor_actions, generate_getters_setters_actions};
-use crate::hover::{docs_for_symbol, hover_info, signature_for_symbol};
+use crate::hover::{docs_for_symbol_from_index, hover_info, signature_for_symbol_from_index};
 use crate::implement_action::implement_missing_actions;
-use crate::implementation::goto_implementation;
+use crate::implementation::{find_implementations, find_implementations_from_index};
 use crate::inlay_hints::inlay_hints;
 use crate::inline_action::inline_variable_actions;
 use crate::inline_value::inline_values_in_range;
@@ -54,10 +54,12 @@ use crate::semantic_tokens::{
     compute_token_delta, legend, semantic_tokens, semantic_tokens_range, token_hash,
 };
 use crate::signature_help::signature_help;
-use crate::symbols::{document_symbols, resolve_workspace_symbol, workspace_symbols};
+use crate::symbols::{document_symbols, resolve_workspace_symbol, workspace_symbols_from_index};
 use crate::type_action::add_return_type_actions;
-use crate::type_definition::goto_type_definition;
-use crate::type_hierarchy::{prepare_type_hierarchy, subtypes_of, supertypes_of};
+use crate::type_definition::{goto_type_definition, goto_type_definition_from_index};
+use crate::type_hierarchy::{
+    prepare_type_hierarchy_from_index, subtypes_of_from_index, supertypes_of_from_index,
+};
 use crate::use_import::{build_use_import_edit, find_fqn_for_class};
 use crate::util::word_at;
 
@@ -780,15 +782,15 @@ impl LanguageServer for Backend {
                     if let Ok(path) = change.uri.to_file_path()
                         && let Ok(text) = tokio::fs::read_to_string(&path).await
                     {
-                        self.docs.index(change.uri.clone(), &text);
-                        if let Some(d) = self.docs.get_doc(&change.uri) {
-                            self.codebase.remove_file_definitions(change.uri.as_str());
-                            self.collect_definitions_for(&change.uri, &d);
-                            self.codebase.finalize();
-                            if self.ref_index_ready.load(Ordering::Acquire) {
-                                index_file_references(&change.uri, &d, &self.codebase);
-                            }
+                        // Parse first to collect into codebase, then index (which drops ParsedDoc).
+                        let (doc, _diags) = parse_document(&text);
+                        self.codebase.remove_file_definitions(change.uri.as_str());
+                        self.collect_definitions_for(&change.uri, &doc);
+                        self.codebase.finalize();
+                        if self.ref_index_ready.load(Ordering::Acquire) {
+                            index_file_references(&change.uri, &doc, &self.codebase);
                         }
+                        self.docs.index(change.uri.clone(), &text);
                     }
                 }
                 FileChangeType::DELETED => {
@@ -847,14 +849,14 @@ impl LanguageServer for Backend {
         }
         // Strip trailing ':' from named-argument labels (e.g. "param:") before lookup.
         let name = item.label.trim_end_matches(':');
-        let all_docs = self.docs.all_docs();
+        let all_indexes = self.docs.all_indexes();
         if item.detail.is_none()
-            && let Some(sig) = signature_for_symbol(name, &all_docs)
+            && let Some(sig) = signature_for_symbol_from_index(name, &all_indexes)
         {
             item.detail = Some(sig);
         }
         if item.documentation.is_none()
-            && let Some(md) = docs_for_symbol(name, &all_docs)
+            && let Some(md) = docs_for_symbol_from_index(name, &all_indexes)
         {
             item.documentation = Some(Documentation::MarkupContent(MarkupContent {
                 kind: MarkupKind::Markdown,
@@ -875,10 +877,16 @@ impl LanguageServer for Backend {
             Some(d) => d,
             None => return Ok(None),
         };
-        let other_docs = self.docs.other_docs(uri);
-
-        // Primary lookup: search all indexed documents
-        if let Some(loc) = goto_definition(uri, &source, &doc, &other_docs, position) {
+        // Search current file's ParsedDoc first (fast), then fall back to index search.
+        let empty_other_docs: Vec<(Url, Arc<ParsedDoc>)> = vec![];
+        if let Some(loc) = goto_definition(uri, &source, &doc, &empty_other_docs, position) {
+            return Ok(Some(GotoDefinitionResponse::Scalar(loc)));
+        }
+        // Cross-file: use FileIndex (no disk I/O for background files).
+        let other_indexes = self.docs.other_indexes(uri);
+        if let Some(word) = crate::util::word_at(&source, position)
+            && let Some(loc) = find_in_indexes(&word, &other_indexes)
+        {
             return Ok(Some(GotoDefinitionResponse::Scalar(loc)));
         }
 
@@ -911,7 +919,7 @@ impl LanguageServer for Backend {
         } else {
             symbol_kind_at(&source, position, &word)
         };
-        let all_docs = self.docs.all_docs();
+        let all_docs = self.docs.all_docs_for_scan();
         let include_declaration = params.context.include_declaration;
 
         // Fast path: use the pre-computed reference index once it is ready.
@@ -962,10 +970,10 @@ impl LanguageServer for Backend {
                 position,
             )))
         } else if is_after_arrow(&source, position) {
-            let all_docs = self.docs.all_docs();
+            let all_docs = self.docs.all_docs_for_scan();
             Ok(Some(rename_property(&word, &params.new_name, &all_docs)))
         } else {
-            let all_docs = self.docs.all_docs();
+            let all_docs = self.docs.all_docs_for_scan();
             Ok(Some(rename(&word, &params.new_name, &all_docs)))
         }
     }
@@ -1042,8 +1050,8 @@ impl LanguageServer for Backend {
             .and_then(|v| v.as_str())
             .map(str::to_string);
         if let Some(name) = func_name {
-            let all_docs = self.docs.all_docs();
-            if let Some(md) = docs_for_symbol(&name, &all_docs) {
+            let all_indexes = self.docs.all_indexes();
+            if let Some(md) = docs_for_symbol_from_index(&name, &all_indexes) {
                 item.tooltip = Some(InlayHintTooltip::MarkupContent(MarkupContent {
                     kind: MarkupKind::Markdown,
                     value: md,
@@ -1057,8 +1065,8 @@ impl LanguageServer for Backend {
         &self,
         params: WorkspaceSymbolParams,
     ) -> Result<Option<Vec<SymbolInformation>>> {
-        let docs = self.docs.all_docs();
-        let results = workspace_symbols(&params.query, &docs);
+        let indexes = self.docs.all_indexes();
+        let results = workspace_symbols_from_index(&params.query, &indexes);
         Ok(if results.is_empty() {
             None
         } else {
@@ -1067,6 +1075,7 @@ impl LanguageServer for Backend {
     }
 
     async fn symbol_resolve(&self, params: WorkspaceSymbol) -> Result<WorkspaceSymbol> {
+        // For resolve, we need the full range from the ParsedDoc of open files.
         let docs = self.docs.all_docs();
         Ok(resolve_workspace_symbol(params, &docs))
     }
@@ -1174,7 +1183,7 @@ impl LanguageServer for Backend {
             Some(w) => w,
             None => return Ok(None),
         };
-        let all_docs = self.docs.all_docs();
+        let all_docs = self.docs.all_docs_for_scan();
         Ok(prepare_call_hierarchy(&word, &all_docs).map(|item| vec![item]))
     }
 
@@ -1182,7 +1191,7 @@ impl LanguageServer for Backend {
         &self,
         params: CallHierarchyIncomingCallsParams,
     ) -> Result<Option<Vec<CallHierarchyIncomingCall>>> {
-        let all_docs = self.docs.all_docs();
+        let all_docs = self.docs.all_docs_for_scan();
         let calls = incoming_calls(&params.item, &all_docs);
         Ok(if calls.is_empty() { None } else { Some(calls) })
     }
@@ -1191,7 +1200,7 @@ impl LanguageServer for Backend {
         &self,
         params: CallHierarchyOutgoingCallsParams,
     ) -> Result<Option<Vec<CallHierarchyOutgoingCall>>> {
-        let all_docs = self.docs.all_docs();
+        let all_docs = self.docs.all_docs_for_scan();
         let calls = outgoing_calls(&params.item, &all_docs);
         Ok(if calls.is_empty() { None } else { Some(calls) })
     }
@@ -1246,9 +1255,17 @@ impl LanguageServer for Backend {
         let uri = &params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
         let source = self.docs.get(uri).unwrap_or_default();
-        let all_docs = self.docs.all_docs();
         let imports = self.file_imports(uri);
-        let locs = goto_implementation(&source, &all_docs, position, &imports);
+        let word = crate::util::word_at(&source, position).unwrap_or_default();
+        let fqn = imports.get(&word).map(|s| s.as_str());
+        // First pass: open-file ParsedDocs give accurate character positions.
+        let open_docs = self.docs.all_docs();
+        let mut locs = find_implementations(&word, fqn, &open_docs);
+        if locs.is_empty() {
+            // Second pass: background files via FileIndex (line-only positions).
+            let all_indexes = self.docs.all_indexes();
+            locs = find_implementations_from_index(&word, fqn, &all_indexes);
+        }
         if locs.is_empty() {
             Ok(None)
         } else {
@@ -1263,8 +1280,15 @@ impl LanguageServer for Backend {
         let uri = &params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
         let source = self.docs.get(uri).unwrap_or_default();
-        let all_docs = self.docs.all_docs();
-        Ok(goto_declaration(&source, &all_docs, position).map(GotoDefinitionResponse::Scalar))
+        // First pass: open-file ParsedDocs give accurate character positions.
+        let open_docs = self.docs.all_docs();
+        if let Some(loc) = goto_declaration(&source, &open_docs, position) {
+            return Ok(Some(GotoDefinitionResponse::Scalar(loc)));
+        }
+        // Second pass: background files via FileIndex (line-only positions).
+        let all_indexes = self.docs.all_indexes();
+        Ok(goto_declaration_from_index(&source, &all_indexes, position)
+            .map(GotoDefinitionResponse::Scalar))
     }
 
     async fn goto_type_definition(
@@ -1278,9 +1302,17 @@ impl LanguageServer for Backend {
             Some(d) => d,
             None => return Ok(None),
         };
-        let all_docs = self.docs.all_docs();
-        Ok(goto_type_definition(&source, &doc, &all_docs, position)
-            .map(GotoDefinitionResponse::Scalar))
+        // First pass: open-file ParsedDocs give accurate character positions.
+        let open_docs = self.docs.all_docs();
+        if let Some(loc) = goto_type_definition(&source, &doc, &open_docs, position) {
+            return Ok(Some(GotoDefinitionResponse::Scalar(loc)));
+        }
+        // Second pass: background files via FileIndex (line-only positions).
+        let all_indexes = self.docs.all_indexes();
+        Ok(
+            goto_type_definition_from_index(&source, &doc, &all_indexes, position)
+                .map(GotoDefinitionResponse::Scalar),
+        )
     }
 
     async fn prepare_type_hierarchy(
@@ -1290,16 +1322,19 @@ impl LanguageServer for Backend {
         let uri = &params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
         let source = self.docs.get(uri).unwrap_or_default();
-        let all_docs = self.docs.all_docs();
-        Ok(prepare_type_hierarchy(&source, &all_docs, position).map(|item| vec![item]))
+        let all_indexes = self.docs.all_indexes();
+        Ok(
+            prepare_type_hierarchy_from_index(&source, &all_indexes, position)
+                .map(|item| vec![item]),
+        )
     }
 
     async fn supertypes(
         &self,
         params: TypeHierarchySupertypesParams,
     ) -> Result<Option<Vec<TypeHierarchyItem>>> {
-        let all_docs = self.docs.all_docs();
-        let result = supertypes_of(&params.item, &all_docs);
+        let all_indexes = self.docs.all_indexes();
+        let result = supertypes_of_from_index(&params.item, &all_indexes);
         Ok(if result.is_empty() {
             None
         } else {
@@ -1311,8 +1346,8 @@ impl LanguageServer for Backend {
         &self,
         params: TypeHierarchySubtypesParams,
     ) -> Result<Option<Vec<TypeHierarchyItem>>> {
-        let all_docs = self.docs.all_docs();
-        let result = subtypes_of(&params.item, &all_docs);
+        let all_indexes = self.docs.all_indexes();
+        let result = subtypes_of_from_index(&params.item, &all_indexes);
         Ok(if result.is_empty() {
             None
         } else {
@@ -1326,7 +1361,7 @@ impl LanguageServer for Backend {
             Some(d) => d,
             None => return Ok(None),
         };
-        let all_docs = self.docs.all_docs();
+        let all_docs = self.docs.all_docs_for_scan();
         let lenses = code_lenses(uri, &doc, &all_docs);
         Ok(if lenses.is_empty() {
             None
@@ -1424,7 +1459,7 @@ impl LanguageServer for Backend {
 
     async fn will_rename_files(&self, params: RenameFilesParams) -> Result<Option<WorkspaceEdit>> {
         let psr4 = self.psr4.read().unwrap();
-        let all_docs = self.docs.all_docs();
+        let all_docs = self.docs.all_docs_for_scan();
         let mut merged_changes: std::collections::HashMap<
             tower_lsp::lsp_types::Url,
             Vec<tower_lsp::lsp_types::TextEdit>,
@@ -1563,7 +1598,7 @@ impl LanguageServer for Backend {
     /// `use` import referencing its PSR-4 class name.
     async fn will_delete_files(&self, params: DeleteFilesParams) -> Result<Option<WorkspaceEdit>> {
         let psr4 = self.psr4.read().unwrap();
-        let all_docs = self.docs.all_docs();
+        let all_docs = self.docs.all_docs_for_scan();
         let mut merged_changes: std::collections::HashMap<Url, Vec<TextEdit>> =
             std::collections::HashMap::new();
 
@@ -2384,10 +2419,11 @@ async fn scan_workspace(
                 return;
             };
             tokio::task::spawn_blocking(move || {
+                // Parse once: collect into codebase, then let docs.index()
+                // extract the FileIndex and drop the ParsedDoc.
+                let (doc, _diags) = parse_document(&text);
+                collect_into_codebase(&codebase, &uri, &doc);
                 docs.index(uri.clone(), &text);
-                if let Some(d) = docs.get_doc(&uri) {
-                    collect_into_codebase(&codebase, &uri, &d);
-                }
                 count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             })
             .await
@@ -2417,7 +2453,7 @@ async fn build_reference_index(
     // semantic_diagnostics calls that reset the finalized flag via
     // remove_file_definitions(), causing method-inheritance lookups to
     // transiently return None and silently drop those references from the index.
-    let all_docs = docs.all_docs();
+    let all_docs = docs.all_docs_for_scan();
     let parallelism = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(4);
