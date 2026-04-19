@@ -1,27 +1,87 @@
 /// Core AST infrastructure: arena-backed `ParsedDoc`, span utilities, and TypeHint formatting.
+use std::mem::ManuallyDrop;
+use std::sync::{LazyLock, Mutex};
+
 use php_ast::{Program, Span, TypeHint, TypeHintKind};
 use tower_lsp::lsp_types::{Position, Range};
+
+// ── BumpPool ──────────────────────────────────────────────────────────────────
+
+const POOL_CAP: usize = 8;
+
+struct BumpPool {
+    // Box<Bump> required: arena_box.as_ref() is transmuted to &'static Bump in
+    // ParsedDoc::parse(). The Box keeps the Bump at a stable heap address so
+    // that reference remains valid after the Box is moved into ArenaGuard.
+    #[allow(clippy::vec_box)]
+    pool: Mutex<Vec<Box<bumpalo::Bump>>>,
+}
+
+impl BumpPool {
+    fn take(&self) -> Box<bumpalo::Bump> {
+        self.pool
+            .lock()
+            .unwrap()
+            .pop()
+            .unwrap_or_else(|| Box::new(bumpalo::Bump::new()))
+    }
+
+    fn give(&self, mut arena: Box<bumpalo::Bump>) {
+        arena.reset();
+        let mut p = self.pool.lock().unwrap();
+        if p.len() < POOL_CAP {
+            p.push(arena);
+        }
+    }
+}
+
+static BUMP_POOL: LazyLock<BumpPool> = LazyLock::new(|| BumpPool {
+    pool: Mutex::new(Vec::new()),
+});
+
+// ── ArenaGuard ────────────────────────────────────────────────────────────────
+
+/// Returns the arena to the pool on drop.
+struct ArenaGuard(Option<Box<bumpalo::Bump>>);
+
+impl Drop for ArenaGuard {
+    fn drop(&mut self) {
+        if let Some(arena) = self.0.take() {
+            BUMP_POOL.give(arena);
+        }
+    }
+}
 
 // ── ParsedDoc ─────────────────────────────────────────────────────────────────
 
 /// Owns a parsed PHP document: the bumpalo arena, source snapshot, and Program.
 ///
 /// SAFETY invariants:
-/// - `program` is dropped before `_arena` and `_source` (field declaration order).
+/// - `program` uses `ManuallyDrop` and is explicitly dropped in `Drop::drop()`
+///   before any field auto-drop runs. This guarantees arena-allocated nodes are
+///   gone before `ArenaGuard` recycles the arena — regardless of field order.
 /// - Both `_arena` and `_source` are `Box`-allocated; their heap addresses are
 ///   stable and never move.
-/// - The `'static` lifetimes in `Box<Program<'static, 'static>>` are erased
-///   versions of the true lifetimes `'_arena` and `'_source`. The public
-///   `program()` accessor re-attaches them to `&self`, preventing any reference
-///   from escaping beyond the lifetime of the `ParsedDoc`.
+/// - The `'static` lifetimes in `ManuallyDrop<Box<Program<'static, 'static>>>`
+///   are erased versions of the true lifetimes `'_arena` and `'_source`. The
+///   public `program()` accessor re-attaches them to `&self`, preventing any
+///   reference from escaping beyond the lifetime of the `ParsedDoc`.
 pub struct ParsedDoc {
-    // Drop order is declaration order in Rust — program drops first.
-    program: Box<Program<'static, 'static>>,
+    program: ManuallyDrop<Box<Program<'static, 'static>>>,
     pub errors: Vec<php_rs_parser::diagnostics::ParseError>,
-    _arena: Box<bumpalo::Bump>,
     #[allow(clippy::box_collection)]
     _source: Box<String>,
     line_starts: Vec<u32>,
+    _arena: ArenaGuard,
+}
+
+impl Drop for ParsedDoc {
+    fn drop(&mut self) {
+        // Drop program explicitly before any field auto-drop runs (including
+        // _arena). ManuallyDrop prevents a second drop after this method returns.
+        // SAFETY: called exactly once here; no other code drops this field.
+        unsafe { ManuallyDrop::drop(&mut self.program) };
+    }
 }
 
 // SAFETY: Program nodes contain only data; no thread-local state.
@@ -31,7 +91,8 @@ unsafe impl Sync for ParsedDoc {}
 impl ParsedDoc {
     pub fn parse(source: String) -> Self {
         let source_box = Box::new(source);
-        let arena_box = Box::new(bumpalo::Bump::new());
+        // Take a pre-warmed arena from the pool (or allocate a fresh one).
+        let arena_box = BUMP_POOL.take();
 
         // SAFETY: Both boxes are on the heap; moving a Box<T> moves the pointer,
         // not the heap data. These references therefore remain valid for as long
@@ -47,11 +108,11 @@ impl ParsedDoc {
         let line_starts = build_line_starts(src_ref);
 
         ParsedDoc {
-            program: Box::new(result.program),
+            program: ManuallyDrop::new(Box::new(result.program)),
             errors: result.errors,
-            _arena: arena_box,
             _source: source_box,
             line_starts,
+            _arena: ArenaGuard(Some(arena_box)),
         }
     }
 
