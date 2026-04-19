@@ -28,10 +28,10 @@ name = "requests"
 harness = false
 
 [dependencies]
-mir-analyzer = "0.5.2"
-mir-issues = "0.5.2"
-mir-codebase = "0.5.2"
-mir-types = "0.5.2"
+mir-analyzer = "0.6.0"
+mir-issues = "0.6.0"
+mir-codebase = "0.6.0"
+mir-types = "0.6.0"
 php-rs-parser = "0.8.0"
 php-ast = "0.8.0"
 bumpalo = { version = "3", features = ["collections"] }
