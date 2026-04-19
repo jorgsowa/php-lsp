@@ -562,6 +562,58 @@ mod tests {
     }
 
     #[test]
+    fn class_const_access_span_covers_only_member_name() {
+        // Searching for the constant name `ACTIVE` in `Status::ACTIVE` must highlight
+        // only `ACTIVE`, not the whole `Status::ACTIVE` expression.
+        // Line 0: <?php
+        // Line 1: $x = Status::ACTIVE;
+        //                       ^ character 13
+        let src = "<?php\n$x = Status::ACTIVE;";
+        let docs = vec![doc("/a.php", src)];
+        let refs = find_references("ACTIVE", &docs, false, None);
+        assert_eq!(refs.len(), 1, "expected 1 reference, got: {:?}", refs);
+        let r = &refs[0].range;
+        assert_eq!(r.start.line, 1, "reference must be on line 1");
+        // "$x = Status::" is 13 chars; "ACTIVE" starts at character 13.
+        // Before the fix this was 5 (the start of "Status"), not 13.
+        assert_eq!(
+            r.start.character, 13,
+            "range must start at 'ACTIVE' (char 13), not at 'Status' (char 5); got {:?}",
+            r
+        );
+    }
+
+    #[test]
+    fn class_const_access_no_duplicate_when_name_equals_class() {
+        // Edge case: enum case named the same as the enum itself — `Status::Status`.
+        // The general walker finds two distinct references:
+        //   - the class-side `Status` at character 5  ($x = [S]tatus::Status)
+        //   - the member-side `Status` at character 13 ($x = Status::[S]tatus)
+        // Before the fix, both pushed a span starting at character 5, producing a duplicate.
+        // Line 0: <?php
+        // Line 1: $x = Status::Status;
+        //              ^    char 5 (class)
+        //                       ^ char 13 (member)
+        let src = "<?php\n$x = Status::Status;";
+        let docs = vec![doc("/a.php", src)];
+        let refs = find_references("Status", &docs, false, None);
+        assert_eq!(
+            refs.len(),
+            2,
+            "expected exactly 2 refs (class side + member side), got: {:?}",
+            refs
+        );
+        let mut chars: Vec<u32> = refs.iter().map(|r| r.range.start.character).collect();
+        chars.sort_unstable();
+        assert_eq!(
+            chars,
+            vec![5, 13],
+            "class-side ref must be at char 5 and member-side at char 13, got: {:?}",
+            refs
+        );
+    }
+
+    #[test]
     fn finds_reference_inside_enum_method_body() {
         // A function call inside an enum method body should be found by find_references.
         let src = "<?php\nfunction helper() {}\nenum Status {\n    public function label(): string { return helper(); }\n}";
