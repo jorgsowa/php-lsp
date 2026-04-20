@@ -4,6 +4,14 @@ use std::sync::{Arc, RwLock};
 
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::notification::Progress as ProgressNotification;
+
+/// Sent to the client once Phase 3 (reference index build) finishes.
+/// Allows tests and tooling to wait for the codebase fast path to be active.
+enum IndexReadyNotification {}
+impl tower_lsp::lsp_types::notification::Notification for IndexReadyNotification {
+    type Params = ();
+    const METHOD: &'static str = "$/php-lsp/indexReady";
+}
 use tower_lsp::lsp_types::request::{
     CodeLensRefresh, InlayHintRefreshRequest, InlineValueRefreshRequest, SemanticTokensRefresh,
     WorkDoneProgressCreate, WorkspaceDiagnosticRefresh,
@@ -529,7 +537,7 @@ impl LanguageServer for Backend {
                 // find_references_codebase can serve O(k) lookups instead of
                 // scanning every file's AST. Runs after the progress notification
                 // so the editor considers indexing "done" while this completes.
-                build_reference_index(docs, codebase, ref_index_ready).await;
+                build_reference_index(docs, codebase, ref_index_ready, client).await;
             });
         }
 
@@ -2473,6 +2481,7 @@ async fn build_reference_index(
     docs: Arc<DocumentStore>,
     codebase: Arc<mir_codebase::Codebase>,
     ready: Arc<AtomicBool>,
+    client: Client,
 ) {
     // The codebase was already finalized at the end of the workspace scan
     // (Phase 2). Calling finalize() again here would race with concurrent
@@ -2501,6 +2510,7 @@ async fn build_reference_index(
 
     while set.join_next().await.is_some() {}
     ready.store(true, Ordering::Release);
+    client.send_notification::<IndexReadyNotification>(()).await;
 }
 
 #[cfg(test)]
@@ -3087,6 +3097,7 @@ mod tests {
 mod integration {
     use super::Backend;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tower_lsp::lsp_types::Url;
     use tower_lsp::{LspService, Server};
 
     /// Encode a JSON value as an LSP-framed message.
@@ -3198,6 +3209,38 @@ mod integration {
             .unwrap_or_else(|_| panic!("timed out waiting for {method} notification"))
         }
 
+        /// Wait until the server sends `$/php-lsp/indexReady` (10 s timeout).
+        /// The fast path in `find_references_codebase` is only active after this.
+        ///
+        /// The workspace scan sends server-to-client requests (`WorkDoneProgressCreate`,
+        /// `client/registerCapability`) and blocks until they're answered.  This loop
+        /// auto-responds with `{"result": null}` to any server request so those don't
+        /// deadlock the scan.
+        async fn wait_for_index_ready(&mut self) {
+            tokio::time::timeout(tokio::time::Duration::from_secs(10), async {
+                loop {
+                    let msg = read_msg(&mut self.read).await;
+                    if msg.get("method") == Some(&serde_json::json!("$/php-lsp/indexReady")) {
+                        return;
+                    }
+                    // Server-to-client request (has both "id" and "method"):
+                    // send a null-result response so the server isn't blocked.
+                    if msg.get("method").is_some() {
+                        if let Some(id) = msg.get("id") {
+                            let response = serde_json::json!({
+                                "jsonrpc": "2.0",
+                                "id": id,
+                                "result": null
+                            });
+                            self.write.write_all(&frame(&response)).await.unwrap();
+                        }
+                    }
+                }
+            })
+            .await
+            .unwrap_or_else(|_| panic!("timed out waiting for $/php-lsp/indexReady"))
+        }
+
         /// Read `textDocument/publishDiagnostics` notifications until one arrives for `uri`.
         async fn read_diagnostics_for(&mut self, uri: &str) -> serde_json::Value {
             let uri_val = serde_json::json!(uri);
@@ -3245,6 +3288,29 @@ mod integration {
         // Send initialized notification (required by LSP spec)
         client.notify("initialized", serde_json::json!({})).await;
         resp
+    }
+
+    /// Initialize with a workspace root so the server runs the workspace scan
+    /// and builds the reference index (Phase 3).  Callers must then call
+    /// `client.wait_for_index_ready()` before exercising the codebase fast path.
+    async fn initialize_with_root(client: &mut TestClient, root: &std::path::Path) {
+        let root_uri = Url::from_file_path(root).unwrap();
+        client
+            .request(
+                "initialize",
+                serde_json::json!({
+                    "processId": null,
+                    "rootUri": root_uri.as_str(),
+                    "capabilities": {
+                        "textDocument": {
+                            "hover": { "contentFormat": ["markdown", "plaintext"] },
+                            "completion": { "completionItem": { "snippetSupport": true } }
+                        }
+                    }
+                }),
+            )
+            .await;
+        client.notify("initialized", serde_json::json!({})).await;
     }
 
     #[tokio::test]
@@ -3753,6 +3819,107 @@ mod integration {
             !hits.contains(&("file:///b.php", 2)),
             "free-function call (b.php line 2) must be excluded, got: {:?}",
             hits
+        );
+    }
+
+    /// E2E: the codebase fast path (find_references_codebase) is exercised for a
+    /// `final` class method across multiple files.
+    ///
+    /// The key difference from the AST-walk tests: the server is initialized with a
+    /// real workspace root so the workspace scan and reference-index build (Phase 3)
+    /// run.  We wait for `$/php-lsp/indexReady` before sending the references request
+    /// to guarantee the fast path is active, not the fallback AST scan.
+    ///
+    /// ignored.php has a same-named call on an unknown receiver; the fast path must
+    /// restrict the scan to files the codebase tracked, so ignored.php must not appear.
+    #[tokio::test]
+    async fn references_fast_path_final_class_cross_file_e2e() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // class.php — final class definition, no call sites.
+        std::fs::write(
+            dir.path().join("class.php"),
+            "<?php\nfinal class Order {\n    public function submit(): void {}\n}\n",
+        )
+        .unwrap();
+        // caller.php — typed call site: $order is known to be Order.
+        std::fs::write(
+            dir.path().join("caller.php"),
+            "<?php\n$order = new Order();\n$order->submit();\n",
+        )
+        .unwrap();
+        // ignored.php — untyped call: mir cannot resolve the receiver.
+        std::fs::write(
+            dir.path().join("ignored.php"),
+            "<?php\n$unknown->submit();\n",
+        )
+        .unwrap();
+
+        let class_uri = Url::from_file_path(dir.path().join("class.php"))
+            .unwrap()
+            .to_string();
+        let caller_uri = Url::from_file_path(dir.path().join("caller.php"))
+            .unwrap()
+            .to_string();
+        let ignored_uri = Url::from_file_path(dir.path().join("ignored.php"))
+            .unwrap()
+            .to_string();
+
+        let mut client = start_server();
+        initialize_with_root(&mut client, dir.path()).await;
+
+        // Wait for Phase 3 to complete so the codebase fast path is active.
+        client.wait_for_index_ready().await;
+
+        // Open class.php and place the cursor on "submit" in the declaration.
+        // Line 2: "    public function submit(): void {}"
+        //                             ^ character 20
+        client
+            .notify(
+                "textDocument/didOpen",
+                serde_json::json!({
+                    "textDocument": {
+                        "uri": class_uri,
+                        "languageId": "php",
+                        "version": 1,
+                        "text": "<?php\nfinal class Order {\n    public function submit(): void {}\n}\n"
+                    }
+                }),
+            )
+            .await;
+
+        // Give the async did_open handler time to store the document text.
+        tokio::time::sleep(tokio::time::Duration::from_millis(150)).await;
+
+        let resp = client
+            .request(
+                "textDocument/references",
+                serde_json::json!({
+                    "textDocument": { "uri": class_uri },
+                    "position": { "line": 2, "character": 20 },
+                    "context": { "includeDeclaration": false }
+                }),
+            )
+            .await;
+
+        assert!(
+            resp["error"].is_null(),
+            "references should not error: {:?}",
+            resp
+        );
+
+        let locs = resp["result"].as_array().expect("expected location array");
+        let uris: Vec<&str> = locs.iter().map(|l| l["uri"].as_str().unwrap()).collect();
+
+        assert!(
+            uris.iter().any(|u| *u == caller_uri.as_str()),
+            "caller.php (typed call) must appear in results, got: {:?}",
+            uris
+        );
+        assert!(
+            !uris.iter().any(|u| *u == ignored_uri.as_str()),
+            "ignored.php (untyped call) must be excluded by the fast path, got: {:?}",
+            uris
         );
     }
 
