@@ -232,12 +232,6 @@ fn find_references_inner(
             }
         }
 
-        // Deduplicate spans before converting — multiple walk paths can emit
-        // the same byte offset (e.g. a declaration that also appears as an
-        // identifier reference in the general walker).
-        spans.sort_unstable_by_key(|s| s.start);
-        spans.dedup_by_key(|s| s.start);
-
         let sv = doc.view();
         for span in spans {
             let start = sv.position_of(span.start);
