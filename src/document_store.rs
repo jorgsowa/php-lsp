@@ -160,6 +160,41 @@ impl DocumentStore {
             },
         );
 
+        self.push_to_lru(uri);
+    }
+
+    /// Index a file using an already-parsed `ParsedDoc`, avoiding a second parse.
+    ///
+    /// Prefer this over [`index`] when the caller already has a `ParsedDoc` (e.g.
+    /// after running `DefinitionCollector` during workspace scan). The `ParsedDoc`
+    /// is not retained — `FileIndex` is extracted and the doc is dropped immediately.
+    pub fn index_from_doc(&self, uri: Url, doc: &ParsedDoc, diagnostics: Vec<Diagnostic>) {
+        if self
+            .map
+            .get(&uri)
+            .map(|d| d.text.is_some())
+            .unwrap_or(false)
+        {
+            return;
+        }
+        let index = Arc::new(FileIndex::extract(&uri, doc));
+
+        self.map.insert(
+            uri.clone(),
+            Document {
+                text: None,
+                doc: None,
+                index,
+                diagnostics,
+                sem_diagnostics: vec![],
+                text_version: 0,
+            },
+        );
+
+        self.push_to_lru(uri);
+    }
+
+    fn push_to_lru(&self, uri: Url) {
         let mut order = self.indexed_order.lock().unwrap();
         order.push_back(uri);
         // Evict enough indexed-only entries to bring the queue back to DEFAULT_MAX_INDEXED.
