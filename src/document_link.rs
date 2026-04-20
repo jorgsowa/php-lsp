@@ -95,15 +95,15 @@ fn link_from_path_expr(
 
     let target = if std::path::Path::new(raw).is_absolute() {
         Url::from_file_path(raw).ok()
-    } else {
-        let base = uri.to_file_path().ok()?;
-        let dir = base.parent()?;
+    } else if let Some(dir) = uri.to_file_path().ok().as_deref().and_then(|p| p.parent()) {
         Url::from_file_path(
             dir.join(raw)
                 .canonicalize()
                 .unwrap_or_else(|_| dir.join(raw)),
         )
         .ok()
+    } else {
+        None
     };
 
     Some(DocumentLink {

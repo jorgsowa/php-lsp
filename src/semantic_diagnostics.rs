@@ -37,14 +37,20 @@ pub fn semantic_diagnostics(
     // and rebuild inheritance tables.
     codebase.remove_file_definitions(&file);
     let source_map = php_rs_parser::source_map::SourceMap::new(doc.source());
-    let collector = mir_analyzer::collector::DefinitionCollector::new(
-        codebase,
-        file.clone(),
-        doc.source(),
-        &source_map,
-    );
-    let collector_issues = collector.collect(doc.program());
-    codebase.finalize();
+    let collector_issues = {
+        let _span = tracing::debug_span!("collect_definitions", file = %uri).entered();
+        let collector = mir_analyzer::collector::DefinitionCollector::new(
+            codebase,
+            file.clone(),
+            doc.source(),
+            &source_map,
+        );
+        collector.collect(doc.program())
+    };
+    {
+        let _span = tracing::debug_span!("codebase_finalize", file = %uri).entered();
+        codebase.finalize();
+    }
 
     // Pass 2: analyse function/method bodies in the current document.
     let mut issue_buffer = mir_issues::IssueBuffer::new();
@@ -58,7 +64,10 @@ pub fn semantic_diagnostics(
         &mut symbols,
     );
     let mut ctx = mir_analyzer::context::Context::new();
-    analyzer.analyze_stmts(&doc.program().stmts, &mut ctx);
+    {
+        let _span = tracing::debug_span!("analyze_stmts", file = %uri).entered();
+        analyzer.analyze_stmts(&doc.program().stmts, &mut ctx);
+    }
 
     collector_issues
         .into_iter()

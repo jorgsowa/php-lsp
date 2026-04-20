@@ -49,11 +49,27 @@ mod use_import;
 mod util;
 mod walk;
 
+#[cfg(feature = "dhat-heap")]
+#[global_allocator]
+static ALLOC: dhat::Alloc = dhat::Alloc;
+
 use backend::Backend;
 use tower_lsp::{LspService, Server};
 
 #[tokio::main]
 async fn main() {
+    #[cfg(feature = "dhat-heap")]
+    let _profiler = dhat::Profiler::new_heap();
+
+    // Emit JSON spans to stderr when RUST_LOG is set.
+    // Example: RUST_LOG=php_lsp=debug php-lsp 2>trace.jsonl
+    // Each closed span includes "time.busy" and "time.idle" duration fields.
+    tracing_subscriber::fmt()
+        .json()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_span_events(tracing_subscriber::fmt::format::FmtSpan::CLOSE)
+        .with_writer(std::io::stderr)
+        .init();
     if let Some(arg) = std::env::args().nth(1)
         && (arg == "--version" || arg == "-V")
     {

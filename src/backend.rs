@@ -2362,6 +2362,7 @@ const MAX_INDEXED_FILES: usize = 50_000;
 ///
 /// Phase 1 — directory traversal: async, serial (I/O-bound; tokio handles it well).
 /// Phase 2 — file reading + parsing: concurrent, bounded by available CPU cores.
+#[tracing::instrument(skip(docs, exclude_paths, codebase), fields(root = %root.display()))]
 async fn scan_workspace(
     root: PathBuf,
     docs: Arc<DocumentStore>,

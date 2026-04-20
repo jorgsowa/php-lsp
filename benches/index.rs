@@ -88,11 +88,55 @@ fn bench_workspace_scan(c: &mut Criterion) {
     group.finish();
 }
 
+/// Benchmark indexing the Laravel framework (~2,500 PHP files).
+///
+/// Requires running `scripts/setup_laravel_fixture.sh` first.
+/// Skipped automatically if the fixture is absent.
+fn bench_workspace_scan_laravel(c: &mut Criterion) {
+    let fixture_dir =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("benches/fixtures/laravel/src");
+
+    if !fixture_dir.exists() {
+        eprintln!(
+            "Laravel fixture not found — run `scripts/setup_laravel_fixture.sh` to enable this benchmark"
+        );
+        return;
+    }
+
+    let php_files: Vec<(tower_lsp::lsp_types::Url, String)> = walkdir::WalkDir::new(&fixture_dir)
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().map_or(false, |x| x == "php"))
+        .filter_map(|e| {
+            let url = tower_lsp::lsp_types::Url::from_file_path(e.path()).ok()?;
+            let src = std::fs::read_to_string(e.path()).ok()?;
+            Some((url, src))
+        })
+        .collect();
+
+    eprintln!("Laravel fixture: {} PHP files", php_files.len());
+
+    let mut group = c.benchmark_group("index/workspace_scan");
+    group.sample_size(10);
+
+    group.bench_function("laravel_framework", |b| {
+        b.iter(|| {
+            let store = DocumentStore::new();
+            for (url, src) in &php_files {
+                store.index(url.clone(), src);
+            }
+        });
+    });
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_index_single,
     bench_get_doc,
     bench_all_docs,
-    bench_workspace_scan
+    bench_workspace_scan,
+    bench_workspace_scan_laravel
 );
 criterion_main!(benches);
