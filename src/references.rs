@@ -1026,4 +1026,144 @@ mod tests {
             lines
         );
     }
+
+    // ── switch / throw / unset / property-default coverage ──────────────────
+
+    #[test]
+    fn finds_function_call_inside_switch_case() {
+        // Line 1: function tick() {}
+        // Line 2: switch ($x) { case 1: tick(); break; }
+        let src = "<?php\nfunction tick() {}\nswitch ($x) {\n    case 1: tick(); break;\n}";
+        let docs = vec![doc("/a.php", src)];
+        let lines: Vec<u32> = find_references("tick", &docs, false, Some(SymbolKind::Function))
+            .iter()
+            .map(|r| r.range.start.line)
+            .collect();
+        assert!(
+            lines.contains(&3),
+            "tick() call inside switch case (line 3) must be present, got: {:?}",
+            lines
+        );
+    }
+
+    #[test]
+    fn finds_method_call_inside_switch_case() {
+        // Line 1: switch ($x) { case 1: $obj->process(); break; }
+        let src = "<?php\nswitch ($x) {\n    case 1: $obj->process(); break;\n}";
+        let docs = vec![doc("/a.php", src)];
+        let lines: Vec<u32> = find_references("process", &docs, false, Some(SymbolKind::Method))
+            .iter()
+            .map(|r| r.range.start.line)
+            .collect();
+        assert!(
+            lines.contains(&2),
+            "process() call inside switch case (line 2) must be present, got: {:?}",
+            lines
+        );
+    }
+
+    #[test]
+    fn finds_function_call_inside_switch_condition() {
+        // Line 1: function classify() {}
+        // Line 2: switch (classify()) { default: break; }
+        let src = "<?php\nfunction classify() {}\nswitch (classify()) { default: break; }";
+        let docs = vec![doc("/a.php", src)];
+        let lines: Vec<u32> = find_references("classify", &docs, false, Some(SymbolKind::Function))
+            .iter()
+            .map(|r| r.range.start.line)
+            .collect();
+        assert!(
+            lines.contains(&2),
+            "classify() in switch subject (line 2) must be present, got: {:?}",
+            lines
+        );
+    }
+
+    #[test]
+    fn finds_function_call_inside_throw() {
+        // Line 1: function makeException() {}
+        // Line 2: throw makeException();
+        let src = "<?php\nfunction makeException() {}\nthrow makeException();";
+        let docs = vec![doc("/a.php", src)];
+        let lines: Vec<u32> =
+            find_references("makeException", &docs, false, Some(SymbolKind::Function))
+                .iter()
+                .map(|r| r.range.start.line)
+                .collect();
+        assert!(
+            lines.contains(&2),
+            "makeException() inside throw (line 2) must be present, got: {:?}",
+            lines
+        );
+    }
+
+    #[test]
+    fn finds_method_call_inside_throw() {
+        // Line 1: throw $factory->create();
+        let src = "<?php\nthrow $factory->create();";
+        let docs = vec![doc("/a.php", src)];
+        let lines: Vec<u32> = find_references("create", &docs, false, Some(SymbolKind::Method))
+            .iter()
+            .map(|r| r.range.start.line)
+            .collect();
+        assert!(
+            lines.contains(&1),
+            "create() inside throw (line 1) must be present, got: {:?}",
+            lines
+        );
+    }
+
+    #[test]
+    fn finds_method_call_inside_unset() {
+        // Line 1: unset($obj->getProp());
+        let src = "<?php\nunset($obj->getProp());";
+        let docs = vec![doc("/a.php", src)];
+        let lines: Vec<u32> = find_references("getProp", &docs, false, Some(SymbolKind::Method))
+            .iter()
+            .map(|r| r.range.start.line)
+            .collect();
+        assert!(
+            lines.contains(&1),
+            "getProp() inside unset (line 1) must be present, got: {:?}",
+            lines
+        );
+    }
+
+    #[test]
+    fn finds_static_method_call_in_class_property_default() {
+        // Line 1: class Config {
+        // Line 2:     public array $data = self::defaults();
+        // Line 3:     public static function defaults(): array { return []; }
+        // Line 4: }
+        let src = "<?php\nclass Config {\n    public array $data = self::defaults();\n    public static function defaults(): array { return []; }\n}";
+        let docs = vec![doc("/a.php", src)];
+        let lines: Vec<u32> = find_references("defaults", &docs, false, Some(SymbolKind::Method))
+            .iter()
+            .map(|r| r.range.start.line)
+            .collect();
+        assert!(
+            lines.contains(&2),
+            "defaults() in class property default (line 2) must be present, got: {:?}",
+            lines
+        );
+    }
+
+    #[test]
+    fn finds_static_method_call_in_trait_property_default() {
+        // Line 1: trait T {
+        // Line 2:     public int $x = self::init();
+        // Line 3:     public static function init(): int { return 0; }
+        // Line 4: }
+        let src = "<?php\ntrait T {\n    public int $x = self::init();\n    public static function init(): int { return 0; }\n}";
+        let docs = vec![doc("/a.php", src)];
+        let lines: Vec<u32> = find_references("init", &docs, false, Some(SymbolKind::Method))
+            .iter()
+            .map(|r| r.range.start.line)
+            .collect();
+        assert!(
+            lines.contains(&2),
+            "init() in trait property default (line 2) must be present, got: {:?}",
+            lines
+        );
+    }
 }
