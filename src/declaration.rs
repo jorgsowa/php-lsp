@@ -328,8 +328,6 @@ mod tests {
 
     #[test]
     fn from_index_finds_abstract_method() {
-        // abstract speak() is in animal.php; concrete speak() is in cat.php.
-        // Cursor in cat.php source must resolve to the abstract declaration.
         let (animal_uri, animal_idx) = make_index(
             "/animal.php",
             "<?php\nabstract class Animal {\n    abstract public function speak(): string;\n}",

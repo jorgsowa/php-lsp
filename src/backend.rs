@@ -1830,13 +1830,11 @@ impl LanguageServer for Backend {
             uri,
             params.range,
         ));
-        let mut all_docs_impl = vec![(uri.clone(), Arc::clone(&doc))];
-        all_docs_impl.extend(other_docs.iter().cloned());
         actions.extend(defer_actions(
             implement_missing_actions(
                 &source,
                 &doc,
-                &all_docs_impl,
+                &self.docs.doc_with_others(uri, Arc::clone(&doc)),
                 params.range,
                 uri,
                 &self.file_imports(uri),
@@ -1923,11 +1921,15 @@ impl LanguageServer for Backend {
         let candidates: Vec<CodeActionOrCommand> = match kind_tag.as_str() {
             "phpdoc" => phpdoc_actions(&uri, &doc, &source, range),
             "implement" => {
-                let other_docs = self.docs.other_docs(&uri);
                 let imports = self.file_imports(&uri);
-                let mut all_docs_impl = vec![(uri.clone(), Arc::clone(&doc))];
-                all_docs_impl.extend(other_docs.iter().cloned());
-                implement_missing_actions(&source, &doc, &all_docs_impl, range, &uri, &imports)
+                implement_missing_actions(
+                    &source,
+                    &doc,
+                    &self.docs.doc_with_others(&uri, Arc::clone(&doc)),
+                    range,
+                    &uri,
+                    &imports,
+                )
             }
             "constructor" => generate_constructor_actions(&source, &doc, range, &uri),
             "getters_setters" => generate_getters_setters_actions(&source, &doc, range, &uri),
