@@ -270,6 +270,14 @@ impl DocumentStore {
             .collect()
     }
 
+    /// Returns `(uri, doc)` first, followed by all other open files.
+    /// Use this when the callee requires the primary document to be the first entry.
+    pub fn doc_with_others(&self, uri: &Url, doc: Arc<ParsedDoc>) -> Vec<(Url, Arc<ParsedDoc>)> {
+        let mut result = vec![(uri.clone(), doc)];
+        result.extend(self.other_docs(uri));
+        result
+    }
+
     /// Returns `(uri, doc)` for open files excluding `uri`.
     pub fn other_docs(&self, uri: &Url) -> Vec<(Url, Arc<ParsedDoc>)> {
         self.map
