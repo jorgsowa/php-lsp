@@ -126,9 +126,9 @@ fn main() {
     for (i, (url, src)) in php_files.iter().enumerate() {
         if let Some(cb) = &codebase {
             // Replicate the real scan_workspace pipeline:
-            // 1. Parse to get AST
+            // 1. Parse once to get AST
             // 2. Run DefinitionCollector into codebase
-            // 3. Store FileIndex (docs.index re-parses internally)
+            // 3. Store FileIndex reusing the same ParsedDoc (no second parse)
             let doc = ParsedDoc::parse(src.clone());
             let file: Arc<str> = Arc::from(url.as_str());
             let source_map = php_rs_parser::source_map::SourceMap::new(doc.source());
@@ -139,8 +139,10 @@ fn main() {
                 &source_map,
             );
             collector.collect(doc.program());
+            store.index_from_doc(url.clone(), &doc, vec![]);
+        } else {
+            store.index(url.clone(), src);
         }
-        store.index(url.clone(), src);
 
         if i % 100 == 0 {
             let rss = rss_kb();

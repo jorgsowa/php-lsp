@@ -27,6 +27,7 @@ use crate::document_store::DocumentStore;
 use crate::extract_action::extract_variable_actions;
 use crate::extract_constant_action::extract_constant_actions;
 use crate::extract_method_action::extract_method_actions;
+use crate::file_index::FileIndex;
 use crate::file_rename::{use_edits_for_delete, use_edits_for_rename};
 use crate::folding::folding_ranges;
 use crate::formatting::{format_document, format_range};
@@ -699,21 +700,35 @@ impl LanguageServer for Backend {
                 .await
                 .unwrap_or_else(|_| (ParsedDoc::default(), vec![]));
 
+            // Compare new structure against the cached index to decide whether the
+            // codebase rebuild (remove + collect + finalize) is needed.  Most
+            // keystrokes only change method bodies — no rebuild required for those.
+            let new_index = FileIndex::extract(&uri, &doc);
+            let structure_changed = docs
+                .get_index(&uri)
+                .is_none_or(|old| !old.same_structure(&new_index));
+            drop(new_index);
+
             // Only apply if no newer edit arrived while we were parsing
             if docs.apply_parse(&uri, doc, diagnostics.clone(), version) {
                 let source = docs.get(&uri).unwrap_or_default();
                 let mut all_diags = diagnostics;
                 if let Some(d) = docs.get_doc(&uri) {
-                    // semantic_diagnostics handles remove → collect → finalize → analyze
-                    // as one unit, keeping the codebase consistent and ensuring any
-                    // future collector-phase issues from mir-analyzer are surfaced.
-                    let sem_diags = semantic_diagnostics(
-                        &uri,
-                        &d,
-                        &codebase,
-                        &diag_cfg,
-                        php_version.as_deref(),
-                    );
+                    let sem_diags = if structure_changed {
+                        // Structure changed (new/removed class, method signature changed, …):
+                        // rebuild codebase definitions so inheritance lookups stay accurate.
+                        semantic_diagnostics(&uri, &d, &codebase, &diag_cfg, php_version.as_deref())
+                    } else {
+                        // Body-only edit: skip remove → collect → finalize; use the
+                        // already-finalized codebase for body analysis only.
+                        semantic_diagnostics_no_rebuild(
+                            &uri,
+                            &d,
+                            &codebase,
+                            &diag_cfg,
+                            php_version.as_deref(),
+                        )
+                    };
                     // Cache so code_action can read them without rerunning the rebuild.
                     docs.set_sem_diagnostics(&uri, sem_diags.clone());
                     all_diags.extend(sem_diags);
@@ -782,15 +797,16 @@ impl LanguageServer for Backend {
                     if let Ok(path) = change.uri.to_file_path()
                         && let Ok(text) = tokio::fs::read_to_string(&path).await
                     {
-                        // Parse first to collect into codebase, then index (which drops ParsedDoc).
-                        let (doc, _diags) = parse_document(&text);
+                        // Parse once: collect into codebase, then index using the same
+                        // ParsedDoc — avoids a second parse inside docs.index().
+                        let (doc, diags) = parse_document(&text);
                         self.codebase.remove_file_definitions(change.uri.as_str());
                         self.collect_definitions_for(&change.uri, &doc);
                         self.codebase.finalize();
                         if self.ref_index_ready.load(Ordering::Acquire) {
                             index_file_references(&change.uri, &doc, &self.codebase);
                         }
-                        self.docs.index(change.uri.clone(), &text);
+                        self.docs.index_from_doc(change.uri.clone(), &doc, diags);
                     }
                 }
                 FileChangeType::DELETED => {
@@ -2429,11 +2445,11 @@ async fn scan_workspace(
                 return;
             };
             tokio::task::spawn_blocking(move || {
-                // Parse once: collect into codebase, then let docs.index()
-                // extract the FileIndex and drop the ParsedDoc.
-                let (doc, _diags) = parse_document(&text);
+                // Parse once: collect into codebase, then index using the same
+                // ParsedDoc — avoids a second parse inside docs.index().
+                let (doc, diags) = parse_document(&text);
                 collect_into_codebase(&codebase, &uri, &doc);
-                docs.index(uri.clone(), &text);
+                docs.index_from_doc(uri.clone(), &doc, diags);
                 count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             })
             .await
