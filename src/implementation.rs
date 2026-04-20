@@ -52,6 +52,7 @@ pub fn find_implementations(
 /// from the `use` statements in the current file (e.g. `"Animal"` →
 /// `"App\\Animal"`). This allows goto_implementation to find classes that
 /// write the FQN form in their `extends`/`implements` clause.
+#[allow(dead_code)]
 pub fn goto_implementation(
     source: &str,
     all_docs: &[(Url, Arc<ParsedDoc>)],

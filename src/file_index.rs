@@ -28,6 +28,7 @@ pub struct FileIndex {
 pub struct FunctionDef {
     pub name: String,
     /// Fully-qualified name: `\Namespace\function_name` or just `function_name`.
+    #[allow(dead_code)]
     pub fqn: String,
     pub params: Vec<ParamDef>,
     pub return_type: Option<String>,
@@ -40,6 +41,7 @@ pub struct FunctionDef {
 pub struct ParamDef {
     pub name: String,
     pub type_hint: Option<String>,
+    #[allow(dead_code)]
     pub has_default: bool,
     pub variadic: bool,
 }
@@ -48,6 +50,7 @@ pub struct ParamDef {
 pub struct ClassDef {
     pub name: String,
     /// Fully-qualified name.
+    #[allow(dead_code)]
     pub fqn: String,
     pub kind: ClassKind,
     pub is_abstract: bool,
@@ -74,8 +77,10 @@ pub enum ClassKind {
 #[derive(Debug, Clone)]
 pub struct MethodDef {
     pub name: String,
+    #[allow(dead_code)]
     pub is_static: bool,
     pub is_abstract: bool,
+    #[allow(dead_code)]
     pub visibility: Visibility,
     pub params: Vec<ParamDef>,
     pub return_type: Option<String>,
@@ -93,8 +98,11 @@ pub enum Visibility {
 #[derive(Debug, Clone)]
 pub struct PropertyDef {
     pub name: String,
+    #[allow(dead_code)]
     pub is_static: bool,
+    #[allow(dead_code)]
     pub type_hint: Option<String>,
+    #[allow(dead_code)]
     pub visibility: Visibility,
 }
 

@@ -219,6 +219,7 @@ impl DocumentStore {
     }
 
     /// Returns the compact symbol index for a file.
+    #[allow(dead_code)]
     pub fn get_index(&self, uri: &Url) -> Option<Arc<FileIndex>> {
         self.map.get(uri).map(|d| d.index.clone())
     }
@@ -319,6 +320,7 @@ impl DocumentStore {
     }
 
     /// Same as `all_docs_for_scan` but excludes `uri`.
+    #[allow(dead_code)]
     pub fn other_docs_for_scan(&self, uri: &Url) -> Vec<(Url, Arc<ParsedDoc>)> {
         let mut result = Vec::new();
         for entry in self.map.iter() {

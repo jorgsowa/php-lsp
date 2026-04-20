@@ -76,6 +76,7 @@ fn parse_kind_filter(query: &str) -> (Option<SymbolKind>, &str) {
 /// Matches by camel/underscore abbreviation or plain case-insensitive substring.
 ///
 /// Supports optional kind-filter prefix in the query (e.g. `#class:User`).
+#[allow(dead_code)]
 pub fn workspace_symbols(query: &str, docs: &[(Url, Arc<ParsedDoc>)]) -> Vec<SymbolInformation> {
     let (kind_filter, term) = parse_kind_filter(query);
     let mut results = Vec::new();
@@ -93,7 +94,7 @@ pub fn workspace_symbols(query: &str, docs: &[(Url, Arc<ParsedDoc>)]) -> Vec<Sym
     results
 }
 
-#[allow(deprecated)]
+#[allow(dead_code, deprecated)]
 fn collect_symbol_info(
     sv: SourceView<'_>,
     stmts: &[Stmt<'_, '_>],
