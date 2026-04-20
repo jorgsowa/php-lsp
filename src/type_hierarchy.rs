@@ -9,6 +9,7 @@ use crate::util::word_at;
 
 // ── Prepare ───────────────────────────────────────────────────────────────────
 
+#[allow(dead_code)]
 pub fn prepare_type_hierarchy(
     source: &str,
     all_docs: &[(Url, Arc<ParsedDoc>)],
@@ -24,6 +25,7 @@ pub fn prepare_type_hierarchy(
     None
 }
 
+#[allow(dead_code)]
 fn find_type_item(
     sv: SourceView<'_>,
     stmts: &[Stmt<'_, '_>],
@@ -58,6 +60,7 @@ fn find_type_item(
     None
 }
 
+#[allow(dead_code)]
 fn make_item(sv: SourceView<'_>, name: &str, kind: SymbolKind, uri: &Url) -> TypeHierarchyItem {
     let range = sv.name_range(name);
     TypeHierarchyItem {
@@ -74,6 +77,7 @@ fn make_item(sv: SourceView<'_>, name: &str, kind: SymbolKind, uri: &Url) -> Typ
 
 // ── Supertypes ────────────────────────────────────────────────────────────────
 
+#[allow(dead_code)]
 pub fn supertypes_of(
     item: &TypeHierarchyItem,
     all_docs: &[(Url, Arc<ParsedDoc>)],
@@ -97,6 +101,7 @@ pub fn supertypes_of(
     result
 }
 
+#[allow(dead_code)]
 fn collect_super_names(stmts: &[Stmt<'_, '_>], name: &str, out: &mut Vec<String>) {
     for stmt in stmts {
         match &stmt.kind {
@@ -130,6 +135,7 @@ fn collect_super_names(stmts: &[Stmt<'_, '_>], name: &str, out: &mut Vec<String>
 
 // ── Subtypes ──────────────────────────────────────────────────────────────────
 
+#[allow(dead_code)]
 pub fn subtypes_of(
     item: &TypeHierarchyItem,
     all_docs: &[(Url, Arc<ParsedDoc>)],
@@ -142,6 +148,7 @@ pub fn subtypes_of(
     result
 }
 
+#[allow(dead_code)]
 fn collect_subtypes(
     sv: SourceView<'_>,
     stmts: &[Stmt<'_, '_>],

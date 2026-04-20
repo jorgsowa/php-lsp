@@ -1095,8 +1095,11 @@ impl LanguageServer for Backend {
             }
         };
         let tokens = semantic_tokens(doc.source(), &doc);
+        let result_id = token_hash(&tokens);
+        self.docs
+            .store_token_cache(uri, result_id.clone(), tokens.clone());
         Ok(Some(SemanticTokensResult::Tokens(SemanticTokens {
-            result_id: None,
+            result_id: Some(result_id),
             data: tokens,
         })))
     }
@@ -1827,11 +1830,13 @@ impl LanguageServer for Backend {
             uri,
             params.range,
         ));
+        let mut all_docs_impl = vec![(uri.clone(), Arc::clone(&doc))];
+        all_docs_impl.extend(other_docs.iter().cloned());
         actions.extend(defer_actions(
             implement_missing_actions(
                 &source,
                 &doc,
-                &other_docs,
+                &all_docs_impl,
                 params.range,
                 uri,
                 &self.file_imports(uri),
@@ -1920,7 +1925,9 @@ impl LanguageServer for Backend {
             "implement" => {
                 let other_docs = self.docs.other_docs(&uri);
                 let imports = self.file_imports(&uri);
-                implement_missing_actions(&source, &doc, &other_docs, range, &uri, &imports)
+                let mut all_docs_impl = vec![(uri.clone(), Arc::clone(&doc))];
+                all_docs_impl.extend(other_docs.iter().cloned());
+                implement_missing_actions(&source, &doc, &all_docs_impl, range, &uri, &imports)
             }
             "constructor" => generate_constructor_actions(&source, &doc, range, &uri),
             "getters_setters" => generate_getters_setters_actions(&source, &doc, range, &uri),
@@ -3282,14 +3289,18 @@ mod integration {
             "hover should not error: {:?}",
             resp
         );
-        // result can be null (no hover) or an object — both are valid, but for `greet` we expect content
-        if !resp["result"].is_null() {
-            let contents = &resp["result"]["contents"];
-            assert!(
-                contents.is_object() || contents.is_string(),
-                "hover contents should be present"
-            );
-        }
+        assert!(
+            !resp["result"].is_null(),
+            "hover on a known function must return a result, got null"
+        );
+        let value = resp["result"]["contents"]["value"]
+            .as_str()
+            .unwrap_or_default();
+        assert!(
+            value.contains("greet"),
+            "hover must show function signature containing 'greet', got: {}",
+            value
+        );
     }
 
     #[tokio::test]
@@ -3856,6 +3867,65 @@ mod integration {
             loc["range"]["start"]["character"].as_u64().unwrap(),
             6,
             "Dog name starts at char 6, not at the 'class' keyword"
+        );
+    }
+
+    /// Cross-file goto-definition exercises `find_in_indexes`: the symbol is
+    /// defined in file A (open, so its FileIndex is populated) but the cursor
+    /// is in file B where the symbol is used.  The single-file first pass on B
+    /// finds nothing, so the handler falls through to `find_in_indexes` which
+    /// searches all other files' FileIndex entries.
+    #[tokio::test]
+    async fn definition_cross_file_uses_find_in_indexes() {
+        let mut client = start_server();
+        initialize(&mut client).await;
+
+        // File A defines Greeter.
+        open_doc(
+            &mut client,
+            "file:///greeter.php",
+            "<?php\nclass Greeter {}\n",
+        )
+        .await;
+        // File B uses Greeter — Greeter is NOT defined here.
+        open_doc(
+            &mut client,
+            "file:///user.php",
+            "<?php\n$g = new Greeter();\n",
+        )
+        .await;
+
+        // Cursor on `Greeter` in `new Greeter()` — line 1, char 9 ('G').
+        let resp = client
+            .request(
+                "textDocument/definition",
+                serde_json::json!({
+                    "textDocument": { "uri": "file:///user.php" },
+                    "position": { "line": 1, "character": 9 }
+                }),
+            )
+            .await;
+
+        assert!(resp["error"].is_null(), "definition error: {:?}", resp);
+        let result = &resp["result"];
+        assert!(
+            !result.is_null(),
+            "expected a cross-file definition for Greeter, got null"
+        );
+        let loc = if result.is_array() {
+            result[0].clone()
+        } else {
+            result.clone()
+        };
+        assert_eq!(
+            loc["uri"].as_str().unwrap(),
+            "file:///greeter.php",
+            "definition must point to greeter.php"
+        );
+        assert_eq!(
+            loc["range"]["start"]["line"].as_u64().unwrap(),
+            1,
+            "Greeter is declared on line 1 of greeter.php"
         );
     }
 
@@ -5172,6 +5242,1118 @@ class Broken
             codes.contains(&"UndefinedClass".to_owned()),
             "expected UndefinedClass inside a namespaced class method, got: {:?}",
             codes
+        );
+    }
+
+    // ── call hierarchy ────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn call_hierarchy_prepare_returns_item() {
+        let mut client = start_server();
+        initialize(&mut client).await;
+
+        open_doc(
+            &mut client,
+            "file:///ch.php",
+            "<?php\nfunction callee(): void {}\ncallee();\n",
+        )
+        .await;
+
+        let resp = client
+            .request(
+                "textDocument/prepareCallHierarchy",
+                serde_json::json!({
+                    "textDocument": { "uri": "file:///ch.php" },
+                    "position": { "line": 1, "character": 9 }
+                }),
+            )
+            .await;
+
+        assert!(
+            resp["error"].is_null(),
+            "prepareCallHierarchy error: {:?}",
+            resp
+        );
+        let result = &resp["result"];
+        assert!(
+            result.is_array(),
+            "expected array result, got: {:?}",
+            result
+        );
+        let items = result.as_array().unwrap();
+        assert!(!items.is_empty(), "expected at least one CallHierarchyItem");
+        assert_eq!(
+            items[0]["name"].as_str().unwrap_or(""),
+            "callee",
+            "expected item name to be 'callee', got: {:?}",
+            items[0]
+        );
+    }
+
+    #[tokio::test]
+    async fn call_hierarchy_incoming_calls_finds_caller() {
+        let mut client = start_server();
+        initialize(&mut client).await;
+
+        open_doc(
+            &mut client,
+            "file:///ch_in.php",
+            "<?php\nfunction callee(): void {}\nfunction caller(): void { callee(); }\n",
+        )
+        .await;
+
+        let prep = client
+            .request(
+                "textDocument/prepareCallHierarchy",
+                serde_json::json!({
+                    "textDocument": { "uri": "file:///ch_in.php" },
+                    "position": { "line": 1, "character": 9 }
+                }),
+            )
+            .await;
+
+        let item = &prep["result"][0];
+        assert!(item.is_object(), "need a prepared item to continue");
+
+        let resp = client
+            .request(
+                "callHierarchy/incomingCalls",
+                serde_json::json!({ "item": item }),
+            )
+            .await;
+
+        assert!(resp["error"].is_null(), "incomingCalls error: {:?}", resp);
+        let calls = resp["result"].as_array().expect("expected array");
+        assert!(!calls.is_empty(), "expected at least one incoming call");
+        assert!(
+            calls
+                .iter()
+                .any(|c| c["from"]["name"].as_str() == Some("caller")),
+            "expected 'caller' as incoming caller, got: {:?}",
+            calls
+        );
+    }
+
+    #[tokio::test]
+    async fn call_hierarchy_outgoing_calls_finds_callee() {
+        let mut client = start_server();
+        initialize(&mut client).await;
+
+        open_doc(
+            &mut client,
+            "file:///ch_out.php",
+            "<?php\nfunction inner(): void {}\nfunction outer(): void { inner(); }\n",
+        )
+        .await;
+
+        let prep = client
+            .request(
+                "textDocument/prepareCallHierarchy",
+                serde_json::json!({
+                    "textDocument": { "uri": "file:///ch_out.php" },
+                    "position": { "line": 2, "character": 9 }
+                }),
+            )
+            .await;
+
+        let item = &prep["result"][0];
+        assert!(item.is_object(), "need a prepared item to continue");
+
+        let resp = client
+            .request(
+                "callHierarchy/outgoingCalls",
+                serde_json::json!({ "item": item }),
+            )
+            .await;
+
+        assert!(resp["error"].is_null(), "outgoingCalls error: {:?}", resp);
+        let calls = resp["result"].as_array().expect("expected array");
+        assert!(!calls.is_empty(), "expected at least one outgoing call");
+        assert!(
+            calls
+                .iter()
+                .any(|c| c["to"]["name"].as_str() == Some("inner")),
+            "expected 'inner' as outgoing callee, got: {:?}",
+            calls
+        );
+    }
+
+    // ── type hierarchy ────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn type_hierarchy_prepare_returns_item() {
+        let mut client = start_server();
+        initialize(&mut client).await;
+
+        open_doc(&mut client, "file:///th.php", "<?php\nclass MyClass {}\n").await;
+
+        let resp = client
+            .request(
+                "textDocument/prepareTypeHierarchy",
+                serde_json::json!({
+                    "textDocument": { "uri": "file:///th.php" },
+                    "position": { "line": 1, "character": 6 }
+                }),
+            )
+            .await;
+
+        assert!(
+            resp["error"].is_null(),
+            "prepareTypeHierarchy error: {:?}",
+            resp
+        );
+        let result = &resp["result"];
+        assert!(result.is_array(), "expected array, got: {:?}", result);
+        let items = result.as_array().unwrap();
+        assert!(!items.is_empty(), "expected at least one TypeHierarchyItem");
+        assert_eq!(
+            items[0]["name"].as_str().unwrap_or(""),
+            "MyClass",
+            "expected item name 'MyClass', got: {:?}",
+            items[0]
+        );
+    }
+
+    #[tokio::test]
+    async fn type_hierarchy_supertypes_finds_parent() {
+        let mut client = start_server();
+        initialize(&mut client).await;
+
+        open_doc(
+            &mut client,
+            "file:///th_super.php",
+            "<?php\nclass ParentClass {}\nclass ChildClass extends ParentClass {}\n",
+        )
+        .await;
+
+        let prep = client
+            .request(
+                "textDocument/prepareTypeHierarchy",
+                serde_json::json!({
+                    "textDocument": { "uri": "file:///th_super.php" },
+                    "position": { "line": 2, "character": 6 }
+                }),
+            )
+            .await;
+
+        let item = &prep["result"][0];
+        assert!(item.is_object(), "need a prepared item to continue");
+
+        let resp = client
+            .request(
+                "typeHierarchy/supertypes",
+                serde_json::json!({ "item": item }),
+            )
+            .await;
+
+        assert!(resp["error"].is_null(), "supertypes error: {:?}", resp);
+        let types = resp["result"].as_array().expect("expected array");
+        assert!(!types.is_empty(), "expected parent in supertypes");
+        assert!(
+            types
+                .iter()
+                .any(|t| t["name"].as_str() == Some("ParentClass")),
+            "expected ParentClass in supertypes, got: {:?}",
+            types
+        );
+    }
+
+    #[tokio::test]
+    async fn type_hierarchy_subtypes_finds_child() {
+        let mut client = start_server();
+        initialize(&mut client).await;
+
+        open_doc(
+            &mut client,
+            "file:///th_sub.php",
+            "<?php\ninterface Runnable {}\nclass Runner implements Runnable {}\n",
+        )
+        .await;
+
+        let prep = client
+            .request(
+                "textDocument/prepareTypeHierarchy",
+                serde_json::json!({
+                    "textDocument": { "uri": "file:///th_sub.php" },
+                    "position": { "line": 1, "character": 10 }
+                }),
+            )
+            .await;
+
+        let item = &prep["result"][0];
+        assert!(item.is_object(), "need a prepared item to continue");
+
+        let resp = client
+            .request(
+                "typeHierarchy/subtypes",
+                serde_json::json!({ "item": item }),
+            )
+            .await;
+
+        assert!(resp["error"].is_null(), "subtypes error: {:?}", resp);
+        let types = resp["result"].as_array().expect("expected array");
+        assert!(!types.is_empty(), "expected child in subtypes");
+        assert!(
+            types.iter().any(|t| t["name"].as_str() == Some("Runner")),
+            "expected Runner in subtypes, got: {:?}",
+            types
+        );
+    }
+
+    // ── workspace symbols ─────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn workspace_symbols_returns_matching_items() {
+        let mut client = start_server();
+        initialize(&mut client).await;
+
+        open_doc(
+            &mut client,
+            "file:///wsym.php",
+            "<?php\nclass FuzzyTarget {}\n",
+        )
+        .await;
+
+        let resp = client
+            .request(
+                "workspace/symbol",
+                serde_json::json!({ "query": "FuzzyTarget" }),
+            )
+            .await;
+
+        assert!(
+            resp["error"].is_null(),
+            "workspace/symbol error: {:?}",
+            resp
+        );
+        let result = &resp["result"];
+        assert!(result.is_array(), "expected array, got: {:?}", result);
+        let items = result.as_array().unwrap();
+        assert!(!items.is_empty(), "expected at least one symbol");
+        assert!(
+            items
+                .iter()
+                .any(|s| s["name"].as_str() == Some("FuzzyTarget")),
+            "expected FuzzyTarget in results, got: {:?}",
+            items
+        );
+    }
+
+    // ── completion resolve ────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn completion_resolve_returns_item() {
+        let mut client = start_server();
+        initialize(&mut client).await;
+
+        open_doc(
+            &mut client,
+            "file:///cresolve.php",
+            "<?php\nfunction resolveMe(): void {}\nresolveM\n",
+        )
+        .await;
+
+        let comp = client
+            .request(
+                "textDocument/completion",
+                serde_json::json!({
+                    "textDocument": { "uri": "file:///cresolve.php" },
+                    "position": { "line": 2, "character": 8 }
+                }),
+            )
+            .await;
+
+        let items = match &comp["result"] {
+            v if v.is_array() => v.as_array().unwrap().to_vec(),
+            v if v["items"].is_array() => v["items"].as_array().unwrap().to_vec(),
+            _ => vec![],
+        };
+
+        assert!(
+            !items.is_empty(),
+            "expected completions for 'resolveM' prefix, got: {:?}",
+            comp["result"]
+        );
+
+        // Find the resolveMe item specifically so the assertion is deterministic.
+        let resolve_me = items
+            .iter()
+            .find(|i| i["label"].as_str() == Some("resolveMe"))
+            .cloned()
+            .expect("resolveMe must appear in completions for its own prefix");
+
+        let resp = client.request("completionItem/resolve", resolve_me).await;
+
+        assert!(
+            resp["error"].is_null(),
+            "completionItem/resolve error: {:?}",
+            resp
+        );
+        assert!(resp["result"].is_object(), "expected resolved item object");
+        // signature_for_symbol_from_index must populate `detail` with the function signature.
+        let detail = resp["result"]["detail"].as_str().unwrap_or("");
+        assert!(
+            detail.contains("resolveMe"),
+            "resolved item must have detail populated with the function signature, got: {:?}",
+            resp["result"]
+        );
+    }
+
+    // ── inlay hint resolve ────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn inlay_hint_resolve_returns_hint() {
+        let mut client = start_server();
+        initialize(&mut client).await;
+
+        open_doc(
+            &mut client,
+            "file:///ih_resolve.php",
+            "<?php\nfunction add(int $a, int $b): int { return $a + $b; }\nadd(1, 2);\n",
+        )
+        .await;
+
+        let hints_resp = client
+            .request(
+                "textDocument/inlayHint",
+                serde_json::json!({
+                    "textDocument": { "uri": "file:///ih_resolve.php" },
+                    "range": {
+                        "start": { "line": 0, "character": 0 },
+                        "end": { "line": 3, "character": 0 }
+                    }
+                }),
+            )
+            .await;
+
+        let hints = hints_resp["result"].as_array().cloned().unwrap_or_default();
+        assert!(
+            !hints.is_empty(),
+            "expected inlay hints for add(1, 2) call, got: {:?}",
+            hints_resp["result"]
+        );
+
+        let resp = client.request("inlayHint/resolve", hints[0].clone()).await;
+
+        assert!(
+            resp["error"].is_null(),
+            "inlayHint/resolve error: {:?}",
+            resp
+        );
+        assert!(resp["result"].is_object(), "expected resolved hint object");
+    }
+
+    // ── semantic tokens range ─────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn semantic_tokens_range_returns_data() {
+        let mut client = start_server();
+        initialize(&mut client).await;
+
+        open_doc(
+            &mut client,
+            "file:///st_range.php",
+            "<?php\nfunction ranged(int $x): int { return $x; }\n",
+        )
+        .await;
+
+        let resp = client
+            .request(
+                "textDocument/semanticTokens/range",
+                serde_json::json!({
+                    "textDocument": { "uri": "file:///st_range.php" },
+                    "range": {
+                        "start": { "line": 0, "character": 0 },
+                        "end": { "line": 2, "character": 0 }
+                    }
+                }),
+            )
+            .await;
+
+        assert!(
+            resp["error"].is_null(),
+            "semanticTokens/range error: {:?}",
+            resp
+        );
+        let result = &resp["result"];
+        assert!(!result.is_null(), "expected non-null result");
+        let data = result["data"]
+            .as_array()
+            .expect("expected data array in result");
+        assert!(
+            !data.is_empty(),
+            "expected non-empty token data for a file with typed function"
+        );
+    }
+
+    // ── semantic tokens full delta ────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn semantic_tokens_full_delta_returns_result() {
+        let mut client = start_server();
+        initialize(&mut client).await;
+
+        open_doc(
+            &mut client,
+            "file:///st_delta.php",
+            "<?php\nfunction delta(int $x): int { return $x; }\n",
+        )
+        .await;
+
+        let full = client
+            .request(
+                "textDocument/semanticTokens/full",
+                serde_json::json!({
+                    "textDocument": { "uri": "file:///st_delta.php" }
+                }),
+            )
+            .await;
+
+        assert!(
+            full["error"].is_null(),
+            "semanticTokens/full error: {:?}",
+            full
+        );
+        let result_id = full["result"]["resultId"].clone();
+        assert!(
+            !result_id.is_null(),
+            "semanticTokens/full must return a resultId to support delta requests"
+        );
+
+        let resp = client
+            .request(
+                "textDocument/semanticTokens/full/delta",
+                serde_json::json!({
+                    "textDocument": { "uri": "file:///st_delta.php" },
+                    "previousResultId": result_id
+                }),
+            )
+            .await;
+
+        assert!(
+            resp["error"].is_null(),
+            "semanticTokens/full/delta error: {:?}",
+            resp
+        );
+        let result = &resp["result"];
+        assert!(
+            result["edits"].is_array() || result["data"].is_array(),
+            "expected 'edits' or 'data' in delta result, got: {:?}",
+            result
+        );
+    }
+
+    // ── document link ─────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn document_link_returns_array() {
+        let mut client = start_server();
+        initialize(&mut client).await;
+
+        open_doc(
+            &mut client,
+            "file:///dlink.php",
+            "<?php\nrequire_once 'vendor/autoload.php';\n",
+        )
+        .await;
+
+        let resp = client
+            .request(
+                "textDocument/documentLink",
+                serde_json::json!({
+                    "textDocument": { "uri": "file:///dlink.php" }
+                }),
+            )
+            .await;
+
+        assert!(resp["error"].is_null(), "documentLink error: {:?}", resp);
+        // require_once with a string path must always produce at least one link entry.
+        let links = resp["result"]
+            .as_array()
+            .expect("documentLink must return an array");
+        assert!(
+            !links.is_empty(),
+            "expected at least one link for require_once path"
+        );
+    }
+
+    // ── inline value ──────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn inline_value_returns_array() {
+        let mut client = start_server();
+        initialize(&mut client).await;
+
+        open_doc(
+            &mut client,
+            "file:///inlval.php",
+            "<?php\n$x = 42;\n$y = $x + 1;\n",
+        )
+        .await;
+
+        let resp = client
+            .request(
+                "textDocument/inlineValue",
+                serde_json::json!({
+                    "textDocument": { "uri": "file:///inlval.php" },
+                    "range": {
+                        "start": { "line": 0, "character": 0 },
+                        "end": { "line": 3, "character": 0 }
+                    },
+                    "context": {
+                        "frameId": 0,
+                        "stoppedLocation": {
+                            "start": { "line": 2, "character": 0 },
+                            "end": { "line": 2, "character": 10 }
+                        }
+                    }
+                }),
+            )
+            .await;
+
+        assert!(resp["error"].is_null(), "inlineValue error: {:?}", resp);
+        // $x and $y are in range so the server must return a non-null array.
+        let values = resp["result"]
+            .as_array()
+            .expect("inlineValue must return an array when variables are in range");
+        assert!(
+            !values.is_empty(),
+            "expected at least one inline value for $x/$y"
+        );
+    }
+
+    // ── pull diagnostics ──────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn pull_diagnostics_returns_report() {
+        let mut client = start_server();
+        initialize(&mut client).await;
+
+        open_doc(&mut client, "file:///pull_diag.php", "<?php\n$x = 1;\n").await;
+
+        let resp = client
+            .request(
+                "textDocument/diagnostic",
+                serde_json::json!({
+                    "textDocument": { "uri": "file:///pull_diag.php" }
+                }),
+            )
+            .await;
+
+        assert!(
+            resp["error"].is_null(),
+            "textDocument/diagnostic error: {:?}",
+            resp
+        );
+        let result = &resp["result"];
+        assert!(!result.is_null(), "expected non-null diagnostic report");
+        let kind = result["kind"].as_str().unwrap_or("");
+        assert!(
+            kind == "full" || kind == "unchanged",
+            "expected kind 'full' or 'unchanged', got: {:?}",
+            kind
+        );
+    }
+
+    // ── workspace diagnostic ──────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn workspace_diagnostic_returns_report() {
+        let mut client = start_server();
+        initialize(&mut client).await;
+
+        open_doc(&mut client, "file:///ws_diag.php", "<?php\n$x = 1;\n").await;
+
+        let resp = client
+            .request(
+                "workspace/diagnostic",
+                serde_json::json!({ "previousResultIds": [] }),
+            )
+            .await;
+
+        assert!(
+            resp["error"].is_null(),
+            "workspace/diagnostic error: {:?}",
+            resp
+        );
+        let result = &resp["result"];
+        let items = result["items"]
+            .as_array()
+            .expect("expected 'items' array in workspace diagnostic report");
+        assert!(
+            !items.is_empty(),
+            "expected at least one item for the opened file, got empty items"
+        );
+    }
+
+    // ── moniker ───────────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn moniker_returns_no_error() {
+        let mut client = start_server();
+        initialize(&mut client).await;
+
+        open_doc(
+            &mut client,
+            "file:///moniker.php",
+            "<?php\nfunction monikerFn(): void {}\n",
+        )
+        .await;
+
+        let resp = client
+            .request(
+                "textDocument/moniker",
+                serde_json::json!({
+                    "textDocument": { "uri": "file:///moniker.php" },
+                    "position": { "line": 1, "character": 9 }
+                }),
+            )
+            .await;
+
+        assert!(resp["error"].is_null(), "moniker error: {:?}", resp);
+        let result = &resp["result"];
+        assert!(
+            result.is_array() && !result.as_array().unwrap().is_empty(),
+            "expected non-empty moniker array, got: {:?}",
+            result
+        );
+        assert_eq!(
+            result[0]["identifier"].as_str().unwrap_or(""),
+            "monikerFn",
+            "expected moniker identifier 'monikerFn', got: {:?}",
+            result[0]
+        );
+        assert_eq!(
+            result[0]["scheme"].as_str().unwrap_or(""),
+            "php",
+            "expected moniker scheme 'php'"
+        );
+    }
+
+    // ── linked editing range ──────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn linked_editing_range_returns_no_error() {
+        let mut client = start_server();
+        initialize(&mut client).await;
+
+        open_doc(
+            &mut client,
+            "file:///linked.php",
+            "<?php\nclass LinkedClass {}\n",
+        )
+        .await;
+
+        let resp = client
+            .request(
+                "textDocument/linkedEditingRange",
+                serde_json::json!({
+                    "textDocument": { "uri": "file:///linked.php" },
+                    "position": { "line": 1, "character": 6 }
+                }),
+            )
+            .await;
+
+        assert!(
+            resp["error"].is_null(),
+            "linkedEditingRange error: {:?}",
+            resp
+        );
+        let result = &resp["result"];
+        assert!(
+            !result.is_null(),
+            "expected non-null LinkedEditingRanges for class name, got null"
+        );
+        let ranges = result["ranges"]
+            .as_array()
+            .expect("expected 'ranges' array in LinkedEditingRanges");
+        assert!(
+            !ranges.is_empty(),
+            "expected at least one range for LinkedClass"
+        );
+    }
+
+    // ── formatting ────────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn formatting_returns_null_or_edits() {
+        let mut client = start_server();
+        initialize(&mut client).await;
+
+        open_doc(
+            &mut client,
+            "file:///fmt.php",
+            "<?php\nfunction ugly( $x ){return $x;}\n",
+        )
+        .await;
+
+        let resp = client
+            .request(
+                "textDocument/formatting",
+                serde_json::json!({
+                    "textDocument": { "uri": "file:///fmt.php" },
+                    "options": { "tabSize": 4, "insertSpaces": true }
+                }),
+            )
+            .await;
+
+        assert!(resp["error"].is_null(), "formatting error: {:?}", resp);
+        assert!(
+            resp["result"].is_null() || resp["result"].is_array(),
+            "expected null or array, got: {:?}",
+            resp["result"]
+        );
+    }
+
+    #[tokio::test]
+    async fn range_formatting_returns_null_or_edits() {
+        let mut client = start_server();
+        initialize(&mut client).await;
+
+        open_doc(
+            &mut client,
+            "file:///rfmt.php",
+            "<?php\nfunction ugly( $x ){return $x;}\n",
+        )
+        .await;
+
+        let resp = client
+            .request(
+                "textDocument/rangeFormatting",
+                serde_json::json!({
+                    "textDocument": { "uri": "file:///rfmt.php" },
+                    "range": {
+                        "start": { "line": 0, "character": 0 },
+                        "end": { "line": 2, "character": 0 }
+                    },
+                    "options": { "tabSize": 4, "insertSpaces": true }
+                }),
+            )
+            .await;
+
+        assert!(resp["error"].is_null(), "rangeFormatting error: {:?}", resp);
+        assert!(
+            resp["result"].is_null() || resp["result"].is_array(),
+            "expected null or array, got: {:?}",
+            resp["result"]
+        );
+    }
+
+    // ── on-type formatting ────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn on_type_formatting_returns_null_or_edits() {
+        let mut client = start_server();
+        initialize(&mut client).await;
+
+        open_doc(&mut client, "file:///otfmt.php", "<?php\nif (true) {\n").await;
+
+        let resp = client
+            .request(
+                "textDocument/onTypeFormatting",
+                serde_json::json!({
+                    "textDocument": { "uri": "file:///otfmt.php" },
+                    "position": { "line": 1, "character": 10 },
+                    "ch": "{",
+                    "options": { "tabSize": 4, "insertSpaces": true }
+                }),
+            )
+            .await;
+
+        assert!(
+            resp["error"].is_null(),
+            "onTypeFormatting error: {:?}",
+            resp
+        );
+        assert!(
+            resp["result"].is_null() || resp["result"].is_array(),
+            "expected null or array, got: {:?}",
+            resp["result"]
+        );
+    }
+
+    // ── code actions ──────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn code_action_phpdoc_offered_for_undocumented_function() {
+        let mut client = start_server();
+        initialize(&mut client).await;
+
+        open_doc(
+            &mut client,
+            "file:///ca_phpdoc.php",
+            "<?php\nfunction noDoc(int $x): int { return $x; }\n",
+        )
+        .await;
+
+        let resp = client
+            .request(
+                "textDocument/codeAction",
+                serde_json::json!({
+                    "textDocument": { "uri": "file:///ca_phpdoc.php" },
+                    "range": {
+                        "start": { "line": 1, "character": 9 },
+                        "end": { "line": 1, "character": 14 }
+                    },
+                    "context": { "diagnostics": [] }
+                }),
+            )
+            .await;
+
+        assert!(resp["error"].is_null(), "codeAction error: {:?}", resp);
+        let actions = resp["result"].as_array().cloned().unwrap_or_default();
+        let has_phpdoc = actions.iter().any(|a| {
+            a["title"]
+                .as_str()
+                .map(|t| t.to_lowercase().contains("phpdoc"))
+                .unwrap_or(false)
+        });
+        assert!(has_phpdoc, "expected a PHPDoc action, got: {:?}", actions);
+    }
+
+    #[tokio::test]
+    async fn code_action_extract_variable_offered_on_expression() {
+        let mut client = start_server();
+        initialize(&mut client).await;
+
+        open_doc(
+            &mut client,
+            "file:///ca_extract.php",
+            "<?php\n$result = 1 + 2;\n",
+        )
+        .await;
+
+        let resp = client
+            .request(
+                "textDocument/codeAction",
+                serde_json::json!({
+                    "textDocument": { "uri": "file:///ca_extract.php" },
+                    "range": {
+                        "start": { "line": 1, "character": 10 },
+                        "end": { "line": 1, "character": 15 }
+                    },
+                    "context": { "diagnostics": [] }
+                }),
+            )
+            .await;
+
+        assert!(resp["error"].is_null(), "codeAction error: {:?}", resp);
+        let actions = resp["result"].as_array().cloned().unwrap_or_default();
+        let has_extract = actions.iter().any(|a| {
+            a["title"]
+                .as_str()
+                .map(|t| t.to_lowercase().contains("extract"))
+                .unwrap_or(false)
+        });
+        assert!(
+            has_extract,
+            "expected an Extract action, got: {:?}",
+            actions
+        );
+    }
+
+    #[tokio::test]
+    async fn code_action_generate_constructor_offered_for_class() {
+        let mut client = start_server();
+        initialize(&mut client).await;
+
+        open_doc(
+            &mut client,
+            "file:///ca_ctor.php",
+            "<?php\nclass Point {\n    public int $x;\n    public int $y;\n}\n",
+        )
+        .await;
+
+        let resp = client
+            .request(
+                "textDocument/codeAction",
+                serde_json::json!({
+                    "textDocument": { "uri": "file:///ca_ctor.php" },
+                    "range": {
+                        "start": { "line": 1, "character": 6 },
+                        "end": { "line": 1, "character": 11 }
+                    },
+                    "context": { "diagnostics": [] }
+                }),
+            )
+            .await;
+
+        assert!(resp["error"].is_null(), "codeAction error: {:?}", resp);
+        let actions = resp["result"].as_array().cloned().unwrap_or_default();
+        let has_ctor = actions.iter().any(|a| {
+            a["title"]
+                .as_str()
+                .map(|t| t.to_lowercase().contains("constructor"))
+                .unwrap_or(false)
+        });
+        assert!(
+            has_ctor,
+            "expected a Generate constructor action, got: {:?}",
+            actions
+        );
+    }
+
+    #[tokio::test]
+    async fn code_action_implement_missing_offered() {
+        let mut client = start_server();
+        initialize(&mut client).await;
+
+        // Interface and class in the same file — previously broken, now fixed.
+        open_doc(
+            &mut client,
+            "file:///ca_impl.php",
+            "<?php\ninterface Greetable {\n    public function greet(): string;\n}\nclass Hello implements Greetable {\n}\n",
+        )
+        .await;
+
+        let resp = client
+            .request(
+                "textDocument/codeAction",
+                serde_json::json!({
+                    "textDocument": { "uri": "file:///ca_impl.php" },
+                    "range": {
+                        "start": { "line": 4, "character": 0 },
+                        "end": { "line": 4, "character": 0 }
+                    },
+                    "context": { "diagnostics": [] }
+                }),
+            )
+            .await;
+
+        assert!(resp["error"].is_null(), "codeAction error: {:?}", resp);
+        let actions = resp["result"].as_array().cloned().unwrap_or_default();
+        let has_impl = actions.iter().any(|a| {
+            a["title"]
+                .as_str()
+                .map(|t| t.to_lowercase().contains("implement"))
+                .unwrap_or(false)
+        });
+        assert!(has_impl, "expected an Implement action, got: {:?}", actions);
+    }
+
+    #[tokio::test]
+    async fn code_action_add_return_type_offered() {
+        let mut client = start_server();
+        initialize(&mut client).await;
+
+        open_doc(
+            &mut client,
+            "file:///ca_rettype.php",
+            "<?php\nfunction noReturn() { return 42; }\n",
+        )
+        .await;
+
+        let resp = client
+            .request(
+                "textDocument/codeAction",
+                serde_json::json!({
+                    "textDocument": { "uri": "file:///ca_rettype.php" },
+                    "range": {
+                        "start": { "line": 1, "character": 9 },
+                        "end": { "line": 1, "character": 17 }
+                    },
+                    "context": { "diagnostics": [] }
+                }),
+            )
+            .await;
+
+        assert!(resp["error"].is_null(), "codeAction error: {:?}", resp);
+        let actions = resp["result"].as_array().cloned().unwrap_or_default();
+        let has_ret = actions.iter().any(|a| {
+            a["title"]
+                .as_str()
+                .map(|t| t.to_lowercase().contains("return type"))
+                .unwrap_or(false)
+        });
+        assert!(
+            has_ret,
+            "expected an Add return type action, got: {:?}",
+            actions
+        );
+    }
+
+    // ── file lifecycle notifications ──────────────────────────────────────────
+
+    #[tokio::test]
+    async fn will_rename_files_returns_no_error() {
+        let mut client = start_server();
+        initialize(&mut client).await;
+
+        open_doc(
+            &mut client,
+            "file:///rename_old.php",
+            "<?php\nclass OldClass {}\n",
+        )
+        .await;
+
+        let resp = client
+            .request(
+                "workspace/willRenameFiles",
+                serde_json::json!({
+                    "files": [{
+                        "oldUri": "file:///rename_old.php",
+                        "newUri": "file:///rename_new.php"
+                    }]
+                }),
+            )
+            .await;
+
+        assert!(resp["error"].is_null(), "willRenameFiles error: {:?}", resp);
+        assert!(
+            resp["result"].is_null() || resp["result"].is_object(),
+            "expected null or WorkspaceEdit, got: {:?}",
+            resp["result"]
+        );
+    }
+
+    #[tokio::test]
+    async fn will_create_files_returns_no_error() {
+        let mut client = start_server();
+        initialize(&mut client).await;
+
+        let resp = client
+            .request(
+                "workspace/willCreateFiles",
+                serde_json::json!({
+                    "files": [{ "uri": "file:///new_created.php" }]
+                }),
+            )
+            .await;
+
+        assert!(resp["error"].is_null(), "willCreateFiles error: {:?}", resp);
+        assert!(
+            resp["result"].is_null() || resp["result"].is_object(),
+            "expected null or WorkspaceEdit, got: {:?}",
+            resp["result"]
+        );
+    }
+
+    #[tokio::test]
+    async fn will_delete_files_returns_no_error() {
+        let mut client = start_server();
+        initialize(&mut client).await;
+
+        open_doc(
+            &mut client,
+            "file:///to_delete.php",
+            "<?php\nclass ToDelete {}\n",
+        )
+        .await;
+
+        let resp = client
+            .request(
+                "workspace/willDeleteFiles",
+                serde_json::json!({
+                    "files": [{ "uri": "file:///to_delete.php" }]
+                }),
+            )
+            .await;
+
+        assert!(resp["error"].is_null(), "willDeleteFiles error: {:?}", resp);
+        assert!(
+            resp["result"].is_null() || resp["result"].is_object(),
+            "expected null or WorkspaceEdit, got: {:?}",
+            resp["result"]
         );
     }
 }

@@ -315,4 +315,59 @@ mod tests {
         );
         assert_eq!(loc.unwrap().range.start.line, 1);
     }
+
+    // ── goto_declaration_from_index ───────────────────────────────────────────
+
+    fn make_index(path: &str, src: &str) -> (Url, std::sync::Arc<crate::file_index::FileIndex>) {
+        use crate::file_index::FileIndex;
+        let u = uri(path);
+        let d = ParsedDoc::parse(src.to_string());
+        let idx = FileIndex::extract(&u, &d);
+        (u, std::sync::Arc::new(idx))
+    }
+
+    #[test]
+    fn from_index_finds_abstract_method() {
+        // abstract speak() is in animal.php; concrete speak() is in cat.php.
+        // Cursor in cat.php source must resolve to the abstract declaration.
+        let (animal_uri, animal_idx) = make_index(
+            "/animal.php",
+            "<?php\nabstract class Animal {\n    abstract public function speak(): string;\n}",
+        );
+        let cat_src = "<?php\nclass Cat extends Animal {\n    public function speak(): string { return 'meow'; }\n}";
+        let (cat_uri, cat_idx) = make_index("/cat.php", cat_src);
+
+        let indexes = vec![(animal_uri.clone(), animal_idx), (cat_uri, cat_idx)];
+        // "    public function " = 20 chars → 's' of speak is at char 20 on line 2.
+        let loc = goto_declaration_from_index(cat_src, &indexes, pos(2, 20));
+        assert!(loc.is_some(), "expected abstract declaration");
+        let loc = loc.unwrap();
+        assert_eq!(loc.uri, animal_uri, "should point to animal.php");
+        // "    abstract public function " = 28 chars → speak starts at char 28 on line 2.
+        assert_eq!(
+            loc.range.start.line, 2,
+            "abstract speak is on line 2 of animal.php"
+        );
+    }
+
+    #[test]
+    fn from_index_finds_interface_method() {
+        let (iface_uri, iface_idx) = make_index(
+            "/logger.php",
+            "<?php\ninterface Logger {\n    public function log(string $msg): void;\n}",
+        );
+        let impl_src = "<?php\nclass FileLogger implements Logger {\n    public function log(string $msg): void {}\n}";
+        let (impl_uri, impl_idx) = make_index("/file_logger.php", impl_src);
+
+        let indexes = vec![(iface_uri.clone(), iface_idx), (impl_uri, impl_idx)];
+        // "    public function " = 20 chars → 'l' of log at char 20 on line 2.
+        let loc = goto_declaration_from_index(impl_src, &indexes, pos(2, 20));
+        assert!(loc.is_some(), "expected interface method declaration");
+        let loc = loc.unwrap();
+        assert_eq!(loc.uri, iface_uri, "should point to logger.php");
+        assert_eq!(
+            loc.range.start.line, 2,
+            "interface log is on line 2 of logger.php"
+        );
+    }
 }
