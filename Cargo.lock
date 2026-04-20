@@ -1098,6 +1098,7 @@ dependencies = [
  "dhat",
  "expect-test",
  "iai-callgrind",
+ "indexmap",
  "mir-analyzer",
  "mir-codebase",
  "mir-issues",
