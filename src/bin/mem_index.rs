@@ -43,14 +43,13 @@ fn rss_kb() -> u64 {
     #[cfg(target_os = "linux")]
     if let Ok(s) = std::fs::read_to_string(format!("/proc/{}/status", std::process::id())) {
         for line in s.lines() {
-            if line.starts_with("VmRSS:") {
-                if let Some(n) = line
+            if line.starts_with("VmRSS:")
+                && let Some(n) = line
                     .split_whitespace()
                     .nth(1)
                     .and_then(|v| v.parse::<u64>().ok())
-                {
-                    return n;
-                }
+            {
+                return n;
             }
         }
     }
