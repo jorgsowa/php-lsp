@@ -49,13 +49,22 @@ pub fn find_references_with_use(
 
 /// Fast path: look up pre-computed reference locations from the mir codebase index.
 ///
-/// Only handles `Function` and `Class` kinds — for those the mir analyzer records every
-/// call-site / instantiation with a precise name-only span via `mark_*_referenced_at`.
-/// Returns `None` for `Method` (type-unaware callers would be missed) and for `None`
-/// kind (caller should use the general AST walker instead).
+/// Handles `Function`, `Class`, and (partially) `Method` kinds.  For `Function` and
+/// `Class` the mir analyzer records every call-site / instantiation via
+/// `mark_*_referenced_at` and the index is authoritative.
 ///
-/// Returns `None` also when the symbol is not found in the codebase, signalling the
-/// caller to fall back to the AST scan.
+/// For `Method`, the index is used as a pre-filter: only files that contain a tracked
+/// call site for the method are scanned with the AST walker.  This fast path is
+/// activated for two cases where the tracked set is reliably complete or narrows the
+/// search scope without missing real references:
+///   • `private` methods — PHP semantics guarantee that private methods are only
+///     callable from within the class body, so mir always resolves the receiver type.
+///   • methods on `final` classes — no subclassing means call sites on the concrete
+///     type are unambiguous; the codebase set covers all statically-typed callers.
+///
+/// Returns `None` for public/protected methods on non-final classes and for `None`
+/// kind (caller should use the general AST walker instead).  Also returns `None` when
+/// no matching symbol is found in the codebase.
 pub fn find_references_codebase(
     word: &str,
     all_docs: &[(Url, Arc<ParsedDoc>)],
@@ -177,9 +186,71 @@ pub fn find_references_codebase(
             }
         }
 
-        // Method references: mir only tracks calls on known types; fall back to
-        // the AST walker so dynamic / unknown-type call sites are included.
-        Some(SymbolKind::Method) | None => None,
+        Some(SymbolKind::Method) => {
+            let word_lower = word.to_lowercase();
+
+            // Collect method keys (FQCN::lowercase_name) for types where the
+            // codebase index is authoritative or a reliable pre-filter.
+            let mut method_keys: Vec<String> = Vec::new();
+            let mut decl_files: Vec<String> = Vec::new();
+
+            for entry in codebase.classes.iter() {
+                let cls = entry.value();
+                if let Some(method) = cls.own_methods.get(word_lower.as_str())
+                    && (cls.is_final || method.visibility == mir_codebase::Visibility::Private)
+                {
+                    method_keys.push(format!("{}::{}", entry.key(), word_lower));
+                    if include_declaration && let Some(loc) = &method.location {
+                        decl_files.push(loc.file.as_ref().to_string());
+                    }
+                }
+            }
+            for entry in codebase.enums.iter() {
+                let enm = entry.value();
+                if let Some(method) = enm.own_methods.get(word_lower.as_str())
+                    && method.visibility == mir_codebase::Visibility::Private
+                {
+                    method_keys.push(format!("{}::{}", entry.key(), word_lower));
+                    if include_declaration && let Some(loc) = &method.location {
+                        decl_files.push(loc.file.as_ref().to_string());
+                    }
+                }
+            }
+
+            if method_keys.is_empty() {
+                // No qualifying class/enum found — fall back to the full AST scan.
+                return None;
+            }
+
+            // Collect candidate files from the reference index, then add
+            // declaration files so include_declaration=true works correctly.
+            let mut candidate_uris: std::collections::HashSet<String> =
+                decl_files.into_iter().collect();
+            for key in &method_keys {
+                for (file, _, _) in codebase.get_reference_locations(key) {
+                    candidate_uris.insert(file.as_ref().to_string());
+                }
+            }
+
+            // Restrict the AST walk to the candidate files only.
+            let candidate_docs: Vec<(Url, Arc<ParsedDoc>)> = all_docs
+                .iter()
+                .filter(|(url, _)| candidate_uris.contains(url.as_str()))
+                .cloned()
+                .collect();
+
+            let locations = find_references_inner(
+                word,
+                &candidate_docs,
+                include_declaration,
+                false,
+                Some(SymbolKind::Method),
+            );
+            Some(locations)
+        }
+
+        // General walker already handles None kind; codebase index adds no value.
+        None => None,
     }
 }
 
@@ -1164,6 +1235,251 @@ mod tests {
             lines.contains(&2),
             "init() in trait property default (line 2) must be present, got: {:?}",
             lines
+        );
+    }
+
+    // ── find_references_codebase: Method fast-path ──────────────────────────
+
+    fn make_class(
+        fqcn: &str,
+        is_final: bool,
+        method_name: &str,
+        visibility: mir_codebase::Visibility,
+    ) -> mir_codebase::ClassStorage {
+        use indexmap::IndexMap;
+        let method = mir_codebase::MethodStorage {
+            name: std::sync::Arc::from(method_name),
+            fqcn: std::sync::Arc::from(fqcn),
+            params: vec![],
+            return_type: None,
+            inferred_return_type: None,
+            visibility,
+            is_static: false,
+            is_abstract: false,
+            is_final: false,
+            is_constructor: false,
+            template_params: vec![],
+            assertions: vec![],
+            throws: vec![],
+            is_deprecated: false,
+            is_internal: false,
+            is_pure: false,
+            location: None,
+        };
+        let mut methods: IndexMap<
+            std::sync::Arc<str>,
+            std::sync::Arc<mir_codebase::MethodStorage>,
+        > = IndexMap::new();
+        // own_methods keys are lowercase (PHP method names are case-insensitive).
+        methods.insert(
+            std::sync::Arc::from(method_name.to_lowercase().as_str()),
+            std::sync::Arc::new(method),
+        );
+        mir_codebase::ClassStorage {
+            fqcn: std::sync::Arc::from(fqcn),
+            short_name: std::sync::Arc::from(fqcn.rsplit('\\').next().unwrap_or(fqcn)),
+            parent: None,
+            interfaces: vec![],
+            traits: vec![],
+            own_methods: methods,
+            own_properties: IndexMap::new(),
+            own_constants: IndexMap::new(),
+            template_params: vec![],
+            is_abstract: false,
+            is_final,
+            is_readonly: false,
+            all_parents: vec![],
+            is_deprecated: false,
+            is_internal: false,
+            location: None,
+        }
+    }
+
+    #[test]
+    fn codebase_method_falls_back_for_public_method_on_nonfinal_class() {
+        // Public method on a non-final class: no fast path → None → full AST scan.
+        let cb = mir_codebase::Codebase::new();
+        cb.classes.insert(
+            std::sync::Arc::from("Foo"),
+            make_class("Foo", false, "process", mir_codebase::Visibility::Public),
+        );
+        cb.mark_method_referenced_at(
+            "Foo",
+            "process",
+            std::sync::Arc::from("file:///a.php"),
+            10,
+            17,
+        );
+
+        let src = "<?php\nclass Foo { public function process() {} }\n$foo->process();";
+        let docs = vec![doc("/a.php", src)];
+        let result =
+            find_references_codebase("process", &docs, false, Some(SymbolKind::Method), &cb);
+        assert!(
+            result.is_none(),
+            "public method on non-final class must return None (fall back to AST), got: {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn codebase_method_fast_path_private_method_filters_files() {
+        // Private method: only files tracked in the codebase index are scanned.
+        // File b.php has a same-named call but is not in the codebase index —
+        // it must be excluded, proving the fast path is active.
+        let cb = mir_codebase::Codebase::new();
+        cb.classes.insert(
+            std::sync::Arc::from("Foo"),
+            make_class("Foo", false, "execute", mir_codebase::Visibility::Private),
+        );
+        // Only a.php is tracked.
+        cb.mark_method_referenced_at(
+            "Foo",
+            "execute",
+            std::sync::Arc::from("file:///a.php"),
+            10,
+            17,
+        );
+
+        // a.php: Foo with private execute + a call to $this->execute() inside the class.
+        let src_a = "<?php\nclass Foo {\n    private function execute() {}\n    public function run() { $this->execute(); }\n}";
+        // b.php: also calls ->execute() but is NOT in the codebase index.
+        let src_b = "<?php\n$other->execute();";
+
+        let docs = vec![doc("/a.php", src_a), doc("/b.php", src_b)];
+        let result =
+            find_references_codebase("execute", &docs, false, Some(SymbolKind::Method), &cb);
+
+        assert!(
+            result.is_some(),
+            "private method must activate the fast path"
+        );
+        let locs = result.unwrap();
+
+        let uris: Vec<&str> = locs.iter().map(|l| l.uri.as_str()).collect();
+        assert!(
+            uris.iter().all(|u| u.ends_with("/a.php")),
+            "all results must be from a.php (b.php was not in the codebase index), got: {:?}",
+            locs
+        );
+        assert!(
+            !locs.is_empty(),
+            "expected at least the $this->execute() call in a.php, got: {:?}",
+            locs
+        );
+    }
+
+    #[test]
+    fn codebase_method_fast_path_final_class_filters_files() {
+        // Final class: method is on a final class, so the fast path applies.
+        // File b.php is not tracked → excluded.
+        let cb = mir_codebase::Codebase::new();
+        cb.classes.insert(
+            std::sync::Arc::from("Counter"),
+            make_class(
+                "Counter",
+                true, // is_final
+                "increment",
+                mir_codebase::Visibility::Public,
+            ),
+        );
+        cb.mark_method_referenced_at(
+            "Counter",
+            "increment",
+            std::sync::Arc::from("file:///a.php"),
+            10,
+            19,
+        );
+
+        let src_a = "<?php\nfinal class Counter {\n    public function increment() {}\n}\n$c = new Counter();\n$c->increment();";
+        let src_b = "<?php\n$other->increment();";
+
+        let docs = vec![doc("/a.php", src_a), doc("/b.php", src_b)];
+        let result =
+            find_references_codebase("increment", &docs, false, Some(SymbolKind::Method), &cb);
+
+        assert!(
+            result.is_some(),
+            "final class method must activate the fast path"
+        );
+        let locs = result.unwrap();
+
+        let uris: Vec<&str> = locs.iter().map(|l| l.uri.as_str()).collect();
+        assert!(
+            uris.iter().all(|u| u.ends_with("/a.php")),
+            "all results must be from a.php only, got: {:?}",
+            locs
+        );
+    }
+
+    #[test]
+    fn codebase_method_fast_path_cross_file_reference() {
+        // Realistic cross-file scenario: class defined in class.php, called from
+        // caller.php and ignored.php (not tracked).
+        // The fast path must include caller.php (tracked) and exclude ignored.php.
+        let cb = mir_codebase::Codebase::new();
+        cb.classes.insert(
+            std::sync::Arc::from("Order"),
+            make_class(
+                "Order",
+                true, // is_final
+                "submit",
+                mir_codebase::Visibility::Public,
+            ),
+        );
+        // The codebase tracks caller.php as referencing Order::submit.
+        cb.mark_method_referenced_at(
+            "Order",
+            "submit",
+            std::sync::Arc::from("file:///caller.php"),
+            50,
+            56,
+        );
+
+        // class.php: defines the final class (no calls here).
+        let src_class = "<?php\nfinal class Order {\n    public function submit() {}\n}";
+        // caller.php: calls $order->submit() — tracked in codebase.
+        let src_caller = "<?php\n$order = new Order();\n$order->submit();";
+        // ignored.php: also calls ->submit() on an unknown type — NOT tracked.
+        let src_ignored = "<?php\n$unknown->submit();";
+
+        let docs = vec![
+            doc("/class.php", src_class),
+            doc("/caller.php", src_caller),
+            doc("/ignored.php", src_ignored),
+        ];
+
+        let result =
+            find_references_codebase("submit", &docs, false, Some(SymbolKind::Method), &cb);
+
+        assert!(result.is_some(), "fast path must activate for final class");
+        let locs = result.unwrap();
+
+        let uris: Vec<&str> = locs.iter().map(|l| l.uri.as_str()).collect();
+        assert!(
+            uris.iter().any(|u| u.ends_with("/caller.php")),
+            "caller.php (tracked) must appear in results, got: {:?}",
+            locs
+        );
+        assert!(
+            !uris.iter().any(|u| u.ends_with("/ignored.php")),
+            "ignored.php (not tracked) must be excluded, got: {:?}",
+            locs
+        );
+    }
+
+    #[test]
+    fn codebase_method_fast_path_empty_codebase_falls_back() {
+        // Empty codebase: no qualifying class found → None → caller falls back to full AST.
+        let cb = mir_codebase::Codebase::new();
+        let src = "<?php\n$obj->doWork();";
+        let docs = vec![doc("/a.php", src)];
+        let result =
+            find_references_codebase("doWork", &docs, false, Some(SymbolKind::Method), &cb);
+        assert!(
+            result.is_none(),
+            "empty codebase must return None for Method kind, got: {:?}",
+            result
         );
     }
 }
