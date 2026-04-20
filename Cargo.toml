@@ -27,7 +27,13 @@ harness = false
 name = "requests"
 harness = false
 
+[features]
+dhat-heap = ["dep:dhat"]
+
 [dependencies]
+dhat = { version = "0.3", optional = true }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 mir-analyzer = "0.6.0"
 mir-issues = "0.6.0"
 mir-codebase = "0.6.0"
@@ -40,7 +46,15 @@ tokio = { version = "1", features = ["full"] }
 serde_json = "1"
 dashmap = "6"
 
+[dependencies.walkdir]
+version = "2"
+
 [dev-dependencies]
 tempfile = "3"
 expect-test = "1"
 criterion = { version = "0.8", features = ["html_reports"] }
+iai-callgrind = "0.14"
+
+[[bench]]
+name = "iai_critical"
+harness = false

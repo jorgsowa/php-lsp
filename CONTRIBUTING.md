@@ -30,6 +30,25 @@ Requires Rust stable. No additional system dependencies.
 
 See [docs/architecture.md](docs/architecture.md) for a map of the codebase.
 
+## Benchmarking
+
+Before landing a change that touches parsing, indexing, or request handling,
+verify it doesn't regress performance. See [`benches/README.md`](benches/README.md)
+for the full tooling guide. Quick reference:
+
+```bash
+# Set up the Laravel fixture once (clones ~2 500 PHP files):
+./scripts/setup_laravel_fixture.sh
+
+# Save a baseline, make your change, then compare:
+./scripts/bench.sh save main
+./scripts/bench.sh compare main
+
+# Measure full-pipeline memory (matches real LSP workspace scan):
+cargo build --release
+cargo run --release --bin mem_index -- --full benches/fixtures/laravel/src
+```
+
 ## Issues
 
 Bug reports and feature requests are welcome via [GitHub Issues](https://github.com/jorgsowa/php-lsp/issues). Include a minimal PHP snippet that reproduces the problem when reporting bugs.

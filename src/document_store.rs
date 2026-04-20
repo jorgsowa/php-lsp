@@ -350,6 +350,7 @@ impl DocumentStore {
 
 /// Read a file from disk and parse it. Returns `None` if the file cannot be read.
 fn read_and_parse_from_disk(uri: &Url) -> Option<ParsedDoc> {
+    let _span = tracing::debug_span!("parse_from_disk", file = %uri).entered();
     let path = uri.to_file_path().ok()?;
     let text = std::fs::read_to_string(&path).ok()?;
     let (doc, _) = parse_document(&text);

@@ -17,6 +17,7 @@ Usage:
 import argparse
 import json
 import os
+import select
 import subprocess
 import sys
 import threading
@@ -87,6 +88,14 @@ def notif_initialized() -> dict:
     return {"jsonrpc": "2.0", "method": "initialized", "params": {}}
 
 
+def req_shutdown() -> dict:
+    return {"jsonrpc": "2.0", "id": next_id(), "method": "shutdown", "params": None}
+
+
+def notif_exit() -> dict:
+    return {"jsonrpc": "2.0", "method": "exit", "params": None}
+
+
 def req_did_open(uri: str, text: str) -> dict:
     return {
         "jsonrpc": "2.0",
@@ -141,11 +150,15 @@ def req_references(req_id: int, uri: str, line: int, character: int) -> dict:
 
 # ── Index-complete detection ───────────────────────────────────────────────────
 
-def _drain_until_indexed(proc, index_wait: float) -> None:
+def _drain_until_indexed(proc, index_wait: float, rss_samples: list) -> None:
     """
     Read server notifications in a background thread until either:
       - a $/progress end-of-work-done notification is received, or
       - `index_wait` seconds have elapsed (safety fallback).
+
+    While waiting, a second thread samples RSS every 500 ms and appends
+    ``{"time_ms": ..., "rss_kb": ..., "event": "sample"}`` dicts to
+    ``rss_samples``.  The caller can inspect this list for peak RSS.
 
     php-lsp sends ``$/progress`` with ``kind == "end"`` when the
     workspace scan finishes.  Advertising ``window.workDoneProgress``
@@ -153,13 +166,26 @@ def _drain_until_indexed(proc, index_wait: float) -> None:
     """
     deadline = time.monotonic() + index_wait
     done = threading.Event()
+    t0 = time.monotonic()
+
+    def _sampler():
+        while not done.is_set():
+            kb = rss_kb(proc.pid)
+            if kb is not None:
+                rss_samples.append({
+                    "time_ms": round((time.monotonic() - t0) * 1000.0, 1),
+                    "rss_kb": kb,
+                    "event": "sample",
+                })
+            done.wait(timeout=0.5)
 
     def _reader():
         while not done.is_set() and time.monotonic() < deadline:
-            try:
-                proc.stdout._sock.settimeout(0.1)  # noqa: SLF001
-            except AttributeError:
-                pass
+            # Use select so the loop stays responsive to the `done` flag
+            # even when the server is quiet (pipe has no socket timeout).
+            ready, _, _ = select.select([proc.stdout], [], [], 0.1)
+            if not ready:
+                continue
             try:
                 msg = read_message(proc)
             except (EOFError, OSError, ValueError):
@@ -175,12 +201,15 @@ def _drain_until_indexed(proc, index_wait: float) -> None:
                     done.set()
                     break
 
+    sampler = threading.Thread(target=_sampler, daemon=True)
+    sampler.start()
     t = threading.Thread(target=_reader, daemon=True)
     t.start()
     # Wait for the end signal or the deadline, whichever comes first.
     done.wait(timeout=index_wait)
-    done.set()  # signal thread to stop if it's still running
+    done.set()  # signal threads to stop
     t.join(timeout=1.0)
+    sampler.join(timeout=1.0)
 
 
 # ── RSS helper ─────────────────────────────────────────────────────────────────
@@ -230,6 +259,11 @@ def main() -> None:
         default="hover",
         help="LSP request method to benchmark (default: hover)",
     )
+    parser.add_argument(
+        "--trace-file",
+        default=None,
+        help="Write server stderr (tracing spans) to this file instead of discarding it",
+    )
     args = parser.parse_args()
 
     fixture_path = os.path.abspath(args.fixture)
@@ -258,11 +292,16 @@ def main() -> None:
 
     # Spawn the server and record wall time immediately.
     spawn_t0 = time.perf_counter()
+    if args.trace_file:
+        stderr_dest = open(args.trace_file, "wb")  # noqa: SIM115
+    else:
+        stderr_dest = subprocess.DEVNULL
     proc = subprocess.Popen(
         [args.binary],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
-        stderr=subprocess.DEVNULL,
+        stderr=stderr_dest,
+        env={**os.environ},
     )
 
     output_fh = open(args.output, "w", encoding="utf-8") if args.output != "-" else sys.stdout
@@ -292,13 +331,22 @@ def main() -> None:
         # if the server does not emit them.  This avoids measuring RSS before
         # the index is built (which would undercount) while also bounding wait
         # time on workspaces without progress support.
-        _drain_until_indexed(proc, args.index_wait)
+        rss_samples: list = []
+        _drain_until_indexed(proc, args.index_wait, rss_samples)
 
-        rss = rss_kb(proc.pid)
+        rss_post_index = rss_kb(proc.pid)
+        peak_rss = max((s["rss_kb"] for s in rss_samples), default=rss_post_index)
         output_fh.write(json.dumps({
             "method": "rss",
-            "rss_kb": rss,
+            "rss_kb": rss_post_index,
+            "peak_rss_kb": peak_rss,
+            "samples": len(rss_samples),
         }) + "\n")
+        output_fh.flush()
+
+        # Write per-sample timeline so callers can plot memory growth.
+        for sample in rss_samples:
+            output_fh.write(json.dumps({"method": "rss_sample", **sample}) + "\n")
         output_fh.flush()
 
         # ── Request latency ───────────────────────────────────────────────────
@@ -318,10 +366,28 @@ def main() -> None:
             output_fh.flush()
 
     finally:
-        proc.stdin.close()
-        proc.wait(timeout=5)
+        # Send LSP shutdown/exit so the server exits cleanly (Drop runs, dhat writes).
+        try:
+            proc.stdin.write(encode_message(req_shutdown()))
+            proc.stdin.flush()
+            read_message(proc)  # wait for shutdown response
+            proc.stdin.write(encode_message(notif_exit()))
+            proc.stdin.flush()
+        except (OSError, EOFError):
+            pass
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.wait()
         if args.output != "-":
             output_fh.close()
+        if args.trace_file and stderr_dest is not subprocess.DEVNULL:
+            stderr_dest.close()
 
 
 if __name__ == "__main__":
