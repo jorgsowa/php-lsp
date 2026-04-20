@@ -5325,6 +5325,13 @@ class Broken
         assert!(resp["error"].is_null(), "incomingCalls error: {:?}", resp);
         let calls = resp["result"].as_array().expect("expected array");
         assert!(!calls.is_empty(), "expected at least one incoming call");
+        assert!(
+            calls
+                .iter()
+                .any(|c| c["from"]["name"].as_str() == Some("caller")),
+            "expected 'caller' as incoming caller, got: {:?}",
+            calls
+        );
     }
 
     #[tokio::test]
@@ -5362,6 +5369,13 @@ class Broken
         assert!(resp["error"].is_null(), "outgoingCalls error: {:?}", resp);
         let calls = resp["result"].as_array().expect("expected array");
         assert!(!calls.is_empty(), "expected at least one outgoing call");
+        assert!(
+            calls
+                .iter()
+                .any(|c| c["to"]["name"].as_str() == Some("inner")),
+            "expected 'inner' as outgoing callee, got: {:?}",
+            calls
+        );
     }
 
     // ── type hierarchy ────────────────────────────────────────────────────────
@@ -5566,7 +5580,7 @@ class Broken
             .iter()
             .find(|i| i["label"].as_str() == Some("resolveMe"))
             .cloned()
-            .unwrap_or_else(|| items[0].clone());
+            .expect("resolveMe must appear in completions for its own prefix");
 
         let resp = client.request("completionItem/resolve", resolve_me).await;
 
