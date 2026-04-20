@@ -247,4 +247,33 @@ mod tests {
         );
         assert_eq!(loc.unwrap().range.start.line, 1);
     }
+
+    // ── goto_type_definition_from_index ───────────────────────────────────────
+
+    fn make_index(path: &str, src: &str) -> (Url, std::sync::Arc<crate::file_index::FileIndex>) {
+        use crate::file_index::FileIndex;
+        let u = uri(path);
+        let d = ParsedDoc::parse(src.to_string());
+        (u.clone(), std::sync::Arc::new(FileIndex::extract(&u, &d)))
+    }
+
+    #[test]
+    fn from_index_resolves_variable_to_cross_file_class() {
+        // Current file infers $obj → Mailer via new Mailer().
+        // Mailer class lives in mailer.php (background-indexed, not in open_docs).
+        let src = "<?php\n$obj = new Mailer();\n$obj->send();";
+        let parsed = ParsedDoc::parse(src.to_string());
+        let (mailer_uri, mailer_idx) = make_index(
+            "/mailer.php",
+            "<?php\nclass Mailer { public function send(): void {} }",
+        );
+        let indexes = vec![(mailer_uri.clone(), mailer_idx)];
+        // Cursor on $obj in "$obj->send();" — line 2, char 2.
+        let loc = goto_type_definition_from_index(src, &parsed, &indexes, pos(2, 2));
+        assert!(
+            loc.is_some(),
+            "expected type definition for $obj (Mailer) in index"
+        );
+        assert_eq!(loc.unwrap().uri, mailer_uri, "should point to mailer.php");
+    }
 }

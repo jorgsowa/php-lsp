@@ -455,4 +455,48 @@ mod tests {
             "expected Dog (extends App\\\\Animal) found via use-import FQN, got: {locs:?}"
         );
     }
+
+    // ── find_implementations_from_index ───────────────────────────────────────
+
+    fn make_index(path: &str, src: &str) -> (Url, std::sync::Arc<crate::file_index::FileIndex>) {
+        use crate::file_index::FileIndex;
+        let u = uri(path);
+        let d = ParsedDoc::parse(src.to_string());
+        (u.clone(), std::sync::Arc::new(FileIndex::extract(&u, &d)))
+    }
+
+    #[test]
+    fn from_index_finds_implementing_class() {
+        let (circle_uri, circle_idx) = make_index(
+            "/circle.php",
+            "<?php\nclass Circle implements Drawable {\n    public function draw(): void {}\n}",
+        );
+        let indexes = vec![(circle_uri.clone(), circle_idx)];
+        let locs = find_implementations_from_index("Drawable", None, &indexes);
+        assert_eq!(
+            locs.len(),
+            1,
+            "expected Circle as implementation of Drawable"
+        );
+        assert_eq!(locs[0].uri, circle_uri);
+        assert_eq!(locs[0].range.start.line, 1, "Circle is declared on line 1");
+    }
+
+    #[test]
+    fn from_index_finds_extending_class() {
+        let (dog_uri, dog_idx) = make_index("/dog.php", "<?php\nclass Dog extends Animal {}");
+        let indexes = vec![(dog_uri.clone(), dog_idx)];
+        let locs = find_implementations_from_index("Animal", None, &indexes);
+        assert_eq!(locs.len(), 1, "expected Dog as subclass of Animal");
+        assert_eq!(locs[0].range.start.line, 1);
+    }
+
+    #[test]
+    fn from_index_finds_across_multiple_files() {
+        let (a_uri, a_idx) = make_index("/a.php", "<?php\nclass Cat extends Animal {}");
+        let (b_uri, b_idx) = make_index("/b.php", "<?php\nclass Dog extends Animal {}");
+        let indexes = vec![(a_uri, a_idx), (b_uri, b_idx)];
+        let locs = find_implementations_from_index("Animal", None, &indexes);
+        assert_eq!(locs.len(), 2, "expected both Cat and Dog");
+    }
 }
