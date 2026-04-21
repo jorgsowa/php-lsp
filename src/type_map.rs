@@ -9,7 +9,7 @@ use php_ast::{
 };
 use tower_lsp::lsp_types::Position;
 
-use crate::ast::{ParsedDoc, SourceView};
+use crate::ast::{MethodReturnsMap, ParsedDoc, SourceView};
 use crate::docblock::{docblock_before, parse_docblock};
 use crate::phpstorm_meta::PhpStormMeta;
 
@@ -26,14 +26,14 @@ impl TypeMap {
     /// Build from a parsed document, optionally enriched by PHPStorm metadata
     /// for factory-method return type inference.
     pub fn from_doc_with_meta(doc: &ParsedDoc, meta: Option<&PhpStormMeta>) -> Self {
-        let method_returns = build_method_returns(doc);
+        let method_returns = cached_method_returns(doc);
         let mut map = HashMap::new();
         collect_types_stmts(
             doc.source(),
             &doc.program().stmts,
             &mut map,
             meta,
-            &method_returns,
+            std::slice::from_ref(&method_returns),
             None,
         );
         TypeMap(map)
@@ -46,20 +46,19 @@ impl TypeMap {
         other_docs: impl IntoIterator<Item = &'a ParsedDoc>,
         meta: Option<&'a PhpStormMeta>,
     ) -> Self {
-        let mut method_returns = build_method_returns(doc);
-        for other in other_docs {
-            let other_returns = build_method_returns(other);
-            for (class, methods) in other_returns {
-                method_returns.entry(class).or_default().extend(methods);
-            }
-        }
+        let doc_returns = cached_method_returns(doc);
+        let other_returns: Vec<&MethodReturnsMap> =
+            other_docs.into_iter().map(cached_method_returns).collect();
+        let mut all_returns: Vec<&MethodReturnsMap> = Vec::with_capacity(other_returns.len() + 1);
+        all_returns.push(doc_returns);
+        all_returns.extend(other_returns);
         let mut map = HashMap::new();
         collect_types_stmts(
             doc.source(),
             &doc.program().stmts,
             &mut map,
             meta,
-            &method_returns,
+            &all_returns,
             None,
         );
         TypeMap(map)
@@ -90,20 +89,19 @@ impl TypeMap {
                 None
             }
         };
-        let mut method_returns = build_method_returns(doc);
-        for other in other_docs {
-            let other_returns = build_method_returns(other);
-            for (class, methods) in other_returns {
-                method_returns.entry(class).or_default().extend(methods);
-            }
-        }
+        let doc_returns = cached_method_returns(doc);
+        let other_returns: Vec<&MethodReturnsMap> =
+            other_docs.into_iter().map(cached_method_returns).collect();
+        let mut all_returns: Vec<&MethodReturnsMap> = Vec::with_capacity(other_returns.len() + 1);
+        all_returns.push(doc_returns);
+        all_returns.extend(other_returns);
         let mut map = HashMap::new();
         collect_types_stmts(
             doc.source(),
             &doc.program().stmts,
             &mut map,
             meta,
-            &method_returns,
+            &all_returns,
             cursor_byte,
         );
         TypeMap(map)
@@ -115,11 +113,35 @@ impl TypeMap {
     }
 }
 
-/// Pre-build a map of class_name → method_name → return_class_name from all given docs.
-pub fn build_method_returns(doc: &ParsedDoc) -> HashMap<String, HashMap<String, String>> {
+/// Pre-build a map of class_name → method_name → return_class_name for a single doc.
+pub fn build_method_returns(doc: &ParsedDoc) -> MethodReturnsMap {
     let mut out = HashMap::new();
     collect_method_returns_stmts(doc.source(), &doc.program().stmts, &mut out);
     out
+}
+
+/// Return the doc's cached method-returns map, building it on first access.
+/// Subsequent calls on the same `ParsedDoc` return the memoized result.
+fn cached_method_returns(doc: &ParsedDoc) -> &MethodReturnsMap {
+    doc.method_returns_cached(|| build_method_returns(doc))
+}
+
+/// Look up `class.method() -> return_class` across a stack of per-doc maps.
+/// Returns the first match — later docs override earlier ones, matching the
+/// previous merge-based behavior.
+fn lookup_method_return<'a>(
+    maps: &'a [&'a MethodReturnsMap],
+    class_name: &str,
+    method_name: &str,
+) -> Option<&'a str> {
+    for m in maps.iter().rev() {
+        if let Some(class_rets) = m.get(class_name)
+            && let Some(ret) = class_rets.get(method_name)
+        {
+            return Some(ret.as_str());
+        }
+    }
+    None
 }
 
 fn collect_method_returns_stmts(
@@ -251,7 +273,7 @@ fn collect_types_stmts(
     stmts: &[Stmt<'_, '_>],
     map: &mut HashMap<String, String>,
     meta: Option<&PhpStormMeta>,
-    method_returns: &HashMap<String, HashMap<String, String>>,
+    method_returns: &[&MethodReturnsMap],
     cursor_byte: Option<u32>,
 ) {
     for stmt in stmts {
@@ -580,7 +602,7 @@ fn collect_types_expr(
     expr: &php_ast::Expr<'_, '_>,
     map: &mut HashMap<String, String>,
     meta: Option<&PhpStormMeta>,
-    method_returns: &HashMap<String, HashMap<String, String>>,
+    method_returns: &[&MethodReturnsMap],
     cursor_byte: Option<u32>,
 ) {
     match &expr.kind {
@@ -615,10 +637,10 @@ fn collect_types_expr(
                     && let (ExprKind::Variable(obj_var), ExprKind::Identifier(method_name)) =
                         (&mc.object.kind, &mc.method.kind)
                     && let Some(obj_class) = map.get(&format!("${}", obj_var.as_str())).cloned()
-                    && let Some(class_rets) = method_returns.get(&obj_class)
-                    && let Some(ret_type) = class_rets.get(method_name.as_str())
+                    && let Some(ret_type) =
+                        lookup_method_return(method_returns, &obj_class, method_name.as_str())
                 {
-                    map.insert(format!("${}", var_name.as_str()), ret_type.clone());
+                    map.insert(format!("${}", var_name.as_str()), ret_type.to_string());
                 }
                 // PHPStorm meta: `$var = $obj->make(SomeClass::class)`
                 if let Some(meta) = meta

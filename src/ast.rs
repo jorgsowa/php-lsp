@@ -1,9 +1,14 @@
 /// Core AST infrastructure: arena-backed `ParsedDoc`, span utilities, and TypeHint formatting.
+use std::collections::HashMap;
 use std::mem::ManuallyDrop;
-use std::sync::{LazyLock, Mutex};
+use std::sync::{LazyLock, Mutex, OnceLock};
 
 use php_ast::{Program, Span, TypeHint, TypeHintKind};
 use tower_lsp::lsp_types::{Position, Range};
+
+/// Cached per-doc map of `class_name -> method_name -> return_class_name`.
+/// Exposed here (rather than in `type_map`) because it lives on `ParsedDoc`.
+pub type MethodReturnsMap = HashMap<String, HashMap<String, String>>;
 
 // ── BumpPool ──────────────────────────────────────────────────────────────────
 
@@ -72,6 +77,11 @@ pub struct ParsedDoc {
     #[allow(clippy::box_collection)]
     _source: Box<String>,
     line_starts: Vec<u32>,
+    /// Lazily-populated per-doc cache of method return types. Built on first
+    /// access by `type_map::build_method_returns`. Valid for the lifetime of
+    /// this `ParsedDoc` — a reparse produces a new instance, which naturally
+    /// invalidates the cache.
+    method_returns: OnceLock<MethodReturnsMap>,
     _arena: ArenaGuard,
 }
 
@@ -112,8 +122,18 @@ impl ParsedDoc {
             errors: result.errors,
             _source: source_box,
             line_starts,
+            method_returns: OnceLock::new(),
             _arena: ArenaGuard(Some(arena_box)),
         }
+    }
+
+    /// Return the cached per-doc method-return-type map, computing it on first
+    /// access via `build`. `build` is called at most once per `ParsedDoc`.
+    pub fn method_returns_cached<F>(&self, build: F) -> &MethodReturnsMap
+    where
+        F: FnOnce() -> MethodReturnsMap,
+    {
+        self.method_returns.get_or_init(build)
     }
 
     /// Borrow the program with lifetimes bounded by `&self`.
