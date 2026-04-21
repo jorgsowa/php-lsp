@@ -578,7 +578,7 @@ mod tests {
         let src =
             "<?php\n/** @deprecated Use newFunc() instead */\nfunction oldFunc() {}\n\noldFunc();";
         let doc = ParsedDoc::parse(src.to_string());
-        let diags = deprecated_call_diagnostics(src, &doc, &[], &DiagnosticsConfig::default());
+        let diags = deprecated_call_diagnostics(src, &doc, &[], &DiagnosticsConfig::all_enabled());
         assert_eq!(
             diags.len(),
             1,
@@ -596,7 +596,7 @@ mod tests {
     fn duplicate_class_emits_warning() {
         let src = "<?php\nclass Foo {}\nclass Foo {}";
         let doc = ParsedDoc::parse(src.to_string());
-        let diags = duplicate_declaration_diagnostics(src, &doc, &DiagnosticsConfig::default());
+        let diags = duplicate_declaration_diagnostics(src, &doc, &DiagnosticsConfig::all_enabled());
         assert_eq!(
             diags.len(),
             1,
@@ -614,7 +614,7 @@ mod tests {
     fn no_duplicate_for_unique_declarations() {
         let src = "<?php\nclass Foo {}\nclass Bar {}";
         let doc = ParsedDoc::parse(src.to_string());
-        let diags = duplicate_declaration_diagnostics(src, &doc, &DiagnosticsConfig::default());
+        let diags = duplicate_declaration_diagnostics(src, &doc, &DiagnosticsConfig::all_enabled());
         assert!(diags.is_empty());
     }
 
@@ -623,7 +623,7 @@ mod tests {
         // Two classes named `Foo` in different namespaces — should produce zero diagnostics.
         let src = "<?php\nnamespace App\\A {\nclass Foo {}\n}\nnamespace App\\B {\nclass Foo {}\n}";
         let doc = ParsedDoc::parse(src.to_string());
-        let diags = duplicate_declaration_diagnostics(src, &doc, &DiagnosticsConfig::default());
+        let diags = duplicate_declaration_diagnostics(src, &doc, &DiagnosticsConfig::all_enabled());
         assert!(
             diags.is_empty(),
             "classes with same name in different namespaces should not be flagged, got: {:?}",
@@ -636,7 +636,7 @@ mod tests {
         // Same interface defined twice in same file — should produce exactly one error.
         let src = "<?php\ninterface Logger {}\ninterface Logger {}";
         let doc = ParsedDoc::parse(src.to_string());
-        let diags = duplicate_declaration_diagnostics(src, &doc, &DiagnosticsConfig::default());
+        let diags = duplicate_declaration_diagnostics(src, &doc, &DiagnosticsConfig::all_enabled());
         assert_eq!(
             diags.len(),
             1,
@@ -659,7 +659,7 @@ mod tests {
         // Same trait defined twice in same file — should produce exactly one error.
         let src = "<?php\ntrait Serializable {}\ntrait Serializable {}";
         let doc = ParsedDoc::parse(src.to_string());
-        let diags = duplicate_declaration_diagnostics(src, &doc, &DiagnosticsConfig::default());
+        let diags = duplicate_declaration_diagnostics(src, &doc, &DiagnosticsConfig::all_enabled());
         assert_eq!(
             diags.len(),
             1,
@@ -690,7 +690,7 @@ mod tests {
             "$m->send();\n",
         );
         let doc = ParsedDoc::parse(src.to_string());
-        let diags = deprecated_call_diagnostics(src, &doc, &[], &DiagnosticsConfig::default());
+        let diags = deprecated_call_diagnostics(src, &doc, &[], &DiagnosticsConfig::all_enabled());
         assert_eq!(
             diags.len(),
             1,
@@ -717,7 +717,7 @@ mod tests {
         // word "Deprecated" (case-sensitive per implementation: "Deprecated: …").
         let src = "<?php\n/** @deprecated old API */\nfunction legacyFn() {}\n\nlegacyFn();";
         let doc = ParsedDoc::parse(src.to_string());
-        let diags = deprecated_call_diagnostics(src, &doc, &[], &DiagnosticsConfig::default());
+        let diags = deprecated_call_diagnostics(src, &doc, &[], &DiagnosticsConfig::all_enabled());
         assert_eq!(diags.len(), 1, "expected exactly 1 diagnostic");
         let msg = &diags[0].message;
         assert!(
@@ -736,7 +736,7 @@ mod tests {
         // (Note: `duplicate_declaration_diagnostics` emits DiagnosticSeverity::WARNING.)
         let src = "<?php\nfunction doWork() {}\nfunction doWork() {}";
         let doc = ParsedDoc::parse(src.to_string());
-        let diags = duplicate_declaration_diagnostics(src, &doc, &DiagnosticsConfig::default());
+        let diags = duplicate_declaration_diagnostics(src, &doc, &DiagnosticsConfig::all_enabled());
         assert_eq!(diags.len(), 1, "expected exactly 1 duplicate diagnostic");
         assert_eq!(
             diags[0].severity,
@@ -756,7 +756,7 @@ mod tests {
             "wrapper(oldFn());\n",
         );
         let doc = ParsedDoc::parse(src.to_string());
-        let diags = deprecated_call_diagnostics(src, &doc, &[], &DiagnosticsConfig::default());
+        let diags = deprecated_call_diagnostics(src, &doc, &[], &DiagnosticsConfig::all_enabled());
         assert_eq!(
             diags.len(),
             1,
@@ -783,7 +783,7 @@ mod tests {
             "$a->log();\n",
         );
         let doc = ParsedDoc::parse(src.to_string());
-        let diags = deprecated_call_diagnostics(src, &doc, &[], &DiagnosticsConfig::default());
+        let diags = deprecated_call_diagnostics(src, &doc, &[], &DiagnosticsConfig::all_enabled());
         assert_eq!(
             diags.len(),
             1,
@@ -809,7 +809,7 @@ mod tests {
             "$s->label();\n",
         );
         let doc = ParsedDoc::parse(src.to_string());
-        let diags = deprecated_call_diagnostics(src, &doc, &[], &DiagnosticsConfig::default());
+        let diags = deprecated_call_diagnostics(src, &doc, &[], &DiagnosticsConfig::all_enabled());
         assert_eq!(
             diags.len(),
             1,
@@ -827,7 +827,7 @@ mod tests {
         // Two classes named `Foo` in different unbraced namespaces — should not be a duplicate.
         let src = "<?php\nnamespace App\\A;\nclass Foo {}\nnamespace App\\B;\nclass Foo {}";
         let doc = ParsedDoc::parse(src.to_string());
-        let diags = duplicate_declaration_diagnostics(src, &doc, &DiagnosticsConfig::default());
+        let diags = duplicate_declaration_diagnostics(src, &doc, &DiagnosticsConfig::all_enabled());
         assert!(
             diags.is_empty(),
             "classes with same name in different unbraced namespaces should not be flagged, got: {:?}",
@@ -840,7 +840,7 @@ mod tests {
         // Two classes named `Foo` in the same unbraced namespace — should produce one warning.
         let src = "<?php\nnamespace App;\nclass Foo {}\nclass Foo {}";
         let doc = ParsedDoc::parse(src.to_string());
-        let diags = duplicate_declaration_diagnostics(src, &doc, &DiagnosticsConfig::default());
+        let diags = duplicate_declaration_diagnostics(src, &doc, &DiagnosticsConfig::all_enabled());
         assert_eq!(
             diags.len(),
             1,
@@ -855,7 +855,7 @@ mod tests {
         // Duplicate declaration diagnostic range should span the entire name, not just first character.
         let src = "<?php\nclass Foo {}\nclass Foo {}";
         let doc = ParsedDoc::parse(src.to_string());
-        let diags = duplicate_declaration_diagnostics(src, &doc, &DiagnosticsConfig::default());
+        let diags = duplicate_declaration_diagnostics(src, &doc, &DiagnosticsConfig::all_enabled());
         assert_eq!(diags.len(), 1, "expected exactly 1 duplicate diagnostic");
 
         let d = &diags[0];
@@ -885,7 +885,7 @@ mod tests {
         // Function duplicate should also span the full function name.
         let src = "<?php\nfunction doWork() {}\nfunction doWork() {}";
         let doc = ParsedDoc::parse(src.to_string());
-        let diags = duplicate_declaration_diagnostics(src, &doc, &DiagnosticsConfig::default());
+        let diags = duplicate_declaration_diagnostics(src, &doc, &DiagnosticsConfig::all_enabled());
         assert_eq!(diags.len(), 1, "expected exactly 1 duplicate diagnostic");
 
         let d = &diags[0];
@@ -915,7 +915,7 @@ mod tests {
         // Interface duplicate should span the full interface name.
         let src = "<?php\ninterface Logger {}\ninterface Logger {}";
         let doc = ParsedDoc::parse(src.to_string());
-        let diags = duplicate_declaration_diagnostics(src, &doc, &DiagnosticsConfig::default());
+        let diags = duplicate_declaration_diagnostics(src, &doc, &DiagnosticsConfig::all_enabled());
         assert_eq!(diags.len(), 1, "expected exactly 1 duplicate diagnostic");
 
         let d = &diags[0];
@@ -945,7 +945,7 @@ mod tests {
         // Diagnostic range should be on the correct line.
         let src = "<?php\nclass Foo {}\n\nclass Foo {}";
         let doc = ParsedDoc::parse(src.to_string());
-        let diags = duplicate_declaration_diagnostics(src, &doc, &DiagnosticsConfig::default());
+        let diags = duplicate_declaration_diagnostics(src, &doc, &DiagnosticsConfig::all_enabled());
         assert_eq!(diags.len(), 1, "expected exactly 1 duplicate diagnostic");
 
         let d = &diags[0];

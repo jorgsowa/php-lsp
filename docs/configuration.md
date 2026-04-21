@@ -16,7 +16,7 @@ All options are optional.
 
 | Key | Default | Description |
 |---|---|---|
-| `enabled` | `true` | Master switch — set to `false` to disable all diagnostics. |
+| `enabled` | `false` | Master switch — diagnostics are off by default; set to `true` to emit them. |
 | `undefinedVariables` | `true` | Undefined variable references. |
 | `undefinedFunctions` | `true` | Calls to undefined functions. |
 | `undefinedClasses` | `true` | References to undefined classes, interfaces, or traits. |
@@ -32,6 +32,7 @@ All options are optional.
   "phpVersion": "8.1",
   "excludePaths": ["cache/*", "storage/*", "tests/fixtures/*"],
   "diagnostics": {
+    "enabled": true,
     "undefinedVariables": true,
     "deprecatedCalls": false
   }
