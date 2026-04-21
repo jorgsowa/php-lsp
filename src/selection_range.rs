@@ -11,44 +11,92 @@ pub fn selection_ranges(
     positions: &[Position],
 ) -> Vec<SelectionRange> {
     let sv = doc.view();
-    let fr = file_range(sv.source());
+    let fr = file_range(sv);
     positions
         .iter()
-        .map(|pos| build_chain(sv, &doc.program().stmts, *pos, fr))
+        .map(|pos| {
+            let byte_off = position_to_byte(sv, *pos);
+            build_chain(sv, &doc.program().stmts, byte_off, fr)
+        })
         .collect()
 }
 
 /// The entire file as a single range.
-fn file_range(source: &str) -> Range {
-    let lines: Vec<&str> = source.lines().collect();
-    let last_line = lines.len().saturating_sub(1) as u32;
-    // Use the actual UTF-16 length of the last line rather than u32::MAX.
-    // u32::MAX is not LSP-spec-compliant; stricter clients may reject it.
-    let last_char = lines
-        .last()
-        .map(|l| l.chars().map(|c| c.len_utf16() as u32).sum::<u32>())
-        .unwrap_or(0);
+///
+/// Uses the precomputed `line_starts` table to jump to the last line rather
+/// than doing an O(file_size) `source.lines().collect()`. Only scans the last
+/// line's characters to compute the UTF-16 end column.
+fn file_range(sv: SourceView<'_>) -> Range {
+    let source = sv.source();
+    let line_starts = sv.line_starts();
+    if source.is_empty() {
+        return Range {
+            start: Position {
+                line: 0,
+                character: 0,
+            },
+            end: Position {
+                line: 0,
+                character: 0,
+            },
+        };
+    }
+    let last_line_idx = line_starts.len().saturating_sub(1) as u32;
+    let last_line_start = *line_starts.last().unwrap_or(&0) as usize;
+    let raw = &source[last_line_start..];
+    let line = raw.strip_suffix('\n').unwrap_or(raw);
+    let line = line.strip_suffix('\r').unwrap_or(line);
+    let last_char: u32 = line.chars().map(|c| c.len_utf16() as u32).sum();
     Range {
         start: Position {
             line: 0,
             character: 0,
         },
         end: Position {
-            line: last_line,
+            line: last_line_idx,
             character: last_char,
         },
     }
+}
+
+/// O(log lines) UTF-16 `Position` → byte offset, via the precomputed
+/// `line_starts` table. Scans only the characters on the target line.
+fn position_to_byte(sv: SourceView<'_>, pos: Position) -> u32 {
+    let source = sv.source();
+    let line_starts = sv.line_starts();
+    let line_idx = pos.line as usize;
+    let line_start = line_starts.get(line_idx).copied().unwrap_or(0) as usize;
+    let line_end = line_starts
+        .get(line_idx + 1)
+        .map(|&s| (s as usize).saturating_sub(1))
+        .unwrap_or(source.len());
+    let raw = &source[line_start..line_end.min(source.len())];
+    let line = raw.strip_suffix('\r').unwrap_or(raw);
+    let mut col_utf16: u32 = 0;
+    let mut byte_in_line: usize = 0;
+    for ch in line.chars() {
+        if col_utf16 >= pos.character {
+            break;
+        }
+        col_utf16 += ch.len_utf16() as u32;
+        byte_in_line += ch.len_utf8();
+    }
+    (line_start + byte_in_line) as u32
 }
 
 /// Build the innermost-to-outermost chain for a cursor position.
 fn build_chain(
     sv: SourceView<'_>,
     stmts: &[Stmt<'_, '_>],
-    pos: Position,
+    byte_off: u32,
     fr: Range,
 ) -> SelectionRange {
-    let mut ranges: Vec<Range> = Vec::new();
-    collect_ranges_stmts(sv, stmts, pos, &mut ranges);
+    let mut spans: Vec<(u32, u32)> = Vec::new();
+    collect_spans_stmts(stmts, byte_off, &mut spans);
+    let mut ranges: Vec<Range> = spans
+        .into_iter()
+        .map(|(s, e)| span_range(sv, s, e))
+        .collect();
 
     // Sort from smallest span to largest (innermost first)
     ranges.sort_by_key(|r| {
@@ -83,6 +131,7 @@ fn build_chain(
     })
 }
 
+#[cfg(test)]
 fn contains(range: Range, pos: Position) -> bool {
     if pos.line < range.start.line || pos.line > range.end.line {
         return false;
@@ -103,161 +152,122 @@ fn span_range(sv: SourceView<'_>, start: u32, end: u32) -> Range {
     }
 }
 
-fn collect_ranges_stmts(
-    sv: SourceView<'_>,
-    stmts: &[Stmt<'_, '_>],
-    pos: Position,
-    out: &mut Vec<Range>,
-) {
+fn span_contains(start: u32, end: u32, off: u32) -> bool {
+    off >= start && off < end
+}
+
+fn collect_spans_stmts(stmts: &[Stmt<'_, '_>], off: u32, out: &mut Vec<(u32, u32)>) {
     for stmt in stmts {
-        collect_ranges_stmt(sv, stmt, pos, out);
+        collect_spans_stmt(stmt, off, out);
     }
 }
 
-fn collect_ranges_stmt(
-    sv: SourceView<'_>,
-    stmt: &Stmt<'_, '_>,
-    pos: Position,
-    out: &mut Vec<Range>,
-) {
-    let range = span_range(sv, stmt.span.start, stmt.span.end);
+fn collect_spans_stmt(stmt: &Stmt<'_, '_>, off: u32, out: &mut Vec<(u32, u32)>) {
+    let s = stmt.span.start;
+    let e = stmt.span.end;
+    if !span_contains(s, e, off) {
+        return;
+    }
     match &stmt.kind {
         StmtKind::Function(f) => {
-            if !contains(range, pos) {
-                return;
-            }
-            out.push(range);
-            collect_ranges_stmts(sv, &f.body, pos, out);
+            out.push((s, e));
+            collect_spans_stmts(&f.body, off, out);
         }
         StmtKind::Class(c) => {
-            if !contains(range, pos) {
-                return;
-            }
-            out.push(range);
+            out.push((s, e));
             for member in c.members.iter() {
-                let m_range = span_range(sv, member.span.start, member.span.end);
-                if !contains(m_range, pos) {
+                if !span_contains(member.span.start, member.span.end, off) {
                     continue;
                 }
-                out.push(m_range);
+                out.push((member.span.start, member.span.end));
                 if let ClassMemberKind::Method(m) = &member.kind
                     && let Some(body) = &m.body
                 {
-                    collect_ranges_stmts(sv, body, pos, out);
+                    collect_spans_stmts(body, off, out);
                 }
             }
         }
         StmtKind::Interface(i) => {
-            if contains(range, pos) {
-                out.push(range);
-                for member in i.members.iter() {
-                    let m_range = span_range(sv, member.span.start, member.span.end);
-                    if contains(m_range, pos) {
-                        out.push(m_range);
-                    }
+            out.push((s, e));
+            for member in i.members.iter() {
+                if span_contains(member.span.start, member.span.end, off) {
+                    out.push((member.span.start, member.span.end));
                 }
             }
         }
         StmtKind::Trait(t) => {
-            if !contains(range, pos) {
-                return;
-            }
-            out.push(range);
+            out.push((s, e));
             for member in t.members.iter() {
-                let m_range = span_range(sv, member.span.start, member.span.end);
-                if !contains(m_range, pos) {
+                if !span_contains(member.span.start, member.span.end, off) {
                     continue;
                 }
-                out.push(m_range);
+                out.push((member.span.start, member.span.end));
                 if let ClassMemberKind::Method(m) = &member.kind
                     && let Some(body) = &m.body
                 {
-                    collect_ranges_stmts(sv, body, pos, out);
+                    collect_spans_stmts(body, off, out);
                 }
             }
         }
-        StmtKind::Enum(e) => {
-            if !contains(range, pos) {
-                return;
-            }
-            out.push(range);
-            for member in e.members.iter() {
-                let m_range = span_range(sv, member.span.start, member.span.end);
-                if !contains(m_range, pos) {
+        StmtKind::Enum(en) => {
+            out.push((s, e));
+            for member in en.members.iter() {
+                if !span_contains(member.span.start, member.span.end, off) {
                     continue;
                 }
-                out.push(m_range);
+                out.push((member.span.start, member.span.end));
                 if let EnumMemberKind::Method(m) = &member.kind
                     && let Some(body) = &m.body
                 {
-                    collect_ranges_stmts(sv, body, pos, out);
+                    collect_spans_stmts(body, off, out);
                 }
             }
         }
         StmtKind::Namespace(ns) => {
-            if !contains(range, pos) {
-                return;
-            }
-            out.push(range);
+            out.push((s, e));
             if let NamespaceBody::Braced(inner) = &ns.body {
-                collect_ranges_stmts(sv, inner, pos, out);
+                collect_spans_stmts(inner, off, out);
             }
         }
         StmtKind::If(i) => {
-            if !contains(range, pos) {
-                return;
-            }
-            out.push(range);
-            collect_ranges_stmt(sv, i.then_branch, pos, out);
+            out.push((s, e));
+            collect_spans_stmt(i.then_branch, off, out);
             for ei in i.elseif_branches.iter() {
-                collect_ranges_stmt(sv, &ei.body, pos, out);
+                collect_spans_stmt(&ei.body, off, out);
             }
-            if let Some(e) = &i.else_branch {
-                collect_ranges_stmt(sv, e, pos, out);
+            if let Some(el) = &i.else_branch {
+                collect_spans_stmt(el, off, out);
             }
         }
         StmtKind::While(w) => {
-            if contains(range, pos) {
-                out.push(range);
-                collect_ranges_stmt(sv, w.body, pos, out);
-            }
+            out.push((s, e));
+            collect_spans_stmt(w.body, off, out);
         }
         StmtKind::For(f) => {
-            if contains(range, pos) {
-                out.push(range);
-                collect_ranges_stmt(sv, f.body, pos, out);
-            }
+            out.push((s, e));
+            collect_spans_stmt(f.body, off, out);
         }
         StmtKind::Foreach(f) => {
-            if contains(range, pos) {
-                out.push(range);
-                collect_ranges_stmt(sv, f.body, pos, out);
-            }
+            out.push((s, e));
+            collect_spans_stmt(f.body, off, out);
         }
         StmtKind::DoWhile(d) => {
-            if contains(range, pos) {
-                out.push(range);
-                collect_ranges_stmt(sv, d.body, pos, out);
-            }
+            out.push((s, e));
+            collect_spans_stmt(d.body, off, out);
         }
         StmtKind::TryCatch(t) => {
-            if !contains(range, pos) {
-                return;
-            }
-            out.push(range);
-            collect_ranges_stmts(sv, &t.body, pos, out);
+            out.push((s, e));
+            collect_spans_stmts(&t.body, off, out);
             for catch in t.catches.iter() {
-                collect_ranges_stmts(sv, &catch.body, pos, out);
+                collect_spans_stmts(&catch.body, off, out);
             }
             if let Some(finally) = &t.finally {
-                collect_ranges_stmts(sv, finally, pos, out);
+                collect_spans_stmts(finally, off, out);
             }
         }
         StmtKind::Block(stmts) => {
-            if contains(range, pos) {
-                out.push(range);
-                collect_ranges_stmts(sv, stmts, pos, out);
-            }
+            out.push((s, e));
+            collect_spans_stmts(stmts, off, out);
         }
         _ => {}
     }

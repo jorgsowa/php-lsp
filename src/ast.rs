@@ -184,6 +184,11 @@ impl<'a> SourceView<'a> {
         offset_to_position(self.source, self.line_starts, offset)
     }
 
+    #[inline]
+    pub fn line_starts(self) -> &'a [u32] {
+        self.line_starts
+    }
+
     pub fn range_of(self, span: Span) -> Range {
         Range {
             start: self.position_of(span.start),
