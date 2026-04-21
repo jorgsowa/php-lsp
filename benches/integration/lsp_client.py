@@ -66,7 +66,7 @@ def next_id() -> int:
     return _id_counter
 
 
-def req_initialize(root_uri: str) -> dict:
+def req_initialize(root_uri: str, init_options: dict | None = None) -> dict:
     return {
         "jsonrpc": "2.0",
         "id": next_id(),
@@ -78,8 +78,24 @@ def req_initialize(root_uri: str) -> dict:
                 # Advertise progress support so the server sends $/progress
                 # notifications when the workspace index begins and ends.
                 "window": {"workDoneProgress": True},
+                "workspace": {
+                    "configuration": True,
+                    "didChangeConfiguration": {"dynamicRegistration": False},
+                },
             },
-            "initializationOptions": {},
+            "initializationOptions": init_options or {},
+        },
+    }
+
+
+def notif_did_change(uri: str, version: int, text: str) -> dict:
+    """FULL sync: resend the whole document text on each change."""
+    return {
+        "jsonrpc": "2.0",
+        "method": "textDocument/didChange",
+        "params": {
+            "textDocument": {"uri": uri, "version": version},
+            "contentChanges": [{"text": text}],
         },
     }
 
@@ -150,7 +166,55 @@ def req_references(req_id: int, uri: str, line: int, character: int) -> dict:
 
 # ── Index-complete detection ───────────────────────────────────────────────────
 
-def _drain_until_indexed(proc, index_wait: float, rss_samples: list) -> None:
+def _answer_reverse_request(proc, msg: dict, init_options: dict | None = None) -> bool:
+    """
+    Answer server→client requests so the server keeps making progress.
+
+    A server that advertises support for `workspace/configuration`,
+    `window.workDoneProgress`, or dynamic capability registration may
+    send these *requests* (with an `id`) to the client. If the client
+    ignores them, the server blocks forever waiting for the reply — this
+    was the root cause of the integration bench's 130 s wall time on
+    Laravel.
+
+    Returns True if the message was a reverse request and has been answered.
+    """
+    method = msg.get("method", "")
+    if "id" not in msg:
+        return False
+    if method == "workspace/configuration":
+        # Reply with the init_options for each requested section, or null.
+        items = msg.get("params", {}).get("items", [])
+        reply = []
+        for it in items:
+            sect = it.get("section", "")
+            if init_options and sect in ("", "php-lsp", "phplsp", "php"):
+                reply.append(init_options)
+            else:
+                reply.append(None)
+        proc.stdin.write(encode_message({
+            "jsonrpc": "2.0", "id": msg["id"], "result": reply,
+        }))
+        proc.stdin.flush()
+        return True
+    if method in (
+        "client/registerCapability",
+        "client/unregisterCapability",
+        "window/workDoneProgress/create",
+        "workspace/semanticTokens/refresh",
+        "workspace/diagnostic/refresh",
+        "workspace/inlayHint/refresh",
+        "workspace/codeLens/refresh",
+    ):
+        proc.stdin.write(encode_message({
+            "jsonrpc": "2.0", "id": msg["id"], "result": None,
+        }))
+        proc.stdin.flush()
+        return True
+    return False
+
+
+def _drain_until_indexed(proc, index_wait: float, rss_samples: list, init_options: dict | None = None) -> None:
     """
     Read server notifications in a background thread until either:
       - a $/progress end-of-work-done notification is received, or
@@ -190,6 +254,9 @@ def _drain_until_indexed(proc, index_wait: float, rss_samples: list) -> None:
                 msg = read_message(proc)
             except (EOFError, OSError, ValueError):
                 break
+            # Answer reverse requests so the server doesn't block.
+            if _answer_reverse_request(proc, msg, init_options):
+                continue
             method = msg.get("method", "")
             if method == "$/progress":
                 kind = (
@@ -255,9 +322,32 @@ def main() -> None:
     )
     parser.add_argument(
         "--lsp-method",
-        choices=["hover", "definition", "references"],
+        choices=["hover", "definition", "references", "diagnostics"],
         default="hover",
-        help="LSP request method to benchmark (default: hover)",
+        help=(
+            "LSP request method to benchmark (default: hover). "
+            "`diagnostics` measures time-to-first + time-to-last publishDiagnostics "
+            "after each simulated edit (requires semantic diagnostics enabled "
+            "via --init-options)."
+        ),
+    )
+    parser.add_argument(
+        "--init-options",
+        default=None,
+        help=(
+            "JSON string passed as initializationOptions. Use "
+            '\'{\"diagnostics\": {\"enabled\": true}}\' to exercise the mir-analyzer '
+            "pipeline in the diagnostics mode."
+        ),
+    )
+    parser.add_argument(
+        "--settle-ms",
+        type=int,
+        default=1500,
+        help=(
+            "Diagnostics mode only: quiet-window after the last publishDiagnostics "
+            "before concluding a pass is complete (default: 1500ms)"
+        ),
     )
     parser.add_argument(
         "--trace-file",
@@ -265,6 +355,10 @@ def main() -> None:
         help="Write server stderr (tracing spans) to this file instead of discarding it",
     )
     args = parser.parse_args()
+
+    init_options: dict | None = None
+    if args.init_options:
+        init_options = json.loads(args.init_options)
 
     fixture_path = os.path.abspath(args.fixture)
     fixture_uri = "file://" + fixture_path
@@ -306,11 +400,25 @@ def main() -> None:
 
     output_fh = open(args.output, "w", encoding="utf-8") if args.output != "-" else sys.stdout
 
+    def read_response(req_id: int, timeout_s: float = 30.0) -> dict:
+        """Read messages until a response with `req_id` arrives, answering
+        any reverse requests along the way."""
+        deadline = time.monotonic() + timeout_s
+        while time.monotonic() < deadline:
+            msg = read_message(proc)
+            if _answer_reverse_request(proc, msg, init_options):
+                continue
+            if msg.get("id") == req_id:
+                return msg
+        raise TimeoutError(f"No response for id={req_id} within {timeout_s}s")
+
     try:
         # ── Startup: measure time from spawn to initialize response ──────────
-        proc.stdin.write(encode_message(req_initialize(root_uri)))
+        init_msg = req_initialize(root_uri, init_options)
+        init_id = init_msg["id"]
+        proc.stdin.write(encode_message(init_msg))
         proc.stdin.flush()
-        _init_resp = read_message(proc)
+        _init_resp = read_response(init_id)
         startup_ms = (time.perf_counter() - spawn_t0) * 1000.0
 
         output_fh.write(json.dumps({
@@ -332,7 +440,7 @@ def main() -> None:
         # the index is built (which would undercount) while also bounding wait
         # time on workspaces without progress support.
         rss_samples: list = []
-        _drain_until_indexed(proc, args.index_wait, rss_samples)
+        _drain_until_indexed(proc, args.index_wait, rss_samples, init_options)
 
         rss_post_index = rss_kb(proc.pid)
         peak_rss = max((s["rss_kb"] for s in rss_samples), default=rss_post_index)
@@ -350,27 +458,92 @@ def main() -> None:
         output_fh.flush()
 
         # ── Request latency ───────────────────────────────────────────────────
-        for i in range(args.requests):
-            rid = next_id()
-            msg = build_request(rid)
-            t0 = time.perf_counter()
-            proc.stdin.write(encode_message(msg))
-            proc.stdin.flush()
-            _resp = read_message(proc)
-            t1 = time.perf_counter()
-            output_fh.write(json.dumps({
-                "method": f"textDocument/{lsp_method}",
-                "request_index": i,
-                "latency_ms": round((t1 - t0) * 1000.0, 3),
-            }) + "\n")
-            output_fh.flush()
+        if lsp_method == "diagnostics":
+            # Edit-loop mode: simulate a keystroke with didChange and measure
+            # time to first + time to last publishDiagnostics (settle-ms of
+            # quiet = "done"). Requires init_options to enable diagnostics on
+            # the server side.
+            settle_s = args.settle_ms / 1000.0
+            doc_version = 1
+            for i in range(args.requests):
+                doc_version += 1
+                change = notif_did_change(fixture_uri, doc_version, fixture_text)
+                t0 = time.perf_counter()
+                proc.stdin.write(encode_message(change))
+                proc.stdin.flush()
+
+                t_first = None
+                t_last = None
+                diag_count = 0
+                last_msg_t = t0
+                # Read until quiet window elapses after the last diagnostics
+                # (or we've been waiting > 30s total).
+                hard_deadline = t0 + 30.0
+                while True:
+                    now = time.perf_counter()
+                    if now >= hard_deadline:
+                        break
+                    if t_first is not None and (now - last_msg_t) >= settle_s:
+                        break
+                    remaining = hard_deadline - now
+                    wait_s = min(remaining, settle_s)
+                    ready, _, _ = select.select([proc.stdout], [], [], wait_s)
+                    if not ready:
+                        continue
+                    try:
+                        msg = read_message(proc)
+                    except (EOFError, OSError, ValueError):
+                        break
+                    if _answer_reverse_request(proc, msg, init_options):
+                        continue
+                    if msg.get("method") == "textDocument/publishDiagnostics":
+                        params = msg.get("params", {})
+                        if params.get("uri") == fixture_uri:
+                            now = time.perf_counter()
+                            if t_first is None:
+                                t_first = now - t0
+                            t_last = now - t0
+                            diag_count = len(params.get("diagnostics", []))
+                            last_msg_t = now
+
+                output_fh.write(json.dumps({
+                    "method": "textDocument/publishDiagnostics",
+                    "request_index": i,
+                    "latency_ms": round((t_first or 0.0) * 1000.0, 3),
+                    "time_to_last_ms": round((t_last or 0.0) * 1000.0, 3) if t_last is not None else None,
+                    "diagnostic_count": diag_count,
+                }) + "\n")
+                output_fh.flush()
+        else:
+            for i in range(args.requests):
+                rid = next_id()
+                msg = build_request(rid)
+                t0 = time.perf_counter()
+                proc.stdin.write(encode_message(msg))
+                proc.stdin.flush()
+                _resp = read_response(rid)
+                t1 = time.perf_counter()
+                output_fh.write(json.dumps({
+                    "method": f"textDocument/{lsp_method}",
+                    "request_index": i,
+                    "latency_ms": round((t1 - t0) * 1000.0, 3),
+                }) + "\n")
+                output_fh.flush()
 
     finally:
         # Send LSP shutdown/exit so the server exits cleanly (Drop runs, dhat writes).
         try:
-            proc.stdin.write(encode_message(req_shutdown()))
+            shutdown_msg = req_shutdown()
+            proc.stdin.write(encode_message(shutdown_msg))
             proc.stdin.flush()
-            read_message(proc)  # wait for shutdown response
+            # Drain any trailing reverse requests / notifications until the
+            # shutdown response arrives.
+            while True:
+                msg = read_message(proc)
+                if _answer_reverse_request(proc, msg, init_options):
+                    continue
+                if msg.get("id") == shutdown_msg["id"]:
+                    break
             proc.stdin.write(encode_message(notif_exit()))
             proc.stdin.flush()
         except (OSError, EOFError):

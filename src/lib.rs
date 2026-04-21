@@ -22,7 +22,7 @@ pub mod file_index;
 // Private modules needed transitively by the public ones.
 mod autoload;
 pub mod backend;
-mod call_hierarchy;
+pub mod call_hierarchy;
 mod code_lens;
 mod declaration;
 mod diagnostics;
@@ -36,7 +36,7 @@ mod folding;
 mod formatting;
 mod generate_action;
 mod implement_action;
-mod implementation;
+pub mod implementation;
 mod inlay_hints;
 mod inline_action;
 mod inline_value;

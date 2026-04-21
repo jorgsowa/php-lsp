@@ -18,6 +18,8 @@ INDEX_WAIT=15
 # ── Argument parsing ───────────────────────────────────────────────────────────
 LSP_METHOD="hover"
 NUM_REQUESTS=100
+INIT_OPTIONS=""
+SETTLE_MS=1500
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -29,10 +31,20 @@ while [[ $# -gt 0 ]]; do
             FIXTURE="$2"; shift 2 ;;
         --index-wait)
             INDEX_WAIT="$2"; shift 2 ;;
+        --init-options)
+            INIT_OPTIONS="$2"; shift 2 ;;
+        --settle-ms)
+            SETTLE_MS="$2"; shift 2 ;;
         *)
             echo "Unknown argument: $1" >&2; exit 1 ;;
     esac
 done
+
+# When benchmarking diagnostics, default to enabling them on the server side
+# (mir-analyzer is the thing we want to measure). Users can override.
+if [[ "$LSP_METHOD" == "diagnostics" && -z "$INIT_OPTIONS" ]]; then
+    INIT_OPTIONS='{"diagnostics":{"enabled":true}}'
+fi
 
 # Portable millisecond timestamp (works on macOS and Linux).
 ms_now() { python3 -c "import time; print(int(time.monotonic()*1000))"; }
@@ -48,13 +60,19 @@ echo "    Build time: ${BUILD_MS} ms"
 # ── Run client ────────────────────────────────────────────────────────────────
 echo "==> Benchmarking textDocument/${LSP_METHOD} (${NUM_REQUESTS} requests)..."
 START_MS=$(ms_now)
-python3 "$CLIENT" \
-    --binary "$BINARY" \
-    --fixture "$FIXTURE" \
-    --requests "$NUM_REQUESTS" \
-    --lsp-method "$LSP_METHOD" \
-    --index-wait "$INDEX_WAIT" \
+CLIENT_ARGS=(
+    --binary "$BINARY"
+    --fixture "$FIXTURE"
+    --requests "$NUM_REQUESTS"
+    --lsp-method "$LSP_METHOD"
+    --index-wait "$INDEX_WAIT"
+    --settle-ms "$SETTLE_MS"
     --output "$RESULTS_FILE"
+)
+if [[ -n "$INIT_OPTIONS" ]]; then
+    CLIENT_ARGS+=(--init-options "$INIT_OPTIONS")
+fi
+python3 "$CLIENT" "${CLIENT_ARGS[@]}"
 END_MS=$(ms_now)
 TOTAL_MS=$(( END_MS - START_MS ))
 echo "    Total wall time: ${TOTAL_MS} ms"
@@ -70,6 +88,7 @@ startup_ms = None
 rss_kb = None
 peak_rss_kb = None
 latencies = []
+time_to_last_list = []
 
 with open(results_path) as f:
     for line in f:
@@ -90,6 +109,9 @@ with open(results_path) as f:
             pass  # timeline samples — available in JSONL for plotting
         elif "latency_ms" in obj:
             latencies.append(obj["latency_ms"])
+            ttl = obj.get("time_to_last_ms")
+            if ttl is not None:
+                time_to_last_list.append(ttl)
 
 print("==> Startup time (spawn → initialize response):")
 if startup_ms is not None:
@@ -107,7 +129,13 @@ if peak_rss_kb is not None:
 else:
     print("    peak       : N/A")
 
-print(f"==> textDocument/{lsp_method} latency statistics (ms):")
+if lsp_method == "diagnostics":
+    title_method = "publishDiagnostics"
+    title_suffix = " (time to FIRST diagnostic)"
+else:
+    title_method = lsp_method
+    title_suffix = ""
+print(f"==> textDocument/{title_method} latency statistics (ms){title_suffix}:")
 if not latencies:
     print("    No latency records found.")
     sys.exit(0)
@@ -121,6 +149,17 @@ print(f"    p95   : {s[int(n * 0.95)]:.2f}")
 print(f"    p99   : {s[min(int(n * 0.99), n - 1)]:.2f}")
 print(f"    min   : {s[0]:.2f}")
 print(f"    max   : {s[-1]:.2f}")
+
+if time_to_last_list:
+    t = sorted(time_to_last_list)
+    tn = len(t)
+    print()
+    print("==> textDocument/publishDiagnostics time-to-LAST diagnostic (ms):")
+    print(f"    count : {tn}")
+    print(f"    mean  : {statistics.mean(time_to_last_list):.2f}")
+    print(f"    p50   : {t[int(tn * 0.50)]:.2f}")
+    print(f"    p95   : {t[int(tn * 0.95)]:.2f}")
+    print(f"    p99   : {t[min(int(tn * 0.99), tn - 1)]:.2f}")
 EOF
 
 rm -f "$RESULTS_FILE"
