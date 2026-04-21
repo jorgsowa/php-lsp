@@ -73,10 +73,13 @@ use crate::use_import::{build_use_import_edit, find_fqn_for_class};
 use crate::util::word_at;
 
 /// Per-category diagnostic toggle flags.
-/// All flags default to `true` (enabled). Set to `false` to suppress that category.
+/// The master `enabled` switch defaults to `false` — clients must opt in via
+/// `initializationOptions.diagnostics.enabled = true`. Individual category
+/// flags default to `true`, so flipping `enabled` on enables everything unless
+/// specific categories are turned off.
 #[derive(Debug, Clone)]
 pub struct DiagnosticsConfig {
-    /// Master switch: when `false`, no diagnostics are emitted.
+    /// Master switch: when `false`, no diagnostics are emitted. Defaults to `false`.
     pub enabled: bool,
     /// Undefined variable references.
     pub undefined_variables: bool,
@@ -97,7 +100,7 @@ pub struct DiagnosticsConfig {
 impl Default for DiagnosticsConfig {
     fn default() -> Self {
         DiagnosticsConfig {
-            enabled: true,
+            enabled: false,
             undefined_variables: true,
             undefined_functions: true,
             undefined_classes: true,
@@ -110,11 +113,24 @@ impl Default for DiagnosticsConfig {
 }
 
 impl DiagnosticsConfig {
+    /// All categories on. Used in tests and by clients that explicitly enable
+    /// diagnostics without overriding individual flags.
+    #[cfg(test)]
+    pub fn all_enabled() -> Self {
+        DiagnosticsConfig {
+            enabled: true,
+            ..DiagnosticsConfig::default()
+        }
+    }
+
     fn from_value(v: &serde_json::Value) -> Self {
         let mut cfg = DiagnosticsConfig::default();
         let Some(obj) = v.as_object() else { return cfg };
         let flag = |key: &str| obj.get(key).and_then(|x| x.as_bool()).unwrap_or(true);
-        cfg.enabled = flag("enabled");
+        cfg.enabled = obj
+            .get("enabled")
+            .and_then(|x| x.as_bool())
+            .unwrap_or(false);
         cfg.undefined_variables = flag("undefinedVariables");
         cfg.undefined_functions = flag("undefinedFunctions");
         cfg.undefined_classes = flag("undefinedClasses");
@@ -2521,9 +2537,11 @@ mod tests {
 
     // DiagnosticsConfig::from_value tests
     #[test]
-    fn diagnostics_config_defaults_all_enabled() {
+    fn diagnostics_config_default_is_disabled() {
         let cfg = DiagnosticsConfig::default();
-        assert!(cfg.enabled);
+        assert!(!cfg.enabled);
+        // Category flags still default to true so that flipping `enabled`
+        // on turns everything on unless explicitly disabled.
         assert!(cfg.undefined_variables);
         assert!(cfg.undefined_functions);
         assert!(cfg.undefined_classes);
@@ -2534,16 +2552,16 @@ mod tests {
     }
 
     #[test]
-    fn diagnostics_config_from_empty_object_uses_defaults() {
+    fn diagnostics_config_from_empty_object_is_disabled() {
         let cfg = DiagnosticsConfig::from_value(&serde_json::json!({}));
-        assert!(cfg.enabled);
+        assert!(!cfg.enabled);
         assert!(cfg.undefined_variables);
     }
 
     #[test]
     fn diagnostics_config_from_non_object_uses_defaults() {
         let cfg = DiagnosticsConfig::from_value(&serde_json::json!(null));
-        assert!(cfg.enabled);
+        assert!(!cfg.enabled);
     }
 
     #[test]
@@ -2576,13 +2594,20 @@ mod tests {
         assert!(cfg.undefined_variables);
     }
 
+    #[test]
+    fn diagnostics_config_master_switch_enables_all() {
+        let cfg = DiagnosticsConfig::from_value(&serde_json::json!({"enabled": true}));
+        assert!(cfg.enabled);
+        assert!(cfg.undefined_variables);
+    }
+
     // LspConfig::from_value tests
     #[test]
     fn lsp_config_default_is_empty() {
         let cfg = LspConfig::default();
         assert!(cfg.php_version.is_none());
         assert!(cfg.exclude_paths.is_empty());
-        assert!(cfg.diagnostics.enabled);
+        assert!(!cfg.diagnostics.enabled);
     }
 
     #[test]
@@ -3281,7 +3306,8 @@ mod integration {
                             "hover": { "contentFormat": ["markdown", "plaintext"] },
                             "completion": { "completionItem": { "snippetSupport": true } }
                         }
-                    }
+                    },
+                    "initializationOptions": { "diagnostics": { "enabled": true } }
                 }),
             )
             .await;
@@ -3306,7 +3332,8 @@ mod integration {
                             "hover": { "contentFormat": ["markdown", "plaintext"] },
                             "completion": { "completionItem": { "snippetSupport": true } }
                         }
-                    }
+                    },
+                    "initializationOptions": { "diagnostics": { "enabled": true } }
                 }),
             )
             .await;
