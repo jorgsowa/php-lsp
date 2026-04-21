@@ -27,6 +27,10 @@ harness = false
 name = "requests"
 harness = false
 
+[[bench]]
+name = "semantic"
+harness = false
+
 [features]
 dhat-heap = ["dep:dhat"]
 

@@ -14,7 +14,7 @@ set -euo pipefail
 BASELINE="${2:-main}"
 CMD="${1:-run}"
 
-BENCHES=(parse index requests)
+BENCHES=(parse index requests semantic)
 
 case "$CMD" in
   save)
