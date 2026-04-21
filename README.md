@@ -82,7 +82,7 @@ See **[docs/configuration.md](docs/configuration.md)** for all options including
 | Intelephense | TypeScript | ⚠️ Freemium | ✅ Active |
 | PHPantom | Rust | ✅ Free/OSS | ✅ Active |
 | Phpactor | PHP | ✅ Free/OSS | ✅ Active |
-| DEVSENSE | .NET | 🔒 Paid | ✅ Active |
+| DEVSENSE | .NET | ⚠️ Freemium | ✅ Active |
 | Psalm LSP | PHP | ✅ Free/OSS | ✅ Active |
 | phpls | Go | ✅ Free/OSS | ✅ Active |
 | felixfbecker | PHP | ✅ Free/OSS | ❌ Abandoned |
