@@ -50,6 +50,7 @@ tokio = { version = "1", features = ["full"] }
 serde_json = "1"
 dashmap = "6"
 rayon = "1"
+salsa = "0.26"
 
 [dependencies.walkdir]
 version = "2"

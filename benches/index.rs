@@ -34,7 +34,7 @@ fn bench_get_doc(c: &mut Criterion) {
     store.index(uri.clone(), MEDIUM);
 
     c.bench_function("index/get_doc", |b| {
-        b.iter(|| black_box(store.get_doc(&uri)));
+        b.iter(|| black_box(store.get_doc_salsa(&uri)));
     });
 }
 

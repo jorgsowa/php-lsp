@@ -683,10 +683,14 @@ impl LanguageServer for Backend {
         .await
         .unwrap_or_else(|_| (ParsedDoc::default(), vec![], vec![]));
 
-        self.docs
-            .apply_parse(&uri, doc, parse_diags.clone(), version);
+        // B4d-3c: did_open runs inline (no debounce), so staleness is not a
+        // concern here; we record diagnostics unconditionally. `version` is
+        // retained for symmetry with did_change.
+        let _ = version;
+        drop(doc);
+        self.docs.set_parse_diagnostics(&uri, parse_diags.clone());
         let stored_source = self.docs.get(&uri).unwrap_or_default();
-        let doc2 = self.docs.get_doc(&uri);
+        let doc2 = self.docs.get_doc_salsa(&uri);
         let mut all_diags = parse_diags;
         if let Some(ref d) = doc2 {
             let dup_diags = duplicate_declaration_diagnostics(&stored_source, d, &diag_cfg);
@@ -704,6 +708,13 @@ impl LanguageServer for Backend {
             None => return,
         };
 
+        // Capture the pre-edit index *before* `set_text` mirrors the new
+        // text into salsa — otherwise `file_index(db, sf)` would already
+        // reflect the new text and the structure comparison below would
+        // become a no-op. Holding the `Arc<FileIndex>` keeps the old view
+        // alive regardless of input revision changes.
+        let old_index = self.docs.get_index_salsa(&uri);
+
         // Store text immediately and capture the version token.
         // Features (completion, hover, …) see the new text instantly while
         // the parse runs in the background.
@@ -716,28 +727,35 @@ impl LanguageServer for Backend {
         let diag_cfg = self.config.read().unwrap().diagnostics.clone();
         let php_version = self.config.read().unwrap().php_version.clone();
         tokio::spawn(async move {
-            // 100 ms debounce: if another edit arrives before we parse, the
-            // version check in apply_parse will discard this stale result.
+            // 100 ms debounce: if another edit arrives before we parse,
+            // the version gate in Backend below will discard this result.
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
             let (doc, diagnostics) = tokio::task::spawn_blocking(move || parse_document(&text))
                 .await
                 .unwrap_or_else(|_| (ParsedDoc::default(), vec![]));
 
-            // Compare new structure against the cached index to decide whether the
-            // codebase rebuild (remove + collect + finalize) is needed.  Most
-            // keystrokes only change method bodies — no rebuild required for those.
-            let new_index = FileIndex::extract(&uri, &doc);
-            let structure_changed = docs
-                .get_index(&uri)
+            // Compare new structure against the pre-edit index (captured
+            // before the salsa mirror saw the new text) to decide whether
+            // the codebase rebuild (remove + collect + finalize) is needed.
+            // Most keystrokes only change method bodies — no rebuild needed.
+            let new_index = FileIndex::extract(&doc);
+            let structure_changed = old_index
+                .as_ref()
                 .is_none_or(|old| !old.same_structure(&new_index));
             drop(new_index);
 
-            // Only apply if no newer edit arrived while we were parsing
-            if docs.apply_parse(&uri, doc, diagnostics.clone(), version) {
+            // Drop the AST produced here — salsa owns parsing. We only kept
+            // it to support the `same_structure` check above.
+            drop(doc);
+
+            // Only apply if no newer edit arrived while we were parsing.
+            // Backend-level gate replaces the old `apply_parse` version check.
+            if docs.current_version(&uri) == Some(version) {
+                docs.set_parse_diagnostics(&uri, diagnostics.clone());
                 let source = docs.get(&uri).unwrap_or_default();
                 let mut all_diags = diagnostics;
-                if let Some(d) = docs.get_doc(&uri) {
+                if let Some(d) = docs.get_doc_salsa(&uri) {
                     let sem_diags = if structure_changed {
                         // Structure changed (new/removed class, method signature changed, …):
                         // rebuild codebase definitions so inheritance lookups stay accurate.
@@ -799,7 +817,7 @@ impl LanguageServer for Backend {
         // Re-publish diagnostics on save so editors that defer diagnostics
         // until save (rather than on every keystroke) see up-to-date results.
         let source = self.docs.get(&uri).unwrap_or_default();
-        let doc = self.docs.get_doc(&uri);
+        let doc = self.docs.get_doc_salsa(&uri);
         if let Some(ref d) = doc {
             let diag_cfg = self.config.read().unwrap().diagnostics.clone();
             let parse_diags = self.docs.get_diagnostics(&uri).unwrap_or_default();
@@ -847,7 +865,8 @@ impl LanguageServer for Backend {
         let uri = &params.text_document_position.text_document.uri;
         let position = params.text_document_position.position;
         let source = self.docs.get(uri).unwrap_or_default();
-        let doc = match self.docs.get_doc(uri) {
+        // B4c: first production caller migrated to salsa-backed read.
+        let doc = match self.docs.get_doc_salsa(uri) {
             Some(d) => d,
             None => return Ok(Some(CompletionResponse::Array(vec![]))),
         };
@@ -913,7 +932,7 @@ impl LanguageServer for Backend {
         let uri = &params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
         let source = self.docs.get(uri).unwrap_or_default();
-        let doc = match self.docs.get_doc(uri) {
+        let doc = match self.docs.get_doc_salsa(uri) {
             Some(d) => d,
             None => return Ok(None),
         };
@@ -949,7 +968,7 @@ impl LanguageServer for Backend {
             Some(w) => w,
             None => return Ok(None),
         };
-        let kind = if let Some(doc) = self.docs.get_doc(uri) {
+        let kind = if let Some(doc) = self.docs.get_doc_salsa(uri) {
             let stmts = &doc.program().stmts;
             if cursor_is_on_method_decl(doc.source(), stmts, position) {
                 Some(SymbolKind::Method)
@@ -997,7 +1016,7 @@ impl LanguageServer for Backend {
             None => return Ok(None),
         };
         if word.starts_with('$') {
-            let doc = match self.docs.get_doc(uri) {
+            let doc = match self.docs.get_doc_salsa(uri) {
                 Some(d) => d,
                 None => return Ok(None),
             };
@@ -1021,7 +1040,7 @@ impl LanguageServer for Backend {
         let uri = &params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
         let source = self.docs.get(uri).unwrap_or_default();
-        let doc = match self.docs.get_doc(uri) {
+        let doc = match self.docs.get_doc_salsa(uri) {
             Some(d) => d,
             None => return Ok(None),
         };
@@ -1032,7 +1051,7 @@ impl LanguageServer for Backend {
         let uri = &params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
         let source = self.docs.get(uri).unwrap_or_default();
-        let doc = match self.docs.get_doc(uri) {
+        let doc = match self.docs.get_doc_salsa(uri) {
             Some(d) => d,
             None => return Ok(None),
         };
@@ -1045,7 +1064,7 @@ impl LanguageServer for Backend {
         params: DocumentSymbolParams,
     ) -> Result<Option<DocumentSymbolResponse>> {
         let uri = &params.text_document.uri;
-        let doc = match self.docs.get_doc(uri) {
+        let doc = match self.docs.get_doc_salsa(uri) {
             Some(d) => d,
             None => return Ok(None),
         };
@@ -1057,7 +1076,7 @@ impl LanguageServer for Backend {
 
     async fn folding_range(&self, params: FoldingRangeParams) -> Result<Option<Vec<FoldingRange>>> {
         let uri = &params.text_document.uri;
-        let doc = match self.docs.get_doc(uri) {
+        let doc = match self.docs.get_doc_salsa(uri) {
             Some(d) => d,
             None => return Ok(None),
         };
@@ -1071,7 +1090,7 @@ impl LanguageServer for Backend {
 
     async fn inlay_hint(&self, params: InlayHintParams) -> Result<Option<Vec<InlayHint>>> {
         let uri = &params.text_document.uri;
-        let doc = match self.docs.get_doc(uri) {
+        let doc = match self.docs.get_doc_salsa(uri) {
             Some(d) => d,
             None => return Ok(None),
         };
@@ -1124,7 +1143,7 @@ impl LanguageServer for Backend {
         params: SemanticTokensParams,
     ) -> Result<Option<SemanticTokensResult>> {
         let uri = &params.text_document.uri;
-        let doc = match self.docs.get_doc(uri) {
+        let doc = match self.docs.get_doc_salsa(uri) {
             Some(d) => d,
             None => {
                 return Ok(Some(SemanticTokensResult::Tokens(SemanticTokens {
@@ -1148,7 +1167,7 @@ impl LanguageServer for Backend {
         params: SemanticTokensRangeParams,
     ) -> Result<Option<SemanticTokensRangeResult>> {
         let uri = &params.text_document.uri;
-        let doc = match self.docs.get_doc(uri) {
+        let doc = match self.docs.get_doc_salsa(uri) {
             Some(d) => d,
             None => {
                 return Ok(Some(SemanticTokensRangeResult::Tokens(SemanticTokens {
@@ -1169,7 +1188,7 @@ impl LanguageServer for Backend {
         params: SemanticTokensDeltaParams,
     ) -> Result<Option<SemanticTokensFullDeltaResult>> {
         let uri = &params.text_document.uri;
-        let doc = match self.docs.get_doc(uri) {
+        let doc = match self.docs.get_doc_salsa(uri) {
             Some(d) => d,
             None => return Ok(None),
         };
@@ -1202,7 +1221,7 @@ impl LanguageServer for Backend {
         params: SelectionRangeParams,
     ) -> Result<Option<Vec<SelectionRange>>> {
         let uri = &params.text_document.uri;
-        let doc = match self.docs.get_doc(uri) {
+        let doc = match self.docs.get_doc_salsa(uri) {
             Some(d) => d,
             None => return Ok(None),
         };
@@ -1254,7 +1273,7 @@ impl LanguageServer for Backend {
         let uri = &params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
         let source = self.docs.get(uri).unwrap_or_default();
-        let doc = match self.docs.get_doc(uri) {
+        let doc = match self.docs.get_doc_salsa(uri) {
             Some(d) => d,
             None => return Ok(None),
         };
@@ -1273,7 +1292,7 @@ impl LanguageServer for Backend {
         let uri = &params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
         let source = self.docs.get(uri).unwrap_or_default();
-        let doc = match self.docs.get_doc(uri) {
+        let doc = match self.docs.get_doc_salsa(uri) {
             Some(d) => d,
             None => return Ok(None),
         };
@@ -1340,7 +1359,7 @@ impl LanguageServer for Backend {
         let uri = &params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
         let source = self.docs.get(uri).unwrap_or_default();
-        let doc = match self.docs.get_doc(uri) {
+        let doc = match self.docs.get_doc_salsa(uri) {
             Some(d) => d,
             None => return Ok(None),
         };
@@ -1399,7 +1418,7 @@ impl LanguageServer for Backend {
 
     async fn code_lens(&self, params: CodeLensParams) -> Result<Option<Vec<CodeLens>>> {
         let uri = &params.text_document.uri;
-        let doc = match self.docs.get_doc(uri) {
+        let doc = match self.docs.get_doc_salsa(uri) {
             Some(d) => d,
             None => return Ok(None),
         };
@@ -1419,7 +1438,7 @@ impl LanguageServer for Backend {
 
     async fn document_link(&self, params: DocumentLinkParams) -> Result<Option<Vec<DocumentLink>>> {
         let uri = &params.text_document.uri;
-        let doc = match self.docs.get_doc(uri) {
+        let doc = match self.docs.get_doc_salsa(uri) {
             Some(d) => d,
             None => return Ok(None),
         };
@@ -1688,7 +1707,7 @@ impl LanguageServer for Backend {
         let uri = &params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
         let source = self.docs.get(uri).unwrap_or_default();
-        let doc = match self.docs.get_doc(uri) {
+        let doc = match self.docs.get_doc_salsa(uri) {
             Some(d) => d,
             None => return Ok(None),
         };
@@ -1717,7 +1736,7 @@ impl LanguageServer for Backend {
         let source = self.docs.get(uri).unwrap_or_default();
 
         let parse_diags = self.docs.get_diagnostics(uri).unwrap_or_default();
-        let doc = match self.docs.get_doc(uri) {
+        let doc = match self.docs.get_doc_salsa(uri) {
             Some(d) => d,
             None => {
                 return Ok(DocumentDiagnosticReportResult::Report(
@@ -1773,7 +1792,7 @@ impl LanguageServer for Backend {
         let items: Vec<WorkspaceDocumentDiagnosticReport> = all_parse_diags
             .into_iter()
             .filter_map(|(uri, parse_diags, version)| {
-                let doc = self.docs.get_doc(&uri)?;
+                let doc = self.docs.get_doc_salsa(&uri)?;
 
                 let source = doc.source().to_string();
                 let sem_diags = semantic_diagnostics_no_rebuild(
@@ -1810,7 +1829,7 @@ impl LanguageServer for Backend {
     async fn code_action(&self, params: CodeActionParams) -> Result<Option<CodeActionResponse>> {
         let uri = &params.text_document.uri;
         let source = self.docs.get(uri).unwrap_or_default();
-        let doc = match self.docs.get_doc(uri) {
+        let doc = match self.docs.get_doc_salsa(uri) {
             Some(d) => d,
             None => return Ok(None),
         };
@@ -1952,7 +1971,7 @@ impl LanguageServer for Backend {
         };
 
         let source = self.docs.get(&uri).unwrap_or_default();
-        let doc = match self.docs.get_doc(&uri) {
+        let doc = match self.docs.get_doc_salsa(&uri) {
             Some(d) => d,
             None => return Ok(item),
         };
@@ -2229,13 +2248,16 @@ impl Backend {
 
         let file_uri = Url::from_file_path(&path).ok()?;
 
-        // Index on-demand if the file was not picked up by the workspace scan
-        if self.docs.get_doc(&file_uri).is_none() {
+        // Index on-demand if the file was not picked up by the workspace scan.
+        // Use `get_doc_salsa_any` (ignores open-file gating): after `index()`
+        // the file is mirrored but background-only, and the call site needs
+        // the AST regardless of whether the editor has the file open.
+        if self.docs.get_doc_salsa_any(&file_uri).is_none() {
             let text = tokio::fs::read_to_string(&path).await.ok()?;
             self.docs.index(file_uri.clone(), &text);
         }
 
-        let doc = self.docs.get_doc(&file_uri)?;
+        let doc = self.docs.get_doc_salsa_any(&file_uri)?;
 
         // Classes are declared by their short (unqualified) name, e.g. `class Foo`
         // not `class App\Services\Foo`.

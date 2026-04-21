@@ -1,11 +1,14 @@
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 use dashmap::DashMap;
+use salsa::Setter;
 use tower_lsp::lsp_types::{Diagnostic, SemanticToken, Url};
 
 use crate::ast::ParsedDoc;
+use crate::db::analysis::AnalysisHost;
+use crate::db::input::{FileId, SourceFile};
 use crate::diagnostics::parse_document;
 use crate::file_index::FileIndex;
 
@@ -18,11 +21,11 @@ pub(crate) const DEFAULT_MAX_INDEXED: usize = 1_000;
 
 struct Document {
     /// `Some` when the file is open in the editor; `None` for workspace-indexed files.
+    /// This remains the source of truth for "is this file open" — used by LRU
+    /// eviction and by the salsa `get_doc_salsa` gating.
     text: Option<String>,
-    /// `Some` for open files; `None` for background-indexed files (they use `index` instead).
-    doc: Option<Arc<ParsedDoc>>,
-    /// Always present; compact symbol index extracted after parsing.
-    index: Arc<FileIndex>,
+    /// Parse-level diagnostics. Later phases will derive these from the salsa
+    /// `parsed_doc` query.
     diagnostics: Vec<Diagnostic>,
     /// Semantic diagnostics computed by `did_open`/`did_change`.
     /// Stored separately so callers like `code_action` can read them without
@@ -41,6 +44,21 @@ pub struct DocumentStore {
     token_cache: DashMap<Url, (String, Vec<SemanticToken>)>,
     /// Maximum number of indexed-only files to keep in memory.
     max_indexed: AtomicUsize,
+
+    // ── Phase B4a salsa mirror ──────────────────────────────────────────────
+    // The salsa layer runs in parallel to the legacy `map` during migration.
+    // Every mutation that changes a file's text also updates the salsa input;
+    // reads are unchanged for now. Once all feature modules are migrated to
+    // `*_salsa` accessors (B4c), the legacy fields above will be removed.
+    /// Mutex-guarded because salsa input creation and `set_text` both require
+    /// exclusive db access. Contention only happens during edits/scan, and is
+    /// already serialized per-file today via DashMap write sharding.
+    host: Mutex<AnalysisHost>,
+    /// `Url -> SourceFile` lookup. The `SourceFile` is a salsa-id handle; the
+    /// underlying input lives in `host.db` for the lifetime of the database.
+    source_files: DashMap<Url, SourceFile>,
+    /// Monotonic allocator for `FileId`s (one per ever-seen URL).
+    next_file_id: AtomicU32,
 }
 
 impl Default for DocumentStore {
@@ -56,7 +74,51 @@ impl DocumentStore {
             indexed_order: Mutex::new(VecDeque::new()),
             token_cache: DashMap::new(),
             max_indexed: AtomicUsize::new(DEFAULT_MAX_INDEXED),
+            host: Mutex::new(AnalysisHost::new()),
+            source_files: DashMap::new(),
+            next_file_id: AtomicU32::new(0),
         }
+    }
+
+    /// Mirror a file's current text into the salsa layer. Creates the
+    /// `SourceFile` input on first sight, otherwise updates `text` on the
+    /// existing input (bumping the salsa revision so downstream queries
+    /// invalidate). Returns the `SourceFile` handle for this `uri`.
+    ///
+    /// B4a: called from every text-changing mutation site. Reads still come
+    /// from the legacy `map` — this mirror is not yet observed by production
+    /// code paths.
+    fn mirror_text(&self, uri: &Url, text: &str) -> SourceFile {
+        let text_arc: Arc<str> = Arc::from(text);
+        if let Some(existing) = self.source_files.get(uri) {
+            let sf = *existing;
+            drop(existing);
+            let mut host = self.host.lock().unwrap();
+            sf.set_text(host.db_mut()).to(text_arc);
+            sf
+        } else {
+            let id = FileId(self.next_file_id.fetch_add(1, Ordering::Relaxed));
+            let sf = {
+                let host = self.host.lock().unwrap();
+                SourceFile::new(host.db(), id, text_arc)
+            };
+            self.source_files.insert(uri.clone(), sf);
+            sf
+        }
+    }
+
+    /// Return the salsa `SourceFile` handle for a URL, if one exists.
+    #[allow(dead_code)]
+    pub fn source_file(&self, uri: &Url) -> Option<SourceFile> {
+        self.source_files.get(uri).map(|e| *e)
+    }
+
+    /// Run `f` with a borrow of the `AnalysisHost`. Used by tests and by the
+    /// upcoming `*_salsa` accessors to query the salsa layer.
+    #[allow(dead_code)]
+    pub fn with_host<R>(&self, f: impl FnOnce(&AnalysisHost) -> R) -> R {
+        let host = self.host.lock().unwrap();
+        f(&host)
     }
 
     /// Update the maximum number of indexed-only files kept in memory.
@@ -84,10 +146,12 @@ impl DocumentStore {
 
     /// Store new text immediately and return a version token for deferred parsing.
     pub fn set_text(&self, uri: Url, text: String) -> u64 {
+        // B4a: mirror into salsa. Done before the DashMap write so downstream
+        // salsa queries see the new revision no later than legacy readers.
+        self.mirror_text(&uri, &text);
+
         let mut entry = self.map.entry(uri).or_insert_with(|| Document {
             text: None,
-            doc: None,
-            index: Arc::new(FileIndex::default()),
             diagnostics: vec![],
             sem_diagnostics: vec![],
             text_version: 0,
@@ -97,31 +161,26 @@ impl DocumentStore {
         entry.text_version
     }
 
-    /// Apply a completed async parse result.
-    /// Returns `true` if the update was applied.
-    pub fn apply_parse(
-        &self,
-        uri: &Url,
-        doc: ParsedDoc,
-        diagnostics: Vec<Diagnostic>,
-        version: u64,
-    ) -> bool {
-        if let Some(mut entry) = self.map.get_mut(uri)
-            && entry.text_version == version
-        {
-            entry.index = Arc::new(FileIndex::extract(uri, &doc));
-            entry.doc = Some(Arc::new(doc));
+    /// Current text revision for `uri`, if the file is known to the store.
+    ///
+    /// B4d-3c: Backend uses this to gate publication of stale parse
+    /// diagnostics. Pattern at the call site:
+    /// `if docs.current_version(&uri) == Some(v) { … }`.
+    pub fn current_version(&self, uri: &Url) -> Option<u64> {
+        self.map.get(uri).map(|d| d.text_version)
+    }
+
+    /// Store parse-level diagnostics for `uri`. Always succeeds if the file
+    /// is known; the caller is responsible for version gating.
+    pub fn set_parse_diagnostics(&self, uri: &Url, diagnostics: Vec<Diagnostic>) {
+        if let Some(mut entry) = self.map.get_mut(uri) {
             entry.diagnostics = diagnostics;
-            return true;
         }
-        false
     }
 
     pub fn close(&self, uri: &Url) {
         if let Some(mut entry) = self.map.get_mut(uri) {
             entry.text = None;
-            // Drop the full ParsedDoc for closed files — the FileIndex is retained.
-            entry.doc = None;
             entry.text_version += 1;
             let mut q = self.indexed_order.lock().unwrap();
             if !q.contains(uri) {
@@ -140,20 +199,18 @@ impl DocumentStore {
         {
             return;
         }
-        // Parse → extract compact index → drop ParsedDoc + text immediately.
-        let (index, diagnostics) = {
-            let (doc, diagnostics) = parse_document(text);
-            let idx = FileIndex::extract(&uri, &doc);
-            // `doc` is dropped here — arena freed / returned to pool.
-            (Arc::new(idx), diagnostics)
-        };
+        // B4a: mirror into salsa before mutating the legacy map.
+        self.mirror_text(&uri, text);
+
+        // Parse once to extract parse diagnostics (still stored legacy-side
+        // until they too move to salsa). The AST itself is dropped — salsa
+        // holds the canonical parse.
+        let (_doc, diagnostics) = parse_document(text);
 
         self.map.insert(
             uri.clone(),
             Document {
                 text: None,
-                doc: None,
-                index,
                 diagnostics,
                 sem_diagnostics: vec![],
                 text_version: 0,
@@ -166,8 +223,7 @@ impl DocumentStore {
     /// Index a file using an already-parsed `ParsedDoc`, avoiding a second parse.
     ///
     /// Prefer this over [`index`] when the caller already has a `ParsedDoc` (e.g.
-    /// after running `DefinitionCollector` during workspace scan). The `ParsedDoc`
-    /// is not retained — `FileIndex` is extracted and the doc is dropped immediately.
+    /// after running `DefinitionCollector` during workspace scan).
     pub fn index_from_doc(&self, uri: Url, doc: &ParsedDoc, diagnostics: Vec<Diagnostic>) {
         if self
             .map
@@ -177,14 +233,14 @@ impl DocumentStore {
         {
             return;
         }
-        let index = Arc::new(FileIndex::extract(&uri, doc));
+        // B4a: mirror into salsa. `doc.source()` is the text used for this
+        // parse, so the salsa revision and the legacy index agree.
+        self.mirror_text(&uri, doc.source());
 
         self.map.insert(
             uri.clone(),
             Document {
                 text: None,
-                doc: None,
-                index,
                 diagnostics,
                 sem_diagnostics: vec![],
                 text_version: 0,
@@ -226,6 +282,67 @@ impl DocumentStore {
     pub fn remove(&self, uri: &Url) {
         self.map.remove(uri);
         self.token_cache.remove(uri);
+        // Intentionally keep the salsa `SourceFile` input alive: salsa inputs
+        // are immortal for the life of the database, and removing the
+        // `Url -> SourceFile` entry would break later mirror lookups if the
+        // file is re-added. Memory cost is negligible (one `Arc<str>` per
+        // ever-seen URL). Revisit if workspace-churn profiling shows issues.
+    }
+
+    // ── B4b salsa-backed accessors ─────────────────────────────────────────
+    //
+    // These are additive and not yet called from production code. They go
+    // through the salsa layer — reads run the memoized `parsed_doc` /
+    // `file_index` / `method_returns` queries, parsing only on first access
+    // per revision. B4c will migrate feature modules to call these instead of
+    // the legacy `get_doc` / `get_index`.
+
+    /// Salsa-backed parsed document.
+    ///
+    /// Matches legacy `get_doc` semantics: returns `Some` only when the file
+    /// is currently open in the editor. Background-indexed files get `None`
+    /// to preserve feature-handler invariants like "skip if file not open".
+    /// Phase B4d will revisit once every caller has been audited.
+    #[allow(dead_code)]
+    pub fn get_doc_salsa(&self, uri: &Url) -> Option<Arc<ParsedDoc>> {
+        // Gate on legacy open-file state for now.
+        let is_open = self.map.get(uri).map(|d| d.text.is_some()).unwrap_or(false);
+        if !is_open {
+            return None;
+        }
+        let sf = self.source_file(uri)?;
+        Some(self.with_host(|host| crate::db::parse::parsed_doc(host.db(), sf).0.clone()))
+    }
+
+    /// Salsa-backed compact symbol index.
+    #[allow(dead_code)]
+    pub fn get_index_salsa(&self, uri: &Url) -> Option<Arc<FileIndex>> {
+        let sf = self.source_file(uri)?;
+        Some(self.with_host(|host| crate::db::index::file_index(host.db(), sf).0.clone()))
+    }
+
+    /// Salsa-backed parsed document, ignoring legacy open-file state.
+    ///
+    /// Use this for features that legitimately want a `ParsedDoc` for any
+    /// mirrored file (open or background-indexed), e.g. call-hierarchy's
+    /// index-on-demand path that loads a file from disk, calls `index()`,
+    /// then needs to walk the AST. `get_doc_salsa` gates on open-file state
+    /// to match legacy semantics; this variant does not.
+    #[allow(dead_code)]
+    pub fn get_doc_salsa_any(&self, uri: &Url) -> Option<Arc<ParsedDoc>> {
+        let sf = self.source_file(uri)?;
+        Some(self.with_host(|host| crate::db::parse::parsed_doc(host.db(), sf).0.clone()))
+    }
+
+    /// Salsa-backed per-file method-return-type map.
+    #[allow(dead_code)]
+    pub fn get_method_returns_salsa(&self, uri: &Url) -> Option<Arc<crate::ast::MethodReturnsMap>> {
+        let sf = self.source_file(uri)?;
+        Some(self.with_host(|host| {
+            crate::db::method_returns::method_returns(host.db(), sf)
+                .0
+                .clone()
+        }))
     }
 
     /// Cache the semantic tokens computed for a delta response.
@@ -247,16 +364,19 @@ impl DocumentStore {
         self.map.get(uri).and_then(|d| d.text.clone())
     }
 
-    /// Returns the parsed document (cheap Arc clone).
-    /// Only `Some` for files currently open in the editor.
-    pub fn get_doc(&self, uri: &Url) -> Option<Arc<ParsedDoc>> {
-        self.map.get(uri).and_then(|d| d.doc.clone())
-    }
-
     /// Returns the compact symbol index for a file.
+    ///
+    /// B4d-3b: the index now comes from salsa's `file_index` query. The
+    /// "known to us" gate is expressed by checking membership in `map`,
+    /// which still tracks LRU-bounded entries; `remove(uri)` keeps this
+    /// consistent by dropping from `map` (while leaving the salsa input
+    /// alive for potential re-indexing).
     #[allow(dead_code)]
     pub fn get_index(&self, uri: &Url) -> Option<Arc<FileIndex>> {
-        self.map.get(uri).map(|d| d.index.clone())
+        if !self.map.contains_key(uri) {
+            return None;
+        }
+        self.get_index_salsa(uri)
     }
 
     pub fn get_diagnostics(&self, uri: &Url) -> Option<Vec<Diagnostic>> {
@@ -280,12 +400,19 @@ impl DocumentStore {
 
     /// Returns `(uri, doc)` for files currently open in the editor.
     ///
-    /// Background-indexed files no longer retain a `ParsedDoc`; use
-    /// [`all_docs_for_scan`] when you need to traverse every file's AST.
+    /// B4d-3a: the ParsedDoc now comes from the salsa `parsed_doc` query
+    /// (memoized per input revision); open-state is read from the legacy
+    /// map's `text: Option<String>`.
     pub fn all_docs(&self) -> Vec<(Url, Arc<ParsedDoc>)> {
-        self.map
+        let open_urls: Vec<Url> = self
+            .map
             .iter()
-            .filter_map(|e| e.value().doc.as_ref().map(|d| (e.key().clone(), d.clone())))
+            .filter(|e| e.value().text.is_some())
+            .map(|e| e.key().clone())
+            .collect();
+        open_urls
+            .into_iter()
+            .filter_map(|u| self.get_doc_salsa_any(&u).map(|d| (u, d)))
             .collect()
     }
 
@@ -315,81 +442,70 @@ impl DocumentStore {
 
     /// Returns `(uri, doc)` for open files excluding `uri`.
     pub fn other_docs(&self, uri: &Url) -> Vec<(Url, Arc<ParsedDoc>)> {
-        self.map
+        let open_urls: Vec<Url> = self
+            .map
             .iter()
-            .filter(|e| e.key() != uri)
-            .filter_map(|e| e.value().doc.as_ref().map(|d| (e.key().clone(), d.clone())))
+            .filter(|e| e.key() != uri && e.value().text.is_some())
+            .map(|e| e.key().clone())
+            .collect();
+        open_urls
+            .into_iter()
+            .filter_map(|u| self.get_doc_salsa_any(&u).map(|d| (u, d)))
             .collect()
     }
 
-    /// Returns the compact symbol index for every indexed file.
+    /// Returns the compact symbol index for every known file.
+    ///
+    /// B4d-3b: iterates the legacy `map` (still LRU-bounded) and resolves
+    /// each index via salsa. Files evicted by LRU are filtered out.
     pub fn all_indexes(&self) -> Vec<(Url, Arc<FileIndex>)> {
-        self.map
-            .iter()
-            .map(|e| (e.key().clone(), e.value().index.clone()))
+        let urls: Vec<Url> = self.map.iter().map(|e| e.key().clone()).collect();
+        urls.into_iter()
+            .filter_map(|u| self.get_index_salsa(&u).map(|idx| (u, idx)))
             .collect()
     }
 
     /// Returns indexes for every file except `uri`.
     pub fn other_indexes(&self, uri: &Url) -> Vec<(Url, Arc<FileIndex>)> {
-        self.map
+        let urls: Vec<Url> = self
+            .map
             .iter()
             .filter(|e| e.key() != uri)
-            .map(|e| (e.key().clone(), e.value().index.clone()))
+            .map(|e| e.key().clone())
+            .collect();
+        urls.into_iter()
+            .filter_map(|u| self.get_index_salsa(&u).map(|idx| (u, idx)))
             .collect()
     }
 
-    /// Returns parsed documents for every file, suitable for full-scan operations
-    /// (find-references, rename, call_hierarchy, code_lens).
+    /// Returns parsed documents for every mirrored file, suitable for
+    /// full-scan operations (find-references, rename, call_hierarchy,
+    /// code_lens).
     ///
-    /// - For open files: returns the in-memory `ParsedDoc` (cheap Arc clone).
-    /// - For background-indexed files: re-reads the file from disk and parses it.
-    ///   The resulting `ParsedDoc` is **not** stored — callers hold it temporarily.
+    /// B4d-3a: all parsed docs come from salsa's `parsed_doc` query —
+    /// memoized per input revision, parsed on demand. Previously this
+    /// re-read background files from disk on every call; now salsa caches
+    /// the parse across requests.
     pub fn all_docs_for_scan(&self) -> Vec<(Url, Arc<ParsedDoc>)> {
-        let mut result = Vec::new();
-        for entry in self.map.iter() {
-            let uri = entry.key().clone();
-            if let Some(doc) = entry.value().doc.as_ref() {
-                // Open file: use in-memory doc.
-                result.push((uri, doc.clone()));
-            } else {
-                // Background file: read from disk.
-                if let Some(doc) = read_and_parse_from_disk(&uri) {
-                    result.push((uri, Arc::new(doc)));
-                }
-            }
-        }
-        result
+        let urls: Vec<Url> = self.source_files.iter().map(|e| e.key().clone()).collect();
+        urls.into_iter()
+            .filter_map(|u| self.get_doc_salsa_any(&u).map(|d| (u, d)))
+            .collect()
     }
 
     /// Same as `all_docs_for_scan` but excludes `uri`.
     #[allow(dead_code)]
     pub fn other_docs_for_scan(&self, uri: &Url) -> Vec<(Url, Arc<ParsedDoc>)> {
-        let mut result = Vec::new();
-        for entry in self.map.iter() {
-            let entry_uri = entry.key().clone();
-            if &entry_uri == uri {
-                continue;
-            }
-            if let Some(doc) = entry.value().doc.as_ref() {
-                result.push((entry_uri, doc.clone()));
-            } else {
-                if let Some(doc) = read_and_parse_from_disk(&entry_uri) {
-                    result.push((entry_uri, Arc::new(doc)));
-                }
-            }
-        }
-        result
+        let urls: Vec<Url> = self
+            .source_files
+            .iter()
+            .filter(|e| e.key() != uri)
+            .map(|e| e.key().clone())
+            .collect();
+        urls.into_iter()
+            .filter_map(|u| self.get_doc_salsa_any(&u).map(|d| (u, d)))
+            .collect()
     }
-}
-
-/// Read a file from disk and parse it. Returns `None` if the file cannot be read.
-fn read_and_parse_from_disk(uri: &Url) -> Option<ParsedDoc> {
-    let _span = tracing::debug_span!("parse_from_disk", file = %uri).entered();
-    let path = uri.to_file_path().ok()?;
-    let text = std::fs::read_to_string(&path).ok()?;
-    let (doc, _) = parse_document(&text);
-    Some(doc)
 }
 
 #[cfg(test)]
@@ -409,8 +525,9 @@ mod tests {
     fn open(store: &DocumentStore, u: Url, text: String) {
         use crate::diagnostics::parse_document;
         let v = store.set_text(u.clone(), text.clone());
-        let (doc, diags) = parse_document(&text);
-        store.apply_parse(&u, doc, diags, v);
+        let (_doc, diags) = parse_document(&text);
+        assert_eq!(store.current_version(&u), Some(v));
+        store.set_parse_diagnostics(&u, diags);
     }
 
     #[test]
@@ -439,7 +556,7 @@ mod tests {
         store.close(&uri("/a.php"));
         assert!(store.get(&uri("/a.php")).is_none());
         // After close, ParsedDoc is gone but FileIndex is retained.
-        assert!(store.get_doc(&uri("/a.php")).is_none());
+        assert!(store.get_doc_salsa(&uri("/a.php")).is_none());
         assert!(store.get_index(&uri("/a.php")).is_some());
     }
 
@@ -455,7 +572,7 @@ mod tests {
         store.index(uri("/lib.php"), "<?php\nfunction lib_fn() {}");
         assert!(store.get(&uri("/lib.php")).is_none());
         // Background-indexed files have no ParsedDoc, only FileIndex.
-        assert!(store.get_doc(&uri("/lib.php")).is_none());
+        assert!(store.get_doc_salsa(&uri("/lib.php")).is_none());
         assert!(store.get_index(&uri("/lib.php")).is_some());
     }
 
@@ -629,5 +746,135 @@ mod tests {
         let idx = store.get_index(&uri("/a.php")).unwrap();
         assert_eq!(idx.classes.len(), 1);
         assert_eq!(idx.classes[0].name, "Foo");
+    }
+
+    // ── B4a mirror invariants ────────────────────────────────────────────
+    //
+    // Every mutation path that changes file text is supposed to keep the
+    // salsa layer in sync with the legacy map. These tests walk an
+    // open/edit/close/reopen cycle and assert that the salsa-derived
+    // `FileIndex` matches what `get_index` returns at each step.
+
+    fn names_of(idx: &FileIndex) -> Vec<String> {
+        let mut out: Vec<String> = idx.classes.iter().map(|c| c.name.clone()).collect();
+        out.extend(idx.functions.iter().map(|f| f.name.clone()));
+        out.sort();
+        out
+    }
+
+    fn salsa_index_names(store: &DocumentStore, url: &Url) -> Vec<String> {
+        let sf = store.source_file(url).expect("mirror recorded SourceFile");
+        store.with_host(|host| {
+            let arc = crate::db::index::file_index(host.db(), sf);
+            names_of(arc.get())
+        })
+    }
+
+    #[test]
+    fn mirror_tracks_set_text_close_reopen() {
+        let store = DocumentStore::new();
+        let u = uri("/b4a.php");
+
+        // Step 1: set_text -> apply_parse (open flow).
+        open(&store, u.clone(), "<?php\nclass A {}".to_string());
+        let legacy1 = names_of(&store.get_index(&u).unwrap());
+        assert_eq!(legacy1, vec!["A".to_string()]);
+        assert_eq!(salsa_index_names(&store, &u), legacy1);
+
+        // Step 2: edit the file.
+        open(
+            &store,
+            u.clone(),
+            "<?php\nclass A {}\nclass B {}".to_string(),
+        );
+        let legacy2 = names_of(&store.get_index(&u).unwrap());
+        assert_eq!(legacy2, vec!["A".to_string(), "B".to_string()]);
+        assert_eq!(salsa_index_names(&store, &u), legacy2);
+
+        // Step 3: close — legacy drops the AST but keeps FileIndex;
+        // salsa keeps the last text and recomputes on demand.
+        store.close(&u);
+        let legacy3 = names_of(&store.get_index(&u).unwrap());
+        assert_eq!(legacy3, legacy2);
+        assert_eq!(salsa_index_names(&store, &u), legacy3);
+
+        // Step 4: reopen with different text.
+        open(&store, u.clone(), "<?php\nfunction greet() {}".to_string());
+        let legacy4 = names_of(&store.get_index(&u).unwrap());
+        assert_eq!(legacy4, vec!["greet".to_string()]);
+        assert_eq!(salsa_index_names(&store, &u), legacy4);
+    }
+
+    #[test]
+    fn mirror_tracks_index_and_index_from_doc() {
+        let store = DocumentStore::new();
+
+        // Background `index(url, text)` path.
+        let u1 = uri("/bg1.php");
+        store.index(u1.clone(), "<?php\nclass Bg1 {}");
+        assert_eq!(
+            salsa_index_names(&store, &u1),
+            names_of(&store.get_index(&u1).unwrap())
+        );
+
+        // `index_from_doc(url, &doc, diags)` path (workspace-scan Phase 2).
+        let u2 = uri("/bg2.php");
+        let (doc, diags) = parse_document("<?php\nclass Bg2 {}\nfunction f() {}");
+        store.index_from_doc(u2.clone(), &doc, diags);
+        assert_eq!(
+            salsa_index_names(&store, &u2),
+            names_of(&store.get_index(&u2).unwrap())
+        );
+    }
+
+    // ── B4b salsa-backed accessors ─────────────────────────────────────────
+
+    #[test]
+    fn get_index_salsa_matches_legacy_get_index() {
+        let store = DocumentStore::new();
+        let u = uri("/b4b.php");
+        open(
+            &store,
+            u.clone(),
+            "<?php\nclass C {}\nfunction h() {}".to_string(),
+        );
+
+        let legacy = store.get_index(&u).unwrap();
+        let salsa = store.get_index_salsa(&u).unwrap();
+        assert_eq!(names_of(&legacy), names_of(&salsa));
+
+        // Edit — both accessors should reflect the new text.
+        open(&store, u.clone(), "<?php\nclass Z {}".to_string());
+        let legacy2 = store.get_index(&u).unwrap();
+        let salsa2 = store.get_index_salsa(&u).unwrap();
+        assert_eq!(names_of(&legacy2), names_of(&salsa2));
+        assert_eq!(names_of(&salsa2), vec!["Z".to_string()]);
+    }
+
+    #[test]
+    fn get_doc_salsa_matches_legacy_open_state() {
+        let store = DocumentStore::new();
+        let u = uri("/b4b_doc.php");
+
+        // Background-index path: legacy returns None; salsa also returns
+        // None to preserve "skip if not open" semantics in feature handlers.
+        store.index(u.clone(), "<?php\nclass P {}");
+        assert!(store.get_doc_salsa(&u).is_none());
+        assert!(store.get_doc_salsa(&u).is_none());
+
+        // Now open the same file — both accessors should return Some.
+        open(&store, u.clone(), "<?php\nclass P {}".to_string());
+        assert!(store.get_doc_salsa(&u).is_some());
+        let salsa_doc = store.get_doc_salsa(&u).unwrap();
+        assert!(!salsa_doc.program().stmts.is_empty());
+    }
+
+    #[test]
+    fn get_salsa_accessors_return_none_for_unknown_uri() {
+        let store = DocumentStore::new();
+        let u = uri("/never-seen.php");
+        assert!(store.get_doc_salsa(&u).is_none());
+        assert!(store.get_index_salsa(&u).is_none());
+        assert!(store.get_method_returns_salsa(&u).is_none());
     }
 }

@@ -7,6 +7,7 @@
 // Public modules exposed for benchmark crates.
 pub mod ast;
 pub mod completion;
+pub mod db;
 pub mod definition;
 pub mod docblock;
 pub mod document_store;

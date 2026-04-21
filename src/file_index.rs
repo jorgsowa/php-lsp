@@ -9,7 +9,6 @@
 /// Call [`FileIndex::extract`] right after parsing; the `ParsedDoc` (and its
 /// bumpalo arena) can be dropped immediately after extraction.
 use php_ast::{ClassMemberKind, EnumMemberKind, NamespaceBody, Stmt, StmtKind};
-use tower_lsp::lsp_types::Url;
 
 use crate::ast::{ParsedDoc, format_type_hint};
 use crate::docblock::docblock_before;
@@ -110,10 +109,7 @@ pub struct PropertyDef {
 
 impl FileIndex {
     /// Walk `doc.program().stmts` once and build a compact symbol index.
-    ///
-    /// The `_uri` parameter is accepted for future use (e.g. logging) but is
-    /// not currently used.
-    pub fn extract(_uri: &Url, doc: &ParsedDoc) -> Self {
+    pub fn extract(doc: &ParsedDoc) -> Self {
         let source = doc.source();
         let view = doc.view();
         let mut index = FileIndex::default();
@@ -526,15 +522,11 @@ fn method_visibility(vis: Option<php_ast::Visibility>) -> Visibility {
 mod tests {
     use super::*;
 
-    fn uri() -> Url {
-        Url::parse("file:///test.php").unwrap()
-    }
-
     #[test]
     fn extracts_class_and_method() {
         let src = "<?php\nclass Greeter {\n    public function greet(string $name): string {}\n}";
         let doc = ParsedDoc::parse(src.to_string());
-        let idx = FileIndex::extract(&uri(), &doc);
+        let idx = FileIndex::extract(&doc);
         assert_eq!(idx.classes.len(), 1);
         let cls = &idx.classes[0];
         assert_eq!(cls.name, "Greeter");
@@ -553,7 +545,7 @@ mod tests {
     fn extracts_function() {
         let src = "<?php\nfunction add(int $a, int $b): int {}";
         let doc = ParsedDoc::parse(src.to_string());
-        let idx = FileIndex::extract(&uri(), &doc);
+        let idx = FileIndex::extract(&doc);
         assert_eq!(idx.functions.len(), 1);
         let f = &idx.functions[0];
         assert_eq!(f.name, "add");
@@ -565,7 +557,7 @@ mod tests {
     fn extracts_namespace() {
         let src = "<?php\nnamespace App\\Services;\nclass Mailer {}";
         let doc = ParsedDoc::parse(src.to_string());
-        let idx = FileIndex::extract(&uri(), &doc);
+        let idx = FileIndex::extract(&doc);
         assert_eq!(idx.namespace.as_deref(), Some("App\\Services"));
         assert_eq!(idx.classes[0].fqn, "App\\Services\\Mailer");
     }
@@ -574,7 +566,7 @@ mod tests {
     fn extracts_braced_namespace() {
         let src = "<?php\nnamespace App\\Models {\n    class User {}\n}";
         let doc = ParsedDoc::parse(src.to_string());
-        let idx = FileIndex::extract(&uri(), &doc);
+        let idx = FileIndex::extract(&doc);
         assert_eq!(idx.namespace.as_deref(), Some("App\\Models"));
         assert_eq!(idx.classes[0].fqn, "App\\Models\\User");
     }
@@ -583,7 +575,7 @@ mod tests {
     fn extracts_interface() {
         let src = "<?php\ninterface Countable {\n    public function count(): int;\n}";
         let doc = ParsedDoc::parse(src.to_string());
-        let idx = FileIndex::extract(&uri(), &doc);
+        let idx = FileIndex::extract(&doc);
         assert_eq!(idx.classes.len(), 1);
         assert_eq!(idx.classes[0].kind, ClassKind::Interface);
         assert_eq!(idx.classes[0].methods[0].name, "count");
@@ -594,7 +586,7 @@ mod tests {
     fn extracts_trait() {
         let src = "<?php\ntrait Loggable {\n    public function log(): void {}\n}";
         let doc = ParsedDoc::parse(src.to_string());
-        let idx = FileIndex::extract(&uri(), &doc);
+        let idx = FileIndex::extract(&doc);
         assert_eq!(idx.classes[0].kind, ClassKind::Trait);
         assert_eq!(idx.classes[0].methods[0].name, "log");
     }
@@ -603,7 +595,7 @@ mod tests {
     fn extracts_enum_cases() {
         let src = "<?php\nenum Status { case Active; case Inactive; }";
         let doc = ParsedDoc::parse(src.to_string());
-        let idx = FileIndex::extract(&uri(), &doc);
+        let idx = FileIndex::extract(&doc);
         assert_eq!(idx.classes[0].kind, ClassKind::Enum);
         assert!(idx.classes[0].cases.contains(&"Active".to_string()));
         assert!(idx.classes[0].cases.contains(&"Inactive".to_string()));
@@ -613,7 +605,7 @@ mod tests {
     fn extracts_class_properties_and_constants() {
         let src = "<?php\nclass Config {\n    public string $host;\n    const VERSION = '1.0';\n}";
         let doc = ParsedDoc::parse(src.to_string());
-        let idx = FileIndex::extract(&uri(), &doc);
+        let idx = FileIndex::extract(&doc);
         let cls = &idx.classes[0];
         assert_eq!(cls.properties.len(), 1);
         assert_eq!(cls.properties[0].name, "host");
@@ -624,7 +616,7 @@ mod tests {
     fn extracts_trait_use() {
         let src = "<?php\ntrait T {}\nclass MyClass { use T; }";
         let doc = ParsedDoc::parse(src.to_string());
-        let idx = FileIndex::extract(&uri(), &doc);
+        let idx = FileIndex::extract(&doc);
         let cls = idx.classes.iter().find(|c| c.name == "MyClass").unwrap();
         assert!(cls.traits.contains(&"T".to_string()));
     }
@@ -633,7 +625,7 @@ mod tests {
     fn extracts_class_implements_and_extends() {
         let src = "<?php\nclass Dog extends Animal implements Pet, Movable {}";
         let doc = ParsedDoc::parse(src.to_string());
-        let idx = FileIndex::extract(&uri(), &doc);
+        let idx = FileIndex::extract(&doc);
         let cls = &idx.classes[0];
         assert_eq!(cls.parent.as_deref(), Some("Animal"));
         assert!(cls.implements.contains(&"Pet".to_string()));
@@ -644,7 +636,7 @@ mod tests {
     fn constructor_promoted_params_become_properties() {
         let src = "<?php\nclass User {\n    public function __construct(public string $name) {}\n}";
         let doc = ParsedDoc::parse(src.to_string());
-        let idx = FileIndex::extract(&uri(), &doc);
+        let idx = FileIndex::extract(&doc);
         let cls = &idx.classes[0];
         // Should have a property from the promoted param.
         assert!(
@@ -660,8 +652,8 @@ mod tests {
         let b = "<?php\nclass Foo {\n    public function bar(string $x): int { return 99; }\n}";
         let da = ParsedDoc::parse(a.to_string());
         let db = ParsedDoc::parse(b.to_string());
-        let ia = FileIndex::extract(&uri(), &da);
-        let ib = FileIndex::extract(&uri(), &db);
+        let ia = FileIndex::extract(&da);
+        let ib = FileIndex::extract(&db);
         assert!(
             ia.same_structure(&ib),
             "body-only change must not affect structure"
@@ -674,8 +666,8 @@ mod tests {
         let b = "<?php\nclass Foo {\n    public function bar(): void {}\n    public function baz(): void {}\n}";
         let da = ParsedDoc::parse(a.to_string());
         let db = ParsedDoc::parse(b.to_string());
-        let ia = FileIndex::extract(&uri(), &da);
-        let ib = FileIndex::extract(&uri(), &db);
+        let ia = FileIndex::extract(&da);
+        let ib = FileIndex::extract(&db);
         assert!(
             !ia.same_structure(&ib),
             "adding a method must be detected as structural change"
@@ -688,8 +680,8 @@ mod tests {
         let b = "<?php\nclass Foo {\n    public function bar(int $x): int {}\n}";
         let da = ParsedDoc::parse(a.to_string());
         let db = ParsedDoc::parse(b.to_string());
-        let ia = FileIndex::extract(&uri(), &da);
-        let ib = FileIndex::extract(&uri(), &db);
+        let ia = FileIndex::extract(&da);
+        let ib = FileIndex::extract(&db);
         assert!(
             !ia.same_structure(&ib),
             "changing param type must be detected as structural change"
@@ -702,8 +694,8 @@ mod tests {
         let b = "<?php\nclass Foo extends Other {}";
         let da = ParsedDoc::parse(a.to_string());
         let db = ParsedDoc::parse(b.to_string());
-        let ia = FileIndex::extract(&uri(), &da);
-        let ib = FileIndex::extract(&uri(), &db);
+        let ia = FileIndex::extract(&da);
+        let ib = FileIndex::extract(&db);
         assert!(
             !ia.same_structure(&ib),
             "changing parent class must be detected as structural change"

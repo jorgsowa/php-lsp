@@ -4,6 +4,7 @@ mod backend;
 mod call_hierarchy;
 mod code_lens;
 mod completion;
+mod db;
 mod declaration;
 mod definition;
 mod diagnostics;
