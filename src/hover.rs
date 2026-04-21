@@ -1,3 +1,4 @@
+use std::cell::OnceCell;
 use std::sync::Arc;
 
 use php_ast::{ClassMemberKind, EnumMemberKind, ExprKind, NamespaceBody, Param, Stmt, StmtKind};
@@ -57,23 +58,30 @@ pub fn hover_at(
 
     let word = word_at(source, position)?;
 
+    // TypeMap is expensive (scans all docs); build lazily and reuse across branches.
+    let type_map_cell: OnceCell<TypeMap> = OnceCell::new();
+    let type_map = || {
+        type_map_cell.get_or_init(|| {
+            TypeMap::from_docs_at_position(
+                doc,
+                other_docs.iter().map(|(_, d)| d.as_ref()),
+                None,
+                position,
+            )
+        })
+    };
+
     // Feature 2: hover on $variable shows its type
-    if word.starts_with('$') {
-        let type_map = TypeMap::from_docs_at_position(
-            doc,
-            other_docs.iter().map(|(_, d)| d.as_ref()),
-            None,
-            position,
-        );
-        if let Some(class_name) = type_map.get(&word) {
-            return Some(Hover {
-                contents: HoverContents::Markup(MarkupContent {
-                    kind: MarkupKind::Markdown,
-                    value: format!("`{}` `{}`", word, class_name),
-                }),
-                range: None,
-            });
-        }
+    if word.starts_with('$')
+        && let Some(class_name) = type_map().get(&word)
+    {
+        return Some(Hover {
+            contents: HoverContents::Markup(MarkupContent {
+                kind: MarkupKind::Markdown,
+                value: format!("`{}` `{}`", word, class_name),
+            }),
+            range: None,
+        });
     }
 
     // Class-specific method lookup: when the cursor is on a method call after `->`,
@@ -90,17 +98,12 @@ pub fn hover_at(
             if let Some(apos) = arrow_pos {
                 let before_arrow = &line_text[..apos];
                 if let Some(var_name) = extract_receiver_var_from_end(before_arrow) {
-                    let type_map = TypeMap::from_docs_at_position(
-                        doc,
-                        other_docs.iter().map(|(_, d)| d.as_ref()),
-                        None,
-                        position,
-                    );
+                    let tm = type_map();
                     let class_name = if var_name == "$this" {
                         crate::type_map::enclosing_class_at(source, doc, position)
-                            .or_else(|| type_map.get("$this").map(|s| s.to_string()))
+                            .or_else(|| tm.get("$this").map(|s| s.to_string()))
                     } else {
-                        type_map.get(&var_name).map(|s| s.to_string())
+                        tm.get(&var_name).map(|s| s.to_string())
                     };
                     if let Some(cls) = class_name {
                         let first_cls = cls.split('|').next().unwrap_or(&cls);
@@ -201,17 +204,12 @@ pub fn hover_at(
                 let before_arrow = &line_text[..apos];
                 let receiver_var = extract_receiver_var_from_end(before_arrow);
                 if let Some(var_name) = receiver_var {
-                    let type_map = TypeMap::from_docs_at_position(
-                        doc,
-                        other_docs.iter().map(|(_, d)| d.as_ref()),
-                        None,
-                        position,
-                    );
+                    let tm = type_map();
                     let class_name = if var_name == "$this" {
                         crate::type_map::enclosing_class_at(source, doc, position)
-                            .or_else(|| type_map.get("$this").map(|s| s.to_string()))
+                            .or_else(|| tm.get("$this").map(|s| s.to_string()))
                     } else {
-                        type_map.get(&var_name).map(|s| s.to_string())
+                        tm.get(&var_name).map(|s| s.to_string())
                     };
                     if let Some(cls) = class_name {
                         for d in

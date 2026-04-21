@@ -192,7 +192,7 @@ pub fn find_references_codebase(
             // Collect method keys (FQCN::lowercase_name) for types where the
             // codebase index is authoritative or a reliable pre-filter.
             let mut method_keys: Vec<String> = Vec::new();
-            let mut decl_files: Vec<String> = Vec::new();
+            let mut candidate_arcs: Vec<Arc<str>> = Vec::new();
 
             for entry in codebase.classes.iter() {
                 let cls = entry.value();
@@ -201,7 +201,7 @@ pub fn find_references_codebase(
                 {
                     method_keys.push(format!("{}::{}", entry.key(), word_lower));
                     if include_declaration && let Some(loc) = &method.location {
-                        decl_files.push(loc.file.as_ref().to_string());
+                        candidate_arcs.push(loc.file.clone());
                     }
                 }
             }
@@ -212,7 +212,7 @@ pub fn find_references_codebase(
                 {
                     method_keys.push(format!("{}::{}", entry.key(), word_lower));
                     if include_declaration && let Some(loc) = &method.location {
-                        decl_files.push(loc.file.as_ref().to_string());
+                        candidate_arcs.push(loc.file.clone());
                     }
                 }
             }
@@ -222,15 +222,14 @@ pub fn find_references_codebase(
                 return None;
             }
 
-            // Collect candidate files from the reference index, then add
-            // declaration files so include_declaration=true works correctly.
-            let mut candidate_uris: std::collections::HashSet<String> =
-                decl_files.into_iter().collect();
+            // Collect candidate files from the reference index (declaration files
+            // already appended above so include_declaration=true works correctly).
             for key in &method_keys {
                 for (file, _, _) in codebase.get_reference_locations(key) {
-                    candidate_uris.insert(file.as_ref().to_string());
+                    candidate_arcs.push(file);
                 }
             }
+            let candidate_uris: HashSet<&str> = candidate_arcs.iter().map(|a| a.as_ref()).collect();
 
             // Restrict the AST walk to the candidate files only.
             let candidate_docs: Vec<(Url, Arc<ParsedDoc>)> = all_docs

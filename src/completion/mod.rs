@@ -565,14 +565,16 @@ fn match_arm_completions(
     let start_line = position.line as usize;
     let end_line = start_line.saturating_sub(5);
     let all_lines: Vec<&str> = source.lines().collect();
+    let type_map_cell: std::cell::OnceCell<TypeMap> = std::cell::OnceCell::new();
     for line_idx in (end_line..=start_line).rev() {
         let line = all_lines.get(line_idx).copied()?;
         if let Some(cap) = extract_match_subject(line) {
-            let type_map =
-                TypeMap::from_docs_with_meta(doc, other_docs.iter().map(|d| d.as_ref()), meta);
             let class_name = if cap == "this" {
                 enclosing_class_at(source, doc, position)?
             } else {
+                let type_map = type_map_cell.get_or_init(|| {
+                    TypeMap::from_docs_with_meta(doc, other_docs.iter().map(|d| d.as_ref()), meta)
+                });
                 type_map.get(&format!("${cap}"))?.to_string()
             };
             let all_docs: Vec<&ParsedDoc> = std::iter::once(doc)
