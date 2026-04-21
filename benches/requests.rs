@@ -4,10 +4,14 @@ use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_ma
 use tower_lsp::lsp_types::{Position, Url};
 
 use php_lsp::ast::ParsedDoc;
+use php_lsp::call_hierarchy::{incoming_calls, outgoing_calls, prepare_call_hierarchy};
 use php_lsp::completion::{CompletionCtx, filtered_completions_at};
 use php_lsp::definition::goto_definition;
 use php_lsp::hover::hover_info;
+use php_lsp::implementation::find_implementations;
 use php_lsp::references::{SymbolKind, find_references};
+use php_lsp::rename::rename;
+use php_lsp::symbols::{document_symbols, workspace_symbols};
 
 const MEDIUM: &str = include_str!("fixtures/medium_class.php");
 const SMALL: &str = include_str!("fixtures/small_class.php");
@@ -268,11 +272,225 @@ fn bench_references(c: &mut Criterion) {
     group.finish();
 }
 
+// ── Laravel-scale benches ─────────────────────────────────────────────────────
+//
+// These load the Laravel fixture (via `scripts/setup_laravel_fixture.sh`) and
+// measure each request against ~1,600 parsed files. They auto-skip when the
+// fixture is absent.
+
+fn laravel_docs() -> Option<OtherDocs> {
+    let fixture_dir =
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("benches/fixtures/laravel/src");
+    if !fixture_dir.exists() {
+        return None;
+    }
+    let docs: OtherDocs = walkdir::WalkDir::new(&fixture_dir)
+        .into_iter()
+        .filter_map(|e| e.ok())
+        .filter(|e| e.path().extension().map_or(false, |x| x == "php"))
+        .filter_map(|e| {
+            let url = Url::from_file_path(e.path()).ok()?;
+            let src = std::fs::read_to_string(e.path()).ok()?;
+            Some((url, Arc::new(ParsedDoc::parse(src))))
+        })
+        .collect();
+    Some(docs)
+}
+
+fn bench_references_laravel(c: &mut Criterion) {
+    let Some(docs) = laravel_docs() else {
+        eprintln!(
+            "Laravel fixture not found — run `scripts/setup_laravel_fixture.sh` to enable references/laravel_framework"
+        );
+        return;
+    };
+    eprintln!("Laravel fixture: {} PHP files (references)", docs.len());
+
+    let mut group = c.benchmark_group("references");
+    group.sample_size(10);
+    // `Str` is widely referenced across Illuminate — a realistic hot symbol.
+    group.bench_function("laravel_framework", |b| {
+        b.iter(|| {
+            black_box(find_references(
+                "Str",
+                &docs,
+                false,
+                Some(SymbolKind::Class),
+            ))
+        });
+    });
+    group.finish();
+}
+
+fn bench_completion_laravel(c: &mut Criterion) {
+    let Some(docs) = laravel_docs() else {
+        eprintln!(
+            "Laravel fixture not found — run `scripts/setup_laravel_fixture.sh` to enable completion/laravel_framework"
+        );
+        return;
+    };
+    // Derive a parsed-only view for the completion API.
+    let other_parsed: Vec<Arc<ParsedDoc>> = docs.iter().map(|(_, p)| Arc::clone(p)).collect();
+
+    let ctrl_doc = Arc::new(ParsedDoc::parse(CONTROLLER.to_owned()));
+    let ctx = CompletionCtx {
+        source: Some(CONTROLLER),
+        position: Some(POS_ARROW),
+        meta: None,
+        doc_uri: None,
+        file_imports: None,
+    };
+
+    let mut group = c.benchmark_group("completion");
+    group.sample_size(10);
+    group.bench_function("laravel_framework", |b| {
+        b.iter(|| {
+            black_box(filtered_completions_at(
+                &ctrl_doc,
+                &other_parsed,
+                Some(">"),
+                &ctx,
+            ))
+        });
+    });
+    group.finish();
+}
+
+fn bench_rename(c: &mut Criterion) {
+    let other_docs = cross_file_docs();
+
+    let mut group = c.benchmark_group("rename");
+    // Cross-file: rename UserService → UserServiceRenamed across the small
+    // fixture set (controller + service + repository + …).
+    group.bench_function("cross_file_class", |b| {
+        b.iter(|| black_box(rename("UserService", "UserServiceRenamed", &other_docs)));
+    });
+
+    if let Some(docs) = laravel_docs() {
+        eprintln!("Laravel fixture: {} PHP files (rename)", docs.len());
+        group.sample_size(10);
+        group.bench_function("laravel_framework", |b| {
+            b.iter(|| black_box(rename("Str", "StrRenamed", &docs)));
+        });
+    } else {
+        eprintln!("Laravel fixture not found — skipping rename/laravel_framework");
+    }
+    group.finish();
+}
+
+fn bench_workspace_symbol(c: &mut Criterion) {
+    let other_docs = cross_file_docs();
+
+    let mut group = c.benchmark_group("workspace_symbol");
+    // Small-set fuzzy search: query matches `UserService`, `UserRepository`, etc.
+    group.bench_function("fuzzy_small", |b| {
+        b.iter(|| black_box(workspace_symbols("User", &other_docs)));
+    });
+
+    if let Some(docs) = laravel_docs() {
+        eprintln!(
+            "Laravel fixture: {} PHP files (workspace_symbol)",
+            docs.len()
+        );
+        group.sample_size(10);
+        // Common prefix across Illuminate — should match many symbols.
+        group.bench_function("laravel_framework", |b| {
+            b.iter(|| black_box(workspace_symbols("Str", &docs)));
+        });
+    } else {
+        eprintln!("Laravel fixture not found — skipping workspace_symbol/laravel_framework");
+    }
+    group.finish();
+}
+
+fn bench_implementation(c: &mut Criterion) {
+    let other_docs = cross_file_docs();
+
+    let mut group = c.benchmark_group("implementation");
+    // Cross-file: find classes that extend / implement `UserService`.
+    group.bench_function("cross_file_class", |b| {
+        b.iter(|| black_box(find_implementations("UserService", None, &other_docs)));
+    });
+
+    if let Some(docs) = laravel_docs() {
+        eprintln!("Laravel fixture: {} PHP files (implementation)", docs.len());
+        group.sample_size(10);
+        // A widely-implemented Illuminate contract.
+        group.bench_function("laravel_framework", |b| {
+            b.iter(|| black_box(find_implementations("Arrayable", None, &docs)));
+        });
+    } else {
+        eprintln!("Laravel fixture not found — skipping implementation/laravel_framework");
+    }
+    group.finish();
+}
+
+fn bench_document_symbol(c: &mut Criterion) {
+    let medium_doc = Arc::new(ParsedDoc::parse(MEDIUM.to_owned()));
+    let ctrl_doc = Arc::new(ParsedDoc::parse(CONTROLLER.to_owned()));
+
+    let mut group = c.benchmark_group("document_symbol");
+    group.bench_function("medium_class", |b| {
+        b.iter(|| black_box(document_symbols(MEDIUM, &medium_doc)));
+    });
+    group.bench_function("controller", |b| {
+        b.iter(|| black_box(document_symbols(CONTROLLER, &ctrl_doc)));
+    });
+    group.finish();
+}
+
+fn bench_call_hierarchy(c: &mut Criterion) {
+    let other_docs = cross_file_docs();
+
+    // Prepare the item once — it's part of the call-hierarchy request but the
+    // interesting cost is incoming/outgoing, which dominates in real usage.
+    let item_service = prepare_call_hierarchy("UserService", &other_docs);
+
+    let mut group = c.benchmark_group("call_hierarchy");
+    group.bench_function("prepare/cross_file", |b| {
+        b.iter(|| black_box(prepare_call_hierarchy("UserService", &other_docs)));
+    });
+    if let Some(ref item) = item_service {
+        group.bench_function("incoming/cross_file", |b| {
+            b.iter(|| black_box(incoming_calls(item, &other_docs)));
+        });
+        group.bench_function("outgoing/cross_file", |b| {
+            b.iter(|| black_box(outgoing_calls(item, &other_docs)));
+        });
+    }
+
+    if let Some(docs) = laravel_docs() {
+        eprintln!("Laravel fixture: {} PHP files (call_hierarchy)", docs.len());
+        group.sample_size(10);
+        group.bench_function("prepare/laravel_framework", |b| {
+            b.iter(|| black_box(prepare_call_hierarchy("Str", &docs)));
+        });
+        if let Some(item) = prepare_call_hierarchy("Str", &docs) {
+            group.bench_function("incoming/laravel_framework", |b| {
+                b.iter(|| black_box(incoming_calls(&item, &docs)));
+            });
+            group.bench_function("outgoing/laravel_framework", |b| {
+                b.iter(|| black_box(outgoing_calls(&item, &docs)));
+            });
+        }
+    } else {
+        eprintln!("Laravel fixture not found — skipping call_hierarchy/laravel_framework");
+    }
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_hover,
     bench_definition,
     bench_completion,
-    bench_references
+    bench_references,
+    bench_references_laravel,
+    bench_completion_laravel,
+    bench_rename,
+    bench_workspace_symbol,
+    bench_implementation,
+    bench_document_symbol,
+    bench_call_hierarchy
 );
 criterion_main!(benches);
