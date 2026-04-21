@@ -1005,7 +1005,6 @@ impl LanguageServer for Backend {
                 &word,
                 &params.new_name,
                 uri,
-                &source,
                 &doc,
                 position,
             )))

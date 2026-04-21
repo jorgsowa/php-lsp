@@ -4,7 +4,7 @@ use php_ast::{ClassMemberKind, EnumMemberKind, NamespaceBody, Stmt, StmtKind};
 use tower_lsp::lsp_types::{Location, Position, Range, Url};
 
 use crate::ast::{ParsedDoc, SourceView, str_offset};
-use crate::util::{utf16_pos_to_byte, word_at};
+use crate::util::word_at;
 use crate::walk::collect_var_refs_in_scope;
 
 /// Find the definition of the symbol under `position`.
@@ -22,7 +22,7 @@ pub fn goto_definition(
     let sv = doc.view();
     if word.starts_with('$') {
         let bare = word.trim_start_matches('$');
-        let byte_off = utf16_pos_to_byte(sv.source(), position);
+        let byte_off = sv.byte_of_position(position) as usize;
         let mut spans = Vec::new();
         collect_var_refs_in_scope(&doc.program().stmts, bare, byte_off, &mut spans);
         if let Some(span) = spans.into_iter().min_by_key(|s| s.start) {

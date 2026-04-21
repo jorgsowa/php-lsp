@@ -1,7 +1,7 @@
 use tower_lsp::lsp_types::{DocumentHighlight, DocumentHighlightKind, Position, Range};
 
 use crate::ast::ParsedDoc;
-use crate::util::{utf16_pos_to_byte, word_at};
+use crate::util::word_at;
 use crate::walk::{collect_var_refs_in_scope, refs_in_stmts};
 
 /// Return all ranges in the document where the word at `position` appears.
@@ -20,16 +20,15 @@ pub fn document_highlights(
 
     let word_utf16_len: u32 = word.chars().map(|c| c.len_utf16() as u32).sum();
     let mut spans = Vec::new();
+    let sv = doc.view();
 
     if word.starts_with('$') {
         let bare = word.trim_start_matches('$');
-        let byte_off = utf16_pos_to_byte(source, position);
+        let byte_off = sv.byte_of_position(position) as usize;
         collect_var_refs_in_scope(&doc.program().stmts, bare, byte_off, &mut spans);
     } else {
         refs_in_stmts(source, &doc.program().stmts, &word, &mut spans);
     }
-
-    let sv = doc.view();
     spans
         .into_iter()
         .map(|span| {

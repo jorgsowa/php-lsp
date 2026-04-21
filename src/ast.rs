@@ -189,6 +189,42 @@ impl<'a> SourceView<'a> {
         self.line_starts
     }
 
+    /// O(log lines) line number for a byte offset. Cheaper than
+    /// `position_of(..).line` because it skips the UTF-16 column scan.
+    #[inline]
+    pub fn line_of(self, offset: u32) -> u32 {
+        match self.line_starts.partition_point(|&s| s <= offset) {
+            0 => 0,
+            i => (i - 1) as u32,
+        }
+    }
+
+    /// O(log lines) UTF-16 `Position` -> byte offset. Uses the precomputed
+    /// `line_starts` table to jump to the target line and only scans that
+    /// line's characters. Much faster than a linear scan over the whole
+    /// source when the cursor is late in the file.
+    pub fn byte_of_position(self, pos: Position) -> u32 {
+        let line_idx = pos.line as usize;
+        let line_start = self.line_starts.get(line_idx).copied().unwrap_or(0) as usize;
+        let line_end = self
+            .line_starts
+            .get(line_idx + 1)
+            .map(|&s| (s as usize).saturating_sub(1))
+            .unwrap_or(self.source.len());
+        let raw = &self.source[line_start..line_end.min(self.source.len())];
+        let line = raw.strip_suffix('\r').unwrap_or(raw);
+        let mut col_utf16: u32 = 0;
+        let mut byte_in_line: usize = 0;
+        for ch in line.chars() {
+            if col_utf16 >= pos.character {
+                break;
+            }
+            col_utf16 += ch.len_utf16() as u32;
+            byte_in_line += ch.len_utf8();
+        }
+        (line_start + byte_in_line) as u32
+    }
+
     pub fn range_of(self, span: Span) -> Range {
         Range {
             start: self.position_of(span.start),
