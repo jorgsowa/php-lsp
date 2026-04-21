@@ -2,12 +2,6 @@
 
 All notable changes to php-lsp are documented here.
 
-## [Unreleased]
-
-### Changed
-
-- **Diagnostics off by default** (BREAKING): `initializationOptions.diagnostics.enabled` now defaults to `false`. Clients that want undefined-variable/function/class, arity, type, deprecated, and duplicate-declaration diagnostics must opt in with `"diagnostics": { "enabled": true }`. Parse errors are unaffected.
-
 ## [0.1.53] — 2026-04-12
 
 ### Bug fixes
