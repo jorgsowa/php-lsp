@@ -2,6 +2,7 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use php_ast::{ClassMemberKind, EnumMemberKind, NamespaceBody, Span, Stmt, StmtKind};
+use rayon::prelude::*;
 use tower_lsp::lsp_types::{Location, Position, Range, Url};
 
 use crate::ast::{ParsedDoc, str_offset};
@@ -260,64 +261,88 @@ fn find_references_inner(
     include_use: bool,
     kind: Option<SymbolKind>,
 ) -> Vec<Location> {
-    let mut locations = Vec::new();
+    // Each document is scanned independently: substring pre-filter, AST walk,
+    // then span → position translation. Rayon parallelizes across docs; the
+    // per-doc work is CPU-bound and 100% independent, so this scales linearly
+    // with cores on large workspaces (Laravel: ~1,600 files).
+    all_docs
+        .par_iter()
+        .flat_map_iter(|(uri, doc)| {
+            scan_doc(word, uri, doc, include_declaration, include_use, kind)
+        })
+        .collect()
+}
 
-    for (uri, doc) in all_docs {
-        let source = doc.source();
-        let stmts = &doc.program().stmts;
-        let mut spans = Vec::new();
+fn scan_doc(
+    word: &str,
+    uri: &Url,
+    doc: &Arc<ParsedDoc>,
+    include_declaration: bool,
+    include_use: bool,
+    kind: Option<SymbolKind>,
+) -> Vec<Location> {
+    let source = doc.source();
+    // Substring pre-filter: every walker below pushes a span only when an
+    // identifier's bytes equal `word`, so if `word` does not appear in the
+    // source it cannot produce any reference. `str::contains` is memchr-fast
+    // and skips the full AST traversal for the vast majority of files.
+    if !source.contains(word) {
+        return Vec::new();
+    }
+    let stmts = &doc.program().stmts;
+    let mut spans = Vec::new();
 
-        if include_use {
-            // Rename path: general walker covers call sites, `use` imports, and declarations.
-            refs_in_stmts_with_use(source, stmts, word, &mut spans);
-            if !include_declaration {
-                let mut decl_spans = Vec::new();
-                collect_declaration_spans(source, stmts, word, None, &mut decl_spans);
-                let decl_set: HashSet<(u32, u32)> =
-                    decl_spans.iter().map(|s| (s.start, s.end)).collect();
-                spans.retain(|span| !decl_set.contains(&(span.start, span.end)));
-            }
-        } else {
-            match kind {
-                Some(SymbolKind::Function) => function_refs_in_stmts(stmts, word, &mut spans),
-                Some(SymbolKind::Method) => method_refs_in_stmts(stmts, word, &mut spans),
-                Some(SymbolKind::Class) => class_refs_in_stmts(stmts, word, &mut spans),
-                // General walker already includes declarations; filter them out if unwanted.
-                None => {
-                    refs_in_stmts(source, stmts, word, &mut spans);
-                    if !include_declaration {
-                        let mut decl_spans = Vec::new();
-                        collect_declaration_spans(source, stmts, word, None, &mut decl_spans);
-                        let decl_set: HashSet<(u32, u32)> =
-                            decl_spans.iter().map(|s| (s.start, s.end)).collect();
-                        spans.retain(|span| !decl_set.contains(&(span.start, span.end)));
-                    }
+    if include_use {
+        // Rename path: general walker covers call sites, `use` imports, and declarations.
+        refs_in_stmts_with_use(source, stmts, word, &mut spans);
+        if !include_declaration {
+            let mut decl_spans = Vec::new();
+            collect_declaration_spans(source, stmts, word, None, &mut decl_spans);
+            let decl_set: HashSet<(u32, u32)> =
+                decl_spans.iter().map(|s| (s.start, s.end)).collect();
+            spans.retain(|span| !decl_set.contains(&(span.start, span.end)));
+        }
+    } else {
+        match kind {
+            Some(SymbolKind::Function) => function_refs_in_stmts(stmts, word, &mut spans),
+            Some(SymbolKind::Method) => method_refs_in_stmts(stmts, word, &mut spans),
+            Some(SymbolKind::Class) => class_refs_in_stmts(stmts, word, &mut spans),
+            // General walker already includes declarations; filter them out if unwanted.
+            None => {
+                refs_in_stmts(source, stmts, word, &mut spans);
+                if !include_declaration {
+                    let mut decl_spans = Vec::new();
+                    collect_declaration_spans(source, stmts, word, None, &mut decl_spans);
+                    let decl_set: HashSet<(u32, u32)> =
+                        decl_spans.iter().map(|s| (s.start, s.end)).collect();
+                    spans.retain(|span| !decl_set.contains(&(span.start, span.end)));
                 }
             }
-            // Typed walkers never emit declaration spans, so add them separately when wanted.
-            // Pass `kind` so only declarations of the matching category are appended —
-            // a Method search must not return a free-function declaration with the same name.
-            if include_declaration && kind.is_some() {
-                collect_declaration_spans(source, stmts, word, kind, &mut spans);
-            }
         }
-
-        let sv = doc.view();
-        for span in spans {
-            let start = sv.position_of(span.start);
-            let end = Position {
-                line: start.line,
-                character: start.character
-                    + word.chars().map(|c| c.len_utf16() as u32).sum::<u32>(),
-            };
-            locations.push(Location {
-                uri: uri.clone(),
-                range: Range { start, end },
-            });
+        // Typed walkers never emit declaration spans, so add them separately when wanted.
+        // Pass `kind` so only declarations of the matching category are appended —
+        // a Method search must not return a free-function declaration with the same name.
+        if include_declaration && kind.is_some() {
+            collect_declaration_spans(source, stmts, word, kind, &mut spans);
         }
     }
 
-    locations
+    let sv = doc.view();
+    let word_utf16_len: u32 = word.chars().map(|c| c.len_utf16() as u32).sum();
+    spans
+        .into_iter()
+        .map(|span| {
+            let start = sv.position_of(span.start);
+            let end = Position {
+                line: start.line,
+                character: start.character + word_utf16_len,
+            };
+            Location {
+                uri: uri.clone(),
+                range: Range { start, end },
+            }
+        })
+        .collect()
 }
 
 /// Build a span covering exactly the declared name (not the keyword before it).

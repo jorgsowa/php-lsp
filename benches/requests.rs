@@ -319,6 +319,20 @@ fn bench_references_laravel(c: &mut Criterion) {
             ))
         });
     });
+    // Method-kind query on a public method of an open (non-final) hierarchy:
+    // `save` on `Illuminate\Database\Eloquent\Model`. The mir codebase fast path
+    // does not apply here (public + non-final), so this exercises the AST walker
+    // + substring pre-filter path.
+    group.bench_function("laravel_framework_method_save", |b| {
+        b.iter(|| {
+            black_box(find_references(
+                "save",
+                &docs,
+                false,
+                Some(SymbolKind::Method),
+            ))
+        });
+    });
     group.finish();
 }
 
