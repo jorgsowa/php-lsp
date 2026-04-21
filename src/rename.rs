@@ -5,7 +5,6 @@ use tower_lsp::lsp_types::{Position, Range, TextEdit, Url, WorkspaceEdit};
 
 use crate::ast::ParsedDoc;
 use crate::references::find_references_with_use;
-use crate::util::utf16_pos_to_byte;
 use crate::walk::{collect_var_refs_in_scope, property_refs_in_stmts};
 
 /// Compute a WorkspaceEdit that renames every occurrence of `word` to `new_name`
@@ -73,7 +72,6 @@ pub fn rename_variable(
     var_name: &str,
     new_name: &str,
     uri: &Url,
-    source: &str,
     doc: &ParsedDoc,
     position: Position,
 ) -> WorkspaceEdit {
@@ -81,9 +79,9 @@ pub fn rename_variable(
     let new_bare = new_name.trim_start_matches('$');
     let new_text = format!("${new_bare}");
 
-    let byte_off = utf16_pos_to_byte(source, position);
     let stmts = &doc.program().stmts;
     let sv = doc.view();
+    let byte_off = sv.byte_of_position(position) as usize;
 
     let mut spans = Vec::new();
     collect_var_refs_in_scope(stmts, bare, byte_off, &mut spans);
@@ -308,7 +306,7 @@ mod tests {
     fn rename_variable_within_function() {
         let src = "<?php\nfunction foo() {\n    $x = 1;\n    echo $x;\n}";
         let doc = Arc::new(ParsedDoc::parse(src.to_string()));
-        let edit = rename_variable("$x", "$y", &uri("/a.php"), src, &doc, pos(2, 5));
+        let edit = rename_variable("$x", "$y", &uri("/a.php"), &doc, pos(2, 5));
         let changes = edit.changes.unwrap();
         let edits = &changes[&uri("/a.php")];
         assert!(edits.len() >= 2, "should rename both assignment and usage");
@@ -319,7 +317,7 @@ mod tests {
     fn rename_variable_does_not_cross_function_boundary() {
         let src = "<?php\nfunction foo() { $x = 1; }\nfunction bar() { $x = 2; }";
         let doc = Arc::new(ParsedDoc::parse(src.to_string()));
-        let edit = rename_variable("$x", "$z", &uri("/a.php"), src, &doc, pos(1, 20));
+        let edit = rename_variable("$x", "$z", &uri("/a.php"), &doc, pos(1, 20));
         let changes = edit.changes.unwrap();
         let edits = &changes[&uri("/a.php")];
         // Only the $x in foo() should be renamed, not the one in bar()
