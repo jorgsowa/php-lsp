@@ -1105,6 +1105,7 @@ dependencies = [
  "mir-types",
  "php-ast",
  "php-rs-parser",
+ "rayon",
  "serde_json",
  "tempfile",
  "tokio",
