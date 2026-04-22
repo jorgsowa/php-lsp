@@ -72,6 +72,7 @@ pub fn find_references_codebase(
     include_declaration: bool,
     kind: Option<SymbolKind>,
     codebase: &mir_codebase::Codebase,
+    lookup_refs: &dyn Fn(&str) -> Vec<(Arc<str>, u32, u32)>,
 ) -> Option<Vec<Location>> {
     // Build a URI-string → (Url, ParsedDoc) map for O(1) lookup.
     let doc_map: std::collections::HashMap<&str, (&Url, &Arc<ParsedDoc>)> = all_docs
@@ -116,7 +117,7 @@ pub fn find_references_codebase(
 
             let mut locations: Vec<Location> = Vec::new();
             for fqn in &fqns {
-                for (file, start, end) in codebase.get_reference_locations(fqn) {
+                for (file, start, end) in lookup_refs(fqn) {
                     if let Some(loc) = spans_to_location(&file, start, end) {
                         locations.push(loc);
                     }
@@ -168,7 +169,7 @@ pub fn find_references_codebase(
 
             let mut locations: Vec<Location> = Vec::new();
             for fqcn in &fqcns {
-                for (file, start, end) in codebase.get_reference_locations(fqcn) {
+                for (file, start, end) in lookup_refs(fqcn) {
                     if let Some(loc) = spans_to_location(&file, start, end) {
                         locations.push(loc);
                     }
@@ -195,8 +196,16 @@ pub fn find_references_codebase(
             let mut method_keys: Vec<String> = Vec::new();
             let mut candidate_arcs: Vec<Arc<str>> = Vec::new();
 
+            // Only consider user-code classes (those with a source location).
+            // Stub classes (DateTime, Ds\Set, …) live in the same codebase but
+            // have `location: None`; including them pollutes `method_keys` with
+            // keys that have no recorded references, leading the fast path to
+            // return Some(empty) instead of falling back to the AST walker.
             for entry in codebase.classes.iter() {
                 let cls = entry.value();
+                if cls.location.is_none() {
+                    continue;
+                }
                 if let Some(method) = cls.own_methods.get(word_lower.as_str())
                     && (cls.is_final || method.visibility == mir_codebase::Visibility::Private)
                 {
@@ -208,6 +217,9 @@ pub fn find_references_codebase(
             }
             for entry in codebase.enums.iter() {
                 let enm = entry.value();
+                if enm.location.is_none() {
+                    continue;
+                }
                 if let Some(method) = enm.own_methods.get(word_lower.as_str())
                     && method.visibility == mir_codebase::Visibility::Private
                 {
@@ -226,7 +238,7 @@ pub fn find_references_codebase(
             // Collect candidate files from the reference index (declaration files
             // already appended above so include_declaration=true works correctly).
             for key in &method_keys {
-                for (file, _, _) in codebase.get_reference_locations(key) {
+                for (file, _, _) in lookup_refs(key) {
                     candidate_arcs.push(file);
                 }
             }
@@ -1316,7 +1328,15 @@ mod tests {
             all_parents: vec![],
             is_deprecated: false,
             is_internal: false,
-            location: None,
+            // Synthetic user-code location so the fast path treats this as a
+            // user class (stubs have `location: None` and are skipped).
+            location: Some(mir_codebase::storage::Location {
+                file: std::sync::Arc::from("file:///a.php"),
+                start: 0,
+                end: 0,
+                line: 1,
+                col: 0,
+            }),
         }
     }
 
@@ -1338,8 +1358,14 @@ mod tests {
 
         let src = "<?php\nclass Foo { public function process() {} }\n$foo->process();";
         let docs = vec![doc("/a.php", src)];
-        let result =
-            find_references_codebase("process", &docs, false, Some(SymbolKind::Method), &cb);
+        let result = find_references_codebase(
+            "process",
+            &docs,
+            false,
+            Some(SymbolKind::Method),
+            &cb,
+            &|k: &str| cb.get_reference_locations(k),
+        );
         assert!(
             result.is_none(),
             "public method on non-final class must return None (fall back to AST), got: {:?}",
@@ -1372,8 +1398,14 @@ mod tests {
         let src_b = "<?php\n$other->execute();";
 
         let docs = vec![doc("/a.php", src_a), doc("/b.php", src_b)];
-        let result =
-            find_references_codebase("execute", &docs, false, Some(SymbolKind::Method), &cb);
+        let result = find_references_codebase(
+            "execute",
+            &docs,
+            false,
+            Some(SymbolKind::Method),
+            &cb,
+            &|k: &str| cb.get_reference_locations(k),
+        );
 
         assert!(
             result.is_some(),
@@ -1420,8 +1452,14 @@ mod tests {
         let src_b = "<?php\n$other->increment();";
 
         let docs = vec![doc("/a.php", src_a), doc("/b.php", src_b)];
-        let result =
-            find_references_codebase("increment", &docs, false, Some(SymbolKind::Method), &cb);
+        let result = find_references_codebase(
+            "increment",
+            &docs,
+            false,
+            Some(SymbolKind::Method),
+            &cb,
+            &|k: &str| cb.get_reference_locations(k),
+        );
 
         assert!(
             result.is_some(),
@@ -1474,8 +1512,14 @@ mod tests {
             doc("/ignored.php", src_ignored),
         ];
 
-        let result =
-            find_references_codebase("submit", &docs, false, Some(SymbolKind::Method), &cb);
+        let result = find_references_codebase(
+            "submit",
+            &docs,
+            false,
+            Some(SymbolKind::Method),
+            &cb,
+            &|k: &str| cb.get_reference_locations(k),
+        );
 
         assert!(result.is_some(), "fast path must activate for final class");
         let locs = result.unwrap();
@@ -1499,8 +1543,14 @@ mod tests {
         let cb = mir_codebase::Codebase::new();
         let src = "<?php\n$obj->doWork();";
         let docs = vec![doc("/a.php", src)];
-        let result =
-            find_references_codebase("doWork", &docs, false, Some(SymbolKind::Method), &cb);
+        let result = find_references_codebase(
+            "doWork",
+            &docs,
+            false,
+            Some(SymbolKind::Method),
+            &cb,
+            &|k: &str| cb.get_reference_locations(k),
+        );
         assert!(
             result.is_none(),
             "empty codebase must return None for Method kind, got: {:?}",

@@ -1,5 +1,4 @@
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 
 use tower_lsp::jsonrpc::Result;
@@ -56,8 +55,7 @@ use crate::references::{SymbolKind, find_references, find_references_codebase};
 use crate::rename::{prepare_rename, rename, rename_property, rename_variable};
 use crate::selection_range::selection_ranges;
 use crate::semantic_diagnostics::{
-    deprecated_call_diagnostics, duplicate_declaration_diagnostics, index_file_references,
-    semantic_diagnostics_no_rebuild,
+    deprecated_call_diagnostics, duplicate_declaration_diagnostics, semantic_diagnostics_no_rebuild,
 };
 use crate::semantic_tokens::{
     compute_token_delta, legend, semantic_tokens, semantic_tokens_range, token_hash,
@@ -203,9 +201,6 @@ pub struct Backend {
     psr4: Arc<RwLock<Psr4Map>>,
     meta: Arc<RwLock<PhpStormMeta>>,
     config: Arc<RwLock<LspConfig>>,
-    /// Set to `true` once the post-scan reference-indexing pass completes.
-    /// `find_references_codebase` is only used when this is `true`.
-    ref_index_ready: Arc<AtomicBool>,
 }
 
 impl Backend {
@@ -221,7 +216,6 @@ impl Backend {
             psr4: Arc::new(RwLock::new(Psr4Map::empty())),
             meta: Arc::new(RwLock::new(PhpStormMeta::default())),
             config: Arc::new(RwLock::new(LspConfig::default())),
-            ref_index_ready: Arc::new(AtomicBool::new(false)),
         }
     }
 
@@ -500,7 +494,6 @@ impl LanguageServer for Backend {
 
             let docs = Arc::clone(&self.docs);
             let client = self.client.clone();
-            let ref_index_ready = Arc::clone(&self.ref_index_ready);
             let exclude_paths = self.config.read().unwrap().exclude_paths.clone();
             tokio::spawn(async move {
                 client
@@ -545,12 +538,12 @@ impl LanguageServer for Backend {
                 // files before indexing finished would show stale information.
                 send_refresh_requests(&client).await;
 
-                // Phase 3: build the reference index in the background so that
-                // find_references_codebase can serve O(k) lookups instead of
-                // scanning every file's AST. Runs after the progress notification
-                // so the editor considers indexing "done" while this completes.
-                let cb = docs.get_codebase_salsa();
-                build_reference_index(docs, cb, ref_index_ready, client).await;
+                // Phase D: reference index is now lazy. `textDocument/references`
+                // drives `symbol_refs(ws, key)` on demand; salsa memoizes the
+                // per-file `file_refs` across requests. No upfront scan is
+                // needed, and invalidation is automatic on edits.
+                drop(docs);
+                client.send_notification::<IndexReadyNotification>(()).await;
             });
         }
 
@@ -722,7 +715,6 @@ impl LanguageServer for Backend {
 
         let docs = Arc::clone(&self.docs);
         let client = self.client.clone();
-        let ref_index_ready = Arc::clone(&self.ref_index_ready);
         let diag_cfg = self.config.read().unwrap().diagnostics.clone();
         let php_version = self.config.read().unwrap().php_version.clone();
         tokio::spawn(async move {
@@ -772,9 +764,6 @@ impl LanguageServer for Backend {
                     // Cache so code_action can read them without rerunning the rebuild.
                     docs.set_sem_diagnostics(&uri, sem_diags.clone());
                     all_diags.extend(sem_diags);
-                    if ref_index_ready.load(Ordering::Acquire) {
-                        index_file_references(&uri, &d, &codebase);
-                    }
                     all_diags.extend(duplicate_declaration_diagnostics(&source, &d, &diag_cfg));
                     let other_raw = docs.other_docs(&uri);
                     let other_docs: Vec<Arc<ParsedDoc>> =
@@ -841,10 +830,6 @@ impl LanguageServer for Backend {
                         // aggregator re-folds — no manual remove/collect/finalize.
                         let (doc, diags) = parse_document(&text);
                         self.docs.index_from_doc(change.uri.clone(), &doc, diags);
-                        if self.ref_index_ready.load(Ordering::Acquire) {
-                            let cb = self.codebase();
-                            index_file_references(&change.uri, &doc, &cb);
-                        }
                     }
                 }
                 FileChangeType::DELETED => {
@@ -977,15 +962,16 @@ impl LanguageServer for Backend {
         let all_docs = self.docs.all_docs_for_scan();
         let include_declaration = params.context.include_declaration;
 
-        // Fast path: use the pre-computed reference index once it is ready.
-        // Falls back to the full AST scan for Method / None kinds, and whenever
-        // the symbol is not found in the codebase (returns None).
-        let locations = if self.ref_index_ready.load(Ordering::Acquire) {
+        // Fast path: look up references via the salsa `symbol_refs` query.
+        // First call per key runs `file_refs` across the workspace; subsequent
+        // calls hit salsa's memo. Falls back to the full AST scan for Method /
+        // None kinds, and whenever the symbol is not found in the codebase.
+        let locations = {
             let cb = self.codebase();
-            find_references_codebase(&word, &all_docs, include_declaration, kind, &cb)
+            let docs = Arc::clone(&self.docs);
+            let lookup = move |key: &str| docs.get_symbol_refs_salsa(key);
+            find_references_codebase(&word, &all_docs, include_declaration, kind, &cb, &lookup)
                 .unwrap_or_else(|| find_references(&word, &all_docs, include_declaration, kind))
-        } else {
-            find_references(&word, &all_docs, include_declaration, kind)
         };
 
         Ok(if locations.is_empty() {
@@ -2493,49 +2479,6 @@ async fn scan_workspace(
     count.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-/// Phase 3 of workspace initialisation: run `StatementsAnalyzer` on every
-/// indexed file to populate `codebase.symbol_reference_locations`.
-///
-/// This is deliberately run *after* the progress notification is sent so the
-/// editor considers indexing finished while this background work completes.
-/// Once done, `ref_index_ready` is set to `true` so the `references` handler
-/// can switch to O(k) codebase lookups instead of scanning every AST.
-async fn build_reference_index(
-    docs: Arc<DocumentStore>,
-    codebase: Arc<mir_codebase::Codebase>,
-    ready: Arc<AtomicBool>,
-    client: Client,
-) {
-    // The codebase was already finalized at the end of the workspace scan
-    // (Phase 2). Calling finalize() again here would race with concurrent
-    // semantic_diagnostics calls that reset the finalized flag via
-    // remove_file_definitions(), causing method-inheritance lookups to
-    // transiently return None and silently drop those references from the index.
-    let all_docs = docs.all_docs_for_scan();
-    let parallelism = std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(4);
-    let sem = Arc::new(tokio::sync::Semaphore::new(parallelism));
-    let mut set: tokio::task::JoinSet<()> = tokio::task::JoinSet::new();
-
-    for (uri, doc) in all_docs {
-        let permit = Arc::clone(&sem).acquire_owned().await.unwrap();
-        let codebase = Arc::clone(&codebase);
-        set.spawn(async move {
-            let _permit = permit;
-            tokio::task::spawn_blocking(move || {
-                index_file_references(&uri, &doc, &codebase);
-            })
-            .await
-            .ok();
-        });
-    }
-
-    while set.join_next().await.is_some() {}
-    ready.store(true, Ordering::Release);
-    client.send_notification::<IndexReadyNotification>(()).await;
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3704,7 +3647,6 @@ mod integration {
             "references should not error: {:?}",
             resp
         );
-
         let locs = resp["result"]
             .as_array()
             .expect("expected array of locations");

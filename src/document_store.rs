@@ -385,6 +385,21 @@ impl DocumentStore {
         self.with_host(|host| crate::db::codebase::codebase(host.db(), ws).0.clone())
     }
 
+    /// Salsa-backed reference lookup — drop-in replacement for
+    /// `Codebase::get_reference_locations`. First call per `key` runs
+    /// `file_refs` over every workspace file; subsequent calls hit the
+    /// `symbol_refs` memo.
+    pub fn get_symbol_refs_salsa(&self, key: &str) -> Vec<(Arc<str>, u32, u32)> {
+        self.sync_workspace_files();
+        let ws = self.workspace;
+        self.with_host(|host| {
+            crate::db::refs::symbol_refs(host.db(), ws, key.to_string())
+                .0
+                .as_ref()
+                .clone()
+        })
+    }
+
     /// Salsa-backed per-file method-return-type map.
     #[allow(dead_code)]
     pub fn get_method_returns_salsa(&self, uri: &Url) -> Option<Arc<crate::ast::MethodReturnsMap>> {

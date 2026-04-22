@@ -52,6 +52,7 @@ unsafe impl Update for FileRefsArc {
 pub struct SymbolRefsArc(pub Arc<Vec<(Arc<str>, u32, u32)>>);
 
 impl SymbolRefsArc {
+    #[allow(dead_code)] // handy for tests; prod path uses `.0` directly.
     pub fn get(&self) -> &[(Arc<str>, u32, u32)] {
         &self.0
     }
