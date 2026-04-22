@@ -50,9 +50,14 @@ pub struct DocumentStore {
     // Every mutation that changes a file's text also updates the salsa input;
     // reads are unchanged for now. Once all feature modules are migrated to
     // `*_salsa` accessors (B4c), the legacy fields above will be removed.
-    /// Mutex-guarded because salsa input creation and `set_text` both require
-    /// exclusive db access. Contention only happens during edits/scan, and is
-    /// already serialized per-file today via DashMap write sharding.
+    /// Mutex — held briefly to clone the database for reads and to mutate
+    /// it for writes. Per-thread salsa state (`zalsa_local`) is `!Sync`,
+    /// which rules out `RwLock<AnalysisHost>`. Readers instead snapshot the
+    /// db (cheap — storage is `Arc<Zalsa>`) and run queries on the clone
+    /// with the lock released, giving real read/read parallelism. Writers
+    /// during an in-flight read bump the shared revision; the reader raises
+    /// `salsa::Cancelled` on its next query call and `snapshot_query` below
+    /// retries with a fresh snapshot.
     host: Mutex<AnalysisHost>,
     /// `Url -> SourceFile` lookup. The `SourceFile` is a salsa-id handle; the
     /// underlying input lives in `host.db` for the lifetime of the database.
@@ -100,12 +105,14 @@ impl DocumentStore {
         if let Some(existing) = self.source_files.get(uri) {
             let sf = *existing;
             drop(existing);
-            let mut host = self.host.lock().unwrap();
             // Dedup: salsa's set_field unconditionally bumps revision, which
             // would invalidate every downstream query (codebase, file_refs,
             // …). Skip the setter when the new text is byte-for-byte equal
             // to what we already have. Matters heavily during workspace scan
-            // + did_open for unchanged files (no-op mirrors).
+            // + did_open for unchanged files (no-op mirrors). Check under a
+            // read lock first to avoid blocking concurrent request handlers
+            // on a no-op mirror.
+            let mut host = self.host.lock().unwrap();
             let current: Arc<str> = sf.text(host.db());
             if *current == *text_arc {
                 return sf;
@@ -136,6 +143,37 @@ impl DocumentStore {
     pub fn with_host<R>(&self, f: impl FnOnce(&AnalysisHost) -> R) -> R {
         let host = self.host.lock().unwrap();
         f(&host)
+    }
+
+    /// Phase E1: take a brief lock, clone the salsa database, release the
+    /// lock. Queries then run on the cloned `RootDatabase` without blocking
+    /// writers or other readers. Salsa's `Storage<Self>` is reference-counted
+    /// (`Arc<Zalsa>`), so the clone is cheap — it shares memoized data and
+    /// the cancellation flag with the host's db.
+    fn snapshot_db(&self) -> crate::db::analysis::RootDatabase {
+        let host = self.host.lock().unwrap();
+        host.db().clone()
+    }
+
+    /// Run a query on a fresh snapshot, catching `salsa::Cancelled` (raised
+    /// when a concurrent writer advances the revision) and retrying with a
+    /// new snapshot. Writers hold the mutex only long enough to bump input
+    /// values, so a handful of retries is more than enough in practice; we
+    /// cap at 8 to avoid pathological livelock under sustained write pressure.
+    fn snapshot_query<R>(&self, f: impl Fn(&crate::db::analysis::RootDatabase) -> R + Clone) -> R {
+        use std::panic::AssertUnwindSafe;
+        for _ in 0..8 {
+            let db = self.snapshot_db();
+            let f = f.clone();
+            match salsa::Cancelled::catch(AssertUnwindSafe(move || f(&db))) {
+                Ok(r) => return r,
+                Err(_) => continue,
+            }
+        }
+        // Last-resort attempt: take the mutex for the whole query so no
+        // writer can race us. Much slower, but guaranteed to make progress.
+        let host = self.host.lock().unwrap();
+        f(host.db())
     }
 
     /// Update the maximum number of indexed-only files kept in memory.
@@ -330,14 +368,14 @@ impl DocumentStore {
             return None;
         }
         let sf = self.source_file(uri)?;
-        Some(self.with_host(|host| crate::db::parse::parsed_doc(host.db(), sf).0.clone()))
+        Some(self.snapshot_query(move |db| crate::db::parse::parsed_doc(db, sf).0.clone()))
     }
 
     /// Salsa-backed compact symbol index.
     #[allow(dead_code)]
     pub fn get_index_salsa(&self, uri: &Url) -> Option<Arc<FileIndex>> {
         let sf = self.source_file(uri)?;
-        Some(self.with_host(|host| crate::db::index::file_index(host.db(), sf).0.clone()))
+        Some(self.snapshot_query(move |db| crate::db::index::file_index(db, sf).0.clone()))
     }
 
     /// Salsa-backed parsed document, ignoring legacy open-file state.
@@ -350,7 +388,7 @@ impl DocumentStore {
     #[allow(dead_code)]
     pub fn get_doc_salsa_any(&self, uri: &Url) -> Option<Arc<ParsedDoc>> {
         let sf = self.source_file(uri)?;
-        Some(self.with_host(|host| crate::db::parse::parsed_doc(host.db(), sf).0.clone()))
+        Some(self.snapshot_query(move |db| crate::db::parse::parsed_doc(db, sf).0.clone()))
     }
 
     /// Refresh `workspace.files` to mirror the current `source_files` set.
@@ -382,7 +420,7 @@ impl DocumentStore {
     pub fn get_codebase_salsa(&self) -> Arc<mir_codebase::Codebase> {
         self.sync_workspace_files();
         let ws = self.workspace;
-        self.with_host(|host| crate::db::codebase::codebase(host.db(), ws).0.clone())
+        self.snapshot_query(move |db| crate::db::codebase::codebase(db, ws).0.clone())
     }
 
     /// Salsa-backed reference lookup — drop-in replacement for
@@ -392,8 +430,9 @@ impl DocumentStore {
     pub fn get_symbol_refs_salsa(&self, key: &str) -> Vec<(Arc<str>, u32, u32)> {
         self.sync_workspace_files();
         let ws = self.workspace;
-        self.with_host(|host| {
-            crate::db::refs::symbol_refs(host.db(), ws, key.to_string())
+        let key = key.to_string();
+        self.snapshot_query(move |db| {
+            crate::db::refs::symbol_refs(db, ws, key.clone())
                 .0
                 .as_ref()
                 .clone()
@@ -404,11 +443,11 @@ impl DocumentStore {
     #[allow(dead_code)]
     pub fn get_method_returns_salsa(&self, uri: &Url) -> Option<Arc<crate::ast::MethodReturnsMap>> {
         let sf = self.source_file(uri)?;
-        Some(self.with_host(|host| {
-            crate::db::method_returns::method_returns(host.db(), sf)
-                .0
-                .clone()
-        }))
+        Some(
+            self.snapshot_query(move |db| {
+                crate::db::method_returns::method_returns(db, sf).0.clone()
+            }),
+        )
     }
 
     /// Cache the semantic tokens computed for a delta response.
@@ -992,5 +1031,61 @@ mod tests {
         assert!(store.get_doc_salsa(&u).is_none());
         assert!(store.get_index_salsa(&u).is_none());
         assert!(store.get_method_returns_salsa(&u).is_none());
+    }
+
+    /// Phase E1: concurrent readers and writers must not deadlock, panic, or
+    /// return stale data. Writers briefly bump inputs while readers are
+    /// running on cloned snapshots; any `salsa::Cancelled` raised on the
+    /// reader side must be caught and retried by `snapshot_query`.
+    #[test]
+    fn concurrent_reads_and_writes_do_not_panic() {
+        use std::sync::Arc;
+        use std::thread;
+        use std::time::{Duration, Instant};
+
+        let store = Arc::new(DocumentStore::new());
+        let urls: Vec<Url> = (0..8).map(|i| uri(&format!("/f{i}.php"))).collect();
+        for (i, u) in urls.iter().enumerate() {
+            open(&store, u.clone(), format!("<?php\nclass C{i} {{}}"));
+        }
+
+        let deadline = Instant::now() + Duration::from_millis(400);
+        let mut handles = Vec::new();
+
+        // Writer thread: keep bumping every file's text.
+        {
+            let store = Arc::clone(&store);
+            let urls = urls.clone();
+            handles.push(thread::spawn(move || {
+                let mut rev = 0u32;
+                while Instant::now() < deadline {
+                    for u in &urls {
+                        let text = format!("<?php\nclass C{{}}\n// rev {rev}");
+                        store.set_text(u.clone(), text);
+                    }
+                    rev += 1;
+                }
+            }));
+        }
+
+        // Reader threads: hammer the salsa accessors.
+        for _ in 0..4 {
+            let store = Arc::clone(&store);
+            let urls = urls.clone();
+            handles.push(thread::spawn(move || {
+                while Instant::now() < deadline {
+                    for u in &urls {
+                        let _ = store.get_doc_salsa(u);
+                        let _ = store.get_index_salsa(u);
+                    }
+                    let _ = store.get_codebase_salsa();
+                    let _ = store.get_symbol_refs_salsa("C0");
+                }
+            }));
+        }
+
+        for h in handles {
+            h.join().expect("no panic under concurrent read/write");
+        }
     }
 }
