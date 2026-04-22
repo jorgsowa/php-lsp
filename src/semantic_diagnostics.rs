@@ -20,6 +20,12 @@ use crate::docblock::{docblock_before, parse_docblock};
 /// `mir_analyzer` gains version-gating support.
 ///
 /// TODO: pass `php_version` to `mir_analyzer` once it exposes a version API.
+/// Legacy mutating path — runs `remove_file_definitions` + collect + finalize
+/// on the codebase. Kept for benchmarks (`benches/semantic.rs`) and as the
+/// reference implementation while Phase D wraps Pass-2 in salsa. Not used by
+/// the LSP handlers anymore (they use `semantic_diagnostics_no_rebuild`
+/// against the salsa-built codebase).
+#[allow(dead_code)]
 pub fn semantic_diagnostics(
     uri: &Url,
     doc: &ParsedDoc,

@@ -57,7 +57,7 @@ use crate::rename::{prepare_rename, rename, rename_property, rename_variable};
 use crate::selection_range::selection_ranges;
 use crate::semantic_diagnostics::{
     deprecated_call_diagnostics, duplicate_declaration_diagnostics, index_file_references,
-    semantic_diagnostics, semantic_diagnostics_no_rebuild,
+    semantic_diagnostics_no_rebuild,
 };
 use crate::semantic_tokens::{
     compute_token_delta, legend, semantic_tokens, semantic_tokens_range, token_hash,
@@ -203,7 +203,6 @@ pub struct Backend {
     psr4: Arc<RwLock<Psr4Map>>,
     meta: Arc<RwLock<PhpStormMeta>>,
     config: Arc<RwLock<LspConfig>>,
-    codebase: Arc<mir_codebase::Codebase>,
     /// Set to `true` once the post-scan reference-indexing pass completes.
     /// `find_references_codebase` is only used when this is `true`.
     ref_index_ready: Arc<AtomicBool>,
@@ -211,8 +210,10 @@ pub struct Backend {
 
 impl Backend {
     pub fn new(client: Client) -> Self {
-        let codebase = mir_codebase::Codebase::new();
-        mir_analyzer::stubs::load_stubs(&codebase);
+        // No imperative Codebase field anymore — `self.codebase()` below
+        // delegates to the salsa-memoized `codebase` query, which composes
+        // bundled stubs + every file's StubSlice and returns a fresh
+        // `Arc<Codebase>` (or the memoized one when inputs are unchanged).
         Backend {
             client,
             docs: Arc::new(DocumentStore::new()),
@@ -220,19 +221,21 @@ impl Backend {
             psr4: Arc::new(RwLock::new(Psr4Map::empty())),
             meta: Arc::new(RwLock::new(PhpStormMeta::default())),
             config: Arc::new(RwLock::new(LspConfig::default())),
-            codebase: Arc::new(codebase),
             ref_index_ready: Arc::new(AtomicBool::new(false)),
         }
     }
 
-    /// Run the definition collector for a single file, updating the persistent codebase.
-    fn collect_definitions_for(&self, uri: &Url, doc: &ParsedDoc) {
-        collect_into_codebase(&self.codebase, uri, doc);
+    /// Current finalized codebase — stubs + all known files, memoized by salsa.
+    /// Cheap Arc clone on the happy path; on edits the query re-runs under the
+    /// DocumentStore host lock. Hold the returned Arc for the duration of a
+    /// request to get a consistent snapshot.
+    fn codebase(&self) -> Arc<mir_codebase::Codebase> {
+        self.docs.get_codebase_salsa()
     }
 
     /// Look up the import map for a file from the persistent codebase.
     fn file_imports(&self, uri: &Url) -> std::collections::HashMap<String, String> {
-        self.codebase
+        self.codebase()
             .file_imports
             .get(uri.as_str())
             .map(|r| r.clone())
@@ -497,7 +500,6 @@ impl LanguageServer for Backend {
 
             let docs = Arc::clone(&self.docs);
             let client = self.client.clone();
-            let codebase = Arc::clone(&self.codebase);
             let ref_index_ready = Arc::clone(&self.ref_index_ready);
             let exclude_paths = self.config.read().unwrap().exclude_paths.clone();
             tokio::spawn(async move {
@@ -517,13 +519,7 @@ impl LanguageServer for Backend {
 
                 let mut total = 0usize;
                 for root in roots {
-                    total += scan_workspace(
-                        root,
-                        Arc::clone(&docs),
-                        &exclude_paths,
-                        Arc::clone(&codebase),
-                    )
-                    .await;
+                    total += scan_workspace(root, Arc::clone(&docs), &exclude_paths).await;
                 }
 
                 client
@@ -553,7 +549,8 @@ impl LanguageServer for Backend {
                 // find_references_codebase can serve O(k) lookups instead of
                 // scanning every file's AST. Runs after the progress notification
                 // so the editor considers indexing "done" while this completes.
-                build_reference_index(docs, codebase, ref_index_ready, client).await;
+                let cb = docs.get_codebase_salsa();
+                build_reference_index(docs, cb, ref_index_ready, client).await;
             });
         }
 
@@ -639,9 +636,8 @@ impl LanguageServer for Backend {
                 let ex = exclude_paths.clone();
                 let path_clone = path.clone();
                 let client = self.client.clone();
-                let cb = Arc::clone(&self.codebase);
                 tokio::spawn(async move {
-                    scan_workspace(path_clone, docs, &ex, cb).await;
+                    scan_workspace(path_clone, docs, &ex).await;
                     send_refresh_requests(&client).await;
                 });
             }
@@ -656,22 +652,26 @@ impl LanguageServer for Backend {
         let uri = params.text_document.uri;
         let text = params.text_document.text;
 
-        // Store text immediately so other features work while parsing
+        // Store text immediately so other features work while parsing.
+        // This also mirrors the new text into salsa, so the codebase query
+        // sees it when semantic_diagnostics runs below.
         let version = self.docs.set_text(uri.clone(), text.clone());
 
-        let codebase = Arc::clone(&self.codebase);
+        let docs_for_spawn = Arc::clone(&self.docs);
         let diag_cfg = self.config.read().unwrap().diagnostics.clone();
         let php_version = self.config.read().unwrap().php_version.clone();
         let uri_clone = uri.clone();
 
         // Parse and run semantic analysis together in a blocking thread.
-        // semantic_diagnostics handles remove → collect → finalize → analyze,
-        // so definitions are never doubled even if the workspace scan already
-        // indexed this file.
+        // Use `_no_rebuild`: the salsa codebase query already folded this
+        // file's definitions (mirror_text bumped the input above) and ran
+        // finalize(); we must not re-run `remove_file_definitions / collect`
+        // on the memoized Arc, which would mutate shared salsa state.
         let diag_cfg_inner = diag_cfg.clone();
         let (doc, parse_diags, sem_diags) = tokio::task::spawn_blocking(move || {
             let (doc, parse_diags) = parse_document(&text);
-            let sem_diags = semantic_diagnostics(
+            let codebase = docs_for_spawn.get_codebase_salsa();
+            let sem_diags = semantic_diagnostics_no_rebuild(
                 &uri_clone,
                 &doc,
                 &codebase,
@@ -722,7 +722,6 @@ impl LanguageServer for Backend {
 
         let docs = Arc::clone(&self.docs);
         let client = self.client.clone();
-        let codebase = Arc::clone(&self.codebase);
         let ref_index_ready = Arc::clone(&self.ref_index_ready);
         let diag_cfg = self.config.read().unwrap().diagnostics.clone();
         let php_version = self.config.read().unwrap().php_version.clone();
@@ -756,26 +755,23 @@ impl LanguageServer for Backend {
                 let source = docs.get(&uri).unwrap_or_default();
                 let mut all_diags = diagnostics;
                 if let Some(d) = docs.get_doc_salsa(&uri) {
-                    let sem_diags = if structure_changed {
-                        // Structure changed (new/removed class, method signature changed, …):
-                        // rebuild codebase definitions so inheritance lookups stay accurate.
-                        semantic_diagnostics(&uri, &d, &codebase, &diag_cfg, php_version.as_deref())
-                    } else {
-                        // Body-only edit: skip remove → collect → finalize; use the
-                        // already-finalized codebase for body analysis only.
-                        semantic_diagnostics_no_rebuild(
-                            &uri,
-                            &d,
-                            &codebase,
-                            &diag_cfg,
-                            php_version.as_deref(),
-                        )
-                    };
+                    let codebase = docs.get_codebase_salsa();
+                    // Both paths use `_no_rebuild`: whether the edit changed
+                    // structure or not, salsa's `codebase` query has already
+                    // folded this file's new StubSlice and finalized. Only
+                    // the file_index "same_structure" signal still matters —
+                    // e.g. future skip-Pass-2 optimizations.
+                    let _ = structure_changed;
+                    let sem_diags = semantic_diagnostics_no_rebuild(
+                        &uri,
+                        &d,
+                        &codebase,
+                        &diag_cfg,
+                        php_version.as_deref(),
+                    );
                     // Cache so code_action can read them without rerunning the rebuild.
                     docs.set_sem_diagnostics(&uri, sem_diags.clone());
                     all_diags.extend(sem_diags);
-                    // Reference index requires a finalized codebase; semantic_diagnostics
-                    // already called finalize() above.
                     if ref_index_ready.load(Ordering::Acquire) {
                         index_file_references(&uri, &d, &codebase);
                     }
@@ -839,16 +835,16 @@ impl LanguageServer for Backend {
                     if let Ok(path) = change.uri.to_file_path()
                         && let Ok(text) = tokio::fs::read_to_string(&path).await
                     {
-                        // Parse once: collect into codebase, then index using the same
-                        // ParsedDoc — avoids a second parse inside docs.index().
+                        // Salsa path: index_from_doc mirrors the new text into
+                        // the SourceFile input. On the next codebase() call,
+                        // salsa re-runs file_definitions for this file and the
+                        // aggregator re-folds — no manual remove/collect/finalize.
                         let (doc, diags) = parse_document(&text);
-                        self.codebase.remove_file_definitions(change.uri.as_str());
-                        self.collect_definitions_for(&change.uri, &doc);
-                        self.codebase.finalize();
-                        if self.ref_index_ready.load(Ordering::Acquire) {
-                            index_file_references(&change.uri, &doc, &self.codebase);
-                        }
                         self.docs.index_from_doc(change.uri.clone(), &doc, diags);
+                        if self.ref_index_ready.load(Ordering::Acquire) {
+                            let cb = self.codebase();
+                            index_file_references(&change.uri, &doc, &cb);
+                        }
                     }
                 }
                 FileChangeType::DELETED => {
@@ -985,7 +981,8 @@ impl LanguageServer for Backend {
         // Falls back to the full AST scan for Method / None kinds, and whenever
         // the symbol is not found in the codebase (returns None).
         let locations = if self.ref_index_ready.load(Ordering::Acquire) {
-            find_references_codebase(&word, &all_docs, include_declaration, kind, &self.codebase)
+            let cb = self.codebase();
+            find_references_codebase(&word, &all_docs, include_declaration, kind, &cb)
                 .unwrap_or_else(|| find_references(&word, &all_docs, include_declaration, kind))
         } else {
             find_references(&word, &all_docs, include_declaration, kind)
@@ -1754,8 +1751,9 @@ impl LanguageServer for Backend {
             let cfg = self.config.read().unwrap();
             (cfg.diagnostics.clone(), cfg.php_version.clone())
         };
+        let cb = self.codebase();
         let sem_diags =
-            semantic_diagnostics(uri, &doc, &self.codebase, &diag_cfg, php_version.as_deref());
+            semantic_diagnostics_no_rebuild(uri, &doc, &cb, &diag_cfg, php_version.as_deref());
         let dup_diags = duplicate_declaration_diagnostics(&source, &doc, &diag_cfg);
 
         let mut items = parse_diags;
@@ -1783,11 +1781,10 @@ impl LanguageServer for Backend {
             (cfg.diagnostics.clone(), cfg.php_version.clone())
         };
 
-        // Build inheritance tables once for the entire workspace.
-        // The persistent codebase already has all file definitions collected
-        // incrementally via collect_into_codebase(). A single finalize() call
-        // here is O(N); the old approach called finalize() per file → O(N²).
-        self.codebase.finalize();
+        // Salsa-built codebase: finalized by the aggregator query. Grab a
+        // single snapshot and hold it for the whole workspace sweep so all
+        // files see a consistent view.
+        let cb = self.codebase();
 
         let items: Vec<WorkspaceDocumentDiagnosticReport> = all_parse_diags
             .into_iter()
@@ -1798,7 +1795,7 @@ impl LanguageServer for Backend {
                 let sem_diags = semantic_diagnostics_no_rebuild(
                     &uri,
                     &doc,
-                    &self.codebase,
+                    &cb,
                     &diag_cfg,
                     php_version.as_deref(),
                 );
@@ -2399,19 +2396,6 @@ async fn send_refresh_requests(client: &Client) {
         .ok();
 }
 
-/// Run the definition collector for a single file against the persistent codebase.
-fn collect_into_codebase(codebase: &mir_codebase::Codebase, uri: &Url, doc: &ParsedDoc) {
-    let file: Arc<str> = Arc::from(uri.as_str());
-    let source_map = php_rs_parser::source_map::SourceMap::new(doc.source());
-    let collector = mir_analyzer::collector::DefinitionCollector::new(
-        codebase,
-        file,
-        doc.source(),
-        &source_map,
-    );
-    collector.collect(doc.program());
-}
-
 /// Maximum number of PHP files indexed during a workspace scan.
 /// Prevents excessive memory use on projects with very large vendor trees.
 const MAX_INDEXED_FILES: usize = 50_000;
@@ -2423,12 +2407,15 @@ const MAX_INDEXED_FILES: usize = 50_000;
 ///
 /// Phase 1 — directory traversal: async, serial (I/O-bound; tokio handles it well).
 /// Phase 2 — file reading + parsing: concurrent, bounded by available CPU cores.
-#[tracing::instrument(skip(docs, exclude_paths, codebase), fields(root = %root.display()))]
+///
+/// Post-salsa: we only populate the DocumentStore here. The codebase is built
+/// on demand by the salsa `codebase` query the first time a feature asks for
+/// it — stubs + every indexed file's StubSlice, memoized thereafter.
+#[tracing::instrument(skip(docs, exclude_paths), fields(root = %root.display()))]
 async fn scan_workspace(
     root: PathBuf,
     docs: Arc<DocumentStore>,
     exclude_paths: &[String],
-    codebase: Arc<mir_codebase::Codebase>,
 ) -> usize {
     // Phase 1: collect PHP file paths via async directory walk.
     let mut php_files: Vec<PathBuf> = Vec::new();
@@ -2479,7 +2466,6 @@ async fn scan_workspace(
     for path in php_files {
         let permit = Arc::clone(&sem).acquire_owned().await.unwrap();
         let docs = Arc::clone(&docs);
-        let codebase = Arc::clone(&codebase);
         let count = Arc::clone(&count);
         set.spawn(async move {
             let _permit = permit;
@@ -2490,10 +2476,10 @@ async fn scan_workspace(
                 return;
             };
             tokio::task::spawn_blocking(move || {
-                // Parse once: collect into codebase, then index using the same
-                // ParsedDoc — avoids a second parse inside docs.index().
+                // Mirror into salsa + record parse diagnostics. The codebase
+                // query picks up this file on its next run; no imperative
+                // collect step needed.
                 let (doc, diags) = parse_document(&text);
-                collect_into_codebase(&codebase, &uri, &doc);
                 docs.index_from_doc(uri.clone(), &doc, diags);
                 count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             })

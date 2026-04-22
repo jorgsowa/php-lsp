@@ -101,6 +101,15 @@ impl DocumentStore {
             let sf = *existing;
             drop(existing);
             let mut host = self.host.lock().unwrap();
+            // Dedup: salsa's set_field unconditionally bumps revision, which
+            // would invalidate every downstream query (codebase, file_refs,
+            // …). Skip the setter when the new text is byte-for-byte equal
+            // to what we already have. Matters heavily during workspace scan
+            // + did_open for unchanged files (no-op mirrors).
+            let current: Arc<str> = sf.text(host.db());
+            if *current == *text_arc {
+                return sf;
+            }
             sf.set_text(host.db_mut()).to(text_arc);
             sf
         } else {
@@ -289,11 +298,13 @@ impl DocumentStore {
     pub fn remove(&self, uri: &Url) {
         self.map.remove(uri);
         self.token_cache.remove(uri);
-        // Intentionally keep the salsa `SourceFile` input alive: salsa inputs
-        // are immortal for the life of the database, and removing the
-        // `Url -> SourceFile` entry would break later mirror lookups if the
-        // file is re-added. Memory cost is negligible (one `Arc<str>` per
-        // ever-seen URL). Revisit if workspace-churn profiling shows issues.
+        // Also drop the Url→SourceFile mapping so the file stops contributing
+        // to the workspace codebase query. Salsa inputs themselves remain
+        // alive (salsa doesn't expose input removal in 0.26), but they're
+        // orphaned — no query keys them anymore, and re-opening the file
+        // allocates a fresh SourceFile with a new FileId. The ~40 bytes per
+        // orphan is acceptable; revisit if workspace-churn profiling hurts.
+        self.source_files.remove(uri);
     }
 
     // ── B4b salsa-backed accessors ─────────────────────────────────────────
@@ -343,18 +354,20 @@ impl DocumentStore {
 
     /// Refresh `workspace.files` to mirror the current `source_files` set.
     ///
-    /// Called by `get_codebase_salsa` and by tests. Sorting by `FileId` keeps
-    /// the list order deterministic — salsa memoizes on the Arc's pointer
-    /// identity, so same contents should produce the same pointer across
-    /// calls. (A future optimization: only call `set_files` when the set
-    /// genuinely changed; today this is safe because `set_files` to the same
-    /// Arc is a no-op at the salsa level.)
-    #[allow(dead_code)] // used by get_codebase_salsa (step 3 wiring)
+    /// Called by `get_codebase_salsa`. Skips the setter when the file list
+    /// hasn't changed — salsa's `set_field` unconditionally bumps revision,
+    /// which would invalidate every downstream query (codebase, file_refs).
+    /// Dedup is essential for memoization across LSP requests.
+    #[allow(dead_code)] // used by get_codebase_salsa
     pub fn sync_workspace_files(&self) {
         let mut files: Vec<SourceFile> = self.source_files.iter().map(|e| *e.value()).collect();
         files.sort_by_key(|sf| self.with_host(|host| sf.id(host.db()).0));
-        let arc: Arc<[SourceFile]> = Arc::from(files);
         let mut host = self.host.lock().unwrap();
+        let current = self.workspace.files(host.db());
+        if current.len() == files.len() && current.iter().zip(files.iter()).all(|(a, b)| a == b) {
+            return;
+        }
+        let arc: Arc<[SourceFile]> = Arc::from(files);
         self.workspace.set_files(host.db_mut()).to(arc);
     }
 

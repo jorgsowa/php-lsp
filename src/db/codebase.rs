@@ -43,17 +43,25 @@ unsafe impl Update for CodebaseArc {
     }
 }
 
-/// Build a finalized Codebase from every file's `StubSlice`. Depends on
-/// `Workspace.files` (the file set) and transitively on every file's
-/// `file_definitions` query.
+/// Build a finalized Codebase from the bundled PHP stubs (string/array/etc.
+/// builtins) plus every user file's `StubSlice`. Depends on `Workspace.files`
+/// and transitively on every file's `file_definitions` query. Stubs are
+/// treated as constant — they don't participate in salsa invalidation.
+///
+/// Load order matches today's imperative path (`Backend::new`): stubs first,
+/// user definitions second — so user classes with an FQN matching a stub
+/// overwrite the stub entry. `finalize()` runs once at the end.
 #[salsa::tracked(no_eq)]
 pub fn codebase(db: &dyn Database, ws: Workspace) -> CodebaseArc {
+    let mut builder = mir_codebase::CodebaseBuilder::new();
+    mir_analyzer::stubs::load_stubs(builder.codebase());
     let files = ws.files(db);
-    let parts: Vec<mir_codebase::storage::StubSlice> = files
-        .iter()
-        .map(|sf| (*file_definitions(db, *sf).0).clone())
-        .collect();
-    CodebaseArc(Arc::new(mir_codebase::codebase_from_parts(parts)))
+    for sf in files.iter() {
+        builder.add((*file_definitions(db, *sf).0).clone());
+    }
+    // TODO: when PHP-version-dependent stubs land, thread a PhpVersion input
+    // through this query so different versions don't share memoization.
+    CodebaseArc(Arc::new(builder.finalize()))
 }
 
 #[cfg(test)]
