@@ -14,3 +14,16 @@ pub struct SourceFile {
     pub id: FileId,
     pub text: Arc<str>,
 }
+
+/// Workspace-level input: the set of files that participate in whole-program
+/// analyses (codebase, references). Updated by the backend when files are
+/// discovered (workspace scan, did_open on previously-unseen file) or removed
+/// (watched-files delete).
+///
+/// Uses `durability = HIGH` conceptually — the file list changes rarely
+/// (workspace scan, deletions), not on every edit. Salsa's default durability
+/// is LOW; backend can opt into HIGH via `set_files` if churn becomes an issue.
+#[salsa::input]
+pub struct Workspace {
+    pub files: Arc<[SourceFile]>,
+}

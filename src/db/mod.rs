@@ -6,6 +6,7 @@
 //! top of it incrementally.
 
 pub mod analysis;
+pub mod codebase;
 pub mod definitions;
 pub mod index;
 pub mod input;
@@ -15,4 +16,4 @@ pub mod parse;
 #[allow(unused_imports)] // Analysis/RootDatabase reserved for Phase E.
 pub use analysis::{Analysis, AnalysisHost, RootDatabase};
 #[allow(unused_imports)] // FileId construction is test-only today.
-pub use input::{FileId, SourceFile};
+pub use input::{FileId, SourceFile, Workspace};
