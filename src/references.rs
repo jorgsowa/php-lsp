@@ -1303,6 +1303,7 @@ mod tests {
             fqcn: std::sync::Arc::from(fqcn),
             short_name: std::sync::Arc::from(fqcn.rsplit('\\').next().unwrap_or(fqcn)),
             parent: None,
+            extends_type_args: vec![],
             interfaces: vec![],
             traits: vec![],
             own_methods: methods,

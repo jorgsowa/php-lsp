@@ -6,6 +6,7 @@
 //! top of it incrementally.
 
 pub mod analysis;
+pub mod definitions;
 pub mod index;
 pub mod input;
 pub mod method_returns;
