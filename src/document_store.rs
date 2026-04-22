@@ -8,7 +8,7 @@ use tower_lsp::lsp_types::{Diagnostic, SemanticToken, Url};
 
 use crate::ast::ParsedDoc;
 use crate::db::analysis::AnalysisHost;
-use crate::db::input::{FileId, SourceFile};
+use crate::db::input::{FileId, SourceFile, Workspace};
 use crate::diagnostics::parse_document;
 use crate::file_index::FileIndex;
 
@@ -59,6 +59,10 @@ pub struct DocumentStore {
     source_files: DashMap<Url, SourceFile>,
     /// Monotonic allocator for `FileId`s (one per ever-seen URL).
     next_file_id: AtomicU32,
+    /// Workspace salsa input. Tracks the full set of `SourceFile`s that
+    /// participate in whole-program queries (`codebase`, `file_refs`).
+    /// Re-synced from `source_files` on demand by `sync_workspace_files`.
+    workspace: Workspace,
 }
 
 impl Default for DocumentStore {
@@ -69,14 +73,17 @@ impl Default for DocumentStore {
 
 impl DocumentStore {
     pub fn new() -> Self {
+        let host = AnalysisHost::new();
+        let workspace = Workspace::new(host.db(), Arc::<[SourceFile]>::from(Vec::new()));
         DocumentStore {
             map: DashMap::new(),
             indexed_order: Mutex::new(VecDeque::new()),
             token_cache: DashMap::new(),
             max_indexed: AtomicUsize::new(DEFAULT_MAX_INDEXED),
-            host: Mutex::new(AnalysisHost::new()),
+            host: Mutex::new(host),
             source_files: DashMap::new(),
             next_file_id: AtomicU32::new(0),
+            workspace,
         }
     }
 
@@ -334,6 +341,36 @@ impl DocumentStore {
         Some(self.with_host(|host| crate::db::parse::parsed_doc(host.db(), sf).0.clone()))
     }
 
+    /// Refresh `workspace.files` to mirror the current `source_files` set.
+    ///
+    /// Called by `get_codebase_salsa` and by tests. Sorting by `FileId` keeps
+    /// the list order deterministic — salsa memoizes on the Arc's pointer
+    /// identity, so same contents should produce the same pointer across
+    /// calls. (A future optimization: only call `set_files` when the set
+    /// genuinely changed; today this is safe because `set_files` to the same
+    /// Arc is a no-op at the salsa level.)
+    #[allow(dead_code)] // used by get_codebase_salsa (step 3 wiring)
+    pub fn sync_workspace_files(&self) {
+        let mut files: Vec<SourceFile> = self.source_files.iter().map(|e| *e.value()).collect();
+        files.sort_by_key(|sf| self.with_host(|host| sf.id(host.db()).0));
+        let arc: Arc<[SourceFile]> = Arc::from(files);
+        let mut host = self.host.lock().unwrap();
+        self.workspace.set_files(host.db_mut()).to(arc);
+    }
+
+    /// Salsa-backed finalized Codebase. Aggregates every known file's
+    /// `StubSlice` via `codebase_from_parts`, memoized by salsa.
+    ///
+    /// Phase C step 3: this runs in parallel with Backend's imperative
+    /// `Arc<Codebase>`. Comparison tests validate parity; readers migrate in
+    /// a follow-up.
+    #[allow(dead_code)]
+    pub fn get_codebase_salsa(&self) -> Arc<mir_codebase::Codebase> {
+        self.sync_workspace_files();
+        let ws = self.workspace;
+        self.with_host(|host| crate::db::codebase::codebase(host.db(), ws).0.clone())
+    }
+
     /// Salsa-backed per-file method-return-type map.
     #[allow(dead_code)]
     pub fn get_method_returns_salsa(&self, uri: &Url) -> Option<Arc<crate::ast::MethodReturnsMap>> {
@@ -528,6 +565,56 @@ mod tests {
         let (_doc, diags) = parse_document(&text);
         assert_eq!(store.current_version(&u), Some(v));
         store.set_parse_diagnostics(&u, diags);
+    }
+
+    #[test]
+    fn salsa_codebase_matches_imperative_codebase() {
+        // Parity check for Phase C step 3: the salsa-built codebase should
+        // contain exactly the same class/interface/function FQNs as one
+        // built imperatively via DefinitionCollector against a fresh
+        // mir_codebase::Codebase.
+        let store = DocumentStore::new();
+        let sources = [
+            (
+                "/a.php",
+                "<?php\nnamespace A;\nclass Foo {}\ninterface IX {}",
+            ),
+            (
+                "/b.php",
+                "<?php\nnamespace B;\nfunction bar(): int { return 1; }",
+            ),
+            ("/c.php", "<?php\nnamespace C;\nenum Color { case Red; }"),
+        ];
+        for (p, src) in &sources {
+            open(&store, uri(p), src.to_string());
+        }
+
+        let salsa_cb = store.get_codebase_salsa();
+
+        let imperative_cb = mir_codebase::Codebase::new();
+        for (p, src) in &sources {
+            let (doc, _) = crate::diagnostics::parse_document(src);
+            let file: Arc<str> = Arc::from(uri(p).as_str());
+            let map = php_rs_parser::source_map::SourceMap::new(src);
+            let c =
+                mir_analyzer::collector::DefinitionCollector::new(&imperative_cb, file, src, &map);
+            let _ = c.collect(doc.program());
+        }
+        imperative_cb.finalize();
+
+        for fqn in ["A\\Foo", "A\\IX", "C\\Color"] {
+            assert_eq!(
+                salsa_cb.type_exists(fqn),
+                imperative_cb.type_exists(fqn),
+                "parity mismatch on type {fqn}"
+            );
+            assert!(salsa_cb.type_exists(fqn), "{fqn} missing from salsa cb");
+        }
+        assert_eq!(
+            salsa_cb.function_exists("B\\bar"),
+            imperative_cb.function_exists("B\\bar"),
+        );
+        assert!(salsa_cb.function_exists("B\\bar"));
     }
 
     #[test]
