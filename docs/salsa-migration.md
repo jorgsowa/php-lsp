@@ -52,7 +52,7 @@ queries." That gives us:
 | E4 | Move `DocumentStore.map` bookkeeping to `Backend`; delete the struct if empty | ⏳ pending (optional cleanup) |
 | F | `#[salsa::tracked(lru = N)]`; delete `indexed_order` | ⏳ pending (blocked by inputs-are-immortal problem) |
 | G1 | Drop redundant parse in `DocumentStore::index` | ✅ shipped |
-| G2 | Lock-free fast path in `mirror_text` | ⏳ pending |
+| G2 | Lock-free fast path in `mirror_text` | ✅ shipped (measurement pending) |
 | G3 | Trim `get_doc_salsa` overhead (skip panic-catch on fast path) | ⏳ pending |
 | G4 | Investigate `references/*` +2000% regression | ✅ resolved — stale baseline, not a real regression |
 
@@ -532,11 +532,25 @@ Impact (see post-G1 table above): `index/single/*` went from +7 to +66 %
 regressions to −21 to −84 % wins; workspace-scan benches went from −12 to
 −27 % wins to −94 to −97 % wins. All 894 unit tests still pass.
 
-**G2 — Lock-free fast path in `mirror_text`.** Keep a `DashMap<Url, Arc<str>>`
-alongside `source_files` holding the last-set text. Dedup compares against it
-without taking `host.lock()`. Only acquire the mutex when a `set_text` is
-actually needed. Expected win: measurable on multi-threaded workspace scan;
-small on single-threaded benches.
+**G2 — Lock-free fast path in `mirror_text`.** ✅ **shipped 2026-04-22.**
+A `text_cache: DashMap<Url, Arc<str>>` now sits alongside `source_files`
+holding the last-set text per URI. `mirror_text` compares against it
+without taking `host.lock()` and returns immediately on a byte-equal
+match; the mutex is acquired only when the salsa input actually needs
+to change. Cache entries are inserted inside the mutex immediately
+after every setter (and after the creation of a fresh `SourceFile`),
+so a cache hit implies the handle exists and the salsa revision agrees
+with the cached value for equality purposes.
+
+`remove(uri)` now drops the `text_cache` entry alongside `source_files`;
+otherwise a re-indexed file keyed on the same URL would see a stale
+cache hit against a fresh `SourceFile` handle.
+
+All 894 unit tests pass (including `concurrent_reads_and_writes_do_not_panic`
+and `salsa_codebase_matches_imperative_codebase`). Criterion compare run
+still pending; expected impact is on multi-threaded workspace scan where
+multiple threads were previously serialised on `host.lock()` just to
+confirm a no-op mirror.
 
 **G3 — Trim `get_doc_salsa` overhead.** Two sub-options:
 

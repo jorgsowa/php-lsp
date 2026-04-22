@@ -61,6 +61,13 @@ pub struct DocumentStore {
     /// `Url -> SourceFile` lookup. The `SourceFile` is a salsa-id handle; the
     /// underlying input lives in `host.db` for the lifetime of the database.
     source_files: DashMap<Url, SourceFile>,
+    /// G2: lock-free mirror of each `SourceFile`'s last-set text. Lets
+    /// `mirror_text` dedup repeated no-op updates (common during workspace
+    /// scan and `did_open` for already-indexed files) without taking
+    /// `host.lock()`. Updated inside the mutex whenever the salsa input is
+    /// set, so it is always consistent with the salsa revision for the
+    /// purposes of byte-equality comparison.
+    text_cache: DashMap<Url, Arc<str>>,
     /// Monotonic allocator for `FileId`s (one per ever-seen URL).
     next_file_id: AtomicU32,
     /// Workspace salsa input. Tracks the full set of `SourceFile`s that
@@ -86,6 +93,7 @@ impl DocumentStore {
             max_indexed: AtomicUsize::new(DEFAULT_MAX_INDEXED),
             host: Mutex::new(host),
             source_files: DashMap::new(),
+            text_cache: DashMap::new(),
             next_file_id: AtomicU32::new(0),
             workspace,
         }
@@ -100,32 +108,48 @@ impl DocumentStore {
     /// from the legacy `map` — this mirror is not yet observed by production
     /// code paths.
     fn mirror_text(&self, uri: &Url, text: &str) -> SourceFile {
+        // G2 fast path: compare against the lock-free text cache. When the
+        // new text byte-matches what we already mirrored, skip the host
+        // mutex entirely. Common during workspace scan + `did_open` for
+        // unchanged files, where most threads would otherwise serialise on
+        // `host.lock()` just to confirm a no-op. Cache is only populated
+        // after the matching `source_files` entry, so a cache hit implies
+        // the handle exists.
+        if let Some(cached) = self.text_cache.get(uri)
+            && **cached == *text
+            && let Some(sf) = self.source_files.get(uri)
+        {
+            return *sf;
+        }
+
         let text_arc: Arc<str> = Arc::from(text);
         if let Some(existing) = self.source_files.get(uri) {
             let sf = *existing;
             drop(existing);
-            // Dedup: salsa's set_field unconditionally bumps revision, which
-            // would invalidate every downstream query (codebase, file_refs,
-            // …). Skip the setter when the new text is byte-for-byte equal
-            // to what we already have. Matters heavily during workspace scan
-            // + did_open for unchanged files (no-op mirrors). Check under a
-            // read lock first to avoid blocking concurrent request handlers
-            // on a no-op mirror.
+            // Slow path: another writer may have raced us; re-check inside
+            // the mutex. Salsa's `set_text` unconditionally bumps the
+            // revision, so every spurious setter invalidates every
+            // downstream query.
             let mut host = self.host.lock().unwrap();
             let current: Arc<str> = sf.text(host.db());
             if *current == *text_arc {
+                drop(host);
+                self.text_cache.insert(uri.clone(), current);
                 return sf;
             }
-            sf.set_text(host.db_mut()).to(text_arc);
+            sf.set_text(host.db_mut()).to(text_arc.clone());
+            drop(host);
+            self.text_cache.insert(uri.clone(), text_arc);
             sf
         } else {
             let id = FileId(self.next_file_id.fetch_add(1, Ordering::Relaxed));
             let uri_arc: Arc<str> = Arc::from(uri.as_str());
             let sf = {
                 let host = self.host.lock().unwrap();
-                SourceFile::new(host.db(), id, uri_arc, text_arc)
+                SourceFile::new(host.db(), id, uri_arc, text_arc.clone())
             };
             self.source_files.insert(uri.clone(), sf);
+            self.text_cache.insert(uri.clone(), text_arc);
             sf
         }
     }
@@ -343,6 +367,7 @@ impl DocumentStore {
         // allocates a fresh SourceFile with a new FileId. The ~40 bytes per
         // orphan is acceptable; revisit if workspace-churn profiling hurts.
         self.source_files.remove(uri);
+        self.text_cache.remove(uri);
     }
 
     // ── B4b salsa-backed accessors ─────────────────────────────────────────
