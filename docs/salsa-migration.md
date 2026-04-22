@@ -227,6 +227,47 @@ pub fn codebase(db: &dyn Database, ws: Workspace) -> Arc<Codebase> {
 
 **Blocker (C-full)**: `mir_codebase::Codebase` today is built imperatively via `collect_into_codebase` + `finalize`. C-full needs a `CodebaseBuilder::from_parts(Vec<FileDefs>)` constructor in the `mir-codebase` crate so the query is purely functional. The `FileDefs` value must also serialize/carry the interner IDs and reference spans that `Codebase` tracks per-file today; that surface is non-trivial.
 
+**C1 recon findings (2026-04-22)** — `DefinitionCollector` (in `mir-analyzer/src/collector.rs`) writes the following `Codebase` fields and no others:
+
+| Field | Write site (line) | Key/value shape |
+|---|---|---|
+| `functions` | 433 | `DashMap<Arc<str>, FunctionStorage>` |
+| `classes` | 592 | `DashMap<Arc<str>, ClassStorage>` |
+| `interfaces` | 655 | `DashMap<Arc<str>, InterfaceStorage>` |
+| `traits` | 774 | `DashMap<Arc<str>, TraitStorage>` |
+| `enums` | 848 | `DashMap<Arc<str>, EnumStorage>` |
+| `constants` | 870, 889 | `DashMap<Arc<str>, Union>` |
+| `symbol_to_file` | 431, 590, 653, 772, 846 | `DashMap<Arc<str>, Arc<str>>` (FQN → file path) |
+| `global_vars` + `file_global_vars` | 312 (via `register_global_var`) | `DashMap<Arc<str>, Union>` + reverse-index |
+
+Fields **NOT** touched by `DefinitionCollector`: `file_imports`, `file_namespaces`, `known_symbols`, `symbol_reference_locations`, `file_symbol_references`, `compact_ref_index`, `referenced_*`, `symbol_interner`, `file_interner`, `finalized`.
+
+**The `file_imports` / `file_namespaces` / `known_symbols` fields are populated by `mir-analyzer::project::Project::analyze` — php-lsp does not call this path.** php-lsp's `self.codebase.file_imports.get(...)` at `src/backend.rs:236` therefore always returns empty in production. Either (a) php-lsp has a latent bug that needs fixing independently, or (b) php-lsp has its own import-resolution path (see `use_resolver` module) and the `codebase.file_imports` read is dead code. Audit this before Phase C lands; don't replicate a dead read through the new query.
+
+**FileDefs draft** (first cut — validate in C2):
+
+```rust
+// in mir-codebase
+pub struct FileDefs {
+    pub file: Arc<str>,
+    pub functions: Vec<(Arc<str>, FunctionStorage)>,
+    pub classes: Vec<(Arc<str>, ClassStorage)>,
+    pub interfaces: Vec<(Arc<str>, InterfaceStorage)>,
+    pub traits: Vec<(Arc<str>, TraitStorage)>,
+    pub enums: Vec<(Arc<str>, EnumStorage)>,
+    pub constants: Vec<(Arc<str>, Union)>,
+    pub global_vars: Vec<(Arc<str>, Union)>,  // names also drive file_global_vars reverse-index
+}
+
+impl CodebaseBuilder {
+    pub fn from_parts(parts: Vec<FileDefs>) -> Codebase { ... }  // folds + calls finalize()
+}
+```
+
+The `Vec<(K, V)>` shape (vs `HashMap`) is intentional: aggregator merges deterministically by last-writer-wins matching today's `DashMap::insert` behavior; no per-file `HashMap` overhead.
+
+**Reference-index fields (`symbol_reference_locations` etc.) are Pass-2 outputs** — they belong to Phase D (`file_refs`), not Phase C. FileDefs covers only Pass-1 (definitions).
+
 **Also needed**: a `Workspace` salsa input tracking the set of files (medium durability — changes on workspace scan and watched-file events, not on every edit).
 
 ### Phase D — reference index
