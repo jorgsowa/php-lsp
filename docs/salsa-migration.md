@@ -268,6 +268,63 @@ The `Vec<(K, V)>` shape (vs `HashMap`) is intentional: aggregator merges determi
 
 **Reference-index fields (`symbol_reference_locations` etc.) are Pass-2 outputs** — they belong to Phase D (`file_refs`), not Phase C. FileDefs covers only Pass-1 (definitions).
 
+**C2 design (2026-04-22)** — reuse `StubSlice`, don't invent `FileDefs`.
+
+`mir-codebase::StubSlice` (`src/storage.rs:312`) already has: `classes`, `interfaces`, `traits`, `enums`, `functions`, `constants`. And `Codebase::inject_stub_slice` (`src/codebase.rs:225`) already exists as the merge primitive — it inserts all definitions. The Phase C work is smaller than the original plan admitted.
+
+**Storage types carry their own FQN** (`ClassStorage.fqcn`, `InterfaceStorage.fqcn`, `TraitStorage.fqcn`, `EnumStorage.fqcn`, `FunctionStorage.fqn`). The builder can derive `symbol_to_file` by iterating a slice and mapping each FQN → owning file. No need to serialize `symbol_to_file` into FileDefs.
+
+**Mechanical plan**:
+
+1. **Extend `StubSlice`** (non-breaking — `#[serde(default)]` for new fields):
+   ```rust
+   pub struct StubSlice {
+       // existing fields...
+       #[serde(default)]
+       pub file: Option<Arc<str>>,   // None for bundled stubs, Some("path") for user files
+       #[serde(default)]
+       pub global_vars: Vec<(Arc<str>, Union)>,
+   }
+   ```
+
+2. **Refactor `DefinitionCollector`** to accumulate into a `StubSlice` instead of mutating `&Codebase`:
+   ```rust
+   pub struct DefinitionCollector<'a> { /* no codebase field */ }
+   impl DefinitionCollector<'_> {
+       pub fn collect(...) -> (StubSlice, Vec<Issue>) { ... }
+   }
+   ```
+   The `use_aliases` tracking stays internal (used only for FQN resolution during one pass; not persisted).
+
+3. **Add `CodebaseBuilder`** (thin convenience over existing primitives):
+   ```rust
+   pub struct CodebaseBuilder { cb: Codebase }
+   impl CodebaseBuilder {
+       pub fn new() -> Self { Self { cb: Codebase::new() } }
+       pub fn add(&mut self, slice: StubSlice) {
+           // for each def in slice: insert + if slice.file is Some, update symbol_to_file
+           self.cb.inject_stub_slice(slice);
+       }
+       pub fn finalize(self) -> Codebase { self.cb.finalize(); self.cb }
+   }
+   // Or a standalone constructor:
+   pub fn codebase_from_parts(parts: Vec<StubSlice>) -> Codebase { ... }
+   ```
+
+4. **Breaking? No** — existing callers (`mir_analyzer::stubs::load_stubs`, bundled stub loaders) still work because `inject_stub_slice` is unchanged. New `StubSlice` fields default to empty/None.
+
+5. **Backward-compat**: keep `DefinitionCollector::new(codebase, ...)` + `.collect(program) -> Vec<Issue>` as a shim that internally does `collect_into_slice + inject_stub_slice + record symbol_to_file`. Lets the mir-codebase release land without requiring a simultaneous php-lsp change.
+
+**Estimated size**:
+- mir-codebase: 1 PR, ~150-300 LOC (collector refactor + StubSlice fields + builder). Release as 0.7.
+- php-lsp C4: 1 PR, adds `file_definitions` + `codebase` tracked queries, `Workspace` input, replaces `remove_file_definitions` dance with salsa input setters. ~300 LOC.
+
+This is days per PR, not weeks. The advisor's earlier "weeks" estimate assumed inventing FileDefs from scratch; with `StubSlice` reuse, the delta is small.
+
+**Validation before C3 (ship mir-codebase release)**:
+- Run mir-analyzer's existing test suite against the refactored collector; all passes.
+- Verify `semantic_diagnostics.rs` in php-lsp (the non-`backend.rs` caller of DefinitionCollector) still compiles against the shim.
+
 **Also needed**: a `Workspace` salsa input tracking the set of files (medium durability — changes on workspace scan and watched-file events, not on every edit).
 
 ### Phase D — reference index
