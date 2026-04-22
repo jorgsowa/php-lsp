@@ -44,7 +44,7 @@ unsafe impl Update for SliceArc {
 pub fn file_definitions(db: &dyn Database, file: SourceFile) -> SliceArc {
     let doc = parsed_doc(db, file);
     let text = file.text(db);
-    let file_path: Arc<str> = Arc::from(format!("file:{}", file.id(db).0));
+    let file_path: Arc<str> = file.uri(db);
     let source_map = php_rs_parser::source_map::SourceMap::new(&text);
     let collector =
         mir_analyzer::collector::DefinitionCollector::new_for_slice(file_path, &text, &source_map);
@@ -67,6 +67,7 @@ mod tests {
         let file = SourceFile::new(
             host.db(),
             FileId(0),
+            Arc::<str>::from("file:///t.php"),
             Arc::<str>::from("<?php\nnamespace App;\nclass Foo {}"),
         );
         let slice = file_definitions(host.db(), file);
@@ -82,7 +83,12 @@ mod tests {
     #[test]
     fn file_definitions_reruns_after_edit() {
         let mut host = AnalysisHost::new();
-        let file = SourceFile::new(host.db(), FileId(1), Arc::<str>::from("<?php\nclass A {}"));
+        let file = SourceFile::new(
+            host.db(),
+            FileId(1),
+            Arc::<str>::from("file:///t.php"),
+            Arc::<str>::from("<?php\nclass A {}"),
+        );
         let a1 = file_definitions(host.db(), file);
         let first_ptr = Arc::as_ptr(&a1.0);
 

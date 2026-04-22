@@ -114,9 +114,10 @@ impl DocumentStore {
             sf
         } else {
             let id = FileId(self.next_file_id.fetch_add(1, Ordering::Relaxed));
+            let uri_arc: Arc<str> = Arc::from(uri.as_str());
             let sf = {
                 let host = self.host.lock().unwrap();
-                SourceFile::new(host.db(), id, text_arc)
+                SourceFile::new(host.db(), id, uri_arc, text_arc)
             };
             self.source_files.insert(uri.clone(), sf);
             sf

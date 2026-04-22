@@ -92,6 +92,7 @@ mod tests {
         let file = SourceFile::new(
             host.db(),
             FileId(0),
+            Arc::<str>::from("file:///t.php"),
             Arc::<str>::from("<?php\nfunction greet() {}"),
         );
         let arc = parsed_doc(host.db(), file);
@@ -106,6 +107,7 @@ mod tests {
         let file = SourceFile::new(
             host.db(),
             FileId(1),
+            Arc::<str>::from("file:///t.php"),
             Arc::<str>::from("<?php\nfunction a() {}"),
         );
 
@@ -130,7 +132,12 @@ mod tests {
     #[test]
     fn parse_error_count_reflects_diagnostics() {
         let host = AnalysisHost::new();
-        let file = SourceFile::new(host.db(), FileId(2), Arc::<str>::from("<?php\nclass {"));
+        let file = SourceFile::new(
+            host.db(),
+            FileId(2),
+            Arc::<str>::from("file:///t.php"),
+            Arc::<str>::from("<?php\nclass {"),
+        );
         assert!(parse_error_count(host.db(), file) > 0);
     }
 }

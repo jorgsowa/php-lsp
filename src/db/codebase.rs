@@ -79,11 +79,13 @@ mod tests {
         let f1 = SourceFile::new(
             host.db(),
             FileId(0),
+            Arc::<str>::from("file:///a.php"),
             Arc::<str>::from("<?php\nnamespace A;\nclass Foo {}"),
         );
         let f2 = SourceFile::new(
             host.db(),
             FileId(1),
+            Arc::<str>::from("file:///b.php"),
             Arc::<str>::from("<?php\nnamespace B;\nclass Bar {}"),
         );
         let ws = Workspace::new(host.db(), Arc::from([f1, f2]));
@@ -99,6 +101,7 @@ mod tests {
         let f1 = SourceFile::new(
             host.db(),
             FileId(0),
+            Arc::<str>::from("file:///t.php"),
             Arc::<str>::from("<?php\nclass Before {}"),
         );
         let ws = Workspace::new(host.db(), Arc::from([f1]));
@@ -118,7 +121,12 @@ mod tests {
     #[test]
     fn codebase_memoizes_when_nothing_changes() {
         let host = AnalysisHost::new();
-        let f1 = SourceFile::new(host.db(), FileId(0), Arc::<str>::from("<?php\nclass X {}"));
+        let f1 = SourceFile::new(
+            host.db(),
+            FileId(0),
+            Arc::<str>::from("file:///t.php"),
+            Arc::<str>::from("<?php\nclass X {}"),
+        );
         let ws = Workspace::new(host.db(), Arc::from([f1]));
 
         let a1 = codebase(host.db(), ws);

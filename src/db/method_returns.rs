@@ -59,6 +59,7 @@ mod tests {
         let file = SourceFile::new(
             host.db(),
             FileId(0),
+            Arc::<str>::from("file:///t.php"),
             Arc::<str>::from(
                 "<?php\nclass Foo {\n    public function make(): Bar { return new Bar(); }\n}\nclass Bar {}",
             ),
@@ -74,6 +75,7 @@ mod tests {
         let file = SourceFile::new(
             host.db(),
             FileId(1),
+            Arc::<str>::from("file:///t.php"),
             Arc::<str>::from(
                 "<?php\nclass F {\n    public function m(): A { return new A(); }\n}\nclass A {}\nclass B {}",
             ),

@@ -74,6 +74,7 @@ mod tests {
         let file = SourceFile::new(
             host.db(),
             FileId(0),
+            Arc::<str>::from("file:///t.php"),
             Arc::<str>::from("<?php\nclass Foo { public function bar() {} }"),
         );
         let idx = file_index(host.db(), file);
@@ -88,6 +89,7 @@ mod tests {
         let file = SourceFile::new(
             host.db(),
             FileId(1),
+            Arc::<str>::from("file:///t.php"),
             Arc::<str>::from("<?php\nclass A {} class B {}"),
         );
 

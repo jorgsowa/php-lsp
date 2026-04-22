@@ -9,9 +9,15 @@ use std::sync::Arc;
 pub struct FileId(pub u32);
 
 /// Per-file salsa input. A new revision is observed whenever `text` is set.
+///
+/// `uri` is the LSP document URI as a string (e.g. `file:///path/Foo.php`).
+/// It lives on the input so that tracked queries like `file_refs` can emit
+/// per-symbol location records keyed by URI without needing a separate
+/// FileId→URI map outside salsa.
 #[salsa::input]
 pub struct SourceFile {
     pub id: FileId,
+    pub uri: Arc<str>,
     pub text: Arc<str>,
 }
 
