@@ -54,7 +54,7 @@ queries." That gives us:
 | G1 | Drop redundant parse in `DocumentStore::index` | ✅ shipped |
 | G2 | Lock-free fast path in `mirror_text` | ⏳ pending |
 | G3 | Trim `get_doc_salsa` overhead (skip panic-catch on fast path) | ⏳ pending |
-| G4 | Investigate `references/*` +2000% regression (Phase D side-effect) | ⏳ pending |
+| G4 | Investigate `references/*` +2000% regression | ✅ resolved — stale baseline, not a real regression |
 
 ## Architecture — current state
 
@@ -549,15 +549,21 @@ small on single-threaded benches.
 
 Expected win: restores `index/get_doc` to within noise of the baseline.
 
-**G4 — Investigate the `references/*` regression (+2180 % to +2491 %).**
-Discovered in the post-G1 bench run (the suite didn't compile in the first
-run). The bench calls `find_references` directly on `&[(Url, Arc<ParsedDoc>)]`;
-no DocumentStore or salsa involvement. The salsa branch's Phase D commit
-`5b6d6d0` (Backend routed through `symbol_refs`) changed `find_references`
-itself, or removed a codebase-fast-path the function used to hit. Bisect vs
-`main`, identify which commit moved the hot path, decide whether the
-regression is acceptable (the production path goes through salsa-memoized
-`symbol_refs` which amortizes across repeat queries) or needs a repair.
+**G4 — Investigated and resolved (2026-04-22): not a real regression.**
+The saved `main` criterion baseline in `target/criterion/references/*/main/`
+was recorded before commit `d4bd7c7` on main (`perf(references): substring
+pre-filter + parallel per-doc scan`, PR #204) landed — it reflected a
+pre-optimization `find_references` where cross-file scans were ~1 µs.
+Current main produces ~25 µs for the same bench. Re-saving the baseline
+from a fresh `main` checkout and re-running the comparison shows only
+noise-range deltas on `references/scale/*` and a mild +12% on
+`cross_file_class`, which is within the expected range for a 25 µs
+rayon-driven bench. No code change needed.
+
+**Takeaway**: criterion's saved baselines silently go stale when the
+comparison target (`main`) moves. Rerun `scripts/bench.sh save main` after
+every `main` merge that touches perf-sensitive paths; Phase H's CI gate
+should bake this in.
 
 **Validation**: G1 done. G2/G3/G4 each need their own compare run.
 
