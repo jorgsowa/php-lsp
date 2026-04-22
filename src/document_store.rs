@@ -68,6 +68,18 @@ pub struct DocumentStore {
     /// set, so it is always consistent with the salsa revision for the
     /// purposes of byte-equality comparison.
     text_cache: DashMap<Url, Arc<str>>,
+    /// G3: cross-revision read-through cache for `parsed_doc`. Keyed on
+    /// `Url`, stored value is `(text_arc, Arc<ParsedDoc>)` — the text Arc
+    /// captured at parse time. On read, compare against `text_cache[uri]`
+    /// via `Arc::ptr_eq`; a match guarantees the cached ParsedDoc matches
+    /// the current salsa revision's text input, so the query can return
+    /// without snapshotting the db or invoking salsa at all. A miss
+    /// (different pointer, stale or absent entry) falls through to
+    /// `snapshot_query`. Self-evicts on text change — no writer-side
+    /// invalidation is required, which avoids the TOCTOU window where a
+    /// concurrent reader could re-insert a stale entry after a writer's
+    /// eviction.
+    parsed_cache: DashMap<Url, (Arc<str>, Arc<ParsedDoc>)>,
     /// Monotonic allocator for `FileId`s (one per ever-seen URL).
     next_file_id: AtomicU32,
     /// Workspace salsa input. Tracks the full set of `SourceFile`s that
@@ -94,6 +106,7 @@ impl DocumentStore {
             host: Mutex::new(host),
             source_files: DashMap::new(),
             text_cache: DashMap::new(),
+            parsed_cache: DashMap::new(),
             next_file_id: AtomicU32::new(0),
             workspace,
         }
@@ -368,6 +381,7 @@ impl DocumentStore {
         // orphan is acceptable; revisit if workspace-churn profiling hurts.
         self.source_files.remove(uri);
         self.text_cache.remove(uri);
+        self.parsed_cache.remove(uri);
     }
 
     // ── B4b salsa-backed accessors ─────────────────────────────────────────
@@ -391,8 +405,7 @@ impl DocumentStore {
         if !is_open {
             return None;
         }
-        let sf = self.source_file(uri)?;
-        Some(self.snapshot_query(move |db| crate::db::parse::parsed_doc(db, sf).0.clone()))
+        self.get_parsed_cached(uri)
     }
 
     /// Salsa-backed compact symbol index.
@@ -411,8 +424,31 @@ impl DocumentStore {
     /// to match legacy semantics; this variant does not.
     #[allow(dead_code)]
     pub fn get_doc_salsa_any(&self, uri: &Url) -> Option<Arc<ParsedDoc>> {
+        self.get_parsed_cached(uri)
+    }
+
+    /// G3: shared implementation for `get_doc_salsa` / `get_doc_salsa_any`.
+    /// Tries the `parsed_cache` (lock-free) first; validates via
+    /// `Arc::ptr_eq` against the G2 `text_cache` so a concurrent writer
+    /// that has already committed a new text input cannot be masked by a
+    /// stale cache entry. On miss, captures the text Arc and ParsedDoc
+    /// together inside a single `snapshot_query`, then publishes both.
+    fn get_parsed_cached(&self, uri: &Url) -> Option<Arc<ParsedDoc>> {
+        if let Some(current_text) = self.text_cache.get(uri)
+            && let Some(entry) = self.parsed_cache.get(uri)
+            && Arc::ptr_eq(&*current_text, &entry.0)
+        {
+            return Some(entry.1.clone());
+        }
+
         let sf = self.source_file(uri)?;
-        Some(self.snapshot_query(move |db| crate::db::parse::parsed_doc(db, sf).0.clone()))
+        let (text, doc) = self.snapshot_query(move |db| {
+            let text = sf.text(db);
+            let doc = crate::db::parse::parsed_doc(db, sf).0.clone();
+            (text, doc)
+        });
+        self.parsed_cache.insert(uri.clone(), (text, doc.clone()));
+        Some(doc)
     }
 
     /// Refresh `workspace.files` to mirror the current `source_files` set.
@@ -1061,6 +1097,33 @@ mod tests {
         let salsa2 = store.get_index_salsa(&u).unwrap();
         assert_eq!(names_of(&legacy2), names_of(&salsa2));
         assert_eq!(names_of(&salsa2), vec!["Z".to_string()]);
+    }
+
+    /// G3: confirms the `parsed_cache` actually hits — two consecutive
+    /// `get_doc_salsa_any` calls on unchanged text return the same `Arc`
+    /// (pointer equality), and an edit forces a miss that produces a
+    /// different `Arc`. If salsa ever stopped preserving the stored
+    /// `Arc<str>` identity in `SourceFile::text`, the cache would never
+    /// hit and this test would fail on the first assertion.
+    #[test]
+    fn get_doc_salsa_any_cache_hits_across_calls() {
+        let store = DocumentStore::new();
+        let u = uri("/g3_cache.php");
+        open(&store, u.clone(), "<?php\nclass G3 {}".to_string());
+
+        let a = store.get_doc_salsa_any(&u).unwrap();
+        let b = store.get_doc_salsa_any(&u).unwrap();
+        assert!(
+            Arc::ptr_eq(&a, &b),
+            "parsed_cache hit should yield the same Arc across calls"
+        );
+
+        open(&store, u.clone(), "<?php\nclass G3b {}".to_string());
+        let c = store.get_doc_salsa_any(&u).unwrap();
+        assert!(
+            !Arc::ptr_eq(&a, &c),
+            "edit should invalidate the parsed_cache entry"
+        );
     }
 
     #[test]

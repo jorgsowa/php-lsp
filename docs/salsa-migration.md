@@ -53,7 +53,7 @@ queries." That gives us:
 | F | `#[salsa::tracked(lru = N)]`; delete `indexed_order` | ⏳ pending (blocked by inputs-are-immortal problem) |
 | G1 | Drop redundant parse in `DocumentStore::index` | ✅ shipped |
 | G2 | Lock-free fast path in `mirror_text` | ✅ shipped (measurement pending) |
-| G3 | Trim `get_doc_salsa` overhead (skip panic-catch on fast path) | ⏳ pending |
+| G3 | Trim `get_doc_salsa` overhead — cross-revision `parsed_cache` | ✅ shipped |
 | G4 | Investigate `references/*` +2000% regression | ✅ resolved — stale baseline, not a real regression |
 
 ## Architecture — current state
@@ -552,16 +552,34 @@ still pending; expected impact is on multi-threaded workspace scan where
 multiple threads were previously serialised on `host.lock()` just to
 confirm a no-op mirror.
 
-**G3 — Trim `get_doc_salsa` overhead.** Two sub-options:
+**G3 — Trim `get_doc_salsa` overhead.** ✅ **shipped 2026-04-22.**
+Added `parsed_cache: DashMap<Url, (Arc<str>, Arc<ParsedDoc>)>` — a
+cross-revision read-through cache shared by `get_doc_salsa` and
+`get_doc_salsa_any`. Cache validity is keyed on `Arc::ptr_eq` between
+the cached text Arc and the G2 `text_cache[uri]`, which is written
+inside the host mutex right after each `sf.set_text`. That pointer
+check proves the cached ParsedDoc matches the current committed salsa
+revision, so the query can return without snapshotting the db at all.
 
-- Cache: add a `DashMap<Url, Arc<ParsedDoc>>` cross-revision read-through
-  cache keyed on `(uri, salsa revision)`; on hit, skip `snapshot_query`
-  entirely. Trades memory for latency.
-- Skip `Cancelled::catch` on the first attempt: spin the retry loop only if
-  the fast path raised `Cancelled`. The `AssertUnwindSafe` + `catch_unwind`
-  pair installs a panic hook each call — not free at 24 ns scale.
+The pointer-equality approach beats naked URI-keyed invalidation
+because it closes a TOCTOU race: if a reader's `snapshot_query`
+returned a ParsedDoc for rev N and a concurrent writer bumped to N+1
+and cleared a URI-keyed cache before the reader inserted, the reader
+would silently repopulate the cache with a stale entry. Self-evicting
+on Arc mismatch eliminates that window — no writer-side invalidation
+is required at all. `remove(uri)` still drops the entry, purely to
+free memory.
 
-Expected win: restores `index/get_doc` to within noise of the baseline.
+`index/get_doc` improved **−9.6 %** vs the post-G2 baseline
+(`[−11.2 %, −7.8 %]`, p < 0.05). A dedicated test
+(`get_doc_salsa_any_cache_hits_across_calls`) pins the assumption
+that salsa preserves the stored `Arc<str>` identity in
+`SourceFile::text` — if that ever regressed, the cache would stop
+hitting and the test would fail.
+
+The alternative ("skip `Cancelled::catch` on the first attempt") was
+not pursued: `catch_unwind` at this scale costs single-digit
+nanoseconds and the cache hit bypasses it entirely anyway.
 
 **G4 — Investigated and resolved (2026-04-22): not a real regression.**
 The saved `main` criterion baseline in `target/criterion/references/*/main/`
