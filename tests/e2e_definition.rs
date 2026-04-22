@@ -51,3 +51,37 @@ async fn definition_for_class_returns_location() {
     assert_eq!(l["range"]["start"]["line"].as_u64().unwrap(), 1);
     assert_eq!(l["range"]["start"]["character"].as_u64().unwrap(), 6);
 }
+
+/// Cross-file goto-definition exercises `find_in_indexes`: the symbol is
+/// defined in file A (open, so its FileIndex is populated) but the cursor
+/// is in file B where the symbol is used.
+#[tokio::test]
+async fn definition_cross_file_uses_find_in_indexes() {
+    let mut server = TestServer::new().await;
+    server
+        .open("greeter.php", "<?php\nclass Greeter {}\n")
+        .await;
+    server
+        .open("user.php", "<?php\n$g = new Greeter();\n")
+        .await;
+
+    let resp = server.definition("user.php", 1, 9).await;
+
+    assert!(resp["error"].is_null(), "definition error: {:?}", resp);
+    let result = &resp["result"];
+    assert!(
+        !result.is_null(),
+        "expected a cross-file definition for Greeter, got null"
+    );
+    let l = loc(result);
+    assert_eq!(
+        l["uri"].as_str().unwrap(),
+        server.uri("greeter.php"),
+        "definition must point to greeter.php"
+    );
+    assert_eq!(
+        l["range"]["start"]["line"].as_u64().unwrap(),
+        1,
+        "Greeter is declared on line 1 of greeter.php"
+    );
+}

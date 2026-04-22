@@ -519,6 +519,378 @@ impl TestServer {
             .await
     }
 
+    pub async fn semantic_tokens_range(
+        &mut self,
+        path: &str,
+        start_line: u32,
+        start_char: u32,
+        end_line: u32,
+        end_char: u32,
+    ) -> Value {
+        let uri = self.uri(path);
+        self.client
+            .request(
+                "textDocument/semanticTokens/range",
+                json!({
+                    "textDocument": { "uri": uri },
+                    "range": {
+                        "start": { "line": start_line, "character": start_char },
+                        "end": { "line": end_line, "character": end_char },
+                    },
+                }),
+            )
+            .await
+    }
+
+    pub async fn semantic_tokens_full_delta(
+        &mut self,
+        path: &str,
+        previous_result_id: &str,
+    ) -> Value {
+        let uri = self.uri(path);
+        self.client
+            .request(
+                "textDocument/semanticTokens/full/delta",
+                json!({
+                    "textDocument": { "uri": uri },
+                    "previousResultId": previous_result_id,
+                }),
+            )
+            .await
+    }
+
+    pub async fn outgoing_calls(&mut self, item: Value) -> Value {
+        self.client
+            .request("callHierarchy/outgoingCalls", json!({ "item": item }))
+            .await
+    }
+
+    pub async fn declaration(&mut self, path: &str, line: u32, character: u32) -> Value {
+        let uri = self.uri(path);
+        self.client
+            .request(
+                "textDocument/declaration",
+                json!({
+                    "textDocument": { "uri": uri },
+                    "position": { "line": line, "character": character },
+                }),
+            )
+            .await
+    }
+
+    pub async fn signature_help(&mut self, path: &str, line: u32, character: u32) -> Value {
+        let uri = self.uri(path);
+        self.client
+            .request(
+                "textDocument/signatureHelp",
+                json!({
+                    "textDocument": { "uri": uri },
+                    "position": { "line": line, "character": character },
+                }),
+            )
+            .await
+    }
+
+    pub async fn document_highlight(&mut self, path: &str, line: u32, character: u32) -> Value {
+        let uri = self.uri(path);
+        self.client
+            .request(
+                "textDocument/documentHighlight",
+                json!({
+                    "textDocument": { "uri": uri },
+                    "position": { "line": line, "character": character },
+                }),
+            )
+            .await
+    }
+
+    pub async fn inlay_hints(
+        &mut self,
+        path: &str,
+        start_line: u32,
+        start_char: u32,
+        end_line: u32,
+        end_char: u32,
+    ) -> Value {
+        let uri = self.uri(path);
+        self.client
+            .request(
+                "textDocument/inlayHint",
+                json!({
+                    "textDocument": { "uri": uri },
+                    "range": {
+                        "start": { "line": start_line, "character": start_char },
+                        "end": { "line": end_line, "character": end_char },
+                    },
+                }),
+            )
+            .await
+    }
+
+    pub async fn inlay_hint_resolve(&mut self, hint: Value) -> Value {
+        self.client.request("inlayHint/resolve", hint).await
+    }
+
+    pub async fn completion_resolve(&mut self, item: Value) -> Value {
+        self.client.request("completionItem/resolve", item).await
+    }
+
+    pub async fn rename(&mut self, path: &str, line: u32, character: u32, new_name: &str) -> Value {
+        let uri = self.uri(path);
+        self.client
+            .request(
+                "textDocument/rename",
+                json!({
+                    "textDocument": { "uri": uri },
+                    "position": { "line": line, "character": character },
+                    "newName": new_name,
+                }),
+            )
+            .await
+    }
+
+    pub async fn prepare_rename(&mut self, path: &str, line: u32, character: u32) -> Value {
+        let uri = self.uri(path);
+        self.client
+            .request(
+                "textDocument/prepareRename",
+                json!({
+                    "textDocument": { "uri": uri },
+                    "position": { "line": line, "character": character },
+                }),
+            )
+            .await
+    }
+
+    pub async fn folding_range(&mut self, path: &str) -> Value {
+        let uri = self.uri(path);
+        self.client
+            .request(
+                "textDocument/foldingRange",
+                json!({ "textDocument": { "uri": uri } }),
+            )
+            .await
+    }
+
+    pub async fn code_lens(&mut self, path: &str) -> Value {
+        let uri = self.uri(path);
+        self.client
+            .request(
+                "textDocument/codeLens",
+                json!({ "textDocument": { "uri": uri } }),
+            )
+            .await
+    }
+
+    pub async fn selection_range(&mut self, path: &str, positions: Vec<(u32, u32)>) -> Value {
+        let uri = self.uri(path);
+        let positions: Vec<Value> = positions
+            .into_iter()
+            .map(|(l, c)| json!({ "line": l, "character": c }))
+            .collect();
+        self.client
+            .request(
+                "textDocument/selectionRange",
+                json!({
+                    "textDocument": { "uri": uri },
+                    "positions": positions,
+                }),
+            )
+            .await
+    }
+
+    pub async fn document_link(&mut self, path: &str) -> Value {
+        let uri = self.uri(path);
+        self.client
+            .request(
+                "textDocument/documentLink",
+                json!({ "textDocument": { "uri": uri } }),
+            )
+            .await
+    }
+
+    pub async fn inline_value(
+        &mut self,
+        path: &str,
+        start_line: u32,
+        start_char: u32,
+        end_line: u32,
+        end_char: u32,
+    ) -> Value {
+        let uri = self.uri(path);
+        self.client
+            .request(
+                "textDocument/inlineValue",
+                json!({
+                    "textDocument": { "uri": uri },
+                    "range": {
+                        "start": { "line": start_line, "character": start_char },
+                        "end": { "line": end_line, "character": end_char },
+                    },
+                    "context": {
+                        "frameId": 0,
+                        "stoppedLocation": {
+                            "start": { "line": start_line, "character": start_char },
+                            "end": { "line": end_line, "character": end_char },
+                        },
+                    },
+                }),
+            )
+            .await
+    }
+
+    pub async fn pull_diagnostics(&mut self, path: &str) -> Value {
+        let uri = self.uri(path);
+        self.client
+            .request(
+                "textDocument/diagnostic",
+                json!({ "textDocument": { "uri": uri } }),
+            )
+            .await
+    }
+
+    pub async fn workspace_diagnostic(&mut self) -> Value {
+        self.client
+            .request("workspace/diagnostic", json!({ "previousResultIds": [] }))
+            .await
+    }
+
+    pub async fn moniker(&mut self, path: &str, line: u32, character: u32) -> Value {
+        let uri = self.uri(path);
+        self.client
+            .request(
+                "textDocument/moniker",
+                json!({
+                    "textDocument": { "uri": uri },
+                    "position": { "line": line, "character": character },
+                }),
+            )
+            .await
+    }
+
+    pub async fn linked_editing_range(&mut self, path: &str, line: u32, character: u32) -> Value {
+        let uri = self.uri(path);
+        self.client
+            .request(
+                "textDocument/linkedEditingRange",
+                json!({
+                    "textDocument": { "uri": uri },
+                    "position": { "line": line, "character": character },
+                }),
+            )
+            .await
+    }
+
+    pub async fn formatting(&mut self, path: &str) -> Value {
+        let uri = self.uri(path);
+        self.client
+            .request(
+                "textDocument/formatting",
+                json!({
+                    "textDocument": { "uri": uri },
+                    "options": { "tabSize": 4, "insertSpaces": true },
+                }),
+            )
+            .await
+    }
+
+    pub async fn range_formatting(
+        &mut self,
+        path: &str,
+        start_line: u32,
+        start_char: u32,
+        end_line: u32,
+        end_char: u32,
+    ) -> Value {
+        let uri = self.uri(path);
+        self.client
+            .request(
+                "textDocument/rangeFormatting",
+                json!({
+                    "textDocument": { "uri": uri },
+                    "range": {
+                        "start": { "line": start_line, "character": start_char },
+                        "end": { "line": end_line, "character": end_char },
+                    },
+                    "options": { "tabSize": 4, "insertSpaces": true },
+                }),
+            )
+            .await
+    }
+
+    pub async fn on_type_formatting(
+        &mut self,
+        path: &str,
+        line: u32,
+        character: u32,
+        ch: &str,
+    ) -> Value {
+        let uri = self.uri(path);
+        self.client
+            .request(
+                "textDocument/onTypeFormatting",
+                json!({
+                    "textDocument": { "uri": uri },
+                    "position": { "line": line, "character": character },
+                    "ch": ch,
+                    "options": { "tabSize": 4, "insertSpaces": true },
+                }),
+            )
+            .await
+    }
+
+    pub async fn code_action(
+        &mut self,
+        path: &str,
+        start_line: u32,
+        start_char: u32,
+        end_line: u32,
+        end_char: u32,
+    ) -> Value {
+        let uri = self.uri(path);
+        self.client
+            .request(
+                "textDocument/codeAction",
+                json!({
+                    "textDocument": { "uri": uri },
+                    "range": {
+                        "start": { "line": start_line, "character": start_char },
+                        "end": { "line": end_line, "character": end_char },
+                    },
+                    "context": { "diagnostics": [] },
+                }),
+            )
+            .await
+    }
+
+    pub async fn will_rename_files(&mut self, renames: Vec<(String, String)>) -> Value {
+        let files: Vec<Value> = renames
+            .into_iter()
+            .map(|(old, new)| json!({ "oldUri": old, "newUri": new }))
+            .collect();
+        self.client
+            .request("workspace/willRenameFiles", json!({ "files": files }))
+            .await
+    }
+
+    pub async fn will_create_files(&mut self, uris: Vec<String>) -> Value {
+        let files: Vec<Value> = uris.into_iter().map(|u| json!({ "uri": u })).collect();
+        self.client
+            .request("workspace/willCreateFiles", json!({ "files": files }))
+            .await
+    }
+
+    pub async fn will_delete_files(&mut self, uris: Vec<String>) -> Value {
+        let files: Vec<Value> = uris.into_iter().map(|u| json!({ "uri": u })).collect();
+        self.client
+            .request("workspace/willDeleteFiles", json!({ "files": files }))
+            .await
+    }
+
+    pub async fn shutdown(&mut self) -> Value {
+        self.client.request_no_params("shutdown").await
+    }
+
     /// Load a fixture file, find the nth (0-based) occurrence of `needle`,
     /// and return the (text, line, character) for the *start* of the match.
     /// Panics if `needle` isn't found `occurrence + 1` times.
