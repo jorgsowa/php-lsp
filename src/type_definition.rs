@@ -8,7 +8,7 @@ use std::sync::Arc;
 use php_ast::{NamespaceBody, Stmt, StmtKind};
 use tower_lsp::lsp_types::{Location, Position, Range, Url};
 
-use crate::ast::{ParsedDoc, SourceView, format_type_hint};
+use crate::ast::{MethodReturnsMap, ParsedDoc, SourceView, format_type_hint};
 use crate::type_map::TypeMap;
 use crate::util::word_at;
 
@@ -17,12 +17,13 @@ use crate::util::word_at;
 pub fn goto_type_definition(
     source: &str,
     doc: &ParsedDoc,
+    doc_returns: Option<&MethodReturnsMap>,
     all_docs: &[(Url, Arc<ParsedDoc>)],
     position: Position,
 ) -> Option<Location> {
     let word = word_at(source, position)?;
 
-    let type_map = TypeMap::from_doc(doc);
+    let type_map = TypeMap::from_doc_with_meta(doc, None, doc_returns);
     let class_name = if word.starts_with('$') {
         type_map.get(&word)?.to_string()
     } else {
@@ -100,13 +101,14 @@ fn find_class_range(sv: SourceView<'_>, stmts: &[Stmt<'_, '_>], name: &str) -> O
 pub fn goto_type_definition_from_index(
     source: &str,
     doc: &ParsedDoc,
+    doc_returns: Option<&MethodReturnsMap>,
     indexes: &[(Url, std::sync::Arc<crate::file_index::FileIndex>)],
     position: Position,
 ) -> Option<Location> {
     use crate::util::word_at;
     let word = word_at(source, position)?;
 
-    let type_map = TypeMap::from_doc(doc);
+    let type_map = TypeMap::from_doc_with_meta(doc, None, doc_returns);
     let class_name = if word.starts_with('$') {
         type_map.get(&word)?.to_string()
     } else {
@@ -167,7 +169,7 @@ mod tests {
         let src = "<?php\nclass Foo {}\n$obj = new Foo();\n$obj->bar();";
         let parsed = ParsedDoc::parse(src.to_string());
         let docs = vec![(uri("/a.php"), Arc::new(ParsedDoc::parse(src.to_string())))];
-        let loc = goto_type_definition(src, &parsed, &docs, pos(3, 2));
+        let loc = goto_type_definition(src, &parsed, None, &docs, pos(3, 2));
         assert!(loc.is_some(), "expected type definition for $obj");
         assert_eq!(loc.unwrap().range.start.line, 1);
     }
@@ -185,7 +187,7 @@ mod tests {
                 Arc::new(ParsedDoc::parse(other_src.to_string())),
             ),
         ];
-        let loc = goto_type_definition(src, &parsed, &docs, pos(2, 2));
+        let loc = goto_type_definition(src, &parsed, None, &docs, pos(2, 2));
         assert!(loc.is_some());
         assert_eq!(loc.unwrap().uri, other_uri);
     }
@@ -195,7 +197,7 @@ mod tests {
         let src = "<?php\n$unknown->foo();";
         let parsed = ParsedDoc::parse(src.to_string());
         let docs = vec![doc("/a.php", src)];
-        let loc = goto_type_definition(src, &parsed, &docs, pos(1, 2));
+        let loc = goto_type_definition(src, &parsed, None, &docs, pos(1, 2));
         assert!(loc.is_none());
     }
 
@@ -204,7 +206,7 @@ mod tests {
         let src = "<?php\ninterface Countable {}\n$obj = new MyList();\nclass MyList implements Countable {}";
         let parsed = ParsedDoc::parse(src.to_string());
         let docs = vec![doc("/a.php", src)];
-        let loc = goto_type_definition(src, &parsed, &docs, pos(2, 2));
+        let loc = goto_type_definition(src, &parsed, None, &docs, pos(2, 2));
         assert!(loc.is_some());
         assert_eq!(loc.unwrap().range.start.line, 3);
     }
@@ -214,7 +216,7 @@ mod tests {
         let src = "<?php\nfunction greet() {}\ngreet();";
         let parsed = ParsedDoc::parse(src.to_string());
         let docs = vec![doc("/a.php", src)];
-        let loc = goto_type_definition(src, &parsed, &docs, pos(2, 2));
+        let loc = goto_type_definition(src, &parsed, None, &docs, pos(2, 2));
         assert!(loc.is_none());
     }
 
@@ -225,7 +227,7 @@ mod tests {
         let parsed = ParsedDoc::parse(src.to_string());
         let docs = vec![doc("/a.php", src)];
         // "function process(Status $s): void { " is 37 chars, so $s is at col 37.
-        let loc = goto_type_definition(src, &parsed, &docs, pos(2, 37));
+        let loc = goto_type_definition(src, &parsed, None, &docs, pos(2, 37));
         assert!(
             loc.is_some(),
             "expected type definition for Status-typed param"
@@ -240,7 +242,7 @@ mod tests {
         let parsed = ParsedDoc::parse(src.to_string());
         let docs = vec![doc("/a.php", src)];
         // "function process(Logger $l): void { " is 37 chars, so $l is at col 37.
-        let loc = goto_type_definition(src, &parsed, &docs, pos(2, 37));
+        let loc = goto_type_definition(src, &parsed, None, &docs, pos(2, 37));
         assert!(
             loc.is_some(),
             "expected type definition for trait-typed param"
@@ -269,7 +271,7 @@ mod tests {
         );
         let indexes = vec![(mailer_uri.clone(), mailer_idx)];
         // Cursor on $obj in "$obj->send();" — line 2, char 2.
-        let loc = goto_type_definition_from_index(src, &parsed, &indexes, pos(2, 2));
+        let loc = goto_type_definition_from_index(src, &parsed, None, &indexes, pos(2, 2));
         assert!(
             loc.is_some(),
             "expected type definition for $obj (Mailer) in index"

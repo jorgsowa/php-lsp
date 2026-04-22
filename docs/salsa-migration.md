@@ -43,14 +43,18 @@ queries." That gives us:
 | B4d-3a | Delete `entry.doc`; route doc iteration through salsa | ✅ shipped |
 | B4d-3b | Delete `entry.index`; route index iteration through salsa | ✅ shipped |
 | B4d-3c | Move version gate to Backend; delete `apply_parse` | ✅ shipped |
-| B4d-4 | Delete `OnceLock<MethodReturnsMap>` from `ParsedDoc` | ⏸ deferred — see Phase E3 |
+| B4d-4 | Delete `OnceLock<MethodReturnsMap>` from `ParsedDoc` | ✅ shipped (folded into E3) |
 | C | Migrate `mir_codebase` into salsa queries | ✅ shipped |
 | D | `file_refs`/`symbol_refs` lazy reference index | ✅ shipped |
 | E1 | Snapshot-clone reads off the host mutex | ✅ shipped |
 | E2 | LSP request cancellation → `RequestCancelled` | ⏸ folded into E1 — `snapshot_query` retries on `salsa::Cancelled` and falls back to the mutex; nothing escapes to the LSP layer |
-| E3 | Thread salsa db through `type_map`; delete `OnceLock<MethodReturnsMap>` | ⏳ pending — 35 call sites to update |
+| E3 | Thread salsa-memoized method-returns into `TypeMap`; delete `OnceLock<MethodReturnsMap>` | ✅ shipped |
 | E4 | Move `DocumentStore.map` bookkeeping to `Backend`; delete the struct if empty | ⏳ pending (optional cleanup) |
 | F | `#[salsa::tracked(lru = N)]`; delete `indexed_order` | ⏳ pending (blocked by inputs-are-immortal problem) |
+| G1 | Drop redundant parse in `DocumentStore::index` | ✅ shipped |
+| G2 | Lock-free fast path in `mirror_text` | ⏳ pending |
+| G3 | Trim `get_doc_salsa` overhead (skip panic-catch on fast path) | ⏳ pending |
+| G4 | Investigate `references/*` +2000% regression (Phase D side-effect) | ⏳ pending |
 
 ## Architecture — current state
 
@@ -191,6 +195,108 @@ Laravel fixture (1609 files):
 Cross-file query wins come from `all_docs_for_scan` no longer re-reading files
 from disk (salsa memoizes parses across requests). Single-file hot paths are
 unchanged within noise.
+
+## Benchmark results (post-E1 — 2026-04-22)
+
+Re-ran `scripts/bench.sh compare main` on the `refactor/salsa-incremental` branch
+after E1 snapshot-clone landed. The `parse` and `index` suites ran; `requests`
+and `semantic` failed to compile against this branch (API drift — `hover_info`
+et al. grew a `method_returns` parameter during E3; bench files weren't
+updated). Fix tracked under Phase G.
+
+| Benchmark | Δ | Note |
+|---|---|---|
+| `index/workspace_scan/laravel_framework` | **−20.2%** | memoization + Arc sharing |
+| `index/workspace_scan/50_files` | **−27.3%** | same |
+| `index/workspace_scan/10_files` | **−12.0%** | same |
+| `index/single/medium_class` | **−14.4%** | |
+| `parse/small_class` | **−17.7%** | |
+| `parse/medium_class` | **−5.7%** | |
+| `index/single/small_class` | **+65.8%** | per-call overhead dominates |
+| `index/workspace_scan/1_files` | **+64.5%** | same as above (N=1) |
+| `index/get_doc` | **+36.8%** | `snapshot_query` + double DashMap lookup |
+| `parse/interface_large` | +10.5% | |
+| `index/single/interface_large` | +7.7% | |
+
+### After Phase G1 — 2026-04-22 (same day)
+
+Re-ran after dropping the redundant `parse_document` call in
+`DocumentStore::index`. Results vs the same `main` baseline:
+
+| Benchmark | Δ before G1 | Δ after G1 |
+|---|---|---|
+| `index/workspace_scan/laravel_framework` | −20.2% | **−97.4%** |
+| `index/workspace_scan/50_files` | −27.3% | **−97.5%** |
+| `index/workspace_scan/10_files` | −12.0% | **−94.1%** |
+| `index/workspace_scan/1_files` | +64.5% | **−26.7%** |
+| `index/single/small_class` | +65.8% | **−20.6%** |
+| `index/single/medium_class` | −14.4% | **−83.7%** |
+| `index/single/interface_large` | +7.7% | **−67.2%** |
+| `index/get_doc` | +36.8% | +30.1% (unchanged — G3 target) |
+| `parse/small_class` | −17.7% | −21.4% |
+| `parse/medium_class` | −5.7% | −12.4% |
+
+`index()` is now a pure text-mirror into salsa; the parse it used to do was
+entirely wasted (the AST was dropped, salsa re-parsed on first read, and the
+diagnostics it stored were only ever read for open files — which parse again
+via `did_open`). All `index/*` benches now win. G2/G3 remain open.
+
+**New regressions surfaced** (were not visible in the first run because
+`benches/requests.rs` didn't compile):
+
+| Benchmark | Δ | Suspect |
+|---|---|---|
+| `references/scale/5` | +2491% | Phase D `symbol_refs` changed hot path |
+| `references/cross_file_class` | +2180% | same |
+| `references/scale/10` | +1361% | same |
+| `references/scale/1` | +48.5% | same |
+| `references/single_file_method` | +33.1% | same |
+
+These are unrelated to G1 — the `requests` bench calls `find_references`
+directly with `&[(Url, Arc<ParsedDoc>)]`, no DocumentStore involved. The
+salsa branch's Phase D (`feat(salsa): Phase D step 2 — wire references
+handler through symbol_refs`, commit `5b6d6d0`) is the likely cause: it
+changed the cross-file references path. The `find_references` function
+signature is unchanged, so either the function body got slower or the
+codebase-fast-path it used to hit is now gated on a salsa-only condition
+the bench can't satisfy. **Investigate under a new Phase G sub-item (G4).**
+
+**Also**: the bench script aborts if any criterion run panics. The
+`references/laravel_framework` bench has no saved `main` baseline (it didn't
+exist or didn't run at baseline-save time), so criterion panics, `set -e`
+kills `bench.sh`, and the `semantic` suite never runs. Either (a) save a
+baseline for it, (b) make `bench.sh` resilient to per-bench panics, or (c)
+gate the laravel benches on baseline presence.
+
+### What we learned
+
+1. **Salsa adds per-call fixed overhead.** Small/single-file benches hit the
+   worst case: the mutex round-trip, `db.clone()`, and `Cancelled::catch`
+   panic-unwind setup in `snapshot_query` (`document_store.rs:163`) cost tens
+   of nanoseconds each. Negligible when amortized across a workspace scan;
+   dominant when compared against a 24 ns `DashMap::get`.
+
+2. **`DocumentStore::index` double-parses.** `index()` (`document_store.rs:248`)
+   calls `parse_document` purely to extract parse diagnostics — then discards
+   the AST. Salsa's `parsed_doc` query re-parses on first read. For
+   background-indexed files (the `index()` caller path: workspace scan + PSR-4
+   on-demand) parse diagnostics are never published until the file opens, so
+   the upfront parse is wasted work. This is the single largest contributor to
+   the `+65%` on `single/small_class`.
+
+3. **`mirror_text` acquires the host mutex even when deduping.** The
+   byte-equality short-circuit (`document_store.rs:117`) needs the mutex to
+   read `sf.text(host.db())`. Under workspace scan where many calls are no-op
+   updates this serialises threads. Lock-free fast path (read text from a
+   `DashMap<Url, Arc<str>>` mirror) would help multi-threaded indexing.
+
+4. **Micro-benches overstate the downside.** Real LSP workloads are bursts of
+   cross-file queries where memoization pays off (the cross-file suites in
+   the previous table all regressed before salsa and now win 20–40%).
+   Per-edit latency lives in `did_change` → `spawn_blocking` parse, which is
+   dominated by parsing, not by salsa overhead. But the single-file numbers
+   are still real regressions worth fixing; they map to cold-path operations
+   like definition-jump-into-unindexed-file.
 
 ## Remaining phases
 
@@ -385,7 +491,7 @@ Removes the `ref_index_ready` atomic flag and the Phase-3 background task. First
 
 - E1: refactor salsa accessors to snapshot-clone the db and run queries outside the mutex. Prerequisite for everything else. (~1 PR, moderate risk — needs concurrent-read stress tests.)
 - E2: wrap LSP request entry points in `Cancelled::catch`; map to `RequestCancelled`. (~1 PR, small; depends on E1.)
-- E3: thread salsa-db access through `type_map` and delete `OnceLock`. (~1 PR, large — touches 35 call sites.)
+- E3: ✅ shipped. `TypeMap::from_doc_with_meta` / `from_docs_with_meta` / `from_docs_at_position` now accept precomputed `&MethodReturnsMap` values; production callers (inlay_hints, type_definition, hover, completion via `CompletionCtx.doc_returns` / `other_returns`) thread the salsa-memoized Arcs through. `DocumentStore::other_docs_with_returns` batches the salsa fetch into a single `snapshot_query` so `Cancelled` retries don't multiply per open file. `OnceLock<MethodReturnsMap>` and `ParsedDoc::method_returns_cached` removed; the salsa `method_returns(db, file)` query is now the sole cache. The "35 call sites" were mostly tests that still call `TypeMap::from_doc(doc)` unchanged (a `#[cfg(test)]` shim that builds the map inline); only 6 production sites needed edits.
 - E4: move `DocumentStore.map` bookkeeping to `Backend`; delete the struct if anything remains. (cleanup, optional.)
 
 Don't treat Phase E as a single PR. It's a phase with four independent sub-PRs.
@@ -408,6 +514,60 @@ associated eviction tests. Requires measurement on a large fixture to pick `N`.
 **Dependency**: the current LRU tests (`eviction_removes_oldest_indexed_file`,
 `eviction_skips_open_files_and_evicts_next_indexed`) assert a contract that
 moves to salsa. They must be rewritten or deleted as part of Phase F.
+
+### Phase G — close the single-file perf gap
+
+**Goal**: recover the `index/single/*` and `index/get_doc` regressions surfaced
+by the 2026-04-22 bench run, without giving up the workspace-scan wins.
+
+Four concrete items, ordered by expected impact:
+
+**G1 — Drop the redundant parse in `DocumentStore::index`.** ✅ **shipped
+2026-04-22.** `index()` used to call `parse_document` purely to store parse
+diagnostics, then discard the AST — salsa re-parses on first read, and both
+`get_diagnostics` call sites gate on `get_doc_salsa` (open-files-only). The
+parse was wasted work.
+
+Impact (see post-G1 table above): `index/single/*` went from +7 to +66 %
+regressions to −21 to −84 % wins; workspace-scan benches went from −12 to
+−27 % wins to −94 to −97 % wins. All 894 unit tests still pass.
+
+**G2 — Lock-free fast path in `mirror_text`.** Keep a `DashMap<Url, Arc<str>>`
+alongside `source_files` holding the last-set text. Dedup compares against it
+without taking `host.lock()`. Only acquire the mutex when a `set_text` is
+actually needed. Expected win: measurable on multi-threaded workspace scan;
+small on single-threaded benches.
+
+**G3 — Trim `get_doc_salsa` overhead.** Two sub-options:
+
+- Cache: add a `DashMap<Url, Arc<ParsedDoc>>` cross-revision read-through
+  cache keyed on `(uri, salsa revision)`; on hit, skip `snapshot_query`
+  entirely. Trades memory for latency.
+- Skip `Cancelled::catch` on the first attempt: spin the retry loop only if
+  the fast path raised `Cancelled`. The `AssertUnwindSafe` + `catch_unwind`
+  pair installs a panic hook each call — not free at 24 ns scale.
+
+Expected win: restores `index/get_doc` to within noise of the baseline.
+
+**G4 — Investigate the `references/*` regression (+2180 % to +2491 %).**
+Discovered in the post-G1 bench run (the suite didn't compile in the first
+run). The bench calls `find_references` directly on `&[(Url, Arc<ParsedDoc>)]`;
+no DocumentStore or salsa involvement. The salsa branch's Phase D commit
+`5b6d6d0` (Backend routed through `symbol_refs`) changed `find_references`
+itself, or removed a codebase-fast-path the function used to hit. Bisect vs
+`main`, identify which commit moved the hot path, decide whether the
+regression is acceptable (the production path goes through salsa-memoized
+`symbol_refs` which amortizes across repeat queries) or needs a repair.
+
+**Validation**: G1 done. G2/G3/G4 each need their own compare run.
+
+### Phase H — fix benches and add E2E regression gate
+
+`benches/requests.rs` and `benches/semantic.rs` don't compile against this
+branch (signature drift during E3). Fix them, then wire a CI job that runs
+`scripts/bench.sh compare main` and fails on `p < 0.05` regression worse than
+a configurable threshold. Without this gate, future salsa-layer changes will
+keep silently regressing single-file paths.
 
 ## Constraints carried forward
 

@@ -851,12 +851,16 @@ impl LanguageServer for Backend {
             Some(d) => d,
             None => return Ok(Some(CompletionResponse::Array(vec![]))),
         };
-        let other_docs: Vec<Arc<ParsedDoc>> = self
-            .docs
-            .other_docs(uri)
-            .into_iter()
-            .map(|(_, d)| d)
+        let other_with_returns = self.docs.other_docs_with_returns(uri);
+        let other_docs: Vec<Arc<ParsedDoc>> = other_with_returns
+            .iter()
+            .map(|(_, d, _)| d.clone())
             .collect();
+        let other_returns: Vec<Arc<crate::ast::MethodReturnsMap>> = other_with_returns
+            .iter()
+            .map(|(_, _, r)| r.clone())
+            .collect();
+        let doc_returns = self.docs.get_method_returns_salsa(uri);
         let trigger = params
             .context
             .as_ref()
@@ -874,6 +878,8 @@ impl LanguageServer for Backend {
             meta: meta_opt,
             doc_uri: Some(uri),
             file_imports: Some(&imports),
+            doc_returns: doc_returns.as_deref(),
+            other_returns: Some(&other_returns),
         };
         Ok(Some(CompletionResponse::Array(filtered_completions_at(
             &doc,
@@ -1038,8 +1044,18 @@ impl LanguageServer for Backend {
             Some(d) => d,
             None => return Ok(None),
         };
-        let other_docs = self.docs.other_docs(uri);
-        Ok(hover_info(&source, &doc, position, &other_docs))
+        let doc_returns = self
+            .docs
+            .get_method_returns_salsa(uri)
+            .unwrap_or_else(|| std::sync::Arc::new(Default::default()));
+        let other_docs = self.docs.other_docs_with_returns(uri);
+        Ok(hover_info(
+            &source,
+            &doc,
+            &doc_returns,
+            position,
+            &other_docs,
+        ))
     }
 
     async fn document_symbol(
@@ -1077,7 +1093,13 @@ impl LanguageServer for Backend {
             Some(d) => d,
             None => return Ok(None),
         };
-        Ok(Some(inlay_hints(doc.source(), &doc, params.range)))
+        let doc_returns = self.docs.get_method_returns_salsa(uri);
+        Ok(Some(inlay_hints(
+            doc.source(),
+            &doc,
+            doc_returns.as_deref(),
+            params.range,
+        )))
     }
 
     async fn inlay_hint_resolve(&self, mut item: InlayHint) -> Result<InlayHint> {
@@ -1346,17 +1368,24 @@ impl LanguageServer for Backend {
             Some(d) => d,
             None => return Ok(None),
         };
+        let doc_returns = self.docs.get_method_returns_salsa(uri);
         // First pass: open-file ParsedDocs give accurate character positions.
         let open_docs = self.docs.all_docs();
-        if let Some(loc) = goto_type_definition(&source, &doc, &open_docs, position) {
+        if let Some(loc) =
+            goto_type_definition(&source, &doc, doc_returns.as_deref(), &open_docs, position)
+        {
             return Ok(Some(GotoDefinitionResponse::Scalar(loc)));
         }
         // Second pass: background files via FileIndex (line-only positions).
         let all_indexes = self.docs.all_indexes();
-        Ok(
-            goto_type_definition_from_index(&source, &doc, &all_indexes, position)
-                .map(GotoDefinitionResponse::Scalar),
+        Ok(goto_type_definition_from_index(
+            &source,
+            &doc,
+            doc_returns.as_deref(),
+            &all_indexes,
+            position,
         )
+        .map(GotoDefinitionResponse::Scalar))
     }
 
     async fn prepare_type_hierarchy(

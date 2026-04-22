@@ -9,7 +9,6 @@ use tower_lsp::lsp_types::{Diagnostic, SemanticToken, Url};
 use crate::ast::ParsedDoc;
 use crate::db::analysis::AnalysisHost;
 use crate::db::input::{FileId, SourceFile, Workspace};
-use crate::diagnostics::parse_document;
 use crate::file_index::FileIndex;
 
 /// Default limit used in tests so eviction can be exercised without many files.
@@ -257,16 +256,16 @@ impl DocumentStore {
         // B4a: mirror into salsa before mutating the legacy map.
         self.mirror_text(&uri, text);
 
-        // Parse once to extract parse diagnostics (still stored legacy-side
-        // until they too move to salsa). The AST itself is dropped — salsa
-        // holds the canonical parse.
-        let (_doc, diagnostics) = parse_document(text);
-
+        // Phase G1: no eager parse. Salsa's `parsed_doc` query parses lazily
+        // on first read. Parse diagnostics are populated by `did_open` when
+        // the editor actually opens the file — `get_diagnostics` is only ever
+        // read for open files (both call sites in backend.rs gate on
+        // `get_doc_salsa`, which returns `None` for background-indexed files).
         self.map.insert(
             uri.clone(),
             Document {
                 text: None,
-                diagnostics,
+                diagnostics: vec![],
                 sem_diagnostics: vec![],
                 text_version: 0,
             },
@@ -557,6 +556,38 @@ impl DocumentStore {
             .into_iter()
             .filter_map(|u| self.get_doc_salsa_any(&u).map(|d| (u, d)))
             .collect()
+    }
+
+    /// Batched salsa fetch for open files excluding `uri`: returns each
+    /// `(uri, ParsedDoc, MethodReturnsMap)` triple in a single `snapshot_query`
+    /// so cancellation retries don't run N times.
+    pub fn other_docs_with_returns(
+        &self,
+        uri: &Url,
+    ) -> Vec<(Url, Arc<ParsedDoc>, Arc<crate::ast::MethodReturnsMap>)> {
+        let open_urls: Vec<Url> = self
+            .map
+            .iter()
+            .filter(|e| e.key() != uri && e.value().text.is_some())
+            .map(|e| e.key().clone())
+            .collect();
+        let source_files: Vec<(Url, crate::db::input::SourceFile)> = open_urls
+            .into_iter()
+            .filter_map(|u| self.source_file(&u).map(|sf| (u, sf)))
+            .collect();
+        if source_files.is_empty() {
+            return Vec::new();
+        }
+        self.snapshot_query(move |db| {
+            source_files
+                .iter()
+                .map(|(u, sf)| {
+                    let doc = crate::db::parse::parsed_doc(db, *sf).0.clone();
+                    let mr = crate::db::method_returns::method_returns(db, *sf).0.clone();
+                    (u.clone(), doc, mr)
+                })
+                .collect()
+        })
     }
 
     /// Returns the compact symbol index for every known file.
@@ -974,7 +1005,8 @@ mod tests {
 
         // `index_from_doc(url, &doc, diags)` path (workspace-scan Phase 2).
         let u2 = uri("/bg2.php");
-        let (doc, diags) = parse_document("<?php\nclass Bg2 {}\nfunction f() {}");
+        let (doc, diags) =
+            crate::diagnostics::parse_document("<?php\nclass Bg2 {}\nfunction f() {}");
         store.index_from_doc(u2.clone(), &doc, diags);
         assert_eq!(
             salsa_index_names(&store, &u2),

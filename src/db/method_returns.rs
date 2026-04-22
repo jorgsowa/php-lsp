@@ -1,10 +1,11 @@
 //! `method_returns` salsa query — derives the per-file map of
 //! `class_name -> method_name -> return_class_name`. Depends on `parsed_doc`.
 //!
-//! The old `OnceLock<MethodReturnsMap>` cache on `ParsedDoc` is left in place
-//! for now; callers that go through salsa get the memoization from this
-//! query instead. Phase B4 (DocumentStore wrapping) will route the remaining
-//! callers through salsa and remove the `OnceLock`.
+//! This is the sole cache for method-return inference since Phase E3 removed
+//! the `OnceLock<MethodReturnsMap>` from `ParsedDoc`. Production call sites
+//! (inlay_hints, type_definition, hover, completion) fetch the memoized
+//! `Arc<MethodReturnsMap>` via `DocumentStore::get_method_returns_salsa` /
+//! `other_docs_with_returns` and pass it into the `TypeMap` constructors.
 
 use std::sync::Arc;
 

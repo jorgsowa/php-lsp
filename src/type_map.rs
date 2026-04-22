@@ -18,40 +18,54 @@ use crate::phpstorm_meta::PhpStormMeta;
 pub struct TypeMap(HashMap<String, String>);
 
 impl TypeMap {
-    /// Build from a parsed document.
+    /// Build from a parsed document. Method-return-type inference rebuilds
+    /// the per-doc map inline — prefer [`from_doc_with_meta`] with a salsa-
+    /// memoized `doc_returns` on hot paths.
+    #[cfg(test)]
     pub fn from_doc(doc: &ParsedDoc) -> Self {
-        Self::from_doc_with_meta(doc, None)
+        Self::from_doc_with_meta(doc, None, None)
     }
 
     /// Build from a parsed document, optionally enriched by PHPStorm metadata
-    /// for factory-method return type inference.
-    pub fn from_doc_with_meta(doc: &ParsedDoc, meta: Option<&PhpStormMeta>) -> Self {
-        let method_returns = cached_method_returns(doc);
+    /// for factory-method return type inference. `doc_returns` is the
+    /// precomputed method-return map (typically from the salsa `method_returns`
+    /// query); pass `None` to build it inline.
+    pub fn from_doc_with_meta(
+        doc: &ParsedDoc,
+        meta: Option<&PhpStormMeta>,
+        doc_returns: Option<&MethodReturnsMap>,
+    ) -> Self {
+        let owned;
+        let returns: &MethodReturnsMap = match doc_returns {
+            Some(r) => r,
+            None => {
+                owned = build_method_returns(doc);
+                &owned
+            }
+        };
         let mut map = HashMap::new();
         collect_types_stmts(
             doc.source(),
             &doc.program().stmts,
             &mut map,
             meta,
-            std::slice::from_ref(&method_returns),
+            std::slice::from_ref(&returns),
             None,
         );
         TypeMap(map)
     }
 
-    /// Build from a parsed document plus cross-file docs, optionally enriched
-    /// by PHPStorm metadata. Method-return-type inference spans all provided docs.
+    /// Build from a parsed document plus cross-file docs. Callers must supply
+    /// precomputed method-return maps for the primary doc and each other doc
+    /// (typically from the salsa `method_returns` query).
     pub fn from_docs_with_meta<'a>(
         doc: &ParsedDoc,
-        other_docs: impl IntoIterator<Item = &'a ParsedDoc>,
+        doc_returns: &MethodReturnsMap,
+        other_docs: impl IntoIterator<Item = (&'a ParsedDoc, &'a MethodReturnsMap)>,
         meta: Option<&'a PhpStormMeta>,
     ) -> Self {
-        let doc_returns = cached_method_returns(doc);
-        let other_returns: Vec<&MethodReturnsMap> =
-            other_docs.into_iter().map(cached_method_returns).collect();
-        let mut all_returns: Vec<&MethodReturnsMap> = Vec::with_capacity(other_returns.len() + 1);
-        all_returns.push(doc_returns);
-        all_returns.extend(other_returns);
+        let mut all_returns: Vec<&MethodReturnsMap> = vec![doc_returns];
+        all_returns.extend(other_docs.into_iter().map(|(_, r)| r));
         let mut map = HashMap::new();
         collect_types_stmts(
             doc.source(),
@@ -71,7 +85,8 @@ impl TypeMap {
     /// an instance method.
     pub fn from_docs_at_position<'a>(
         doc: &ParsedDoc,
-        other_docs: impl IntoIterator<Item = &'a ParsedDoc>,
+        doc_returns: &MethodReturnsMap,
+        other_docs: impl IntoIterator<Item = (&'a ParsedDoc, &'a MethodReturnsMap)>,
         meta: Option<&'a PhpStormMeta>,
         position: Position,
     ) -> Self {
@@ -89,12 +104,8 @@ impl TypeMap {
                 None
             }
         };
-        let doc_returns = cached_method_returns(doc);
-        let other_returns: Vec<&MethodReturnsMap> =
-            other_docs.into_iter().map(cached_method_returns).collect();
-        let mut all_returns: Vec<&MethodReturnsMap> = Vec::with_capacity(other_returns.len() + 1);
-        all_returns.push(doc_returns);
-        all_returns.extend(other_returns);
+        let mut all_returns: Vec<&MethodReturnsMap> = vec![doc_returns];
+        all_returns.extend(other_docs.into_iter().map(|(_, r)| r));
         let mut map = HashMap::new();
         collect_types_stmts(
             doc.source(),
@@ -118,12 +129,6 @@ pub fn build_method_returns(doc: &ParsedDoc) -> MethodReturnsMap {
     let mut out = HashMap::new();
     collect_method_returns_stmts(doc.source(), &doc.program().stmts, &mut out);
     out
-}
-
-/// Return the doc's cached method-returns map, building it on first access.
-/// Subsequent calls on the same `ParsedDoc` return the memoized result.
-fn cached_method_returns(doc: &ParsedDoc) -> &MethodReturnsMap {
-    doc.method_returns_cached(|| build_method_returns(doc))
 }
 
 /// Look up `class.method() -> return_class` across a stack of per-doc maps.
