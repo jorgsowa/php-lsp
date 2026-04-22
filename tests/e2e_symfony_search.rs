@@ -1,9 +1,4 @@
 //! Workspace + document symbol search across vendored symfony/demo.
-//!
-//! These tests don't pin exact positions or URIs — they assert structural
-//! properties of the index (e.g. a query for "BlogController" surfaces the
-//! controller file) so they remain robust across upstream Symfony refactors.
-//!
 //! Run with `cargo test --release -- --ignored`.
 
 mod common;
@@ -27,9 +22,6 @@ async fn workspace_symbols_finds_controller_by_exact_name() {
         !items.is_empty(),
         "expected at least one symbol for query 'BlogController'"
     );
-    // The App\Controller\BlogController class must surface somewhere in the
-    // results. Two files define BlogController (one under Admin/), so we
-    // check for *any* entry pointing at src/Controller/.
     let found_app_controller = items.iter().any(|it| {
         it["location"]["uri"]
             .as_str()
@@ -46,8 +38,6 @@ async fn workspace_symbols_finds_controller_by_exact_name() {
 #[tokio::test]
 #[ignore = "slow: workspace-scale test, run with --ignored"]
 async fn workspace_symbols_fuzzy_prefix() {
-    // Querying a shorter prefix should still turn up BlogController — the
-    // LSP does camel-case fuzzy matching (see util::fuzzy_camel_match).
     let mut server = TestServer::with_fixture("symfony-demo").await;
     server.wait_for_index_ready().await;
 
@@ -84,7 +74,6 @@ async fn document_symbols_lists_blog_controller_methods() {
     assert!(result.is_array(), "expected symbol array");
     let names = collect_names(result);
 
-    // At minimum, BlogController + its known public methods must appear.
     for expected in ["BlogController", "index", "postShow", "commentNew"] {
         assert!(
             names.iter().any(|n| n == expected),

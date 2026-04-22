@@ -1,9 +1,4 @@
-//! Hover against symfony/demo — checks that signatures/types are surfaced
-//! at realistic sites. Assertions look for *substrings* in the rendered
-//! markdown; we deliberately avoid pinning the exact format so upstream
-//! docblock tweaks don't break the suite.
-//!
-//! Run with `cargo test --release -- --ignored`.
+//! Hover against symfony/demo. Run with `cargo test --release -- --ignored`.
 
 mod common;
 
@@ -34,7 +29,7 @@ async fn hover_on_class_in_extends_clause() {
     server.wait_for_index_ready().await;
 
     let path = "src/Controller/BlogController.php";
-    let (text, line, character) = server.locate(path, "AbstractController", 1); // extends site
+    let (text, line, character) = server.locate(path, "AbstractController", 1);
     server.open(path, &text).await;
 
     let resp = server.hover(path, line, character).await;
@@ -53,14 +48,10 @@ async fn hover_on_class_in_extends_clause() {
 #[tokio::test]
 #[ignore = "php-lsp gap: hover on class name used as a parameter type returns null"]
 async fn hover_on_app_entity_type_in_signature() {
-    // Hover on `Post` in `Post $post` controller parameter.
     let mut server = TestServer::with_fixture("symfony-demo").await;
     server.wait_for_index_ready().await;
 
     let path = "src/Controller/BlogController.php";
-    // Skip occurrences in `use App\Entity\Post;` (0) and the `$post:post`
-    // route parameter string (may or may not match our needle), landing on
-    // the actual parameter declaration.
     let (text, line, character) = server.locate(path, "Post $post", 0);
     server.open(path, &text).await;
 

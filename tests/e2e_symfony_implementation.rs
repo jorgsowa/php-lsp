@@ -1,7 +1,5 @@
-//! Find-implementations across symfony/demo: given an interface, the LSP
-//! should surface concrete classes that implement it.
-//!
-//! Run with `cargo test --release -- --ignored`.
+//! Find-implementations across symfony/demo. Run with
+//! `cargo test --release -- --ignored`.
 
 mod common;
 
@@ -10,13 +8,11 @@ use common::TestServer;
 #[tokio::test]
 #[ignore = "php-lsp gap: textDocument/implementation returns null on an interface reference in a `use`-importing file. Expected App\\Entity\\User to show up as implementor of UserInterface"]
 async fn implementations_of_user_interface_include_app_user() {
-    // `App\Entity\User implements UserInterface` — we ask the LSP for
-    // implementors of `UserInterface` and verify our User entity shows up.
     let mut server = TestServer::with_fixture("symfony-demo").await;
     server.wait_for_index_ready().await;
 
     let path = "src/Entity/User.php";
-    let (text, line, character) = server.locate(path, "UserInterface", 1); // skip the `use` line
+    let (text, line, character) = server.locate(path, "UserInterface", 1);
     server.open(path, &text).await;
 
     let resp = server.implementation(path, line, character).await;

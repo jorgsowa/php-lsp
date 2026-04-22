@@ -465,6 +465,60 @@ impl TestServer {
             .await
     }
 
+    pub async fn prepare_call_hierarchy(&mut self, path: &str, line: u32, character: u32) -> Value {
+        let uri = self.uri(path);
+        self.client
+            .request(
+                "textDocument/prepareCallHierarchy",
+                json!({
+                    "textDocument": { "uri": uri },
+                    "position": { "line": line, "character": character },
+                }),
+            )
+            .await
+    }
+
+    pub async fn incoming_calls(&mut self, item: Value) -> Value {
+        self.client
+            .request("callHierarchy/incomingCalls", json!({ "item": item }))
+            .await
+    }
+
+    pub async fn prepare_type_hierarchy(&mut self, path: &str, line: u32, character: u32) -> Value {
+        let uri = self.uri(path);
+        self.client
+            .request(
+                "textDocument/prepareTypeHierarchy",
+                json!({
+                    "textDocument": { "uri": uri },
+                    "position": { "line": line, "character": character },
+                }),
+            )
+            .await
+    }
+
+    pub async fn supertypes(&mut self, item: Value) -> Value {
+        self.client
+            .request("typeHierarchy/supertypes", json!({ "item": item }))
+            .await
+    }
+
+    pub async fn subtypes(&mut self, item: Value) -> Value {
+        self.client
+            .request("typeHierarchy/subtypes", json!({ "item": item }))
+            .await
+    }
+
+    pub async fn semantic_tokens_full(&mut self, path: &str) -> Value {
+        let uri = self.uri(path);
+        self.client
+            .request(
+                "textDocument/semanticTokens/full",
+                json!({ "textDocument": { "uri": uri } }),
+            )
+            .await
+    }
+
     /// Load a fixture file, find the nth (0-based) occurrence of `needle`,
     /// and return the (text, line, character) for the *start* of the match.
     /// Panics if `needle` isn't found `occurrence + 1` times.

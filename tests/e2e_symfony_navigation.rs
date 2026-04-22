@@ -1,10 +1,9 @@
 //! Goto-definition across the vendored symfony/demo project.
-//!
-//! Exercises resolution scenarios that inline fixtures can't hit:
-//! - vendor-tree PSR-4 resolution
-//! - Symfony attribute classes (`#[Route]`)
-//! - method navigation inherited from an abstract base class in vendor/
-//! - parameter types using `use`-imported FQNs
+//! Each test uses its own indexed server — we investigated sharing via
+//! OnceCell + Mutex, but the shared-server pattern caused state
+//! pollution (wrong goto-def targets after a prior query) and
+//! BrokenPipe flakiness; the per-test server pattern is deterministic
+//! and the extra wall time is acceptable for `--ignored` runs.
 //!
 //! All `#[ignore]`: run with `cargo test --release -- --ignored`.
 
@@ -13,7 +12,6 @@ mod common;
 use common::TestServer;
 use serde_json::Value;
 
-/// Collapse a Location | Location[] | LocationLink[] response into one Location.
 fn first_loc(result: &Value) -> Value {
     if result.is_array() {
         result[0].clone()
@@ -32,7 +30,6 @@ fn uri_of(loc: &Value) -> &str {
 #[tokio::test]
 #[ignore = "slow: workspace-scale test, run with --ignored"]
 async fn goto_definition_parameter_type_in_vendor() {
-    // `Request` in `index(Request $request, ...)` → vendor HttpFoundation.
     let mut server = TestServer::with_fixture("symfony-demo").await;
     server.wait_for_index_ready().await;
 
@@ -54,8 +51,6 @@ async fn goto_definition_parameter_type_in_vendor() {
 #[tokio::test]
 #[ignore = "slow: workspace-scale test, run with --ignored"]
 async fn goto_definition_app_class_from_use_import() {
-    // `PostRepository $posts` in the controller signature → src/Repository/PostRepository.php.
-    // Exercises project-local PSR-4, not vendor.
     let mut server = TestServer::with_fixture("symfony-demo").await;
     server.wait_for_index_ready().await;
 
@@ -75,18 +70,14 @@ async fn goto_definition_app_class_from_use_import() {
 }
 
 #[tokio::test]
-#[ignore = "php-lsp gap: method goto-def on `$this->render` ignores receiver type; jumps to an unrelated render() (observed: BlockQuoteRenderer). Receiver-aware method dispatch is needed"]
+#[ignore = "php-lsp gap: method goto-def on `$this->render` ignores receiver type; jumps to an unrelated render() (observed: BlockQuoteRenderer / Console\\Helper\\Table). Receiver-aware method dispatch is needed"]
 async fn goto_definition_inherited_method_this_render() {
-    // `$this->render(...)` in a controller method → render() on the vendor
-    // AbstractController base class. This is method navigation across a
-    // base-class hop into the vendor tree.
     let mut server = TestServer::with_fixture("symfony-demo").await;
     server.wait_for_index_ready().await;
 
     let path = "src/Controller/BlogController.php";
     let (text, line, character) = server.locate(path, "$this->render(", 0);
-    // The cursor needs to land on `render`, not on `$this->`.
-    let character = character + "$this->".len() as u32 + 1; // +1 = inside "render"
+    let character = character + "$this->".len() as u32 + 1;
     server.open(path, &text).await;
 
     let resp = server.definition(path, line, character).await;
@@ -106,14 +97,12 @@ async fn goto_definition_inherited_method_this_render() {
 #[tokio::test]
 #[ignore = "slow: workspace-scale test, run with --ignored"]
 async fn goto_definition_attribute_class_route() {
-    // `#[Route('/blog')]` on the class → Symfony\Component\Routing\Attribute\Route.
     let mut server = TestServer::with_fixture("symfony-demo").await;
     server.wait_for_index_ready().await;
 
     let path = "src/Controller/BlogController.php";
     let (text, line, character) = server.locate(path, "#[Route(", 0);
-    // Land the cursor inside `Route`, not on `#[`.
-    let character = character + 2; // skip `#[`
+    let character = character + 2;
     server.open(path, &text).await;
 
     let resp = server.definition(path, line, character).await;
