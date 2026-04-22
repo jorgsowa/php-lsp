@@ -422,6 +422,78 @@ impl TestServer {
             )
             .await
     }
+
+    pub async fn implementation(&mut self, path: &str, line: u32, character: u32) -> Value {
+        let uri = self.uri(path);
+        self.client
+            .request(
+                "textDocument/implementation",
+                json!({
+                    "textDocument": { "uri": uri },
+                    "position": { "line": line, "character": character },
+                }),
+            )
+            .await
+    }
+
+    pub async fn type_definition(&mut self, path: &str, line: u32, character: u32) -> Value {
+        let uri = self.uri(path);
+        self.client
+            .request(
+                "textDocument/typeDefinition",
+                json!({
+                    "textDocument": { "uri": uri },
+                    "position": { "line": line, "character": character },
+                }),
+            )
+            .await
+    }
+
+    pub async fn document_symbols(&mut self, path: &str) -> Value {
+        let uri = self.uri(path);
+        self.client
+            .request(
+                "textDocument/documentSymbol",
+                json!({ "textDocument": { "uri": uri } }),
+            )
+            .await
+    }
+
+    pub async fn workspace_symbols(&mut self, query: &str) -> Value {
+        self.client
+            .request("workspace/symbol", json!({ "query": query }))
+            .await
+    }
+
+    /// Load a fixture file, find the nth (0-based) occurrence of `needle`,
+    /// and return the (text, line, character) for the *start* of the match.
+    /// Panics if `needle` isn't found `occurrence + 1` times.
+    ///
+    /// This is the workhorse for tests against the vendored fixture: real
+    /// files don't have `$0` cursor markers, so we locate symbols by
+    /// substring. Line/char are 0-based (LSP convention).
+    pub fn locate(&self, path: &str, needle: &str, occurrence: usize) -> (String, u32, u32) {
+        let full = match &self.root {
+            Some(r) => r.join(path),
+            None => std::path::PathBuf::from("/").join(path),
+        };
+        let text = std::fs::read_to_string(&full)
+            .unwrap_or_else(|e| panic!("read {}: {e}", full.display()));
+        let mut pos = 0usize;
+        let mut byte_pos = None;
+        for _ in 0..=occurrence {
+            let idx = text[pos..].find(needle).unwrap_or_else(|| {
+                panic!("needle {needle:?} missing occurrence {occurrence} in {path}")
+            });
+            byte_pos = Some(pos + idx);
+            pos += idx + needle.len();
+        }
+        let byte_pos = byte_pos.unwrap();
+        let before = &text[..byte_pos];
+        let line = before.bytes().filter(|b| *b == b'\n').count() as u32;
+        let character = before.rsplit('\n').next().unwrap_or("").chars().count() as u32;
+        (text, line, character)
+    }
 }
 
 // ---------- cursor-marker helper ----------
