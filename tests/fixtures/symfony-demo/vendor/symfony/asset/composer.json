@@ -1,0 +1,36 @@
+{
+    "name": "symfony/asset",
+    "type": "library",
+    "description": "Manages URL generation and versioning of web assets such as CSS stylesheets, JavaScript files and image files",
+    "keywords": [],
+    "homepage": "https://symfony.com",
+    "license": "MIT",
+    "authors": [
+        {
+            "name": "Fabien Potencier",
+            "email": "fabien@symfony.com"
+        },
+        {
+            "name": "Symfony Community",
+            "homepage": "https://symfony.com/contributors"
+        }
+    ],
+    "require": {
+        "php": ">=8.2"
+    },
+    "require-dev": {
+        "symfony/http-client": "^6.4|^7.0",
+        "symfony/http-foundation": "^6.4|^7.0",
+        "symfony/http-kernel": "^6.4|^7.0"
+    },
+    "conflict": {
+        "symfony/http-foundation": "<6.4"
+    },
+    "autoload": {
+        "psr-4": { "Symfony\\Component\\Asset\\": "" },
+        "exclude-from-classmap": [
+            "/Tests/"
+        ]
+    },
+    "minimum-stability": "dev"
+}

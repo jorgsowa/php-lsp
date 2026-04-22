@@ -1,0 +1,38 @@
+{
+    "name": "symfonycasts/sass-bundle",
+    "description": "Delightful Sass Support for Symfony + AssetMapper",
+    "license": "MIT",
+    "type": "library",
+    "keywords": ["asset-mapper", "sass"],
+    "authors": [
+        {
+            "name": "Mathéo Daninos",
+            "homepage": "https://github.com/WebMamba"
+        }
+    ],
+    "require": {
+        "php": ">=8.1",
+        "symfony/asset-mapper": "^6.3|^7.0",
+        "symfony/console": "^5.4|^6.3|^7.0",
+        "symfony/filesystem": "^5.4|^6.3|^7.0",
+        "symfony/http-client": "^5.4|^6.3|^7.0",
+        "symfony/process": "^5.4|^6.3|^7.0"
+    },
+    "require-dev": {
+        "matthiasnoback/symfony-config-test": "^5.0",
+        "symfony/framework-bundle": "^6.3|^7.0",
+        "symfony/phpunit-bridge": "^6.3|^7.0",
+        "phpstan/phpstan-symfony": "^1.4"
+    },
+    "minimum-stability": "dev",
+    "autoload": {
+        "psr-4": {
+            "Symfonycasts\\SassBundle\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Symfonycasts\\SassBundle\\Tests\\": "tests/"
+        }
+    }
+}

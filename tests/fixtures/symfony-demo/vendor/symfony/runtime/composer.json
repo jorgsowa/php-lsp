@@ -1,0 +1,45 @@
+{
+    "name": "symfony/runtime",
+    "type": "composer-plugin",
+    "description": "Enables decoupling PHP applications from global state",
+    "keywords": ["runtime"],
+    "homepage": "https://symfony.com",
+    "license" : "MIT",
+    "authors": [
+        {
+            "name": "Nicolas Grekas",
+            "email": "p@tchwork.com"
+        },
+        {
+            "name": "Symfony Community",
+            "homepage": "https://symfony.com/contributors"
+        }
+    ],
+    "require": {
+        "php": ">=8.2",
+        "composer-plugin-api": "^1.0|^2.0"
+    },
+    "require-dev": {
+        "composer/composer": "^2.6",
+        "symfony/console": "^6.4|^7.0",
+        "symfony/dotenv": "^6.4|^7.0",
+        "symfony/http-foundation": "^6.4|^7.0",
+        "symfony/http-kernel": "^6.4|^7.0"
+    },
+    "conflict": {
+        "symfony/dotenv": "<6.4"
+    },
+    "autoload": {
+        "psr-4": {
+            "Symfony\\Component\\Runtime\\": "",
+            "Symfony\\Runtime\\Symfony\\Component\\": "Internal/"
+        },
+        "exclude-from-classmap": [
+            "/Tests/"
+        ]
+    },
+    "minimum-stability": "dev",
+    "extra": {
+        "class": "Symfony\\Component\\Runtime\\Internal\\ComposerPlugin"
+    }
+}
