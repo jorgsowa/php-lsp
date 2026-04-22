@@ -2,6 +2,27 @@ name: Benchmarks
 
 on:
   workflow_dispatch:
+  # Run on pushes to main so gh-pages history stays fresh — every merged
+  # PR updates the baseline the next comparison will use.
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'benches/**'
+      - 'mir-*/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+  # Phase H gate: run on PRs that touch perf-sensitive code. The
+  # benchmark-action compares against gh-pages history with a 130 %
+  # alert threshold, failing the PR on detected regression.
+  pull_request:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'benches/**'
+      - 'mir-*/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
 
 jobs:
   bench:
@@ -29,6 +50,13 @@ jobs:
           key: ${{ runner.os }}-cargo-bench-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: |
             ${{ runner.os }}-cargo-bench-
+
+      # Required by the `*_laravel_framework` benches in requests/index/
+      # semantic — they skip silently if the fixture is missing, so
+      # without this step CI would under-report coverage on salsa's
+      # cross-file paths (the ones most likely to regress).
+      - name: Set up Laravel fixture
+        run: bash scripts/setup_laravel_fixture.sh
 
       - name: Run benchmarks
         run: cargo bench -- --output-format bencher | tee output.txt

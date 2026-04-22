@@ -55,6 +55,7 @@ queries." That gives us:
 | G2 | Lock-free fast path in `mirror_text` | ✅ shipped (measurement pending) |
 | G3 | Trim `get_doc_salsa` overhead — cross-revision `parsed_cache` | ✅ shipped |
 | G4 | Investigate `references/*` +2000% regression | ✅ resolved — stale baseline, not a real regression |
+| H | Fix benches + CI regression gate | ✅ shipped |
 
 ## Architecture — current state
 
@@ -599,13 +600,49 @@ should bake this in.
 
 **Validation**: G1 done. G2/G3/G4 each need their own compare run.
 
-### Phase H — fix benches and add E2E regression gate
+### Phase H — fix benches and add E2E regression gate ✅ shipped 2026-04-22
 
-`benches/requests.rs` and `benches/semantic.rs` don't compile against this
-branch (signature drift during E3). Fix them, then wire a CI job that runs
-`scripts/bench.sh compare main` and fails on `p < 0.05` regression worse than
-a configurable threshold. Without this gate, future salsa-layer changes will
-keep silently regressing single-file paths.
+**Bench compilation** — `benches/requests.rs` and `benches/semantic.rs`
+both compile and run end-to-end on this branch; the E3-era signature
+drift flagged earlier was resolved in transit (current `hover_info`
+et al. take the threaded `MethodReturnsMap` the benches already pass).
+No code change needed here.
+
+**`scripts/bench.sh` resilience** — the previous `set -e` loop aborted
+the entire compare run as soon as one sub-bench panicked (e.g.
+`references/laravel_framework` with no saved baseline). Rewritten to
+track per-suite failures and continue: every suite is attempted, each
+failure emits a `::warning::` line that GitHub Actions surfaces, and
+the script still exits non-zero overall so CI fails loudly. Crucially
+this means a single missing-baseline bench no longer hides regressions
+in the remaining three suites.
+
+**CI gate** — `.github/workflows/bench.yml` now triggers on:
+
+- `push` to `main` (paths: `src/**`, `benches/**`, `mir-*/**`,
+  `Cargo.toml`, `Cargo.lock`) — keeps the gh-pages baseline history
+  fresh so every subsequent PR comparison is anchored on the latest
+  merged state. This replaces the "rerun `bench.sh save main` after
+  every main merge" takeaway from Phase G4.
+- `pull_request` against `main` (same paths filter) — compares the
+  PR's bench output against the gh-pages history and fails the PR
+  on a regression above the 130 % alert threshold.
+- `workflow_dispatch` — unchanged, for manual reruns.
+
+Paths filter avoids running criterion on doc-only or CI-only PRs,
+where the ~15–20 minute bench run would be pure overhead. The Laravel
+fixture is now cloned via `scripts/setup_laravel_fixture.sh` as an
+explicit workflow step — without it the `*_laravel_framework` benches
+silently skip, under-reporting coverage on the cross-file paths most
+likely to regress on salsa changes.
+
+**Why not `scripts/bench.sh compare main`** — the plan originally
+called for driving CI through `bench.sh compare`, but the existing
+`benchmark-action/github-action-benchmark` integration offers a
+stronger signal: it compares against rolling gh-pages history rather
+than a single frozen baseline, surfaces alert comments on the PR, and
+handles result storage across runs. The `compare` subcommand remains
+the canonical local-workflow entry point for reproducing CI results.
 
 ## Constraints carried forward
 
