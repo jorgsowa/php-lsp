@@ -44,9 +44,12 @@ queries." That gives us:
 | B4d-3b | Delete `entry.index`; route index iteration through salsa | ✅ shipped |
 | B4d-3c | Move version gate to Backend; delete `apply_parse` | ✅ shipped |
 | B4d-4 | Delete `OnceLock<MethodReturnsMap>` from `ParsedDoc` | ⏸ deferred — see Phase E3 |
-| C | Migrate `mir_codebase` into salsa queries | ⏳ pending — plan sizing revised 2026-04-22; see section |
-| D | `file_refs`/`symbol_refs` lazy reference index | ⏳ pending (blocked by C) |
-| E | `Analysis` snapshot + cancellation | ⏳ pending — split into E1–E4 (2026-04-22); see section |
+| C | Migrate `mir_codebase` into salsa queries | ✅ shipped |
+| D | `file_refs`/`symbol_refs` lazy reference index | ✅ shipped |
+| E1 | Snapshot-clone reads off the host mutex | ✅ shipped |
+| E2 | LSP request cancellation → `RequestCancelled` | ⏸ folded into E1 — `snapshot_query` retries on `salsa::Cancelled` and falls back to the mutex; nothing escapes to the LSP layer |
+| E3 | Thread salsa db through `type_map`; delete `OnceLock<MethodReturnsMap>` | ⏳ pending — 35 call sites to update |
+| E4 | Move `DocumentStore.map` bookkeeping to `Backend`; delete the struct if empty | ⏳ pending (optional cleanup) |
 | F | `#[salsa::tracked(lru = N)]`; delete `indexed_order` | ⏳ pending (blocked by inputs-are-immortal problem) |
 
 ## Architecture — current state
