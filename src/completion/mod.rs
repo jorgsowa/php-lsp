@@ -26,12 +26,13 @@ use tower_lsp::lsp_types::{
 
 use tower_lsp::lsp_types::{Documentation, MarkupContent, MarkupKind};
 
-use crate::ast::{ParsedDoc, format_type_hint};
+use crate::ast::{MethodReturnsMap, ParsedDoc, format_type_hint};
 use crate::docblock::find_docblock;
 use crate::hover::format_params_str;
 use crate::phpstorm_meta::PhpStormMeta;
 use crate::type_map::{
-    TypeMap, enclosing_class_at, members_of_class, params_of_function, params_of_method,
+    TypeMap, build_method_returns, enclosing_class_at, members_of_class, params_of_function,
+    params_of_method,
 };
 use crate::util::{camel_sort_key, fuzzy_camel_match, utf16_offset_to_byte};
 use std::collections::HashMap;
@@ -195,6 +196,13 @@ pub struct CompletionCtx<'a> {
     pub meta: Option<&'a PhpStormMeta>,
     pub doc_uri: Option<&'a Url>,
     pub file_imports: Option<&'a HashMap<String, String>>,
+    /// Salsa-memoized method-return map for the primary doc. If `None`,
+    /// `filtered_completions_at` builds one inline. Production callers
+    /// pass the salsa-cached Arc to avoid recomputing per request.
+    pub doc_returns: Option<&'a MethodReturnsMap>,
+    /// Salsa-memoized method-return maps aligned with `other_docs`. Must be
+    /// the same length as `other_docs` when set, or `None` to build inline.
+    pub other_returns: Option<&'a [Arc<MethodReturnsMap>]>,
 }
 
 /// Completions filtered by trigger character, with optional context
@@ -211,6 +219,31 @@ pub fn filtered_completions_at(
     let doc_uri = ctx.doc_uri;
     let empty_imports = HashMap::new();
     let imports = ctx.file_imports.unwrap_or(&empty_imports);
+
+    // Materialize method-return maps either from the salsa-provided context
+    // or by building them inline (tests / callers that don't pass them).
+    let doc_returns_owned: Option<MethodReturnsMap> =
+        ctx.doc_returns.is_none().then(|| build_method_returns(doc));
+    let doc_returns_ref: &MethodReturnsMap = ctx
+        .doc_returns
+        .unwrap_or_else(|| doc_returns_owned.as_ref().expect("initialized above"));
+    let other_returns_owned: Option<Vec<MethodReturnsMap>> = ctx
+        .other_returns
+        .is_none()
+        .then(|| other_docs.iter().map(|d| build_method_returns(d)).collect());
+    let other_returns_refs: Vec<&MethodReturnsMap> = match ctx.other_returns {
+        Some(arcs) => arcs.iter().map(|a| a.as_ref()).collect(),
+        None => other_returns_owned
+            .as_ref()
+            .expect("initialized above")
+            .iter()
+            .collect(),
+    };
+    let others_with_returns: Vec<(&ParsedDoc, &MethodReturnsMap)> = other_docs
+        .iter()
+        .map(|d| d.as_ref())
+        .zip(other_returns_refs.iter().copied())
+        .collect();
     match trigger_character {
         Some("$") => {
             let mut items = superglobal_completions();
@@ -224,8 +257,12 @@ pub fn filtered_completions_at(
         Some(">") => {
             // Arrow: $obj->  or  $this->
             if let (Some(src), Some(pos)) = (source, position) {
-                let type_map =
-                    TypeMap::from_docs_with_meta(doc, other_docs.iter().map(|d| d.as_ref()), meta);
+                let type_map = TypeMap::from_docs_with_meta(
+                    doc,
+                    doc_returns_ref,
+                    others_with_returns.iter().copied(),
+                    meta,
+                );
                 if let Some(class_names) = resolve_receiver_class(src, doc, pos, &type_map) {
                     // Feature 5: support union types (Foo|Bar)
                     let mut items = Vec::new();
@@ -446,7 +483,15 @@ pub fn filtered_completions_at(
 
             // Feature 7: match arm completions
             if let (Some(src), Some(pos)) = (source, position)
-                && let Some(match_items) = match_arm_completions(src, doc, other_docs, pos, meta)
+                && let Some(match_items) = match_arm_completions(
+                    src,
+                    doc,
+                    doc_returns_ref,
+                    other_docs,
+                    &others_with_returns,
+                    pos,
+                    meta,
+                )
                 && !match_items.is_empty()
             {
                 let mut all = match_items;
@@ -558,7 +603,9 @@ pub fn filtered_completions_at(
 fn match_arm_completions(
     source: &str,
     doc: &ParsedDoc,
+    doc_returns: &MethodReturnsMap,
     other_docs: &[Arc<ParsedDoc>],
+    others_with_returns: &[(&ParsedDoc, &MethodReturnsMap)],
     position: Position,
     meta: Option<&PhpStormMeta>,
 ) -> Option<Vec<CompletionItem>> {
@@ -573,7 +620,12 @@ fn match_arm_completions(
                 enclosing_class_at(source, doc, position)?
             } else {
                 let type_map = type_map_cell.get_or_init(|| {
-                    TypeMap::from_docs_with_meta(doc, other_docs.iter().map(|d| d.as_ref()), meta)
+                    TypeMap::from_docs_with_meta(
+                        doc,
+                        doc_returns,
+                        others_with_returns.iter().copied(),
+                        meta,
+                    )
                 });
                 type_map.get(&format!("${cap}"))?.to_string()
             };

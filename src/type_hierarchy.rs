@@ -240,41 +240,38 @@ fn make_item_from_index(
     }
 }
 
-/// Prepare type hierarchy from a FileIndex slice.
-pub fn prepare_type_hierarchy_from_index(
+/// Phase J — Prepare from the salsa-memoized workspace aggregate. Constant-time
+/// name lookup via `classes_by_name` instead of walking every file's classes.
+pub fn prepare_type_hierarchy_from_workspace(
     source: &str,
-    indexes: &[(Url, std::sync::Arc<crate::file_index::FileIndex>)],
+    wi: &crate::db::workspace_index::WorkspaceIndexData,
     position: Position,
 ) -> Option<TypeHierarchyItem> {
     use crate::file_index::ClassKind;
     use crate::util::word_at;
     let word = word_at(source, position)?;
-    for (uri, idx) in indexes {
-        for cls in &idx.classes {
-            if cls.name == word {
-                let kind = match cls.kind {
-                    ClassKind::Class | ClassKind::Trait => SymbolKind::CLASS,
-                    ClassKind::Interface => SymbolKind::INTERFACE,
-                    ClassKind::Enum => SymbolKind::ENUM,
-                };
-                return Some(make_item_from_index(&cls.name, kind, uri, cls.start_line));
-            }
-        }
-    }
-    None
+    let refs = wi.classes_by_name.get(&word)?;
+    let (uri, cls) = wi.at(*refs.first()?)?;
+    let kind = match cls.kind {
+        ClassKind::Class | ClassKind::Trait => SymbolKind::CLASS,
+        ClassKind::Interface => SymbolKind::INTERFACE,
+        ClassKind::Enum => SymbolKind::ENUM,
+    };
+    Some(make_item_from_index(&cls.name, kind, uri, cls.start_line))
 }
 
-/// Supertypes from FileIndex.
-pub fn supertypes_of_from_index(
+/// Phase J — Supertypes via the aggregate. Collect parent/interface names from
+/// every declaration of `item.name`, then resolve each name through
+/// `classes_by_name`. O(definitions-of-item + parents) instead of O(files × classes).
+pub fn supertypes_of_from_workspace(
     item: &TypeHierarchyItem,
-    indexes: &[(Url, std::sync::Arc<crate::file_index::FileIndex>)],
+    wi: &crate::db::workspace_index::WorkspaceIndexData,
 ) -> Vec<TypeHierarchyItem> {
     use crate::file_index::ClassKind;
     let mut super_names: Vec<String> = Vec::new();
-
-    for (_, idx) in indexes {
-        for cls in &idx.classes {
-            if cls.name == item.name {
+    if let Some(refs) = wi.classes_by_name.get(&item.name) {
+        for r in refs {
+            if let Some((_, cls)) = wi.at(*r) {
                 if let Some(p) = &cls.parent {
                     super_names.push(p.clone());
                 }
@@ -287,44 +284,41 @@ pub fn supertypes_of_from_index(
 
     let mut result = Vec::new();
     for name in super_names {
-        for (uri, idx) in indexes {
-            if let Some(cls) = idx.classes.iter().find(|c| c.name == name) {
-                let kind = match cls.kind {
-                    ClassKind::Class | ClassKind::Trait => SymbolKind::CLASS,
-                    ClassKind::Interface => SymbolKind::INTERFACE,
-                    ClassKind::Enum => SymbolKind::ENUM,
-                };
-                result.push(make_item_from_index(&cls.name, kind, uri, cls.start_line));
-                break;
-            }
+        if let Some(refs) = wi.classes_by_name.get(&name)
+            && let Some((uri, cls)) = refs.first().and_then(|r| wi.at(*r))
+        {
+            let kind = match cls.kind {
+                ClassKind::Class | ClassKind::Trait => SymbolKind::CLASS,
+                ClassKind::Interface => SymbolKind::INTERFACE,
+                ClassKind::Enum => SymbolKind::ENUM,
+            };
+            result.push(make_item_from_index(&cls.name, kind, uri, cls.start_line));
         }
     }
     result
 }
 
-/// Subtypes from FileIndex.
-pub fn subtypes_of_from_index(
+/// Phase J — Subtypes via the pre-built `subtypes_of` reverse map. O(matches)
+/// instead of O(files × classes).
+pub fn subtypes_of_from_workspace(
     item: &TypeHierarchyItem,
-    indexes: &[(Url, std::sync::Arc<crate::file_index::FileIndex>)],
+    wi: &crate::db::workspace_index::WorkspaceIndexData,
 ) -> Vec<TypeHierarchyItem> {
     use crate::file_index::ClassKind;
-    let mut result = Vec::new();
-    for (uri, idx) in indexes {
-        for cls in &idx.classes {
-            let extends_match = cls.parent.as_deref() == Some(&item.name as &str);
-            let implements_match = cls.implements.iter().any(|i| i == &item.name);
-            let trait_use_match = cls.traits.iter().any(|t| t == &item.name);
-            if extends_match || implements_match || trait_use_match {
-                let kind = match cls.kind {
-                    ClassKind::Class | ClassKind::Trait => SymbolKind::CLASS,
-                    ClassKind::Interface => SymbolKind::INTERFACE,
-                    ClassKind::Enum => SymbolKind::ENUM,
-                };
-                result.push(make_item_from_index(&cls.name, kind, uri, cls.start_line));
-            }
-        }
-    }
-    result
+    let Some(refs) = wi.subtypes_of.get(&item.name) else {
+        return Vec::new();
+    };
+    refs.iter()
+        .filter_map(|r| wi.at(*r))
+        .map(|(uri, cls)| {
+            let kind = match cls.kind {
+                ClassKind::Class | ClassKind::Trait => SymbolKind::CLASS,
+                ClassKind::Interface => SymbolKind::INTERFACE,
+                ClassKind::Enum => SymbolKind::ENUM,
+            };
+            make_item_from_index(&cls.name, kind, uri, cls.start_line)
+        })
+        .collect()
 }
 
 #[cfg(test)]

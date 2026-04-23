@@ -20,6 +20,12 @@ use crate::docblock::{docblock_before, parse_docblock};
 /// `mir_analyzer` gains version-gating support.
 ///
 /// TODO: pass `php_version` to `mir_analyzer` once it exposes a version API.
+/// Legacy mutating path — runs `remove_file_definitions` + collect + finalize
+/// on the codebase. Kept for benchmarks (`benches/semantic.rs`) and as the
+/// reference implementation while Phase D wraps Pass-2 in salsa. Not used by
+/// the LSP handlers anymore (they use `semantic_diagnostics_no_rebuild`
+/// against the salsa-built codebase).
+#[allow(dead_code)]
 pub fn semantic_diagnostics(
     uri: &Url,
     doc: &ParsedDoc,
@@ -85,6 +91,11 @@ pub fn semantic_diagnostics(
 /// codebase — it skips the `remove_file_definitions` / re-collect / `finalize`
 /// cycle. Intended for workspace diagnostic batch passes where the codebase is
 /// built once upfront and `finalize()` is called a single time before the loop.
+///
+/// Phase I: LSP handlers now read issues through the salsa `semantic_issues`
+/// query + `issues_to_diagnostics`. This function is retained for
+/// `benches/semantic.rs` as a single-call reference implementation.
+#[allow(dead_code)]
 pub fn semantic_diagnostics_no_rebuild(
     uri: &Url,
     doc: &ParsedDoc,
@@ -124,6 +135,26 @@ pub fn semantic_diagnostics_no_rebuild(
         .collect()
 }
 
+/// Convert pre-computed raw issues (from `db::semantic::semantic_issues`) into
+/// LSP diagnostics, applying the user's `DiagnosticsConfig` filter. Keeping
+/// filter + conversion outside the salsa query preserves memoization across
+/// config toggles (the user flipping a category must not rerun the analyzer).
+pub fn issues_to_diagnostics(
+    issues: &[mir_issues::Issue],
+    uri: &Url,
+    cfg: &DiagnosticsConfig,
+) -> Vec<Diagnostic> {
+    if !cfg.enabled {
+        return vec![];
+    }
+    issues
+        .iter()
+        .filter(|i| issue_passes_filter(i, cfg))
+        .cloned()
+        .map(|i| to_lsp_diagnostic(i, uri))
+        .collect()
+}
+
 /// Returns `true` if the mir-analyzer issue is allowed through by the config.
 fn issue_passes_filter(issue: &mir_issues::Issue, cfg: &DiagnosticsConfig) -> bool {
     use mir_issues::IssueKind;
@@ -149,32 +180,6 @@ fn issue_passes_filter(issue: &mir_issues::Issue, cfg: &DiagnosticsConfig) -> bo
         }
         _ => true,
     }
-}
-
-/// Run Pass 2 analysis on `doc` to populate `codebase.symbol_reference_locations`.
-///
-/// Unlike [`semantic_diagnostics`] and [`semantic_diagnostics_no_rebuild`], this
-/// function discards all emitted issues — its only purpose is the side-effect of
-/// calling `mark_*_referenced_at` on the codebase so that `get_reference_locations`
-/// returns complete results for `find_references`.
-///
-/// The codebase must already be finalized (all definitions collected, `finalize()`
-/// called) before this is invoked.
-pub fn index_file_references(uri: &Url, doc: &ParsedDoc, codebase: &mir_codebase::Codebase) {
-    let file: Arc<str> = Arc::from(uri.as_str());
-    let source_map = php_rs_parser::source_map::SourceMap::new(doc.source());
-    let mut issue_buffer = mir_issues::IssueBuffer::new();
-    let mut symbols = Vec::new();
-    let mut analyzer = mir_analyzer::stmt::StatementsAnalyzer::new(
-        codebase,
-        file,
-        doc.source(),
-        &source_map,
-        &mut issue_buffer,
-        &mut symbols,
-    );
-    let mut ctx = mir_analyzer::context::Context::new();
-    analyzer.analyze_stmts(&doc.program().stmts, &mut ctx);
 }
 
 /// Check for deprecated function/method calls and emit Warning diagnostics.

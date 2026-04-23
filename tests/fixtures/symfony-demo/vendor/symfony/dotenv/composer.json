@@ -1,0 +1,36 @@
+{
+    "name": "symfony/dotenv",
+    "type": "library",
+    "description": "Registers environment variables from a .env file",
+    "keywords": ["environment", "env", "dotenv"],
+    "homepage": "https://symfony.com",
+    "license" : "MIT",
+    "authors": [
+        {
+            "name": "Fabien Potencier",
+            "email": "fabien@symfony.com"
+        },
+        {
+            "name": "Symfony Community",
+            "homepage": "https://symfony.com/contributors"
+        }
+    ],
+    "require": {
+        "php": ">=8.2"
+    },
+    "require-dev": {
+        "symfony/console": "^6.4|^7.0",
+        "symfony/process": "^6.4|^7.0"
+    },
+    "conflict": {
+        "symfony/console": "<6.4",
+        "symfony/process": "<6.4"
+    },
+    "autoload": {
+        "psr-4": { "Symfony\\Component\\Dotenv\\": "" },
+        "exclude-from-classmap": [
+            "/Tests/"
+        ]
+    },
+    "minimum-stability": "dev"
+}

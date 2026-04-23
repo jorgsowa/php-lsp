@@ -34,20 +34,22 @@ fn bench_get_doc(c: &mut Criterion) {
     store.index(uri.clone(), MEDIUM);
 
     c.bench_function("index/get_doc", |b| {
-        b.iter(|| black_box(store.get_doc(&uri)));
+        b.iter(|| black_box(store.get_doc_salsa(&uri)));
     });
 }
 
-/// Benchmark `all_docs` with 10 indexed files.
+/// Benchmark resolving 10 open-file URLs to parsed docs via `docs_for`.
 fn bench_all_docs(c: &mut Criterion) {
     let store = DocumentStore::new();
-    for i in 0..10 {
-        let uri = Url::parse(&format!("file:///bench/file{i}.php")).unwrap();
-        store.index(uri, SMALL);
+    let urls: Vec<Url> = (0..10)
+        .map(|i| Url::parse(&format!("file:///bench/file{i}.php")).unwrap())
+        .collect();
+    for u in &urls {
+        store.index(u.clone(), SMALL);
     }
 
     c.bench_function("index/all_docs_10", |b| {
-        b.iter(|| black_box(store.all_docs()));
+        b.iter(|| black_box(store.docs_for(&urls)));
     });
 }
 
@@ -122,10 +124,10 @@ fn bench_workspace_scan_laravel(c: &mut Criterion) {
     group.bench_function("laravel_framework", |b| {
         b.iter(|| {
             let store = DocumentStore::new();
-            // Disable LRU eviction so all 1,609 files stay indexed for the
-            // duration of the scan — otherwise this measures indexing 1,000
-            // files + evicting 609, not "index the whole workspace".
-            store.set_max_indexed(usize::MAX);
+            // Phase F: DocumentStore no longer has a hand-written LRU, so
+            // there is no eviction to disable; `index()` unconditionally
+            // keeps every file in the mirror. The old `set_max_indexed`
+            // call has been removed.
             for (url, src) in &php_files {
                 store.index(url.clone(), src);
             }
@@ -135,12 +137,64 @@ fn bench_workspace_scan_laravel(c: &mut Criterion) {
     group.finish();
 }
 
+/// Phase G2 contention micro-bench: N threads concurrently re-mirror the
+/// same URL with the same text. Single-threaded this work is cheap either
+/// way, but with the fast path disabled every thread serialises on
+/// `host.lock()` just to confirm a no-op; the G2 cache hit lets them
+/// proceed in parallel. Mirrors what happens during workspace scan +
+/// `did_open` on already-indexed files under a multi-core tokio runtime.
+fn bench_mirror_same_text_contended(c: &mut Criterion) {
+    use std::sync::Arc;
+
+    let store = Arc::new(DocumentStore::new());
+    let uri = Url::parse("file:///bench/mirror.php").unwrap();
+    store.index(uri.clone(), MEDIUM);
+
+    let threads = 8usize;
+    let iters_per_thread = 500usize;
+
+    c.bench_function("index/mirror_same_text_contended_8x500", |b| {
+        b.iter(|| {
+            let mut handles = Vec::with_capacity(threads);
+            for _ in 0..threads {
+                let store = Arc::clone(&store);
+                let uri = uri.clone();
+                handles.push(std::thread::spawn(move || {
+                    for _ in 0..iters_per_thread {
+                        store.index(black_box(uri.clone()), black_box(MEDIUM));
+                    }
+                }));
+            }
+            for h in handles {
+                h.join().unwrap();
+            }
+        });
+    });
+}
+
+/// Measures `get_doc_salsa` on an already-parsed file — the hot path for
+/// every feature-module call in `backend.rs`. With G3 enabled this should
+/// hit the lock-free `parsed_cache`; without G3 every call goes through
+/// `snapshot_query`. Contrast the two to decide whether G3 is worth keeping.
+fn bench_get_doc_repeated(c: &mut Criterion) {
+    let store = DocumentStore::new();
+    let uri = Url::parse("file:///bench/hotdoc.php").unwrap();
+    store.index(uri.clone(), MEDIUM);
+    let _warm = store.get_doc_salsa(&uri);
+
+    c.bench_function("index/get_doc_repeated", |b| {
+        b.iter(|| black_box(store.get_doc_salsa(black_box(&uri))));
+    });
+}
+
 criterion_group!(
     benches,
     bench_index_single,
     bench_get_doc,
     bench_all_docs,
     bench_workspace_scan,
-    bench_workspace_scan_laravel
+    bench_workspace_scan_laravel,
+    bench_mirror_same_text_contended,
+    bench_get_doc_repeated
 );
 criterion_main!(benches);

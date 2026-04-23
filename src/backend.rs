@@ -1,7 +1,7 @@
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 
+use dashmap::DashMap;
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::notification::Progress as ProgressNotification;
 
@@ -42,7 +42,7 @@ use crate::formatting::{format_document, format_range};
 use crate::generate_action::{generate_constructor_actions, generate_getters_setters_actions};
 use crate::hover::{docs_for_symbol_from_index, hover_info, signature_for_symbol_from_index};
 use crate::implement_action::implement_missing_actions;
-use crate::implementation::{find_implementations, find_implementations_from_index};
+use crate::implementation::{find_implementations, find_implementations_from_workspace};
 use crate::inlay_hints::inlay_hints;
 use crate::inline_action::inline_variable_actions;
 use crate::inline_value::inline_values_in_range;
@@ -55,19 +55,18 @@ use crate::promote_action::promote_constructor_actions;
 use crate::references::{SymbolKind, find_references, find_references_codebase};
 use crate::rename::{prepare_rename, rename, rename_property, rename_variable};
 use crate::selection_range::selection_ranges;
-use crate::semantic_diagnostics::{
-    deprecated_call_diagnostics, duplicate_declaration_diagnostics, index_file_references,
-    semantic_diagnostics, semantic_diagnostics_no_rebuild,
-};
+use crate::semantic_diagnostics::{deprecated_call_diagnostics, duplicate_declaration_diagnostics};
 use crate::semantic_tokens::{
     compute_token_delta, legend, semantic_tokens, semantic_tokens_range, token_hash,
 };
 use crate::signature_help::signature_help;
-use crate::symbols::{document_symbols, resolve_workspace_symbol, workspace_symbols_from_index};
+use crate::symbols::{
+    document_symbols, resolve_workspace_symbol, workspace_symbols_from_workspace,
+};
 use crate::type_action::add_return_type_actions;
 use crate::type_definition::{goto_type_definition, goto_type_definition_from_index};
 use crate::type_hierarchy::{
-    prepare_type_hierarchy_from_index, subtypes_of_from_index, supertypes_of_from_index,
+    prepare_type_hierarchy_from_workspace, subtypes_of_from_workspace, supertypes_of_from_workspace,
 };
 use crate::use_import::{build_use_import_edit, find_fqn_for_class};
 use crate::util::word_at;
@@ -196,43 +195,185 @@ impl LspConfig {
     }
 }
 
+/// Per-open-file state owned by `Backend` (Phase E4).
+///
+/// Previously this lived inside `DocumentStore`'s `map: DashMap<Url, Document>`,
+/// but none of these fields are salsa-shaped: `text` is the live editor buffer,
+/// `version` is an async-parse gate, and `parse_diagnostics` is a publish cache.
+/// Keeping them on `Backend` leaves `DocumentStore` as a pure salsa-input wrapper.
+#[derive(Default, Clone)]
+struct OpenFile {
+    /// Live editor text.
+    text: String,
+    /// Monotonic counter bumped on every `set_open_text` / `close_open_file`;
+    /// used to discard stale async parse results.
+    version: u64,
+    /// Parse-level diagnostics most recently cached for publication.
+    parse_diagnostics: Vec<Diagnostic>,
+}
+
+/// Shared handle to open-file state. Cheaply cloneable — wraps an `Arc<DashMap>`
+/// so it can be captured by async closures alongside `Arc<DocumentStore>`.
+#[derive(Clone, Default)]
+pub struct OpenFiles(Arc<DashMap<Url, OpenFile>>);
+
+impl OpenFiles {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    fn set_open_text(&self, docs: &DocumentStore, uri: Url, text: String) -> u64 {
+        docs.mirror_text(&uri, &text);
+        let mut entry = self.0.entry(uri).or_default();
+        entry.version += 1;
+        entry.text = text;
+        entry.version
+    }
+
+    fn close(&self, docs: &DocumentStore, uri: &Url) {
+        self.0.remove(uri);
+        docs.evict_token_cache(uri);
+    }
+
+    fn current_version(&self, uri: &Url) -> Option<u64> {
+        self.0.get(uri).map(|e| e.version)
+    }
+
+    fn text(&self, uri: &Url) -> Option<String> {
+        self.0.get(uri).map(|e| e.text.clone())
+    }
+
+    fn set_parse_diagnostics(&self, uri: &Url, diagnostics: Vec<Diagnostic>) {
+        if let Some(mut entry) = self.0.get_mut(uri) {
+            entry.parse_diagnostics = diagnostics;
+        }
+    }
+
+    fn parse_diagnostics(&self, uri: &Url) -> Option<Vec<Diagnostic>> {
+        self.0.get(uri).map(|e| e.parse_diagnostics.clone())
+    }
+
+    fn all_with_diagnostics(&self) -> Vec<(Url, Vec<Diagnostic>, Option<i64>)> {
+        self.0
+            .iter()
+            .map(|e| {
+                (
+                    e.key().clone(),
+                    e.value().parse_diagnostics.clone(),
+                    Some(e.value().version as i64),
+                )
+            })
+            .collect()
+    }
+
+    fn urls(&self) -> Vec<Url> {
+        self.0.iter().map(|e| e.key().clone()).collect()
+    }
+
+    fn contains(&self, uri: &Url) -> bool {
+        self.0.contains_key(uri)
+    }
+
+    /// Open-gated parsed doc: returns `Some` only when `uri` is currently open.
+    fn get_doc(&self, docs: &DocumentStore, uri: &Url) -> Option<Arc<ParsedDoc>> {
+        if !self.contains(uri) {
+            return None;
+        }
+        docs.get_doc_salsa(uri)
+    }
+}
+
 pub struct Backend {
     client: Client,
     docs: Arc<DocumentStore>,
+    /// Open-file state: text, version token, parse diagnostics.
+    /// Files that are only background-indexed (never opened in the editor)
+    /// do not appear here; they live only in `DocumentStore`'s salsa layer.
+    open_files: OpenFiles,
     root_paths: Arc<RwLock<Vec<PathBuf>>>,
     psr4: Arc<RwLock<Psr4Map>>,
     meta: Arc<RwLock<PhpStormMeta>>,
     config: Arc<RwLock<LspConfig>>,
-    codebase: Arc<mir_codebase::Codebase>,
-    /// Set to `true` once the post-scan reference-indexing pass completes.
-    /// `find_references_codebase` is only used when this is `true`.
-    ref_index_ready: Arc<AtomicBool>,
 }
 
 impl Backend {
     pub fn new(client: Client) -> Self {
-        let codebase = mir_codebase::Codebase::new();
-        mir_analyzer::stubs::load_stubs(&codebase);
+        // No imperative Codebase field anymore — `self.codebase()` below
+        // delegates to the salsa-memoized `codebase` query, which composes
+        // bundled stubs + every file's StubSlice and returns a fresh
+        // `Arc<Codebase>` (or the memoized one when inputs are unchanged).
         Backend {
             client,
             docs: Arc::new(DocumentStore::new()),
+            open_files: OpenFiles::new(),
             root_paths: Arc::new(RwLock::new(Vec::new())),
             psr4: Arc::new(RwLock::new(Psr4Map::empty())),
             meta: Arc::new(RwLock::new(PhpStormMeta::default())),
             config: Arc::new(RwLock::new(LspConfig::default())),
-            codebase: Arc::new(codebase),
-            ref_index_ready: Arc::new(AtomicBool::new(false)),
         }
     }
 
-    /// Run the definition collector for a single file, updating the persistent codebase.
-    fn collect_definitions_for(&self, uri: &Url, doc: &ParsedDoc) {
-        collect_into_codebase(&self.codebase, uri, doc);
+    // ── Open-file state convenience wrappers (Phase E4) ──────────────────────
+
+    fn set_open_text(&self, uri: Url, text: String) -> u64 {
+        self.open_files.set_open_text(&self.docs, uri, text)
+    }
+
+    fn close_open_file(&self, uri: &Url) {
+        self.open_files.close(&self.docs, uri);
+    }
+
+    /// Background-index a file from disk, but only if it isn't currently
+    /// open in the editor — the editor's buffer is authoritative while a
+    /// file is open, and we must not overwrite it with disk contents.
+    fn index_if_not_open(&self, uri: Url, text: &str) {
+        if !self.open_files.contains(&uri) {
+            self.docs.index(uri, text);
+        }
+    }
+
+    /// Variant of [`index_if_not_open`] that reuses an already-parsed doc.
+    fn index_from_doc_if_not_open(&self, uri: Url, doc: &ParsedDoc, diags: Vec<Diagnostic>) {
+        if !self.open_files.contains(&uri) {
+            self.docs.index_from_doc(uri, doc, diags);
+        }
+    }
+
+    fn get_open_text(&self, uri: &Url) -> Option<String> {
+        self.open_files.text(uri)
+    }
+
+    fn set_parse_diagnostics(&self, uri: &Url, diagnostics: Vec<Diagnostic>) {
+        self.open_files.set_parse_diagnostics(uri, diagnostics);
+    }
+
+    fn get_parse_diagnostics(&self, uri: &Url) -> Option<Vec<Diagnostic>> {
+        self.open_files.parse_diagnostics(uri)
+    }
+
+    fn all_open_files_with_diagnostics(&self) -> Vec<(Url, Vec<Diagnostic>, Option<i64>)> {
+        self.open_files.all_with_diagnostics()
+    }
+
+    fn open_urls(&self) -> Vec<Url> {
+        self.open_files.urls()
+    }
+
+    fn get_doc(&self, uri: &Url) -> Option<Arc<ParsedDoc>> {
+        self.open_files.get_doc(&self.docs, uri)
+    }
+
+    /// Current finalized codebase — stubs + all known files, memoized by salsa.
+    /// Cheap Arc clone on the happy path; on edits the query re-runs under the
+    /// DocumentStore host lock. Hold the returned Arc for the duration of a
+    /// request to get a consistent snapshot.
+    fn codebase(&self) -> Arc<mir_codebase::Codebase> {
+        self.docs.get_codebase_salsa()
     }
 
     /// Look up the import map for a file from the persistent codebase.
     fn file_imports(&self, uri: &Url) -> std::collections::HashMap<String, String> {
-        self.codebase
+        self.codebase()
             .file_imports
             .get(uri.as_str())
             .map(|r| r.clone())
@@ -313,7 +454,13 @@ impl LanguageServer for Backend {
                     .await;
             }
             cfg.php_version = Some(ver);
-            self.docs.set_max_indexed(cfg.max_indexed_files);
+            // Phase F: `maxIndexedFiles` is kept in the LSP config for
+            // backwards compatibility but is now a no-op. The legacy
+            // `DocumentStore`-owned LRU it used to tune has been replaced
+            // by salsa's per-query `lru` on `parsed_doc` (compile-time
+            // constant; see `src/db/parse.rs`). Runtime tuning isn't
+            // exposed by salsa 0.26.
+            let _ = cfg.max_indexed_files;
             *self.config.write().unwrap() = cfg;
         }
 
@@ -401,10 +548,7 @@ impl LanguageServer for Backend {
                     work_done_progress_options: Default::default(),
                 }),
                 execute_command_provider: Some(ExecuteCommandOptions {
-                    commands: vec![
-                        "php-lsp.showReferences".to_string(),
-                        "php-lsp.runTest".to_string(),
-                    ],
+                    commands: vec!["php-lsp.runTest".to_string()],
                     work_done_progress_options: Default::default(),
                 }),
                 diagnostic_provider: Some(DiagnosticServerCapabilities::Options(
@@ -496,9 +640,8 @@ impl LanguageServer for Backend {
                 .ok();
 
             let docs = Arc::clone(&self.docs);
+            let open_files = self.open_files.clone();
             let client = self.client.clone();
-            let codebase = Arc::clone(&self.codebase);
-            let ref_index_ready = Arc::clone(&self.ref_index_ready);
             let exclude_paths = self.config.read().unwrap().exclude_paths.clone();
             tokio::spawn(async move {
                 client
@@ -517,11 +660,18 @@ impl LanguageServer for Backend {
 
                 let mut total = 0usize;
                 for root in roots {
+                    // Phase K2b: open the on-disk cache for this root. If the
+                    // system has no usable cache dir (weird XDG env, sandboxed
+                    // runner, read-only home), `new` returns None and every
+                    // per-file `cache.as_ref()` guard below no-ops — scan still
+                    // runs, just without persistence.
+                    let cache = crate::cache::WorkspaceCache::new(&root);
                     total += scan_workspace(
                         root,
                         Arc::clone(&docs),
+                        open_files.clone(),
+                        cache,
                         &exclude_paths,
-                        Arc::clone(&codebase),
                     )
                     .await;
                 }
@@ -549,11 +699,25 @@ impl LanguageServer for Backend {
                 // files before indexing finished would show stale information.
                 send_refresh_requests(&client).await;
 
-                // Phase 3: build the reference index in the background so that
-                // find_references_codebase can serve O(k) lookups instead of
-                // scanning every file's AST. Runs after the progress notification
-                // so the editor considers indexing "done" while this completes.
-                build_reference_index(docs, codebase, ref_index_ready, client).await;
+                // Phase D: reference index is lazy. `textDocument/references`
+                // drives `symbol_refs(ws, key)` on demand; salsa memoizes the
+                // per-file `file_refs` across requests. Invalidation is
+                // automatic on edits.
+                //
+                // Phase L: warm the memo in the background so the first real
+                // reference lookup doesn't pay the full-workspace walk.
+                // `symbol_refs(ws, <any key>)` iterates every file's
+                // `file_refs` to build its result — even with a sentinel key
+                // that matches nothing, the per-file walk runs and populates
+                // salsa's memo. Fire-and-forget: a reference request that
+                // arrives mid-warmup just retries through
+                // `snapshot_query`'s `salsa::Cancelled` handling.
+                let warm_docs = Arc::clone(&docs);
+                tokio::task::spawn_blocking(move || {
+                    warm_docs.warm_reference_index();
+                });
+                drop(docs);
+                client.send_notification::<IndexReadyNotification>(()).await;
             });
         }
 
@@ -609,7 +773,13 @@ impl LanguageServer for Backend {
                     .await;
             }
             cfg.php_version = Some(ver);
-            self.docs.set_max_indexed(cfg.max_indexed_files);
+            // Phase F: `maxIndexedFiles` is kept in the LSP config for
+            // backwards compatibility but is now a no-op. The legacy
+            // `DocumentStore`-owned LRU it used to tune has been replaced
+            // by salsa's per-query `lru` on `parsed_doc` (compile-time
+            // constant; see `src/db/parse.rs`). Runtime tuning isn't
+            // exposed by salsa 0.26.
+            let _ = cfg.max_indexed_files;
             *self.config.write().unwrap() = cfg;
         }
     }
@@ -636,12 +806,13 @@ impl LanguageServer for Backend {
                     }
                 }
                 let docs = Arc::clone(&self.docs);
+                let open_files = self.open_files.clone();
                 let ex = exclude_paths.clone();
                 let path_clone = path.clone();
                 let client = self.client.clone();
-                let cb = Arc::clone(&self.codebase);
                 tokio::spawn(async move {
-                    scan_workspace(path_clone, docs, &ex, cb).await;
+                    let cache = crate::cache::WorkspaceCache::new(&path_clone);
+                    scan_workspace(path_clone, docs, open_files, cache, &ex).await;
                     send_refresh_requests(&client).await;
                 });
             }
@@ -656,44 +827,48 @@ impl LanguageServer for Backend {
         let uri = params.text_document.uri;
         let text = params.text_document.text;
 
-        // Store text immediately so other features work while parsing
-        let version = self.docs.set_text(uri.clone(), text.clone());
+        // Store text immediately so other features work while parsing.
+        // This also mirrors the new text into salsa, so the codebase query
+        // sees it when semantic_diagnostics runs below.
+        let version = self.set_open_text(uri.clone(), text.clone());
 
-        let codebase = Arc::clone(&self.codebase);
+        let docs_for_spawn = Arc::clone(&self.docs);
         let diag_cfg = self.config.read().unwrap().diagnostics.clone();
         let php_version = self.config.read().unwrap().php_version.clone();
         let uri_clone = uri.clone();
 
-        // Parse and run semantic analysis together in a blocking thread.
-        // semantic_diagnostics handles remove → collect → finalize → analyze,
-        // so definitions are never doubled even if the workspace scan already
-        // indexed this file.
-        let diag_cfg_inner = diag_cfg.clone();
-        let (doc, parse_diags, sem_diags) = tokio::task::spawn_blocking(move || {
+        // Phase I: parse + semantic analysis both run on the blocking pool.
+        // The semantic pass is memoized by salsa, but the *first* call per
+        // file walks `StatementsAnalyzer` over the AST (hundreds of ms on
+        // cold files) — we must not block the async executor on it.
+        let _ = (uri_clone, php_version);
+        let uri_sem = uri.clone();
+        let (parse_diags, sem_issues) = tokio::task::spawn_blocking(move || {
             let (doc, parse_diags) = parse_document(&text);
-            let sem_diags = semantic_diagnostics(
-                &uri_clone,
-                &doc,
-                &codebase,
-                &diag_cfg_inner,
-                php_version.as_deref(),
-            );
-            (doc, parse_diags, sem_diags)
+            drop(doc);
+            let sem_issues = docs_for_spawn.get_semantic_issues_salsa(&uri_sem);
+            (parse_diags, sem_issues)
         })
         .await
-        .unwrap_or_else(|_| (ParsedDoc::default(), vec![], vec![]));
+        .unwrap_or_else(|_| (vec![], None));
 
-        self.docs
-            .apply_parse(&uri, doc, parse_diags.clone(), version);
-        let stored_source = self.docs.get(&uri).unwrap_or_default();
-        let doc2 = self.docs.get_doc(&uri);
+        // B4d-3c: did_open runs inline (no debounce), so staleness is not a
+        // concern here; we record diagnostics unconditionally. `version` is
+        // retained for symmetry with did_change.
+        let _ = version;
+        self.set_parse_diagnostics(&uri, parse_diags.clone());
+        let stored_source = self.get_open_text(&uri).unwrap_or_default();
+        let doc2 = self.get_doc(&uri);
         let mut all_diags = parse_diags;
         if let Some(ref d) = doc2 {
             let dup_diags = duplicate_declaration_diagnostics(&stored_source, d, &diag_cfg);
             all_diags.extend(dup_diags);
         }
-        all_diags.extend(sem_diags.clone());
-        self.docs.set_sem_diagnostics(&uri, sem_diags);
+        if let Some(issues) = sem_issues {
+            all_diags.extend(crate::semantic_diagnostics::issues_to_diagnostics(
+                &issues, &uri, &diag_cfg,
+            ));
+        }
         self.client.publish_diagnostics(uri, all_diags, None).await;
     }
 
@@ -704,74 +879,97 @@ impl LanguageServer for Backend {
             None => return,
         };
 
+        // Capture the pre-edit index *before* `set_text` mirrors the new
+        // text into salsa — otherwise `file_index(db, sf)` would already
+        // reflect the new text and the structure comparison below would
+        // become a no-op. Holding the `Arc<FileIndex>` keeps the old view
+        // alive regardless of input revision changes.
+        let old_index = self.docs.get_index_salsa(&uri);
+
         // Store text immediately and capture the version token.
         // Features (completion, hover, …) see the new text instantly while
         // the parse runs in the background.
-        let version = self.docs.set_text(uri.clone(), text.clone());
+        let version = self.set_open_text(uri.clone(), text.clone());
 
         let docs = Arc::clone(&self.docs);
+        let open_files = self.open_files.clone();
         let client = self.client.clone();
-        let codebase = Arc::clone(&self.codebase);
-        let ref_index_ready = Arc::clone(&self.ref_index_ready);
         let diag_cfg = self.config.read().unwrap().diagnostics.clone();
         let php_version = self.config.read().unwrap().php_version.clone();
         tokio::spawn(async move {
-            // 100 ms debounce: if another edit arrives before we parse, the
-            // version check in apply_parse will discard this stale result.
+            // 100 ms debounce: if another edit arrives before we parse,
+            // the version gate in Backend below will discard this result.
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
             let (doc, diagnostics) = tokio::task::spawn_blocking(move || parse_document(&text))
                 .await
                 .unwrap_or_else(|_| (ParsedDoc::default(), vec![]));
 
-            // Compare new structure against the cached index to decide whether the
-            // codebase rebuild (remove + collect + finalize) is needed.  Most
-            // keystrokes only change method bodies — no rebuild required for those.
-            let new_index = FileIndex::extract(&uri, &doc);
-            let structure_changed = docs
-                .get_index(&uri)
+            // Compare new structure against the pre-edit index (captured
+            // before the salsa mirror saw the new text) to decide whether
+            // the codebase rebuild (remove + collect + finalize) is needed.
+            // Most keystrokes only change method bodies — no rebuild needed.
+            let new_index = FileIndex::extract(&doc);
+            let structure_changed = old_index
+                .as_ref()
                 .is_none_or(|old| !old.same_structure(&new_index));
             drop(new_index);
 
-            // Only apply if no newer edit arrived while we were parsing
-            if docs.apply_parse(&uri, doc, diagnostics.clone(), version) {
-                let source = docs.get(&uri).unwrap_or_default();
-                let mut all_diags = diagnostics;
-                if let Some(d) = docs.get_doc(&uri) {
-                    let sem_diags = if structure_changed {
-                        // Structure changed (new/removed class, method signature changed, …):
-                        // rebuild codebase definitions so inheritance lookups stay accurate.
-                        semantic_diagnostics(&uri, &d, &codebase, &diag_cfg, php_version.as_deref())
-                    } else {
-                        // Body-only edit: skip remove → collect → finalize; use the
-                        // already-finalized codebase for body analysis only.
-                        semantic_diagnostics_no_rebuild(
-                            &uri,
-                            &d,
-                            &codebase,
-                            &diag_cfg,
-                            php_version.as_deref(),
-                        )
+            // Drop the AST produced here — salsa owns parsing. We only kept
+            // it to support the `same_structure` check above.
+            drop(doc);
+
+            // Only apply if no newer edit arrived while we were parsing.
+            // Backend-level gate replaces the old `apply_parse` version check.
+            if open_files.current_version(&uri) == Some(version) {
+                open_files.set_parse_diagnostics(&uri, diagnostics.clone());
+                let _ = structure_changed;
+                let _ = php_version.as_deref();
+
+                // Phase I: the salsa `semantic_issues` walk is synchronous
+                // and CPU-bound on a cold file — run it on the blocking
+                // pool so the async runtime stays responsive. Returns the
+                // full diagnostic bundle (semantic + dup-decl + deprecated
+                // calls), all computed off-thread.
+                let docs_sem = Arc::clone(&docs);
+                let open_files_sem = open_files.clone();
+                let uri_sem = uri.clone();
+                let diag_cfg_sem = diag_cfg.clone();
+                let extra = tokio::task::spawn_blocking(move || {
+                    let Some(d) = open_files_sem.get_doc(&docs_sem, &uri_sem) else {
+                        return Vec::<Diagnostic>::new();
                     };
-                    // Cache so code_action can read them without rerunning the rebuild.
-                    docs.set_sem_diagnostics(&uri, sem_diags.clone());
-                    all_diags.extend(sem_diags);
-                    // Reference index requires a finalized codebase; semantic_diagnostics
-                    // already called finalize() above.
-                    if ref_index_ready.load(Ordering::Acquire) {
-                        index_file_references(&uri, &d, &codebase);
+                    let source = open_files_sem.text(&uri_sem).unwrap_or_default();
+                    let mut out = Vec::new();
+                    if let Some(issues) = docs_sem.get_semantic_issues_salsa(&uri_sem) {
+                        out.extend(crate::semantic_diagnostics::issues_to_diagnostics(
+                            &issues,
+                            &uri_sem,
+                            &diag_cfg_sem,
+                        ));
                     }
-                    all_diags.extend(duplicate_declaration_diagnostics(&source, &d, &diag_cfg));
-                    let other_raw = docs.other_docs(&uri);
+                    out.extend(duplicate_declaration_diagnostics(
+                        &source,
+                        &d,
+                        &diag_cfg_sem,
+                    ));
+                    let open_urls = open_files_sem.urls();
+                    let other_raw = docs_sem.other_docs(&uri_sem, &open_urls);
                     let other_docs: Vec<Arc<ParsedDoc>> =
                         other_raw.into_iter().map(|(_, d)| d).collect();
-                    all_diags.extend(deprecated_call_diagnostics(
+                    out.extend(deprecated_call_diagnostics(
                         &source,
                         &d,
                         &other_docs,
-                        &diag_cfg,
+                        &diag_cfg_sem,
                     ));
-                }
+                    out
+                })
+                .await
+                .unwrap_or_default();
+
+                let mut all_diags = diagnostics;
+                all_diags.extend(extra);
                 client.publish_diagnostics(uri, all_diags, None).await;
             }
         });
@@ -779,7 +977,7 @@ impl LanguageServer for Backend {
 
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
         let uri = params.text_document.uri;
-        self.docs.close(&uri);
+        self.close_open_file(&uri);
         // Clear editor diagnostics; the file stays indexed for cross-file features
         self.client.publish_diagnostics(uri, vec![], None).await;
     }
@@ -790,7 +988,9 @@ impl LanguageServer for Backend {
         &self,
         params: WillSaveTextDocumentParams,
     ) -> Result<Option<Vec<TextEdit>>> {
-        let source = self.docs.get(&params.text_document.uri).unwrap_or_default();
+        let source = self
+            .get_open_text(&params.text_document.uri)
+            .unwrap_or_default();
         Ok(format_document(&source))
     }
 
@@ -798,13 +998,13 @@ impl LanguageServer for Backend {
         let uri = params.text_document.uri;
         // Re-publish diagnostics on save so editors that defer diagnostics
         // until save (rather than on every keystroke) see up-to-date results.
-        let source = self.docs.get(&uri).unwrap_or_default();
-        let doc = self.docs.get_doc(&uri);
+        let source = self.get_open_text(&uri).unwrap_or_default();
+        let doc = self.get_doc(&uri);
         if let Some(ref d) = doc {
             let diag_cfg = self.config.read().unwrap().diagnostics.clone();
-            let parse_diags = self.docs.get_diagnostics(&uri).unwrap_or_default();
+            let parse_diags = self.get_parse_diagnostics(&uri).unwrap_or_default();
             let dup_diags = duplicate_declaration_diagnostics(&source, d, &diag_cfg);
-            let other_raw = self.docs.other_docs(&uri);
+            let other_raw = self.docs.other_docs(&uri, &self.open_urls());
             let other_docs: Vec<Arc<ParsedDoc>> = other_raw.into_iter().map(|(_, d)| d).collect();
             let dep_diags = deprecated_call_diagnostics(&source, d, &other_docs, &diag_cfg);
             let mut all = parse_diags;
@@ -821,16 +1021,12 @@ impl LanguageServer for Backend {
                     if let Ok(path) = change.uri.to_file_path()
                         && let Ok(text) = tokio::fs::read_to_string(&path).await
                     {
-                        // Parse once: collect into codebase, then index using the same
-                        // ParsedDoc — avoids a second parse inside docs.index().
+                        // Salsa path: index_from_doc mirrors the new text into
+                        // the SourceFile input. On the next codebase() call,
+                        // salsa re-runs file_definitions for this file and the
+                        // aggregator re-folds — no manual remove/collect/finalize.
                         let (doc, diags) = parse_document(&text);
-                        self.codebase.remove_file_definitions(change.uri.as_str());
-                        self.collect_definitions_for(&change.uri, &doc);
-                        self.codebase.finalize();
-                        if self.ref_index_ready.load(Ordering::Acquire) {
-                            index_file_references(&change.uri, &doc, &self.codebase);
-                        }
-                        self.docs.index_from_doc(change.uri.clone(), &doc, diags);
+                        self.index_from_doc_if_not_open(change.uri.clone(), &doc, diags);
                     }
                 }
                 FileChangeType::DELETED => {
@@ -846,17 +1042,22 @@ impl LanguageServer for Backend {
     async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
         let uri = &params.text_document_position.text_document.uri;
         let position = params.text_document_position.position;
-        let source = self.docs.get(uri).unwrap_or_default();
-        let doc = match self.docs.get_doc(uri) {
+        let source = self.get_open_text(uri).unwrap_or_default();
+        // B4c: first production caller migrated to salsa-backed read.
+        let doc = match self.get_doc(uri) {
             Some(d) => d,
             None => return Ok(Some(CompletionResponse::Array(vec![]))),
         };
-        let other_docs: Vec<Arc<ParsedDoc>> = self
-            .docs
-            .other_docs(uri)
-            .into_iter()
-            .map(|(_, d)| d)
+        let other_with_returns = self.docs.other_docs_with_returns(uri, &self.open_urls());
+        let other_docs: Vec<Arc<ParsedDoc>> = other_with_returns
+            .iter()
+            .map(|(_, d, _)| d.clone())
             .collect();
+        let other_returns: Vec<Arc<crate::ast::MethodReturnsMap>> = other_with_returns
+            .iter()
+            .map(|(_, _, r)| r.clone())
+            .collect();
+        let doc_returns = self.docs.get_method_returns_salsa(uri);
         let trigger = params
             .context
             .as_ref()
@@ -874,6 +1075,8 @@ impl LanguageServer for Backend {
             meta: meta_opt,
             doc_uri: Some(uri),
             file_imports: Some(&imports),
+            doc_returns: doc_returns.as_deref(),
+            other_returns: Some(&other_returns),
         };
         Ok(Some(CompletionResponse::Array(filtered_completions_at(
             &doc,
@@ -912,8 +1115,8 @@ impl LanguageServer for Backend {
     ) -> Result<Option<GotoDefinitionResponse>> {
         let uri = &params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
-        let source = self.docs.get(uri).unwrap_or_default();
-        let doc = match self.docs.get_doc(uri) {
+        let source = self.get_open_text(uri).unwrap_or_default();
+        let doc = match self.get_doc(uri) {
             Some(d) => d,
             None => return Ok(None),
         };
@@ -944,12 +1147,12 @@ impl LanguageServer for Backend {
     async fn references(&self, params: ReferenceParams) -> Result<Option<Vec<Location>>> {
         let uri = &params.text_document_position.text_document.uri;
         let position = params.text_document_position.position;
-        let source = self.docs.get(uri).unwrap_or_default();
+        let source = self.get_open_text(uri).unwrap_or_default();
         let word = match word_at(&source, position) {
             Some(w) => w,
             None => return Ok(None),
         };
-        let kind = if let Some(doc) = self.docs.get_doc(uri) {
+        let kind = if let Some(doc) = self.get_doc(uri) {
             let stmts = &doc.program().stmts;
             if cursor_is_on_method_decl(doc.source(), stmts, position) {
                 Some(SymbolKind::Method)
@@ -962,14 +1165,16 @@ impl LanguageServer for Backend {
         let all_docs = self.docs.all_docs_for_scan();
         let include_declaration = params.context.include_declaration;
 
-        // Fast path: use the pre-computed reference index once it is ready.
-        // Falls back to the full AST scan for Method / None kinds, and whenever
-        // the symbol is not found in the codebase (returns None).
-        let locations = if self.ref_index_ready.load(Ordering::Acquire) {
-            find_references_codebase(&word, &all_docs, include_declaration, kind, &self.codebase)
+        // Fast path: look up references via the salsa `symbol_refs` query.
+        // First call per key runs `file_refs` across the workspace; subsequent
+        // calls hit salsa's memo. Falls back to the full AST scan for Method /
+        // None kinds, and whenever the symbol is not found in the codebase.
+        let locations = {
+            let cb = self.codebase();
+            let docs = Arc::clone(&self.docs);
+            let lookup = move |key: &str| docs.get_symbol_refs_salsa(key);
+            find_references_codebase(&word, &all_docs, include_declaration, kind, &cb, &lookup)
                 .unwrap_or_else(|| find_references(&word, &all_docs, include_declaration, kind))
-        } else {
-            find_references(&word, &all_docs, include_declaration, kind)
         };
 
         Ok(if locations.is_empty() {
@@ -984,20 +1189,20 @@ impl LanguageServer for Backend {
         params: TextDocumentPositionParams,
     ) -> Result<Option<PrepareRenameResponse>> {
         let uri = &params.text_document.uri;
-        let source = self.docs.get(uri).unwrap_or_default();
+        let source = self.get_open_text(uri).unwrap_or_default();
         Ok(prepare_rename(&source, params.position).map(PrepareRenameResponse::Range))
     }
 
     async fn rename(&self, params: RenameParams) -> Result<Option<WorkspaceEdit>> {
         let uri = &params.text_document_position.text_document.uri;
         let position = params.text_document_position.position;
-        let source = self.docs.get(uri).unwrap_or_default();
+        let source = self.get_open_text(uri).unwrap_or_default();
         let word = match word_at(&source, position) {
             Some(w) => w,
             None => return Ok(None),
         };
         if word.starts_with('$') {
-            let doc = match self.docs.get_doc(uri) {
+            let doc = match self.get_doc(uri) {
                 Some(d) => d,
                 None => return Ok(None),
             };
@@ -1020,8 +1225,8 @@ impl LanguageServer for Backend {
     async fn signature_help(&self, params: SignatureHelpParams) -> Result<Option<SignatureHelp>> {
         let uri = &params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
-        let source = self.docs.get(uri).unwrap_or_default();
-        let doc = match self.docs.get_doc(uri) {
+        let source = self.get_open_text(uri).unwrap_or_default();
+        let doc = match self.get_doc(uri) {
             Some(d) => d,
             None => return Ok(None),
         };
@@ -1031,13 +1236,23 @@ impl LanguageServer for Backend {
     async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
         let uri = &params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
-        let source = self.docs.get(uri).unwrap_or_default();
-        let doc = match self.docs.get_doc(uri) {
+        let source = self.get_open_text(uri).unwrap_or_default();
+        let doc = match self.get_doc(uri) {
             Some(d) => d,
             None => return Ok(None),
         };
-        let other_docs = self.docs.other_docs(uri);
-        Ok(hover_info(&source, &doc, position, &other_docs))
+        let doc_returns = self
+            .docs
+            .get_method_returns_salsa(uri)
+            .unwrap_or_else(|| std::sync::Arc::new(Default::default()));
+        let other_docs = self.docs.other_docs_with_returns(uri, &self.open_urls());
+        Ok(hover_info(
+            &source,
+            &doc,
+            &doc_returns,
+            position,
+            &other_docs,
+        ))
     }
 
     async fn document_symbol(
@@ -1045,7 +1260,7 @@ impl LanguageServer for Backend {
         params: DocumentSymbolParams,
     ) -> Result<Option<DocumentSymbolResponse>> {
         let uri = &params.text_document.uri;
-        let doc = match self.docs.get_doc(uri) {
+        let doc = match self.get_doc(uri) {
             Some(d) => d,
             None => return Ok(None),
         };
@@ -1057,7 +1272,7 @@ impl LanguageServer for Backend {
 
     async fn folding_range(&self, params: FoldingRangeParams) -> Result<Option<Vec<FoldingRange>>> {
         let uri = &params.text_document.uri;
-        let doc = match self.docs.get_doc(uri) {
+        let doc = match self.get_doc(uri) {
             Some(d) => d,
             None => return Ok(None),
         };
@@ -1071,11 +1286,17 @@ impl LanguageServer for Backend {
 
     async fn inlay_hint(&self, params: InlayHintParams) -> Result<Option<Vec<InlayHint>>> {
         let uri = &params.text_document.uri;
-        let doc = match self.docs.get_doc(uri) {
+        let doc = match self.get_doc(uri) {
             Some(d) => d,
             None => return Ok(None),
         };
-        Ok(Some(inlay_hints(doc.source(), &doc, params.range)))
+        let doc_returns = self.docs.get_method_returns_salsa(uri);
+        Ok(Some(inlay_hints(
+            doc.source(),
+            &doc,
+            doc_returns.as_deref(),
+            params.range,
+        )))
     }
 
     async fn inlay_hint_resolve(&self, mut item: InlayHint) -> Result<InlayHint> {
@@ -1104,8 +1325,11 @@ impl LanguageServer for Backend {
         &self,
         params: WorkspaceSymbolParams,
     ) -> Result<Option<Vec<SymbolInformation>>> {
-        let indexes = self.docs.all_indexes();
-        let results = workspace_symbols_from_index(&params.query, &indexes);
+        // Phase J: read through the salsa-memoized aggregate so repeated
+        // workspace-symbol queries (every keystroke in the picker) share the
+        // same `Arc` until a file changes.
+        let wi = self.docs.get_workspace_index_salsa();
+        let results = workspace_symbols_from_workspace(&params.query, &wi);
         Ok(if results.is_empty() {
             None
         } else {
@@ -1115,7 +1339,7 @@ impl LanguageServer for Backend {
 
     async fn symbol_resolve(&self, params: WorkspaceSymbol) -> Result<WorkspaceSymbol> {
         // For resolve, we need the full range from the ParsedDoc of open files.
-        let docs = self.docs.all_docs();
+        let docs = self.docs.docs_for(&self.open_urls());
         Ok(resolve_workspace_symbol(params, &docs))
     }
 
@@ -1124,7 +1348,7 @@ impl LanguageServer for Backend {
         params: SemanticTokensParams,
     ) -> Result<Option<SemanticTokensResult>> {
         let uri = &params.text_document.uri;
-        let doc = match self.docs.get_doc(uri) {
+        let doc = match self.get_doc(uri) {
             Some(d) => d,
             None => {
                 return Ok(Some(SemanticTokensResult::Tokens(SemanticTokens {
@@ -1148,7 +1372,7 @@ impl LanguageServer for Backend {
         params: SemanticTokensRangeParams,
     ) -> Result<Option<SemanticTokensRangeResult>> {
         let uri = &params.text_document.uri;
-        let doc = match self.docs.get_doc(uri) {
+        let doc = match self.get_doc(uri) {
             Some(d) => d,
             None => {
                 return Ok(Some(SemanticTokensRangeResult::Tokens(SemanticTokens {
@@ -1169,7 +1393,7 @@ impl LanguageServer for Backend {
         params: SemanticTokensDeltaParams,
     ) -> Result<Option<SemanticTokensFullDeltaResult>> {
         let uri = &params.text_document.uri;
-        let doc = match self.docs.get_doc(uri) {
+        let doc = match self.get_doc(uri) {
             Some(d) => d,
             None => return Ok(None),
         };
@@ -1202,7 +1426,7 @@ impl LanguageServer for Backend {
         params: SelectionRangeParams,
     ) -> Result<Option<Vec<SelectionRange>>> {
         let uri = &params.text_document.uri;
-        let doc = match self.docs.get_doc(uri) {
+        let doc = match self.get_doc(uri) {
             Some(d) => d,
             None => return Ok(None),
         };
@@ -1220,7 +1444,7 @@ impl LanguageServer for Backend {
     ) -> Result<Option<Vec<CallHierarchyItem>>> {
         let uri = &params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
-        let source = self.docs.get(uri).unwrap_or_default();
+        let source = self.get_open_text(uri).unwrap_or_default();
         let word = match word_at(&source, position) {
             Some(w) => w,
             None => return Ok(None),
@@ -1253,8 +1477,8 @@ impl LanguageServer for Backend {
     ) -> Result<Option<Vec<DocumentHighlight>>> {
         let uri = &params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
-        let source = self.docs.get(uri).unwrap_or_default();
-        let doc = match self.docs.get_doc(uri) {
+        let source = self.get_open_text(uri).unwrap_or_default();
+        let doc = match self.get_doc(uri) {
             Some(d) => d,
             None => return Ok(None),
         };
@@ -1272,8 +1496,8 @@ impl LanguageServer for Backend {
     ) -> Result<Option<LinkedEditingRanges>> {
         let uri = &params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
-        let source = self.docs.get(uri).unwrap_or_default();
-        let doc = match self.docs.get_doc(uri) {
+        let source = self.get_open_text(uri).unwrap_or_default();
+        let doc = match self.get_doc(uri) {
             Some(d) => d,
             None => return Ok(None),
         };
@@ -1296,17 +1520,18 @@ impl LanguageServer for Backend {
     ) -> Result<Option<tower_lsp::lsp_types::request::GotoImplementationResponse>> {
         let uri = &params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
-        let source = self.docs.get(uri).unwrap_or_default();
+        let source = self.get_open_text(uri).unwrap_or_default();
         let imports = self.file_imports(uri);
         let word = crate::util::word_at(&source, position).unwrap_or_default();
         let fqn = imports.get(&word).map(|s| s.as_str());
         // First pass: open-file ParsedDocs give accurate character positions.
-        let open_docs = self.docs.all_docs();
+        let open_docs = self.docs.docs_for(&self.open_urls());
         let mut locs = find_implementations(&word, fqn, &open_docs);
         if locs.is_empty() {
-            // Second pass: background files via FileIndex (line-only positions).
-            let all_indexes = self.docs.all_indexes();
-            locs = find_implementations_from_index(&word, fqn, &all_indexes);
+            // Second pass: background files via the salsa-memoized workspace
+            // aggregate's `subtypes_of` reverse map (line-only positions).
+            let wi = self.docs.get_workspace_index_salsa();
+            locs = find_implementations_from_workspace(&word, fqn, &wi);
         }
         if locs.is_empty() {
             Ok(None)
@@ -1321,9 +1546,9 @@ impl LanguageServer for Backend {
     ) -> Result<Option<tower_lsp::lsp_types::request::GotoDeclarationResponse>> {
         let uri = &params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
-        let source = self.docs.get(uri).unwrap_or_default();
+        let source = self.get_open_text(uri).unwrap_or_default();
         // First pass: open-file ParsedDocs give accurate character positions.
-        let open_docs = self.docs.all_docs();
+        let open_docs = self.docs.docs_for(&self.open_urls());
         if let Some(loc) = goto_declaration(&source, &open_docs, position) {
             return Ok(Some(GotoDefinitionResponse::Scalar(loc)));
         }
@@ -1339,22 +1564,29 @@ impl LanguageServer for Backend {
     ) -> Result<Option<tower_lsp::lsp_types::request::GotoTypeDefinitionResponse>> {
         let uri = &params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
-        let source = self.docs.get(uri).unwrap_or_default();
-        let doc = match self.docs.get_doc(uri) {
+        let source = self.get_open_text(uri).unwrap_or_default();
+        let doc = match self.get_doc(uri) {
             Some(d) => d,
             None => return Ok(None),
         };
+        let doc_returns = self.docs.get_method_returns_salsa(uri);
         // First pass: open-file ParsedDocs give accurate character positions.
-        let open_docs = self.docs.all_docs();
-        if let Some(loc) = goto_type_definition(&source, &doc, &open_docs, position) {
+        let open_docs = self.docs.docs_for(&self.open_urls());
+        if let Some(loc) =
+            goto_type_definition(&source, &doc, doc_returns.as_deref(), &open_docs, position)
+        {
             return Ok(Some(GotoDefinitionResponse::Scalar(loc)));
         }
         // Second pass: background files via FileIndex (line-only positions).
         let all_indexes = self.docs.all_indexes();
-        Ok(
-            goto_type_definition_from_index(&source, &doc, &all_indexes, position)
-                .map(GotoDefinitionResponse::Scalar),
+        Ok(goto_type_definition_from_index(
+            &source,
+            &doc,
+            doc_returns.as_deref(),
+            &all_indexes,
+            position,
         )
+        .map(GotoDefinitionResponse::Scalar))
     }
 
     async fn prepare_type_hierarchy(
@@ -1363,20 +1595,19 @@ impl LanguageServer for Backend {
     ) -> Result<Option<Vec<TypeHierarchyItem>>> {
         let uri = &params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
-        let source = self.docs.get(uri).unwrap_or_default();
-        let all_indexes = self.docs.all_indexes();
-        Ok(
-            prepare_type_hierarchy_from_index(&source, &all_indexes, position)
-                .map(|item| vec![item]),
-        )
+        let source = self.get_open_text(uri).unwrap_or_default();
+        // Phase J: use the salsa-memoized aggregate's `classes_by_name` map.
+        let wi = self.docs.get_workspace_index_salsa();
+        Ok(prepare_type_hierarchy_from_workspace(&source, &wi, position).map(|item| vec![item]))
     }
 
     async fn supertypes(
         &self,
         params: TypeHierarchySupertypesParams,
     ) -> Result<Option<Vec<TypeHierarchyItem>>> {
-        let all_indexes = self.docs.all_indexes();
-        let result = supertypes_of_from_index(&params.item, &all_indexes);
+        // Phase J: resolve parents via the aggregate's `classes_by_name` map.
+        let wi = self.docs.get_workspace_index_salsa();
+        let result = supertypes_of_from_workspace(&params.item, &wi);
         Ok(if result.is_empty() {
             None
         } else {
@@ -1388,8 +1619,9 @@ impl LanguageServer for Backend {
         &self,
         params: TypeHierarchySubtypesParams,
     ) -> Result<Option<Vec<TypeHierarchyItem>>> {
-        let all_indexes = self.docs.all_indexes();
-        let result = subtypes_of_from_index(&params.item, &all_indexes);
+        // Phase J: O(matches) lookup via the aggregate's `subtypes_of` map.
+        let wi = self.docs.get_workspace_index_salsa();
+        let result = subtypes_of_from_workspace(&params.item, &wi);
         Ok(if result.is_empty() {
             None
         } else {
@@ -1399,7 +1631,7 @@ impl LanguageServer for Backend {
 
     async fn code_lens(&self, params: CodeLensParams) -> Result<Option<Vec<CodeLens>>> {
         let uri = &params.text_document.uri;
-        let doc = match self.docs.get_doc(uri) {
+        let doc = match self.get_doc(uri) {
             Some(d) => d,
             None => return Ok(None),
         };
@@ -1419,7 +1651,7 @@ impl LanguageServer for Backend {
 
     async fn document_link(&self, params: DocumentLinkParams) -> Result<Option<Vec<DocumentLink>>> {
         let uri = &params.text_document.uri;
-        let doc = match self.docs.get_doc(uri) {
+        let doc = match self.get_doc(uri) {
             Some(d) => d,
             None => return Ok(None),
         };
@@ -1434,7 +1666,7 @@ impl LanguageServer for Backend {
 
     async fn formatting(&self, params: DocumentFormattingParams) -> Result<Option<Vec<TextEdit>>> {
         let uri = &params.text_document.uri;
-        let source = self.docs.get(uri).unwrap_or_default();
+        let source = self.get_open_text(uri).unwrap_or_default();
         Ok(format_document(&source))
     }
 
@@ -1443,7 +1675,7 @@ impl LanguageServer for Backend {
         params: DocumentRangeFormattingParams,
     ) -> Result<Option<Vec<TextEdit>>> {
         let uri = &params.text_document.uri;
-        let source = self.docs.get(uri).unwrap_or_default();
+        let source = self.get_open_text(uri).unwrap_or_default();
         Ok(format_range(&source, params.range))
     }
 
@@ -1452,7 +1684,7 @@ impl LanguageServer for Backend {
         params: DocumentOnTypeFormattingParams,
     ) -> Result<Option<Vec<TextEdit>>> {
         let uri = &params.text_document_position.text_document.uri;
-        let source = self.docs.get(uri).unwrap_or_default();
+        let source = self.get_open_text(uri).unwrap_or_default();
         let edits = on_type_format(
             &source,
             params.text_document_position.position,
@@ -1467,11 +1699,6 @@ impl LanguageServer for Backend {
         params: ExecuteCommandParams,
     ) -> Result<Option<serde_json::Value>> {
         match params.command.as_str() {
-            "php-lsp.showReferences" => {
-                // The client handles showing the references panel;
-                // the server just acknowledges the command.
-                Ok(None)
-            }
             "php-lsp.runTest" => {
                 // Arguments: [uri_string, "ClassName::methodName"]
                 let file_uri = params
@@ -1555,7 +1782,7 @@ impl LanguageServer for Backend {
                 && let Ok(path) = new_uri.to_file_path()
                 && let Ok(text) = tokio::fs::read_to_string(&path).await
             {
-                self.docs.index(new_uri, &text);
+                self.index_if_not_open(new_uri, &text);
             }
         }
     }
@@ -1628,7 +1855,7 @@ impl LanguageServer for Backend {
                 && let Ok(path) = uri.to_file_path()
                 && let Ok(text) = tokio::fs::read_to_string(&path).await
             {
-                self.docs.index(uri, &text);
+                self.index_if_not_open(uri, &text);
             }
         }
         send_refresh_requests(&self.client).await;
@@ -1687,8 +1914,8 @@ impl LanguageServer for Backend {
     async fn moniker(&self, params: MonikerParams) -> Result<Option<Vec<Moniker>>> {
         let uri = &params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
-        let source = self.docs.get(uri).unwrap_or_default();
-        let doc = match self.docs.get_doc(uri) {
+        let source = self.get_open_text(uri).unwrap_or_default();
+        let doc = match self.get_doc(uri) {
             Some(d) => d,
             None => return Ok(None),
         };
@@ -1700,7 +1927,7 @@ impl LanguageServer for Backend {
 
     async fn inline_value(&self, params: InlineValueParams) -> Result<Option<Vec<InlineValue>>> {
         let uri = &params.text_document.uri;
-        let source = self.docs.get(uri).unwrap_or_default();
+        let source = self.get_open_text(uri).unwrap_or_default();
         let values = inline_values_in_range(&source, params.range);
         Ok(if values.is_empty() {
             None
@@ -1714,10 +1941,10 @@ impl LanguageServer for Backend {
         params: DocumentDiagnosticParams,
     ) -> Result<DocumentDiagnosticReportResult> {
         let uri = &params.text_document.uri;
-        let source = self.docs.get(uri).unwrap_or_default();
+        let source = self.get_open_text(uri).unwrap_or_default();
 
-        let parse_diags = self.docs.get_diagnostics(uri).unwrap_or_default();
-        let doc = match self.docs.get_doc(uri) {
+        let parse_diags = self.get_parse_diagnostics(uri).unwrap_or_default();
+        let doc = match self.get_doc(uri) {
             Some(d) => d,
             None => {
                 return Ok(DocumentDiagnosticReportResult::Report(
@@ -1735,8 +1962,24 @@ impl LanguageServer for Backend {
             let cfg = self.config.read().unwrap();
             (cfg.diagnostics.clone(), cfg.php_version.clone())
         };
-        let sem_diags =
-            semantic_diagnostics(uri, &doc, &self.codebase, &diag_cfg, php_version.as_deref());
+        let _ = php_version.as_deref();
+        // Phase I: salsa Pass-2 is CPU-bound; run off the async executor.
+        let docs = Arc::clone(&self.docs);
+        let uri_owned = uri.clone();
+        let diag_cfg_sem = diag_cfg.clone();
+        let sem_diags = tokio::task::spawn_blocking(move || {
+            docs.get_semantic_issues_salsa(&uri_owned)
+                .map(|issues| {
+                    crate::semantic_diagnostics::issues_to_diagnostics(
+                        &issues,
+                        &uri_owned,
+                        &diag_cfg_sem,
+                    )
+                })
+                .unwrap_or_default()
+        })
+        .await
+        .unwrap_or_default();
         let dup_diags = duplicate_declaration_diagnostics(&source, &doc, &diag_cfg);
 
         let mut items = parse_diags;
@@ -1758,49 +2001,61 @@ impl LanguageServer for Backend {
         &self,
         _params: WorkspaceDiagnosticParams,
     ) -> Result<WorkspaceDiagnosticReportResult> {
-        let all_parse_diags = self.docs.all_diagnostics();
+        let all_parse_diags = self.all_open_files_with_diagnostics();
         let (diag_cfg, php_version) = {
             let cfg = self.config.read().unwrap();
             (cfg.diagnostics.clone(), cfg.php_version.clone())
         };
 
-        // Build inheritance tables once for the entire workspace.
-        // The persistent codebase already has all file definitions collected
-        // incrementally via collect_into_codebase(). A single finalize() call
-        // here is O(N); the old approach called finalize() per file → O(N²).
-        self.codebase.finalize();
+        // Phase I: each file's semantic issues flow through the salsa
+        // `semantic_issues` query. The memo is shared with `did_open` /
+        // `did_change` / `document_diagnostic` / `code_action`, so repeated
+        // workspace-diagnostic pulls reuse prior analysis. The first pull on
+        // a cold workspace still walks every file's `StatementsAnalyzer` —
+        // run the whole sweep on the blocking pool so the async runtime
+        // stays responsive.
+        let _ = php_version.as_deref();
+        let docs = Arc::clone(&self.docs);
+        let diag_cfg_sweep = diag_cfg.clone();
+        let items = tokio::task::spawn_blocking(move || {
+            all_parse_diags
+                .into_iter()
+                .filter_map(|(uri, parse_diags, version)| {
+                    let doc = docs.get_doc_salsa(&uri)?;
 
-        let items: Vec<WorkspaceDocumentDiagnosticReport> = all_parse_diags
-            .into_iter()
-            .filter_map(|(uri, parse_diags, version)| {
-                let doc = self.docs.get_doc(&uri)?;
+                    let source = doc.source().to_string();
+                    let sem_diags = docs
+                        .get_semantic_issues_salsa(&uri)
+                        .map(|issues| {
+                            crate::semantic_diagnostics::issues_to_diagnostics(
+                                &issues,
+                                &uri,
+                                &diag_cfg_sweep,
+                            )
+                        })
+                        .unwrap_or_default();
+                    let dup_diags =
+                        duplicate_declaration_diagnostics(&source, &doc, &diag_cfg_sweep);
 
-                let source = doc.source().to_string();
-                let sem_diags = semantic_diagnostics_no_rebuild(
-                    &uri,
-                    &doc,
-                    &self.codebase,
-                    &diag_cfg,
-                    php_version.as_deref(),
-                );
-                let dup_diags = duplicate_declaration_diagnostics(&source, &doc, &diag_cfg);
+                    let mut all_diags = parse_diags;
+                    all_diags.extend(sem_diags);
+                    all_diags.extend(dup_diags);
 
-                let mut all_diags = parse_diags;
-                all_diags.extend(sem_diags);
-                all_diags.extend(dup_diags);
-
-                Some(WorkspaceDocumentDiagnosticReport::Full(
-                    WorkspaceFullDocumentDiagnosticReport {
-                        uri,
-                        version,
-                        full_document_diagnostic_report: FullDocumentDiagnosticReport {
-                            result_id: None,
-                            items: all_diags,
+                    Some(WorkspaceDocumentDiagnosticReport::Full(
+                        WorkspaceFullDocumentDiagnosticReport {
+                            uri,
+                            version,
+                            full_document_diagnostic_report: FullDocumentDiagnosticReport {
+                                result_id: None,
+                                items: all_diags,
+                            },
                         },
-                    },
-                ))
-            })
-            .collect();
+                    ))
+                })
+                .collect::<Vec<_>>()
+        })
+        .await
+        .unwrap_or_default();
 
         Ok(WorkspaceDiagnosticReportResult::Report(
             WorkspaceDiagnosticReport { items },
@@ -1809,17 +2064,37 @@ impl LanguageServer for Backend {
 
     async fn code_action(&self, params: CodeActionParams) -> Result<Option<CodeActionResponse>> {
         let uri = &params.text_document.uri;
-        let source = self.docs.get(uri).unwrap_or_default();
-        let doc = match self.docs.get_doc(uri) {
+        let source = self.get_open_text(uri).unwrap_or_default();
+        let doc = match self.get_doc(uri) {
             Some(d) => d,
             None => return Ok(None),
         };
-        let other_docs = self.docs.other_docs(uri);
+        let other_docs = self.docs.other_docs(uri, &self.open_urls());
 
-        // Reuse semantic diagnostics cached by did_open/did_change rather than
-        // running a full codebase rebuild here — that rebuild takes write locks
-        // which stall concurrent requests for ~1-2 s.
-        let sem_diags = self.docs.get_sem_diagnostics(uri);
+        // Phase I: read semantic issues through the salsa query. The result
+        // is memoized across did_open/did_change/document_diagnostic, so
+        // code_action usually hits the memo instead of rerunning analysis.
+        // On a memo miss (e.g. code-action fires before did_open finishes),
+        // the analyzer runs — park that on the blocking pool so the async
+        // runtime doesn't stall.
+        let diag_cfg = self.config.read().unwrap().diagnostics.clone();
+        let docs_sem = Arc::clone(&self.docs);
+        let uri_sem = uri.clone();
+        let diag_cfg_sem = diag_cfg.clone();
+        let sem_diags = tokio::task::spawn_blocking(move || {
+            docs_sem
+                .get_semantic_issues_salsa(&uri_sem)
+                .map(|issues| {
+                    crate::semantic_diagnostics::issues_to_diagnostics(
+                        &issues,
+                        &uri_sem,
+                        &diag_cfg_sem,
+                    )
+                })
+                .unwrap_or_default()
+        })
+        .await
+        .unwrap_or_default();
 
         // Build "Add use import" code actions for undefined class names in range
         let mut actions: Vec<CodeActionOrCommand> = Vec::new();
@@ -1873,7 +2148,9 @@ impl LanguageServer for Backend {
             implement_missing_actions(
                 &source,
                 &doc,
-                &self.docs.doc_with_others(uri, Arc::clone(&doc)),
+                &self
+                    .docs
+                    .doc_with_others(uri, Arc::clone(&doc), &self.open_urls()),
                 params.range,
                 uri,
                 &self.file_imports(uri),
@@ -1951,8 +2228,8 @@ impl LanguageServer for Backend {
             None => return Ok(item),
         };
 
-        let source = self.docs.get(&uri).unwrap_or_default();
-        let doc = match self.docs.get_doc(&uri) {
+        let source = self.get_open_text(&uri).unwrap_or_default();
+        let doc = match self.get_doc(&uri) {
             Some(d) => d,
             None => return Ok(item),
         };
@@ -1964,7 +2241,9 @@ impl LanguageServer for Backend {
                 implement_missing_actions(
                     &source,
                     &doc,
-                    &self.docs.doc_with_others(&uri, Arc::clone(&doc)),
+                    &self
+                        .docs
+                        .doc_with_others(&uri, Arc::clone(&doc), &self.open_urls()),
                     range,
                     &uri,
                     &imports,
@@ -2229,13 +2508,16 @@ impl Backend {
 
         let file_uri = Url::from_file_path(&path).ok()?;
 
-        // Index on-demand if the file was not picked up by the workspace scan
-        if self.docs.get_doc(&file_uri).is_none() {
+        // Index on-demand if the file was not picked up by the workspace scan.
+        // Use `get_doc_salsa_any` (ignores open-file gating): after `index()`
+        // the file is mirrored but background-only, and the call site needs
+        // the AST regardless of whether the editor has the file open.
+        if self.docs.get_doc_salsa(&file_uri).is_none() {
             let text = tokio::fs::read_to_string(&path).await.ok()?;
-            self.docs.index(file_uri.clone(), &text);
+            self.index_if_not_open(file_uri.clone(), &text);
         }
 
-        let doc = self.docs.get_doc(&file_uri)?;
+        let doc = self.docs.get_doc_salsa(&file_uri)?;
 
         // Classes are declared by their short (unqualified) name, e.g. `class Foo`
         // not `class App\Services\Foo`.
@@ -2377,19 +2659,6 @@ async fn send_refresh_requests(client: &Client) {
         .ok();
 }
 
-/// Run the definition collector for a single file against the persistent codebase.
-fn collect_into_codebase(codebase: &mir_codebase::Codebase, uri: &Url, doc: &ParsedDoc) {
-    let file: Arc<str> = Arc::from(uri.as_str());
-    let source_map = php_rs_parser::source_map::SourceMap::new(doc.source());
-    let collector = mir_analyzer::collector::DefinitionCollector::new(
-        codebase,
-        file,
-        doc.source(),
-        &source_map,
-    );
-    collector.collect(doc.program());
-}
-
 /// Maximum number of PHP files indexed during a workspace scan.
 /// Prevents excessive memory use on projects with very large vendor trees.
 const MAX_INDEXED_FILES: usize = 50_000;
@@ -2401,12 +2670,20 @@ const MAX_INDEXED_FILES: usize = 50_000;
 ///
 /// Phase 1 — directory traversal: async, serial (I/O-bound; tokio handles it well).
 /// Phase 2 — file reading + parsing: concurrent, bounded by available CPU cores.
-#[tracing::instrument(skip(docs, exclude_paths, codebase), fields(root = %root.display()))]
+///
+/// Post-salsa: we only populate the DocumentStore here. The codebase is built
+/// on demand by the salsa `codebase` query the first time a feature asks for
+/// it — stubs + every indexed file's StubSlice, memoized thereafter.
+#[tracing::instrument(
+    skip(docs, open_files, cache, exclude_paths),
+    fields(root = %root.display())
+)]
 async fn scan_workspace(
     root: PathBuf,
     docs: Arc<DocumentStore>,
+    open_files: OpenFiles,
+    cache: Option<crate::cache::WorkspaceCache>,
     exclude_paths: &[String],
-    codebase: Arc<mir_codebase::Codebase>,
 ) -> usize {
     // Phase 1: collect PHP file paths via async directory walk.
     let mut php_files: Vec<PathBuf> = Vec::new();
@@ -2457,7 +2734,8 @@ async fn scan_workspace(
     for path in php_files {
         let permit = Arc::clone(&sem).acquire_owned().await.unwrap();
         let docs = Arc::clone(&docs);
-        let codebase = Arc::clone(&codebase);
+        let open_files = open_files.clone();
+        let cache = cache.clone();
         let count = Arc::clone(&count);
         set.spawn(async move {
             let _permit = permit;
@@ -2468,12 +2746,48 @@ async fn scan_workspace(
                 return;
             };
             tokio::task::spawn_blocking(move || {
-                // Parse once: collect into codebase, then index using the same
-                // ParsedDoc — avoids a second parse inside docs.index().
+                // Skip files the editor has already opened — their buffer
+                // is authoritative; scan must not overwrite their salsa
+                // input with disk contents.
+                if open_files.contains(&uri) {
+                    return;
+                }
+
+                // Phase K2b read path: if the on-disk cache has a StubSlice
+                // for this (uri, content) key, mirror the text and seed
+                // the cached slice — `file_definitions` will return it
+                // directly on the first query, skipping parse and
+                // `DefinitionCollector` entirely. An edit later clears
+                // the seeded slice via `mirror_text` (K2a).
+                let cache_key = cache
+                    .as_ref()
+                    .map(|_| crate::cache::WorkspaceCache::key_for(uri.as_str(), &text));
+                if let (Some(cache), Some(key)) = (cache.as_ref(), cache_key.as_ref())
+                    && let Some(slice) = cache.read::<mir_codebase::storage::StubSlice>(key)
+                {
+                    docs.mirror_text(&uri, &text);
+                    docs.seed_cached_slice(&uri, Arc::new(slice));
+                    count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    return;
+                }
+
+                // Cache miss: normal parse + mirror.
                 let (doc, diags) = parse_document(&text);
-                collect_into_codebase(&codebase, &uri, &doc);
                 docs.index_from_doc(uri.clone(), &doc, diags);
                 count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+                // K2b write path: force `file_definitions` and persist
+                // the fresh slice so a subsequent startup hits the cache.
+                // The work is unavoidable anyway — `get_codebase_salsa`
+                // would call `file_definitions` lazily on first use — so
+                // materializing it here trades a small up-front cost for
+                // a large warm-start win next time. Best-effort: a write
+                // error is logged via `.ok()` and doesn't fail the scan.
+                if let (Some(cache), Some(key)) = (cache.as_ref(), cache_key.as_ref())
+                    && let Some(slice) = docs.slice_for(&uri)
+                {
+                    let _ = cache.write(key, &*slice);
+                }
             })
             .await
             .ok();
@@ -2483,49 +2797,6 @@ async fn scan_workspace(
     while set.join_next().await.is_some() {}
 
     count.load(std::sync::atomic::Ordering::Relaxed)
-}
-
-/// Phase 3 of workspace initialisation: run `StatementsAnalyzer` on every
-/// indexed file to populate `codebase.symbol_reference_locations`.
-///
-/// This is deliberately run *after* the progress notification is sent so the
-/// editor considers indexing finished while this background work completes.
-/// Once done, `ref_index_ready` is set to `true` so the `references` handler
-/// can switch to O(k) codebase lookups instead of scanning every AST.
-async fn build_reference_index(
-    docs: Arc<DocumentStore>,
-    codebase: Arc<mir_codebase::Codebase>,
-    ready: Arc<AtomicBool>,
-    client: Client,
-) {
-    // The codebase was already finalized at the end of the workspace scan
-    // (Phase 2). Calling finalize() again here would race with concurrent
-    // semantic_diagnostics calls that reset the finalized flag via
-    // remove_file_definitions(), causing method-inheritance lookups to
-    // transiently return None and silently drop those references from the index.
-    let all_docs = docs.all_docs_for_scan();
-    let parallelism = std::thread::available_parallelism()
-        .map(|n| n.get())
-        .unwrap_or(4);
-    let sem = Arc::new(tokio::sync::Semaphore::new(parallelism));
-    let mut set: tokio::task::JoinSet<()> = tokio::task::JoinSet::new();
-
-    for (uri, doc) in all_docs {
-        let permit = Arc::clone(&sem).acquire_owned().await.unwrap();
-        let codebase = Arc::clone(&codebase);
-        set.spawn(async move {
-            let _permit = permit;
-            tokio::task::spawn_blocking(move || {
-                index_file_references(&uri, &doc, &codebase);
-            })
-            .await
-            .ok();
-        });
-    }
-
-    while set.join_next().await.is_some() {}
-    ready.store(true, Ordering::Release);
-    client.send_notification::<IndexReadyNotification>(()).await;
 }
 
 #[cfg(test)]
@@ -3696,7 +3967,6 @@ mod integration {
             "references should not error: {:?}",
             resp
         );
-
         let locs = resp["result"]
             .as_array()
             .expect("expected array of locations");

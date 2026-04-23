@@ -1,0 +1,56 @@
+name: "Tests"
+
+on:
+    pull_request:
+    push:
+        branches:
+            - main
+
+env:
+    fail-fast: true
+
+permissions:
+    contents: read
+
+jobs:
+    test:
+        name: "${{ matrix.operating-system }} / PHP ${{ matrix.php-version }}"
+        runs-on: ${{ matrix.operating-system }}
+        continue-on-error: false
+
+        strategy:
+            matrix:
+                operating-system: ['ubuntu-latest']
+                php-version: ['8.2', '8.3', '8.4']
+                include:
+                    - operating-system: 'macos-latest'
+                      php-version: '8.2'
+                    - operating-system: 'windows-latest'
+                      php-version: '8.2'
+
+        steps:
+            - name: "Checkout code"
+              uses: actions/checkout@v4
+
+            - name: "Install PHP with extensions"
+              uses: shivammathur/setup-php@v2
+              with:
+                  coverage: "none"
+                  extensions: "intl, mbstring, pdo_sqlite, zip"
+                  php-version: ${{ matrix.php-version }}
+                  tools: composer:v2
+
+            - name: "Add PHPUnit matcher"
+              run: echo "::add-matcher::${{ runner.tool_cache }}/phpunit.json"
+
+            - name: "Install dependencies"
+              run: composer install --ansi --no-interaction --no-progress
+
+            - name: "Build and compile assets"
+              run: |
+                php bin/console importmap:install
+                php bin/console sass:build
+                php bin/console asset-map:compile
+
+            - name: "Run tests"
+              run: vendor/bin/phpunit

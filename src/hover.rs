@@ -4,7 +4,7 @@ use std::sync::Arc;
 use php_ast::{ClassMemberKind, EnumMemberKind, ExprKind, NamespaceBody, Param, Stmt, StmtKind};
 use tower_lsp::lsp_types::{Hover, HoverContents, MarkupContent, MarkupKind, Position};
 
-use crate::ast::{ParsedDoc, format_type_hint};
+use crate::ast::{MethodReturnsMap, ParsedDoc, format_type_hint};
 use crate::docblock::{Docblock, docblock_before, find_docblock, parse_docblock};
 use crate::type_map::TypeMap;
 use crate::util::{is_php_builtin, php_doc_url, word_at};
@@ -12,17 +12,27 @@ use crate::util::{is_php_builtin, php_doc_url, word_at};
 pub fn hover_info(
     source: &str,
     doc: &ParsedDoc,
+    doc_returns: &MethodReturnsMap,
     position: Position,
-    other_docs: &[(tower_lsp::lsp_types::Url, Arc<ParsedDoc>)],
+    other_docs: &[(
+        tower_lsp::lsp_types::Url,
+        Arc<ParsedDoc>,
+        Arc<MethodReturnsMap>,
+    )],
 ) -> Option<Hover> {
-    hover_at(source, doc, other_docs, position)
+    hover_at(source, doc, doc_returns, other_docs, position)
 }
 
 /// Full hover implementation.
 pub fn hover_at(
     source: &str,
     doc: &ParsedDoc,
-    other_docs: &[(tower_lsp::lsp_types::Url, Arc<ParsedDoc>)],
+    doc_returns: &MethodReturnsMap,
+    other_docs: &[(
+        tower_lsp::lsp_types::Url,
+        Arc<ParsedDoc>,
+        Arc<MethodReturnsMap>,
+    )],
     position: Position,
 ) -> Option<Hover> {
     // Feature 6: hover on use statement shows full FQN
@@ -64,7 +74,8 @@ pub fn hover_at(
         type_map_cell.get_or_init(|| {
             TypeMap::from_docs_at_position(
                 doc,
-                other_docs.iter().map(|(_, d)| d.as_ref()),
+                doc_returns,
+                other_docs.iter().map(|(_, d, r)| (d.as_ref(), r.as_ref())),
                 None,
                 position,
             )
@@ -107,8 +118,8 @@ pub fn hover_at(
                     };
                     if let Some(cls) = class_name {
                         let first_cls = cls.split('|').next().unwrap_or(&cls);
-                        for d in
-                            std::iter::once(doc).chain(other_docs.iter().map(|(_, d)| d.as_ref()))
+                        for d in std::iter::once(doc)
+                            .chain(other_docs.iter().map(|(_, d, _)| d.as_ref()))
                         {
                             if let Some(sig) =
                                 scan_method_of_class(&d.program().stmts, first_cls, &word)
@@ -139,7 +150,7 @@ pub fn hover_at(
     // Search current document first, then cross-file.
     let found = scan_statements(&doc.program().stmts, &word).map(|sig| (sig, source, doc));
     let found = found.or_else(|| {
-        for (_, other) in other_docs {
+        for (_, other, _) in other_docs {
             if let Some(sig) = scan_statements(&other.program().stmts, &word) {
                 return Some((sig, other.source(), other.as_ref()));
             }
@@ -212,8 +223,8 @@ pub fn hover_at(
                         tm.get(&var_name).map(|s| s.to_string())
                     };
                     if let Some(cls) = class_name {
-                        for d in
-                            std::iter::once(doc).chain(other_docs.iter().map(|(_, d)| d.as_ref()))
+                        for d in std::iter::once(doc)
+                            .chain(other_docs.iter().map(|(_, d, _)| d.as_ref()))
                         {
                             if let Some((type_str, db)) = find_property_info(d, &cls, &word) {
                                 let sig = format!(
@@ -979,6 +990,7 @@ fn find_method_docblock_in_stmts(
 mod tests {
     use super::*;
     use crate::test_utils::cursor;
+    use crate::type_map::build_method_returns;
 
     fn pos(line: u32, character: u32) -> Position {
         Position { line, character }
@@ -988,7 +1000,7 @@ mod tests {
     fn hover_on_function_name_returns_signature() {
         let (src, p) = cursor("<?php\nfunction g$0reet(string $name): string {}");
         let doc = ParsedDoc::parse(src.clone());
-        let result = hover_info(&src, &doc, p, &[]);
+        let result = hover_info(&src, &doc, &build_method_returns(&doc), p, &[]);
         assert!(result.is_some(), "expected hover result");
         if let Some(Hover {
             contents: HoverContents::Markup(mc),
@@ -1007,7 +1019,7 @@ mod tests {
     fn hover_on_class_name_returns_class_sig() {
         let (src, p) = cursor("<?php\nclass My$0Service {}");
         let doc = ParsedDoc::parse(src.clone());
-        let result = hover_info(&src, &doc, p, &[]);
+        let result = hover_info(&src, &doc, &build_method_returns(&doc), p, &[]);
         assert!(result.is_some(), "expected hover result");
         if let Some(Hover {
             contents: HoverContents::Markup(mc),
@@ -1026,7 +1038,7 @@ mod tests {
     fn hover_on_unknown_word_returns_none() {
         let src = "<?php\n$unknown = 42;";
         let doc = ParsedDoc::parse(src.to_string());
-        let result = hover_info(src, &doc, pos(1, 2), &[]);
+        let result = hover_info(src, &doc, &build_method_returns(&doc), pos(1, 2), &[]);
         assert!(result.is_none(), "expected None for unknown word");
     }
 
@@ -1034,7 +1046,7 @@ mod tests {
     fn hover_at_column_beyond_line_length_returns_none() {
         let src = "<?php\nfunction hi() {}";
         let doc = ParsedDoc::parse(src.to_string());
-        let result = hover_info(src, &doc, pos(1, 999), &[]);
+        let result = hover_info(src, &doc, &build_method_returns(&doc), pos(1, 999), &[]);
         assert!(result.is_none());
     }
 
@@ -1049,7 +1061,7 @@ mod tests {
     fn hover_on_class_with_extends_shows_parent() {
         let src = "<?php\nclass Dog extends Animal {}";
         let doc = ParsedDoc::parse(src.to_string());
-        let result = hover_info(src, &doc, pos(1, 8), &[]);
+        let result = hover_info(src, &doc, &build_method_returns(&doc), pos(1, 8), &[]);
         assert!(result.is_some());
         if let Some(Hover {
             contents: HoverContents::Markup(mc),
@@ -1068,7 +1080,7 @@ mod tests {
     fn hover_on_class_with_implements_shows_interfaces() {
         let src = "<?php\nclass Repo implements Countable, Serializable {}";
         let doc = ParsedDoc::parse(src.to_string());
-        let result = hover_info(src, &doc, pos(1, 8), &[]);
+        let result = hover_info(src, &doc, &build_method_returns(&doc), pos(1, 8), &[]);
         assert!(result.is_some());
         if let Some(Hover {
             contents: HoverContents::Markup(mc),
@@ -1087,7 +1099,7 @@ mod tests {
     fn hover_on_trait_returns_trait_sig() {
         let src = "<?php\ntrait Loggable {}";
         let doc = ParsedDoc::parse(src.to_string());
-        let result = hover_info(src, &doc, pos(1, 8), &[]);
+        let result = hover_info(src, &doc, &build_method_returns(&doc), pos(1, 8), &[]);
         assert!(result.is_some());
         if let Some(Hover {
             contents: HoverContents::Markup(mc),
@@ -1106,7 +1118,7 @@ mod tests {
     fn hover_on_interface_returns_interface_sig() {
         let src = "<?php\ninterface Serializable {}";
         let doc = ParsedDoc::parse(src.to_string());
-        let result = hover_info(src, &doc, pos(1, 12), &[]);
+        let result = hover_info(src, &doc, &build_method_returns(&doc), pos(1, 12), &[]);
         assert!(result.is_some(), "expected hover result");
         if let Some(Hover {
             contents: HoverContents::Markup(mc),
@@ -1125,7 +1137,7 @@ mod tests {
     fn function_with_no_params_no_return_shows_no_colon() {
         let src = "<?php\nfunction init() {}";
         let doc = ParsedDoc::parse(src.to_string());
-        let result = hover_info(src, &doc, pos(1, 10), &[]);
+        let result = hover_info(src, &doc, &build_method_returns(&doc), pos(1, 10), &[]);
         assert!(result.is_some());
         if let Some(Hover {
             contents: HoverContents::Markup(mc),
@@ -1149,7 +1161,7 @@ mod tests {
     fn hover_on_enum_returns_enum_sig() {
         let src = "<?php\nenum Suit {}";
         let doc = ParsedDoc::parse(src.to_string());
-        let result = hover_info(src, &doc, pos(1, 6), &[]);
+        let result = hover_info(src, &doc, &build_method_returns(&doc), pos(1, 6), &[]);
         assert!(result.is_some());
         if let Some(Hover {
             contents: HoverContents::Markup(mc),
@@ -1168,7 +1180,7 @@ mod tests {
     fn hover_on_enum_with_implements_shows_interface() {
         let src = "<?php\nenum Status: string implements Stringable {}";
         let doc = ParsedDoc::parse(src.to_string());
-        let result = hover_info(src, &doc, pos(1, 6), &[]);
+        let result = hover_info(src, &doc, &build_method_returns(&doc), pos(1, 6), &[]);
         assert!(result.is_some());
         if let Some(Hover {
             contents: HoverContents::Markup(mc),
@@ -1188,7 +1200,7 @@ mod tests {
         let src = "<?php\nenum Status { case Active; case Inactive; }";
         let doc = ParsedDoc::parse(src.to_string());
         // "Active" starts at col 19: "enum Status { case Active;"
-        let result = hover_info(src, &doc, pos(1, 21), &[]);
+        let result = hover_info(src, &doc, &build_method_returns(&doc), pos(1, 21), &[]);
         assert!(result.is_some(), "expected hover on enum case");
         if let Some(Hover {
             contents: HoverContents::Markup(mc),
@@ -1232,7 +1244,7 @@ mod tests {
         let src = "<?php\ntrait Loggable { public function log(string $msg): void {} }";
         let doc = ParsedDoc::parse(src.to_string());
         // "log" at "trait Loggable { public function log(" — col 33
-        let result = hover_info(src, &doc, pos(1, 34), &[]);
+        let result = hover_info(src, &doc, &build_method_returns(&doc), pos(1, 34), &[]);
         assert!(result.is_some(), "expected hover on trait method");
         if let Some(Hover {
             contents: HoverContents::Markup(mc),
@@ -1254,10 +1266,17 @@ mod tests {
         let other_src = "<?php\nclass PaymentService { public function charge() {} }";
         let doc = ParsedDoc::parse(src.to_string());
         let other_doc = Arc::new(ParsedDoc::parse(other_src.to_string()));
+        let other_mr = Arc::new(build_method_returns(&other_doc));
         let uri = tower_lsp::lsp_types::Url::parse("file:///other.php").unwrap();
-        let other_docs = vec![(uri, other_doc)];
+        let other_docs = vec![(uri, other_doc, other_mr)];
         // Hover on "PaymentService" in line 1
-        let result = hover_info(src, &doc, pos(1, 12), &other_docs);
+        let result = hover_info(
+            src,
+            &doc,
+            &build_method_returns(&doc),
+            pos(1, 12),
+            &other_docs,
+        );
         assert!(result.is_some(), "expected cross-file hover result");
         if let Some(Hover {
             contents: HoverContents::Markup(mc),
@@ -1276,7 +1295,7 @@ mod tests {
     fn hover_on_variable_shows_type() {
         let src = "<?php\n$obj = new Mailer();\n$obj";
         let doc = ParsedDoc::parse(src.to_string());
-        let h = hover_at(src, &doc, &[], pos(2, 2));
+        let h = hover_at(src, &doc, &build_method_returns(&doc), &[], pos(2, 2));
         assert!(h.is_some());
         let text = match h.unwrap().contents {
             HoverContents::Markup(m) => m.value,
@@ -1289,7 +1308,7 @@ mod tests {
     fn hover_on_builtin_class_shows_stub_info() {
         let src = "<?php\n$pdo = new PDO('sqlite::memory:');\n$pdo->query('SELECT 1');";
         let doc = ParsedDoc::parse(src.to_string());
-        let h = hover_at(src, &doc, &[], pos(1, 12));
+        let h = hover_at(src, &doc, &build_method_returns(&doc), &[], pos(1, 12));
         assert!(h.is_some(), "should hover on PDO");
         let text = match h.unwrap().contents {
             HoverContents::Markup(m) => m.value,
@@ -1303,7 +1322,7 @@ mod tests {
         let src = "<?php\nclass User { public string $name; public int $age; }\n$u = new User();\n$u->name";
         let doc = ParsedDoc::parse(src.to_string());
         // "name" in "$u->name" — col 4 in "$u->name"
-        let h = hover_at(src, &doc, &[], pos(3, 5));
+        let h = hover_at(src, &doc, &build_method_returns(&doc), &[], pos(3, 5));
         assert!(h.is_some(), "expected hover on property");
         let text = match h.unwrap().contents {
             HoverContents::Markup(m) => m.value,
@@ -1319,7 +1338,7 @@ mod tests {
         let src = "<?php\nclass Point {\n    public function __construct(\n        public float $x,\n        public float $y,\n    ) {}\n}\n$p = new Point(1.0, 2.0);\n$p->x";
         let doc = ParsedDoc::parse(src.to_string());
         // "x" at the end of "$p->x"
-        let h = hover_at(src, &doc, &[], pos(8, 4));
+        let h = hover_at(src, &doc, &build_method_returns(&doc), &[], pos(8, 4));
         assert!(h.is_some(), "expected hover on promoted property");
         let text = match h.unwrap().contents {
             HoverContents::Markup(m) => m.value,
@@ -1341,7 +1360,7 @@ mod tests {
         let src = "<?php\nclass User {\n    /**\n     * Create a user.\n     * @param string $name The user's display name\n     * @param int $age The user's age\n     * @return void\n     * @throws \\InvalidArgumentException\n     */\n    public function __construct(\n        public string $name,\n        public int $age,\n    ) {}\n}\n$u = new User('Alice', 30);\n$u->name";
         let doc = ParsedDoc::parse(src.to_string());
         // hover on "$u->name" — cursor on 'name' (line 15, char 4 after "$u->")
-        let h = hover_at(src, &doc, &[], pos(15, 4));
+        let h = hover_at(src, &doc, &build_method_returns(&doc), &[], pos(15, 4));
         assert!(h.is_some(), "expected hover on promoted property");
         let text = match h.unwrap().contents {
             HoverContents::Markup(m) => m.value,
@@ -1375,7 +1394,7 @@ mod tests {
         // hover should still work (showing type) without appending any docblock section.
         let src = "<?php\nclass User {\n    /**\n     * Create a user.\n     * @return void\n     */\n    public function __construct(\n        public string $name,\n    ) {}\n}\n$u = new User('Alice');\n$u->name";
         let doc = ParsedDoc::parse(src.to_string());
-        let h = hover_at(src, &doc, &[], pos(11, 4));
+        let h = hover_at(src, &doc, &build_method_returns(&doc), &[], pos(11, 4));
         assert!(h.is_some(), "expected hover on promoted property");
         let text = match h.unwrap().contents {
             HoverContents::Markup(m) => m.value,
@@ -1395,6 +1414,7 @@ mod tests {
         let h = hover_at(
             src,
             &doc,
+            &build_method_returns(&doc),
             &[],
             Position {
                 line: 1,
@@ -1414,7 +1434,7 @@ mod tests {
         // `unknownFunc` is not defined anywhere — hover should return None.
         let src = "<?php\nunknownFunc();";
         let doc = ParsedDoc::parse(src.to_string());
-        let result = hover_info(src, &doc, pos(1, 3), &[]);
+        let result = hover_info(src, &doc, &build_method_returns(&doc), pos(1, 3), &[]);
         assert!(
             result.is_none(),
             "hover on undefined symbol should return None"
@@ -1427,7 +1447,7 @@ mod tests {
         // string that contains "strlen".
         let src = "<?php\nstrlen('hello');";
         let doc = ParsedDoc::parse(src.to_string());
-        let result = hover_info(src, &doc, pos(1, 3), &[]);
+        let result = hover_info(src, &doc, &build_method_returns(&doc), pos(1, 3), &[]);
         let h = result.expect("expected hover result for built-in 'strlen'");
         let text = match h.contents {
             HoverContents::Markup(mc) => mc.value,
@@ -1448,7 +1468,7 @@ mod tests {
         let src = "<?php\nclass User {\n    /** The user's display name. */\n    public string $name;\n}\n$u = new User();\n$u->name";
         let doc = ParsedDoc::parse(src.to_string());
         // "name" in "$u->name" at the last line
-        let h = hover_at(src, &doc, &[], pos(6, 5));
+        let h = hover_at(src, &doc, &build_method_returns(&doc), &[], pos(6, 5));
         assert!(h.is_some(), "expected hover on property with docblock");
         let text = match h.unwrap().contents {
             HoverContents::Markup(m) => m.value,
@@ -1471,7 +1491,7 @@ mod tests {
         // to_markdown() never rendered var_type.
         let src = "<?php\nclass User {\n    /** @var string */\n    public $name;\n}\n$u = new User();\n$u->name";
         let doc = ParsedDoc::parse(src.to_string());
-        let h = hover_at(src, &doc, &[], pos(6, 5));
+        let h = hover_at(src, &doc, &build_method_returns(&doc), &[], pos(6, 5));
         assert!(h.is_some(), "expected hover on @var-only property");
         let text = match h.unwrap().contents {
             HoverContents::Markup(m) => m.value,
@@ -1493,7 +1513,7 @@ mod tests {
     fn hover_on_property_with_var_tag_and_description() {
         let src = "<?php\nclass User {\n    /** @var string The display name. */\n    public $name;\n}\n$u = new User();\n$u->name";
         let doc = ParsedDoc::parse(src.to_string());
-        let h = hover_at(src, &doc, &[], pos(6, 5));
+        let h = hover_at(src, &doc, &build_method_returns(&doc), &[], pos(6, 5));
         assert!(
             h.is_some(),
             "expected hover on property with @var description"
@@ -1519,7 +1539,7 @@ mod tests {
         let src = "<?php\nclass Counter {\n    public int $count = 0;\n    public function increment(): void {\n        $this->count;\n    }\n}";
         let doc = ParsedDoc::parse(src.to_string());
         // "$this->count" — "count" starts at col 15 in "        $this->count;"
-        let h = hover_at(src, &doc, &[], pos(4, 16));
+        let h = hover_at(src, &doc, &build_method_returns(&doc), &[], pos(4, 16));
         assert!(h.is_some(), "expected hover on $this->property");
         let text = match h.unwrap().contents {
             HoverContents::Markup(m) => m.value,
@@ -1535,7 +1555,7 @@ mod tests {
         let src = "<?php\nclass Profile { public string $bio; }\n$p = new Profile();\n$p?->bio";
         let doc = ParsedDoc::parse(src.to_string());
         // "bio" in "$p?->bio" at line 3, col 5
-        let h = hover_at(src, &doc, &[], pos(3, 5));
+        let h = hover_at(src, &doc, &build_method_returns(&doc), &[], pos(3, 5));
         assert!(h.is_some(), "expected hover on nullsafe property access");
         let text = match h.unwrap().contents {
             HoverContents::Markup(m) => m.value,
@@ -1552,7 +1572,7 @@ mod tests {
 
     fn check_hover(src: &str, position: Position, expect: Expect) {
         let doc = ParsedDoc::parse(src.to_string());
-        let result = hover_info(src, &doc, position, &[]);
+        let result = hover_info(src, &doc, &build_method_returns(&doc), position, &[]);
         let actual = match result {
             Some(Hover {
                 contents: HoverContents::Markup(mc),
@@ -1715,7 +1735,7 @@ mod tests {
     fn hover_on_catch_variable_shows_exception_class() {
         let (src, p) = cursor("<?php\ntry { } catch (RuntimeException $e$0) { }");
         let doc = ParsedDoc::parse(src.clone());
-        let result = hover_info(&src, &doc, p, &[]);
+        let result = hover_info(&src, &doc, &build_method_returns(&doc), p, &[]);
         assert!(result.is_some(), "expected hover result for catch variable");
         if let Some(Hover {
             contents: HoverContents::Markup(mc),
@@ -1734,7 +1754,7 @@ mod tests {
     fn hover_on_static_var_with_array_default_shows_array() {
         let (src, p) = cursor("<?php\nfunction counter() { static $cach$0e = []; }");
         let doc = ParsedDoc::parse(src.clone());
-        let result = hover_info(&src, &doc, p, &[]);
+        let result = hover_info(&src, &doc, &build_method_returns(&doc), p, &[]);
         assert!(
             result.is_some(),
             "expected hover result for static variable"
@@ -1756,7 +1776,7 @@ mod tests {
     fn hover_on_static_var_with_new_shows_class() {
         let (src, p) = cursor("<?php\nfunction make() { static $inst$0ance = new MyService(); }");
         let doc = ParsedDoc::parse(src.clone());
-        let result = hover_info(&src, &doc, p, &[]);
+        let result = hover_info(&src, &doc, &build_method_returns(&doc), p, &[]);
         assert!(
             result.is_some(),
             "expected hover result for static variable"
@@ -1787,7 +1807,7 @@ mod tests {
             "}\n",
         ));
         let doc = ParsedDoc::parse(src.clone());
-        let result = hover_info(&src, &doc, p, &[]);
+        let result = hover_info(&src, &doc, &build_method_returns(&doc), p, &[]);
         if let Some(Hover {
             contents: HoverContents::Markup(mc),
             ..
@@ -1819,7 +1839,7 @@ mod tests {
             "$mailer->proc$0ess();\n",
         ));
         let doc = ParsedDoc::parse(src.clone());
-        let result = hover_info(&src, &doc, p, &[]);
+        let result = hover_info(&src, &doc, &build_method_returns(&doc), p, &[]);
         assert!(result.is_some(), "expected hover on method call");
         if let Some(Hover {
             contents: HoverContents::Markup(mc),

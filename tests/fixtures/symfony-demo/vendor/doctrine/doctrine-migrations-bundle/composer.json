@@ -1,0 +1,61 @@
+{
+    "name": "doctrine/doctrine-migrations-bundle",
+    "description": "Symfony DoctrineMigrationsBundle",
+    "license": "MIT",
+    "type": "symfony-bundle",
+    "keywords": [
+        "DBAL",
+        "Migrations",
+        "Schema"
+    ],
+    "authors": [
+        {
+            "name": "Fabien Potencier",
+            "email": "fabien@symfony.com"
+        },
+        {
+            "name": "Doctrine Project",
+            "homepage": "https://www.doctrine-project.org"
+        },
+        {
+            "name": "Symfony Community",
+            "homepage": "https://symfony.com/contributors"
+        }
+    ],
+    "homepage": "https://www.doctrine-project.org",
+    "require": {
+        "php": "^7.2 || ^8.0",
+        "doctrine/doctrine-bundle": "^2.4",
+        "doctrine/migrations": "^3.2",
+        "symfony/deprecation-contracts": "^2.1 || ^3",
+        "symfony/framework-bundle": "^5.4 || ^6.0 || ^7.0"
+    },
+    "require-dev": {
+        "composer/semver": "^3.0",
+        "doctrine/coding-standard": "^12",
+        "doctrine/orm": "^2.6 || ^3",
+        "phpstan/phpstan": "^1.4 || ^2",
+        "phpstan/phpstan-deprecation-rules": "^1 || ^2",
+        "phpstan/phpstan-phpunit": "^1 || ^2",
+        "phpstan/phpstan-strict-rules": "^1.1 || ^2",
+        "phpstan/phpstan-symfony": "^1.3 || ^2",
+        "phpunit/phpunit": "^8.5 || ^9.5",
+        "symfony/phpunit-bridge": "^6.3 || ^7",
+        "symfony/var-exporter": "^5.4 || ^6 || ^7"
+    },
+    "autoload": {
+        "psr-4": {
+            "Doctrine\\Bundle\\MigrationsBundle\\": "src"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Doctrine\\Bundle\\MigrationsBundle\\Tests\\": "tests"
+        }
+    },
+    "config": {
+        "allow-plugins": {
+            "dealerdirect/phpcodesniffer-composer-installer": true
+        }
+    }
+}

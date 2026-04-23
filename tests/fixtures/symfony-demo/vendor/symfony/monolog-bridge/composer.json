@@ -1,0 +1,45 @@
+{
+    "name": "symfony/monolog-bridge",
+    "type": "symfony-bridge",
+    "description": "Provides integration for Monolog with various Symfony components",
+    "keywords": [],
+    "homepage": "https://symfony.com",
+    "license": "MIT",
+    "authors": [
+        {
+            "name": "Fabien Potencier",
+            "email": "fabien@symfony.com"
+        },
+        {
+            "name": "Symfony Community",
+            "homepage": "https://symfony.com/contributors"
+        }
+    ],
+    "require": {
+        "php": ">=8.2",
+        "monolog/monolog": "^3",
+        "symfony/service-contracts": "^2.5|^3",
+        "symfony/http-kernel": "^6.4|^7.0"
+    },
+    "require-dev": {
+        "symfony/console": "^6.4|^7.0",
+        "symfony/http-client": "^6.4|^7.0",
+        "symfony/security-core": "^6.4|^7.0",
+        "symfony/var-dumper": "^6.4|^7.0",
+        "symfony/mailer": "^6.4|^7.0",
+        "symfony/mime": "^6.4|^7.0",
+        "symfony/messenger": "^6.4|^7.0"
+    },
+    "conflict": {
+        "symfony/console": "<6.4",
+        "symfony/http-foundation": "<6.4",
+        "symfony/security-core": "<6.4"
+    },
+    "autoload": {
+        "psr-4": { "Symfony\\Bridge\\Monolog\\": "" },
+        "exclude-from-classmap": [
+            "/Tests/"
+        ]
+    },
+    "minimum-stability": "dev"
+}

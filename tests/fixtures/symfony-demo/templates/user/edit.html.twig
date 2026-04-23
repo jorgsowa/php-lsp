@@ -1,0 +1,27 @@
+{% extends 'base.html.twig' %}
+
+{% block body_id 'user_edit' %}
+
+{% block main %}
+    <h1>{{ 'title.edit_user'|trans }}</h1>
+
+    {{ form_start(form) }}
+        {{ form_widget(form) }}
+
+        <button type="submit" class="btn btn-primary">
+            <twig:ux:icon name="tabler:save-changes"/> {{ 'action.save'|trans }}
+        </button>
+    {{ form_end(form) }}
+{% endblock %}
+
+{% block sidebar %}
+    <div class="section">
+        <a href="{{ path('user_change_password') }}" class="btn btn-lg btn-block btn-danger">
+            <twig:ux:icon name="tabler:key"/> {{ 'action.change_password'|trans }}
+        </a>
+    </div>
+
+    {{ parent() }}
+
+    {{ show_source_code(_self) }}
+{% endblock %}

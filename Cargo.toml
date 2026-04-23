@@ -38,18 +38,22 @@ dhat-heap = ["dep:dhat"]
 dhat = { version = "0.3", optional = true }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
-mir-analyzer = "0.6.0"
-mir-issues = "0.6.0"
-mir-codebase = "0.6.0"
-mir-types = "0.6.0"
-php-rs-parser = "0.8.0"
-php-ast = "0.8.0"
+mir-analyzer = "0.7.1"
+mir-issues = "0.7.1"
+mir-codebase = "0.7.1"
+mir-types = "0.7.1"
+php-rs-parser = "0.9.0"
+php-ast = "0.9.0"
 bumpalo = { version = "3", features = ["collections"] }
 tower-lsp = "0.20"
 tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+bincode = { version = "2", features = ["serde"] }
+blake3 = "1"
 dashmap = "6"
 rayon = "1"
+salsa = "0.26"
 
 [dependencies.walkdir]
 version = "2"

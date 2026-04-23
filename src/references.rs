@@ -7,9 +7,13 @@ use tower_lsp::lsp_types::{Location, Position, Range, Url};
 
 use crate::ast::{ParsedDoc, str_offset};
 use crate::walk::{
-    class_refs_in_stmts, function_refs_in_stmts, method_refs_in_stmts, refs_in_stmts,
-    refs_in_stmts_with_use,
+    class_refs_in_stmts, function_refs_in_stmts, method_refs_in_stmts, property_refs_in_stmts,
+    refs_in_stmts, refs_in_stmts_with_use,
 };
+
+/// Callback signature for the mir-codebase reference-lookup fast path:
+/// `(key) -> Vec<(file_uri, start_byte, end_byte)>`.
+pub type RefLookup<'a> = dyn Fn(&str) -> Vec<(Arc<str>, u32, u32)> + 'a;
 
 /// What kind of symbol the cursor is on.  Used to dispatch to the
 /// appropriate semantic walker so that, e.g., searching for `get` as a
@@ -22,6 +26,8 @@ pub enum SymbolKind {
     Method,
     /// A class, interface, trait, or enum name used as a type.
     Class,
+    /// A class / trait property (`->name`, `?->name`, promoted or declared).
+    Property,
 }
 
 /// Find all locations where `word` is referenced across the given documents.
@@ -72,6 +78,7 @@ pub fn find_references_codebase(
     include_declaration: bool,
     kind: Option<SymbolKind>,
     codebase: &mir_codebase::Codebase,
+    lookup_refs: &RefLookup<'_>,
 ) -> Option<Vec<Location>> {
     // Build a URI-string → (Url, ParsedDoc) map for O(1) lookup.
     let doc_map: std::collections::HashMap<&str, (&Url, &Arc<ParsedDoc>)> = all_docs
@@ -116,7 +123,7 @@ pub fn find_references_codebase(
 
             let mut locations: Vec<Location> = Vec::new();
             for fqn in &fqns {
-                for (file, start, end) in codebase.get_reference_locations(fqn) {
+                for (file, start, end) in lookup_refs(fqn) {
                     if let Some(loc) = spans_to_location(&file, start, end) {
                         locations.push(loc);
                     }
@@ -168,7 +175,7 @@ pub fn find_references_codebase(
 
             let mut locations: Vec<Location> = Vec::new();
             for fqcn in &fqcns {
-                for (file, start, end) in codebase.get_reference_locations(fqcn) {
+                for (file, start, end) in lookup_refs(fqcn) {
                     if let Some(loc) = spans_to_location(&file, start, end) {
                         locations.push(loc);
                     }
@@ -195,8 +202,16 @@ pub fn find_references_codebase(
             let mut method_keys: Vec<String> = Vec::new();
             let mut candidate_arcs: Vec<Arc<str>> = Vec::new();
 
+            // Only consider user-code classes (those with a source location).
+            // Stub classes (DateTime, Ds\Set, …) live in the same codebase but
+            // have `location: None`; including them pollutes `method_keys` with
+            // keys that have no recorded references, leading the fast path to
+            // return Some(empty) instead of falling back to the AST walker.
             for entry in codebase.classes.iter() {
                 let cls = entry.value();
+                if cls.location.is_none() {
+                    continue;
+                }
                 if let Some(method) = cls.own_methods.get(word_lower.as_str())
                     && (cls.is_final || method.visibility == mir_codebase::Visibility::Private)
                 {
@@ -208,6 +223,9 @@ pub fn find_references_codebase(
             }
             for entry in codebase.enums.iter() {
                 let enm = entry.value();
+                if enm.location.is_none() {
+                    continue;
+                }
                 if let Some(method) = enm.own_methods.get(word_lower.as_str())
                     && method.visibility == mir_codebase::Visibility::Private
                 {
@@ -226,7 +244,7 @@ pub fn find_references_codebase(
             // Collect candidate files from the reference index (declaration files
             // already appended above so include_declaration=true works correctly).
             for key in &method_keys {
-                for (file, _, _) in codebase.get_reference_locations(key) {
+                for (file, _, _) in lookup_refs(key) {
                     candidate_arcs.push(file);
                 }
             }
@@ -251,6 +269,10 @@ pub fn find_references_codebase(
 
         // General walker already handles None kind; codebase index adds no value.
         None => None,
+
+        // Properties aren't tracked in the mir codebase index; fall through to
+        // the general AST walker by returning None.
+        Some(SymbolKind::Property) => None,
     }
 }
 
@@ -307,6 +329,24 @@ fn scan_doc(
             Some(SymbolKind::Function) => function_refs_in_stmts(stmts, word, &mut spans),
             Some(SymbolKind::Method) => method_refs_in_stmts(stmts, word, &mut spans),
             Some(SymbolKind::Class) => class_refs_in_stmts(stmts, word, &mut spans),
+            // Property walker emits both access sites *and* declaration spans
+            // (used by rename). Strip decls here when the caller doesn't want them.
+            Some(SymbolKind::Property) => {
+                property_refs_in_stmts(source, stmts, word, &mut spans);
+                if !include_declaration {
+                    let mut decl_spans = Vec::new();
+                    collect_declaration_spans(
+                        source,
+                        stmts,
+                        word,
+                        Some(SymbolKind::Property),
+                        &mut decl_spans,
+                    );
+                    let decl_set: HashSet<(u32, u32)> =
+                        decl_spans.iter().map(|s| (s.start, s.end)).collect();
+                    spans.retain(|span| !decl_set.contains(&(span.start, span.end)));
+                }
+            }
             // General walker already includes declarations; filter them out if unwanted.
             None => {
                 refs_in_stmts(source, stmts, word, &mut spans);
@@ -319,10 +359,16 @@ fn scan_doc(
                 }
             }
         }
-        // Typed walkers never emit declaration spans, so add them separately when wanted.
-        // Pass `kind` so only declarations of the matching category are appended —
-        // a Method search must not return a free-function declaration with the same name.
-        if include_declaration && kind.is_some() {
+        // Typed walkers (except Property, which already includes decls) don't emit
+        // declaration spans, so add them separately when wanted. Pass `kind` so only
+        // declarations of the matching category are appended — a Method search must
+        // not return a free-function declaration with the same name.
+        if include_declaration
+            && matches!(
+                kind,
+                Some(SymbolKind::Function) | Some(SymbolKind::Method) | Some(SymbolKind::Class)
+            )
+        {
             collect_declaration_spans(source, stmts, word, kind, &mut spans);
         }
     }
@@ -372,6 +418,7 @@ fn collect_declaration_spans(
     let want_free = matches!(kind, None | Some(SymbolKind::Function));
     let want_method = matches!(kind, None | Some(SymbolKind::Method));
     let want_type = matches!(kind, None | Some(SymbolKind::Class));
+    let want_property = matches!(kind, None | Some(SymbolKind::Property));
 
     for stmt in stmts {
         match &stmt.kind {
@@ -387,12 +434,26 @@ fn collect_declaration_spans(
                 {
                     out.push(declaration_name_span(source, name));
                 }
-                if want_method {
+                if want_method || want_property {
                     for member in c.members.iter() {
-                        if let ClassMemberKind::Method(m) = &member.kind
-                            && m.name == word
-                        {
-                            out.push(declaration_name_span(source, m.name));
+                        match &member.kind {
+                            ClassMemberKind::Method(m) if want_method && m.name == word => {
+                                out.push(declaration_name_span(source, m.name));
+                            }
+                            ClassMemberKind::Method(m)
+                                if want_property && m.name == "__construct" =>
+                            {
+                                // Promoted constructor params act as property declarations.
+                                for p in m.params.iter() {
+                                    if p.visibility.is_some() && p.name == word {
+                                        out.push(declaration_name_span(source, p.name));
+                                    }
+                                }
+                            }
+                            ClassMemberKind::Property(p) if want_property && p.name == word => {
+                                out.push(declaration_name_span(source, p.name));
+                            }
+                            _ => {}
                         }
                     }
                 }
@@ -415,12 +476,16 @@ fn collect_declaration_spans(
                 if want_type && t.name == word {
                     out.push(declaration_name_span(source, t.name));
                 }
-                if want_method {
+                if want_method || want_property {
                     for member in t.members.iter() {
-                        if let ClassMemberKind::Method(m) = &member.kind
-                            && m.name == word
-                        {
-                            out.push(declaration_name_span(source, m.name));
+                        match &member.kind {
+                            ClassMemberKind::Method(m) if want_method && m.name == word => {
+                                out.push(declaration_name_span(source, m.name));
+                            }
+                            ClassMemberKind::Property(p) if want_property && p.name == word => {
+                                out.push(declaration_name_span(source, p.name));
+                            }
+                            _ => {}
                         }
                     }
                 }
@@ -1303,6 +1368,7 @@ mod tests {
             fqcn: std::sync::Arc::from(fqcn),
             short_name: std::sync::Arc::from(fqcn.rsplit('\\').next().unwrap_or(fqcn)),
             parent: None,
+            extends_type_args: vec![],
             interfaces: vec![],
             traits: vec![],
             own_methods: methods,
@@ -1315,7 +1381,15 @@ mod tests {
             all_parents: vec![],
             is_deprecated: false,
             is_internal: false,
-            location: None,
+            // Synthetic user-code location so the fast path treats this as a
+            // user class (stubs have `location: None` and are skipped).
+            location: Some(mir_codebase::storage::Location {
+                file: std::sync::Arc::from("file:///a.php"),
+                start: 0,
+                end: 0,
+                line: 1,
+                col: 0,
+            }),
         }
     }
 
@@ -1337,8 +1411,14 @@ mod tests {
 
         let src = "<?php\nclass Foo { public function process() {} }\n$foo->process();";
         let docs = vec![doc("/a.php", src)];
-        let result =
-            find_references_codebase("process", &docs, false, Some(SymbolKind::Method), &cb);
+        let result = find_references_codebase(
+            "process",
+            &docs,
+            false,
+            Some(SymbolKind::Method),
+            &cb,
+            &|k: &str| cb.get_reference_locations(k),
+        );
         assert!(
             result.is_none(),
             "public method on non-final class must return None (fall back to AST), got: {:?}",
@@ -1371,8 +1451,14 @@ mod tests {
         let src_b = "<?php\n$other->execute();";
 
         let docs = vec![doc("/a.php", src_a), doc("/b.php", src_b)];
-        let result =
-            find_references_codebase("execute", &docs, false, Some(SymbolKind::Method), &cb);
+        let result = find_references_codebase(
+            "execute",
+            &docs,
+            false,
+            Some(SymbolKind::Method),
+            &cb,
+            &|k: &str| cb.get_reference_locations(k),
+        );
 
         assert!(
             result.is_some(),
@@ -1419,8 +1505,14 @@ mod tests {
         let src_b = "<?php\n$other->increment();";
 
         let docs = vec![doc("/a.php", src_a), doc("/b.php", src_b)];
-        let result =
-            find_references_codebase("increment", &docs, false, Some(SymbolKind::Method), &cb);
+        let result = find_references_codebase(
+            "increment",
+            &docs,
+            false,
+            Some(SymbolKind::Method),
+            &cb,
+            &|k: &str| cb.get_reference_locations(k),
+        );
 
         assert!(
             result.is_some(),
@@ -1473,8 +1565,14 @@ mod tests {
             doc("/ignored.php", src_ignored),
         ];
 
-        let result =
-            find_references_codebase("submit", &docs, false, Some(SymbolKind::Method), &cb);
+        let result = find_references_codebase(
+            "submit",
+            &docs,
+            false,
+            Some(SymbolKind::Method),
+            &cb,
+            &|k: &str| cb.get_reference_locations(k),
+        );
 
         assert!(result.is_some(), "fast path must activate for final class");
         let locs = result.unwrap();
@@ -1498,8 +1596,14 @@ mod tests {
         let cb = mir_codebase::Codebase::new();
         let src = "<?php\n$obj->doWork();";
         let docs = vec![doc("/a.php", src)];
-        let result =
-            find_references_codebase("doWork", &docs, false, Some(SymbolKind::Method), &cb);
+        let result = find_references_codebase(
+            "doWork",
+            &docs,
+            false,
+            Some(SymbolKind::Method),
+            &cb,
+            &|k: &str| cb.get_reference_locations(k),
+        );
         assert!(
             result.is_none(),
             "empty codebase must return None for Method kind, got: {:?}",

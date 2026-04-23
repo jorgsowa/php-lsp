@@ -1,0 +1,59 @@
+{
+    "name": "symfony/ux-twig-component",
+    "type": "symfony-bundle",
+    "description": "Twig components for Symfony",
+    "keywords": [
+        "symfony-ux",
+        "twig",
+        "components"
+    ],
+    "homepage": "https://symfony.com",
+    "license": "MIT",
+    "authors": [
+        {
+            "name": "Symfony Community",
+            "homepage": "https://symfony.com/contributors"
+        }
+    ],
+    "autoload": {
+        "psr-4": {
+            "Symfony\\UX\\TwigComponent\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Symfony\\UX\\TwigComponent\\Tests\\": "tests/"
+        }
+    },
+    "require": {
+        "php": ">=8.1",
+        "symfony/dependency-injection": "^5.4|^6.0|^7.0",
+        "symfony/deprecation-contracts": "^2.2|^3.0",
+        "symfony/event-dispatcher": "^5.4|^6.0|^7.0",
+        "symfony/property-access": "^5.4|^6.0|^7.0",
+        "twig/twig": "^3.10.3"
+    },
+    "require-dev": {
+        "symfony/console": "^5.4|^6.0|^7.0",
+        "symfony/css-selector": "^5.4|^6.0|^7.0",
+        "symfony/dom-crawler": "^5.4|^6.0|^7.0",
+        "symfony/framework-bundle": "^5.4|^6.0|^7.0",
+        "symfony/phpunit-bridge": "^6.0|^7.0",
+        "symfony/stimulus-bundle": "^2.9.1",
+        "symfony/twig-bundle": "^5.4|^6.0|^7.0",
+        "symfony/webpack-encore-bundle": "^1.15"
+    },
+    "conflict": {
+        "symfony/config": "<5.4.0"
+    },
+    "config": {
+        "sort-packages": true
+    },
+    "extra": {
+        "thanks": {
+            "name": "symfony/ux",
+            "url": "https://github.com/symfony/ux"
+        }
+    },
+    "minimum-stability": "dev"
+}

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
 use tower_lsp::lsp_types::{Position, Url};
 
-use php_lsp::ast::ParsedDoc;
+use php_lsp::ast::{MethodReturnsMap, ParsedDoc};
 use php_lsp::call_hierarchy::{incoming_calls, outgoing_calls, prepare_call_hierarchy};
 use php_lsp::completion::{CompletionCtx, filtered_completions_at};
 use php_lsp::definition::goto_definition;
@@ -12,6 +12,7 @@ use php_lsp::implementation::find_implementations;
 use php_lsp::references::{SymbolKind, find_references};
 use php_lsp::rename::rename;
 use php_lsp::symbols::{document_symbols, workspace_symbols};
+use php_lsp::type_map::build_method_returns;
 
 const MEDIUM: &str = include_str!("fixtures/medium_class.php");
 const SMALL: &str = include_str!("fixtures/small_class.php");
@@ -54,6 +55,16 @@ const POS_ARROW: Position = Position {
 };
 
 type OtherDocs = Vec<(Url, Arc<ParsedDoc>)>;
+type HoverDocs = Vec<(Url, Arc<ParsedDoc>, Arc<MethodReturnsMap>)>;
+
+fn to_hover_docs(docs: &OtherDocs) -> HoverDocs {
+    docs.iter()
+        .map(|(u, d)| {
+            let mr = Arc::new(build_method_returns(d));
+            (u.clone(), Arc::clone(d), mr)
+        })
+        .collect()
+}
 
 fn cross_file_docs() -> OtherDocs {
     [
@@ -75,33 +86,37 @@ fn cross_file_docs() -> OtherDocs {
 
 fn bench_hover(c: &mut Criterion) {
     let medium_doc = Arc::new(ParsedDoc::parse(MEDIUM.to_owned()));
+    let medium_mr = build_method_returns(&medium_doc);
     let ctrl_doc = Arc::new(ParsedDoc::parse(CONTROLLER.to_owned()));
+    let ctrl_mr = build_method_returns(&ctrl_doc);
     let other_docs = cross_file_docs();
+    let hover_others = to_hover_docs(&other_docs);
 
     // Build a 10-entry context by cycling the 5 cross-file docs (mirrors the
     // definition scale benchmark so the two are directly comparable).
-    let ten_docs: OtherDocs = (0..10)
+    let ten_hover_docs: HoverDocs = (0..10)
         .map(|i| {
-            let (_, parsed) = &other_docs[i % other_docs.len()];
+            let (_, parsed, mr) = &hover_others[i % hover_others.len()];
             let url = Url::parse(&format!("file:///bench/extra_{i}.php")).unwrap();
-            (url, Arc::clone(parsed))
+            (url, Arc::clone(parsed), Arc::clone(mr))
         })
         .collect();
 
     let mut group = c.benchmark_group("hover");
     group.bench_function("single_method", |b| {
-        b.iter(|| black_box(hover_info(MEDIUM, &medium_doc, POS_METHOD, &[])));
+        b.iter(|| black_box(hover_info(MEDIUM, &medium_doc, &medium_mr, POS_METHOD, &[])));
     });
     group.bench_function("single_member", |b| {
-        b.iter(|| black_box(hover_info(MEDIUM, &medium_doc, POS_MEMBER, &[])));
+        b.iter(|| black_box(hover_info(MEDIUM, &medium_doc, &medium_mr, POS_MEMBER, &[])));
     });
     group.bench_function("cross_file_service_type", |b| {
         b.iter(|| {
             black_box(hover_info(
                 CONTROLLER,
                 &ctrl_doc,
+                &ctrl_mr,
                 POS_SERVICE_TYPE,
-                &other_docs,
+                &hover_others,
             ))
         });
     });
@@ -110,15 +125,28 @@ fn bench_hover(c: &mut Criterion) {
             black_box(hover_info(
                 CONTROLLER,
                 &ctrl_doc,
+                &ctrl_mr,
                 POS_SERVICE_CTOR,
-                &other_docs,
+                &hover_others,
             ))
         });
     });
     for &n in &[1usize, 5, 10] {
-        group.bench_with_input(BenchmarkId::new("scale", n), &ten_docs[..n], |b, docs| {
-            b.iter(|| black_box(hover_info(CONTROLLER, &ctrl_doc, POS_SERVICE_TYPE, docs)));
-        });
+        group.bench_with_input(
+            BenchmarkId::new("scale", n),
+            &ten_hover_docs[..n],
+            |b, docs| {
+                b.iter(|| {
+                    black_box(hover_info(
+                        CONTROLLER,
+                        &ctrl_doc,
+                        &ctrl_mr,
+                        POS_SERVICE_TYPE,
+                        docs,
+                    ))
+                });
+            },
+        );
     }
     group.finish();
 }
@@ -200,6 +228,8 @@ fn bench_completion(c: &mut Criterion) {
         meta: None,
         doc_uri: None,
         file_imports: None,
+        doc_returns: None,
+        other_returns: None,
     };
 
     c.bench_function("completion/cross_file_arrow", |b| {
@@ -353,6 +383,8 @@ fn bench_completion_laravel(c: &mut Criterion) {
         meta: None,
         doc_uri: None,
         file_imports: None,
+        doc_returns: None,
+        other_returns: None,
     };
 
     let mut group = c.benchmark_group("completion");

@@ -6,7 +6,7 @@ use php_ast::{
 use serde_json::json;
 use tower_lsp::lsp_types::{InlayHint, InlayHintKind, InlayHintLabel, Position, Range};
 
-use crate::ast::{ParsedDoc, SourceView, format_type_hint};
+use crate::ast::{MethodReturnsMap, ParsedDoc, SourceView, format_type_hint};
 use crate::type_map::TypeMap;
 
 struct FuncDef {
@@ -18,10 +18,15 @@ struct FuncDef {
 
 /// Returns parameter-name inlay hints AND return-type hints for all
 /// function/method declarations and calls in `doc`.
-pub fn inlay_hints(_source: &str, doc: &ParsedDoc, range: Range) -> Vec<InlayHint> {
+pub fn inlay_hints(
+    _source: &str,
+    doc: &ParsedDoc,
+    doc_returns: Option<&MethodReturnsMap>,
+    range: Range,
+) -> Vec<InlayHint> {
     let sv = doc.view();
     let defs = collect_defs(&doc.program().stmts);
-    let type_map = TypeMap::from_doc(doc);
+    let type_map = TypeMap::from_doc_with_meta(doc, None, doc_returns);
     let mut hints = Vec::new();
     hints_in_stmts(
         sv,
@@ -551,7 +556,7 @@ mod tests {
     fn emits_hint_for_single_param_call() {
         let src = "<?php\nfunction greet(string $name): void {}\ngreet('Alice');";
         let d = doc(src);
-        let hints = inlay_hints(src, &d, full_range());
+        let hints = inlay_hints(src, &d, None, full_range());
         assert_eq!(hints.len(), 1);
         assert_eq!(label_str(&hints[0]), "name:");
     }
@@ -560,7 +565,7 @@ mod tests {
     fn emits_hints_for_multiple_params() {
         let src = "<?php\nfunction add(int $a, int $b): int { return $a + $b; }\nadd(1, 2);";
         let d = doc(src);
-        let hints = inlay_hints(src, &d, full_range());
+        let hints = inlay_hints(src, &d, None, full_range());
         assert_eq!(hints.len(), 2);
         assert_eq!(label_str(&hints[0]), "a:");
         assert_eq!(label_str(&hints[1]), "b:");
@@ -570,7 +575,7 @@ mod tests {
     fn no_hints_for_unknown_function() {
         let src = "<?php\nunknownFn(1, 2);";
         let d = doc(src);
-        let hints = inlay_hints(src, &d, full_range());
+        let hints = inlay_hints(src, &d, None, full_range());
         assert!(hints.is_empty());
     }
 
@@ -578,7 +583,7 @@ mod tests {
     fn no_hints_for_zero_param_call() {
         let src = "<?php\nfunction init(): void {}\ninit();";
         let d = doc(src);
-        let hints = inlay_hints(src, &d, full_range());
+        let hints = inlay_hints(src, &d, None, full_range());
         assert!(hints.is_empty());
     }
 
@@ -586,7 +591,7 @@ mod tests {
     fn skips_named_arguments() {
         let src = "<?php\nfunction greet(string $name): void {}\ngreet(name: 'Alice');";
         let d = doc(src);
-        let hints = inlay_hints(src, &d, full_range());
+        let hints = inlay_hints(src, &d, None, full_range());
         assert!(hints.is_empty());
     }
 
@@ -594,7 +599,7 @@ mod tests {
     fn hint_kind_is_parameter() {
         let src = "<?php\nfunction f(int $x): void {}\nf(1);";
         let d = doc(src);
-        let hints = inlay_hints(src, &d, full_range());
+        let hints = inlay_hints(src, &d, None, full_range());
         assert_eq!(hints[0].kind, Some(InlayHintKind::PARAMETER));
     }
 
@@ -602,7 +607,7 @@ mod tests {
     fn hint_position_is_at_argument_start() {
         let src = "<?php\nfunction greet(string $name): void {}\ngreet('Alice');";
         let d = doc(src);
-        let hints = inlay_hints(src, &d, full_range());
+        let hints = inlay_hints(src, &d, None, full_range());
         assert_eq!(hints.len(), 1);
         assert_eq!(
             hints[0].position,
@@ -617,7 +622,7 @@ mod tests {
     fn hint_positions_for_multiple_args() {
         let src = "<?php\nfunction add(int $a, int $b): int { return $a + $b; }\nadd(1, 2);";
         let d = doc(src);
-        let hints = inlay_hints(src, &d, full_range());
+        let hints = inlay_hints(src, &d, None, full_range());
         assert_eq!(hints.len(), 2);
         assert_eq!(
             hints[0].position,
@@ -639,7 +644,7 @@ mod tests {
     fn fewer_args_than_params_emits_hints_for_provided_args_only() {
         let src = "<?php\nfunction add(int $a, int $b): int { return $a + $b; }\nadd(1);";
         let d = doc(src);
-        let hints = inlay_hints(src, &d, full_range());
+        let hints = inlay_hints(src, &d, None, full_range());
         assert_eq!(hints.len(), 1);
         assert_eq!(label_str(&hints[0]), "a:");
     }
@@ -648,7 +653,7 @@ mod tests {
     fn more_args_than_params_emits_hints_only_for_known_params() {
         let src = "<?php\nfunction f(int $x): void {}\nf(1, 2, 3);";
         let d = doc(src);
-        let hints = inlay_hints(src, &d, full_range());
+        let hints = inlay_hints(src, &d, None, full_range());
         assert_eq!(hints.len(), 1);
         assert_eq!(label_str(&hints[0]), "x:");
     }
@@ -657,7 +662,7 @@ mod tests {
     fn return_type_hint_for_assignment() {
         let src = "<?php\nfunction make(): string { return 'x'; }\n$s = make();";
         let d = doc(src);
-        let hints = inlay_hints(src, &d, full_range());
+        let hints = inlay_hints(src, &d, None, full_range());
         let ret_hint = hints.iter().find(|h| label_str(h) == ": string");
         assert!(ret_hint.is_some(), "expected ': string' return type hint");
     }
@@ -666,7 +671,7 @@ mod tests {
     fn no_return_type_hint_for_void() {
         let src = "<?php\nfunction init(): void {}\n$x = init();";
         let d = doc(src);
-        let hints = inlay_hints(src, &d, full_range());
+        let hints = inlay_hints(src, &d, None, full_range());
         let ret_hint = hints.iter().find(|h| label_str(h).starts_with(": "));
         assert!(
             ret_hint.is_none(),
@@ -678,7 +683,7 @@ mod tests {
     fn hints_for_function_inside_namespace() {
         let src = "<?php\nnamespace App;\nfunction greet(string $name): void {}\ngreet('Alice');";
         let d = doc(src);
-        let hints = inlay_hints(src, &d, full_range());
+        let hints = inlay_hints(src, &d, None, full_range());
         assert_eq!(hints.len(), 1);
         assert_eq!(label_str(&hints[0]), "name:");
     }
@@ -688,7 +693,7 @@ mod tests {
         let src =
             "<?php\n$greet = function(string $name, int $times): void {};\n$greet('Alice', 3);";
         let d = doc(src);
-        let hints = inlay_hints(src, &d, full_range());
+        let hints = inlay_hints(src, &d, None, full_range());
         let param_hints: Vec<&str> = hints
             .iter()
             .filter(|h| h.kind == Some(InlayHintKind::PARAMETER))
@@ -702,7 +707,7 @@ mod tests {
     fn arrow_function_variable_call_gets_param_hints() {
         let src = "<?php\n$double = fn(int $n): int => $n * 2;\n$result = $double(5);";
         let d = doc(src);
-        let hints = inlay_hints(src, &d, full_range());
+        let hints = inlay_hints(src, &d, None, full_range());
         let param_hints: Vec<&str> = hints
             .iter()
             .filter(|h| h.kind == Some(InlayHintKind::PARAMETER))
@@ -715,7 +720,7 @@ mod tests {
     fn function_call_inside_closure_body_gets_hints() {
         let src = "<?php\nfunction add(int $a, int $b): int { return $a + $b; }\n$fn = function() { add(1, 2); };";
         let d = doc(src);
-        let hints = inlay_hints(src, &d, full_range());
+        let hints = inlay_hints(src, &d, None, full_range());
         let param_hints: Vec<&str> = hints
             .iter()
             .filter(|h| h.kind == Some(InlayHintKind::PARAMETER))
@@ -748,7 +753,7 @@ mod tests {
                 character: u32::MAX,
             },
         };
-        let hints = inlay_hints(src, &d, narrow_range);
+        let hints = inlay_hints(src, &d, None, narrow_range);
         assert!(
             hints.is_empty(),
             "hints on line 2 should be excluded when range ends at line 1, got: {:?}",
@@ -768,7 +773,7 @@ mod tests {
             "$g->sayHello('World');\n",
         );
         let d = doc(src);
-        let hints = inlay_hints(src, &d, full_range());
+        let hints = inlay_hints(src, &d, None, full_range());
         let param_hints: Vec<&str> = hints
             .iter()
             .filter(|h| h.kind == Some(InlayHintKind::PARAMETER))
@@ -798,7 +803,7 @@ mod tests {
             "$p = new Point(1, 2);\n",
         );
         let d = doc(src);
-        let hints = inlay_hints(src, &d, full_range());
+        let hints = inlay_hints(src, &d, None, full_range());
         let param_hints: Vec<&str> = hints
             .iter()
             .filter(|h| h.kind == Some(InlayHintKind::PARAMETER))
@@ -833,7 +838,7 @@ mod tests {
             "log('hello', 3);\n",
         );
         let d = doc(src);
-        let hints = inlay_hints(src, &d, full_range());
+        let hints = inlay_hints(src, &d, None, full_range());
         let param_hints: Vec<&str> = hints
             .iter()
             .filter(|h| h.kind == Some(InlayHintKind::PARAMETER))
@@ -860,7 +865,7 @@ mod tests {
             "for (tick(1); $i < 10; tick(2)) {}\n",
         );
         let d = doc(src);
-        let hints = inlay_hints(src, &d, full_range());
+        let hints = inlay_hints(src, &d, None, full_range());
         let param_hints: Vec<&str> = hints
             .iter()
             .filter(|h| h.kind == Some(InlayHintKind::PARAMETER))
@@ -884,7 +889,7 @@ mod tests {
         // `new Foo()` where Foo has no __construct should produce no param hints.
         let src = "<?php\nclass Foo {}\n$f = new Foo();\n";
         let d = doc(src);
-        let hints = inlay_hints(src, &d, full_range());
+        let hints = inlay_hints(src, &d, None, full_range());
         let param_hints: Vec<&str> = hints
             .iter()
             .filter(|h| h.kind == Some(InlayHintKind::PARAMETER))
@@ -907,7 +912,7 @@ mod tests {
             "}\n",
         );
         let d = doc(src);
-        let hints = inlay_hints(src, &d, full_range());
+        let hints = inlay_hints(src, &d, None, full_range());
         let param_hints: Vec<&str> = hints
             .iter()
             .filter(|h| h.kind == Some(InlayHintKind::PARAMETER))
@@ -931,7 +936,7 @@ mod tests {
             "}\n",
         );
         let d = doc(src);
-        let hints = inlay_hints(src, &d, full_range());
+        let hints = inlay_hints(src, &d, None, full_range());
         let param_hints: Vec<&str> = hints
             .iter()
             .filter(|h| h.kind == Some(InlayHintKind::PARAMETER))
@@ -955,7 +960,7 @@ mod tests {
             "label('x', 2);\n",
         );
         let d = doc(src);
-        let hints = inlay_hints(src, &d, full_range());
+        let hints = inlay_hints(src, &d, None, full_range());
         let param_hints: Vec<&str> = hints
             .iter()
             .filter(|h| h.kind == Some(InlayHintKind::PARAMETER))
@@ -985,7 +990,7 @@ mod tests {
             "}\n",
         );
         let d = doc(src);
-        let hints = inlay_hints(src, &d, full_range());
+        let hints = inlay_hints(src, &d, None, full_range());
         let type_hints: Vec<&str> = hints
             .iter()
             .filter(|h| h.kind == Some(InlayHintKind::TYPE))
@@ -1008,7 +1013,7 @@ mod tests {
             "}\n",
         );
         let d = doc(src);
-        let hints = inlay_hints(src, &d, full_range());
+        let hints = inlay_hints(src, &d, None, full_range());
         let type_hints: Vec<&str> = hints
             .iter()
             .filter(|h| h.kind == Some(InlayHintKind::TYPE))
@@ -1031,7 +1036,7 @@ mod tests {
             "log('a', 'b', 'c');\n",
         );
         let d = doc(src);
-        let hints = inlay_hints(src, &d, full_range());
+        let hints = inlay_hints(src, &d, None, full_range());
         let param_hints: Vec<&str> = hints
             .iter()
             .filter(|h| h.kind == Some(InlayHintKind::PARAMETER))
@@ -1058,7 +1063,7 @@ mod tests {
             "push('bucket', 1, 2, 3);\n",
         );
         let d = doc(src);
-        let hints = inlay_hints(src, &d, full_range());
+        let hints = inlay_hints(src, &d, None, full_range());
         let param_hints: Vec<&str> = hints
             .iter()
             .filter(|h| h.kind == Some(InlayHintKind::PARAMETER))
@@ -1084,7 +1089,7 @@ mod tests {
     fn arrow_function_with_declared_return_type_emits_hint() {
         let src = "<?php\n$double = fn(int $n): int => $n * 2;\n";
         let d = doc(src);
-        let hints = inlay_hints(src, &d, full_range());
+        let hints = inlay_hints(src, &d, None, full_range());
         let ret_hints: Vec<&str> = hints
             .iter()
             .filter(|h| h.kind == Some(InlayHintKind::TYPE))
@@ -1101,7 +1106,7 @@ mod tests {
     fn arrow_function_without_declared_return_type_no_hint() {
         let src = "<?php\n$double = fn(int $n) => $n * 2;\n";
         let d = doc(src);
-        let hints = inlay_hints(src, &d, full_range());
+        let hints = inlay_hints(src, &d, None, full_range());
         let ret_hints: Vec<&str> = hints
             .iter()
             .filter(|h| h.kind == Some(InlayHintKind::TYPE))
@@ -1129,7 +1134,7 @@ mod tests {
             "$u = new User('Alice', 30);\n",
         );
         let d = doc(src);
-        let hints = inlay_hints(src, &d, full_range());
+        let hints = inlay_hints(src, &d, None, full_range());
         let param_hints: Vec<&str> = hints
             .iter()
             .filter(|h| h.kind == Some(InlayHintKind::PARAMETER))

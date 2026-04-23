@@ -322,7 +322,7 @@ mod tests {
         use crate::file_index::FileIndex;
         let u = uri(path);
         let d = ParsedDoc::parse(src.to_string());
-        let idx = FileIndex::extract(&u, &d);
+        let idx = FileIndex::extract(&d);
         (u, std::sync::Arc::new(idx))
     }
 

@@ -706,6 +706,19 @@ pub fn workspace_symbols_from_index(
     results
 }
 
+/// Phase J — Thin wrapper over `workspace_symbols_from_index` that reads the
+/// `(Url, Arc<FileIndex>)` list out of the salsa-memoized aggregate. The
+/// inner walk is unchanged (fuzzy match is inherently O(total symbols)); the
+/// win is that every handler shares the same aggregate `Arc`, rebuilt only on
+/// edits, instead of each request rebuilding the list via `all_indexes()`
+/// (which takes the host mutex once per file).
+pub fn workspace_symbols_from_workspace(
+    query: &str,
+    wi: &crate::db::workspace_index::WorkspaceIndexData,
+) -> Vec<SymbolInformation> {
+    workspace_symbols_from_index(query, &wi.files)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
