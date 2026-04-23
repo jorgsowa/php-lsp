@@ -60,7 +60,7 @@ queries." That gives us:
 | J | Workspace-symbol / type-hierarchy / implementation as tracked queries | ✅ shipped |
 | K1 | Persistent on-disk cache — infrastructure module | ✅ shipped |
 | K2a | Plumb `cached_slice` through `file_definitions` | ✅ shipped |
-| K2b | Wire `scan_workspace` to read/write the cache | 🧭 proposed |
+| K2b | Wire `scan_workspace` to read/write the cache | ✅ shipped |
 | K3 | Cache size cap + orphan sweep | 🧭 proposed |
 | L | Reference warm-up background task | ✅ shipped |
 
@@ -1029,20 +1029,53 @@ No user-visible impact yet — `seed_cached_slice` has no callers in
 production code. K2b wires scan_workspace to actually populate it from
 disk.
 
-#### K2b — wire scan_workspace to read/write the cache (proposed)
+#### K2b — wire scan_workspace to read/write the cache ✅ shipped 2026-04-23
 
-Read path: for each file in `scan_workspace`, compute
-`WorkspaceCache::key_for(uri, content)`, attempt `cache.read::<StubSlice>`,
-and on hit call `docs.mirror_text` + `docs.seed_cached_slice`. On miss,
-fall through to the existing parse path; after `file_definitions` has
-produced a fresh `Arc<StubSlice>`, write it to the cache for next
-startup. TBD whether the write happens inline in the scan task or in a
-post-scan sweep.
+The `scan_workspace` per-file task is now:
 
-**Blocker**: `ParsedDoc` cannot be cached (bumpalo arena). So even with
-K2b, opening a file still re-parses. That's fine — the expensive path
-is `DefinitionCollector` running on every file's AST during
-`scan_workspace`, which is what K2b bypasses for unchanged files.
+```text
+read text from disk
+if editor already has file open → skip (buffer is authoritative)
+key = WorkspaceCache::key_for(uri, text)
+
+if cache.read::<StubSlice>(key) is Some(slice):
+    mirror_text(uri, text)
+    seed_cached_slice(uri, Arc::new(slice))
+    return                           ← no parse, no DefinitionCollector
+else:
+    parse_document(text)
+    docs.index_from_doc(uri, doc, diags)
+    docs.slice_for(uri)               ← forces file_definitions run
+    cache.write(key, &slice)          ← best-effort persist
+```
+
+The write path materializes `file_definitions` inline in the scan task
+instead of letting it run lazily on first codebase query. That's a
+wash on work — the query has to run before anything useful can happen
+anyway — but doing it inside the scan task means (a) the parallelism
+budget already covers it, and (b) the slice is in hand right when we
+want to persist it, so no separate "sweep through memoized slices
+after scan" pass is needed.
+
+`WorkspaceCache::new(root)` is called once per root in
+`Backend::initialized` / `did_change_workspace_folders`. When it
+returns `None` (no cache dir available — sandboxed runner, read-only
+`$HOME`), every `cache.as_ref()` guard no-ops and scan runs exactly as
+before. Persistence is strictly best-effort: an I/O error during
+`cache.write` is silently discarded (`let _ = …`) so a flaky disk
+can't fail the scan.
+
+**Blocker (unchanged)**: `ParsedDoc` cannot be cached (bumpalo arena).
+So even with K2b, opening a file still re-parses. That's fine — the
+expensive path on cold start is `DefinitionCollector` running on every
+file's AST, which is exactly what K2b skips for unchanged files.
+
+**Expected impact**: second-start on Laravel (1609 files) should drop
+from seconds of `scan_workspace` (read + parse + collect) to tens of
+ms (read + hash + deserialize). Full measurement requires an
+integration bench that runs twice against a persistent cache dir —
+deferred until K3 lands a size cap, otherwise benchmarks could grow
+the cache unboundedly across runs.
 
 #### K3 — size cap + orphan sweep (proposed)
 

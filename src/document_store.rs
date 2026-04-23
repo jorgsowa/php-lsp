@@ -171,7 +171,6 @@ impl DocumentStore {
     ///
     /// Returns `false` when `uri` was not mirrored (caller should mirror
     /// first); returns `true` on success.
-    #[allow(dead_code)] // wired by scan_workspace in K2b.
     pub fn seed_cached_slice(
         &self,
         uri: &Url,
@@ -424,6 +423,18 @@ impl DocumentStore {
                 .0
                 .clone()
         });
+    }
+
+    /// Phase K2b: run `file_definitions` for `uri` and return the
+    /// resulting `StubSlice`. Used by the workspace-scan write path to
+    /// persist slices to disk after a cache miss.
+    pub fn slice_for(&self, uri: &Url) -> Option<Arc<mir_codebase::storage::StubSlice>> {
+        let sf = self.source_file(uri)?;
+        Some(
+            self.snapshot_query(move |db| {
+                crate::db::definitions::file_definitions(db, sf).0.clone()
+            }),
+        )
     }
 
     /// Salsa-backed per-file method-return-type map.

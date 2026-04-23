@@ -660,9 +660,20 @@ impl LanguageServer for Backend {
 
                 let mut total = 0usize;
                 for root in roots {
-                    total +=
-                        scan_workspace(root, Arc::clone(&docs), open_files.clone(), &exclude_paths)
-                            .await;
+                    // Phase K2b: open the on-disk cache for this root. If the
+                    // system has no usable cache dir (weird XDG env, sandboxed
+                    // runner, read-only home), `new` returns None and every
+                    // per-file `cache.as_ref()` guard below no-ops — scan still
+                    // runs, just without persistence.
+                    let cache = crate::cache::WorkspaceCache::new(&root);
+                    total += scan_workspace(
+                        root,
+                        Arc::clone(&docs),
+                        open_files.clone(),
+                        cache,
+                        &exclude_paths,
+                    )
+                    .await;
                 }
 
                 client
@@ -800,7 +811,8 @@ impl LanguageServer for Backend {
                 let path_clone = path.clone();
                 let client = self.client.clone();
                 tokio::spawn(async move {
-                    scan_workspace(path_clone, docs, open_files, &ex).await;
+                    let cache = crate::cache::WorkspaceCache::new(&path_clone);
+                    scan_workspace(path_clone, docs, open_files, cache, &ex).await;
                     send_refresh_requests(&client).await;
                 });
             }
@@ -2662,11 +2674,15 @@ const MAX_INDEXED_FILES: usize = 50_000;
 /// Post-salsa: we only populate the DocumentStore here. The codebase is built
 /// on demand by the salsa `codebase` query the first time a feature asks for
 /// it — stubs + every indexed file's StubSlice, memoized thereafter.
-#[tracing::instrument(skip(docs, open_files, exclude_paths), fields(root = %root.display()))]
+#[tracing::instrument(
+    skip(docs, open_files, cache, exclude_paths),
+    fields(root = %root.display())
+)]
 async fn scan_workspace(
     root: PathBuf,
     docs: Arc<DocumentStore>,
     open_files: OpenFiles,
+    cache: Option<crate::cache::WorkspaceCache>,
     exclude_paths: &[String],
 ) -> usize {
     // Phase 1: collect PHP file paths via async directory walk.
@@ -2719,6 +2735,7 @@ async fn scan_workspace(
         let permit = Arc::clone(&sem).acquire_owned().await.unwrap();
         let docs = Arc::clone(&docs);
         let open_files = open_files.clone();
+        let cache = cache.clone();
         let count = Arc::clone(&count);
         set.spawn(async move {
             let _permit = permit;
@@ -2729,16 +2746,48 @@ async fn scan_workspace(
                 return;
             };
             tokio::task::spawn_blocking(move || {
-                // Mirror into salsa + record parse diagnostics. The codebase
-                // query picks up this file on its next run; no imperative
-                // collect step needed. Skip files the editor has already
-                // opened — their buffer is authoritative.
+                // Skip files the editor has already opened — their buffer
+                // is authoritative; scan must not overwrite their salsa
+                // input with disk contents.
                 if open_files.contains(&uri) {
                     return;
                 }
+
+                // Phase K2b read path: if the on-disk cache has a StubSlice
+                // for this (uri, content) key, mirror the text and seed
+                // the cached slice — `file_definitions` will return it
+                // directly on the first query, skipping parse and
+                // `DefinitionCollector` entirely. An edit later clears
+                // the seeded slice via `mirror_text` (K2a).
+                let cache_key = cache
+                    .as_ref()
+                    .map(|_| crate::cache::WorkspaceCache::key_for(uri.as_str(), &text));
+                if let (Some(cache), Some(key)) = (cache.as_ref(), cache_key.as_ref())
+                    && let Some(slice) = cache.read::<mir_codebase::storage::StubSlice>(key)
+                {
+                    docs.mirror_text(&uri, &text);
+                    docs.seed_cached_slice(&uri, Arc::new(slice));
+                    count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    return;
+                }
+
+                // Cache miss: normal parse + mirror.
                 let (doc, diags) = parse_document(&text);
                 docs.index_from_doc(uri.clone(), &doc, diags);
                 count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+                // K2b write path: force `file_definitions` and persist
+                // the fresh slice so a subsequent startup hits the cache.
+                // The work is unavoidable anyway — `get_codebase_salsa`
+                // would call `file_definitions` lazily on first use — so
+                // materializing it here trades a small up-front cost for
+                // a large warm-start win next time. Best-effort: a write
+                // error is logged via `.ok()` and doesn't fail the scan.
+                if let (Some(cache), Some(key)) = (cache.as_ref(), cache_key.as_ref())
+                    && let Some(slice) = docs.slice_for(&uri)
+                {
+                    let _ = cache.write(key, &*slice);
+                }
             })
             .await
             .ok();
