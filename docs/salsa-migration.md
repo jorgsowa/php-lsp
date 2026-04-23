@@ -49,7 +49,7 @@ queries." That gives us:
 | E1 | Snapshot-clone reads off the host mutex | ✅ shipped |
 | E2 | LSP request cancellation → `RequestCancelled` | ⏸ folded into E1 — `snapshot_query` retries on `salsa::Cancelled` and falls back to the mutex; nothing escapes to the LSP layer |
 | E3 | Thread salsa-memoized method-returns into `TypeMap`; delete `OnceLock<MethodReturnsMap>` | ✅ shipped |
-| E4 | Move `DocumentStore.map` bookkeeping to `Backend`; delete the struct if empty | ⏳ pending (optional cleanup) |
+| E4 | Move `DocumentStore.map` bookkeeping to `Backend`; delete the struct if empty | ✅ shipped |
 | F | `#[salsa::tracked(lru = N)]`; delete `indexed_order` | ✅ shipped |
 | G1 | Drop redundant parse in `DocumentStore::index` | ✅ shipped |
 | G2 | Lock-free fast path in `mirror_text` | ✅ shipped (measurement pending) |
@@ -497,9 +497,72 @@ Removes the `ref_index_ready` atomic flag and the Phase-3 background task. First
 - E1: refactor salsa accessors to snapshot-clone the db and run queries outside the mutex. Prerequisite for everything else. (~1 PR, moderate risk — needs concurrent-read stress tests.)
 - E2: wrap LSP request entry points in `Cancelled::catch`; map to `RequestCancelled`. (~1 PR, small; depends on E1.)
 - E3: ✅ shipped. `TypeMap::from_doc_with_meta` / `from_docs_with_meta` / `from_docs_at_position` now accept precomputed `&MethodReturnsMap` values; production callers (inlay_hints, type_definition, hover, completion via `CompletionCtx.doc_returns` / `other_returns`) thread the salsa-memoized Arcs through. `DocumentStore::other_docs_with_returns` batches the salsa fetch into a single `snapshot_query` so `Cancelled` retries don't multiply per open file. `OnceLock<MethodReturnsMap>` and `ParsedDoc::method_returns_cached` removed; the salsa `method_returns(db, file)` query is now the sole cache. The "35 call sites" were mostly tests that still call `TypeMap::from_doc(doc)` unchanged (a `#[cfg(test)]` shim that builds the map inline); only 6 production sites needed edits.
-- E4: move `DocumentStore.map` bookkeeping to `Backend`; delete the struct if anything remains. (cleanup, optional.)
+- E4: ✅ shipped. See "Phase E4 — delete DocumentStore.map" below.
 
 Don't treat Phase E as a single PR. It's a phase with four independent sub-PRs.
+
+### Phase E4 — delete DocumentStore.map ✅ shipped 2026-04-23
+
+**What shipped**
+
+- `DocumentStore.map: DashMap<Url, Document>` and the `Document` struct are
+  deleted. With them go `set_text`, `close`, `get`, `current_version`,
+  `set_parse_diagnostics`, `get_diagnostics`, `all_diagnostics`, and
+  `get_index`. `DocumentStore` is now a pure salsa-input wrapper —
+  `source_files` is the known-files set, and every read goes through the
+  salsa queries (`parsed_doc`, `file_index`, `method_returns`,
+  `semantic_issues`, `codebase`, `symbol_refs`, `workspace_index`).
+- Open-file state moved to `Backend` as an `OpenFiles` newtype wrapping
+  `Arc<DashMap<Url, OpenFile>>`. `OpenFile { text, version,
+  parse_diagnostics }` bundles the three non-salsa concerns that used to
+  live on `Document`. `OpenFiles` clones cheaply (Arc) so async closures
+  (`did_change` debounce, workspace scan) can capture it alongside
+  `Arc<DocumentStore>`.
+- `DocumentStore::get_doc_salsa` lost its open-state gate — it now
+  returns `Some` for any mirrored file. The gate lives on
+  `Backend::get_doc`, which checks `open_files.contains(&uri)` before
+  delegating. The `get_doc_salsa_any` variant is folded back into
+  `get_doc_salsa` (one method, one contract).
+- Aggregation helpers (`other_docs`, `other_docs_with_returns`,
+  `doc_with_others`, `docs_for`) on `DocumentStore` take the open-URL
+  slice as a parameter. `all_indexes` / `other_indexes` / `all_docs_for_scan`
+  iterate `source_files` (the same known-files set that `map` used to be).
+- `Backend::index_if_not_open` / `index_from_doc_if_not_open` replace
+  the old `map`-based "skip if already open" guard inside `DocumentStore::index`.
+  Call sites: `did_change_watched_files`, `did_rename_files`,
+  `did_create_files`, `psr4_goto`, and the workspace scan inside
+  `scan_workspace`. The editor's buffer remains authoritative for open files.
+
+**Call-site surface** — contained entirely to `backend.rs` (~60
+mechanical replacements via `replace_all`) plus the `document_store.rs`
+reshape. Zero feature-module changes.
+
+**Tests** — 894/894 after E4 (down from 903; nine tests in
+`document_store.rs::tests` that poked legacy `map` semantics were
+either deleted or rewritten to exercise salsa-level invariants
+directly: `open_then_get_returns_text`, `update_replaces_text`,
+`close_clears_text_but_keeps_index`, `close_nonexistent_uri_is_safe`,
+`index_does_not_overwrite_open_file`, `open_caches_diagnostics_for_invalid_file`,
+`get_index_salsa_matches_legacy_get_index`,
+`get_doc_salsa_matches_legacy_open_state`, and
+`get_returns_none_for_unknown_uri`). Integration suites (all 57 E2E
+tests + Symfony suite) pass unchanged — the Backend-side open-file
+semantics are the same contract, just owned by a different struct.
+
+**Atomicity** — text + version are stored in the same `OpenFile` value,
+so a single `DashMap::entry` acquisition updates both. No TOCTOU window
+between `set_open_text`'s mirror-into-salsa call and the entry write:
+salsa sees the new revision first, then the entry lock is taken; any
+reader that observes the bumped version has also observed the
+corresponding text through either the open-files map or the salsa
+input. Parse-diagnostics is updated under the same entry lock via
+`set_parse_diagnostics`.
+
+**Known non-goal** — the `DocumentStore` struct is *not* deleted. It
+still owns `host: Mutex<AnalysisHost>`, `source_files`, `text_cache`
+(G2), `parsed_cache` (G3), `token_cache`, `workspace`, and
+`next_file_id`. All salsa-shaped. Calling the new shape
+`InputStore` would be more accurate but is a rename-only follow-up.
 
 ### Phase F — salsa LRU + delete indexed_order ✅ shipped 2026-04-22
 

@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
+use dashmap::DashMap;
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::notification::Progress as ProgressNotification;
 
@@ -194,9 +195,101 @@ impl LspConfig {
     }
 }
 
+/// Per-open-file state owned by `Backend` (Phase E4).
+///
+/// Previously this lived inside `DocumentStore`'s `map: DashMap<Url, Document>`,
+/// but none of these fields are salsa-shaped: `text` is the live editor buffer,
+/// `version` is an async-parse gate, and `parse_diagnostics` is a publish cache.
+/// Keeping them on `Backend` leaves `DocumentStore` as a pure salsa-input wrapper.
+#[derive(Default, Clone)]
+struct OpenFile {
+    /// Live editor text.
+    text: String,
+    /// Monotonic counter bumped on every `set_open_text` / `close_open_file`;
+    /// used to discard stale async parse results.
+    version: u64,
+    /// Parse-level diagnostics most recently cached for publication.
+    parse_diagnostics: Vec<Diagnostic>,
+}
+
+/// Shared handle to open-file state. Cheaply cloneable — wraps an `Arc<DashMap>`
+/// so it can be captured by async closures alongside `Arc<DocumentStore>`.
+#[derive(Clone, Default)]
+pub struct OpenFiles(Arc<DashMap<Url, OpenFile>>);
+
+impl OpenFiles {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    fn set_open_text(&self, docs: &DocumentStore, uri: Url, text: String) -> u64 {
+        docs.mirror_text(&uri, &text);
+        let mut entry = self.0.entry(uri).or_default();
+        entry.version += 1;
+        entry.text = text;
+        entry.version
+    }
+
+    fn close(&self, docs: &DocumentStore, uri: &Url) {
+        self.0.remove(uri);
+        docs.evict_token_cache(uri);
+    }
+
+    fn current_version(&self, uri: &Url) -> Option<u64> {
+        self.0.get(uri).map(|e| e.version)
+    }
+
+    fn text(&self, uri: &Url) -> Option<String> {
+        self.0.get(uri).map(|e| e.text.clone())
+    }
+
+    fn set_parse_diagnostics(&self, uri: &Url, diagnostics: Vec<Diagnostic>) {
+        if let Some(mut entry) = self.0.get_mut(uri) {
+            entry.parse_diagnostics = diagnostics;
+        }
+    }
+
+    fn parse_diagnostics(&self, uri: &Url) -> Option<Vec<Diagnostic>> {
+        self.0.get(uri).map(|e| e.parse_diagnostics.clone())
+    }
+
+    fn all_with_diagnostics(&self) -> Vec<(Url, Vec<Diagnostic>, Option<i64>)> {
+        self.0
+            .iter()
+            .map(|e| {
+                (
+                    e.key().clone(),
+                    e.value().parse_diagnostics.clone(),
+                    Some(e.value().version as i64),
+                )
+            })
+            .collect()
+    }
+
+    fn urls(&self) -> Vec<Url> {
+        self.0.iter().map(|e| e.key().clone()).collect()
+    }
+
+    fn contains(&self, uri: &Url) -> bool {
+        self.0.contains_key(uri)
+    }
+
+    /// Open-gated parsed doc: returns `Some` only when `uri` is currently open.
+    fn get_doc(&self, docs: &DocumentStore, uri: &Url) -> Option<Arc<ParsedDoc>> {
+        if !self.contains(uri) {
+            return None;
+        }
+        docs.get_doc_salsa(uri)
+    }
+}
+
 pub struct Backend {
     client: Client,
     docs: Arc<DocumentStore>,
+    /// Open-file state: text, version token, parse diagnostics.
+    /// Files that are only background-indexed (never opened in the editor)
+    /// do not appear here; they live only in `DocumentStore`'s salsa layer.
+    open_files: OpenFiles,
     root_paths: Arc<RwLock<Vec<PathBuf>>>,
     psr4: Arc<RwLock<Psr4Map>>,
     meta: Arc<RwLock<PhpStormMeta>>,
@@ -212,11 +305,62 @@ impl Backend {
         Backend {
             client,
             docs: Arc::new(DocumentStore::new()),
+            open_files: OpenFiles::new(),
             root_paths: Arc::new(RwLock::new(Vec::new())),
             psr4: Arc::new(RwLock::new(Psr4Map::empty())),
             meta: Arc::new(RwLock::new(PhpStormMeta::default())),
             config: Arc::new(RwLock::new(LspConfig::default())),
         }
+    }
+
+    // ── Open-file state convenience wrappers (Phase E4) ──────────────────────
+
+    fn set_open_text(&self, uri: Url, text: String) -> u64 {
+        self.open_files.set_open_text(&self.docs, uri, text)
+    }
+
+    fn close_open_file(&self, uri: &Url) {
+        self.open_files.close(&self.docs, uri);
+    }
+
+    /// Background-index a file from disk, but only if it isn't currently
+    /// open in the editor — the editor's buffer is authoritative while a
+    /// file is open, and we must not overwrite it with disk contents.
+    fn index_if_not_open(&self, uri: Url, text: &str) {
+        if !self.open_files.contains(&uri) {
+            self.docs.index(uri, text);
+        }
+    }
+
+    /// Variant of [`index_if_not_open`] that reuses an already-parsed doc.
+    fn index_from_doc_if_not_open(&self, uri: Url, doc: &ParsedDoc, diags: Vec<Diagnostic>) {
+        if !self.open_files.contains(&uri) {
+            self.docs.index_from_doc(uri, doc, diags);
+        }
+    }
+
+    fn get_open_text(&self, uri: &Url) -> Option<String> {
+        self.open_files.text(uri)
+    }
+
+    fn set_parse_diagnostics(&self, uri: &Url, diagnostics: Vec<Diagnostic>) {
+        self.open_files.set_parse_diagnostics(uri, diagnostics);
+    }
+
+    fn get_parse_diagnostics(&self, uri: &Url) -> Option<Vec<Diagnostic>> {
+        self.open_files.parse_diagnostics(uri)
+    }
+
+    fn all_open_files_with_diagnostics(&self) -> Vec<(Url, Vec<Diagnostic>, Option<i64>)> {
+        self.open_files.all_with_diagnostics()
+    }
+
+    fn open_urls(&self) -> Vec<Url> {
+        self.open_files.urls()
+    }
+
+    fn get_doc(&self, uri: &Url) -> Option<Arc<ParsedDoc>> {
+        self.open_files.get_doc(&self.docs, uri)
     }
 
     /// Current finalized codebase — stubs + all known files, memoized by salsa.
@@ -496,6 +640,7 @@ impl LanguageServer for Backend {
                 .ok();
 
             let docs = Arc::clone(&self.docs);
+            let open_files = self.open_files.clone();
             let client = self.client.clone();
             let exclude_paths = self.config.read().unwrap().exclude_paths.clone();
             tokio::spawn(async move {
@@ -515,7 +660,9 @@ impl LanguageServer for Backend {
 
                 let mut total = 0usize;
                 for root in roots {
-                    total += scan_workspace(root, Arc::clone(&docs), &exclude_paths).await;
+                    total +=
+                        scan_workspace(root, Arc::clone(&docs), open_files.clone(), &exclude_paths)
+                            .await;
                 }
 
                 client
@@ -648,11 +795,12 @@ impl LanguageServer for Backend {
                     }
                 }
                 let docs = Arc::clone(&self.docs);
+                let open_files = self.open_files.clone();
                 let ex = exclude_paths.clone();
                 let path_clone = path.clone();
                 let client = self.client.clone();
                 tokio::spawn(async move {
-                    scan_workspace(path_clone, docs, &ex).await;
+                    scan_workspace(path_clone, docs, open_files, &ex).await;
                     send_refresh_requests(&client).await;
                 });
             }
@@ -670,7 +818,7 @@ impl LanguageServer for Backend {
         // Store text immediately so other features work while parsing.
         // This also mirrors the new text into salsa, so the codebase query
         // sees it when semantic_diagnostics runs below.
-        let version = self.docs.set_text(uri.clone(), text.clone());
+        let version = self.set_open_text(uri.clone(), text.clone());
 
         let docs_for_spawn = Arc::clone(&self.docs);
         let diag_cfg = self.config.read().unwrap().diagnostics.clone();
@@ -696,9 +844,9 @@ impl LanguageServer for Backend {
         // concern here; we record diagnostics unconditionally. `version` is
         // retained for symmetry with did_change.
         let _ = version;
-        self.docs.set_parse_diagnostics(&uri, parse_diags.clone());
-        let stored_source = self.docs.get(&uri).unwrap_or_default();
-        let doc2 = self.docs.get_doc_salsa(&uri);
+        self.set_parse_diagnostics(&uri, parse_diags.clone());
+        let stored_source = self.get_open_text(&uri).unwrap_or_default();
+        let doc2 = self.get_doc(&uri);
         let mut all_diags = parse_diags;
         if let Some(ref d) = doc2 {
             let dup_diags = duplicate_declaration_diagnostics(&stored_source, d, &diag_cfg);
@@ -729,9 +877,10 @@ impl LanguageServer for Backend {
         // Store text immediately and capture the version token.
         // Features (completion, hover, …) see the new text instantly while
         // the parse runs in the background.
-        let version = self.docs.set_text(uri.clone(), text.clone());
+        let version = self.set_open_text(uri.clone(), text.clone());
 
         let docs = Arc::clone(&self.docs);
+        let open_files = self.open_files.clone();
         let client = self.client.clone();
         let diag_cfg = self.config.read().unwrap().diagnostics.clone();
         let php_version = self.config.read().unwrap().php_version.clone();
@@ -760,8 +909,8 @@ impl LanguageServer for Backend {
 
             // Only apply if no newer edit arrived while we were parsing.
             // Backend-level gate replaces the old `apply_parse` version check.
-            if docs.current_version(&uri) == Some(version) {
-                docs.set_parse_diagnostics(&uri, diagnostics.clone());
+            if open_files.current_version(&uri) == Some(version) {
+                open_files.set_parse_diagnostics(&uri, diagnostics.clone());
                 let _ = structure_changed;
                 let _ = php_version.as_deref();
 
@@ -771,13 +920,14 @@ impl LanguageServer for Backend {
                 // full diagnostic bundle (semantic + dup-decl + deprecated
                 // calls), all computed off-thread.
                 let docs_sem = Arc::clone(&docs);
+                let open_files_sem = open_files.clone();
                 let uri_sem = uri.clone();
                 let diag_cfg_sem = diag_cfg.clone();
                 let extra = tokio::task::spawn_blocking(move || {
-                    let Some(d) = docs_sem.get_doc_salsa(&uri_sem) else {
+                    let Some(d) = open_files_sem.get_doc(&docs_sem, &uri_sem) else {
                         return Vec::<Diagnostic>::new();
                     };
-                    let source = docs_sem.get(&uri_sem).unwrap_or_default();
+                    let source = open_files_sem.text(&uri_sem).unwrap_or_default();
                     let mut out = Vec::new();
                     if let Some(issues) = docs_sem.get_semantic_issues_salsa(&uri_sem) {
                         out.extend(crate::semantic_diagnostics::issues_to_diagnostics(
@@ -791,7 +941,8 @@ impl LanguageServer for Backend {
                         &d,
                         &diag_cfg_sem,
                     ));
-                    let other_raw = docs_sem.other_docs(&uri_sem);
+                    let open_urls = open_files_sem.urls();
+                    let other_raw = docs_sem.other_docs(&uri_sem, &open_urls);
                     let other_docs: Vec<Arc<ParsedDoc>> =
                         other_raw.into_iter().map(|(_, d)| d).collect();
                     out.extend(deprecated_call_diagnostics(
@@ -814,7 +965,7 @@ impl LanguageServer for Backend {
 
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
         let uri = params.text_document.uri;
-        self.docs.close(&uri);
+        self.close_open_file(&uri);
         // Clear editor diagnostics; the file stays indexed for cross-file features
         self.client.publish_diagnostics(uri, vec![], None).await;
     }
@@ -825,7 +976,9 @@ impl LanguageServer for Backend {
         &self,
         params: WillSaveTextDocumentParams,
     ) -> Result<Option<Vec<TextEdit>>> {
-        let source = self.docs.get(&params.text_document.uri).unwrap_or_default();
+        let source = self
+            .get_open_text(&params.text_document.uri)
+            .unwrap_or_default();
         Ok(format_document(&source))
     }
 
@@ -833,13 +986,13 @@ impl LanguageServer for Backend {
         let uri = params.text_document.uri;
         // Re-publish diagnostics on save so editors that defer diagnostics
         // until save (rather than on every keystroke) see up-to-date results.
-        let source = self.docs.get(&uri).unwrap_or_default();
-        let doc = self.docs.get_doc_salsa(&uri);
+        let source = self.get_open_text(&uri).unwrap_or_default();
+        let doc = self.get_doc(&uri);
         if let Some(ref d) = doc {
             let diag_cfg = self.config.read().unwrap().diagnostics.clone();
-            let parse_diags = self.docs.get_diagnostics(&uri).unwrap_or_default();
+            let parse_diags = self.get_parse_diagnostics(&uri).unwrap_or_default();
             let dup_diags = duplicate_declaration_diagnostics(&source, d, &diag_cfg);
-            let other_raw = self.docs.other_docs(&uri);
+            let other_raw = self.docs.other_docs(&uri, &self.open_urls());
             let other_docs: Vec<Arc<ParsedDoc>> = other_raw.into_iter().map(|(_, d)| d).collect();
             let dep_diags = deprecated_call_diagnostics(&source, d, &other_docs, &diag_cfg);
             let mut all = parse_diags;
@@ -861,7 +1014,7 @@ impl LanguageServer for Backend {
                         // salsa re-runs file_definitions for this file and the
                         // aggregator re-folds — no manual remove/collect/finalize.
                         let (doc, diags) = parse_document(&text);
-                        self.docs.index_from_doc(change.uri.clone(), &doc, diags);
+                        self.index_from_doc_if_not_open(change.uri.clone(), &doc, diags);
                     }
                 }
                 FileChangeType::DELETED => {
@@ -877,13 +1030,13 @@ impl LanguageServer for Backend {
     async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
         let uri = &params.text_document_position.text_document.uri;
         let position = params.text_document_position.position;
-        let source = self.docs.get(uri).unwrap_or_default();
+        let source = self.get_open_text(uri).unwrap_or_default();
         // B4c: first production caller migrated to salsa-backed read.
-        let doc = match self.docs.get_doc_salsa(uri) {
+        let doc = match self.get_doc(uri) {
             Some(d) => d,
             None => return Ok(Some(CompletionResponse::Array(vec![]))),
         };
-        let other_with_returns = self.docs.other_docs_with_returns(uri);
+        let other_with_returns = self.docs.other_docs_with_returns(uri, &self.open_urls());
         let other_docs: Vec<Arc<ParsedDoc>> = other_with_returns
             .iter()
             .map(|(_, d, _)| d.clone())
@@ -950,8 +1103,8 @@ impl LanguageServer for Backend {
     ) -> Result<Option<GotoDefinitionResponse>> {
         let uri = &params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
-        let source = self.docs.get(uri).unwrap_or_default();
-        let doc = match self.docs.get_doc_salsa(uri) {
+        let source = self.get_open_text(uri).unwrap_or_default();
+        let doc = match self.get_doc(uri) {
             Some(d) => d,
             None => return Ok(None),
         };
@@ -982,12 +1135,12 @@ impl LanguageServer for Backend {
     async fn references(&self, params: ReferenceParams) -> Result<Option<Vec<Location>>> {
         let uri = &params.text_document_position.text_document.uri;
         let position = params.text_document_position.position;
-        let source = self.docs.get(uri).unwrap_or_default();
+        let source = self.get_open_text(uri).unwrap_or_default();
         let word = match word_at(&source, position) {
             Some(w) => w,
             None => return Ok(None),
         };
-        let kind = if let Some(doc) = self.docs.get_doc_salsa(uri) {
+        let kind = if let Some(doc) = self.get_doc(uri) {
             let stmts = &doc.program().stmts;
             if cursor_is_on_method_decl(doc.source(), stmts, position) {
                 Some(SymbolKind::Method)
@@ -1024,20 +1177,20 @@ impl LanguageServer for Backend {
         params: TextDocumentPositionParams,
     ) -> Result<Option<PrepareRenameResponse>> {
         let uri = &params.text_document.uri;
-        let source = self.docs.get(uri).unwrap_or_default();
+        let source = self.get_open_text(uri).unwrap_or_default();
         Ok(prepare_rename(&source, params.position).map(PrepareRenameResponse::Range))
     }
 
     async fn rename(&self, params: RenameParams) -> Result<Option<WorkspaceEdit>> {
         let uri = &params.text_document_position.text_document.uri;
         let position = params.text_document_position.position;
-        let source = self.docs.get(uri).unwrap_or_default();
+        let source = self.get_open_text(uri).unwrap_or_default();
         let word = match word_at(&source, position) {
             Some(w) => w,
             None => return Ok(None),
         };
         if word.starts_with('$') {
-            let doc = match self.docs.get_doc_salsa(uri) {
+            let doc = match self.get_doc(uri) {
                 Some(d) => d,
                 None => return Ok(None),
             };
@@ -1060,8 +1213,8 @@ impl LanguageServer for Backend {
     async fn signature_help(&self, params: SignatureHelpParams) -> Result<Option<SignatureHelp>> {
         let uri = &params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
-        let source = self.docs.get(uri).unwrap_or_default();
-        let doc = match self.docs.get_doc_salsa(uri) {
+        let source = self.get_open_text(uri).unwrap_or_default();
+        let doc = match self.get_doc(uri) {
             Some(d) => d,
             None => return Ok(None),
         };
@@ -1071,8 +1224,8 @@ impl LanguageServer for Backend {
     async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
         let uri = &params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
-        let source = self.docs.get(uri).unwrap_or_default();
-        let doc = match self.docs.get_doc_salsa(uri) {
+        let source = self.get_open_text(uri).unwrap_or_default();
+        let doc = match self.get_doc(uri) {
             Some(d) => d,
             None => return Ok(None),
         };
@@ -1080,7 +1233,7 @@ impl LanguageServer for Backend {
             .docs
             .get_method_returns_salsa(uri)
             .unwrap_or_else(|| std::sync::Arc::new(Default::default()));
-        let other_docs = self.docs.other_docs_with_returns(uri);
+        let other_docs = self.docs.other_docs_with_returns(uri, &self.open_urls());
         Ok(hover_info(
             &source,
             &doc,
@@ -1095,7 +1248,7 @@ impl LanguageServer for Backend {
         params: DocumentSymbolParams,
     ) -> Result<Option<DocumentSymbolResponse>> {
         let uri = &params.text_document.uri;
-        let doc = match self.docs.get_doc_salsa(uri) {
+        let doc = match self.get_doc(uri) {
             Some(d) => d,
             None => return Ok(None),
         };
@@ -1107,7 +1260,7 @@ impl LanguageServer for Backend {
 
     async fn folding_range(&self, params: FoldingRangeParams) -> Result<Option<Vec<FoldingRange>>> {
         let uri = &params.text_document.uri;
-        let doc = match self.docs.get_doc_salsa(uri) {
+        let doc = match self.get_doc(uri) {
             Some(d) => d,
             None => return Ok(None),
         };
@@ -1121,7 +1274,7 @@ impl LanguageServer for Backend {
 
     async fn inlay_hint(&self, params: InlayHintParams) -> Result<Option<Vec<InlayHint>>> {
         let uri = &params.text_document.uri;
-        let doc = match self.docs.get_doc_salsa(uri) {
+        let doc = match self.get_doc(uri) {
             Some(d) => d,
             None => return Ok(None),
         };
@@ -1174,7 +1327,7 @@ impl LanguageServer for Backend {
 
     async fn symbol_resolve(&self, params: WorkspaceSymbol) -> Result<WorkspaceSymbol> {
         // For resolve, we need the full range from the ParsedDoc of open files.
-        let docs = self.docs.all_docs();
+        let docs = self.docs.docs_for(&self.open_urls());
         Ok(resolve_workspace_symbol(params, &docs))
     }
 
@@ -1183,7 +1336,7 @@ impl LanguageServer for Backend {
         params: SemanticTokensParams,
     ) -> Result<Option<SemanticTokensResult>> {
         let uri = &params.text_document.uri;
-        let doc = match self.docs.get_doc_salsa(uri) {
+        let doc = match self.get_doc(uri) {
             Some(d) => d,
             None => {
                 return Ok(Some(SemanticTokensResult::Tokens(SemanticTokens {
@@ -1207,7 +1360,7 @@ impl LanguageServer for Backend {
         params: SemanticTokensRangeParams,
     ) -> Result<Option<SemanticTokensRangeResult>> {
         let uri = &params.text_document.uri;
-        let doc = match self.docs.get_doc_salsa(uri) {
+        let doc = match self.get_doc(uri) {
             Some(d) => d,
             None => {
                 return Ok(Some(SemanticTokensRangeResult::Tokens(SemanticTokens {
@@ -1228,7 +1381,7 @@ impl LanguageServer for Backend {
         params: SemanticTokensDeltaParams,
     ) -> Result<Option<SemanticTokensFullDeltaResult>> {
         let uri = &params.text_document.uri;
-        let doc = match self.docs.get_doc_salsa(uri) {
+        let doc = match self.get_doc(uri) {
             Some(d) => d,
             None => return Ok(None),
         };
@@ -1261,7 +1414,7 @@ impl LanguageServer for Backend {
         params: SelectionRangeParams,
     ) -> Result<Option<Vec<SelectionRange>>> {
         let uri = &params.text_document.uri;
-        let doc = match self.docs.get_doc_salsa(uri) {
+        let doc = match self.get_doc(uri) {
             Some(d) => d,
             None => return Ok(None),
         };
@@ -1279,7 +1432,7 @@ impl LanguageServer for Backend {
     ) -> Result<Option<Vec<CallHierarchyItem>>> {
         let uri = &params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
-        let source = self.docs.get(uri).unwrap_or_default();
+        let source = self.get_open_text(uri).unwrap_or_default();
         let word = match word_at(&source, position) {
             Some(w) => w,
             None => return Ok(None),
@@ -1312,8 +1465,8 @@ impl LanguageServer for Backend {
     ) -> Result<Option<Vec<DocumentHighlight>>> {
         let uri = &params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
-        let source = self.docs.get(uri).unwrap_or_default();
-        let doc = match self.docs.get_doc_salsa(uri) {
+        let source = self.get_open_text(uri).unwrap_or_default();
+        let doc = match self.get_doc(uri) {
             Some(d) => d,
             None => return Ok(None),
         };
@@ -1331,8 +1484,8 @@ impl LanguageServer for Backend {
     ) -> Result<Option<LinkedEditingRanges>> {
         let uri = &params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
-        let source = self.docs.get(uri).unwrap_or_default();
-        let doc = match self.docs.get_doc_salsa(uri) {
+        let source = self.get_open_text(uri).unwrap_or_default();
+        let doc = match self.get_doc(uri) {
             Some(d) => d,
             None => return Ok(None),
         };
@@ -1355,12 +1508,12 @@ impl LanguageServer for Backend {
     ) -> Result<Option<tower_lsp::lsp_types::request::GotoImplementationResponse>> {
         let uri = &params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
-        let source = self.docs.get(uri).unwrap_or_default();
+        let source = self.get_open_text(uri).unwrap_or_default();
         let imports = self.file_imports(uri);
         let word = crate::util::word_at(&source, position).unwrap_or_default();
         let fqn = imports.get(&word).map(|s| s.as_str());
         // First pass: open-file ParsedDocs give accurate character positions.
-        let open_docs = self.docs.all_docs();
+        let open_docs = self.docs.docs_for(&self.open_urls());
         let mut locs = find_implementations(&word, fqn, &open_docs);
         if locs.is_empty() {
             // Second pass: background files via the salsa-memoized workspace
@@ -1381,9 +1534,9 @@ impl LanguageServer for Backend {
     ) -> Result<Option<tower_lsp::lsp_types::request::GotoDeclarationResponse>> {
         let uri = &params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
-        let source = self.docs.get(uri).unwrap_or_default();
+        let source = self.get_open_text(uri).unwrap_or_default();
         // First pass: open-file ParsedDocs give accurate character positions.
-        let open_docs = self.docs.all_docs();
+        let open_docs = self.docs.docs_for(&self.open_urls());
         if let Some(loc) = goto_declaration(&source, &open_docs, position) {
             return Ok(Some(GotoDefinitionResponse::Scalar(loc)));
         }
@@ -1399,14 +1552,14 @@ impl LanguageServer for Backend {
     ) -> Result<Option<tower_lsp::lsp_types::request::GotoTypeDefinitionResponse>> {
         let uri = &params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
-        let source = self.docs.get(uri).unwrap_or_default();
-        let doc = match self.docs.get_doc_salsa(uri) {
+        let source = self.get_open_text(uri).unwrap_or_default();
+        let doc = match self.get_doc(uri) {
             Some(d) => d,
             None => return Ok(None),
         };
         let doc_returns = self.docs.get_method_returns_salsa(uri);
         // First pass: open-file ParsedDocs give accurate character positions.
-        let open_docs = self.docs.all_docs();
+        let open_docs = self.docs.docs_for(&self.open_urls());
         if let Some(loc) =
             goto_type_definition(&source, &doc, doc_returns.as_deref(), &open_docs, position)
         {
@@ -1430,7 +1583,7 @@ impl LanguageServer for Backend {
     ) -> Result<Option<Vec<TypeHierarchyItem>>> {
         let uri = &params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
-        let source = self.docs.get(uri).unwrap_or_default();
+        let source = self.get_open_text(uri).unwrap_or_default();
         // Phase J: use the salsa-memoized aggregate's `classes_by_name` map.
         let wi = self.docs.get_workspace_index_salsa();
         Ok(prepare_type_hierarchy_from_workspace(&source, &wi, position).map(|item| vec![item]))
@@ -1466,7 +1619,7 @@ impl LanguageServer for Backend {
 
     async fn code_lens(&self, params: CodeLensParams) -> Result<Option<Vec<CodeLens>>> {
         let uri = &params.text_document.uri;
-        let doc = match self.docs.get_doc_salsa(uri) {
+        let doc = match self.get_doc(uri) {
             Some(d) => d,
             None => return Ok(None),
         };
@@ -1486,7 +1639,7 @@ impl LanguageServer for Backend {
 
     async fn document_link(&self, params: DocumentLinkParams) -> Result<Option<Vec<DocumentLink>>> {
         let uri = &params.text_document.uri;
-        let doc = match self.docs.get_doc_salsa(uri) {
+        let doc = match self.get_doc(uri) {
             Some(d) => d,
             None => return Ok(None),
         };
@@ -1501,7 +1654,7 @@ impl LanguageServer for Backend {
 
     async fn formatting(&self, params: DocumentFormattingParams) -> Result<Option<Vec<TextEdit>>> {
         let uri = &params.text_document.uri;
-        let source = self.docs.get(uri).unwrap_or_default();
+        let source = self.get_open_text(uri).unwrap_or_default();
         Ok(format_document(&source))
     }
 
@@ -1510,7 +1663,7 @@ impl LanguageServer for Backend {
         params: DocumentRangeFormattingParams,
     ) -> Result<Option<Vec<TextEdit>>> {
         let uri = &params.text_document.uri;
-        let source = self.docs.get(uri).unwrap_or_default();
+        let source = self.get_open_text(uri).unwrap_or_default();
         Ok(format_range(&source, params.range))
     }
 
@@ -1519,7 +1672,7 @@ impl LanguageServer for Backend {
         params: DocumentOnTypeFormattingParams,
     ) -> Result<Option<Vec<TextEdit>>> {
         let uri = &params.text_document_position.text_document.uri;
-        let source = self.docs.get(uri).unwrap_or_default();
+        let source = self.get_open_text(uri).unwrap_or_default();
         let edits = on_type_format(
             &source,
             params.text_document_position.position,
@@ -1617,7 +1770,7 @@ impl LanguageServer for Backend {
                 && let Ok(path) = new_uri.to_file_path()
                 && let Ok(text) = tokio::fs::read_to_string(&path).await
             {
-                self.docs.index(new_uri, &text);
+                self.index_if_not_open(new_uri, &text);
             }
         }
     }
@@ -1690,7 +1843,7 @@ impl LanguageServer for Backend {
                 && let Ok(path) = uri.to_file_path()
                 && let Ok(text) = tokio::fs::read_to_string(&path).await
             {
-                self.docs.index(uri, &text);
+                self.index_if_not_open(uri, &text);
             }
         }
         send_refresh_requests(&self.client).await;
@@ -1749,8 +1902,8 @@ impl LanguageServer for Backend {
     async fn moniker(&self, params: MonikerParams) -> Result<Option<Vec<Moniker>>> {
         let uri = &params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
-        let source = self.docs.get(uri).unwrap_or_default();
-        let doc = match self.docs.get_doc_salsa(uri) {
+        let source = self.get_open_text(uri).unwrap_or_default();
+        let doc = match self.get_doc(uri) {
             Some(d) => d,
             None => return Ok(None),
         };
@@ -1762,7 +1915,7 @@ impl LanguageServer for Backend {
 
     async fn inline_value(&self, params: InlineValueParams) -> Result<Option<Vec<InlineValue>>> {
         let uri = &params.text_document.uri;
-        let source = self.docs.get(uri).unwrap_or_default();
+        let source = self.get_open_text(uri).unwrap_or_default();
         let values = inline_values_in_range(&source, params.range);
         Ok(if values.is_empty() {
             None
@@ -1776,10 +1929,10 @@ impl LanguageServer for Backend {
         params: DocumentDiagnosticParams,
     ) -> Result<DocumentDiagnosticReportResult> {
         let uri = &params.text_document.uri;
-        let source = self.docs.get(uri).unwrap_or_default();
+        let source = self.get_open_text(uri).unwrap_or_default();
 
-        let parse_diags = self.docs.get_diagnostics(uri).unwrap_or_default();
-        let doc = match self.docs.get_doc_salsa(uri) {
+        let parse_diags = self.get_parse_diagnostics(uri).unwrap_or_default();
+        let doc = match self.get_doc(uri) {
             Some(d) => d,
             None => {
                 return Ok(DocumentDiagnosticReportResult::Report(
@@ -1836,7 +1989,7 @@ impl LanguageServer for Backend {
         &self,
         _params: WorkspaceDiagnosticParams,
     ) -> Result<WorkspaceDiagnosticReportResult> {
-        let all_parse_diags = self.docs.all_diagnostics();
+        let all_parse_diags = self.all_open_files_with_diagnostics();
         let (diag_cfg, php_version) = {
             let cfg = self.config.read().unwrap();
             (cfg.diagnostics.clone(), cfg.php_version.clone())
@@ -1899,12 +2052,12 @@ impl LanguageServer for Backend {
 
     async fn code_action(&self, params: CodeActionParams) -> Result<Option<CodeActionResponse>> {
         let uri = &params.text_document.uri;
-        let source = self.docs.get(uri).unwrap_or_default();
-        let doc = match self.docs.get_doc_salsa(uri) {
+        let source = self.get_open_text(uri).unwrap_or_default();
+        let doc = match self.get_doc(uri) {
             Some(d) => d,
             None => return Ok(None),
         };
-        let other_docs = self.docs.other_docs(uri);
+        let other_docs = self.docs.other_docs(uri, &self.open_urls());
 
         // Phase I: read semantic issues through the salsa query. The result
         // is memoized across did_open/did_change/document_diagnostic, so
@@ -1983,7 +2136,9 @@ impl LanguageServer for Backend {
             implement_missing_actions(
                 &source,
                 &doc,
-                &self.docs.doc_with_others(uri, Arc::clone(&doc)),
+                &self
+                    .docs
+                    .doc_with_others(uri, Arc::clone(&doc), &self.open_urls()),
                 params.range,
                 uri,
                 &self.file_imports(uri),
@@ -2061,8 +2216,8 @@ impl LanguageServer for Backend {
             None => return Ok(item),
         };
 
-        let source = self.docs.get(&uri).unwrap_or_default();
-        let doc = match self.docs.get_doc_salsa(&uri) {
+        let source = self.get_open_text(&uri).unwrap_or_default();
+        let doc = match self.get_doc(&uri) {
             Some(d) => d,
             None => return Ok(item),
         };
@@ -2074,7 +2229,9 @@ impl LanguageServer for Backend {
                 implement_missing_actions(
                     &source,
                     &doc,
-                    &self.docs.doc_with_others(&uri, Arc::clone(&doc)),
+                    &self
+                        .docs
+                        .doc_with_others(&uri, Arc::clone(&doc), &self.open_urls()),
                     range,
                     &uri,
                     &imports,
@@ -2343,12 +2500,12 @@ impl Backend {
         // Use `get_doc_salsa_any` (ignores open-file gating): after `index()`
         // the file is mirrored but background-only, and the call site needs
         // the AST regardless of whether the editor has the file open.
-        if self.docs.get_doc_salsa_any(&file_uri).is_none() {
+        if self.docs.get_doc_salsa(&file_uri).is_none() {
             let text = tokio::fs::read_to_string(&path).await.ok()?;
-            self.docs.index(file_uri.clone(), &text);
+            self.index_if_not_open(file_uri.clone(), &text);
         }
 
-        let doc = self.docs.get_doc_salsa_any(&file_uri)?;
+        let doc = self.docs.get_doc_salsa(&file_uri)?;
 
         // Classes are declared by their short (unqualified) name, e.g. `class Foo`
         // not `class App\Services\Foo`.
@@ -2505,10 +2662,11 @@ const MAX_INDEXED_FILES: usize = 50_000;
 /// Post-salsa: we only populate the DocumentStore here. The codebase is built
 /// on demand by the salsa `codebase` query the first time a feature asks for
 /// it — stubs + every indexed file's StubSlice, memoized thereafter.
-#[tracing::instrument(skip(docs, exclude_paths), fields(root = %root.display()))]
+#[tracing::instrument(skip(docs, open_files, exclude_paths), fields(root = %root.display()))]
 async fn scan_workspace(
     root: PathBuf,
     docs: Arc<DocumentStore>,
+    open_files: OpenFiles,
     exclude_paths: &[String],
 ) -> usize {
     // Phase 1: collect PHP file paths via async directory walk.
@@ -2560,6 +2718,7 @@ async fn scan_workspace(
     for path in php_files {
         let permit = Arc::clone(&sem).acquire_owned().await.unwrap();
         let docs = Arc::clone(&docs);
+        let open_files = open_files.clone();
         let count = Arc::clone(&count);
         set.spawn(async move {
             let _permit = permit;
@@ -2572,7 +2731,11 @@ async fn scan_workspace(
             tokio::task::spawn_blocking(move || {
                 // Mirror into salsa + record parse diagnostics. The codebase
                 // query picks up this file on its next run; no imperative
-                // collect step needed.
+                // collect step needed. Skip files the editor has already
+                // opened — their buffer is authoritative.
+                if open_files.contains(&uri) {
+                    return;
+                }
                 let (doc, diags) = parse_document(&text);
                 docs.index_from_doc(uri.clone(), &doc, diags);
                 count.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
