@@ -58,18 +58,59 @@ pub struct WorkspaceCache {
     dir: PathBuf,
 }
 
+/// Size cap (bytes) for a single workspace's cache directory. At
+/// startup, if the directory exceeds this, we reset it — simpler than
+/// LRU eviction and the rebuild cost is bounded (it's just the next
+/// workspace scan running as if cold). 512 MiB fits a mega-workspace
+/// (50 k files × ~10 KB average `StubSlice`) with headroom and is
+/// small enough that no reasonable disk will choke on it.
+pub const CACHE_SIZE_CAP: u64 = 512 * 1024 * 1024;
+
 impl WorkspaceCache {
     /// Create (or re-open) the cache directory for a workspace rooted at
     /// `root`. Returns `None` when the system has no usable home/cache
     /// directory — callers should treat that as "cache disabled" and
     /// proceed without persistence.
+    ///
+    /// If the existing cache directory exceeds [`CACHE_SIZE_CAP`], it is
+    /// cleared before the handle is returned. That's a coarse knob —
+    /// K3 could refine to LRU-by-mtime — but crossing 512 MiB at
+    /// startup indicates the workspace has churned through many
+    /// content hashes and the rebuild cost is bounded to one full
+    /// re-scan.
     pub fn new(root: &Path) -> Option<Self> {
         let base = cache_base_dir()?;
         let schema = schema_version();
         let workspace = workspace_hash(root);
         let dir = base.join("php-lsp").join(schema).join(workspace);
         std::fs::create_dir_all(&dir).ok()?;
-        Some(Self { dir })
+        let cache = Self { dir };
+        if cache.size_bytes().unwrap_or(0) > CACHE_SIZE_CAP {
+            let _ = cache.clear();
+        }
+        Some(cache)
+    }
+
+    /// Total bytes consumed by `.bin` entries in this workspace's cache
+    /// directory. Cheap (one `read_dir` pass, no recursion into
+    /// subdirectories because the layout is flat).
+    pub fn size_bytes(&self) -> io::Result<u64> {
+        let mut total = 0u64;
+        let entries = match std::fs::read_dir(&self.dir) {
+            Ok(e) => e,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(0),
+            Err(e) => return Err(e),
+        };
+        for entry in entries.flatten() {
+            let meta = match entry.metadata() {
+                Ok(m) => m,
+                Err(_) => continue,
+            };
+            if meta.is_file() {
+                total = total.saturating_add(meta.len());
+            }
+        }
+        Ok(total)
     }
 
     /// Override the root directory directly. Intended for tests; the
@@ -128,7 +169,6 @@ impl WorkspaceCache {
     /// other threads are reading — individual `read` calls that race
     /// with a `clear` will see `None` rather than garbage, and the next
     /// `write` recreates the entry.
-    #[allow(dead_code)] // reserved for Step 2 cleanup wiring.
     pub fn clear(&self) -> io::Result<()> {
         if self.dir.exists() {
             std::fs::remove_dir_all(&self.dir)?;
@@ -292,6 +332,39 @@ mod tests {
             let decoded: Option<SamplePayload> = cache.read(&k);
             assert!(decoded.is_none());
         }
+    }
+
+    #[test]
+    fn size_bytes_sums_flat_bin_files() {
+        let dir = TempDir::new().unwrap();
+        let cache = WorkspaceCache::with_dir(dir.path().to_path_buf());
+        assert_eq!(cache.size_bytes().unwrap(), 0);
+
+        let key1 = WorkspaceCache::key_for("file:///s1.php", "<?php");
+        cache
+            .write(
+                &key1,
+                &SamplePayload {
+                    name: "s1".into(),
+                    values: vec![0u32; 16],
+                },
+            )
+            .unwrap();
+        let key2 = WorkspaceCache::key_for("file:///s2.php", "<?php");
+        cache
+            .write(
+                &key2,
+                &SamplePayload {
+                    name: "s2".into(),
+                    values: vec![0u32; 16],
+                },
+            )
+            .unwrap();
+
+        let total = cache.size_bytes().unwrap();
+        let expected1 = cache.path_for(&key1).metadata().unwrap().len();
+        let expected2 = cache.path_for(&key2).metadata().unwrap().len();
+        assert_eq!(total, expected1 + expected2);
     }
 
     #[test]

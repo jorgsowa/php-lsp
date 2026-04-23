@@ -61,7 +61,8 @@ queries." That gives us:
 | K1 | Persistent on-disk cache — infrastructure module | ✅ shipped |
 | K2a | Plumb `cached_slice` through `file_definitions` | ✅ shipped |
 | K2b | Wire `scan_workspace` to read/write the cache | ✅ shipped |
-| K3 | Cache size cap + orphan sweep | 🧭 proposed |
+| K3 | Cache size cap (reset-on-overflow) | ✅ shipped |
+| K4 | LRU-by-mtime eviction + orphan sweep | 🧭 proposed |
 | L | Reference warm-up background task | ✅ shipped |
 
 ## Architecture — current state
@@ -1077,9 +1078,30 @@ integration bench that runs twice against a persistent cache dir —
 deferred until K3 lands a size cap, otherwise benchmarks could grow
 the cache unboundedly across runs.
 
-#### K3 — size cap + orphan sweep (proposed)
+#### K3 — size cap (reset-on-overflow) ✅ shipped 2026-04-23
 
-Cap workspace cache at a configurable size (default ~100 MB). On startup, sweep entries that no longer correspond to a file in the workspace (renamed / deleted files leave orphaned entries). LRU by file mtime or access time — not critical; random eviction is fine given content-hash keys make staleness impossible.
+Cap at `CACHE_SIZE_CAP = 512 MiB` per workspace. At `WorkspaceCache::new`,
+sum the flat directory's `.bin` files via `size_bytes()`; if over cap,
+call `clear()` before returning the handle. Rebuild cost is bounded:
+exactly one full `scan_workspace` runs as if cold, and the new cache
+grows back under the cap because every edit keeps one entry per live
+content hash.
+
+Chosen over LRU-by-mtime for K3 because it's ~30 lines and touches
+nothing outside `cache.rs`. LRU would need either a per-entry
+last-access timestamp (atime is unreliable on `noatime` mounts,
+adding `touch` on read costs one syscall per hit) or a separate
+index file — both materially more complex for a marginal savings
+(the reset approach wastes at most one cold start per cap overflow).
+
+#### K4 — LRU-by-mtime eviction + orphan sweep (proposed)
+
+Replace the K3 reset with fine-grained eviction: walk entries on
+overflow, sort by `mtime`, delete oldest until under target (e.g.
+80% of cap). Also do an orphan sweep on startup — delete entries
+whose content hash corresponds to a URI no longer in the workspace
+file list. Both reduce the "one full cold scan" cost K3 incurs on
+overflow, at the cost of one `read_dir` + sort per startup.
 
 ### Phase L — reference warm-up background task ✅ shipped 2026-04-22
 
