@@ -11,6 +11,10 @@ use crate::walk::{
     refs_in_stmts, refs_in_stmts_with_use,
 };
 
+/// Callback signature for the mir-codebase reference-lookup fast path:
+/// `(key) -> Vec<(file_uri, start_byte, end_byte)>`.
+pub type RefLookup<'a> = dyn Fn(&str) -> Vec<(Arc<str>, u32, u32)> + 'a;
+
 /// What kind of symbol the cursor is on.  Used to dispatch to the
 /// appropriate semantic walker so that, e.g., searching for `get` as a
 /// *method* doesn't return free-function calls named `get`.
@@ -74,7 +78,7 @@ pub fn find_references_codebase(
     include_declaration: bool,
     kind: Option<SymbolKind>,
     codebase: &mir_codebase::Codebase,
-    lookup_refs: &dyn Fn(&str) -> Vec<(Arc<str>, u32, u32)>,
+    lookup_refs: &RefLookup<'_>,
 ) -> Option<Vec<Location>> {
     // Build a URI-string → (Url, ParsedDoc) map for O(1) lookup.
     let doc_map: std::collections::HashMap<&str, (&Url, &Arc<ParsedDoc>)> = all_docs
