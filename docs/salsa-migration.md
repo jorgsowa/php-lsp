@@ -52,7 +52,7 @@ queries." That gives us:
 | E4 | Move `DocumentStore.map` bookkeeping to `Backend`; delete the struct if empty | ✅ shipped |
 | F | `#[salsa::tracked(lru = N)]`; delete `indexed_order` | ✅ shipped |
 | G1 | Drop redundant parse in `DocumentStore::index` | ✅ shipped |
-| G2 | Lock-free fast path in `mirror_text` | ✅ shipped (measurement pending) |
+| G2 | Lock-free fast path in `mirror_text` | ✅ shipped (≈4.1× speedup under 8-thread contention) |
 | G3 | Trim `get_doc_salsa` overhead — cross-revision `parsed_cache` | ✅ shipped |
 | G4 | Investigate `references/*` +2000% regression | ✅ resolved — stale baseline, not a real regression |
 | H | Fix benches + CI regression gate | ✅ shipped |
@@ -678,10 +678,25 @@ otherwise a re-indexed file keyed on the same URL would see a stale
 cache hit against a fresh `SourceFile` handle.
 
 All 894 unit tests pass (including `concurrent_reads_and_writes_do_not_panic`
-and `salsa_codebase_matches_imperative_codebase`). Criterion compare run
-still pending; expected impact is on multi-threaded workspace scan where
-multiple threads were previously serialised on `host.lock()` just to
-confirm a no-op mirror.
+and `salsa_codebase_matches_imperative_codebase`).
+
+**Measurement (2026-04-23).** Added `bench_mirror_same_text_contended` to
+`benches/index.rs`: 8 worker threads, each calling `store.index(uri,
+MEDIUM)` 500× on a pre-indexed file. This models the workspace-scan /
+`did_open` collision where every thread wants to re-mirror the same
+already-correct text.
+
+| variant | total time (8×500 ops) | per-op |
+|---|---|---|
+| G2 ON (shipped) | 2.16 ms | ≈540 ns |
+| G2 OFF (fast path removed) | 8.92 ms | ≈2 230 ns |
+
+That's a **≈4.1× speedup** from the lock-free fast path. Single-threaded
+throughput actually regresses slightly (the two `DashMap::get` guards
+cost more than one uncontended `host.lock()` + one `Arc::from` on a
+4 KB fixture) — the win is entirely from avoiding host-mutex
+serialization under contention, which is exactly the workspace-scan
+shape we care about.
 
 **G3 — Trim `get_doc_salsa` overhead.** ✅ **shipped 2026-04-22.**
 Added `parsed_cache: DashMap<Url, (Arc<str>, Arc<ParsedDoc>)>` — a

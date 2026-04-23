@@ -137,12 +137,48 @@ fn bench_workspace_scan_laravel(c: &mut Criterion) {
     group.finish();
 }
 
+/// Phase G2 contention micro-bench: N threads concurrently re-mirror the
+/// same URL with the same text. Single-threaded this work is cheap either
+/// way, but with the fast path disabled every thread serialises on
+/// `host.lock()` just to confirm a no-op; the G2 cache hit lets them
+/// proceed in parallel. Mirrors what happens during workspace scan +
+/// `did_open` on already-indexed files under a multi-core tokio runtime.
+fn bench_mirror_same_text_contended(c: &mut Criterion) {
+    use std::sync::Arc;
+
+    let store = Arc::new(DocumentStore::new());
+    let uri = Url::parse("file:///bench/mirror.php").unwrap();
+    store.index(uri.clone(), MEDIUM);
+
+    let threads = 8usize;
+    let iters_per_thread = 500usize;
+
+    c.bench_function("index/mirror_same_text_contended_8x500", |b| {
+        b.iter(|| {
+            let mut handles = Vec::with_capacity(threads);
+            for _ in 0..threads {
+                let store = Arc::clone(&store);
+                let uri = uri.clone();
+                handles.push(std::thread::spawn(move || {
+                    for _ in 0..iters_per_thread {
+                        store.index(black_box(uri.clone()), black_box(MEDIUM));
+                    }
+                }));
+            }
+            for h in handles {
+                h.join().unwrap();
+            }
+        });
+    });
+}
+
 criterion_group!(
     benches,
     bench_index_single,
     bench_get_doc,
     bench_all_docs,
     bench_workspace_scan,
-    bench_workspace_scan_laravel
+    bench_workspace_scan_laravel,
+    bench_mirror_same_text_contended
 );
 criterion_main!(benches);
