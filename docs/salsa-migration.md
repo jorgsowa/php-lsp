@@ -58,7 +58,9 @@ queries." That gives us:
 | H | Fix benches + CI regression gate | ✅ shipped |
 | I | Semantic diagnostics as a salsa query | ✅ shipped |
 | J | Workspace-symbol / type-hierarchy / implementation as tracked queries | ✅ shipped |
-| K | Persistent on-disk cache | 🧭 proposed |
+| K1 | Persistent on-disk cache — infrastructure module | ✅ shipped |
+| K2 | Wire cache into `scan_workspace` read/write path | 🧭 proposed |
+| K3 | Cache size cap + orphan sweep | 🧭 proposed |
 | L | Reference warm-up background task | ✅ shipped |
 
 ## Architecture — current state
@@ -944,34 +946,45 @@ instead of rebuilding a `Vec<(Url, Arc<FileIndex>)>` via 1609
 `host.lock()` acquisitions through `all_indexes()`. A dedicated
 `_from_workspace` benchmark is a follow-up.
 
-### Phase K — persistent on-disk cache (proposed)
+### Phase K — persistent on-disk cache
 
-**Goal**: serialize the salsa memo state (or a curated subset) to disk between
-LSP sessions so cold-start on the same workspace skips re-parsing and
-re-collecting. Mentioned in the "Why" motivation of this doc but never
-scoped.
+**Goal**: serialize `StubSlice` per file to disk between LSP sessions so a
+warm start on the same workspace skips parsing + `DefinitionCollector` for
+files whose content hasn't changed.
 
-**Sketch**: on shutdown, write `FileIndex` / `StubSlice` / `FileRefs` per file
-to `~/.cache/php-lsp/<workspace-hash>/`. On `initialize`, hash each discovered
-file's content and reload the cached artifact if the hash matches. Parse on
-demand as usual when the editor opens a file; most indexed-but-not-open files
-never get re-parsed at all.
+Broken into three shippable steps so each carries its own weight:
 
-**Payoff**: biggest remaining cold-start win. Today even with salsa, a restart
-re-parses the full workspace on `initialized`. The bundled stubs + PSR-4 map
-already take seconds on Laravel; a persisted cache could take that to
-milliseconds.
+#### K1 — infrastructure module ✅ shipped 2026-04-23
 
-**Blocker / risk**: significant. (1) Cache invalidation — need robust
-content-hash + version keys so a php-lsp upgrade or mir-codebase schema change
-invalidates the cache. (2) Serde boundary — `FileIndex` / `StubSlice` /
-`FileRefs` already derive `Serialize`/`Deserialize` (stubs use this), but
-`ParsedDoc` does not and cannot (bumpalo arena). So cached data skips the AST
-tier; `parsed_doc` stays memory-only. (3) Bundled-stubs path already does
-something like this — reuse `StubSlice` serde infrastructure instead of
-inventing a new format. **Size**: 1–2 PRs, weeks of wall-clock once design is
-agreed. Defer until Phases I/J have landed and the persistent value is
-larger.
+New `src/cache.rs` with `WorkspaceCache { dir: PathBuf }`:
+
+- `WorkspaceCache::new(root)` — creates (or re-opens) `<cache_base>/php-lsp/<schema>/<workspace-hash>/`. Returns `None` when the system has no cache dir; callers treat that as "cache disabled".
+- `WorkspaceCache::key_for(uri, content) -> CacheKey` — blake3 over `uri || 0x00 || content`, truncated to 128 bits. URI is baked into the key because `StubSlice::file` is part of the payload; otherwise two files with identical content would share a cache entry but carry the wrong URI after decode.
+- `read<T: DeserializeOwned>(&key) -> Option<T>` / `write<T: Serialize>(&key, &value)` — bincode v2. `write` goes through a temp-file rename, so a crash mid-write never leaves a half-written `.bin`.
+- `clear()` — drops every entry (reserved for K3).
+
+**Cache layout**:
+```text
+<cache_base>/php-lsp/<pkg-version>-mir-0.7/<workspace-hash>/<entry-hash>.bin
+```
+
+`<cache_base>` = `$XDG_CACHE_HOME` / `$HOME/.cache` / `%LOCALAPPDATA%`. No `dirs` crate — hand-rolled to keep the footprint small and behaviour predictable. `<schema-version>` includes `CARGO_PKG_VERSION` + a hardcoded mir-codebase marker (`mir-0.7`): bumping either rotates every cache entry. `<workspace-hash>` is blake3 of the canonicalized root path (truncated to 64 bits) — two separate projects stay isolated; two checkouts at the same path share.
+
+**Dependencies added**: `blake3`, `bincode v2`, `serde` (derive). All three were already transitively present via salsa / mir-codebase. Direct-dep footprint: +3 lines in `Cargo.toml`.
+
+**Nothing is wired yet.** `backend.rs` / `document_store.rs` don't consume the module — K2 is a separate commit that plumbs it into `scan_workspace`. K1 on its own is 9 tests (key determinism, round-trip, corruption-is-silent, atomic write, clear, `StubSlice` smoke-test) landing on top of 895 → 904 lib tests.
+
+#### K2 — wire into scan_workspace (proposed)
+
+Read path: for each file encountered during workspace scan, compute `WorkspaceCache::key_for(uri, content)`. If the cache has an entry, deserialize the `StubSlice`, mirror the text into the salsa input, and pre-populate the `file_definitions` memo so salsa doesn't re-run `DefinitionCollector`. (The exact mechanism for memo pre-population isn't trivial — salsa 0.26 doesn't expose a `set_memo` API, so the realistic shape is a separate salsa input that wraps an `Option<Arc<StubSlice>>` and is checked first inside `file_definitions`.)
+
+Write path: after `file_definitions` computes a `StubSlice` for a fresh input, persist it to the cache. Could live as a post-hook on `scan_workspace`'s Phase 2, or as a fire-and-forget write inside the query body — TBD.
+
+**Blocker**: `ParsedDoc` cannot be cached (bumpalo arena). So even with K2, opening a file still re-parses. That's fine — the expensive path is `DefinitionCollector` running on every file's AST during `scan_workspace`, which is what K2 bypasses for unchanged files.
+
+#### K3 — size cap + orphan sweep (proposed)
+
+Cap workspace cache at a configurable size (default ~100 MB). On startup, sweep entries that no longer correspond to a file in the workspace (renamed / deleted files leave orphaned entries). LRU by file mtime or access time — not critical; random eviction is fine given content-hash keys make staleness impossible.
 
 ### Phase L — reference warm-up background task ✅ shipped 2026-04-22
 

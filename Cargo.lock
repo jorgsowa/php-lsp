@@ -1161,6 +1161,8 @@ dependencies = [
 name = "php-lsp"
 version = "0.1.54"
 dependencies = [
+ "bincode 2.0.1",
+ "blake3",
  "bumpalo",
  "criterion",
  "dashmap 6.1.0",
@@ -1176,6 +1178,7 @@ dependencies = [
  "php-rs-parser",
  "rayon",
  "salsa",
+ "serde",
  "serde_json",
  "tempfile",
  "tokio",

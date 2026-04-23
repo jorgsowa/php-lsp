@@ -1,6 +1,8 @@
 mod ast;
 mod autoload;
 mod backend;
+#[allow(dead_code)] // Phase K Step 1: infrastructure; bin doesn't wire it yet.
+mod cache;
 mod call_hierarchy;
 mod code_lens;
 mod completion;
