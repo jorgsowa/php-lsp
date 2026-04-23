@@ -130,6 +130,11 @@ impl DocumentStore {
                 return sf;
             }
             sf.set_text(host.db_mut()).to(text_arc.clone());
+            // Phase K2: any text change invalidates a previously-seeded
+            // cached slice. Clearing it forces the fresh-parse branch of
+            // `file_definitions` on the next query, which is correct —
+            // the cached slice no longer matches the new text.
+            sf.set_cached_slice(host.db_mut()).to(None);
             drop(host);
             self.text_cache.insert(uri.clone(), text_arc);
             sf
@@ -138,7 +143,7 @@ impl DocumentStore {
             let uri_arc: Arc<str> = Arc::from(uri.as_str());
             let sf = {
                 let host = self.host.lock().unwrap();
-                SourceFile::new(host.db(), id, uri_arc, text_arc.clone())
+                SourceFile::new(host.db(), id, uri_arc, text_arc.clone(), None)
             };
             self.source_files.insert(uri.clone(), sf);
             self.text_cache.insert(uri.clone(), text_arc);
@@ -150,6 +155,34 @@ impl DocumentStore {
     #[allow(dead_code)]
     pub fn source_file(&self, uri: &Url) -> Option<SourceFile> {
         self.source_files.get(uri).map(|e| *e)
+    }
+
+    /// Phase K2: pre-seed a `StubSlice` loaded from the on-disk cache
+    /// onto the `SourceFile` input for `uri`. The next `file_definitions`
+    /// call for that file returns the cached slice directly, skipping
+    /// parse + `DefinitionCollector`.
+    ///
+    /// Must be called **before** any `file_definitions(db, sf)` call for
+    /// this file — otherwise salsa has already memoized the fresh-parse
+    /// result and setting `cached_slice` now would only bump the revision
+    /// without actually using the cache. In practice the workspace-scan
+    /// path seeds immediately after `mirror_text` and before any query
+    /// runs.
+    ///
+    /// Returns `false` when `uri` was not mirrored (caller should mirror
+    /// first); returns `true` on success.
+    #[allow(dead_code)] // wired by scan_workspace in K2b.
+    pub fn seed_cached_slice(
+        &self,
+        uri: &Url,
+        slice: Arc<mir_codebase::storage::StubSlice>,
+    ) -> bool {
+        let Some(sf) = self.source_files.get(uri).map(|e| *e) else {
+            return false;
+        };
+        let mut host = self.host.lock().unwrap();
+        sf.set_cached_slice(host.db_mut()).to(Some(slice));
+        true
     }
 
     /// Run `f` with a borrow of the `AnalysisHost`. Used by tests and by the
@@ -749,6 +782,62 @@ mod tests {
     /// parsed_cache must stay bounded — inserting more than
     /// `PARSED_CACHE_CAP` unique URLs must not cause unbounded growth.
     /// Eviction is probabilistic, so we only assert the bound, not which
+    /// Phase K2 end-to-end: seed a cached slice through `DocumentStore`,
+    /// confirm the workspace codebase sees the cached fact, then edit the
+    /// text and confirm the cache is cleared (codebase now reflects the
+    /// re-parsed text). Exercises `seed_cached_slice` + `mirror_text`'s
+    /// `set_cached_slice(None)` invalidation together.
+    #[test]
+    fn seed_cached_slice_then_edit_invalidates() {
+        let store = DocumentStore::new();
+        let u = uri("/seed_e2e.php");
+
+        // Mirror the initial text — classes: "Real".
+        store.mirror_text(&u, "<?php\nclass Real {}");
+
+        // Build a cached slice claiming classes: "Seeded", for the same URI.
+        let seeded = {
+            let src = "<?php\nclass Seeded {}";
+            let source_map = php_rs_parser::source_map::SourceMap::new(src);
+            let (doc, _) = crate::diagnostics::parse_document(src);
+            let collector = mir_analyzer::collector::DefinitionCollector::new_for_slice(
+                Arc::<str>::from(u.as_str()),
+                src,
+                &source_map,
+            );
+            let (s, _) = collector.collect_slice(doc.program());
+            Arc::new(s)
+        };
+        assert!(store.seed_cached_slice(&u, seeded));
+
+        // Codebase should contain the seeded class, not the real one.
+        let cb = store.get_codebase_salsa();
+        assert!(cb.type_exists("Seeded"));
+        assert!(!cb.type_exists("Real"));
+
+        // Edit: mirror_text flips the text and also clears cached_slice.
+        store.mirror_text(&u, "<?php\nclass Edited {}");
+        let cb = store.get_codebase_salsa();
+        assert!(
+            cb.type_exists("Edited"),
+            "after edit, codebase must reflect fresh parse"
+        );
+        assert!(
+            !cb.type_exists("Seeded"),
+            "mirror_text must clear cached_slice so stale data is gone"
+        );
+    }
+
+    /// Seeding for a URL that was never mirrored is a no-op (returns `false`)
+    /// — avoids silently allocating SourceFiles outside `mirror_text`'s control.
+    #[test]
+    fn seed_cached_slice_noops_for_unknown_uri() {
+        let store = DocumentStore::new();
+        let u = uri("/never_mirrored.php");
+        let slice = Arc::new(mir_codebase::storage::StubSlice::default());
+        assert!(!store.seed_cached_slice(&u, slice));
+    }
+
     /// entries survive.
     #[test]
     fn parsed_cache_stays_bounded_under_many_inserts() {

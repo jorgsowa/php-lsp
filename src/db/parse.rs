@@ -101,6 +101,7 @@ mod tests {
             FileId(0),
             Arc::<str>::from("file:///t.php"),
             Arc::<str>::from("<?php\nfunction greet() {}"),
+            None,
         );
         let arc = parsed_doc(host.db(), file);
         assert!(arc.get().errors.is_empty());
@@ -116,6 +117,7 @@ mod tests {
             FileId(1),
             Arc::<str>::from("file:///t.php"),
             Arc::<str>::from("<?php\nfunction a() {}"),
+            None,
         );
 
         let _ = counted_parse(host.db(), file);
@@ -144,6 +146,7 @@ mod tests {
             FileId(2),
             Arc::<str>::from("file:///t.php"),
             Arc::<str>::from("<?php\nclass {"),
+            None,
         );
         assert!(parse_error_count(host.db(), file) > 0);
     }

@@ -149,12 +149,14 @@ mod tests {
             FileId(0),
             Arc::<str>::from("file:///a.php"),
             Arc::<str>::from("<?php\nfunction greet(): void {}"),
+            None,
         );
         let f2 = SourceFile::new(
             host.db(),
             FileId(1),
             Arc::<str>::from("file:///b.php"),
             Arc::<str>::from("<?php\ngreet();"),
+            None,
         );
         let ws = Workspace::new(host.db(), Arc::from([f1, f2]));
 
@@ -175,6 +177,7 @@ mod tests {
             FileId(0),
             Arc::<str>::from("file:///a.php"),
             Arc::<str>::from("<?php\nfunction hi(): void {}\nhi();"),
+            None,
         );
         let ws = Workspace::new(host.db(), Arc::from([f1]));
 

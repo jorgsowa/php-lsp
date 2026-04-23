@@ -94,6 +94,7 @@ mod tests {
             FileId(id),
             Arc::<str>::from(uri),
             Arc::<str>::from(src),
+            None,
         )
     }
 

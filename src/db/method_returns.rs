@@ -64,6 +64,7 @@ mod tests {
             Arc::<str>::from(
                 "<?php\nclass Foo {\n    public function make(): Bar { return new Bar(); }\n}\nclass Bar {}",
             ),
+            None,
         );
         let m = method_returns(host.db(), file);
         let foo = m.get().get("Foo").expect("class Foo in map");
@@ -80,6 +81,7 @@ mod tests {
             Arc::<str>::from(
                 "<?php\nclass F {\n    public function m(): A { return new A(); }\n}\nclass A {}\nclass B {}",
             ),
+            None,
         );
         let a1 = method_returns(host.db(), file);
         let first = Arc::as_ptr(&a1.0);

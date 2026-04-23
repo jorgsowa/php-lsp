@@ -2,6 +2,8 @@
 
 use std::sync::Arc;
 
+use mir_codebase::storage::StubSlice;
+
 /// Opaque file identifier used as a stable key for a source file across edits.
 /// Backend will map `Url` <-> `FileId`; salsa queries key on `SourceFile` which
 /// wraps this id plus the current text.
@@ -14,11 +16,21 @@ pub struct FileId(pub u32);
 /// It lives on the input so that tracked queries like `file_refs` can emit
 /// per-symbol location records keyed by URI without needing a separate
 /// FileId→URI map outside salsa.
+///
+/// `cached_slice` (Phase K2): when `Some`, holds a pre-computed `StubSlice`
+/// loaded from the on-disk cache. `file_definitions` checks this field
+/// first and returns the cached slice instead of parsing + running
+/// `DefinitionCollector`. Cleared back to `None` on any text edit — see
+/// `DocumentStore::mirror_text` — so a stale cached slice cannot mask a
+/// real change. Seeded by workspace scan via
+/// `DocumentStore::seed_cached_slice` before the first `file_definitions`
+/// call for that file.
 #[salsa::input]
 pub struct SourceFile {
     pub id: FileId,
     pub uri: Arc<str>,
     pub text: Arc<str>,
+    pub cached_slice: Option<Arc<StubSlice>>,
 }
 
 /// Workspace-level input: the set of files that participate in whole-program

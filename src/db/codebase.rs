@@ -81,12 +81,14 @@ mod tests {
             FileId(0),
             Arc::<str>::from("file:///a.php"),
             Arc::<str>::from("<?php\nnamespace A;\nclass Foo {}"),
+            None,
         );
         let f2 = SourceFile::new(
             host.db(),
             FileId(1),
             Arc::<str>::from("file:///b.php"),
             Arc::<str>::from("<?php\nnamespace B;\nclass Bar {}"),
+            None,
         );
         let ws = Workspace::new(host.db(), Arc::from([f1, f2]));
 
@@ -103,6 +105,7 @@ mod tests {
             FileId(0),
             Arc::<str>::from("file:///t.php"),
             Arc::<str>::from("<?php\nclass Before {}"),
+            None,
         );
         let ws = Workspace::new(host.db(), Arc::from([f1]));
 
@@ -126,6 +129,7 @@ mod tests {
             FileId(0),
             Arc::<str>::from("file:///t.php"),
             Arc::<str>::from("<?php\nclass X {}"),
+            None,
         );
         let ws = Workspace::new(host.db(), Arc::from([f1]));
 

@@ -76,6 +76,7 @@ mod tests {
             FileId(0),
             Arc::<str>::from("file:///t.php"),
             Arc::<str>::from("<?php\nclass Foo { public function bar() {} }"),
+            None,
         );
         let idx = file_index(host.db(), file);
         assert_eq!(idx.get().classes.len(), 1);
@@ -91,6 +92,7 @@ mod tests {
             FileId(1),
             Arc::<str>::from("file:///t.php"),
             Arc::<str>::from("<?php\nclass A {} class B {}"),
+            None,
         );
 
         // Fetch the parsed doc, then the index — salsa should parse once.
