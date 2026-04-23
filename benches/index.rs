@@ -38,16 +38,18 @@ fn bench_get_doc(c: &mut Criterion) {
     });
 }
 
-/// Benchmark `all_docs` with 10 indexed files.
+/// Benchmark resolving 10 open-file URLs to parsed docs via `docs_for`.
 fn bench_all_docs(c: &mut Criterion) {
     let store = DocumentStore::new();
-    for i in 0..10 {
-        let uri = Url::parse(&format!("file:///bench/file{i}.php")).unwrap();
-        store.index(uri, SMALL);
+    let urls: Vec<Url> = (0..10)
+        .map(|i| Url::parse(&format!("file:///bench/file{i}.php")).unwrap())
+        .collect();
+    for u in &urls {
+        store.index(u.clone(), SMALL);
     }
 
     c.bench_function("index/all_docs_10", |b| {
-        b.iter(|| black_box(store.all_docs()));
+        b.iter(|| black_box(store.docs_for(&urls)));
     });
 }
 

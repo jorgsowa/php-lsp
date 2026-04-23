@@ -24,20 +24,23 @@ library_benchmark_group!(name = parse_group; benchmarks = parse_medium);
 
 // --- index ---
 
-fn setup_store_50() -> DocumentStore {
+fn setup_store_50() -> (DocumentStore, Vec<Url>) {
     let store = DocumentStore::new();
     let fixtures = [SMALL, MEDIUM, SERVICE, REPOSITORY];
-    for i in 0..50usize {
-        let uri = Url::parse(&format!("file:///iai/file{i}.php")).unwrap();
-        store.index(uri, fixtures[i % fixtures.len()]);
+    let urls: Vec<Url> = (0..50usize)
+        .map(|i| Url::parse(&format!("file:///iai/file{i}.php")).unwrap())
+        .collect();
+    for (i, uri) in urls.iter().enumerate() {
+        store.index(uri.clone(), fixtures[i % fixtures.len()]);
     }
-    store
+    (store, urls)
 }
 
 #[library_benchmark]
 #[bench::fifty_files(setup_store_50())]
-fn index_get_all_docs(store: DocumentStore) {
-    black_box(store.all_docs());
+fn index_get_all_docs(input: (DocumentStore, Vec<Url>)) {
+    let (store, urls) = input;
+    black_box(store.docs_for(&urls));
 }
 
 library_benchmark_group!(name = index_group; benchmarks = index_get_all_docs);
