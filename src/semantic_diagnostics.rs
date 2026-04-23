@@ -91,6 +91,11 @@ pub fn semantic_diagnostics(
 /// codebase — it skips the `remove_file_definitions` / re-collect / `finalize`
 /// cycle. Intended for workspace diagnostic batch passes where the codebase is
 /// built once upfront and `finalize()` is called a single time before the loop.
+///
+/// Phase I: LSP handlers now read issues through the salsa `semantic_issues`
+/// query + `issues_to_diagnostics`. This function is retained for
+/// `benches/semantic.rs` as a single-call reference implementation.
+#[allow(dead_code)]
 pub fn semantic_diagnostics_no_rebuild(
     uri: &Url,
     doc: &ParsedDoc,
@@ -126,6 +131,26 @@ pub fn semantic_diagnostics_no_rebuild(
         .into_iter()
         .filter(|i| !i.suppressed)
         .filter(|i| issue_passes_filter(i, cfg))
+        .map(|i| to_lsp_diagnostic(i, uri))
+        .collect()
+}
+
+/// Convert pre-computed raw issues (from `db::semantic::semantic_issues`) into
+/// LSP diagnostics, applying the user's `DiagnosticsConfig` filter. Keeping
+/// filter + conversion outside the salsa query preserves memoization across
+/// config toggles (the user flipping a category must not rerun the analyzer).
+pub fn issues_to_diagnostics(
+    issues: &[mir_issues::Issue],
+    uri: &Url,
+    cfg: &DiagnosticsConfig,
+) -> Vec<Diagnostic> {
+    if !cfg.enabled {
+        return vec![];
+    }
+    issues
+        .iter()
+        .filter(|i| issue_passes_filter(i, cfg))
+        .cloned()
         .map(|i| to_lsp_diagnostic(i, uri))
         .collect()
 }

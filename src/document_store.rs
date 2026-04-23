@@ -1,5 +1,4 @@
-use std::collections::VecDeque;
-use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 use dashmap::DashMap;
@@ -11,38 +10,23 @@ use crate::db::analysis::AnalysisHost;
 use crate::db::input::{FileId, SourceFile, Workspace};
 use crate::file_index::FileIndex;
 
-/// Default limit used in tests so eviction can be exercised without many files.
-#[cfg(test)]
-pub(crate) const DEFAULT_MAX_INDEXED: usize = 3;
-/// Default maximum number of indexed-only (not open in editor) files kept in memory.
-#[cfg(not(test))]
-pub(crate) const DEFAULT_MAX_INDEXED: usize = 1_000;
-
 struct Document {
     /// `Some` when the file is open in the editor; `None` for workspace-indexed files.
-    /// This remains the source of truth for "is this file open" — used by LRU
-    /// eviction and by the salsa `get_doc_salsa` gating.
+    /// Source of truth for "is this file open" — used by salsa `get_doc_salsa`
+    /// gating.
     text: Option<String>,
     /// Parse-level diagnostics. Later phases will derive these from the salsa
     /// `parsed_doc` query.
     diagnostics: Vec<Diagnostic>,
-    /// Semantic diagnostics computed by `did_open`/`did_change`.
-    /// Stored separately so callers like `code_action` can read them without
-    /// rerunning the full codebase rebuild that produces them.
-    sem_diagnostics: Vec<Diagnostic>,
     /// Incremented on every `set_text` call; used to discard stale async parse results.
     text_version: u64,
 }
 
 pub struct DocumentStore {
     map: DashMap<Url, Document>,
-    /// Insertion-order queue of indexed-only URIs for LRU eviction.
-    indexed_order: Mutex<VecDeque<Url>>,
     /// Cached semantic tokens per document: (result_id, tokens).
     /// Used to compute incremental deltas for `textDocument/semanticTokens/full/delta`.
     token_cache: DashMap<Url, (String, Vec<SemanticToken>)>,
-    /// Maximum number of indexed-only files to keep in memory.
-    max_indexed: AtomicUsize,
 
     // ── Phase B4a salsa mirror ──────────────────────────────────────────────
     // The salsa layer runs in parallel to the legacy `map` during migration.
@@ -100,9 +84,7 @@ impl DocumentStore {
         let workspace = Workspace::new(host.db(), Arc::<[SourceFile]>::from(Vec::new()));
         DocumentStore {
             map: DashMap::new(),
-            indexed_order: Mutex::new(VecDeque::new()),
             token_cache: DashMap::new(),
-            max_indexed: AtomicUsize::new(DEFAULT_MAX_INDEXED),
             host: Mutex::new(host),
             source_files: DashMap::new(),
             text_cache: DashMap::new(),
@@ -212,29 +194,6 @@ impl DocumentStore {
         f(host.db())
     }
 
-    /// Update the maximum number of indexed-only files kept in memory.
-    /// Excess entries are evicted immediately.
-    pub fn set_max_indexed(&self, limit: usize) {
-        self.max_indexed.store(limit, Ordering::Relaxed);
-        let mut order = self.indexed_order.lock().unwrap();
-        let need_to_evict = order.len().saturating_sub(limit);
-        let mut evicted = 0;
-        while evicted < need_to_evict {
-            let Some(oldest) = order.pop_front() else {
-                break;
-            };
-            if self
-                .map
-                .get(&oldest)
-                .map(|d| d.text.is_none())
-                .unwrap_or(false)
-            {
-                self.map.remove(&oldest);
-                evicted += 1;
-            }
-        }
-    }
-
     /// Store new text immediately and return a version token for deferred parsing.
     pub fn set_text(&self, uri: Url, text: String) -> u64 {
         // B4a: mirror into salsa. Done before the DashMap write so downstream
@@ -244,7 +203,6 @@ impl DocumentStore {
         let mut entry = self.map.entry(uri).or_insert_with(|| Document {
             text: None,
             diagnostics: vec![],
-            sem_diagnostics: vec![],
             text_version: 0,
         });
         entry.text_version += 1;
@@ -273,10 +231,6 @@ impl DocumentStore {
         if let Some(mut entry) = self.map.get_mut(uri) {
             entry.text = None;
             entry.text_version += 1;
-            let mut q = self.indexed_order.lock().unwrap();
-            if !q.contains(uri) {
-                q.push_back(uri.clone());
-            }
         }
         self.token_cache.remove(uri);
     }
@@ -299,16 +253,13 @@ impl DocumentStore {
         // read for open files (both call sites in backend.rs gate on
         // `get_doc_salsa`, which returns `None` for background-indexed files).
         self.map.insert(
-            uri.clone(),
+            uri,
             Document {
                 text: None,
                 diagnostics: vec![],
-                sem_diagnostics: vec![],
                 text_version: 0,
             },
         );
-
-        self.push_to_lru(uri);
     }
 
     /// Index a file using an already-parsed `ParsedDoc`, avoiding a second parse.
@@ -329,45 +280,13 @@ impl DocumentStore {
         self.mirror_text(&uri, doc.source());
 
         self.map.insert(
-            uri.clone(),
+            uri,
             Document {
                 text: None,
                 diagnostics,
-                sem_diagnostics: vec![],
                 text_version: 0,
             },
         );
-
-        self.push_to_lru(uri);
-    }
-
-    fn push_to_lru(&self, uri: Url) {
-        let mut order = self.indexed_order.lock().unwrap();
-        order.push_back(uri);
-        // Evict enough indexed-only entries to bring the queue back to DEFAULT_MAX_INDEXED.
-        // A file that became open after being indexed must be skipped — it will be
-        // re-queued when it is eventually closed.  We must not stop early just
-        // because popping an open file decremented order.len() to DEFAULT_MAX_INDEXED;
-        // that would leave the map with too many entries.
-        let need_to_evict = order
-            .len()
-            .saturating_sub(self.max_indexed.load(Ordering::Relaxed));
-        let mut evicted = 0;
-        while evicted < need_to_evict {
-            let Some(oldest) = order.pop_front() else {
-                break;
-            };
-            if self
-                .map
-                .get(&oldest)
-                .map(|d| d.text.is_none())
-                .unwrap_or(false)
-            {
-                self.map.remove(&oldest);
-                evicted += 1;
-            }
-            // If the file is open, discard it from the queue and keep looking.
-        }
     }
 
     pub fn remove(&self, uri: &Url) {
@@ -499,6 +418,43 @@ impl DocumentStore {
         })
     }
 
+    /// Phase J: salsa-memoized aggregate workspace index.
+    ///
+    /// Returns the shared `Arc<WorkspaceIndexData>` with flat
+    /// `(Url, Arc<FileIndex>)` list plus pre-built `classes_by_name` and
+    /// `subtypes_of` reverse maps. Used by workspace_symbols,
+    /// prepare_type_hierarchy, supertypes_of, subtypes_of, and
+    /// find_implementations so they don't each rebuild the aggregate per
+    /// request. Invalidates automatically when any file's `file_index`
+    /// changes.
+    pub fn get_workspace_index_salsa(&self) -> Arc<crate::db::workspace_index::WorkspaceIndexData> {
+        self.sync_workspace_files();
+        let ws = self.workspace;
+        self.snapshot_query(move |db| {
+            crate::db::workspace_index::workspace_index(db, ws)
+                .0
+                .clone()
+        })
+    }
+
+    /// Phase L: force `file_refs` to run for every workspace file so that
+    /// subsequent `textDocument/references` / `prepare_rename` / call-hierarchy
+    /// lookups hit the memo instead of paying first-call latency.
+    ///
+    /// Implemented by asking `symbol_refs` for a sentinel key that no real
+    /// symbol matches — the query still iterates every file's `file_refs`
+    /// and populates salsa's memo along the way, but the returned `Vec` is
+    /// empty and discarded.
+    pub fn warm_reference_index(&self) {
+        self.sync_workspace_files();
+        let ws = self.workspace;
+        let _ = self.snapshot_query(move |db| {
+            crate::db::refs::symbol_refs(db, ws, String::from("__phplsp_warmup__"))
+                .0
+                .clone()
+        });
+    }
+
     /// Salsa-backed per-file method-return-type map.
     #[allow(dead_code)]
     pub fn get_method_returns_salsa(&self, uri: &Url) -> Option<Arc<crate::ast::MethodReturnsMap>> {
@@ -548,19 +504,19 @@ impl DocumentStore {
         self.map.get(uri).map(|d| d.diagnostics.clone())
     }
 
-    /// Cache the semantic diagnostics computed by `did_open`/`did_change` so that
-    /// `code_action` can read them without holding codebase write locks.
-    pub fn set_sem_diagnostics(&self, uri: &Url, diagnostics: Vec<Diagnostic>) {
-        if let Some(mut entry) = self.map.get_mut(uri) {
-            entry.sem_diagnostics = diagnostics;
-        }
-    }
-
-    pub fn get_sem_diagnostics(&self, uri: &Url) -> Vec<Diagnostic> {
-        self.map
-            .get(uri)
-            .map(|d| d.sem_diagnostics.clone())
-            .unwrap_or_default()
+    /// Phase I: salsa-memoized raw semantic issues for a file. Callers apply
+    /// their own `DiagnosticsConfig` filter via
+    /// [`crate::semantic_diagnostics::issues_to_diagnostics`] — keeping the
+    /// filter outside the query preserves memoization across config toggles.
+    pub fn get_semantic_issues_salsa(&self, uri: &Url) -> Option<Arc<[mir_issues::Issue]>> {
+        let sf = self.source_file(uri)?;
+        self.sync_workspace_files();
+        let ws = self.workspace;
+        Some(
+            self.snapshot_query(move |db| {
+                crate::db::semantic::semantic_issues(db, ws, sf).0.clone()
+            }),
+        )
     }
 
     /// Returns `(uri, doc)` for files currently open in the editor.
@@ -880,74 +836,12 @@ mod tests {
         assert!(!diags.is_empty());
     }
 
-    // ── LRU eviction regression tests ────────────────────────────────────────
-
-    #[test]
-    fn eviction_removes_oldest_indexed_file() {
-        // Fill the store to exactly DEFAULT_MAX_INDEXED, then add one more.
-        // The oldest entry must be evicted so the map stays at DEFAULT_MAX_INDEXED.
-        let store = DocumentStore::new();
-        for i in 0..DEFAULT_MAX_INDEXED {
-            store.index(uri(&format!("/{i}.php")), "<?php");
-        }
-        store.index(uri("/overflow.php"), "<?php");
-
-        assert_eq!(
-            store.all_indexes().len(),
-            DEFAULT_MAX_INDEXED,
-            "map must not exceed DEFAULT_MAX_INDEXED after overflow"
-        );
-        assert!(
-            store.get_index(&uri("/overflow.php")).is_some(),
-            "newly indexed file must be present"
-        );
-        assert!(
-            store.get_index(&uri("/0.php")).is_none(),
-            "oldest file must have been evicted"
-        );
-    }
-
-    #[test]
-    fn eviction_skips_open_files_and_evicts_next_indexed() {
-        // Regression test for the bug where an open file at the front of the
-        // eviction queue caused the loop to exit without evicting anything.
-        let store = DocumentStore::new();
-
-        // Index DEFAULT_MAX_INDEXED files; /0.php will be the oldest in the queue.
-        for i in 0..DEFAULT_MAX_INDEXED {
-            store.index(uri(&format!("/{i}.php")), "<?php");
-        }
-
-        // Open /0.php — it now has text and must not be evicted.
-        open(&store, uri("/0.php"), "<?php $x = 1;".to_string());
-
-        // Index one more file.  Eviction must skip /0.php (open) and evict
-        // /1.php (the next oldest indexed-only file) instead.
-        store.index(uri("/overflow.php"), "<?php");
-
-        // The open file must still be present.
-        assert!(
-            store.get_index(&uri("/0.php")).is_some(),
-            "/0.php is open and must not be evicted"
-        );
-        // The overflow file must have been indexed.
-        assert!(
-            store.get_index(&uri("/overflow.php")).is_some(),
-            "overflow file must be present"
-        );
-        // The eviction must have brought the map back to DEFAULT_MAX_INDEXED total
-        // entries.
-        assert_eq!(
-            store.all_indexes().len(),
-            DEFAULT_MAX_INDEXED,
-            "total docs must equal DEFAULT_MAX_INDEXED after eviction"
-        );
-        // /1.php should have been evicted (oldest indexed-only file after /0.php).
-        assert!(
-            store.get_index(&uri("/1.php")).is_none(),
-            "/1.php must have been evicted as the oldest indexed-only file"
-        );
-    }
+    // Phase F: the old `eviction_removes_oldest_indexed_file` and
+    // `eviction_skips_open_files_and_evicts_next_indexed` tests asserted
+    // the hand-written `indexed_order` LRU contract, which no longer
+    // exists. `DocumentStore.map` now holds an unbounded known-files set;
+    // memory is capped by the `lru = 2048` on `parsed_doc` (see
+    // `src/db/parse.rs`), exercised via salsa's own test suite.
 
     #[test]
     fn close_evicts_token_cache() {
@@ -960,22 +854,9 @@ mod tests {
         assert!(store.get_token_cache(&u, "id1").is_none());
     }
 
-    #[test]
-    fn close_twice_does_not_duplicate_lru_entry() {
-        let store = DocumentStore::new();
-        let u = uri("/a.php");
-        open(&store, u.clone(), "<?php".to_string());
-        // First close.
-        store.close(&u);
-        let len_after_first = store.indexed_order.lock().unwrap().len();
-        // Second close — must not push a duplicate.
-        store.close(&u);
-        let len_after_second = store.indexed_order.lock().unwrap().len();
-        assert_eq!(
-            len_after_first, len_after_second,
-            "second close must not add a duplicate entry to indexed_order"
-        );
-    }
+    // Phase F: `close_twice_does_not_duplicate_lru_entry` was deleted
+    // along with the `indexed_order` queue it exercised. `close()` no
+    // longer pushes to any queue; it just flips `text` to `None`.
 
     #[test]
     fn index_populates_file_index_with_symbols() {
@@ -1207,5 +1088,32 @@ mod tests {
         for h in handles {
             h.join().expect("no panic under concurrent read/write");
         }
+    }
+
+    /// Phase L: warm-up must not error and must pre-populate the `file_refs`
+    /// memo. We can't cheaply observe salsa memo state from outside, so we
+    /// instead call `warm_reference_index` and then verify that a real
+    /// reference lookup returns the expected result — the warm-up running
+    /// without panic across a realistic two-file workspace is the load-bearing
+    /// guarantee.
+    #[test]
+    fn warm_reference_index_does_not_panic_and_keeps_lookups_correct() {
+        let store = DocumentStore::new();
+        open(
+            &store,
+            uri("/wa.php"),
+            "<?php\nfunction a() { b(); }".to_string(),
+        );
+        open(
+            &store,
+            uri("/wb.php"),
+            "<?php\nfunction b() {}\na();".to_string(),
+        );
+        store.warm_reference_index();
+        let refs_to_a = store.get_symbol_refs_salsa("a");
+        assert!(
+            refs_to_a.iter().any(|(uri, _, _)| uri.contains("wb.php")),
+            "reference to a() from /wb.php should be discoverable after warm-up, got {refs_to_a:?}"
+        );
     }
 }

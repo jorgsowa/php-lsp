@@ -41,7 +41,7 @@ use crate::formatting::{format_document, format_range};
 use crate::generate_action::{generate_constructor_actions, generate_getters_setters_actions};
 use crate::hover::{docs_for_symbol_from_index, hover_info, signature_for_symbol_from_index};
 use crate::implement_action::implement_missing_actions;
-use crate::implementation::{find_implementations, find_implementations_from_index};
+use crate::implementation::{find_implementations, find_implementations_from_workspace};
 use crate::inlay_hints::inlay_hints;
 use crate::inline_action::inline_variable_actions;
 use crate::inline_value::inline_values_in_range;
@@ -54,18 +54,18 @@ use crate::promote_action::promote_constructor_actions;
 use crate::references::{SymbolKind, find_references, find_references_codebase};
 use crate::rename::{prepare_rename, rename, rename_property, rename_variable};
 use crate::selection_range::selection_ranges;
-use crate::semantic_diagnostics::{
-    deprecated_call_diagnostics, duplicate_declaration_diagnostics, semantic_diagnostics_no_rebuild,
-};
+use crate::semantic_diagnostics::{deprecated_call_diagnostics, duplicate_declaration_diagnostics};
 use crate::semantic_tokens::{
     compute_token_delta, legend, semantic_tokens, semantic_tokens_range, token_hash,
 };
 use crate::signature_help::signature_help;
-use crate::symbols::{document_symbols, resolve_workspace_symbol, workspace_symbols_from_index};
+use crate::symbols::{
+    document_symbols, resolve_workspace_symbol, workspace_symbols_from_workspace,
+};
 use crate::type_action::add_return_type_actions;
 use crate::type_definition::{goto_type_definition, goto_type_definition_from_index};
 use crate::type_hierarchy::{
-    prepare_type_hierarchy_from_index, subtypes_of_from_index, supertypes_of_from_index,
+    prepare_type_hierarchy_from_workspace, subtypes_of_from_workspace, supertypes_of_from_workspace,
 };
 use crate::use_import::{build_use_import_edit, find_fqn_for_class};
 use crate::util::word_at;
@@ -310,7 +310,13 @@ impl LanguageServer for Backend {
                     .await;
             }
             cfg.php_version = Some(ver);
-            self.docs.set_max_indexed(cfg.max_indexed_files);
+            // Phase F: `maxIndexedFiles` is kept in the LSP config for
+            // backwards compatibility but is now a no-op. The legacy
+            // `DocumentStore`-owned LRU it used to tune has been replaced
+            // by salsa's per-query `lru` on `parsed_doc` (compile-time
+            // constant; see `src/db/parse.rs`). Runtime tuning isn't
+            // exposed by salsa 0.26.
+            let _ = cfg.max_indexed_files;
             *self.config.write().unwrap() = cfg;
         }
 
@@ -398,10 +404,7 @@ impl LanguageServer for Backend {
                     work_done_progress_options: Default::default(),
                 }),
                 execute_command_provider: Some(ExecuteCommandOptions {
-                    commands: vec![
-                        "php-lsp.showReferences".to_string(),
-                        "php-lsp.runTest".to_string(),
-                    ],
+                    commands: vec!["php-lsp.runTest".to_string()],
                     work_done_progress_options: Default::default(),
                 }),
                 diagnostic_provider: Some(DiagnosticServerCapabilities::Options(
@@ -538,10 +541,23 @@ impl LanguageServer for Backend {
                 // files before indexing finished would show stale information.
                 send_refresh_requests(&client).await;
 
-                // Phase D: reference index is now lazy. `textDocument/references`
+                // Phase D: reference index is lazy. `textDocument/references`
                 // drives `symbol_refs(ws, key)` on demand; salsa memoizes the
-                // per-file `file_refs` across requests. No upfront scan is
-                // needed, and invalidation is automatic on edits.
+                // per-file `file_refs` across requests. Invalidation is
+                // automatic on edits.
+                //
+                // Phase L: warm the memo in the background so the first real
+                // reference lookup doesn't pay the full-workspace walk.
+                // `symbol_refs(ws, <any key>)` iterates every file's
+                // `file_refs` to build its result — even with a sentinel key
+                // that matches nothing, the per-file walk runs and populates
+                // salsa's memo. Fire-and-forget: a reference request that
+                // arrives mid-warmup just retries through
+                // `snapshot_query`'s `salsa::Cancelled` handling.
+                let warm_docs = Arc::clone(&docs);
+                tokio::task::spawn_blocking(move || {
+                    warm_docs.warm_reference_index();
+                });
                 drop(docs);
                 client.send_notification::<IndexReadyNotification>(()).await;
             });
@@ -599,7 +615,13 @@ impl LanguageServer for Backend {
                     .await;
             }
             cfg.php_version = Some(ver);
-            self.docs.set_max_indexed(cfg.max_indexed_files);
+            // Phase F: `maxIndexedFiles` is kept in the LSP config for
+            // backwards compatibility but is now a no-op. The legacy
+            // `DocumentStore`-owned LRU it used to tune has been replaced
+            // by salsa's per-query `lru` on `parsed_doc` (compile-time
+            // constant; see `src/db/parse.rs`). Runtime tuning isn't
+            // exposed by salsa 0.26.
+            let _ = cfg.max_indexed_files;
             *self.config.write().unwrap() = cfg;
         }
     }
@@ -655,32 +677,25 @@ impl LanguageServer for Backend {
         let php_version = self.config.read().unwrap().php_version.clone();
         let uri_clone = uri.clone();
 
-        // Parse and run semantic analysis together in a blocking thread.
-        // Use `_no_rebuild`: the salsa codebase query already folded this
-        // file's definitions (mirror_text bumped the input above) and ran
-        // finalize(); we must not re-run `remove_file_definitions / collect`
-        // on the memoized Arc, which would mutate shared salsa state.
-        let diag_cfg_inner = diag_cfg.clone();
-        let (doc, parse_diags, sem_diags) = tokio::task::spawn_blocking(move || {
+        // Phase I: parse + semantic analysis both run on the blocking pool.
+        // The semantic pass is memoized by salsa, but the *first* call per
+        // file walks `StatementsAnalyzer` over the AST (hundreds of ms on
+        // cold files) — we must not block the async executor on it.
+        let _ = (uri_clone, php_version);
+        let uri_sem = uri.clone();
+        let (parse_diags, sem_issues) = tokio::task::spawn_blocking(move || {
             let (doc, parse_diags) = parse_document(&text);
-            let codebase = docs_for_spawn.get_codebase_salsa();
-            let sem_diags = semantic_diagnostics_no_rebuild(
-                &uri_clone,
-                &doc,
-                &codebase,
-                &diag_cfg_inner,
-                php_version.as_deref(),
-            );
-            (doc, parse_diags, sem_diags)
+            drop(doc);
+            let sem_issues = docs_for_spawn.get_semantic_issues_salsa(&uri_sem);
+            (parse_diags, sem_issues)
         })
         .await
-        .unwrap_or_else(|_| (ParsedDoc::default(), vec![], vec![]));
+        .unwrap_or_else(|_| (vec![], None));
 
         // B4d-3c: did_open runs inline (no debounce), so staleness is not a
         // concern here; we record diagnostics unconditionally. `version` is
         // retained for symmetry with did_change.
         let _ = version;
-        drop(doc);
         self.docs.set_parse_diagnostics(&uri, parse_diags.clone());
         let stored_source = self.docs.get(&uri).unwrap_or_default();
         let doc2 = self.docs.get_doc_salsa(&uri);
@@ -689,8 +704,11 @@ impl LanguageServer for Backend {
             let dup_diags = duplicate_declaration_diagnostics(&stored_source, d, &diag_cfg);
             all_diags.extend(dup_diags);
         }
-        all_diags.extend(sem_diags.clone());
-        self.docs.set_sem_diagnostics(&uri, sem_diags);
+        if let Some(issues) = sem_issues {
+            all_diags.extend(crate::semantic_diagnostics::issues_to_diagnostics(
+                &issues, &uri, &diag_cfg,
+            ));
+        }
         self.client.publish_diagnostics(uri, all_diags, None).await;
     }
 
@@ -744,37 +762,51 @@ impl LanguageServer for Backend {
             // Backend-level gate replaces the old `apply_parse` version check.
             if docs.current_version(&uri) == Some(version) {
                 docs.set_parse_diagnostics(&uri, diagnostics.clone());
-                let source = docs.get(&uri).unwrap_or_default();
-                let mut all_diags = diagnostics;
-                if let Some(d) = docs.get_doc_salsa(&uri) {
-                    let codebase = docs.get_codebase_salsa();
-                    // Both paths use `_no_rebuild`: whether the edit changed
-                    // structure or not, salsa's `codebase` query has already
-                    // folded this file's new StubSlice and finalized. Only
-                    // the file_index "same_structure" signal still matters —
-                    // e.g. future skip-Pass-2 optimizations.
-                    let _ = structure_changed;
-                    let sem_diags = semantic_diagnostics_no_rebuild(
-                        &uri,
+                let _ = structure_changed;
+                let _ = php_version.as_deref();
+
+                // Phase I: the salsa `semantic_issues` walk is synchronous
+                // and CPU-bound on a cold file — run it on the blocking
+                // pool so the async runtime stays responsive. Returns the
+                // full diagnostic bundle (semantic + dup-decl + deprecated
+                // calls), all computed off-thread.
+                let docs_sem = Arc::clone(&docs);
+                let uri_sem = uri.clone();
+                let diag_cfg_sem = diag_cfg.clone();
+                let extra = tokio::task::spawn_blocking(move || {
+                    let Some(d) = docs_sem.get_doc_salsa(&uri_sem) else {
+                        return Vec::<Diagnostic>::new();
+                    };
+                    let source = docs_sem.get(&uri_sem).unwrap_or_default();
+                    let mut out = Vec::new();
+                    if let Some(issues) = docs_sem.get_semantic_issues_salsa(&uri_sem) {
+                        out.extend(crate::semantic_diagnostics::issues_to_diagnostics(
+                            &issues,
+                            &uri_sem,
+                            &diag_cfg_sem,
+                        ));
+                    }
+                    out.extend(duplicate_declaration_diagnostics(
+                        &source,
                         &d,
-                        &codebase,
-                        &diag_cfg,
-                        php_version.as_deref(),
-                    );
-                    // Cache so code_action can read them without rerunning the rebuild.
-                    docs.set_sem_diagnostics(&uri, sem_diags.clone());
-                    all_diags.extend(sem_diags);
-                    all_diags.extend(duplicate_declaration_diagnostics(&source, &d, &diag_cfg));
-                    let other_raw = docs.other_docs(&uri);
+                        &diag_cfg_sem,
+                    ));
+                    let other_raw = docs_sem.other_docs(&uri_sem);
                     let other_docs: Vec<Arc<ParsedDoc>> =
                         other_raw.into_iter().map(|(_, d)| d).collect();
-                    all_diags.extend(deprecated_call_diagnostics(
+                    out.extend(deprecated_call_diagnostics(
                         &source,
                         &d,
                         &other_docs,
-                        &diag_cfg,
+                        &diag_cfg_sem,
                     ));
-                }
+                    out
+                })
+                .await
+                .unwrap_or_default();
+
+                let mut all_diags = diagnostics;
+                all_diags.extend(extra);
                 client.publish_diagnostics(uri, all_diags, None).await;
             }
         });
@@ -1128,8 +1160,11 @@ impl LanguageServer for Backend {
         &self,
         params: WorkspaceSymbolParams,
     ) -> Result<Option<Vec<SymbolInformation>>> {
-        let indexes = self.docs.all_indexes();
-        let results = workspace_symbols_from_index(&params.query, &indexes);
+        // Phase J: read through the salsa-memoized aggregate so repeated
+        // workspace-symbol queries (every keystroke in the picker) share the
+        // same `Arc` until a file changes.
+        let wi = self.docs.get_workspace_index_salsa();
+        let results = workspace_symbols_from_workspace(&params.query, &wi);
         Ok(if results.is_empty() {
             None
         } else {
@@ -1328,9 +1363,10 @@ impl LanguageServer for Backend {
         let open_docs = self.docs.all_docs();
         let mut locs = find_implementations(&word, fqn, &open_docs);
         if locs.is_empty() {
-            // Second pass: background files via FileIndex (line-only positions).
-            let all_indexes = self.docs.all_indexes();
-            locs = find_implementations_from_index(&word, fqn, &all_indexes);
+            // Second pass: background files via the salsa-memoized workspace
+            // aggregate's `subtypes_of` reverse map (line-only positions).
+            let wi = self.docs.get_workspace_index_salsa();
+            locs = find_implementations_from_workspace(&word, fqn, &wi);
         }
         if locs.is_empty() {
             Ok(None)
@@ -1395,19 +1431,18 @@ impl LanguageServer for Backend {
         let uri = &params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
         let source = self.docs.get(uri).unwrap_or_default();
-        let all_indexes = self.docs.all_indexes();
-        Ok(
-            prepare_type_hierarchy_from_index(&source, &all_indexes, position)
-                .map(|item| vec![item]),
-        )
+        // Phase J: use the salsa-memoized aggregate's `classes_by_name` map.
+        let wi = self.docs.get_workspace_index_salsa();
+        Ok(prepare_type_hierarchy_from_workspace(&source, &wi, position).map(|item| vec![item]))
     }
 
     async fn supertypes(
         &self,
         params: TypeHierarchySupertypesParams,
     ) -> Result<Option<Vec<TypeHierarchyItem>>> {
-        let all_indexes = self.docs.all_indexes();
-        let result = supertypes_of_from_index(&params.item, &all_indexes);
+        // Phase J: resolve parents via the aggregate's `classes_by_name` map.
+        let wi = self.docs.get_workspace_index_salsa();
+        let result = supertypes_of_from_workspace(&params.item, &wi);
         Ok(if result.is_empty() {
             None
         } else {
@@ -1419,8 +1454,9 @@ impl LanguageServer for Backend {
         &self,
         params: TypeHierarchySubtypesParams,
     ) -> Result<Option<Vec<TypeHierarchyItem>>> {
-        let all_indexes = self.docs.all_indexes();
-        let result = subtypes_of_from_index(&params.item, &all_indexes);
+        // Phase J: O(matches) lookup via the aggregate's `subtypes_of` map.
+        let wi = self.docs.get_workspace_index_salsa();
+        let result = subtypes_of_from_workspace(&params.item, &wi);
         Ok(if result.is_empty() {
             None
         } else {
@@ -1498,11 +1534,6 @@ impl LanguageServer for Backend {
         params: ExecuteCommandParams,
     ) -> Result<Option<serde_json::Value>> {
         match params.command.as_str() {
-            "php-lsp.showReferences" => {
-                // The client handles showing the references panel;
-                // the server just acknowledges the command.
-                Ok(None)
-            }
             "php-lsp.runTest" => {
                 // Arguments: [uri_string, "ClassName::methodName"]
                 let file_uri = params
@@ -1766,9 +1797,24 @@ impl LanguageServer for Backend {
             let cfg = self.config.read().unwrap();
             (cfg.diagnostics.clone(), cfg.php_version.clone())
         };
-        let cb = self.codebase();
-        let sem_diags =
-            semantic_diagnostics_no_rebuild(uri, &doc, &cb, &diag_cfg, php_version.as_deref());
+        let _ = php_version.as_deref();
+        // Phase I: salsa Pass-2 is CPU-bound; run off the async executor.
+        let docs = Arc::clone(&self.docs);
+        let uri_owned = uri.clone();
+        let diag_cfg_sem = diag_cfg.clone();
+        let sem_diags = tokio::task::spawn_blocking(move || {
+            docs.get_semantic_issues_salsa(&uri_owned)
+                .map(|issues| {
+                    crate::semantic_diagnostics::issues_to_diagnostics(
+                        &issues,
+                        &uri_owned,
+                        &diag_cfg_sem,
+                    )
+                })
+                .unwrap_or_default()
+        })
+        .await
+        .unwrap_or_default();
         let dup_diags = duplicate_declaration_diagnostics(&source, &doc, &diag_cfg);
 
         let mut items = parse_diags;
@@ -1796,42 +1842,55 @@ impl LanguageServer for Backend {
             (cfg.diagnostics.clone(), cfg.php_version.clone())
         };
 
-        // Salsa-built codebase: finalized by the aggregator query. Grab a
-        // single snapshot and hold it for the whole workspace sweep so all
-        // files see a consistent view.
-        let cb = self.codebase();
+        // Phase I: each file's semantic issues flow through the salsa
+        // `semantic_issues` query. The memo is shared with `did_open` /
+        // `did_change` / `document_diagnostic` / `code_action`, so repeated
+        // workspace-diagnostic pulls reuse prior analysis. The first pull on
+        // a cold workspace still walks every file's `StatementsAnalyzer` —
+        // run the whole sweep on the blocking pool so the async runtime
+        // stays responsive.
+        let _ = php_version.as_deref();
+        let docs = Arc::clone(&self.docs);
+        let diag_cfg_sweep = diag_cfg.clone();
+        let items = tokio::task::spawn_blocking(move || {
+            all_parse_diags
+                .into_iter()
+                .filter_map(|(uri, parse_diags, version)| {
+                    let doc = docs.get_doc_salsa(&uri)?;
 
-        let items: Vec<WorkspaceDocumentDiagnosticReport> = all_parse_diags
-            .into_iter()
-            .filter_map(|(uri, parse_diags, version)| {
-                let doc = self.docs.get_doc_salsa(&uri)?;
+                    let source = doc.source().to_string();
+                    let sem_diags = docs
+                        .get_semantic_issues_salsa(&uri)
+                        .map(|issues| {
+                            crate::semantic_diagnostics::issues_to_diagnostics(
+                                &issues,
+                                &uri,
+                                &diag_cfg_sweep,
+                            )
+                        })
+                        .unwrap_or_default();
+                    let dup_diags =
+                        duplicate_declaration_diagnostics(&source, &doc, &diag_cfg_sweep);
 
-                let source = doc.source().to_string();
-                let sem_diags = semantic_diagnostics_no_rebuild(
-                    &uri,
-                    &doc,
-                    &cb,
-                    &diag_cfg,
-                    php_version.as_deref(),
-                );
-                let dup_diags = duplicate_declaration_diagnostics(&source, &doc, &diag_cfg);
+                    let mut all_diags = parse_diags;
+                    all_diags.extend(sem_diags);
+                    all_diags.extend(dup_diags);
 
-                let mut all_diags = parse_diags;
-                all_diags.extend(sem_diags);
-                all_diags.extend(dup_diags);
-
-                Some(WorkspaceDocumentDiagnosticReport::Full(
-                    WorkspaceFullDocumentDiagnosticReport {
-                        uri,
-                        version,
-                        full_document_diagnostic_report: FullDocumentDiagnosticReport {
-                            result_id: None,
-                            items: all_diags,
+                    Some(WorkspaceDocumentDiagnosticReport::Full(
+                        WorkspaceFullDocumentDiagnosticReport {
+                            uri,
+                            version,
+                            full_document_diagnostic_report: FullDocumentDiagnosticReport {
+                                result_id: None,
+                                items: all_diags,
+                            },
                         },
-                    },
-                ))
-            })
-            .collect();
+                    ))
+                })
+                .collect::<Vec<_>>()
+        })
+        .await
+        .unwrap_or_default();
 
         Ok(WorkspaceDiagnosticReportResult::Report(
             WorkspaceDiagnosticReport { items },
@@ -1847,10 +1906,30 @@ impl LanguageServer for Backend {
         };
         let other_docs = self.docs.other_docs(uri);
 
-        // Reuse semantic diagnostics cached by did_open/did_change rather than
-        // running a full codebase rebuild here — that rebuild takes write locks
-        // which stall concurrent requests for ~1-2 s.
-        let sem_diags = self.docs.get_sem_diagnostics(uri);
+        // Phase I: read semantic issues through the salsa query. The result
+        // is memoized across did_open/did_change/document_diagnostic, so
+        // code_action usually hits the memo instead of rerunning analysis.
+        // On a memo miss (e.g. code-action fires before did_open finishes),
+        // the analyzer runs — park that on the blocking pool so the async
+        // runtime doesn't stall.
+        let diag_cfg = self.config.read().unwrap().diagnostics.clone();
+        let docs_sem = Arc::clone(&self.docs);
+        let uri_sem = uri.clone();
+        let diag_cfg_sem = diag_cfg.clone();
+        let sem_diags = tokio::task::spawn_blocking(move || {
+            docs_sem
+                .get_semantic_issues_salsa(&uri_sem)
+                .map(|issues| {
+                    crate::semantic_diagnostics::issues_to_diagnostics(
+                        &issues,
+                        &uri_sem,
+                        &diag_cfg_sem,
+                    )
+                })
+                .unwrap_or_default()
+        })
+        .await
+        .unwrap_or_default();
 
         // Build "Add use import" code actions for undefined class names in range
         let mut actions: Vec<CodeActionOrCommand> = Vec::new();

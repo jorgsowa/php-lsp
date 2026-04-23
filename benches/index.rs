@@ -122,10 +122,10 @@ fn bench_workspace_scan_laravel(c: &mut Criterion) {
     group.bench_function("laravel_framework", |b| {
         b.iter(|| {
             let store = DocumentStore::new();
-            // Disable LRU eviction so all 1,609 files stay indexed for the
-            // duration of the scan — otherwise this measures indexing 1,000
-            // files + evicting 609, not "index the whole workspace".
-            store.set_max_indexed(usize::MAX);
+            // Phase F: DocumentStore no longer has a hand-written LRU, so
+            // there is no eviction to disable; `index()` unconditionally
+            // keeps every file in the mirror. The old `set_max_indexed`
+            // call has been removed.
             for (url, src) in &php_files {
                 store.index(url.clone(), src);
             }

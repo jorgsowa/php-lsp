@@ -11,12 +11,13 @@
 use std::sync::Arc;
 
 use php_ast::{ClassMemberKind, EnumMemberKind, NamespaceBody, Stmt, StmtKind};
+use serde_json::json;
 use tower_lsp::lsp_types::{CodeLens, Command, Url};
 
 use crate::ast::{ParsedDoc, SourceView};
 use crate::docblock::docblock_before;
 use crate::implementation::find_implementations;
-use crate::references::find_references;
+use crate::references::{SymbolKind, find_references};
 use crate::type_map::{members_of_class, parent_class_name};
 
 /// Build all code lenses for `uri`/`doc`, using `all_docs` for reference counts.
@@ -42,68 +43,117 @@ fn collect_lenses(
         match &stmt.kind {
             StmtKind::Function(f) => {
                 let range = sv.name_range(f.name);
-                out.push(ref_count_lens(range, f.name, all_docs));
+                out.push(ref_count_lens(range, f.name, uri, all_docs, None));
             }
             StmtKind::Class(c) => {
                 if let Some(class_name) = c.name {
                     let class_range = sv.name_range(class_name);
-                    out.push(ref_count_lens(class_range, class_name, all_docs));
+                    out.push(ref_count_lens(class_range, class_name, uri, all_docs, None));
 
                     // Implementations count for abstract classes (classes extending this).
                     if c.modifiers.is_abstract {
-                        let impl_count = find_implementations(class_name, None, all_docs).len();
-                        out.push(impl_count_lens(class_range, impl_count));
+                        let impls = find_implementations(class_name, None, all_docs);
+                        out.push(impl_count_lens(class_range, uri, impls));
                     }
 
                     // Find the parent class once for the whole class.
                     let parent = find_parent_class(c, all_docs);
 
                     for member in c.members.iter() {
-                        if let ClassMemberKind::Method(m) = &member.kind {
-                            let method_range = sv.name_range(m.name);
-                            out.push(ref_count_lens(method_range, m.name, all_docs));
+                        match &member.kind {
+                            ClassMemberKind::Method(m) => {
+                                let method_range = sv.name_range(m.name);
+                                out.push(ref_count_lens(method_range, m.name, uri, all_docs, None));
 
-                            if is_test_method(sv.source(), m, member.span.start) {
-                                out.push(run_test_lens(method_range, uri, class_name, m.name));
-                            }
+                                if is_test_method(sv.source(), m, member.span.start) {
+                                    out.push(run_test_lens(method_range, uri, class_name, m.name));
+                                }
 
-                            // Overrides lens: show if parent class has a method with the same name.
-                            if let Some(ref parent_name) = parent
-                                && parent_has_method(parent_name, m.name, all_docs)
-                            {
-                                out.push(overrides_lens(method_range, parent_name, m.name));
+                                // Overrides lens: show if parent class has a method with the same name.
+                                if let Some(ref parent_name) = parent
+                                    && let Some(parent_loc) =
+                                        parent_method_location(parent_name, m.name, all_docs)
+                                {
+                                    out.push(overrides_lens(
+                                        method_range,
+                                        uri,
+                                        parent_name,
+                                        m.name,
+                                        parent_loc,
+                                    ));
+                                }
+
+                                // Constructor-promoted params: `public function __construct(public string $name)`.
+                                if m.name == "__construct" {
+                                    for p in m.params.iter() {
+                                        if p.visibility.is_some() {
+                                            let prop_range = sv.name_range(p.name);
+                                            out.push(ref_count_lens(
+                                                prop_range,
+                                                p.name,
+                                                uri,
+                                                all_docs,
+                                                Some(SymbolKind::Property),
+                                            ));
+                                        }
+                                    }
+                                }
                             }
+                            ClassMemberKind::Property(p) => {
+                                let prop_range = sv.name_range(p.name);
+                                out.push(ref_count_lens(
+                                    prop_range,
+                                    p.name,
+                                    uri,
+                                    all_docs,
+                                    Some(SymbolKind::Property),
+                                ));
+                            }
+                            _ => {}
                         }
                     }
                 }
             }
             StmtKind::Interface(i) => {
                 let range = sv.name_range(i.name);
-                out.push(ref_count_lens(range, i.name, all_docs));
+                out.push(ref_count_lens(range, i.name, uri, all_docs, None));
                 // Implementations count lens.
-                let impl_count = find_implementations(i.name, None, all_docs).len();
-                out.push(impl_count_lens(range, impl_count));
+                let impls = find_implementations(i.name, None, all_docs);
+                out.push(impl_count_lens(range, uri, impls));
             }
             StmtKind::Trait(t) => {
                 let range = sv.name_range(t.name);
-                out.push(ref_count_lens(range, t.name, all_docs));
-                // Usages count: how many classes use this trait.
-                let usage_count = count_trait_usages(t.name, all_docs);
-                out.push(impl_count_lens(range, usage_count));
+                out.push(ref_count_lens(range, t.name, uri, all_docs, None));
+                // Usages: classes that `use` this trait.
+                let usages = trait_usage_locations(t.name, all_docs);
+                out.push(impl_count_lens(range, uri, usages));
                 for member in t.members.iter() {
-                    if let ClassMemberKind::Method(m) = &member.kind {
-                        let method_range = sv.name_range(m.name);
-                        out.push(ref_count_lens(method_range, m.name, all_docs));
+                    match &member.kind {
+                        ClassMemberKind::Method(m) => {
+                            let method_range = sv.name_range(m.name);
+                            out.push(ref_count_lens(method_range, m.name, uri, all_docs, None));
+                        }
+                        ClassMemberKind::Property(p) => {
+                            let prop_range = sv.name_range(p.name);
+                            out.push(ref_count_lens(
+                                prop_range,
+                                p.name,
+                                uri,
+                                all_docs,
+                                Some(SymbolKind::Property),
+                            ));
+                        }
+                        _ => {}
                     }
                 }
             }
             StmtKind::Enum(e) => {
                 let range = sv.name_range(e.name);
-                out.push(ref_count_lens(range, e.name, all_docs));
+                out.push(ref_count_lens(range, e.name, uri, all_docs, None));
                 for member in e.members.iter() {
                     if let EnumMemberKind::Method(m) = &member.kind {
                         let method_range = sv.name_range(m.name);
-                        out.push(ref_count_lens(method_range, m.name, all_docs));
+                        out.push(ref_count_lens(method_range, m.name, uri, all_docs, None));
                     }
                 }
             }
@@ -122,9 +172,12 @@ fn collect_lenses(
 fn ref_count_lens(
     range: tower_lsp::lsp_types::Range,
     name: &str,
+    uri: &Url,
     all_docs: &[(Url, Arc<ParsedDoc>)],
+    kind: Option<SymbolKind>,
 ) -> CodeLens {
-    let count = find_references(name, all_docs, false, None).len();
+    let locations = find_references(name, all_docs, false, kind);
+    let count = locations.len();
     let label = match count {
         0 => "0 references".to_string(),
         1 => "1 reference".to_string(),
@@ -134,14 +187,19 @@ fn ref_count_lens(
         range,
         command: Some(Command {
             title: label,
-            command: "php-lsp.showReferences".to_string(),
-            arguments: None,
+            command: "editor.action.showReferences".to_string(),
+            arguments: Some(vec![json!(uri), json!(range.start), json!(locations)]),
         }),
         data: None,
     }
 }
 
-fn impl_count_lens(range: tower_lsp::lsp_types::Range, count: usize) -> CodeLens {
+fn impl_count_lens(
+    range: tower_lsp::lsp_types::Range,
+    uri: &Url,
+    locations: Vec<tower_lsp::lsp_types::Location>,
+) -> CodeLens {
+    let count = locations.len();
     let label = match count {
         0 => "0 implementations".to_string(),
         1 => "1 implementation".to_string(),
@@ -151,8 +209,8 @@ fn impl_count_lens(range: tower_lsp::lsp_types::Range, count: usize) -> CodeLens
         range,
         command: Some(Command {
             title: label,
-            command: "php-lsp.showImplementations".to_string(),
-            arguments: None,
+            command: "editor.action.showReferences".to_string(),
+            arguments: Some(vec![json!(uri), json!(range.start), json!(locations)]),
         }),
         data: None,
     }
@@ -160,15 +218,21 @@ fn impl_count_lens(range: tower_lsp::lsp_types::Range, count: usize) -> CodeLens
 
 fn overrides_lens(
     range: tower_lsp::lsp_types::Range,
+    uri: &Url,
     parent_class: &str,
     method_name: &str,
+    parent_location: tower_lsp::lsp_types::Location,
 ) -> CodeLens {
     CodeLens {
         range,
         command: Some(Command {
             title: format!("overrides {}::{}", parent_class, method_name),
-            command: "php-lsp.goToDeclaration".to_string(),
-            arguments: None,
+            command: "editor.action.showReferences".to_string(),
+            arguments: Some(vec![
+                json!(uri),
+                json!(range.start),
+                json!(vec![parent_location]),
+            ]),
         }),
         data: None,
     }
@@ -197,16 +261,25 @@ fn run_test_lens(
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 /// Count how many classes across `all_docs` use `trait_name` via a `use` statement.
-fn count_trait_usages(trait_name: &str, all_docs: &[(Url, Arc<ParsedDoc>)]) -> usize {
-    let mut count = 0;
-    for (_, doc) in all_docs {
-        count += count_trait_usages_in_stmts(trait_name, &doc.program().stmts);
+fn trait_usage_locations(
+    trait_name: &str,
+    all_docs: &[(Url, Arc<ParsedDoc>)],
+) -> Vec<tower_lsp::lsp_types::Location> {
+    let mut out = Vec::new();
+    for (uri, doc) in all_docs {
+        let sv = doc.view();
+        collect_trait_usages_in_stmts(trait_name, &doc.program().stmts, sv, uri, &mut out);
     }
-    count
+    out
 }
 
-fn count_trait_usages_in_stmts(trait_name: &str, stmts: &[php_ast::Stmt<'_, '_>]) -> usize {
-    let mut count = 0;
+fn collect_trait_usages_in_stmts(
+    trait_name: &str,
+    stmts: &[php_ast::Stmt<'_, '_>],
+    sv: SourceView<'_>,
+    uri: &Url,
+    out: &mut Vec<tower_lsp::lsp_types::Location>,
+) {
     for stmt in stmts {
         match &stmt.kind {
             StmtKind::Class(c) => {
@@ -219,19 +292,21 @@ fn count_trait_usages_in_stmts(trait_name: &str, stmts: &[php_ast::Stmt<'_, '_>]
                         false
                     }
                 });
-                if uses_trait {
-                    count += 1;
+                if uses_trait && let Some(class_name) = c.name {
+                    out.push(tower_lsp::lsp_types::Location {
+                        uri: uri.clone(),
+                        range: sv.name_range(class_name),
+                    });
                 }
             }
             StmtKind::Namespace(ns) => {
                 if let NamespaceBody::Braced(inner) = &ns.body {
-                    count += count_trait_usages_in_stmts(trait_name, inner);
+                    collect_trait_usages_in_stmts(trait_name, inner, sv, uri, out);
                 }
             }
             _ => {}
         }
     }
-    count
 }
 
 /// Return the direct parent class name of a class, if any.
@@ -249,19 +324,60 @@ fn find_parent_class(
     Some(parent_short)
 }
 
-/// Check whether `parent_class` declares a method named `method_name`.
-fn parent_has_method(
+/// Find the declaration location of `method_name` on `parent_class`, if any.
+fn parent_method_location(
     parent_class: &str,
     method_name: &str,
     all_docs: &[(Url, Arc<ParsedDoc>)],
-) -> bool {
-    for (_, doc) in all_docs {
+) -> Option<tower_lsp::lsp_types::Location> {
+    for (uri, doc) in all_docs {
+        // Cheap existence pre-check using the existing helper.
         let members = members_of_class(doc, parent_class);
-        if members.methods.iter().any(|(n, _)| n == method_name) {
-            return true;
+        if !members.methods.iter().any(|(n, _)| n == method_name) {
+            continue;
+        }
+        // Located the class-doc pair; walk its AST to get the method's name range.
+        let sv = doc.view();
+        if let Some(range) =
+            find_method_name_range(&doc.program().stmts, parent_class, method_name, sv)
+        {
+            return Some(tower_lsp::lsp_types::Location {
+                uri: uri.clone(),
+                range,
+            });
         }
     }
-    false
+    None
+}
+
+fn find_method_name_range(
+    stmts: &[php_ast::Stmt<'_, '_>],
+    class_name: &str,
+    method_name: &str,
+    sv: SourceView<'_>,
+) -> Option<tower_lsp::lsp_types::Range> {
+    for stmt in stmts {
+        match &stmt.kind {
+            StmtKind::Class(c) if c.name == Some(class_name) => {
+                for member in c.members.iter() {
+                    if let ClassMemberKind::Method(m) = &member.kind
+                        && m.name == method_name
+                    {
+                        return Some(sv.name_range(m.name));
+                    }
+                }
+            }
+            StmtKind::Namespace(ns) => {
+                if let NamespaceBody::Braced(inner) = &ns.body
+                    && let Some(r) = find_method_name_range(inner, class_name, method_name, sv)
+                {
+                    return Some(r);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 /// A method is a test if its name starts with `test` (PHPUnit convention),
@@ -319,8 +435,8 @@ mod tests {
             "unused function should show '0 references'"
         );
         assert_eq!(
-            cmd.command, "php-lsp.showReferences",
-            "command name should be 'php-lsp.showReferences'"
+            cmd.command, "editor.action.showReferences",
+            "command name should be 'editor.action.showReferences'"
         );
     }
 
@@ -558,7 +674,7 @@ mod tests {
         let ref_lens = lenses.iter().find(|l| {
             l.command
                 .as_ref()
-                .map_or(false, |c| c.command == "php-lsp.showReferences")
+                .map_or(false, |c| c.command == "editor.action.showReferences")
         });
         let cmd = ref_lens
             .expect("expected a showReferences lens")
@@ -720,6 +836,154 @@ mod tests {
             title.starts_with("2"),
             "expected 2 implementations across docs, got: {}",
             title
+        );
+    }
+
+    /// Invariant: every lens that emits `editor.action.showReferences` must
+    /// pass `[uri, position, locations]` as arguments. Catches the bug class
+    /// where a lens was wired with `arguments: None` and silently did nothing.
+    #[test]
+    fn show_references_lenses_always_have_three_arguments() {
+        let src = "<?php
+namespace App;
+interface Animal { public function speak(): string; }
+trait Barker { public function bark(): string { return 'woof'; } }
+abstract class Base { public function greet(): string { return 'hi'; } }
+class Dog extends Base implements Animal {
+    use Barker;
+    public string $breed = '';
+    public function __construct(public int $age) {}
+    public function speak(): string { return 'woof'; }
+    public function greet(): string { return 'hello'; }
+}
+function topLevel(): void {}
+";
+        let d = doc(src);
+        let docs = vec![(uri("/a.php"), Arc::new(doc(src)))];
+        let lenses = code_lenses(&uri("/a.php"), &d, &docs);
+
+        let mut seen_any = false;
+        for lens in &lenses {
+            let Some(cmd) = &lens.command else { continue };
+            if cmd.command == "editor.action.showReferences" {
+                seen_any = true;
+                let args = cmd.arguments.as_ref().unwrap_or_else(|| {
+                    panic!(
+                        "lens {:?} uses editor.action.showReferences but has no arguments",
+                        cmd.title
+                    )
+                });
+                assert_eq!(
+                    args.len(),
+                    3,
+                    "lens {:?} must pass [uri, position, locations]; got {} args",
+                    cmd.title,
+                    args.len()
+                );
+                assert!(args[2].is_array(), "3rd arg (locations) must be an array");
+            }
+        }
+        assert!(
+            seen_any,
+            "fixture should produce at least one editor.action.showReferences lens"
+        );
+    }
+
+    #[test]
+    fn emits_lens_for_class_property() {
+        // Regular class property: `public string $name;` should get a ref-count lens.
+        let src = r#"<?php
+class User {
+    public string $name = '';
+    public function rename(string $new): void { $this->name = $new; }
+    public function who(): string { return $this->name; }
+}"#;
+        let d = doc(src);
+        let docs = vec![(uri("/a.php"), Arc::new(doc(src)))];
+        let lenses = code_lenses(&uri("/a.php"), &d, &docs);
+        // The lens should sit on the property name range (line with `public string $name`).
+        // Look for any lens whose title is a reference count and whose range overlaps the property line.
+        let prop_lens = lenses.iter().find(|l| {
+            let title_ok = l
+                .command
+                .as_ref()
+                .map_or(false, |c| c.title.contains("reference"));
+            // $name appears on line index 2 (0-based) in the fixture.
+            title_ok && l.range.start.line == 2
+        });
+        assert!(
+            prop_lens.is_some(),
+            "expected a references lens on the property declaration line"
+        );
+        let cmd = prop_lens.unwrap().command.as_ref().unwrap();
+        // Two accesses: `$this->name = $new` and `return $this->name`.
+        assert!(
+            cmd.title.starts_with("2"),
+            "expected '2 references' for the property, got {:?}",
+            cmd.title
+        );
+    }
+
+    #[test]
+    fn emits_lens_for_promoted_constructor_property() {
+        // Constructor-promoted property: `public function __construct(public int $age)`.
+        let src = r#"<?php
+class Dog {
+    public function __construct(public int $age) {}
+    public function birthday(): void { $this->age++; }
+    public function years(): int { return $this->age; }
+}"#;
+        let d = doc(src);
+        let docs = vec![(uri("/a.php"), Arc::new(doc(src)))];
+        let lenses = code_lenses(&uri("/a.php"), &d, &docs);
+        // Promoted param lens sits on the __construct line — look for a '2 references' lens there.
+        let promoted_lens = lenses.iter().find(|l| {
+            let cmd_ok = l
+                .command
+                .as_ref()
+                .map_or(false, |c| c.title.contains("reference"));
+            // __construct is on line 2 (0-based).
+            cmd_ok && l.range.start.line == 2 && l.command.as_ref().unwrap().title.starts_with("2")
+        });
+        assert!(
+            promoted_lens.is_some(),
+            "expected a '2 references' lens on the promoted-property declaration line"
+        );
+    }
+
+    #[test]
+    fn property_lens_does_not_match_same_named_method() {
+        // A method and a property with the same identifier must not cross-count.
+        let src = r#"<?php
+class Foo {
+    public string $name = '';
+    public function name(): string { return $this->name; }
+}
+$f = new Foo();
+echo $f->name;
+$f->name();
+"#;
+        let d = doc(src);
+        let docs = vec![(uri("/a.php"), Arc::new(doc(src)))];
+        let lenses = code_lenses(&uri("/a.php"), &d, &docs);
+        // Property lens is on line 2 (the `$name` declaration line).
+        let prop_title = lenses
+            .iter()
+            .find(|l| {
+                l.range.start.line == 2
+                    && l.command
+                        .as_ref()
+                        .map_or(false, |c| c.title.contains("reference"))
+            })
+            .and_then(|l| l.command.as_ref())
+            .map(|c| c.title.clone())
+            .expect("expected a property lens on the $name declaration line");
+        // Property accesses: `$this->name` in the method body + `$f->name` below.
+        // The property lens must NOT include the method call `$f->name()`.
+        assert!(
+            prop_title.starts_with("2"),
+            "property lens should count only property accesses, not method calls; got {:?}",
+            prop_title
         );
     }
 }

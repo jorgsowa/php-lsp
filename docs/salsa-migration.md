@@ -50,12 +50,16 @@ queries." That gives us:
 | E2 | LSP request cancellation → `RequestCancelled` | ⏸ folded into E1 — `snapshot_query` retries on `salsa::Cancelled` and falls back to the mutex; nothing escapes to the LSP layer |
 | E3 | Thread salsa-memoized method-returns into `TypeMap`; delete `OnceLock<MethodReturnsMap>` | ✅ shipped |
 | E4 | Move `DocumentStore.map` bookkeeping to `Backend`; delete the struct if empty | ⏳ pending (optional cleanup) |
-| F | `#[salsa::tracked(lru = N)]`; delete `indexed_order` | ⏳ pending (blocked by inputs-are-immortal problem) |
+| F | `#[salsa::tracked(lru = N)]`; delete `indexed_order` | ✅ shipped |
 | G1 | Drop redundant parse in `DocumentStore::index` | ✅ shipped |
 | G2 | Lock-free fast path in `mirror_text` | ✅ shipped (measurement pending) |
 | G3 | Trim `get_doc_salsa` overhead — cross-revision `parsed_cache` | ✅ shipped |
 | G4 | Investigate `references/*` +2000% regression | ✅ resolved — stale baseline, not a real regression |
 | H | Fix benches + CI regression gate | ✅ shipped |
+| I | Semantic diagnostics as a salsa query | ✅ shipped |
+| J | Workspace-symbol / type-hierarchy / implementation as tracked queries | ✅ shipped |
+| K | Persistent on-disk cache | 🧭 proposed |
+| L | Reference warm-up background task | ✅ shipped |
 
 ## Architecture — current state
 
@@ -497,24 +501,87 @@ Removes the `ref_index_ready` atomic flag and the Phase-3 background task. First
 
 Don't treat Phase E as a single PR. It's a phase with four independent sub-PRs.
 
-### Phase F — salsa LRU + delete indexed_order
+### Phase F — salsa LRU + delete indexed_order ✅ shipped 2026-04-22
 
-**2026-04-22 note**: Phase F alone does not solve memory growth. Salsa's per-query LRU only evicts memoized *outputs*; salsa *inputs* (`SourceFile` handles stored in `DocumentStore.source_files`) are immortal for the life of the database. A workspace that churns through many files accumulates inputs forever. Phase F needs to be paired with explicit input removal (salsa 0.26 supports deleting inputs, but the pattern and correctness implications need design work). Not a quick win.
+**What shipped**
 
+- `parsed_doc` in `src/db/parse.rs` now carries `#[salsa::tracked(no_eq,
+  lru = 2048)]`. That is the only query bounded: parsed docs own bumpalo
+  arenas and dominate memo memory; `file_index` and `method_returns` are
+  plain structs in the KB range, and their memos are already tied to the
+  lifetime of the input set via dependency tracking, so adding `lru` to
+  them would trade a small memory win for CPU regressions on cross-file
+  queries.
+- `DocumentStore.indexed_order` (VecDeque), `max_indexed` (AtomicUsize),
+  `DEFAULT_MAX_INDEXED`, `set_max_indexed`, and `push_to_lru` are all
+  deleted. `close()` no longer pushes to a queue; `index` /
+  `index_from_doc` no longer evict.
+- The `DocumentStore.map` survives as an unbounded known-files set. Its
+  remaining purpose is the three roles that are not salsa-shaped:
+  open-file state (`text: Option<String>`), parse diagnostics cache,
+  and semantic-diagnostics cache. Memory cost at workspace-scan cap
+  (50 k files) is ~2 MB of `Document` headers plus empty `Vec`s —
+  acceptable, and the same order as the existing `source_files` /
+  `text_cache` DashMaps.
+- Three tests deleted: `eviction_removes_oldest_indexed_file`,
+  `eviction_skips_open_files_and_evicts_next_indexed`, and
+  `close_twice_does_not_duplicate_lru_entry`. They asserted the
+  `indexed_order` contract that no longer exists; salsa's own test
+  suite covers the `lru` behaviour on the query side. `cargo test` is
+  892/892 after the removal (was 895; the delta is exactly the three
+  deleted tests).
 
-**Goal**: replace the hand-written `indexed_order: Mutex<VecDeque<Url>>` eviction with salsa's per-query LRU.
+**`maxIndexedFiles` LSP config option** — preserved as a no-op for
+backwards compatibility with existing editor configs. Salsa 0.26
+exposes `IngredientImpl::set_capacity` only on internal types; the
+`#[salsa::tracked(lru = N)]` macro emits a compile-time `usize` literal
+and does not generate a public `set_lru_capacity` on the query. Runtime
+tuning is therefore not reachable from the tracked-fn API. The three
+`lsp_config_*_max_indexed_files` tests in `backend.rs` only assert
+parsing and continue to pass; the field is read once at `initialize`
+and immediately discarded with a `let _ =` so the intent is explicit
+in the source. Bumping `lru = 2048` in `src/db/parse.rs` is the new
+knob, and it requires a recompile.
 
-```rust
-#[salsa::tracked(no_eq, lru = 512)]
-pub fn parsed_doc(db: &dyn Database, file: SourceFile) -> ParsedArc { … }
-```
+**Why `lru = 2048`** — sized above the Laravel fixture (1609 files) so
+full-workspace scans stay memoized with ~25 % headroom for per-session
+churn. Measurement on larger fixtures can bump this; it is a single-line
+change.
 
-Removes `indexed_order`, `max_indexed`, `set_max_indexed`, `push_to_lru`, and the
-associated eviction tests. Requires measurement on a large fixture to pick `N`.
+**Known limitation — DocumentStore holds ASTs outside the salsa LRU.**
+The G2 `text_cache: DashMap<Url, Arc<str>>` and G3 `parsed_cache:
+DashMap<Url, (Arc<str>, Arc<ParsedDoc>)>` are read-through caches keyed
+on `Url`. Every `get_doc_salsa*` read inserts into `parsed_cache` and
+only `remove(uri)` (or a text change) evicts. On a workspace that
+reads every file once, those DashMaps pin 50 k ASTs regardless of
+salsa's memo LRU — the salsa memo can drop its `Arc<ParsedDoc>` but
+the DashMap's clone keeps the bumpalo arena alive. This predates
+Phase F (shipped in G2/G3) and is not regressed by it, but Phase F
+does not fix it either. A follow-up that bounds `parsed_cache` with
+a size-capped LRU (or replaces it with a read through salsa) would
+close the gap. Tracked as an outstanding item rather than a phase of
+its own.
 
-**Dependency**: the current LRU tests (`eviction_removes_oldest_indexed_file`,
-`eviction_skips_open_files_and_evicts_next_indexed`) assert a contract that
-moves to salsa. They must be rewritten or deleted as part of Phase F.
+**Inputs-are-immortal** — unchanged by this phase. Salsa 0.26 has no
+public input-delete API (confirmed: `salsa-0.26.1/src/input.rs` has no
+`delete` / `remove` method; only tracked-struct deletion exists in
+`tracked_struct.rs`). `DocumentStore::remove(uri)` already drops the
+`source_files` / `text_cache` / `parsed_cache` entries so the file
+stops contributing to `workspace.files` after the next
+`sync_workspace_files()` call. The salsa input header itself
+(~40 bytes of `FileId` + `Arc<str>` uri) remains alive for the lifetime
+of the database. This is a complexity-reduction fix, not a memory-leak
+fix: a workspace that churns through hundreds of thousands of unique
+files over a single LSP session would still leak those headers. A
+proper solution waits on salsa exposing input deletion upstream; revisit
+when `salsa` releases the feature.
+
+**Behaviour change observable to callers** — `get_index(uri)` used to
+return `None` for files that had been evicted by the hand-written LRU;
+it now returns `Some` for any ever-indexed file (salsa reparses on a
+memo miss). This is strictly better: feature handlers no longer see
+spurious "file unknown" results mid-session. No LSP-visible regression
+because the only feature gate was the LRU itself.
 
 ### Phase G — close the single-file perf gap
 
@@ -643,6 +710,228 @@ stronger signal: it compares against rolling gh-pages history rather
 than a single frozen baseline, surfaces alert comments on the PR, and
 handles result storage across runs. The `compare` subcommand remains
 the canonical local-workflow entry point for reproducing CI results.
+
+### Phase I — semantic diagnostics as a salsa query ✅ shipped 2026-04-22
+
+**What shipped**
+
+- New `src/db/semantic.rs` exposing
+  `semantic_issues(db, ws, file) -> IssuesArc` where `IssuesArc(Arc<[Issue]>)`
+  has the same `Arc::ptr_eq`-based `Update` impl as the other `*Arc`
+  newtypes. The query runs `mir_analyzer::StatementsAnalyzer` against the
+  memoized codebase + parsed doc and returns the raw non-suppressed
+  `mir_issues::Issue` list. Depends on `codebase(ws)` and
+  `parsed_doc(file)`, so body-only edits to a file invalidate only its
+  own issues; structural edits cascade via the codebase query.
+- New `DocumentStore::get_semantic_issues_salsa(uri) -> Option<Arc<[Issue]>>`
+  accessor that runs the query under `snapshot_query` (so it benefits
+  from the same `salsa::Cancelled` retry loop as the other read paths).
+- **Config filtering lives outside the query.** New
+  `semantic_diagnostics::issues_to_diagnostics(&[Issue], &Url,
+  &DiagnosticsConfig) -> Vec<Diagnostic>` applies the user's per-category
+  toggles and converts to LSP diagnostics. Keeping the filter outside the
+  tracked function preserves memoization across `DiagnosticsConfig`
+  changes — flipping "undefined_variables" no longer invalidates the
+  expensive analyzer output.
+- Backend handlers (`did_open`, `did_change`, `document_diagnostic`,
+  `workspace_diagnostic`, `code_action`) all migrated to call the
+  accessor + `issues_to_diagnostics`. Every call is wrapped in
+  `tokio::task::spawn_blocking` — the salsa memo turns repeat hits into
+  Arc-clones, but the *first* call per file still walks
+  `StatementsAnalyzer` (hundreds of ms on cold files) and would stall
+  the async runtime if run inline. The imperative
+  `semantic_diagnostics_no_rebuild` is retained for `benches/semantic.rs`
+  as a single-call reference implementation and is marked
+  `#[allow(dead_code)]` for the library build.
+- **Dropped**: `Document.sem_diagnostics` field,
+  `DocumentStore::set_sem_diagnostics` / `get_sem_diagnostics`, and
+  every call site that wrote into the manual cache. `code_action` now
+  reads through the memo like every other diagnostic consumer — no
+  extra cache layer, no risk of serving stale diagnostics after an
+  edit.
+
+**Behaviour changes observable to callers**
+
+- Repeated `textDocument/diagnostic` pulls on an unchanged file return
+  instantly from the memo (was: reran `StatementsAnalyzer` every pull).
+- `workspace/diagnostic` sweeps share the per-file memo with open-file
+  handlers; on a cold workspace the pull pays the full analysis once
+  across handlers, not once per pull.
+- `code_action` no longer depends on `did_open`/`did_change` having
+  populated a side cache first. Previously, code-actions raised right
+  after `initialize` (before any edit) saw empty diagnostics; now they
+  compute on demand through the memo.
+
+**Tests**
+
+- Three new `src/db/semantic.rs` tests pin the query contract: flags an
+  undefined-function call, memoizes on unchanged inputs
+  (`Arc::ptr_eq` across calls), and reparses after an edit (different
+  `Arc`). Full suite is 895/895 after migration.
+
+### Phase J — workspace-symbol / type-hierarchy / implementation as tracked queries ✅ shipped 2026-04-22
+
+**What shipped**
+
+One aggregate query instead of a per-handler query per class of work.
+Reading the handlers showed that `workspace_symbols`,
+`prepare_type_hierarchy`, `supertypes`, `subtypes`, and
+`find_implementations` all needed the same three shapes: the flat
+`(Url, Arc<FileIndex>)` list, name → class lookup, and parent/interface
+name → subtype lookup. Collapsing them into a single query keeps the
+memo footprint bounded, avoids a combinatorial explosion of query
+keys, and skips the "workspace_symbols(query) memo grows
+unboundedly" hazard the original sketch flagged.
+
+- New `src/db/workspace_index.rs` exposes
+  `workspace_index(db, ws) -> WorkspaceIndexArc`. The `WorkspaceIndexData`
+  inner type carries:
+  - `files: Vec<(Url, Arc<FileIndex>)>` — the flat list handlers used
+    to rebuild on each call,
+  - `classes_by_name: HashMap<String, Vec<ClassRef>>` — O(1) name
+    lookup for `prepare_type_hierarchy` and `supertypes_of`,
+  - `subtypes_of: HashMap<String, Vec<ClassRef>>` — pre-built reverse
+    map (keyed by `extends`/`implements`/`use` target) for
+    `subtypes_of` and `find_implementations`.
+- `ClassRef { file: u32, class: u32 }` plus `WorkspaceIndexData::at`
+  turns a reverse-map entry back into `(&Url, &ClassDef)` without
+  cloning strings.
+- New `DocumentStore::get_workspace_index_salsa()` runs the query
+  through `snapshot_query` (same retry-on-cancel path the other salsa
+  accessors use) and returns the shared `Arc`. `sync_workspace_files`
+  is called first so the aggregate always reflects the latest set of
+  mirrored files.
+- `type_hierarchy`, `implementation`, and `symbols` each gained a
+  `_from_workspace` helper that consumes `&WorkspaceIndexData` in place
+  of `&[(Url, Arc<FileIndex>)]`. The inner algorithms for
+  `subtypes_of_from_workspace` and `find_implementations_from_workspace`
+  are now O(matches) via the `subtypes_of` map instead of O(files ×
+  classes); `prepare_type_hierarchy_from_workspace` and
+  `supertypes_of_from_workspace` are O(name-lookup).
+  `workspace_symbols_from_workspace` is the one exception: fuzzy match
+  is inherently O(total symbols), so the function body is a thin
+  wrapper over the original walk. The win there is removing the
+  per-request `all_indexes()` rebuild (~1600 `host.lock()` acquisitions
+  on Laravel).
+- Backend handlers (`symbol`, `prepare_type_hierarchy`, `supertypes`,
+  `subtypes`, `goto_implementation`) all migrated to the
+  `_from_workspace` variants.
+- **Dropped**: `prepare_type_hierarchy_from_index`,
+  `supertypes_of_from_index`, `subtypes_of_from_index`, and
+  `find_implementations_from_index`. They had no remaining callers
+  after the migration; their tests were rewritten against the new
+  `_from_workspace` helpers via a test-only
+  `WorkspaceIndexData::from_files` constructor.
+
+**Tests**: new `src/db/workspace_index.rs` has three tests pinning the
+aggregate contract (name map + subtype map populated correctly, Arc
+memoization on unchanged inputs, Arc invalidation on edit, trait-use
+and interface cases). `src/implementation.rs` tests ported to
+`_from_workspace`. Full suite is 899/899 (was 896, +3 from the new
+aggregate query).
+
+**Benches** (2026-04-22, `cargo bench --bench requests` against the
+previous run's baseline):
+
+| Bench | Δ | Absolute |
+|---|---|---|
+| `workspace_symbol/fuzzy_small` | +1.9 % | 4.7 µs |
+| `workspace_symbol/laravel_framework` | +5.3 % | 2.2 ms |
+| `implementation/cross_file_class` | −7.8 % | 38 ns |
+| `implementation/laravel_framework` | +25.4 % | 29 µs |
+
+These deltas are not a measurement of Phase J. The existing benches
+call the direct parsed-doc paths (`symbols::workspace_symbols`,
+`implementation::find_implementations`) — which take `&[(Url,
+Arc<ParsedDoc>)]` and walk every AST — whereas the Phase J hot path
+lives in the backend handlers calling `*_from_workspace` against a
+memoized `Arc<WorkspaceIndexData>`. The numbers above therefore only
+validate that the public `workspace_symbols` / `find_implementations`
+functions were left untouched; the `+25 %` on `implementation/laravel_framework`
+at a 29 µs operation is within criterion's baseline-noise
+window for a bench of that size.
+
+The real payoff lives in the LSP handler path that benches don't
+exercise: every workspace-symbol picker keystroke, subtype lookup, and
+implementation jump now reads through the shared `Arc<WorkspaceIndexData>`
+instead of rebuilding a `Vec<(Url, Arc<FileIndex>)>` via 1609
+`host.lock()` acquisitions through `all_indexes()`. A dedicated
+`_from_workspace` benchmark is a follow-up.
+
+### Phase K — persistent on-disk cache (proposed)
+
+**Goal**: serialize the salsa memo state (or a curated subset) to disk between
+LSP sessions so cold-start on the same workspace skips re-parsing and
+re-collecting. Mentioned in the "Why" motivation of this doc but never
+scoped.
+
+**Sketch**: on shutdown, write `FileIndex` / `StubSlice` / `FileRefs` per file
+to `~/.cache/php-lsp/<workspace-hash>/`. On `initialize`, hash each discovered
+file's content and reload the cached artifact if the hash matches. Parse on
+demand as usual when the editor opens a file; most indexed-but-not-open files
+never get re-parsed at all.
+
+**Payoff**: biggest remaining cold-start win. Today even with salsa, a restart
+re-parses the full workspace on `initialized`. The bundled stubs + PSR-4 map
+already take seconds on Laravel; a persisted cache could take that to
+milliseconds.
+
+**Blocker / risk**: significant. (1) Cache invalidation — need robust
+content-hash + version keys so a php-lsp upgrade or mir-codebase schema change
+invalidates the cache. (2) Serde boundary — `FileIndex` / `StubSlice` /
+`FileRefs` already derive `Serialize`/`Deserialize` (stubs use this), but
+`ParsedDoc` does not and cannot (bumpalo arena). So cached data skips the AST
+tier; `parsed_doc` stays memory-only. (3) Bundled-stubs path already does
+something like this — reuse `StubSlice` serde infrastructure instead of
+inventing a new format. **Size**: 1–2 PRs, weeks of wall-clock once design is
+agreed. Defer until Phases I/J have landed and the persistent value is
+larger.
+
+### Phase L — reference warm-up background task ✅ shipped 2026-04-22
+
+**What shipped**
+
+Simpler than the original sketch. Reading `src/db/refs.rs` showed that
+`symbol_refs(db, ws, key)` iterates every workspace file's `file_refs`
+to build its result — **with any key**, including a sentinel that
+matches nothing. The per-file walk is memoized on first traversal, so
+one call warms the entire cross-file reference index. No need to pick
+"hot symbols"; a single invocation does the work.
+
+Implementation:
+
+- New `DocumentStore::warm_reference_index(&self)` — invokes
+  `symbol_refs(db, ws, "__phplsp_warmup__")` through `snapshot_query`.
+  The returned `Vec<(Url, u32, u32)>` is empty (sentinel matches
+  nothing), but the memo is populated for every `file_refs(ws, sf)`
+  pair.
+- Called from the `initialized` workspace-scan spawn, right after the
+  per-root scan loop completes and before `drop(docs)`. Wrapped in
+  `tokio::task::spawn_blocking` so the async runtime doesn't stall on
+  the CPU-bound walk.
+- Fire-and-forget. A `textDocument/references` request arriving
+  mid-warmup runs through `snapshot_query`'s existing `salsa::Cancelled`
+  retry loop, so late-arriving lookups either join the warm-up's
+  results or retry cheaply.
+
+**Payoff**: first `textDocument/references` on a cold workspace goes
+from "walk every file's Pass-2 analysis" to "O(total refs) filter-walk
+over already-memoized `file_refs`". On Laravel (1609 files) that's the
+difference between seconds and single-digit milliseconds.
+
+**Tests**: new
+`warm_reference_index_does_not_panic_and_keeps_lookups_correct` in
+`document_store.rs` exercises the path on a two-file workspace and
+asserts that a post-warm-up `get_symbol_refs_salsa` still returns the
+correct locations. Full suite is 896/896 after Phase I + L.
+
+---
+
+**Prioritization among I/J/K/L**: I, J, and L shipped 2026-04-22. K is
+deferred — the in-memory picture is salsa-native now, but the observed
+wins (Phase D references, Phase I diagnostics, Phase J cross-file lookups)
+already cover the user-visible hot paths. Revisit K only if cold-start
+profiling becomes the dominant complaint.
 
 ## Constraints carried forward
 

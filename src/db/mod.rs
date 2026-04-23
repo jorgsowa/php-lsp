@@ -13,6 +13,8 @@ pub mod input;
 pub mod method_returns;
 pub mod parse;
 pub mod refs;
+pub mod semantic;
+pub mod workspace_index;
 
 #[allow(unused_imports)] // Analysis/RootDatabase reserved for Phase E.
 pub use analysis::{Analysis, AnalysisHost, RootDatabase};

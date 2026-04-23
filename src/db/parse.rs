@@ -52,7 +52,14 @@ unsafe impl Update for ParsedArc {
 /// Parse the file's source text. `no_eq` because `ParsedArc` has no
 /// structural equality — invalidation is driven entirely by input changes,
 /// not by comparing the new value against the old one.
-#[salsa::tracked(no_eq)]
+///
+/// Phase F: `lru = 2048` bounds the number of cached ASTs. Parsed docs own
+/// bumpalo arenas and are the largest memoized values in the db; dropping
+/// older entries caps resident memory at roughly 2048 × avg_ast_size.
+/// Re-reads after eviction reparse from the live `SourceFile::text` input
+/// (cheap `Arc<str>` clone). This replaces the hand-written
+/// `DocumentStore::indexed_order` LRU that used to bound `Document` entries.
+#[salsa::tracked(no_eq, lru = 2048)]
 pub fn parsed_doc(db: &dyn Database, file: SourceFile) -> ParsedArc {
     let text = file.text(db);
     let (doc, _diags) = parse_document(&text);

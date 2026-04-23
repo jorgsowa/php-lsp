@@ -67,42 +67,70 @@ pub fn goto_implementation(
     find_implementations(&word, fqn, all_docs)
 }
 
-/// Find implementations using `FileIndex` entries (memory-efficient cross-file search).
-pub fn find_implementations_from_index(
+/// Phase J — Find implementations via the salsa-memoized workspace aggregate.
+/// Uses the pre-built `subtypes_of[word]` reverse map for O(matches) lookups,
+/// with an additional pass over the FQN's `subtypes_of` entry when the caller
+/// supplied one (covers classes that wrote out the fully-qualified form in
+/// their `extends`/`implements` clause). Replaces the old
+/// `find_implementations_from_index` which walked every file's classes.
+pub fn find_implementations_from_workspace(
     word: &str,
     fqn: Option<&str>,
-    indexes: &[(
-        tower_lsp::lsp_types::Url,
-        std::sync::Arc<crate::file_index::FileIndex>,
-    )],
+    wi: &crate::db::workspace_index::WorkspaceIndexData,
 ) -> Vec<Location> {
     let mut locations = Vec::new();
-    for (uri, idx) in indexes {
-        for cls in &idx.classes {
-            let extends_match = cls
-                .parent
-                .as_deref()
-                .map(|p| name_matches(p, word, fqn))
-                .unwrap_or(false);
-            let implements_match = cls
-                .implements
-                .iter()
-                .any(|iface| name_matches(iface, word, fqn));
-            if extends_match || implements_match {
-                let pos = tower_lsp::lsp_types::Position {
-                    line: cls.start_line,
-                    character: 0,
-                };
-                locations.push(Location {
-                    uri: uri.clone(),
-                    range: tower_lsp::lsp_types::Range {
-                        start: pos,
-                        end: pos,
-                    },
-                });
+    let mut push_refs = |key: &str| {
+        if let Some(refs) = wi.subtypes_of.get(key) {
+            for r in refs {
+                if let Some((uri, cls)) = wi.at(*r) {
+                    // Re-check with `name_matches` so a bare-name subtype_of
+                    // entry survives an FQN-qualified search and vice versa.
+                    let extends_match = cls
+                        .parent
+                        .as_deref()
+                        .map(|p| name_matches(p, word, fqn))
+                        .unwrap_or(false);
+                    let implements_match = cls
+                        .implements
+                        .iter()
+                        .any(|iface| name_matches(iface, word, fqn));
+                    if extends_match || implements_match {
+                        let pos = tower_lsp::lsp_types::Position {
+                            line: cls.start_line,
+                            character: 0,
+                        };
+                        locations.push(Location {
+                            uri: uri.clone(),
+                            range: tower_lsp::lsp_types::Range {
+                                start: pos,
+                                end: pos,
+                            },
+                        });
+                    }
+                }
             }
         }
+    };
+    push_refs(word);
+    if let Some(f) = fqn
+        && f != word
+    {
+        push_refs(f);
+        // Cover `\App\Animal`-style leading-backslash forms.
+        let trimmed = f.trim_start_matches('\\');
+        if trimmed != f {
+            push_refs(trimmed);
+        }
     }
+    // De-dup: a class may list both the bare name and the FQN of the same
+    // parent (unlikely but cheap to guard against).
+    locations.sort_by(|a, b| {
+        a.uri
+            .as_str()
+            .cmp(b.uri.as_str())
+            .then(a.range.start.line.cmp(&b.range.start.line))
+    });
+    locations.dedup_by(|a, b| a.uri == b.uri && a.range.start.line == b.range.start.line);
     locations
 }
 
@@ -457,7 +485,11 @@ mod tests {
         );
     }
 
-    // ── find_implementations_from_index ───────────────────────────────────────
+    // ── find_implementations_from_workspace ──────────────────────────────────
+    //
+    // Phase J: these tests build a `WorkspaceIndexData` directly via
+    // `from_files` (no AnalysisHost needed) so they exercise the reverse-map
+    // shape the backend actually uses in production.
 
     fn make_index(path: &str, src: &str) -> (Url, std::sync::Arc<crate::file_index::FileIndex>) {
         use crate::file_index::FileIndex;
@@ -467,13 +499,16 @@ mod tests {
     }
 
     #[test]
-    fn from_index_finds_implementing_class() {
+    fn from_workspace_finds_implementing_class() {
         let (circle_uri, circle_idx) = make_index(
             "/circle.php",
             "<?php\nclass Circle implements Drawable {\n    public function draw(): void {}\n}",
         );
-        let indexes = vec![(circle_uri.clone(), circle_idx)];
-        let locs = find_implementations_from_index("Drawable", None, &indexes);
+        let wi = crate::db::workspace_index::WorkspaceIndexData::from_files(vec![(
+            circle_uri.clone(),
+            circle_idx,
+        )]);
+        let locs = find_implementations_from_workspace("Drawable", None, &wi);
         assert_eq!(
             locs.len(),
             1,
@@ -484,20 +519,24 @@ mod tests {
     }
 
     #[test]
-    fn from_index_finds_extending_class() {
+    fn from_workspace_finds_extending_class() {
         let (dog_uri, dog_idx) = make_index("/dog.php", "<?php\nclass Dog extends Animal {}");
-        let indexes = vec![(dog_uri.clone(), dog_idx)];
-        let locs = find_implementations_from_index("Animal", None, &indexes);
+        let wi =
+            crate::db::workspace_index::WorkspaceIndexData::from_files(vec![(dog_uri, dog_idx)]);
+        let locs = find_implementations_from_workspace("Animal", None, &wi);
         assert_eq!(locs.len(), 1, "expected Dog as subclass of Animal");
         assert_eq!(locs[0].range.start.line, 1);
     }
 
     #[test]
-    fn from_index_finds_across_multiple_files() {
+    fn from_workspace_finds_across_multiple_files() {
         let (a_uri, a_idx) = make_index("/a.php", "<?php\nclass Cat extends Animal {}");
         let (b_uri, b_idx) = make_index("/b.php", "<?php\nclass Dog extends Animal {}");
-        let indexes = vec![(a_uri, a_idx), (b_uri, b_idx)];
-        let locs = find_implementations_from_index("Animal", None, &indexes);
+        let wi = crate::db::workspace_index::WorkspaceIndexData::from_files(vec![
+            (a_uri, a_idx),
+            (b_uri, b_idx),
+        ]);
+        let locs = find_implementations_from_workspace("Animal", None, &wi);
         assert_eq!(locs.len(), 2, "expected both Cat and Dog");
     }
 }

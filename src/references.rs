@@ -7,8 +7,8 @@ use tower_lsp::lsp_types::{Location, Position, Range, Url};
 
 use crate::ast::{ParsedDoc, str_offset};
 use crate::walk::{
-    class_refs_in_stmts, function_refs_in_stmts, method_refs_in_stmts, refs_in_stmts,
-    refs_in_stmts_with_use,
+    class_refs_in_stmts, function_refs_in_stmts, method_refs_in_stmts, property_refs_in_stmts,
+    refs_in_stmts, refs_in_stmts_with_use,
 };
 
 /// What kind of symbol the cursor is on.  Used to dispatch to the
@@ -22,6 +22,8 @@ pub enum SymbolKind {
     Method,
     /// A class, interface, trait, or enum name used as a type.
     Class,
+    /// A class / trait property (`->name`, `?->name`, promoted or declared).
+    Property,
 }
 
 /// Find all locations where `word` is referenced across the given documents.
@@ -263,6 +265,10 @@ pub fn find_references_codebase(
 
         // General walker already handles None kind; codebase index adds no value.
         None => None,
+
+        // Properties aren't tracked in the mir codebase index; fall through to
+        // the general AST walker by returning None.
+        Some(SymbolKind::Property) => None,
     }
 }
 
@@ -319,6 +325,24 @@ fn scan_doc(
             Some(SymbolKind::Function) => function_refs_in_stmts(stmts, word, &mut spans),
             Some(SymbolKind::Method) => method_refs_in_stmts(stmts, word, &mut spans),
             Some(SymbolKind::Class) => class_refs_in_stmts(stmts, word, &mut spans),
+            // Property walker emits both access sites *and* declaration spans
+            // (used by rename). Strip decls here when the caller doesn't want them.
+            Some(SymbolKind::Property) => {
+                property_refs_in_stmts(source, stmts, word, &mut spans);
+                if !include_declaration {
+                    let mut decl_spans = Vec::new();
+                    collect_declaration_spans(
+                        source,
+                        stmts,
+                        word,
+                        Some(SymbolKind::Property),
+                        &mut decl_spans,
+                    );
+                    let decl_set: HashSet<(u32, u32)> =
+                        decl_spans.iter().map(|s| (s.start, s.end)).collect();
+                    spans.retain(|span| !decl_set.contains(&(span.start, span.end)));
+                }
+            }
             // General walker already includes declarations; filter them out if unwanted.
             None => {
                 refs_in_stmts(source, stmts, word, &mut spans);
@@ -331,10 +355,16 @@ fn scan_doc(
                 }
             }
         }
-        // Typed walkers never emit declaration spans, so add them separately when wanted.
-        // Pass `kind` so only declarations of the matching category are appended —
-        // a Method search must not return a free-function declaration with the same name.
-        if include_declaration && kind.is_some() {
+        // Typed walkers (except Property, which already includes decls) don't emit
+        // declaration spans, so add them separately when wanted. Pass `kind` so only
+        // declarations of the matching category are appended — a Method search must
+        // not return a free-function declaration with the same name.
+        if include_declaration
+            && matches!(
+                kind,
+                Some(SymbolKind::Function) | Some(SymbolKind::Method) | Some(SymbolKind::Class)
+            )
+        {
             collect_declaration_spans(source, stmts, word, kind, &mut spans);
         }
     }
@@ -384,6 +414,7 @@ fn collect_declaration_spans(
     let want_free = matches!(kind, None | Some(SymbolKind::Function));
     let want_method = matches!(kind, None | Some(SymbolKind::Method));
     let want_type = matches!(kind, None | Some(SymbolKind::Class));
+    let want_property = matches!(kind, None | Some(SymbolKind::Property));
 
     for stmt in stmts {
         match &stmt.kind {
@@ -399,12 +430,26 @@ fn collect_declaration_spans(
                 {
                     out.push(declaration_name_span(source, name));
                 }
-                if want_method {
+                if want_method || want_property {
                     for member in c.members.iter() {
-                        if let ClassMemberKind::Method(m) = &member.kind
-                            && m.name == word
-                        {
-                            out.push(declaration_name_span(source, m.name));
+                        match &member.kind {
+                            ClassMemberKind::Method(m) if want_method && m.name == word => {
+                                out.push(declaration_name_span(source, m.name));
+                            }
+                            ClassMemberKind::Method(m)
+                                if want_property && m.name == "__construct" =>
+                            {
+                                // Promoted constructor params act as property declarations.
+                                for p in m.params.iter() {
+                                    if p.visibility.is_some() && p.name == word {
+                                        out.push(declaration_name_span(source, p.name));
+                                    }
+                                }
+                            }
+                            ClassMemberKind::Property(p) if want_property && p.name == word => {
+                                out.push(declaration_name_span(source, p.name));
+                            }
+                            _ => {}
                         }
                     }
                 }
@@ -427,12 +472,16 @@ fn collect_declaration_spans(
                 if want_type && t.name == word {
                     out.push(declaration_name_span(source, t.name));
                 }
-                if want_method {
+                if want_method || want_property {
                     for member in t.members.iter() {
-                        if let ClassMemberKind::Method(m) = &member.kind
-                            && m.name == word
-                        {
-                            out.push(declaration_name_span(source, m.name));
+                        match &member.kind {
+                            ClassMemberKind::Method(m) if want_method && m.name == word => {
+                                out.push(declaration_name_span(source, m.name));
+                            }
+                            ClassMemberKind::Property(p) if want_property && p.name == word => {
+                                out.push(declaration_name_span(source, p.name));
+                            }
+                            _ => {}
                         }
                     }
                 }
