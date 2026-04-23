@@ -10,6 +10,12 @@ use crate::db::analysis::AnalysisHost;
 use crate::db::input::{FileId, SourceFile, Workspace};
 use crate::file_index::FileIndex;
 
+/// Upper bound on `parsed_cache` entries. Matched to the `lru = 2048` on
+/// `parsed_doc` in `src/db/parse.rs` so the secondary Arc retention can't
+/// pin more ASTs alive than salsa's memo already bounds. Exceeding this
+/// triggers probabilistic eviction (see [`DocumentStore::insert_parsed_cache`]).
+const PARSED_CACHE_CAP: usize = 2048;
+
 pub struct DocumentStore {
     /// Cached semantic tokens per document: (result_id, tokens).
     /// Used to compute incremental deltas for `textDocument/semanticTokens/full/delta`.
@@ -50,6 +56,11 @@ pub struct DocumentStore {
     /// invalidation is required, which avoids the TOCTOU window where a
     /// concurrent reader could re-insert a stale entry after a writer's
     /// eviction.
+    ///
+    /// Size-bounded at [`PARSED_CACHE_CAP`] — see `insert_parsed_cache`.
+    /// Without this bound, every workspace file read-through would pin
+    /// its bumpalo arena alive regardless of salsa's `lru = 2048` on the
+    /// `parsed_doc` memo.
     parsed_cache: DashMap<Url, (Arc<str>, Arc<ParsedDoc>)>,
     /// Monotonic allocator for `FileId`s (one per ever-seen URL).
     next_file_id: AtomicU32,
@@ -266,8 +277,35 @@ impl DocumentStore {
             let doc = crate::db::parse::parsed_doc(db, sf).0.clone();
             (text, doc)
         });
-        self.parsed_cache.insert(uri.clone(), (text, doc.clone()));
+        self.insert_parsed_cache(uri.clone(), text, doc.clone());
         Some(doc)
+    }
+
+    /// Publish a fresh `ParsedDoc` into `parsed_cache`, shedding roughly
+    /// half of the cache first if it has grown past [`PARSED_CACHE_CAP`].
+    ///
+    /// Eviction is probabilistic (DashMap iteration order is arbitrary),
+    /// not LRU. That's fine — salsa's own `parsed_doc` memo uses
+    /// `lru = 2048` on hotness-aware storage, so a cache-miss here is
+    /// cheap: the next read goes through `snapshot_query` and
+    /// `parsed_doc`, which still short-circuits on the salsa memo.
+    /// What we're bounding here is the *secondary* Arc retention that
+    /// would otherwise pin every workspace file's bumpalo arena alive
+    /// regardless of salsa's eviction decisions.
+    fn insert_parsed_cache(&self, uri: Url, text: Arc<str>, doc: Arc<ParsedDoc>) {
+        if self.parsed_cache.len() >= PARSED_CACHE_CAP {
+            let drop_target = self.parsed_cache.len() / 2;
+            let mut dropped = 0usize;
+            self.parsed_cache.retain(|_, _| {
+                if dropped < drop_target {
+                    dropped += 1;
+                    false
+                } else {
+                    true
+                }
+            });
+        }
+        self.parsed_cache.insert(uri, (text, doc));
     }
 
     /// Refresh `workspace.files` to mirror the current `source_files` set.
@@ -708,6 +746,28 @@ mod tests {
     /// `get_doc_salsa` calls on unchanged text return the same `Arc`
     /// (pointer equality), and an edit forces a miss that produces a
     /// different `Arc`.
+    /// parsed_cache must stay bounded — inserting more than
+    /// `PARSED_CACHE_CAP` unique URLs must not cause unbounded growth.
+    /// Eviction is probabilistic, so we only assert the bound, not which
+    /// entries survive.
+    #[test]
+    fn parsed_cache_stays_bounded_under_many_inserts() {
+        let store = DocumentStore::new();
+        let overflow = PARSED_CACHE_CAP + 100;
+        for i in 0..overflow {
+            let u = uri(&format!("/cap/file{i}.php"));
+            store.index(u.clone(), "<?php\nclass A {}");
+            // Force a parsed_cache insert via get_doc_salsa.
+            let _ = store.get_doc_salsa(&u);
+        }
+        assert!(
+            store.parsed_cache.len() <= PARSED_CACHE_CAP,
+            "parsed_cache grew to {} entries (cap {})",
+            store.parsed_cache.len(),
+            PARSED_CACHE_CAP
+        );
+    }
+
     #[test]
     fn get_doc_salsa_cache_hits_across_calls() {
         let store = DocumentStore::new();

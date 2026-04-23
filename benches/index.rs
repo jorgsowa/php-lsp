@@ -172,6 +172,21 @@ fn bench_mirror_same_text_contended(c: &mut Criterion) {
     });
 }
 
+/// Measures `get_doc_salsa` on an already-parsed file — the hot path for
+/// every feature-module call in `backend.rs`. With G3 enabled this should
+/// hit the lock-free `parsed_cache`; without G3 every call goes through
+/// `snapshot_query`. Contrast the two to decide whether G3 is worth keeping.
+fn bench_get_doc_repeated(c: &mut Criterion) {
+    let store = DocumentStore::new();
+    let uri = Url::parse("file:///bench/hotdoc.php").unwrap();
+    store.index(uri.clone(), MEDIUM);
+    let _warm = store.get_doc_salsa(&uri);
+
+    c.bench_function("index/get_doc_repeated", |b| {
+        b.iter(|| black_box(store.get_doc_salsa(black_box(&uri))));
+    });
+}
+
 criterion_group!(
     benches,
     bench_index_single,
@@ -179,6 +194,7 @@ criterion_group!(
     bench_all_docs,
     bench_workspace_scan,
     bench_workspace_scan_laravel,
-    bench_mirror_same_text_contended
+    bench_mirror_same_text_contended,
+    bench_get_doc_repeated
 );
 criterion_main!(benches);

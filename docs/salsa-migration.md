@@ -614,16 +614,24 @@ change.
 **Known limitation — DocumentStore holds ASTs outside the salsa LRU.**
 The G2 `text_cache: DashMap<Url, Arc<str>>` and G3 `parsed_cache:
 DashMap<Url, (Arc<str>, Arc<ParsedDoc>)>` are read-through caches keyed
-on `Url`. Every `get_doc_salsa*` read inserts into `parsed_cache` and
-only `remove(uri)` (or a text change) evicts. On a workspace that
-reads every file once, those DashMaps pin 50 k ASTs regardless of
-salsa's memo LRU — the salsa memo can drop its `Arc<ParsedDoc>` but
-the DashMap's clone keeps the bumpalo arena alive. This predates
-Phase F (shipped in G2/G3) and is not regressed by it, but Phase F
-does not fix it either. A follow-up that bounds `parsed_cache` with
-a size-capped LRU (or replaces it with a read through salsa) would
-close the gap. Tracked as an outstanding item rather than a phase of
-its own.
+on `Url`. Every `get_doc_salsa` read inserts into `parsed_cache` and
+only `remove(uri)` (or a text change) evicts.
+
+**Update (2026-04-23):** `parsed_cache` is now size-bounded at
+`PARSED_CACHE_CAP = 2048` (matching the `lru = 2048` on the salsa
+`parsed_doc` memo). On insert, if the cache has grown past the cap,
+`insert_parsed_cache` calls `DashMap::retain` to drop roughly half the
+entries before inserting the new one. Eviction is probabilistic
+(DashMap iteration order is arbitrary), which is deliberate — salsa's
+memo already has hotness-aware LRU, so losing a DashMap entry for a
+hot file just means one extra `snapshot_query` that short-circuits on
+the salsa memo. Benchmarked hot-path cost is unchanged at
+~39 ns/call; G3 vs no-G3 is still 38 ns vs 76 ns (measured on this
+bench machine, 2026-04-23).
+
+`text_cache` is still unbounded. It stores only `Arc<str>` (the file
+text), not parsed docs, so the per-entry cost is bytes-of-source not
+KB-of-arena; leaving it as-is until profiling justifies a bound.
 
 **Inputs-are-immortal** — unchanged by this phase. Salsa 0.26 has no
 public input-delete API (confirmed: `salsa-0.26.1/src/input.rs` has no
