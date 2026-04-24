@@ -35,7 +35,6 @@ use crate::document_store::DocumentStore;
 use crate::extract_action::extract_variable_actions;
 use crate::extract_constant_action::extract_constant_actions;
 use crate::extract_method_action::extract_method_actions;
-use crate::file_index::FileIndex;
 use crate::file_rename::{use_edits_for_delete, use_edits_for_rename};
 use crate::folding::folding_ranges;
 use crate::formatting::{format_document, format_range};
@@ -142,7 +141,7 @@ impl DiagnosticsConfig {
 }
 
 /// Configuration received from the client via `initializationOptions`.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct LspConfig {
     /// PHP version string, e.g. `"8.1"`.  Set explicitly via `initializationOptions`
     /// or auto-detected from `composer.json` / the `php` binary at startup.
@@ -151,20 +150,6 @@ pub struct LspConfig {
     pub exclude_paths: Vec<String>,
     /// Per-category diagnostic toggles.
     pub diagnostics: DiagnosticsConfig,
-    /// Maximum number of background-indexed files kept in memory (default: 1000).
-    /// Lower this to reduce memory usage on large projects.
-    pub max_indexed_files: usize,
-}
-
-impl Default for LspConfig {
-    fn default() -> Self {
-        LspConfig {
-            php_version: None,
-            exclude_paths: vec![],
-            diagnostics: DiagnosticsConfig::default(),
-            max_indexed_files: 1_000,
-        }
-    }
 }
 
 impl LspConfig {
@@ -183,13 +168,6 @@ impl LspConfig {
         }
         if let Some(diag_val) = v.get("diagnostics") {
             cfg.diagnostics = DiagnosticsConfig::from_value(diag_val);
-        }
-        if let Some(n) = v
-            .get("maxIndexedFiles")
-            .and_then(|x| x.as_u64())
-            .map(|x| x as usize)
-        {
-            cfg.max_indexed_files = n;
         }
         cfg
     }
@@ -454,13 +432,6 @@ impl LanguageServer for Backend {
                     .await;
             }
             cfg.php_version = Some(ver);
-            // Phase F: `maxIndexedFiles` is kept in the LSP config for
-            // backwards compatibility but is now a no-op. The legacy
-            // `DocumentStore`-owned LRU it used to tune has been replaced
-            // by salsa's per-query `lru` on `parsed_doc` (compile-time
-            // constant; see `src/db/parse.rs`). Runtime tuning isn't
-            // exposed by salsa 0.26.
-            let _ = cfg.max_indexed_files;
             *self.config.write().unwrap() = cfg;
         }
 
@@ -773,13 +744,6 @@ impl LanguageServer for Backend {
                     .await;
             }
             cfg.php_version = Some(ver);
-            // Phase F: `maxIndexedFiles` is kept in the LSP config for
-            // backwards compatibility but is now a no-op. The legacy
-            // `DocumentStore`-owned LRU it used to tune has been replaced
-            // by salsa's per-query `lru` on `parsed_doc` (compile-time
-            // constant; see `src/db/parse.rs`). Runtime tuning isn't
-            // exposed by salsa 0.26.
-            let _ = cfg.max_indexed_files;
             *self.config.write().unwrap() = cfg;
         }
     }
@@ -879,13 +843,6 @@ impl LanguageServer for Backend {
             None => return,
         };
 
-        // Capture the pre-edit index *before* `set_text` mirrors the new
-        // text into salsa — otherwise `file_index(db, sf)` would already
-        // reflect the new text and the structure comparison below would
-        // become a no-op. Holding the `Arc<FileIndex>` keeps the old view
-        // alive regardless of input revision changes.
-        let old_index = self.docs.get_index_salsa(&uri);
-
         // Store text immediately and capture the version token.
         // Features (completion, hover, …) see the new text instantly while
         // the parse runs in the background.
@@ -895,36 +852,19 @@ impl LanguageServer for Backend {
         let open_files = self.open_files.clone();
         let client = self.client.clone();
         let diag_cfg = self.config.read().unwrap().diagnostics.clone();
-        let php_version = self.config.read().unwrap().php_version.clone();
         tokio::spawn(async move {
             // 100 ms debounce: if another edit arrives before we parse,
             // the version gate in Backend below will discard this result.
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
-            let (doc, diagnostics) = tokio::task::spawn_blocking(move || parse_document(&text))
+            let (_doc, diagnostics) = tokio::task::spawn_blocking(move || parse_document(&text))
                 .await
                 .unwrap_or_else(|_| (ParsedDoc::default(), vec![]));
-
-            // Compare new structure against the pre-edit index (captured
-            // before the salsa mirror saw the new text) to decide whether
-            // the codebase rebuild (remove + collect + finalize) is needed.
-            // Most keystrokes only change method bodies — no rebuild needed.
-            let new_index = FileIndex::extract(&doc);
-            let structure_changed = old_index
-                .as_ref()
-                .is_none_or(|old| !old.same_structure(&new_index));
-            drop(new_index);
-
-            // Drop the AST produced here — salsa owns parsing. We only kept
-            // it to support the `same_structure` check above.
-            drop(doc);
 
             // Only apply if no newer edit arrived while we were parsing.
             // Backend-level gate replaces the old `apply_parse` version check.
             if open_files.current_version(&uri) == Some(version) {
                 open_files.set_parse_diagnostics(&uri, diagnostics.clone());
-                let _ = structure_changed;
-                let _ = php_version.as_deref();
 
                 // Phase I: the salsa `semantic_issues` walk is synchronous
                 // and CPU-bound on a cold file — run it on the blocking
@@ -2908,24 +2848,6 @@ mod tests {
         let cfg = LspConfig::from_value(&serde_json::json!({}));
         assert!(cfg.php_version.is_none());
         assert!(cfg.exclude_paths.is_empty());
-    }
-
-    #[test]
-    fn lsp_config_default_max_indexed_files() {
-        let cfg = LspConfig::default();
-        assert_eq!(cfg.max_indexed_files, 1_000);
-    }
-
-    #[test]
-    fn lsp_config_parses_max_indexed_files() {
-        let cfg = LspConfig::from_value(&serde_json::json!({"maxIndexedFiles": 500}));
-        assert_eq!(cfg.max_indexed_files, 500);
-    }
-
-    #[test]
-    fn lsp_config_ignores_invalid_max_indexed_files() {
-        let cfg = LspConfig::from_value(&serde_json::json!({"maxIndexedFiles": "bad"}));
-        assert_eq!(cfg.max_indexed_files, 1_000);
     }
 
     // find_use_insert_line tests

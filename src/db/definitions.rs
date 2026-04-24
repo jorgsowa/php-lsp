@@ -17,7 +17,6 @@ use crate::db::parse::parsed_doc;
 pub struct SliceArc(pub Arc<StubSlice>);
 
 impl SliceArc {
-    #[allow(dead_code)] // reserved for codebase aggregator (step 2).
     pub fn get(&self) -> &StubSlice {
         &self.0
     }

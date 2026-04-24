@@ -25,7 +25,6 @@ use crate::db::parse::parsed_doc;
 pub struct IssuesArc(pub Arc<[Issue]>);
 
 impl IssuesArc {
-    #[allow(dead_code)] // used by tests; production code clones the Arc directly.
     pub fn get(&self) -> &[Issue] {
         &self.0
     }

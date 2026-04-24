@@ -27,7 +27,6 @@ pub struct FileIndex {
 pub struct FunctionDef {
     pub name: String,
     /// Fully-qualified name: `\Namespace\function_name` or just `function_name`.
-    #[allow(dead_code)]
     pub fqn: String,
     pub params: Vec<ParamDef>,
     pub return_type: Option<String>,
@@ -40,7 +39,6 @@ pub struct FunctionDef {
 pub struct ParamDef {
     pub name: String,
     pub type_hint: Option<String>,
-    #[allow(dead_code)]
     pub has_default: bool,
     pub variadic: bool,
 }
@@ -49,7 +47,6 @@ pub struct ParamDef {
 pub struct ClassDef {
     pub name: String,
     /// Fully-qualified name.
-    #[allow(dead_code)]
     pub fqn: String,
     pub kind: ClassKind,
     pub is_abstract: bool,
@@ -76,10 +73,8 @@ pub enum ClassKind {
 #[derive(Debug, Clone)]
 pub struct MethodDef {
     pub name: String,
-    #[allow(dead_code)]
     pub is_static: bool,
     pub is_abstract: bool,
-    #[allow(dead_code)]
     pub visibility: Visibility,
     pub params: Vec<ParamDef>,
     pub return_type: Option<String>,
@@ -97,11 +92,8 @@ pub enum Visibility {
 #[derive(Debug, Clone)]
 pub struct PropertyDef {
     pub name: String,
-    #[allow(dead_code)]
     pub is_static: bool,
-    #[allow(dead_code)]
     pub type_hint: Option<String>,
-    #[allow(dead_code)]
     pub visibility: Visibility,
 }
 
@@ -115,71 +107,6 @@ impl FileIndex {
         let mut index = FileIndex::default();
         collect_stmts(source, &view, &doc.program().stmts, None, &mut index);
         index
-    }
-
-    /// Returns `true` if `self` and `other` have the same inheritance-relevant
-    /// structure: same namespace, class/interface/trait/enum names, kinds,
-    /// parent/implements/traits, and method signatures (name + param types +
-    /// return type). Ignores `start_line`, docblocks, property defaults, and
-    /// method bodies — changes to those don't require a codebase rebuild.
-    pub fn same_structure(&self, other: &Self) -> bool {
-        if self.namespace != other.namespace {
-            return false;
-        }
-        if self.functions.len() != other.functions.len() {
-            return false;
-        }
-        for (a, b) in self.functions.iter().zip(other.functions.iter()) {
-            if a.name != b.name || a.return_type != b.return_type {
-                return false;
-            }
-            if a.params.len() != b.params.len() {
-                return false;
-            }
-            for (pa, pb) in a.params.iter().zip(b.params.iter()) {
-                if pa.name != pb.name || pa.type_hint != pb.type_hint || pa.variadic != pb.variadic
-                {
-                    return false;
-                }
-            }
-        }
-        if self.classes.len() != other.classes.len() {
-            return false;
-        }
-        for (a, b) in self.classes.iter().zip(other.classes.iter()) {
-            if a.name != b.name
-                || a.kind != b.kind
-                || a.is_abstract != b.is_abstract
-                || a.parent != b.parent
-                || a.implements != b.implements
-                || a.traits != b.traits
-            {
-                return false;
-            }
-            if a.methods.len() != b.methods.len() {
-                return false;
-            }
-            for (ma, mb) in a.methods.iter().zip(b.methods.iter()) {
-                if ma.name != mb.name
-                    || ma.is_abstract != mb.is_abstract
-                    || ma.return_type != mb.return_type
-                {
-                    return false;
-                }
-                if ma.params.len() != mb.params.len() {
-                    return false;
-                }
-                for (pa, pb) in ma.params.iter().zip(mb.params.iter()) {
-                    if pa.name != pb.name
-                        || pa.type_hint != pb.type_hint
-                        || pa.variadic != pb.variadic
-                    {
-                        return false;
-                    }
-                }
-            }
-        }
-        true
     }
 }
 
@@ -643,62 +570,6 @@ mod tests {
             cls.properties.iter().any(|p| p.name == "name"),
             "expected promoted property 'name', got: {:?}",
             cls.properties.iter().map(|p| &p.name).collect::<Vec<_>>()
-        );
-    }
-
-    #[test]
-    fn same_structure_body_only_change() {
-        let a = "<?php\nclass Foo {\n    public function bar(string $x): int { return 1; }\n}";
-        let b = "<?php\nclass Foo {\n    public function bar(string $x): int { return 99; }\n}";
-        let da = ParsedDoc::parse(a.to_string());
-        let db = ParsedDoc::parse(b.to_string());
-        let ia = FileIndex::extract(&da);
-        let ib = FileIndex::extract(&db);
-        assert!(
-            ia.same_structure(&ib),
-            "body-only change must not affect structure"
-        );
-    }
-
-    #[test]
-    fn same_structure_detects_new_method() {
-        let a = "<?php\nclass Foo {\n    public function bar(): void {}\n}";
-        let b = "<?php\nclass Foo {\n    public function bar(): void {}\n    public function baz(): void {}\n}";
-        let da = ParsedDoc::parse(a.to_string());
-        let db = ParsedDoc::parse(b.to_string());
-        let ia = FileIndex::extract(&da);
-        let ib = FileIndex::extract(&db);
-        assert!(
-            !ia.same_structure(&ib),
-            "adding a method must be detected as structural change"
-        );
-    }
-
-    #[test]
-    fn same_structure_detects_signature_change() {
-        let a = "<?php\nclass Foo {\n    public function bar(string $x): int {}\n}";
-        let b = "<?php\nclass Foo {\n    public function bar(int $x): int {}\n}";
-        let da = ParsedDoc::parse(a.to_string());
-        let db = ParsedDoc::parse(b.to_string());
-        let ia = FileIndex::extract(&da);
-        let ib = FileIndex::extract(&db);
-        assert!(
-            !ia.same_structure(&ib),
-            "changing param type must be detected as structural change"
-        );
-    }
-
-    #[test]
-    fn same_structure_detects_parent_change() {
-        let a = "<?php\nclass Foo extends Base {}";
-        let b = "<?php\nclass Foo extends Other {}";
-        let da = ParsedDoc::parse(a.to_string());
-        let db = ParsedDoc::parse(b.to_string());
-        let ia = FileIndex::extract(&da);
-        let ib = FileIndex::extract(&db);
-        assert!(
-            !ia.same_structure(&ib),
-            "changing parent class must be detected as structural change"
         );
     }
 }

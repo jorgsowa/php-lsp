@@ -1,3 +1,7 @@
+// Matches the crate-level suppression on `lib.rs`: private items only reached
+// through other modules look dead from either entry point.
+#![allow(dead_code)]
+
 mod ast;
 mod autoload;
 mod backend;

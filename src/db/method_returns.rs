@@ -20,7 +20,6 @@ use crate::type_map::build_method_returns;
 pub struct MethodReturnsArc(pub Arc<MethodReturnsMap>);
 
 impl MethodReturnsArc {
-    #[allow(dead_code)] // Used by tests and by Phase E call sites.
     pub fn get(&self) -> &MethodReturnsMap {
         &self.0
     }

@@ -25,7 +25,6 @@ use crate::docblock::{docblock_before, parse_docblock};
 /// reference implementation while Phase D wraps Pass-2 in salsa. Not used by
 /// the LSP handlers anymore (they use `semantic_diagnostics_no_rebuild`
 /// against the salsa-built codebase).
-#[allow(dead_code)]
 pub fn semantic_diagnostics(
     uri: &Url,
     doc: &ParsedDoc,
@@ -95,7 +94,6 @@ pub fn semantic_diagnostics(
 /// Phase I: LSP handlers now read issues through the salsa `semantic_issues`
 /// query + `issues_to_diagnostics`. This function is retained for
 /// `benches/semantic.rs` as a single-call reference implementation.
-#[allow(dead_code)]
 pub fn semantic_diagnostics_no_rebuild(
     uri: &Url,
     doc: &ParsedDoc,

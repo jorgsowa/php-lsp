@@ -489,7 +489,6 @@ fn format_class_const(c: &php_ast::ClassConstDecl<'_, '_>) -> String {
 /// Look up markdown documentation for a symbol by name across all indexed documents.
 /// Returns a markdown string with a code fence signature and optional PHPDoc annotations,
 /// or `None` if the symbol is not found.
-#[allow(dead_code)]
 pub fn docs_for_symbol(
     name: &str,
     all_docs: &[(tower_lsp::lsp_types::Url, Arc<ParsedDoc>)],
@@ -664,7 +663,6 @@ pub fn docs_for_symbol_from_index(
 /// Examples of returned strings:
 ///   `"function foo(string $bar, int $baz): bool"`
 ///   `"function __construct(Foo $x)"`
-#[allow(dead_code)]
 pub fn signature_for_symbol(
     name: &str,
     all_docs: &[(tower_lsp::lsp_types::Url, Arc<ParsedDoc>)],

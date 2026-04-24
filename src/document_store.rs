@@ -152,7 +152,6 @@ impl DocumentStore {
     }
 
     /// Return the salsa `SourceFile` handle for a URL, if one exists.
-    #[allow(dead_code)]
     pub fn source_file(&self, uri: &Url) -> Option<SourceFile> {
         self.source_files.get(uri).map(|e| *e)
     }
@@ -186,7 +185,6 @@ impl DocumentStore {
 
     /// Run `f` with a borrow of the `AnalysisHost`. Used by tests and by the
     /// upcoming `*_salsa` accessors to query the salsa layer.
-    #[allow(dead_code)]
     pub fn with_host<R>(&self, f: impl FnOnce(&AnalysisHost) -> R) -> R {
         let host = self.host.lock().unwrap();
         f(&host)
@@ -277,13 +275,11 @@ impl DocumentStore {
     /// background-indexed). Returns `None` only when the file is not known
     /// to the store. Callers that want "only if open" should gate on
     /// `Backend::open_files` at the call site (see `Backend::get_doc`).
-    #[allow(dead_code)]
     pub fn get_doc_salsa(&self, uri: &Url) -> Option<Arc<ParsedDoc>> {
         self.get_parsed_cached(uri)
     }
 
     /// Salsa-backed compact symbol index.
-    #[allow(dead_code)]
     pub fn get_index_salsa(&self, uri: &Url) -> Option<Arc<FileIndex>> {
         let sf = self.source_file(uri)?;
         Some(self.snapshot_query(move |db| crate::db::index::file_index(db, sf).0.clone()))
@@ -346,7 +342,6 @@ impl DocumentStore {
     /// hasn't changed — salsa's `set_field` unconditionally bumps revision,
     /// which would invalidate every downstream query (codebase, file_refs).
     /// Dedup is essential for memoization across LSP requests.
-    #[allow(dead_code)] // used by get_codebase_salsa
     pub fn sync_workspace_files(&self) {
         let mut files: Vec<SourceFile> = self.source_files.iter().map(|e| *e.value()).collect();
         files.sort_by_key(|sf| self.with_host(|host| sf.id(host.db()).0));
@@ -365,7 +360,6 @@ impl DocumentStore {
     /// Phase C step 3: this runs in parallel with Backend's imperative
     /// `Arc<Codebase>`. Comparison tests validate parity; readers migrate in
     /// a follow-up.
-    #[allow(dead_code)]
     pub fn get_codebase_salsa(&self) -> Arc<mir_codebase::Codebase> {
         self.sync_workspace_files();
         let ws = self.workspace;
@@ -438,7 +432,6 @@ impl DocumentStore {
     }
 
     /// Salsa-backed per-file method-return-type map.
-    #[allow(dead_code)]
     pub fn get_method_returns_salsa(&self, uri: &Url) -> Option<Arc<crate::ast::MethodReturnsMap>> {
         let sf = self.source_file(uri)?;
         Some(
@@ -570,7 +563,6 @@ impl DocumentStore {
     }
 
     /// Same as `all_docs_for_scan` but excludes `uri`.
-    #[allow(dead_code)]
     pub fn other_docs_for_scan(&self, uri: &Url) -> Vec<(Url, Arc<ParsedDoc>)> {
         let urls: Vec<Url> = self
             .source_files

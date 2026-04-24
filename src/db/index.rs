@@ -18,7 +18,6 @@ use crate::file_index::FileIndex;
 pub struct IndexArc(pub Arc<FileIndex>);
 
 impl IndexArc {
-    #[allow(dead_code)] // Used by tests and by Phase E call sites.
     pub fn get(&self) -> &FileIndex {
         &self.0
     }

@@ -24,7 +24,6 @@ use crate::db::input::Workspace;
 pub struct CodebaseArc(pub Arc<Codebase>);
 
 impl CodebaseArc {
-    #[allow(dead_code)] // reserved for backend migration (step 3).
     pub fn get(&self) -> &Codebase {
         &self.0
     }
