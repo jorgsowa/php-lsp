@@ -996,6 +996,16 @@ impl TestServer {
         render_code_lens(&resp)
     }
 
+    /// Prepare type hierarchy at `$0`, render the prepared item(s) directly.
+    pub async fn check_prepare_type_hierarchy(&mut self, src: &str) -> String {
+        let opened = self.open_fixture(src).await;
+        let c = opened.cursor().clone();
+        let resp = self
+            .prepare_type_hierarchy(&c.path, c.line, c.character)
+            .await;
+        render_type_hierarchy(&resp, &self.uri(""))
+    }
+
     /// Prepare type hierarchy at `$0`, request supertypes, rendered sorted.
     pub async fn check_supertypes(&mut self, src: &str) -> String {
         let opened = self.open_fixture(src).await;

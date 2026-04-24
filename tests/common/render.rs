@@ -434,10 +434,11 @@ pub(crate) fn render_type_hierarchy(resp: &Value, root_uri: &str) -> String {
         .iter()
         .map(|i| {
             let name = i["name"].as_str().unwrap_or("?");
+            let kind = symbol_kind_name(i["kind"].as_u64().unwrap_or(0));
             let uri = i["uri"].as_str().unwrap_or("?");
             let short = uri.strip_prefix(&prefix).unwrap_or(uri);
             let line = i["selectionRange"]["start"]["line"].as_u64().unwrap_or(0);
-            format!("{name} @ {short}:{line}")
+            format!("{name} ({kind}) @ {short}:{line}")
         })
         .collect();
     rows.sort();
