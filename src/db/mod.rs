@@ -16,7 +16,7 @@ pub mod refs;
 pub mod semantic;
 pub mod workspace_index;
 
-#[allow(unused_imports)] // Analysis/RootDatabase reserved for Phase E.
-pub use analysis::{Analysis, AnalysisHost, RootDatabase};
+#[allow(unused_imports)] // RootDatabase reserved for Phase E.
+pub use analysis::{AnalysisHost, RootDatabase};
 #[allow(unused_imports)] // FileId construction is test-only today.
 pub use input::{FileId, SourceFile, Workspace};

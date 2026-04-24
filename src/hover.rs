@@ -486,43 +486,6 @@ fn format_class_const(c: &php_ast::ClassConstDecl<'_, '_>) -> String {
     format!("const {}{}{}", type_str, c.name, value_str)
 }
 
-/// Look up markdown documentation for a symbol by name across all indexed documents.
-/// Returns a markdown string with a code fence signature and optional PHPDoc annotations,
-/// or `None` if the symbol is not found.
-pub fn docs_for_symbol(
-    name: &str,
-    all_docs: &[(tower_lsp::lsp_types::Url, Arc<ParsedDoc>)],
-) -> Option<String> {
-    for (_, doc) in all_docs {
-        if let Some(sig) = scan_statements(&doc.program().stmts, name) {
-            let mut value = wrap_php(&sig);
-            if let Some(db) = find_docblock(doc.source(), &doc.program().stmts, name) {
-                let md = db.to_markdown();
-                if !md.is_empty() {
-                    value.push_str("\n\n---\n\n");
-                    value.push_str(&md);
-                }
-            }
-            if is_php_builtin(name) {
-                value.push_str(&format!(
-                    "\n\n[php.net documentation]({})",
-                    php_doc_url(name)
-                ));
-            }
-            return Some(value);
-        }
-    }
-    // Fallback: built-in with no user-defined counterpart.
-    if is_php_builtin(name) {
-        return Some(format!(
-            "```php\nfunction {}()\n```\n\n[php.net documentation]({})",
-            name,
-            php_doc_url(name)
-        ));
-    }
-    None
-}
-
 pub(crate) fn format_params_str(params: &[Param<'_, '_>]) -> String {
     format_params(params)
 }
@@ -653,24 +616,6 @@ pub fn docs_for_symbol_from_index(
             name,
             php_doc_url(name)
         ));
-    }
-    None
-}
-
-/// Return the plain-text signature for a symbol (function or method) found in
-/// any of the supplied documents, or `None` if not found.
-///
-/// Examples of returned strings:
-///   `"function foo(string $bar, int $baz): bool"`
-///   `"function __construct(Foo $x)"`
-pub fn signature_for_symbol(
-    name: &str,
-    all_docs: &[(tower_lsp::lsp_types::Url, Arc<ParsedDoc>)],
-) -> Option<String> {
-    for (_, doc) in all_docs {
-        if let Some(sig) = scan_statements(&doc.program().stmts, name) {
-            return Some(sig);
-        }
     }
     None
 }

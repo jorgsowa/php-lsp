@@ -1,13 +1,11 @@
 /// `textDocument/implementation` — find all classes that implement an interface
 /// or extend a class with the given name.
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use php_ast::{NamespaceBody, Stmt, StmtKind};
-use tower_lsp::lsp_types::{Location, Position, Url};
+use tower_lsp::lsp_types::{Location, Url};
 
 use crate::ast::{ParsedDoc, SourceView};
-use crate::util::word_at;
 
 /// Returns `true` when the name written in an `extends`/`implements` clause
 /// (given as its `to_string_repr()` string) refers to the symbol we are
@@ -43,27 +41,6 @@ pub fn find_implementations(
         collect_implementations(&doc.program().stmts, word, fqn, sv, uri, &mut locations);
     }
     locations
-}
-
-/// Convenience wrapper: extract word at `position`, resolve it through
-/// `file_imports`, then call `find_implementations`.
-///
-/// `file_imports` maps short names to their fully-qualified names as built
-/// from the `use` statements in the current file (e.g. `"Animal"` →
-/// `"App\\Animal"`). This allows goto_implementation to find classes that
-/// write the FQN form in their `extends`/`implements` clause.
-pub fn goto_implementation(
-    source: &str,
-    all_docs: &[(Url, Arc<ParsedDoc>)],
-    position: Position,
-    file_imports: &HashMap<String, String>,
-) -> Vec<Location> {
-    let word = match word_at(source, position) {
-        Some(w) => w,
-        None => return vec![],
-    };
-    let fqn = file_imports.get(&word).map(|s| s.as_str());
-    find_implementations(&word, fqn, all_docs)
 }
 
 /// Phase J — Find implementations via the salsa-memoized workspace aggregate.
@@ -196,21 +173,6 @@ mod tests {
 
     fn doc(path: &str, source: &str) -> (Url, Arc<ParsedDoc>) {
         (uri(path), Arc::new(ParsedDoc::parse(source.to_string())))
-    }
-
-    fn pos(line: u32, character: u32) -> Position {
-        Position { line, character }
-    }
-
-    fn no_imports() -> HashMap<String, String> {
-        HashMap::new()
-    }
-
-    fn imports(pairs: &[(&str, &str)]) -> HashMap<String, String> {
-        pairs
-            .iter()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect()
     }
 
     // ── find_implementations ──────────────────────────────────────────────────
@@ -421,67 +383,6 @@ mod tests {
         let uris: Vec<&str> = locs.iter().map(|l| l.uri.path()).collect();
         assert!(uris.contains(&"/src/Dog.php"));
         assert!(uris.contains(&"/src/Cat.php"));
-    }
-
-    // ── goto_implementation ───────────────────────────────────────────────────
-
-    #[test]
-    fn goto_implementation_uses_cursor_word() {
-        let src = "<?php\ninterface Countable {}\nclass Repo implements Countable {}";
-        let docs = vec![doc("/a.php", src)];
-        let locs = goto_implementation(src, &docs, pos(1, 12), &no_imports());
-        assert!(!locs.is_empty());
-    }
-
-    #[test]
-    fn goto_implementation_on_whitespace_returns_empty() {
-        // Cursor on a space — word_at returns None → empty result, no panic.
-        let src = "<?php\nclass Dog extends Animal {}";
-        let docs = vec![doc("/a.php", src)];
-        // character 0 on line 0 is '<' — not an identifier char; word_at returns None
-        let locs = goto_implementation(src, &docs, pos(0, 0), &no_imports());
-        assert!(locs.is_empty());
-    }
-
-    #[test]
-    fn goto_implementation_on_unimplemented_name_returns_empty() {
-        let src = "<?php\nclass Standalone {}";
-        let docs = vec![doc("/a.php", src)];
-        // cursor on "Standalone" — no other class extends it
-        let locs = goto_implementation(src, &docs, pos(1, 8), &no_imports());
-        assert!(locs.is_empty());
-    }
-
-    #[test]
-    fn goto_implementation_resolves_use_import_to_fqn() {
-        // The cursor file imports `use App\Animal;` — the short name "Animal"
-        // should be resolved to "App\Animal" and match `extends \App\Animal`.
-        let cursor_src = "<?php\nuse App\\Animal;\ninterface Animal {}";
-        let impl_src = "<?php\nclass Dog extends \\App\\Animal {}";
-        let docs = vec![doc("/a.php", cursor_src), doc("/b.php", impl_src)];
-        let file_imports = imports(&[("Animal", "App\\Animal")]);
-        // cursor on "Animal" in the interface declaration (line 2, col 12)
-        let locs = goto_implementation(cursor_src, &docs, pos(2, 12), &file_imports);
-        assert_eq!(
-            locs.len(),
-            1,
-            "expected Dog (extends \\\\App\\\\Animal) found via use-import FQN, got: {locs:?}"
-        );
-    }
-
-    #[test]
-    fn goto_implementation_resolves_use_import_relative_fqn() {
-        // Same as above but with `extends App\Animal` (no leading `\`).
-        let cursor_src = "<?php\nuse App\\Animal;\ninterface Animal {}";
-        let impl_src = "<?php\nclass Dog extends App\\Animal {}";
-        let docs = vec![doc("/a.php", cursor_src), doc("/b.php", impl_src)];
-        let file_imports = imports(&[("Animal", "App\\Animal")]);
-        let locs = goto_implementation(cursor_src, &docs, pos(2, 12), &file_imports);
-        assert_eq!(
-            locs.len(),
-            1,
-            "expected Dog (extends App\\\\Animal) found via use-import FQN, got: {locs:?}"
-        );
     }
 
     // ── find_implementations_from_workspace ──────────────────────────────────

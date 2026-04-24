@@ -34,25 +34,4 @@ impl AnalysisHost {
     pub fn db_mut(&mut self) -> &mut RootDatabase {
         &mut self.db
     }
-
-    /// Produce a read-only analysis view. In Phase A this is a cheap clone of
-    /// the database; Phase E will replace this with proper snapshot semantics.
-    pub fn analysis(&self) -> Analysis {
-        Analysis {
-            db: self.db.clone(),
-        }
-    }
-}
-
-/// Read-only view of the database used by LSP request handlers. Reserved
-/// for Phase E — request handlers currently go through `DocumentStore`'s
-/// salsa-backed accessors instead.
-pub struct Analysis {
-    db: RootDatabase,
-}
-
-impl Analysis {
-    pub fn db(&self) -> &RootDatabase {
-        &self.db
-    }
 }

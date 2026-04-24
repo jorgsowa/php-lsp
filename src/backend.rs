@@ -794,32 +794,24 @@ impl LanguageServer for Backend {
         // Store text immediately so other features work while parsing.
         // This also mirrors the new text into salsa, so the codebase query
         // sees it when semantic_diagnostics runs below.
-        let version = self.set_open_text(uri.clone(), text.clone());
+        self.set_open_text(uri.clone(), text.clone());
 
         let docs_for_spawn = Arc::clone(&self.docs);
         let diag_cfg = self.config.read().unwrap().diagnostics.clone();
-        let php_version = self.config.read().unwrap().php_version.clone();
-        let uri_clone = uri.clone();
 
         // Phase I: parse + semantic analysis both run on the blocking pool.
         // The semantic pass is memoized by salsa, but the *first* call per
         // file walks `StatementsAnalyzer` over the AST (hundreds of ms on
         // cold files) — we must not block the async executor on it.
-        let _ = (uri_clone, php_version);
         let uri_sem = uri.clone();
         let (parse_diags, sem_issues) = tokio::task::spawn_blocking(move || {
-            let (doc, parse_diags) = parse_document(&text);
-            drop(doc);
+            let (_doc, parse_diags) = parse_document(&text);
             let sem_issues = docs_for_spawn.get_semantic_issues_salsa(&uri_sem);
             (parse_diags, sem_issues)
         })
         .await
         .unwrap_or_else(|_| (vec![], None));
 
-        // B4d-3c: did_open runs inline (no debounce), so staleness is not a
-        // concern here; we record diagnostics unconditionally. `version` is
-        // retained for symmetry with did_change.
-        let _ = version;
         self.set_parse_diagnostics(&uri, parse_diags.clone());
         let stored_source = self.get_open_text(&uri).unwrap_or_default();
         let doc2 = self.get_doc(&uri);
@@ -2076,54 +2068,16 @@ impl LanguageServer for Backend {
             }
         }
 
-        // PHPDoc, implement, constructor, getters/setters: defer edit computation to
-        // code_action_resolve so the menu appears instantly.
-        actions.extend(defer_actions(
-            phpdoc_actions(uri, &doc, &source, params.range),
-            "phpdoc",
-            uri,
-            params.range,
-        ));
-        actions.extend(defer_actions(
-            implement_missing_actions(
-                &source,
-                &doc,
-                &self
-                    .docs
-                    .doc_with_others(uri, Arc::clone(&doc), &self.open_urls()),
-                params.range,
+        // Defer edit computation to code_action_resolve so the menu renders
+        // instantly; the client fetches the full edit only for the selected item.
+        for tag in DEFERRED_ACTION_TAGS {
+            actions.extend(defer_actions(
+                self.generate_deferred_actions(tag, &source, &doc, params.range, uri),
+                tag,
                 uri,
-                &self.file_imports(uri),
-            ),
-            "implement",
-            uri,
-            params.range,
-        ));
-        actions.extend(defer_actions(
-            generate_constructor_actions(&source, &doc, params.range, uri),
-            "constructor",
-            uri,
-            params.range,
-        ));
-        actions.extend(defer_actions(
-            generate_getters_setters_actions(&source, &doc, params.range, uri),
-            "getters_setters",
-            uri,
-            params.range,
-        ));
-
-        actions.extend(defer_actions(
-            add_return_type_actions(&source, &doc, params.range, uri),
-            "return_type",
-            uri,
-            params.range,
-        ));
-        actions.extend(defer_actions(
-            promote_constructor_actions(&source, &doc, params.range, uri),
-            "promote",
-            uri,
-            params.range,
-        ));
+                params.range,
+            ));
+        }
 
         // Extract variable: cheap, keep eager.
         actions.extend(extract_variable_actions(&source, params.range, uri));
@@ -2174,27 +2128,7 @@ impl LanguageServer for Backend {
             None => return Ok(item),
         };
 
-        let candidates: Vec<CodeActionOrCommand> = match kind_tag.as_str() {
-            "phpdoc" => phpdoc_actions(&uri, &doc, &source, range),
-            "implement" => {
-                let imports = self.file_imports(&uri);
-                implement_missing_actions(
-                    &source,
-                    &doc,
-                    &self
-                        .docs
-                        .doc_with_others(&uri, Arc::clone(&doc), &self.open_urls()),
-                    range,
-                    &uri,
-                    &imports,
-                )
-            }
-            "constructor" => generate_constructor_actions(&source, &doc, range, &uri),
-            "getters_setters" => generate_getters_setters_actions(&source, &doc, range, &uri),
-            "return_type" => add_return_type_actions(&source, &doc, range, &uri),
-            "promote" => promote_constructor_actions(&source, &doc, range, &uri),
-            _ => return Ok(item),
-        };
+        let candidates = self.generate_deferred_actions(&kind_tag, &source, &doc, range, &uri);
 
         // Find the action whose title matches and return it fully resolved.
         for candidate in candidates {
@@ -2437,7 +2371,50 @@ fn cursor_is_on_method_decl(source: &str, stmts: &[Stmt<'_, '_>], position: Posi
     check(source, stmts, cursor)
 }
 
+/// Tags for deferred code actions (resolved lazily via `codeAction/resolve`).
+/// Iteration order controls the order items appear in the client menu.
+const DEFERRED_ACTION_TAGS: &[&str] = &[
+    "phpdoc",
+    "implement",
+    "constructor",
+    "getters_setters",
+    "return_type",
+    "promote",
+];
+
 impl Backend {
+    /// Tag → generator mapping for deferred code actions.
+    fn generate_deferred_actions(
+        &self,
+        tag: &str,
+        source: &str,
+        doc: &Arc<ParsedDoc>,
+        range: Range,
+        uri: &Url,
+    ) -> Vec<CodeActionOrCommand> {
+        match tag {
+            "phpdoc" => phpdoc_actions(uri, doc, source, range),
+            "implement" => {
+                let imports = self.file_imports(uri);
+                implement_missing_actions(
+                    source,
+                    doc,
+                    &self
+                        .docs
+                        .doc_with_others(uri, Arc::clone(doc), &self.open_urls()),
+                    range,
+                    uri,
+                    &imports,
+                )
+            }
+            "constructor" => generate_constructor_actions(source, doc, range, uri),
+            "getters_setters" => generate_getters_setters_actions(source, doc, range, uri),
+            "return_type" => add_return_type_actions(source, doc, range, uri),
+            "promote" => promote_constructor_actions(source, doc, range, uri),
+            _ => Vec::new(),
+        }
+    }
+
     /// Try to resolve a fully-qualified name via the PSR-4 map.
     /// Indexes the file on-demand if it is not already in the document store.
     async fn psr4_goto(&self, fqn: &str) -> Option<Location> {
@@ -5195,7 +5172,6 @@ mod integration {
 
     // ── full probe (disabled; restore #[tokio::test] + run with --nocapture to inspect) ──
 
-    #[allow(dead_code)]
     async fn probe_all_features() {
         macro_rules! dump {
             ($label:expr, $r:expr) => {

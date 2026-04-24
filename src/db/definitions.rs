@@ -140,7 +140,6 @@ mod tests {
         );
 
         let seeded = {
-            let mut slice = mir_codebase::storage::StubSlice::default();
             // Build a plausible class entry using the real collector on
             // a file that contains "class Cached" so the StubSlice is
             // well-formed. This is load-bearing: a hand-rolled slice is
@@ -153,8 +152,7 @@ mod tests {
                 src,
                 &source_map,
             );
-            let (s, _) = collector.collect_slice(doc.program());
-            slice = s;
+            let (slice, _) = collector.collect_slice(doc.program());
             Arc::new(slice)
         };
         file.set_cached_slice(host.db_mut()).to(Some(seeded));

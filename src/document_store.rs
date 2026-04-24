@@ -561,19 +561,6 @@ impl DocumentStore {
             .filter_map(|u| self.get_doc_salsa(&u).map(|d| (u, d)))
             .collect()
     }
-
-    /// Same as `all_docs_for_scan` but excludes `uri`.
-    pub fn other_docs_for_scan(&self, uri: &Url) -> Vec<(Url, Arc<ParsedDoc>)> {
-        let urls: Vec<Url> = self
-            .source_files
-            .iter()
-            .filter(|e| e.key() != uri)
-            .map(|e| e.key().clone())
-            .collect();
-        urls.into_iter()
-            .filter_map(|u| self.get_doc_salsa(&u).map(|d| (u, d)))
-            .collect()
-    }
 }
 
 #[cfg(test)]
