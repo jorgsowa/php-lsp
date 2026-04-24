@@ -1,9 +1,8 @@
 //! Comprehensive hover coverage.
 //!
 //! Each scenario is an independent `#[tokio::test]` using the multi-file
-//! fixture DSL with `$0` cursor markers. We assert on key substrings in the
-//! returned hover contents rather than snapshotting the whole string, so tests
-//! survive minor formatting changes.
+//! fixture DSL with `$0` cursor markers. Assertions check key substrings so
+//! tests survive minor formatting changes while still catching regressions.
 
 mod common;
 
@@ -71,8 +70,7 @@ class Gre$0eter {}
 "#,
     )
     .await;
-    // Just asserting we get a non-empty response.
-    assert!(!v.is_empty(), "expected non-empty hover for class");
+    assert!(v.contains("Greeter"), "expected class name in hover: {v}");
 }
 
 #[tokio::test]
@@ -85,7 +83,7 @@ enum Stat$0us { case Active; case Inactive; }
 "#,
     )
     .await;
-    assert!(!v.is_empty());
+    assert!(v.contains("Status"), "expected enum name in hover: {v}");
 }
 
 #[tokio::test]
@@ -98,7 +96,10 @@ interface Writ$0able { public function write(): void; }
 "#,
     )
     .await;
-    assert!(!v.is_empty());
+    assert!(
+        v.contains("Writable"),
+        "expected interface name in hover: {v}"
+    );
 }
 
 #[tokio::test]
@@ -117,6 +118,8 @@ function gr$0eet(string $name): string { return $name; }
     )
     .await;
     assert!(v.contains("greet"));
+    assert!(v.contains("Greets"), "expected docblock body in hover: {v}");
+    assert!(v.contains("@param"), "expected @param in hover: {v}");
 }
 
 #[tokio::test]
@@ -161,11 +164,8 @@ class Service {
 #[tokio::test]
 async fn hover_missing_symbol_returns_nothing() {
     let mut s = TestServer::new().await;
-    // No function `foo` defined; hovering it should render as "no hover".
     let v = hover(&mut s, r#"<?php fo$0o();"#).await;
-    // Some servers still return `foo` as a hint. The key invariant is that we
-    // don't crash; accept anything non-null.
-    let _ = v;
+    assert_eq!(v, "<no hover>", "expected no hover for undefined symbol");
 }
 
 #[tokio::test]
@@ -205,6 +205,6 @@ echo $u->na$0me;
 "#,
     )
     .await;
-    // Servers may or may not expose property hover; just make sure no error.
-    let _ = v;
+    assert!(v.contains("$name"), "expected property name in hover: {v}");
+    assert!(v.contains("string"), "expected property type in hover: {v}");
 }

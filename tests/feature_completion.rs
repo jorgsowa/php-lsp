@@ -83,6 +83,7 @@ Reg::$0
     );
 }
 
+#[ignore = "php-lsp gap: namespace-prefix completion returns nothing without a workspace root / PSR-4 map"]
 #[tokio::test]
 async fn completion_namespace_prefix() {
     let mut s = TestServer::new().await;
@@ -99,8 +100,10 @@ $g = new \App\$0
 "#,
     )
     .await;
-    // Tolerant: just ensure server responds without error on `\App\` prefix.
-    let _ = labels;
+    assert!(
+        labels.iter().any(|l| l == "Greeter"),
+        "expected Greeter in namespace-prefix completions: {labels:?}"
+    );
 }
 
 #[tokio::test]

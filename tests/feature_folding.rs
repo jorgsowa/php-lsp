@@ -1,6 +1,7 @@
 mod common;
 
 use common::TestServer;
+use expect_test::expect;
 
 #[tokio::test]
 async fn folding_ranges_cover_function_body() {
@@ -16,7 +17,8 @@ function f(): void {
 "#,
         )
         .await;
-    assert!(!out.starts_with("error:"), "errored: {out}");
+    // Function body spans lines 1–5 and is exposed as a "region" fold.
+    expect!["1..5 region"].assert_eq(&out);
 }
 
 #[tokio::test]
@@ -30,5 +32,8 @@ $w = new Widget();
 "#,
         )
         .await;
-    assert!(!out.starts_with("error:"), "errored: {out}");
+    assert!(
+        out.contains("reference"),
+        "expected reference count lens: {out}"
+    );
 }

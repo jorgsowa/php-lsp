@@ -3,6 +3,7 @@
 mod common;
 
 use common::TestServer;
+use expect_test::expect;
 
 #[tokio::test]
 async fn incoming_calls_lists_callers() {
@@ -43,10 +44,7 @@ class D$0og extends Animal {}
 "#,
         )
         .await;
-    assert!(
-        out.contains("Animal") || out == "<empty>" || out == "<no prepared item>",
-        "unexpected: {out}"
-    );
+    expect!["Animal @ main.php:1"].assert_eq(&out);
 }
 
 #[tokio::test]
@@ -61,11 +59,5 @@ class Cat extends Animal {}
 "#,
         )
         .await;
-    assert!(
-        out.contains("Dog")
-            || out.contains("Cat")
-            || out == "<empty>"
-            || out == "<no prepared item>",
-        "unexpected: {out}"
-    );
+    expect!["Cat @ main.php:3\nDog @ main.php:2"].assert_eq(&out);
 }

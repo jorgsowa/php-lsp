@@ -19,8 +19,8 @@ class U$0ser$0 {
         )
         .await;
     assert!(
-        out.contains("constructor") || out == "<no actions>",
-        "unexpected: {out}"
+        out.contains("Generate constructor"),
+        "expected 'Generate constructor' in: {out}"
     );
 }
 
@@ -36,7 +36,10 @@ function f(): int {
 "#,
         )
         .await;
-    assert!(!out.starts_with("error:"), "errored: {out}");
+    assert!(
+        out.contains("Extract variable"),
+        "expected 'Extract variable' in: {out}"
+    );
 }
 
 #[tokio::test]
@@ -50,5 +53,8 @@ class $0My$0 implements Writable {}
 "#,
         )
         .await;
-    assert!(!out.starts_with("error:"), "errored: {out}");
+    assert!(
+        out.contains("Implement missing method"),
+        "expected 'Implement missing method' in: {out}"
+    );
 }

@@ -68,3 +68,4 @@ iai-callgrind = "0.14"
 [[bench]]
 name = "iai_critical"
 harness = false
+
