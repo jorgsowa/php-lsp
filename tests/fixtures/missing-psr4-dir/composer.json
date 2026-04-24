@@ -1,0 +1,9 @@
+{
+    "name": "php-lsp/missing-psr4-dir",
+    "autoload": {
+        "psr-4": {
+            "Ghost\\": "src/Ghost/",
+            "Present\\": "src/Present/"
+        }
+    }
+}

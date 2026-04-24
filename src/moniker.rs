@@ -39,41 +39,57 @@ pub fn moniker_at(
 /// When the name is not declared in this file, checks `use` statements so that
 /// imported names resolve to their FQN (e.g. `Mailer` → `App\\Services\\Mailer`).
 /// Falls back to returning `name` as-is.
-fn resolve_fqn(doc: &ParsedDoc, name: &str, file_imports: &HashMap<String, String>) -> String {
+pub(crate) fn resolve_fqn(
+    doc: &ParsedDoc,
+    name: &str,
+    file_imports: &HashMap<String, String>,
+) -> String {
     // Strip a leading `\` from a fully-qualified reference.
     let bare = name.trim_start_matches('\\');
 
+    // Track the current namespace prefix across top-level statements so that
+    // the declaration-form `namespace App;` (NamespaceBody::Simple) applies
+    // to every subsequent class/function until the next namespace statement.
+    let mut current_ns: Option<String> = None;
+
+    fn matches_top(kind: &StmtKind<'_, '_>, name: &str) -> bool {
+        match kind {
+            StmtKind::Class(c) => c.name == Some(name),
+            StmtKind::Interface(i) => i.name == name,
+            StmtKind::Trait(t) => t.name == name,
+            StmtKind::Enum(e) => e.name == name,
+            StmtKind::Function(f) => f.name == name,
+            _ => false,
+        }
+    }
+
     for stmt in doc.program().stmts.iter() {
         match &stmt.kind {
-            // Top-level declarations
-            StmtKind::Class(c) if c.name == Some(bare) => return bare.to_string(),
-            StmtKind::Interface(i) if i.name == bare => return bare.to_string(),
-            StmtKind::Trait(t) if t.name == bare => return bare.to_string(),
-            StmtKind::Enum(e) if e.name == bare => return bare.to_string(),
-            StmtKind::Function(f) if f.name == bare => return bare.to_string(),
-            // Namespaced declarations
             StmtKind::Namespace(ns) => {
-                let ns_prefix = ns
-                    .name
-                    .as_ref()
-                    .map(|n| format!("{}\\", n.to_string_repr()))
-                    .unwrap_or_default();
-
-                if let NamespaceBody::Braced(inner) = &ns.body {
-                    for s in inner.iter() {
-                        let matched = match &s.kind {
-                            StmtKind::Class(c) => c.name == Some(bare),
-                            StmtKind::Interface(i) => i.name == bare,
-                            StmtKind::Trait(t) => t.name == bare,
-                            StmtKind::Enum(e) => e.name == bare,
-                            StmtKind::Function(f) => f.name == bare,
-                            _ => false,
-                        };
-                        if matched {
-                            return format!("{ns_prefix}{bare}");
+                let ns_name = ns.name.as_ref().map(|n| n.to_string_repr().to_string());
+                match &ns.body {
+                    NamespaceBody::Braced(inner) => {
+                        let ns_prefix = ns_name
+                            .as_ref()
+                            .map(|n| format!("{n}\\"))
+                            .unwrap_or_default();
+                        for s in inner.iter() {
+                            if matches_top(&s.kind, bare) {
+                                return format!("{ns_prefix}{bare}");
+                            }
                         }
                     }
+                    NamespaceBody::Simple => {
+                        // Set the "active namespace" for all following top-level stmts.
+                        current_ns = ns_name;
+                    }
                 }
+            }
+            k if matches_top(k, bare) => {
+                return match &current_ns {
+                    Some(ns) => format!("{ns}\\{bare}"),
+                    None => bare.to_string(),
+                };
             }
             _ => {}
         }
@@ -82,6 +98,14 @@ fn resolve_fqn(doc: &ParsedDoc, name: &str, file_imports: &HashMap<String, Strin
     // Not a local declaration — resolve via `use` statements.
     if let Some(fqn) = file_imports.get(bare) {
         return fqn.clone();
+    }
+
+    // No local declaration and no `use` import. When the file declares a
+    // namespace (Simple form), unqualified references still resolve to that
+    // namespace (PHP falls back to global only for *functions*; for classes
+    // the namespace-prefixed FQCN is authoritative).
+    if let Some(ns) = current_ns {
+        return format!("{ns}\\{bare}");
     }
 
     bare.to_string()

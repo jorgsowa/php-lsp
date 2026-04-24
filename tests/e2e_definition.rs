@@ -1,8 +1,12 @@
+//! Go-to-definition tests. Fixture DSL with `$0` cursor markers locates the
+//! request position; multi-file fixtures cover cross-file resolution.
+
 mod common;
 
 use common::TestServer;
+use serde_json::Value;
 
-fn loc(result: &serde_json::Value) -> serde_json::Value {
+fn loc(result: &Value) -> Value {
     if result.is_array() {
         result[0].clone()
     } else {
@@ -13,20 +17,21 @@ fn loc(result: &serde_json::Value) -> serde_json::Value {
 #[tokio::test]
 async fn definition_returns_location_for_function() {
     let mut server = TestServer::new().await;
-    server
-        .open(
-            "def.php",
-            "<?php\nfunction greet(string $name): string { return $name; }\ngreet('world');\n",
+    let opened = server
+        .open_fixture(
+            r#"<?php
+function greet(string $name): string { return $name; }
+g$0reet('world');
+"#,
         )
         .await;
+    let c = opened.cursor();
 
-    let resp = server.definition("def.php", 2, 1).await;
+    let resp = server.definition(&c.path, c.line, c.character).await;
 
-    assert!(resp["error"].is_null(), "definition error: {:?}", resp);
-    let result = &resp["result"];
-    assert!(!result.is_null(), "expected a definition location");
-    let l = loc(result);
-    assert_eq!(l["uri"].as_str().unwrap(), server.uri("def.php"));
+    assert!(resp["error"].is_null(), "definition error: {resp:?}");
+    let l = loc(&resp["result"]);
+    assert_eq!(l["uri"].as_str().unwrap(), server.uri(&c.path));
     assert_eq!(l["range"]["start"]["line"].as_u64().unwrap(), 1);
     assert_eq!(
         l["range"]["start"]["character"].as_u64().unwrap(),
@@ -38,16 +43,20 @@ async fn definition_returns_location_for_function() {
 #[tokio::test]
 async fn definition_for_class_returns_location() {
     let mut server = TestServer::new().await;
-    server
-        .open("cls.php", "<?php\nclass Dog {}\n$d = new Dog();\n")
+    let opened = server
+        .open_fixture(
+            r#"<?php
+class Dog {}
+$d = new D$0og();
+"#,
+        )
         .await;
+    let c = opened.cursor();
 
-    let resp = server.definition("cls.php", 2, 9).await;
+    let resp = server.definition(&c.path, c.line, c.character).await;
 
-    assert!(resp["error"].is_null(), "definition error: {:?}", resp);
-    let result = &resp["result"];
-    assert!(!result.is_null(), "expected a location for class Dog");
-    let l = loc(result);
+    assert!(resp["error"].is_null(), "definition error: {resp:?}");
+    let l = loc(&resp["result"]);
     assert_eq!(l["range"]["start"]["line"].as_u64().unwrap(), 1);
     assert_eq!(l["range"]["start"]["character"].as_u64().unwrap(), 6);
 }
@@ -58,22 +67,24 @@ async fn definition_for_class_returns_location() {
 #[tokio::test]
 async fn definition_cross_file_uses_find_in_indexes() {
     let mut server = TestServer::new().await;
-    server
-        .open("greeter.php", "<?php\nclass Greeter {}\n")
-        .await;
-    server
-        .open("user.php", "<?php\n$g = new Greeter();\n")
-        .await;
+    let opened = server
+        .open_fixture(
+            r#"//- /greeter.php
+<?php
+class Greeter {}
 
-    let resp = server.definition("user.php", 1, 9).await;
+//- /user.php
+<?php
+$g = new Gr$0eeter();
+"#,
+        )
+        .await;
+    let c = opened.cursor();
 
-    assert!(resp["error"].is_null(), "definition error: {:?}", resp);
-    let result = &resp["result"];
-    assert!(
-        !result.is_null(),
-        "expected a cross-file definition for Greeter, got null"
-    );
-    let l = loc(result);
+    let resp = server.definition(&c.path, c.line, c.character).await;
+
+    assert!(resp["error"].is_null(), "definition error: {resp:?}");
+    let l = loc(&resp["result"]);
     assert_eq!(
         l["uri"].as_str().unwrap(),
         server.uri("greeter.php"),

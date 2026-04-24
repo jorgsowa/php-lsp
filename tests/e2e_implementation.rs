@@ -5,21 +5,26 @@ use common::TestServer;
 #[tokio::test]
 async fn implementation_finds_concrete_class() {
     let mut server = TestServer::new().await;
-    server
-        .open(
-            "impl.php",
-            "<?php\ninterface Drawable {\n    public function draw(): void;\n}\nclass Circle implements Drawable {\n    public function draw(): void {}\n}\n",
+    let opened = server
+        .open_fixture(
+            r#"<?php
+interface Dr$0awable {
+    public function draw(): void;
+}
+class Circle implements Drawable {
+    public function draw(): void {}
+}
+"#,
         )
         .await;
+    let c = opened.cursor();
 
-    let resp = server.implementation("impl.php", 1, 10).await;
-
-    assert!(resp["error"].is_null(), "implementation error: {:?}", resp);
+    let resp = server.implementation(&c.path, c.line, c.character).await;
+    assert!(resp["error"].is_null(), "implementation error: {resp:?}");
     let result = &resp["result"];
     assert!(
         result.is_array(),
-        "implementation must return an array: {:?}",
-        result
+        "implementation must return an array: {result:?}"
     );
     let locs = result.as_array().unwrap();
     assert!(

@@ -1053,6 +1053,20 @@ fn enclosing_class_in_stmts(
                     return c.name.map(|n| n.to_string());
                 }
             }
+            StmtKind::Interface(i) => {
+                let start = sv.position_of(stmt.span.start).line;
+                let end = sv.position_of(stmt.span.end).line;
+                if pos.line >= start && pos.line <= end {
+                    return Some(i.name.to_string());
+                }
+            }
+            StmtKind::Trait(t) => {
+                let start = sv.position_of(stmt.span.start).line;
+                let end = sv.position_of(stmt.span.end).line;
+                if pos.line >= start && pos.line <= end {
+                    return Some(t.name.to_string());
+                }
+            }
             StmtKind::Enum(e) => {
                 let start = sv.position_of(stmt.span.start).line;
                 let end = sv.position_of(stmt.span.end).line;

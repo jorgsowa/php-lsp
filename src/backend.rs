@@ -51,7 +51,9 @@ use crate::organize_imports::organize_imports_action;
 use crate::phpdoc_action::phpdoc_actions;
 use crate::phpstorm_meta::PhpStormMeta;
 use crate::promote_action::promote_constructor_actions;
-use crate::references::{SymbolKind, find_references, find_references_codebase};
+use crate::references::{
+    SymbolKind, find_references, find_references_codebase_with_target, find_references_with_target,
+};
 use crate::rename::{prepare_rename, rename, rename_property, rename_variable};
 use crate::selection_range::selection_ranges;
 use crate::semantic_diagnostics::{deprecated_call_diagnostics, duplicate_declaration_diagnostics};
@@ -1084,7 +1086,88 @@ impl LanguageServer for Backend {
             Some(w) => w,
             None => return Ok(None),
         };
-        let kind = if let Some(doc) = self.get_doc(uri) {
+        // Special case: cursor on a class's `__construct` method declaration.
+        // The constructor's call sites are `new OwningClass(...)`, not
+        // `->__construct()`, so name-only matching would return every class's
+        // constructor declaration (what issue reports describe as "references
+        // to __construct shows every class"). Redirect to Class-kind refs on
+        // the owning class and tack on the ctor's own decl span.
+        if word == "__construct"
+            && let Some(doc) = self.get_doc(uri)
+            && let Some(class_name) =
+                class_name_at_construct_decl(doc.source(), &doc.program().stmts, position)
+        {
+            let all_docs = self.docs.all_docs_for_scan();
+            let include_declaration = params.context.include_declaration;
+            // `class_name` is the FQN when the constructor is inside a namespace
+            // (e.g. `"Shop\\Order"`). The AST walker must search for the *short*
+            // name (`"Order"`) since that's what appears in source at call sites,
+            // while the FQN is used only to scope the search and prevent collisions
+            // between two classes with the same short name in different namespaces.
+            let short_name = class_name
+                .rsplit('\\')
+                .next()
+                .unwrap_or(class_name.as_str())
+                .to_owned();
+            let class_fqn = if class_name.contains('\\') {
+                Some(class_name.as_str())
+            } else {
+                None
+            };
+            let mut locations = {
+                let cb = self.codebase();
+                let docs = Arc::clone(&self.docs);
+                let lookup = move |key: &str| docs.get_symbol_refs_salsa(key);
+                find_references_codebase_with_target(
+                    &short_name,
+                    &all_docs,
+                    false,
+                    Some(SymbolKind::Class),
+                    class_fqn,
+                    &cb,
+                    &lookup,
+                )
+                .unwrap_or_else(|| {
+                    if let Some(fqn) = class_fqn {
+                        find_references_with_target(
+                            &short_name,
+                            &all_docs,
+                            false,
+                            Some(SymbolKind::Class),
+                            fqn,
+                        )
+                    } else {
+                        find_references(&short_name, &all_docs, false, Some(SymbolKind::Class))
+                    }
+                })
+            };
+            if include_declaration {
+                // The cursor is already on the `__construct` name (verified by
+                // `class_name_at_construct_decl`), so use the cursor position directly as
+                // the span rather than re-searching via str_offset (which finds the first
+                // occurrence in the file and would point at the wrong constructor in files
+                // with more than one class).
+                let end = Position {
+                    line: position.line,
+                    character: position.character + "__construct".len() as u32,
+                };
+                locations.push(Location {
+                    uri: uri.clone(),
+                    range: Range {
+                        start: position,
+                        end,
+                    },
+                });
+            }
+            return Ok(if locations.is_empty() {
+                None
+            } else {
+                Some(locations)
+            });
+        }
+
+        let doc_opt = self.get_doc(uri);
+        let kind = if let Some(doc) = &doc_opt {
             let stmts = &doc.program().stmts;
             if cursor_is_on_method_decl(doc.source(), stmts, position) {
                 Some(SymbolKind::Method)
@@ -1097,6 +1180,32 @@ impl LanguageServer for Backend {
         let all_docs = self.docs.all_docs_for_scan();
         let include_declaration = params.context.include_declaration;
 
+        // Resolve the FQN at the cursor so `find_references_codebase_with_target`
+        // can match by exact FQN instead of short name. This fixes the
+        // cross-namespace overmatch for Function/Class and the unrelated-class
+        // overmatch for Method (via the owning FQCN).
+        let target_fqn: Option<String> = doc_opt.as_ref().and_then(|doc| {
+            let imports = self.file_imports(uri);
+            match kind {
+                Some(SymbolKind::Function) | Some(SymbolKind::Class) => {
+                    let resolved = crate::moniker::resolve_fqn(doc, &word, &imports);
+                    if resolved.contains('\\') {
+                        Some(resolved)
+                    } else {
+                        None
+                    }
+                }
+                Some(SymbolKind::Method) => {
+                    // Owning FQCN: the class/interface/trait/enum that contains the cursor.
+                    let short_owner =
+                        crate::type_map::enclosing_class_at(doc.source(), doc, position)?;
+                    // `resolve_fqn` walks the doc and applies namespace prefix if any.
+                    Some(crate::moniker::resolve_fqn(doc, &short_owner, &imports))
+                }
+                _ => None,
+            }
+        });
+
         // Fast path: look up references via the salsa `symbol_refs` query.
         // First call per key runs `file_refs` across the workspace; subsequent
         // calls hit salsa's memo. Falls back to the full AST scan for Method /
@@ -1105,8 +1214,21 @@ impl LanguageServer for Backend {
             let cb = self.codebase();
             let docs = Arc::clone(&self.docs);
             let lookup = move |key: &str| docs.get_symbol_refs_salsa(key);
-            find_references_codebase(&word, &all_docs, include_declaration, kind, &cb, &lookup)
-                .unwrap_or_else(|| find_references(&word, &all_docs, include_declaration, kind))
+            find_references_codebase_with_target(
+                &word,
+                &all_docs,
+                include_declaration,
+                kind,
+                target_fqn.as_deref(),
+                &cb,
+                &lookup,
+            )
+            .unwrap_or_else(|| match target_fqn.as_deref() {
+                Some(t) => {
+                    find_references_with_target(&word, &all_docs, include_declaration, kind, t)
+                }
+                None => find_references(&word, &all_docs, include_declaration, kind),
+            })
         };
 
         Ok(if locations.is_empty() {
@@ -2369,6 +2491,67 @@ fn cursor_is_on_method_decl(source: &str, stmts: &[Stmt<'_, '_>], position: Posi
     }
 
     check(source, stmts, cursor)
+}
+
+/// When the cursor sits on a `__construct` method name declaration, return
+/// the owning class FQN (namespace-qualified when inside a namespace). Returns
+/// `None` otherwise (including when the cursor is on a non-constructor method,
+/// inside a trait/interface, or inside a namespaced enum — constructors on
+/// those don't drive class instantiation call sites the way class constructors
+/// do).
+fn class_name_at_construct_decl(
+    source: &str,
+    stmts: &[Stmt<'_, '_>],
+    position: Position,
+) -> Option<String> {
+    let cursor = position_to_offset(source, position)?;
+
+    fn check(source: &str, stmts: &[Stmt<'_, '_>], cursor: u32, ns_prefix: &str) -> Option<String> {
+        let mut current_ns = ns_prefix.to_owned();
+        for stmt in stmts {
+            match &stmt.kind {
+                StmtKind::Class(c) => {
+                    for member in c.members.iter() {
+                        if let ClassMemberKind::Method(m) = &member.kind
+                            && m.name == "__construct"
+                        {
+                            let start = str_offset(source, m.name);
+                            let end = start + m.name.len() as u32;
+                            if cursor >= start && cursor < end {
+                                let short = c.name?;
+                                return Some(if current_ns.is_empty() {
+                                    short.to_owned()
+                                } else {
+                                    format!("{}\\{}", current_ns, short)
+                                });
+                            }
+                        }
+                    }
+                }
+                StmtKind::Namespace(ns) => {
+                    let ns_name = ns
+                        .name
+                        .as_ref()
+                        .map(|n| n.to_string_repr().to_string())
+                        .unwrap_or_default();
+                    match &ns.body {
+                        NamespaceBody::Braced(inner) => {
+                            if let Some(name) = check(source, inner, cursor, &ns_name) {
+                                return Some(name);
+                            }
+                        }
+                        NamespaceBody::Simple => {
+                            current_ns = ns_name;
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
+    check(source, stmts, cursor, "")
 }
 
 /// Tags for deferred code actions (resolved lazily via `codeAction/resolve`).

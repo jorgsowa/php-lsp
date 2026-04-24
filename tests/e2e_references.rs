@@ -1,29 +1,32 @@
 mod common;
 
 use common::TestServer;
+use serde_json::Value;
+
+fn lines_of(locs: &[Value]) -> Vec<u32> {
+    locs.iter()
+        .map(|l| l["range"]["start"]["line"].as_u64().unwrap() as u32)
+        .collect()
+}
 
 #[tokio::test]
 async fn references_with_exclude_declaration() {
     let mut server = TestServer::new().await;
-    server
-        .open(
-            "refs.php",
-            "<?php\nfunction sub(int $a, int $b): int { return $a - $b; }\nsub(10, 3);\n",
+    let opened = server
+        .open_fixture(
+            r#"<?php
+function s$0ub(int $a, int $b): int { return $a - $b; }
+sub(10, 3);
+"#,
         )
         .await;
+    let c = opened.cursor();
 
-    let resp = server.references("refs.php", 1, 9, false).await;
+    let resp = server.references(&c.path, c.line, c.character, false).await;
 
-    assert!(resp["error"].is_null(), "references error: {:?}", resp);
-    let result = &resp["result"];
-    assert!(result.is_array(), "expected an array, got: {:?}", result);
-    let locs = result.as_array().unwrap();
-    assert_eq!(
-        locs.len(),
-        1,
-        "expected exactly 1 call-site reference, got: {:?}",
-        locs
-    );
+    assert!(resp["error"].is_null(), "references error: {resp:?}");
+    let locs = resp["result"].as_array().expect("expected array").clone();
+    assert_eq!(locs.len(), 1, "expected one call-site reference: {locs:?}");
     assert_eq!(locs[0]["range"]["start"]["line"].as_u64().unwrap(), 2);
     assert_eq!(locs[0]["range"]["start"]["character"].as_u64().unwrap(), 0);
 }
@@ -31,124 +34,105 @@ async fn references_with_exclude_declaration() {
 #[tokio::test]
 async fn references_include_declaration_returns_both() {
     let mut server = TestServer::new().await;
-    server
-        .open(
-            "refs_incl.php",
-            "<?php\nfunction add(int $a, int $b): int { return $a + $b; }\nadd(1, 2);\n",
+    let opened = server
+        .open_fixture(
+            r#"<?php
+function a$0dd(int $a, int $b): int { return $a + $b; }
+add(1, 2);
+"#,
         )
         .await;
+    let c = opened.cursor();
 
-    let resp = server.references("refs_incl.php", 1, 9, true).await;
+    let resp = server.references(&c.path, c.line, c.character, true).await;
 
     assert!(resp["error"].is_null());
     let locs = resp["result"].as_array().cloned().unwrap_or_default();
     assert!(
         locs.len() >= 2,
-        "expected declaration + call site, got: {:?}",
-        locs
+        "expected declaration + call site: {locs:?}"
     );
 }
 
-/// Regression test for issue #125: cursor on a method *declaration* must
-/// return method references, not free-function references with the same name.
+/// Regression for issue #125: cursor on a method *declaration* must return
+/// method references, not free-function references with the same name.
 #[tokio::test]
 async fn references_on_method_decl_returns_method_refs_not_function_refs() {
-    let src =
-        "<?php\nfunction add() {}\nclass C {\n    public function add() {}\n}\nadd();\n$c->add();";
-
     let mut server = TestServer::new().await;
-    server.open("refs_test.php", src).await;
+    let opened = server
+        .open_fixture(
+            r#"<?php
+function add() {}
+class C {
+    public function a$0dd() {}
+}
+add();
+$c->add();
+"#,
+        )
+        .await;
+    let c = opened.cursor();
 
-    let resp = server.references("refs_test.php", 3, 20, true).await;
+    let resp = server.references(&c.path, c.line, c.character, true).await;
+    assert!(resp["error"].is_null(), "references error: {resp:?}");
+    let lines = lines_of(resp["result"].as_array().expect("array"));
 
-    assert!(
-        resp["error"].is_null(),
-        "references should not error: {:?}",
-        resp
-    );
-    let locs = resp["result"]
-        .as_array()
-        .expect("expected array of locations");
-    let lines: Vec<u32> = locs
-        .iter()
-        .map(|l| l["range"]["start"]["line"].as_u64().unwrap() as u32)
-        .collect();
-
-    assert!(
-        lines.contains(&3),
-        "method declaration (line 3) must be included, got: {:?}",
-        lines
-    );
-    assert!(
-        lines.contains(&6),
-        "method call (line 6) must be included, got: {:?}",
-        lines
-    );
+    assert!(lines.contains(&3), "method decl line 3 missing: {lines:?}");
+    assert!(lines.contains(&6), "method call line 6 missing: {lines:?}");
     assert!(
         !lines.contains(&1),
-        "free-function declaration (line 1) must be excluded, got: {:?}",
-        lines
+        "free-function decl line 1 must be excluded: {lines:?}"
     );
     assert!(
         !lines.contains(&5),
-        "free-function call (line 5) must be excluded, got: {:?}",
-        lines
+        "free-function call line 5 must be excluded: {lines:?}"
     );
 
-    let resp2 = server.references("refs_test.php", 3, 20, false).await;
-
-    assert!(
-        resp2["error"].is_null(),
-        "references (no decl) should not error: {:?}",
-        resp2
-    );
-
-    let lines2: Vec<u32> = resp2["result"]
-        .as_array()
-        .expect("expected array of locations")
-        .iter()
-        .map(|l| l["range"]["start"]["line"].as_u64().unwrap() as u32)
-        .collect();
-
+    let resp2 = server.references(&c.path, c.line, c.character, false).await;
+    assert!(resp2["error"].is_null(), "references error: {resp2:?}");
+    let lines2 = lines_of(resp2["result"].as_array().expect("array"));
     assert!(
         lines2.contains(&6),
-        "method call (line 6) must be included when includeDeclaration=false, got: {:?}",
-        lines2
+        "method call line 6 missing: {lines2:?}"
     );
     assert!(
         !lines2.contains(&3),
-        "method declaration (line 3) must be excluded when includeDeclaration=false, got: {:?}",
-        lines2
+        "method decl must be excluded when includeDeclaration=false: {lines2:?}"
     );
 }
 
-/// Multi-file variant of issue #125: method decl in file A must not pull in
+/// Multi-file variant of #125: method decl in file A must not pull in
 /// free-function usages of the same name from file B.
 #[tokio::test]
 async fn references_on_method_decl_excludes_cross_file_free_function() {
-    let src_a = "<?php\nclass C {\n    public function add() {}\n}";
-    let src_b = "<?php\nfunction add() {}\nadd();\n$c->add();";
-
     let mut server = TestServer::new().await;
-    server.open("a.php", src_a).await;
-    server.open("b.php", src_b).await;
+    let opened = server
+        .open_fixture(
+            r#"//- /a.php
+<?php
+class C {
+    public function a$0dd() {}
+}
+
+//- /b.php
+<?php
+function add() {}
+add();
+$c->add();
+"#,
+        )
+        .await;
+    let c = opened.cursor();
 
     let a_uri = server.uri("a.php");
     let b_uri = server.uri("b.php");
 
-    let resp = server.references("a.php", 2, 20, true).await;
+    let resp = server.references(&c.path, c.line, c.character, true).await;
+    assert!(resp["error"].is_null(), "references error: {resp:?}");
 
-    assert!(
-        resp["error"].is_null(),
-        "references should not error: {:?}",
-        resp
-    );
-
-    let locs = resp["result"]
+    let hits: Vec<(String, u32)> = resp["result"]
         .as_array()
-        .expect("expected array of locations");
-
-    let hits: Vec<(String, u32)> = locs
+        .expect("array")
         .iter()
         .map(|l| {
             (
@@ -160,28 +144,25 @@ async fn references_on_method_decl_excludes_cross_file_free_function() {
 
     assert!(
         hits.contains(&(a_uri.clone(), 2)),
-        "method declaration (a.php line 2) must be included, got: {:?}",
-        hits
+        "method decl a.php:2 missing: {hits:?}"
     );
     assert!(
         hits.contains(&(b_uri.clone(), 3)),
-        "method call (b.php line 3) must be included, got: {:?}",
-        hits
+        "method call b.php:3 missing: {hits:?}"
     );
     assert!(
         !hits.contains(&(b_uri.clone(), 1)),
-        "free-function declaration (b.php line 1) must be excluded, got: {:?}",
-        hits
+        "free-function decl b.php:1 must be excluded: {hits:?}"
     );
     assert!(
         !hits.contains(&(b_uri.clone(), 2)),
-        "free-function call (b.php line 2) must be excluded, got: {:?}",
-        hits
+        "free-function call b.php:2 must be excluded: {hits:?}"
     );
 }
 
-/// E2E: the codebase fast path (find_references_codebase) is exercised for a
-/// `final` class method across multiple files.
+/// The codebase fast path (`find_references_codebase`) for a `final` class
+/// method across files. Uses `with_root` because the fast path relies on the
+/// workspace scan populating the index.
 #[tokio::test]
 async fn references_fast_path_final_class_cross_file_e2e() {
     let dir = tempfile::tempdir().unwrap();
@@ -217,54 +198,284 @@ async fn references_fast_path_final_class_cross_file_e2e() {
 
     let resp = server.references("class.php", 2, 20, false).await;
 
-    assert!(
-        resp["error"].is_null(),
-        "references should not error: {:?}",
-        resp
-    );
-
-    let locs = resp["result"].as_array().expect("expected location array");
-    let uris: Vec<&str> = locs.iter().map(|l| l["uri"].as_str().unwrap()).collect();
+    assert!(resp["error"].is_null(), "references error: {resp:?}");
+    let uris: Vec<&str> = resp["result"]
+        .as_array()
+        .expect("array")
+        .iter()
+        .map(|l| l["uri"].as_str().unwrap())
+        .collect();
 
     assert!(
         uris.iter().any(|u| *u == caller_uri.as_str()),
-        "caller.php (typed call) must appear in results, got: {:?}",
-        uris
+        "caller.php missing: {uris:?}"
     );
     assert!(
         !uris.iter().any(|u| *u == ignored_uri.as_str()),
-        "ignored.php (untyped call) must be excluded by the fast path, got: {:?}",
-        uris
+        "ignored.php (untyped) must be excluded by fast path: {uris:?}"
+    );
+}
+
+/// Regression: references on `__construct` of class `Foo` must return only
+/// Foo's constructor and its call sites (`new Foo(...)`), NOT every other
+/// class's `__construct` declaration. The symbol has a class-scoped identity;
+/// name-only matching across classes is wrong.
+#[tokio::test]
+async fn references_on_constructor_are_scoped_to_owning_class() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("a.php"),
+        "<?php\nclass Foo {\n    public function __construct(int $x) {}\n}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("b.php"),
+        "<?php\nclass Bar {\n    public function __construct(string $s) {}\n}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("c.php"),
+        "<?php\n$foo = new Foo(1);\n$bar = new Bar('x');\n",
+    )
+    .unwrap();
+
+    let mut server = TestServer::with_root(dir.path()).await;
+    server.wait_for_index_ready().await;
+
+    let (text, _, _) = server.locate("a.php", "<?php", 0);
+    server.open("a.php", &text).await;
+
+    let (_, line, col) = server.locate("a.php", "__construct", 0);
+    let resp = server.references("a.php", line, col + 2, true).await;
+    assert!(resp["error"].is_null(), "references error: {resp:?}");
+
+    let a_uri = server.uri("a.php");
+    let b_uri = server.uri("b.php");
+    let c_uri = server.uri("c.php");
+
+    let hits: Vec<(String, u32)> = resp["result"]
+        .as_array()
+        .unwrap_or_else(|| panic!("expected array of references, got: {resp:?}"))
+        .iter()
+        .map(|l| {
+            (
+                l["uri"].as_str().unwrap().to_string(),
+                l["range"]["start"]["line"].as_u64().unwrap() as u32,
+            )
+        })
+        .collect();
+
+    // Must NOT include Bar's unrelated __construct declaration.
+    assert!(
+        !hits.contains(&(b_uri.clone(), 2)),
+        "Bar::__construct decl on b.php:2 must be excluded — got {hits:?}"
+    );
+    // Must NOT include `new Bar('x')` call.
+    assert!(
+        !hits.contains(&(c_uri.clone(), 2)),
+        "`new Bar('x')` on c.php:2 must be excluded — got {hits:?}"
+    );
+    // Sanity: Foo's own constructor and `new Foo(1)` should be present.
+    assert!(
+        hits.iter().any(|(u, _)| u == &a_uri),
+        "Foo::__construct decl missing — got {hits:?}"
+    );
+    assert!(
+        hits.contains(&(c_uri.clone(), 1)),
+        "`new Foo(1)` missing from c.php:1 — got {hits:?}"
+    );
+}
+
+/// Regression for Bug 1: two constructors in the same file — `str_offset`
+/// would always find the first `__construct` occurrence, so the declaration
+/// span for the second constructor pointed at the first one. With the fix the
+/// cursor position is used directly, so each constructor gets its own span.
+#[tokio::test]
+async fn references_on_second_constructor_has_correct_decl_span() {
+    let mut server = TestServer::new().await;
+    let opened = server
+        .open_fixture(
+            r#"<?php
+class Alpha {
+    public function __construct(int $x) {}
+}
+class Beta {
+    public function __con$0struct(string $s) {}
+}
+new Alpha(1);
+new Beta('x');
+"#,
+        )
+        .await;
+    let c = opened.cursor();
+
+    let resp = server.references(&c.path, c.line, c.character, true).await;
+    assert!(resp["error"].is_null(), "references error: {resp:?}");
+
+    let hits: Vec<u32> = resp["result"]
+        .as_array()
+        .expect("array")
+        .iter()
+        .map(|l| l["range"]["start"]["line"].as_u64().unwrap() as u32)
+        .collect();
+
+    // Beta's constructor is on line 5; the decl span must point there, not at
+    // Alpha's constructor on line 2.
+    assert!(
+        hits.contains(&5),
+        "Beta::__construct decl (line 5) missing: {hits:?}"
+    );
+    assert!(
+        !hits.contains(&2),
+        "Alpha::__construct decl (line 2) must not appear: {hits:?}"
+    );
+    // `new Beta('x')` is on line 8.
+    assert!(
+        hits.contains(&8),
+        "`new Beta(...)` (line 8) missing: {hits:?}"
+    );
+    // `new Alpha(1)` must not appear.
+    assert!(
+        !hits.contains(&7),
+        "`new Alpha(...)` (line 7) must not appear: {hits:?}"
+    );
+}
+
+/// Regression for Bug 2: braced-namespace class `__construct` — the function
+/// previously only walked top-level statements and skipped
+/// `NamespaceBody::Braced`, returning `None` for every constructor inside a
+/// braced namespace block and falling through to name-only matching.
+#[tokio::test]
+async fn references_on_constructor_in_braced_namespace() {
+    let mut server = TestServer::new().await;
+    let opened = server
+        .open_fixture(
+            r#"<?php
+namespace Shop {
+    class Order {
+        public function __con$0struct(int $id) {}
+    }
+}
+namespace Shop {
+    $o = new Order(1);
+}
+"#,
+        )
+        .await;
+    let c = opened.cursor();
+
+    let resp = server.references(&c.path, c.line, c.character, true).await;
+    assert!(resp["error"].is_null(), "references error: {resp:?}");
+
+    let hits: Vec<u32> = resp["result"]
+        .as_array()
+        .expect("array")
+        .iter()
+        .map(|l| l["range"]["start"]["line"].as_u64().unwrap() as u32)
+        .collect();
+
+    // The constructor declaration is on line 3.
+    assert!(
+        hits.contains(&3),
+        "Order::__construct decl (line 3) missing: {hits:?}"
+    );
+    // `new Order(1)` is on line 8.
+    assert!(
+        hits.contains(&7),
+        "`new Order(1)` (line 7) missing: {hits:?}"
+    );
+}
+
+/// Regression for Bug 3: two classes with the same short name in different
+/// namespaces — the constructor path previously called `find_references_codebase`
+/// with the bare short name, so `new Foo(...)` sites from *both* namespaces
+/// were returned when asking for refs on one class's constructor.
+#[tokio::test]
+async fn references_on_constructor_scoped_by_namespace_fqn() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("a.php"),
+        "<?php\nnamespace Alpha;\nclass Widget {\n    public function __construct(int $x) {}\n}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("b.php"),
+        "<?php\nnamespace Beta;\nclass Widget {\n    public function __construct(string $s) {}\n}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("c.php"),
+        "<?php\n$a = new \\Alpha\\Widget(1);\n$b = new \\Beta\\Widget('x');\n",
+    )
+    .unwrap();
+
+    let mut server = TestServer::with_root(dir.path()).await;
+    server.wait_for_index_ready().await;
+
+    let (text, _, _) = server.locate("a.php", "<?php", 0);
+    server.open("a.php", &text).await;
+
+    let (_, line, col) = server.locate("a.php", "__construct", 0);
+    let resp = server.references("a.php", line, col + 2, true).await;
+    assert!(resp["error"].is_null(), "references error: {resp:?}");
+
+    let c_uri = server.uri("c.php");
+    let b_uri = server.uri("b.php");
+
+    let hits: Vec<(String, u32)> = resp["result"]
+        .as_array()
+        .unwrap_or_else(|| panic!("expected array, got: {resp:?}"))
+        .iter()
+        .map(|l| {
+            (
+                l["uri"].as_str().unwrap().to_string(),
+                l["range"]["start"]["line"].as_u64().unwrap() as u32,
+            )
+        })
+        .collect();
+
+    // `new \Alpha\Widget(1)` is on c.php line 1.
+    assert!(
+        hits.contains(&(c_uri.clone(), 1)),
+        "`new \\Alpha\\Widget(1)` missing: {hits:?}"
+    );
+    // `new \Beta\Widget('x')` must NOT appear.
+    assert!(
+        !hits.contains(&(c_uri.clone(), 2)),
+        "`new \\Beta\\Widget('x')` must not appear: {hits:?}"
+    );
+    // Beta's constructor declaration must NOT appear.
+    assert!(
+        !hits.iter().any(|(u, _)| u == &b_uri),
+        "Beta::Widget::__construct must not appear: {hits:?}"
     );
 }
 
 #[tokio::test]
 async fn references_finds_all_usages_of_function() {
     let mut server = TestServer::new().await;
-    server
-        .open(
-            "refs_all.php",
-            "<?php\nfunction add(int $a, int $b): int { return $a + $b; }\nadd(1, 2);\nadd(3, 4);\n",
+    let opened = server
+        .open_fixture(
+            r#"<?php
+function a$0dd(int $a, int $b): int { return $a + $b; }
+add(1, 2);
+add(3, 4);
+"#,
         )
         .await;
+    let c = opened.cursor();
 
-    let resp = server.references("refs_all.php", 1, 9, true).await;
+    let resp = server.references(&c.path, c.line, c.character, true).await;
 
-    assert!(resp["error"].is_null(), "references error: {:?}", resp);
-    let result = &resp["result"];
-    assert!(result.is_array(), "expected array");
-    let locs = result.as_array().unwrap();
+    assert!(resp["error"].is_null(), "references error: {resp:?}");
+    let locs = resp["result"].as_array().expect("array");
     assert_eq!(
         locs.len(),
         3,
-        "expected 3 references (1 declaration + 2 calls), got: {:?}",
-        locs
+        "expected 3 refs (1 decl + 2 calls): {locs:?}"
     );
-    let lines: Vec<u64> = locs
-        .iter()
-        .map(|l| l["range"]["start"]["line"].as_u64().unwrap())
-        .collect();
-    assert!(lines.contains(&1), "declaration on line 1 must be included");
-    assert!(lines.contains(&2), "call on line 2 must be included");
-    assert!(lines.contains(&3), "call on line 3 must be included");
+    let lines = lines_of(locs);
+    assert!(lines.contains(&1), "decl line 1 missing");
+    assert!(lines.contains(&2), "call line 2 missing");
+    assert!(lines.contains(&3), "call line 3 missing");
 }

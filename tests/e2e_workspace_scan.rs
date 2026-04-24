@@ -30,6 +30,41 @@ async fn workspace_without_composer_json_still_works() {
     );
 }
 
+/// A composer.json that points a PSR-4 prefix at a directory that doesn't
+/// exist on disk must not crash or stall the scan — existing directories
+/// must still be indexed, and features on opened files in the valid
+/// directory must still work.
+#[tokio::test]
+async fn nonexistent_psr4_dir_does_not_crash_server() {
+    let mut server = TestServer::with_fixture("missing-psr4-dir").await;
+    server.wait_for_index_ready().await;
+
+    // `Present\Alive` lives under an existing PSR-4 root and must still be
+    // discoverable via workspace symbols — the missing `src/Ghost/` root must
+    // have been skipped silently.
+    let resp = server.workspace_symbols("Alive").await;
+    let symbols = resp["result"].as_array().cloned().unwrap_or_default();
+    assert!(
+        symbols.iter().any(|s| {
+            s["location"]["uri"]
+                .as_str()
+                .map(|u| u.ends_with("src/Present/Alive.php"))
+                .unwrap_or(false)
+        }),
+        "Alive in existing PSR-4 root must be indexed despite sibling missing dir, got: {symbols:?}"
+    );
+
+    // Opening the file and requesting document symbols exercises the parser +
+    // PSR-4 resolution path end-to-end.
+    let (text, _, _) = server.locate("src/Present/Alive.php", "<?php", 0);
+    server.open("src/Present/Alive.php", &text).await;
+    let resp = server.document_symbols("src/Present/Alive.php").await;
+    assert!(
+        resp["error"].is_null(),
+        "documentSymbol errored with missing PSR-4 dir in composer: {resp:?}"
+    );
+}
+
 /// A malformed composer.json must not crash the server or block the scan —
 /// the server must still accept requests on the workspace's files.
 #[tokio::test]
@@ -67,29 +102,8 @@ async fn malformed_composer_json_does_not_crash_server() {
 /// in an excluded file must not find it.
 #[tokio::test]
 async fn exclude_paths_honored_by_workspace_scan() {
-    // Reuse the psr4-mini fixture layout but tell the server to exclude the
-    // entire `src/Service` directory.
-    let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let source = manifest_dir.join("tests/fixtures/psr4-mini");
-    let tmp = tempfile::tempdir().expect("tempdir");
-    // Copy fixture manually so we own the TempDir.
-    fn copy_dir(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
-        std::fs::create_dir_all(dst)?;
-        for e in std::fs::read_dir(src)? {
-            let e = e?;
-            let to = dst.join(e.file_name());
-            if e.file_type()?.is_dir() {
-                copy_dir(&e.path(), &to)?;
-            } else {
-                std::fs::copy(e.path(), &to)?;
-            }
-        }
-        Ok(())
-    }
-    copy_dir(&source, tmp.path()).expect("copy");
-
-    let mut server = TestServer::with_root_and_options(
-        tmp.path(),
+    let mut server = TestServer::with_fixture_and_options(
+        "psr4-mini",
         json!({
             "diagnostics": { "enabled": true },
             "excludePaths": ["src/Service/*"],
@@ -101,34 +115,26 @@ async fn exclude_paths_honored_by_workspace_scan() {
     // Greeter is in src/Service — it must NOT appear in workspace symbols.
     let resp = server.workspace_symbols("Greeter").await;
     let symbols = resp["result"].as_array().cloned().unwrap_or_default();
-    let found_greeter = symbols.iter().any(|s| {
-        s["name"].as_str() == Some("Greeter")
-            && s["location"]["uri"]
+    assert!(
+        !symbols.iter().any(|s| {
+            s["location"]["uri"]
                 .as_str()
                 .map(|u| u.ends_with("src/Service/Greeter.php"))
                 .unwrap_or(false)
-    });
-    assert!(
-        !found_greeter,
+        }),
         "Greeter is in excluded src/Service — must not be indexed, got: {symbols:?}"
     );
 
     // User is in src/Model — it must still be indexed.
     let resp = server.workspace_symbols("User").await;
     let symbols = resp["result"].as_array().cloned().unwrap_or_default();
-    let found_user = symbols.iter().any(|s| {
-        s["name"].as_str() == Some("User")
-            && s["location"]["uri"]
+    assert!(
+        symbols.iter().any(|s| {
+            s["location"]["uri"]
                 .as_str()
                 .map(|u| u.ends_with("src/Model/User.php"))
                 .unwrap_or(false)
-    });
-    assert!(
-        found_user,
+        }),
         "User is NOT excluded — must still appear in workspace symbols, got: {symbols:?}"
     );
-
-    // Keep tempdir alive past server use.
-    drop(server);
-    drop(tmp);
 }

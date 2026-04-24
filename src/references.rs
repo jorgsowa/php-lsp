@@ -40,7 +40,28 @@ pub fn find_references(
     include_declaration: bool,
     kind: Option<SymbolKind>,
 ) -> Vec<Location> {
-    find_references_inner(word, all_docs, include_declaration, false, kind)
+    find_references_inner(word, all_docs, include_declaration, false, kind, None)
+}
+
+/// Like [`find_references`] but narrows scanning to docs whose namespace +
+/// `use` imports would resolve `word` to `target_fqn`. Used by
+/// `textDocument/references` for the AST fallback so it doesn't match
+/// same-short-name symbols in unrelated namespaces.
+pub fn find_references_with_target(
+    word: &str,
+    all_docs: &[(Url, Arc<ParsedDoc>)],
+    include_declaration: bool,
+    kind: Option<SymbolKind>,
+    target_fqn: &str,
+) -> Vec<Location> {
+    find_references_inner(
+        word,
+        all_docs,
+        include_declaration,
+        false,
+        kind,
+        Some(target_fqn),
+    )
 }
 
 /// Like `find_references` but also includes `use` statement spans.
@@ -51,7 +72,7 @@ pub fn find_references_with_use(
     all_docs: &[(Url, Arc<ParsedDoc>)],
     include_declaration: bool,
 ) -> Vec<Location> {
-    find_references_inner(word, all_docs, include_declaration, true, None)
+    find_references_inner(word, all_docs, include_declaration, true, None, None)
 }
 
 /// Fast path: look up pre-computed reference locations from the mir codebase index.
@@ -80,6 +101,30 @@ pub fn find_references_codebase(
     codebase: &mir_codebase::Codebase,
     lookup_refs: &RefLookup<'_>,
 ) -> Option<Vec<Location>> {
+    find_references_codebase_with_target(
+        word,
+        all_docs,
+        include_declaration,
+        kind,
+        None,
+        codebase,
+        lookup_refs,
+    )
+}
+
+/// Like [`find_references_codebase`] but accepts an exact FQN (for Function/Class)
+/// or owning FQCN (for Method) to avoid short-name collisions across namespaces
+/// and unrelated classes. When `target_fqn` is `None`, behaves identically to
+/// `find_references_codebase`.
+pub fn find_references_codebase_with_target(
+    word: &str,
+    all_docs: &[(Url, Arc<ParsedDoc>)],
+    include_declaration: bool,
+    kind: Option<SymbolKind>,
+    target_fqn: Option<&str>,
+    codebase: &mir_codebase::Codebase,
+    lookup_refs: &RefLookup<'_>,
+) -> Option<Vec<Location>> {
     // Build a URI-string → (Url, ParsedDoc) map for O(1) lookup.
     let doc_map: std::collections::HashMap<&str, (&Url, &Arc<ParsedDoc>)> = all_docs
         .iter()
@@ -100,32 +145,48 @@ pub fn find_references_codebase(
         })
     };
 
+    // Normalize: strip a single leading `\` from any fully-qualified target.
+    let target_fqn = target_fqn.map(|t| t.trim_start_matches('\\'));
+
     match kind {
         Some(SymbolKind::Function) => {
-            // Collect all FQNs whose short name (last `\`-segment) matches `word`.
-            let fqns: Vec<Arc<str>> = codebase
-                .functions
-                .iter()
-                .filter_map(|e| {
-                    let fqn = e.key();
-                    let short = fqn.rsplit('\\').next().unwrap_or(fqn.as_ref());
-                    if short == word {
-                        Some(fqn.clone())
-                    } else {
-                        None
-                    }
-                })
-                .collect();
+            // When the caller resolved a specific FQN for the cursor, use it
+            // exactly — don't union across namespaces that share the short name.
+            let fqns: Vec<Arc<str>> = if let Some(t) = target_fqn.filter(|t| t.contains('\\')) {
+                // Exact FQN match only. If the codebase doesn't know this FQN,
+                // return None so the caller falls back to the AST walker
+                // (which will at least find in-file references).
+                match codebase.functions.get(t) {
+                    Some(entry) => vec![entry.key().clone()],
+                    None => return None,
+                }
+            } else {
+                codebase
+                    .functions
+                    .iter()
+                    .filter_map(|e| {
+                        let fqn = e.key();
+                        let short = fqn.rsplit('\\').next().unwrap_or(fqn.as_ref());
+                        if short == word {
+                            Some(fqn.clone())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect()
+            };
 
             if fqns.is_empty() {
                 return None;
             }
 
+            let mut call_site_count = 0usize;
             let mut locations: Vec<Location> = Vec::new();
             for fqn in &fqns {
                 for (file, start, end) in lookup_refs(fqn) {
                     if let Some(loc) = spans_to_location(&file, start, end) {
                         locations.push(loc);
+                        call_site_count += 1;
                     }
                 }
                 if include_declaration
@@ -136,48 +197,70 @@ pub fn find_references_codebase(
                     locations.push(loc);
                 }
             }
-            if locations.is_empty() {
-                None
-            } else {
-                Some(locations)
+            // If mir tracked no call sites for this FQN, the index may be
+            // incomplete (still analyzing) or genuinely empty. Fall back to
+            // the AST walker so we don't silently drop real refs.
+            if call_site_count == 0 {
+                return None;
             }
+            Some(locations)
         }
 
         Some(SymbolKind::Class) => {
-            // Collect all FQCNs whose short name matches `word` across all type maps.
-            let mut fqcns: Vec<Arc<str>> = Vec::new();
-            let short_matches =
-                |fqcn: &Arc<str>| fqcn.rsplit('\\').next().unwrap_or(fqcn.as_ref()) == word;
-            for e in codebase.classes.iter() {
-                if short_matches(e.key()) {
-                    fqcns.push(e.key().clone());
+            // When the caller resolved a specific FQCN, use it exactly — don't
+            // union classes/interfaces/traits/enums that merely share the short name.
+            let fqcns: Vec<Arc<str>> = if let Some(t) = target_fqn.filter(|t| t.contains('\\')) {
+                let mut v: Vec<Arc<str>> = Vec::new();
+                if let Some(e) = codebase.classes.get(t) {
+                    v.push(e.key().clone());
+                } else if let Some(e) = codebase.interfaces.get(t) {
+                    v.push(e.key().clone());
+                } else if let Some(e) = codebase.traits.get(t) {
+                    v.push(e.key().clone());
+                } else if let Some(e) = codebase.enums.get(t) {
+                    v.push(e.key().clone());
+                } else {
+                    return None;
                 }
-            }
-            for e in codebase.interfaces.iter() {
-                if short_matches(e.key()) {
-                    fqcns.push(e.key().clone());
+                v
+            } else {
+                let mut v: Vec<Arc<str>> = Vec::new();
+                let short_matches =
+                    |fqcn: &Arc<str>| fqcn.rsplit('\\').next().unwrap_or(fqcn.as_ref()) == word;
+                for e in codebase.classes.iter() {
+                    if short_matches(e.key()) {
+                        v.push(e.key().clone());
+                    }
                 }
-            }
-            for e in codebase.traits.iter() {
-                if short_matches(e.key()) {
-                    fqcns.push(e.key().clone());
+                for e in codebase.interfaces.iter() {
+                    if short_matches(e.key()) {
+                        v.push(e.key().clone());
+                    }
                 }
-            }
-            for e in codebase.enums.iter() {
-                if short_matches(e.key()) {
-                    fqcns.push(e.key().clone());
+                for e in codebase.traits.iter() {
+                    if short_matches(e.key()) {
+                        v.push(e.key().clone());
+                    }
                 }
-            }
+                for e in codebase.enums.iter() {
+                    if short_matches(e.key()) {
+                        v.push(e.key().clone());
+                    }
+                }
+                v
+            };
 
             if fqcns.is_empty() {
                 return None;
             }
 
+            let mut call_site_count = 0usize;
             let mut locations: Vec<Location> = Vec::new();
             for fqcn in &fqcns {
                 for (file, start, end) in lookup_refs(fqcn) {
                     if let Some(loc) = spans_to_location(&file, start, end) {
                         locations.push(loc);
+                        call_site_count += 1;
                     }
                 }
                 if include_declaration
@@ -187,62 +270,201 @@ pub fn find_references_codebase(
                     locations.push(loc);
                 }
             }
-            if locations.is_empty() {
-                None
-            } else {
-                Some(locations)
+            if call_site_count == 0 {
+                return None;
             }
+            Some(locations)
         }
 
         Some(SymbolKind::Method) => {
             let word_lower = word.to_lowercase();
 
-            // Collect method keys (FQCN::lowercase_name) for types where the
-            // codebase index is authoritative or a reliable pre-filter.
+            // Pre-compute the set of user-code URIs so stub classes that carry
+            // a (bundled-stub) `location` but aren't part of the workspace get
+            // filtered out.
+            let user_code_uris: HashSet<&str> =
+                all_docs.iter().map(|(url, _)| url.as_str()).collect();
+            let is_user_code = |loc: &Option<mir_codebase::storage::Location>| -> bool {
+                loc.as_ref()
+                    .is_some_and(|l| user_code_uris.contains(l.file.as_ref()))
+            };
+
             let mut method_keys: Vec<String> = Vec::new();
             let mut candidate_arcs: Vec<Arc<str>> = Vec::new();
 
-            // Only consider user-code classes (those with a source location).
-            // Stub classes (DateTime, Ds\Set, …) live in the same codebase but
-            // have `location: None`; including them pollutes `method_keys` with
-            // keys that have no recorded references, leading the fast path to
-            // return Some(empty) instead of falling back to the AST walker.
-            for entry in codebase.classes.iter() {
-                let cls = entry.value();
-                if cls.location.is_none() {
-                    continue;
+            if let Some(owner_fqcn) = target_fqn {
+                // Caller resolved the owning FQCN. Build the full set of owners
+                // (the target plus subclasses / implementers / trait users) and
+                // return locations straight from mir's reference index — which
+                // is keyed by exact FQCN, so calls on unrelated same-named
+                // classes are completely filtered out without re-walking the AST.
+                let mut owners: Vec<Arc<str>> = Vec::new();
+
+                if let Some(entry) = codebase.classes.get(owner_fqcn) {
+                    owners.push(entry.key().clone());
+                    for e in codebase.classes.iter() {
+                        if e.value()
+                            .all_parents
+                            .iter()
+                            .any(|p| p.as_ref() == owner_fqcn)
+                        {
+                            owners.push(e.key().clone());
+                        }
+                    }
+                } else if let Some(entry) = codebase.enums.get(owner_fqcn) {
+                    owners.push(entry.key().clone());
+                } else if let Some(entry) = codebase.interfaces.get(owner_fqcn) {
+                    owners.push(entry.key().clone());
+                    for e in codebase.classes.iter() {
+                        if e.value()
+                            .interfaces
+                            .iter()
+                            .any(|i| i.as_ref() == owner_fqcn)
+                        {
+                            owners.push(e.key().clone());
+                        }
+                    }
+                } else if let Some(entry) = codebase.traits.get(owner_fqcn) {
+                    owners.push(entry.key().clone());
+                    for e in codebase.classes.iter() {
+                        if e.value().traits.iter().any(|t| t.as_ref() == owner_fqcn) {
+                            owners.push(e.key().clone());
+                        }
+                    }
+                } else {
+                    return None;
                 }
-                if let Some(method) = cls.own_methods.get(word_lower.as_str())
-                    && (cls.is_final || method.visibility == mir_codebase::Visibility::Private)
-                {
-                    method_keys.push(format!("{}::{}", entry.key(), word_lower));
-                    if include_declaration && let Some(loc) = &method.location {
-                        candidate_arcs.push(loc.file.clone());
+
+                // Reference locations are exact method-name spans from mir's
+                // index — use them directly (no AST re-scan which can't
+                // distinguish by receiver type).
+                let mut call_site_count = 0usize;
+                let mut locations: Vec<Location> = Vec::new();
+                for owner in &owners {
+                    let key = format!("{}::{}", owner, word_lower);
+                    for (file, start, end) in lookup_refs(&key) {
+                        if let Some(loc) = spans_to_location(&file, start, end) {
+                            locations.push(loc);
+                            call_site_count += 1;
+                        }
                     }
                 }
-            }
-            for entry in codebase.enums.iter() {
-                let enm = entry.value();
-                if enm.location.is_none() {
-                    continue;
+                // If mir tracked no call sites, fall back to the AST walker.
+                // This avoids silently dropping refs when mir can't resolve
+                // the receiver type at a call site (e.g. dynamic dispatch,
+                // typed-less $this, cross-file calls pending analysis).
+                if call_site_count == 0 {
+                    return None;
                 }
-                if let Some(method) = enm.own_methods.get(word_lower.as_str())
-                    && method.visibility == mir_codebase::Visibility::Private
-                {
-                    method_keys.push(format!("{}::{}", entry.key(), word_lower));
-                    if include_declaration && let Some(loc) = &method.location {
-                        candidate_arcs.push(loc.file.clone());
+
+                if include_declaration {
+                    // For each owner, parse its decl file and locate the
+                    // method's *name* span (not the body). This keeps the
+                    // declaration result pinpoint, matching what the rest of
+                    // the system does for non-codebase references.
+                    for owner in &owners {
+                        let decl_file =
+                            codebase
+                                .classes
+                                .get(owner.as_ref())
+                                .and_then(|e| {
+                                    e.value()
+                                        .own_methods
+                                        .get(word_lower.as_str())
+                                        .and_then(|m| m.location.as_ref().map(|l| l.file.clone()))
+                                })
+                                .or_else(|| {
+                                    codebase.enums.get(owner.as_ref()).and_then(|e| {
+                                        e.value().own_methods.get(word_lower.as_str()).and_then(
+                                            |m| m.location.as_ref().map(|l| l.file.clone()),
+                                        )
+                                    })
+                                })
+                                .or_else(|| {
+                                    codebase.interfaces.get(owner.as_ref()).and_then(|e| {
+                                        e.value().own_methods.get(word_lower.as_str()).and_then(
+                                            |m| m.location.as_ref().map(|l| l.file.clone()),
+                                        )
+                                    })
+                                });
+                        let Some(decl_file) = decl_file else { continue };
+                        let Some((url, doc)) = all_docs
+                            .iter()
+                            .find(|(u, _)| u.as_str() == decl_file.as_ref())
+                        else {
+                            continue;
+                        };
+                        // Scope the declaration lookup to the owning class, so
+                        // unrelated same-named methods in the same file don't
+                        // add spurious decl spans.
+                        let short = owner.rsplit('\\').next().unwrap_or(owner.as_ref());
+                        let mut spans: Vec<Span> = Vec::new();
+                        collect_method_decls_in_class(
+                            doc.source(),
+                            &doc.program().stmts,
+                            short,
+                            word,
+                            &mut spans,
+                        );
+                        let sv = doc.view();
+                        let word_utf16_len: u32 = word.chars().map(|c| c.len_utf16() as u32).sum();
+                        for span in spans {
+                            let start = sv.position_of(span.start);
+                            let end = Position {
+                                line: start.line,
+                                character: start.character + word_utf16_len,
+                            };
+                            locations.push(Location {
+                                uri: (*url).clone(),
+                                range: Range { start, end },
+                            });
+                        }
                     }
+                }
+
+                return if locations.is_empty() {
+                    None
+                } else {
+                    Some(locations)
+                };
+            } else {
+                // No resolved owner — fall back to the previous gated heuristic
+                // (only final classes or private methods get the fast path).
+                for entry in codebase.classes.iter() {
+                    let cls = entry.value();
+                    if !is_user_code(&cls.location) {
+                        continue;
+                    }
+                    if let Some(method) = cls.own_methods.get(word_lower.as_str())
+                        && (cls.is_final || method.visibility == mir_codebase::Visibility::Private)
+                    {
+                        method_keys.push(format!("{}::{}", entry.key(), word_lower));
+                        if include_declaration && let Some(loc) = &method.location {
+                            candidate_arcs.push(loc.file.clone());
+                        }
+                    }
+                }
+                for entry in codebase.enums.iter() {
+                    let enm = entry.value();
+                    if !is_user_code(&enm.location) {
+                        continue;
+                    }
+                    if let Some(method) = enm.own_methods.get(word_lower.as_str())
+                        && method.visibility == mir_codebase::Visibility::Private
+                    {
+                        method_keys.push(format!("{}::{}", entry.key(), word_lower));
+                        if include_declaration && let Some(loc) = &method.location {
+                            candidate_arcs.push(loc.file.clone());
+                        }
+                    }
+                }
+
+                if method_keys.is_empty() {
+                    return None;
                 }
             }
 
-            if method_keys.is_empty() {
-                // No qualifying class/enum found — fall back to the full AST scan.
-                return None;
-            }
-
-            // Collect candidate files from the reference index (declaration files
-            // already appended above so include_declaration=true works correctly).
+            // Collect candidate files from the reference index.
             for key in &method_keys {
                 for (file, _, _) in lookup_refs(key) {
                     candidate_arcs.push(file);
@@ -263,6 +485,7 @@ pub fn find_references_codebase(
                 include_declaration,
                 false,
                 Some(SymbolKind::Method),
+                None,
             );
             Some(locations)
         }
@@ -282,17 +505,78 @@ fn find_references_inner(
     include_declaration: bool,
     include_use: bool,
     kind: Option<SymbolKind>,
+    target_fqn: Option<&str>,
 ) -> Vec<Location> {
     // Each document is scanned independently: substring pre-filter, AST walk,
     // then span → position translation. Rayon parallelizes across docs; the
     // per-doc work is CPU-bound and 100% independent, so this scales linearly
     // with cores on large workspaces (Laravel: ~1,600 files).
+    // Per-file namespace pre-filter only applies to Function and Class kinds,
+    // where the target FQN refers to the symbol itself. For methods the
+    // target is the *owning* FQCN, which can't be compared against the
+    // method name via namespace resolution.
+    let namespace_filter_active =
+        matches!(kind, Some(SymbolKind::Function) | Some(SymbolKind::Class));
     all_docs
         .par_iter()
         .flat_map_iter(|(uri, doc)| {
+            if namespace_filter_active
+                && let Some(target) = target_fqn
+                && !doc_can_reference_target(doc, word, target)
+            {
+                return Vec::new();
+            }
             scan_doc(word, uri, doc, include_declaration, include_use, kind)
         })
         .collect()
+}
+
+/// Return true when this doc's namespace + `use` imports could plausibly
+/// refer to `target_fqn` under the short name `word`.  Used as a pre-filter
+/// so the AST walker doesn't emit refs in files whose namespace would resolve
+/// `word` to a different FQN.
+fn doc_can_reference_target(doc: &ParsedDoc, word: &str, target_fqn: &str) -> bool {
+    let target = target_fqn.trim_start_matches('\\');
+    let imports = collect_file_imports(doc);
+    let resolved = crate::moniker::resolve_fqn(doc, word, &imports);
+    // PHP falls back to the global namespace for unqualified *function* calls
+    // when the namespaced version doesn't exist.  We don't know at this point
+    // which symbol category the target is, so accept either an exact match
+    // or a global-namespace fallback match.
+    resolved == target
+        || (resolved == word && !target.contains('\\'))
+        || (resolved == word && target == format!("\\{word}"))
+}
+
+/// Build a local-name → FQN map from a doc's `use` statements.  Mirrors
+/// `Backend::file_imports` but self-contained so the reference walker can
+/// run without a persistent codebase.
+fn collect_file_imports(doc: &ParsedDoc) -> std::collections::HashMap<String, String> {
+    let mut out = std::collections::HashMap::new();
+    fn walk(stmts: &[Stmt<'_, '_>], out: &mut std::collections::HashMap<String, String>) {
+        for stmt in stmts {
+            match &stmt.kind {
+                StmtKind::Use(u) => {
+                    for item in u.uses.iter() {
+                        let fqn = item.name.to_string_repr().into_owned();
+                        let short = item
+                            .alias
+                            .map(|a| a.to_string())
+                            .unwrap_or_else(|| fqn.rsplit('\\').next().unwrap_or(&fqn).to_string());
+                        out.insert(short, fqn);
+                    }
+                }
+                StmtKind::Namespace(ns) => {
+                    if let NamespaceBody::Braced(inner) = &ns.body {
+                        walk(inner, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    walk(&doc.program().stmts, &mut out);
+    out
 }
 
 fn scan_doc(
@@ -397,6 +681,66 @@ fn declaration_name_span(source: &str, name: &str) -> Span {
     Span {
         start,
         end: start + name.len() as u32,
+    }
+}
+
+/// Collect method-name declaration spans for a method named `method_word`
+/// inside the class/interface/trait/enum whose short name is `class_short`.
+/// Used by the Method fast path to emit precise declaration spans that are
+/// scoped to the target owning type, so unrelated same-named methods in the
+/// same file don't pollute the results.
+fn collect_method_decls_in_class(
+    source: &str,
+    stmts: &[Stmt<'_, '_>],
+    class_short: &str,
+    method_word: &str,
+    out: &mut Vec<Span>,
+) {
+    for stmt in stmts {
+        match &stmt.kind {
+            StmtKind::Class(c) if c.name == Some(class_short) => {
+                for member in c.members.iter() {
+                    if let ClassMemberKind::Method(m) = &member.kind
+                        && m.name == method_word
+                    {
+                        out.push(declaration_name_span(source, m.name));
+                    }
+                }
+            }
+            StmtKind::Interface(i) if i.name == class_short => {
+                for member in i.members.iter() {
+                    if let ClassMemberKind::Method(m) = &member.kind
+                        && m.name == method_word
+                    {
+                        out.push(declaration_name_span(source, m.name));
+                    }
+                }
+            }
+            StmtKind::Trait(t) if t.name == class_short => {
+                for member in t.members.iter() {
+                    if let ClassMemberKind::Method(m) = &member.kind
+                        && m.name == method_word
+                    {
+                        out.push(declaration_name_span(source, m.name));
+                    }
+                }
+            }
+            StmtKind::Enum(e) if e.name == class_short => {
+                for member in e.members.iter() {
+                    if let EnumMemberKind::Method(m) = &member.kind
+                        && m.name == method_word
+                    {
+                        out.push(declaration_name_span(source, m.name));
+                    }
+                }
+            }
+            StmtKind::Namespace(ns) => {
+                if let NamespaceBody::Braced(inner) = &ns.body {
+                    collect_method_decls_in_class(source, inner, class_short, method_word, out);
+                }
+            }
+            _ => {}
+        }
     }
 }
 
@@ -1552,7 +1896,8 @@ mod tests {
             56,
         );
 
-        // class.php: defines the final class (no calls here).
+        // a.php: defines the final class (matches `make_class`'s synthetic
+        // location). No calls here — the decl itself is not a call site.
         let src_class = "<?php\nfinal class Order {\n    public function submit() {}\n}";
         // caller.php: calls $order->submit() — tracked in codebase.
         let src_caller = "<?php\n$order = new Order();\n$order->submit();";
@@ -1560,7 +1905,7 @@ mod tests {
         let src_ignored = "<?php\n$unknown->submit();";
 
         let docs = vec![
-            doc("/class.php", src_class),
+            doc("/a.php", src_class),
             doc("/caller.php", src_caller),
             doc("/ignored.php", src_ignored),
         ];

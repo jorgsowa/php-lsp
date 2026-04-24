@@ -22,8 +22,10 @@ pub fn inline_variable_actions(source: &str, range: Range, uri: &Url) -> Vec<Cod
         _ => return vec![],
     };
 
-    // Find the single-line assignment above the cursor.
-    let (assign_line_no, rhs) = match find_assignment(source, &var_name, cursor.line) {
+    // Require exactly one visible assignment in the file. Multiple writes
+    // make inlining ambiguous (which RHS?) and unsafe (we'd silently drop
+    // one), so we refuse rather than guess.
+    let (assign_line_no, rhs) = match find_unique_assignment(source, &var_name, cursor.line) {
         Some(v) => v,
         None => return vec![],
     };
@@ -72,24 +74,38 @@ pub fn inline_variable_actions(source: &str, range: Range, uri: &Url) -> Vec<Cod
     })]
 }
 
-/// Scan backward from `before_line` (exclusive) to find the nearest
-/// `$var = <expr>;` assignment.  Returns `(line_number, rhs_text)`.
-fn find_assignment(source: &str, var_name: &str, before_line: u32) -> Option<(u32, String)> {
+/// Find the single `$var = <expr>;` assignment in `source`. Returns
+/// `(line_number, rhs_text)` only if exactly one such line exists *and* it
+/// appears before `before_line` — any second write, before or after the
+/// cursor, disqualifies the inline. Compound assignments (`+=`, `-=`, …) and
+/// equality (`==`) are ignored.
+fn find_unique_assignment(source: &str, var_name: &str, before_line: u32) -> Option<(u32, String)> {
     let lines: Vec<&str> = source.lines().collect();
-    let search_up_to = (before_line as usize).min(lines.len());
+    let mut hit: Option<(u32, String)> = None;
 
-    for i in (0..search_up_to).rev() {
-        let line = lines[i].trim();
-        // Match `$var = <expr>;`
+    for (i, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
         let prefix = format!("{var_name} =");
-        if let Some(rest) = line.strip_prefix(prefix.as_str()) {
-            let rhs = rest.trim().trim_end_matches(';').trim();
-            if !rhs.is_empty() {
-                return Some((i as u32, rhs.to_string()));
-            }
+        let Some(rest) = trimmed.strip_prefix(prefix.as_str()) else {
+            continue;
+        };
+        // Reject `$var ==` (equality) — `strip_prefix("$var =")` matches both.
+        if rest.starts_with('=') {
+            continue;
         }
+        let rhs = rest.trim().trim_end_matches(';').trim();
+        if rhs.is_empty() {
+            continue;
+        }
+        if hit.is_some() {
+            return None; // more than one write → ambiguous
+        }
+        hit = Some((i as u32, rhs.to_string()));
     }
-    None
+
+    // The unique assignment must precede the cursor; otherwise usage collection
+    // (which only scans *below* the assignment) would miss the cursor's usage.
+    hit.filter(|(line_no, _)| *line_no < before_line)
 }
 
 /// Find all occurrences of `$var` in `source` at or after `from_line`.
@@ -247,5 +263,71 @@ mod tests {
             panic!();
         };
         assert_eq!(ca.kind, Some(CodeActionKind::REFACTOR_INLINE));
+    }
+
+    /// Two assignments to `$tmp` make the inline ambiguous — refuse.
+    #[test]
+    fn refuses_when_multiple_assignments_exist() {
+        let src = "<?php\n$tmp = 1;\n$tmp = 2;\nreturn $tmp;\n";
+        // Cursor on `$tmp` in `return $tmp;` (line 3).
+        let range = Range {
+            start: Position {
+                line: 3,
+                character: 7,
+            },
+            end: Position {
+                line: 3,
+                character: 11,
+            },
+        };
+        let actions = inline_variable_actions(src, range, &uri());
+        assert!(
+            actions.is_empty(),
+            "inline must refuse when two assignments to the same var exist"
+        );
+    }
+
+    /// A later assignment (after the cursor) must also block the inline —
+    /// substituting an earlier RHS would silently overwrite the later write.
+    #[test]
+    fn refuses_when_assignment_appears_after_cursor() {
+        let src = "<?php\n$tmp = 1;\necho $tmp;\n$tmp = 2;\n";
+        // Cursor on `$tmp` in `echo $tmp;` (line 2).
+        let range = Range {
+            start: Position {
+                line: 2,
+                character: 5,
+            },
+            end: Position {
+                line: 2,
+                character: 9,
+            },
+        };
+        let actions = inline_variable_actions(src, range, &uri());
+        assert!(
+            actions.is_empty(),
+            "inline must refuse when a subsequent assignment would be clobbered"
+        );
+    }
+
+    /// `$x == 1` must not be misread as an assignment.
+    #[test]
+    fn equality_comparison_is_not_an_assignment() {
+        let src = "<?php\n$x = 1;\nif ($x == 2) { echo $x; }\n";
+        let range = Range {
+            start: Position {
+                line: 2,
+                character: 21,
+            },
+            end: Position {
+                line: 2,
+                character: 23,
+            },
+        };
+        let actions = inline_variable_actions(src, range, &uri());
+        assert!(
+            !actions.is_empty(),
+            "equality comparison must not block inline"
+        );
     }
 }
