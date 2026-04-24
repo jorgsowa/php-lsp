@@ -25,20 +25,6 @@ async fn bring_up() -> TestServer {
     server
 }
 
-fn find_edits_for<'a>(resp: &'a serde_json::Value, uri_suffix: &str) -> Vec<&'a serde_json::Value> {
-    let changes = resp["result"]["changes"]
-        .as_object()
-        .expect("expected `changes` map in WorkspaceEdit");
-    changes
-        .iter()
-        .filter(|(uri, _)| uri.ends_with(uri_suffix))
-        .flat_map(|(_, edits)| edits.as_array().cloned().unwrap_or_default())
-        .collect::<Vec<_>>()
-        .leak()
-        .iter()
-        .collect()
-}
-
 /// Moving `src/Model/User.php` to `src/Entity/User.php` changes the class's
 /// FQN from `App\Model\User` to `App\Entity\User`. Every `use App\Model\User`
 /// in dependent files must be rewritten.
@@ -121,15 +107,18 @@ async fn will_delete_file_strips_use_imports_from_dependents() {
         panic!("expected changes map for willDeleteFiles, got: {resp:?}");
     };
     let touched: Vec<&str> = changes.keys().map(String::as_str).collect();
+    // Both Registry and Greeter import `User` — deleting the file must strip
+    // the `use` line from every dependent, not just one.
     assert!(
         touched
             .iter()
-            .any(|u| u.ends_with("src/Service/Registry.php"))
-            || touched
-                .iter()
-                .any(|u| u.ends_with("src/Service/Greeter.php")),
-        "expected use-import removal in a Service/*.php dependent, got: {touched:?}"
+            .any(|u| u.ends_with("src/Service/Registry.php")),
+        "expected use-import removal in Registry.php, got: {touched:?}"
     );
-    // Silence unused-helper warning if this path ever simplifies.
-    let _ = find_edits_for;
+    assert!(
+        touched
+            .iter()
+            .any(|u| u.ends_with("src/Service/Greeter.php")),
+        "expected use-import removal in Greeter.php, got: {touched:?}"
+    );
 }

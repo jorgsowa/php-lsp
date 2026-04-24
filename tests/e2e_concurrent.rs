@@ -64,14 +64,13 @@ async fn didchange_followed_by_request_sees_new_state_every_iteration() {
     }
 }
 
-/// A volley of hover requests pipelined without awaiting in between (via
-/// separate spawned tasks) must all complete. This catches any bug where the
-/// server's request pump blocks on per-document locks in pathological order.
-///
-/// We drive this single-threaded over the wire — the test just verifies the
-/// server processes them all without hanging within the timeout.
+/// Sequential 20-call hover volley — the harness's `TestClient` couples
+/// send+recv on `&mut self`, so a true pipelined (request-1, request-2, ...
+/// then drain responses) pattern isn't possible without extending the
+/// harness. This test at least catches per-request regressions that only
+/// surface after sustained load (arena reset, version-token exhaustion).
 #[tokio::test]
-async fn pipelined_hover_requests_all_complete() {
+async fn sustained_hover_volley_all_succeed() {
     let mut server = TestServer::new().await;
     server
         .open(
@@ -80,12 +79,12 @@ async fn pipelined_hover_requests_all_complete() {
         )
         .await;
 
-    // Fire 20 hover calls in a tight loop; the harness awaits each.
     for _ in 0..20 {
         let resp = server.hover("pipe.php", 1, 10).await;
+        assert!(resp["error"].is_null(), "hover errored in volley: {resp:?}");
         assert!(
-            resp["error"].is_null(),
-            "hover errored in pipeline: {resp:?}"
+            resp["result"]["contents"].to_string().contains("pipeHover"),
+            "hover content must stay correct across volley"
         );
     }
 }

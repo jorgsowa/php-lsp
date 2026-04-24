@@ -40,11 +40,11 @@ async fn hover_reflects_didchange_new_symbol() {
     );
 }
 
-/// After renaming a symbol via didChange (old name deleted, new name added),
-/// definition on the old-name call site must return null and on the new-name
-/// call site must resolve.
+/// Cache-invalidation check: populate the definition cache by querying on
+/// the V1 name, then rewrite via didChange and query again. A server that
+/// failed to invalidate would return the stale V1 result on the V2 query.
 #[tokio::test]
-async fn definition_updates_after_symbol_rename_via_didchange() {
+async fn definition_cache_is_invalidated_after_didchange() {
     let mut server = TestServer::new().await;
     server
         .open(
@@ -53,16 +53,30 @@ async fn definition_updates_after_symbol_rename_via_didchange() {
         )
         .await;
 
-    // Replace the function and call site.
+    // Warm the cache on V1. `oldName()` on line 2 must resolve to line 1.
+    let resp = server.definition("ren.php", 2, 1).await;
+    let loc_v1 = if resp["result"].is_array() {
+        resp["result"][0].clone()
+    } else {
+        resp["result"].clone()
+    };
+    assert_eq!(
+        loc_v1["range"]["start"]["line"].as_u64().unwrap(),
+        1,
+        "V1 cache warmup failed"
+    );
+
+    // V2: different function name at a different declaration column.
     server
         .change(
             "ren.php",
             2,
-            "<?php\nfunction newName(): void {}\nnewName();\n",
+            "<?php\n\nfunction newName(): void {}\nnewName();\n",
         )
         .await;
 
-    let resp = server.definition("ren.php", 2, 1).await;
+    // Query at V2's call site position (line 3, col 1).
+    let resp = server.definition("ren.php", 3, 1).await;
     let result = &resp["result"];
     assert!(!result.is_null(), "newName() must resolve after didChange");
     let loc = if result.is_array() {
@@ -70,7 +84,13 @@ async fn definition_updates_after_symbol_rename_via_didchange() {
     } else {
         result
     };
-    assert_eq!(loc["range"]["start"]["line"].as_u64().unwrap(), 1);
+    // V2 declaration is on line 2 (was line 1 in V1). A stale cache would
+    // return line 1 or the old range.
+    assert_eq!(
+        loc["range"]["start"]["line"].as_u64().unwrap(),
+        2,
+        "expected V2 line (2), stale V1 result would be line 1"
+    );
 }
 
 /// References must reflect the post-edit state — an added usage shows up,
@@ -140,10 +160,13 @@ async fn diagnostics_replaced_not_appended_on_didchange() {
     );
 }
 
-/// Cross-file invalidation: file A defines a class, file B uses it. Edit A to
-/// rename the class. Diagnostics for B must flip from clean to UndefinedClass.
+/// Cross-file *re-analysis on demand*: after the dependency changes, a new
+/// didChange on the dependent yields fresh diagnostics. This documents the
+/// current behavior — re-analysis is triggered by the next edit, not pushed
+/// proactively (see `cross_file_diagnostics_republish_on_dependency_change`
+/// below for the ideal behavior, tracked as ignored).
 #[tokio::test]
-async fn cross_file_diagnostics_invalidate_when_dependency_changes() {
+async fn cross_file_diagnostics_refresh_on_next_didchange() {
     let mut server = TestServer::new().await;
     server.open("dep.php", "<?php\nclass Widget {}\n").await;
     let notif = server.open("user.php", "<?php\n$w = new Widget();\n").await;
@@ -169,39 +192,74 @@ async fn cross_file_diagnostics_invalidate_when_dependency_changes() {
     );
 }
 
-/// Rapid-fire edits: the server debounces parsing by 100 ms. A burst of
-/// changes must converge to the final text — no stale diagnostics, no panics.
+/// IDEAL behavior (tracked gap): when a dependency changes, the server
+/// should proactively republish diagnostics for every dependent file — no
+/// extra didChange required. rust-analyzer does this via its notification
+/// pump. php-lsp currently does not; flip this test on once it does.
 #[tokio::test]
-async fn rapid_didchange_burst_converges_to_final_text() {
+#[ignore = "server does not proactively republish diagnostics when a dependency changes"]
+async fn cross_file_diagnostics_republish_on_dependency_change() {
+    let mut server = TestServer::new().await;
+    server.open("dep2.php", "<?php\nclass Widget2 {}\n").await;
+    server
+        .open("user2.php", "<?php\n$w = new Widget2();\n")
+        .await;
+
+    server
+        .change("dep2.php", 2, "<?php\nclass Gadget2 {}\n")
+        .await;
+
+    // Expect a publishDiagnostics notification for user2.php without any
+    // further didChange.
+    let uri = server.uri("user2.php");
+    let notif = server.client().wait_for_diagnostics(&uri).await;
+    assert!(
+        has_code(&notif, "UndefinedClass"),
+        "expected proactive UndefinedClass on user2.php after dependency edit"
+    );
+}
+
+/// Fire five didChange notifications back-to-back **without** awaiting
+/// publishDiagnostics between them, then hover on the final state. This
+/// genuinely stresses the 100 ms debounce — intermediate versions are
+/// superseded before they parse. A correct server converges on V6.
+#[tokio::test]
+async fn true_burst_didchange_converges_to_final_text() {
     let mut server = TestServer::new().await;
     server.open("burst.php", "<?php\n").await;
 
+    let uri = server.uri("burst.php");
+    // Raw notifies — no wait_for_diagnostics in the loop.
     for v in 2..=6 {
+        let text = format!("<?php\nfunction f{v}(): void {{}}\n");
         server
-            .change(
-                "burst.php",
-                v,
-                &format!("<?php\nfunction f{v}(): void {{}}\n"),
+            .client()
+            .notify(
+                "textDocument/didChange",
+                serde_json::json!({
+                    "textDocument": { "uri": uri, "version": v },
+                    "contentChanges": [{ "text": text }],
+                }),
             )
             .await;
     }
 
-    // The final version defines f6 — hover on it should work.
-    let resp = server.hover("burst.php", 1, 10).await;
-    let contents = resp["result"]["contents"].to_string();
-    assert!(
-        contents.contains("f6"),
-        "after burst, hover must reflect final text (f6), got: {contents}"
-    );
-
-    // And f2..f5 must be gone.
-    let resp = server.definition("burst.php", 1, 1).await;
-    // Not asserting exact value here — just that the server is alive and
-    // responding. The key invariant tested above is final-text convergence.
-    assert!(
-        resp["error"].is_null(),
-        "server unresponsive after burst: {resp:?}"
-    );
+    // Drain publishDiagnostics messages until we see one from the final
+    // version text. The loop tolerates intermediate notifications the
+    // debounce may or may not have produced.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        if std::time::Instant::now() >= deadline {
+            panic!("timed out waiting for burst to settle");
+        }
+        // Probe with hover — once it reflects f6 the server has caught up.
+        let resp = server.hover("burst.php", 1, 10).await;
+        let contents = resp["result"]["contents"].to_string();
+        if contents.contains("f6") {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
 }
 
 /// Re-opening (didClose + didOpen) must not leave ghost symbols. A second

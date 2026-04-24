@@ -7,11 +7,12 @@ use php_lsp::ast::{MethodReturnsMap, ParsedDoc};
 use php_lsp::call_hierarchy::{incoming_calls, outgoing_calls, prepare_call_hierarchy};
 use php_lsp::completion::{CompletionCtx, filtered_completions_at};
 use php_lsp::definition::goto_definition;
+use php_lsp::file_index::FileIndex;
 use php_lsp::hover::hover_info;
 use php_lsp::implementation::find_implementations;
 use php_lsp::references::{SymbolKind, find_references};
 use php_lsp::rename::rename;
-use php_lsp::symbols::{document_symbols, workspace_symbols};
+use php_lsp::symbols::{document_symbols, workspace_symbols_from_index};
 use php_lsp::type_map::build_method_returns;
 
 const MEDIUM: &str = include_str!("fixtures/medium_class.php");
@@ -424,13 +425,20 @@ fn bench_rename(c: &mut Criterion) {
     group.finish();
 }
 
+fn to_indexes(docs: &OtherDocs) -> Vec<(Url, Arc<FileIndex>)> {
+    docs.iter()
+        .map(|(uri, parsed)| (uri.clone(), Arc::new(FileIndex::extract(parsed))))
+        .collect()
+}
+
 fn bench_workspace_symbol(c: &mut Criterion) {
     let other_docs = cross_file_docs();
+    let other_indexes = to_indexes(&other_docs);
 
     let mut group = c.benchmark_group("workspace_symbol");
     // Small-set fuzzy search: query matches `UserService`, `UserRepository`, etc.
     group.bench_function("fuzzy_small", |b| {
-        b.iter(|| black_box(workspace_symbols("User", &other_docs)));
+        b.iter(|| black_box(workspace_symbols_from_index("User", &other_indexes)));
     });
 
     if let Some(docs) = laravel_docs() {
@@ -438,10 +446,11 @@ fn bench_workspace_symbol(c: &mut Criterion) {
             "Laravel fixture: {} PHP files (workspace_symbol)",
             docs.len()
         );
+        let indexes = to_indexes(&docs);
         group.sample_size(10);
         // Common prefix across Illuminate — should match many symbols.
         group.bench_function("laravel_framework", |b| {
-            b.iter(|| black_box(workspace_symbols("Str", &docs)));
+            b.iter(|| black_box(workspace_symbols_from_index("Str", &indexes)));
         });
     } else {
         eprintln!("Laravel fixture not found — skipping workspace_symbol/laravel_framework");

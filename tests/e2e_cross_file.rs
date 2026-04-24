@@ -79,17 +79,7 @@ async fn goto_definition_method_call_across_files() {
 #[tokio::test]
 async fn references_include_use_imports_across_files() {
     let mut server = bring_up().await;
-    // Open files so they're in the live index (belt-and-suspenders — the
-    // workspace scan should already have indexed them).
-    server
-        .open(
-            "src/Model/User.php",
-            &std::fs::read_to_string(std::path::Path::new(
-                &server.uri("src/Model/User.php").replace("file://", ""),
-            ))
-            .unwrap_or_default(),
-        )
-        .await;
+    open_fixture(&mut server, "src/Model/User.php").await;
 
     let (_, line, ch) = server.locate("src/Model/User.php", "class User", 0);
     // `class User` — cursor on the `U` of User (after "class ")
@@ -156,12 +146,18 @@ async fn workspace_symbol_finds_class_by_short_name() {
     let mut server = bring_up().await;
     let resp = server.workspace_symbols("User").await;
     let symbols = resp["result"].as_array().expect("symbols array");
-    assert!(
-        symbols.iter().any(|s| s["name"].as_str() == Some("User")
-            || s["name"]
+    // Exact-name match, Class kind (5), and URI pointing at User.php — a
+    // loose `contains("User")` would match UserInterface, AbstractUser, etc.
+    let matched = symbols.iter().find(|s| {
+        s["name"].as_str() == Some("User")
+            && s["kind"].as_u64() == Some(5)
+            && s["location"]["uri"]
                 .as_str()
-                .map(|n| n.contains("User"))
-                .unwrap_or(false)),
-        "workspace symbol `User` must appear, got: {symbols:?}"
+                .map(|u| u.ends_with("src/Model/User.php"))
+                .unwrap_or(false)
+    });
+    assert!(
+        matched.is_some(),
+        "expected exact class `User` in src/Model/User.php, got: {symbols:?}"
     );
 }
