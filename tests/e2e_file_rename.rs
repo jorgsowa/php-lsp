@@ -9,7 +9,8 @@
 
 mod common;
 
-use common::TestServer;
+use common::{TestServer, canonicalize_workspace_edit};
+use expect_test::expect;
 
 async fn bring_up() -> TestServer {
     let mut server = TestServer::with_fixture("psr4-mini").await;
@@ -38,36 +39,18 @@ async fn will_rename_file_rewrites_use_imports_in_dependents() {
     let resp = server.will_rename_files(vec![(old_uri, new_uri)]).await;
 
     assert!(resp["error"].is_null(), "willRenameFiles error: {resp:?}");
-    let changes = resp["result"]["changes"]
-        .as_object()
-        .expect("expected changes map");
-    let touched: Vec<&str> = changes.keys().map(String::as_str).collect();
+    let root = server.uri("");
+    let snap = canonicalize_workspace_edit(&resp["result"], &root);
+    // Snapshot the full edit so byte-offset regressions in the `use`-import
+    // rewriter are caught immediately. Run `UPDATE_EXPECT=1 cargo test` if
+    // the rewriter output changes intentionally.
+    expect![[r#"
+        // src/Service/Greeter.php
+        4:4-4:18 → "App\\Entity\\User"
 
-    assert!(
-        touched
-            .iter()
-            .any(|u| u.ends_with("src/Service/Registry.php")),
-        "expected use-import edit in Registry.php, got: {touched:?}"
-    );
-    assert!(
-        touched
-            .iter()
-            .any(|u| u.ends_with("src/Service/Greeter.php")),
-        "expected use-import edit in Greeter.php, got: {touched:?}"
-    );
-
-    // Spot-check that the edit text mentions the new namespace.
-    let all_new_texts: Vec<String> = changes
-        .values()
-        .flat_map(|edits| edits.as_array().cloned().unwrap_or_default())
-        .map(|e| e["newText"].as_str().unwrap_or_default().to_owned())
-        .collect();
-    assert!(
-        all_new_texts
-            .iter()
-            .any(|t| t.contains("App\\Entity\\User")),
-        "expected new FQN App\\Entity\\User in edits, got: {all_new_texts:?}"
-    );
+        // src/Service/Registry.php
+        4:4-4:18 → "App\\Entity\\User""#]]
+    .assert_eq(&snap);
 }
 
 /// Renaming a file to a path with the same PSR-4-derived FQN (same class
@@ -103,22 +86,13 @@ async fn will_delete_file_strips_use_imports_from_dependents() {
     let resp = server.will_delete_files(vec![uri]).await;
 
     assert!(resp["error"].is_null(), "willDeleteFiles error: {resp:?}");
-    let Some(changes) = resp["result"]["changes"].as_object() else {
-        panic!("expected changes map for willDeleteFiles, got: {resp:?}");
-    };
-    let touched: Vec<&str> = changes.keys().map(String::as_str).collect();
-    // Both Registry and Greeter import `User` — deleting the file must strip
-    // the `use` line from every dependent, not just one.
-    assert!(
-        touched
-            .iter()
-            .any(|u| u.ends_with("src/Service/Registry.php")),
-        "expected use-import removal in Registry.php, got: {touched:?}"
-    );
-    assert!(
-        touched
-            .iter()
-            .any(|u| u.ends_with("src/Service/Greeter.php")),
-        "expected use-import removal in Greeter.php, got: {touched:?}"
-    );
+    let root = server.uri("");
+    let snap = canonicalize_workspace_edit(&resp["result"], &root);
+    expect![[r#"
+        // src/Service/Greeter.php
+        4:0-5:0 → ""
+
+        // src/Service/Registry.php
+        4:0-5:0 → """#]]
+    .assert_eq(&snap);
 }

@@ -103,3 +103,129 @@ async fn semantic_tokens_full_delta_returns_result() {
         result
     );
 }
+
+/// Delta request with an unknown `previousResultId` must degrade gracefully
+/// to a full-token response — the server must never error out or panic when
+/// the client's baseline is stale / unknown (e.g. after a server restart).
+#[tokio::test]
+async fn semantic_tokens_delta_with_stale_previous_result_id_degrades_to_full() {
+    let mut server = TestServer::new().await;
+    server
+        .open(
+            "st_stale.php",
+            "<?php\nfunction stale(int $x): int { return $x; }\n",
+        )
+        .await;
+
+    let resp = server
+        .semantic_tokens_full_delta("st_stale.php", "definitely-not-a-real-id")
+        .await;
+
+    assert!(
+        resp["error"].is_null(),
+        "delta with stale resultId must not error: {resp:?}"
+    );
+    let result = &resp["result"];
+    assert!(!result.is_null(), "expected a result payload, got null");
+    // Fallback is a full token set — `data` array present, non-empty.
+    let data = result["data"].as_array();
+    assert!(
+        data.is_some() && !data.unwrap().is_empty(),
+        "stale-id delta must fall back to a full token set, got: {result:?}"
+    );
+}
+
+/// Delta request before any baseline (`previousResultId` referencing an id
+/// the server has never issued) must also degrade to a full response. This
+/// catches edit-loop races where the client requests delta before the first
+/// full response has been received.
+#[tokio::test]
+async fn semantic_tokens_delta_without_baseline_degrades_to_full() {
+    let mut server = TestServer::new().await;
+    server
+        .open(
+            "st_noprior.php",
+            "<?php\nfunction nobaseline(): int { return 1; }\n",
+        )
+        .await;
+
+    // No preceding semanticTokens/full call; jump straight to delta.
+    let resp = server
+        .semantic_tokens_full_delta("st_noprior.php", "0")
+        .await;
+
+    assert!(
+        resp["error"].is_null(),
+        "baseline-less delta must not error: {resp:?}"
+    );
+    let result = &resp["result"];
+    assert!(!result.is_null(), "expected a result, got null");
+    assert!(
+        result["data"].is_array(),
+        "expected full-token fallback (data array), got: {result:?}"
+    );
+}
+
+/// After `didChange`, requesting delta with the pre-edit resultId must
+/// either (a) return an `edits` array describing the diff, or (b) fall back
+/// to a full `data` array — whichever the server chooses. What it MUST NOT
+/// do is return the old pre-edit token set unchanged.
+#[tokio::test]
+async fn semantic_tokens_delta_after_didchange_reflects_new_content() {
+    let mut server = TestServer::new().await;
+    server
+        .open("st_edit.php", "<?php\nfunction one(): int { return 1; }\n")
+        .await;
+
+    let full = server.semantic_tokens_full("st_edit.php").await;
+    let pre_id = full["result"]["resultId"]
+        .as_str()
+        .expect("resultId")
+        .to_string();
+    let pre_data_len = full["result"]["data"]
+        .as_array()
+        .map(|a| a.len())
+        .unwrap_or(0);
+
+    // didChange: add a second function, growing the token stream.
+    server
+        .change(
+            "st_edit.php",
+            2,
+            "<?php\nfunction one(): int { return 1; }\nfunction two(): int { return 2; }\n",
+        )
+        .await;
+
+    let resp = server
+        .semantic_tokens_full_delta("st_edit.php", &pre_id)
+        .await;
+    assert!(resp["error"].is_null(), "delta errored: {resp:?}");
+    let result = &resp["result"];
+
+    // Either the server returned edits (resultId preserved or refreshed) or
+    // a full data set — in both cases the post-edit length must exceed the
+    // pre-edit length since we added an entire function.
+    let got_full = result["data"].is_array();
+    let got_edits = result["edits"].is_array();
+    assert!(
+        got_full || got_edits,
+        "delta response must contain `data` or `edits`, got: {result:?}"
+    );
+
+    if got_full {
+        let post_len = result["data"].as_array().unwrap().len();
+        assert!(
+            post_len > pre_data_len,
+            "post-edit tokens ({post_len}) must exceed pre-edit tokens ({pre_data_len})"
+        );
+    } else {
+        // If edits-based, at least one edit with non-empty data must exist.
+        let edits = result["edits"].as_array().unwrap();
+        assert!(
+            edits
+                .iter()
+                .any(|e| e["data"].as_array().map(|d| !d.is_empty()).unwrap_or(false)),
+            "delta edits must carry new token data, got: {edits:?}"
+        );
+    }
+}

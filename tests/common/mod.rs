@@ -272,6 +272,14 @@ impl TestServer {
     }
 
     async fn do_initialize(client: &mut TestClient, root: Option<&std::path::Path>) {
+        Self::do_initialize_with(client, root, json!({ "diagnostics": { "enabled": true } })).await;
+    }
+
+    async fn do_initialize_with(
+        client: &mut TestClient,
+        root: Option<&std::path::Path>,
+        initialization_options: Value,
+    ) {
         let root_uri = root.map(|p| Url::from_file_path(p).unwrap());
         let root_val = root_uri
             .as_ref()
@@ -289,11 +297,28 @@ impl TestServer {
                             "completion": { "completionItem": { "snippetSupport": true } }
                         }
                     },
-                    "initializationOptions": { "diagnostics": { "enabled": true } }
+                    "initializationOptions": initialization_options,
                 }),
             )
             .await;
         client.notify("initialized", json!({})).await;
+    }
+
+    /// Start a server rooted at `root` with custom `initializationOptions`.
+    /// Used for tests that need to exercise configuration flags
+    /// (`phpVersion`, `excludePaths`, etc.) rather than the defaults.
+    pub async fn with_root_and_options(
+        root: impl AsRef<std::path::Path>,
+        initialization_options: Value,
+    ) -> Self {
+        let root = root.as_ref().to_path_buf();
+        let mut client = spawn_server();
+        Self::do_initialize_with(&mut client, Some(&root), initialization_options).await;
+        TestServer {
+            client,
+            root: Some(root),
+            _fixture_dir: None,
+        }
     }
 
     /// Escape hatch for scenarios the builder doesn't cover.
@@ -920,6 +945,70 @@ impl TestServer {
         let character = before.rsplit('\n').next().unwrap_or("").chars().count() as u32;
         (text, line, character)
     }
+}
+
+// ---------- snapshot canonicalization ----------
+
+/// Render a WorkspaceEdit (the `result` payload from `textDocument/rename`,
+/// `workspace/willRenameFiles`, a resolved codeAction, …) into a stable
+/// text form suitable for `expect_test` snapshots:
+///
+/// - URIs stripped of the `file://<root>/` prefix so tempdir paths don't
+///   leak into snapshots
+/// - Per-file edits sorted by `(line, character, end_line, end_character)`
+///   so the output is deterministic regardless of server-side ordering
+/// - Each edit rendered as `L:C-L:C → "newText"` with `\n`/`\r` visible
+///
+/// Pass `root_uri` as the `file://…` URI of the workspace root (i.e. what
+/// `TestServer::uri("")` returns). Pass an empty string to keep full URIs.
+pub fn canonicalize_workspace_edit(edit: &Value, root_uri: &str) -> String {
+    let Some(changes) = edit["changes"].as_object() else {
+        return format!("<no `changes` map in {edit}>");
+    };
+
+    // Trailing slash so "file:///tmp/x" + "a.php" → "a.php", not "/a.php".
+    let prefix = if root_uri.ends_with('/') {
+        root_uri.to_owned()
+    } else {
+        format!("{root_uri}/")
+    };
+
+    let mut uris: Vec<&String> = changes.keys().collect();
+    uris.sort();
+
+    let mut out = String::new();
+    for uri in uris {
+        let short = uri.strip_prefix(&prefix).unwrap_or(uri);
+        out.push_str(&format!("// {short}\n"));
+
+        let mut edits: Vec<&Value> = changes[uri]
+            .as_array()
+            .map(|a| a.iter().collect())
+            .unwrap_or_default();
+        edits.sort_by_key(|e| {
+            (
+                e["range"]["start"]["line"].as_u64().unwrap_or(0),
+                e["range"]["start"]["character"].as_u64().unwrap_or(0),
+                e["range"]["end"]["line"].as_u64().unwrap_or(0),
+                e["range"]["end"]["character"].as_u64().unwrap_or(0),
+            )
+        });
+        for e in edits {
+            let s = &e["range"]["start"];
+            let en = &e["range"]["end"];
+            let text = e["newText"].as_str().unwrap_or("");
+            out.push_str(&format!(
+                "{}:{}-{}:{} → {:?}\n",
+                s["line"].as_u64().unwrap_or(0),
+                s["character"].as_u64().unwrap_or(0),
+                en["line"].as_u64().unwrap_or(0),
+                en["character"].as_u64().unwrap_or(0),
+                text,
+            ));
+        }
+        out.push('\n');
+    }
+    out.trim_end_matches('\n').to_owned()
 }
 
 // ---------- cursor-marker helper ----------

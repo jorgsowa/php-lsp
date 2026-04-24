@@ -6,7 +6,8 @@
 
 mod common;
 
-use common::TestServer;
+use common::{TestServer, canonicalize_workspace_edit};
+use expect_test::expect;
 
 async fn bring_up() -> TestServer {
     let mut server = TestServer::with_fixture("psr4-mini").await;
@@ -103,8 +104,15 @@ async fn references_include_use_imports_across_files() {
     );
 }
 
-/// Rename across files must produce edits in every file that uses the
-/// renamed symbol (declaration + `use` imports + type hints).
+/// Rename across files — snapshot-pinned. Replacing this with `.contains()`
+/// would miss edits landing at the wrong line/column, and hides a real
+/// coverage gap the snapshot surfaces: the current output only edits the
+/// `class User` declaration + `use` imports. It does NOT rewrite the
+/// `User $user` parameter types in Registry/Greeter or the `@var User[]`
+/// docblock in Registry — those remain broken after rename. Flip this
+/// snapshot to include those positions once the rename handler covers
+/// non-FQN usages in `use`-importing files. `UPDATE_EXPECT=1 cargo test`
+/// updates it.
 #[tokio::test]
 async fn rename_class_edits_all_dependents() {
     let mut server = bring_up().await;
@@ -118,25 +126,18 @@ async fn rename_class_edits_all_dependents() {
         .await;
 
     assert!(resp["error"].is_null(), "rename error: {resp:?}");
-    let changes = resp["result"]["changes"]
-        .as_object()
-        .expect("rename must return `changes` map");
+    let root = server.uri("");
+    let snap = canonicalize_workspace_edit(&resp["result"], &root);
+    expect![[r#"
+        // src/Model/User.php
+        4:6-4:10 → "Account"
 
-    // Must touch at least User.php, Registry.php, Greeter.php.
-    let touched: Vec<&String> = changes.keys().collect();
-    let ends_with = |suffix: &str| touched.iter().any(|u| u.ends_with(suffix));
-    assert!(
-        ends_with("src/Model/User.php"),
-        "rename must edit the declaration file, got: {touched:?}"
-    );
-    assert!(
-        ends_with("src/Service/Registry.php"),
-        "rename must edit Registry.php (use + @var + param), got: {touched:?}"
-    );
-    assert!(
-        ends_with("src/Service/Greeter.php"),
-        "rename must edit Greeter.php (use + param), got: {touched:?}"
-    );
+        // src/Service/Greeter.php
+        4:14-4:18 → "Account"
+
+        // src/Service/Registry.php
+        4:14-4:18 → "Account""#]]
+    .assert_eq(&snap);
 }
 
 /// Workspace symbol search must find `User` by short name even though the
