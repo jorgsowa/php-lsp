@@ -451,6 +451,109 @@ async fn references_on_constructor_scoped_by_namespace_fqn() {
     );
 }
 
+/// Bug: `__construct` references should only return `new ClassName()` call sites,
+/// NOT type hints, `instanceof` checks, `extends`, or `implements` — all of which
+/// were previously included because mir's `ClassReference` key covers every class
+/// usage under the same FQCN.
+#[tokio::test]
+async fn references_on_constructor_excludes_type_hints_and_instanceof() {
+    let mut server = TestServer::new().await;
+    let opened = server
+        .open_fixture(
+            r#"<?php
+class Order {
+    public function __con$0struct(int $id) {}
+}
+// call site — must be included
+$o = new Order(1);
+// type hint — must NOT be included
+function ship(Order $o): void {}
+// instanceof — must NOT be included
+if ($o instanceof Order) {}
+// static call — must NOT be included
+Order::class;
+"#,
+        )
+        .await;
+    let c = opened.cursor();
+
+    let resp = server.references(&c.path, c.line, c.character, true).await;
+    assert!(resp["error"].is_null(), "references error: {resp:?}");
+
+    let hits: Vec<u32> = resp["result"]
+        .as_array()
+        .expect("expected array")
+        .iter()
+        .map(|l| l["range"]["start"]["line"].as_u64().unwrap() as u32)
+        .collect();
+
+    // The `__construct` declaration is on line 2.
+    assert!(
+        hits.contains(&2),
+        "__construct decl (line 2) missing: {hits:?}"
+    );
+    // `$o = new Order(1)` is on line 5 (line 4 is the preceding comment).
+    assert!(
+        hits.contains(&5),
+        "`new Order(1)` (line 5) missing: {hits:?}"
+    );
+    // Type hint `Order $o` is on line 7 — must NOT appear.
+    assert!(
+        !hits.contains(&7),
+        "type hint on line 7 must be excluded: {hits:?}"
+    );
+    // `instanceof Order` is on line 9 — must NOT appear.
+    assert!(
+        !hits.contains(&9),
+        "`instanceof` on line 9 must be excluded: {hits:?}"
+    );
+    // `Order::class` is on line 11 — must NOT appear.
+    assert!(
+        !hits.contains(&11),
+        "`Order::class` on line 11 must be excluded: {hits:?}"
+    );
+}
+
+/// Bug: when the cursor is on a promoted constructor property parameter (e.g.
+/// `$name` in `public function __construct(public readonly string $name)`),
+/// references should return all `->name` property access sites, not variable
+/// occurrences of `$name` inside the constructor body.
+#[tokio::test]
+async fn references_on_promoted_property_param_finds_property_accesses() {
+    let mut server = TestServer::new().await;
+    let opened = server
+        .open_fixture(
+            r#"<?php
+class Person {
+    public function __construct(public readonly string $na$0me) {}
+    public function greet(): string { return $this->name; }
+}
+$p = new Person('Alice');
+echo $p->name;
+"#,
+        )
+        .await;
+    let c = opened.cursor();
+
+    let resp = server.references(&c.path, c.line, c.character, true).await;
+    assert!(resp["error"].is_null(), "references error: {resp:?}");
+
+    let hits: Vec<u32> = resp["result"]
+        .as_array()
+        .expect("expected array")
+        .iter()
+        .map(|l| l["range"]["start"]["line"].as_u64().unwrap() as u32)
+        .collect();
+
+    // `$this->name` inside greet() is on line 3.
+    assert!(
+        hits.contains(&3),
+        "`$this->name` (line 3) missing: {hits:?}"
+    );
+    // `$p->name` on line 6.
+    assert!(hits.contains(&6), "`$p->name` (line 6) missing: {hits:?}");
+}
+
 #[tokio::test]
 async fn references_finds_all_usages_of_function() {
     let mut server = TestServer::new().await;

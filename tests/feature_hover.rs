@@ -279,3 +279,81 @@ echo $u->na$0me;
         ```"#]]
     .assert_eq(&v);
 }
+
+/// Hovering on an enum *case* (not the enum name) should return the qualified
+/// case label. If the server only indexes enum names but not individual cases
+/// this will produce `<no hover>` — that is the bug to fix.
+#[tokio::test]
+async fn hover_enum_case_declaration() {
+    let mut s = TestServer::new().await;
+    let v = s
+        .check_hover(
+            r#"<?php
+enum Status { case Acti$0ve; case Inactive; }
+"#,
+        )
+        .await;
+    expect![[r#"
+        ```php
+        case Status::Active
+        ```"#]]
+    .assert_eq(&v);
+}
+
+/// Hovering on a class constant must show the constant with its inferred or
+/// declared type. An unimplemented constant-hover returns `<no hover>`.
+#[tokio::test]
+async fn hover_class_constant() {
+    let mut s = TestServer::new().await;
+    let v = s
+        .check_hover(
+            r#"<?php
+class Config {
+    const VERSI$0ON = 42;
+}
+"#,
+        )
+        .await;
+    expect![[r#"
+        ```php
+        const int VERSION = 42
+        ```"#]]
+    .assert_eq(&v);
+}
+
+/// A function with a nullable param type `?T` must render the `?` in hover so
+/// callers can see the type is optional. Cursor is on the function name.
+#[tokio::test]
+async fn hover_nullable_param_type() {
+    let mut s = TestServer::new().await;
+    let v = s
+        .check_hover(
+            r#"<?php
+function sho$0w(?string $label): void {}
+"#,
+        )
+        .await;
+    expect![[r#"
+        ```php
+        function show(?string $label): void
+        ```"#]]
+    .assert_eq(&v);
+}
+
+/// Hovering on a trait identifier must render as `trait Name`, not `class`.
+#[tokio::test]
+async fn hover_trait_identifier() {
+    let mut s = TestServer::new().await;
+    let v = s
+        .check_hover(
+            r#"<?php
+trait Logg$0able { public function log(): void {} }
+"#,
+        )
+        .await;
+    expect![[r#"
+        ```php
+        trait Loggable
+        ```"#]]
+    .assert_eq(&v);
+}

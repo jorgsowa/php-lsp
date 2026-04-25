@@ -103,3 +103,61 @@ $b = new Widget();
         3:9-3:15 → "Gadget""#]]
     .assert_eq(&out);
 }
+
+/// `prepareRename` on a PHP keyword must return null so the editor greys out
+/// the rename action rather than presenting an empty rename dialog.
+#[tokio::test]
+async fn prepare_rename_on_keyword_returns_nothing() {
+    let mut s = TestServer::new().await;
+    let out = s
+        .check_prepare_rename(
+            r#"<?php
+func$0tion greet(): void {}
+"#,
+        )
+        .await;
+    expect!["<not renameable>"].assert_eq(&out);
+}
+
+/// `prepareRename` on a variable should return the range covering the
+/// variable name (without `$`) so editors highlight the right text.
+#[tokio::test]
+async fn prepare_rename_on_variable() {
+    let mut s = TestServer::new().await;
+    let out = s
+        .check_prepare_rename(
+            r#"<?php
+function f(): void {
+    $cou$0nt = 0;
+}
+"#,
+        )
+        .await;
+    expect!["2:5-2:10"].assert_eq(&out);
+}
+
+/// Renaming a property via a `->access` site must update the declaration and
+/// all other access sites. The cursor must be on the bare name after `->`,
+/// not on the `$prop` declaration (which is treated as a variable rename).
+#[tokio::test]
+async fn rename_property_updates_all_access_sites() {
+    let mut s = TestServer::new().await;
+    let out = s
+        .check_rename(
+            r#"<?php
+class Counter {
+    public int $count = 0;
+    public function inc(): void { $this->coun$0t++; }
+    public function get(): int  { return $this->count; }
+}
+"#,
+            "total",
+        )
+        .await;
+    expect![[r#"
+        // main.php
+        2:16-2:21 → "total"
+        3:41-3:46 → "total"
+        4:48-4:53 → "total""#]]
+    .assert_eq(&out);
+}

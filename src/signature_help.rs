@@ -41,6 +41,17 @@ pub fn signature_help(source: &str, doc: &ParsedDoc, position: Position) -> Opti
         })
         .collect();
 
+    // Cap the active parameter index so it never exceeds the declared parameter
+    // array. This matters for variadic functions (where arg count > param count
+    // is normal) and prevents clients from trying to highlight a non-existent
+    // parameter slot.
+    let n = params.len();
+    let effective_active: Option<u32> = if n == 0 {
+        None
+    } else {
+        Some(active_param.min(n - 1) as u32)
+    };
+
     Some(SignatureHelp {
         signatures: vec![SignatureInformation {
             label,
@@ -50,10 +61,10 @@ pub fn signature_help(source: &str, doc: &ParsedDoc, position: Position) -> Opti
             } else {
                 Some(params)
             },
-            active_parameter: Some(active_param as u32),
+            active_parameter: effective_active,
         }],
         active_signature: Some(0),
-        active_parameter: Some(active_param as u32),
+        active_parameter: effective_active,
     })
 }
 
