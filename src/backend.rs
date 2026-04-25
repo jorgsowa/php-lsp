@@ -56,7 +56,7 @@ use crate::references::{
 };
 use crate::rename::{prepare_rename, rename, rename_property, rename_variable};
 use crate::selection_range::selection_ranges;
-use crate::semantic_diagnostics::{deprecated_call_diagnostics, duplicate_declaration_diagnostics};
+use crate::semantic_diagnostics::duplicate_declaration_diagnostics;
 use crate::semantic_tokens::{
     compute_token_delta, legend, semantic_tokens, semantic_tokens_range, token_hash,
 };
@@ -913,16 +913,6 @@ impl LanguageServer for Backend {
                         &d,
                         &diag_cfg_sem,
                     ));
-                    let open_urls = open_files_sem.urls();
-                    let other_raw = docs_sem.other_docs(&uri_sem, &open_urls);
-                    let other_docs: Vec<Arc<ParsedDoc>> =
-                        other_raw.into_iter().map(|(_, d)| d).collect();
-                    out.extend(deprecated_call_diagnostics(
-                        &source,
-                        &d,
-                        &other_docs,
-                        &diag_cfg_sem,
-                    ));
                     out
                 })
                 .await
@@ -964,12 +954,8 @@ impl LanguageServer for Backend {
             let diag_cfg = self.config.read().unwrap().diagnostics.clone();
             let parse_diags = self.get_parse_diagnostics(&uri).unwrap_or_default();
             let dup_diags = duplicate_declaration_diagnostics(&source, d, &diag_cfg);
-            let other_raw = self.docs.other_docs(&uri, &self.open_urls());
-            let other_docs: Vec<Arc<ParsedDoc>> = other_raw.into_iter().map(|(_, d)| d).collect();
-            let dep_diags = deprecated_call_diagnostics(&source, d, &other_docs, &diag_cfg);
             let mut all = parse_diags;
             all.extend(dup_diags);
-            all.extend(dep_diags);
             self.client.publish_diagnostics(uri, all, None).await;
         }
     }

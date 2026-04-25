@@ -115,6 +115,30 @@ class Broken {
         .await;
 }
 
+/// Regression for issue #177 — deprecated-call warnings must appear on did_open,
+/// not only after the first did_change.
+#[tokio::test]
+async fn did_open_reports_deprecated_call_warning() {
+    let mut server = TestServer::new().await;
+    let notif = server
+        .open(
+            "deprecated_test.php",
+            "<?php\n/** @deprecated Use newFunc() instead */\nfunction oldFunc(): void {}\n\noldFunc();\n",
+        )
+        .await;
+    let diags = notif["params"]["diagnostics"].as_array().unwrap();
+    let has_deprecated = diags.iter().any(|d| {
+        d["message"]
+            .as_str()
+            .map(|m| m.contains("oldFunc") && m.contains("eprecated"))
+            .unwrap_or(false)
+    });
+    assert!(
+        has_deprecated,
+        "expected a deprecated warning on did_open, got: {diags:?}"
+    );
+}
+
 /// Regression for issue #170 — undefined function and class references in a
 /// method body of a namespaced class must both be reported.
 #[tokio::test]
