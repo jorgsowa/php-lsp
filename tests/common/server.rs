@@ -776,6 +776,50 @@ impl TestServer {
             .await
     }
 
+    /// Send `workspace/didChangeWatchedFiles`. Each entry is a `(uri, type)`
+    /// pair where type is 1=CREATED, 2=CHANGED, 3=DELETED (LSP FileChangeType).
+    ///
+    /// The handler runs asynchronously and indexes files before calling
+    /// `send_refresh_requests`. Use `workspace_symbols` in a polling loop to
+    /// confirm the effect has landed.
+    pub async fn did_change_watched_files(&mut self, changes: Vec<(String, u32)>) {
+        let changes_json: Vec<Value> = changes
+            .into_iter()
+            .map(|(uri, typ)| json!({ "uri": uri, "type": typ }))
+            .collect();
+        self.client
+            .notify(
+                "workspace/didChangeWatchedFiles",
+                json!({ "changes": changes_json }),
+            )
+            .await;
+    }
+
+    /// Write `content` to `path` relative to the workspace root. Creates
+    /// parent directories as needed.
+    pub fn write_file(&self, path: &str, content: &str) {
+        let full = self.root.as_ref().expect("server has no root").join(path);
+        if let Some(parent) = full.parent() {
+            std::fs::create_dir_all(parent).expect("create parent dirs");
+        }
+        std::fs::write(&full, content).expect("write file");
+    }
+
+    /// Delete a file at `path` relative to the workspace root. Ignores errors
+    /// if the file is already gone.
+    pub fn remove_file(&self, path: &str) {
+        let full = self.root.as_ref().expect("server has no root").join(path);
+        std::fs::remove_file(&full).ok();
+    }
+
+    /// Run `workspace/symbol` for `query` and render the result as sorted
+    /// `<kind> <name> @ path:line` lines. Paths are relative to the workspace
+    /// root so snapshots are tempdir-agnostic.
+    pub async fn snapshot_workspace_symbols(&mut self, query: &str) -> String {
+        let resp = self.workspace_symbols(query).await;
+        super::render::render_workspace_symbols(&resp, &self.uri(""))
+    }
+
     pub async fn shutdown(&mut self) -> Value {
         self.client.request_no_params("shutdown").await
     }
