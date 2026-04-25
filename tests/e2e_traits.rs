@@ -70,10 +70,8 @@ class Greeter {
     );
 }
 
-/// Known gap: goto-definition on `$this->traitMethod()` does not yet resolve
-/// to the trait method. Kept as an ignored test so the feature is tracked.
+/// Goto-definition on `$this->traitMethod()` resolves to the trait method.
 #[tokio::test]
-#[ignore = "goto-def on $this->traitMethod() returns null — tracked as gap"]
 async fn goto_definition_jumps_to_trait_method() {
     let src = r#"<?php
 trait Greeting {

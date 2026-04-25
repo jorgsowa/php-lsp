@@ -94,8 +94,24 @@ fn scan_statements(sv: SourceView<'_>, stmts: &[Stmt<'_, '_>], word: &str) -> Op
             StmtKind::Interface(i) if i.name == word => {
                 return Some(sv.name_range(i.name));
             }
-            StmtKind::Trait(t) if t.name == word => {
-                return Some(sv.name_range(t.name));
+            StmtKind::Trait(t) => {
+                if t.name == word {
+                    return Some(sv.name_range(t.name));
+                }
+                for member in t.members.iter() {
+                    match &member.kind {
+                        ClassMemberKind::Method(m) if m.name == word => {
+                            return Some(sv.name_range(m.name));
+                        }
+                        ClassMemberKind::ClassConst(cc) if cc.name == word => {
+                            return Some(sv.name_range(cc.name));
+                        }
+                        ClassMemberKind::Property(p) if p.name == bare => {
+                            return Some(sv.name_range(p.name));
+                        }
+                        _ => {}
+                    }
+                }
             }
             StmtKind::Enum(e) if e.name == word => {
                 return Some(sv.name_range(e.name));
@@ -465,5 +481,17 @@ mod tests {
             "should jump to line 1 where the property is declared"
         );
         assert_eq!(loc.uri, uri(), "should be in the same file");
+    }
+
+    #[test]
+    fn jumps_to_trait_method_definition() {
+        let src = "<?php\ntrait Greeting {\n    public function sayHello(string $name): string { return ''; }\n}";
+        let doc = ParsedDoc::parse(src.to_string());
+        let result = goto_definition(&uri(), src, &doc, &[], pos(2, 22));
+        assert!(
+            result.is_some(),
+            "expected location for trait method 'sayHello'"
+        );
+        assert_eq!(result.unwrap().range.start.line, 2);
     }
 }
