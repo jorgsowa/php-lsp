@@ -7,12 +7,12 @@ use tower_lsp::{LspService, Server};
 
 // ---------- low-level framing ----------
 
-fn frame(msg: &Value) -> Vec<u8> {
+pub(super) fn frame(msg: &Value) -> Vec<u8> {
     let body = serde_json::to_string(msg).unwrap();
     format!("Content-Length: {}\r\n\r\n{}", body.len(), body).into_bytes()
 }
 
-async fn read_msg(reader: &mut (impl AsyncReadExt + Unpin)) -> Value {
+pub(super) async fn read_msg(reader: &mut (impl AsyncReadExt + Unpin)) -> Value {
     let mut header_buf = Vec::new();
     loop {
         let b = reader.read_u8().await.expect("read byte");
@@ -57,6 +57,18 @@ impl TestClient {
         self.write.write_all(&frame(&msg)).await.unwrap();
         loop {
             let resp = read_msg(&mut self.read).await;
+            // If this message is a server→client request (has method + id), reply null
+            if resp.get("method").is_some() {
+                if let Some(srv_id) = resp.get("id") {
+                    let ack = json!({
+                        "jsonrpc": "2.0",
+                        "id": srv_id,
+                        "result": null,
+                    });
+                    self.write.write_all(&frame(&ack)).await.unwrap();
+                }
+                continue;
+            }
             if resp.get("id") == Some(&json!(id)) {
                 return resp;
             }
@@ -75,6 +87,18 @@ impl TestClient {
         self.write.write_all(&frame(&msg)).await.unwrap();
         loop {
             let resp = read_msg(&mut self.read).await;
+            // If this message is a server→client request (has method + id), reply null
+            if resp.get("method").is_some() {
+                if let Some(srv_id) = resp.get("id") {
+                    let ack = json!({
+                        "jsonrpc": "2.0",
+                        "id": srv_id,
+                        "result": null,
+                    });
+                    self.write.write_all(&frame(&ack)).await.unwrap();
+                }
+                continue;
+            }
             if resp.get("id") == Some(&json!(id)) {
                 return resp;
             }
@@ -134,6 +158,34 @@ impl TestClient {
         })
         .await
         .unwrap_or_else(|_| panic!("timed out waiting for publishDiagnostics for {uri}"))
+    }
+
+    /// Read messages until a server→client request with the given `method` arrives.
+    /// Returns `(id, params)`. Skips notifications and client responses.
+    /// Panics after 5 seconds.
+    pub async fn expect_server_request(&mut self, method: &str) -> (Value, Value) {
+        tokio::time::timeout(tokio::time::Duration::from_secs(5), async {
+            loop {
+                let msg = read_msg(&mut self.read).await;
+                if msg.get("method") == Some(&json!(method)) && msg.get("id").is_some() {
+                    let id = msg["id"].clone();
+                    let params = msg.get("params").cloned().unwrap_or(json!(null));
+                    return (id, params);
+                }
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("timed out waiting for server request {method}"))
+    }
+
+    /// Send a successful response to a server→client request.
+    pub async fn reply_to_server_request(&mut self, id: Value, result: Value) {
+        let response = json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "result": result,
+        });
+        self.write.write_all(&frame(&response)).await.unwrap();
     }
 
     /// Wait for `$/php-lsp/indexReady` (10 s timeout). Auto-replies to any
