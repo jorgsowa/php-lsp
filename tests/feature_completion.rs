@@ -7,6 +7,7 @@
 mod common;
 
 use common::TestServer;
+use expect_test::expect;
 
 async fn labels(s: &mut TestServer, src: &str) -> Vec<String> {
     let opened = s.open_fixture(src).await;
@@ -26,9 +27,9 @@ async fn labels(s: &mut TestServer, src: &str) -> Vec<String> {
 #[tokio::test]
 async fn completion_arrow_method() {
     let mut s = TestServer::new().await;
-    let labels = labels(
-        &mut s,
-        r#"<?php
+    let out = s
+        .check_completion(
+            r#"<?php
 class Greeter {
     public function hello(): string { return 'hi'; }
     public function bye(): void {}
@@ -36,12 +37,17 @@ class Greeter {
 $g = new Greeter();
 $g->h$0
 "#,
-    )
-    .await;
-    assert!(
-        labels.iter().any(|l| l == "hello"),
-        "hello missing: {labels:?}"
-    );
+        )
+        .await;
+    expect![[r#"
+        Function    hash
+        Function    header
+        Function    headers_sent
+        Method      hello
+        Function    htmlentities
+        Function    htmlspecialchars
+        Function    http_build_query"#]]
+    .assert_eq(&out);
 }
 
 #[ignore = "php-lsp gap: `->` completion does not list properties"]
@@ -66,21 +72,329 @@ $u->na$0
 #[tokio::test]
 async fn completion_double_colon_static_method() {
     let mut s = TestServer::new().await;
-    let labels = labels(
-        &mut s,
-        r#"<?php
+    let out = s
+        .check_completion(
+            r#"<?php
 class Reg {
     public static function get(): void {}
     public static function set(): void {}
 }
 Reg::$0
 "#,
-    )
-    .await;
-    assert!(
-        labels.iter().any(|l| l == "get"),
-        "expected 'get': {labels:?}"
-    );
+        )
+        .await;
+    expect![[r#"
+        Variable    $GLOBALS
+        Variable    $_COOKIE
+        Variable    $_ENV
+        Variable    $_FILES
+        Variable    $_GET
+        Variable    $_POST
+        Variable    $_REQUEST
+        Variable    $_SERVER
+        Variable    $_SESSION
+        Class       Reg
+        Constant    __CLASS__
+        Constant    __DIR__
+        Constant    __FILE__
+        Constant    __FUNCTION__
+        Constant    __LINE__
+        Constant    __METHOD__
+        Constant    __NAMESPACE__
+        Constant    __TRAIT__
+        Function    abs
+        Keyword     abstract
+        Function    acos
+        Function    addslashes
+        Keyword     and
+        Keyword     array
+        Function    array_chunk
+        Function    array_combine
+        Function    array_diff
+        Function    array_fill
+        Function    array_fill_keys
+        Function    array_filter
+        Function    array_flip
+        Function    array_intersect
+        Function    array_key_exists
+        Function    array_keys
+        Function    array_map
+        Function    array_merge
+        Function    array_pad
+        Function    array_pop
+        Function    array_push
+        Function    array_reduce
+        Function    array_replace
+        Function    array_reverse
+        Function    array_search
+        Function    array_shift
+        Function    array_slice
+        Function    array_splice
+        Function    array_unique
+        Function    array_unshift
+        Function    array_values
+        Function    array_walk
+        Function    array_walk_recursive
+        Function    arsort
+        Keyword     as
+        Function    asin
+        Function    asort
+        Function    atan
+        Function    atan2
+        Function    base64_decode
+        Function    base64_encode
+        Function    basename
+        Function    boolval
+        Keyword     break
+        Function    call_user_func
+        Function    call_user_func_array
+        Keyword     callable
+        Keyword     case
+        Keyword     catch
+        Function    ceil
+        Function    checkdate
+        Keyword     class
+        Function    class_exists
+        Keyword     clone
+        Function    closedir
+        Function    compact
+        Keyword     const
+        Function    constant
+        Keyword     continue
+        Function    copy
+        Function    cos
+        Function    count
+        Function    date
+        Function    date_add
+        Function    date_create
+        Function    date_diff
+        Function    date_format
+        Function    date_sub
+        Keyword     declare
+        Keyword     default
+        Function    define
+        Function    defined
+        Keyword     die
+        Function    dirname
+        Keyword     do
+        Keyword     echo
+        Keyword     else
+        Keyword     elseif
+        Keyword     empty
+        Keyword     enddeclare
+        Keyword     endfor
+        Keyword     endforeach
+        Keyword     endif
+        Keyword     endswitch
+        Keyword     endwhile
+        Keyword     enum
+        Keyword     eval
+        Keyword     exit
+        Function    exp
+        Function    explode
+        Keyword     extends
+        Function    extract
+        Keyword     false
+        Function    fclose
+        Function    feof
+        Function    fgets
+        Function    file_exists
+        Function    file_get_contents
+        Function    file_put_contents
+        Keyword     final
+        Keyword     finally
+        Function    floatval
+        Function    floor
+        Function    fmod
+        Keyword     fn
+        Function    fopen
+        Keyword     for
+        Keyword     foreach
+        Function    fputs
+        Function    fread
+        Function    fseek
+        Function    ftell
+        Keyword     function
+        Function    function_exists
+        Function    fwrite
+        Method      get
+        Function    get_class
+        Function    get_parent_class
+        Function    gettype
+        Function    glob
+        Keyword     global
+        Keyword     goto
+        Function    hash
+        Function    header
+        Function    headers_sent
+        Function    htmlentities
+        Function    htmlspecialchars
+        Function    http_build_query
+        Keyword     if
+        Keyword     implements
+        Function    implode
+        Function    in_array
+        Keyword     include
+        Keyword     include_once
+        Keyword     instanceof
+        Keyword     insteadof
+        Function    intdiv
+        Keyword     interface
+        Function    interface_exists
+        Function    intval
+        Function    is_a
+        Function    is_array
+        Function    is_bool
+        Function    is_callable
+        Function    is_dir
+        Function    is_double
+        Function    is_file
+        Function    is_finite
+        Function    is_float
+        Function    is_infinite
+        Function    is_int
+        Function    is_integer
+        Function    is_long
+        Function    is_nan
+        Function    is_null
+        Function    is_numeric
+        Function    is_object
+        Function    is_readable
+        Function    is_string
+        Function    is_subclass_of
+        Function    is_writable
+        Keyword     isset
+        Function    join
+        Function    json_decode
+        Function    json_encode
+        Function    krsort
+        Function    ksort
+        Function    lcfirst
+        Keyword     list
+        Function    log
+        Function    ltrim
+        Keyword     match
+        Function    max
+        Function    md5
+        Function    method_exists
+        Function    microtime
+        Function    min
+        Function    mkdir
+        Function    mktime
+        Function    mt_rand
+        Keyword     namespace
+        Keyword     new
+        Function    nl2br
+        Keyword     null
+        Function    number_format
+        Function    ob_end_clean
+        Function    ob_get_clean
+        Function    ob_start
+        Function    opendir
+        Keyword     or
+        Function    parse_str
+        Function    parse_url
+        Function    pathinfo
+        Function    pi
+        Function    pow
+        Function    preg_match
+        Function    preg_match_all
+        Function    preg_quote
+        Function    preg_replace
+        Function    preg_split
+        Keyword     print
+        Function    print_r
+        Function    printf
+        Keyword     private
+        Function    property_exists
+        Keyword     protected
+        Keyword     public
+        Function    rand
+        Function    random_int
+        Function    range
+        Function    rawurldecode
+        Function    rawurlencode
+        Function    readdir
+        Keyword     readonly
+        Function    realpath
+        Function    rename
+        Keyword     require
+        Keyword     require_once
+        Keyword     return
+        Function    rewind
+        Function    rmdir
+        Function    round
+        Function    rsort
+        Function    rtrim
+        Function    scandir
+        Keyword     self
+        Function    serialize
+        Function    session_destroy
+        Function    session_start
+        Method      set
+        Function    setcookie
+        Function    settype
+        Function    sha1
+        Function    sin
+        Function    sleep
+        Function    sort
+        Function    sprintf
+        Function    sqrt
+        Keyword     static
+        Function    str_contains
+        Function    str_ends_with
+        Function    str_pad
+        Function    str_repeat
+        Function    str_replace
+        Function    str_split
+        Function    str_starts_with
+        Function    str_word_count
+        Function    strcasecmp
+        Function    strcmp
+        Function    strip_tags
+        Function    stripslashes
+        Function    stristr
+        Function    strlen
+        Function    strncasecmp
+        Function    strncmp
+        Function    strpos
+        Function    strrpos
+        Function    strstr
+        Function    strtolower
+        Function    strtotime
+        Function    strtoupper
+        Function    strval
+        Function    substr
+        Function    substr_count
+        Function    substr_replace
+        Keyword     switch
+        Function    tan
+        Keyword     throw
+        Function    time
+        Keyword     trait
+        Function    trim
+        Keyword     true
+        Keyword     try
+        Function    uasort
+        Function    ucfirst
+        Function    ucwords
+        Function    uksort
+        Function    unlink
+        Function    unserialize
+        Function    unset
+        Function    urldecode
+        Function    urlencode
+        Keyword     use
+        Function    usleep
+        Function    usort
+        Keyword     var
+        Function    var_dump
+        Function    var_export
+        Function    vsprintf
+        Keyword     while
+        Keyword     xor
+        Keyword     yield"#]]
+    .assert_eq(&out);
 }
 
 #[ignore = "php-lsp gap: namespace-prefix completion returns nothing without a workspace root / PSR-4 map"]

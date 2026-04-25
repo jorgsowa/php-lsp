@@ -21,6 +21,25 @@ greet('world', 3);
 }
 
 #[tokio::test]
+async fn inlay_hint_resolve_returns_same_hint() {
+    let mut s = TestServer::new().await;
+    s.open(
+        "resolve.php",
+        "<?php\nfunction add(int $a, int $b): int { return $a + $b; }\nadd(1, 2);\n",
+    )
+    .await;
+    let hints_resp = s.inlay_hints("resolve.php", 0, 0, 4, 0).await;
+    let hints = hints_resp["result"].as_array().cloned().unwrap_or_default();
+    assert!(!hints.is_empty(), "expected inlay hints");
+    let resp = s.inlay_hint_resolve(hints[0].clone()).await;
+    assert!(resp["error"].is_null(), "inlayHint/resolve error: {resp:?}");
+    assert_eq!(
+        resp["result"]["label"], hints[0]["label"],
+        "resolved label must match original"
+    );
+}
+
+#[tokio::test]
 async fn inlay_hints_empty_for_file_with_no_calls() {
     let mut s = TestServer::new().await;
     let out = s
