@@ -94,6 +94,7 @@ pub fn file_refs(db: &dyn Database, ws: Workspace, file: SourceFile) -> FileRefs
             &map,
             &mut issue_buffer,
             &mut symbols,
+            ws.php_version(db),
         );
         let mut ctx = mir_analyzer::context::Context::new();
         analyzer.analyze_stmts(&doc.get().program().stmts, &mut ctx);
@@ -157,7 +158,11 @@ mod tests {
             Arc::<str>::from("<?php\ngreet();"),
             None,
         );
-        let ws = Workspace::new(host.db(), Arc::from([f1, f2]));
+        let ws = Workspace::new(
+            host.db(),
+            Arc::from([f1, f2]),
+            mir_analyzer::PhpVersion::LATEST,
+        );
 
         let locs = symbol_refs(host.db(), ws, "greet".to_string());
         let found: Vec<&str> = locs.get().iter().map(|(u, _, _)| u.as_ref()).collect();
@@ -178,7 +183,7 @@ mod tests {
             Arc::<str>::from("<?php\nfunction hi(): void {}\nhi();"),
             None,
         );
-        let ws = Workspace::new(host.db(), Arc::from([f1]));
+        let ws = Workspace::new(host.db(), Arc::from([f1]), mir_analyzer::PhpVersion::LATEST);
 
         let a = symbol_refs(host.db(), ws, "hi".to_string());
         let b = symbol_refs(host.db(), ws, "hi".to_string());

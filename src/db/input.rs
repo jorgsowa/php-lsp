@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use mir_analyzer::PhpVersion;
 use mir_codebase::storage::StubSlice;
 
 /// Opaque file identifier used as a stable key for a source file across edits.
@@ -44,4 +45,8 @@ pub struct SourceFile {
 #[salsa::input]
 pub struct Workspace {
     pub files: Arc<[SourceFile]>,
+    /// Target PHP version for analysis. Changing this invalidates all
+    /// `semantic_issues` queries so diagnostics are re-evaluated against the
+    /// new version's rules.
+    pub php_version: PhpVersion,
 }

@@ -79,7 +79,11 @@ impl Default for DocumentStore {
 impl DocumentStore {
     pub fn new() -> Self {
         let host = AnalysisHost::new();
-        let workspace = Workspace::new(host.db(), Arc::<[SourceFile]>::from(Vec::new()));
+        let workspace = Workspace::new(
+            host.db(),
+            Arc::<[SourceFile]>::from(Vec::new()),
+            mir_analyzer::PhpVersion::LATEST,
+        );
         DocumentStore {
             token_cache: DashMap::new(),
             host: Mutex::new(host),
@@ -352,6 +356,18 @@ impl DocumentStore {
         }
         let arc: Arc<[SourceFile]> = Arc::from(files);
         self.workspace.set_files(host.db_mut()).to(arc);
+    }
+
+    /// Update the PHP version tracked by the workspace. Salsa will invalidate
+    /// all `semantic_issues` queries so diagnostics are re-evaluated.
+    /// Skips the setter when the version hasn't changed to avoid spurious
+    /// query invalidation.
+    pub fn set_php_version(&self, version: mir_analyzer::PhpVersion) {
+        let mut host = self.host.lock().unwrap();
+        if self.workspace.php_version(host.db()) == version {
+            return;
+        }
+        self.workspace.set_php_version(host.db_mut()).to(version);
     }
 
     /// Salsa-backed finalized Codebase. Aggregates every known file's

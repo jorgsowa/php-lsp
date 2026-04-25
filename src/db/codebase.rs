@@ -89,7 +89,11 @@ mod tests {
             Arc::<str>::from("<?php\nnamespace B;\nclass Bar {}"),
             None,
         );
-        let ws = Workspace::new(host.db(), Arc::from([f1, f2]));
+        let ws = Workspace::new(
+            host.db(),
+            Arc::from([f1, f2]),
+            mir_analyzer::PhpVersion::LATEST,
+        );
 
         let cb = codebase(host.db(), ws);
         assert!(cb.get().type_exists("A\\Foo"));
@@ -106,7 +110,7 @@ mod tests {
             Arc::<str>::from("<?php\nclass Before {}"),
             None,
         );
-        let ws = Workspace::new(host.db(), Arc::from([f1]));
+        let ws = Workspace::new(host.db(), Arc::from([f1]), mir_analyzer::PhpVersion::LATEST);
 
         let a1 = codebase(host.db(), ws);
         assert!(a1.get().type_exists("Before"));
@@ -130,7 +134,7 @@ mod tests {
             Arc::<str>::from("<?php\nclass X {}"),
             None,
         );
-        let ws = Workspace::new(host.db(), Arc::from([f1]));
+        let ws = Workspace::new(host.db(), Arc::from([f1]), mir_analyzer::PhpVersion::LATEST);
 
         let a1 = codebase(host.db(), ws);
         let a2 = codebase(host.db(), ws);

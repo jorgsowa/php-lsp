@@ -59,6 +59,7 @@ pub fn semantic_issues(db: &dyn Database, ws: Workspace, file: SourceFile) -> Is
 
     let mut issue_buffer = mir_issues::IssueBuffer::new();
     let mut symbols = Vec::new();
+    let php_version = ws.php_version(db);
     let mut analyzer = mir_analyzer::stmt::StatementsAnalyzer::new(
         cb.get(),
         uri_arc,
@@ -66,6 +67,7 @@ pub fn semantic_issues(db: &dyn Database, ws: Workspace, file: SourceFile) -> Is
         &source_map,
         &mut issue_buffer,
         &mut symbols,
+        php_version,
     );
     let mut ctx = mir_analyzer::context::Context::new();
     analyzer.analyze_stmts(&doc.program().stmts, &mut ctx);
@@ -101,7 +103,11 @@ mod tests {
     fn semantic_issues_flags_undefined_function() {
         let host = AnalysisHost::new();
         let file = new_file(&host, 0, "file:///a.php", "<?php\nfoo_bar_baz();");
-        let ws = Workspace::new(host.db(), Arc::from([file]));
+        let ws = Workspace::new(
+            host.db(),
+            Arc::from([file]),
+            mir_analyzer::PhpVersion::LATEST,
+        );
         let issues = semantic_issues(host.db(), ws, file);
         assert!(
             issues
@@ -117,7 +123,11 @@ mod tests {
     fn semantic_issues_memoizes_across_calls() {
         let host = AnalysisHost::new();
         let file = new_file(&host, 0, "file:///a.php", "<?php\nfoo_bar_baz();");
-        let ws = Workspace::new(host.db(), Arc::from([file]));
+        let ws = Workspace::new(
+            host.db(),
+            Arc::from([file]),
+            mir_analyzer::PhpVersion::LATEST,
+        );
         let a = semantic_issues(host.db(), ws, file);
         let b = semantic_issues(host.db(), ws, file);
         assert!(
@@ -130,7 +140,11 @@ mod tests {
     fn semantic_issues_reruns_after_edit() {
         let mut host = AnalysisHost::new();
         let file = new_file(&host, 0, "file:///a.php", "<?php\nfoo_bar_baz();");
-        let ws = Workspace::new(host.db(), Arc::from([file]));
+        let ws = Workspace::new(
+            host.db(),
+            Arc::from([file]),
+            mir_analyzer::PhpVersion::LATEST,
+        );
         let a = semantic_issues(host.db(), ws, file);
         let first_ptr = Arc::as_ptr(&a.0);
         file.set_text(host.db_mut())

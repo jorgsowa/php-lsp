@@ -1014,9 +1014,9 @@ dependencies = [
 
 [[package]]
 name = "mir-analyzer"
-version = "0.7.3"
+version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "acfa5ca39ff24b6ec10806cb6726e5d83fc8951c14e5c29c3ea301ba2577489c"
+checksum = "bb017e434cb7884b5dadb6b3c2dfa691b12b0fc4b6c538c106c6b10ad8b77181"
 dependencies = [
  "blake3",
  "bumpalo",
@@ -1035,9 +1035,9 @@ dependencies = [
 
 [[package]]
 name = "mir-codebase"
-version = "0.7.3"
+version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7af4899e89f5721072bec485834e639670667617f7840cc0f13a1dcb2381b691"
+checksum = "7590194b797f3683ab8f7dc17fc9d121c488180a1fd48d6ee207956fdfd4f1bc"
 dependencies = [
  "dashmap 6.1.0",
  "indexmap",
@@ -1048,9 +1048,9 @@ dependencies = [
 
 [[package]]
 name = "mir-issues"
-version = "0.7.3"
+version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b181842ae14347149ab6cbca7fdc9db7f7efae1669094de553ba88a5e766c358"
+checksum = "91868def910081bf77b47dfb7566917320c80d30dd6414ce1c9a4838b568e4a3"
 dependencies = [
  "mir-types",
  "owo-colors",
@@ -1060,9 +1060,9 @@ dependencies = [
 
 [[package]]
 name = "mir-types"
-version = "0.7.3"
+version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3791cb5d47867052c26d1b9b8b8fa81aeb7a255ccf5e582bb8443e395f0afb7b"
+checksum = "c028d464cb143807f389d3fb019f8991fe459bea961ec3b65ec2080eb131ac9c"
 dependencies = [
  "indexmap",
  "serde",

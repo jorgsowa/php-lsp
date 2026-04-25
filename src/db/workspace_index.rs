@@ -210,7 +210,11 @@ mod tests {
             "file:///b.php",
             "<?php\nclass Dog extends Animal {}\nclass Cat extends Animal {}",
         );
-        let ws = Workspace::new(host.db(), Arc::from([f1, f2]));
+        let ws = Workspace::new(
+            host.db(),
+            Arc::from([f1, f2]),
+            mir_analyzer::PhpVersion::LATEST,
+        );
 
         let wi = workspace_index(host.db(), ws);
         let data = wi.get();
@@ -236,7 +240,7 @@ mod tests {
     fn workspace_index_memoizes_and_invalidates() {
         let mut host = AnalysisHost::new();
         let f1 = new_file(&host, 0, "file:///a.php", "<?php\nclass A {}");
-        let ws = Workspace::new(host.db(), Arc::from([f1]));
+        let ws = Workspace::new(host.db(), Arc::from([f1]), mir_analyzer::PhpVersion::LATEST);
 
         let a = workspace_index(host.db(), ws);
         let b = workspace_index(host.db(), ws);
@@ -263,7 +267,7 @@ mod tests {
             "class Hi implements Greeter { use Shouting; }\n",
         );
         let f = new_file(&host, 0, "file:///m.php", src);
-        let ws = Workspace::new(host.db(), Arc::from([f]));
+        let ws = Workspace::new(host.db(), Arc::from([f]), mir_analyzer::PhpVersion::LATEST);
         let wi = workspace_index(host.db(), ws);
         let data = wi.get();
 
