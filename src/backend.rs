@@ -847,6 +847,14 @@ impl LanguageServer for Backend {
         if let Some(ref d) = doc2 {
             let dup_diags = duplicate_declaration_diagnostics(&stored_source, d, &diag_cfg);
             all_diags.extend(dup_diags);
+            let other_raw = self.docs.other_docs(&uri, &self.open_urls());
+            let other_docs: Vec<Arc<ParsedDoc>> = other_raw.into_iter().map(|(_, d)| d).collect();
+            all_diags.extend(deprecated_call_diagnostics(
+                &stored_source,
+                d,
+                &other_docs,
+                &diag_cfg,
+            ));
         }
         if let Some(issues) = sem_issues {
             all_diags.extend(crate::semantic_diagnostics::issues_to_diagnostics(
