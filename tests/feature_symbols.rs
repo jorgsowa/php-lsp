@@ -47,7 +47,6 @@ enum Status {
     .assert_eq(&out);
 }
 
-#[ignore = "php-lsp gap: interface method declarations missing from document symbols"]
 #[tokio::test]
 async fn document_symbols_interface() {
     let mut s = TestServer::new().await;
@@ -60,7 +59,10 @@ interface Writable {
 "#,
         )
         .await;
-    expect![""].assert_eq(&out);
+    expect![[r#"
+        Interface Writable @L1
+          Method write @L2"#]]
+    .assert_eq(&out);
 }
 
 #[tokio::test]

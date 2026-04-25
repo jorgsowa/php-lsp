@@ -249,8 +249,25 @@ fn statement_to_symbol(sv: SourceView<'_>, stmt: &Stmt<'_, '_>) -> Option<Docume
             let children: Vec<DocumentSymbol> = i
                 .members
                 .iter()
-                .filter_map(|member| {
-                    if let ClassMemberKind::ClassConst(cc) = &member.kind {
+                .filter_map(|member| match &member.kind {
+                    ClassMemberKind::Method(m) => {
+                        let mrange = member_range(sv, member);
+                        let msel = sv.name_range(m.name);
+                        let method_deprecated = docblock_before(sv.source(), member.span.start)
+                            .filter(|raw| parse_docblock(raw).deprecated.is_some())
+                            .map(|_| true);
+                        Some(DocumentSymbol {
+                            name: m.name.to_string(),
+                            detail: Some(format_fn_signature(&m.params, m.return_type.as_ref())),
+                            kind: SymbolKind::METHOD,
+                            tags: None,
+                            deprecated: method_deprecated,
+                            range: mrange,
+                            selection_range: msel,
+                            children: None,
+                        })
+                    }
+                    ClassMemberKind::ClassConst(cc) => {
                         let crange = member_range(sv, member);
                         let csel = sv.name_range(cc.name);
                         let const_deprecated = docblock_before(sv.source(), member.span.start)
@@ -266,9 +283,8 @@ fn statement_to_symbol(sv: SourceView<'_>, stmt: &Stmt<'_, '_>) -> Option<Docume
                             selection_range: csel,
                             children: None,
                         })
-                    } else {
-                        None
                     }
+                    _ => None,
                 })
                 .collect();
             Some(DocumentSymbol {
@@ -835,8 +851,7 @@ mod tests {
     }
 
     #[test]
-    fn interface_without_constants_has_no_children() {
-        // An interface with only abstract methods (no constants) should have children: None.
+    fn interface_with_only_methods_has_method_children() {
         let src = "<?php\ninterface Runnable {\n    public function run(): void;\n}";
         let doc = ParsedDoc::parse(src.to_string());
         let syms = document_symbols(src, &doc);
@@ -844,10 +859,16 @@ mod tests {
             .iter()
             .find(|s| s.name == "Runnable")
             .expect("Runnable not found");
+        let children = i
+            .children
+            .as_ref()
+            .expect("interface with methods should have children");
         assert!(
-            i.children.is_none(),
-            "interface with no constants should have no children, got: {:?}",
-            i.children
+            children
+                .iter()
+                .any(|c| c.name == "run" && c.kind == SymbolKind::METHOD),
+            "missing run method child, got: {:?}",
+            children.iter().map(|c| &c.name).collect::<Vec<_>>()
         );
     }
 
