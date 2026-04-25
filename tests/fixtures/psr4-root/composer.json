@@ -1,0 +1,8 @@
+{
+    "name": "php-lsp/psr4-root",
+    "autoload": {
+        "psr-4": {
+            "": "src/"
+        }
+    }
+}
