@@ -532,7 +532,10 @@ impl LanguageServer for Backend {
                     )
                     .await;
             }
-            cfg.php_version = Some(ver);
+            cfg.php_version = Some(ver.clone());
+            if let Ok(pv) = ver.parse::<mir_analyzer::PhpVersion>() {
+                self.docs.set_php_version(pv);
+            }
             *self.config.write().unwrap() = cfg;
         }
 
@@ -858,7 +861,10 @@ impl LanguageServer for Backend {
                     )
                     .await;
             }
-            cfg.php_version = Some(ver);
+            cfg.php_version = Some(ver.clone());
+            if let Ok(pv) = ver.parse::<mir_analyzer::PhpVersion>() {
+                self.docs.set_php_version(pv);
+            }
             *self.config.write().unwrap() = cfg;
         }
     }

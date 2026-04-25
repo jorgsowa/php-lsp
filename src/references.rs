@@ -1694,7 +1694,7 @@ mod tests {
             template_params: vec![],
             assertions: vec![],
             throws: vec![],
-            is_deprecated: false,
+            deprecated: None,
             is_internal: false,
             is_pure: false,
             location: None,
@@ -1723,7 +1723,7 @@ mod tests {
             is_final,
             is_readonly: false,
             all_parents: vec![],
-            is_deprecated: false,
+            deprecated: None,
             is_internal: false,
             // Synthetic user-code location so the fast path treats this as a
             // user class (stubs have `location: None` and are skipped).

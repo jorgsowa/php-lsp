@@ -13,10 +13,8 @@ use crate::backend::DiagnosticsConfig;
 /// evicted and re-collected, then `finalize()` rebuilds inheritance tables.
 ///
 /// `php_version` is a version string like `"8.1"` sourced from `LspConfig`.
-/// It is threaded through here so callers are already wired correctly once
-/// `mir_analyzer` gains version-gating support.
+/// Parsed to `mir_analyzer::PhpVersion` and forwarded to `StatementsAnalyzer`.
 ///
-/// TODO: pass `php_version` to `mir_analyzer` once it exposes a version API.
 /// Legacy mutating path — runs `remove_file_definitions` + collect + finalize
 /// on the codebase. Kept for benchmarks (`benches/semantic.rs`) and as the
 /// reference implementation while Phase D wraps Pass-2 in salsa. Not used by
@@ -27,7 +25,7 @@ pub fn semantic_diagnostics(
     doc: &ParsedDoc,
     codebase: &mir_codebase::Codebase,
     cfg: &DiagnosticsConfig,
-    _php_version: Option<&str>,
+    php_version: Option<&str>,
 ) -> Vec<Diagnostic> {
     if !cfg.enabled {
         return vec![];
@@ -55,6 +53,9 @@ pub fn semantic_diagnostics(
     }
 
     // Pass 2: analyse function/method bodies in the current document.
+    let ver = php_version
+        .and_then(|s| s.parse::<mir_analyzer::PhpVersion>().ok())
+        .unwrap_or(mir_analyzer::PhpVersion::LATEST);
     let mut issue_buffer = mir_issues::IssueBuffer::new();
     let mut symbols = Vec::new();
     let mut analyzer = mir_analyzer::stmt::StatementsAnalyzer::new(
@@ -64,6 +65,7 @@ pub fn semantic_diagnostics(
         &source_map,
         &mut issue_buffer,
         &mut symbols,
+        ver,
     );
     let mut ctx = mir_analyzer::context::Context::new();
     {
@@ -96,7 +98,7 @@ pub fn semantic_diagnostics_no_rebuild(
     doc: &ParsedDoc,
     codebase: &mir_codebase::Codebase,
     cfg: &DiagnosticsConfig,
-    _php_version: Option<&str>,
+    php_version: Option<&str>,
 ) -> Vec<Diagnostic> {
     if !cfg.enabled {
         return vec![];
@@ -108,6 +110,9 @@ pub fn semantic_diagnostics_no_rebuild(
     // Pass 2 only: analyse function/method bodies.
     // The codebase is already finalized — skip remove/re-collect/finalize so
     // that inheritance tables are not torn down and rebuilt for every file.
+    let ver = php_version
+        .and_then(|s| s.parse::<mir_analyzer::PhpVersion>().ok())
+        .unwrap_or(mir_analyzer::PhpVersion::LATEST);
     let mut issue_buffer = mir_issues::IssueBuffer::new();
     let mut symbols = Vec::new();
     let mut analyzer = mir_analyzer::stmt::StatementsAnalyzer::new(
@@ -117,6 +122,7 @@ pub fn semantic_diagnostics_no_rebuild(
         &source_map,
         &mut issue_buffer,
         &mut symbols,
+        ver,
     );
     let mut ctx = mir_analyzer::context::Context::new();
     analyzer.analyze_stmts(&doc.program().stmts, &mut ctx);
