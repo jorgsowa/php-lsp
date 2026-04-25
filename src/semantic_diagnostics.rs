@@ -2,14 +2,11 @@
 ///
 /// Delegates all analysis to the `mir-analyzer` crate and converts its `Issue`
 /// type into the `tower-lsp` `Diagnostic` type expected by the LSP backend.
-use std::sync::Arc;
-
-use php_ast::{ClassMemberKind, EnumMemberKind, ExprKind, NamespaceBody, Stmt, StmtKind};
+use php_ast::StmtKind;
 use tower_lsp::lsp_types::{Diagnostic, DiagnosticSeverity, NumberOrString, Position, Range, Url};
 
 use crate::ast::{ParsedDoc, SourceView};
 use crate::backend::DiagnosticsConfig;
-use crate::docblock::{docblock_before, parse_docblock};
 
 /// Run semantic checks on `doc` using the backend's persistent codebase.
 /// The codebase is updated incrementally: the current file's definitions are
@@ -36,7 +33,7 @@ pub fn semantic_diagnostics(
         return vec![];
     }
 
-    let file: Arc<str> = Arc::from(uri.as_str());
+    let file: std::sync::Arc<str> = std::sync::Arc::from(uri.as_str());
 
     // Incremental update: evict stale definitions for this file, re-collect,
     // and rebuild inheritance tables.
@@ -105,7 +102,7 @@ pub fn semantic_diagnostics_no_rebuild(
         return vec![];
     }
 
-    let file: Arc<str> = Arc::from(uri.as_str());
+    let file: std::sync::Arc<str> = std::sync::Arc::from(uri.as_str());
     let source_map = php_rs_parser::source_map::SourceMap::new(doc.source());
 
     // Pass 2 only: analyse function/method bodies.
@@ -173,251 +170,12 @@ fn issue_passes_filter(issue: &mir_issues::Issue, cfg: &DiagnosticsConfig) -> bo
         | IssueKind::NullableReturnStatement { .. }
         | IssueKind::InvalidPropertyAssignment { .. }
         | IssueKind::InvalidOperand { .. } => cfg.type_errors,
-        IssueKind::DeprecatedMethod { .. } | IssueKind::DeprecatedClass { .. } => {
-            cfg.deprecated_calls
-        }
+        IssueKind::DeprecatedCall { .. }
+        | IssueKind::DeprecatedMethodCall { .. }
+        | IssueKind::DeprecatedMethod { .. }
+        | IssueKind::DeprecatedClass { .. } => cfg.deprecated_calls,
         _ => true,
     }
-}
-
-/// Check for deprecated function/method calls and emit Warning diagnostics.
-pub fn deprecated_call_diagnostics(
-    _source: &str,
-    doc: &ParsedDoc,
-    other_docs: &[Arc<ParsedDoc>],
-    cfg: &DiagnosticsConfig,
-) -> Vec<Diagnostic> {
-    if !cfg.enabled || !cfg.deprecated_calls {
-        return vec![];
-    }
-    let sv = doc.view();
-    let mut diags = Vec::new();
-    let all_sources: Vec<(&str, &ParsedDoc)> = std::iter::once((sv.source(), doc))
-        .chain(other_docs.iter().map(|d| (d.source(), d.as_ref())))
-        .collect();
-    collect_deprecated_calls(sv, &doc.program().stmts, &all_sources, &mut diags);
-    diags
-}
-
-fn collect_deprecated_calls(
-    sv: SourceView<'_>,
-    stmts: &[Stmt<'_, '_>],
-    all_sources: &[(&str, &ParsedDoc)],
-    diags: &mut Vec<Diagnostic>,
-) {
-    for stmt in stmts {
-        match &stmt.kind {
-            StmtKind::Expression(e) => {
-                check_expr_for_deprecated(sv, e, all_sources, diags);
-            }
-            StmtKind::Namespace(ns) => {
-                if let NamespaceBody::Braced(inner) = &ns.body {
-                    collect_deprecated_calls(sv, inner, all_sources, diags);
-                }
-            }
-            StmtKind::Function(f) => {
-                collect_deprecated_calls(sv, &f.body, all_sources, diags);
-            }
-            StmtKind::Class(c) => {
-                for member in c.members.iter() {
-                    if let ClassMemberKind::Method(m) = &member.kind
-                        && let Some(body) = &m.body
-                    {
-                        collect_deprecated_calls(sv, body, all_sources, diags);
-                    }
-                }
-            }
-            StmtKind::Trait(t) => {
-                for member in t.members.iter() {
-                    if let ClassMemberKind::Method(m) = &member.kind
-                        && let Some(body) = &m.body
-                    {
-                        collect_deprecated_calls(sv, body, all_sources, diags);
-                    }
-                }
-            }
-            StmtKind::Enum(e) => {
-                for member in e.members.iter() {
-                    if let EnumMemberKind::Method(m) = &member.kind
-                        && let Some(body) = &m.body
-                    {
-                        collect_deprecated_calls(sv, body, all_sources, diags);
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-}
-
-fn check_expr_for_deprecated(
-    sv: SourceView<'_>,
-    expr: &php_ast::Expr<'_, '_>,
-    all_sources: &[(&str, &ParsedDoc)],
-    diags: &mut Vec<Diagnostic>,
-) {
-    if let ExprKind::Assign(a) = &expr.kind {
-        check_expr_for_deprecated(sv, a.value, all_sources, diags);
-        return;
-    }
-    if let ExprKind::FunctionCall(call) = &expr.kind {
-        if let ExprKind::Identifier(name) = &call.name.kind {
-            let func_name = name;
-            // Search all docs for this function's declaration
-            for (src, d) in all_sources {
-                if let Some(span_start) = find_function_span(d, func_name)
-                    && let Some(raw) = docblock_before(src, span_start)
-                {
-                    let db = parse_docblock(&raw);
-                    if db.is_deprecated() {
-                        let start_pos = sv.position_of(call.name.span.start);
-                        let end_pos = sv.position_of(call.name.span.end);
-                        let msg = match &db.deprecated {
-                            Some(m) if !m.is_empty() => {
-                                format!("Deprecated: {} — {}", func_name.as_str(), m)
-                            }
-                            _ => format!("Deprecated: {}", func_name.as_str()),
-                        };
-                        diags.push(Diagnostic {
-                            range: Range {
-                                start: Position {
-                                    line: start_pos.line,
-                                    character: start_pos.character,
-                                },
-                                end: Position {
-                                    line: end_pos.line,
-                                    character: end_pos.character,
-                                },
-                            },
-                            severity: Some(DiagnosticSeverity::WARNING),
-                            source: Some("php-lsp".to_string()),
-                            message: msg,
-                            ..Default::default()
-                        });
-                        break;
-                    }
-                }
-            }
-        }
-        // Recurse into arguments so nested calls are also checked.
-        for arg in call.args.iter() {
-            check_expr_for_deprecated(sv, &arg.value, all_sources, diags);
-        }
-    }
-    if let ExprKind::MethodCall(call) = &expr.kind {
-        if let ExprKind::Identifier(name) = &call.method.kind {
-            let method_name = name;
-            for (src, d) in all_sources {
-                if let Some(span_start) = find_method_span(d, method_name)
-                    && let Some(raw) = docblock_before(src, span_start)
-                {
-                    let db = parse_docblock(&raw);
-                    if db.is_deprecated() {
-                        let start_pos = sv.position_of(call.method.span.start);
-                        let end_pos = sv.position_of(call.method.span.end);
-                        let msg = match &db.deprecated {
-                            Some(m) if !m.is_empty() => {
-                                format!("Deprecated: {} — {}", method_name.as_str(), m)
-                            }
-                            _ => format!("Deprecated: {}", method_name.as_str()),
-                        };
-                        diags.push(Diagnostic {
-                            range: Range {
-                                start: Position {
-                                    line: start_pos.line,
-                                    character: start_pos.character,
-                                },
-                                end: Position {
-                                    line: end_pos.line,
-                                    character: end_pos.character,
-                                },
-                            },
-                            severity: Some(DiagnosticSeverity::WARNING),
-                            source: Some("php-lsp".to_string()),
-                            message: msg,
-                            ..Default::default()
-                        });
-                        break;
-                    }
-                }
-            }
-        }
-        // Recurse into object and arguments so nested calls are also checked.
-        check_expr_for_deprecated(sv, call.object, all_sources, diags);
-        for arg in call.args.iter() {
-            check_expr_for_deprecated(sv, &arg.value, all_sources, diags);
-        }
-    }
-}
-
-fn find_function_span(doc: &ParsedDoc, func_name: &str) -> Option<u32> {
-    find_function_span_in_stmts(&doc.program().stmts, func_name)
-}
-
-fn find_function_span_in_stmts(stmts: &[Stmt<'_, '_>], func_name: &str) -> Option<u32> {
-    for stmt in stmts {
-        match &stmt.kind {
-            StmtKind::Function(f) if f.name == func_name => {
-                return Some(stmt.span.start);
-            }
-            StmtKind::Namespace(ns) => {
-                if let NamespaceBody::Braced(inner) = &ns.body
-                    && let Some(s) = find_function_span_in_stmts(inner, func_name)
-                {
-                    return Some(s);
-                }
-            }
-            _ => {}
-        }
-    }
-    None
-}
-
-fn find_method_span(doc: &ParsedDoc, method_name: &str) -> Option<u32> {
-    find_method_span_in_stmts(&doc.program().stmts, method_name)
-}
-
-fn find_method_span_in_stmts(stmts: &[Stmt<'_, '_>], method_name: &str) -> Option<u32> {
-    for stmt in stmts {
-        match &stmt.kind {
-            StmtKind::Class(c) => {
-                for member in c.members.iter() {
-                    if let ClassMemberKind::Method(m) = &member.kind
-                        && m.name == method_name
-                    {
-                        return Some(member.span.start);
-                    }
-                }
-            }
-            StmtKind::Trait(t) => {
-                for member in t.members.iter() {
-                    if let ClassMemberKind::Method(m) = &member.kind
-                        && m.name == method_name
-                    {
-                        return Some(member.span.start);
-                    }
-                }
-            }
-            StmtKind::Enum(e) => {
-                for member in e.members.iter() {
-                    if let EnumMemberKind::Method(m) = &member.kind
-                        && m.name == method_name
-                    {
-                        return Some(member.span.start);
-                    }
-                }
-            }
-            StmtKind::Namespace(ns) => {
-                if let NamespaceBody::Braced(inner) = &ns.body
-                    && let Some(s) = find_method_span_in_stmts(inner, method_name)
-                {
-                    return Some(s);
-                }
-            }
-            _ => {}
-        }
-    }
-    None
 }
 
 /// Check for duplicate class/function/interface/trait/enum declarations.
@@ -577,25 +335,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn deprecated_function_call_emits_warning() {
-        let src =
-            "<?php\n/** @deprecated Use newFunc() instead */\nfunction oldFunc() {}\n\noldFunc();";
-        let doc = ParsedDoc::parse(src.to_string());
-        let diags = deprecated_call_diagnostics(src, &doc, &[], &DiagnosticsConfig::all_enabled());
-        assert_eq!(
-            diags.len(),
-            1,
-            "expected exactly 1 deprecated warning diagnostic"
-        );
-        let d = &diags[0];
-        assert_eq!(d.severity, Some(DiagnosticSeverity::WARNING));
-        assert!(
-            d.message.contains("oldFunc"),
-            "message should mention the function name"
-        );
-    }
-
-    #[test]
     fn duplicate_class_emits_warning() {
         let src = "<?php\nclass Foo {}\nclass Foo {}";
         let doc = ParsedDoc::parse(src.to_string());
@@ -681,59 +420,6 @@ mod tests {
     }
 
     #[test]
-    fn deprecated_method_call_emits_warning() {
-        // Calling a method annotated @deprecated should emit a warning.
-        let src = concat!(
-            "<?php\n",
-            "class Mailer {\n",
-            "    /** @deprecated Use sendAsync() instead */\n",
-            "    public function send() {}\n",
-            "}\n",
-            "$m = new Mailer();\n",
-            "$m->send();\n",
-        );
-        let doc = ParsedDoc::parse(src.to_string());
-        let diags = deprecated_call_diagnostics(src, &doc, &[], &DiagnosticsConfig::all_enabled());
-        assert_eq!(
-            diags.len(),
-            1,
-            "expected exactly 1 deprecated warning, got: {:?}",
-            diags
-        );
-        let d = &diags[0];
-        assert_eq!(d.severity, Some(DiagnosticSeverity::WARNING));
-        assert!(
-            d.message.contains("send"),
-            "message should mention 'send', got: {}",
-            d.message
-        );
-        assert!(
-            d.message.to_lowercase().contains("deprecated"),
-            "message should contain 'deprecated', got: {}",
-            d.message
-        );
-    }
-
-    #[test]
-    fn deprecated_function_warning_has_correct_message() {
-        // The deprecation warning message must contain the function name AND the
-        // word "Deprecated" (case-sensitive per implementation: "Deprecated: …").
-        let src = "<?php\n/** @deprecated old API */\nfunction legacyFn() {}\n\nlegacyFn();";
-        let doc = ParsedDoc::parse(src.to_string());
-        let diags = deprecated_call_diagnostics(src, &doc, &[], &DiagnosticsConfig::all_enabled());
-        assert_eq!(diags.len(), 1, "expected exactly 1 diagnostic");
-        let msg = &diags[0].message;
-        assert!(
-            msg.contains("legacyFn"),
-            "message should contain function name 'legacyFn', got: {msg}"
-        );
-        assert!(
-            msg.to_lowercase().contains("deprecated"),
-            "message should contain 'deprecated', got: {msg}"
-        );
-    }
-
-    #[test]
     fn duplicate_diagnostic_has_warning_severity() {
         // Duplicate declarations are reported as WARNING by our implementation.
         // (Note: `duplicate_declaration_diagnostics` emits DiagnosticSeverity::WARNING.)
@@ -745,83 +431,6 @@ mod tests {
             diags[0].severity,
             Some(DiagnosticSeverity::WARNING),
             "duplicate declaration diagnostic should have WARNING severity"
-        );
-    }
-
-    #[test]
-    fn deprecated_call_nested_in_argument_is_detected() {
-        // A deprecated function call nested inside another call's argument must still warn.
-        let src = concat!(
-            "<?php\n",
-            "/** @deprecated */\n",
-            "function oldFn(): string { return ''; }\n",
-            "function wrapper(string $s): void {}\n",
-            "wrapper(oldFn());\n",
-        );
-        let doc = ParsedDoc::parse(src.to_string());
-        let diags = deprecated_call_diagnostics(src, &doc, &[], &DiagnosticsConfig::all_enabled());
-        assert_eq!(
-            diags.len(),
-            1,
-            "expected 1 deprecation warning for nested call, got: {:?}",
-            diags
-        );
-        assert!(
-            diags[0].message.contains("oldFn"),
-            "message should mention 'oldFn'"
-        );
-    }
-
-    #[test]
-    fn deprecated_method_in_trait_is_detected() {
-        // A method annotated @deprecated in a trait should trigger a warning when called.
-        let src = concat!(
-            "<?php\n",
-            "trait Logger {\n",
-            "    /** @deprecated Use logAsync() instead */\n",
-            "    public function log() {}\n",
-            "}\n",
-            "class App { use Logger; }\n",
-            "$a = new App();\n",
-            "$a->log();\n",
-        );
-        let doc = ParsedDoc::parse(src.to_string());
-        let diags = deprecated_call_diagnostics(src, &doc, &[], &DiagnosticsConfig::all_enabled());
-        assert_eq!(
-            diags.len(),
-            1,
-            "expected 1 deprecated warning for trait method, got: {:?}",
-            diags
-        );
-        assert!(
-            diags[0].message.contains("log"),
-            "message should mention 'log'"
-        );
-    }
-
-    #[test]
-    fn deprecated_method_in_enum_is_detected() {
-        let src = concat!(
-            "<?php\n",
-            "enum Status {\n",
-            "    case Active;\n",
-            "    /** @deprecated Use activeLabel() instead */\n",
-            "    public function label(): string { return 'active'; }\n",
-            "}\n",
-            "$s = Status::Active;\n",
-            "$s->label();\n",
-        );
-        let doc = ParsedDoc::parse(src.to_string());
-        let diags = deprecated_call_diagnostics(src, &doc, &[], &DiagnosticsConfig::all_enabled());
-        assert_eq!(
-            diags.len(),
-            1,
-            "expected 1 deprecated warning for enum method, got: {:?}",
-            diags
-        );
-        assert!(
-            diags[0].message.contains("label"),
-            "message should mention 'label'"
         );
     }
 
