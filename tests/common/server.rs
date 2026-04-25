@@ -509,6 +509,10 @@ impl TestServer {
         self.client.request("inlayHint/resolve", hint).await
     }
 
+    pub async fn workspace_symbol_resolve(&mut self, symbol: Value) -> Value {
+        self.client.request("workspaceSymbol/resolve", symbol).await
+    }
+
     pub async fn completion_resolve(&mut self, item: Value) -> Value {
         self.client.request("completionItem/resolve", item).await
     }
