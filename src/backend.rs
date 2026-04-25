@@ -143,7 +143,7 @@ impl DiagnosticsConfig {
 }
 
 /// Configuration received from the client via `initializationOptions`.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct LspConfig {
     /// PHP version string, e.g. `"8.1"`.  Set explicitly via `initializationOptions`
     /// or auto-detected from `composer.json` / the `php` binary at startup.
@@ -152,6 +152,21 @@ pub struct LspConfig {
     pub exclude_paths: Vec<String>,
     /// Per-category diagnostic toggles.
     pub diagnostics: DiagnosticsConfig,
+    /// Hard cap on the number of PHP files indexed during a workspace scan.
+    /// Defaults to [`MAX_INDEXED_FILES`]. Set lower via `initializationOptions`
+    /// to reduce memory on projects with very large vendor trees.
+    pub max_indexed_files: usize,
+}
+
+impl Default for LspConfig {
+    fn default() -> Self {
+        LspConfig {
+            php_version: None,
+            exclude_paths: Vec::new(),
+            diagnostics: DiagnosticsConfig::default(),
+            max_indexed_files: MAX_INDEXED_FILES,
+        }
+    }
 }
 
 impl LspConfig {
@@ -170,6 +185,9 @@ impl LspConfig {
         }
         if let Some(diag_val) = v.get("diagnostics") {
             cfg.diagnostics = DiagnosticsConfig::from_value(diag_val);
+        }
+        if let Some(n) = v.get("maxIndexedFiles").and_then(|x| x.as_u64()) {
+            cfg.max_indexed_files = n as usize;
         }
         cfg
     }
@@ -615,7 +633,10 @@ impl LanguageServer for Backend {
             let docs = Arc::clone(&self.docs);
             let open_files = self.open_files.clone();
             let client = self.client.clone();
-            let exclude_paths = self.config.read().unwrap().exclude_paths.clone();
+            let (exclude_paths, max_indexed_files) = {
+                let cfg = self.config.read().unwrap();
+                (cfg.exclude_paths.clone(), cfg.max_indexed_files)
+            };
             tokio::spawn(async move {
                 client
                     .send_notification::<ProgressNotification>(ProgressParams {
@@ -645,6 +666,7 @@ impl LanguageServer for Backend {
                         open_files.clone(),
                         cache,
                         &exclude_paths,
+                        max_indexed_files,
                     )
                     .await;
                 }
@@ -762,7 +784,10 @@ impl LanguageServer for Backend {
         }
 
         // Add new folders and kick off background scans for each.
-        let exclude_paths = self.config.read().unwrap().exclude_paths.clone();
+        let (exclude_paths, max_indexed_files) = {
+            let cfg = self.config.read().unwrap();
+            (cfg.exclude_paths.clone(), cfg.max_indexed_files)
+        };
         for added in &params.event.added {
             if let Ok(path) = added.uri.to_file_path() {
                 {
@@ -778,7 +803,8 @@ impl LanguageServer for Backend {
                 let client = self.client.clone();
                 tokio::spawn(async move {
                     let cache = crate::cache::WorkspaceCache::new(&path_clone);
-                    scan_workspace(path_clone, docs, open_files, cache, &ex).await;
+                    scan_workspace(path_clone, docs, open_files, cache, &ex, max_indexed_files)
+                        .await;
                     send_refresh_requests(&client).await;
                 });
             }
@@ -2784,6 +2810,7 @@ async fn scan_workspace(
     open_files: OpenFiles,
     cache: Option<crate::cache::WorkspaceCache>,
     exclude_paths: &[String],
+    max_files: usize,
 ) -> usize {
     // Phase 1: collect PHP file paths via async directory walk.
     let mut php_files: Vec<PathBuf> = Vec::new();
@@ -2816,7 +2843,7 @@ async fn scan_workspace(
                 }
             } else if file_type.is_file() && path.extension().is_some_and(|e| e == "php") {
                 php_files.push(path);
-                if php_files.len() >= MAX_INDEXED_FILES {
+                if php_files.len() >= max_files {
                     break 'walk;
                 }
             }
@@ -3008,6 +3035,18 @@ mod tests {
         let cfg = LspConfig::from_value(&serde_json::json!({}));
         assert!(cfg.php_version.is_none());
         assert!(cfg.exclude_paths.is_empty());
+    }
+
+    #[test]
+    fn lsp_config_parses_max_indexed_files() {
+        let cfg = LspConfig::from_value(&serde_json::json!({"maxIndexedFiles": 5000}));
+        assert_eq!(cfg.max_indexed_files, 5000);
+    }
+
+    #[test]
+    fn lsp_config_default_max_indexed_files() {
+        let cfg = LspConfig::default();
+        assert_eq!(cfg.max_indexed_files, MAX_INDEXED_FILES);
     }
 
     // find_use_insert_line tests

@@ -55,6 +55,10 @@ mod use_import;
 mod util;
 mod walk;
 
+#[cfg(not(feature = "dhat-heap"))]
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 #[cfg(feature = "dhat-heap")]
 #[global_allocator]
 static ALLOC: dhat::Alloc = dhat::Alloc;

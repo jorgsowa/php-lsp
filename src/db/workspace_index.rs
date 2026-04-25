@@ -46,8 +46,9 @@ pub struct WorkspaceIndexData {
     pub classes_by_name: HashMap<String, Vec<ClassRef>>,
     /// `parent_or_interface_or_trait_name → [subtype ClassRef]`.
     /// A class that extends `X` AND implements `Y` contributes separate entries
-    /// under both keys.
-    pub subtypes_of: HashMap<String, Vec<ClassRef>>,
+    /// under both keys. Keyed by `Arc<str>` so insertions from `ClassDef`'s
+    /// already-interned fields are pointer copies rather than heap allocations.
+    pub subtypes_of: HashMap<Arc<str>, Vec<ClassRef>>,
 }
 
 impl WorkspaceIndexData {
@@ -66,7 +67,7 @@ impl WorkspaceIndexData {
     #[cfg(test)]
     pub fn from_files(files: Vec<(Url, Arc<FileIndex>)>) -> Self {
         let mut classes_by_name: HashMap<String, Vec<ClassRef>> = HashMap::new();
-        let mut subtypes_of: HashMap<String, Vec<ClassRef>> = HashMap::new();
+        let mut subtypes_of: HashMap<Arc<str>, Vec<ClassRef>> = HashMap::new();
         for (file_idx, (_, idx)) in files.iter().enumerate() {
             let file_idx = file_idx as u32;
             for (cls_idx, cls) in idx.classes.iter().enumerate() {
@@ -79,13 +80,13 @@ impl WorkspaceIndexData {
                     .or_default()
                     .push(cr);
                 if let Some(parent) = &cls.parent {
-                    subtypes_of.entry(parent.clone()).or_default().push(cr);
+                    subtypes_of.entry(Arc::clone(parent)).or_default().push(cr);
                 }
                 for iface in &cls.implements {
-                    subtypes_of.entry(iface.clone()).or_default().push(cr);
+                    subtypes_of.entry(Arc::clone(iface)).or_default().push(cr);
                 }
                 for trt in &cls.traits {
-                    subtypes_of.entry(trt.clone()).or_default().push(cr);
+                    subtypes_of.entry(Arc::clone(trt)).or_default().push(cr);
                 }
             }
         }
@@ -148,7 +149,7 @@ pub fn workspace_index(db: &dyn Database, ws: Workspace) -> WorkspaceIndexArc {
     }
 
     let mut classes_by_name: HashMap<String, Vec<ClassRef>> = HashMap::new();
-    let mut subtypes_of: HashMap<String, Vec<ClassRef>> = HashMap::new();
+    let mut subtypes_of: HashMap<Arc<str>, Vec<ClassRef>> = HashMap::new();
 
     for (file_idx, (_, idx)) in files.iter().enumerate() {
         let file_idx = file_idx as u32;
@@ -162,13 +163,13 @@ pub fn workspace_index(db: &dyn Database, ws: Workspace) -> WorkspaceIndexArc {
                 .or_default()
                 .push(cr);
             if let Some(parent) = &cls.parent {
-                subtypes_of.entry(parent.clone()).or_default().push(cr);
+                subtypes_of.entry(Arc::clone(parent)).or_default().push(cr);
             }
             for iface in &cls.implements {
-                subtypes_of.entry(iface.clone()).or_default().push(cr);
+                subtypes_of.entry(Arc::clone(iface)).or_default().push(cr);
             }
             for trt in &cls.traits {
-                subtypes_of.entry(trt.clone()).or_default().push(cr);
+                subtypes_of.entry(Arc::clone(trt)).or_default().push(cr);
             }
         }
     }

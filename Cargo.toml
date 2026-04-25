@@ -36,6 +36,7 @@ dhat-heap = ["dep:dhat"]
 
 [dependencies]
 dhat = { version = "0.3", optional = true }
+mimalloc = { version = "0.1", default-features = false }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 mir-analyzer = "0.7.1"

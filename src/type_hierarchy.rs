@@ -1,4 +1,6 @@
 /// `textDocument/prepareTypeHierarchy`, `typeHierarchy/supertypes`, `typeHierarchy/subtypes`.
+use std::sync::Arc;
+
 use tower_lsp::lsp_types::{Position, SymbolKind, TypeHierarchyItem, Url};
 
 fn line_range(line: u32) -> tower_lsp::lsp_types::Range {
@@ -56,15 +58,15 @@ pub fn supertypes_of_from_workspace(
     wi: &crate::db::workspace_index::WorkspaceIndexData,
 ) -> Vec<TypeHierarchyItem> {
     use crate::file_index::ClassKind;
-    let mut super_names: Vec<String> = Vec::new();
+    let mut super_names: Vec<Arc<str>> = Vec::new();
     if let Some(refs) = wi.classes_by_name.get(&item.name) {
         for r in refs {
             if let Some((_, cls)) = wi.at(*r) {
                 if let Some(p) = &cls.parent {
-                    super_names.push(p.clone());
+                    super_names.push(Arc::clone(p));
                 }
                 for iface in &cls.implements {
-                    super_names.push(iface.clone());
+                    super_names.push(Arc::clone(iface));
                 }
             }
         }
@@ -72,7 +74,7 @@ pub fn supertypes_of_from_workspace(
 
     let mut result = Vec::new();
     for name in super_names {
-        if let Some(refs) = wi.classes_by_name.get(&name)
+        if let Some(refs) = wi.classes_by_name.get(name.as_ref())
             && let Some((uri, cls)) = refs.first().and_then(|r| wi.at(*r))
         {
             let kind = match cls.kind {
@@ -93,7 +95,7 @@ pub fn subtypes_of_from_workspace(
     wi: &crate::db::workspace_index::WorkspaceIndexData,
 ) -> Vec<TypeHierarchyItem> {
     use crate::file_index::ClassKind;
-    let Some(refs) = wi.subtypes_of.get(&item.name) else {
+    let Some(refs) = wi.subtypes_of.get(item.name.as_str()) else {
         return Vec::new();
     };
     refs.iter()

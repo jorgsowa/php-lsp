@@ -8,6 +8,8 @@
 ///
 /// Call [`FileIndex::extract`] right after parsing; the `ParsedDoc` (and its
 /// bumpalo arena) can be dropped immediately after extraction.
+use std::sync::Arc;
+
 use php_ast::{ClassMemberKind, EnumMemberKind, NamespaceBody, Stmt, StmtKind};
 
 use crate::ast::{ParsedDoc, format_type_hint};
@@ -51,9 +53,9 @@ pub struct ClassDef {
     pub kind: ClassKind,
     pub is_abstract: bool,
     /// `extends` clause as written in source (may be short name or FQN).
-    pub parent: Option<String>,
-    pub implements: Vec<String>,
-    pub traits: Vec<String>,
+    pub parent: Option<Arc<str>>,
+    pub implements: Vec<Arc<str>>,
+    pub traits: Vec<Arc<str>>,
     pub methods: Vec<MethodDef>,
     pub properties: Vec<PropertyDef>,
     pub constants: Vec<String>,
@@ -181,11 +183,14 @@ fn collect_stmts(
                     fqn: fqn(ns, class_name),
                     kind: ClassKind::Class,
                     is_abstract: c.modifiers.is_abstract,
-                    parent: c.extends.as_ref().map(|e| e.to_string_repr().into_owned()),
+                    parent: c
+                        .extends
+                        .as_ref()
+                        .map(|e| Arc::from(e.to_string_repr().as_ref())),
                     implements: c
                         .implements
                         .iter()
-                        .map(|i| i.to_string_repr().into_owned())
+                        .map(|i| Arc::from(i.to_string_repr().as_ref()))
                         .collect(),
                     traits: Vec::new(),
                     methods: Vec::new(),
@@ -242,7 +247,9 @@ fn collect_stmts(
                         }
                         ClassMemberKind::TraitUse(tu) => {
                             for t in tu.traits.iter() {
-                                class_def.traits.push(t.to_string_repr().into_owned());
+                                class_def
+                                    .traits
+                                    .push(Arc::from(t.to_string_repr().as_ref()));
                             }
                         }
                     }
@@ -264,7 +271,7 @@ fn collect_stmts(
                     implements: i
                         .extends
                         .iter()
-                        .map(|e| e.to_string_repr().into_owned())
+                        .map(|e| Arc::from(e.to_string_repr().as_ref()))
                         .collect(),
                     traits: Vec::new(),
                     methods: Vec::new(),
@@ -350,7 +357,9 @@ fn collect_stmts(
                         }
                         ClassMemberKind::TraitUse(tu) => {
                             for tr in tu.traits.iter() {
-                                trait_def.traits.push(tr.to_string_repr().into_owned());
+                                trait_def
+                                    .traits
+                                    .push(Arc::from(tr.to_string_repr().as_ref()));
                             }
                         }
                     }
@@ -372,7 +381,7 @@ fn collect_stmts(
                     implements: e
                         .implements
                         .iter()
-                        .map(|i| i.to_string_repr().into_owned())
+                        .map(|i| Arc::from(i.to_string_repr().as_ref()))
                         .collect(),
                     traits: Vec::new(),
                     methods: Vec::new(),
@@ -545,7 +554,7 @@ mod tests {
         let doc = ParsedDoc::parse(src.to_string());
         let idx = FileIndex::extract(&doc);
         let cls = idx.classes.iter().find(|c| c.name == "MyClass").unwrap();
-        assert!(cls.traits.contains(&"T".to_string()));
+        assert!(cls.traits.iter().any(|t| t.as_ref() == "T"));
     }
 
     #[test]
@@ -555,8 +564,8 @@ mod tests {
         let idx = FileIndex::extract(&doc);
         let cls = &idx.classes[0];
         assert_eq!(cls.parent.as_deref(), Some("Animal"));
-        assert!(cls.implements.contains(&"Pet".to_string()));
-        assert!(cls.implements.contains(&"Movable".to_string()));
+        assert!(cls.implements.iter().any(|i| i.as_ref() == "Pet"));
+        assert!(cls.implements.iter().any(|i| i.as_ref() == "Movable"));
     }
 
     #[test]

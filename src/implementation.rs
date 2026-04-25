@@ -69,7 +69,7 @@ pub fn find_implementations_from_workspace(
                     let implements_match = cls
                         .implements
                         .iter()
-                        .any(|iface| name_matches(iface, word, fqn));
+                        .any(|iface| name_matches(iface.as_ref(), word, fqn));
                     if extends_match || implements_match {
                         let pos = tower_lsp::lsp_types::Position {
                             line: cls.start_line,
