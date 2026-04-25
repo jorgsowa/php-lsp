@@ -824,6 +824,40 @@ impl TestServer {
     /// The handler runs asynchronously and indexes files before calling
     /// `send_refresh_requests`. Use `workspace_symbols` in a polling loop to
     /// confirm the effect has landed.
+    /// Send `workspace/didRenameFiles` notification.
+    pub async fn did_rename_files(&mut self, renames: Vec<(String, String)>) {
+        let files: Vec<Value> = renames
+            .into_iter()
+            .map(|(old, new)| json!({ "oldUri": old, "newUri": new }))
+            .collect();
+        self.client
+            .notify("workspace/didRenameFiles", json!({ "files": files }))
+            .await;
+    }
+
+    /// Send `workspace/didCreateFiles` notification.
+    pub async fn did_create_files(&mut self, uris: Vec<String>) {
+        let files: Vec<Value> = uris.into_iter().map(|u| json!({ "uri": u })).collect();
+        self.client
+            .notify("workspace/didCreateFiles", json!({ "files": files }))
+            .await;
+    }
+
+    /// Send `workspace/didDeleteFiles` notification and wait for the
+    /// publishDiagnostics the server sends to clear each deleted file.
+    pub async fn did_delete_files(&mut self, uris: Vec<String>) -> Vec<Value> {
+        let cloned = uris.clone();
+        let files: Vec<Value> = uris.into_iter().map(|u| json!({ "uri": u })).collect();
+        self.client
+            .notify("workspace/didDeleteFiles", json!({ "files": files }))
+            .await;
+        let mut results = Vec::new();
+        for uri in &cloned {
+            results.push(self.client.wait_for_diagnostics(uri).await);
+        }
+        results
+    }
+
     pub async fn did_change_watched_files(&mut self, changes: Vec<(String, u32)>) {
         let changes_json: Vec<Value> = changes
             .into_iter()
