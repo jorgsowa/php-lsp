@@ -64,7 +64,7 @@ tempfile = "3"
 expect-test = "1"
 indexmap = "2"
 criterion = { version = "0.8", features = ["html_reports"] }
-iai-callgrind = "0.14"
+iai-callgrind = "0.16"
 
 [[bench]]
 name = "iai_critical"
