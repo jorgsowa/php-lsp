@@ -185,6 +185,8 @@ impl TestServer {
             let full = root.join(path);
             Url::from_file_path(full).unwrap().to_string()
         } else {
+            // Do NOT use Url::from_file_path here — it rejects paths like
+            // "/a.php" on Windows (no drive letter) and panics on unwrap().
             format!("file:///{path}")
         }
     }
