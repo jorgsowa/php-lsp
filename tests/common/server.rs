@@ -178,15 +178,14 @@ impl TestServer {
     }
 
     /// Build a `file://` URI from a short path. If the server has a root, the
-    /// path is resolved relative to it; otherwise it's anchored at `/` so the
-    /// resulting URI is still absolute (e.g. `"a.php"` → `"file:///a.php"`).
+    /// path is resolved relative to it; otherwise it's anchored at a synthetic
+    /// absolute URI (e.g. `"a.php"` → `"file:///a.php"`).
     pub fn uri(&self, path: &str) -> String {
         if let Some(root) = &self.root {
             let full = root.join(path);
             Url::from_file_path(full).unwrap().to_string()
         } else {
-            let full = std::path::Path::new("/").join(path);
-            Url::from_file_path(full).unwrap().to_string()
+            format!("file:///{path}")
         }
     }
 
