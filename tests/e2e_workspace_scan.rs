@@ -138,3 +138,120 @@ async fn exclude_paths_honored_by_workspace_scan() {
         "User is NOT excluded — must still appear in workspace symbols, got: {symbols:?}"
     );
 }
+
+/// `excludePaths` set in `.php-lsp.json` must be honored by the workspace scan,
+/// even when no `initializationOptions` are provided by the editor.
+#[tokio::test]
+async fn php_lsp_json_exclude_paths_honored() {
+    // Copy psr4-mini into a temp dir and add .php-lsp.json before the server starts.
+    let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let source = manifest_dir.join("tests/fixtures/psr4-mini");
+    let tmp = tempfile::tempdir().expect("create TempDir");
+    // Copy the fixture.
+    fn copy_dir(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
+        std::fs::create_dir_all(dst)?;
+        for e in std::fs::read_dir(src)? {
+            let e = e?;
+            let to = dst.join(e.file_name());
+            if e.file_type()?.is_dir() {
+                copy_dir(&e.path(), &to)?;
+            } else {
+                std::fs::copy(e.path(), to)?;
+            }
+        }
+        Ok(())
+    }
+    copy_dir(&source, tmp.path()).unwrap();
+    // Write .php-lsp.json that excludes src/Service/*.
+    std::fs::write(
+        tmp.path().join(".php-lsp.json"),
+        r#"{"excludePaths": ["src/Service/*"]}"#,
+    )
+    .unwrap();
+
+    let mut server = TestServer::with_root(tmp.path()).await;
+    server.wait_for_index_ready().await;
+
+    // Greeter lives in src/Service — must not appear.
+    let resp = server.workspace_symbols("Greeter").await;
+    let symbols = resp["result"].as_array().cloned().unwrap_or_default();
+    assert!(
+        !symbols.iter().any(|s| s["location"]["uri"]
+            .as_str()
+            .map(|u| u.ends_with("src/Service/Greeter.php"))
+            .unwrap_or(false)),
+        "Greeter is excluded via .php-lsp.json — must not be indexed, got: {symbols:?}"
+    );
+
+    // User lives in src/Model — must still appear.
+    let resp = server.workspace_symbols("User").await;
+    let symbols = resp["result"].as_array().cloned().unwrap_or_default();
+    assert!(
+        symbols.iter().any(|s| s["location"]["uri"]
+            .as_str()
+            .map(|u| u.ends_with("src/Model/User.php"))
+            .unwrap_or(false)),
+        "User is not excluded — must still be indexed, got: {symbols:?}"
+    );
+}
+
+/// `excludePaths` from `.php-lsp.json` and from `initializationOptions` must
+/// be concatenated (not replaced): both sources of exclusions must apply.
+#[tokio::test]
+async fn php_lsp_json_exclude_paths_concat_with_editor() {
+    let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let source = manifest_dir.join("tests/fixtures/psr4-mini");
+    let tmp = tempfile::tempdir().expect("create TempDir");
+    fn copy_dir(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
+        std::fs::create_dir_all(dst)?;
+        for e in std::fs::read_dir(src)? {
+            let e = e?;
+            let to = dst.join(e.file_name());
+            if e.file_type()?.is_dir() {
+                copy_dir(&e.path(), &to)?;
+            } else {
+                std::fs::copy(e.path(), to)?;
+            }
+        }
+        Ok(())
+    }
+    copy_dir(&source, tmp.path()).unwrap();
+    // File excludes src/Service; editor excludes src/Model.
+    std::fs::write(
+        tmp.path().join(".php-lsp.json"),
+        r#"{"excludePaths": ["src/Service/*"]}"#,
+    )
+    .unwrap();
+
+    let mut server = TestServer::with_root_and_options(
+        tmp.path(),
+        json!({
+            "diagnostics": { "enabled": true },
+            "excludePaths": ["src/Model/*"],
+        }),
+    )
+    .await;
+    server.wait_for_index_ready().await;
+
+    // Greeter (src/Service) must not appear.
+    let resp = server.workspace_symbols("Greeter").await;
+    let symbols = resp["result"].as_array().cloned().unwrap_or_default();
+    assert!(
+        !symbols.iter().any(|s| s["location"]["uri"]
+            .as_str()
+            .map(|u| u.ends_with("src/Service/Greeter.php"))
+            .unwrap_or(false)),
+        "Greeter excluded via .php-lsp.json, got: {symbols:?}"
+    );
+
+    // User (src/Model) must not appear either.
+    let resp = server.workspace_symbols("User").await;
+    let symbols = resp["result"].as_array().cloned().unwrap_or_default();
+    assert!(
+        !symbols.iter().any(|s| s["location"]["uri"]
+            .as_str()
+            .map(|u| u.ends_with("src/Model/User.php"))
+            .unwrap_or(false)),
+        "User excluded via initializationOptions, got: {symbols:?}"
+    );
+}

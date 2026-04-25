@@ -199,15 +199,39 @@ pub fn detect_php_require_version_from_composer(root: &Path) -> Option<String> {
     parse_php_version_constraint(constraint)
 }
 
+/// Load `.php-lsp.json` from the first workspace root that contains one.
+///
+/// Returns `None` if no root has the file or the file contains invalid JSON
+/// (the caller should log a warning in that case and proceed with defaults).
+pub fn load_project_config_json(roots: &[PathBuf]) -> Option<serde_json::Value> {
+    for root in roots {
+        let path = root.join(".php-lsp.json");
+        let text = match std::fs::read_to_string(&path) {
+            Ok(t) => t,
+            Err(_) => continue,
+        };
+        return match serde_json::from_str(&text) {
+            Ok(v) => Some(v),
+            Err(_) => {
+                // Signal parse failure by returning an explicit null so the
+                // caller can distinguish "file not found" from "file corrupt".
+                Some(serde_json::Value::Null)
+            }
+        };
+    }
+    None
+}
+
 /// Resolve the PHP version to use, in priority order:
 ///
 /// 1. `explicit` — set by the client via `initializationOptions` or
 ///    `workspace/configuration` (highest priority).
-/// 2. `config.platform.php` in `composer.json` — explicit project-level override.
-/// 3. `php --version` — actual runtime on the machine (or inside the container
+/// 2. `phpVersion` in `.php-lsp.json` at the workspace root.
+/// 3. `config.platform.php` in `composer.json` — explicit project-level override.
+/// 4. `php --version` — actual runtime on the machine (or inside the container
 ///    when the LSP server runs there).
-/// 4. `require.php` in `composer.json` — compatibility range, last resort.
-/// 5. `PHP_8_5` — server default.
+/// 5. `require.php` in `composer.json` — compatibility range, last resort.
+/// 6. `PHP_8_5` — server default.
 ///
 /// Returns `(version, source)` so the caller can log where the version came from.
 pub fn resolve_php_version_from_roots(
@@ -216,6 +240,14 @@ pub fn resolve_php_version_from_roots(
 ) -> (String, &'static str) {
     if let Some(ver) = explicit {
         return (ver.to_string(), "set by editor");
+    }
+    // .php-lsp.json phpVersion (valid versions only; invalid ones are ignored here,
+    // the caller logs a warning via load_project_config_json).
+    if let Some(serde_json::Value::Object(obj)) = load_project_config_json(roots)
+        && let Some(ver) = obj.get("phpVersion").and_then(|v| v.as_str())
+        && is_valid_php_version(ver)
+    {
+        return (ver.to_string(), ".php-lsp.json");
     }
     if let Some(ver) = roots
         .iter()
@@ -695,5 +727,66 @@ mod tests {
             Some("5.6".to_string())
         );
         assert!(!is_valid_php_version("5.6"));
+    }
+
+    // --- .php-lsp.json ---
+
+    #[test]
+    fn project_config_beats_composer_platform() {
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            &dir.path().join("composer.json"),
+            r#"{"config": {"platform": {"php": "8.0.0"}}}"#,
+        );
+        write(
+            &dir.path().join(".php-lsp.json"),
+            r#"{"phpVersion": "8.3"}"#,
+        );
+        let (ver, source) = resolve_php_version_from_roots(&[dir.path().to_path_buf()], None);
+        assert_eq!(ver, PHP_8_3);
+        assert_eq!(source, ".php-lsp.json");
+    }
+
+    #[test]
+    fn editor_explicit_beats_project_config() {
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            &dir.path().join(".php-lsp.json"),
+            r#"{"phpVersion": "8.1"}"#,
+        );
+        let (ver, source) =
+            resolve_php_version_from_roots(&[dir.path().to_path_buf()], Some("8.4"));
+        assert_eq!(ver, PHP_8_4);
+        assert_eq!(source, "set by editor");
+    }
+
+    #[test]
+    fn project_config_invalid_php_version_is_ignored() {
+        // An unrecognised phpVersion in .php-lsp.json should be skipped; the
+        // cascade falls through to composer / binary / default.
+        let dir = tempfile::tempdir().unwrap();
+        write(
+            &dir.path().join(".php-lsp.json"),
+            r#"{"phpVersion": "5.3"}"#,
+        );
+        let (ver, source) = resolve_php_version_from_roots(&[dir.path().to_path_buf()], None);
+        // Falls through to binary or default; the version is not "5.3".
+        assert_ne!(ver, "5.3");
+        assert_ne!(source, ".php-lsp.json");
+    }
+
+    #[test]
+    fn load_project_config_json_returns_null_for_invalid_json() {
+        let dir = tempfile::tempdir().unwrap();
+        write(&dir.path().join(".php-lsp.json"), "not json {{{");
+        let result = load_project_config_json(&[dir.path().to_path_buf()]);
+        assert!(matches!(result, Some(serde_json::Value::Null)));
+    }
+
+    #[test]
+    fn load_project_config_json_returns_none_when_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        let result = load_project_config_json(&[dir.path().to_path_buf()]);
+        assert!(result.is_none());
     }
 }

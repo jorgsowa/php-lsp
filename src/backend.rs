@@ -172,6 +172,45 @@ impl Default for LspConfig {
 }
 
 impl LspConfig {
+    /// Merge a `.php-lsp.json` value with editor `initializationOptions` /
+    /// `workspace/configuration`. Editor settings win per-key; `excludePaths`
+    /// arrays are **concatenated** (file entries first, editor entries appended)
+    /// rather than replaced, since exclusion patterns are additive.
+    ///
+    /// Hot-reload of `.php-lsp.json` on file change is not supported; the file
+    /// is only read during `initialize` and `did_change_configuration`.
+    pub fn merge_project_configs(
+        file: Option<&serde_json::Value>,
+        editor: Option<&serde_json::Value>,
+    ) -> serde_json::Value {
+        let mut merged = file
+            .cloned()
+            .unwrap_or(serde_json::Value::Object(Default::default()));
+        let Some(editor_obj) = editor.and_then(|e| e.as_object()) else {
+            return merged;
+        };
+        let merged_obj = merged
+            .as_object_mut()
+            .expect("merged base is always an object");
+        for (key, val) in editor_obj {
+            if key == "excludePaths" {
+                let file_arr = merged_obj
+                    .get("excludePaths")
+                    .and_then(|v| v.as_array())
+                    .cloned()
+                    .unwrap_or_default();
+                let editor_arr = val.as_array().cloned().unwrap_or_default();
+                merged_obj.insert(
+                    key.clone(),
+                    serde_json::Value::Array([file_arr, editor_arr].concat()),
+                );
+            } else {
+                merged_obj.insert(key.clone(), val.clone());
+            }
+        }
+        merged
+    }
+
     fn from_value(v: &serde_json::Value) -> Self {
         let mut cfg = LspConfig::default();
         if let Some(ver) = v.get("phpVersion").and_then(|x| x.as_str())
@@ -409,10 +448,40 @@ impl LanguageServer for Backend {
             *self.root_paths.write().unwrap() = roots;
         }
 
-        // Parse initializationOptions if provided by the client.
+        // Parse initializationOptions merged with .php-lsp.json (editor wins per-key).
         {
             let opts = params.initialization_options.as_ref();
-            let mut cfg = opts.map(LspConfig::from_value).unwrap_or_default();
+            let roots = self.root_paths.read().unwrap().clone();
+
+            // Load .php-lsp.json from the workspace root (first root wins).
+            let file_cfg = crate::autoload::load_project_config_json(&roots);
+
+            // Warn if the file exists but is not valid JSON (Null sentinel).
+            if matches!(file_cfg, Some(serde_json::Value::Null)) {
+                self.client
+                    .log_message(
+                        tower_lsp::lsp_types::MessageType::WARNING,
+                        "php-lsp: .php-lsp.json contains invalid JSON — ignoring",
+                    )
+                    .await;
+            }
+
+            // Warn if .php-lsp.json contains an unrecognised phpVersion.
+            if let Some(serde_json::Value::Object(ref obj)) = file_cfg
+                && let Some(ver) = obj.get("phpVersion").and_then(|v| v.as_str())
+                && !crate::autoload::is_valid_php_version(ver)
+            {
+                self.client
+                    .log_message(
+                        tower_lsp::lsp_types::MessageType::WARNING,
+                        format!(
+                            "php-lsp: .php-lsp.json unsupported phpVersion {ver:?} — valid values: {}",
+                            crate::autoload::SUPPORTED_PHP_VERSIONS.join(", ")
+                        ),
+                    )
+                    .await;
+            }
+
             // Warn if the client supplied an unrecognised phpVersion.
             if let Some(ver) = opts
                 .and_then(|o| o.get("phpVersion"))
@@ -429,7 +498,17 @@ impl LanguageServer for Backend {
                     )
                     .await;
             }
+
+            // Merge: file config is the base; editor initializationOptions override per-key.
+            // excludePaths arrays are concatenated rather than replaced.
+            let file_obj = file_cfg.as_ref().filter(|v| v.is_object());
+            let merged = LspConfig::merge_project_configs(file_obj, opts);
+            let mut cfg = LspConfig::from_value(&merged);
+
             // Resolve the PHP version and log what was chosen and why.
+            // phpVersion from initializationOptions is already in cfg.php_version (editor wins).
+            // If neither editor nor .php-lsp.json set it, resolve_php_version falls through
+            // to composer.json / php binary / default.
             let (ver, source) = self.resolve_php_version(cfg.php_version.as_deref());
             self.client
                 .log_message(
@@ -733,7 +812,12 @@ impl LanguageServer for Backend {
         if let Ok(values) = self.client.configuration(items).await
             && let Some(value) = values.into_iter().next()
         {
-            let mut cfg = LspConfig::from_value(&value);
+            let roots = self.root_paths.read().unwrap().clone();
+
+            // Re-read .php-lsp.json so a user who edits the file and then
+            // triggers a configuration reload picks up the latest values.
+            let file_cfg = crate::autoload::load_project_config_json(&roots);
+
             if let Some(ver) = value.get("phpVersion").and_then(|v| v.as_str())
                 && !crate::autoload::is_valid_php_version(ver)
             {
@@ -747,6 +831,11 @@ impl LanguageServer for Backend {
                     )
                     .await;
             }
+
+            let file_obj = file_cfg.as_ref().filter(|v| v.is_object());
+            let merged = LspConfig::merge_project_configs(file_obj, Some(&value));
+            let mut cfg = LspConfig::from_value(&merged);
+
             // Resolve the PHP version and log what was chosen and why.
             let (ver, source) = self.resolve_php_version(cfg.php_version.as_deref());
             self.client
@@ -3501,5 +3590,68 @@ mod tests {
             ),
             "method in braced namespace must be detected"
         );
+    }
+
+    // --- LspConfig::merge_project_configs ---
+
+    #[test]
+    fn merge_file_only_uses_file_values() {
+        let file = serde_json::json!({
+            "phpVersion": "8.1",
+            "excludePaths": ["vendor/*"],
+            "maxIndexedFiles": 500,
+        });
+        let merged = LspConfig::merge_project_configs(Some(&file), None);
+        let cfg = LspConfig::from_value(&merged);
+        assert_eq!(cfg.php_version, Some("8.1".to_string()));
+        assert_eq!(cfg.exclude_paths, vec!["vendor/*"]);
+        assert_eq!(cfg.max_indexed_files, 500);
+    }
+
+    #[test]
+    fn merge_editor_wins_per_key_over_file() {
+        let file = serde_json::json!({"phpVersion": "8.1", "maxIndexedFiles": 100});
+        let editor = serde_json::json!({"phpVersion": "8.3", "maxIndexedFiles": 200});
+        let merged = LspConfig::merge_project_configs(Some(&file), Some(&editor));
+        let cfg = LspConfig::from_value(&merged);
+        assert_eq!(cfg.php_version, Some("8.3".to_string()));
+        assert_eq!(cfg.max_indexed_files, 200);
+    }
+
+    #[test]
+    fn merge_exclude_paths_concat_not_replace() {
+        let file = serde_json::json!({"excludePaths": ["cache/*"]});
+        let editor = serde_json::json!({"excludePaths": ["logs/*"]});
+        let merged = LspConfig::merge_project_configs(Some(&file), Some(&editor));
+        let cfg = LspConfig::from_value(&merged);
+        // File entries come first, editor entries appended.
+        assert_eq!(cfg.exclude_paths, vec!["cache/*", "logs/*"]);
+    }
+
+    #[test]
+    fn merge_no_file_uses_editor_only() {
+        let editor = serde_json::json!({"phpVersion": "8.2", "excludePaths": ["tmp/*"]});
+        let merged = LspConfig::merge_project_configs(None, Some(&editor));
+        let cfg = LspConfig::from_value(&merged);
+        assert_eq!(cfg.php_version, Some("8.2".to_string()));
+        assert_eq!(cfg.exclude_paths, vec!["tmp/*"]);
+    }
+
+    #[test]
+    fn merge_both_none_returns_defaults() {
+        let merged = LspConfig::merge_project_configs(None, None);
+        let cfg = LspConfig::from_value(&merged);
+        assert!(cfg.php_version.is_none());
+        assert!(cfg.exclude_paths.is_empty());
+        assert_eq!(cfg.max_indexed_files, MAX_INDEXED_FILES);
+    }
+
+    #[test]
+    fn merge_file_editor_both_have_exclude_paths_all_present() {
+        let file = serde_json::json!({"excludePaths": ["a/*", "b/*"]});
+        let editor = serde_json::json!({"excludePaths": ["c/*"]});
+        let merged = LspConfig::merge_project_configs(Some(&file), Some(&editor));
+        let cfg = LspConfig::from_value(&merged);
+        assert_eq!(cfg.exclude_paths, vec!["a/*", "b/*", "c/*"]);
     }
 }

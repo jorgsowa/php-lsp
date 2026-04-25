@@ -752,6 +752,48 @@ impl TestServer {
         .await
     }
 
+    /// Send `textDocument/didClose` notification.
+    pub async fn close(&mut self, path: &str) {
+        let uri = self.uri(path);
+        self.client
+            .notify(
+                "textDocument/didClose",
+                json!({
+                    "textDocument": { "uri": uri }
+                }),
+            )
+            .await;
+    }
+
+    /// Send `textDocument/didSave` notification and wait for the
+    /// publishDiagnostics the server emits in response.
+    pub async fn save(&mut self, path: &str) -> Value {
+        let uri = self.uri(path);
+        self.client
+            .notify(
+                "textDocument/didSave",
+                json!({
+                    "textDocument": { "uri": uri }
+                }),
+            )
+            .await;
+        self.client.wait_for_diagnostics(&uri).await
+    }
+
+    /// Send `textDocument/willSaveWaitUntil` request and return the response.
+    pub async fn will_save_wait_until(&mut self, path: &str) -> Value {
+        let uri = self.uri(path);
+        self.client
+            .request(
+                "textDocument/willSaveWaitUntil",
+                json!({
+                    "textDocument": { "uri": uri },
+                    "reason": 1
+                }),
+            )
+            .await
+    }
+
     pub async fn will_rename_files(&mut self, renames: Vec<(String, String)>) -> Value {
         let files: Vec<Value> = renames
             .into_iter()
