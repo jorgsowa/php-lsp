@@ -2914,7 +2914,9 @@ async fn scan_workspace(
         };
         while let Ok(Some(entry)) = entries.next_entry().await {
             let path = entry.path();
-            let path_str = path.to_string_lossy();
+            // Normalize to forward slashes so patterns like "src/Service/*"
+            // match on Windows where paths use backslashes.
+            let path_str = path.to_string_lossy().replace('\\', "/");
             // Check user-configured exclude patterns (simple substring/prefix match).
             if exclude_paths.iter().any(|pat| {
                 let p = pat.trim_end_matches('*').trim_end_matches('/');
