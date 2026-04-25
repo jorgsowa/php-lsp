@@ -391,6 +391,7 @@ impl DocumentStore {
         let ws = self.workspace;
         let key = key.to_string();
         self.snapshot_query(move |db| {
+            warm_file_refs_parallel(db, ws);
             crate::db::refs::symbol_refs(db, ws, key.clone())
                 .0
                 .as_ref()
@@ -421,14 +422,13 @@ impl DocumentStore {
     /// subsequent `textDocument/references` / `prepare_rename` / call-hierarchy
     /// lookups hit the memo instead of paying first-call latency.
     ///
-    /// Implemented by asking `symbol_refs` for a sentinel key that no real
-    /// symbol matches — the query still iterates every file's `file_refs`
-    /// and populates salsa's memo along the way, but the returned `Vec` is
-    /// empty and discarded.
+    /// Uses parallel warming (`warm_file_refs_parallel`) so all `file_refs`
+    /// complete concurrently; `symbol_refs` then only aggregates memos.
     pub fn warm_reference_index(&self) {
         self.sync_workspace_files();
         let ws = self.workspace;
         let _ = self.snapshot_query(move |db| {
+            warm_file_refs_parallel(db, ws);
             crate::db::refs::symbol_refs(db, ws, String::from("__phplsp_warmup__"))
                 .0
                 .clone()
@@ -577,6 +577,39 @@ impl DocumentStore {
             .filter_map(|u| self.get_doc_salsa(&u).map(|d| (u, d)))
             .collect()
     }
+}
+
+/// Run `file_refs` for every workspace file in parallel.
+///
+/// `db` clones are cheap (they share the same `Arc<Zalsa>` memo store), so
+/// results computed on any clone are immediately visible to all others at the
+/// same revision.  After this returns, the sequential loop inside `symbol_refs`
+/// only does cheap memo lookups instead of running `StatementsAnalyzer` on
+/// every file one-by-one.
+///
+/// Per-task `salsa::Cancelled` is caught and swallowed: any files that didn't
+/// finish are recomputed sequentially inside `symbol_refs` as a fallback.  The
+/// outer `snapshot_query` retry loop handles whole-revision cancellation.
+fn warm_file_refs_parallel(
+    db: &crate::db::analysis::RootDatabase,
+    ws: crate::db::input::Workspace,
+) {
+    let files: Vec<_> = ws.files(db).iter().copied().collect();
+    // Pre-clone one snapshot per file before entering the scope.
+    // RootDatabase: Send (ZalsaLocal owns its RefCell; Arc<Zalsa> is Sync),
+    // but RootDatabase: !Sync, so we must avoid sharing &RootDatabase across
+    // threads.  Collecting owned clones first and moving each into its task
+    // requires only Send, not Sync.
+    let snaps: Vec<crate::db::analysis::RootDatabase> = files.iter().map(|_| db.clone()).collect();
+    rayon::scope(move |s| {
+        for (sf, snap) in files.into_iter().zip(snaps) {
+            s.spawn(move |_| {
+                let _ = salsa::Cancelled::catch(std::panic::AssertUnwindSafe(|| {
+                    crate::db::refs::file_refs(&snap, ws, sf);
+                }));
+            });
+        }
+    });
 }
 
 #[cfg(test)]
@@ -984,5 +1017,87 @@ mod tests {
             refs_to_a.iter().any(|(uri, _, _)| uri.contains("wb.php")),
             "reference to a() from /wb.php should be discoverable after warm-up, got {refs_to_a:?}"
         );
+    }
+
+    /// Parallel warm must find exactly the right number of call sites across
+    /// many files — enough that the rayon thread pool actually distributes
+    /// work across multiple threads.  A lost file or a duplicated memo entry
+    /// would show up as a wrong count here.
+    #[test]
+    fn parallel_warm_finds_all_references_across_many_files() {
+        let store = DocumentStore::new();
+        let caller_count = 15usize;
+        let bystander_count = 5usize;
+        // One file defines the function.
+        open(
+            &store,
+            uri("/def.php"),
+            "<?php\nfunction target(): void {}".to_string(),
+        );
+        // `caller_count` files call it.
+        for i in 0..caller_count {
+            open(
+                &store,
+                uri(&format!("/caller_{i}.php")),
+                "<?php\ntarget();".to_string(),
+            );
+        }
+        // `bystander_count` files contain unrelated code.
+        for i in 0..bystander_count {
+            open(
+                &store,
+                uri(&format!("/other_{i}.php")),
+                format!("<?php\nfunction other_{i}() {{}}"),
+            );
+        }
+
+        let refs = store.get_symbol_refs_salsa("target");
+        assert_eq!(
+            refs.len(),
+            caller_count,
+            "expected {caller_count} references, got {}: {:?}",
+            refs.len(),
+            refs.iter().map(|(u, _, _)| u.as_ref()).collect::<Vec<_>>()
+        );
+    }
+
+    /// After `warm_file_refs_parallel` runs, `file_refs` for each workspace
+    /// file must return a memoized `Arc` — proven by `Arc::ptr_eq` on two
+    /// consecutive calls within the same revision.  If the parallel warm
+    /// failed to populate the memo, the first call here would compute from
+    /// scratch and the second call would still be a fresh allocation (salsa
+    /// would detect no prior entry).
+    #[test]
+    fn parallel_warm_memos_are_visible_to_subsequent_file_refs_calls() {
+        let store = DocumentStore::new();
+        open(
+            &store,
+            uri("/pm_a.php"),
+            "<?php\nfunction foo(): void {}".to_string(),
+        );
+        open(&store, uri("/pm_b.php"), "<?php\nfoo();".to_string());
+        open(&store, uri("/pm_c.php"), "<?php\nfoo(); foo();".to_string());
+        store.sync_workspace_files();
+
+        let ws = store.workspace;
+        let db = store.snapshot_db();
+        warm_file_refs_parallel(&db, ws);
+
+        // For every file in the workspace the second file_refs call must
+        // return the same Arc as the first (memo hit, not a fresh run).
+        let files: Vec<_> = ws.files(&db).iter().copied().collect();
+        assert!(
+            !files.is_empty(),
+            "workspace must be non-empty for this test"
+        );
+        for sf in files {
+            let r1 = crate::db::refs::file_refs(&db, ws, sf);
+            let r2 = crate::db::refs::file_refs(&db, ws, sf);
+            assert!(
+                std::sync::Arc::ptr_eq(&r1.0, &r2.0),
+                "file_refs for {} should be memoized after parallel warm",
+                sf.uri(&db)
+            );
+        }
     }
 }
