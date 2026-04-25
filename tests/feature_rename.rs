@@ -3,6 +3,7 @@
 mod common;
 
 use common::TestServer;
+use expect_test::expect;
 
 #[tokio::test]
 async fn prepare_rename_on_identifier() {
@@ -14,10 +15,7 @@ function gre$0et(): void {}
 "#,
         )
         .await;
-    assert!(
-        !out.contains("<not renameable>"),
-        "expected a valid prepare-rename range: {out}"
-    );
+    expect!["1:9-1:14"].assert_eq(&out);
 }
 
 #[tokio::test]
@@ -33,7 +31,12 @@ greet();
             "salute",
         )
         .await;
-    assert!(out.contains("salute"), "expected 'salute' in edit: {out}");
+    expect![[r#"
+        // main.php
+        1:9-1:14 → "salute"
+        2:0-2:5 → "salute"
+        3:0-3:5 → "salute""#]]
+    .assert_eq(&out);
 }
 
 #[tokio::test]
@@ -51,7 +54,11 @@ $g->hello();
             "salute",
         )
         .await;
-    assert!(out.contains("salute"), "expected 'salute': {out}");
+    expect![[r#"
+        // main.php
+        2:20-2:25 → "salute"
+        5:4-5:9 → "salute""#]]
+    .assert_eq(&out);
 }
 
 #[tokio::test]
@@ -67,5 +74,10 @@ $b = new Widget();
             "Gadget",
         )
         .await;
-    assert!(out.contains("Gadget"));
+    expect![[r#"
+        // main.php
+        1:6-1:12 → "Gadget"
+        2:9-2:15 → "Gadget"
+        3:9-3:15 → "Gadget""#]]
+    .assert_eq(&out);
 }

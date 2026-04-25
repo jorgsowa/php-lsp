@@ -19,10 +19,12 @@ function top_level(): void {}
 "#,
         )
         .await;
-    assert!(out.contains("Greeter"));
-    assert!(out.contains("hello"));
-    assert!(out.contains("bye"));
-    assert!(out.contains("top_level"));
+    expect![[r#"
+        Class Greeter @L1
+          Method hello @L2
+          Method bye @L3
+        Function top_level @L5"#]]
+    .assert_eq(&out);
 }
 
 #[tokio::test]
@@ -38,7 +40,11 @@ enum Status {
 "#,
         )
         .await;
-    assert!(out.contains("Status"));
+    expect![[r#"
+        Enum Status @L1
+          EnumMember Active @L2
+          EnumMember Inactive @L3"#]]
+    .assert_eq(&out);
 }
 
 #[ignore = "php-lsp gap: interface method declarations missing from document symbols"]
@@ -54,8 +60,7 @@ interface Writable {
 "#,
         )
         .await;
-    assert!(out.contains("Writable"));
-    assert!(out.contains("write"));
+    expect![""].assert_eq(&out);
 }
 
 #[tokio::test]
@@ -70,8 +75,5 @@ function abracadabra(): void {}
             "MagicReg",
         )
         .await;
-    assert!(
-        out.contains("MagicRegistry"),
-        "expected MagicRegistry in workspace symbols, got: {out}"
-    );
+    expect!["Class       MagicRegistry @ main.php:1"].assert_eq(&out);
 }

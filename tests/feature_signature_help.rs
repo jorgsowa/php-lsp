@@ -1,6 +1,7 @@
 mod common;
 
 use common::TestServer;
+use expect_test::expect;
 
 #[tokio::test]
 async fn signature_help_at_first_arg() {
@@ -13,8 +14,7 @@ greet($0);
 "#,
         )
         .await;
-    assert!(out.contains("greet"), "expected signature: {out}");
-    assert!(out.contains("@param0"), "expected @param0 active: {out}");
+    expect!["▶ greet(string $name, int $count = 1)  @param0"].assert_eq(&out);
 }
 
 #[tokio::test]
@@ -28,7 +28,7 @@ greet('x', $0);
 "#,
         )
         .await;
-    assert!(out.contains("@param1"), "expected @param1 active: {out}");
+    expect!["▶ greet(string $name, int $count = 1)  @param1"].assert_eq(&out);
 }
 
 #[tokio::test]
@@ -45,5 +45,5 @@ $g->hello($0);
 "#,
         )
         .await;
-    assert!(out.contains("hello"), "expected method sig: {out}");
+    expect!["▶ hello(string $name)  @param0"].assert_eq(&out);
 }

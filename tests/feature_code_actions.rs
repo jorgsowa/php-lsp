@@ -4,6 +4,7 @@
 mod common;
 
 use common::TestServer;
+use expect_test::expect;
 
 #[tokio::test]
 async fn code_actions_offers_generate_constructor() {
@@ -18,10 +19,11 @@ class U$0ser$0 {
 "#,
         )
         .await;
-    assert!(
-        out.contains("Generate constructor"),
-        "expected 'Generate constructor' in: {out}"
-    );
+    expect![[r#"
+        refactor         Generate 4 getters/setters
+        refactor         Generate constructor
+        refactor.extract Extract variable"#]]
+    .assert_eq(&out);
 }
 
 #[tokio::test]
@@ -36,10 +38,7 @@ function f(): int {
 "#,
         )
         .await;
-    assert!(
-        out.contains("Extract variable"),
-        "expected 'Extract variable' in: {out}"
-    );
+    expect!["refactor.extract Extract variable"].assert_eq(&out);
 }
 
 #[tokio::test]
@@ -53,8 +52,8 @@ class $0My$0 implements Writable {}
 "#,
         )
         .await;
-    assert!(
-        out.contains("Implement missing method"),
-        "expected 'Implement missing method' in: {out}"
-    );
+    expect![[r#"
+        quickfix         Implement missing method
+        refactor.extract Extract variable"#]]
+    .assert_eq(&out);
 }
