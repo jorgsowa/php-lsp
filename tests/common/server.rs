@@ -860,6 +860,34 @@ impl TestServer {
         results
     }
 
+    pub async fn add_workspace_folder(&mut self, folder_uri: &str) {
+        self.client
+            .notify(
+                "workspace/didChangeWorkspaceFolders",
+                json!({
+                    "event": {
+                        "added": [{ "uri": folder_uri, "name": folder_uri }],
+                        "removed": [],
+                    }
+                }),
+            )
+            .await;
+    }
+
+    pub async fn remove_workspace_folder(&mut self, folder_uri: &str) {
+        self.client
+            .notify(
+                "workspace/didChangeWorkspaceFolders",
+                json!({
+                    "event": {
+                        "added": [],
+                        "removed": [{ "uri": folder_uri, "name": folder_uri }],
+                    }
+                }),
+            )
+            .await;
+    }
+
     pub async fn did_change_watched_files(&mut self, changes: Vec<(String, u32)>) {
         let changes_json: Vec<Value> = changes
             .into_iter()
