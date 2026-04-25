@@ -39,7 +39,9 @@ use crate::file_rename::{use_edits_for_delete, use_edits_for_rename};
 use crate::folding::folding_ranges;
 use crate::formatting::{format_document, format_range};
 use crate::generate_action::{generate_constructor_actions, generate_getters_setters_actions};
-use crate::hover::{docs_for_symbol_from_index, hover_info, signature_for_symbol_from_index};
+use crate::hover::{
+    class_hover_from_index, docs_for_symbol_from_index, hover_info, signature_for_symbol_from_index,
+};
 use crate::implement_action::implement_missing_actions;
 use crate::implementation::{find_implementations, find_implementations_from_workspace};
 use crate::inlay_hints::inlay_hints;
@@ -1312,13 +1314,20 @@ impl LanguageServer for Backend {
             .get_method_returns_salsa(uri)
             .unwrap_or_else(|| std::sync::Arc::new(Default::default()));
         let other_docs = self.docs.other_docs_with_returns(uri, &self.open_urls());
-        Ok(hover_info(
-            &source,
-            &doc,
-            &doc_returns,
-            position,
-            &other_docs,
-        ))
+        let result = hover_info(&source, &doc, &doc_returns, position, &other_docs);
+        if result.is_some() {
+            return Ok(result);
+        }
+        // Fallback: look up the word in the workspace index so class names in
+        // extends clauses and parameter types resolve even when their defining
+        // file is never opened.
+        let all_indexes = self.docs.all_indexes();
+        if let Some(word) = crate::util::word_at(&source, position)
+            && let Some(h) = class_hover_from_index(&word, &all_indexes)
+        {
+            return Ok(Some(h));
+        }
+        Ok(None)
     }
 
     async fn document_symbol(

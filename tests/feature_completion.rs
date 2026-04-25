@@ -40,17 +40,11 @@ $g->h$0
         )
         .await;
     expect![[r#"
-        Function    hash
-        Function    header
-        Function    headers_sent
-        Method      hello
-        Function    htmlentities
-        Function    htmlspecialchars
-        Function    http_build_query"#]]
+        Method      bye
+        Method      hello"#]]
     .assert_eq(&out);
 }
 
-#[ignore = "php-lsp gap: `->` completion does not list properties"]
 #[tokio::test]
 async fn completion_arrow_property() {
     let mut s = TestServer::new().await;
@@ -433,7 +427,6 @@ func$0
     assert!(labels.iter().any(|l| l == "function"));
 }
 
-#[ignore = "php-lsp gap: variable completion does not surface in-scope locals/params"]
 #[tokio::test]
 async fn completion_variable_in_scope() {
     let mut s = TestServer::new().await;
@@ -452,7 +445,6 @@ function f(string $name, int $count): void {
     );
 }
 
-#[ignore = "php-lsp gap: method completion includes methods from unrelated classes"]
 #[tokio::test]
 async fn completion_method_does_not_leak_to_unrelated_classes() {
     let mut s = TestServer::new().await;

@@ -401,6 +401,68 @@ pub fn filtered_completions_at(
             vec![]
         }
         _ => {
+            // Detect $obj->member context (invoked completion without trigger char).
+            // Returns only the receiver class's instance members so unrelated class
+            // methods don't pollute the list.
+            if let (Some(src), Some(pos)) = (source, position) {
+                let line = src.lines().nth(pos.line as usize).unwrap_or("");
+                let col = utf16_offset_to_byte(line, pos.character as usize);
+                let before = &line[..col];
+                // Strip any identifier chars the user is typing as the member prefix.
+                let pre_arrow = before.trim_end_matches(|c: char| c.is_alphanumeric() || c == '_');
+                let has_arrow = pre_arrow.ends_with("->") || pre_arrow.ends_with("?->");
+                if has_arrow {
+                    let type_map = TypeMap::from_docs_with_meta(
+                        doc,
+                        doc_returns_ref,
+                        others_with_returns.iter().copied(),
+                        meta,
+                    );
+                    // Extract receiver var from text before the arrow.
+                    let arrow_stripped = pre_arrow
+                        .strip_suffix("->")
+                        .or_else(|| pre_arrow.strip_suffix("?->"))
+                        .unwrap_or(pre_arrow);
+                    let receiver: String = arrow_stripped
+                        .chars()
+                        .rev()
+                        .take_while(|&c| c.is_alphanumeric() || c == '_' || c == '$')
+                        .collect::<String>()
+                        .chars()
+                        .rev()
+                        .collect();
+                    let receiver = if receiver.starts_with('$') {
+                        receiver
+                    } else if !receiver.is_empty() {
+                        format!("${receiver}")
+                    } else {
+                        String::new()
+                    };
+                    let class_name = if receiver == "$this" {
+                        enclosing_class_at(src, doc, pos)
+                            .or_else(|| type_map.get("$this").map(|s| s.to_string()))
+                    } else if !receiver.is_empty() {
+                        type_map.get(&receiver).map(|s| s.to_string())
+                    } else {
+                        None
+                    };
+                    if let Some(cls) = class_name {
+                        let mut items = Vec::new();
+                        let mut seen = std::collections::HashSet::new();
+                        for class_name in cls.split('|') {
+                            for item in all_instance_members(class_name.trim(), doc, other_docs) {
+                                if seen.insert(item.label.clone()) {
+                                    items.push(item);
+                                }
+                            }
+                        }
+                        if !items.is_empty() {
+                            return items;
+                        }
+                    }
+                }
+            }
+
             // Feature 4: detect `use ` context and suggest FQNs from other docs
             if let (Some(src), Some(pos)) = (source, position)
                 && let Some(use_prefix) = use_completion_prefix(src, pos)

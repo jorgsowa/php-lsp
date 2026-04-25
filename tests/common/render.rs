@@ -245,7 +245,7 @@ pub(crate) fn render_locations(resp: &Value, root_uri: &str) -> String {
     rows.join("\n")
 }
 
-pub(crate) fn render_hover(resp: &Value) -> String {
+pub fn render_hover(resp: &Value) -> String {
     if let Some(err) = resp.get("error").filter(|e| !e.is_null()) {
         return format!("error: {err}");
     }

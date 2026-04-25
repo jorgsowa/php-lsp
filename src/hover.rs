@@ -620,6 +620,53 @@ pub fn docs_for_symbol_from_index(
     None
 }
 
+/// Build a hover for a class/interface/trait/enum found by short name in the workspace index.
+/// Returns `None` when no class with that name exists in `indexes`.
+pub fn class_hover_from_index(
+    word: &str,
+    indexes: &[(
+        tower_lsp::lsp_types::Url,
+        std::sync::Arc<crate::file_index::FileIndex>,
+    )],
+) -> Option<Hover> {
+    use crate::file_index::ClassKind;
+
+    for (_, idx) in indexes {
+        for cls in &idx.classes {
+            if cls.name == word || cls.fqn.trim_start_matches('\\') == word {
+                let kw = match cls.kind {
+                    ClassKind::Interface => "interface",
+                    ClassKind::Trait => "trait",
+                    ClassKind::Enum => "enum",
+                    ClassKind::Class => {
+                        if cls.is_abstract {
+                            "abstract class"
+                        } else {
+                            "class"
+                        }
+                    }
+                };
+                let mut sig = format!("{} {}", kw, cls.name);
+                if let Some(parent) = &cls.parent {
+                    sig.push_str(&format!(" extends {}", parent));
+                }
+                if !cls.implements.is_empty() {
+                    let list: Vec<&str> = cls.implements.iter().map(|s| s.as_ref()).collect();
+                    sig.push_str(&format!(" implements {}", list.join(", ")));
+                }
+                return Some(Hover {
+                    contents: HoverContents::Markup(MarkupContent {
+                        kind: MarkupKind::Markdown,
+                        value: wrap_php(&sig),
+                    }),
+                    range: None,
+                });
+            }
+        }
+    }
+    None
+}
+
 fn format_params(params: &[Param<'_, '_>]) -> String {
     params
         .iter()

@@ -188,7 +188,7 @@ pub(super) fn typed_prefix(source: Option<&str>, position: Option<Position>) -> 
     let prefix: String = before
         .chars()
         .rev()
-        .take_while(|&c| c.is_alphanumeric() || c == '_' || c == '\\')
+        .take_while(|&c| c.is_alphanumeric() || c == '_' || c == '\\' || c == '$')
         .collect::<String>()
         .chars()
         .rev()

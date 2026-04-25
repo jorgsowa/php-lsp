@@ -2,7 +2,7 @@
 
 mod common;
 
-use common::TestServer;
+use common::{TestServer, render_hover};
 use expect_test::expect;
 
 #[tokio::test]
@@ -188,6 +188,48 @@ async fn hover_missing_symbol_returns_nothing() {
     let mut s = TestServer::new().await;
     let v = s.check_hover(r#"<?php fo$0o();"#).await;
     expect!["<no hover>"].assert_eq(&v);
+}
+
+#[tokio::test]
+async fn hover_class_in_extends_clause_cross_file() {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(tmp.path().join("Base.php"), "<?php\nclass Base {}\n").unwrap();
+    let child_src = "<?php\nclass Child extends Base {}\n";
+    std::fs::write(tmp.path().join("Child.php"), child_src).unwrap();
+    let mut s = TestServer::with_root(tmp.path()).await;
+    s.wait_for_index_ready().await;
+    // Only open Child.php — Base.php is indexed but never opened.
+    s.open("Child.php", child_src).await;
+    let (_, line, col) = s.locate("Child.php", "Base", 0);
+    let resp = s.hover("Child.php", line, col).await;
+    expect![[r#"
+        ```php
+        class Base
+        ```"#]]
+    .assert_eq(&render_hover(&resp));
+}
+
+#[tokio::test]
+async fn hover_class_as_param_type_cross_file() {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        tmp.path().join("Post.php"),
+        "<?php\nclass Post { public string $title = ''; }\n",
+    )
+    .unwrap();
+    let ctrl_src = "<?php\nfunction show(Post $post): void {}\n";
+    std::fs::write(tmp.path().join("Controller.php"), ctrl_src).unwrap();
+    let mut s = TestServer::with_root(tmp.path()).await;
+    s.wait_for_index_ready().await;
+    // Only open Controller.php — Post.php is indexed but never opened.
+    s.open("Controller.php", ctrl_src).await;
+    let (_, line, col) = s.locate("Controller.php", "Post", 0);
+    let resp = s.hover("Controller.php", line, col).await;
+    expect![[r#"
+        ```php
+        class Post
+        ```"#]]
+    .assert_eq(&render_hover(&resp));
 }
 
 #[tokio::test]

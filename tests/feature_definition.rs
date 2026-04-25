@@ -84,6 +84,26 @@ $w = new Wid$0get();
     .await;
 }
 
+/// Cross-file goto-definition for a namespace-free class — exercises the
+/// `find_in_indexes` path where the defining file is opened but not the
+/// active file.
+#[tokio::test]
+async fn definition_cross_file_simple_class() {
+    let mut s = TestServer::new().await;
+    s.check_definition_annotated(
+        r#"//- /greeter.php
+<?php
+class Greeter {}
+//    ^^^^^^^ def
+
+//- /user.php
+<?php
+$g = new Gr$0eeter();
+"#,
+    )
+    .await;
+}
+
 #[tokio::test]
 async fn definition_returns_none_for_missing_symbol() {
     let mut s = TestServer::new().await;
