@@ -17,7 +17,6 @@ function f(): void {
 "#,
         )
         .await;
-    // Function body spans lines 1–5 and is exposed as a "region" fold.
     expect!["1..5 region"].assert_eq(&out);
 }
 
@@ -32,8 +31,5 @@ $w = new Widget();
 "#,
         )
         .await;
-    assert!(
-        out.contains("reference"),
-        "expected reference count lens: {out}"
-    );
+    expect!["L1: 1 reference [editor.action.showReferences]"].assert_eq(&out);
 }

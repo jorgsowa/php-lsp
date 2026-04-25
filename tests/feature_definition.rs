@@ -3,6 +3,7 @@
 mod common;
 
 use common::TestServer;
+use expect_test::expect;
 
 #[tokio::test]
 async fn definition_function_same_file() {
@@ -93,10 +94,7 @@ no$0thing_here();
 "#,
         )
         .await;
-    assert!(
-        out == "<none>" || out.contains("nothing_here"),
-        "unexpected: {out}"
-    );
+    expect!["<none>"].assert_eq(&out);
 }
 
 #[tokio::test]
@@ -112,9 +110,7 @@ $f->wr$0ite();
 "#,
         )
         .await;
-    // Should land on the interface method declaration or the class method.
-    // Just ensure we got something.
-    assert!(out != "<none>" || !out.is_empty());
+    expect!["main.php:1:37-1:42"].assert_eq(&out);
 }
 
 #[tokio::test]
@@ -129,8 +125,7 @@ $$0u;
 "#,
         )
         .await;
-    // Servers differ on where type_definition lands; accept any non-error.
-    assert!(!out.starts_with("error:"), "errored: {out}");
+    expect!["main.php:1:6-1:10"].assert_eq(&out);
 }
 
 #[tokio::test]
@@ -145,5 +140,8 @@ class B implements Writable { public function write(): void {} }
 "#,
         )
         .await;
-    assert!(!out.starts_with("error:"), "errored: {out}");
+    expect![[r#"
+        main.php:2:6-2:7
+        main.php:3:6-3:7"#]]
+    .assert_eq(&out);
 }

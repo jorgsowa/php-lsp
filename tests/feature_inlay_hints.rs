@@ -1,6 +1,7 @@
 mod common;
 
 use common::TestServer;
+use expect_test::expect;
 
 #[tokio::test]
 async fn inlay_hints_for_parameter_names() {
@@ -13,10 +14,10 @@ greet('world', 3);
 "#,
         )
         .await;
-    assert!(
-        out.contains("name") || out.contains("$name"),
-        "expected parameter-name hint: {out}"
-    );
+    expect![[r#"
+        2:6 name:
+        2:15 count:"#]]
+    .assert_eq(&out);
 }
 
 #[tokio::test]
@@ -30,8 +31,5 @@ $y = 2;
 "#,
         )
         .await;
-    assert!(
-        out == "<no hints>" || !out.contains("error:"),
-        "unexpected: {out}"
-    );
+    expect!["<no hints>"].assert_eq(&out);
 }
