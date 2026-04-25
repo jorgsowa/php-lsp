@@ -866,6 +866,7 @@ impl LanguageServer for Backend {
                 self.docs.set_php_version(pv);
             }
             *self.config.write().unwrap() = cfg;
+            send_refresh_requests(&self.client).await;
         }
     }
 
