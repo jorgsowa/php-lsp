@@ -61,6 +61,28 @@ $g->hello();
     .assert_eq(&out);
 }
 
+/// Regression: renaming a variable inside an enum method previously produced
+/// zero edits because collect_in_fn_at had no arm for StmtKind::Enum.
+#[tokio::test]
+async fn rename_variable_inside_enum_method() {
+    let mut s = TestServer::new().await;
+    let out = s
+        .check_rename(
+            r#"<?php
+enum Status {
+    public function label($a$0rg) { return $arg + 1; }
+}
+"#,
+            "value",
+        )
+        .await;
+    expect![[r#"
+        // main.php
+        2:26-2:30 → "$value"
+        2:41-2:45 → "$value""#]]
+    .assert_eq(&out);
+}
+
 #[tokio::test]
 async fn rename_class_updates_new_sites() {
     let mut s = TestServer::new().await;

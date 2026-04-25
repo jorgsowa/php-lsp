@@ -42,6 +42,23 @@ function f(): int {
 }
 
 #[tokio::test]
+async fn code_actions_offers_add_return_type() {
+    let mut s = TestServer::new().await;
+    let out = s
+        .check_code_actions(
+            r#"<?php
+function $0noReturn$0() { return 42; }
+"#,
+        )
+        .await;
+    expect![[r#"
+        refactor         Add return type `: mixed`
+        refactor         Generate PHPDoc
+        refactor.extract Extract variable"#]]
+    .assert_eq(&out);
+}
+
+#[tokio::test]
 async fn code_actions_offers_implement_missing_methods() {
     let mut s = TestServer::new().await;
     let out = s

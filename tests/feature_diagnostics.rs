@@ -50,6 +50,56 @@ class C {
 }
 
 #[tokio::test]
+async fn undefined_function_inside_namespaced_method() {
+    let mut s = TestServer::new().await;
+    s.check_diagnostics(
+        r#"<?php
+namespace LspTest;
+class Broken {
+    public function f(): void {
+        nonexistent_fn();
+//      ^^^^^^^^^^^^^^^^ error: nonexistent_fn
+    }
+}
+"#,
+    )
+    .await;
+}
+
+/// Regression for issue #170: mir-analyzer must detect errors inside
+/// namespaced class method bodies, not just top-level / non-namespaced code.
+#[tokio::test]
+async fn issue_170_errors_inside_namespaced_method_detected() {
+    let mut s = TestServer::new().await;
+    s.check_diagnostics(
+        r#"<?php
+namespace LspTest;
+
+class Broken
+{
+    public int $count = 0;
+
+    public function bump(): int
+    {
+        $this->count++;
+        return $this->count;
+    }
+
+    public function obviouslyBroken(): int
+    {
+        nonexistent_function();
+//      ^^^^^^^^^^^^^^^^^^^^^^ error: nonexistent_function
+        $x = new UnknownClass();
+//               ^^^^^^^^^^^^ error: UnknownClass
+        return 0;
+    }
+}
+"#,
+    )
+    .await;
+}
+
+#[tokio::test]
 async fn undefined_class_in_new() {
     let mut s = TestServer::new().await;
     s.check_diagnostics(
