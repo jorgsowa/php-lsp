@@ -7,8 +7,8 @@ use tower_lsp::lsp_types::{Location, Position, Range, Url};
 
 use crate::ast::{ParsedDoc, str_offset};
 use crate::walk::{
-    class_refs_in_stmts, function_refs_in_stmts, method_refs_in_stmts, property_refs_in_stmts,
-    refs_in_stmts, refs_in_stmts_with_use,
+    class_refs_in_stmts, function_refs_in_stmts, method_refs_in_stmts, new_refs_in_stmts,
+    property_refs_in_stmts, refs_in_stmts, refs_in_stmts_with_use,
 };
 
 /// Callback signature for the mir-codebase reference-lookup fast path:
@@ -73,6 +73,56 @@ pub fn find_references_with_use(
     include_declaration: bool,
 ) -> Vec<Location> {
     find_references_inner(word, all_docs, include_declaration, true, None, None)
+}
+
+/// Find only `new ClassName(...)` instantiation sites across all docs.
+///
+/// Used by the `__construct` references handler — `SymbolKind::Class` (the normal
+/// class-kind path) is too broad because mir's `ClassReference` key covers type
+/// hints, `instanceof`, `extends`, and `implements` in addition to `new` calls.
+/// This function walks the AST using `new_refs_in_stmts` which only emits spans
+/// for `ExprKind::New` nodes, giving the caller exactly the call sites.
+///
+/// `class_fqn` is the fully-qualified name (e.g. `"Alpha\\Widget"`) used to
+/// filter files where the short name resolves to a different class. Pass `None`
+/// for global-namespace classes.
+pub fn find_constructor_references(
+    short_name: &str,
+    all_docs: &[(Url, Arc<ParsedDoc>)],
+    class_fqn: Option<&str>,
+) -> Vec<Location> {
+    let class_utf16_len: u32 = short_name.chars().map(|c| c.len_utf16() as u32).sum();
+    all_docs
+        .par_iter()
+        .flat_map_iter(|(uri, doc)| {
+            // Skip files that can't reference the target unless they may use the FQN
+            // directly (without a `use` statement). FQN-qualified identifiers in the
+            // AST are disambiguated inside `new_refs_in_stmts` via `class_fqn`.
+            if let Some(fqn) = class_fqn
+                && !doc_can_reference_target(doc, short_name, fqn)
+                && !doc.view().source().contains(fqn.trim_start_matches('\\'))
+            {
+                return Vec::new();
+            }
+            let mut spans = Vec::new();
+            new_refs_in_stmts(&doc.program().stmts, short_name, class_fqn, &mut spans);
+            let sv = doc.view();
+            spans
+                .into_iter()
+                .map(|span| {
+                    let start = sv.position_of(span.start);
+                    let end = Position {
+                        line: start.line,
+                        character: start.character + class_utf16_len,
+                    };
+                    Location {
+                        uri: uri.clone(),
+                        range: Range { start, end },
+                    }
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect()
 }
 
 /// Fast path: look up pre-computed reference locations from the mir codebase index.

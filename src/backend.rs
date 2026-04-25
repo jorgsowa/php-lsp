@@ -54,7 +54,8 @@ use crate::phpdoc_action::phpdoc_actions;
 use crate::phpstorm_meta::PhpStormMeta;
 use crate::promote_action::promote_constructor_actions;
 use crate::references::{
-    SymbolKind, find_references, find_references_codebase_with_target, find_references_with_target,
+    SymbolKind, find_constructor_references, find_references, find_references_codebase_with_target,
+    find_references_with_target,
 };
 use crate::rename::{prepare_rename, rename, rename_property, rename_variable};
 use crate::selection_range::selection_ranges;
@@ -1224,33 +1225,10 @@ impl LanguageServer for Backend {
             } else {
                 None
             };
-            let mut locations = {
-                let cb = self.codebase();
-                let docs = Arc::clone(&self.docs);
-                let lookup = move |key: &str| docs.get_symbol_refs_salsa(key);
-                find_references_codebase_with_target(
-                    &short_name,
-                    &all_docs,
-                    false,
-                    Some(SymbolKind::Class),
-                    class_fqn,
-                    &cb,
-                    &lookup,
-                )
-                .unwrap_or_else(|| {
-                    if let Some(fqn) = class_fqn {
-                        find_references_with_target(
-                            &short_name,
-                            &all_docs,
-                            false,
-                            Some(SymbolKind::Class),
-                            fqn,
-                        )
-                    } else {
-                        find_references(&short_name, &all_docs, false, Some(SymbolKind::Class))
-                    }
-                })
-            };
+            // Use `new_refs_in_stmts` directly — bypasses the codebase/salsa
+            // index whose `ClassReference` key is too broad (covers type hints,
+            // `instanceof`, `extends`, `implements` in addition to `new` calls).
+            let mut locations = find_constructor_references(&short_name, &all_docs, class_fqn);
             if include_declaration {
                 // The cursor is already on the `__construct` name (verified by
                 // `class_name_at_construct_decl`), so use the cursor position directly as
@@ -1277,15 +1255,23 @@ impl LanguageServer for Backend {
         }
 
         let doc_opt = self.get_doc(uri);
-        let kind = if let Some(doc) = &doc_opt {
-            let stmts = &doc.program().stmts;
-            if cursor_is_on_method_decl(doc.source(), stmts, position) {
+        // Check for promoted constructor property params before the character-based
+        // heuristic: `$name` in `public function __construct(public string $name)`
+        // should find `->name` property accesses, not `$name` variable occurrences.
+        let (word, kind) = if let Some(doc) = &doc_opt
+            && let Some(prop_name) =
+                promoted_property_at_cursor(doc.source(), &doc.program().stmts, position)
+        {
+            (prop_name, Some(SymbolKind::Property))
+        } else {
+            let k = if let Some(doc) = &doc_opt
+                && cursor_is_on_method_decl(doc.source(), &doc.program().stmts, position)
+            {
                 Some(SymbolKind::Method)
             } else {
                 symbol_kind_at(&source, position, &word)
-            }
-        } else {
-            symbol_kind_at(&source, position, &word)
+            };
+            (word, k)
         };
         let all_docs = self.docs.all_docs_for_scan();
         let include_declaration = params.context.include_declaration;
@@ -2669,6 +2655,57 @@ fn class_name_at_construct_decl(
     }
 
     check(source, stmts, cursor, "")
+}
+
+/// If the cursor sits on a promoted constructor property parameter (one that
+/// has a visibility modifier like `public`/`protected`/`private`), return the
+/// property name without the leading `$` so the caller can search for
+/// `->name` property accesses (`SymbolKind::Property`).
+///
+/// Returns `None` for regular (non-promoted) params and for any cursor position
+/// not on a constructor param name.
+fn promoted_property_at_cursor(
+    source: &str,
+    stmts: &[Stmt<'_, '_>],
+    position: Position,
+) -> Option<String> {
+    let cursor = position_to_offset(source, position)?;
+
+    fn check(source: &str, stmts: &[Stmt<'_, '_>], cursor: u32) -> Option<String> {
+        for stmt in stmts {
+            match &stmt.kind {
+                StmtKind::Class(c) => {
+                    for member in c.members.iter() {
+                        if let ClassMemberKind::Method(m) = &member.kind
+                            && m.name == "__construct"
+                        {
+                            for param in m.params.iter() {
+                                if param.visibility.is_none() {
+                                    continue;
+                                }
+                                let name_start = str_offset(source, param.name);
+                                let name_end = name_start + param.name.len() as u32;
+                                if cursor >= name_start && cursor < name_end {
+                                    return Some(param.name.trim_start_matches('$').to_owned());
+                                }
+                            }
+                        }
+                    }
+                }
+                StmtKind::Namespace(ns) => {
+                    if let NamespaceBody::Braced(inner) = &ns.body
+                        && let Some(name) = check(source, inner, cursor)
+                    {
+                        return Some(name);
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
+    check(source, stmts, cursor)
 }
 
 /// Tags for deferred code actions (resolved lazily via `codeAction/resolve`).

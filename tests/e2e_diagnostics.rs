@@ -166,3 +166,77 @@ class Broken
         )
         .await;
 }
+
+/// Static methods are a separate scope; the analyzer must descend into them.
+#[tokio::test]
+async fn undefined_function_detected_in_static_method() {
+    let mut server = TestServer::new().await;
+    server
+        .check_diagnostics(
+            r#"<?php
+class Factory {
+    public static function build(): void {
+        nonexistent_function();
+//      ^^^^^^^^^^^^^^^^^^^^^^ error: nonexistent_function
+    }
+}
+"#,
+        )
+        .await;
+}
+
+/// Arrow functions (`fn() => expr`) are a PHP 8.0 construct; the analyzer
+/// must walk their bodies rather than treating them as opaque.
+#[tokio::test]
+async fn undefined_function_detected_in_arrow_function() {
+    let mut server = TestServer::new().await;
+    server
+        .check_diagnostics(
+            r#"<?php
+$fn = fn() => nonexistent_function();
+//            ^^^^^^^^^^^^^^^^^^^^^^ error: nonexistent_function
+"#,
+        )
+        .await;
+}
+
+/// Traits carry their own method bodies; the analyzer must analyze them just
+/// like class methods.
+///
+/// Currently ignored: `mir-analyzer` 0.8.x does not descend into trait method
+/// bodies, so no diagnostics are emitted for undefined calls inside traits.
+/// Remove `#[ignore]` when mir-analyzer covers trait scopes.
+#[ignore = "mir-analyzer gap: trait method bodies are not analyzed"]
+#[tokio::test]
+async fn undefined_function_detected_in_trait_method() {
+    let mut server = TestServer::new().await;
+    server
+        .check_diagnostics(
+            r#"<?php
+trait Auditable {
+    public function audit(): void {
+        nonexistent_function();
+//      ^^^^^^^^^^^^^^^^^^^^^^ error: nonexistent_function
+    }
+}
+"#,
+        )
+        .await;
+}
+
+/// A closure captures an outer scope but still gets its own scope for local
+/// variables. Undefined function calls inside closures must be reported.
+#[tokio::test]
+async fn undefined_function_detected_in_closure() {
+    let mut server = TestServer::new().await;
+    server
+        .check_diagnostics(
+            r#"<?php
+$fn = function() {
+    nonexistent_function();
+//  ^^^^^^^^^^^^^^^^^^^^^^ error: nonexistent_function
+};
+"#,
+        )
+        .await;
+}

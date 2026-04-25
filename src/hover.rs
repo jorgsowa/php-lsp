@@ -509,11 +509,11 @@ pub fn signature_for_symbol_from_index(
                     .iter()
                     .map(|p| {
                         let mut s = String::new();
-                        if p.variadic {
-                            s.push_str("...");
-                        }
                         if let Some(t) = &p.type_hint {
                             s.push_str(&format!("{} ", t));
+                        }
+                        if p.variadic {
+                            s.push_str("...");
                         }
                         s.push_str(&format!("${}", p.name));
                         s
@@ -536,11 +536,11 @@ pub fn signature_for_symbol_from_index(
                         .iter()
                         .map(|p| {
                             let mut s = String::new();
-                            if p.variadic {
-                                s.push_str("...");
-                            }
                             if let Some(t) = &p.type_hint {
                                 s.push_str(&format!("{} ", t));
+                            }
+                            if p.variadic {
+                                s.push_str("...");
                             }
                             s.push_str(&format!("${}", p.name));
                             s
@@ -675,11 +675,11 @@ fn format_params(params: &[Param<'_, '_>]) -> String {
             if p.by_ref {
                 s.push('&');
             }
-            if p.variadic {
-                s.push_str("...");
-            }
             if let Some(t) = &p.type_hint {
                 s.push_str(&format!("{} ", format_type_hint(t)));
+            }
+            if p.variadic {
+                s.push_str("...");
             }
             s.push_str(&format!("${}", p.name));
             if let Some(default) = &p.default {

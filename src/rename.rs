@@ -34,9 +34,16 @@ pub fn prepare_rename(source: &str, position: Position) -> Option<Range> {
     if word.contains('\\') {
         return None;
     }
+    // PHP keywords cannot be renamed; return None so editors disable the action.
+    if is_php_keyword(&word) {
+        return None;
+    }
     let line = source.lines().nth(position.line as usize)?;
     let col = position.character as usize;
     let chars: Vec<char> = line.chars().collect();
+    // `is_word` intentionally excludes `$` so the range covers only the bare
+    // identifier name (not the sigil). `word_at` may return `$var` with the `$`,
+    // so we strip it before computing the range length to avoid an off-by-one.
     let is_word = |c: char| c.is_alphanumeric() || c == '_';
     let mut utf16_col = 0usize;
     let mut char_idx = 0usize;
@@ -52,8 +59,9 @@ pub fn prepare_rename(source: &str, position: Position) -> Option<Range> {
         left -= 1;
     }
 
+    let bare_word = word.trim_start_matches('$');
     let start_utf16: u32 = chars[..left].iter().map(|c| c.len_utf16() as u32).sum();
-    let end_utf16: u32 = start_utf16 + word.chars().map(|c| c.len_utf16() as u32).sum::<u32>();
+    let end_utf16: u32 = start_utf16 + bare_word.chars().map(|c| c.len_utf16() as u32).sum::<u32>();
     Some(Range {
         start: Position {
             line: position.line,
@@ -64,6 +72,85 @@ pub fn prepare_rename(source: &str, position: Position) -> Option<Range> {
             character: end_utf16,
         },
     })
+}
+
+fn is_php_keyword(word: &str) -> bool {
+    matches!(
+        word,
+        "abstract"
+            | "and"
+            | "array"
+            | "as"
+            | "break"
+            | "callable"
+            | "case"
+            | "catch"
+            | "class"
+            | "clone"
+            | "const"
+            | "continue"
+            | "declare"
+            | "default"
+            | "die"
+            | "do"
+            | "echo"
+            | "else"
+            | "elseif"
+            | "empty"
+            | "enddeclare"
+            | "endfor"
+            | "endforeach"
+            | "endif"
+            | "endswitch"
+            | "endwhile"
+            | "enum"
+            | "eval"
+            | "exit"
+            | "extends"
+            | "final"
+            | "finally"
+            | "fn"
+            | "for"
+            | "foreach"
+            | "function"
+            | "global"
+            | "goto"
+            | "if"
+            | "implements"
+            | "include"
+            | "include_once"
+            | "instanceof"
+            | "insteadof"
+            | "interface"
+            | "isset"
+            | "list"
+            | "match"
+            | "namespace"
+            | "new"
+            | "null"
+            | "or"
+            | "print"
+            | "private"
+            | "protected"
+            | "public"
+            | "readonly"
+            | "require"
+            | "require_once"
+            | "return"
+            | "self"
+            | "static"
+            | "switch"
+            | "throw"
+            | "trait"
+            | "true"
+            | "false"
+            | "try"
+            | "use"
+            | "var"
+            | "while"
+            | "xor"
+            | "yield"
+    )
 }
 
 /// Rename a `$variable` (or parameter) within its enclosing function/method scope.

@@ -464,3 +464,50 @@ $a->$0
         "B::bar should not appear in A completion: {labels:?}"
     );
 }
+
+/// `Status::$0` on a PHP 8.1 enum must offer the declared cases. The server
+/// returns them as fully-qualified labels (`Status::Active`, `Status::Inactive`)
+/// alongside the global completion list. Both labels must be present.
+#[tokio::test]
+async fn completion_enum_case_access() {
+    let mut s = TestServer::new().await;
+    let labels = labels(
+        &mut s,
+        r#"<?php
+enum Status { case Active; case Inactive; }
+Status::$0
+"#,
+    )
+    .await;
+    assert!(
+        labels.iter().any(|l| l == "Status::Active"),
+        "expected Status::Active in enum case completions: {labels:?}"
+    );
+    assert!(
+        labels.iter().any(|l| l == "Status::Inactive"),
+        "expected Status::Inactive in enum case completions: {labels:?}"
+    );
+}
+
+/// `new $0` must include class names so users can pick from defined classes.
+#[tokio::test]
+async fn completion_after_new_offers_class_names() {
+    let mut s = TestServer::new().await;
+    let labels = labels(
+        &mut s,
+        r#"<?php
+class Widget {}
+class Gadget {}
+$x = new $0
+"#,
+    )
+    .await;
+    assert!(
+        labels.iter().any(|l| l == "Widget"),
+        "expected Widget in `new` completions: {labels:?}"
+    );
+    assert!(
+        labels.iter().any(|l| l == "Gadget"),
+        "expected Gadget in `new` completions: {labels:?}"
+    );
+}

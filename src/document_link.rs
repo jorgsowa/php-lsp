@@ -95,15 +95,11 @@ fn link_from_path_expr(
 
     let target = if std::path::Path::new(raw).is_absolute() {
         Url::from_file_path(raw).ok()
-    } else if let Some(dir) = uri.to_file_path().ok().as_deref().and_then(|p| p.parent()) {
-        Url::from_file_path(
-            dir.join(raw)
-                .canonicalize()
-                .unwrap_or_else(|_| dir.join(raw)),
-        )
-        .ok()
     } else {
-        None
+        // Resolve relative to the document URI. Url::join strips the last
+        // path segment (the filename) and appends `raw`, which is correct
+        // for both real and synthetic (no drive letter) file:// URIs.
+        uri.join(raw).ok()
     };
 
     Some(DocumentLink {
