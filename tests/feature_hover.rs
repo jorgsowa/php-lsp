@@ -357,3 +357,97 @@ trait Logg$0able { public function log(): void {} }
         ```"#]]
     .assert_eq(&v);
 }
+
+#[tokio::test]
+async fn hover_trait_inherited_method() {
+    let mut s = TestServer::new().await;
+    let out = s
+        .check_hover(
+            r#"<?php
+trait Greeting {
+    public function sayHello(string $name): string {
+        return "Hello, {$name}";
+    }
+}
+class Greeter {
+    use Greeting;
+    public function run(): string {
+        return $this->$0sayHello('world');
+    }
+}
+"#,
+        )
+        .await;
+    assert!(
+        out.contains("sayHello"),
+        "hover on trait-inherited method must return its signature, got: {out}"
+    );
+}
+
+#[tokio::test]
+async fn hover_multi_trait_alpha() {
+    let mut s = TestServer::new().await;
+    let out = s
+        .check_hover(
+            r#"<?php
+trait A { public function alpha(): int { return 1; } }
+trait B { public function beta(): int { return 2; } }
+class Both {
+    use A;
+    use B;
+    public function run(): int { return $this->$0alpha() + $this->beta(); }
+}
+"#,
+        )
+        .await;
+    assert!(
+        out.contains("alpha"),
+        "hover on alpha() via multi-trait must mention it, got: {out}"
+    );
+}
+
+#[tokio::test]
+async fn hover_multi_trait_beta() {
+    let mut s = TestServer::new().await;
+    let out = s
+        .check_hover(
+            r#"<?php
+trait A { public function alpha(): int { return 1; } }
+trait B { public function beta(): int { return 2; } }
+class Both {
+    use A;
+    use B;
+    public function run(): int { return $this->alpha() + $this->$0beta(); }
+}
+"#,
+        )
+        .await;
+    assert!(
+        out.contains("beta"),
+        "hover on beta() via multi-trait must mention it, got: {out}"
+    );
+}
+
+#[tokio::test]
+async fn hover_on_empty_file_returns_null_not_error() {
+    let mut s = TestServer::new().await;
+    s.open("empty.php", "").await;
+    let resp = s.hover("empty.php", 0, 0).await;
+    assert!(
+        resp["error"].is_null(),
+        "hover errored on empty file: {resp:?}"
+    );
+    assert!(
+        resp["result"].is_null(),
+        "hover on empty file should be null, got: {:?}",
+        resp["result"]
+    );
+}
+
+#[tokio::test]
+async fn hover_past_eof_does_not_crash() {
+    let mut s = TestServer::new().await;
+    s.open("short.php", "<?php\nfunction f(): void {}\n").await;
+    let resp = s.hover("short.php", 500, 500).await;
+    assert!(resp["error"].is_null(), "hover past EOF errored: {resp:?}");
+}
