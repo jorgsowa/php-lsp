@@ -5,7 +5,7 @@
 //! The harness speaks the full LSP wire protocol — no internal API shortcuts —
 //! so tests exercise the same path a real editor client would.
 
-#![allow(dead_code)]
+#![allow(dead_code, unused_imports)]
 
 mod client;
 pub mod fixture;

@@ -1969,14 +1969,15 @@ impl LanguageServer for Backend {
             let Ok(uri) = Url::parse(&file.uri) else {
                 continue;
             };
-            let Ok(path) = uri.to_file_path() else {
-                continue;
-            };
-            if path.extension().and_then(|e| e.to_str()) != Some("php") {
+            // Check the extension from the URI path so this works on Windows
+            // where to_file_path() fails for drive-less URIs (e.g. file:///foo.php).
+            if !uri.path().ends_with(".php") {
                 continue;
             }
 
-            let stub = if let Some(fqn) = psr4.file_to_fqn(&path) {
+            let stub = if let Ok(path) = uri.to_file_path()
+                && let Some(fqn) = psr4.file_to_fqn(&path)
+            {
                 let (ns, class_name) = match fqn.rfind('\\') {
                     Some(pos) => (&fqn[..pos], &fqn[pos + 1..]),
                     None => ("", fqn.as_str()),
