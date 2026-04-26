@@ -4,6 +4,7 @@ mod common;
 
 use common::TestServer;
 use expect_test::expect;
+use serde_json::json;
 
 #[tokio::test]
 async fn definition_function_same_file() {
@@ -214,5 +215,81 @@ async fn definition_on_unknown_symbol_returns_null() {
     assert!(
         is_empty,
         "unknown symbol should have no definition, got: {result:?}"
+    );
+}
+
+// --- cross-file definition (psr4-mini fixture) ---
+
+async fn psr4_bring_up() -> TestServer {
+    let mut server = TestServer::with_fixture("psr4-mini").await;
+    server.wait_for_index_ready().await;
+    server
+}
+
+async fn psr4_open(server: &mut TestServer, path: &str) {
+    let (text, _, _) = server.locate(path, "<?php", 0);
+    server.open(path, &text).await;
+}
+
+/// Goto-definition on a `use`-imported class type hint must jump across files.
+/// `User $user` in Greeter::greet resolves to `class User` in Model/User.php.
+#[tokio::test]
+async fn goto_definition_resolves_use_import_across_files() {
+    let mut server = psr4_bring_up().await;
+    psr4_open(&mut server, "src/Service/Greeter.php").await;
+    let (_, line, ch) = server.locate("src/Service/Greeter.php", "User $user", 0);
+
+    let resp = server.definition("src/Service/Greeter.php", line, ch).await;
+    let result = &resp["result"];
+    assert!(
+        !result.is_null(),
+        "expected cross-file definition: {resp:?}"
+    );
+    let loc = if result.is_array() {
+        &result[0]
+    } else {
+        result
+    };
+    let uri = loc["uri"].as_str().unwrap();
+    assert!(
+        uri.ends_with("src/Model/User.php"),
+        "definition must resolve to User.php, got: {uri}"
+    );
+    // `class User` is on line 4 (0-indexed); the server returns a line-start range.
+    assert_eq!(
+        loc["range"]["start"]["line"],
+        json!(4),
+        "wrong line: {loc:?}"
+    );
+}
+
+/// Goto-definition on a method call across files: `$user->greeting()` in
+/// Greeter must jump to `User::greeting` in Model/User.php (line 12, char 20).
+#[tokio::test]
+async fn goto_definition_method_call_across_files() {
+    let mut server = psr4_bring_up().await;
+    psr4_open(&mut server, "src/Service/Greeter.php").await;
+    let (_, line, ch) = server.locate("src/Service/Greeter.php", "greeting()", 0);
+
+    let resp = server.definition("src/Service/Greeter.php", line, ch).await;
+    let result = &resp["result"];
+    assert!(
+        !result.is_null(),
+        "expected cross-file method definition: {resp:?}"
+    );
+    let loc = if result.is_array() {
+        &result[0]
+    } else {
+        result
+    };
+    assert!(
+        loc["uri"].as_str().unwrap().ends_with("src/Model/User.php"),
+        "method definition must land in User.php, got: {loc:?}"
+    );
+    // `public function greeting()` is on line 12; the server returns a line-start range.
+    assert_eq!(
+        loc["range"]["start"]["line"],
+        json!(12),
+        "wrong line: {loc:?}"
     );
 }

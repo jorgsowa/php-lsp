@@ -475,3 +475,39 @@ async fn references_on_unopened_uri_returns_empty() {
         "references on unopened file should be empty, got: {result:?}"
     );
 }
+
+/// Find-references on `class User` must surface `use App\Model\User` imports in
+/// every dependent file. This is the safety-critical path rename depends on.
+#[tokio::test]
+async fn references_include_use_imports_across_files() {
+    let mut server = TestServer::with_fixture("psr4-mini").await;
+    server.wait_for_index_ready().await;
+    let (text, _, _) = server.locate("src/Model/User.php", "<?php", 0);
+    server.open("src/Model/User.php", &text).await;
+
+    let (_, line, ch) = server.locate("src/Model/User.php", "class User", 0);
+    // Cursor on the `U` of `User` (after "class ").
+    let resp = server
+        .references("src/Model/User.php", line, ch + 6, false)
+        .await;
+
+    let refs = resp["result"].as_array().expect("references array");
+    assert!(
+        refs.len() >= 2,
+        "expected at least 2 cross-file references, got {}",
+        refs.len()
+    );
+    let ref_uris: Vec<&str> = refs.iter().filter_map(|r| r["uri"].as_str()).collect();
+    assert!(
+        ref_uris
+            .iter()
+            .any(|u| u.ends_with("src/Service/Registry.php")),
+        "expected a reference in Registry.php, got: {ref_uris:?}"
+    );
+    assert!(
+        ref_uris
+            .iter()
+            .any(|u| u.ends_with("src/Service/Greeter.php")),
+        "expected a reference in Greeter.php, got: {ref_uris:?}"
+    );
+}
