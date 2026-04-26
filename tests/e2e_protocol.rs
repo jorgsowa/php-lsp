@@ -34,9 +34,21 @@ async fn inline_value_returns_array() {
     let values = resp["result"]
         .as_array()
         .expect("inlineValue must return an array when variables are in range");
+    // Line 2 is `$y = $x + 1;` — two variable lookups: $y at col 0 and $x at col 5.
+    assert_eq!(values.len(), 2, "expected exactly $y and $x on line 2");
+    let names: Vec<&str> = values
+        .iter()
+        .filter_map(|v| v["variableName"].as_str())
+        .collect();
     assert!(
-        !values.is_empty(),
-        "expected at least one inline value for $x/$y"
+        names.contains(&"y"),
+        "expected variable 'y' ($y), got: {:?}",
+        names
+    );
+    assert!(
+        names.contains(&"x"),
+        "expected variable 'x' ($x), got: {:?}",
+        names
     );
 }
 
@@ -51,19 +63,20 @@ async fn moniker_returns_no_error() {
 
     assert!(resp["error"].is_null(), "moniker error: {:?}", resp);
     let result = &resp["result"];
-    assert!(
-        result.is_array() && !result.as_array().unwrap().is_empty(),
-        "expected non-empty moniker array, got: {:?}",
-        result
+    let monikers = result.as_array().expect("expected non-empty moniker array");
+    assert_eq!(
+        monikers.len(),
+        1,
+        "expected exactly one moniker for monikerFn"
     );
     assert_eq!(
-        result[0]["identifier"].as_str().unwrap_or(""),
+        monikers[0]["identifier"].as_str().unwrap_or(""),
         "monikerFn",
         "expected moniker identifier 'monikerFn', got: {:?}",
-        result[0]
+        monikers[0]
     );
     assert_eq!(
-        result[0]["scheme"].as_str().unwrap_or(""),
+        monikers[0]["scheme"].as_str().unwrap_or(""),
         "php",
         "expected moniker scheme 'php'"
     );
@@ -91,8 +104,21 @@ async fn linked_editing_range_returns_no_error() {
     let ranges = result["ranges"]
         .as_array()
         .expect("expected 'ranges' array in LinkedEditingRanges");
-    assert!(
-        !ranges.is_empty(),
-        "expected at least one range for LinkedClass"
+    // `class LinkedClass {}` — the class name is the only occurrence, so exactly one range.
+    assert_eq!(
+        ranges.len(),
+        1,
+        "expected exactly one range for LinkedClass"
+    );
+    // `class ` is 6 chars; `LinkedClass` is 11 chars → cols 6..17.
+    assert_eq!(
+        ranges[0]["start"],
+        serde_json::json!({"line": 1, "character": 6}),
+        "range start must point to the L in LinkedClass"
+    );
+    assert_eq!(
+        ranges[0]["end"],
+        serde_json::json!({"line": 1, "character": 17}),
+        "range end must be after the last char of LinkedClass"
     );
 }

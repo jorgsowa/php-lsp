@@ -1075,6 +1075,7 @@ impl TestServer {
     /// Open `src` and assert its inline `// ^^^` annotations match the
     /// diagnostics the server publishes for each file. Panics with a
     /// side-by-side diff on mismatch.
+    #[track_caller]
     pub async fn check_diagnostics(&mut self, src: &str) {
         let opened = self.open_fixture(src).await;
         for file in &opened.fixture.files {
@@ -1272,6 +1273,7 @@ impl TestServer {
     ///
     /// Each LSP `Location` must align with one annotation's range in the file
     /// it lives in; extra or missing locations cause a side-by-side diff.
+    #[track_caller]
     pub async fn check_references_annotated(&mut self, src: &str) {
         let opened = self.open_fixture(src).await;
         let c = opened.cursor().clone();
@@ -1282,6 +1284,7 @@ impl TestServer {
 
     /// Assert that go-to-definition at `$0` lands on every `// ^^^ def`
     /// annotation in the fixture.
+    #[track_caller]
     pub async fn check_definition_annotated(&mut self, src: &str) {
         let opened = self.open_fixture(src).await;
         let c = opened.cursor().clone();
@@ -1292,6 +1295,7 @@ impl TestServer {
 
     /// Assert that document highlights at `$0` match every `// ^^^ read` /
     /// `// ^^^ write` / `// ^^^ ref` annotation in the same file.
+    #[track_caller]
     pub async fn check_highlight_annotated(&mut self, src: &str) {
         let opened = self.open_fixture(src).await;
         let c = opened.cursor().clone();
