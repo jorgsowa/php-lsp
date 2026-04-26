@@ -240,3 +240,60 @@ $fn = function() {
         )
         .await;
 }
+
+/// Passing too few arguments to a user-defined function is flagged as
+/// `InvalidArgument` (the same code used for type mismatches). The diagnostic
+/// spans the whole call expression.
+#[tokio::test]
+async fn argument_count_too_few_detected() {
+    let mut server = TestServer::new().await;
+    server
+        .check_diagnostics(
+            r#"<?php
+function needs_two(string $a, string $b): void {}
+function wrap(): void {
+    needs_two('x');
+//  ^^^^^^^^^^^^^^ error: needs_two
+}
+"#,
+        )
+        .await;
+}
+
+/// Passing a value of the wrong type to a typed parameter emits `InvalidArgument`.
+/// The diagnostic range covers the offending argument expression.
+#[tokio::test]
+async fn argument_type_mismatch_detected() {
+    let mut server = TestServer::new().await;
+    server
+        .check_diagnostics(
+            r#"<?php
+function takes_string(string $s): void {}
+function wrap(): void {
+    takes_string(42);
+//               ^^ error: takes_string
+}
+"#,
+        )
+        .await;
+}
+
+/// Passing too *many* arguments to a user-defined function — a genuine arity
+/// over-application — is not yet detected by `mir-analyzer`. Remove `#[ignore]`
+/// once the analyzer covers this case.
+#[ignore = "mir-analyzer gap: too-many-arguments not detected"]
+#[tokio::test]
+async fn argument_count_too_many_detected() {
+    let mut server = TestServer::new().await;
+    server
+        .check_diagnostics(
+            r#"<?php
+function takes_one(string $s): void {}
+function wrap(): void {
+    takes_one('a', 'b', 'c');
+//  ^^^^^^^^^^^^^^^^^^^^^^^^^ error: takes_one
+}
+"#,
+        )
+        .await;
+}
