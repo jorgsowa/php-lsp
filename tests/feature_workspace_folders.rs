@@ -4,8 +4,8 @@
 mod common;
 
 use common::TestServer;
+use common::{render_document_symbols, render_hover, render_workspace_symbols};
 use expect_test::expect;
-use serde_json::json;
 use std::time::{Duration, Instant};
 use tower_lsp::lsp_types::Url;
 
@@ -109,13 +109,8 @@ async fn add_workspace_folder_indexes_php_classes() {
     poll_until_symbol_present(&mut server, "ExtraWidget", Duration::from_secs(5)).await;
 
     let resp = server.workspace_symbols("ExtraWidget").await;
-    let symbols = resp["result"].as_array().cloned().unwrap_or_default();
-    assert!(
-        symbols
-            .iter()
-            .any(|s| s["name"].as_str() == Some("ExtraWidget")),
-        "ExtraWidget must appear after adding folder, got: {symbols:?}"
-    );
+    let out = render_workspace_symbols(&resp, &folder_uri);
+    expect![[r#"Class       ExtraWidget @ ExtraWidget.php:1"#]].assert_eq(&out);
 }
 
 #[tokio::test]
@@ -129,14 +124,13 @@ async fn add_empty_workspace_folder_does_not_crash() {
         .to_string();
 
     server.add_workspace_folder(&folder_uri).await;
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    poll_until_symbol_present(&mut server, "User", Duration::from_secs(3)).await;
 
-    let resp = server.workspace_symbols("User").await;
-    let symbols = resp["result"].as_array().cloned().unwrap_or_default();
-    assert!(
-        symbols.iter().any(|s| s["name"].as_str() == Some("User")),
-        "User from psr4-mini must still be accessible, got: {symbols:?}"
-    );
+    let out = server.snapshot_workspace_symbols("User").await;
+    expect!["Class       User @ src/Model/User.php:4"].assert_eq(&out);
+
+    let out = server.snapshot_workspace_symbols("NonExistent").await;
+    expect![[r#"<no symbols>"#]].assert_eq(&out);
 }
 
 #[tokio::test]
@@ -160,15 +154,8 @@ async fn add_workspace_folder_idempotent_on_duplicate() {
     poll_until_symbol_present(&mut server, "UniqueGadget", Duration::from_secs(5)).await;
 
     let resp = server.workspace_symbols("UniqueGadget").await;
-    let symbols = resp["result"].as_array().cloned().unwrap_or_default();
-    let count = symbols
-        .iter()
-        .filter(|s| s["name"].as_str() == Some("UniqueGadget"))
-        .count();
-    assert_eq!(
-        count, 1,
-        "UniqueGadget must appear exactly once (not duplicated), got: {symbols:?}"
-    );
+    let out = render_workspace_symbols(&resp, &folder_uri);
+    expect![[r#"Class       UniqueGadget @ UniqueGadget.php:1"#]].assert_eq(&out);
 }
 
 #[tokio::test]
@@ -179,16 +166,11 @@ async fn remove_workspace_folder_does_not_crash_and_keeps_indexed_docs() {
     let root_uri = server.uri("").trim_end_matches('/').to_string();
     server.remove_workspace_folder(&root_uri).await;
 
-    let resp = server.workspace_symbols("User").await;
-    assert!(
-        resp["error"].is_null(),
-        "workspace_symbols must not error after remove_workspace_folder: {resp:?}"
-    );
-    let symbols = resp["result"].as_array().cloned().unwrap_or_default();
-    assert!(
-        symbols.iter().any(|s| s["name"].as_str() == Some("User")),
-        "User must remain accessible after folder removal (docs stay in memory): {symbols:?}"
-    );
+    // Removing a folder keeps already-indexed docs in memory (no negative
+    // assertion possible here since the root folder was removed and its
+    // symbols remain accessible by design).
+    let out = server.snapshot_workspace_symbols("User").await;
+    expect!["Class       User @ src/Model/User.php:4"].assert_eq(&out);
 }
 
 // ── workspace-scan edge cases ─────────────────────────────────────────────────
@@ -201,12 +183,12 @@ async fn workspace_without_composer_json_still_works() {
     let (text, line, ch) = server.locate("src/standalone.php", "standalone", 0);
     server.open("src/standalone.php", &text).await;
     let resp = server.hover("src/standalone.php", line, ch).await;
-    assert!(resp["error"].is_null(), "hover errored: {resp:?}");
-    let contents = resp["result"]["contents"].to_string();
-    assert!(
-        contents.contains("standalone") && contents.contains("int"),
-        "hover must work without composer.json, got: {contents}"
-    );
+    let out = render_hover(&resp);
+    expect![[r#"
+        ```php
+        function standalone(int $n): int
+        ```"#]]
+    .assert_eq(&out);
 }
 
 #[tokio::test]
@@ -214,25 +196,17 @@ async fn nonexistent_psr4_dir_does_not_crash_server() {
     let mut server = TestServer::with_fixture("missing-psr4-dir").await;
     server.wait_for_index_ready().await;
 
-    let resp = server.workspace_symbols("Alive").await;
-    let symbols = resp["result"].as_array().cloned().unwrap_or_default();
-    assert!(
-        symbols.iter().any(|s| {
-            s["location"]["uri"]
-                .as_str()
-                .map(|u| u.ends_with("src/Present/Alive.php"))
-                .unwrap_or(false)
-        }),
-        "Alive in existing PSR-4 root must be indexed despite missing sibling dir: {symbols:?}"
-    );
+    let out = server.snapshot_workspace_symbols("Alive").await;
+    expect!["Class       Alive @ src/Present/Alive.php:4"].assert_eq(&out);
 
     let (text, _, _) = server.locate("src/Present/Alive.php", "<?php", 0);
     server.open("src/Present/Alive.php", &text).await;
     let resp = server.document_symbols("src/Present/Alive.php").await;
-    assert!(
-        resp["error"].is_null(),
-        "documentSymbol errored with missing PSR-4 dir: {resp:?}"
-    );
+    let out = render_document_symbols(&resp);
+    expect![[r#"
+        Class Alive @L4
+          Method hello @L6"#]]
+    .assert_eq(&out);
 }
 
 #[tokio::test]
@@ -244,23 +218,11 @@ async fn malformed_composer_json_does_not_crash_server() {
     server.open("src/Thing.php", &text).await;
 
     let resp = server.document_symbols("src/Thing.php").await;
-    assert!(
-        resp["error"].is_null(),
-        "documentSymbol errored after malformed composer: {resp:?}"
-    );
-    let result = &resp["result"];
-    let has_thing = result
-        .as_array()
-        .map(|arr| {
-            arr.iter().any(|s| {
-                s["name"].as_str() == Some("Thing") || s["name"].as_str() == Some("App\\Thing")
-            })
-        })
-        .unwrap_or(false);
-    assert!(
-        has_thing,
-        "expected `Thing` in document symbols despite broken composer, got: {result:?}"
-    );
+    let out = render_document_symbols(&resp);
+    expect![[r#"
+        Class Thing @L4
+          Method go @L6"#]]
+    .assert_eq(&out);
 }
 
 // ── workspace/didCreateFiles / didDeleteFiles / didRenameFiles ────────────────
@@ -289,22 +251,8 @@ async fn did_rename_files_updates_index_to_new_path() {
     )
     .await;
 
-    let post = server.workspace_symbols("User").await;
-    let post_symbols = post["result"].as_array().cloned().unwrap_or_default();
-    assert!(
-        !post_symbols.iter().any(|s| s["location"]["uri"]
-            .as_str()
-            .map(|u| u.contains("Model/User.php"))
-            .unwrap_or(false)),
-        "old URI must not appear after rename: {post_symbols:?}"
-    );
-    assert!(
-        post_symbols.iter().any(|s| s["location"]["uri"]
-            .as_str()
-            .map(|u| u.contains("Entity/User.php"))
-            .unwrap_or(false)),
-        "new URI must appear after rename: {post_symbols:?}"
-    );
+    let out = server.snapshot_workspace_symbols("User").await;
+    expect!["Class       User @ src/Entity/User.php:4"].assert_eq(&out);
 }
 
 #[tokio::test]
@@ -330,12 +278,8 @@ async fn did_create_files_adds_new_class_to_index() {
 
     poll_until_symbol_present(&mut server, "OrderRepo", Duration::from_secs(3)).await;
 
-    let post = server.workspace_symbols("OrderRepo").await;
-    let symbols = post["result"].as_array().cloned().unwrap_or_default();
-    assert!(
-        !symbols.is_empty(),
-        "OrderRepo must be discoverable after did_create_files: {symbols:?}"
-    );
+    let out = server.snapshot_workspace_symbols("OrderRepo").await;
+    expect!["Class       OrderRepo @ src/Repository/OrderRepo.php:2"].assert_eq(&out);
 }
 
 #[tokio::test]
@@ -352,6 +296,11 @@ async fn did_delete_files_removes_class_and_clears_diagnostics() {
     let results = server.did_delete_files(vec![uri]).await;
 
     let diag_notif = &results[0];
+    let notif_uri = diag_notif["params"]["uri"].as_str().unwrap_or("");
+    assert!(
+        notif_uri.contains("Model/User.php"),
+        "publishDiagnostics must be for User.php, got URI: {notif_uri}"
+    );
     let diagnostics = diag_notif["params"]["diagnostics"]
         .as_array()
         .cloned()
@@ -394,16 +343,12 @@ async fn changed_event_does_not_overwrite_open_editor_file() {
     server.did_change_watched_files(vec![(uri, CHANGED)]).await;
 
     let resp = server.hover("editor.php", 1, 10).await;
-    assert!(resp["error"].is_null(), "hover errored: {resp:?}");
-    let contents = resp["result"]["contents"].to_string();
-    assert!(
-        contents.contains("editorVersion"),
-        "hover must reflect the editor's version after CHANGED event, got: {contents}"
-    );
-    assert!(
-        !contents.contains("diskVersion"),
-        "hover must NOT reflect the on-disk version — open file guard failed, got: {contents}"
-    );
+    let out = render_hover(&resp);
+    expect![[r#"
+        ```php
+        function editorVersion(): void
+        ```"#]]
+    .assert_eq(&out);
 }
 
 #[tokio::test]
