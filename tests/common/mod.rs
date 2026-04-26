@@ -13,5 +13,7 @@ mod render;
 mod server;
 
 pub use client::TestClient;
-pub use render::{canonicalize_workspace_edit, render_hover};
+pub use render::{
+    canonicalize_workspace_edit, render_document_symbols, render_hover, render_workspace_symbols,
+};
 pub use server::{OpenedFixture, TestServer};

@@ -923,23 +923,28 @@ impl LanguageServer for Backend {
         };
         for added in &params.event.added {
             if let Ok(path) = added.uri.to_file_path() {
-                {
+                let is_new = {
                     let mut roots = self.root_paths.write().unwrap();
                     if !roots.contains(&path) {
                         roots.push(path.clone());
+                        true
+                    } else {
+                        false
                     }
+                };
+                if is_new {
+                    let docs = Arc::clone(&self.docs);
+                    let open_files = self.open_files.clone();
+                    let ex = exclude_paths.clone();
+                    let path_clone = path.clone();
+                    let client = self.client.clone();
+                    tokio::spawn(async move {
+                        let cache = crate::cache::WorkspaceCache::new(&path_clone);
+                        scan_workspace(path_clone, docs, open_files, cache, &ex, max_indexed_files)
+                            .await;
+                        send_refresh_requests(&client).await;
+                    });
                 }
-                let docs = Arc::clone(&self.docs);
-                let open_files = self.open_files.clone();
-                let ex = exclude_paths.clone();
-                let path_clone = path.clone();
-                let client = self.client.clone();
-                tokio::spawn(async move {
-                    let cache = crate::cache::WorkspaceCache::new(&path_clone);
-                    scan_workspace(path_clone, docs, open_files, cache, &ex, max_indexed_files)
-                        .await;
-                    send_refresh_requests(&client).await;
-                });
             }
         }
     }

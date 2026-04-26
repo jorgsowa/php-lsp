@@ -133,7 +133,7 @@ fn completion_kind_name(k: u64) -> &'static str {
 
 // ---------- render helpers ----------
 
-pub(crate) fn render_document_symbols(resp: &Value) -> String {
+pub fn render_document_symbols(resp: &Value) -> String {
     if let Some(err) = resp.get("error").filter(|e| !e.is_null()) {
         return format!("error: {err}");
     }
@@ -164,7 +164,7 @@ pub(crate) fn render_document_symbols(resp: &Value) -> String {
     out.trim_end().to_owned()
 }
 
-pub(crate) fn render_workspace_symbols(resp: &Value, root_uri: &str) -> String {
+pub fn render_workspace_symbols(resp: &Value, root_uri: &str) -> String {
     if let Some(err) = resp.get("error").filter(|e| !e.is_null()) {
         return format!("error: {err}");
     }
