@@ -391,6 +391,7 @@ impl DocumentStore {
         let ws = self.workspace;
         let key = key.to_string();
         self.snapshot_query(move |db| {
+            warm_file_refs_parallel(db, ws);
             crate::db::refs::symbol_refs(db, ws, key.clone())
                 .0
                 .as_ref()
@@ -421,14 +422,13 @@ impl DocumentStore {
     /// subsequent `textDocument/references` / `prepare_rename` / call-hierarchy
     /// lookups hit the memo instead of paying first-call latency.
     ///
-    /// Implemented by asking `symbol_refs` for a sentinel key that no real
-    /// symbol matches — the query still iterates every file's `file_refs`
-    /// and populates salsa's memo along the way, but the returned `Vec` is
-    /// empty and discarded.
+    /// Uses parallel warming (`warm_file_refs_parallel`) so all `file_refs`
+    /// complete concurrently; `symbol_refs` then only aggregates memos.
     pub fn warm_reference_index(&self) {
         self.sync_workspace_files();
         let ws = self.workspace;
         let _ = self.snapshot_query(move |db| {
+            warm_file_refs_parallel(db, ws);
             crate::db::refs::symbol_refs(db, ws, String::from("__phplsp_warmup__"))
                 .0
                 .clone()
@@ -577,6 +577,42 @@ impl DocumentStore {
             .filter_map(|u| self.get_doc_salsa(&u).map(|d| (u, d)))
             .collect()
     }
+}
+
+/// Run `file_refs` for every workspace file in parallel.
+///
+/// `db` clones are cheap (they share the same `Arc<Zalsa>` memo store), so
+/// results computed on any clone are immediately visible to all others at the
+/// same revision.  After this returns, the sequential loop inside `symbol_refs`
+/// only does cheap memo lookups instead of running `StatementsAnalyzer` on
+/// every file one-by-one.
+///
+/// Per-task `salsa::Cancelled` is caught and swallowed.  If the revision was
+/// bumped, the main thread's next salsa call inside `symbol_refs` will raise
+/// `Cancelled` too and `snapshot_query` retries the whole operation from
+/// scratch.  If the revision was not bumped, any file whose task was cancelled
+/// before completion simply has no memo entry and `symbol_refs`'s sequential
+/// loop recomputes it.
+fn warm_file_refs_parallel(
+    db: &crate::db::analysis::RootDatabase,
+    ws: crate::db::input::Workspace,
+) {
+    let files: Vec<_> = ws.files(db).iter().copied().collect();
+    // Pre-clone one snapshot per file before entering the scope.
+    // RootDatabase: Send (ZalsaLocal owns its RefCell; Arc<Zalsa> is Sync),
+    // but RootDatabase: !Sync, so we must avoid sharing &RootDatabase across
+    // threads.  Collecting owned clones first and moving each into its task
+    // requires only Send, not Sync.
+    let snaps: Vec<crate::db::analysis::RootDatabase> = files.iter().map(|_| db.clone()).collect();
+    rayon::scope(move |s| {
+        for (sf, snap) in files.into_iter().zip(snaps) {
+            s.spawn(move |_| {
+                let _ = salsa::Cancelled::catch(std::panic::AssertUnwindSafe(|| {
+                    crate::db::refs::file_refs(&snap, ws, sf);
+                }));
+            });
+        }
+    });
 }
 
 #[cfg(test)]
