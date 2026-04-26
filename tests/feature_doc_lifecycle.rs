@@ -1,6 +1,10 @@
+//! Document lifecycle: didClose, didSave, willSaveWaitUntil, didChange,
+//! and basic endpoint wiring (documentLink, inlineValue).
+
 mod common;
 
 use common::TestServer;
+use serde_json::json;
 
 // --- did_close ---
 
@@ -34,7 +38,6 @@ async fn did_close_unopened_does_not_crash() {
     let mut server = TestServer::new().await;
     let uri = server.uri("never_opened.php");
 
-    // The handler publishes an empty array even for unknown files.
     server.close("never_opened.php").await;
     let notif = server.client().wait_for_diagnostics(&uri).await;
     assert!(
@@ -117,8 +120,6 @@ async fn will_save_wait_until_returns_null_or_edits_for_unformatted_file() {
     let resp = server.will_save_wait_until("wswu_ugly.php").await;
     assert!(resp["error"].is_null(), "unexpected error: {resp:?}");
 
-    // If a PHP formatter is installed the result is a non-empty array of TextEdits.
-    // If no formatter is available the handler returns null — both are valid.
     let result = &resp["result"];
     if let Some(edits) = result.as_array() {
         for edit in edits {
@@ -134,4 +135,74 @@ async fn will_save_wait_until_returns_null_or_edits_for_unformatted_file() {
     } else {
         assert!(result.is_null(), "expected null or array, got: {result:?}");
     }
+}
+
+// --- didChange ---
+
+#[tokio::test]
+async fn did_change_updates_document() {
+    let mut server = TestServer::new().await;
+    server.open("change.php", "<?php\n").await;
+
+    server
+        .change("change.php", 2, "<?php\nfunction updated() {}\n")
+        .await;
+
+    let resp = server.hover("change.php", 1, 10).await;
+
+    assert!(
+        resp["error"].is_null(),
+        "hover after change should not error"
+    );
+}
+
+// --- endpoint wiring ---
+
+#[tokio::test]
+async fn document_link_returns_array() {
+    let mut server = TestServer::new().await;
+    server
+        .open("dlink.php", "<?php\nrequire_once 'vendor/autoload.php';\n")
+        .await;
+
+    let resp = server.document_link("dlink.php").await;
+
+    assert!(resp["error"].is_null(), "documentLink error: {:?}", resp);
+    let links = resp["result"]
+        .as_array()
+        .expect("documentLink must return an array");
+    assert!(
+        !links.is_empty(),
+        "expected at least one link for require_once path"
+    );
+}
+
+#[tokio::test]
+async fn inline_value_returns_array() {
+    let mut server = TestServer::new().await;
+    server
+        .open("inlval.php", "<?php\n$x = 42;\n$y = $x + 1;\n")
+        .await;
+
+    let resp = server.inline_value("inlval.php", 2, 0, 2, 10).await;
+
+    assert!(resp["error"].is_null(), "inlineValue error: {:?}", resp);
+    let values = resp["result"]
+        .as_array()
+        .expect("inlineValue must return an array when variables are in range");
+    assert_eq!(values.len(), 2, "expected exactly $y and $x on line 2");
+    let names: Vec<&str> = values
+        .iter()
+        .filter_map(|v| v["variableName"].as_str())
+        .collect();
+    assert!(
+        names.contains(&"y"),
+        "expected variable 'y' ($y), got: {:?}",
+        names
+    );
+    assert!(
+        names.contains(&"x"),
+        "expected variable 'x' ($x), got: {:?}",
+        names
+    );
 }

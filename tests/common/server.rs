@@ -34,7 +34,7 @@ fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::
 
 // ---------- fluent builder ----------
 
-/// High-level E2E test harness. Wraps `TestClient` and handles the boring
+/// High-level test harness. Wraps `TestClient` and handles the boring
 /// parts: initialize handshake, didOpen + wait-for-diagnostics, URI building
 /// from short paths.
 ///

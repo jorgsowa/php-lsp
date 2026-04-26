@@ -1,4 +1,4 @@
-//! Shared E2E test harness: a real LSP server wired over in-memory duplex
+//! Shared test harness: a real LSP server wired over in-memory duplex
 //! streams, plus a fluent `TestServer` builder to cut down on JSON-RPC
 //! boilerplate in tests.
 //!

@@ -1,6 +1,6 @@
 # tests/fixtures
 
-Vendored real-world PHP projects used by E2E tests. Each fixture is copied
+Vendored real-world PHP projects used by integration tests. Each fixture is copied
 into a fresh `TempDir` per test via `TestServer::with_fixture(name)`, so
 tests can mutate files without contaminating siblings.
 
@@ -42,4 +42,4 @@ extensions, abstract controllers, traits, interfaces — a realistic workload
 for cross-file goto-definition, references, and workspace symbol search.
 
 To upgrade the pin: re-run the acquisition against a newer tag, update the
-commit SHA above, and run `cargo test --test 'e2e_symfony*'`.
+commit SHA above, and run `cargo test --test 'feature_symfony*' -- --ignored`.

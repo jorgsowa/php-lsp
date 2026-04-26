@@ -1,3 +1,5 @@
+//! Text formatting: document formatting, range formatting, and on-type formatting.
+
 mod common;
 
 use common::TestServer;
@@ -12,7 +14,6 @@ async fn formatting_returns_null_or_valid_edits() {
     let resp = server.formatting("fmt.php").await;
 
     assert!(resp["error"].is_null(), "formatting error: {:?}", resp);
-    // null = no formatter installed on this machine; array = formatter produced edits
     match resp["result"].as_array() {
         None => assert!(
             resp["result"].is_null(),
@@ -96,12 +97,10 @@ async fn on_type_formatting_unknown_trigger_returns_null() {
 #[tokio::test]
 async fn on_type_formatting_close_brace_deindents() {
     let mut server = TestServer::new().await;
-    // Line 2 has "    }" (4-space indent); the matching `{` on line 1 has 0 indent.
     server
         .open("otfmt2.php", "<?php\nif (true) {\n    }\n")
         .await;
 
-    // Cursor is at line 2, character 4 (just after the indent, on `}`).
     let resp = server.on_type_formatting("otfmt2.php", 2, 4, "}").await;
 
     assert!(

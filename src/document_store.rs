@@ -832,7 +832,7 @@ mod tests {
     #[test]
     fn seed_cached_slice_then_edit_invalidates() {
         let store = DocumentStore::new();
-        let u = uri("/seed_e2e.php");
+        let u = uri("/seed_test.php");
 
         // Mirror the initial text — classes: "Real".
         store.mirror_text(&u, "<?php\nclass Real {}");

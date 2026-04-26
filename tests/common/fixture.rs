@@ -1,4 +1,4 @@
-//! Multi-file fixture DSL for E2E tests.
+//! Multi-file fixture DSL for integration tests.
 //!
 //! Lets a single string describe a whole workspace:
 //!

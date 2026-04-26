@@ -549,7 +549,7 @@ directly: `open_then_get_returns_text`, `update_replaces_text`,
 `index_does_not_overwrite_open_file`, `open_caches_diagnostics_for_invalid_file`,
 `get_index_salsa_matches_legacy_get_index`,
 `get_doc_salsa_matches_legacy_open_state`, and
-`get_returns_none_for_unknown_uri`). Integration suites (all 57 E2E
+`get_returns_none_for_unknown_uri`). Integration suites (all 57 wire-protocol
 tests + Symfony suite) pass unchanged — the Backend-side open-file
 semantics are the same contract, just owned by a different struct.
 
@@ -757,7 +757,7 @@ should bake this in.
 
 **Validation**: G1 done. G2/G3/G4 each need their own compare run.
 
-### Phase H — fix benches and add E2E regression gate ✅ shipped 2026-04-22
+### Phase H — fix benches and add integration regression gate ✅ shipped 2026-04-22
 
 **Bench compilation** — `benches/requests.rs` and `benches/semantic.rs`
 both compile and run end-to-end on this branch; the E3-era signature

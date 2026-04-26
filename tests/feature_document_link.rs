@@ -1,3 +1,5 @@
+//! Document link resolution: require/require_once paths and @link docblocks.
+
 mod common;
 
 use common::TestServer;
@@ -96,8 +98,6 @@ async fn document_link_range_is_inside_quotes() {
     // Source line 1: `require 'abc.php';`
     // "require " = 8 chars, opening quote `'` at col 8, content starts at col 9.
     // "abc.php" = 7 chars, so end character = 9 + 7 = 16.
-    // The implementation sets span.start to the opening quote, then adds 1 for
-    // content_offset, so the range covers only the path string inside the quotes.
     let mut server = TestServer::new().await;
     server.open("rng.php", "<?php\nrequire 'abc.php';\n").await;
     let resp = server.document_link("rng.php").await;
