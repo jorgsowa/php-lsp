@@ -256,75 +256,11 @@ pub fn find_references_codebase_with_target(
             Some(locations)
         }
 
-        Some(SymbolKind::Class) => {
-            // When the caller resolved a specific FQCN, use it exactly — don't
-            // union classes/interfaces/traits/enums that merely share the short name.
-            let fqcns: Vec<Arc<str>> = if let Some(t) = target_fqn.filter(|t| t.contains('\\')) {
-                let mut v: Vec<Arc<str>> = Vec::new();
-                if let Some(e) = codebase.classes.get(t) {
-                    v.push(e.key().clone());
-                } else if let Some(e) = codebase.interfaces.get(t) {
-                    v.push(e.key().clone());
-                } else if let Some(e) = codebase.traits.get(t) {
-                    v.push(e.key().clone());
-                } else if let Some(e) = codebase.enums.get(t) {
-                    v.push(e.key().clone());
-                } else {
-                    return None;
-                }
-                v
-            } else {
-                let mut v: Vec<Arc<str>> = Vec::new();
-                let short_matches =
-                    |fqcn: &Arc<str>| fqcn.rsplit('\\').next().unwrap_or(fqcn.as_ref()) == word;
-                for e in codebase.classes.iter() {
-                    if short_matches(e.key()) {
-                        v.push(e.key().clone());
-                    }
-                }
-                for e in codebase.interfaces.iter() {
-                    if short_matches(e.key()) {
-                        v.push(e.key().clone());
-                    }
-                }
-                for e in codebase.traits.iter() {
-                    if short_matches(e.key()) {
-                        v.push(e.key().clone());
-                    }
-                }
-                for e in codebase.enums.iter() {
-                    if short_matches(e.key()) {
-                        v.push(e.key().clone());
-                    }
-                }
-                v
-            };
-
-            if fqcns.is_empty() {
-                return None;
-            }
-
-            let mut call_site_count = 0usize;
-            let mut locations: Vec<Location> = Vec::new();
-            for fqcn in &fqcns {
-                for (file, start, end) in lookup_refs(fqcn) {
-                    if let Some(loc) = spans_to_location(&file, start, end) {
-                        locations.push(loc);
-                        call_site_count += 1;
-                    }
-                }
-                if include_declaration
-                    && let Some(decl) = codebase.get_symbol_location(fqcn)
-                    && let Some(loc) = spans_to_location(&decl.file, decl.start, decl.end)
-                {
-                    locations.push(loc);
-                }
-            }
-            if call_site_count == 0 {
-                return None;
-            }
-            Some(locations)
-        }
+        // The mir index records ClassReference only for `new Foo()` expressions, not
+        // for type hints, `extends`, `implements`, or `instanceof`. Using the index
+        // would silently drop those sites when any `new` call exists. Always fall
+        // through to the AST walker (class_refs_in_stmts) which covers all sites.
+        Some(SymbolKind::Class) => None,
 
         Some(SymbolKind::Method) => {
             let word_lower = word.to_lowercase();
