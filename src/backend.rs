@@ -323,6 +323,40 @@ impl OpenFiles {
     }
 }
 
+/// Build the full diagnostic bundle for an already-open file.
+///
+/// Reuses cached parse diagnostics from `OpenFiles` (set by the file's own
+/// debounced parse) and recomputes the rest:
+/// - `duplicate_declaration_diagnostics` is intra-file (AST walk over the
+///   doc's own statements), so a dependency change does NOT change its
+///   result — but it's cheap and keeps this helper a single source of
+///   truth for "the diagnostic bundle for `uri`".
+/// - `semantic_issues` is salsa-cached; for files unaffected by the
+///   triggering change it's a cache hit.
+///
+/// Used both for the originating file (during `did_open`/`did_change`) and
+/// when proactively republishing diagnostics to other open files after a
+/// dependency edit. Salsa-blocking — call from a `spawn_blocking` if invoked
+/// off the originating file's debounce path.
+fn compute_open_file_diagnostics(
+    docs: &DocumentStore,
+    open_files: &OpenFiles,
+    uri: &Url,
+    diag_cfg: &DiagnosticsConfig,
+) -> Vec<Diagnostic> {
+    let mut out = open_files.parse_diagnostics(uri).unwrap_or_default();
+    let source = open_files.text(uri).unwrap_or_default();
+    if let Some(d) = open_files.get_doc(docs, uri) {
+        out.extend(duplicate_declaration_diagnostics(&source, &d, diag_cfg));
+    }
+    if let Some(issues) = docs.get_semantic_issues_salsa(uri) {
+        out.extend(crate::semantic_diagnostics::issues_to_diagnostics(
+            &issues, uri, diag_cfg,
+        ));
+    }
+    out
+}
+
 pub struct Backend {
     client: Client,
     docs: Arc<DocumentStore>,
@@ -952,7 +986,41 @@ impl LanguageServer for Backend {
                 &issues, &uri, &diag_cfg,
             ));
         }
-        self.client.publish_diagnostics(uri, all_diags, None).await;
+        // Publish for the opened file FIRST — see did_change for why ordering matters.
+        self.client
+            .publish_diagnostics(uri.clone(), all_diags, None)
+            .await;
+
+        // Cross-file republish: opening a file that defines new symbols can
+        // clear `UndefinedClass`/`UndefinedFunction` errors in already-open
+        // dependents. Symmetric to the loop in did_change.
+        let docs_dep = Arc::clone(&self.docs);
+        let open_files_dep = self.open_files.clone();
+        let diag_cfg_dep = diag_cfg.clone();
+        let opened_uri = uri.clone();
+        let dependents = tokio::task::spawn_blocking(move || {
+            let mut out: Vec<(Url, Vec<Diagnostic>)> = Vec::new();
+            for other in open_files_dep.urls() {
+                if other == opened_uri {
+                    continue;
+                }
+                let diags = compute_open_file_diagnostics(
+                    &docs_dep,
+                    &open_files_dep,
+                    &other,
+                    &diag_cfg_dep,
+                );
+                out.push((other, diags));
+            }
+            out
+        })
+        .await
+        .unwrap_or_default();
+        for (dep_uri, dep_diags) in dependents {
+            self.client
+                .publish_diagnostics(dep_uri, dep_diags, None)
+                .await;
+        }
     }
 
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
@@ -1019,7 +1087,47 @@ impl LanguageServer for Backend {
 
                 let mut all_diags = diagnostics;
                 all_diags.extend(extra);
-                client.publish_diagnostics(uri, all_diags, None).await;
+                // Publish for the changed file FIRST. Test harnesses (and
+                // some clients) consume publishDiagnostics for unrelated
+                // URIs while waiting for one specific URI; reversing this
+                // order would silently swallow the changed file's publish.
+                client
+                    .publish_diagnostics(uri.clone(), all_diags, None)
+                    .await;
+
+                // Cross-file republish: a dependency change may invalidate
+                // diagnostics in other open files. We re-query each open
+                // file's diagnostics (salsa-cached for unaffected files,
+                // recomputed for affected ones) and publish the result.
+                //
+                // Race window: if `other` is being edited concurrently, its
+                // own debounced did_change will still fire a republish, so
+                // any briefly-stale publish here self-corrects within ~100ms.
+                let docs_dep = Arc::clone(&docs);
+                let open_files_dep = open_files.clone();
+                let diag_cfg_dep = diag_cfg.clone();
+                let changed_uri = uri.clone();
+                let dependents = tokio::task::spawn_blocking(move || {
+                    let mut out: Vec<(Url, Vec<Diagnostic>)> = Vec::new();
+                    for other in open_files_dep.urls() {
+                        if other == changed_uri {
+                            continue;
+                        }
+                        let diags = compute_open_file_diagnostics(
+                            &docs_dep,
+                            &open_files_dep,
+                            &other,
+                            &diag_cfg_dep,
+                        );
+                        out.push((other, diags));
+                    }
+                    out
+                })
+                .await
+                .unwrap_or_default();
+                for (dep_uri, dep_diags) in dependents {
+                    client.publish_diagnostics(dep_uri, dep_diags, None).await;
+                }
             }
         });
     }
