@@ -4,6 +4,7 @@
 mod common;
 
 use common::TestServer;
+use expect_test::expect;
 use serde_json::json;
 use std::time::{Duration, Instant};
 use tower_lsp::lsp_types::Url;
