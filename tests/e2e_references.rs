@@ -554,6 +554,101 @@ echo $p->name;
     assert!(hits.contains(&6), "`$p->name` (line 6) missing: {hits:?}");
 }
 
+/// `include_declaration=false` on a constructor must return only `new Foo()`
+/// call sites — the constructor declaration itself must be absent.
+#[tokio::test]
+async fn references_on_constructor_with_include_declaration_false() {
+    let mut server = TestServer::new().await;
+    let opened = server
+        .open_fixture(
+            r#"<?php
+class Invoice {
+    public function __con$0struct(int $id) {}
+}
+$a = new Invoice(1);
+$b = new Invoice(2);
+"#,
+        )
+        .await;
+    let c = opened.cursor();
+
+    let resp = server.references(&c.path, c.line, c.character, false).await;
+    assert!(resp["error"].is_null(), "references error: {resp:?}");
+
+    let hits: Vec<u32> = resp["result"]
+        .as_array()
+        .expect("expected array")
+        .iter()
+        .map(|l| l["range"]["start"]["line"].as_u64().unwrap() as u32)
+        .collect();
+
+    // Lines: 0=<?php  1=class Invoice {  2=__construct  3=}  4=new(1)  5=new(2)
+    assert!(
+        hits.contains(&4),
+        "`new Invoice(1)` (line 4) missing: {hits:?}"
+    );
+    assert!(
+        hits.contains(&5),
+        "`new Invoice(2)` (line 5) missing: {hits:?}"
+    );
+    // The constructor declaration on line 2 must NOT appear.
+    assert!(
+        !hits.contains(&2),
+        "__construct decl (line 2) must be excluded when include_declaration=false: {hits:?}"
+    );
+    assert_eq!(hits.len(), 2, "expected exactly 2 call sites: {hits:?}");
+}
+
+/// Cross-file promoted property: accessing via `->prop` in another file must
+/// be found when cursor is on the promoted param in the declaring file.
+#[tokio::test]
+async fn references_on_promoted_property_cross_file() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("entity.php"),
+        "<?php\nclass User {\n    public function __construct(public readonly string $email) {}\n}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("service.php"),
+        "<?php\nfunction notify(User $u): void {\n    echo $u->email;\n    echo $u?->email;\n}\n",
+    )
+    .unwrap();
+
+    let mut server = TestServer::with_root(dir.path()).await;
+    server.wait_for_index_ready().await;
+
+    let (text, _, _) = server.locate("entity.php", "<?php", 0);
+    server.open("entity.php", &text).await;
+
+    let (_, line, col) = server.locate("entity.php", "$email", 0);
+    // Cursor on the `$email` promoted param.
+    let resp = server.references("entity.php", line, col + 1, false).await;
+    assert!(resp["error"].is_null(), "references error: {resp:?}");
+
+    let service_uri = server.uri("service.php");
+    let hits: Vec<(String, u32)> = resp["result"]
+        .as_array()
+        .unwrap_or_else(|| panic!("expected array: {resp:?}"))
+        .iter()
+        .map(|l| {
+            (
+                l["uri"].as_str().unwrap().to_string(),
+                l["range"]["start"]["line"].as_u64().unwrap() as u32,
+            )
+        })
+        .collect();
+
+    assert!(
+        hits.contains(&(service_uri.clone(), 2)),
+        "`$u->email` (service.php:2) missing: {hits:?}"
+    );
+    assert!(
+        hits.contains(&(service_uri.clone(), 3)),
+        "`$u?->email` (service.php:3) missing: {hits:?}"
+    );
+}
+
 #[tokio::test]
 async fn references_finds_all_usages_of_function() {
     let mut server = TestServer::new().await;

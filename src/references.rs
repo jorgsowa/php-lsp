@@ -436,6 +436,13 @@ pub fn find_references_codebase_with_target(
                                             |m| m.location.as_ref().map(|l| l.file.clone()),
                                         )
                                     })
+                                })
+                                .or_else(|| {
+                                    codebase.traits.get(owner.as_ref()).and_then(|e| {
+                                        e.value().own_methods.get(word_lower.as_str()).and_then(
+                                            |m| m.location.as_ref().map(|l| l.file.clone()),
+                                        )
+                                    })
                                 });
                         let Some(decl_file) = decl_file else { continue };
                         let Some((url, doc)) = all_docs
