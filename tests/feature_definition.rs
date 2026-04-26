@@ -165,3 +165,54 @@ class B implements Writable { public function write(): void {} }
         main.php:3:6-3:7"#]]
     .assert_eq(&out);
 }
+
+#[tokio::test]
+async fn definition_trait_use_resolves_to_trait_decl() {
+    let mut s = TestServer::new().await;
+    s.check_definition_annotated(
+        r#"<?php
+trait Greeting {
+//    ^^^^^^^^ def
+    public function sayHello(string $name): string { return ""; }
+}
+class Greeter {
+    use $0Greeting;
+}
+"#,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn definition_trait_method_via_this() {
+    let mut s = TestServer::new().await;
+    s.check_definition_annotated(
+        r#"<?php
+trait Greeting {
+    public function sayHello(string $name): string {
+    //              ^^^^^^^^ def
+        return "";
+    }
+}
+class Greeter {
+    use Greeting;
+    public function run(): string { return $this->$0sayHello('world'); }
+}
+"#,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn definition_on_unknown_symbol_returns_null() {
+    let mut s = TestServer::new().await;
+    s.open("unk.php", "<?php\n$x = new UnknownClass();\n").await;
+    let resp = s.definition("unk.php", 1, 13).await;
+    assert!(resp["error"].is_null(), "definition errored: {resp:?}");
+    let result = &resp["result"];
+    let is_empty = result.is_null() || result.as_array().map(|a| a.is_empty()).unwrap_or(false);
+    assert!(
+        is_empty,
+        "unknown symbol should have no definition, got: {result:?}"
+    );
+}

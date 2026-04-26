@@ -510,3 +510,27 @@ $x = new $0
         "expected Gadget in `new` completions: {labels:?}"
     );
 }
+
+#[tokio::test]
+#[ignore = "$this-> completion does not yet surface trait members — tracked as gap"]
+async fn completion_this_arrow_includes_trait_methods() {
+    let mut s = TestServer::new().await;
+    let out = s
+        .check_completion(
+            r#"<?php
+trait Counter {
+    public function tick(): void {}
+    public function reset(): void {}
+}
+class Timer {
+    use Counter;
+    public function run(): void { $this->$0t; }
+}
+"#,
+        )
+        .await;
+    assert!(
+        out.contains("tick"),
+        "expected trait method `tick` in completions, got: {out}"
+    );
+}

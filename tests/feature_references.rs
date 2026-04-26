@@ -462,3 +462,16 @@ echo $c?->key;
     )
     .await;
 }
+
+#[tokio::test]
+async fn references_on_unopened_uri_returns_empty() {
+    let mut s = TestServer::new().await;
+    let resp = s.references("ghost.php", 0, 0, false).await;
+    assert!(resp["error"].is_null(), "references errored: {resp:?}");
+    let result = &resp["result"];
+    let is_empty = result.is_null() || result.as_array().map(|a| a.is_empty()).unwrap_or(false);
+    assert!(
+        is_empty,
+        "references on unopened file should be empty, got: {result:?}"
+    );
+}

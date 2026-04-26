@@ -161,3 +161,11 @@ class Counter {
         4:48-4:53 → "total""#]]
     .assert_eq(&out);
 }
+
+#[tokio::test]
+async fn rename_on_nonexistent_symbol_does_not_error() {
+    let mut s = TestServer::new().await;
+    s.open("rn.php", "<?php\n// nothing to rename\n").await;
+    let resp = s.rename("rn.php", 1, 5, "NewName").await;
+    assert!(resp["error"].is_null(), "rename errored: {resp:?}");
+}
