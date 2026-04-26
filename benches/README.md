@@ -52,7 +52,7 @@ Three benchmarks: `parse_medium`, `index_get_all_docs`, `hover_cross_file`.
 
 ---
 
-## 3. E2E — latency + peak RSS (integration)
+## 3. Integration — latency + peak RSS
 
 Best for: measuring request latency and memory growth against a real binary.
 

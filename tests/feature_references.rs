@@ -634,7 +634,7 @@ $c->add();
 // ── Workspace-scan / fast-path tests ─────────────────────────────────────────
 
 #[tokio::test]
-async fn references_fast_path_final_class_cross_file_e2e() {
+async fn references_fast_path_final_class_cross_file() {
     let dir = tempfile::tempdir().unwrap();
 
     std::fs::write(

@@ -1,11 +1,8 @@
-//! Workspace-scale E2E smoke test for the vendored symfony/demo fixture.
+//! Workspace-scale smoke test for the vendored symfony/demo fixture.
 //!
-//! Fuller suites live in the sibling `e2e_symfony_*` files. This file
-//! keeps one smoke test so `cargo test --test e2e_symfony_demo -- --ignored`
-//! quickly answers "does the harness still work?" without running
-//! everything.
-//!
-//! All `#[ignore]`: run with `cargo test --release -- --ignored`.
+//! All tests are `#[ignore]` — run with `cargo test --release -- --ignored`
+//! to verify the full symfony fixture end-to-end without running the
+//! entire suite.
 
 mod common;
 

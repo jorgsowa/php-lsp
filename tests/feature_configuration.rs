@@ -1,3 +1,6 @@
+//! workspace/didChangeConfiguration: PHP version detection, validation,
+//! semantic-token refresh, and repeated calls.
+
 mod common;
 
 use common::TestServer;
@@ -40,7 +43,6 @@ async fn change_configuration_invalid_php_version_logs_warning() {
         .reply_to_server_request(req_id, json!([{ "phpVersion": "5.6" }]))
         .await;
 
-    // First log: WARNING about unsupported version
     let warning_msg = server.client().read_notification("window/logMessage").await;
     let warning_text = warning_msg["params"]["message"].as_str().unwrap_or("");
     assert!(
@@ -48,7 +50,6 @@ async fn change_configuration_invalid_php_version_logs_warning() {
         "expected unsupported version warning: {warning_text:?}"
     );
 
-    // Second log: INFO confirming which version was actually used
     let info_msg = server.client().read_notification("window/logMessage").await;
     let info_text = info_msg["params"]["message"].as_str().unwrap_or("");
     assert!(
@@ -77,10 +78,8 @@ async fn change_configuration_triggers_semantic_token_refresh() {
         .reply_to_server_request(req_id, json!([{ "phpVersion": "8.1" }]))
         .await;
 
-    // Wait for completion log
     let _log = server.client().read_notification("window/logMessage").await;
 
-    // The bug fix adds send_refresh_requests — at least one refresh request must now arrive
     let (refresh_id, _) = server
         .client()
         .expect_server_request("workspace/semanticTokens/refresh")
@@ -89,7 +88,6 @@ async fn change_configuration_triggers_semantic_token_refresh() {
         .client()
         .reply_to_server_request(refresh_id, json!(null))
         .await;
-    // Test passes — refresh was sent, proving the bug fix works
 }
 
 #[tokio::test]

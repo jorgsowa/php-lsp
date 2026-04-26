@@ -1,3 +1,5 @@
+//! Semantic token coverage: full, range, delta, and delta-fallback cases.
+
 mod common;
 
 use common::TestServer;
@@ -127,7 +129,6 @@ async fn semantic_tokens_delta_with_stale_previous_result_id_degrades_to_full() 
     );
     let result = &resp["result"];
     assert!(!result.is_null(), "expected a result payload, got null");
-    // Fallback is a full token set — `data` array present, non-empty.
     let data = result["data"].as_array();
     assert!(
         data.is_some() && !data.unwrap().is_empty(),
@@ -135,10 +136,6 @@ async fn semantic_tokens_delta_with_stale_previous_result_id_degrades_to_full() 
     );
 }
 
-/// Delta request before any baseline (`previousResultId` referencing an id
-/// the server has never issued) must also degrade to a full response. This
-/// catches edit-loop races where the client requests delta before the first
-/// full response has been received.
 #[tokio::test]
 async fn semantic_tokens_delta_without_baseline_degrades_to_full() {
     let mut server = TestServer::new().await;
@@ -149,7 +146,6 @@ async fn semantic_tokens_delta_without_baseline_degrades_to_full() {
         )
         .await;
 
-    // No preceding semanticTokens/full call; jump straight to delta.
     let resp = server
         .semantic_tokens_full_delta("st_noprior.php", "0")
         .await;
@@ -166,10 +162,10 @@ async fn semantic_tokens_delta_without_baseline_degrades_to_full() {
     );
 }
 
-/// After `didChange`, requesting delta with the pre-edit resultId must
-/// either (a) return an `edits` array describing the diff, or (b) fall back
-/// to a full `data` array — whichever the server chooses. What it MUST NOT
-/// do is return the old pre-edit token set unchanged.
+/// After `didChange`, requesting delta with the pre-edit resultId must reflect
+/// the new content. Either an `edits` diff or a full `data` set is acceptable,
+/// but the post-edit token count must exceed the pre-edit count since we added
+/// an entire function.
 #[tokio::test]
 async fn semantic_tokens_delta_after_didchange_reflects_new_content() {
     let mut server = TestServer::new().await;
@@ -187,7 +183,6 @@ async fn semantic_tokens_delta_after_didchange_reflects_new_content() {
         .map(|a| a.len())
         .unwrap_or(0);
 
-    // didChange: add a second function, growing the token stream.
     server
         .change(
             "st_edit.php",
@@ -202,9 +197,6 @@ async fn semantic_tokens_delta_after_didchange_reflects_new_content() {
     assert!(resp["error"].is_null(), "delta errored: {resp:?}");
     let result = &resp["result"];
 
-    // Either the server returned edits (resultId preserved or refreshed) or
-    // a full data set — in both cases the post-edit length must exceed the
-    // pre-edit length since we added an entire function.
     let got_full = result["data"].is_array();
     let got_edits = result["edits"].is_array();
     assert!(
@@ -219,7 +211,6 @@ async fn semantic_tokens_delta_after_didchange_reflects_new_content() {
             "post-edit tokens ({post_len}) must exceed pre-edit tokens ({pre_data_len})"
         );
     } else {
-        // If edits-based, at least one edit with non-empty data must exist.
         let edits = result["edits"].as_array().unwrap();
         assert!(
             edits

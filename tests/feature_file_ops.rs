@@ -1,21 +1,75 @@
-//! Tests for `workspace/willCreateFiles` stub generation.
-//!
-//! The handler generates PSR-4-aware PHP class stubs when creating new files:
-//! - PSR-4-mapped path → full `namespace` + `class` stub
-//! - Root-namespace PSR-4 mapping (empty prefix) → `class` stub without `namespace`
-//! - Path outside PSR-4 roots → minimal `<?php\n\n` stub
-//! - Multiple files in one request → a stub edit for each file
+//! File operation stubs: willRenameFiles, willCreateFiles, willDeleteFiles.
+//! Covers both rootless servers (no PSR-4 map) and PSR-4-aware fixture workspaces.
 
 mod common;
 
 use common::{TestServer, canonicalize_workspace_edit};
 use expect_test::expect;
 
-// ── Test 1: PSR-4-mapped file gets namespace + class stub ────────────────────
+// ── rootless server (no PSR-4 map) ──────────────────────────────────────────
 
-/// A file created under `src/Model/` maps to `App\Model\Product`.
-/// The server should return a workspace edit inserting a full stub with
-/// `declare(strict_types=1)`, `namespace App\Model;`, and `class Product`.
+#[tokio::test]
+async fn will_rename_files_outside_psr4_returns_null() {
+    let mut server = TestServer::new().await;
+    server
+        .open("rename_old.php", "<?php\nclass OldClass {}\n")
+        .await;
+
+    let old_uri = server.uri("rename_old.php");
+    let new_uri = server.uri("rename_new.php");
+
+    let resp = server.will_rename_files(vec![(old_uri, new_uri)]).await;
+
+    assert!(resp["error"].is_null(), "willRenameFiles error: {:?}", resp);
+    assert!(
+        resp["result"].is_null(),
+        "expected null (no PSR-4 map → no edits), got: {:?}",
+        resp["result"]
+    );
+}
+
+#[tokio::test]
+async fn will_create_files_returns_workspace_edit_with_stub() {
+    let mut server = TestServer::new().await;
+    let uri = server.uri("new_created.php");
+
+    let resp = server.will_create_files(vec![uri]).await;
+
+    assert!(resp["error"].is_null(), "willCreateFiles error: {:?}", resp);
+    assert!(
+        resp["result"].is_object(),
+        "expected WorkspaceEdit object, got: {:?}",
+        resp["result"]
+    );
+    assert!(
+        resp["result"]["changes"].is_object()
+            && !resp["result"]["changes"].as_object().unwrap().is_empty(),
+        "expected non-empty changes map in WorkspaceEdit, got: {:?}",
+        resp["result"]
+    );
+}
+
+#[tokio::test]
+async fn will_delete_files_outside_psr4_returns_null() {
+    let mut server = TestServer::new().await;
+    server
+        .open("to_delete.php", "<?php\nclass ToDelete {}\n")
+        .await;
+
+    let uri = server.uri("to_delete.php");
+
+    let resp = server.will_delete_files(vec![uri]).await;
+
+    assert!(resp["error"].is_null(), "willDeleteFiles error: {:?}", resp);
+    assert!(
+        resp["result"].is_null(),
+        "expected null (no PSR-4 map → no use-sites to remove), got: {:?}",
+        resp["result"]
+    );
+}
+
+// ── PSR-4-aware stub generation (psr4-mini fixture) ─────────────────────────
+
 #[tokio::test]
 async fn will_create_files_psr4_mapped_generates_namespace_stub() {
     let mut server = TestServer::with_fixture("psr4-mini").await;
@@ -33,10 +87,6 @@ async fn will_create_files_psr4_mapped_generates_namespace_stub() {
     .assert_eq(&snap);
 }
 
-// ── Test 2: File outside PSR-4 root gets minimal stub ───────────────────────
-
-/// A file at `scripts/bootstrap.php` is not under `src/` so it has no
-/// PSR-4 FQN. The server should return the fallback `<?php\n\n` stub.
 #[tokio::test]
 async fn will_create_files_outside_psr4_root_generates_minimal_stub() {
     let mut server = TestServer::with_fixture("psr4-mini").await;
@@ -46,8 +96,6 @@ async fn will_create_files_outside_psr4_root_generates_minimal_stub() {
     let resp = server.will_create_files(vec![uri]).await;
 
     assert!(resp["error"].is_null(), "willCreateFiles error: {resp:?}");
-    // The result must be a workspace edit with exactly one change containing
-    // the minimal stub text.
     let changes = resp["result"]["changes"]
         .as_object()
         .expect("expected a changes map");
@@ -62,11 +110,6 @@ async fn will_create_files_outside_psr4_root_generates_minimal_stub() {
     );
 }
 
-// ── Test 3: Root-namespace PSR-4 mapping produces stub without namespace ─────
-
-/// A fixture with `"": "src/"` maps every file under `src/` to a root-namespace
-/// class (no namespace prefix). The stub must include `declare(strict_types=1)`
-/// and `class Bootstrap` but no `namespace` line.
 #[tokio::test]
 async fn will_create_files_root_namespace_generates_stub_without_namespace() {
     let mut server = TestServer::with_fixture("psr4-root").await;
@@ -84,10 +127,6 @@ async fn will_create_files_root_namespace_generates_stub_without_namespace() {
     .assert_eq(&snap);
 }
 
-// ── Test 4: Multiple files in one request get independent stubs ──────────────
-
-/// Sending two URIs in one `willCreateFiles` request must produce two
-/// independent workspace-edit entries — one stub per file.
 #[tokio::test]
 async fn will_create_files_multiple_files_get_independent_stubs() {
     let mut server = TestServer::with_fixture("psr4-mini").await;
