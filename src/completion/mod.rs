@@ -501,7 +501,7 @@ pub fn filtered_completions_at(
                 // Check we're NOT in a use statement
                 let is_use = use_completion_prefix(src, pos).is_some();
                 if !is_use {
-                    let prefix_lc = prefix.to_lowercase();
+                    let prefix_lc = prefix.trim_start_matches('\\').to_lowercase();
                     let mut ns_items: Vec<CompletionItem> = Vec::new();
                     for other in other_docs {
                         let mut classes = Vec::new();
