@@ -172,3 +172,57 @@ function _wrap(): void {
     )
     .await;
 }
+
+#[tokio::test]
+async fn pull_diagnostics_returns_report() {
+    let mut server = TestServer::new().await;
+    server.open("pull_diag.php", "<?php\n$x = 1;\n").await;
+
+    let resp = server.pull_diagnostics("pull_diag.php").await;
+
+    assert!(
+        resp["error"].is_null(),
+        "textDocument/diagnostic error: {:?}",
+        resp
+    );
+    let result = &resp["result"];
+    assert!(!result.is_null(), "expected non-null diagnostic report");
+    // First pull on a freshly-opened file must be a full report, not unchanged.
+    assert_eq!(
+        result["kind"].as_str(),
+        Some("full"),
+        "first pull must return kind='full', got: {:?}",
+        result["kind"]
+    );
+    // Clean file has no diagnostics.
+    let items = result["items"]
+        .as_array()
+        .expect("'items' array in full report");
+    assert!(
+        items.is_empty(),
+        "clean file should have zero diagnostics, got: {items:?}"
+    );
+}
+
+#[tokio::test]
+async fn workspace_diagnostic_returns_report() {
+    let mut server = TestServer::new().await;
+    server.open("ws_diag.php", "<?php\n$x = 1;\n").await;
+
+    let resp = server.workspace_diagnostic().await;
+
+    assert!(
+        resp["error"].is_null(),
+        "workspace/diagnostic error: {:?}",
+        resp
+    );
+    let result = &resp["result"];
+    let items = result["items"]
+        .as_array()
+        .expect("expected 'items' array in workspace diagnostic report");
+    assert_eq!(
+        items.len(),
+        1,
+        "expected exactly one item for the one opened file, got: {items:?}"
+    );
+}
