@@ -226,3 +226,182 @@ async fn workspace_diagnostic_returns_report() {
         "expected exactly one item for the one opened file, got: {items:?}"
     );
 }
+
+#[tokio::test]
+async fn requests_on_parse_error_file_do_not_error() {
+    let mut server = TestServer::new().await;
+    let notif = server
+        .open("broken.php", "<?php\nfunction f( $x { // missing ): body\n")
+        .await;
+
+    let diags = notif["params"]["diagnostics"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    assert!(
+        !diags.is_empty(),
+        "expected parse diagnostics for broken source"
+    );
+
+    let resp = server.hover("broken.php", 1, 10).await;
+    assert!(resp["error"].is_null(), "hover errored: {resp:?}");
+
+    let resp = server.document_symbols("broken.php").await;
+    assert!(resp["error"].is_null(), "documentSymbol errored: {resp:?}");
+
+    let resp = server.folding_range("broken.php").await;
+    assert!(resp["error"].is_null(), "foldingRange errored: {resp:?}");
+}
+
+#[tokio::test]
+async fn diagnostics_published_on_did_change_for_undefined_function() {
+    let mut server = TestServer::new().await;
+    server.open("change_test.php", "<?php\n").await;
+
+    let notif = server
+        .change("change_test.php", 2, "<?php\nnonexistent_function();\n")
+        .await;
+    let has = notif["params"]["diagnostics"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|d| d["code"].as_str() == Some("UndefinedFunction"));
+    assert!(has, "expected UndefinedFunction after didChange: {notif:?}");
+}
+
+/// Regression for issue #177 — deprecated-call warnings must appear on did_open,
+/// not only after the first did_change.
+#[tokio::test]
+async fn did_open_reports_deprecated_call_warning() {
+    let mut server = TestServer::new().await;
+    let notif = server
+        .open(
+            "deprecated_test.php",
+            "<?php\n/** @deprecated Use newFunc() instead */\nfunction oldFunc(): void {}\n\noldFunc();\n",
+        )
+        .await;
+    let diags = notif["params"]["diagnostics"].as_array().unwrap();
+    let hit = diags.iter().find(|d| {
+        d["code"].as_str() == Some("DeprecatedCall")
+            && d["message"]
+                .as_str()
+                .map(|m| m.contains("oldFunc"))
+                .unwrap_or(false)
+    });
+    assert!(
+        hit.is_some(),
+        "expected DeprecatedCall diagnostic for oldFunc on did_open, got: {diags:?}"
+    );
+}
+
+#[tokio::test]
+async fn undefined_function_detected_in_static_method() {
+    let mut server = TestServer::new().await;
+    server
+        .check_diagnostics(
+            r#"<?php
+class Factory {
+    public static function build(): void {
+        nonexistent_function();
+//      ^^^^^^^^^^^^^^^^^^^^^^ error: nonexistent_function
+    }
+}
+"#,
+        )
+        .await;
+}
+
+#[tokio::test]
+async fn undefined_function_detected_in_arrow_function() {
+    let mut server = TestServer::new().await;
+    server
+        .check_diagnostics(
+            r#"<?php
+$fn = fn() => nonexistent_function();
+//            ^^^^^^^^^^^^^^^^^^^^^^ error: nonexistent_function
+"#,
+        )
+        .await;
+}
+
+#[ignore = "mir-analyzer gap: trait method bodies are not analyzed"]
+#[tokio::test]
+async fn undefined_function_detected_in_trait_method() {
+    let mut server = TestServer::new().await;
+    server
+        .check_diagnostics(
+            r#"<?php
+trait Auditable {
+    public function audit(): void {
+        nonexistent_function();
+//      ^^^^^^^^^^^^^^^^^^^^^^ error: nonexistent_function
+    }
+}
+"#,
+        )
+        .await;
+}
+
+#[tokio::test]
+async fn undefined_function_detected_in_closure() {
+    let mut server = TestServer::new().await;
+    server
+        .check_diagnostics(
+            r#"<?php
+$fn = function() {
+    nonexistent_function();
+//  ^^^^^^^^^^^^^^^^^^^^^^ error: nonexistent_function
+};
+"#,
+        )
+        .await;
+}
+
+#[tokio::test]
+async fn argument_count_too_few_detected() {
+    let mut server = TestServer::new().await;
+    server
+        .check_diagnostics(
+            r#"<?php
+function needs_two(string $a, string $b): void {}
+function wrap(): void {
+    needs_two('x');
+//  ^^^^^^^^^^^^^^ error: needs_two
+}
+"#,
+        )
+        .await;
+}
+
+#[tokio::test]
+async fn argument_type_mismatch_detected() {
+    let mut server = TestServer::new().await;
+    server
+        .check_diagnostics(
+            r#"<?php
+function takes_string(string $s): void {}
+function wrap(): void {
+    takes_string(42);
+//               ^^ error: takes_string
+}
+"#,
+        )
+        .await;
+}
+
+#[ignore = "mir-analyzer gap: too-many-arguments not detected"]
+#[tokio::test]
+async fn argument_count_too_many_detected() {
+    let mut server = TestServer::new().await;
+    server
+        .check_diagnostics(
+            r#"<?php
+function takes_one(string $s): void {}
+function wrap(): void {
+    takes_one('a', 'b', 'c');
+//  ^^^^^^^^^^^^^^^^^^^^^^^^^ error: takes_one
+}
+"#,
+        )
+        .await;
+}
