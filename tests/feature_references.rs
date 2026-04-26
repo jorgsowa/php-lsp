@@ -203,3 +203,132 @@ $c->work();
     )
     .await;
 }
+
+#[tokio::test]
+async fn references_trait_method() {
+    let mut s = TestServer::new().await;
+    s.check_references_annotated(
+        r#"<?php
+trait Timestampable {
+    public function touc$0hAt(): void {}
+    //              ^^^^^^^ def
+}
+class Post {
+    use Timestampable;
+}
+$p = new Post();
+$p->touchAt();
+//  ^^^^^^^ ref
+$p->touchAt();
+//  ^^^^^^^ ref
+"#,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn references_interface_method_finds_call_sites() {
+    // Cursor on the interface method declaration: must find both the
+    // implementing class's method declaration and call sites.
+    let mut s = TestServer::new().await;
+    s.check_references_annotated(
+        r#"<?php
+interface Renderable {
+    public function ren$0der(): string;
+    //              ^^^^^^ def
+}
+class Page implements Renderable {
+    public function render(): string { return ''; }
+    //              ^^^^^^ def
+}
+$page = new Page();
+echo $page->render();
+//         ^^^^^^ ref
+"#,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn references_enum_method() {
+    let mut s = TestServer::new().await;
+    s.check_references_annotated(
+        r#"<?php
+enum Status {
+    case Active;
+    public function lab$0el(): string { return 'active'; }
+    //              ^^^^^ def
+}
+echo Status::Active->label();
+//                   ^^^^^ ref
+echo Status::Active->label();
+//                   ^^^^^ ref
+"#,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn references_nullsafe_method_call() {
+    // `$obj?->method()` must be found as a reference alongside `$obj->method()`.
+    let mut s = TestServer::new().await;
+    s.check_references_annotated(
+        r#"<?php
+class Mailer {
+    public function se$0nd(): void {}
+    //              ^^^^ def
+}
+$m = new Mailer();
+$m->send();
+//  ^^^^ ref
+$m?->send();
+//   ^^^^ ref
+"#,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn references_class_includes_type_hints_and_extends() {
+    // When cursor is on a class name (not __construct), refs include structural
+    // usages: type hints, `extends`, and `instanceof`. No `new Ev$0ent()` is
+    // present so the codebase fast path (which only tracks instantiation sites)
+    // falls back to the AST walker that catches all class references.
+    let mut s = TestServer::new().await;
+    s.check_references_annotated(
+        r#"<?php
+class Ev$0ent {}
+//    ^^^^^ def
+class UserEvent extends Event {}
+//                      ^^^^^ ref
+function dispatch(Event $e): void {}
+//                ^^^^^ ref
+$e = null;
+if ($e instanceof Event) {}
+//                ^^^^^ ref
+"#,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn references_promoted_property_finds_nullsafe_access() {
+    // `$obj?->prop` must be returned alongside `$obj->prop` when searching
+    // refs on a promoted constructor property. The promoted param declaration
+    // itself is not included because the property walker finds access sites,
+    // not constructor parameter declarations.
+    let mut s = TestServer::new().await;
+    s.check_references_annotated(
+        r#"<?php
+class Config {
+    public function __construct(public readonly string $ke$0y) {}
+}
+$c = new Config('x');
+echo $c->key;
+//       ^^^ ref
+echo $c?->key;
+//         ^^^ ref
+"#,
+    )
+    .await;
+}
