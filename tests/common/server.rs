@@ -1086,6 +1086,7 @@ impl TestServer {
     /// rust-analyzer-style helper: open `src`, run hover at `$0`, and return
     /// a stable string rendering of the response. Pair with
     /// `expect_test::expect!` to snapshot hover content.
+    #[track_caller]
     pub async fn check_hover(&mut self, src: &str) -> String {
         let opened = self.open_fixture(src).await;
         let c = opened.cursor().clone();
@@ -1095,6 +1096,7 @@ impl TestServer {
 
     /// Open `src`, request completion at `$0`, and return a one-line-per-
     /// item rendering (`<kind> <label>`) sorted by `sortText`.
+    #[track_caller]
     pub async fn check_completion(&mut self, src: &str) -> String {
         let opened = self.open_fixture(src).await;
         let c = opened.cursor().clone();
@@ -1105,6 +1107,7 @@ impl TestServer {
     /// Go-to-definition at `$0`, rendered as one `path:line:col-line:col` line
     /// per result. URIs stripped of the workspace-root prefix so snapshots
     /// stay tempdir-agnostic.
+    #[track_caller]
     pub async fn check_definition(&mut self, src: &str) -> String {
         let opened = self.open_fixture(src).await;
         let c = opened.cursor().clone();
@@ -1113,6 +1116,7 @@ impl TestServer {
     }
 
     /// References at `$0`, rendered one-per-line (includeDeclaration=true).
+    #[track_caller]
     pub async fn check_references(&mut self, src: &str) -> String {
         let opened = self.open_fixture(src).await;
         let c = opened.cursor().clone();
@@ -1122,6 +1126,7 @@ impl TestServer {
 
     /// Document-symbol outline rendered with indentation per `children`.
     /// The fixture's first file is used.
+    #[track_caller]
     pub async fn check_document_symbols(&mut self, src: &str) -> String {
         let opened = self.open_fixture(src).await;
         let path = opened.fixture.files[0].path.clone();
@@ -1131,6 +1136,7 @@ impl TestServer {
 
     /// Workspace-symbol search rendered as sorted `<kind> <name> @ path:line`
     /// lines.
+    #[track_caller]
     pub async fn check_workspace_symbols(&mut self, src: &str, query: &str) -> String {
         let _ = self.open_fixture(src).await;
         let resp = self.workspace_symbols(query).await;
@@ -1139,6 +1145,7 @@ impl TestServer {
 
     /// Signature help at `$0`, rendered as `label` + ` @<active>` for the
     /// active parameter index. Falls back to `<no signature>` when empty.
+    #[track_caller]
     pub async fn check_signature_help(&mut self, src: &str) -> String {
         let opened = self.open_fixture(src).await;
         let c = opened.cursor().clone();
@@ -1148,6 +1155,7 @@ impl TestServer {
 
     /// Inlay hints over the full text of the fixture's first file, rendered
     /// as sorted `line:col <label>` lines.
+    #[track_caller]
     pub async fn check_inlay_hints(&mut self, src: &str) -> String {
         let opened = self.open_fixture(src).await;
         let path = opened.fixture.files[0].path.clone();
@@ -1156,6 +1164,7 @@ impl TestServer {
         render_inlay_hints(&resp)
     }
 
+    #[track_caller]
     pub async fn check_declaration(&mut self, src: &str) -> String {
         let opened = self.open_fixture(src).await;
         let c = opened.cursor().clone();
@@ -1163,6 +1172,7 @@ impl TestServer {
         render_locations(&resp, &self.uri(""))
     }
 
+    #[track_caller]
     pub async fn check_type_definition(&mut self, src: &str) -> String {
         let opened = self.open_fixture(src).await;
         let c = opened.cursor().clone();
@@ -1170,6 +1180,7 @@ impl TestServer {
         render_locations(&resp, &self.uri(""))
     }
 
+    #[track_caller]
     pub async fn check_implementation(&mut self, src: &str) -> String {
         let opened = self.open_fixture(src).await;
         let c = opened.cursor().clone();
@@ -1180,6 +1191,7 @@ impl TestServer {
     /// Run `textDocument/codeAction` over the fixture's two-`$0` selection
     /// (falls back to a zero-width range at `$0` if only one cursor is set)
     /// and render the action menu as `<kind> <title>` lines sorted by title.
+    #[track_caller]
     pub async fn check_code_actions(&mut self, src: &str) -> String {
         let opened = self.open_fixture(src).await;
         let resp = if let Some(r) = opened.fixture.range.clone() {
@@ -1192,6 +1204,7 @@ impl TestServer {
         render_code_actions(&resp)
     }
 
+    #[track_caller]
     pub async fn check_folding(&mut self, src: &str) -> String {
         let opened = self.open_fixture(src).await;
         let path = opened.fixture.files[0].path.clone();
@@ -1199,6 +1212,7 @@ impl TestServer {
         render_folding_ranges(&resp)
     }
 
+    #[track_caller]
     pub async fn check_code_lens(&mut self, src: &str) -> String {
         let opened = self.open_fixture(src).await;
         let path = opened.fixture.files[0].path.clone();
@@ -1207,6 +1221,7 @@ impl TestServer {
     }
 
     /// Prepare type hierarchy at `$0`, render the prepared item(s) directly.
+    #[track_caller]
     pub async fn check_prepare_type_hierarchy(&mut self, src: &str) -> String {
         let opened = self.open_fixture(src).await;
         let c = opened.cursor().clone();
@@ -1217,6 +1232,7 @@ impl TestServer {
     }
 
     /// Prepare type hierarchy at `$0`, request supertypes, rendered sorted.
+    #[track_caller]
     pub async fn check_supertypes(&mut self, src: &str) -> String {
         let opened = self.open_fixture(src).await;
         let c = opened.cursor().clone();
@@ -1233,6 +1249,7 @@ impl TestServer {
         render_type_hierarchy(&resp, &self.uri(""))
     }
 
+    #[track_caller]
     pub async fn check_subtypes(&mut self, src: &str) -> String {
         let opened = self.open_fixture(src).await;
         let c = opened.cursor().clone();
@@ -1250,6 +1267,7 @@ impl TestServer {
     }
 
     /// Rename at `$0` with `new_name`, rendered via `canonicalize_workspace_edit`.
+    #[track_caller]
     pub async fn check_rename(&mut self, src: &str, new_name: &str) -> String {
         let opened = self.open_fixture(src).await;
         let c = opened.cursor().clone();
@@ -1260,6 +1278,7 @@ impl TestServer {
         canonicalize_workspace_edit(&resp["result"], &self.uri(""))
     }
 
+    #[track_caller]
     pub async fn check_prepare_rename(&mut self, src: &str) -> String {
         let opened = self.open_fixture(src).await;
         let c = opened.cursor().clone();
@@ -1308,6 +1327,7 @@ impl TestServer {
 
     /// Prepare call hierarchy at `$0`, request incomingCalls, and render the
     /// callers as sorted `<name> @ path:line` lines.
+    #[track_caller]
     pub async fn check_incoming_calls(&mut self, src: &str) -> String {
         let opened = self.open_fixture(src).await;
         let c = opened.cursor().clone();
@@ -1326,6 +1346,7 @@ impl TestServer {
 
     /// Prepare call hierarchy at `$0`, request outgoingCalls, and render the
     /// callees as sorted `<name> @ path:line` lines.
+    #[track_caller]
     pub async fn check_outgoing_calls(&mut self, src: &str) -> String {
         let opened = self.open_fixture(src).await;
         let c = opened.cursor().clone();

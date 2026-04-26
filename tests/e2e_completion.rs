@@ -2,30 +2,10 @@ mod common;
 
 use common::TestServer;
 
-#[tokio::test]
-async fn completion_after_initialize() {
-    let mut server = TestServer::new().await;
-    let opened = server.open_fixture("<?php\nclas$0").await;
-    let c = opened.cursor();
-
-    let resp = server.completion(&c.path, c.line, c.character).await;
-
-    assert!(resp["error"].is_null(), "completion error: {resp:?}");
-    let items = match &resp["result"] {
-        v if v.is_array() => v.as_array().unwrap().clone(),
-        v if v["items"].is_array() => v["items"].as_array().unwrap().clone(),
-        other => panic!("completion must return a concrete list, got: {other:?}"),
-    };
-    assert!(
-        !items.is_empty(),
-        "top-level completion after `clas` must offer at least the `class` keyword"
-    );
-    assert!(
-        items.iter().any(|i| i["label"].as_str() == Some("class")),
-        "`class` keyword must be among completions: {items:?}"
-    );
-}
-
+/// Verify that `completionItem/resolve` is wired up end-to-end: request a
+/// completion list, pick an item, resolve it, and check the `detail` field is
+/// populated. This tests the resolve round-trip protocol; scenario coverage
+/// (which items appear, in what order) lives in feature_completion.rs.
 #[tokio::test]
 async fn completion_resolve_returns_item() {
     let mut server = TestServer::new().await;
