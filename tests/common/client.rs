@@ -160,6 +160,82 @@ impl TestClient {
         .unwrap_or_else(|_| panic!("timed out waiting for publishDiagnostics for {uri}"))
     }
 
+    /// Wait for `textDocument/publishDiagnostics` for each of `uris`, in any
+    /// order. Discards messages for other URIs encountered along the way.
+    /// Returns a map keyed by URI. Replies to any server→client requests
+    /// with `null` so the server isn't blocked while we're draining.
+    ///
+    /// Use when a single LSP event triggers publishes for multiple files
+    /// (e.g., cross-file republish after a dependency change) and the test
+    /// needs to assert against each independently.
+    pub async fn wait_for_diagnostics_multi(
+        &mut self,
+        uris: &[&str],
+    ) -> std::collections::HashMap<String, Value> {
+        let mut remaining: std::collections::HashSet<String> =
+            uris.iter().map(|s| s.to_string()).collect();
+        let mut collected: std::collections::HashMap<String, Value> =
+            std::collections::HashMap::new();
+        let expected = remaining.clone();
+        tokio::time::timeout(tokio::time::Duration::from_secs(5), async {
+            while !remaining.is_empty() {
+                let msg = read_msg(&mut self.read).await;
+                if msg.get("method") == Some(&json!("textDocument/publishDiagnostics")) {
+                    if let Some(uri) = msg["params"]["uri"].as_str() {
+                        if remaining.remove(uri) {
+                            collected.insert(uri.to_string(), msg);
+                        }
+                    }
+                } else if msg.get("method").is_some() {
+                    if let Some(id) = msg.get("id") {
+                        let response = json!({
+                            "jsonrpc": "2.0",
+                            "id": id,
+                            "result": null,
+                        });
+                        self.write.write_all(&frame(&response)).await.unwrap();
+                    }
+                }
+            }
+        })
+        .await
+        .unwrap_or_else(|_| {
+            panic!("timed out; expected publishDiagnostics for {expected:?}, got {collected:?}")
+        });
+        collected
+    }
+
+    /// Drain incoming messages for `duration`, returning every
+    /// `publishDiagnostics` URI seen. Used to assert the *absence* of a
+    /// publish (e.g., closed file must not receive cross-file republishes).
+    pub async fn drain_publish_diagnostics_uris(
+        &mut self,
+        duration: tokio::time::Duration,
+    ) -> Vec<String> {
+        let mut uris = Vec::new();
+        let _ = tokio::time::timeout(duration, async {
+            loop {
+                let msg = read_msg(&mut self.read).await;
+                if msg.get("method") == Some(&json!("textDocument/publishDiagnostics")) {
+                    if let Some(uri) = msg["params"]["uri"].as_str() {
+                        uris.push(uri.to_string());
+                    }
+                } else if msg.get("method").is_some() {
+                    if let Some(id) = msg.get("id") {
+                        let response = json!({
+                            "jsonrpc": "2.0",
+                            "id": id,
+                            "result": null,
+                        });
+                        self.write.write_all(&frame(&response)).await.unwrap();
+                    }
+                }
+            }
+        })
+        .await;
+        uris
+    }
+
     /// Read messages until a server→client request with the given `method` arrives.
     /// Returns `(id, params)`. Skips notifications and client responses.
     /// Panics after 5 seconds.

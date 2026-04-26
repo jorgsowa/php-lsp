@@ -192,12 +192,9 @@ async fn cross_file_diagnostics_refresh_on_next_didchange() {
     );
 }
 
-/// IDEAL behavior (tracked gap): when a dependency changes, the server
-/// should proactively republish diagnostics for every dependent file — no
-/// extra didChange required. rust-analyzer does this via its notification
-/// pump. php-lsp currently does not; flip this test on once it does.
+/// When a dependency changes, the server proactively republishes
+/// diagnostics for every open dependent file — no extra didChange required.
 #[tokio::test]
-#[ignore = "server does not proactively republish diagnostics when a dependency changes"]
 async fn cross_file_diagnostics_republish_on_dependency_change() {
     let mut server = TestServer::new().await;
     server.open("dep2.php", "<?php\nclass Widget2 {}\n").await;
@@ -287,5 +284,192 @@ async fn reopen_does_not_duplicate_symbols() {
         refs.len(),
         2,
         "expected declaration + 1 call, not duplicates after reopen: {refs:?}"
+    );
+}
+
+// ── cross-file diagnostic republish: edge cases ─────────────────────────────
+
+/// Symmetric to the rename case: when a dependency *appears* (did_open of a
+/// file that defines a previously-missing symbol), the dependent's
+/// UndefinedClass must clear without re-editing the dependent.
+#[tokio::test]
+async fn cross_file_diagnostic_clears_when_dependency_opened() {
+    let mut server = TestServer::new().await;
+    let notif = server
+        .open("user_open.php", "<?php\n$w = new ProvidedClass();\n")
+        .await;
+    assert!(
+        has_code(&notif, "UndefinedClass"),
+        "expected UndefinedClass before dep is opened: {:?}",
+        notif["params"]["diagnostics"]
+    );
+
+    // Opening a file that defines ProvidedClass should clear the error in user_open.php.
+    server
+        .open("provider.php", "<?php\nclass ProvidedClass {}\n")
+        .await;
+
+    let user_uri = server.uri("user_open.php");
+    let notif = server.client().wait_for_diagnostics(&user_uri).await;
+    assert!(
+        !has_code(&notif, "UndefinedClass"),
+        "expected UndefinedClass cleared after dep opened: {:?}",
+        notif["params"]["diagnostics"]
+    );
+}
+
+/// Two open dependents must both receive proactive republishes after a
+/// dependency change. Order of dependent publishes is not guaranteed.
+#[tokio::test]
+async fn cross_file_republish_fans_out_to_multiple_dependents() {
+    let mut server = TestServer::new().await;
+    server
+        .open("dep_fan.php", "<?php\nclass FanWidget {}\n")
+        .await;
+    server
+        .open("u1_fan.php", "<?php\n$w = new FanWidget();\n")
+        .await;
+    server
+        .open("u2_fan.php", "<?php\n$w = new FanWidget();\n")
+        .await;
+
+    // Each open() above triggers cross-file republishes for already-open
+    // files; those leftover publishes sit in the queue with stale (pre-
+    // rename) content. Drain them so the assertion below only inspects
+    // publishes triggered by the change.
+    let _ = server
+        .client()
+        .drain_publish_diagnostics_uris(tokio::time::Duration::from_millis(200))
+        .await;
+
+    // Trigger: rename FanWidget away. server.change() consumes dep_fan's
+    // publish; the dependent publishes for u1/u2 stay queued.
+    server
+        .change("dep_fan.php", 2, "<?php\nclass FanGadget {}\n")
+        .await;
+
+    let u1 = server.uri("u1_fan.php");
+    let u2 = server.uri("u2_fan.php");
+    let notifs = server
+        .client()
+        .wait_for_diagnostics_multi(&[&u1, &u2])
+        .await;
+
+    for (label, uri) in [("u1", &u1), ("u2", &u2)] {
+        let notif = notifs
+            .get(uri)
+            .unwrap_or_else(|| panic!("missing publish for {label} ({uri})"));
+        assert!(
+            has_code(notif, "UndefinedClass"),
+            "{label}: expected UndefinedClass after FanWidget rename, got: {:?}",
+            notif["params"]["diagnostics"]
+        );
+    }
+}
+
+/// A closed file must NOT receive proactive republishes — the server should
+/// only push to currently-open documents. Editing a published-only file
+/// would violate the LSP open-document contract.
+#[tokio::test]
+async fn cross_file_republish_skips_closed_files() {
+    let mut server = TestServer::new().await;
+    server
+        .open("dep_closed.php", "<?php\nclass ClosedDep {}\n")
+        .await;
+    server
+        .open("user_closed.php", "<?php\n$w = new ClosedDep();\n")
+        .await;
+
+    // Close user_closed.php. did_close itself sends one final empty publish
+    // to clear the editor — drain any pending publish for that URI here.
+    let user_uri = server.uri("user_closed.php");
+    server.close("user_closed.php").await;
+    let _ = server
+        .client()
+        .drain_publish_diagnostics_uris(tokio::time::Duration::from_millis(200))
+        .await;
+
+    // Now mutate dep so it WOULD have caused a republish if user_closed.php
+    // were still open.
+    server
+        .change("dep_closed.php", 2, "<?php\nclass ClosedDepRenamed {}\n")
+        .await;
+
+    // No publish should arrive for the closed file. Wait briefly to confirm.
+    let seen = server
+        .client()
+        .drain_publish_diagnostics_uris(tokio::time::Duration::from_millis(300))
+        .await;
+    assert!(
+        !seen.iter().any(|u| u == &user_uri),
+        "closed file received an unexpected publishDiagnostics: {seen:?}"
+    );
+}
+
+/// Editing a file with no dependents still sends republishes to other open
+/// files (for simplicity — Salsa caches make this cheap), and those
+/// republishes must use `[]` not `null` for the diagnostics field, since
+/// `null` would violate the LSP spec.
+#[tokio::test]
+async fn cross_file_republish_uses_empty_array_for_clean_dependent() {
+    let mut server = TestServer::new().await;
+    // Two independent files, both clean. They don't reference each other.
+    server
+        .open("clean_a.php", "<?php\nfunction aa(): void {}\n")
+        .await;
+    server
+        .open("clean_b.php", "<?php\nfunction bb(): void {}\n")
+        .await;
+
+    // Edit clean_a; clean_b is unaffected but receives a cache-hit republish.
+    server
+        .change("clean_a.php", 2, "<?php\nfunction aaaa(): void {}\n")
+        .await;
+
+    let b_uri = server.uri("clean_b.php");
+    let notif = server.client().wait_for_diagnostics(&b_uri).await;
+    let diags = &notif["params"]["diagnostics"];
+    assert!(
+        diags.is_array(),
+        "diagnostics must be an array (LSP requires the field), got: {diags:?}"
+    );
+    assert!(
+        diags.as_array().unwrap().is_empty(),
+        "clean_b is independent — expected empty diagnostics, got: {diags:?}"
+    );
+}
+
+/// A dependent with a parse error must keep its parse diagnostics through
+/// a cross-file republish — the republish path uses cached parse diagnostics
+/// rather than re-parsing, so the error must not silently drop.
+#[tokio::test]
+async fn cross_file_republish_preserves_dependent_parse_errors() {
+    let mut server = TestServer::new().await;
+    let notif = server.open("broken.php", "<?php\nbroken(;\n").await;
+    let original_count = notif["params"]["diagnostics"]
+        .as_array()
+        .map(|a| a.len())
+        .unwrap_or(0);
+    assert!(
+        original_count > 0,
+        "expected parse error in broken.php on open"
+    );
+
+    // Open an unrelated file; this triggers a cross-file republish loop that
+    // recomputes broken.php's diagnostics. Parse errors must be preserved.
+    server
+        .open("trigger.php", "<?php\nclass Triggered {}\n")
+        .await;
+
+    let broken_uri = server.uri("broken.php");
+    let notif = server.client().wait_for_diagnostics(&broken_uri).await;
+    let count = notif["params"]["diagnostics"]
+        .as_array()
+        .map(|a| a.len())
+        .unwrap_or(0);
+    assert!(
+        count >= original_count,
+        "cross-file republish dropped parse diagnostics: had {original_count}, now {count}: {:?}",
+        notif["params"]["diagnostics"]
     );
 }
