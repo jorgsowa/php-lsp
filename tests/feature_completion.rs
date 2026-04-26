@@ -391,7 +391,6 @@ Reg::$0
     .assert_eq(&out);
 }
 
-#[ignore = "php-lsp gap: namespace-prefix completion returns nothing without a workspace root / PSR-4 map"]
 #[tokio::test]
 async fn completion_namespace_prefix() {
     let mut s = TestServer::new().await;
