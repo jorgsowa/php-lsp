@@ -9,6 +9,12 @@ fn lines_of(locs: &[Value]) -> Vec<u32> {
         .collect()
 }
 
+// ── Protocol-behaviour tests ─────────────────────────────────────────────────
+// These tests exercise the `includeDeclaration` flag and other wire-level
+// behaviours that the annotation-DSL tests in feature_references.rs cannot
+// express. Scenario coverage (which symbols are returned for which cursors)
+// lives in feature_references.rs.
+
 #[tokio::test]
 async fn references_with_exclude_declaration() {
     let mut server = TestServer::new().await;
@@ -32,30 +38,48 @@ sub(10, 3);
 }
 
 #[tokio::test]
-async fn references_include_declaration_returns_both() {
+async fn references_on_constructor_with_include_declaration_false() {
     let mut server = TestServer::new().await;
     let opened = server
         .open_fixture(
             r#"<?php
-function a$0dd(int $a, int $b): int { return $a + $b; }
-add(1, 2);
+class Invoice {
+    public function __con$0struct(int $id) {}
+}
+$a = new Invoice(1);
+$b = new Invoice(2);
 "#,
         )
         .await;
     let c = opened.cursor();
 
-    let resp = server.references(&c.path, c.line, c.character, true).await;
+    let resp = server.references(&c.path, c.line, c.character, false).await;
+    assert!(resp["error"].is_null(), "references error: {resp:?}");
 
-    assert!(resp["error"].is_null());
-    let locs = resp["result"].as_array().cloned().unwrap_or_default();
+    let hits: Vec<u32> = resp["result"]
+        .as_array()
+        .expect("expected array")
+        .iter()
+        .map(|l| l["range"]["start"]["line"].as_u64().unwrap() as u32)
+        .collect();
+
     assert!(
-        locs.len() >= 2,
-        "expected declaration + call site: {locs:?}"
+        hits.contains(&4),
+        "`new Invoice(1)` (line 4) missing: {hits:?}"
     );
+    assert!(
+        hits.contains(&5),
+        "`new Invoice(2)` (line 5) missing: {hits:?}"
+    );
+    assert!(
+        !hits.contains(&2),
+        "__construct decl (line 2) must be excluded when includeDeclaration=false: {hits:?}"
+    );
+    assert_eq!(hits.len(), 2, "expected exactly 2 call sites: {hits:?}");
 }
 
-/// Regression for issue #125: cursor on a method *declaration* must return
-/// method references, not free-function references with the same name.
+/// Method decl on class C must not pull in free-function refs, and
+/// `includeDeclaration=false` must exclude the method decl itself.
 #[tokio::test]
 async fn references_on_method_decl_returns_method_refs_not_function_refs() {
     let mut server = TestServer::new().await;
@@ -101,64 +125,9 @@ $c->add();
     );
 }
 
-/// Multi-file variant of #125: method decl in file A must not pull in
-/// free-function usages of the same name from file B.
-#[tokio::test]
-async fn references_on_method_decl_excludes_cross_file_free_function() {
-    let mut server = TestServer::new().await;
-    let opened = server
-        .open_fixture(
-            r#"//- /a.php
-<?php
-class C {
-    public function a$0dd() {}
-}
-
-//- /b.php
-<?php
-function add() {}
-add();
-$c->add();
-"#,
-        )
-        .await;
-    let c = opened.cursor();
-
-    let a_uri = server.uri("a.php");
-    let b_uri = server.uri("b.php");
-
-    let resp = server.references(&c.path, c.line, c.character, true).await;
-    assert!(resp["error"].is_null(), "references error: {resp:?}");
-
-    let hits: Vec<(String, u32)> = resp["result"]
-        .as_array()
-        .expect("array")
-        .iter()
-        .map(|l| {
-            (
-                l["uri"].as_str().unwrap().to_string(),
-                l["range"]["start"]["line"].as_u64().unwrap() as u32,
-            )
-        })
-        .collect();
-
-    assert!(
-        hits.contains(&(a_uri.clone(), 2)),
-        "method decl a.php:2 missing: {hits:?}"
-    );
-    assert!(
-        hits.contains(&(b_uri.clone(), 3)),
-        "method call b.php:3 missing: {hits:?}"
-    );
-    assert!(
-        !hits.contains(&(b_uri.clone(), 1)),
-        "free-function decl b.php:1 must be excluded: {hits:?}"
-    );
-    assert!(
-        !hits.contains(&(b_uri.clone(), 2)),
-        "free-function call b.php:2 must be excluded: {hits:?}"
-    );
-}
+// ── Workspace-scan / fast-path tests ─────────────────────────────────────────
+// These tests need the workspace index populated (with_root + wait_for_index_ready)
+// because they exercise the codebase fast path that reads the workspace file index.
 
 /// The codebase fast path (`find_references_codebase`) for a `final` class
 /// method across files. Uses `with_root` because the fast path relies on the
@@ -196,6 +165,7 @@ async fn references_fast_path_final_class_cross_file_e2e() {
         )
         .await;
 
+    // `submit` is on line 2, char 20
     let resp = server.references("class.php", 2, 20, false).await;
 
     assert!(resp["error"].is_null(), "references error: {resp:?}");
@@ -218,8 +188,7 @@ async fn references_fast_path_final_class_cross_file_e2e() {
 
 /// Regression: references on `__construct` of class `Foo` must return only
 /// Foo's constructor and its call sites (`new Foo(...)`), NOT every other
-/// class's `__construct` declaration. The symbol has a class-scoped identity;
-/// name-only matching across classes is wrong.
+/// class's `__construct` declaration.
 #[tokio::test]
 async fn references_on_constructor_are_scoped_to_owning_class() {
     let dir = tempfile::tempdir().unwrap();
@@ -242,11 +211,16 @@ async fn references_on_constructor_are_scoped_to_owning_class() {
     let mut server = TestServer::with_root(dir.path()).await;
     server.wait_for_index_ready().await;
 
-    let (text, _, _) = server.locate("a.php", "<?php", 0);
-    server.open("a.php", &text).await;
+    // Open a.php so the server knows its content.
+    server
+        .open(
+            "a.php",
+            "<?php\nclass Foo {\n    public function __construct(int $x) {}\n}\n",
+        )
+        .await;
 
-    let (_, line, col) = server.locate("a.php", "__construct", 0);
-    let resp = server.references("a.php", line, col + 2, true).await;
+    // `__construct` is on line 2, char 20; col+2=22 places cursor inside it.
+    let resp = server.references("a.php", 2, 22, true).await;
     assert!(resp["error"].is_null(), "references error: {resp:?}");
 
     let a_uri = server.uri("a.php");
@@ -265,17 +239,14 @@ async fn references_on_constructor_are_scoped_to_owning_class() {
         })
         .collect();
 
-    // Must NOT include Bar's unrelated __construct declaration.
     assert!(
         !hits.contains(&(b_uri.clone(), 2)),
         "Bar::__construct decl on b.php:2 must be excluded — got {hits:?}"
     );
-    // Must NOT include `new Bar('x')` call.
     assert!(
         !hits.contains(&(c_uri.clone(), 2)),
         "`new Bar('x')` on c.php:2 must be excluded — got {hits:?}"
     );
-    // Sanity: Foo's own constructor and `new Foo(1)` should be present.
     assert!(
         hits.iter().any(|(u, _)| u == &a_uri),
         "Foo::__construct decl missing — got {hits:?}"
@@ -286,110 +257,8 @@ async fn references_on_constructor_are_scoped_to_owning_class() {
     );
 }
 
-/// Regression for Bug 1: two constructors in the same file — `str_offset`
-/// would always find the first `__construct` occurrence, so the declaration
-/// span for the second constructor pointed at the first one. With the fix the
-/// cursor position is used directly, so each constructor gets its own span.
-#[tokio::test]
-async fn references_on_second_constructor_has_correct_decl_span() {
-    let mut server = TestServer::new().await;
-    let opened = server
-        .open_fixture(
-            r#"<?php
-class Alpha {
-    public function __construct(int $x) {}
-}
-class Beta {
-    public function __con$0struct(string $s) {}
-}
-new Alpha(1);
-new Beta('x');
-"#,
-        )
-        .await;
-    let c = opened.cursor();
-
-    let resp = server.references(&c.path, c.line, c.character, true).await;
-    assert!(resp["error"].is_null(), "references error: {resp:?}");
-
-    let hits: Vec<u32> = resp["result"]
-        .as_array()
-        .expect("array")
-        .iter()
-        .map(|l| l["range"]["start"]["line"].as_u64().unwrap() as u32)
-        .collect();
-
-    // Beta's constructor is on line 5; the decl span must point there, not at
-    // Alpha's constructor on line 2.
-    assert!(
-        hits.contains(&5),
-        "Beta::__construct decl (line 5) missing: {hits:?}"
-    );
-    assert!(
-        !hits.contains(&2),
-        "Alpha::__construct decl (line 2) must not appear: {hits:?}"
-    );
-    // `new Beta('x')` is on line 8.
-    assert!(
-        hits.contains(&8),
-        "`new Beta(...)` (line 8) missing: {hits:?}"
-    );
-    // `new Alpha(1)` must not appear.
-    assert!(
-        !hits.contains(&7),
-        "`new Alpha(...)` (line 7) must not appear: {hits:?}"
-    );
-}
-
-/// Regression for Bug 2: braced-namespace class `__construct` — the function
-/// previously only walked top-level statements and skipped
-/// `NamespaceBody::Braced`, returning `None` for every constructor inside a
-/// braced namespace block and falling through to name-only matching.
-#[tokio::test]
-async fn references_on_constructor_in_braced_namespace() {
-    let mut server = TestServer::new().await;
-    let opened = server
-        .open_fixture(
-            r#"<?php
-namespace Shop {
-    class Order {
-        public function __con$0struct(int $id) {}
-    }
-}
-namespace Shop {
-    $o = new Order(1);
-}
-"#,
-        )
-        .await;
-    let c = opened.cursor();
-
-    let resp = server.references(&c.path, c.line, c.character, true).await;
-    assert!(resp["error"].is_null(), "references error: {resp:?}");
-
-    let hits: Vec<u32> = resp["result"]
-        .as_array()
-        .expect("array")
-        .iter()
-        .map(|l| l["range"]["start"]["line"].as_u64().unwrap() as u32)
-        .collect();
-
-    // The constructor declaration is on line 3.
-    assert!(
-        hits.contains(&3),
-        "Order::__construct decl (line 3) missing: {hits:?}"
-    );
-    // `new Order(1)` is on line 8.
-    assert!(
-        hits.contains(&7),
-        "`new Order(1)` (line 7) missing: {hits:?}"
-    );
-}
-
-/// Regression for Bug 3: two classes with the same short name in different
-/// namespaces — the constructor path previously called `find_references_codebase`
-/// with the bare short name, so `new Foo(...)` sites from *both* namespaces
-/// were returned when asking for refs on one class's constructor.
+/// Regression: two classes with the same short name in different namespaces —
+/// constructor path must use the FQN, not the bare short name.
 #[tokio::test]
 async fn references_on_constructor_scoped_by_namespace_fqn() {
     let dir = tempfile::tempdir().unwrap();
@@ -412,11 +281,16 @@ async fn references_on_constructor_scoped_by_namespace_fqn() {
     let mut server = TestServer::with_root(dir.path()).await;
     server.wait_for_index_ready().await;
 
-    let (text, _, _) = server.locate("a.php", "<?php", 0);
-    server.open("a.php", &text).await;
+    // Open a.php so the server knows its content.
+    // `__construct` is on line 3, char 20; col+2=22 places cursor inside it.
+    server
+        .open(
+            "a.php",
+            "<?php\nnamespace Alpha;\nclass Widget {\n    public function __construct(int $x) {}\n}\n",
+        )
+        .await;
 
-    let (_, line, col) = server.locate("a.php", "__construct", 0);
-    let resp = server.references("a.php", line, col + 2, true).await;
+    let resp = server.references("a.php", 3, 22, true).await;
     assert!(resp["error"].is_null(), "references error: {resp:?}");
 
     let c_uri = server.uri("c.php");
@@ -434,169 +308,18 @@ async fn references_on_constructor_scoped_by_namespace_fqn() {
         })
         .collect();
 
-    // `new \Alpha\Widget(1)` is on c.php line 1.
     assert!(
         hits.contains(&(c_uri.clone(), 1)),
         "`new \\Alpha\\Widget(1)` missing: {hits:?}"
     );
-    // `new \Beta\Widget('x')` must NOT appear.
     assert!(
         !hits.contains(&(c_uri.clone(), 2)),
         "`new \\Beta\\Widget('x')` must not appear: {hits:?}"
     );
-    // Beta's constructor declaration must NOT appear.
     assert!(
         !hits.iter().any(|(u, _)| u == &b_uri),
         "Beta::Widget::__construct must not appear: {hits:?}"
     );
-}
-
-/// Bug: `__construct` references should only return `new ClassName()` call sites,
-/// NOT type hints, `instanceof` checks, `extends`, or `implements` — all of which
-/// were previously included because mir's `ClassReference` key covers every class
-/// usage under the same FQCN.
-#[tokio::test]
-async fn references_on_constructor_excludes_type_hints_and_instanceof() {
-    let mut server = TestServer::new().await;
-    let opened = server
-        .open_fixture(
-            r#"<?php
-class Order {
-    public function __con$0struct(int $id) {}
-}
-// call site — must be included
-$o = new Order(1);
-// type hint — must NOT be included
-function ship(Order $o): void {}
-// instanceof — must NOT be included
-if ($o instanceof Order) {}
-// static call — must NOT be included
-Order::class;
-"#,
-        )
-        .await;
-    let c = opened.cursor();
-
-    let resp = server.references(&c.path, c.line, c.character, true).await;
-    assert!(resp["error"].is_null(), "references error: {resp:?}");
-
-    let hits: Vec<u32> = resp["result"]
-        .as_array()
-        .expect("expected array")
-        .iter()
-        .map(|l| l["range"]["start"]["line"].as_u64().unwrap() as u32)
-        .collect();
-
-    // The `__construct` declaration is on line 2.
-    assert!(
-        hits.contains(&2),
-        "__construct decl (line 2) missing: {hits:?}"
-    );
-    // `$o = new Order(1)` is on line 5 (line 4 is the preceding comment).
-    assert!(
-        hits.contains(&5),
-        "`new Order(1)` (line 5) missing: {hits:?}"
-    );
-    // Type hint `Order $o` is on line 7 — must NOT appear.
-    assert!(
-        !hits.contains(&7),
-        "type hint on line 7 must be excluded: {hits:?}"
-    );
-    // `instanceof Order` is on line 9 — must NOT appear.
-    assert!(
-        !hits.contains(&9),
-        "`instanceof` on line 9 must be excluded: {hits:?}"
-    );
-    // `Order::class` is on line 11 — must NOT appear.
-    assert!(
-        !hits.contains(&11),
-        "`Order::class` on line 11 must be excluded: {hits:?}"
-    );
-}
-
-/// Bug: when the cursor is on a promoted constructor property parameter (e.g.
-/// `$name` in `public function __construct(public readonly string $name)`),
-/// references should return all `->name` property access sites, not variable
-/// occurrences of `$name` inside the constructor body.
-#[tokio::test]
-async fn references_on_promoted_property_param_finds_property_accesses() {
-    let mut server = TestServer::new().await;
-    let opened = server
-        .open_fixture(
-            r#"<?php
-class Person {
-    public function __construct(public readonly string $na$0me) {}
-    public function greet(): string { return $this->name; }
-}
-$p = new Person('Alice');
-echo $p->name;
-"#,
-        )
-        .await;
-    let c = opened.cursor();
-
-    let resp = server.references(&c.path, c.line, c.character, true).await;
-    assert!(resp["error"].is_null(), "references error: {resp:?}");
-
-    let hits: Vec<u32> = resp["result"]
-        .as_array()
-        .expect("expected array")
-        .iter()
-        .map(|l| l["range"]["start"]["line"].as_u64().unwrap() as u32)
-        .collect();
-
-    // `$this->name` inside greet() is on line 3.
-    assert!(
-        hits.contains(&3),
-        "`$this->name` (line 3) missing: {hits:?}"
-    );
-    // `$p->name` on line 6.
-    assert!(hits.contains(&6), "`$p->name` (line 6) missing: {hits:?}");
-}
-
-/// `include_declaration=false` on a constructor must return only `new Foo()`
-/// call sites — the constructor declaration itself must be absent.
-#[tokio::test]
-async fn references_on_constructor_with_include_declaration_false() {
-    let mut server = TestServer::new().await;
-    let opened = server
-        .open_fixture(
-            r#"<?php
-class Invoice {
-    public function __con$0struct(int $id) {}
-}
-$a = new Invoice(1);
-$b = new Invoice(2);
-"#,
-        )
-        .await;
-    let c = opened.cursor();
-
-    let resp = server.references(&c.path, c.line, c.character, false).await;
-    assert!(resp["error"].is_null(), "references error: {resp:?}");
-
-    let hits: Vec<u32> = resp["result"]
-        .as_array()
-        .expect("expected array")
-        .iter()
-        .map(|l| l["range"]["start"]["line"].as_u64().unwrap() as u32)
-        .collect();
-
-    // Lines: 0=<?php  1=class Invoice {  2=__construct  3=}  4=new(1)  5=new(2)
-    assert!(
-        hits.contains(&4),
-        "`new Invoice(1)` (line 4) missing: {hits:?}"
-    );
-    assert!(
-        hits.contains(&5),
-        "`new Invoice(2)` (line 5) missing: {hits:?}"
-    );
-    // The constructor declaration on line 2 must NOT appear.
-    assert!(
-        !hits.contains(&2),
-        "__construct decl (line 2) must be excluded when include_declaration=false: {hits:?}"
-    );
-    assert_eq!(hits.len(), 2, "expected exactly 2 call sites: {hits:?}");
 }
 
 /// Cross-file promoted property: accessing via `->prop` in another file must
@@ -604,11 +327,8 @@ $b = new Invoice(2);
 #[tokio::test]
 async fn references_on_promoted_property_cross_file() {
     let dir = tempfile::tempdir().unwrap();
-    std::fs::write(
-        dir.path().join("entity.php"),
-        "<?php\nclass User {\n    public function __construct(public readonly string $email) {}\n}\n",
-    )
-    .unwrap();
+    let entity_src = "<?php\nclass User {\n    public function __construct(public readonly string $email) {}\n}\n";
+    std::fs::write(dir.path().join("entity.php"), entity_src).unwrap();
     std::fs::write(
         dir.path().join("service.php"),
         "<?php\nfunction notify(User $u): void {\n    echo $u->email;\n    echo $u?->email;\n}\n",
@@ -618,12 +338,11 @@ async fn references_on_promoted_property_cross_file() {
     let mut server = TestServer::with_root(dir.path()).await;
     server.wait_for_index_ready().await;
 
-    let (text, _, _) = server.locate("entity.php", "<?php", 0);
-    server.open("entity.php", &text).await;
+    server.open("entity.php", entity_src).await;
 
-    let (_, line, col) = server.locate("entity.php", "$email", 0);
-    // Cursor on the `$email` promoted param.
-    let resp = server.references("entity.php", line, col + 1, false).await;
+    // `$email` is on line 2, char 55; col+1=56 places cursor inside `$email`.
+    // Position breakdown: "    public function __construct(public readonly string " = 55 chars.
+    let resp = server.references("entity.php", 2, 56, false).await;
     assert!(resp["error"].is_null(), "references error: {resp:?}");
 
     let service_uri = server.uri("service.php");
@@ -649,11 +368,10 @@ async fn references_on_promoted_property_cross_file() {
     );
 }
 
+// ── Parallelism / consistency tests ──────────────────────────────────────────
+
 /// Parallel warm must find exactly the right number of call sites across many
-/// files — enough that the rayon thread pool actually distributes work across
-/// multiple threads.  A lost or duplicated memo would produce the wrong count.
-/// The workspace scan populates the file index; `textDocument/references`
-/// triggers `warm_file_refs_parallel` then aggregates the memos.
+/// files — enough that the rayon thread pool actually distributes work.
 #[tokio::test]
 async fn parallel_warm_finds_all_references_across_many_files() {
     let dir = tempfile::tempdir().unwrap();
@@ -684,7 +402,7 @@ async fn parallel_warm_finds_all_references_across_many_files() {
         .open("def.php", "<?php\nfunction target(): void {}")
         .await;
 
-    // Line 1, character 9 = start of "target" in `function target(): void {}`
+    // `target` is on line 1, char 9
     let resp = server.references("def.php", 1, 9, false).await;
     assert!(resp["error"].is_null(), "references error: {resp:?}");
     let locs = resp["result"].as_array().expect("expected array");
@@ -696,10 +414,8 @@ async fn parallel_warm_finds_all_references_across_many_files() {
     );
 }
 
-/// After the first `textDocument/references` call populates salsa memos via
-/// `warm_file_refs_parallel`, a second call for the same symbol must return
-/// the same result — verifying that parallel memo population is correct and
-/// not corrupted by concurrent writes.
+/// After the first references call populates salsa memos, a second call for
+/// the same symbol must return the same result.
 #[tokio::test]
 async fn parallel_warm_gives_consistent_results_on_repeated_references_calls() {
     let mut server = TestServer::new().await;
@@ -736,33 +452,4 @@ foo(); foo();
         locs2.len(),
         "repeated references calls returned different counts"
     );
-}
-
-#[tokio::test]
-async fn references_finds_all_usages_of_function() {
-    let mut server = TestServer::new().await;
-    let opened = server
-        .open_fixture(
-            r#"<?php
-function a$0dd(int $a, int $b): int { return $a + $b; }
-add(1, 2);
-add(3, 4);
-"#,
-        )
-        .await;
-    let c = opened.cursor();
-
-    let resp = server.references(&c.path, c.line, c.character, true).await;
-
-    assert!(resp["error"].is_null(), "references error: {resp:?}");
-    let locs = resp["result"].as_array().expect("array");
-    assert_eq!(
-        locs.len(),
-        3,
-        "expected 3 refs (1 decl + 2 calls): {locs:?}"
-    );
-    let lines = lines_of(locs);
-    assert!(lines.contains(&1), "decl line 1 missing");
-    assert!(lines.contains(&2), "call line 2 missing");
-    assert!(lines.contains(&3), "call line 3 missing");
 }

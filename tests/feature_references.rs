@@ -332,6 +332,116 @@ $x = new Widget();
 }
 
 #[tokio::test]
+async fn references_constructor_decl_span_scoped_to_owning_class() {
+    // Bug 1: two constructors in the same file — the decl span for Beta's
+    // __construct must point at Beta (line 5), not Alpha (line 2).
+    let mut s = TestServer::new().await;
+    s.check_references_annotated(
+        r#"<?php
+class Alpha {
+    public function __construct(int $x) {}
+}
+class Beta {
+    public function __con$0struct(string $s) {}
+    //              ^^^^^^^^^^^ def
+}
+new Alpha(1);
+new Beta('x');
+//  ^^^^ ref
+"#,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn references_constructor_in_braced_namespace() {
+    // Bug 2: braced-namespace constructor must be found by references.
+    let mut s = TestServer::new().await;
+    s.check_references_annotated(
+        r#"<?php
+namespace Shop {
+    class Order {
+        public function __con$0struct(int $id) {}
+        //              ^^^^^^^^^^^ def
+    }
+}
+namespace Shop {
+    $o = new Order(1);
+    //       ^^^^^ ref
+}
+"#,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn references_constructor_excludes_type_hints_and_instanceof() {
+    // __construct references must only include `new` call sites — not type hints,
+    // `instanceof`, or `::class`. The annotation DSL implicitly asserts exclusions:
+    // any location the server returns that isn't annotated causes a diff failure.
+    let mut s = TestServer::new().await;
+    s.check_references_annotated(
+        r#"<?php
+class Order {
+    public function __con$0struct(int $id) {}
+    //              ^^^^^^^^^^^ def
+}
+$o = new Order(1);
+//       ^^^^^ ref
+function ship(Order $o): void {}
+if ($o instanceof Order) {}
+Order::class;
+"#,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn references_method_excludes_cross_file_free_function() {
+    // Method refs on C::add must not include the free-function `add()`.
+    let mut s = TestServer::new().await;
+    s.check_references_annotated(
+        r#"//- /a.php
+<?php
+class C {
+    public function a$0dd() {}
+    //              ^^^ def
+}
+
+//- /b.php
+<?php
+function add() {}
+add();
+$c->add();
+//  ^^^ ref
+"#,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn references_promoted_property_this_access() {
+    // `$this->prop` inside a method must be returned alongside external `->prop`
+    // accesses when cursor is on a promoted constructor property.
+    let mut s = TestServer::new().await;
+    s.check_references_annotated(
+        r#"<?php
+class Person {
+    public function __construct(public readonly string $na$0me) {}
+    public function greet(): string {
+        return $this->name;
+        //            ^^^^ ref
+    }
+}
+$p = new Person('Alice');
+echo $p->name;
+//       ^^^^ ref
+"#,
+    )
+    .await;
+}
+
+#[tokio::test]
 async fn references_promoted_property_finds_nullsafe_access() {
     // `$obj?->prop` must be returned alongside `$obj->prop` when searching
     // refs on a promoted constructor property. The promoted param declaration
