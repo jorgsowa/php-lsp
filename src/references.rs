@@ -1720,6 +1720,8 @@ mod tests {
             all_parents: vec![],
             deprecated: None,
             is_internal: false,
+            type_aliases: std::collections::HashMap::new(),
+            pending_import_types: vec![],
             // Synthetic user-code location so the fast path treats this as a
             // user class (stubs have `location: None` and are skipped).
             location: Some(mir_codebase::storage::Location {

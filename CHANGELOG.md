@@ -2,6 +2,78 @@
 
 All notable changes to php-lsp are documented here.
 
+## [0.3.0] — 2026-04-26
+
+### Maintenance
+
+- **Dependencies**: Upgraded `mir-{analyzer,codebase,issues,types}` from 0.9.0 to 0.10.0, and `php-rs-parser`/`php-ast` from 0.9.2 to 0.9.4.
+
+The mir 0.10.0 upgrade brings three new diagnostics that will now surface in the editor:
+- `NullArgument` — literal `null` passed to a non-nullable parameter (warning).
+- `UnusedFunction` — free functions never called when dead-code analysis is enabled.
+- `InvalidPropertyAssignment` — value of an incompatible type assigned to a typed property.
+- `InvalidDocblock` — malformed type annotation in a docblock.
+
+## [0.2.0] — 2026-04-26
+
+### Features
+
+- **Incremental computation**: Salsa query layer replaces imperative codebase updates. Repeated reads (hover, completion, references) now hit memoized results rather than recomputing. LRU eviction keeps memory bounded.
+- **Persistent cache**: On-disk cache stores file definitions across server restarts, eliminating the full workspace re-scan on startup for large projects.
+- **`maxIndexedFiles`**: Configurable cap (default 1 000) on the number of files indexed during workspace scan. Prevents unbounded memory growth on very large monorepos.
+
+### Performance
+
+- Switched allocator to `mimalloc` for reduced fragmentation and faster small allocations.
+- Parallelized `file_refs` warm-up for faster initial `textDocument/references` responses.
+- Eliminated double-parse in workspace scan; skips codebase rebuild on body-only edits.
+- O(log n) line lookup via precomputed `line_starts`; dropped O(n) UTF-16 position scan.
+- Cached `TypeMap` in hover and completion; eliminated `Arc<str>` → `String` conversions in references.
+- Reused bump arenas across parses via a global pool; avoided codebase rebuild in code actions.
+
+### Bug fixes
+
+- **References**: Trait method declarations, constructor refs, promoted-property refs, and nullsafe refs are now found correctly.
+- **Completion**: Leading backslash in namespace-prefix completions is now normalised.
+- **Hover**: Classes not yet opened in the editor are now resolved correctly; arrow function completion includes properties; variable scoping fixed.
+- **Document symbols**: Interface method declarations now appear.
+- **Goto definition**: `$this->traitMethod()` now resolves to the trait declaration.
+- **Diagnostics**: `did_open` now triggers deprecated-call diagnostics; duplicate deprecated-call filter removed.
+- **Require paths**: Used `Url::join` for relative require paths to fix resolution on Windows.
+- **Configuration**: `send_refresh_requests` is now fired after `did_change_configuration`.
+
+### Maintenance
+
+- **Dependencies**: Upgraded `mir-*` crates from 0.7.x to 0.9.0 and `php-rs-parser`/`php-ast` to 0.9.2. PHP version is now wired through to the analysis engine.
+- **Docblock parser**: Removed the in-tree duplicate; delegated to `mir`'s `DocblockParser`.
+
+## [0.1.54] — 2026-04-12
+
+### Performance
+
+- **Call hierarchy**: Eliminated O(n²) scans with HashMaps for incoming/outgoing call lookups.
+- **References**: Used `HashSet` for O(1) declaration-span filtering; collect declaration spans once before `retain()`.
+- **Semantic diagnostics**: Build `all_sources` once per file instead of once per call expression.
+- **Workspace scan**: Parallelised file parsing across CPU cores.
+- **Workspace diagnostics**: Finalise codebase once instead of once per file.
+
+### Features
+
+- **Benchmarks**: Added a performance benchmark suite (`cargo bench`).
+
+### Bug fixes
+
+- **References**: Interface method declarations are now included in `collect_declaration_spans`; method declarations are now classified as `Method` (not `Function`).
+- **Semantic tokens**: Stopped emitting keyword tokens.
+- **Hover**: `@var` type and description are now shown for class properties.
+- **Diagnostics**: Duplicate-declaration diagnostic range now spans the full symbol name.
+- **PHP version detection**: Improved accuracy; wired through to diagnostics.
+- **Selection range / semantic tokens**: Fixed several integration test failures uncovering edge-case bugs.
+
+### Maintenance
+
+- **Docblock**: Delegated to `mir`'s `DocblockParser`; removed the in-tree duplicate parser.
+
 ## [0.1.53] — 2026-04-12
 
 ### Bug fixes
