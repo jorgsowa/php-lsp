@@ -1160,16 +1160,12 @@ impl LanguageServer for Backend {
         let uri = params.text_document.uri;
         // Re-publish diagnostics on save so editors that defer diagnostics
         // until save (rather than on every keystroke) see up-to-date results.
-        let source = self.get_open_text(&uri).unwrap_or_default();
-        let doc = self.get_doc(&uri);
-        if let Some(ref d) = doc {
-            let diag_cfg = self.config.read().unwrap().diagnostics.clone();
-            let parse_diags = self.get_parse_diagnostics(&uri).unwrap_or_default();
-            let dup_diags = duplicate_declaration_diagnostics(&source, d, &diag_cfg);
-            let mut all = parse_diags;
-            all.extend(dup_diags);
-            self.client.publish_diagnostics(uri, all, None).await;
-        }
+        // Must include semantic diagnostics — publishDiagnostics replaces the
+        // prior set entirely, so omitting them would clear errors the editor
+        // showed after the last did_change.
+        let diag_cfg = self.config.read().unwrap().diagnostics.clone();
+        let all = compute_open_file_diagnostics(&self.docs, &self.open_files, &uri, &diag_cfg);
+        self.client.publish_diagnostics(uri, all, None).await;
     }
 
     async fn did_change_watched_files(&self, params: DidChangeWatchedFilesParams) {

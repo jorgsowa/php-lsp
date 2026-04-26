@@ -4,7 +4,6 @@
 mod common;
 
 use common::TestServer;
-use serde_json::json;
 
 // --- did_close ---
 
@@ -91,6 +90,36 @@ async fn did_save_republishes_diagnostics_for_duplicate_functions() {
             .len()
             >= 1,
         "expected >=1 diagnostic after save with duplicate functions: {save_notif:?}"
+    );
+}
+
+#[tokio::test]
+async fn did_save_republishes_semantic_diagnostics() {
+    // Regression: did_save was manually building parse+dup-decl diagnostics
+    // and omitting the semantic pass. publishDiagnostics *replaces* the prior
+    // set, so saving a file with semantic errors would silently clear them.
+    let mut server = TestServer::new().await;
+    let open_notif = server
+        .open(
+            "save_semantic.php",
+            "<?php\nfunction _wrap(): void {\n    nonexistent_fn();\n}\n",
+        )
+        .await;
+    assert!(
+        !open_notif["params"]["diagnostics"]
+            .as_array()
+            .unwrap_or(&vec![])
+            .is_empty(),
+        "expected semantic diagnostic on open: {open_notif:?}"
+    );
+
+    let save_notif = server.save("save_semantic.php").await;
+    assert!(
+        !save_notif["params"]["diagnostics"]
+            .as_array()
+            .unwrap()
+            .is_empty(),
+        "did_save must republish semantic diagnostics, got empty list: {save_notif:?}"
     );
 }
 
