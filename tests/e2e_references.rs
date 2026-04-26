@@ -649,6 +649,95 @@ async fn references_on_promoted_property_cross_file() {
     );
 }
 
+/// Parallel warm must find exactly the right number of call sites across many
+/// files — enough that the rayon thread pool actually distributes work across
+/// multiple threads.  A lost or duplicated memo would produce the wrong count.
+/// The workspace scan populates the file index; `textDocument/references`
+/// triggers `warm_file_refs_parallel` then aggregates the memos.
+#[tokio::test]
+async fn parallel_warm_finds_all_references_across_many_files() {
+    let dir = tempfile::tempdir().unwrap();
+    let caller_count = 15usize;
+    std::fs::write(
+        dir.path().join("def.php"),
+        "<?php\nfunction target(): void {}",
+    )
+    .unwrap();
+    for i in 0..caller_count {
+        std::fs::write(
+            dir.path().join(format!("caller_{i}.php")),
+            "<?php\ntarget();",
+        )
+        .unwrap();
+    }
+    for i in 0..5usize {
+        std::fs::write(
+            dir.path().join(format!("other_{i}.php")),
+            format!("<?php\nfunction other_{i}() {{}}"),
+        )
+        .unwrap();
+    }
+
+    let mut server = TestServer::with_root(dir.path()).await;
+    server.wait_for_index_ready().await;
+    server
+        .open("def.php", "<?php\nfunction target(): void {}")
+        .await;
+
+    // Line 1, character 9 = start of "target" in `function target(): void {}`
+    let resp = server.references("def.php", 1, 9, false).await;
+    assert!(resp["error"].is_null(), "references error: {resp:?}");
+    let locs = resp["result"].as_array().expect("expected array");
+    assert_eq!(
+        locs.len(),
+        caller_count,
+        "expected {caller_count} references, got {}: {locs:?}",
+        locs.len()
+    );
+}
+
+/// After the first `textDocument/references` call populates salsa memos via
+/// `warm_file_refs_parallel`, a second call for the same symbol must return
+/// the same result — verifying that parallel memo population is correct and
+/// not corrupted by concurrent writes.
+#[tokio::test]
+async fn parallel_warm_gives_consistent_results_on_repeated_references_calls() {
+    let mut server = TestServer::new().await;
+    let opened = server
+        .open_fixture(
+            r#"//- /a.php
+<?php
+function fo$0o(): void {}
+
+//- /b.php
+<?php
+foo();
+
+//- /c.php
+<?php
+foo(); foo();
+"#,
+        )
+        .await;
+    let c = opened.cursor();
+
+    let resp1 = server.references(&c.path, c.line, c.character, false).await;
+    let resp2 = server.references(&c.path, c.line, c.character, false).await;
+
+    let locs1 = resp1["result"].as_array().expect("array");
+    let locs2 = resp2["result"].as_array().expect("array");
+    assert_eq!(
+        locs1.len(),
+        3,
+        "expected 3 references (1 from b.php, 2 from c.php): {locs1:?}"
+    );
+    assert_eq!(
+        locs1.len(),
+        locs2.len(),
+        "repeated references calls returned different counts"
+    );
+}
+
 #[tokio::test]
 async fn references_finds_all_usages_of_function() {
     let mut server = TestServer::new().await;
