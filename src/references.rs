@@ -1772,6 +1772,8 @@ mod tests {
             extends_type_args: vec![],
             interfaces: vec![],
             traits: vec![],
+            mixins: vec![],
+            implements_type_args: vec![],
             own_methods: methods,
             own_properties: IndexMap::new(),
             own_constants: IndexMap::new(),
