@@ -312,6 +312,26 @@ if ($e instanceof Event) {}
 }
 
 #[tokio::test]
+async fn references_class_type_hint_with_new_call() {
+    // When a class appears both as a type hint AND in a new expression, find-references
+    // must include ALL sites — not just the new call. This is the regression case where
+    // the salsa fast path returned only `new Widget()` and silently dropped type hints.
+    let mut s = TestServer::new().await;
+    s.check_references_annotated(
+        r#"<?php
+class Wi$0dget {}
+//    ^^^^^^ def
+function foo(Widget $w): Widget {}
+//           ^^^^^^ ref
+//                       ^^^^^^ ref
+$x = new Widget();
+//       ^^^^^^ ref
+"#,
+    )
+    .await;
+}
+
+#[tokio::test]
 async fn references_promoted_property_finds_nullsafe_access() {
     // `$obj?->prop` must be returned alongside `$obj->prop` when searching
     // refs on a promoted constructor property. The promoted param declaration
