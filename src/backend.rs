@@ -2579,16 +2579,38 @@ fn symbol_kind_at(source: &str, position: Position, word: &str) -> Option<Symbol
         char_idx -= 1;
     }
 
+    // Look past the end of the word to distinguish `->method()` from `->prop`.
+    let word_end = {
+        let mut i = char_idx;
+        while i < chars.len() && is_word_char(chars[i]) {
+            i += 1;
+        }
+        // Skip spaces before the next token.
+        while i < chars.len() && chars[i] == ' ' {
+            i += 1;
+        }
+        i
+    };
+    let next_is_call = word_end < chars.len() && chars[word_end] == '(';
+
     // Check for `->` or `?->`
     if char_idx >= 2 && chars[char_idx - 1] == '>' && chars[char_idx - 2] == '-' {
-        return Some(SymbolKind::Method);
+        return if next_is_call {
+            Some(SymbolKind::Method)
+        } else {
+            Some(SymbolKind::Property)
+        };
     }
     if char_idx >= 3
         && chars[char_idx - 1] == '>'
         && chars[char_idx - 2] == '-'
         && chars[char_idx - 3] == '?'
     {
-        return Some(SymbolKind::Method);
+        return if next_is_call {
+            Some(SymbolKind::Method)
+        } else {
+            Some(SymbolKind::Property)
+        };
     }
 
     // Check for `::`

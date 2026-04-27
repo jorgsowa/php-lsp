@@ -87,6 +87,14 @@ fn scan_statements(sv: SourceView<'_>, stmts: &[Stmt<'_, '_>], word: &str) -> Op
                         ClassMemberKind::Property(p) if p.name == bare => {
                             return Some(sv.name_range(p.name));
                         }
+                        // Constructor-promoted parameters act as property declarations.
+                        ClassMemberKind::Method(m) if m.name == "__construct" => {
+                            for p in m.params.iter() {
+                                if p.visibility.is_some() && p.name == bare {
+                                    return Some(sv.name_range(p.name));
+                                }
+                            }
+                        }
                         _ => {}
                     }
                 }
@@ -204,7 +212,7 @@ pub fn find_in_indexes(
             for p in &cls.properties {
                 if p.name == bare {
                     let pos = tower_lsp::lsp_types::Position {
-                        line: cls.start_line,
+                        line: p.start_line,
                         character: 0,
                     };
                     return Some(Location {

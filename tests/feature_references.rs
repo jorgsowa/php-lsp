@@ -429,12 +429,14 @@ $c->add();
 #[tokio::test]
 async fn references_promoted_property_this_access() {
     // `$this->prop` inside a method must be returned alongside external `->prop`
-    // accesses when cursor is on a promoted constructor property.
+    // accesses and the constructor param declaration when cursor is on a promoted
+    // constructor property.
     let mut s = TestServer::new().await;
     s.check_references_annotated(
         r#"<?php
 class Person {
     public function __construct(public readonly string $na$0me) {}
+    //                                                  ^^^^ ref
     public function greet(): string {
         return $this->name;
         //            ^^^^ ref
@@ -450,21 +452,41 @@ echo $p->name;
 
 #[tokio::test]
 async fn references_promoted_property_finds_nullsafe_access() {
-    // `$obj?->prop` must be returned alongside `$obj->prop` when searching
-    // refs on a promoted constructor property. The promoted param declaration
-    // itself is not included because the property walker finds access sites,
-    // not constructor parameter declarations.
+    // `$obj?->prop` must be returned alongside `$obj->prop` and the constructor
+    // param declaration when searching refs on a promoted constructor property.
     let mut s = TestServer::new().await;
     s.check_references_annotated(
         r#"<?php
 class Config {
     public function __construct(public readonly string $ke$0y) {}
+    //                                                  ^^^ ref
 }
 $c = new Config('x');
 echo $c->key;
 //       ^^^ ref
 echo $c?->key;
 //         ^^^ ref
+"#,
+    )
+    .await;
+}
+
+/// Searching references from a property *access* site (`$this->prop`) must
+/// behave the same as searching from the constructor param declaration —
+/// finding all property accesses, not method calls.
+#[tokio::test]
+async fn references_promoted_property_from_access_site() {
+    let mut s = TestServer::new().await;
+    s.check_references_annotated(
+        r#"<?php
+class Cart {
+    public function __construct(private object $item) {}
+    //                                          ^^^^ ref
+    public function total(): void { $this->it$0em; }
+    //                                      ^^^^ ref
+    public function describe(): void { $this->item; }
+    //                                        ^^^^ ref
+}
 "#,
     )
     .await;

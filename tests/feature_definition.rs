@@ -293,3 +293,108 @@ async fn goto_definition_method_call_across_files() {
         "wrong line: {loc:?}"
     );
 }
+
+/// go-to-definition on a promoted constructor property should jump to the
+/// parameter declaration, not to an unrelated class that happens to have a
+/// property with the same name.
+#[tokio::test]
+async fn definition_promoted_property_same_file() {
+    let mut s = TestServer::new().await;
+    s.check_definition_annotated(
+        r#"<?php
+class Service {
+    public function __construct(private object $repo) {}
+    //                                          ^^^^ def
+    public function run(): void { $this->re$0po; }
+}
+"#,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn definition_promoted_property_not_hijacked_by_other_class() {
+    let mut s = TestServer::new().await;
+    s.check_definition_annotated(
+        r#"//- /service.php
+<?php
+class Service {
+    public function __construct(private object $repo) {}
+    //                                          ^^^^ def
+    public function run(): void { $this->re$0po; }
+}
+
+//- /other.php
+<?php
+class Other {
+    public object $repo;
+}
+"#,
+    )
+    .await;
+}
+
+/// Cursor on `$repo` inside the constructor body itself (as a parameter
+/// variable, not a property access) should resolve to the promoted param decl.
+#[tokio::test]
+async fn definition_promoted_property_cursor_in_constructor_body() {
+    let mut s = TestServer::new().await;
+    s.check_definition_annotated(
+        r#"<?php
+class Builder {
+    public function __construct(private string $name) {
+    //                                          ^^^^ def
+        echo $na$0me;
+    }
+}
+"#,
+    )
+    .await;
+}
+
+/// Untyped promoted param with only a `@param` docblock — the original
+/// scenario the user reported where definition jumped to an unrelated class.
+#[tokio::test]
+async fn definition_promoted_property_docblock_typed() {
+    let mut s = TestServer::new().await;
+    s.check_definition_annotated(
+        r#"//- /service.php
+<?php
+class Service {
+    /** @param object $repo */
+    public function __construct(private $repo) {}
+    //                                   ^^^^ def
+    public function run(): void { $this->re$0po; }
+}
+
+//- /other.php
+<?php
+class Other {
+    public object $repo;
+}
+"#,
+    )
+    .await;
+}
+
+/// True cross-file definition: cursor in one file, promoted param declaration
+/// in a different file's constructor.
+#[tokio::test]
+async fn definition_promoted_property_cross_file() {
+    let mut s = TestServer::new().await;
+    s.check_definition_annotated(
+        r#"//- /src/Repository.php
+<?php
+class Repository {
+    public function __construct(private object $conn) {}
+    //                                          ^^^^ def
+}
+
+//- /src/main.php
+<?php
+$r = new Repository($db);
+$r->co$0nn;
+"#,
+    )
+    .await;
+}

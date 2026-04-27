@@ -387,14 +387,27 @@ impl<'arena, 'src> Visitor<'arena, 'src> for PropertyRefsVisitor<'_> {
     }
 
     fn visit_class_member(&mut self, member: &ClassMember<'arena, 'src>) -> ControlFlow<()> {
-        if let ClassMemberKind::Property(p) = &member.kind
-            && p.name == self.prop_name
-        {
-            let offset = str_offset(self.source, p.name);
-            self.out.push(Span {
-                start: offset,
-                end: offset + p.name.len() as u32,
-            });
+        match &member.kind {
+            ClassMemberKind::Property(p) if p.name == self.prop_name => {
+                let offset = str_offset(self.source, p.name);
+                self.out.push(Span {
+                    start: offset,
+                    end: offset + p.name.len() as u32,
+                });
+            }
+            // Constructor-promoted parameters act as property declarations.
+            ClassMemberKind::Method(m) if m.name == "__construct" => {
+                for p in m.params.iter() {
+                    if p.visibility.is_some() && p.name == self.prop_name {
+                        let offset = str_offset(self.source, p.name);
+                        self.out.push(Span {
+                            start: offset,
+                            end: offset + p.name.len() as u32,
+                        });
+                    }
+                }
+            }
+            _ => {}
         }
         walk_class_member(self, member)
     }

@@ -97,6 +97,7 @@ pub struct PropertyDef {
     pub is_static: bool,
     pub type_hint: Option<String>,
     pub visibility: Visibility,
+    pub start_line: u32,
 }
 
 // ── Extract ───────────────────────────────────────────────────────────────────
@@ -211,6 +212,7 @@ fn collect_stmts(
                             for ast_param in m.params.iter() {
                                 if ast_param.visibility.is_some() {
                                     let pvis = method_visibility(ast_param.visibility);
+                                    let pstart = view.position_of(ast_param.span.start).line;
                                     class_def.properties.push(PropertyDef {
                                         name: ast_param.name.to_string(),
                                         is_static: false,
@@ -219,6 +221,7 @@ fn collect_stmts(
                                             .as_ref()
                                             .map(format_type_hint),
                                         visibility: pvis,
+                                        start_line: pstart,
                                     });
                                 }
                             }
@@ -235,11 +238,13 @@ fn collect_stmts(
                         }
                         ClassMemberKind::Property(p) => {
                             let vis = method_visibility(p.visibility);
+                            let pstart = view.position_of(member.span.start).line;
                             class_def.properties.push(PropertyDef {
                                 name: p.name.to_string(),
                                 is_static: p.is_static,
                                 type_hint: p.type_hint.as_ref().map(format_type_hint),
                                 visibility: vis,
+                                start_line: pstart,
                             });
                         }
                         ClassMemberKind::ClassConst(cc) => {
@@ -345,11 +350,13 @@ fn collect_stmts(
                         }
                         ClassMemberKind::Property(p) => {
                             let vis = method_visibility(p.visibility);
+                            let pstart = view.position_of(member.span.start).line;
                             trait_def.properties.push(PropertyDef {
                                 name: p.name.to_string(),
                                 is_static: p.is_static,
                                 type_hint: p.type_hint.as_ref().map(format_type_hint),
                                 visibility: vis,
+                                start_line: pstart,
                             });
                         }
                         ClassMemberKind::ClassConst(cc) => {
