@@ -1557,11 +1557,13 @@ impl LanguageServer for Backend {
             None => return Ok(None),
         };
         let doc_returns = self.docs.get_method_returns_salsa(uri);
+        let wi = self.docs.get_workspace_index_salsa();
         Ok(Some(inlay_hints(
             doc.source(),
             &doc,
             doc_returns.as_deref(),
             params.range,
+            &wi.files,
         )))
     }
 

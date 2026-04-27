@@ -318,7 +318,7 @@ pub(crate) fn render_signature_help(resp: &Value) -> String {
     out.trim_end().to_owned()
 }
 
-pub(crate) fn render_inlay_hints(resp: &Value) -> String {
+pub fn render_inlay_hints(resp: &Value) -> String {
     if let Some(err) = resp.get("error").filter(|e| !e.is_null()) {
         return format!("error: {err}");
     }

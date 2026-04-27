@@ -1,7 +1,97 @@
 mod common;
 
-use common::TestServer;
+use common::{TestServer, render_inlay_hints};
 use expect_test::expect;
+
+/// The definition file is never opened — it exists only in the workspace index
+/// from the background scan. This is the typical production scenario.
+#[tokio::test]
+async fn inlay_hints_from_workspace_index_only() {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        tmp.path().join("greeter.php"),
+        "<?php\nfunction greet(string $name, int $count): void {}\n",
+    )
+    .unwrap();
+    let caller_src = "<?php\ngreet('world', 3);\n";
+    std::fs::write(tmp.path().join("caller.php"), caller_src).unwrap();
+    let mut s = TestServer::with_root(tmp.path()).await;
+    s.wait_for_index_ready().await;
+    // Only open the caller — greeter.php is indexed but never opened.
+    s.open("caller.php", caller_src).await;
+    let resp = s.inlay_hints("caller.php", 0, 0, 3, 0).await;
+    expect![[r#"
+        1:6 name:
+        1:15 count:"#]]
+    .assert_eq(&render_inlay_hints(&resp));
+}
+
+#[tokio::test]
+async fn inlay_hints_cross_file_function_call() {
+    let mut s = TestServer::new().await;
+    let out = s
+        .check_inlay_hints(
+            r#"//- /caller.php
+<?php
+greet('world', 3);
+
+//- /greeter.php
+<?php
+function greet(string $name, int $count): void {}
+"#,
+        )
+        .await;
+    expect![[r#"
+        1:6 name:
+        1:15 count:"#]]
+    .assert_eq(&out);
+}
+
+#[tokio::test]
+async fn inlay_hints_cross_file_constructor_call() {
+    let mut s = TestServer::new().await;
+    let out = s
+        .check_inlay_hints(
+            r#"//- /caller.php
+<?php
+$p = new Point(1, 2);
+
+//- /Point.php
+<?php
+class Point {
+    public function __construct(int $x, int $y) {}
+}
+"#,
+        )
+        .await;
+    expect![[r#"
+        1:15 x:
+        1:18 y:"#]]
+    .assert_eq(&out);
+}
+
+#[tokio::test]
+async fn inlay_hints_cross_file_method_call() {
+    let mut s = TestServer::new().await;
+    let out = s
+        .check_inlay_hints(
+            r#"//- /caller.php
+<?php
+$g = new Greeter();
+$g->sayHello('World');
+
+//- /Greeter.php
+<?php
+class Greeter {
+    public function sayHello(string $name): void {}
+}
+"#,
+        )
+        .await;
+    expect![[r#"
+        2:13 name:"#]]
+    .assert_eq(&out);
+}
 
 #[tokio::test]
 async fn inlay_hints_for_parameter_names() {
