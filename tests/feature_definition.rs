@@ -119,6 +119,34 @@ no$0thing_here();
 }
 
 #[tokio::test]
+async fn definition_interface_method_same_file() {
+    let mut s = TestServer::new().await;
+    s.check_definition_annotated(
+        r#"<?php
+interface Serializable {
+    public function seri$0alize(): string;
+    //              ^^^^^^^^^ def
+}
+"#,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn definition_interface_constant_same_file() {
+    let mut s = TestServer::new().await;
+    s.check_definition_annotated(
+        r#"<?php
+interface Limits {
+    const MA$0X_SIZE = 100;
+    //    ^^^^^^^^ def
+}
+"#,
+    )
+    .await;
+}
+
+#[tokio::test]
 async fn declaration_on_interface_method() {
     let mut s = TestServer::new().await;
     let out = s

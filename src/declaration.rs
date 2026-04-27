@@ -96,6 +96,7 @@ fn find_any_declaration(
     stmts: &[Stmt<'_, '_>],
     word: &str,
 ) -> Option<tower_lsp::lsp_types::Range> {
+    let bare = word.strip_prefix('$').unwrap_or(word);
     for stmt in stmts {
         match &stmt.kind {
             StmtKind::Function(f) if f.name == word => {
@@ -113,11 +114,40 @@ fn find_any_declaration(
                     }
                 }
             }
-            StmtKind::Interface(i) if i.name == word => {
-                return Some(sv.name_range(i.name));
+            StmtKind::Interface(i) => {
+                if i.name == word {
+                    return Some(sv.name_range(i.name));
+                }
+                for member in i.members.iter() {
+                    match &member.kind {
+                        ClassMemberKind::Method(m) if m.name == word => {
+                            return Some(sv.name_range(m.name));
+                        }
+                        ClassMemberKind::ClassConst(cc) if cc.name == word => {
+                            return Some(sv.name_range(cc.name));
+                        }
+                        _ => {}
+                    }
+                }
             }
-            StmtKind::Trait(t) if t.name == word => {
-                return Some(sv.name_range(t.name));
+            StmtKind::Trait(t) => {
+                if t.name == word {
+                    return Some(sv.name_range(t.name));
+                }
+                for member in t.members.iter() {
+                    match &member.kind {
+                        ClassMemberKind::Method(m) if m.name == word => {
+                            return Some(sv.name_range(m.name));
+                        }
+                        ClassMemberKind::ClassConst(cc) if cc.name == word => {
+                            return Some(sv.name_range(cc.name));
+                        }
+                        ClassMemberKind::Property(p) if p.name == bare => {
+                            return Some(sv.name_range(p.name));
+                        }
+                        _ => {}
+                    }
+                }
             }
             StmtKind::Enum(e) if e.name == word => {
                 return Some(sv.name_range(e.name));

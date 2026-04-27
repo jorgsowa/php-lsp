@@ -99,8 +99,21 @@ fn scan_statements(sv: SourceView<'_>, stmts: &[Stmt<'_, '_>], word: &str) -> Op
                     }
                 }
             }
-            StmtKind::Interface(i) if i.name == word => {
-                return Some(sv.name_range(i.name));
+            StmtKind::Interface(i) => {
+                if i.name == word {
+                    return Some(sv.name_range(i.name));
+                }
+                for member in i.members.iter() {
+                    match &member.kind {
+                        ClassMemberKind::Method(m) if m.name == word => {
+                            return Some(sv.name_range(m.name));
+                        }
+                        ClassMemberKind::ClassConst(cc) if cc.name == word => {
+                            return Some(sv.name_range(cc.name));
+                        }
+                        _ => {}
+                    }
+                }
             }
             StmtKind::Trait(t) => {
                 if t.name == word {
