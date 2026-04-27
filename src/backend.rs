@@ -76,13 +76,13 @@ use crate::use_import::{build_use_import_edit, find_fqn_for_class};
 use crate::util::word_at;
 
 /// Per-category diagnostic toggle flags.
-/// The master `enabled` switch defaults to `false` — clients must opt in via
-/// `initializationOptions.diagnostics.enabled = true`. Individual category
-/// flags default to `true`, so flipping `enabled` on enables everything unless
-/// specific categories are turned off.
+/// The master `enabled` switch defaults to `true`. Individual category flags
+/// also default to `true`, so all diagnostics are on out of the box; set
+/// `initializationOptions.diagnostics.enabled = false` to silence everything,
+/// or turn off specific categories individually.
 #[derive(Debug, Clone)]
 pub struct DiagnosticsConfig {
-    /// Master switch: when `false`, no diagnostics are emitted. Defaults to `false`.
+    /// Master switch: when `false`, no diagnostics are emitted. Defaults to `true`.
     pub enabled: bool,
     /// Undefined variable references.
     pub undefined_variables: bool,
@@ -103,7 +103,7 @@ pub struct DiagnosticsConfig {
 impl Default for DiagnosticsConfig {
     fn default() -> Self {
         DiagnosticsConfig {
-            enabled: false,
+            enabled: true,
             undefined_variables: true,
             undefined_functions: true,
             undefined_classes: true,
@@ -130,10 +130,7 @@ impl DiagnosticsConfig {
         let mut cfg = DiagnosticsConfig::default();
         let Some(obj) = v.as_object() else { return cfg };
         let flag = |key: &str| obj.get(key).and_then(|x| x.as_bool()).unwrap_or(true);
-        cfg.enabled = obj
-            .get("enabled")
-            .and_then(|x| x.as_bool())
-            .unwrap_or(false);
+        cfg.enabled = obj.get("enabled").and_then(|x| x.as_bool()).unwrap_or(true);
         cfg.undefined_variables = flag("undefinedVariables");
         cfg.undefined_functions = flag("undefinedFunctions");
         cfg.undefined_classes = flag("undefinedClasses");
