@@ -544,7 +544,7 @@ fn doc_can_reference_target(doc: &ParsedDoc, word: &str, target_fqn: &str) -> bo
 /// Build a local-name → FQN map from a doc's `use` statements.  Mirrors
 /// `Backend::file_imports` but self-contained so the reference walker can
 /// run without a persistent codebase.
-fn collect_file_imports(doc: &ParsedDoc) -> std::collections::HashMap<String, String> {
+pub(crate) fn collect_file_imports(doc: &ParsedDoc) -> std::collections::HashMap<String, String> {
     let mut out = std::collections::HashMap::new();
     fn walk(stmts: &[Stmt<'_, '_>], out: &mut std::collections::HashMap<String, String>) {
         for stmt in stmts {

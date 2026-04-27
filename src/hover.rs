@@ -2000,7 +2000,7 @@ mod tests {
             pos(1, 32),
             expect![[r#"
                 ```php
-                function add(int $a, int $b): int
+                public function add(int $a, int $b): int
                 ```"#]],
         );
     }

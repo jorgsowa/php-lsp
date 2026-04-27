@@ -373,12 +373,14 @@ impl Backend {
         // delegates to the salsa-memoized `codebase` query, which composes
         // bundled stubs + every file's StubSlice and returns a fresh
         // `Arc<Codebase>` (or the memoized one when inputs are unchanged).
+        let docs = Arc::new(DocumentStore::new());
+        let psr4 = docs.psr4_arc();
         Backend {
             client,
-            docs: Arc::new(DocumentStore::new()),
+            docs,
             open_files: OpenFiles::new(),
             root_paths: Arc::new(RwLock::new(Vec::new())),
-            psr4: Arc::new(RwLock::new(Psr4Map::empty())),
+            psr4,
             meta: Arc::new(RwLock::new(PhpStormMeta::default())),
             config: Arc::new(RwLock::new(LspConfig::default())),
         }
@@ -478,6 +480,22 @@ impl LanguageServer for Backend {
                 roots.push(path);
             }
             *self.root_paths.write().unwrap() = roots;
+        }
+
+        // Pre-load PSR-4 map synchronously during initialize so it is available
+        // before the first didOpen arrives. The initialized handler reloads it too
+        // (after workspace folders may be updated), but doing it here eliminates
+        // the race where didOpen runs before the initialized handler finishes its
+        // register_capability round-trip.
+        {
+            let roots = self.root_paths.read().unwrap().clone();
+            if !roots.is_empty() {
+                let mut merged = Psr4Map::empty();
+                for root in &roots {
+                    merged.extend(Psr4Map::load(root));
+                }
+                *self.psr4.write().unwrap() = merged;
+            }
         }
 
         // Parse initializationOptions merged with .php-lsp.json (editor wins per-key).
@@ -3203,11 +3221,9 @@ mod tests {
 
     // DiagnosticsConfig::from_value tests
     #[test]
-    fn diagnostics_config_default_is_disabled() {
+    fn diagnostics_config_default_is_enabled() {
         let cfg = DiagnosticsConfig::default();
-        assert!(!cfg.enabled);
-        // Category flags still default to true so that flipping `enabled`
-        // on turns everything on unless explicitly disabled.
+        assert!(cfg.enabled);
         assert!(cfg.undefined_variables);
         assert!(cfg.undefined_functions);
         assert!(cfg.undefined_classes);
@@ -3218,16 +3234,16 @@ mod tests {
     }
 
     #[test]
-    fn diagnostics_config_from_empty_object_is_disabled() {
+    fn diagnostics_config_from_empty_object_is_enabled() {
         let cfg = DiagnosticsConfig::from_value(&serde_json::json!({}));
-        assert!(!cfg.enabled);
+        assert!(cfg.enabled);
         assert!(cfg.undefined_variables);
     }
 
     #[test]
     fn diagnostics_config_from_non_object_uses_defaults() {
         let cfg = DiagnosticsConfig::from_value(&serde_json::json!(null));
-        assert!(!cfg.enabled);
+        assert!(cfg.enabled);
     }
 
     #[test]
@@ -3273,7 +3289,7 @@ mod tests {
         let cfg = LspConfig::default();
         assert!(cfg.php_version.is_none());
         assert!(cfg.exclude_paths.is_empty());
-        assert!(!cfg.diagnostics.enabled);
+        assert!(cfg.diagnostics.enabled);
     }
 
     #[test]

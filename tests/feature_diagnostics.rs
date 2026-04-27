@@ -389,6 +389,47 @@ function wrap(): void {
         .await;
 }
 
+/// PSR-4-resolvable classes must not produce UndefinedClass diagnostics even
+/// when the background workspace scan has not yet reached the dependency file.
+/// The fix (PSR-4 lazy-loading inside `get_semantic_issues_salsa`) reads the
+/// dependency from disk before running semantic analysis, making the result
+/// deterministic regardless of scan timing.
+#[tokio::test]
+async fn psr4_imported_class_not_flagged_before_workspace_scan() {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        tmp.path().join("composer.json"),
+        r#"{"autoload":{"psr-4":{"App\\":"src/"}}}"#,
+    )
+    .unwrap();
+
+    // Dependency: exists on disk; lazy-loading must find it via PSR-4.
+    std::fs::create_dir_all(tmp.path().join("src/Model")).unwrap();
+    std::fs::write(
+        tmp.path().join("src/Model/Entity.php"),
+        "<?php\nnamespace App\\Model;\nclass Entity {}\n",
+    )
+    .unwrap();
+
+    // Consuming file: uses Entity as a parameter type — the analyzer resolves
+    // parameter types through use statements, exercising the full lazy-load path.
+    std::fs::create_dir_all(tmp.path().join("src/Service")).unwrap();
+    let handler_src = "<?php\nnamespace App\\Service;\nuse App\\Model\\Entity;\nfunction handle(Entity $e): Entity { return $e; }\n";
+    std::fs::write(tmp.path().join("src/Service/Handler.php"), handler_src).unwrap();
+
+    let mut s = TestServer::with_root(tmp.path()).await;
+    let notif = s.open("src/Service/Handler.php", handler_src).await;
+
+    let diags = notif["params"]["diagnostics"]
+        .as_array()
+        .unwrap_or(&vec![])
+        .clone();
+    assert!(
+        diags.is_empty(),
+        "expected zero diagnostics for clean PSR-4-resolvable file, got: {diags:?}"
+    );
+}
+
 #[ignore = "mir-analyzer gap: too-many-arguments not detected"]
 #[tokio::test]
 async fn argument_count_too_many_detected() {

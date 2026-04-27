@@ -136,6 +136,41 @@ mod tests {
         );
     }
 
+    /// Reproducer: if a class imported via `use` is instantiated but its file is
+    /// not yet in `ws.files()` (e.g. the background workspace scan hasn't reached
+    /// it yet), the analyzer currently emits a spurious `UndefinedClass`.
+    ///
+    /// This test documents the bug: it asserts UndefinedClass IS emitted.
+    /// After the fix (PSR-4 lazy-loading before `semantic_issues` runs) the
+    /// expected assertion must be inverted — UndefinedClass must NOT appear.
+    #[test]
+    fn use_imported_class_absent_from_workspace_emits_undefined_class() {
+        let host = AnalysisHost::new();
+        // Only the consuming file is registered — its dependency is not.
+        let consuming = new_file(
+            &host,
+            0,
+            "file:///src/Service/Handler.php",
+            "<?php\nnamespace App\\Service;\nuse App\\Model\\Entity;\nfunction handle(): void { $e = new Entity(); }",
+        );
+        let ws = Workspace::new(
+            host.db(),
+            Arc::from([consuming]),
+            mir_analyzer::PhpVersion::LATEST,
+        );
+        let issues = semantic_issues(host.db(), ws, consuming);
+        // Bug: UndefinedClass IS emitted when the dependency is absent.
+        // After the fix this assertion must be inverted to `!any(...)`.
+        assert!(
+            issues
+                .get()
+                .iter()
+                .any(|i| matches!(i.kind, mir_issues::IssueKind::UndefinedClass { .. })),
+            "expected UndefinedClass when dependency is absent from workspace; got: {:?}",
+            issues.get()
+        );
+    }
+
     #[test]
     fn semantic_issues_reruns_after_edit() {
         let mut host = AnalysisHost::new();

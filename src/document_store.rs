@@ -1,11 +1,12 @@
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, RwLock};
 
 use dashmap::DashMap;
 use salsa::Setter;
 use tower_lsp::lsp_types::{Diagnostic, SemanticToken, Url};
 
 use crate::ast::ParsedDoc;
+use crate::autoload::Psr4Map;
 use crate::db::analysis::AnalysisHost;
 use crate::db::input::{FileId, SourceFile, Workspace};
 use crate::file_index::FileIndex;
@@ -68,6 +69,10 @@ pub struct DocumentStore {
     /// participate in whole-program queries (`codebase`, `file_refs`).
     /// Re-synced from `source_files` on demand by `sync_workspace_files`.
     workspace: Workspace,
+    /// Shared PSR-4 namespace-to-path map. Shared with `Backend` via `Arc`
+    /// so updates from `initialized` (when composer.json is loaded) are
+    /// visible here without any additional wiring.
+    psr4: Arc<RwLock<Psr4Map>>,
 }
 
 impl Default for DocumentStore {
@@ -92,7 +97,16 @@ impl DocumentStore {
             parsed_cache: DashMap::new(),
             next_file_id: AtomicU32::new(0),
             workspace,
+            psr4: Arc::new(RwLock::new(Psr4Map::empty())),
         }
+    }
+
+    /// Return the `Arc<RwLock<Psr4Map>>` so callers can share it.
+    /// `Backend` clones this arc at construction time so writes to the lock
+    /// (e.g. loading composer.json on `initialized`) are immediately visible
+    /// to `lazy_load_psr4_imports` without extra plumbing.
+    pub fn psr4_arc(&self) -> Arc<RwLock<Psr4Map>> {
+        Arc::clone(&self.psr4)
     }
 
     /// Mirror a file's current text into the salsa layer. Creates the
@@ -471,12 +485,46 @@ impl DocumentStore {
             .map(|e| e.1.clone())
     }
 
+    /// Before running semantic analysis for `uri`, resolve every `use`-imported
+    /// class through the PSR-4 map and mirror any that are not yet registered.
+    /// This prevents spurious `UndefinedClass` diagnostics when the background
+    /// workspace scan has not yet reached a dependency file.
+    fn lazy_load_psr4_imports(&self, uri: &Url) {
+        let doc = match self.get_doc_salsa(uri) {
+            Some(d) => d,
+            None => return,
+        };
+        let imports = crate::references::collect_file_imports(&doc);
+        if imports.is_empty() {
+            return;
+        }
+        let psr4 = self.psr4.read().unwrap();
+        let paths: Vec<std::path::PathBuf> = imports
+            .values()
+            .filter_map(|fqcn| psr4.resolve(fqcn))
+            .collect();
+        drop(psr4);
+
+        for path in paths {
+            let Ok(dep_url) = Url::from_file_path(&path) else {
+                continue;
+            };
+            if self.source_files.contains_key(&dep_url) {
+                continue;
+            }
+            if let Ok(text) = std::fs::read_to_string(&path) {
+                self.mirror_text(&dep_url, &text);
+            }
+        }
+    }
+
     /// Phase I: salsa-memoized raw semantic issues for a file. Callers apply
     /// their own `DiagnosticsConfig` filter via
     /// [`crate::semantic_diagnostics::issues_to_diagnostics`] — keeping the
     /// filter outside the query preserves memoization across config toggles.
     pub fn get_semantic_issues_salsa(&self, uri: &Url) -> Option<Arc<[mir_issues::Issue]>> {
         let sf = self.source_file(uri)?;
+        self.lazy_load_psr4_imports(uri);
         self.sync_workspace_files();
         let ws = self.workspace;
         Some(
@@ -1019,6 +1067,53 @@ mod tests {
         assert!(
             refs_to_a.iter().any(|(uri, _, _)| uri.contains("wb.php")),
             "reference to a() from /wb.php should be discoverable after warm-up, got {refs_to_a:?}"
+        );
+    }
+
+    /// PSR-4 lazy-loading: `get_semantic_issues_salsa` must not emit
+    /// `UndefinedClass` for a class that is PSR-4-resolvable on disk, even
+    /// when the dependency file is not yet in `source_files`.
+    #[test]
+    fn psr4_lazy_load_suppresses_undefined_class() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        // Write Entity.php to disk (not mirrored into the store).
+        std::fs::create_dir_all(tmp.path().join("src/Model")).unwrap();
+        std::fs::write(
+            tmp.path().join("src/Model/Entity.php"),
+            "<?php\nnamespace App\\Model;\nclass Entity {}\n",
+        )
+        .unwrap();
+
+        // Write composer.json so Psr4Map::load can build the map.
+        std::fs::write(
+            tmp.path().join("composer.json"),
+            r#"{"autoload":{"psr-4":{"App\\":"src/"}}}"#,
+        )
+        .unwrap();
+
+        let store = DocumentStore::new();
+
+        // Inject a PSR-4 map pointing at the tmp dir.
+        *store.psr4.write().unwrap() = crate::autoload::Psr4Map::load(tmp.path());
+
+        // Mirror the consuming file (Entity not yet in source_files).
+        // Uses Entity as a parameter type hint — the analyzer resolves these
+        // through use statements, so this exercises the full PSR-4 lazy-load path.
+        let handler_url = Url::from_file_path(tmp.path().join("src/Service/Handler.php")).unwrap();
+        store.mirror_text(
+            &handler_url,
+            "<?php\nnamespace App\\Service;\nuse App\\Model\\Entity;\nfunction handle(Entity $e): Entity { return $e; }\n",
+        );
+
+        let issues = store.get_semantic_issues_salsa(&handler_url).unwrap();
+        let undef: Vec<_> = issues
+            .iter()
+            .filter(|i| matches!(i.kind, mir_issues::IssueKind::UndefinedClass { .. }))
+            .collect();
+        assert!(
+            undef.is_empty(),
+            "PSR-4 lazy-loading must prevent UndefinedClass for App\\Model\\Entity; got: {undef:?}"
         );
     }
 }
