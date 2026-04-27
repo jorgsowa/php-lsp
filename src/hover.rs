@@ -1,13 +1,16 @@
 use std::cell::OnceCell;
 use std::sync::Arc;
 
-use php_ast::{ClassMemberKind, EnumMemberKind, ExprKind, NamespaceBody, Param, Stmt, StmtKind};
+use php_ast::{
+    ClassMemberKind, EnumMemberKind, ExprKind, NamespaceBody, Param, Stmt, StmtKind, UseKind,
+    Visibility,
+};
 use tower_lsp::lsp_types::{Hover, HoverContents, MarkupContent, MarkupKind, Position};
 
 use crate::ast::{MethodReturnsMap, ParsedDoc, format_type_hint};
 use crate::docblock::{Docblock, docblock_before, find_docblock, parse_docblock};
 use crate::type_map::TypeMap;
-use crate::util::{is_php_builtin, php_doc_url, word_at};
+use crate::util::{is_php_builtin, php_doc_url, word_at, word_range_at};
 
 pub fn hover_info(
     source: &str,
@@ -35,8 +38,10 @@ pub fn hover_at(
     )],
     position: Position,
 ) -> Option<Hover> {
-    // Feature 6: hover on use statement shows full FQN
-    // Check this before word_at since cursor may be past the last word boundary
+    let hover_range = word_range_at(source, position);
+
+    // Hover on a `use` line shows the full FQN — check before word_at since the
+    // cursor may be past the last word boundary.
     if let Some(line_text) = source.lines().nth(position.line as usize) {
         let trimmed = line_text.trim();
         if trimmed.starts_with("use ") && !trimmed.starts_with("use function ") {
@@ -46,12 +51,11 @@ pub fn hover_at(
                 .trim_end_matches(';')
                 .trim();
             if !fqn.is_empty() {
-                // Find the word at position (may be None if at end of line)
                 let maybe_word = word_at(source, position);
                 let alias = fqn.rsplit('\\').next().unwrap_or(fqn);
                 let matches = match &maybe_word {
                     Some(w) => w == alias || fqn.contains(w.as_str()),
-                    None => true, // hovering past end of line on a use statement
+                    None => true,
                 };
                 if matches {
                     return Some(Hover {
@@ -59,7 +63,7 @@ pub fn hover_at(
                             kind: MarkupKind::Markdown,
                             value: format!("`use {};`", fqn),
                         }),
-                        range: None,
+                        range: hover_range,
                     });
                 }
             }
@@ -68,7 +72,7 @@ pub fn hover_at(
 
     let word = word_at(source, position)?;
 
-    // TypeMap is expensive (scans all docs); build lazily and reuse across branches.
+    // TypeMap is expensive; build lazily and reuse across branches.
     let type_map_cell: OnceCell<TypeMap> = OnceCell::new();
     let type_map = || {
         type_map_cell.get_or_init(|| {
@@ -82,7 +86,7 @@ pub fn hover_at(
         })
     };
 
-    // Feature 2: hover on $variable shows its type
+    // Hover on $variable shows its inferred type.
     if word.starts_with('$')
         && let Some(class_name) = type_map().get(&word)
     {
@@ -91,67 +95,128 @@ pub fn hover_at(
                 kind: MarkupKind::Markdown,
                 value: format!("`{}` `{}`", word, class_name),
             }),
-            range: None,
+            range: hover_range,
         });
     }
 
-    // Class-specific method lookup: when the cursor is on a method call after `->`,
-    // resolve the receiver class and look up the method there to show the right signature.
+    // Cursor-aware receiver resolution: extract the receiver from immediately
+    // before `->word` or `?->word` at the cursor column, not just anywhere on
+    // the line.  This correctly handles multiple method calls on one line.
     if !word.starts_with('$')
         && let Some(line_text) = source.lines().nth(position.line as usize)
     {
-        let arrow_word = format!("->{}", word);
-        let nullsafe_arrow_word = format!("?->{}", word);
-        if line_text.contains(&arrow_word) || line_text.contains(&nullsafe_arrow_word) {
-            let arrow_pos = line_text
-                .find(&nullsafe_arrow_word)
-                .or_else(|| line_text.find(&arrow_word));
-            if let Some(apos) = arrow_pos {
-                let before_arrow = &line_text[..apos];
-                if let Some(var_name) = extract_receiver_var_from_end(before_arrow) {
-                    let tm = type_map();
-                    let class_name = if var_name == "$this" {
-                        crate::type_map::enclosing_class_at(source, doc, position)
-                            .or_else(|| tm.get("$this").map(|s| s.to_string()))
-                    } else {
-                        tm.get(&var_name).map(|s| s.to_string())
-                    };
-                    if let Some(cls) = class_name {
-                        let first_cls = cls.split('|').next().unwrap_or(&cls);
-                        for d in std::iter::once(doc)
-                            .chain(other_docs.iter().map(|(_, d, _)| d.as_ref()))
-                        {
-                            if let Some(sig) =
-                                scan_method_of_class(&d.program().stmts, first_cls, &word)
-                            {
-                                let mut value = wrap_php(&sig);
-                                if let Some(db) = find_method_docblock(d, first_cls, &word) {
-                                    let md = db.to_markdown();
-                                    if !md.is_empty() {
-                                        value.push_str("\n\n---\n\n");
-                                        value.push_str(&md);
-                                    }
-                                }
-                                return Some(Hover {
-                                    contents: HoverContents::Markup(MarkupContent {
-                                        kind: MarkupKind::Markdown,
-                                        value,
-                                    }),
-                                    range: None,
-                                });
+        if let Some(var_name) =
+            extract_receiver_var_before_cursor(line_text, position.character as usize)
+        {
+            let tm = type_map();
+            let class_name = if var_name == "$this" {
+                crate::type_map::enclosing_class_at(source, doc, position)
+                    .or_else(|| tm.get("$this").map(|s| s.to_string()))
+            } else {
+                tm.get(&var_name).map(|s| s.to_string())
+            };
+            if let Some(cls) = class_name {
+                let first_cls = cls.split('|').next().unwrap_or(&cls);
+                // Try method lookup first, then property lookup.
+                for d in std::iter::once(doc).chain(other_docs.iter().map(|(_, d, _)| d.as_ref())) {
+                    if let Some(sig) = scan_method_of_class(&d.program().stmts, first_cls, &word) {
+                        let mut value = wrap_php(&sig);
+                        if let Some(db) = find_method_docblock(d, first_cls, &word) {
+                            let md = db.to_markdown();
+                            if !md.is_empty() {
+                                value.push_str("\n\n---\n\n");
+                                value.push_str(&md);
                             }
                         }
+                        return Some(Hover {
+                            contents: HoverContents::Markup(MarkupContent {
+                                kind: MarkupKind::Markdown,
+                                value,
+                            }),
+                            range: hover_range,
+                        });
                     }
+                    if let Some((modifiers, type_str, db)) = find_property_info(d, first_cls, &word)
+                    {
+                        let sig = format!(
+                            "(property) {}{}::${}{}",
+                            modifiers,
+                            first_cls,
+                            word,
+                            if type_str.is_empty() {
+                                String::new()
+                            } else {
+                                format!(": {}", type_str)
+                            }
+                        );
+                        let mut value = wrap_php(&sig);
+                        if let Some(doc) = db {
+                            let md = doc.to_markdown();
+                            if !md.is_empty() {
+                                value.push_str("\n\n---\n\n");
+                                value.push_str(&md);
+                            }
+                        }
+                        return Some(Hover {
+                            contents: HoverContents::Markup(MarkupContent {
+                                kind: MarkupKind::Markdown,
+                                value,
+                            }),
+                            range: hover_range,
+                        });
+                    }
+                }
+            }
+        }
+
+        // Static call: `ClassName::method()` or `ClassName::CONST`.
+        if let Some(class_name) =
+            extract_static_class_before_cursor(line_text, position.character as usize)
+        {
+            let effective_class = if class_name == "self" || class_name == "static" {
+                crate::type_map::enclosing_class_at(source, doc, position)
+                    .unwrap_or(class_name.clone())
+            } else if class_name == "parent" {
+                // Find the enclosing class, then its parent
+                crate::type_map::enclosing_class_at(source, doc, position)
+                    .and_then(|enc| find_parent_class_name(&doc.program().stmts, &enc))
+                    .unwrap_or(class_name.clone())
+            } else {
+                class_name.clone()
+            };
+            for d in std::iter::once(doc).chain(other_docs.iter().map(|(_, d, _)| d.as_ref())) {
+                if let Some(sig) = scan_method_of_class(&d.program().stmts, &effective_class, &word)
+                {
+                    let mut value = wrap_php(&sig);
+                    if let Some(db) = find_method_docblock(d, &effective_class, &word) {
+                        let md = db.to_markdown();
+                        if !md.is_empty() {
+                            value.push_str("\n\n---\n\n");
+                            value.push_str(&md);
+                        }
+                    }
+                    return Some(Hover {
+                        contents: HoverContents::Markup(MarkupContent {
+                            kind: MarkupKind::Markdown,
+                            value,
+                        }),
+                        range: hover_range,
+                    });
                 }
             }
         }
     }
 
-    // Search current document first, then cross-file.
-    let found = scan_statements(&doc.program().stmts, &word).map(|sig| (sig, source, doc));
+    // Resolve use-import aliases: `use Foo\Bar as Baz` — hovering on `Baz`
+    // should show what `Bar` is.
+    let all_stmts = &*doc.program().stmts as &[_];
+    let resolved_word = resolve_use_alias(all_stmts, &word).unwrap_or_else(|| word.clone());
+
+    // Search current document first, then cross-file (using resolved name).
+    let found = scan_statements(&doc.program().stmts, &resolved_word).map(|sig| (sig, source, doc));
     let found = found.or_else(|| {
         for (_, other, _) in other_docs {
-            if let Some(sig) = scan_statements(&other.program().stmts, &word) {
+            if let Some(sig) = scan_statements(&other.program().stmts, &resolved_word) {
                 return Some((sig, other.source(), other.as_ref()));
             }
         }
@@ -160,17 +225,17 @@ pub fn hover_at(
 
     if let Some((sig, sig_source, sig_doc)) = found {
         let mut value = wrap_php(&sig);
-        if let Some(db) = find_docblock(sig_source, &sig_doc.program().stmts, &word) {
+        if let Some(db) = find_docblock(sig_source, &sig_doc.program().stmts, &resolved_word) {
             let md = db.to_markdown();
             if !md.is_empty() {
                 value.push_str("\n\n---\n\n");
                 value.push_str(&md);
             }
         }
-        if is_php_builtin(&word) {
+        if is_php_builtin(&resolved_word) {
             value.push_str(&format!(
                 "\n\n[php.net documentation]({})",
-                php_doc_url(&word)
+                php_doc_url(&resolved_word)
             ));
         }
         return Some(Hover {
@@ -178,90 +243,28 @@ pub fn hover_at(
                 kind: MarkupKind::Markdown,
                 value,
             }),
-            range: None,
+            range: hover_range,
         });
     }
 
     // Fallback: built-in function with no user-defined counterpart.
-    if is_php_builtin(&word) {
+    if is_php_builtin(&resolved_word) {
         let value = format!(
             "```php\nfunction {}()\n```\n\n[php.net documentation]({})",
-            word,
-            php_doc_url(&word)
+            resolved_word,
+            php_doc_url(&resolved_word)
         );
         return Some(Hover {
             contents: HoverContents::Markup(MarkupContent {
                 kind: MarkupKind::Markdown,
                 value,
             }),
-            range: None,
+            range: hover_range,
         });
     }
 
-    // Feature 4: hover on a property name in `$obj->propName` or `$this->propName`
-    if !word.starts_with('$')
-        && let Some(line_text) = source.lines().nth(position.line as usize)
-    {
-        // Check if the word appears after `->` or `?->` on this line
-        let arrow_word = format!("->{}", word);
-        let nullsafe_arrow_word = format!("?->{}", word);
-        if line_text.contains(&arrow_word) || line_text.contains(&nullsafe_arrow_word) {
-            // Find the position of `->word` in the line and extract the receiver var
-            // before it.
-            let arrow_pos = line_text
-                .find(&nullsafe_arrow_word)
-                .or_else(|| line_text.find(&arrow_word));
-            if let Some(apos) = arrow_pos {
-                let before_arrow = &line_text[..apos];
-                let receiver_var = extract_receiver_var_from_end(before_arrow);
-                if let Some(var_name) = receiver_var {
-                    let tm = type_map();
-                    let class_name = if var_name == "$this" {
-                        crate::type_map::enclosing_class_at(source, doc, position)
-                            .or_else(|| tm.get("$this").map(|s| s.to_string()))
-                    } else {
-                        tm.get(&var_name).map(|s| s.to_string())
-                    };
-                    if let Some(cls) = class_name {
-                        for d in std::iter::once(doc)
-                            .chain(other_docs.iter().map(|(_, d, _)| d.as_ref()))
-                        {
-                            if let Some((type_str, db)) = find_property_info(d, &cls, &word) {
-                                let sig = format!(
-                                    "(property) {}::${}{}",
-                                    cls,
-                                    word,
-                                    if type_str.is_empty() {
-                                        String::new()
-                                    } else {
-                                        format!(": {}", type_str)
-                                    }
-                                );
-                                let mut value = wrap_php(&sig);
-                                if let Some(doc) = db {
-                                    let md = doc.to_markdown();
-                                    if !md.is_empty() {
-                                        value.push_str("\n\n---\n\n");
-                                        value.push_str(&md);
-                                    }
-                                }
-                                return Some(Hover {
-                                    contents: HoverContents::Markup(MarkupContent {
-                                        kind: MarkupKind::Markdown,
-                                        value,
-                                    }),
-                                    range: None,
-                                });
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // Feature 3: hover on a built-in class name shows stub info
-    if let Some(stub) = crate::stubs::builtin_class_members(&word) {
+    // Hover on a built-in class name shows stub info.
+    if let Some(stub) = crate::stubs::builtin_class_members(&resolved_word) {
         let method_names: Vec<&str> = stub
             .methods
             .iter()
@@ -276,7 +279,7 @@ pub fn hover_at(
             .map(|(n, _)| n.as_str())
             .take(4)
             .collect();
-        let mut lines = vec![format!("**{}** — built-in class", word)];
+        let mut lines = vec![format!("**{}** — built-in class", resolved_word)];
         if !method_names.is_empty() {
             lines.push(format!(
                 "Methods: {}",
@@ -305,7 +308,7 @@ pub fn hover_at(
                 kind: MarkupKind::Markdown,
                 value: lines.join("\n\n"),
             }),
-            range: None,
+            range: hover_range,
         });
     }
 
@@ -325,7 +328,16 @@ fn scan_statements(stmts: &[Stmt<'_, '_>], word: &str) -> Option<String> {
                 return Some(format!("function {}({}){}", word, params, ret));
             }
             StmtKind::Class(c) if c.name == Some(word) => {
-                let mut sig = format!("class {}", word);
+                let kw = if c.modifiers.is_abstract {
+                    "abstract class"
+                } else if c.modifiers.is_final {
+                    "final class"
+                } else if c.modifiers.is_readonly {
+                    "readonly class"
+                } else {
+                    "class"
+                };
+                let mut sig = format!("{} {}", kw, word);
                 if let Some(ext) = &c.extends {
                     sig.push_str(&format!(" extends {}", ext.to_string_repr()));
                 }
@@ -346,13 +358,19 @@ fn scan_statements(stmts: &[Stmt<'_, '_>], word: &str) -> Option<String> {
                 for member in i.members.iter() {
                     match &member.kind {
                         ClassMemberKind::Method(m) if m.name == word => {
+                            let prefix = format_method_prefix(
+                                m.visibility.as_ref(),
+                                m.is_static,
+                                m.is_abstract,
+                                m.is_final,
+                            );
                             let params = format_params(&m.params);
                             let ret = m
                                 .return_type
                                 .as_ref()
                                 .map(|r| format!(": {}", format_type_hint(r)))
                                 .unwrap_or_default();
-                            return Some(format!("function {}({}){}", word, params, ret));
+                            return Some(format!("{}function {}({}){}", prefix, word, params, ret));
                         }
                         ClassMemberKind::ClassConst(k) if k.name == word => {
                             return Some(format_class_const(k));
@@ -365,7 +383,11 @@ fn scan_statements(stmts: &[Stmt<'_, '_>], word: &str) -> Option<String> {
                 return Some(format!("trait {}", word));
             }
             StmtKind::Enum(e) if e.name == word => {
-                let mut sig = format!("enum {}", word);
+                let mut sig = if let Some(scalar) = &e.scalar_type {
+                    format!("enum {}: {}", word, scalar.to_string_repr())
+                } else {
+                    format!("enum {}", word)
+                };
                 if !e.implements.is_empty() {
                     let ifaces: Vec<String> = e
                         .implements
@@ -380,13 +402,19 @@ fn scan_statements(stmts: &[Stmt<'_, '_>], word: &str) -> Option<String> {
                 for member in e.members.iter() {
                     match &member.kind {
                         EnumMemberKind::Method(m) if m.name == word => {
+                            let prefix = format_method_prefix(
+                                m.visibility.as_ref(),
+                                m.is_static,
+                                m.is_abstract,
+                                m.is_final,
+                            );
                             let params = format_params(&m.params);
                             let ret = m
                                 .return_type
                                 .as_ref()
                                 .map(|r| format!(": {}", format_type_hint(r)))
                                 .unwrap_or_default();
-                            return Some(format!("function {}({}){}", word, params, ret));
+                            return Some(format!("{}function {}({}){}", prefix, word, params, ret));
                         }
                         EnumMemberKind::Case(c) if c.name == word => {
                             let value_str = c
@@ -408,13 +436,19 @@ fn scan_statements(stmts: &[Stmt<'_, '_>], word: &str) -> Option<String> {
                 for member in c.members.iter() {
                     match &member.kind {
                         ClassMemberKind::Method(m) if m.name == word => {
+                            let prefix = format_method_prefix(
+                                m.visibility.as_ref(),
+                                m.is_static,
+                                m.is_abstract,
+                                m.is_final,
+                            );
                             let params = format_params(&m.params);
                             let ret = m
                                 .return_type
                                 .as_ref()
                                 .map(|r| format!(": {}", format_type_hint(r)))
                                 .unwrap_or_default();
-                            return Some(format!("function {}({}){}", word, params, ret));
+                            return Some(format!("{}function {}({}){}", prefix, word, params, ret));
                         }
                         ClassMemberKind::ClassConst(k) if k.name == word => {
                             return Some(format_class_const(k));
@@ -427,13 +461,19 @@ fn scan_statements(stmts: &[Stmt<'_, '_>], word: &str) -> Option<String> {
                 for member in t.members.iter() {
                     match &member.kind {
                         ClassMemberKind::Method(m) if m.name == word => {
+                            let prefix = format_method_prefix(
+                                m.visibility.as_ref(),
+                                m.is_static,
+                                m.is_abstract,
+                                m.is_final,
+                            );
                             let params = format_params(&m.params);
                             let ret = m
                                 .return_type
                                 .as_ref()
                                 .map(|r| format!(": {}", format_type_hint(r)))
                                 .unwrap_or_default();
-                            return Some(format!("function {}({}){}", word, params, ret));
+                            return Some(format!("{}function {}({}){}", prefix, word, params, ret));
                         }
                         ClassMemberKind::ClassConst(k) if k.name == word => {
                             return Some(format_class_const(k));
@@ -667,6 +707,62 @@ pub fn class_hover_from_index(
     None
 }
 
+fn visibility_str(v: &Visibility) -> &'static str {
+    match v {
+        Visibility::Public => "public",
+        Visibility::Protected => "protected",
+        Visibility::Private => "private",
+    }
+}
+
+fn format_method_prefix(
+    visibility: Option<&Visibility>,
+    is_static: bool,
+    is_abstract: bool,
+    is_final: bool,
+) -> String {
+    let mut parts: Vec<&str> = Vec::new();
+    if let Some(v) = visibility {
+        parts.push(visibility_str(v));
+    }
+    if is_abstract {
+        parts.push("abstract");
+    }
+    if is_final {
+        parts.push("final");
+    }
+    if is_static {
+        parts.push("static");
+    }
+    if parts.is_empty() {
+        String::new()
+    } else {
+        parts.join(" ") + " "
+    }
+}
+
+fn format_prop_prefix(
+    visibility: Option<&Visibility>,
+    is_static: bool,
+    is_readonly: bool,
+) -> String {
+    let mut parts: Vec<&str> = Vec::new();
+    if let Some(v) = visibility {
+        parts.push(visibility_str(v));
+    }
+    if is_static {
+        parts.push("static");
+    }
+    if is_readonly {
+        parts.push("readonly");
+    }
+    if parts.is_empty() {
+        String::new()
+    } else {
+        parts.join(" ") + " "
+    }
+}
+
 fn format_params(params: &[Param<'_, '_>]) -> String {
     params
         .iter()
@@ -720,36 +816,168 @@ fn wrap_php(sig: &str) -> String {
     format!("```php\n{}\n```", sig)
 }
 
-/// Extract the receiver variable name (with `$`) from the end of text that appears
-/// immediately before `->` or `?->`.
-fn extract_receiver_var_from_end(before_arrow: &str) -> Option<String> {
-    // The text ends with the variable name (and possibly whitespace)
-    let trimmed = before_arrow.trim_end();
-    let var_name: String = trimmed
-        .chars()
-        .rev()
-        .take_while(|&c| c.is_alphanumeric() || c == '_' || c == '$')
-        .collect::<String>()
-        .chars()
-        .rev()
-        .collect();
-    if var_name.starts_with('$') && var_name.len() > 1 {
-        Some(var_name)
-    } else if !var_name.is_empty() && !var_name.starts_with('$') {
-        Some(format!("${}", var_name))
+/// Extract the receiver variable from immediately before `->word` or `?->word`
+/// at the cursor's exact column position.  Uses the column rather than
+/// `str::find()` so multiple method calls on the same line are handled
+/// correctly.
+fn extract_receiver_var_before_cursor(line: &str, cursor_col_utf16: usize) -> Option<String> {
+    let chars: Vec<char> = line.chars().collect();
+
+    // Convert UTF-16 cursor column to char index.
+    let mut utf16 = 0usize;
+    let mut char_idx = 0usize;
+    for ch in &chars {
+        if utf16 >= cursor_col_utf16 {
+            break;
+        }
+        utf16 += ch.len_utf16();
+        char_idx += 1;
+    }
+
+    // Find the start of the word under the cursor (expand left).
+    let is_word_char = |c: char| c.is_alphanumeric() || c == '_';
+    let mut word_start = char_idx;
+    while word_start > 0 && is_word_char(chars[word_start - 1]) {
+        word_start -= 1;
+    }
+
+    // Check for `?->` (3 chars) or `->` (2 chars) immediately before word_start.
+    let (is_arrow, arrow_end) = if word_start >= 3
+        && chars[word_start - 3] == '?'
+        && chars[word_start - 2] == '-'
+        && chars[word_start - 1] == '>'
+    {
+        (true, word_start - 3)
+    } else if word_start >= 2 && chars[word_start - 2] == '-' && chars[word_start - 1] == '>' {
+        (true, word_start - 2)
+    } else {
+        (false, 0)
+    };
+
+    if !is_arrow {
+        return None;
+    }
+
+    extract_name_from_chars_end(&chars[..arrow_end])
+}
+
+/// Extract the class name from immediately before `::` at the cursor's column.
+fn extract_static_class_before_cursor(line: &str, cursor_col_utf16: usize) -> Option<String> {
+    let chars: Vec<char> = line.chars().collect();
+
+    let mut utf16 = 0usize;
+    let mut char_idx = 0usize;
+    for ch in &chars {
+        if utf16 >= cursor_col_utf16 {
+            break;
+        }
+        utf16 += ch.len_utf16();
+        char_idx += 1;
+    }
+
+    let is_word_char = |c: char| c.is_alphanumeric() || c == '_';
+    let mut word_start = char_idx;
+    while word_start > 0 && is_word_char(chars[word_start - 1]) {
+        word_start -= 1;
+    }
+
+    if word_start < 2 || chars[word_start - 2] != ':' || chars[word_start - 1] != ':' {
+        return None;
+    }
+
+    let before_colons = &chars[..word_start - 2];
+    // Class name may contain `\` for FQN; extract the short name (last segment).
+    let is_name_char = |c: char| c.is_alphanumeric() || c == '_' || c == '\\';
+    let end = before_colons.len().saturating_sub(
+        before_colons
+            .iter()
+            .rev()
+            .take_while(|&&c| c == ' ' || c == '\t')
+            .count(),
+    );
+    let mut start = end;
+    while start > 0 && is_name_char(before_colons[start - 1]) {
+        start -= 1;
+    }
+    if start == end {
+        return None;
+    }
+    let full: String = before_colons[start..end].iter().collect();
+    // Return only the last segment so callers get a short name.
+    Some(full.rsplit('\\').next().unwrap_or(&full).to_owned())
+}
+
+/// Walk backwards through `chars`, skipping whitespace, and return the
+/// identifier (with `$` prefix if present) ending at the last non-space char.
+fn extract_name_from_chars_end(chars: &[char]) -> Option<String> {
+    let is_var_char = |c: char| c.is_alphanumeric() || c == '_' || c == '$';
+    let end = chars.len()
+        - chars
+            .iter()
+            .rev()
+            .take_while(|&&c| c == ' ' || c == '\t')
+            .count();
+    if end == 0 {
+        return None;
+    }
+    let mut start = end;
+    while start > 0 && is_var_char(chars[start - 1]) {
+        start -= 1;
+    }
+    if start == end {
+        return None;
+    }
+    let name: String = chars[start..end].iter().collect();
+    if name.starts_with('$') && name.len() > 1 {
+        Some(name)
+    } else if !name.is_empty() && !name.starts_with('$') {
+        // Plain identifier (e.g. `$obj->getUser()->name` — the inner result):
+        // treat as a non-variable receiver; callers handle the `$` lookup.
+        Some(format!("${}", name))
     } else {
         None
     }
 }
 
-/// Find the type hint and docblock for a property named `prop_name` in class `class_name`
-/// within `doc`. Returns `Some((type_str, docblock))` if found, where `type_str` may be empty
-/// if no type hint is present and `docblock` is `None` if there is no preceding `/** */` comment.
+/// Resolve a use-import alias to the short class name.
+///
+/// Given `use App\Foo as Bar`, hovering on `Bar` anywhere in the file should
+/// resolve to `Foo` so the declaration lookup succeeds.
+pub(crate) fn resolve_use_alias(stmts: &[Stmt<'_, '_>], word: &str) -> Option<String> {
+    for stmt in stmts {
+        match &stmt.kind {
+            StmtKind::Use(u) if u.kind == UseKind::Normal => {
+                for item in u.uses.iter() {
+                    if let Some(alias) = item.alias
+                        && alias == word
+                    {
+                        let fqn = item.name.to_string_repr();
+                        let short = fqn.rsplit('\\').next().unwrap_or(fqn.as_ref()).to_owned();
+                        return Some(short);
+                    }
+                }
+            }
+            StmtKind::Namespace(ns) => {
+                if let NamespaceBody::Braced(inner) = &ns.body
+                    && let Some(s) = resolve_use_alias(inner, word)
+                {
+                    return Some(s);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Find visibility, type, and docblock for a property named `prop_name` in class `class_name`.
+/// Returns `Some((modifiers, type_str, docblock))` where `modifiers` is a prefix like
+/// `"public readonly "` and `type_str` is the declared type (may be empty).
 fn find_property_info(
     doc: &ParsedDoc,
     class_name: &str,
     prop_name: &str,
-) -> Option<(String, Option<Docblock>)> {
+) -> Option<(String, String, Option<Docblock>)> {
     find_property_info_in_stmts(doc.source(), &doc.program().stmts, class_name, prop_name)
 }
 
@@ -758,13 +986,18 @@ fn find_property_info_in_stmts<'a>(
     stmts: &[Stmt<'a, 'a>],
     class_name: &str,
     prop_name: &str,
-) -> Option<(String, Option<Docblock>)> {
+) -> Option<(String, String, Option<Docblock>)> {
     for stmt in stmts {
         match &stmt.kind {
             StmtKind::Class(c) if c.name == Some(class_name) => {
                 for member in c.members.iter() {
                     match &member.kind {
                         ClassMemberKind::Property(p) if p.name == prop_name => {
+                            let modifiers = format_prop_prefix(
+                                p.visibility.as_ref(),
+                                p.is_static,
+                                p.is_readonly,
+                            );
                             let type_str = p
                                 .type_hint
                                 .as_ref()
@@ -772,12 +1005,14 @@ fn find_property_info_in_stmts<'a>(
                                 .unwrap_or_default();
                             let db = docblock_before(source, member.span.start)
                                 .map(|raw| parse_docblock(&raw));
-                            return Some((type_str, db));
+                            return Some((modifiers, type_str, db));
                         }
                         ClassMemberKind::Method(m) if m.name == "__construct" => {
                             // Check promoted constructor parameters
                             for p in m.params.iter() {
                                 if p.name == prop_name && p.visibility.is_some() {
+                                    let modifiers =
+                                        format_prop_prefix(p.visibility.as_ref(), false, false);
                                     let type_str = p
                                         .type_hint
                                         .as_ref()
@@ -808,7 +1043,7 @@ fn find_property_info_in_stmts<'a>(
                                             }
                                         },
                                     );
-                                    return Some((type_str, db));
+                                    return Some((modifiers, type_str, db));
                                 }
                             }
                         }
@@ -832,16 +1067,26 @@ fn find_property_info_in_stmts<'a>(
     None
 }
 
-/// Find the signature of `method_name` specifically within `class_name`, formatted as
-/// `ClassName::methodName(params): ReturnType`.
+/// Find the signature of `method_name` within `class_name` (including trait
+/// uses and the extends chain within the same stmts slice).
 fn scan_method_of_class(
     stmts: &[Stmt<'_, '_>],
+    class_name: &str,
+    method_name: &str,
+) -> Option<String> {
+    scan_method_of_class_impl(stmts, stmts, class_name, method_name)
+}
+
+fn scan_method_of_class_impl<'a>(
+    root: &[Stmt<'a, 'a>],
+    stmts: &[Stmt<'a, 'a>],
     class_name: &str,
     method_name: &str,
 ) -> Option<String> {
     for stmt in stmts {
         match &stmt.kind {
             StmtKind::Class(c) if c.name == Some(class_name) => {
+                // 1. Direct method lookup.
                 for member in c.members.iter() {
                     if let ClassMemberKind::Method(m) = &member.kind
                         && m.name == method_name
@@ -855,6 +1100,36 @@ fn scan_method_of_class(
                         return Some(format!(
                             "{}::{}({}){}",
                             class_name, method_name, params, ret
+                        ));
+                    }
+                }
+                // 2. Walk trait uses within the same document.
+                let mut trait_names: Vec<String> = Vec::new();
+                for member in c.members.iter() {
+                    if let ClassMemberKind::TraitUse(tu) = &member.kind {
+                        for tn in tu.traits.iter() {
+                            let s = tn.to_string_repr();
+                            let short = s.rsplit('\\').next().unwrap_or(s.as_ref()).to_owned();
+                            trait_names.push(short);
+                        }
+                    }
+                }
+                for tname in &trait_names {
+                    if let Some(partial) = find_method_sig_in_trait(root, tname, method_name) {
+                        return Some(format!("{}::{}", class_name, partial));
+                    }
+                }
+                // 3. Walk extends chain within the same document.
+                if let Some(parent) = &c.extends {
+                    let pn = parent.to_string_repr();
+                    let short = pn.rsplit('\\').next().unwrap_or(pn.as_ref()).to_owned();
+                    if let Some(sig) = scan_method_of_class_impl(root, root, &short, method_name) {
+                        // Replace "Parent::" with "ClassName::" so the hover always
+                        // shows the receiver type.
+                        return Some(sig.replacen(
+                            &format!("{}::", short),
+                            &format!("{}::", class_name),
+                            1,
                         ));
                     }
                 }
@@ -900,10 +1175,71 @@ fn scan_method_of_class(
             }
             StmtKind::Namespace(ns) => {
                 if let NamespaceBody::Braced(inner) = &ns.body {
-                    let result = scan_method_of_class(inner, class_name, method_name);
+                    let result = scan_method_of_class_impl(root, inner, class_name, method_name);
                     if result.is_some() {
                         return result;
                     }
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Return `"methodName(params): ReturnType"` for `method_name` inside `trait_name`.
+fn find_method_sig_in_trait(
+    stmts: &[Stmt<'_, '_>],
+    trait_name: &str,
+    method_name: &str,
+) -> Option<String> {
+    for stmt in stmts {
+        match &stmt.kind {
+            StmtKind::Trait(t) if t.name == trait_name => {
+                for member in t.members.iter() {
+                    if let ClassMemberKind::Method(m) = &member.kind
+                        && m.name == method_name
+                    {
+                        let params = format_params(&m.params);
+                        let ret = m
+                            .return_type
+                            .as_ref()
+                            .map(|r| format!(": {}", format_type_hint(r)))
+                            .unwrap_or_default();
+                        return Some(format!("{}({}){}", method_name, params, ret));
+                    }
+                }
+                return None;
+            }
+            StmtKind::Namespace(ns) => {
+                if let NamespaceBody::Braced(inner) = &ns.body
+                    && let Some(s) = find_method_sig_in_trait(inner, trait_name, method_name)
+                {
+                    return Some(s);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Return the short name of the parent class of `class_name`, if declared in
+/// these stmts.
+fn find_parent_class_name(stmts: &[Stmt<'_, '_>], class_name: &str) -> Option<String> {
+    for stmt in stmts {
+        match &stmt.kind {
+            StmtKind::Class(c) if c.name == Some(class_name) => {
+                return c.extends.as_ref().map(|p| {
+                    let pn = p.to_string_repr();
+                    pn.rsplit('\\').next().unwrap_or(pn.as_ref()).to_owned()
+                });
+            }
+            StmtKind::Namespace(ns) => {
+                if let NamespaceBody::Braced(inner) = &ns.body
+                    && let Some(s) = find_parent_class_name(inner, class_name)
+                {
+                    return Some(s);
                 }
             }
             _ => {}
@@ -926,15 +1262,50 @@ fn find_method_docblock_in_stmts(
     class_name: &str,
     method_name: &str,
 ) -> Option<crate::docblock::Docblock> {
+    find_method_docblock_impl(source, stmts, stmts, class_name, method_name)
+}
+
+fn find_method_docblock_impl<'a>(
+    source: &str,
+    root: &[Stmt<'a, 'a>],
+    stmts: &[Stmt<'a, 'a>],
+    class_name: &str,
+    method_name: &str,
+) -> Option<crate::docblock::Docblock> {
     for stmt in stmts {
         match &stmt.kind {
             StmtKind::Class(c) if c.name == Some(class_name) => {
+                // Direct lookup.
                 for member in c.members.iter() {
                     if let ClassMemberKind::Method(m) = &member.kind
                         && m.name == method_name
                     {
                         return docblock_before(source, member.span.start)
                             .map(|raw| parse_docblock(&raw));
+                    }
+                }
+                // Walk trait uses.
+                for member in c.members.iter() {
+                    if let ClassMemberKind::TraitUse(tu) = &member.kind {
+                        for tn in tu.traits.iter() {
+                            let s = tn.to_string_repr();
+                            let short = s.rsplit('\\').next().unwrap_or(s.as_ref()).to_owned();
+                            if let Some(db) =
+                                find_method_docblock_impl(source, root, root, &short, method_name)
+                            {
+                                return Some(db);
+                            }
+                        }
+                    }
+                }
+                // Walk extends.
+                if let Some(parent) = &c.extends {
+                    let pn = parent.to_string_repr();
+                    let short = pn.rsplit('\\').next().unwrap_or(pn.as_ref()).to_owned();
+                    if let Some(db) =
+                        find_method_docblock_impl(source, root, root, &short, method_name)
+                    {
+                        return Some(db);
                     }
                 }
                 return None;
@@ -964,7 +1335,7 @@ fn find_method_docblock_in_stmts(
             StmtKind::Namespace(ns) => {
                 if let NamespaceBody::Braced(inner) = &ns.body {
                     let result =
-                        find_method_docblock_in_stmts(source, inner, class_name, method_name);
+                        find_method_docblock_impl(source, root, inner, class_name, method_name);
                     if result.is_some() {
                         return result;
                     }

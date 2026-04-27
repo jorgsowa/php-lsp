@@ -1,4 +1,4 @@
-use tower_lsp::lsp_types::Position;
+use tower_lsp::lsp_types::{Position, Range};
 
 /// Returns `true` if `query` matches `candidate` using camelCase/underscore
 /// abbreviation rules.
@@ -394,6 +394,64 @@ pub(crate) fn word_at(source: &str, position: Position) -> Option<String> {
 
     let word: String = chars[left..right].iter().collect();
     if word.is_empty() { None } else { Some(word) }
+}
+
+/// Return the LSP `Range` of the word (identifier) under the cursor.
+/// Uses the same word-boundary rules as `word_at`.
+pub(crate) fn word_range_at(source: &str, position: Position) -> Option<Range> {
+    let raw = source.split('\n').nth(position.line as usize)?;
+    let line = raw.strip_suffix('\r').unwrap_or(raw);
+    let char_offset = position.character as usize;
+
+    let chars: Vec<char> = line.chars().collect();
+
+    let mut utf16_len = 0usize;
+    let mut char_pos = 0usize;
+    for ch in &chars {
+        if utf16_len >= char_offset {
+            break;
+        }
+        utf16_len += ch.len_utf16();
+        char_pos += 1;
+    }
+
+    let total_utf16: usize = chars.iter().map(|c| c.len_utf16()).sum();
+    if char_offset > total_utf16 {
+        return None;
+    }
+
+    let is_word = |c: char| c.is_alphanumeric() || c == '_' || c == '$' || c == '\\';
+
+    let mut left = char_pos;
+    while left > 0 && is_word(chars[left - 1]) {
+        left -= 1;
+    }
+    let mut right = char_pos;
+    while right < chars.len() && is_word(chars[right]) {
+        right += 1;
+    }
+    if left == right {
+        return None;
+    }
+
+    let start_col = chars[..left]
+        .iter()
+        .map(|c| c.len_utf16() as u32)
+        .sum::<u32>();
+    let end_col = chars[..right]
+        .iter()
+        .map(|c| c.len_utf16() as u32)
+        .sum::<u32>();
+    Some(Range {
+        start: Position {
+            line: position.line,
+            character: start_col,
+        },
+        end: Position {
+            line: position.line,
+            character: end_col,
+        },
+    })
 }
 
 /// Extract the source text covered by an LSP `Range`.

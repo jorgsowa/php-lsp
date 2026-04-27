@@ -42,7 +42,7 @@ class Greeter {
         .await;
     expect![[r#"
         ```php
-        function hello(): string
+        public function hello(): string
         ```"#]]
     .assert_eq(&v);
 }
@@ -60,7 +60,7 @@ class Registry {
         .await;
     expect![[r#"
         ```php
-        function get(string $k): mixed
+        public static function get(string $k): mixed
         ```"#]]
     .assert_eq(&v);
 }
@@ -275,7 +275,7 @@ echo $u->na$0me;
         .await;
     expect![[r#"
         ```php
-        (property) User::$name: string
+        (property) public User::$name: string
         ```"#]]
     .assert_eq(&v);
 }
@@ -361,7 +361,7 @@ trait Logg$0able { public function log(): void {} }
 #[tokio::test]
 async fn hover_trait_inherited_method() {
     let mut s = TestServer::new().await;
-    let out = s
+    let v = s
         .check_hover(
             r#"<?php
 trait Greeting {
@@ -378,16 +378,17 @@ class Greeter {
 "#,
         )
         .await;
-    assert!(
-        out.contains("sayHello"),
-        "hover on trait-inherited method must return its signature, got: {out}"
-    );
+    expect![[r#"
+        ```php
+        Greeter::sayHello(string $name): string
+        ```"#]]
+    .assert_eq(&v);
 }
 
 #[tokio::test]
 async fn hover_multi_trait_alpha() {
     let mut s = TestServer::new().await;
-    let out = s
+    let v = s
         .check_hover(
             r#"<?php
 trait A { public function alpha(): int { return 1; } }
@@ -400,16 +401,17 @@ class Both {
 "#,
         )
         .await;
-    assert!(
-        out.contains("alpha"),
-        "hover on alpha() via multi-trait must mention it, got: {out}"
-    );
+    expect![[r#"
+        ```php
+        Both::alpha(): int
+        ```"#]]
+    .assert_eq(&v);
 }
 
 #[tokio::test]
 async fn hover_multi_trait_beta() {
     let mut s = TestServer::new().await;
-    let out = s
+    let v = s
         .check_hover(
             r#"<?php
 trait A { public function alpha(): int { return 1; } }
@@ -422,10 +424,11 @@ class Both {
 "#,
         )
         .await;
-    assert!(
-        out.contains("beta"),
-        "hover on beta() via multi-trait must mention it, got: {out}"
-    );
+    expect![[r#"
+        ```php
+        Both::beta(): int
+        ```"#]]
+    .assert_eq(&v);
 }
 
 #[tokio::test]
@@ -450,4 +453,368 @@ async fn hover_past_eof_does_not_crash() {
     s.open("short.php", "<?php\nfunction f(): void {}\n").await;
     let resp = s.hover("short.php", 500, 500).await;
     assert!(resp["error"].is_null(), "hover past EOF errored: {resp:?}");
+}
+
+// ── Backed enum ───────────────────────────────────────────────────────────────
+
+/// `enum Status: string` must include `: string` in the hover so the caller
+/// knows the backing type.
+#[tokio::test]
+async fn hover_backed_enum_shows_backing_type() {
+    let mut s = TestServer::new().await;
+    let v = s
+        .check_hover(
+            r#"<?php
+enum Stat$0us: string { case Active = 'active'; }
+"#,
+        )
+        .await;
+    expect![[r#"
+        ```php
+        enum Status: string
+        ```"#]]
+    .assert_eq(&v);
+}
+
+/// Backed int enum.
+#[tokio::test]
+async fn hover_backed_int_enum_shows_backing_type() {
+    let mut s = TestServer::new().await;
+    let v = s
+        .check_hover(
+            r#"<?php
+enum Priorit$0y: int { case Low = 1; case High = 2; }
+"#,
+        )
+        .await;
+    expect![[r#"
+        ```php
+        enum Priority: int
+        ```"#]]
+    .assert_eq(&v);
+}
+
+// ── Class modifiers ───────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn hover_abstract_class_shows_keyword() {
+    let mut s = TestServer::new().await;
+    let v = s
+        .check_hover(
+            r#"<?php
+abstract class Bas$0eHandler {}
+"#,
+        )
+        .await;
+    expect![[r#"
+        ```php
+        abstract class BaseHandler
+        ```"#]]
+    .assert_eq(&v);
+}
+
+#[tokio::test]
+async fn hover_final_class_shows_keyword() {
+    let mut s = TestServer::new().await;
+    let v = s
+        .check_hover(
+            r#"<?php
+final class Concret$0eService {}
+"#,
+        )
+        .await;
+    expect![[r#"
+        ```php
+        final class ConcreteService
+        ```"#]]
+    .assert_eq(&v);
+}
+
+#[tokio::test]
+async fn hover_readonly_class_shows_keyword() {
+    let mut s = TestServer::new().await;
+    let v = s
+        .check_hover(
+            r#"<?php
+readonly class Poi$0nt { public function __construct(public float $x, public float $y) {} }
+"#,
+        )
+        .await;
+    expect![[r#"
+        ```php
+        readonly class Point
+        ```"#]]
+    .assert_eq(&v);
+}
+
+// ── Use-alias resolution ──────────────────────────────────────────────────────
+
+/// Hovering on `Bar` where `use Foo as Bar` is in scope must show the `Foo`
+/// class declaration.
+#[tokio::test]
+async fn hover_use_alias_resolves_to_class() {
+    let mut s = TestServer::new().await;
+    let v = s
+        .check_hover(
+            r#"<?php
+class Mailer { public function send(): void {} }
+use Mailer as Sender;
+$s = new Send$0er();
+"#,
+        )
+        .await;
+    expect![[r#"
+        ```php
+        class Mailer
+        ```"#]]
+    .assert_eq(&v);
+}
+
+// ── Static-call disambiguation ────────────────────────────────────────────────
+
+/// Hovering on the method name in `Worker::run()` at the call site must show
+/// `Worker::run`, not `Scheduler::run`, even though both classes have `run`.
+#[tokio::test]
+async fn hover_static_call_resolves_correct_class() {
+    let mut s = TestServer::new().await;
+    let v = s
+        .check_hover(
+            r#"<?php
+class Worker { public static function run(int $jobs): void {} }
+class Scheduler { public static function run(string $cron): bool { return true; } }
+Worker::ru$0n(4);
+"#,
+        )
+        .await;
+    expect![[r#"
+        ```php
+        Worker::run(int $jobs): void
+        ```"#]]
+    .assert_eq(&v);
+}
+
+/// `self::method()` at a call site resolves to the enclosing class.
+#[tokio::test]
+async fn hover_self_static_call_resolves_enclosing_class() {
+    let mut s = TestServer::new().await;
+    let v = s
+        .check_hover(
+            r#"<?php
+class Builder {
+    public static function create(): static { return new static(); }
+    public function run(): void { self::crea$0te(); }
+}
+"#,
+        )
+        .await;
+    expect![[r#"
+        ```php
+        Builder::create(): static
+        ```"#]]
+    .assert_eq(&v);
+}
+
+// ── Correct receiver on multi-call line ───────────────────────────────────────
+
+/// Two different `->process()` calls on the same line — cursor on the second
+/// one must pick the second receiver, not the first.
+#[tokio::test]
+async fn hover_second_method_call_on_same_line_picks_correct_receiver() {
+    let mut s = TestServer::new().await;
+    let v = s
+        .check_hover(
+            r#"<?php
+class A { public function handle(string $x): bool {} }
+class B { public function handle(int $n): void {} }
+$a = new A(); $b = new B();
+$a->handle('x'); $b->hand$0le(1);
+"#,
+        )
+        .await;
+    // Must show B::handle (int $n), not A::handle (string $x).
+    expect![[r#"
+        ```php
+        B::handle(int $n): void
+        ```"#]]
+    .assert_eq(&v);
+}
+
+// ── Trait inheritance correctness ─────────────────────────────────────────────
+
+/// Two classes each define a method named `ping`; only `Server` uses the
+/// `Pingable` trait that actually has the implementation.  Hovering on
+/// `$server->ping()` must show `Server::ping`, not `Client::ping`.
+#[tokio::test]
+async fn hover_trait_method_picks_correct_class_not_unrelated_one() {
+    let mut s = TestServer::new().await;
+    let v = s
+        .check_hover(
+            r#"<?php
+trait Pingable { public function ping(): string { return 'pong'; } }
+class Server { use Pingable; }
+class Client { public function ping(): bool { return false; } }
+$s = new Server();
+$s->pin$0g();
+"#,
+        )
+        .await;
+    // Must show Server::ping (from trait), returning string — not Client::ping.
+    expect![[r#"
+        ```php
+        Server::ping(): string
+        ```"#]]
+    .assert_eq(&v);
+}
+
+/// Hovering on a parent-class method accessed through a child instance.
+#[tokio::test]
+async fn hover_inherited_method_shows_child_class_name() {
+    let mut s = TestServer::new().await;
+    let v = s
+        .check_hover(
+            r#"<?php
+class Animal { public function spe$0ak(): string { return '...'; } }
+class Dog extends Animal {}
+$d = new Dog();
+$d->speak();
+"#,
+        )
+        .await;
+    // Hovering on the declaration itself — should show Animal::speak.
+    expect![[r#"
+        ```php
+        public function speak(): string
+        ```"#]]
+    .assert_eq(&v);
+}
+
+/// `$dog->speak()` where Dog extends Animal must show Dog::speak (via extends
+/// walk) when another class also has a method called `speak`.
+#[tokio::test]
+async fn hover_child_receiver_resolves_parent_method_correctly() {
+    let mut s = TestServer::new().await;
+    let v = s
+        .check_hover(
+            r#"<?php
+class Animal { public function speak(): string { return '...'; } }
+class Dog extends Animal {}
+class Parrot { public function speak(): string { return 'hello'; } }
+$d = new Dog();
+$d->spea$0k();
+"#,
+        )
+        .await;
+    // Must show Dog::speak (inherited from Animal), NOT Parrot::speak.
+    expect![[r#"
+        ```php
+        Dog::speak(): string
+        ```"#]]
+    .assert_eq(&v);
+}
+
+// ── Declaration-site modifiers ────────────────────────────────────────────────
+
+#[tokio::test]
+async fn hover_abstract_method_shows_modifiers() {
+    let mut s = TestServer::new().await;
+    let v = s
+        .check_hover(
+            r#"<?php
+abstract class Base {
+    abstract protected function pro$0cess(string $input): string;
+}
+"#,
+        )
+        .await;
+    expect![[r#"
+        ```php
+        protected abstract function process(string $input): string
+        ```"#]]
+    .assert_eq(&v);
+}
+
+#[tokio::test]
+async fn hover_final_method_shows_modifiers() {
+    let mut s = TestServer::new().await;
+    let v = s
+        .check_hover(
+            r#"<?php
+class Locked {
+    final public function sea$0l(): void {}
+}
+"#,
+        )
+        .await;
+    expect![[r#"
+        ```php
+        public final function seal(): void
+        ```"#]]
+    .assert_eq(&v);
+}
+
+#[tokio::test]
+async fn hover_readonly_property_shows_modifier() {
+    let mut s = TestServer::new().await;
+    let v = s
+        .check_hover(
+            r#"<?php
+class Point {
+    public readonly float $x;
+}
+$p = new Point();
+echo $p->$0x;
+"#,
+        )
+        .await;
+    expect![[r#"
+        ```php
+        (property) public readonly Point::$x: float
+        ```"#]]
+    .assert_eq(&v);
+}
+
+#[tokio::test]
+async fn hover_deprecated_function_shows_banner() {
+    let mut s = TestServer::new().await;
+    let v = s
+        .check_hover(
+            r#"<?php
+/** @deprecated Use newGreet() instead */
+function ol$0dGreet(): void {}
+"#,
+        )
+        .await;
+    expect![[r#"
+        ```php
+        function oldGreet(): void
+        ```
+
+        ---
+
+        > **Deprecated**: Use newGreet() instead"#]]
+    .assert_eq(&v);
+}
+
+#[tokio::test]
+async fn hover_function_with_throws_shows_tag() {
+    let mut s = TestServer::new().await;
+    let v = s
+        .check_hover(
+            r#"<?php
+/**
+ * @throws \RuntimeException When the operation fails
+ */
+function ri$0sky(): void {}
+"#,
+        )
+        .await;
+    expect![[r#"
+        ```php
+        function risky(): void
+        ```
+
+        ---
+
+        **@throws** `\RuntimeException` — When the operation fails"#]]
+    .assert_eq(&v);
 }

@@ -1511,12 +1511,20 @@ impl LanguageServer for Backend {
         }
         // Fallback: look up the word in the workspace index so class names in
         // extends clauses and parameter types resolve even when their defining
-        // file is never opened.
+        // file is never opened.  Also try the alias-resolved name so that
+        // `use Foo as Bar` works even when Foo is only in the index.
         let all_indexes = self.docs.all_indexes();
-        if let Some(word) = crate::util::word_at(&source, position)
-            && let Some(h) = class_hover_from_index(&word, &all_indexes)
-        {
-            return Ok(Some(h));
+        if let Some(word) = crate::util::word_at(&source, position) {
+            // Try the literal word first.
+            if let Some(h) = class_hover_from_index(&word, &all_indexes) {
+                return Ok(Some(h));
+            }
+            // Try alias resolution.
+            if let Some(resolved) = crate::hover::resolve_use_alias(&doc.program().stmts, &word)
+                && let Some(h) = class_hover_from_index(&resolved, &all_indexes)
+            {
+                return Ok(Some(h));
+            }
         }
         Ok(None)
     }
