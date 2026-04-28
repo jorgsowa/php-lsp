@@ -31,6 +31,8 @@ pub struct Docblock {
     pub templates: Vec<DocTemplate>,
     /// `@mixin ClassName`
     pub mixins: Vec<String>,
+    /// `true` when the doc is `{@inheritDoc}` / `@inheritDoc` with no other content.
+    pub is_inherit_doc: bool,
     /// `@psalm-type Alias = TypeExpr` / `@phpstan-type Alias = TypeExpr`
     pub type_aliases: Vec<DocTypeAlias>,
     /// `@property Type $name` / `@property-read Type $name` / `@property-write Type $name`
@@ -170,6 +172,17 @@ impl Docblock {
 /// Delegates to [`mir_analyzer::DocblockParser`] for type resolution and
 /// [`php_rs_parser::phpdoc`] for description fields.
 pub fn parse_docblock(raw: &str) -> Docblock {
+    let is_inherit_doc = {
+        let stripped = raw
+            .trim_start_matches("/**")
+            .trim_end_matches("*/")
+            .replace('*', "")
+            .replace(['{', '}'], "")
+            .trim()
+            .to_lowercase();
+        stripped == "@inheritdoc"
+    };
+
     let mir = DocblockParser::parse(raw);
     let raw_doc = phpdoc::parse(raw);
 
@@ -305,6 +318,7 @@ pub fn parse_docblock(raw: &str) -> Docblock {
         type_aliases,
         properties,
         methods,
+        is_inherit_doc,
     }
 }
 

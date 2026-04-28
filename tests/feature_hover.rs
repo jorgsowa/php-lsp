@@ -862,3 +862,197 @@ class Config {
         ```"#]]
     .assert_eq(&v);
 }
+
+// ── 1.3 First-class callable hover ──────────────────────────────────────────
+
+#[tokio::test]
+async fn hover_first_class_callable_builtin() {
+    let mut s = TestServer::new().await;
+    let v = s.check_hover(r#"<?php $fn = str$0len(...);"#).await;
+    expect![[r#"
+        ```php
+        function strlen()
+        ```
+
+        [php.net documentation](https://www.php.net/function.strlen)"#]]
+    .assert_eq(&v);
+}
+
+#[tokio::test]
+async fn hover_first_class_callable_user_function() {
+    let mut s = TestServer::new().await;
+    let v = s
+        .check_hover(r#"<?php function double(int $n): int {} $fn = dou$0ble(...);"#)
+        .await;
+    expect![[r#"
+        ```php
+        function double(int $n): int
+        ```"#]]
+    .assert_eq(&v);
+}
+
+// ── 1.1 @inheritDoc resolution ───────────────────────────────────────────────
+
+#[tokio::test]
+async fn hover_inheritdoc_shows_parent_description() {
+    let mut s = TestServer::new().await;
+    let v = s
+        .check_hover(
+            r#"<?php
+class Base {
+    /** Sends the payload to the remote endpoint. */
+    public function send(): void {}
+}
+class Child extends Base {
+    /** {@inheritDoc} */
+    public function send(): void {}
+}
+$c = new Child();
+$c->sen$0d();
+"#,
+        )
+        .await;
+    expect![[r#"
+        ```php
+        Child::send(): void
+        ```
+
+        ---
+
+        Sends the payload to the remote endpoint."#]]
+    .assert_eq(&v);
+}
+
+#[tokio::test]
+async fn hover_inheritdoc_at_tag_form() {
+    let mut s = TestServer::new().await;
+    let v = s
+        .check_hover(
+            r#"<?php
+class Base {
+    /** Fetches the record. */
+    public function fetch(): void {}
+}
+class Child extends Base {
+    /** @inheritDoc */
+    public function fetch(): void {}
+}
+$c = new Child();
+$c->fet$0ch();
+"#,
+        )
+        .await;
+    expect![[r#"
+        ```php
+        Child::fetch(): void
+        ```
+
+        ---
+
+        Fetches the record."#]]
+    .assert_eq(&v);
+}
+
+#[tokio::test]
+async fn hover_real_docblock_not_overwritten_by_inheritdoc() {
+    let mut s = TestServer::new().await;
+    let v = s
+        .check_hover(
+            r#"<?php
+class Base {
+    /** Parent description. */
+    public function run(): void {}
+}
+class Child extends Base {
+    /** Child's own description. */
+    public function run(): void {}
+}
+$c = new Child();
+$c->ru$0n();
+"#,
+        )
+        .await;
+    expect![[r#"
+        ```php
+        Child::run(): void
+        ```
+
+        ---
+
+        Child's own description."#]]
+    .assert_eq(&v);
+}
+
+// ── 1.2 Keyword hover ────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn hover_keyword_match() {
+    let mut s = TestServer::new().await;
+    let v = s.check_hover(r#"<?php $x = mat$0ch($y) {};"#).await;
+    expect![["`match` — evaluates an expression against a set of arms (PHP 8.0)"]].assert_eq(&v);
+}
+
+#[tokio::test]
+async fn hover_keyword_null() {
+    let mut s = TestServer::new().await;
+    let v = s.check_hover(r#"<?php $x = nu$0ll;"#).await;
+    expect![["`null` — the null value; a variable has no value"]].assert_eq(&v);
+}
+
+#[tokio::test]
+async fn hover_keyword_true() {
+    let mut s = TestServer::new().await;
+    let v = s.check_hover(r#"<?php $x = tr$0ue;"#).await;
+    expect![["`true` — boolean true"]].assert_eq(&v);
+}
+
+#[tokio::test]
+async fn hover_keyword_false() {
+    let mut s = TestServer::new().await;
+    let v = s.check_hover(r#"<?php $x = fal$0se;"#).await;
+    expect![["`false` — boolean false"]].assert_eq(&v);
+}
+
+#[tokio::test]
+async fn hover_keyword_readonly() {
+    let mut s = TestServer::new().await;
+    let v = s
+        .check_hover(r#"<?php class Foo { readon$0ly string $x; }"#)
+        .await;
+    expect![["`readonly` — property or class that can only be initialised once (PHP 8.1)"]]
+        .assert_eq(&v);
+}
+
+#[tokio::test]
+async fn hover_keyword_never() {
+    let mut s = TestServer::new().await;
+    let v = s
+        .check_hover(r#"<?php function fail(): nev$0er { throw new \Exception(); }"#)
+        .await;
+    expect![["`never` — return type indicating the function always throws or exits (PHP 8.1)"]]
+        .assert_eq(&v);
+}
+
+#[tokio::test]
+async fn hover_static_keyword_in_static_call_not_intercepted() {
+    // `static::method()` — hovering `static` should NOT return the keyword doc,
+    // it should fall through to the self/static class resolution.
+    let mut s = TestServer::new().await;
+    let v = s
+        .check_hover(
+            r#"<?php
+class Base {
+    public static function create(): static {}
+    public static function build(): static {
+        return stat$0ic::create();
+    }
+}
+"#,
+        )
+        .await;
+    // Should resolve to something about Base (static call), not the keyword doc.
+    assert!(
+        !v.contains("return type") && !v.contains("late static"),
+        "static:: should not trigger keyword hover, got: {v}"
+    );
+}

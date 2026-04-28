@@ -72,6 +72,43 @@ pub fn hover_at(
 
     let word = word_at(source, position)?;
 
+    // Keyword hover — must be checked before the static-access path so that
+    // `static::foo()` still falls through.  The `::` guard prevents this branch
+    // from firing for `Class::static` or `self::method`.
+    if let Some(line_text) = source.lines().nth(position.line as usize)
+        && extract_static_class_before_cursor(line_text, position.character as usize).is_none()
+    {
+        let keyword_doc: Option<&str> = match word.as_str() {
+            "match" => Some("`match` — evaluates an expression against a set of arms (PHP 8.0)"),
+            "null" => Some("`null` — the null value; a variable has no value"),
+            "true" => Some("`true` — boolean true"),
+            "false" => Some("`false` — boolean false"),
+            "abstract" => Some(
+                "`abstract` — declares an abstract class or method that must be implemented by a subclass",
+            ),
+            "readonly" => {
+                Some("`readonly` — property or class that can only be initialised once (PHP 8.1)")
+            }
+            "yield" => Some("`yield` — produces a value from a generator function"),
+            "never" => Some(
+                "`never` — return type indicating the function always throws or exits (PHP 8.1)",
+            ),
+            "throw" => {
+                Some("`throw` — throws an exception; can be used as an expression (PHP 8.0)")
+            }
+            _ => None,
+        };
+        if let Some(doc_str) = keyword_doc {
+            return Some(Hover {
+                contents: HoverContents::Markup(MarkupContent {
+                    kind: MarkupKind::Markdown,
+                    value: doc_str.to_string(),
+                }),
+                range: hover_range,
+            });
+        }
+    }
+
     // TypeMap is expensive; build lazily and reuse across branches.
     let type_map_cell: OnceCell<TypeMap> = OnceCell::new();
     let type_map = || {
@@ -167,7 +204,9 @@ pub fn hover_at(
                 for d in std::iter::once(doc).chain(other_docs.iter().map(|(_, d, _)| d.as_ref())) {
                     if let Some(sig) = scan_method_of_class(&d.program().stmts, first_cls, &word) {
                         let mut value = wrap_php(&sig);
-                        if let Some(db) = find_method_docblock(d, first_cls, &word) {
+                        let all_docs = std::iter::once(doc)
+                            .chain(other_docs.iter().map(|(_, d, _)| d.as_ref()));
+                        if let Some(db) = resolve_method_docblock(all_docs, first_cls, &word) {
                             let md = db.to_markdown();
                             if !md.is_empty() {
                                 value.push_str("\n\n---\n\n");
@@ -234,7 +273,9 @@ pub fn hover_at(
                 if let Some(sig) = scan_method_of_class(&d.program().stmts, &effective_class, &word)
                 {
                     let mut value = wrap_php(&sig);
-                    if let Some(db) = find_method_docblock(d, &effective_class, &word) {
+                    let all_docs =
+                        std::iter::once(doc).chain(other_docs.iter().map(|(_, d, _)| d.as_ref()));
+                    if let Some(db) = resolve_method_docblock(all_docs, &effective_class, &word) {
                         let md = db.to_markdown();
                         if !md.is_empty() {
                             value.push_str("\n\n---\n\n");
@@ -1305,6 +1346,36 @@ fn find_method_docblock(
     method_name: &str,
 ) -> Option<crate::docblock::Docblock> {
     find_method_docblock_in_stmts(doc.source(), &doc.program().stmts, class_name, method_name)
+}
+
+/// Like `find_method_docblock` but resolves `{@inheritDoc}` by walking the
+/// parent chain across all supplied documents.
+fn resolve_method_docblock<'a>(
+    docs: impl Iterator<Item = &'a ParsedDoc> + Clone,
+    class_name: &str,
+    method_name: &str,
+) -> Option<crate::docblock::Docblock> {
+    let docs: Vec<&'a ParsedDoc> = docs.collect();
+    let mut current_class = class_name.to_owned();
+    for _ in 0..16 {
+        let db = docs
+            .iter()
+            .find_map(|d| find_method_docblock(d, &current_class, method_name));
+        match db {
+            Some(d) if d.is_inherit_doc => {
+                // Find the parent class name across all documents.
+                let parent = docs
+                    .iter()
+                    .find_map(|d| find_parent_class_name(&d.program().stmts, &current_class));
+                match parent {
+                    Some(p) => current_class = p,
+                    None => return None,
+                }
+            }
+            other => return other,
+        }
+    }
+    None
 }
 
 fn find_method_docblock_in_stmts(
