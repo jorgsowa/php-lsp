@@ -31,17 +31,18 @@ jobs:
     # run-to-run variance compared to the shared 2-core ubuntu-latest runners.
     # The alert threshold is kept at 130 % to absorb remaining CI noise.
     runs-on: ubuntu-latest-4-cores
+    timeout-minutes: 60
     permissions:
       contents: write
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
       - name: Cache cargo registry
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
@@ -62,7 +63,7 @@ jobs:
         run: cargo bench -- --output-format bencher | tee output.txt
 
       - name: Store benchmark result
-        uses: benchmark-action/github-action-benchmark@v1
+        uses: benchmark-action/github-action-benchmark@v1.22.0
         with:
           tool: cargo
           output-file-path: output.txt
@@ -76,7 +77,7 @@ jobs:
           auto-push: ${{ github.ref == 'refs/heads/main' }}
 
       - name: Upload criterion HTML reports
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: criterion-${{ github.sha }}
           path: target/criterion/
