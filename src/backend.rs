@@ -1504,14 +1504,20 @@ impl LanguageServer for Backend {
                 promoted_property_at_cursor(doc.source(), &doc.program().stmts, position)
         {
             (prop_name, Some(SymbolKind::Property))
-        } else {
-            let k = if let Some(doc) = &doc_opt
-                && cursor_is_on_method_decl(doc.source(), &doc.program().stmts, position)
+        } else if let Some(doc) = &doc_opt {
+            let stmts = &doc.program().stmts;
+            if cursor_is_on_method_decl(doc.source(), stmts, position) {
+                (word, Some(SymbolKind::Method))
+            } else if let Some(prop_name) =
+                cursor_is_on_property_decl(doc.source(), stmts, position)
             {
-                Some(SymbolKind::Method)
+                (prop_name, Some(SymbolKind::Property))
             } else {
-                symbol_kind_at(&source, position, &word)
-            };
+                let k = symbol_kind_at(&source, position, &word);
+                (word, k)
+            }
+        } else {
+            let k = symbol_kind_at(&source, position, &word);
             (word, k)
         };
         let all_docs = self.docs.all_docs_for_scan();
@@ -2870,6 +2876,58 @@ fn cursor_is_on_method_decl(source: &str, stmts: &[Stmt<'_, '_>], position: Posi
     check(source, stmts, cursor)
 }
 
+/// If the cursor is on a class or trait property *declaration* name (e.g.
+/// `public string $status`), return the property name without the leading `$`
+/// so the caller can search for `status` via `SymbolKind::Property`.  Returns
+/// `None` when the cursor is elsewhere.
+fn cursor_is_on_property_decl(
+    source: &str,
+    stmts: &[Stmt<'_, '_>],
+    position: Position,
+) -> Option<String> {
+    let cursor = position_to_offset(source, position)?;
+
+    fn check(source: &str, stmts: &[Stmt<'_, '_>], cursor: u32) -> Option<String> {
+        for stmt in stmts {
+            match &stmt.kind {
+                StmtKind::Class(c) => {
+                    for member in c.members.iter() {
+                        if let ClassMemberKind::Property(p) = &member.kind {
+                            let start = str_offset(source, p.name);
+                            let end = start + p.name.len() as u32;
+                            if cursor >= start && cursor < end {
+                                return Some(p.name.to_owned());
+                            }
+                        }
+                    }
+                }
+                StmtKind::Trait(t) => {
+                    for member in t.members.iter() {
+                        if let ClassMemberKind::Property(p) = &member.kind {
+                            let start = str_offset(source, p.name);
+                            let end = start + p.name.len() as u32;
+                            if cursor >= start && cursor < end {
+                                return Some(p.name.to_owned());
+                            }
+                        }
+                    }
+                }
+                StmtKind::Namespace(ns) => {
+                    if let NamespaceBody::Braced(inner) = &ns.body
+                        && let Some(name) = check(source, inner, cursor)
+                    {
+                        return Some(name);
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
+    check(source, stmts, cursor)
+}
+
 /// When the cursor sits on a `__construct` method name declaration, return
 /// the owning class FQN (namespace-qualified when inside a namespace). Returns
 /// `None` otherwise (including when the cursor is on a non-constructor method,
@@ -3400,61 +3458,6 @@ mod tests {
         assert!(cfg.undefined_variables);
     }
 
-    // FeaturesConfig tests
-    #[test]
-    fn features_config_default_all_enabled() {
-        let cfg = FeaturesConfig::default();
-        assert!(cfg.completion);
-        assert!(cfg.hover);
-        assert!(cfg.definition);
-        assert!(cfg.declaration);
-        assert!(cfg.references);
-        assert!(cfg.document_symbols);
-        assert!(cfg.workspace_symbols);
-        assert!(cfg.rename);
-        assert!(cfg.signature_help);
-        assert!(cfg.inlay_hints);
-        assert!(cfg.semantic_tokens);
-        assert!(cfg.selection_range);
-        assert!(cfg.call_hierarchy);
-        assert!(cfg.document_highlight);
-        assert!(cfg.implementation);
-        assert!(cfg.code_action);
-        assert!(cfg.type_definition);
-        assert!(cfg.code_lens);
-        assert!(cfg.formatting);
-        assert!(cfg.range_formatting);
-        assert!(cfg.on_type_formatting);
-        assert!(cfg.document_link);
-        assert!(cfg.linked_editing_range);
-        assert!(cfg.inline_values);
-    }
-
-    #[test]
-    fn features_config_from_empty_object_all_enabled() {
-        let cfg = FeaturesConfig::from_value(&serde_json::json!({}));
-        assert!(cfg.call_hierarchy);
-        assert!(cfg.hover);
-    }
-
-    #[test]
-    fn features_config_can_disable_call_hierarchy() {
-        let cfg = FeaturesConfig::from_value(&serde_json::json!({"callHierarchy": false}));
-        assert!(!cfg.call_hierarchy);
-        assert!(cfg.hover);
-        assert!(cfg.completion);
-    }
-
-    #[test]
-    fn lsp_config_parses_features_section() {
-        let cfg = LspConfig::from_value(
-            &serde_json::json!({"features": {"callHierarchy": false, "hover": false}}),
-        );
-        assert!(!cfg.features.call_hierarchy);
-        assert!(!cfg.features.hover);
-        assert!(cfg.features.completion);
-    }
-
     // LspConfig::from_value tests
     #[test]
     fn lsp_config_default_is_empty() {
@@ -3504,6 +3507,67 @@ mod tests {
     fn lsp_config_default_max_indexed_files() {
         let cfg = LspConfig::default();
         assert_eq!(cfg.max_indexed_files, MAX_INDEXED_FILES);
+    }
+
+    // FeaturesConfig tests
+    #[test]
+    fn features_config_default_all_enabled() {
+        let cfg = FeaturesConfig::default();
+        assert!(cfg.completion);
+        assert!(cfg.hover);
+        assert!(cfg.definition);
+        assert!(cfg.declaration);
+        assert!(cfg.references);
+        assert!(cfg.document_symbols);
+        assert!(cfg.workspace_symbols);
+        assert!(cfg.rename);
+        assert!(cfg.signature_help);
+        assert!(cfg.inlay_hints);
+        assert!(cfg.semantic_tokens);
+        assert!(cfg.selection_range);
+        assert!(cfg.call_hierarchy);
+        assert!(cfg.document_highlight);
+        assert!(cfg.implementation);
+        assert!(cfg.code_action);
+        assert!(cfg.type_definition);
+        assert!(cfg.code_lens);
+        assert!(cfg.formatting);
+        assert!(cfg.range_formatting);
+        assert!(cfg.on_type_formatting);
+        assert!(cfg.document_link);
+        assert!(cfg.linked_editing_range);
+        assert!(cfg.inline_values);
+    }
+
+    #[test]
+    fn features_config_from_empty_object_all_enabled() {
+        let cfg = FeaturesConfig::from_value(&serde_json::json!({}));
+        assert!(cfg.completion);
+        assert!(cfg.hover);
+        assert!(cfg.call_hierarchy);
+        assert!(cfg.inline_values);
+    }
+
+    #[test]
+    fn features_config_can_disable_individual_flags() {
+        let cfg = FeaturesConfig::from_value(&serde_json::json!({
+            "callHierarchy": false,
+        }));
+        assert!(!cfg.call_hierarchy);
+        assert!(cfg.completion);
+        assert!(cfg.hover);
+        assert!(cfg.definition);
+        assert!(cfg.inline_values);
+    }
+
+    #[test]
+    fn lsp_config_parses_features_section() {
+        let cfg = LspConfig::from_value(&serde_json::json!({
+            "features": {"callHierarchy": false}
+        }));
+        assert!(!cfg.features.call_hierarchy);
+        assert!(cfg.features.completion);
+        assert!(cfg.features.hover);
     }
 
     // find_use_insert_line tests

@@ -7,7 +7,7 @@
 
 mod common;
 
-use common::TestServer;
+use common::{TestServer, render_locations};
 use expect_test::expect;
 use serde_json::Value;
 
@@ -427,6 +427,30 @@ $c->add();
     .await;
 }
 
+/// Cross-namespace function filter: refs on `Alpha\process` must not include
+/// calls to `Beta\process` in another file.
+#[tokio::test]
+async fn references_distinguishes_cross_namespace_function_calls() {
+    let mut s = TestServer::new().await;
+    s.check_references_annotated(
+        r#"//- /alpha.php
+<?php
+namespace Alpha;
+function pro$0cess(): void {}
+//       ^^^^^^^ def
+process();
+//^^^^^^^ ref
+
+//- /beta.php
+<?php
+namespace Beta;
+function process(): void {}
+process();
+"#,
+    )
+    .await;
+}
+
 #[tokio::test]
 async fn references_promoted_property_this_access() {
     // `$this->prop` inside a method must be returned alongside external `->prop`
@@ -488,6 +512,29 @@ class Cart {
     public function describe(): void { $this->item; }
     //                                        ^^^^ ref
 }
+"#,
+    )
+    .await;
+}
+
+/// Cursor on a property *access* site — refs must find all `->propName`
+/// accesses and the declaration, but not a method with the same name.
+#[tokio::test]
+async fn references_property_access_site() {
+    let mut s = TestServer::new().await;
+    s.check_references_annotated(
+        r#"<?php
+class Cart {
+    public int $total = 0;
+    //         ^^^^^ def
+    public function total(): int { return $this->total; }
+    //                                          ^^^^^ ref
+}
+$c = new Cart();
+$c->to$0tal;
+//  ^^^^^ ref
+$c->total += 5;
+//  ^^^^^ ref
 "#,
     )
     .await;
@@ -984,4 +1031,56 @@ $w = new \App\Widget();
         Widget.php:3:25-3:36
         main.php:1:9-1:20"#]]
     .assert_eq(&out);
+}
+
+/// Cursor on a property *declaration* — refs must include the declaration
+/// itself plus every access site, but not a same-named method call.
+#[tokio::test]
+async fn references_property_declaration() {
+    let mut s = TestServer::new().await;
+    s.check_references_annotated(
+        r#"<?php
+class Order {
+    public string $sta$0tus = '';
+    //            ^^^^^^ def
+    public function status(): string { return $this->status; }
+    //                                              ^^^^^^ ref
+}
+$o = new Order();
+$o->status;
+//  ^^^^^^ ref
+"#,
+    )
+    .await;
+}
+
+/// After a `did_change` that adds a new call site, a subsequent
+/// `textDocument/references` must reflect the updated file content.
+#[tokio::test]
+async fn references_after_did_change_reflects_added_call() {
+    let mut server = TestServer::new().await;
+
+    server
+        .open(
+            "main.php",
+            "<?php\nfunction compute(): int { return 0; }\ncompute();\n",
+        )
+        .await;
+
+    let resp1 = server.references("main.php", 1, 10, false).await;
+    expect!["main.php:2:0-2:7"].assert_eq(&render_locations(&resp1, &server.uri("")));
+
+    server
+        .change(
+            "main.php",
+            2,
+            "<?php\nfunction compute(): int { return 0; }\ncompute();\ncompute();\n",
+        )
+        .await;
+
+    let resp2 = server.references("main.php", 1, 10, false).await;
+    expect![[r#"
+        main.php:2:0-2:7
+        main.php:3:0-3:7"#]]
+    .assert_eq(&render_locations(&resp2, &server.uri("")));
 }

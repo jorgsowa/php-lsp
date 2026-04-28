@@ -1963,4 +1963,181 @@ mod tests {
             result
         );
     }
+
+    // ── SymbolKind::Property ─────────────────────────────────────────────────
+
+    #[test]
+    fn property_kind_finds_instance_property_access() {
+        // $obj->status should be found; free function `status()` must not appear.
+        let src = "<?php\nclass Order {\n    public string $status = '';\n}\nfunction status() {}\n$o->status;\nstatus();";
+        let docs = vec![doc("/a.php", src)];
+        let refs = find_references("status", &docs, false, Some(SymbolKind::Property));
+        let lines: Vec<u32> = refs.iter().map(|r| r.range.start.line).collect();
+        assert!(
+            lines.contains(&5),
+            "$o->status access (line 5) must be present, got: {:?}",
+            lines
+        );
+        assert!(
+            !lines.contains(&6),
+            "free function call status() (line 6) must not appear with kind=Property, got: {:?}",
+            lines
+        );
+    }
+
+    #[test]
+    fn property_kind_with_include_declaration_finds_decl() {
+        // include_declaration=true must return the property declaration on the class body.
+        let src = "<?php\nclass Foo {\n    public int $count = 0;\n}\n$f->count;\n$f->count;";
+        let docs = vec![doc("/a.php", src)];
+        let refs_with = find_references("count", &docs, true, Some(SymbolKind::Property));
+        let lines_with: Vec<u32> = refs_with.iter().map(|r| r.range.start.line).collect();
+        assert!(
+            lines_with.contains(&2),
+            "property declaration (line 2) must be included with include_declaration=true, got: {:?}",
+            lines_with
+        );
+        assert!(
+            lines_with.contains(&4),
+            "first access (line 4) must be included, got: {:?}",
+            lines_with
+        );
+        assert!(
+            lines_with.contains(&5),
+            "second access (line 5) must be included, got: {:?}",
+            lines_with
+        );
+    }
+
+    #[test]
+    fn property_kind_excludes_declaration_when_flag_false() {
+        // include_declaration=false must suppress the property declaration but keep accesses.
+        let src = "<?php\nclass Foo {\n    public int $count = 0;\n}\n$f->count;";
+        let docs = vec![doc("/a.php", src)];
+        let refs = find_references("count", &docs, false, Some(SymbolKind::Property));
+        let lines: Vec<u32> = refs.iter().map(|r| r.range.start.line).collect();
+        assert!(
+            !lines.contains(&2),
+            "property declaration (line 2) must be excluded when include_declaration=false, got: {:?}",
+            lines
+        );
+        assert!(
+            lines.contains(&4),
+            "access (line 4) must be included, got: {:?}",
+            lines
+        );
+    }
+
+    #[test]
+    fn property_kind_does_not_match_method_with_same_name() {
+        // $obj->run is a property access; $obj->run() is a method call.
+        // kind=Property must not return the method call.
+        let src = "<?php\nclass Task {\n    public bool $run = false;\n    public function run(): void {}\n}\n$t->run;\n$t->run();";
+        let docs = vec![doc("/a.php", src)];
+        let refs = find_references("run", &docs, false, Some(SymbolKind::Property));
+        let lines: Vec<u32> = refs.iter().map(|r| r.range.start.line).collect();
+        assert!(
+            lines.contains(&5),
+            "property access $t->run (line 5) must be present, got: {:?}",
+            lines
+        );
+        // The method call $t->run() on line 6 is an ExprKind::MethodCall, not PropertyAccess,
+        // so the property walker must not emit it.
+        assert!(
+            !lines.contains(&6),
+            "method call $t->run() (line 6) must not appear with kind=Property, got: {:?}",
+            lines
+        );
+    }
+
+    // ── Static method call ────────────────────────────────────────────────────
+
+    #[test]
+    fn method_kind_finds_static_method_call() {
+        // ClassName::method() is a StaticMethodCall; the method walker must capture it.
+        let src = "<?php\nclass Builder {\n    public static function create(): self { return new self(); }\n}\nBuilder::create();\n$b->create();";
+        let docs = vec![doc("/a.php", src)];
+        let refs = find_references("create", &docs, false, Some(SymbolKind::Method));
+        let lines: Vec<u32> = refs.iter().map(|r| r.range.start.line).collect();
+        assert!(
+            lines.contains(&4),
+            "Builder::create() static call (line 4) must be present, got: {:?}",
+            lines
+        );
+        assert!(
+            lines.contains(&5),
+            "$b->create() instance call (line 5) must be present, got: {:?}",
+            lines
+        );
+    }
+
+    // ── find_references_with_target namespace filtering ───────────────────────
+
+    #[test]
+    fn find_references_with_target_includes_file_whose_namespace_resolves_to_target() {
+        // file_a.php is in namespace Alpha — calling `Widget` resolves to `Alpha\Widget`.
+        // find_references_with_target with target `Alpha\Widget` must include it.
+        let src_a = "<?php\nnamespace Alpha;\nfunction make(): void { $w = new Widget(); }";
+        let docs = vec![doc("/a.php", src_a)];
+        let refs = find_references_with_target(
+            "Widget",
+            &docs,
+            false,
+            Some(SymbolKind::Class),
+            "Alpha\\Widget",
+        );
+        let lines: Vec<u32> = refs.iter().map(|r| r.range.start.line).collect();
+        assert!(
+            lines.contains(&2),
+            "new Widget() in Alpha namespace (line 2) must be included, got: {:?}",
+            lines
+        );
+    }
+
+    #[test]
+    fn find_references_with_target_excludes_file_with_different_namespace() {
+        // file_b.php is in namespace Beta — `Widget` there resolves to `Beta\Widget`,
+        // so it must be excluded when the target is `Alpha\Widget`.
+        let src_a = "<?php\nnamespace Alpha;\n$w = new Widget();";
+        let src_b = "<?php\nnamespace Beta;\n$w = new Widget();";
+        let docs = vec![doc("/a.php", src_a), doc("/b.php", src_b)];
+        let refs = find_references_with_target(
+            "Widget",
+            &docs,
+            false,
+            Some(SymbolKind::Class),
+            "Alpha\\Widget",
+        );
+        let uris: Vec<&str> = refs.iter().map(|r| r.uri.as_str()).collect();
+        assert!(
+            uris.iter().any(|u| u.ends_with("/a.php")),
+            "Alpha\\Widget in a.php must be included, got: {:?}",
+            refs
+        );
+        assert!(
+            !uris.iter().any(|u| u.ends_with("/b.php")),
+            "Beta\\Widget in b.php must be excluded, got: {:?}",
+            refs
+        );
+    }
+
+    #[test]
+    fn find_references_with_target_global_function_fallback() {
+        // A file with no namespace calls `strlen` — PHP falls back to the global
+        // namespace, so the target `strlen` (no backslash) must match.
+        let src = "<?php\n$n = strlen('hello');";
+        let docs = vec![doc("/a.php", src)];
+        let refs = find_references_with_target(
+            "strlen",
+            &docs,
+            false,
+            Some(SymbolKind::Function),
+            "strlen",
+        );
+        assert!(
+            !refs.is_empty(),
+            "strlen() in global-namespace file must be included, got: {:?}",
+            refs
+        );
+    }
 }
