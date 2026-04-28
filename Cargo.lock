@@ -1175,7 +1175,7 @@ dependencies = [
 
 [[package]]
 name = "php-lsp"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "bincode 2.0.1",
  "blake3",
