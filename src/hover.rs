@@ -99,6 +99,52 @@ pub fn hover_at(
         });
     }
 
+    // Hover on ClassName::$staticProp — word begins with '$' but is not a local var.
+    if word.starts_with('$')
+        && let Some(line_text) = source.lines().nth(position.line as usize)
+        && let Some(class_name) =
+            extract_static_class_before_cursor(line_text, position.character as usize)
+    {
+        let prop_name = word.trim_start_matches('$');
+        let effective_class = if class_name == "self" || class_name == "static" {
+            crate::type_map::enclosing_class_at(source, doc, position).unwrap_or(class_name.clone())
+        } else {
+            class_name.clone()
+        };
+        for d in std::iter::once(doc).chain(other_docs.iter().map(|(_, d, _)| d.as_ref())) {
+            if let Some((modifiers, type_str, db)) =
+                find_property_info(d, &effective_class, prop_name)
+            {
+                let sig = format!(
+                    "(property) {}{}::${}{}",
+                    modifiers,
+                    effective_class,
+                    prop_name,
+                    if type_str.is_empty() {
+                        String::new()
+                    } else {
+                        format!(": {}", type_str)
+                    }
+                );
+                let mut value = wrap_php(&sig);
+                if let Some(doc) = db {
+                    let md = doc.to_markdown();
+                    if !md.is_empty() {
+                        value.push_str("\n\n---\n\n");
+                        value.push_str(&md);
+                    }
+                }
+                return Some(Hover {
+                    contents: HoverContents::Markup(MarkupContent {
+                        kind: MarkupKind::Markdown,
+                        value,
+                    }),
+                    range: hover_range,
+                });
+            }
+        }
+    }
+
     // Cursor-aware receiver resolution: extract the receiver from immediately
     // before `->word` or `?->word` at the cursor column, not just anywhere on
     // the line.  This correctly handles multiple method calls on one line.
@@ -878,6 +924,11 @@ fn extract_static_class_before_cursor(line: &str, cursor_col_utf16: usize) -> Op
     let is_word_char = |c: char| c.is_alphanumeric() || c == '_';
     let mut word_start = char_idx;
     while word_start > 0 && is_word_char(chars[word_start - 1]) {
+        word_start -= 1;
+    }
+
+    // For `Class::$prop`, skip the `$` before checking for `::`
+    if word_start > 0 && chars[word_start - 1] == '$' {
         word_start -= 1;
     }
 

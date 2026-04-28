@@ -130,6 +130,51 @@ async fn inlay_hint_resolve_returns_same_hint() {
 }
 
 #[tokio::test]
+async fn inlay_hints_nullsafe_method_call() {
+    let mut s = TestServer::new().await;
+    let out = s
+        .check_inlay_hints(
+            r#"//- /caller.php
+<?php
+$g = new Greeter();
+$g?->sayHello('World');
+
+//- /Greeter.php
+<?php
+class Greeter {
+    public function sayHello(string $name): void {}
+}
+"#,
+        )
+        .await;
+    expect![[r#"
+        2:14 name:"#]]
+    .assert_eq(&out);
+}
+
+#[tokio::test]
+async fn inlay_hints_static_method_call() {
+    let mut s = TestServer::new().await;
+    let out = s
+        .check_inlay_hints(
+            r#"//- /caller.php
+<?php
+Greeter::sayHello('world');
+
+//- /Greeter.php
+<?php
+class Greeter {
+    public static function sayHello(string $name): void {}
+}
+"#,
+        )
+        .await;
+    expect![[r#"
+        1:18 name:"#]]
+    .assert_eq(&out);
+}
+
+#[tokio::test]
 async fn inlay_hints_empty_for_file_with_no_calls() {
     let mut s = TestServer::new().await;
     let out = s

@@ -818,3 +818,47 @@ function ri$0sky(): void {}
         **@throws** `\RuntimeException` — When the operation fails"#]]
     .assert_eq(&v);
 }
+
+#[tokio::test]
+async fn hover_static_property() {
+    let mut s = TestServer::new().await;
+    let v = s
+        .check_hover(
+            r#"<?php
+class Config {
+    public static string $version = '1.0';
+}
+Config::$ver$0sion;
+"#,
+        )
+        .await;
+    expect![[r#"
+        ```php
+        (property) public static Config::$version: string
+        ```"#]]
+    .assert_eq(&v);
+}
+
+#[tokio::test]
+async fn hover_static_property_cross_file() {
+    let mut s = TestServer::new().await;
+    let v = s
+        .check_hover(
+            r#"//- /caller.php
+<?php
+Config::$ver$0sion;
+
+//- /Config.php
+<?php
+class Config {
+    public static string $version = '1.0';
+}
+"#,
+        )
+        .await;
+    expect![[r#"
+        ```php
+        (property) public static Config::$version: string
+        ```"#]]
+    .assert_eq(&v);
+}

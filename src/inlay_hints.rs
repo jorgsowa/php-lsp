@@ -395,13 +395,24 @@ fn hints_in_expr(
                 hints_in_expr(sv, &arg.value, defs, type_map, range, out);
             }
         }
-        ExprKind::MethodCall(m) => {
+        ExprKind::MethodCall(m) | ExprKind::NullsafeMethodCall(m) => {
             if let Some(name) = ident_name(m.method)
                 && let Some(def) = defs.get(name)
             {
                 emit_param_hints(sv, &m.args, def, name, range, out);
             }
             hints_in_expr(sv, m.object, defs, type_map, range, out);
+            for arg in m.args.iter() {
+                hints_in_expr(sv, &arg.value, defs, type_map, range, out);
+            }
+        }
+        ExprKind::StaticMethodCall(m) => {
+            if let Some(name) = ident_name(m.method)
+                && let Some(def) = defs.get(name)
+            {
+                emit_param_hints(sv, &m.args, def, name, range, out);
+            }
+            hints_in_expr(sv, m.class, defs, type_map, range, out);
             for arg in m.args.iter() {
                 hints_in_expr(sv, &arg.value, defs, type_map, range, out);
             }
@@ -506,7 +517,8 @@ fn emit_return_type_hint(
 ) {
     let name = match &expr.kind {
         ExprKind::FunctionCall(f) => ident_name(f.name),
-        ExprKind::MethodCall(m) => ident_name(m.method),
+        ExprKind::MethodCall(m) | ExprKind::NullsafeMethodCall(m) => ident_name(m.method),
+        ExprKind::StaticMethodCall(m) => ident_name(m.method),
         _ => return,
     };
     if let Some(name) = name
