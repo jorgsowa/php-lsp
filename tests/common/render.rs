@@ -473,6 +473,37 @@ pub(crate) fn render_prepare_rename(resp: &Value) -> String {
     }
 }
 
+pub(crate) fn render_prepare_call_hierarchy(resp: &Value, root_uri: &str) -> String {
+    if let Some(err) = resp.get("error").filter(|e| !e.is_null()) {
+        return format!("error: {err}");
+    }
+    let arr = resp["result"].as_array().cloned().unwrap_or_default();
+    if arr.is_empty() {
+        return "<empty>".to_owned();
+    }
+    let prefix = if root_uri.ends_with('/') {
+        root_uri.to_owned()
+    } else {
+        format!("{root_uri}/")
+    };
+    let mut rows: Vec<String> = arr
+        .iter()
+        .map(|i| {
+            let name = i["name"].as_str().unwrap_or("?");
+            let kind = symbol_kind_name(i["kind"].as_u64().unwrap_or(0));
+            let uri = i["uri"].as_str().unwrap_or("?");
+            let short = uri.strip_prefix(&prefix).unwrap_or(uri);
+            let line = i["selectionRange"]["start"]["line"].as_u64().unwrap_or(0);
+            match i["detail"].as_str() {
+                Some(detail) => format!("{name} ({kind}) [{detail}] @ {short}:{line}"),
+                None => format!("{name} ({kind}) @ {short}:{line}"),
+            }
+        })
+        .collect();
+    rows.sort();
+    rows.join("\n")
+}
+
 pub(crate) fn render_call_hierarchy(resp: &Value, side: &str, root_uri: &str) -> String {
     if let Some(err) = resp.get("error").filter(|e| !e.is_null()) {
         return format!("error: {err}");

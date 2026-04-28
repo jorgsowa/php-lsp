@@ -1,6 +1,8 @@
 use std::collections::HashMap;
+use std::ops::ControlFlow;
 use std::sync::Arc;
 
+use php_ast::visitor::{Visitor, walk_expr, walk_stmt};
 use php_ast::{ClassMemberKind, EnumMemberKind, ExprKind, NamespaceBody, Span, Stmt, StmtKind};
 use tower_lsp::lsp_types::{
     CallHierarchyIncomingCall, CallHierarchyItem, CallHierarchyOutgoingCall, Position, Range,
@@ -378,310 +380,60 @@ fn collect_calls_for(fn_name: &str, stmts: &[Stmt<'_, '_>], out: &mut Vec<(Strin
     }
 }
 
+/// Collects all (callee_name, span) call sites reachable from a slice of statements,
+/// without descending into nested named declarations (functions, classes, etc.).
 fn calls_in_stmts(stmts: &[Stmt<'_, '_>], out: &mut Vec<(String, Span)>) {
+    let mut collector = CallCollector { out };
     for stmt in stmts {
-        calls_in_stmt(stmt, out);
+        let _ = collector.visit_stmt(stmt);
     }
 }
 
-fn calls_in_stmt(stmt: &Stmt<'_, '_>, out: &mut Vec<(String, Span)>) {
-    match &stmt.kind {
-        StmtKind::Expression(e) => calls_in_expr(e, out),
-        StmtKind::Return(Some(v)) => calls_in_expr(v, out),
-        StmtKind::Echo(exprs) => {
-            for expr in exprs.iter() {
-                calls_in_expr(expr, out);
-            }
-        }
-        StmtKind::If(i) => {
-            calls_in_expr(&i.condition, out);
-            calls_in_stmt(i.then_branch, out);
-            for ei in i.elseif_branches.iter() {
-                calls_in_expr(&ei.condition, out);
-                calls_in_stmt(&ei.body, out);
-            }
-            if let Some(e) = &i.else_branch {
-                calls_in_stmt(e, out);
-            }
-        }
-        StmtKind::While(w) => {
-            calls_in_expr(&w.condition, out);
-            calls_in_stmt(w.body, out);
-        }
-        StmtKind::For(f) => {
-            for e in f.init.iter() {
-                calls_in_expr(e, out);
-            }
-            for cond in f.condition.iter() {
-                calls_in_expr(cond, out);
-            }
-            for e in f.update.iter() {
-                calls_in_expr(e, out);
-            }
-            calls_in_stmt(f.body, out);
-        }
-        StmtKind::Foreach(f) => {
-            calls_in_expr(&f.expr, out);
-            calls_in_stmt(f.body, out);
-        }
-        StmtKind::TryCatch(t) => {
-            calls_in_stmts(&t.body, out);
-            for catch in t.catches.iter() {
-                calls_in_stmts(&catch.body, out);
-            }
-            if let Some(finally) = &t.finally {
-                calls_in_stmts(finally, out);
-            }
-        }
-        StmtKind::Block(stmts) => calls_in_stmts(stmts, out),
-        _ => {}
-    }
+struct CallCollector<'c> {
+    out: &'c mut Vec<(String, Span)>,
 }
 
-fn calls_in_expr(expr: &php_ast::Expr<'_, '_>, out: &mut Vec<(String, Span)>) {
-    match &expr.kind {
-        ExprKind::FunctionCall(f) => {
-            if let ExprKind::Identifier(name) = &f.name.kind {
-                out.push((name.to_string(), f.name.span));
-            } else {
-                calls_in_expr(f.name, out);
+impl<'arena, 'src> Visitor<'arena, 'src> for CallCollector<'_> {
+    fn visit_expr(&mut self, expr: &php_ast::Expr<'arena, 'src>) -> ControlFlow<()> {
+        match &expr.kind {
+            ExprKind::FunctionCall(f) => {
+                if let ExprKind::Identifier(name) = &f.name.kind {
+                    self.out.push((name.to_string(), f.name.span));
+                }
             }
-            for arg in f.args.iter() {
-                calls_in_expr(&arg.value, out);
+            ExprKind::MethodCall(m) | ExprKind::NullsafeMethodCall(m) => {
+                if let ExprKind::Identifier(name) = &m.method.kind {
+                    self.out.push((name.to_string(), m.method.span));
+                }
             }
-        }
-        ExprKind::MethodCall(m) => {
-            calls_in_expr(m.object, out);
-            if let ExprKind::Identifier(name) = &m.method.kind {
-                out.push((name.to_string(), m.method.span));
+            ExprKind::StaticMethodCall(s) => {
+                if let ExprKind::Identifier(name) = &s.method.kind {
+                    self.out.push((name.to_string(), s.method.span));
+                }
             }
-            for arg in m.args.iter() {
-                calls_in_expr(&arg.value, out);
-            }
+            _ => {}
         }
-        ExprKind::NullsafeMethodCall(m) => {
-            calls_in_expr(m.object, out);
-            if let ExprKind::Identifier(name) = &m.method.kind {
-                out.push((name.to_string(), m.method.span));
-            }
-            for arg in m.args.iter() {
-                calls_in_expr(&arg.value, out);
-            }
+        walk_expr(self, expr)
+    }
+
+    fn visit_stmt(&mut self, stmt: &php_ast::Stmt<'arena, 'src>) -> ControlFlow<()> {
+        // Skip nested named declarations — they are separate callable units with
+        // their own call hierarchy entries; their internals are not outgoing calls
+        // of the function currently being analysed.
+        match &stmt.kind {
+            StmtKind::Function(_)
+            | StmtKind::Class(_)
+            | StmtKind::Trait(_)
+            | StmtKind::Enum(_)
+            | StmtKind::Interface(_) => ControlFlow::Continue(()),
+            _ => walk_stmt(self, stmt),
         }
-        ExprKind::StaticMethodCall(s) => {
-            calls_in_expr(s.class, out);
-            for arg in s.args.iter() {
-                calls_in_expr(&arg.value, out);
-            }
-        }
-        ExprKind::Assign(a) => {
-            calls_in_expr(a.target, out);
-            calls_in_expr(a.value, out);
-        }
-        ExprKind::Ternary(t) => {
-            calls_in_expr(t.condition, out);
-            if let Some(then_expr) = t.then_expr {
-                calls_in_expr(then_expr, out);
-            }
-            calls_in_expr(t.else_expr, out);
-        }
-        ExprKind::NullCoalesce(n) => {
-            calls_in_expr(n.left, out);
-            calls_in_expr(n.right, out);
-        }
-        ExprKind::Binary(b) => {
-            calls_in_expr(b.left, out);
-            calls_in_expr(b.right, out);
-        }
-        ExprKind::Parenthesized(e) => calls_in_expr(e, out),
-        _ => {}
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn uri(path: &str) -> Url {
-        Url::parse(&format!("file://{path}")).unwrap()
-    }
-
-    fn doc(path: &str, src: &str) -> (Url, Arc<ParsedDoc>) {
-        (uri(path), Arc::new(ParsedDoc::parse(src.to_string())))
-    }
-
-    #[test]
-    fn prepare_finds_function_declaration() {
-        let docs = vec![doc("/a.php", "<?php\nfunction greet() {}")];
-        let item = prepare_call_hierarchy("greet", &docs);
-        assert!(item.is_some(), "should find greet");
-        let item = item.unwrap();
-        assert_eq!(item.name, "greet");
-        assert_eq!(item.kind, SymbolKind::FUNCTION);
-    }
-
-    #[test]
-    fn prepare_finds_method_declaration() {
-        let docs = vec![doc(
-            "/a.php",
-            "<?php\nclass Foo { public function run() {} }",
-        )];
-        let item = prepare_call_hierarchy("run", &docs);
-        assert!(item.is_some(), "should find run");
-        let item = item.unwrap();
-        assert_eq!(item.name, "run");
-        assert_eq!(item.kind, SymbolKind::METHOD);
-    }
-
-    #[test]
-    fn prepare_returns_none_for_unknown() {
-        let docs = vec![doc("/a.php", "<?php\nfunction greet() {}")];
-        assert!(prepare_call_hierarchy("nonexistent", &docs).is_none());
-    }
-
-    #[test]
-    fn prepare_returns_none_for_empty_docs() {
-        let docs: Vec<(Url, Arc<ParsedDoc>)> = vec![];
-        assert!(prepare_call_hierarchy("anything", &docs).is_none());
-    }
-
-    #[test]
-    fn incoming_calls_finds_callers() {
-        let docs = vec![doc(
-            "/a.php",
-            "<?php\nfunction greet() {}\nfunction main() { greet(); }",
-        )];
-        let item = prepare_call_hierarchy("greet", &docs).unwrap();
-        let incoming = incoming_calls(&item, &docs);
-        assert!(!incoming.is_empty(), "should find at least one caller");
-        assert!(
-            incoming.iter().any(|c| c.from.name == "main"),
-            "main should be a caller"
-        );
-    }
-
-    #[test]
-    fn incoming_calls_empty_when_no_callers() {
-        let docs = vec![doc("/a.php", "<?php\nfunction unused() {}")];
-        let item = prepare_call_hierarchy("unused", &docs).unwrap();
-        let incoming = incoming_calls(&item, &docs);
-        assert!(incoming.is_empty(), "no callers expected");
-    }
-
-    #[test]
-    fn outgoing_calls_finds_callees() {
-        let docs = vec![doc(
-            "/a.php",
-            "<?php\nfunction helper() {}\nfunction main() { helper(); }",
-        )];
-        let item = prepare_call_hierarchy("main", &docs).unwrap();
-        let outgoing = outgoing_calls(&item, &docs);
-        assert!(!outgoing.is_empty(), "should find at least one callee");
-        assert!(
-            outgoing.iter().any(|c| c.to.name == "helper"),
-            "helper should be a callee"
-        );
-    }
-
-    #[test]
-    fn outgoing_calls_empty_for_function_with_no_calls() {
-        let docs = vec![doc("/a.php", "<?php\nfunction noop() { $x = 1; }")];
-        let item = prepare_call_hierarchy("noop", &docs).unwrap();
-        let outgoing = outgoing_calls(&item, &docs);
-        assert!(outgoing.is_empty(), "no outgoing calls expected");
-    }
-
-    #[test]
-    fn outgoing_calls_cross_file() {
-        let a = doc("/a.php", "<?php\nfunction helper() {}");
-        let b = doc("/b.php", "<?php\nfunction main() { helper(); }");
-        let docs = vec![a, b];
-        let item = prepare_call_hierarchy("main", &docs).unwrap();
-        let outgoing = outgoing_calls(&item, &docs);
-        assert!(
-            outgoing.iter().any(|c| c.to.name == "helper"),
-            "cross-file callee not found"
-        );
-    }
-
-    #[test]
-    fn incoming_calls_cross_file() {
-        let a = doc("/a.php", "<?php\nfunction greet() {}");
-        let b = doc("/b.php", "<?php\nfunction run() { greet(); }");
-        let docs = vec![a, b];
-        let item = prepare_call_hierarchy("greet", &docs).unwrap();
-        let incoming = incoming_calls(&item, &docs);
-        assert!(
-            incoming.iter().any(|c| c.from.name == "run"),
-            "cross-file caller not found"
-        );
-    }
-
-    #[test]
-    fn prepare_finds_enum_method_declaration() {
-        let docs = vec![doc(
-            "/a.php",
-            "<?php\nenum Suit { public function label(): string { return 'x'; } }",
-        )];
-        let item = prepare_call_hierarchy("label", &docs);
-        assert!(item.is_some(), "should find enum method 'label'");
-        let item = item.unwrap();
-        assert_eq!(item.name, "label");
-        assert_eq!(item.kind, SymbolKind::METHOD);
-    }
-
-    #[test]
-    fn outgoing_calls_from_enum_method() {
-        let docs = vec![doc(
-            "/a.php",
-            "<?php\nfunction fmt(): string { return ''; }\nenum Suit { public function label(): string { return fmt(); } }",
-        )];
-        let item = prepare_call_hierarchy("label", &docs).unwrap();
-        let outgoing = outgoing_calls(&item, &docs);
-        assert!(
-            outgoing.iter().any(|c| c.to.name == "fmt"),
-            "should find outgoing call to fmt from enum method"
-        );
-    }
-
-    #[test]
-    fn outgoing_calls_from_for_init_and_update() {
-        let docs = vec![doc(
-            "/a.php",
-            "<?php\nfunction start(): int { return 0; }\nfunction step(): void {}\nfunction main(): void { for ($i = start(); $i < 10; step()) {} }",
-        )];
-        let item = prepare_call_hierarchy("main", &docs).unwrap();
-        let outgoing = outgoing_calls(&item, &docs);
-        assert!(
-            outgoing.iter().any(|c| c.to.name == "start"),
-            "should find call to start() in for-init"
-        );
-        assert!(
-            outgoing.iter().any(|c| c.to.name == "step"),
-            "should find call to step() in for-update"
-        );
-    }
-
-    #[test]
-    fn outgoing_calls_deduplicates_same_callee() {
-        let docs = vec![doc(
-            "/a.php",
-            "<?php\nfunction helper() {}\nfunction main() { helper(); helper(); }",
-        )];
-        let item = prepare_call_hierarchy("main", &docs).unwrap();
-        let outgoing = outgoing_calls(&item, &docs);
-        let helper_entries: Vec<_> = outgoing.iter().filter(|c| c.to.name == "helper").collect();
-        assert_eq!(
-            helper_entries.len(),
-            1,
-            "helper should appear once (with two from_ranges)"
-        );
-        assert_eq!(
-            helper_entries[0].from_ranges.len(),
-            2,
-            "should have two call-site ranges"
-        );
-    }
 
     // ── range_contains boundary regression tests ─────────────────────────────
 

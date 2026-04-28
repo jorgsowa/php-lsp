@@ -11,6 +11,8 @@ All options are optional.
 | `phpVersion` | `string` | auto-detected | PHP version used for version-gated diagnostics and completions. Accepted values: `"7.4"`, `"8.0"`, `"8.1"`, `"8.2"`, `"8.3"`, `"8.4"`, `"8.5"`. When omitted, the server auto-detects from `composer.json` (`config.platform.php`, then `require.php`), then from the `php` binary on `$PATH`, and falls back to `"8.5"`. |
 | `excludePaths` | `string[]` | `[]` | Glob patterns for paths to skip during workspace indexing. Matched against paths relative to the workspace root. |
 | `diagnostics` | `object` | see below | Per-category diagnostic toggles. |
+| `features` | `object` | see below | Per-feature capability toggles. |
+| `maxIndexedFiles` | `number` | `50000` | Hard cap on the number of PHP files indexed during a workspace scan. Set lower to reduce memory on projects with very large vendor trees. |
 
 ### `diagnostics` object
 
@@ -25,6 +27,37 @@ All options are optional.
 | `deprecatedCalls` | `true` | Calls to `@deprecated` members. |
 | `duplicateDeclarations` | `true` | Duplicate class or function declarations. |
 
+### `features` object
+
+All flags default to `true` (enabled). Set a flag to `false` to suppress the corresponding entry from `ServerCapabilities` at negotiation time. This is useful when a client does not support a particular capability and you want to opt out cleanly.
+
+| Key | Default | Description |
+|---|---|---|
+| `completion` | `true` | Code completion (`completionProvider`). |
+| `hover` | `true` | Hover documentation (`hoverProvider`). |
+| `definition` | `true` | Go-to-definition (`definitionProvider`). |
+| `declaration` | `true` | Go-to-declaration (`declarationProvider`). |
+| `references` | `true` | Find references (`referencesProvider`). |
+| `documentSymbols` | `true` | Document symbol list (`documentSymbolProvider`). |
+| `workspaceSymbols` | `true` | Workspace symbol search (`workspaceSymbolProvider`). |
+| `rename` | `true` | Rename symbol (`renameProvider`). |
+| `signatureHelp` | `true` | Signature help (`signatureHelpProvider`). |
+| `inlayHints` | `true` | Inlay hints (`inlayHintProvider`). |
+| `semanticTokens` | `true` | Semantic token highlighting (`semanticTokensProvider`). |
+| `selectionRange` | `true` | Smart selection ranges (`selectionRangeProvider`). |
+| `callHierarchy` | `true` | Call hierarchy (`callHierarchyProvider`). |
+| `documentHighlight` | `true` | Document highlight (`documentHighlightProvider`). |
+| `implementation` | `true` | Go-to-implementation (`implementationProvider`). |
+| `codeAction` | `true` | Code actions (`codeActionProvider`). |
+| `typeDefinition` | `true` | Go-to-type-definition (`typeDefinitionProvider`). |
+| `codeLens` | `true` | Code lens (`codeLensProvider`). |
+| `formatting` | `true` | Full-document formatting (`documentFormattingProvider`). |
+| `rangeFormatting` | `true` | Range formatting (`documentRangeFormattingProvider`). |
+| `onTypeFormatting` | `true` | On-type formatting (`documentOnTypeFormattingProvider`). |
+| `documentLink` | `true` | Document links (`documentLinkProvider`). |
+| `linkedEditingRange` | `true` | Linked editing ranges (`linkedEditingRangeProvider`). |
+| `inlineValues` | `true` | Inline values (`inlineValueProvider`). |
+
 ## Example
 
 ```json
@@ -35,6 +68,10 @@ All options are optional.
     "enabled": true,
     "undefinedVariables": true,
     "deprecatedCalls": false
+  },
+  "features": {
+    "callHierarchy": false,
+    "inlineValues": false
   }
 }
 ```

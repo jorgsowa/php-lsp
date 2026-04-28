@@ -11,8 +11,8 @@ use super::render::{
     assert_highlights_match, assert_locations_match, canonicalize_workspace_edit,
     collect_navigation_annotations, render_call_hierarchy, render_code_actions, render_code_lens,
     render_completion, render_document_symbols, render_folding_ranges, render_hover,
-    render_inlay_hints, render_locations, render_prepare_rename, render_signature_help,
-    render_type_hierarchy, render_workspace_symbols,
+    render_inlay_hints, render_locations, render_prepare_call_hierarchy, render_prepare_rename,
+    render_signature_help, render_type_hierarchy, render_workspace_symbols,
 };
 
 fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
@@ -1338,6 +1338,18 @@ impl TestServer {
         // documentHighlight returns ranges without URI; compare by range
         // within the cursor's file only.
         assert_highlights_match(&resp, &expected, &c.path, "document_highlight");
+    }
+
+    /// Prepare call hierarchy at `$0` and render the result as
+    /// `name (Kind) [detail] @ path:line` (detail omitted when absent).
+    #[track_caller]
+    pub async fn check_prepare_call_hierarchy(&mut self, src: &str) -> String {
+        let opened = self.open_fixture(src).await;
+        let c = opened.cursor().clone();
+        let resp = self
+            .prepare_call_hierarchy(&c.path, c.line, c.character)
+            .await;
+        render_prepare_call_hierarchy(&resp, &self.uri(""))
     }
 
     /// Prepare call hierarchy at `$0`, request incomingCalls, and render the
