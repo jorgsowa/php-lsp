@@ -68,6 +68,7 @@ pub fn semantic_issues(db: &dyn Database, ws: Workspace, file: SourceFile) -> Is
         &mut issue_buffer,
         &mut symbols,
         php_version,
+        false,
     );
     let mut ctx = mir_analyzer::context::Context::new();
     analyzer.analyze_stmts(&doc.program().stmts, &mut ctx);

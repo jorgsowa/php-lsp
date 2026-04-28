@@ -66,6 +66,7 @@ pub fn semantic_diagnostics(
         &mut issue_buffer,
         &mut symbols,
         ver,
+        false,
     );
     let mut ctx = mir_analyzer::context::Context::new();
     {
@@ -123,6 +124,7 @@ pub fn semantic_diagnostics_no_rebuild(
         &mut issue_buffer,
         &mut symbols,
         ver,
+        false,
     );
     let mut ctx = mir_analyzer::context::Context::new();
     analyzer.analyze_stmts(&doc.program().stmts, &mut ctx);

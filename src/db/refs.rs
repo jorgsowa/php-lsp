@@ -49,8 +49,10 @@ unsafe impl Update for FileRefsArc {
     }
 }
 
+type SymbolRefsInner = Arc<Vec<(Arc<str>, u32, u16, u16)>>;
+
 #[derive(Clone)]
-pub struct SymbolRefsArc(pub Arc<Vec<(Arc<str>, u32, u16, u16)>>);
+pub struct SymbolRefsArc(pub SymbolRefsInner);
 
 impl SymbolRefsArc {
     pub fn get(&self) -> &[(Arc<str>, u32, u16, u16)] {
@@ -96,6 +98,7 @@ pub fn file_refs(db: &dyn Database, ws: Workspace, file: SourceFile) -> FileRefs
             &mut issue_buffer,
             &mut symbols,
             ws.php_version(db),
+            false,
         );
         let mut ctx = mir_analyzer::context::Context::new();
         analyzer.analyze_stmts(&doc.get().program().stmts, &mut ctx);

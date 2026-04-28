@@ -1983,6 +1983,7 @@ fn find_closure_in_stmt(
     }
 }
 
+#[allow(clippy::only_used_in_recursion)]
 fn find_closure_in_expr(
     source: &str,
     expr: &php_ast::Expr<'_, '_>,
