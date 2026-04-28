@@ -1014,9 +1014,9 @@ dependencies = [
 
 [[package]]
 name = "mir-analyzer"
-version = "0.12.0"
+version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5844df473c5ffc2b9551b8c524f1b4c6603d86e90b8462d2290bad26a88cfdc5"
+checksum = "17507deeded8fdefaf7f936b17c7ce4507ecc0bd74d7738571111c7ff055cc1c"
 dependencies = [
  "blake3",
  "bumpalo",
@@ -1035,9 +1035,9 @@ dependencies = [
 
 [[package]]
 name = "mir-codebase"
-version = "0.12.0"
+version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "008cc49179118a2ef42ace2fd459a552bacc6ec126e851ebbd27a8e0af24a1b0"
+checksum = "0a1a24f37461b38da8872e9cc34117da9a177678320d5a34279d2a2cad66e6fc"
 dependencies = [
  "dashmap 6.1.0",
  "indexmap",
@@ -1048,9 +1048,9 @@ dependencies = [
 
 [[package]]
 name = "mir-issues"
-version = "0.12.0"
+version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4c66e62a98eb298072a3844c546f67d8ded40ef1e1b723b0abb82d423cdb1ca2"
+checksum = "074d6a53933e87c14794bf8d526a8f4b3963c8ca38b4afb32ff2441d6b93c57d"
 dependencies = [
  "mir-types",
  "owo-colors",
@@ -1060,9 +1060,9 @@ dependencies = [
 
 [[package]]
 name = "mir-types"
-version = "0.12.0"
+version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "76b8bb83ebdef00d5e50d1eb6ac201c2c8542ab6dabeace7ebf52a26c8be0809"
+checksum = "3787893eede00461c963711c4933e23716bdedae00c655dd63a611516813b9a9"
 dependencies = [
  "indexmap",
  "serde",
@@ -1155,9 +1155,9 @@ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 
 [[package]]
 name = "php-ast"
-version = "0.9.4"
+version = "0.9.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "02cefd278d319800f8c8d01250dc6d219f4283a0faa663f0975e93af82619243"
+checksum = "0ab4bf4f00feb0aa1716cb565fbc72ebe034a38e49d16cd218153044f0a90915"
 dependencies = [
  "bumpalo",
  "serde",
@@ -1165,9 +1165,9 @@ dependencies = [
 
 [[package]]
 name = "php-lexer"
-version = "0.9.4"
+version = "0.9.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "85216a04b4c5bb9435723a8c28578e134256744620bb1805bfe4fe18f70a4309"
+checksum = "1be6c3f807269be2bada45f01d927ef802d72819bacb2f7043ace93789e85d8d"
 dependencies = [
  "memchr",
  "php-ast",
@@ -1207,9 +1207,9 @@ dependencies = [
 
 [[package]]
 name = "php-rs-parser"
-version = "0.9.4"
+version = "0.9.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6f9c80822d2208b25d08ffebc4ff9813e0a2e6a4e4e08dcc1ac57929560c6e6e"
+checksum = "30478a155181585b68da2f901629ed1e155cae4ac162a438a897da1adf976a37"
 dependencies = [
  "bumpalo",
  "memchr",
