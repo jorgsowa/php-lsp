@@ -82,6 +82,7 @@ jobs:
 
       - name: Run tests
         if: matrix.cross != 'true'
+        timeout-minutes: 15
         run: cargo test
 
       - name: Build

@@ -55,25 +55,30 @@ impl TestClient {
             "params": params,
         });
         self.write.write_all(&frame(&msg)).await.unwrap();
-        loop {
-            let resp = read_msg(&mut self.read).await;
-            // If this message is a server→client request (has method + id), reply null
-            if resp.get("method").is_some() {
-                if let Some(srv_id) = resp.get("id") {
-                    let ack = json!({
-                        "jsonrpc": "2.0",
-                        "id": srv_id,
-                        "result": null,
-                    });
-                    self.write.write_all(&frame(&ack)).await.unwrap();
+        let method_owned = method.to_owned();
+        tokio::time::timeout(tokio::time::Duration::from_secs(10), async {
+            loop {
+                let resp = read_msg(&mut self.read).await;
+                // If this message is a server→client request (has method + id), reply null
+                if resp.get("method").is_some() {
+                    if let Some(srv_id) = resp.get("id") {
+                        let ack = json!({
+                            "jsonrpc": "2.0",
+                            "id": srv_id,
+                            "result": null,
+                        });
+                        self.write.write_all(&frame(&ack)).await.unwrap();
+                    }
+                    continue;
                 }
-                continue;
+                if resp.get("id") == Some(&json!(id)) {
+                    return resp;
+                }
+                // notifications (publishDiagnostics, logMessage, …) — skip
             }
-            if resp.get("id") == Some(&json!(id)) {
-                return resp;
-            }
-            // notifications (publishDiagnostics, logMessage, …) — skip
-        }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("timed out waiting for response to {method_owned}"))
     }
 
     pub async fn request_no_params(&mut self, method: &str) -> Value {
@@ -85,24 +90,29 @@ impl TestClient {
             "method": method,
         });
         self.write.write_all(&frame(&msg)).await.unwrap();
-        loop {
-            let resp = read_msg(&mut self.read).await;
-            // If this message is a server→client request (has method + id), reply null
-            if resp.get("method").is_some() {
-                if let Some(srv_id) = resp.get("id") {
-                    let ack = json!({
-                        "jsonrpc": "2.0",
-                        "id": srv_id,
-                        "result": null,
-                    });
-                    self.write.write_all(&frame(&ack)).await.unwrap();
+        let method_owned = method.to_owned();
+        tokio::time::timeout(tokio::time::Duration::from_secs(10), async {
+            loop {
+                let resp = read_msg(&mut self.read).await;
+                // If this message is a server→client request (has method + id), reply null
+                if resp.get("method").is_some() {
+                    if let Some(srv_id) = resp.get("id") {
+                        let ack = json!({
+                            "jsonrpc": "2.0",
+                            "id": srv_id,
+                            "result": null,
+                        });
+                        self.write.write_all(&frame(&ack)).await.unwrap();
+                    }
+                    continue;
                 }
-                continue;
+                if resp.get("id") == Some(&json!(id)) {
+                    return resp;
+                }
             }
-            if resp.get("id") == Some(&json!(id)) {
-                return resp;
-            }
-        }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("timed out waiting for response to {method_owned}"))
     }
 
     pub async fn notify(&mut self, method: &str, params: Value) {
