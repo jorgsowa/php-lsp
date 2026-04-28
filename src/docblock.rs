@@ -335,20 +335,85 @@ pub fn find_docblock(
     stmts: &[php_ast::Stmt<'_, '_>],
     word: &str,
 ) -> Option<Docblock> {
-    use php_ast::{ClassMemberKind, NamespaceBody, StmtKind};
+    use php_ast::{ClassMemberKind, EnumMemberKind, NamespaceBody, StmtKind};
     for stmt in stmts {
         match &stmt.kind {
             StmtKind::Function(f) if f.name == word => {
                 let raw = docblock_before(source, stmt.span.start)?;
                 return Some(parse_docblock(&raw));
             }
+            StmtKind::Class(c) if c.name == Some(word) => {
+                let raw = docblock_before(source, stmt.span.start)?;
+                return Some(parse_docblock(&raw));
+            }
+            StmtKind::Interface(i) if i.name == word => {
+                let raw = docblock_before(source, stmt.span.start)?;
+                return Some(parse_docblock(&raw));
+            }
+            StmtKind::Trait(t) if t.name == word => {
+                let raw = docblock_before(source, stmt.span.start)?;
+                return Some(parse_docblock(&raw));
+            }
+            StmtKind::Enum(e) if e.name == word => {
+                let raw = docblock_before(source, stmt.span.start)?;
+                return Some(parse_docblock(&raw));
+            }
             StmtKind::Class(c) => {
                 for member in c.members.iter() {
+                    match &member.kind {
+                        ClassMemberKind::Method(m) if m.name == word => {
+                            let raw = docblock_before(source, member.span.start)?;
+                            return Some(parse_docblock(&raw));
+                        }
+                        ClassMemberKind::ClassConst(k) if k.name == word => {
+                            let raw = docblock_before(source, member.span.start)?;
+                            return Some(parse_docblock(&raw));
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            StmtKind::Interface(i) => {
+                for member in i.members.iter() {
+                    match &member.kind {
+                        ClassMemberKind::Method(m) if m.name == word => {
+                            let raw = docblock_before(source, member.span.start)?;
+                            return Some(parse_docblock(&raw));
+                        }
+                        ClassMemberKind::ClassConst(k) if k.name == word => {
+                            let raw = docblock_before(source, member.span.start)?;
+                            return Some(parse_docblock(&raw));
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            StmtKind::Trait(t) => {
+                for member in t.members.iter() {
                     if let ClassMemberKind::Method(m) = &member.kind
                         && m.name == word
                     {
                         let raw = docblock_before(source, member.span.start)?;
                         return Some(parse_docblock(&raw));
+                    }
+                }
+            }
+            StmtKind::Enum(e) => {
+                for member in e.members.iter() {
+                    match &member.kind {
+                        EnumMemberKind::Method(m) if m.name == word => {
+                            let raw = docblock_before(source, member.span.start)?;
+                            return Some(parse_docblock(&raw));
+                        }
+                        EnumMemberKind::Case(c) if c.name == word => {
+                            let raw = docblock_before(source, member.span.start)?;
+                            return Some(parse_docblock(&raw));
+                        }
+                        EnumMemberKind::ClassConst(k) if k.name == word => {
+                            let raw = docblock_before(source, member.span.start)?;
+                            return Some(parse_docblock(&raw));
+                        }
+                        _ => {}
                     }
                 }
             }

@@ -1056,3 +1056,293 @@ class Base {
         "static:: should not trigger keyword hover, got: {v}"
     );
 }
+
+// ── 2.4 PHP attribute hover ───────────────────────────────────────────────────
+
+#[tokio::test]
+async fn hover_attribute_class_name() {
+    let mut s = TestServer::new().await;
+    let v = s
+        .check_hover(
+            r#"<?php
+class MyAttribute {}
+
+#[MyAttri$0bute]
+class Foo {}
+"#,
+        )
+        .await;
+    expect![[r#"
+        ```php
+        class MyAttribute
+        ```"#]]
+    .assert_eq(&v);
+}
+
+#[tokio::test]
+async fn hover_attribute_with_args() {
+    // Cursor on attribute class name when the attribute has constructor arguments.
+    let mut s = TestServer::new().await;
+    let v = s
+        .check_hover(
+            r#"<?php
+class Route {
+    public function __construct(string $path) {}
+}
+
+#[Rou$0te('/api')]
+class Controller {}
+"#,
+        )
+        .await;
+    expect![[r#"
+        ```php
+        class Route
+        ```"#]]
+    .assert_eq(&v);
+}
+
+#[tokio::test]
+async fn hover_attribute_with_docblock() {
+    let mut s = TestServer::new().await;
+    let v = s
+        .check_hover(
+            r#"<?php
+/** Marks a class as a service container. */
+class Service {}
+
+#[Servi$0ce]
+class Mailer {}
+"#,
+        )
+        .await;
+    expect![[r#"
+        ```php
+        class Service
+        ```
+
+        ---
+
+        Marks a class as a service container."#]]
+    .assert_eq(&v);
+}
+
+#[tokio::test]
+async fn hover_attribute_via_use_alias() {
+    let mut s = TestServer::new().await;
+    let v = s
+        .check_hover(
+            r#"<?php
+class Route {}
+use Route as HttpRoute;
+
+#[HttpRou$0te]
+class Api {}
+"#,
+        )
+        .await;
+    // Resolves alias → Route
+    expect![[r#"
+        ```php
+        class Route
+        ```"#]]
+    .assert_eq(&v);
+}
+
+// ── 2.2 Named argument hover ──────────────────────────────────────────────────
+
+#[tokio::test]
+async fn hover_named_arg_builtin_function() {
+    // PHP 8.0 named arg on a user-defined function matching a known param name.
+    let mut s = TestServer::new().await;
+    let v = s
+        .check_hover(
+            r#"<?php
+function greet(string $name, int $count = 1): string { return $name; }
+greet(coun$0t: 3);
+"#,
+        )
+        .await;
+    expect![[r#"
+        ```php
+        (parameter) int $count = 1
+        ```"#]]
+    .assert_eq(&v);
+}
+
+#[tokio::test]
+async fn hover_named_arg_with_docblock() {
+    let mut s = TestServer::new().await;
+    let v = s
+        .check_hover(
+            r#"<?php
+/**
+ * @param string $name The user's name.
+ * @param int $age  The user's age.
+ */
+function register(string $name, int $age): void {}
+register(na$0me: 'Alice', age: 30);
+"#,
+        )
+        .await;
+    expect![[r#"
+        ```php
+        (parameter) string $name
+        ```
+
+        ---
+
+        The user's name."#]]
+    .assert_eq(&v);
+}
+
+#[tokio::test]
+async fn hover_named_arg_method_call() {
+    let mut s = TestServer::new().await;
+    let v = s
+        .check_hover(
+            r#"<?php
+class Mailer {
+    public function send(string $to, string $subject): bool { return true; }
+}
+$m = new Mailer();
+$m->send(subje$0ct: 'Hello', to: 'a@b.com');
+"#,
+        )
+        .await;
+    expect![[r#"
+        ```php
+        (parameter) string $subject
+        ```"#]]
+    .assert_eq(&v);
+}
+
+#[tokio::test]
+async fn hover_named_arg_static_method() {
+    let mut s = TestServer::new().await;
+    let v = s
+        .check_hover(
+            r#"<?php
+class DB {
+    public static function query(string $sql, int $limit = 100): array { return []; }
+}
+DB::query(lim$0it: 10);
+"#,
+        )
+        .await;
+    expect![[r#"
+        ```php
+        (parameter) int $limit = 100
+        ```"#]]
+    .assert_eq(&v);
+}
+
+#[tokio::test]
+async fn hover_named_arg_nested_call() {
+    // Named arg inside a nested function call — cursor on inner call's arg.
+    let mut s = TestServer::new().await;
+    let v = s
+        .check_hover(
+            r#"<?php
+function outer(string $a): string { return $a; }
+function inner(int $x): int { return $x; }
+outer(a: inner(x$0: 1));
+"#,
+        )
+        .await;
+    expect![[r#"
+        ```php
+        (parameter) int $x
+        ```"#]]
+    .assert_eq(&v);
+}
+
+// ── 2.3 Closure / arrow function hover ───────────────────────────────────────
+
+#[tokio::test]
+async fn hover_closure_keyword() {
+    let mut s = TestServer::new().await;
+    let v = s
+        .check_hover(r#"<?php $fn = fun$0ction(int $x, string $y): bool { return true; };"#)
+        .await;
+    expect![[r#"
+        ```php
+        function(int $x, string $y): bool
+        ```"#]]
+    .assert_eq(&v);
+}
+
+#[tokio::test]
+async fn hover_arrow_function_keyword() {
+    let mut s = TestServer::new().await;
+    let v = s
+        .check_hover(r#"<?php $f = f$0n(int $a): string => 'hello';"#)
+        .await;
+    expect![[r#"
+        ```php
+        fn(int $a): string
+        ```"#]]
+    .assert_eq(&v);
+}
+
+#[tokio::test]
+async fn hover_closure_no_params_no_return() {
+    let mut s = TestServer::new().await;
+    let v = s
+        .check_hover(r#"<?php $fn = fun$0ction() { return 1; };"#)
+        .await;
+    expect![[r#"
+        ```php
+        function()
+        ```"#]]
+    .assert_eq(&v);
+}
+
+#[tokio::test]
+async fn hover_closure_as_argument() {
+    // Cursor on `function` keyword passed as a callback argument.
+    let mut s = TestServer::new().await;
+    let v = s
+        .check_hover(
+            r#"<?php
+function apply(callable $fn): void {}
+apply(fun$0ction(int $n): int { return $n * 2; });
+"#,
+        )
+        .await;
+    expect![[r#"
+        ```php
+        function(int $n): int
+        ```"#]]
+    .assert_eq(&v);
+}
+
+#[tokio::test]
+async fn hover_named_function_keyword_not_intercepted() {
+    // Hovering the `function` keyword in a named declaration (not a closure)
+    // should not trigger the closure hover — returns nothing for the keyword itself.
+    // Hover on the function *name* (not keyword) to get the signature.
+    let mut s = TestServer::new().await;
+    let v = s.check_hover(r#"<?php fun$0ction greet(): void {}"#).await;
+    expect!["<no hover>"].assert_eq(&v);
+}
+
+#[tokio::test]
+async fn hover_closure_inside_if_body() {
+    // Closure nested inside an if body — the walker must recurse into if branches.
+    let mut s = TestServer::new().await;
+    let v = s
+        .check_hover(
+            r#"<?php
+if (true) {
+    $fn = fun$0ction(int $x): string { return (string) $x; };
+}
+"#,
+        )
+        .await;
+    expect![[r#"
+        ```php
+        function(int $x): string
+        ```"#]]
+    .assert_eq(&v);
+}

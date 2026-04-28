@@ -109,6 +109,31 @@ pub fn hover_at(
         }
     }
 
+    // Named argument hover: `foo(label: $x)` — hovering the label shows the
+    // parameter type and description.
+    if let Some(line_text) = source.lines().nth(position.line as usize)
+        && !word.starts_with('$')
+        && is_named_arg_at(line_text, position.character as usize, &word)
+        && let Some(callee) = extract_named_arg_callee(line_text, position.character as usize)
+        && let Some(value) = named_arg_hover_value(
+            source,
+            doc,
+            doc_returns,
+            other_docs,
+            position,
+            &callee,
+            &word,
+        )
+    {
+        return Some(Hover {
+            contents: HoverContents::Markup(MarkupContent {
+                kind: MarkupKind::Markdown,
+                value,
+            }),
+            range: hover_range,
+        });
+    }
+
     // TypeMap is expensive; build lazily and reuse across branches.
     let type_map_cell: OnceCell<TypeMap> = OnceCell::new();
     let type_map = || {
@@ -292,6 +317,21 @@ pub fn hover_at(
                 }
             }
         }
+    }
+
+    // Closure / arrow function hover: `function($x) {}` or `fn($x) => $x`.
+    // Must run before `scan_statements` so the keyword doesn't fall through to
+    // the named-function path (which won't find anything for an anonymous fn).
+    if (word == "function" || word == "fn")
+        && let Some(sig) = closure_hover(source, doc, position, &word)
+    {
+        return Some(Hover {
+            contents: HoverContents::Markup(MarkupContent {
+                kind: MarkupKind::Markdown,
+                value: wrap_php(&sig),
+            }),
+            range: hover_range,
+        });
     }
 
     // Resolve use-import aliases: `use Foo\Bar as Baz` — hovering on `Baz`
@@ -1467,6 +1507,553 @@ fn find_method_docblock_impl<'a>(
         }
     }
     None
+}
+
+// ── Named argument hover ─────────────────────────────────────────────────────
+
+/// Callee kinds for named-argument hover lookup.
+enum NamedArgCallee {
+    Function(String),
+    Method(
+        String, /* receiver var */
+        String, /* method name */
+    ),
+    StaticMethod(
+        String, /* class or pseudo */
+        String, /* method name */
+    ),
+}
+
+/// Return true when the cursor word is a named-argument label: `foo(label: $x)`.
+///
+/// Guards: `::` after the word is a static access, not a named arg; lines that
+/// start with `case` are switch-case labels.
+fn is_named_arg_at(line: &str, cursor_col_utf16: usize, _word: &str) -> bool {
+    let trimmed = line.trim_start();
+    if trimmed.starts_with("case ") || trimmed.starts_with("case\t") {
+        return false;
+    }
+
+    let chars: Vec<char> = line.chars().collect();
+    let mut utf16 = 0usize;
+    let mut char_idx = 0usize;
+    for ch in &chars {
+        if utf16 >= cursor_col_utf16 {
+            break;
+        }
+        utf16 += ch.len_utf16();
+        char_idx += 1;
+    }
+    // Advance past the word.
+    let is_word_char = |c: char| c.is_alphanumeric() || c == '_';
+    while char_idx < chars.len() && is_word_char(chars[char_idx]) {
+        char_idx += 1;
+    }
+    // Must be followed by `:` but not `::`.
+    char_idx < chars.len()
+        && chars[char_idx] == ':'
+        && !(char_idx + 1 < chars.len() && chars[char_idx + 1] == ':')
+}
+
+/// Scan backward from `cursor_col_utf16` (which is within the named-arg label
+/// word) to find the opening `(` of the enclosing function call, then extract
+/// the callee information from the text before that `(`.
+fn extract_named_arg_callee(line: &str, cursor_col_utf16: usize) -> Option<NamedArgCallee> {
+    let chars: Vec<char> = line.chars().collect();
+
+    // Convert cursor position to char index.
+    let mut utf16 = 0usize;
+    let mut char_idx = 0usize;
+    for ch in &chars {
+        if utf16 >= cursor_col_utf16 {
+            break;
+        }
+        utf16 += ch.len_utf16();
+        char_idx += 1;
+    }
+    // Back up to the start of the word.
+    let is_word_char = |c: char| c.is_alphanumeric() || c == '_';
+    while char_idx > 0 && is_word_char(chars[char_idx - 1]) {
+        char_idx -= 1;
+    }
+
+    // Scan backward through balanced parens to find the enclosing `(`.
+    let mut depth = 0i32;
+    let mut i = char_idx;
+    while i > 0 {
+        i -= 1;
+        match chars[i] {
+            ')' | ']' => depth += 1,
+            '(' => {
+                if depth == 0 {
+                    return callee_from_chars_before(&chars[..i]);
+                }
+                depth -= 1;
+            }
+            '[' => {
+                if depth == 0 {
+                    return None; // Inside array, not a call.
+                }
+                depth -= 1;
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Extract the callee from the characters immediately before the opening `(`.
+fn callee_from_chars_before(chars: &[char]) -> Option<NamedArgCallee> {
+    let is_name_char = |c: char| c.is_alphanumeric() || c == '_';
+    let end = chars.len()
+        - chars
+            .iter()
+            .rev()
+            .take_while(|&&c| c == ' ' || c == '\t')
+            .count();
+    if end == 0 {
+        return None;
+    }
+    let mut start = end;
+    while start > 0 && is_name_char(chars[start - 1]) {
+        start -= 1;
+    }
+    if start == end {
+        return None;
+    }
+    let name: String = chars[start..end].iter().collect();
+
+    if start >= 2 && chars[start - 2] == '-' && chars[start - 1] == '>' {
+        // Instance method: `$obj->method(`
+        let receiver = extract_name_from_chars_end(&chars[..start - 2])?;
+        Some(NamedArgCallee::Method(receiver, name))
+    } else if start >= 3
+        && chars[start - 3] == '?'
+        && chars[start - 2] == '-'
+        && chars[start - 1] == '>'
+    {
+        // Nullsafe: `$obj?->method(`
+        let receiver = extract_name_from_chars_end(&chars[..start - 3])?;
+        Some(NamedArgCallee::Method(receiver, name))
+    } else if start >= 2 && chars[start - 2] == ':' && chars[start - 1] == ':' {
+        // Static: `ClassName::method(`
+        let is_class_char = |c: char| c.is_alphanumeric() || c == '_' || c == '\\';
+        let cls_end = start - 2;
+        let cls_end_trimmed = cls_end
+            - chars[..cls_end]
+                .iter()
+                .rev()
+                .take_while(|&&c| c == ' ' || c == '\t')
+                .count();
+        let mut cls_start = cls_end_trimmed;
+        while cls_start > 0 && is_class_char(chars[cls_start - 1]) {
+            cls_start -= 1;
+        }
+        if cls_start == cls_end_trimmed {
+            return None;
+        }
+        let full_class: String = chars[cls_start..cls_end_trimmed].iter().collect();
+        let short = full_class
+            .rsplit('\\')
+            .next()
+            .unwrap_or(&full_class)
+            .to_owned();
+        Some(NamedArgCallee::StaticMethod(short, name))
+    } else {
+        Some(NamedArgCallee::Function(name))
+    }
+}
+
+/// Build the hover string for a named argument label.
+///
+/// Returns `None` when the callee or matching parameter cannot be found.
+fn named_arg_hover_value(
+    source: &str,
+    doc: &ParsedDoc,
+    doc_returns: &MethodReturnsMap,
+    other_docs: &[(
+        tower_lsp::lsp_types::Url,
+        std::sync::Arc<crate::ast::ParsedDoc>,
+        std::sync::Arc<crate::ast::MethodReturnsMap>,
+    )],
+    position: Position,
+    callee: &NamedArgCallee,
+    label: &str,
+) -> Option<String> {
+    let all_docs = || std::iter::once(doc).chain(other_docs.iter().map(|(_, d, _)| d.as_ref()));
+
+    match callee {
+        NamedArgCallee::Function(name) => {
+            for d in all_docs() {
+                if let Some((sig, db)) =
+                    find_param_sig_in_stmts(d.source(), &d.program().stmts, name, None, label)
+                {
+                    return Some(format_named_param_hover(&sig, db.as_ref(), label));
+                }
+            }
+            None
+        }
+        NamedArgCallee::Method(receiver_var, method_name) => {
+            let type_map = crate::type_map::TypeMap::from_docs_at_position(
+                doc,
+                doc_returns,
+                other_docs.iter().map(|(_, d, r)| (d.as_ref(), r.as_ref())),
+                None,
+                position,
+            );
+            let class_name = if receiver_var == "$this" {
+                crate::type_map::enclosing_class_at(source, doc, position)
+                    .or_else(|| type_map.get(receiver_var).map(|s| s.to_string()))
+            } else {
+                type_map.get(receiver_var.as_str()).map(|s| s.to_string())
+            }?;
+            let first_class = class_name
+                .split('|')
+                .next()
+                .unwrap_or(&class_name)
+                .to_owned();
+            for d in all_docs() {
+                if let Some((sig, db)) = find_param_sig_in_stmts(
+                    d.source(),
+                    &d.program().stmts,
+                    method_name,
+                    Some(&first_class),
+                    label,
+                ) {
+                    return Some(format_named_param_hover(&sig, db.as_ref(), label));
+                }
+            }
+            None
+        }
+        NamedArgCallee::StaticMethod(class_name, method_name) => {
+            let effective_class = if class_name == "self" || class_name == "static" {
+                crate::type_map::enclosing_class_at(source, doc, position)
+                    .unwrap_or_else(|| class_name.clone())
+            } else if class_name == "parent" {
+                crate::type_map::enclosing_class_at(source, doc, position)
+                    .and_then(|enc| find_parent_class_name(&doc.program().stmts, &enc))
+                    .unwrap_or_else(|| class_name.clone())
+            } else {
+                class_name.clone()
+            };
+            for d in all_docs() {
+                if let Some((sig, db)) = find_param_sig_in_stmts(
+                    d.source(),
+                    &d.program().stmts,
+                    method_name,
+                    Some(&effective_class),
+                    label,
+                ) {
+                    return Some(format_named_param_hover(&sig, db.as_ref(), label));
+                }
+            }
+            None
+        }
+    }
+}
+
+/// Walk the AST to find the parameter signature and docblock for a named argument.
+///
+/// `class_name = None` means a free function; `Some(name)` means a method of
+/// that class.
+fn find_param_sig_in_stmts(
+    source: &str,
+    stmts: &[Stmt<'_, '_>],
+    callee_name: &str,
+    class_name: Option<&str>,
+    label: &str,
+) -> Option<(String, Option<crate::docblock::Docblock>)> {
+    for stmt in stmts {
+        match &stmt.kind {
+            StmtKind::Function(f) if class_name.is_none() && f.name == callee_name => {
+                let param = f.params.iter().find(|p| p.name == label)?;
+                let sig = format_single_param(param);
+                let db = crate::docblock::docblock_before(source, stmt.span.start)
+                    .map(|raw| crate::docblock::parse_docblock(&raw));
+                return Some((sig, db));
+            }
+            StmtKind::Class(c) if class_name == c.name => {
+                for member in c.members.iter() {
+                    if let ClassMemberKind::Method(m) = &member.kind
+                        && m.name == callee_name
+                    {
+                        let param = m.params.iter().find(|p| p.name == label)?;
+                        let sig = format_single_param(param);
+                        let db = crate::docblock::docblock_before(source, member.span.start)
+                            .map(|raw| crate::docblock::parse_docblock(&raw));
+                        return Some((sig, db));
+                    }
+                }
+            }
+            StmtKind::Trait(t) if class_name == Some(t.name) => {
+                for member in t.members.iter() {
+                    if let ClassMemberKind::Method(m) = &member.kind
+                        && m.name == callee_name
+                    {
+                        let param = m.params.iter().find(|p| p.name == label)?;
+                        let sig = format_single_param(param);
+                        let db = crate::docblock::docblock_before(source, member.span.start)
+                            .map(|raw| crate::docblock::parse_docblock(&raw));
+                        return Some((sig, db));
+                    }
+                }
+            }
+            StmtKind::Namespace(ns) => {
+                if let NamespaceBody::Braced(inner) = &ns.body
+                    && let Some(r) =
+                        find_param_sig_in_stmts(source, inner, callee_name, class_name, label)
+                {
+                    return Some(r);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn format_single_param(p: &Param<'_, '_>) -> String {
+    let mut s = String::new();
+    if let Some(t) = &p.type_hint {
+        s.push_str(&format_type_hint(t));
+        s.push(' ');
+    }
+    if p.variadic {
+        s.push_str("...");
+    }
+    s.push('$');
+    s.push_str(p.name);
+    if let Some(default) = &p.default {
+        s.push_str(&format!(" = {}", format_default_value(default)));
+    }
+    s
+}
+
+fn format_named_param_hover(
+    sig: &str,
+    db: Option<&crate::docblock::Docblock>,
+    label: &str,
+) -> String {
+    let mut value = wrap_php(&format!("(parameter) {}", sig));
+    // Include the @param description for this parameter from the docblock.
+    if let Some(db) = db {
+        let matching_param = db.params.iter().find(|p| {
+            p.name == label
+                || p.name == format!("${}", label)
+                || p.name.trim_start_matches('$') == label
+        });
+        if let Some(param) = matching_param
+            && !param.description.is_empty()
+        {
+            value.push_str(&format!("\n\n---\n\n{}", param.description));
+        }
+    }
+    value
+}
+
+// ── Closure / arrow function hover ───────────────────────────────────────────
+
+/// Hover for the `function` or `fn` keyword when used as a closure or arrow
+/// function expression.  Returns `None` when the keyword belongs to a named
+/// function declaration (already handled by `scan_statements`).
+fn closure_hover(source: &str, doc: &ParsedDoc, position: Position, word: &str) -> Option<String> {
+    // Compute cursor byte offset the same way TypeMap does.
+    let line_starts = doc.line_starts();
+    let line = position.line as usize;
+    let line_start = *line_starts.get(line)? as usize;
+    let col_byte =
+        crate::util::utf16_offset_to_byte(&source[line_start..], position.character as usize);
+    let cursor_byte = (line_start + col_byte) as u32;
+
+    find_closure_in_stmts(source, &doc.program().stmts, cursor_byte, word.len() as u32)
+}
+
+/// Recursively walk statements and their expressions looking for a closure
+/// or arrow function whose span starts within `[cursor_byte, cursor_byte + word_len]`.
+fn find_closure_in_stmts(
+    source: &str,
+    stmts: &[Stmt<'_, '_>],
+    cursor_byte: u32,
+    word_len: u32,
+) -> Option<String> {
+    for stmt in stmts {
+        if let Some(sig) = find_closure_in_stmt(source, stmt, cursor_byte, word_len) {
+            return Some(sig);
+        }
+    }
+    None
+}
+
+fn find_closure_in_stmt(
+    source: &str,
+    stmt: &Stmt<'_, '_>,
+    cursor_byte: u32,
+    word_len: u32,
+) -> Option<String> {
+    // Quick span filter: skip statements that don't contain the cursor.
+    if stmt.span.end < cursor_byte || stmt.span.start > cursor_byte + word_len {
+        return None;
+    }
+    match &stmt.kind {
+        StmtKind::Expression(expr) | StmtKind::Throw(expr) => {
+            find_closure_in_expr(source, expr, cursor_byte, word_len)
+        }
+        StmtKind::Return(Some(expr)) => find_closure_in_expr(source, expr, cursor_byte, word_len),
+        StmtKind::Function(f) => find_closure_in_stmts(source, &f.body, cursor_byte, word_len),
+        StmtKind::Class(c) => {
+            for member in c.members.iter() {
+                if let ClassMemberKind::Method(m) = &member.kind
+                    && let Some(body) = &m.body
+                    && let Some(sig) = find_closure_in_stmts(source, body, cursor_byte, word_len)
+                {
+                    return Some(sig);
+                }
+            }
+            None
+        }
+        StmtKind::Namespace(ns) => {
+            if let NamespaceBody::Braced(inner) = &ns.body {
+                find_closure_in_stmts(source, inner, cursor_byte, word_len)
+            } else {
+                None
+            }
+        }
+        StmtKind::Block(inner) => find_closure_in_stmts(source, inner, cursor_byte, word_len),
+        StmtKind::If(i) => {
+            if let Some(sig) = find_closure_in_expr(source, &i.condition, cursor_byte, word_len)
+                .or_else(|| find_closure_in_stmt(source, i.then_branch, cursor_byte, word_len))
+            {
+                return Some(sig);
+            }
+            for ei in i.elseif_branches.iter() {
+                if let Some(sig) =
+                    find_closure_in_expr(source, &ei.condition, cursor_byte, word_len)
+                        .or_else(|| find_closure_in_stmt(source, &ei.body, cursor_byte, word_len))
+                {
+                    return Some(sig);
+                }
+            }
+            if let Some(e) = &i.else_branch {
+                find_closure_in_stmt(source, e, cursor_byte, word_len)
+            } else {
+                None
+            }
+        }
+        StmtKind::While(w) => find_closure_in_expr(source, &w.condition, cursor_byte, word_len)
+            .or_else(|| find_closure_in_stmt(source, w.body, cursor_byte, word_len)),
+        StmtKind::DoWhile(d) => find_closure_in_stmt(source, d.body, cursor_byte, word_len)
+            .or_else(|| find_closure_in_expr(source, &d.condition, cursor_byte, word_len)),
+        StmtKind::For(f) => {
+            for e in f.init.iter() {
+                if let Some(sig) = find_closure_in_expr(source, e, cursor_byte, word_len) {
+                    return Some(sig);
+                }
+            }
+            for e in f.condition.iter() {
+                if let Some(sig) = find_closure_in_expr(source, e, cursor_byte, word_len) {
+                    return Some(sig);
+                }
+            }
+            for e in f.update.iter() {
+                if let Some(sig) = find_closure_in_expr(source, e, cursor_byte, word_len) {
+                    return Some(sig);
+                }
+            }
+            find_closure_in_stmt(source, f.body, cursor_byte, word_len)
+        }
+        StmtKind::Foreach(f) => find_closure_in_expr(source, &f.expr, cursor_byte, word_len)
+            .or_else(|| find_closure_in_stmt(source, f.body, cursor_byte, word_len)),
+        StmtKind::TryCatch(t) => {
+            if let Some(sig) = find_closure_in_stmts(source, &t.body, cursor_byte, word_len) {
+                return Some(sig);
+            }
+            for catch in t.catches.iter() {
+                if let Some(sig) = find_closure_in_stmts(source, &catch.body, cursor_byte, word_len)
+                {
+                    return Some(sig);
+                }
+            }
+            if let Some(finally) = &t.finally {
+                find_closure_in_stmts(source, finally, cursor_byte, word_len)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+fn find_closure_in_expr(
+    source: &str,
+    expr: &php_ast::Expr<'_, '_>,
+    cursor_byte: u32,
+    word_len: u32,
+) -> Option<String> {
+    if expr.span.end < cursor_byte || expr.span.start > cursor_byte + word_len {
+        return None;
+    }
+    match &expr.kind {
+        ExprKind::Closure(c) if c_span_matches(expr.span.start, cursor_byte, word_len) => {
+            let params = format_params(&c.params);
+            let ret = c
+                .return_type
+                .as_ref()
+                .map(|r| format!(": {}", format_type_hint(r)))
+                .unwrap_or_default();
+            let static_kw = if c.is_static { "static " } else { "" };
+            Some(format!("{}function({}){}", static_kw, params, ret))
+        }
+        ExprKind::ArrowFunction(af) if c_span_matches(expr.span.start, cursor_byte, word_len) => {
+            let params = format_params(&af.params);
+            let ret = af
+                .return_type
+                .as_ref()
+                .map(|r| format!(": {}", format_type_hint(r)))
+                .unwrap_or_default();
+            let static_kw = if af.is_static { "static " } else { "" };
+            Some(format!("{}fn({}){}", static_kw, params, ret))
+        }
+        ExprKind::Assign(a) => find_closure_in_expr(source, a.value, cursor_byte, word_len),
+        ExprKind::FunctionCall(fc) => {
+            if let Some(sig) = find_closure_in_expr(source, fc.name, cursor_byte, word_len) {
+                return Some(sig);
+            }
+            for arg in fc.args.iter() {
+                if let Some(sig) = find_closure_in_expr(source, &arg.value, cursor_byte, word_len) {
+                    return Some(sig);
+                }
+            }
+            None
+        }
+        ExprKind::MethodCall(mc) => {
+            for arg in mc.args.iter() {
+                if let Some(sig) = find_closure_in_expr(source, &arg.value, cursor_byte, word_len) {
+                    return Some(sig);
+                }
+            }
+            None
+        }
+        ExprKind::StaticMethodCall(smc) => {
+            for arg in smc.args.iter() {
+                if let Some(sig) = find_closure_in_expr(source, &arg.value, cursor_byte, word_len) {
+                    return Some(sig);
+                }
+            }
+            None
+        }
+        ExprKind::Parenthesized(inner) => {
+            find_closure_in_expr(source, inner, cursor_byte, word_len)
+        }
+        _ => None,
+    }
+}
+
+/// Return true when `span_start` is close enough to `cursor_byte` to be the
+/// keyword the user is hovering.  The span starts at the first character of the
+/// keyword (`function`/`fn`).
+#[inline]
+fn c_span_matches(span_start: u32, cursor_byte: u32, word_len: u32) -> bool {
+    span_start <= cursor_byte && cursor_byte < span_start + word_len + 2
 }
 
 #[cfg(test)]
