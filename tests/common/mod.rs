@@ -15,6 +15,6 @@ mod server;
 pub use client::TestClient;
 pub use render::{
     canonicalize_workspace_edit, render_document_symbols, render_hover, render_inlay_hints,
-    render_workspace_symbols,
+    render_locations, render_workspace_symbols,
 };
 pub use server::{OpenedFixture, TestServer};

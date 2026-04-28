@@ -197,7 +197,7 @@ pub fn render_workspace_symbols(resp: &Value, root_uri: &str) -> String {
 /// Render a `Location[]` / `Location` / `LocationLink[]` response as sorted
 /// `path:line:col-line:col` lines. Unknown / null results produce
 /// `<none>` for readability.
-pub(crate) fn render_locations(resp: &Value, root_uri: &str) -> String {
+pub fn render_locations(resp: &Value, root_uri: &str) -> String {
     if let Some(err) = resp.get("error").filter(|e| !e.is_null()) {
         return format!("error: {err}");
     }
