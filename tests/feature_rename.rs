@@ -83,6 +83,68 @@ enum Status {
     .assert_eq(&out);
 }
 
+/// Regression: renaming a variable parameter in an interface method previously
+/// produced zero edits because collect_in_fn_at gated param collection inside
+/// `if let Some(body)`, but interface methods have no body.
+#[tokio::test]
+async fn rename_variable_interface_method_param() {
+    let mut s = TestServer::new().await;
+    let out = s
+        .check_rename(
+            r#"<?php
+interface Logger {
+    public function log($mes$0sage): void;
+}
+"#,
+            "$msg",
+        )
+        .await;
+    expect![[r#"
+        // main.php
+        2:24-2:32 → "$msg""#]]
+    .assert_eq(&out);
+}
+
+/// Regression: same bug as above but for abstract class methods.
+#[tokio::test]
+async fn rename_variable_abstract_class_method_param() {
+    let mut s = TestServer::new().await;
+    let out = s
+        .check_rename(
+            r#"<?php
+abstract class Processor {
+    abstract public function process($in$0put): string;
+}
+"#,
+            "$data",
+        )
+        .await;
+    expect![[r#"
+        // main.php
+        2:37-2:43 → "$data""#]]
+    .assert_eq(&out);
+}
+
+/// Regression: same bug as above but for abstract trait methods.
+#[tokio::test]
+async fn rename_variable_abstract_trait_method_param() {
+    let mut s = TestServer::new().await;
+    let out = s
+        .check_rename(
+            r#"<?php
+trait Formattable {
+    abstract public function format($da$0ta): string;
+}
+"#,
+            "$input",
+        )
+        .await;
+    expect![[r#"
+        // main.php
+        2:36-2:41 → "$input""#]]
+    .assert_eq(&out);
+}
+
 #[tokio::test]
 async fn rename_class_updates_new_sites() {
     let mut s = TestServer::new().await;

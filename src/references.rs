@@ -91,7 +91,7 @@ pub fn find_constructor_references(
     all_docs: &[(Url, Arc<ParsedDoc>)],
     class_fqn: Option<&str>,
 ) -> Vec<Location> {
-    let class_utf16_len: u32 = short_name.chars().map(|c| c.len_utf16() as u32).sum();
+    let _class_utf16_len: u32 = short_name.chars().map(|c| c.len_utf16() as u32).sum();
     all_docs
         .par_iter()
         .flat_map_iter(|(uri, doc)| {
@@ -111,10 +111,7 @@ pub fn find_constructor_references(
                 .into_iter()
                 .map(|span| {
                     let start = sv.position_of(span.start);
-                    let end = Position {
-                        line: start.line,
-                        character: start.character + class_utf16_len,
-                    };
+                    let end = sv.position_of(span.end);
                     Location {
                         uri: uri.clone(),
                         range: Range { start, end },

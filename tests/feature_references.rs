@@ -8,6 +8,7 @@
 mod common;
 
 use common::TestServer;
+use expect_test::expect;
 use serde_json::Value;
 
 fn lines_of(locs: &[Value]) -> Vec<u32> {
@@ -956,4 +957,31 @@ foo(); foo();
         locs2.len(),
         "repeated references calls returned different counts"
     );
+}
+
+/// Regression: constructor references via FQN (`new \App\Widget()`) produced a
+/// range covering only `short_name.len()` characters from the `\` in `\App\Widget`,
+/// i.e. `\App\W` instead of the full `\App\Widget`.
+#[tokio::test]
+async fn references_constructor_fqn_range_covers_full_name() {
+    let mut s = TestServer::new().await;
+    let out = s
+        .check_references(
+            r#"//- /Widget.php
+<?php
+namespace App;
+class Widget {
+    public function __con$0struct() {}
+}
+
+//- /main.php
+<?php
+$w = new \App\Widget();
+"#,
+        )
+        .await;
+    expect![[r#"
+        Widget.php:3:25-3:36
+        main.php:1:9-1:20"#]]
+    .assert_eq(&out);
 }

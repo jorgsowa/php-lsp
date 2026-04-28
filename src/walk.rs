@@ -240,12 +240,12 @@ fn collect_in_fn_at(
                                 return true;
                             }
                         }
-                        for p in m.params.iter() {
-                            if p.name == var_name {
-                                out.push(p.span);
-                            }
-                        }
                         var_refs_in_stmts(body, var_name, out);
+                    }
+                    for p in m.params.iter() {
+                        if p.name == var_name {
+                            out.push(p.span);
+                        }
                     }
                     return true;
                 }
@@ -265,12 +265,12 @@ fn collect_in_fn_at(
                                 return true;
                             }
                         }
-                        for p in m.params.iter() {
-                            if p.name == var_name {
-                                out.push(p.span);
-                            }
-                        }
                         var_refs_in_stmts(body, var_name, out);
+                    }
+                    for p in m.params.iter() {
+                        if p.name == var_name {
+                            out.push(p.span);
+                        }
                     }
                     return true;
                 }
@@ -315,12 +315,12 @@ fn collect_in_fn_at(
                                 return true;
                             }
                         }
-                        for p in m.params.iter() {
-                            if p.name == var_name {
-                                out.push(p.span);
-                            }
-                        }
                         var_refs_in_stmts(body, var_name, out);
+                    }
+                    for p in m.params.iter() {
+                        if p.name == var_name {
+                            out.push(p.span);
+                        }
                     }
                     return true;
                 }
