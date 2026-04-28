@@ -6,6 +6,7 @@ description = "A PHP Language Server Protocol implementation"
 license = "MIT"
 repository = "https://github.com/jorgsowa/php-lsp"
 readme = "README.md"
+exclude = ["docs/"]
 
 [lib]
 name = "php_lsp"
