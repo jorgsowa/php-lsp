@@ -261,7 +261,7 @@ pub fn render_hover(resp: &Value) -> String {
         .join("\n")
 }
 
-pub(crate) fn render_completion(resp: &Value) -> String {
+pub fn render_completion(resp: &Value) -> String {
     if let Some(err) = resp.get("error").filter(|e| !e.is_null()) {
         return format!("error: {err}");
     }

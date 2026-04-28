@@ -6,7 +6,7 @@
 
 mod common;
 
-use common::TestServer;
+use common::{TestServer, render_completion};
 use expect_test::expect;
 
 async fn labels(s: &mut TestServer, src: &str) -> Vec<String> {
@@ -581,5 +581,202 @@ class Timer {
         Method      reset
         Method      run
         Method      tick"#]]
+    .assert_eq(&out);
+}
+
+// ── Attribute completion filtering ───────────────────────────────────────────
+
+/// `#[` must only offer classes that carry `#[\Attribute]` — a plain class
+/// without it must not appear.
+#[tokio::test]
+async fn completion_attribute_bracket_excludes_non_attribute_classes() {
+    let mut s = TestServer::new().await;
+    let out = s
+        .check_completion(
+            r#"<?php
+#[\Attribute]
+class MyRoute {}
+
+class PlainClass {}
+
+#[$0
+"#,
+        )
+        .await;
+    expect![[r#"
+        Class       MyRoute"#]]
+    .assert_eq(&out);
+}
+
+/// Cross-file: a class in another file that carries `#[\Attribute]` must appear,
+/// while one that doesn't must be excluded.
+#[tokio::test]
+async fn completion_attribute_bracket_cross_file_filters_non_attributes() {
+    let mut s = TestServer::new().await;
+    let out = s
+        .check_completion(
+            r#"//- /src/attrs.php
+<?php
+#[\Attribute]
+class ValidAttr {}
+
+class NotAnAttr {}
+
+//- /src/main.php
+<?php
+#[$0
+"#,
+        )
+        .await;
+    expect![[r#"
+        Class       ValidAttr"#]]
+    .assert_eq(&out);
+}
+
+/// `#[` on a class-level position must not offer method-only attributes
+/// (those with `TARGET_METHOD = 4` exclusively).
+/// The cursor is placed right after `#[`, with `class MyClass {}` on the next
+/// line, so the server can infer the attribute target context.
+#[tokio::test]
+async fn completion_attribute_bracket_target_filters_class_context() {
+    let mut s = TestServer::new().await;
+    let out = s
+        .check_completion(
+            r#"<?php
+#[\Attribute(\Attribute::TARGET_CLASS)]
+class ClassOnlyAttr {}
+
+#[\Attribute(\Attribute::TARGET_METHOD)]
+class MethodOnlyAttr {}
+
+#[\Attribute(\Attribute::TARGET_ALL)]
+class AnyAttr {}
+
+#[$0
+class MyClass {}
+"#,
+        )
+        .await;
+    // AnyAttr (63 & 1 ≠ 0) and ClassOnlyAttr (1 & 1 ≠ 0) pass;
+    // MethodOnlyAttr (4 & 1 = 0) is excluded.
+    expect![[r#"
+        Class       AnyAttr
+        Class       ClassOnlyAttr"#]]
+    .assert_eq(&out);
+}
+
+/// `#[` completions must exclude non-class symbols: interfaces, enums, and
+/// traits cannot carry `#[\Attribute]` so they must never appear.
+#[tokio::test]
+async fn completion_attribute_bracket_excludes_non_class_types() {
+    let mut s = TestServer::new().await;
+    let out = s
+        .check_completion(
+            r#"<?php
+#[\Attribute]
+class ValidAttr {}
+
+interface MyInterface {}
+enum MyEnum {}
+trait MyTrait {}
+
+#[$0
+"#,
+        )
+        .await;
+    expect![[r#"
+        Class       ValidAttr"#]]
+    .assert_eq(&out);
+}
+
+/// `#[` before a function must show METHOD-targeted attributes but exclude
+/// CLASS-only ones. Covers the `infer_attribute_target` branch returning `2|4`.
+#[tokio::test]
+async fn completion_attribute_bracket_target_filters_function_context() {
+    let mut s = TestServer::new().await;
+    let out = s
+        .check_completion(
+            r#"<?php
+#[\Attribute(\Attribute::TARGET_CLASS)]
+class ClassOnlyAttr {}
+
+#[\Attribute(\Attribute::TARGET_METHOD)]
+class MethodOnlyAttr {}
+
+#[\Attribute(\Attribute::TARGET_ALL)]
+class AnyAttr {}
+
+#[$0
+function doSomething(): void {}
+"#,
+        )
+        .await;
+    // AnyAttr (63 & 6 ≠ 0) and MethodOnlyAttr (4 & 6 ≠ 0) pass;
+    // ClassOnlyAttr (1 & 6 = 0) is excluded.
+    expect![[r#"
+        Class       AnyAttr
+        Class       MethodOnlyAttr"#]]
+    .assert_eq(&out);
+}
+
+/// Snapshot test: `#[` must return ONLY attribute classes — no keywords,
+/// built-ins, or plain classes leaking through.
+#[tokio::test]
+async fn completion_attribute_bracket_returns_only_attribute_classes() {
+    let mut s = TestServer::new().await;
+    let out = s
+        .check_completion(
+            r#"<?php
+#[\Attribute]
+class Middleware {}
+
+#[\Attribute]
+class MyRoute {}
+
+class PlainClass {}
+
+#[$0
+"#,
+        )
+        .await;
+    expect![[r#"
+        Class       Middleware
+        Class       MyRoute"#]]
+    .assert_eq(&out);
+}
+
+/// Trigger-character path (`triggerKind: 2`, `triggerCharacter: "["`) must
+/// also restrict completions to `#[\Attribute]`-annotated classes.
+#[tokio::test]
+async fn completion_attribute_bracket_trigger_char_filters_non_attributes() {
+    let mut s = TestServer::new().await;
+    let opened = s
+        .open_fixture(
+            r#"<?php
+#[\Attribute]
+class ValidAttr {}
+
+class NotAnAttr {}
+
+#[$0
+"#,
+        )
+        .await;
+    let c = opened.cursor().clone();
+    let uri = s.uri(&c.path);
+    let resp = s
+        .client()
+        .request(
+            "textDocument/completion",
+            serde_json::json!({
+                "textDocument": { "uri": uri },
+                "position": { "line": c.line, "character": c.character },
+                "context": { "triggerKind": 2, "triggerCharacter": "[" },
+            }),
+        )
+        .await;
+    let out = render_completion(&resp);
+    expect![[r#"
+        Class       ValidAttr"#]]
     .assert_eq(&out);
 }
