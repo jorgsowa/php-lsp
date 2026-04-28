@@ -13,7 +13,7 @@ use crate::walk::{
 
 /// Callback signature for the mir-codebase reference-lookup fast path:
 /// `(key) -> Vec<(file_uri, start_byte, end_byte)>`.
-pub type RefLookup<'a> = dyn Fn(&str) -> Vec<(Arc<str>, u32, u32)> + 'a;
+pub type RefLookup<'a> = dyn Fn(&str) -> Vec<(Arc<str>, u32, u16, u16)> + 'a;
 
 /// What kind of symbol the cursor is on.  Used to dispatch to the
 /// appropriate semantic walker so that, e.g., searching for `get` as a
@@ -181,19 +181,17 @@ pub fn find_references_codebase_with_target(
         .map(|(url, doc)| (url.as_str(), (url, doc)))
         .collect();
 
-    let spans_to_location = |file: &str, start: u32, end: u32| -> Option<Location> {
-        let (url, doc) = doc_map.get(file)?;
-        let sv = doc.view();
-        let start_pos = sv.position_of(start);
-        let end_pos = sv.position_of(end);
-        Some(Location {
-            uri: (*url).clone(),
-            range: Range {
-                start: start_pos,
-                end: end_pos,
-            },
-        })
-    };
+    let spans_to_location =
+        |file: &str, line: u32, col_start: u16, col_end: u16| -> Option<Location> {
+            let (url, _doc) = doc_map.get(file)?;
+            Some(Location {
+                uri: (*url).clone(),
+                range: Range {
+                    start: Position::new(line.saturating_sub(1), col_start as u32),
+                    end: Position::new(line.saturating_sub(1), col_end as u32),
+                },
+            })
+        };
 
     // Normalize: strip a single leading `\` from any fully-qualified target.
     let target_fqn = target_fqn.map(|t| t.trim_start_matches('\\'));
@@ -233,8 +231,8 @@ pub fn find_references_codebase_with_target(
             let mut call_site_count = 0usize;
             let mut locations: Vec<Location> = Vec::new();
             for fqn in &fqns {
-                for (file, start, end) in lookup_refs(fqn) {
-                    if let Some(loc) = spans_to_location(&file, start, end) {
+                for (file, line, col_start, col_end) in lookup_refs(fqn) {
+                    if let Some(loc) = spans_to_location(&file, line, col_start, col_end) {
                         locations.push(loc);
                         call_site_count += 1;
                     }
@@ -242,9 +240,21 @@ pub fn find_references_codebase_with_target(
                 if include_declaration
                     && let Some(func) = codebase.functions.get(fqn.as_ref())
                     && let Some(decl) = &func.location
-                    && let Some(loc) = spans_to_location(&decl.file, decl.start, decl.end)
+                    && let Ok(url) = Url::parse(&decl.file)
                 {
-                    locations.push(loc);
+                    locations.push(Location {
+                        uri: url,
+                        range: Range {
+                            start: Position::new(
+                                decl.line.saturating_sub(1),
+                                decl.col_start as u32,
+                            ),
+                            end: Position::new(
+                                decl.line_end.saturating_sub(1),
+                                decl.col_end as u32,
+                            ),
+                        },
+                    });
                 }
             }
             // If mir tracked no call sites for this FQN, the index may be
@@ -328,8 +338,8 @@ pub fn find_references_codebase_with_target(
                 let mut locations: Vec<Location> = Vec::new();
                 for owner in &owners {
                     let key = format!("{}::{}", owner, word_lower);
-                    for (file, start, end) in lookup_refs(&key) {
-                        if let Some(loc) = spans_to_location(&file, start, end) {
+                    for (file, line, col_start, col_end) in lookup_refs(&key) {
+                        if let Some(loc) = spans_to_location(&file, line, col_start, col_end) {
                             locations.push(loc);
                             call_site_count += 1;
                         }
@@ -459,7 +469,7 @@ pub fn find_references_codebase_with_target(
 
             // Collect candidate files from the reference index.
             for key in &method_keys {
-                for (file, _, _) in lookup_refs(key) {
+                for (file, _, _, _) in lookup_refs(key) {
                     candidate_arcs.push(file);
                 }
             }
@@ -1726,10 +1736,10 @@ mod tests {
             // user class (stubs have `location: None` and are skipped).
             location: Some(mir_codebase::storage::Location {
                 file: std::sync::Arc::from("file:///a.php"),
-                start: 0,
-                end: 0,
                 line: 1,
-                col: 0,
+                line_end: 1,
+                col_start: 0,
+                col_end: 0,
             }),
         }
     }
@@ -1746,8 +1756,9 @@ mod tests {
             "Foo",
             "process",
             std::sync::Arc::from("file:///a.php"),
-            10,
-            17,
+            3,
+            0,
+            7,
         );
 
         let src = "<?php\nclass Foo { public function process() {} }\n$foo->process();";
@@ -1782,8 +1793,9 @@ mod tests {
             "Foo",
             "execute",
             std::sync::Arc::from("file:///a.php"),
-            10,
-            17,
+            4,
+            0,
+            7,
         );
 
         // a.php: Foo with private execute + a call to $this->execute() inside the class.
@@ -1838,8 +1850,9 @@ mod tests {
             "Counter",
             "increment",
             std::sync::Arc::from("file:///a.php"),
-            10,
-            19,
+            6,
+            0,
+            9,
         );
 
         let src_a = "<?php\nfinal class Counter {\n    public function increment() {}\n}\n$c = new Counter();\n$c->increment();";
@@ -1889,8 +1902,9 @@ mod tests {
             "Order",
             "submit",
             std::sync::Arc::from("file:///caller.php"),
-            50,
-            56,
+            3,
+            0,
+            6,
         );
 
         // a.php: defines the final class (matches `make_class`'s synthetic

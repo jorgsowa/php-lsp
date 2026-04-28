@@ -21,8 +21,9 @@ use crate::db::parse::parsed_doc;
 #[derive(Debug, Clone)]
 pub struct FileRefRecord {
     pub key: Arc<str>,
-    pub start: u32,
-    pub end: u32,
+    pub line: u32,
+    pub col_start: u16,
+    pub col_end: u16,
 }
 
 #[derive(Clone)]
@@ -49,10 +50,10 @@ unsafe impl Update for FileRefsArc {
 }
 
 #[derive(Clone)]
-pub struct SymbolRefsArc(pub Arc<Vec<(Arc<str>, u32, u32)>>);
+pub struct SymbolRefsArc(pub Arc<Vec<(Arc<str>, u32, u16, u16)>>);
 
 impl SymbolRefsArc {
-    pub fn get(&self) -> &[(Arc<str>, u32, u32)] {
+    pub fn get(&self) -> &[(Arc<str>, u32, u16, u16)] {
         &self.0
     }
 }
@@ -104,10 +105,13 @@ pub fn file_refs(db: &dyn Database, ws: Workspace, file: SourceFile) -> FileRefs
         .into_iter()
         .filter_map(|s| {
             let key = s.codebase_key()?;
+            let (line, col_start) = map.offset_to_line_col(s.span.start).to_one_based();
+            let (_, col_end) = map.offset_to_line_col(s.span.end).to_one_based();
             Some(FileRefRecord {
                 key: Arc::from(key),
-                start: s.span.start,
-                end: s.span.end,
+                line,
+                col_start: col_start.saturating_sub(1) as u16,
+                col_end: col_end.saturating_sub(1) as u16,
             })
         })
         .collect();
@@ -120,13 +124,13 @@ pub fn file_refs(db: &dyn Database, ws: Workspace, file: SourceFile) -> FileRefs
 #[salsa::tracked(no_eq)]
 pub fn symbol_refs(db: &dyn Database, ws: Workspace, key: String) -> SymbolRefsArc {
     let files = ws.files(db);
-    let mut out: Vec<(Arc<str>, u32, u32)> = Vec::new();
+    let mut out: Vec<(Arc<str>, u32, u16, u16)> = Vec::new();
     for sf in files.iter() {
         let refs = file_refs(db, ws, *sf);
         let uri = sf.uri(db);
         for r in refs.get() {
             if r.key.as_ref() == key.as_str() {
-                out.push((uri.clone(), r.start, r.end));
+                out.push((uri.clone(), r.line, r.col_start, r.col_end));
             }
         }
     }
@@ -165,7 +169,7 @@ mod tests {
         );
 
         let locs = symbol_refs(host.db(), ws, "greet".to_string());
-        let found: Vec<&str> = locs.get().iter().map(|(u, _, _)| u.as_ref()).collect();
+        let found: Vec<&str> = locs.get().iter().map(|(u, _, _, _)| u.as_ref()).collect();
         assert!(
             found.iter().any(|u| *u == "file:///b.php"),
             "expected a reference from b.php, got {:?}",

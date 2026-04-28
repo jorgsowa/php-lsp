@@ -400,7 +400,7 @@ impl DocumentStore {
     /// `Codebase::get_reference_locations`. First call per `key` runs
     /// `file_refs` over every workspace file; subsequent calls hit the
     /// `symbol_refs` memo.
-    pub fn get_symbol_refs_salsa(&self, key: &str) -> Vec<(Arc<str>, u32, u32)> {
+    pub fn get_symbol_refs_salsa(&self, key: &str) -> Vec<(Arc<str>, u32, u16, u16)> {
         self.sync_workspace_files();
         let ws = self.workspace;
         let key = key.to_string();
@@ -1065,7 +1065,9 @@ mod tests {
         store.warm_reference_index();
         let refs_to_a = store.get_symbol_refs_salsa("a");
         assert!(
-            refs_to_a.iter().any(|(uri, _, _)| uri.contains("wb.php")),
+            refs_to_a
+                .iter()
+                .any(|(uri, _, _, _)| uri.contains("wb.php")),
             "reference to a() from /wb.php should be discoverable after warm-up, got {refs_to_a:?}"
         );
     }

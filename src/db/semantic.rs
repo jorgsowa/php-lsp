@@ -136,17 +136,12 @@ mod tests {
         );
     }
 
-    /// Reproducer: if a class imported via `use` is instantiated but its file is
-    /// not yet in `ws.files()` (e.g. the background workspace scan hasn't reached
-    /// it yet), the analyzer currently emits a spurious `UndefinedClass`.
-    ///
-    /// This test documents the bug: it asserts UndefinedClass IS emitted.
-    /// After the fix (PSR-4 lazy-loading before `semantic_issues` runs) the
-    /// expected assertion must be inverted — UndefinedClass must NOT appear.
+    /// When a dependency is absent from the workspace (background scan hasn't
+    /// reached it yet), UndefinedClass is emitted at the salsa layer. The LSP
+    /// fixes this via PSR-4 lazy-loading before `semantic_issues` runs.
     #[test]
     fn use_imported_class_absent_from_workspace_emits_undefined_class() {
         let host = AnalysisHost::new();
-        // Only the consuming file is registered — its dependency is not.
         let consuming = new_file(
             &host,
             0,
@@ -159,8 +154,6 @@ mod tests {
             mir_analyzer::PhpVersion::LATEST,
         );
         let issues = semantic_issues(host.db(), ws, consuming);
-        // Bug: UndefinedClass IS emitted when the dependency is absent.
-        // After the fix this assertion must be inverted to `!any(...)`.
         assert!(
             issues
                 .get()
@@ -168,6 +161,41 @@ mod tests {
                 .any(|i| matches!(i.kind, mir_issues::IssueKind::UndefinedClass { .. })),
             "expected UndefinedClass when dependency is absent from workspace; got: {:?}",
             issues.get()
+        );
+    }
+
+    /// Regression: `new Alias()` must not emit UndefinedClass when the aliased
+    /// class is present in the workspace. Requires mir 0.14.0+ which populates
+    /// `Codebase.file_imports` from `StubSlice.imports`.
+    #[test]
+    fn new_expr_with_use_alias_resolved_in_workspace() {
+        let host = AnalysisHost::new();
+        let entity = new_file(
+            &host,
+            0,
+            "file:///src/Model/Entity.php",
+            "<?php\nnamespace App\\Model;\nclass Entity {}",
+        );
+        let handler = new_file(
+            &host,
+            1,
+            "file:///src/Service/Handler.php",
+            "<?php\nnamespace App\\Service;\nuse App\\Model\\Entity;\nfunction handle(): void { $e = new Entity(); }",
+        );
+        let ws = Workspace::new(
+            host.db(),
+            Arc::from([entity, handler]),
+            mir_analyzer::PhpVersion::LATEST,
+        );
+        let issues = semantic_issues(host.db(), ws, handler);
+        let undef: Vec<_> = issues
+            .get()
+            .iter()
+            .filter(|i| matches!(i.kind, mir_issues::IssueKind::UndefinedClass { .. }))
+            .collect();
+        assert!(
+            undef.is_empty(),
+            "new Alias() must not emit UndefinedClass when class is in workspace; got: {undef:?}"
         );
     }
 
