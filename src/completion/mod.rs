@@ -14,8 +14,9 @@ use member::{
 
 mod namespace;
 use namespace::{
-    collect_classes_with_ns, collect_fqns_with_prefix, current_file_namespace, typed_prefix,
-    use_completion_prefix, use_insert_position,
+    collect_attribute_classes, collect_classes_with_ns, collect_fqns_with_prefix,
+    current_file_namespace, infer_attribute_target, typed_prefix, use_completion_prefix,
+    use_insert_position,
 };
 
 use std::sync::Arc;
@@ -299,63 +300,13 @@ pub fn filtered_completions_at(
             vec![]
         }
         Some("[") => {
-            // PHP attribute: #[ — suggest attribute classes
+            // PHP attribute: #[ — suggest only #[\Attribute]-annotated classes.
             if let (Some(src), Some(pos)) = (source, position) {
                 let line = src.lines().nth(pos.line as usize).unwrap_or("");
                 let col = utf16_offset_to_byte(line, pos.character as usize);
                 let before = &line[..col];
                 if before.trim_end_matches('[').trim_end().ends_with('#') {
-                    let mut items: Vec<CompletionItem> = Vec::new();
-                    let cur_ns = current_file_namespace(&doc.program().stmts);
-                    let mut seen = std::collections::HashSet::new();
-
-                    // Current doc: no auto-import needed (same file).
-                    let mut cur_classes = Vec::new();
-                    collect_classes_with_ns(&doc.program().stmts, "", &mut cur_classes);
-                    for (label, _kind, _fqn) in cur_classes {
-                        if seen.insert(label.clone()) {
-                            items.push(CompletionItem {
-                                label,
-                                kind: Some(CompletionItemKind::CLASS),
-                                ..Default::default()
-                            });
-                        }
-                    }
-
-                    // Other docs: add `use` statement when crossing namespaces.
-                    for other in other_docs {
-                        let mut classes = Vec::new();
-                        collect_classes_with_ns(&other.program().stmts, "", &mut classes);
-                        for (label, _kind, fqn) in classes {
-                            if !seen.insert(label.clone()) {
-                                continue;
-                            }
-                            let in_same_ns =
-                                !cur_ns.is_empty() && fqn == format!("{}\\{}", cur_ns, label);
-                            let is_global = !fqn.contains('\\');
-                            let already = imports.contains_key(&label);
-                            let additional_text_edits = if !in_same_ns && !is_global && !already {
-                                let insert_pos = use_insert_position(src);
-                                Some(vec![TextEdit {
-                                    range: Range {
-                                        start: insert_pos,
-                                        end: insert_pos,
-                                    },
-                                    new_text: format!("use {};\n", fqn),
-                                }])
-                            } else {
-                                None
-                            };
-                            items.push(CompletionItem {
-                                label,
-                                kind: Some(CompletionItemKind::CLASS),
-                                detail: if fqn.contains('\\') { Some(fqn) } else { None },
-                                additional_text_edits,
-                                ..Default::default()
-                            });
-                        }
-                    }
-                    return items;
+                    return attribute_completions(src, pos, doc, other_docs, imports);
                 }
             }
             vec![]
@@ -459,6 +410,21 @@ pub fn filtered_completions_at(
                         if !items.is_empty() {
                             return items;
                         }
+                    }
+                }
+            }
+
+            // Attribute context: #[ or #[PartialName — invoked without trigger char.
+            if let (Some(src), Some(pos)) = (source, position) {
+                let line = src.lines().nth(pos.line as usize).unwrap_or("");
+                let col = utf16_offset_to_byte(line, pos.character as usize);
+                let before = &line[..col];
+                let pre_ident =
+                    before.trim_end_matches(|c: char| c.is_alphanumeric() || c == '_' || c == '\\');
+                if pre_ident.trim_end().ends_with("#[") || pre_ident.trim_end() == "#[" {
+                    let items = attribute_completions(src, pos, doc, other_docs, imports);
+                    if !items.is_empty() {
+                        return items;
                     }
                 }
             }
@@ -660,6 +626,82 @@ pub fn filtered_completions_at(
             items
         }
     }
+}
+
+/// Build attribute-class completion items for a `#[` context.
+///
+/// Only classes annotated with `#[\Attribute]` are included. If the
+/// look-ahead finds a specific declaration (class / function / property),
+/// items are further filtered by the matching `TARGET_*` bitmask.
+fn attribute_completions(
+    source: &str,
+    position: Position,
+    doc: &ParsedDoc,
+    other_docs: &[Arc<ParsedDoc>],
+    imports: &HashMap<String, String>,
+) -> Vec<CompletionItem> {
+    let context_target = infer_attribute_target(source, position);
+    let cur_ns = current_file_namespace(&doc.program().stmts);
+    let mut items: Vec<CompletionItem> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    // Current doc — no auto-import needed.
+    let mut cur_entries = Vec::new();
+    collect_attribute_classes(&doc.program().stmts, "", &mut cur_entries);
+    for entry in cur_entries {
+        if entry.target & context_target == 0 {
+            continue;
+        }
+        if seen.insert(entry.label.clone()) {
+            items.push(CompletionItem {
+                label: entry.label,
+                kind: Some(CompletionItemKind::CLASS),
+                ..Default::default()
+            });
+        }
+    }
+
+    // Other docs — add `use` statement when crossing namespaces.
+    for other in other_docs {
+        let mut entries = Vec::new();
+        collect_attribute_classes(&other.program().stmts, "", &mut entries);
+        for entry in entries {
+            if entry.target & context_target == 0 {
+                continue;
+            }
+            if !seen.insert(entry.label.clone()) {
+                continue;
+            }
+            let in_same_ns =
+                !cur_ns.is_empty() && entry.fqn == format!("{}\\{}", cur_ns, entry.label);
+            let is_global = !entry.fqn.contains('\\');
+            let already = imports.contains_key(&entry.label);
+            let additional_text_edits = if !in_same_ns && !is_global && !already {
+                let insert_pos = use_insert_position(source);
+                Some(vec![TextEdit {
+                    range: Range {
+                        start: insert_pos,
+                        end: insert_pos,
+                    },
+                    new_text: format!("use {};\n", entry.fqn),
+                }])
+            } else {
+                None
+            };
+            items.push(CompletionItem {
+                label: entry.label,
+                kind: Some(CompletionItemKind::CLASS),
+                detail: if entry.fqn.contains('\\') {
+                    Some(entry.fqn)
+                } else {
+                    None
+                },
+                additional_text_edits,
+                ..Default::default()
+            });
+        }
+    }
+    items
 }
 
 fn match_arm_completions(
@@ -1479,12 +1521,13 @@ mod tests {
         );
     }
 
-    // Feature 6: attribute bracket completions
+    // Feature 6: attribute bracket completions — only #[\Attribute]-annotated classes
     #[test]
     fn attribute_bracket_suggests_classes() {
-        let d = doc("<?php\nclass Route {}\nclass Middleware {}\n#[");
+        let src = "<?php\n#[\\Attribute]\nclass Route {}\n#[\\Attribute]\nclass Middleware {}\nclass Plain {}\n#[";
+        let d = doc(src);
         let pos = Position {
-            line: 3,
+            line: 6,
             character: 2,
         };
         let items = filtered_completions_at(
@@ -1492,7 +1535,7 @@ mod tests {
             &[],
             Some("["),
             &CompletionCtx {
-                source: Some("<?php\nclass Route {}\nclass Middleware {}\n#["),
+                source: Some(src),
                 position: Some(pos),
                 ..Default::default()
             },
@@ -1503,6 +1546,10 @@ mod tests {
             ls.contains(&"Middleware"),
             "should suggest Middleware as attribute"
         );
+        assert!(
+            !ls.contains(&"Plain"),
+            "plain class without #[Attribute] must not appear"
+        );
     }
 
     #[test]
@@ -1510,7 +1557,7 @@ mod tests {
         let current_src = "<?php\nnamespace App\\Controllers;\n\n#[";
         let d = doc(current_src);
         let other = Arc::new(ParsedDoc::parse(
-            "<?php\nnamespace App\\Attributes;\nclass Route {}".to_string(),
+            "<?php\nnamespace App\\Attributes;\n#[\\Attribute]\nclass Route {}".to_string(),
         ));
         let pos = Position {
             line: 3,
@@ -1548,7 +1595,7 @@ mod tests {
         let current_src = "<?php\nnamespace App\\Attributes;\n\n#[";
         let d = doc(current_src);
         let other = Arc::new(ParsedDoc::parse(
-            "<?php\nnamespace App\\Attributes;\nclass Route {}".to_string(),
+            "<?php\nnamespace App\\Attributes;\n#[\\Attribute]\nclass Route {}".to_string(),
         ));
         let pos = Position {
             line: 3,
