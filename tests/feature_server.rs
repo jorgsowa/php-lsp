@@ -7,6 +7,85 @@ use common::TestServer;
 
 // ── lifecycle ────────────────────────────────────────────────────────────────
 
+// Every (feature-flag key, ServerCapabilities JSON field) pair.
+const FEATURE_CAP_PAIRS: &[(&str, &str)] = &[
+    ("completion", "completionProvider"),
+    ("hover", "hoverProvider"),
+    ("definition", "definitionProvider"),
+    ("declaration", "declarationProvider"),
+    ("references", "referencesProvider"),
+    ("documentSymbols", "documentSymbolProvider"),
+    ("workspaceSymbols", "workspaceSymbolProvider"),
+    ("rename", "renameProvider"),
+    ("signatureHelp", "signatureHelpProvider"),
+    ("inlayHints", "inlayHintProvider"),
+    ("semanticTokens", "semanticTokensProvider"),
+    ("selectionRange", "selectionRangeProvider"),
+    ("callHierarchy", "callHierarchyProvider"),
+    ("documentHighlight", "documentHighlightProvider"),
+    ("implementation", "implementationProvider"),
+    ("codeAction", "codeActionProvider"),
+    ("typeDefinition", "typeDefinitionProvider"),
+    ("codeLens", "codeLensProvider"),
+    ("formatting", "documentFormattingProvider"),
+    ("rangeFormatting", "documentRangeFormattingProvider"),
+    ("onTypeFormatting", "documentOnTypeFormattingProvider"),
+    ("documentLink", "documentLinkProvider"),
+    ("linkedEditingRange", "linkedEditingRangeProvider"),
+    ("inlineValues", "inlineValueProvider"),
+];
+
+// Capabilities that are always present regardless of feature flags.
+const UNCONDITIONAL_CAPS: &[&str] = &[
+    "textDocumentSync",
+    "foldingRangeProvider",
+    "executeCommandProvider",
+    "diagnosticProvider",
+    "workspace",
+    "monikerProvider",
+];
+
+#[tokio::test]
+async fn all_features_disabled_removes_all_toggleable_capabilities() {
+    let mut all_off = serde_json::json!({ "diagnostics": { "enabled": true }, "features": {} });
+    for (flag, _) in FEATURE_CAP_PAIRS {
+        all_off["features"][flag] = serde_json::json!(false);
+    }
+
+    let (_, resp) = TestServer::new_with_options(all_off).await;
+    let caps = &resp["result"]["capabilities"];
+
+    for (flag, cap_field) in FEATURE_CAP_PAIRS {
+        assert!(
+            caps[cap_field].is_null(),
+            "expected {cap_field} to be absent when feature '{flag}' is disabled, got: {}",
+            caps[cap_field]
+        );
+    }
+    for cap_field in UNCONDITIONAL_CAPS {
+        assert!(
+            !caps[cap_field].is_null(),
+            "expected {cap_field} to remain present (unconditional), got null"
+        );
+    }
+}
+
+#[tokio::test]
+async fn all_features_enabled_by_default() {
+    let (_, resp) = TestServer::new_with_options(serde_json::json!({
+        "diagnostics": { "enabled": true }
+    }))
+    .await;
+    let caps = &resp["result"]["capabilities"];
+
+    for (flag, cap_field) in FEATURE_CAP_PAIRS {
+        assert!(
+            !caps[cap_field].is_null(),
+            "expected {cap_field} to be present by default (feature '{flag}' not mentioned), got null"
+        );
+    }
+}
+
 #[tokio::test]
 async fn initialize_returns_server_capabilities() {
     let mut server = TestServer::new().await;

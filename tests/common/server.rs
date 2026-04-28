@@ -109,13 +109,13 @@ impl TestServer {
         client: &mut TestClient,
         root: Option<&std::path::Path>,
         initialization_options: Value,
-    ) {
+    ) -> Value {
         let root_uri = root.map(|p| Url::from_file_path(p).unwrap());
         let root_val = root_uri
             .as_ref()
             .map(|u| json!(u.as_str()))
             .unwrap_or(json!(null));
-        client
+        let resp = client
             .request(
                 "initialize",
                 json!({
@@ -132,6 +132,21 @@ impl TestServer {
             )
             .await;
         client.notify("initialized", json!({})).await;
+        resp
+    }
+
+    /// Start a rootless server with custom `initializationOptions` and return
+    /// the raw `initialize` response alongside the server. Use this when a
+    /// test needs to inspect `result.capabilities` directly.
+    pub async fn new_with_options(initialization_options: Value) -> (Self, Value) {
+        let mut client = spawn_server();
+        let resp = Self::do_initialize_with(&mut client, None, initialization_options).await;
+        let server = TestServer {
+            client,
+            root: None,
+            _fixture_dir: None,
+        };
+        (server, resp)
     }
 
     /// Like `with_fixture`, but pass custom `initializationOptions`. Copies

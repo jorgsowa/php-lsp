@@ -142,6 +142,100 @@ impl DiagnosticsConfig {
     }
 }
 
+/// Per-feature capability toggles. All default to `true` (enabled).
+/// Set `initializationOptions.features.<name> = false` to suppress a capability.
+#[derive(Debug, Clone)]
+pub struct FeaturesConfig {
+    pub completion: bool,
+    pub hover: bool,
+    pub definition: bool,
+    pub declaration: bool,
+    pub references: bool,
+    pub document_symbols: bool,
+    pub workspace_symbols: bool,
+    pub rename: bool,
+    pub signature_help: bool,
+    pub inlay_hints: bool,
+    pub semantic_tokens: bool,
+    pub selection_range: bool,
+    pub call_hierarchy: bool,
+    pub document_highlight: bool,
+    pub implementation: bool,
+    pub code_action: bool,
+    pub type_definition: bool,
+    pub code_lens: bool,
+    pub formatting: bool,
+    pub range_formatting: bool,
+    pub on_type_formatting: bool,
+    pub document_link: bool,
+    pub linked_editing_range: bool,
+    pub inline_values: bool,
+}
+
+impl Default for FeaturesConfig {
+    fn default() -> Self {
+        FeaturesConfig {
+            completion: true,
+            hover: true,
+            definition: true,
+            declaration: true,
+            references: true,
+            document_symbols: true,
+            workspace_symbols: true,
+            rename: true,
+            signature_help: true,
+            inlay_hints: true,
+            semantic_tokens: true,
+            selection_range: true,
+            call_hierarchy: true,
+            document_highlight: true,
+            implementation: true,
+            code_action: true,
+            type_definition: true,
+            code_lens: true,
+            formatting: true,
+            range_formatting: true,
+            on_type_formatting: true,
+            document_link: true,
+            linked_editing_range: true,
+            inline_values: true,
+        }
+    }
+}
+
+impl FeaturesConfig {
+    fn from_value(v: &serde_json::Value) -> Self {
+        let mut cfg = FeaturesConfig::default();
+        let Some(obj) = v.as_object() else { return cfg };
+        let flag = |key: &str| obj.get(key).and_then(|x| x.as_bool()).unwrap_or(true);
+        cfg.completion = flag("completion");
+        cfg.hover = flag("hover");
+        cfg.definition = flag("definition");
+        cfg.declaration = flag("declaration");
+        cfg.references = flag("references");
+        cfg.document_symbols = flag("documentSymbols");
+        cfg.workspace_symbols = flag("workspaceSymbols");
+        cfg.rename = flag("rename");
+        cfg.signature_help = flag("signatureHelp");
+        cfg.inlay_hints = flag("inlayHints");
+        cfg.semantic_tokens = flag("semanticTokens");
+        cfg.selection_range = flag("selectionRange");
+        cfg.call_hierarchy = flag("callHierarchy");
+        cfg.document_highlight = flag("documentHighlight");
+        cfg.implementation = flag("implementation");
+        cfg.code_action = flag("codeAction");
+        cfg.type_definition = flag("typeDefinition");
+        cfg.code_lens = flag("codeLens");
+        cfg.formatting = flag("formatting");
+        cfg.range_formatting = flag("rangeFormatting");
+        cfg.on_type_formatting = flag("onTypeFormatting");
+        cfg.document_link = flag("documentLink");
+        cfg.linked_editing_range = flag("linkedEditingRange");
+        cfg.inline_values = flag("inlineValues");
+        cfg
+    }
+}
+
 /// Configuration received from the client via `initializationOptions`.
 #[derive(Debug, Clone)]
 pub struct LspConfig {
@@ -152,6 +246,8 @@ pub struct LspConfig {
     pub exclude_paths: Vec<String>,
     /// Per-category diagnostic toggles.
     pub diagnostics: DiagnosticsConfig,
+    /// Per-feature capability toggles.
+    pub features: FeaturesConfig,
     /// Hard cap on the number of PHP files indexed during a workspace scan.
     /// Defaults to [`MAX_INDEXED_FILES`]. Set lower via `initializationOptions`
     /// to reduce memory on projects with very large vendor trees.
@@ -164,6 +260,7 @@ impl Default for LspConfig {
             php_version: None,
             exclude_paths: Vec::new(),
             diagnostics: DiagnosticsConfig::default(),
+            features: FeaturesConfig::default(),
             max_indexed_files: MAX_INDEXED_FILES,
         }
     }
@@ -224,6 +321,9 @@ impl LspConfig {
         }
         if let Some(diag_val) = v.get("diagnostics") {
             cfg.diagnostics = DiagnosticsConfig::from_value(diag_val);
+        }
+        if let Some(feat_val) = v.get("features") {
+            cfg.features = FeaturesConfig::from_value(feat_val);
         }
         if let Some(n) = v.get("maxIndexedFiles").and_then(|x| x.as_u64()) {
             cfg.max_indexed_files = n as usize;
@@ -589,6 +689,7 @@ impl LanguageServer for Backend {
             *self.config.write().unwrap() = cfg;
         }
 
+        let feat = self.config.read().unwrap().features.clone();
         Ok(InitializeResult {
             capabilities: ServerCapabilities {
                 text_document_sync: Some(TextDocumentSyncCapability::Options(
@@ -602,7 +703,7 @@ impl LanguageServer for Backend {
                         })),
                     },
                 )),
-                completion_provider: Some(CompletionOptions {
+                completion_provider: feat.completion.then(|| CompletionOptions {
                     trigger_characters: Some(vec![
                         "$".to_string(),
                         ">".to_string(),
@@ -613,62 +714,78 @@ impl LanguageServer for Backend {
                     resolve_provider: Some(true),
                     ..Default::default()
                 }),
-                hover_provider: Some(HoverProviderCapability::Simple(true)),
-                definition_provider: Some(OneOf::Left(true)),
-                references_provider: Some(OneOf::Left(true)),
-                document_symbol_provider: Some(OneOf::Left(true)),
-                workspace_symbol_provider: Some(OneOf::Right(WorkspaceSymbolOptions {
-                    resolve_provider: Some(true),
-                    work_done_progress_options: Default::default(),
-                })),
-                rename_provider: Some(OneOf::Right(RenameOptions {
-                    prepare_provider: Some(true),
-                    work_done_progress_options: Default::default(),
-                })),
-                signature_help_provider: Some(SignatureHelpOptions {
+                hover_provider: feat.hover.then_some(HoverProviderCapability::Simple(true)),
+                definition_provider: feat.definition.then_some(OneOf::Left(true)),
+                references_provider: feat.references.then_some(OneOf::Left(true)),
+                document_symbol_provider: feat.document_symbols.then_some(OneOf::Left(true)),
+                workspace_symbol_provider: feat.workspace_symbols.then(|| {
+                    OneOf::Right(WorkspaceSymbolOptions {
+                        resolve_provider: Some(true),
+                        work_done_progress_options: Default::default(),
+                    })
+                }),
+                rename_provider: feat.rename.then(|| {
+                    OneOf::Right(RenameOptions {
+                        prepare_provider: Some(true),
+                        work_done_progress_options: Default::default(),
+                    })
+                }),
+                signature_help_provider: feat.signature_help.then(|| SignatureHelpOptions {
                     trigger_characters: Some(vec!["(".to_string(), ",".to_string()]),
                     retrigger_characters: None,
                     work_done_progress_options: Default::default(),
                 }),
-                inlay_hint_provider: Some(OneOf::Right(InlayHintServerCapabilities::Options(
-                    InlayHintOptions {
+                inlay_hint_provider: feat.inlay_hints.then(|| {
+                    OneOf::Right(InlayHintServerCapabilities::Options(InlayHintOptions {
                         resolve_provider: Some(true),
                         work_done_progress_options: Default::default(),
-                    },
-                ))),
+                    }))
+                }),
                 folding_range_provider: Some(FoldingRangeProviderCapability::Simple(true)),
-                semantic_tokens_provider: Some(
-                    SemanticTokensServerCapabilities::SemanticTokensOptions(
-                        SemanticTokensOptions {
-                            legend: legend(),
-                            full: Some(SemanticTokensFullOptions::Delta { delta: Some(true) }),
-                            range: Some(true),
-                            ..Default::default()
-                        },
-                    ),
-                ),
-                selection_range_provider: Some(SelectionRangeProviderCapability::Simple(true)),
-                call_hierarchy_provider: Some(CallHierarchyServerCapability::Simple(true)),
-                document_highlight_provider: Some(OneOf::Left(true)),
-                implementation_provider: Some(ImplementationProviderCapability::Simple(true)),
-                code_action_provider: Some(CodeActionProviderCapability::Options(
-                    CodeActionOptions {
+                semantic_tokens_provider: feat.semantic_tokens.then(|| {
+                    SemanticTokensServerCapabilities::SemanticTokensOptions(SemanticTokensOptions {
+                        legend: legend(),
+                        full: Some(SemanticTokensFullOptions::Delta { delta: Some(true) }),
+                        range: Some(true),
+                        ..Default::default()
+                    })
+                }),
+                selection_range_provider: feat
+                    .selection_range
+                    .then_some(SelectionRangeProviderCapability::Simple(true)),
+                call_hierarchy_provider: feat
+                    .call_hierarchy
+                    .then_some(CallHierarchyServerCapability::Simple(true)),
+                document_highlight_provider: feat.document_highlight.then_some(OneOf::Left(true)),
+                implementation_provider: feat
+                    .implementation
+                    .then_some(ImplementationProviderCapability::Simple(true)),
+                code_action_provider: feat.code_action.then(|| {
+                    CodeActionProviderCapability::Options(CodeActionOptions {
                         resolve_provider: Some(true),
                         ..Default::default()
-                    },
-                )),
-                declaration_provider: Some(DeclarationCapability::Simple(true)),
-                type_definition_provider: Some(TypeDefinitionProviderCapability::Simple(true)),
-                code_lens_provider: Some(CodeLensOptions {
+                    })
+                }),
+                declaration_provider: feat
+                    .declaration
+                    .then_some(DeclarationCapability::Simple(true)),
+                type_definition_provider: feat
+                    .type_definition
+                    .then_some(TypeDefinitionProviderCapability::Simple(true)),
+                code_lens_provider: feat.code_lens.then_some(CodeLensOptions {
                     resolve_provider: Some(true),
                 }),
-                document_formatting_provider: Some(OneOf::Left(true)),
-                document_range_formatting_provider: Some(OneOf::Left(true)),
-                document_on_type_formatting_provider: Some(DocumentOnTypeFormattingOptions {
-                    first_trigger_character: "}".to_string(),
-                    more_trigger_character: Some(vec!["\n".to_string()]),
+                document_formatting_provider: feat.formatting.then_some(OneOf::Left(true)),
+                document_range_formatting_provider: feat
+                    .range_formatting
+                    .then_some(OneOf::Left(true)),
+                document_on_type_formatting_provider: feat.on_type_formatting.then(|| {
+                    DocumentOnTypeFormattingOptions {
+                        first_trigger_character: "}".to_string(),
+                        more_trigger_character: Some(vec!["\n".to_string()]),
+                    }
                 }),
-                document_link_provider: Some(DocumentLinkOptions {
+                document_link_provider: feat.document_link.then(|| DocumentLinkOptions {
                     resolve_provider: Some(true),
                     work_done_progress_options: Default::default(),
                 }),
@@ -698,15 +815,15 @@ impl LanguageServer for Backend {
                         ..Default::default()
                     }),
                 }),
-                linked_editing_range_provider: Some(LinkedEditingRangeServerCapabilities::Simple(
-                    true,
-                )),
+                linked_editing_range_provider: feat
+                    .linked_editing_range
+                    .then_some(LinkedEditingRangeServerCapabilities::Simple(true)),
                 moniker_provider: Some(OneOf::Left(true)),
-                inline_value_provider: Some(OneOf::Right(InlineValueServerCapabilities::Options(
-                    InlineValueOptions {
+                inline_value_provider: feat.inline_values.then(|| {
+                    OneOf::Right(InlineValueServerCapabilities::Options(InlineValueOptions {
                         work_done_progress_options: Default::default(),
-                    },
-                ))),
+                    }))
+                }),
                 ..Default::default()
             },
             ..Default::default()
@@ -3281,6 +3398,61 @@ mod tests {
         let cfg = DiagnosticsConfig::from_value(&serde_json::json!({"enabled": true}));
         assert!(cfg.enabled);
         assert!(cfg.undefined_variables);
+    }
+
+    // FeaturesConfig tests
+    #[test]
+    fn features_config_default_all_enabled() {
+        let cfg = FeaturesConfig::default();
+        assert!(cfg.completion);
+        assert!(cfg.hover);
+        assert!(cfg.definition);
+        assert!(cfg.declaration);
+        assert!(cfg.references);
+        assert!(cfg.document_symbols);
+        assert!(cfg.workspace_symbols);
+        assert!(cfg.rename);
+        assert!(cfg.signature_help);
+        assert!(cfg.inlay_hints);
+        assert!(cfg.semantic_tokens);
+        assert!(cfg.selection_range);
+        assert!(cfg.call_hierarchy);
+        assert!(cfg.document_highlight);
+        assert!(cfg.implementation);
+        assert!(cfg.code_action);
+        assert!(cfg.type_definition);
+        assert!(cfg.code_lens);
+        assert!(cfg.formatting);
+        assert!(cfg.range_formatting);
+        assert!(cfg.on_type_formatting);
+        assert!(cfg.document_link);
+        assert!(cfg.linked_editing_range);
+        assert!(cfg.inline_values);
+    }
+
+    #[test]
+    fn features_config_from_empty_object_all_enabled() {
+        let cfg = FeaturesConfig::from_value(&serde_json::json!({}));
+        assert!(cfg.call_hierarchy);
+        assert!(cfg.hover);
+    }
+
+    #[test]
+    fn features_config_can_disable_call_hierarchy() {
+        let cfg = FeaturesConfig::from_value(&serde_json::json!({"callHierarchy": false}));
+        assert!(!cfg.call_hierarchy);
+        assert!(cfg.hover);
+        assert!(cfg.completion);
+    }
+
+    #[test]
+    fn lsp_config_parses_features_section() {
+        let cfg = LspConfig::from_value(
+            &serde_json::json!({"features": {"callHierarchy": false, "hover": false}}),
+        );
+        assert!(!cfg.features.call_hierarchy);
+        assert!(!cfg.features.hover);
+        assert!(cfg.features.completion);
     }
 
     // LspConfig::from_value tests
