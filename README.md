@@ -82,7 +82,7 @@ See **[docs/configuration.md](docs/configuration.md)** for all options including
 | Intelephense | TypeScript | ⚠️ Freemium | ✅ Active |
 | PHPantom | Rust | ✅ Free/OSS | ✅ Active |
 | Phpactor | PHP | ✅ Free/OSS | ✅ Active |
-| DEVSENSE | Node.js | 🔒 Paid | ✅ Active |
+| DEVSENSE | .NET | ⚠️ Freemium | ✅ Active |
 | Psalm LSP | PHP | ✅ Free/OSS | ✅ Active |
 | phpls | Go | ✅ Free/OSS | ✅ Active |
 | felixfbecker | PHP | ✅ Free/OSS | ❌ Abandoned |
@@ -94,26 +94,27 @@ See **[docs/configuration.md](docs/configuration.md)** for all options including
 | Completion | ✅ | ✅ | ✅ | ✅ | ✅ | ⚠️ limited |
 | Hover | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | Go-to-definition | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| Go-to-declaration | ✅ | 🔒 Premium | ❌ | ✅ | ✅ | ❌ |
-| Go-to-type-definition | ✅ | 🔒 Premium | ❌ | ❌ | ✅ | ❌ |
-| Find references | ✅ | ✅ | ❌ | ✅ | ✅ | ❌ |
+| Go-to-declaration | ✅ | 🔒 Premium | ✅ | ✅ | ✅ | ❌ |
+| Go-to-type-definition | ✅ | 🔒 Premium | ✅ | ❌ | ✅ | ❌ |
+| Find references | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ |
 | Rename | ✅ | 🔒 Premium | ✅ | ✅ | ✅ | ❌ |
 | Call hierarchy | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ |
-| Type hierarchy | ✅ | 🔒 Premium | ❌ | ❌ | ✅ | ❌ |
-| Implementations | ✅ | 🔒 Premium | ❌ | ✅ | ✅ | ❌ |
-| Semantic tokens | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ |
-| Inlay hints | ✅ | ❌ | ❌ | ✅ | ✅ | ❌ |
-| Code lens | ✅ | 🔒 Premium | ❌ | ❌ | ✅ | ❌ |
-| Signature help | ✅ | ✅ | ❌ | ✅ | ✅ | ❌ |
-| Selection range | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ |
-| Document highlight | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ |
-| Folding | ✅ | 🔒 Premium | ❌ | ❌ | ✅ | ❌ |
+| Type hierarchy | ✅ | 🔒 Premium | ✅ | ❌ | ✅ | ❌ |
+| Implementations | ✅ | 🔒 Premium | ✅ | ✅ | ✅ | ❌ |
+| Semantic tokens | ✅ | ❌ | ✅ | ❌ | ✅ | ❌ |
+| Inlay hints | ✅ | 🔒 Premium | ✅ | ✅ | ✅ | ❌ |
+| Code lens | ✅ | 🔒 Premium | ✅ | ❌ | ✅ | ❌ |
+| Signature help | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ |
+| Selection range | ✅ | 🔒 Premium | ✅ | ✅ | ✅ | ❌ |
+| Document highlight | ✅ | ✅ | ❌ | ✅ | ✅ | ❌ |
+| Folding | ✅ | 🔒 Premium | ✅ | ❌ | ✅ | ❌ |
 | On-type formatting | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ |
-| Document links | ✅ | ❌ | ❌ | ❌ | ✅ | ❌ |
-| PSR-4 autoload | ✅ | ✅ | ❌ | ✅ | ✅ | ❌ |
+| Document links | ✅ | 🔒 Premium | ✅ | ❌ | ✅ | ❌ |
+| PSR-4 autoload | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ |
 | PhpStorm meta | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
 | Static analysis | ✅ | ✅ | ✅ | ✅ | ✅ | ✅✅ |
 | Embedded HTML/JS/CSS | ❌ | ✅ | ❌ | ❌ | ✅ | ❌ |
+| Linked editing | ✅ | ❌ | ✅ | ❌ | ✅ | ❌ |
 | Laravel/framework aware | ❌ | ⚠️ plugin | ✅ built-in | ❌ | ⚠️ plugin | ❌ |
 | Debugger | ❌ | ❌ | ❌ | ❌ | ✅ | ❌ |
 | Deep generics / PHPStan types | ⚠️ partial | ⚠️ partial | ✅ | ❌ | ✅ | ✅ |
