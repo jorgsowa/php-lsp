@@ -446,3 +446,136 @@ function wrap(): void {
         )
         .await;
 }
+
+/// Regression: `new ShortName()` where `use A\B\ShortName;` must not emit
+/// UndefinedClass when the class is on disk (PSR-4 lazy-loading path).
+/// Distinct from `psr4_imported_class_not_flagged_before_workspace_scan` which
+/// only tested parameter type hints — this exercises the `new` expression path.
+#[tokio::test]
+async fn new_expr_with_use_import_not_flagged_as_undefined_class() {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        tmp.path().join("composer.json"),
+        r#"{"autoload":{"psr-4":{"App\\":"src/"}}}"#,
+    )
+    .unwrap();
+
+    std::fs::create_dir_all(tmp.path().join("src/Model")).unwrap();
+    std::fs::write(
+        tmp.path().join("src/Model/Entity.php"),
+        "<?php\nnamespace App\\Model;\nclass Entity {}\n",
+    )
+    .unwrap();
+
+    std::fs::create_dir_all(tmp.path().join("src/Service")).unwrap();
+    let src = "<?php\nnamespace App\\Service;\nuse App\\Model\\Entity;\nfunction handle(): void { $e = new Entity(); }\n";
+    std::fs::write(tmp.path().join("src/Service/Handler.php"), src).unwrap();
+
+    let mut s = TestServer::with_root(tmp.path()).await;
+    let notif = s.open("src/Service/Handler.php", src).await;
+
+    let diags = notif["params"]["diagnostics"]
+        .as_array()
+        .unwrap_or(&vec![])
+        .clone();
+    assert!(
+        diags.is_empty(),
+        "new Entity() must not emit UndefinedClass when class is PSR-4-resolvable; got: {diags:?}"
+    );
+}
+
+/// Regression: `use A\B\C as Alias; new Alias()` must not emit UndefinedClass.
+/// The explicit `as` form writes a different key into `file_imports` than the
+/// implicit short-name form, and is the primary path that was broken before
+/// mir 0.14.0 populated `Codebase.file_imports` from `StubSlice.imports`.
+#[tokio::test]
+async fn new_expr_with_explicit_use_alias_not_flagged_as_undefined_class() {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        tmp.path().join("composer.json"),
+        r#"{"autoload":{"psr-4":{"App\\":"src/"}}}"#,
+    )
+    .unwrap();
+
+    std::fs::create_dir_all(tmp.path().join("src/Model")).unwrap();
+    std::fs::write(
+        tmp.path().join("src/Model/Entity.php"),
+        "<?php\nnamespace App\\Model;\nclass Entity {}\n",
+    )
+    .unwrap();
+
+    std::fs::create_dir_all(tmp.path().join("src/Service")).unwrap();
+    let src = "<?php\nnamespace App\\Service;\nuse App\\Model\\Entity as EntityAlias;\nfunction handle(): void { $e = new EntityAlias(); }\n";
+    std::fs::write(tmp.path().join("src/Service/Handler.php"), src).unwrap();
+
+    let mut s = TestServer::with_root(tmp.path()).await;
+    let notif = s.open("src/Service/Handler.php", src).await;
+
+    let diags = notif["params"]["diagnostics"]
+        .as_array()
+        .unwrap_or(&vec![])
+        .clone();
+    let undef: Vec<_> = diags
+        .iter()
+        .filter(|d| d["code"].as_str() == Some("UndefinedClass"))
+        .collect();
+    assert!(
+        undef.is_empty(),
+        "new EntityAlias() must not emit UndefinedClass with explicit `as` alias; got: {undef:?}"
+    );
+}
+
+/// Sanity baseline: fully-qualified `new \App\Model\Entity()` (no `use` statement)
+/// must not emit UndefinedClass when the class is PSR-4-resolvable.
+/// Tracked as a known gap: PSR-4 lazy-loading only inspects `use` statements,
+/// so FQN `new` expressions that bypass the import list are not resolved.
+#[ignore = "mir-analyzer gap: PSR-4 lazy-loading does not cover FQN new expressions"]
+#[tokio::test]
+async fn new_expr_fully_qualified_not_flagged_as_undefined_class() {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        tmp.path().join("composer.json"),
+        r#"{"autoload":{"psr-4":{"App\\":"src/"}}}"#,
+    )
+    .unwrap();
+
+    std::fs::create_dir_all(tmp.path().join("src/Model")).unwrap();
+    std::fs::write(
+        tmp.path().join("src/Model/Entity.php"),
+        "<?php\nnamespace App\\Model;\nclass Entity {}\n",
+    )
+    .unwrap();
+
+    std::fs::create_dir_all(tmp.path().join("src/Service")).unwrap();
+    let src = "<?php\nnamespace App\\Service;\nfunction handle(): void { $e = new \\App\\Model\\Entity(); }\n";
+    std::fs::write(tmp.path().join("src/Service/Handler.php"), src).unwrap();
+
+    let mut s = TestServer::with_root(tmp.path()).await;
+    let notif = s.open("src/Service/Handler.php", src).await;
+
+    let diags = notif["params"]["diagnostics"]
+        .as_array()
+        .unwrap_or(&vec![])
+        .clone();
+    assert!(
+        diags.is_empty(),
+        "new \\App\\Model\\Entity() (FQN) must not emit UndefinedClass; got: {diags:?}"
+    );
+}
+
+/// Positive control: a genuinely unknown class in a `new` expression must still
+/// emit UndefinedClass so the above no-false-positive tests are meaningful.
+#[tokio::test]
+async fn new_expr_truly_unknown_class_is_flagged() {
+    let mut server = TestServer::new().await;
+    server
+        .check_diagnostics(
+            r#"<?php
+function _wrap(): void {
+    $x = new TrulyNonExistentClass9z();
+//           ^^^^^^^^^^^^^^^^^^^^^^^ error: TrulyNonExistentClass9z
+}
+"#,
+        )
+        .await;
+}
