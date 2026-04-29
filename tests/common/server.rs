@@ -149,6 +149,14 @@ impl TestServer {
         (server, resp)
     }
 
+    /// Variant of `with_fixture` that excludes `vendor/` from the workspace
+    /// scan. Use for tests whose subject is workspace code only — `vendor/`
+    /// dwarfs the workspace in real-world fixtures (40 MB / 5k+ files for
+    /// symfony/demo) and indexing it dominates wall-clock latency.
+    pub async fn with_fixture_no_vendor(name: &str) -> Self {
+        Self::with_fixture_and_options(name, json!({ "excludePaths": ["vendor/"] })).await
+    }
+
     /// Like `with_fixture`, but pass custom `initializationOptions`. Copies
     /// `tests/fixtures/<name>` into a TempDir so the server has an isolated
     /// workspace, and wires those options into the initialize handshake.

@@ -1,20 +1,20 @@
-//! Semantic tokens against vendored symfony/demo.
+//! Semantic tokens against the workspace portion of vendored symfony/demo.
 //!
 //! Structural shape check only — asserts that the LSP emits a non-empty,
 //! well-formed token stream (length a multiple of 5, deltas in bounds)
 //! for a realistic controller file. Pinning exact token types is brittle
 //! across parser changes; we leave that to unit tests.
 //!
-//! Run with `cargo test --release -- --ignored`.
+//! Tokenization is per-file and doesn't read across the workspace, so
+//! `vendor/` is excluded from the scan.
 
 mod common;
 
 use common::TestServer;
 
 #[tokio::test]
-#[ignore = "slow: workspace-scale test, run with --ignored"]
 async fn semantic_tokens_full_on_blog_controller_is_nonempty_and_well_formed() {
-    let mut server = TestServer::with_fixture("symfony-demo").await;
+    let mut server = TestServer::with_fixture_no_vendor("symfony-demo").await;
     server.wait_for_index_ready().await;
 
     let path = "src/Controller/BlogController.php";

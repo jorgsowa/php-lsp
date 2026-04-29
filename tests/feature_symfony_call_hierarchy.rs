@@ -1,20 +1,20 @@
-//! Call hierarchy against vendored symfony/demo.
+//! Call hierarchy against the workspace portion of vendored symfony/demo.
 //!
 //! Scenario: the controller's `index()` method is a known caller of
 //! `PostRepository::findLatest()`. We prepare call hierarchy on
 //! `findLatest`, then ask for incoming calls and assert the BlogController
 //! caller is represented.
 //!
-//! Run with `cargo test --release -- --ignored`.
+//! Both caller and callee are workspace code, so `vendor/` is excluded from
+//! the scan to keep the test fast.
 
 mod common;
 
 use common::TestServer;
 
 #[tokio::test]
-#[ignore = "slow: workspace-scale test, run with --ignored"]
 async fn incoming_calls_to_post_repository_find_latest() {
-    let mut server = TestServer::with_fixture("symfony-demo").await;
+    let mut server = TestServer::with_fixture_no_vendor("symfony-demo").await;
     server.wait_for_index_ready().await;
 
     // Open the definition site so the LSP knows where the method lives.

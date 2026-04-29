@@ -1,14 +1,15 @@
 //! Workspace + document symbol search across vendored symfony/demo.
-//! Run with `cargo test --release -- --ignored`.
+//!
+//! Queries target workspace symbols (`BlogController`, `Blog`), so `vendor/`
+//! is excluded from the scan.
 
 mod common;
 
 use common::TestServer;
 
 #[tokio::test]
-#[ignore = "slow: workspace-scale test, run with --ignored"]
 async fn workspace_symbols_finds_controller_by_exact_name() {
-    let mut server = TestServer::with_fixture("symfony-demo").await;
+    let mut server = TestServer::with_fixture_no_vendor("symfony-demo").await;
     server.wait_for_index_ready().await;
 
     let resp = server.workspace_symbols("BlogController").await;
@@ -36,9 +37,8 @@ async fn workspace_symbols_finds_controller_by_exact_name() {
 }
 
 #[tokio::test]
-#[ignore = "slow: workspace-scale test, run with --ignored"]
 async fn workspace_symbols_fuzzy_prefix() {
-    let mut server = TestServer::with_fixture("symfony-demo").await;
+    let mut server = TestServer::with_fixture_no_vendor("symfony-demo").await;
     server.wait_for_index_ready().await;
 
     let resp = server.workspace_symbols("Blog").await;
@@ -58,9 +58,8 @@ async fn workspace_symbols_fuzzy_prefix() {
 }
 
 #[tokio::test]
-#[ignore = "slow: workspace-scale test, run with --ignored"]
 async fn document_symbols_lists_blog_controller_methods() {
-    let mut server = TestServer::with_fixture("symfony-demo").await;
+    let mut server = TestServer::with_fixture_no_vendor("symfony-demo").await;
     server.wait_for_index_ready().await;
 
     let path = "src/Controller/BlogController.php";
