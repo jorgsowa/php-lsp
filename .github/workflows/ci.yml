@@ -37,6 +37,7 @@ jobs:
           restore-keys: ${{ runner.os }}-cargo-
 
       - name: Run tests
+        timeout-minutes: 30
         run: cargo test
 
   install:

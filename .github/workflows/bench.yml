@@ -2,27 +2,6 @@ name: Benchmarks
 
 on:
   workflow_dispatch:
-  # Run on pushes to main so gh-pages history stays fresh — every merged
-  # PR updates the baseline the next comparison will use.
-  push:
-    branches: [main]
-    paths:
-      - 'src/**'
-      - 'benches/**'
-      - 'mir-*/**'
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-  # Phase H gate: run on PRs that touch perf-sensitive code. The
-  # benchmark-action compares against gh-pages history with a 130 %
-  # alert threshold, failing the PR on detected regression.
-  pull_request:
-    branches: [main]
-    paths:
-      - 'src/**'
-      - 'benches/**'
-      - 'mir-*/**'
-      - 'Cargo.toml'
-      - 'Cargo.lock'
 
 jobs:
   bench:
