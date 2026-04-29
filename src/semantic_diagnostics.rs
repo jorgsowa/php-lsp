@@ -182,6 +182,7 @@ fn issue_passes_filter(issue: &mir_issues::Issue, cfg: &DiagnosticsConfig) -> bo
         | IssueKind::DeprecatedMethodCall { .. }
         | IssueKind::DeprecatedMethod { .. }
         | IssueKind::DeprecatedClass { .. } => cfg.deprecated_calls,
+        IssueKind::InvalidNamedArgument { .. } => cfg.arity_errors,
         _ => true,
     }
 }

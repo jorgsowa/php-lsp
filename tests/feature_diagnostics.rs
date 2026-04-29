@@ -579,3 +579,74 @@ function _wrap(): void {
         )
         .await;
 }
+
+// ── named argument diagnostics ────────────────────────────────────────────────
+
+#[tokio::test]
+async fn duplicate_named_arg_in_function_call() {
+    let mut s = TestServer::new().await;
+    s.check_diagnostics(
+        r#"<?php
+function foo(int $a, int $b): void {}
+foo(a: 1, b: 2, a: 3);
+//              ^^^^ error: foo() has no parameter named $a
+"#,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn duplicate_named_arg_in_method_call() {
+    let mut s = TestServer::new().await;
+    s.check_diagnostics(
+        r#"<?php
+class C {
+    public function run(int $x, int $y): void {}
+}
+(new C())->run(x: 1, y: 2, x: 99);
+//                         ^^^^^ error: run() has no parameter named $x
+"#,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn duplicate_named_arg_in_constructor() {
+    let mut s = TestServer::new().await;
+    s.check_diagnostics(
+        r#"<?php
+class Point {
+    public function __construct(public int $x, public int $y) {}
+}
+new Point(x: 0, y: 1, x: 2);
+//                    ^^^^ error: Point::__construct() has no parameter named $x
+"#,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn positional_after_named_arg() {
+    let mut s = TestServer::new().await;
+    s.check_diagnostics(
+        r#"<?php
+function bar(int $a, int $b): void {}
+bar(a: 1, 2);
+//        ^ error: cannot use positional argument after named argument
+//        ^ error: bar() has no parameter named $#2
+"#,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn valid_named_args_produce_no_diagnostic() {
+    let mut s = TestServer::new().await;
+    s.check_diagnostics(
+        r#"<?php
+function greet(string $name, int $times): void {}
+greet(name: 'Alice', times: 3);
+"#,
+    )
+    .await;
+}

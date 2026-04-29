@@ -1117,8 +1117,11 @@ impl LanguageServer for Backend {
         let doc2 = self.get_doc(&uri);
         let mut all_diags = parse_diags;
         if let Some(ref d) = doc2 {
-            let dup_diags = duplicate_declaration_diagnostics(&stored_source, d, &diag_cfg);
-            all_diags.extend(dup_diags);
+            all_diags.extend(duplicate_declaration_diagnostics(
+                &stored_source,
+                d,
+                &diag_cfg,
+            ));
         }
         if let Some(issues) = sem_issues {
             all_diags.extend(crate::semantic_diagnostics::issues_to_diagnostics(
@@ -2432,11 +2435,9 @@ impl LanguageServer for Backend {
         })
         .await
         .unwrap_or_default();
-        let dup_diags = duplicate_declaration_diagnostics(&source, &doc, &diag_cfg);
-
         let mut items = parse_diags;
         items.extend(sem_diags);
-        items.extend(dup_diags);
+        items.extend(duplicate_declaration_diagnostics(&source, &doc, &diag_cfg));
 
         Ok(DocumentDiagnosticReportResult::Report(
             DocumentDiagnosticReport::Full(RelatedFullDocumentDiagnosticReport {
@@ -2486,12 +2487,13 @@ impl LanguageServer for Backend {
                             )
                         })
                         .unwrap_or_default();
-                    let dup_diags =
-                        duplicate_declaration_diagnostics(&source, &doc, &diag_cfg_sweep);
-
                     let mut all_diags = parse_diags;
                     all_diags.extend(sem_diags);
-                    all_diags.extend(dup_diags);
+                    all_diags.extend(duplicate_declaration_diagnostics(
+                        &source,
+                        &doc,
+                        &diag_cfg_sweep,
+                    ));
 
                     Some(WorkspaceDocumentDiagnosticReport::Full(
                         WorkspaceFullDocumentDiagnosticReport {
