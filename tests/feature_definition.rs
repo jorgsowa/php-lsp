@@ -426,3 +426,49 @@ $r->co$0nn;
     )
     .await;
 }
+
+/// Receiver-aware dispatch: `$this->render()` must jump to the correct parent's
+/// `render()` even when another unrelated class also defines `render()`.
+#[tokio::test]
+async fn definition_this_method_picks_correct_parent_not_unrelated_class() {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        tmp.path().join("AbstractController.php"),
+        "<?php\nclass AbstractController {\n    public function render(): string { return ''; }\n}\n",
+    )
+    .unwrap();
+    // Unrelated class that also has render() — must NOT be returned.
+    std::fs::write(
+        tmp.path().join("BlockQuoteRenderer.php"),
+        "<?php\nclass BlockQuoteRenderer {\n    public function render(): string { return ''; }\n}\n",
+    )
+    .unwrap();
+    let ctrl_src = "<?php\nclass BlogController extends AbstractController {\n    public function index(): void { $this->render(); }\n}\n";
+    std::fs::write(tmp.path().join("BlogController.php"), ctrl_src).unwrap();
+
+    let mut s = TestServer::with_root(tmp.path()).await;
+    s.wait_for_index_ready().await;
+    s.open("BlogController.php", ctrl_src).await;
+
+    let (_, line, ch) = s.locate("BlogController.php", "$this->render", 0);
+    let ch = ch + "$this->".len() as u32;
+    let resp = s.definition("BlogController.php", line, ch).await;
+
+    let result = &resp["result"];
+    assert!(
+        !result.is_null(),
+        "expected a definition location: {resp:?}"
+    );
+    let loc = if result.is_array() {
+        &result[0]
+    } else {
+        result
+    };
+    assert!(
+        loc["uri"]
+            .as_str()
+            .unwrap()
+            .ends_with("AbstractController.php"),
+        "must jump to AbstractController::render(), got: {loc:?}"
+    );
+}

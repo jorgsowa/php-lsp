@@ -70,7 +70,7 @@ async fn goto_definition_app_class_from_use_import() {
 }
 
 #[tokio::test]
-#[ignore = "php-lsp gap: method goto-def on `$this->render` ignores receiver type; jumps to an unrelated render() (observed: BlockQuoteRenderer / Console\\Helper\\Table). Receiver-aware method dispatch is needed"]
+#[ignore = "slow: workspace-scale test, run with --ignored"]
 async fn goto_definition_inherited_method_this_render() {
     let mut server = TestServer::with_fixture("symfony-demo").await;
     server.wait_for_index_ready().await;

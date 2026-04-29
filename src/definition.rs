@@ -274,6 +274,60 @@ pub fn find_in_indexes(
     None
 }
 
+/// Walk the class hierarchy (extends + traits) in the workspace index to find
+/// `method_name` defined in `class_name` or any of its superclasses/traits.
+///
+/// Returns the first match in PHP's resolution order: class itself → traits →
+/// parent → parent's traits, etc. Uses `indexes` so no disk I/O is needed.
+pub fn find_method_in_class_hierarchy(
+    class_name: &str,
+    method_name: &str,
+    indexes: &[(
+        tower_lsp::lsp_types::Url,
+        std::sync::Arc<crate::file_index::FileIndex>,
+    )],
+) -> Option<Location> {
+    let mut queue: Vec<String> = vec![class_name.to_owned()];
+    let mut visited = std::collections::HashSet::new();
+
+    while !queue.is_empty() {
+        let current = queue.remove(0);
+        if !visited.insert(current.clone()) {
+            continue;
+        }
+        for (uri, idx) in indexes {
+            for cls in &idx.classes {
+                if cls.name != current && cls.fqn.trim_start_matches('\\') != current.as_str() {
+                    continue;
+                }
+                for m in &cls.methods {
+                    if m.name == method_name {
+                        let pos = tower_lsp::lsp_types::Position {
+                            line: m.start_line,
+                            character: 0,
+                        };
+                        return Some(Location {
+                            uri: uri.clone(),
+                            range: Range {
+                                start: pos,
+                                end: pos,
+                            },
+                        });
+                    }
+                }
+                // Traits first (PHP MRO), then parent.
+                for trt in &cls.traits {
+                    queue.push(trt.as_ref().to_owned());
+                }
+                if let Some(parent) = &cls.parent {
+                    queue.push(parent.as_ref().to_owned());
+                }
+            }
+        }
+    }
+    None
+}
+
 fn _name_range_from_offset(sv: SourceView<'_>, name: &str) -> Range {
     let start_offset = str_offset(sv.source(), name);
     let start = sv.position_of(start_offset);
@@ -514,5 +568,69 @@ mod tests {
             "expected location for trait method 'sayHello'"
         );
         assert_eq!(result.unwrap().range.start.line, 2);
+    }
+
+    // ── find_method_in_class_hierarchy ───────────────────────────────────────
+
+    fn make_index(path: &str, src: &str) -> (Url, std::sync::Arc<crate::file_index::FileIndex>) {
+        use crate::file_index::FileIndex;
+        let u = Url::parse(&format!("file://{path}")).unwrap();
+        let d = ParsedDoc::parse(src.to_string());
+        (u, std::sync::Arc::new(FileIndex::extract(&d)))
+    }
+
+    #[test]
+    fn hierarchy_finds_method_in_class_itself() {
+        let (uri, idx) = make_index(
+            "/a.php",
+            "<?php\nclass Foo { public function bar(): void {} }",
+        );
+        let indexes = vec![(uri, idx)];
+        let loc = find_method_in_class_hierarchy("Foo", "bar", &indexes);
+        assert!(loc.is_some(), "expected bar() in Foo");
+        assert_eq!(loc.unwrap().range.start.line, 1);
+    }
+
+    #[test]
+    fn hierarchy_finds_method_in_parent() {
+        let (base_uri, base_idx) = make_index(
+            "/Base.php",
+            "<?php\nclass Base { public function render(): void {} }",
+        );
+        let (cu, ci) = make_index("/Child.php", "<?php\nclass Child extends Base {}");
+        let indexes = vec![(base_uri.clone(), base_idx), (cu, ci)];
+        let loc = find_method_in_class_hierarchy("Child", "render", &indexes);
+        assert!(loc.is_some(), "expected render() found via parent Base");
+        assert_eq!(loc.unwrap().uri, base_uri);
+    }
+
+    #[test]
+    fn hierarchy_finds_method_in_trait() {
+        let (trait_uri, trait_idx) = make_index(
+            "/Renderable.php",
+            "<?php\ntrait Renderable { public function render(): void {} }",
+        );
+        let (pu, pi) = make_index("/Page.php", "<?php\nclass Page { use Renderable; }");
+        let indexes = vec![(trait_uri.clone(), trait_idx), (pu, pi)];
+        let loc = find_method_in_class_hierarchy("Page", "render", &indexes);
+        assert!(loc.is_some(), "expected render() found via trait");
+        assert_eq!(loc.unwrap().uri, trait_uri);
+    }
+
+    #[test]
+    fn hierarchy_returns_none_for_missing_method() {
+        let (uri, idx) = make_index("/Foo.php", "<?php\nclass Foo {}");
+        let indexes = vec![(uri, idx)];
+        assert!(find_method_in_class_hierarchy("Foo", "missing", &indexes).is_none());
+    }
+
+    #[test]
+    fn hierarchy_handles_cycle_without_panic() {
+        // Bogus source where A extends B extends A — must not loop forever.
+        let (ua, ia) = make_index("/A.php", "<?php\nclass A extends B {}");
+        let (ub, ib) = make_index("/B.php", "<?php\nclass B extends A {}");
+        let indexes = vec![(ua, ia), (ub, ib)];
+        let loc = find_method_in_class_hierarchy("A", "missing", &indexes);
+        assert!(loc.is_none());
     }
 }

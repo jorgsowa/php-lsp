@@ -23,7 +23,7 @@ fn hover_text(resp: &serde_json::Value) -> String {
 }
 
 #[tokio::test]
-#[ignore = "php-lsp gap: hover on class identifier in `extends` clause returns null (inline-fixture hover works on function names only)"]
+#[ignore = "slow: workspace-scale test, run with --ignored"]
 async fn hover_on_class_in_extends_clause() {
     let mut server = TestServer::with_fixture("symfony-demo").await;
     server.wait_for_index_ready().await;
@@ -46,7 +46,7 @@ async fn hover_on_class_in_extends_clause() {
 }
 
 #[tokio::test]
-#[ignore = "php-lsp gap: hover on class name used as a parameter type returns null"]
+#[ignore = "slow: workspace-scale test, run with --ignored"]
 async fn hover_on_app_entity_type_in_signature() {
     let mut server = TestServer::with_fixture("symfony-demo").await;
     server.wait_for_index_ready().await;

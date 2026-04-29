@@ -27,7 +27,9 @@ use crate::call_hierarchy::{incoming_calls, outgoing_calls, prepare_call_hierarc
 use crate::code_lens::code_lenses;
 use crate::completion::{CompletionCtx, filtered_completions_at};
 use crate::declaration::{goto_declaration, goto_declaration_from_index};
-use crate::definition::{find_declaration_range, find_in_indexes, goto_definition};
+use crate::definition::{
+    find_declaration_range, find_in_indexes, find_method_in_class_hierarchy, goto_definition,
+};
 use crate::diagnostics::parse_document;
 use crate::document_highlight::document_highlights;
 use crate::document_link::document_links;
@@ -1411,6 +1413,41 @@ impl LanguageServer for Backend {
         if let Some(loc) = goto_definition(uri, &source, &doc, &empty_other_docs, position) {
             return Ok(Some(GotoDefinitionResponse::Scalar(loc)));
         }
+        // Receiver-aware method dispatch: `$var->method()` must jump to the
+        // method defined in `$var`'s class hierarchy, not the first `method`
+        // found in any indexed file (which would return a wrong class).
+        if let Some(line_text) = source.lines().nth(position.line as usize)
+            && let Some(word) = crate::util::word_at(&source, position)
+            && let Some(receiver) = crate::hover::extract_receiver_var_before_cursor(
+                line_text,
+                position.character as usize,
+            )
+        {
+            let class_name = if receiver == "$this" {
+                crate::type_map::enclosing_class_at(&source, &doc, position)
+            } else {
+                let doc_returns = self
+                    .docs
+                    .get_method_returns_salsa(uri)
+                    .unwrap_or_else(|| std::sync::Arc::new(Default::default()));
+                let tm = crate::type_map::TypeMap::from_docs_at_position(
+                    &doc,
+                    &doc_returns,
+                    std::iter::empty(),
+                    None,
+                    position,
+                );
+                tm.get(&receiver).map(|s| s.to_string())
+            };
+            if let Some(cls) = class_name {
+                let first_cls = cls.split('|').next().unwrap_or(&cls).to_owned();
+                let all_indexes = self.docs.all_indexes();
+                if let Some(loc) = find_method_in_class_hierarchy(&first_cls, &word, &all_indexes) {
+                    return Ok(Some(GotoDefinitionResponse::Scalar(loc)));
+                }
+            }
+        }
+
         // Cross-file: use FileIndex (no disk I/O for background files).
         let other_indexes = self.docs.other_indexes(uri);
         if let Some(word) = crate::util::word_at(&source, position)

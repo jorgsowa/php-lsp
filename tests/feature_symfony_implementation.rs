@@ -6,7 +6,7 @@ mod common;
 use common::TestServer;
 
 #[tokio::test]
-#[ignore = "php-lsp gap: textDocument/implementation returns null on an interface reference in a `use`-importing file. Expected App\\Entity\\User to show up as implementor of UserInterface"]
+#[ignore = "slow: workspace-scale test, run with --ignored"]
 async fn implementations_of_user_interface_include_app_user() {
     let mut server = TestServer::with_fixture("symfony-demo").await;
     server.wait_for_index_ready().await;

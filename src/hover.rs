@@ -947,7 +947,10 @@ fn wrap_php(sig: &str) -> String {
 /// at the cursor's exact column position.  Uses the column rather than
 /// `str::find()` so multiple method calls on the same line are handled
 /// correctly.
-fn extract_receiver_var_before_cursor(line: &str, cursor_col_utf16: usize) -> Option<String> {
+pub(crate) fn extract_receiver_var_before_cursor(
+    line: &str,
+    cursor_col_utf16: usize,
+) -> Option<String> {
     let chars: Vec<char> = line.chars().collect();
 
     // Convert UTF-16 cursor column to char index.
