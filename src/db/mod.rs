@@ -6,6 +6,7 @@
 //! top of it incrementally.
 
 pub mod analysis;
+pub mod class_issues;
 pub mod codebase;
 pub mod definitions;
 pub mod index;

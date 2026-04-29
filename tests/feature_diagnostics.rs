@@ -650,3 +650,44 @@ greet(name: 'Alice', times: 3);
     )
     .await;
 }
+
+// ── circular inheritance diagnostics ─────────────────────────────────────────
+
+#[tokio::test]
+async fn circular_inheritance_self_extends() {
+    let mut s = TestServer::new().await;
+    s.check_diagnostics(
+        r#"<?php
+  class A extends A {}
+//^^^^^^^^^^^^^^^^^^^^ error: Class A has a circular inheritance chain
+"#,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn circular_inheritance_two_class_cycle() {
+    let mut s = TestServer::new().await;
+    s.check_diagnostics(
+        r#"<?php
+  class A extends B {}
+  class B extends A {}
+//^^^^^^^^^^^^^^^^^^^^ error: Class B has a circular inheritance chain
+"#,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn circular_inheritance_three_class_cycle() {
+    let mut s = TestServer::new().await;
+    s.check_diagnostics(
+        r#"<?php
+  class A extends B {}
+  class B extends C {}
+  class C extends A {}
+//^^^^^^^^^^^^^^^^^^^^ error: Class C has a circular inheritance chain
+"#,
+    )
+    .await;
+}

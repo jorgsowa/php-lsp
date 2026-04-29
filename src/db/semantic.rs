@@ -14,6 +14,7 @@ use std::sync::Arc;
 use mir_issues::Issue;
 use salsa::{Database, Update};
 
+use crate::db::class_issues::class_issues;
 use crate::db::codebase::codebase;
 use crate::db::input::{SourceFile, Workspace};
 use crate::db::parse::parsed_doc;
@@ -62,7 +63,7 @@ pub fn semantic_issues(db: &dyn Database, ws: Workspace, file: SourceFile) -> Is
     let php_version = ws.php_version(db);
     let mut analyzer = mir_analyzer::stmt::StatementsAnalyzer::new(
         cb.get(),
-        uri_arc,
+        uri_arc.clone(),
         source,
         &source_map,
         &mut issue_buffer,
@@ -73,9 +74,17 @@ pub fn semantic_issues(db: &dyn Database, ws: Workspace, file: SourceFile) -> Is
     let mut ctx = mir_analyzer::context::Context::new();
     analyzer.analyze_stmts(&doc.program().stmts, &mut ctx);
 
+    let ws_class_issues = class_issues(db, ws);
+    let file_class_issues = ws_class_issues
+        .0
+        .iter()
+        .filter(|i| i.location.file == uri_arc)
+        .cloned();
+
     let issues: Vec<Issue> = issue_buffer
         .into_issues()
         .into_iter()
+        .chain(file_class_issues)
         .filter(|i| !i.suppressed)
         .collect();
     IssuesArc(Arc::from(issues))
