@@ -810,6 +810,21 @@ impl TestServer {
         self.client.wait_for_diagnostics(&uri).await
     }
 
+    /// Send `textDocument/willSave` notification (void, no response).
+    /// `reason` is the LSP `TextDocumentSaveReason`: 1=Manual, 2=AfterDelay, 3=FocusOut.
+    pub async fn will_save(&mut self, path: &str, reason: u32) {
+        let uri = self.uri(path);
+        self.client
+            .notify(
+                "textDocument/willSave",
+                json!({
+                    "textDocument": { "uri": uri },
+                    "reason": reason
+                }),
+            )
+            .await;
+    }
+
     /// Send `textDocument/willSaveWaitUntil` request and return the response.
     pub async fn will_save_wait_until(&mut self, path: &str) -> Value {
         let uri = self.uri(path);
