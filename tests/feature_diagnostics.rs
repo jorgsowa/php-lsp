@@ -4,6 +4,7 @@
 mod common;
 
 use common::TestServer;
+use serde_json::json;
 
 #[tokio::test]
 async fn undefined_function_top_level() {
@@ -687,6 +688,20 @@ async fn circular_inheritance_three_class_cycle() {
   class B extends C {}
   class C extends A {}
 //^^^^^^^^^^^^^^^^^^^^ error: Class C has a circular inheritance chain
+"#,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn circular_inheritance_suppressed_when_type_errors_disabled() {
+    let (mut s, _resp) = TestServer::new_with_options(json!({
+        "diagnostics": { "typeErrors": false }
+    }))
+    .await;
+    s.check_diagnostics(
+        r#"<?php
+class A extends A {}
 "#,
     )
     .await;
