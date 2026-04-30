@@ -1813,11 +1813,13 @@ impl LanguageServer for Backend {
         };
         let tokens = semantic_tokens(doc.source(), &doc);
         let result_id = token_hash(&tokens);
+        let tokens_arc = Arc::new(tokens);
         self.docs
-            .store_token_cache(uri, result_id.clone(), tokens.clone());
+            .store_token_cache(uri, result_id.clone(), Arc::clone(&tokens_arc));
+        let data = Arc::try_unwrap(tokens_arc).unwrap_or_else(|arc| (*arc).clone());
         Ok(Some(SemanticTokensResult::Tokens(SemanticTokens {
             result_id: Some(result_id),
-            data: tokens,
+            data,
         })))
     }
 
@@ -1852,7 +1854,7 @@ impl LanguageServer for Backend {
             None => return Ok(None),
         };
 
-        let new_tokens = semantic_tokens(doc.source(), &doc);
+        let new_tokens = Arc::new(semantic_tokens(doc.source(), &doc));
         let new_result_id = token_hash(&new_tokens);
         let prev_id = &params.previous_result_id;
 
@@ -1867,7 +1869,7 @@ impl LanguageServer for Backend {
             // Unknown previous result — fall back to full tokens
             None => SemanticTokensFullDeltaResult::Tokens(SemanticTokens {
                 result_id: Some(new_result_id.clone()),
-                data: new_tokens.clone(),
+                data: (*new_tokens).clone(),
             }),
         };
 

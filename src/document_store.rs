@@ -20,7 +20,9 @@ const PARSED_CACHE_CAP: usize = 2048;
 pub struct DocumentStore {
     /// Cached semantic tokens per document: (result_id, tokens).
     /// Used to compute incremental deltas for `textDocument/semanticTokens/full/delta`.
-    token_cache: DashMap<Url, (String, Vec<SemanticToken>)>,
+    /// Tokens are stored in an `Arc` so the delta-path lookup can hand the
+    /// previous snapshot back without cloning the inner Vec.
+    token_cache: DashMap<Url, (String, Arc<Vec<SemanticToken>>)>,
 
     // ── Salsa-input storage ────────────────────────────────────────────────
     // Phase E4: `DocumentStore` is now a pure salsa-input wrapper. Open-file
@@ -473,16 +475,16 @@ impl DocumentStore {
 
     /// Cache the semantic tokens computed for a delta response.
     /// `result_id` is an opaque string (a hash of the token data) returned to the client.
-    pub fn store_token_cache(&self, uri: &Url, result_id: String, tokens: Vec<SemanticToken>) {
+    pub fn store_token_cache(&self, uri: &Url, result_id: String, tokens: Arc<Vec<SemanticToken>>) {
         self.token_cache.insert(uri.clone(), (result_id, tokens));
     }
 
     /// Return the cached tokens if `result_id` matches the stored one.
-    pub fn get_token_cache(&self, uri: &Url, result_id: &str) -> Option<Vec<SemanticToken>> {
+    pub fn get_token_cache(&self, uri: &Url, result_id: &str) -> Option<Arc<Vec<SemanticToken>>> {
         self.token_cache
             .get(uri)
             .filter(|e| e.0.as_str() == result_id)
-            .map(|e| e.1.clone())
+            .map(|e| Arc::clone(&e.1))
     }
 
     /// Before running semantic analysis for `uri`, resolve every `use`-imported
@@ -778,7 +780,7 @@ mod tests {
         let store = DocumentStore::new();
         let u = uri("/a.php");
         open(&store, u.clone(), "<?php".to_string());
-        store.store_token_cache(&u, "id1".to_string(), vec![]);
+        store.store_token_cache(&u, "id1".to_string(), Arc::new(vec![]));
         assert!(store.get_token_cache(&u, "id1").is_some());
         store.evict_token_cache(&u);
         assert!(store.get_token_cache(&u, "id1").is_none());
