@@ -1118,4 +1118,66 @@ mod tests {
             "PSR-4 lazy-loading must prevent UndefinedClass for App\\Model\\Entity; got: {undef:?}"
         );
     }
+
+    /// Issue #191 regression: workspace-wide scans (find-references, rename,
+    /// call-hierarchy) must not re-parse closed/indexed files on repeated
+    /// invocations. Once a file's `ParsedDoc` has been produced, subsequent
+    /// `all_docs_for_scan()` calls must hit the cache and return the same
+    /// `Arc<ParsedDoc>` (pointer equality), proving no re-parse occurred.
+    ///
+    /// The cache layers protecting this are:
+    ///   1. `parsed_cache` (cap [`PARSED_CACHE_CAP`]) — read-through, validated
+    ///      via `Arc::ptr_eq` on the text Arc.
+    ///   2. salsa `parsed_doc` memo (`lru = 2048`) — second line of defense
+    ///      when `parsed_cache` evicts.
+    ///
+    /// Together they keep every workspace-scan op O(N) memo lookups, never
+    /// O(N) parses, for any workspace whose file count fits the cap.
+    #[test]
+    fn all_docs_for_scan_does_not_reparse_indexed_files() {
+        let store = DocumentStore::new();
+        const N: usize = 50;
+        for i in 0..N {
+            let u = uri(&format!("/scan/file{i}.php"));
+            store.index(u, &format!("<?php\nclass C{i} {{}}\nfunction f{i}() {{}}"));
+        }
+
+        let first: Vec<_> = store.all_docs_for_scan();
+        let second: Vec<_> = store.all_docs_for_scan();
+        assert_eq!(first.len(), N);
+        assert_eq!(second.len(), N);
+
+        let by_url_first: std::collections::HashMap<Url, Arc<ParsedDoc>> =
+            first.into_iter().collect();
+        for (u, doc2) in second {
+            let doc1 = by_url_first
+                .get(&u)
+                .expect("second scan returned a URL the first didn't");
+            assert!(
+                Arc::ptr_eq(doc1, &doc2),
+                "{u} re-parsed across all_docs_for_scan calls — \
+                 cache (parsed_cache + salsa parsed_doc memo) failed to hit"
+            );
+        }
+
+        // Editing one file's text must invalidate just that file's entry,
+        // not the rest. This locks in self-eviction via Arc::ptr_eq on text.
+        let edited_url = uri("/scan/file0.php");
+        let pre_edit = store.get_doc_salsa(&edited_url).unwrap();
+        store.index(edited_url.clone(), "<?php\nclass C0Edited {}");
+        let post_edit = store.get_doc_salsa(&edited_url).unwrap();
+        assert!(
+            !Arc::ptr_eq(&pre_edit, &post_edit),
+            "edited file must produce a fresh ParsedDoc"
+        );
+        for i in 1..N {
+            let u = uri(&format!("/scan/file{i}.php"));
+            let original = by_url_first.get(&u).unwrap();
+            let after = store.get_doc_salsa(&u).unwrap();
+            assert!(
+                Arc::ptr_eq(original, &after),
+                "{u} should not have re-parsed because of an unrelated edit"
+            );
+        }
+    }
 }
