@@ -16,15 +16,7 @@ use crate::ast::str_offset;
 // ── Public entry points ───────────────────────────────────────────────────────
 
 pub fn refs_in_stmts(source: &str, stmts: &[Stmt<'_, '_>], word: &str, out: &mut Vec<Span>) {
-    let mut v = AllRefsVisitor {
-        source,
-        word,
-        out: Vec::new(),
-    };
-    for stmt in stmts {
-        let _ = v.visit_stmt(stmt);
-    }
-    out.append(&mut v.out);
+    walk_all_refs(source, stmts, word, false, out);
 }
 
 /// Like `refs_in_stmts`, but also matches spans inside `use` statements.
@@ -35,37 +27,26 @@ pub fn refs_in_stmts_with_use(
     word: &str,
     out: &mut Vec<Span>,
 ) {
-    refs_in_stmts(source, stmts, word, out);
-    use_refs(stmts, word, out);
+    walk_all_refs(source, stmts, word, true, out);
 }
 
-fn use_refs(stmts: &[Stmt<'_, '_>], word: &str, out: &mut Vec<Span>) {
+fn walk_all_refs(
+    source: &str,
+    stmts: &[Stmt<'_, '_>],
+    word: &str,
+    include_use: bool,
+    out: &mut Vec<Span>,
+) {
+    let mut v = AllRefsVisitor {
+        source,
+        word,
+        include_use,
+        out: Vec::new(),
+    };
     for stmt in stmts {
-        match &stmt.kind {
-            StmtKind::Use(u) => {
-                for use_item in u.uses.iter() {
-                    let fqn = use_item.name.to_string_repr().into_owned();
-                    let alias_match = use_item.alias.map(|a| a == word).unwrap_or(false);
-                    let last_seg = fqn.rsplit('\\').next().unwrap_or(&fqn);
-                    if alias_match || last_seg == word {
-                        let name_span = use_item.name.span();
-                        let offset = (fqn.len() - last_seg.len()) as u32;
-                        let syn_span = Span {
-                            start: name_span.start + offset,
-                            end: name_span.start + fqn.len() as u32,
-                        };
-                        out.push(syn_span);
-                    }
-                }
-            }
-            StmtKind::Namespace(ns) => {
-                if let NamespaceBody::Braced(inner) = &ns.body {
-                    use_refs(inner, word, out);
-                }
-            }
-            _ => {}
-        }
+        let _ = v.visit_stmt(stmt);
     }
+    out.append(&mut v.out);
 }
 
 // ── AllRefsVisitor ────────────────────────────────────────────────────────────
@@ -73,6 +54,7 @@ fn use_refs(stmts: &[Stmt<'_, '_>], word: &str, out: &mut Vec<Span>) {
 struct AllRefsVisitor<'a> {
     source: &'a str,
     word: &'a str,
+    include_use: bool,
     out: Vec<Span>,
 }
 
@@ -100,6 +82,21 @@ impl<'arena, 'src> Visitor<'arena, 'src> for AllRefsVisitor<'_> {
             StmtKind::Interface(i) => self.push_name_str(i.name),
             StmtKind::Trait(t) => self.push_name_str(t.name),
             StmtKind::Enum(e) => self.push_name_str(e.name),
+            StmtKind::Use(u) if self.include_use => {
+                for use_item in u.uses.iter() {
+                    let fqn = use_item.name.to_string_repr().into_owned();
+                    let alias_match = use_item.alias.map(|a| a == self.word).unwrap_or(false);
+                    let last_seg = fqn.rsplit('\\').next().unwrap_or(&fqn);
+                    if alias_match || last_seg == self.word {
+                        let name_span = use_item.name.span();
+                        let offset = (fqn.len() - last_seg.len()) as u32;
+                        self.out.push(Span {
+                            start: name_span.start + offset,
+                            end: name_span.start + fqn.len() as u32,
+                        });
+                    }
+                }
+            }
             _ => {}
         }
         walk_stmt(self, stmt)

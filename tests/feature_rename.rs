@@ -224,6 +224,78 @@ class Counter {
     .assert_eq(&out);
 }
 
+/// Regression for #141: rename must rewrite the matching segment of a `use`
+/// import in addition to call sites. Pinned via snapshot so a future change to
+/// the single-pass walker cannot silently drop the `use`-line edit.
+#[tokio::test]
+async fn rename_class_rewrites_use_import_in_same_file() {
+    let mut s = TestServer::new().await;
+    let out = s
+        .check_rename(
+            r#"<?php
+use Vendor\Lib\Widget;
+$a = new Wid$0get();
+$b = new Widget();
+"#,
+            "Gadget",
+        )
+        .await;
+    expect![[r#"
+        // main.php
+        1:15-1:21 → "Gadget"
+        2:9-2:15 → "Gadget"
+        3:9-3:15 → "Gadget""#]]
+    .assert_eq(&out);
+}
+
+/// Cross-file companion to `rename_class_rewrites_use_import_in_same_file`:
+/// renaming the class in one file must rewrite both the `use` import segment
+/// and short-name expression sites in dependents. Snapshot pinned so the
+/// merged AST walker can't silently drop either category.
+///
+/// Note: type hints and inline fully-qualified `\App\Widget` references are
+/// intentionally omitted — the general rename walker only emits spans for
+/// `ExprKind::Identifier` whose text equals the short name, so neither form
+/// participates in the cross-file rename surface today.
+#[tokio::test]
+async fn rename_class_rewrites_use_imports_across_files() {
+    let mut s = TestServer::new().await;
+    let out = s
+        .check_rename(
+            r#"//- /src/Widget.php
+<?php
+namespace App;
+class Wid$0get {}
+
+//- /src/a.php
+<?php
+use App\Widget;
+$x = new Widget();
+$is = $x instanceof Widget;
+
+//- /src/b.php
+<?php
+use App\Widget;
+$y = new Widget();
+"#,
+            "Gadget",
+        )
+        .await;
+    expect![[r#"
+        // src/Widget.php
+        2:6-2:12 → "Gadget"
+
+        // src/a.php
+        1:8-1:14 → "Gadget"
+        2:9-2:15 → "Gadget"
+        3:20-3:26 → "Gadget"
+
+        // src/b.php
+        1:8-1:14 → "Gadget"
+        2:9-2:15 → "Gadget""#]]
+    .assert_eq(&out);
+}
+
 #[tokio::test]
 async fn rename_on_nonexistent_symbol_does_not_error() {
     let mut s = TestServer::new().await;
