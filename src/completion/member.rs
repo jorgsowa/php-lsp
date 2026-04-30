@@ -30,11 +30,15 @@ pub(super) fn all_instance_members(
             continue;
         }
         let mut parent: Option<String> = None;
+        // PHP defines a class in exactly one file, so stop scanning once the
+        // defining doc is hit. Without the early break, member completion
+        // walks every workspace doc for every class in the inheritance chain.
         for d in &all {
             let members = members_of_class(d, &current);
-            if parent.is_none() {
-                parent = members.parent.clone();
+            if !members.found {
+                continue;
             }
+            parent = members.parent.clone();
             for (name, is_static) in members.methods {
                 if !is_static && seen_names.insert(name.clone()) {
                     // Method params unknown here; use has_params=true so
@@ -88,6 +92,7 @@ pub(super) fn all_instance_members(
             for trait_name in members.trait_uses {
                 queue.push(trait_name);
             }
+            break;
         }
         // Fall back to built-in stubs if the class wasn't found in any user doc
         if let Some(stub) = builtin_class_members(&current) {
@@ -147,9 +152,10 @@ pub(super) fn all_static_members(
         let mut parent: Option<String> = None;
         for d in &all {
             let members = members_of_class(d, &current);
-            if parent.is_none() {
-                parent = members.parent.clone();
+            if !members.found {
+                continue;
             }
+            parent = members.parent.clone();
             for (name, is_static) in members.methods {
                 if is_static && seen_names.insert(name.clone()) {
                     items.push(callable_item(&name, CompletionItemKind::METHOD, true));
@@ -180,6 +186,7 @@ pub(super) fn all_static_members(
             for trait_name in members.trait_uses {
                 queue.push(trait_name);
             }
+            break;
         }
         // Fall back to built-in stubs for static members
         if let Some(stub) = builtin_class_members(&current) {

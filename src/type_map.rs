@@ -871,6 +871,10 @@ pub struct ClassMembers {
     pub parent: Option<String>,
     /// Trait names used by this class (`use Foo, Bar;`).
     pub trait_uses: Vec<String>,
+    /// True when a class/enum/trait with this name was found in the doc.
+    /// Lets workspace-wide loops short-circuit once the defining doc is hit
+    /// instead of continuing to scan every file.
+    pub found: bool,
 }
 
 /// Return all members (methods, properties, constants) of `class_name`.
@@ -890,6 +894,7 @@ fn collect_members_stmts(
     for stmt in stmts {
         match &stmt.kind {
             StmtKind::Class(c) if c.name == Some(class_name) => {
+                out.found = true;
                 // Check docblock for @property and @method tags
                 if let Some(raw) = docblock_before(source, stmt.span.start) {
                     let db = parse_docblock(&raw);
@@ -940,6 +945,7 @@ fn collect_members_stmts(
                 return c.extends.as_ref().map(|n| n.to_string_repr().to_string());
             }
             StmtKind::Enum(e) if e.name == class_name => {
+                out.found = true;
                 let is_backed = e.scalar_type.is_some();
                 // Every enum instance exposes `->name`; backed enums also expose `->value`.
                 out.properties.push(("name".to_string(), false));
@@ -970,6 +976,7 @@ fn collect_members_stmts(
                 return None; // enums have no parent class
             }
             StmtKind::Trait(t) if t.name == class_name => {
+                out.found = true;
                 for member in t.members.iter() {
                     match &member.kind {
                         ClassMemberKind::Method(m) => {
