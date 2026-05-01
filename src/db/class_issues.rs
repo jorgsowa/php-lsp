@@ -44,9 +44,13 @@ unsafe impl Update for ClassIssuesArc {
 #[salsa::tracked(no_eq)]
 pub fn class_issues(db: &dyn Database, ws: Workspace) -> ClassIssuesArc {
     let cb = codebase(db, ws);
+    let mut mir_db = mir_analyzer::db::MirDb::default();
+    mir_db.ingest_codebase(cb.get());
     let files = ws.files(db);
     let analyzed_files: HashSet<Arc<str>> = files.iter().map(|f| f.uri(db)).collect();
-    let issues =
-        mir_analyzer::class::ClassAnalyzer::with_files(cb.get(), analyzed_files, &[]).analyze_all();
+    let issues = salsa::attach_allow_change(&mir_db, || {
+        mir_analyzer::class::ClassAnalyzer::with_files(cb.get(), &mir_db, analyzed_files, &[])
+            .analyze_all()
+    });
     ClassIssuesArc(Arc::from(issues))
 }

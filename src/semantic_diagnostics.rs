@@ -10,12 +10,12 @@ use crate::backend::DiagnosticsConfig;
 
 /// Run semantic checks on `doc` using the backend's persistent codebase.
 /// The codebase is updated incrementally: the current file's definitions are
-/// evicted and re-collected, then `finalize()` rebuilds inheritance tables.
+/// evicted and re-collected, then mirrored into MIR's Salsa database.
 ///
 /// `php_version` is a version string like `"8.1"` sourced from `LspConfig`.
 /// Parsed to `mir_analyzer::PhpVersion` and forwarded to `StatementsAnalyzer`.
 ///
-/// Legacy mutating path — runs `remove_file_definitions` + collect + finalize
+/// Legacy mutating path — runs `remove_file_definitions` + collect
 /// on the codebase. Kept for benchmarks (`benches/semantic.rs`) and as the
 /// reference implementation while Phase D wraps Pass-2 in salsa. Not used by
 /// the LSP handlers anymore (they use `semantic_diagnostics_no_rebuild`
@@ -33,8 +33,7 @@ pub fn semantic_diagnostics(
 
     let file: std::sync::Arc<str> = std::sync::Arc::from(uri.as_str());
 
-    // Incremental update: evict stale definitions for this file, re-collect,
-    // and rebuild inheritance tables.
+    // Incremental update: evict stale definitions for this file and re-collect.
     codebase.remove_file_definitions(&file);
     let source_map = php_rs_parser::source_map::SourceMap::new(doc.source());
     let collector_issues = {
@@ -47,10 +46,8 @@ pub fn semantic_diagnostics(
         );
         collector.collect(doc.program())
     };
-    {
-        let _span = tracing::debug_span!("codebase_finalize", file = %uri).entered();
-        codebase.finalize();
-    }
+    let mut mir_db = mir_analyzer::db::MirDb::default();
+    mir_db.ingest_codebase(codebase);
 
     // Pass 2: analyse function/method bodies in the current document.
     let ver = php_version
@@ -58,21 +55,22 @@ pub fn semantic_diagnostics(
         .unwrap_or(mir_analyzer::PhpVersion::LATEST);
     let mut issue_buffer = mir_issues::IssueBuffer::new();
     let mut symbols = Vec::new();
-    let mut analyzer = mir_analyzer::stmt::StatementsAnalyzer::new(
-        codebase,
-        file.clone(),
-        doc.source(),
-        &source_map,
-        &mut issue_buffer,
-        &mut symbols,
-        ver,
-        false,
-    );
-    let mut ctx = mir_analyzer::context::Context::new();
-    {
+    salsa::attach_allow_change(&mir_db, || {
+        let mut analyzer = mir_analyzer::stmt::StatementsAnalyzer::new(
+            codebase,
+            &mir_db,
+            file.clone(),
+            doc.source(),
+            &source_map,
+            &mut issue_buffer,
+            &mut symbols,
+            ver,
+            false,
+        );
+        let mut ctx = mir_analyzer::context::Context::new();
         let _span = tracing::debug_span!("analyze_stmts", file = %uri).entered();
         analyzer.analyze_stmts(&doc.program().stmts, &mut ctx);
-    }
+    });
 
     collector_issues
         .into_iter()
@@ -84,12 +82,12 @@ pub fn semantic_diagnostics(
 }
 
 /// Run semantic body analysis on `doc` assuming the codebase is already
-/// finalized (all definitions collected, `finalize()` already called).
+/// finalized (all definitions collected).
 ///
 /// Unlike [`semantic_diagnostics`], this function does **not** mutate the
 /// codebase — it skips the `remove_file_definitions` / re-collect / `finalize`
 /// cycle. Intended for workspace diagnostic batch passes where the codebase is
-/// built once upfront and `finalize()` is called a single time before the loop.
+/// built once upfront before the loop.
 ///
 /// Phase I: LSP handlers now read issues through the salsa `semantic_issues`
 /// query + `issues_to_diagnostics`. This function is retained for
@@ -107,27 +105,32 @@ pub fn semantic_diagnostics_no_rebuild(
 
     let file: std::sync::Arc<str> = std::sync::Arc::from(uri.as_str());
     let source_map = php_rs_parser::source_map::SourceMap::new(doc.source());
+    let mut mir_db = mir_analyzer::db::MirDb::default();
+    mir_db.ingest_codebase(codebase);
 
     // Pass 2 only: analyse function/method bodies.
-    // The codebase is already finalized — skip remove/re-collect/finalize so
-    // that inheritance tables are not torn down and rebuilt for every file.
+    // The codebase is already built — skip remove/re-collect so every file can
+    // share the same definition set.
     let ver = php_version
         .and_then(|s| s.parse::<mir_analyzer::PhpVersion>().ok())
         .unwrap_or(mir_analyzer::PhpVersion::LATEST);
     let mut issue_buffer = mir_issues::IssueBuffer::new();
     let mut symbols = Vec::new();
-    let mut analyzer = mir_analyzer::stmt::StatementsAnalyzer::new(
-        codebase,
-        file,
-        doc.source(),
-        &source_map,
-        &mut issue_buffer,
-        &mut symbols,
-        ver,
-        false,
-    );
-    let mut ctx = mir_analyzer::context::Context::new();
-    analyzer.analyze_stmts(&doc.program().stmts, &mut ctx);
+    salsa::attach_allow_change(&mir_db, || {
+        let mut analyzer = mir_analyzer::stmt::StatementsAnalyzer::new(
+            codebase,
+            &mir_db,
+            file,
+            doc.source(),
+            &source_map,
+            &mut issue_buffer,
+            &mut symbols,
+            ver,
+            false,
+        );
+        let mut ctx = mir_analyzer::context::Context::new();
+        analyzer.analyze_stmts(&doc.program().stmts, &mut ctx);
+    });
 
     issue_buffer
         .into_issues()

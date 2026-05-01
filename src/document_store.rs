@@ -714,7 +714,7 @@ mod tests {
                 mir_analyzer::collector::DefinitionCollector::new(&imperative_cb, file, src, &map);
             let _ = c.collect(doc.program());
         }
-        imperative_cb.finalize();
+        imperative_cb.resolve_pending_import_types();
 
         for fqn in ["A\\Foo", "A\\IX", "C\\Color"] {
             assert_eq!(
@@ -725,10 +725,10 @@ mod tests {
             assert!(salsa_cb.type_exists(fqn), "{fqn} missing from salsa cb");
         }
         assert_eq!(
-            salsa_cb.function_exists("B\\bar"),
-            imperative_cb.function_exists("B\\bar"),
+            salsa_cb.functions.contains_key("B\\bar"),
+            imperative_cb.functions.contains_key("B\\bar"),
         );
-        assert!(salsa_cb.function_exists("B\\bar"));
+        assert!(salsa_cb.functions.contains_key("B\\bar"));
     }
 
     #[test]

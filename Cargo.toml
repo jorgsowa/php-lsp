@@ -40,10 +40,10 @@ dhat = { version = "0.3", optional = true }
 mimalloc = { version = "0.1", default-features = false }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
-mir-analyzer = "0.16.0"
-mir-issues = "0.16.0"
-mir-codebase = "0.16.0"
-mir-types = "0.16.0"
+mir-analyzer = "0.16.1"
+mir-issues = "0.16.1"
+mir-codebase = "0.16.1"
+mir-types = "0.16.1"
 php-rs-parser = "0.9.4"
 php-ast = "0.9.4"
 bumpalo = { version = "3", features = ["collections"] }
@@ -70,4 +70,3 @@ iai-callgrind = "0.16"
 [[bench]]
 name = "iai_critical"
 harness = false
-

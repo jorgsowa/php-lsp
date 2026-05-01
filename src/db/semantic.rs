@@ -52,6 +52,8 @@ unsafe impl Update for IssuesArc {
 #[salsa::tracked(no_eq)]
 pub fn semantic_issues(db: &dyn Database, ws: Workspace, file: SourceFile) -> IssuesArc {
     let cb = codebase(db, ws);
+    let mut mir_db = mir_analyzer::db::MirDb::default();
+    mir_db.ingest_codebase(cb.get());
     let doc_arc = parsed_doc(db, file);
     let doc = doc_arc.get();
     let uri_arc: Arc<str> = file.uri(db);
@@ -61,18 +63,21 @@ pub fn semantic_issues(db: &dyn Database, ws: Workspace, file: SourceFile) -> Is
     let mut issue_buffer = mir_issues::IssueBuffer::new();
     let mut symbols = Vec::new();
     let php_version = ws.php_version(db);
-    let mut analyzer = mir_analyzer::stmt::StatementsAnalyzer::new(
-        cb.get(),
-        uri_arc.clone(),
-        source,
-        &source_map,
-        &mut issue_buffer,
-        &mut symbols,
-        php_version,
-        false,
-    );
-    let mut ctx = mir_analyzer::context::Context::new();
-    analyzer.analyze_stmts(&doc.program().stmts, &mut ctx);
+    salsa::attach_allow_change(&mir_db, || {
+        let mut analyzer = mir_analyzer::stmt::StatementsAnalyzer::new(
+            cb.get(),
+            &mir_db,
+            uri_arc.clone(),
+            source,
+            &source_map,
+            &mut issue_buffer,
+            &mut symbols,
+            php_version,
+            false,
+        );
+        let mut ctx = mir_analyzer::context::Context::new();
+        analyzer.analyze_stmts(&doc.program().stmts, &mut ctx);
+    });
 
     let ws_class_issues = class_issues(db, ws);
     let file_class_issues = ws_class_issues

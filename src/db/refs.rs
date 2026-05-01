@@ -83,15 +83,18 @@ unsafe impl Update for SymbolRefsArc {
 #[salsa::tracked(no_eq)]
 pub fn file_refs(db: &dyn Database, ws: Workspace, file: SourceFile) -> FileRefsArc {
     let cb = codebase(db, ws);
+    let mut mir_db = mir_analyzer::db::MirDb::default();
+    mir_db.ingest_codebase(cb.get());
     let doc = parsed_doc(db, file);
     let uri = file.uri(db);
     let source = file.text(db);
     let map = php_rs_parser::source_map::SourceMap::new(&source);
     let mut issue_buffer = mir_issues::IssueBuffer::new();
     let mut symbols = Vec::new();
-    {
+    salsa::attach_allow_change(&mir_db, || {
         let mut analyzer = mir_analyzer::stmt::StatementsAnalyzer::new(
             cb.get(),
+            &mir_db,
             uri,
             &source,
             &map,
@@ -102,7 +105,7 @@ pub fn file_refs(db: &dyn Database, ws: Workspace, file: SourceFile) -> FileRefs
         );
         let mut ctx = mir_analyzer::context::Context::new();
         analyzer.analyze_stmts(&doc.get().program().stmts, &mut ctx);
-    }
+    });
 
     let records: Vec<FileRefRecord> = symbols
         .into_iter()

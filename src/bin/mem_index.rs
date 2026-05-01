@@ -6,7 +6,7 @@
 ///   # FileIndex only (DocumentStore, fast):
 ///   cargo run --release --bin mem_index -- benches/fixtures/laravel/src
 ///
-///   # Full pipeline (DocumentStore + Codebase + finalize, matches real LSP):
+///   # Full pipeline (DocumentStore + Codebase, matches real LSP):
 ///   cargo run --release --bin mem_index -- --full benches/fixtures/laravel/src
 ///
 ///   # Full pipeline with heap profile:
@@ -79,7 +79,7 @@ fn main() {
     let dir = dir_arg.cloned().unwrap_or_else(|| {
         eprintln!("Usage: mem_index [--full] <directory>");
         eprintln!(
-            "  --full   also run DefinitionCollector + codebase.finalize() (full LSP pipeline)"
+            "  --full   also run DefinitionCollector + codebase resolution (full LSP pipeline)"
         );
         std::process::exit(1);
     });
@@ -157,13 +157,12 @@ fn main() {
         peak_rss = rss_after_index;
     }
 
-    // Finalize the codebase (rebuilds full inheritance tables) — this is what
-    // makes the first did_change after workspace scan expensive.
+    // Resolve pending imported types after all definitions are collected.
     if let Some(cb) = &codebase {
         let t_fin = Instant::now();
-        cb.finalize();
+        cb.resolve_pending_import_types();
         println!(
-            "codebase.finalize(): {:.1}ms",
+            "codebase resolution: {:.1}ms",
             t_fin.elapsed().as_secs_f64() * 1000.0
         );
         let rss_fin = rss_kb();

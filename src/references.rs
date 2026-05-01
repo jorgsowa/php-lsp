@@ -30,6 +30,95 @@ pub enum SymbolKind {
     Property,
 }
 
+fn class_has_ancestor(
+    codebase: &mir_codebase::Codebase,
+    class_fqcn: &str,
+    target_fqcn: &str,
+) -> bool {
+    fn visit_class(
+        codebase: &mir_codebase::Codebase,
+        fqcn: &str,
+        target_fqcn: &str,
+        seen: &mut HashSet<Arc<str>>,
+    ) -> bool {
+        if !seen.insert(Arc::from(fqcn)) {
+            return false;
+        }
+
+        let Some(class) = codebase.classes.get(fqcn) else {
+            return false;
+        };
+
+        if class.parent.as_deref() == Some(target_fqcn) {
+            return true;
+        }
+        if class
+            .interfaces
+            .iter()
+            .chain(class.traits.iter())
+            .any(|name| name.as_ref() == target_fqcn)
+        {
+            return true;
+        }
+
+        if class
+            .parent
+            .as_deref()
+            .is_some_and(|parent| visit_class(codebase, parent, target_fqcn, seen))
+        {
+            return true;
+        }
+
+        class
+            .interfaces
+            .iter()
+            .any(|iface| visit_interface(codebase, iface, target_fqcn, seen))
+            || class
+                .traits
+                .iter()
+                .any(|tr| visit_trait(codebase, tr, target_fqcn, seen))
+    }
+
+    fn visit_interface(
+        codebase: &mir_codebase::Codebase,
+        fqcn: &str,
+        target_fqcn: &str,
+        seen: &mut HashSet<Arc<str>>,
+    ) -> bool {
+        if !seen.insert(Arc::from(fqcn)) {
+            return false;
+        }
+        let Some(interface) = codebase.interfaces.get(fqcn) else {
+            return false;
+        };
+        interface.extends.iter().any(|parent| {
+            parent.as_ref() == target_fqcn
+                || visit_interface(codebase, parent.as_ref(), target_fqcn, seen)
+        })
+    }
+
+    fn visit_trait(
+        codebase: &mir_codebase::Codebase,
+        fqcn: &str,
+        target_fqcn: &str,
+        seen: &mut HashSet<Arc<str>>,
+    ) -> bool {
+        if !seen.insert(Arc::from(fqcn)) {
+            return false;
+        }
+        let Some(trait_) = codebase.traits.get(fqcn) else {
+            return false;
+        };
+        trait_.traits.iter().any(|parent| {
+            parent.as_ref() == target_fqcn
+                || visit_trait(codebase, parent.as_ref(), target_fqcn, seen)
+        })
+    }
+
+    let mut seen = HashSet::new();
+    visit_class(codebase, class_fqcn, target_fqcn, &mut seen)
+}
+
 /// Find all locations where `word` is referenced across the given documents.
 /// If `include_declaration` is true, also includes the declaration site.
 /// Pass `kind` to restrict results to a particular symbol category; `None`
@@ -296,11 +385,7 @@ pub fn find_references_codebase_with_target(
                 if let Some(entry) = codebase.classes.get(owner_fqcn) {
                     owners.push(entry.key().clone());
                     for e in codebase.classes.iter() {
-                        if e.value()
-                            .all_parents
-                            .iter()
-                            .any(|p| p.as_ref() == owner_fqcn)
-                        {
+                        if class_has_ancestor(codebase, e.key().as_ref(), owner_fqcn) {
                             owners.push(e.key().clone());
                         }
                     }
@@ -1724,7 +1809,6 @@ mod tests {
             is_abstract: false,
             is_final,
             is_readonly: false,
-            all_parents: vec![],
             deprecated: None,
             is_internal: false,
             type_aliases: std::collections::HashMap::new(),
