@@ -18,7 +18,7 @@ use crate::ast::{ParsedDoc, SourceView};
 use crate::docblock::docblock_before;
 use crate::implementation::find_implementations;
 use crate::references::{SymbolKind, find_references};
-use crate::type_map::{members_of_class, parent_class_name};
+use crate::type_map::parent_class_name;
 
 /// Build all code lenses for `uri`/`doc`, using `all_docs` for reference counts.
 pub fn code_lenses(
@@ -56,8 +56,9 @@ fn collect_lenses(
                         out.push(impl_count_lens(class_range, uri, impls));
                     }
 
-                    // Find the parent class once for the whole class.
-                    let parent = find_parent_class(c, all_docs);
+                    // Direct supertypes — extends parent + used traits — checked once
+                    // per class for overrides lookups on each method.
+                    let parents = collect_direct_supertypes(c, all_docs);
 
                     for member in c.members.iter() {
                         match &member.kind {
@@ -69,18 +70,20 @@ fn collect_lenses(
                                     out.push(run_test_lens(method_range, uri, class_name, m.name));
                                 }
 
-                                // Overrides lens: show if parent class has a method with the same name.
-                                if let Some(ref parent_name) = parent
-                                    && let Some(parent_loc) =
+                                // Overrides lens: emit for each direct supertype (parent class
+                                // or used trait) that declares a method with the same name.
+                                for parent_name in &parents {
+                                    if let Some(parent_loc) =
                                         parent_method_location(parent_name, m.name, all_docs)
-                                {
-                                    out.push(overrides_lens(
-                                        method_range,
-                                        uri,
-                                        parent_name,
-                                        m.name,
-                                        parent_loc,
-                                    ));
+                                    {
+                                        out.push(overrides_lens(
+                                            method_range,
+                                            uri,
+                                            parent_name,
+                                            m.name,
+                                            parent_loc,
+                                        ));
+                                    }
                                 }
 
                                 // Constructor-promoted params: `public function __construct(public string $name)`.
@@ -151,9 +154,16 @@ fn collect_lenses(
                 let range = sv.name_range(e.name);
                 out.push(ref_count_lens(range, e.name, uri, all_docs, None));
                 for member in e.members.iter() {
-                    if let EnumMemberKind::Method(m) = &member.kind {
-                        let method_range = sv.name_range(m.name);
-                        out.push(ref_count_lens(method_range, m.name, uri, all_docs, None));
+                    match &member.kind {
+                        EnumMemberKind::Method(m) => {
+                            let method_range = sv.name_range(m.name);
+                            out.push(ref_count_lens(method_range, m.name, uri, all_docs, None));
+                        }
+                        EnumMemberKind::Case(c) => {
+                            let case_range = sv.name_range(c.name);
+                            out.push(ref_count_lens(case_range, c.name, uri, all_docs, None));
+                        }
+                        _ => {}
                     }
                 }
             }
@@ -309,37 +319,46 @@ fn collect_trait_usages_in_stmts(
     }
 }
 
-/// Return the direct parent class name of a class, if any.
-fn find_parent_class(
+/// Direct supertypes of `c` — the extended parent class (resolved to its
+/// canonical short name) plus every trait listed in `use` clauses. Order is
+/// stable: extends first, then traits in source order. Duplicates are removed.
+fn collect_direct_supertypes(
     c: &php_ast::ClassDecl<'_, '_>,
     all_docs: &[(Url, Arc<ParsedDoc>)],
-) -> Option<String> {
-    let parent_short = c.extends.as_ref()?.to_string_repr().into_owned();
-    // Resolve through the documents to get the canonical short name.
-    for (_, doc) in all_docs {
-        if let Some(p) = parent_class_name(doc, &parent_short) {
-            return Some(p);
+) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    if let Some(extends) = &c.extends {
+        let parent_short = extends.to_string_repr().into_owned();
+        let resolved = all_docs
+            .iter()
+            .find_map(|(_, doc)| parent_class_name(doc, &parent_short))
+            .unwrap_or(parent_short);
+        out.push(resolved);
+    }
+    for member in c.members.iter() {
+        if let ClassMemberKind::TraitUse(t) = &member.kind {
+            for name in t.traits.iter() {
+                let s = name.to_string_repr().into_owned();
+                if !out.contains(&s) {
+                    out.push(s);
+                }
+            }
         }
     }
-    Some(parent_short)
+    out
 }
 
-/// Find the declaration location of `method_name` on `parent_class`, if any.
+/// Find the declaration location of `method_name` on a class or trait named
+/// `parent_name`, if any.
 fn parent_method_location(
-    parent_class: &str,
+    parent_name: &str,
     method_name: &str,
     all_docs: &[(Url, Arc<ParsedDoc>)],
 ) -> Option<tower_lsp::lsp_types::Location> {
     for (uri, doc) in all_docs {
-        // Cheap existence pre-check using the existing helper.
-        let members = members_of_class(doc, parent_class);
-        if !members.methods.iter().any(|(n, _)| n == method_name) {
-            continue;
-        }
-        // Located the class-doc pair; walk its AST to get the method's name range.
         let sv = doc.view();
         if let Some(range) =
-            find_method_name_range(&doc.program().stmts, parent_class, method_name, sv)
+            find_method_name_range(&doc.program().stmts, parent_name, method_name, sv)
         {
             return Some(tower_lsp::lsp_types::Location {
                 uri: uri.clone(),
@@ -352,14 +371,23 @@ fn parent_method_location(
 
 fn find_method_name_range(
     stmts: &[php_ast::Stmt<'_, '_>],
-    class_name: &str,
+    parent_name: &str,
     method_name: &str,
     sv: SourceView<'_>,
 ) -> Option<tower_lsp::lsp_types::Range> {
     for stmt in stmts {
         match &stmt.kind {
-            StmtKind::Class(c) if c.name == Some(class_name) => {
+            StmtKind::Class(c) if c.name == Some(parent_name) => {
                 for member in c.members.iter() {
+                    if let ClassMemberKind::Method(m) = &member.kind
+                        && m.name == method_name
+                    {
+                        return Some(sv.name_range(m.name));
+                    }
+                }
+            }
+            StmtKind::Trait(t) if t.name == parent_name => {
+                for member in t.members.iter() {
                     if let ClassMemberKind::Method(m) = &member.kind
                         && m.name == method_name
                     {
@@ -369,7 +397,7 @@ fn find_method_name_range(
             }
             StmtKind::Namespace(ns) => {
                 if let NamespaceBody::Braced(inner) = &ns.body
-                    && let Some(r) = find_method_name_range(inner, class_name, method_name, sv)
+                    && let Some(r) = find_method_name_range(inner, parent_name, method_name, sv)
                 {
                     return Some(r);
                 }
