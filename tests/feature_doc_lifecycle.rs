@@ -368,33 +368,3 @@ async fn document_link_returns_array() {
         "expected at least one link for require_once path"
     );
 }
-
-#[tokio::test]
-async fn inline_value_returns_array() {
-    let mut server = TestServer::new().await;
-    server
-        .open("inlval.php", "<?php\n$x = 42;\n$y = $x + 1;\n")
-        .await;
-
-    let resp = server.inline_value("inlval.php", 2, 0, 2, 10).await;
-
-    assert!(resp["error"].is_null(), "inlineValue error: {:?}", resp);
-    let values = resp["result"]
-        .as_array()
-        .expect("inlineValue must return an array when variables are in range");
-    assert_eq!(values.len(), 2, "expected exactly $y and $x on line 2");
-    let names: Vec<&str> = values
-        .iter()
-        .filter_map(|v| v["variableName"].as_str())
-        .collect();
-    assert!(
-        names.contains(&"y"),
-        "expected variable 'y' ($y), got: {:?}",
-        names
-    );
-    assert!(
-        names.contains(&"x"),
-        "expected variable 'x' ($x), got: {:?}",
-        names
-    );
-}

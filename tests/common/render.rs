@@ -459,6 +459,58 @@ pub(crate) fn render_moniker(resp: &Value) -> String {
     rows.join("\n")
 }
 
+/// Render a `textDocument/inlineValue` response — one `VariableLookup` per
+/// line as `L:C-L:C $name (case_sensitive)` sorted by start position so
+/// the snapshot is order-independent. Other inline-value variants render
+/// their tag plus the range.
+pub(crate) fn render_inline_value(resp: &Value) -> String {
+    if let Some(err) = resp.get("error").filter(|e| !e.is_null()) {
+        return format!("error: {err}");
+    }
+    let result = &resp["result"];
+    if result.is_null() {
+        return "<no inline values>".to_owned();
+    }
+    let arr = result.as_array().cloned().unwrap_or_default();
+    if arr.is_empty() {
+        return "<no inline values>".to_owned();
+    }
+    let mut rows: Vec<(u64, u64, String)> = arr
+        .iter()
+        .map(|v| {
+            let r = &v["range"];
+            let sl = r["start"]["line"].as_u64().unwrap_or(0);
+            let sc = r["start"]["character"].as_u64().unwrap_or(0);
+            let el = r["end"]["line"].as_u64().unwrap_or(0);
+            let ec = r["end"]["character"].as_u64().unwrap_or(0);
+            // VariableLookup has variableName + caseSensitiveLookup.
+            let line = if let Some(name) = v["variableName"].as_str() {
+                let cs = v["caseSensitiveLookup"].as_bool().unwrap_or(false);
+                let cs_tag = if cs {
+                    "case-sensitive"
+                } else {
+                    "case-insensitive"
+                };
+                format!("{sl}:{sc}-{el}:{ec} ${name} ({cs_tag})")
+            } else if v.get("text").is_some() {
+                let text = v["text"].as_str().unwrap_or("");
+                format!("{sl}:{sc}-{el}:{ec} text={text:?}")
+            } else if v.get("expression").is_some() {
+                let expr = v["expression"].as_str().unwrap_or("");
+                format!("{sl}:{sc}-{el}:{ec} expr={expr:?}")
+            } else {
+                format!("{sl}:{sc}-{el}:{ec} <unknown variant>")
+            };
+            (sl, sc, line)
+        })
+        .collect();
+    rows.sort_by_key(|(sl, sc, _)| (*sl, *sc));
+    rows.into_iter()
+        .map(|(_, _, s)| s)
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 pub(crate) fn render_code_lens(resp: &Value) -> String {
     if let Some(err) = resp.get("error").filter(|e| !e.is_null()) {
         return format!("error: {err}");

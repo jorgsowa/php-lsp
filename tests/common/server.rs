@@ -11,9 +11,9 @@ use super::render::{
     assert_highlights_match, assert_locations_match, canonicalize_workspace_edit,
     collect_navigation_annotations, render_call_hierarchy, render_code_actions, render_code_lens,
     render_completion, render_document_symbols, render_folding_ranges, render_hover,
-    render_inlay_hints, render_locations, render_moniker, render_prepare_call_hierarchy,
-    render_prepare_rename, render_selection_range, render_signature_help, render_type_hierarchy,
-    render_workspace_symbols,
+    render_inlay_hints, render_inline_value, render_locations, render_moniker,
+    render_prepare_call_hierarchy, render_prepare_rename, render_selection_range,
+    render_signature_help, render_type_hierarchy, render_workspace_symbols,
 };
 
 fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
@@ -1277,6 +1277,36 @@ impl TestServer {
         let path = opened.fixture.files[0].path.clone();
         let resp = self.selection_range(&path, positions).await;
         render_selection_range(&resp)
+    }
+
+    /// `textDocument/inlineValue` over the fixture's `$0…$0` range (or the
+    /// entire first file when no markers are set), rendered as one
+    /// `VariableLookup` per line sorted by start position.
+    #[track_caller]
+    pub async fn check_inline_value(&mut self, src: &str) -> String {
+        let opened = self.open_fixture(src).await;
+        let (path, sl, sc, el, ec) = if let Some(r) = opened.fixture.range.clone() {
+            (
+                r.path,
+                r.start_line,
+                r.start_character,
+                r.end_line,
+                r.end_character,
+            )
+        } else {
+            let file = &opened.fixture.files[0];
+            let line_count = file.text.lines().count() as u32;
+            let last_line_len = file.text.lines().last().map(|l| l.len()).unwrap_or(0) as u32;
+            (
+                file.path.clone(),
+                0u32,
+                0u32,
+                line_count.saturating_sub(1),
+                last_line_len,
+            )
+        };
+        let resp = self.inline_value(&path, sl, sc, el, ec).await;
+        render_inline_value(&resp)
     }
 
     /// `textDocument/moniker` at the `$0` cursor in `src`, rendered as one
