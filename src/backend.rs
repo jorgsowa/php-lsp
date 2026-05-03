@@ -542,16 +542,17 @@ impl Backend {
     /// Cheap Arc clone on the happy path; on edits the query re-runs under the
     /// DocumentStore host lock. Hold the returned Arc for the duration of a
     /// request to get a consistent snapshot.
-    fn codebase(&self) -> Arc<mir_codebase::Codebase> {
+    fn codebase(&self) -> mir_analyzer::db::MirDb {
         self.docs.get_codebase_salsa()
     }
 
-    /// Look up the import map for a file from the persistent codebase.
+    /// Look up the import map for a file. Reads directly from the per-file
+    /// `StubSlice` (memoized by salsa's `file_definitions`) — avoids building
+    /// or cloning the workspace-wide MirDb on every cursor-position request.
     fn file_imports(&self, uri: &Url) -> std::collections::HashMap<String, String> {
-        self.codebase()
-            .file_imports
-            .get(uri.as_str())
-            .map(|r| r.clone())
+        self.docs
+            .slice_for(uri)
+            .map(|s| s.imports.clone())
             .unwrap_or_default()
     }
 

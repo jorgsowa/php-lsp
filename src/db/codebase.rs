@@ -1,31 +1,40 @@
-//! `codebase` salsa query — aggregates every file's `StubSlice` into a
-//! finalized `mir_codebase::Codebase` via `codebase_from_parts`.
+//! `codebase` salsa query — aggregates every file's `StubSlice` into a list
+//! of slices that can be fed into a `mir_analyzer::db::MirDb` via
+//! `ingest_stub_slice`.
 //!
-//! When any file's `file_definitions` output changes, salsa marks this query
-//! dirty and re-runs it. Re-running calls `file_definitions` for each file in
-//! the workspace; unchanged files return their memoized slice instantly, so
-//! the work per edit is `O(N * merge_cost)` (plus one `finalize()`).
-//!
-//! Phase C step 2: query exists and has correctness tests; Backend still uses
-//! the imperative `remove/collect/finalize` path. Step 3 migrates Backend.
+//! The salsa output is just the slice list (Send + Sync). Consumers build a
+//! `MirDb` from the slices on demand. We cannot store `Arc<MirDb>` in salsa
+//! because `MirDb` contains a non-`Sync` `salsa::Storage<MirDb>`.
 
 use std::sync::Arc;
 
-use mir_codebase::Codebase;
+use mir_codebase::storage::StubSlice;
 use salsa::{Database, Update};
 
 use crate::db::definitions::file_definitions;
 use crate::db::input::Workspace;
 
-/// Opaque handle to a finalized Codebase. `Arc::ptr_eq` for the `Update`
+/// Opaque handle to the aggregated slice list. `Arc::ptr_eq` for the `Update`
 /// contract — every re-run produces a new `Arc`, matching `ParsedArc`'s
 /// pattern.
 #[derive(Clone)]
-pub struct CodebaseArc(pub Arc<Codebase>);
+pub struct CodebaseArc(pub Arc<[Arc<StubSlice>]>);
 
 impl CodebaseArc {
-    pub fn get(&self) -> &Codebase {
+    pub fn slices(&self) -> &[Arc<StubSlice>] {
         &self.0
+    }
+
+    /// Build a fresh `MirDb` populated with the bundled stubs and every
+    /// aggregated slice. `php_version` is passed to `load_stubs_for_version`
+    /// so version-gated stubs are loaded correctly.
+    pub fn build_mir_db(&self, php_version: mir_analyzer::PhpVersion) -> mir_analyzer::db::MirDb {
+        let mut db = mir_analyzer::db::MirDb::default();
+        mir_analyzer::stubs::load_stubs_for_version(&mut db, php_version);
+        for slice in self.0.iter() {
+            db.ingest_stub_slice(slice);
+        }
+        db
     }
 }
 
@@ -42,25 +51,19 @@ unsafe impl Update for CodebaseArc {
     }
 }
 
-/// Build a finalized Codebase from the bundled PHP stubs (string/array/etc.
-/// builtins) plus every user file's `StubSlice`. Depends on `Workspace.files`
-/// and transitively on every file's `file_definitions` query. Stubs are
-/// treated as constant — they don't participate in salsa invalidation.
-///
-/// Load order matches today's imperative path (`Backend::new`): stubs first,
-/// user definitions second — so user classes with an FQN matching a stub
-/// overwrite the stub entry. `finalize()` runs once at the end.
+/// Aggregate every file's `StubSlice` into one list. Depends on
+/// `Workspace.files` and transitively on every file's `file_definitions`
+/// query. Stubs are *not* part of the aggregate — they're loaded on the
+/// consumer side when constructing a `MirDb`, so version changes don't
+/// invalidate this query.
 #[salsa::tracked(no_eq)]
 pub fn codebase(db: &dyn Database, ws: Workspace) -> CodebaseArc {
-    let mut builder = mir_codebase::CodebaseBuilder::new();
-    mir_analyzer::stubs::load_stubs(builder.codebase());
     let files = ws.files(db);
-    for sf in files.iter() {
-        builder.add((*file_definitions(db, *sf).0).clone());
-    }
-    // TODO: when PHP-version-dependent stubs land, thread a PhpVersion input
-    // through this query so different versions don't share memoization.
-    CodebaseArc(Arc::new(builder.finalize()))
+    let slices: Vec<Arc<StubSlice>> = files
+        .iter()
+        .map(|sf| file_definitions(db, *sf).0.clone())
+        .collect();
+    CodebaseArc(Arc::from(slices))
 }
 
 #[cfg(test)]
@@ -70,6 +73,7 @@ mod tests {
     use super::*;
     use crate::db::analysis::AnalysisHost;
     use crate::db::input::{FileId, SourceFile};
+    use mir_analyzer::db::type_exists_via_db;
     use salsa::Setter;
 
     #[test]
@@ -96,8 +100,9 @@ mod tests {
         );
 
         let cb = codebase(host.db(), ws);
-        assert!(cb.get().type_exists("A\\Foo"));
-        assert!(cb.get().type_exists("B\\Bar"));
+        let mir_db = cb.build_mir_db(mir_analyzer::PhpVersion::LATEST);
+        assert!(type_exists_via_db(&mir_db, "A\\Foo"));
+        assert!(type_exists_via_db(&mir_db, "B\\Bar"));
     }
 
     #[test]
@@ -113,15 +118,17 @@ mod tests {
         let ws = Workspace::new(host.db(), Arc::from([f1]), mir_analyzer::PhpVersion::LATEST);
 
         let a1 = codebase(host.db(), ws);
-        assert!(a1.get().type_exists("Before"));
+        let mir_a1 = a1.build_mir_db(mir_analyzer::PhpVersion::LATEST);
+        assert!(type_exists_via_db(&mir_a1, "Before"));
         let first_ptr = Arc::as_ptr(&a1.0);
 
         f1.set_text(host.db_mut())
             .to(Arc::<str>::from("<?php\nclass After {}"));
         let a2 = codebase(host.db(), ws);
         assert_ne!(first_ptr, Arc::as_ptr(&a2.0), "edit should invalidate");
-        assert!(a2.get().type_exists("After"));
-        assert!(!a2.get().type_exists("Before"));
+        let mir_a2 = a2.build_mir_db(mir_analyzer::PhpVersion::LATEST);
+        assert!(type_exists_via_db(&mir_a2, "After"));
+        assert!(!type_exists_via_db(&mir_a2, "Before"));
     }
 
     #[test]

@@ -9,8 +9,9 @@
 
 use std::sync::Arc;
 
-use salsa::{Database, Update};
+use salsa::Update;
 
+use crate::db::analysis::LspDatabase;
 use crate::db::codebase::codebase;
 use crate::db::input::{SourceFile, Workspace};
 use crate::db::parse::parsed_doc;
@@ -75,16 +76,14 @@ unsafe impl Update for SymbolRefsArc {
 /// Run Pass-2 analysis on `file` against the workspace codebase and return
 /// every resolved reference with its codebase key and byte span.
 ///
-/// The analyzer internally also calls `mark_*_referenced_at` on the Codebase
-/// Arc from `codebase(ws)` — we deliberately ignore those mutations here and
-/// build our own aggregation via `symbol_refs`. This keeps the data flow
-/// purely functional from salsa's perspective even though the underlying
-/// Codebase uses interior mutability.
+/// The analyzer internally records reference locations via the salsa
+/// accumulator on the cloned `MirDb` — we deliberately ignore those side
+/// effects here and build our own aggregation from the resolved-symbol list,
+/// keeping the data flow purely functional from salsa's perspective.
 #[salsa::tracked(no_eq)]
-pub fn file_refs(db: &dyn Database, ws: Workspace, file: SourceFile) -> FileRefsArc {
+pub fn file_refs(db: &dyn LspDatabase, ws: Workspace, file: SourceFile) -> FileRefsArc {
     let cb = codebase(db, ws);
-    let mut mir_db = mir_analyzer::db::MirDb::default();
-    mir_db.ingest_codebase(cb.get());
+    let mir_db = db.cached_mir_db(cb.0.clone(), ws.php_version(db));
     let doc = parsed_doc(db, file);
     let uri = file.uri(db);
     let source = file.text(db);
@@ -93,7 +92,6 @@ pub fn file_refs(db: &dyn Database, ws: Workspace, file: SourceFile) -> FileRefs
     let mut symbols = Vec::new();
     salsa::attach_allow_change(&mir_db, || {
         let mut analyzer = mir_analyzer::stmt::StatementsAnalyzer::new(
-            cb.get(),
             &mir_db,
             uri,
             &source,
@@ -128,7 +126,7 @@ pub fn file_refs(db: &dyn Database, ws: Workspace, file: SourceFile) -> FileRefs
 /// `(uri, start, end)` list — drop-in replacement for
 /// `Codebase::get_reference_locations`.
 #[salsa::tracked(no_eq)]
-pub fn symbol_refs(db: &dyn Database, ws: Workspace, key: String) -> SymbolRefsArc {
+pub fn symbol_refs(db: &dyn LspDatabase, ws: Workspace, key: String) -> SymbolRefsArc {
     let files = ws.files(db);
     let mut out: Vec<(Arc<str>, u32, u16, u16)> = Vec::new();
     for sf in files.iter() {

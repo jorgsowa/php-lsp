@@ -40,7 +40,7 @@ fn all_enabled() -> DiagnosticsConfig {
     }
 }
 
-/// Single-file cold analyze: fresh `Codebase` on every iteration.
+/// Single-file cold analyze: fresh `MirDb` on every iteration.
 fn bench_single_file(c: &mut Criterion) {
     let uri = Url::parse("file:///bench/medium.php").unwrap();
     let doc = ParsedDoc::parse(MEDIUM.to_owned());
@@ -48,28 +48,29 @@ fn bench_single_file(c: &mut Criterion) {
 
     c.bench_function("semantic/single_file/medium", |b| {
         b.iter(|| {
-            let codebase = mir_codebase::Codebase::new();
-            black_box(semantic_diagnostics(&uri, &doc, &codebase, &cfg, None));
+            let mut mir_db = mir_analyzer::db::MirDb::default();
+            black_box(semantic_diagnostics(&uri, &doc, &mut mir_db, &cfg, None));
         });
     });
 }
 
-/// Edit-loop: codebase is re-populated in place per iter via
-/// `semantic_diagnostics` (which evicts the file's definitions, re-collects,
-/// re-finalizes, then analyzes). Models the per-keystroke cost on a
-/// small workspace where the changed file is the only thing in the codebase.
+/// Edit-loop: MirDb is re-populated in place per iter via
+/// `semantic_diagnostics` (which evicts the file's definitions, re-collects
+/// into a `StubSlice`, then re-ingests + analyzes). Models the per-keystroke
+/// cost on a small workspace where the changed file is the only thing in the
+/// db.
 fn bench_edit_loop(c: &mut Criterion) {
     let uri = Url::parse("file:///bench/medium.php").unwrap();
     let doc = ParsedDoc::parse(MEDIUM.to_owned());
     let cfg = all_enabled();
-    let codebase = mir_codebase::Codebase::new();
+    let mut mir_db = mir_analyzer::db::MirDb::default();
 
-    // Warm the codebase so the first iter isn't an outlier.
-    let _ = semantic_diagnostics(&uri, &doc, &codebase, &cfg, None);
+    // Warm the db so the first iter isn't an outlier.
+    let _ = semantic_diagnostics(&uri, &doc, &mut mir_db, &cfg, None);
 
     c.bench_function("semantic/edit_loop/medium", |b| {
         b.iter(|| {
-            black_box(semantic_diagnostics(&uri, &doc, &codebase, &cfg, None));
+            black_box(semantic_diagnostics(&uri, &doc, &mut mir_db, &cfg, None));
         });
     });
 }
@@ -104,20 +105,19 @@ fn bench_laravel_scale(c: &mut Criterion) {
 
     eprintln!("Laravel fixture: {} PHP files (semantic)", parsed.len());
 
-    // Populate codebase with every file's definitions, then finalize once.
-    let codebase = mir_codebase::Codebase::new();
+    // Populate the MirDb with every file's definitions.
+    let mut mir_db = mir_analyzer::db::MirDb::default();
     for (url, doc, _) in &parsed {
         let file: Arc<str> = Arc::from(url.as_str());
         let source_map = php_rs_parser::source_map::SourceMap::new(doc.source());
-        let collector = mir_analyzer::collector::DefinitionCollector::new(
-            &codebase,
+        let collector = mir_analyzer::collector::DefinitionCollector::new_for_slice(
             file,
             doc.source(),
             &source_map,
         );
-        collector.collect(doc.program());
+        let (slice, _) = collector.collect_slice(doc.program());
+        mir_db.ingest_stub_slice(&slice);
     }
-    codebase.finalize();
 
     // Pick a representative hot file to re-analyze on each iter. Prefer a
     // well-known Illuminate file; fall back to the first parsed entry.
@@ -134,7 +134,7 @@ fn bench_laravel_scale(c: &mut Criterion) {
     group.bench_function("reanalyze_str", |b| {
         b.iter(|| {
             black_box(semantic_diagnostics_no_rebuild(
-                &hot.0, &hot.1, &codebase, &cfg, None,
+                &hot.0, &hot.1, &mir_db, &cfg, None,
             ));
         });
     });

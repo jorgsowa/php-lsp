@@ -8,22 +8,20 @@ use tower_lsp::lsp_types::{Diagnostic, DiagnosticSeverity, NumberOrString, Posit
 use crate::ast::{ParsedDoc, SourceView};
 use crate::backend::DiagnosticsConfig;
 
-/// Run semantic checks on `doc` using the backend's persistent codebase.
-/// The codebase is updated incrementally: the current file's definitions are
-/// evicted and re-collected, then mirrored into MIR's Salsa database.
+/// Run semantic checks on `doc` using the backend's persistent `MirDb`.
+/// The MirDb is updated incrementally: the current file's definitions are
+/// evicted, re-collected into a fresh `StubSlice`, then re-ingested.
 ///
 /// `php_version` is a version string like `"8.1"` sourced from `LspConfig`.
 /// Parsed to `mir_analyzer::PhpVersion` and forwarded to `StatementsAnalyzer`.
 ///
-/// Legacy mutating path — runs `remove_file_definitions` + collect
-/// on the codebase. Kept for benchmarks (`benches/semantic.rs`) and as the
-/// reference implementation while Phase D wraps Pass-2 in salsa. Not used by
-/// the LSP handlers anymore (they use `semantic_diagnostics_no_rebuild`
-/// against the salsa-built codebase).
+/// Legacy mutating path — kept for benchmarks (`benches/semantic.rs`) and as
+/// the reference implementation. LSP handlers read issues through the salsa
+/// `semantic_issues` query + `issues_to_diagnostics`.
 pub fn semantic_diagnostics(
     uri: &Url,
     doc: &ParsedDoc,
-    codebase: &mir_codebase::Codebase,
+    mir_db: &mut mir_analyzer::db::MirDb,
     cfg: &DiagnosticsConfig,
     php_version: Option<&str>,
 ) -> Vec<Diagnostic> {
@@ -34,20 +32,18 @@ pub fn semantic_diagnostics(
     let file: std::sync::Arc<str> = std::sync::Arc::from(uri.as_str());
 
     // Incremental update: evict stale definitions for this file and re-collect.
-    codebase.remove_file_definitions(&file);
+    mir_db.remove_file_definitions(&file);
     let source_map = php_rs_parser::source_map::SourceMap::new(doc.source());
-    let collector_issues = {
+    let (slice, collector_issues) = {
         let _span = tracing::debug_span!("collect_definitions", file = %uri).entered();
-        let collector = mir_analyzer::collector::DefinitionCollector::new(
-            codebase,
+        let collector = mir_analyzer::collector::DefinitionCollector::new_for_slice(
             file.clone(),
             doc.source(),
             &source_map,
         );
-        collector.collect(doc.program())
+        collector.collect_slice(doc.program())
     };
-    let mut mir_db = mir_analyzer::db::MirDb::default();
-    mir_db.ingest_codebase(codebase);
+    mir_db.ingest_stub_slice(&slice);
 
     // Pass 2: analyse function/method bodies in the current document.
     let ver = php_version
@@ -55,10 +51,9 @@ pub fn semantic_diagnostics(
         .unwrap_or(mir_analyzer::PhpVersion::LATEST);
     let mut issue_buffer = mir_issues::IssueBuffer::new();
     let mut symbols = Vec::new();
-    salsa::attach_allow_change(&mir_db, || {
+    salsa::attach_allow_change(&*mir_db, || {
         let mut analyzer = mir_analyzer::stmt::StatementsAnalyzer::new(
-            codebase,
-            &mir_db,
+            &*mir_db,
             file.clone(),
             doc.source(),
             &source_map,
@@ -81,21 +76,17 @@ pub fn semantic_diagnostics(
         .collect()
 }
 
-/// Run semantic body analysis on `doc` assuming the codebase is already
-/// finalized (all definitions collected).
+/// Run semantic body analysis on `doc` assuming the `MirDb` is already
+/// finalized (all definitions ingested).
 ///
 /// Unlike [`semantic_diagnostics`], this function does **not** mutate the
-/// codebase — it skips the `remove_file_definitions` / re-collect / `finalize`
-/// cycle. Intended for workspace diagnostic batch passes where the codebase is
-/// built once upfront before the loop.
-///
-/// Phase I: LSP handlers now read issues through the salsa `semantic_issues`
-/// query + `issues_to_diagnostics`. This function is retained for
-/// `benches/semantic.rs` as a single-call reference implementation.
+/// MirDb — it skips the `remove_file_definitions` / re-collect cycle. Intended
+/// for workspace diagnostic batch passes where the MirDb is built once upfront
+/// before the loop.
 pub fn semantic_diagnostics_no_rebuild(
     uri: &Url,
     doc: &ParsedDoc,
-    codebase: &mir_codebase::Codebase,
+    mir_db: &mir_analyzer::db::MirDb,
     cfg: &DiagnosticsConfig,
     php_version: Option<&str>,
 ) -> Vec<Diagnostic> {
@@ -105,21 +96,15 @@ pub fn semantic_diagnostics_no_rebuild(
 
     let file: std::sync::Arc<str> = std::sync::Arc::from(uri.as_str());
     let source_map = php_rs_parser::source_map::SourceMap::new(doc.source());
-    let mut mir_db = mir_analyzer::db::MirDb::default();
-    mir_db.ingest_codebase(codebase);
 
-    // Pass 2 only: analyse function/method bodies.
-    // The codebase is already built — skip remove/re-collect so every file can
-    // share the same definition set.
     let ver = php_version
         .and_then(|s| s.parse::<mir_analyzer::PhpVersion>().ok())
         .unwrap_or(mir_analyzer::PhpVersion::LATEST);
     let mut issue_buffer = mir_issues::IssueBuffer::new();
     let mut symbols = Vec::new();
-    salsa::attach_allow_change(&mir_db, || {
+    salsa::attach_allow_change(mir_db, || {
         let mut analyzer = mir_analyzer::stmt::StatementsAnalyzer::new(
-            codebase,
-            &mir_db,
+            mir_db,
             file,
             doc.source(),
             &source_map,

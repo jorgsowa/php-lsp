@@ -13,8 +13,9 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 use mir_issues::Issue;
-use salsa::{Database, Update};
+use salsa::Update;
 
+use crate::db::analysis::LspDatabase;
 use crate::db::codebase::codebase;
 use crate::db::input::Workspace;
 
@@ -42,15 +43,13 @@ unsafe impl Update for ClassIssuesArc {
 /// diagnostics by range, not by snippet, so the `sources` map inside
 /// `ClassAnalyzer` is unused here.
 #[salsa::tracked(no_eq)]
-pub fn class_issues(db: &dyn Database, ws: Workspace) -> ClassIssuesArc {
+pub fn class_issues(db: &dyn LspDatabase, ws: Workspace) -> ClassIssuesArc {
     let cb = codebase(db, ws);
-    let mut mir_db = mir_analyzer::db::MirDb::default();
-    mir_db.ingest_codebase(cb.get());
+    let mir_db = db.cached_mir_db(cb.0.clone(), ws.php_version(db));
     let files = ws.files(db);
     let analyzed_files: HashSet<Arc<str>> = files.iter().map(|f| f.uri(db)).collect();
     let issues = salsa::attach_allow_change(&mir_db, || {
-        mir_analyzer::class::ClassAnalyzer::with_files(cb.get(), &mir_db, analyzed_files, &[])
-            .analyze_all()
+        mir_analyzer::class::ClassAnalyzer::with_files(&mir_db, analyzed_files, &[]).analyze_all()
     });
     ClassIssuesArc(Arc::from(issues))
 }

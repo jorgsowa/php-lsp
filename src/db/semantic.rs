@@ -12,8 +12,9 @@
 use std::sync::Arc;
 
 use mir_issues::Issue;
-use salsa::{Database, Update};
+use salsa::Update;
 
+use crate::db::analysis::LspDatabase;
 use crate::db::class_issues::class_issues;
 use crate::db::codebase::codebase;
 use crate::db::input::{SourceFile, Workspace};
@@ -50,10 +51,9 @@ unsafe impl Update for IssuesArc {
 /// `no_eq` because `IssuesArc` has no structural equality — invalidation is
 /// driven by the upstream inputs (codebase, parsed_doc).
 #[salsa::tracked(no_eq)]
-pub fn semantic_issues(db: &dyn Database, ws: Workspace, file: SourceFile) -> IssuesArc {
+pub fn semantic_issues(db: &dyn LspDatabase, ws: Workspace, file: SourceFile) -> IssuesArc {
     let cb = codebase(db, ws);
-    let mut mir_db = mir_analyzer::db::MirDb::default();
-    mir_db.ingest_codebase(cb.get());
+    let mir_db = db.cached_mir_db(cb.0.clone(), ws.php_version(db));
     let doc_arc = parsed_doc(db, file);
     let doc = doc_arc.get();
     let uri_arc: Arc<str> = file.uri(db);
@@ -65,7 +65,6 @@ pub fn semantic_issues(db: &dyn Database, ws: Workspace, file: SourceFile) -> Is
     let php_version = ws.php_version(db);
     salsa::attach_allow_change(&mir_db, || {
         let mut analyzer = mir_analyzer::stmt::StatementsAnalyzer::new(
-            cb.get(),
             &mir_db,
             uri_arc.clone(),
             source,

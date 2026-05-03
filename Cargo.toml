@@ -40,12 +40,12 @@ dhat = { version = "0.3", optional = true }
 mimalloc = { version = "0.1", default-features = false }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
-mir-analyzer = "0.16.1"
-mir-issues = "0.16.1"
-mir-codebase = "0.16.1"
-mir-types = "0.16.1"
-php-rs-parser = "0.9.4"
-php-ast = "0.9.4"
+mir-analyzer = "0.17.1"
+mir-issues = "0.17.1"
+mir-codebase = "0.17.1"
+mir-types = "0.17.1"
+php-rs-parser = "0.9.6"
+php-ast = "0.9.6"
 bumpalo = { version = "3", features = ["collections"] }
 tower-lsp = "0.20"
 tokio = { version = "1", features = ["full"] }

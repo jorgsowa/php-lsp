@@ -104,7 +104,7 @@ fn main() {
     println!(
         "Mode:           {}",
         if full_pipeline {
-            "full (DocumentStore + Codebase)"
+            "full (DocumentStore + MirDb)"
         } else {
             "index-only (DocumentStore)"
         }
@@ -115,8 +115,8 @@ fn main() {
     let t0 = Instant::now();
 
     let store = DocumentStore::new();
-    let codebase = if full_pipeline {
-        Some(Arc::new(mir_codebase::Codebase::new()))
+    let mut mir_db = if full_pipeline {
+        Some(mir_analyzer::db::MirDb::default())
     } else {
         None
     };
@@ -124,21 +124,21 @@ fn main() {
     let mut peak_rss = rss_before;
 
     for (i, (url, src)) in php_files.iter().enumerate() {
-        if let Some(cb) = &codebase {
+        if let Some(db) = mir_db.as_mut() {
             // Replicate the real scan_workspace pipeline:
             // 1. Parse once to get AST
-            // 2. Run DefinitionCollector into codebase
+            // 2. Run DefinitionCollector into a StubSlice and ingest into MirDb
             // 3. Store FileIndex reusing the same ParsedDoc (no second parse)
             let doc = ParsedDoc::parse(src.clone());
             let file: Arc<str> = Arc::from(url.as_str());
             let source_map = php_rs_parser::source_map::SourceMap::new(doc.source());
-            let collector = mir_analyzer::collector::DefinitionCollector::new(
-                cb,
+            let collector = mir_analyzer::collector::DefinitionCollector::new_for_slice(
                 file,
                 doc.source(),
                 &source_map,
             );
-            collector.collect(doc.program());
+            let (slice, _issues) = collector.collect_slice(doc.program());
+            db.ingest_stub_slice(&slice);
             store.index_from_doc(url.clone(), &doc, vec![]);
         } else {
             store.index(url.clone(), src);
@@ -157,20 +157,6 @@ fn main() {
         peak_rss = rss_after_index;
     }
 
-    // Resolve pending imported types after all definitions are collected.
-    if let Some(cb) = &codebase {
-        let t_fin = Instant::now();
-        cb.resolve_pending_import_types();
-        println!(
-            "codebase resolution: {:.1}ms",
-            t_fin.elapsed().as_secs_f64() * 1000.0
-        );
-        let rss_fin = rss_kb();
-        if rss_fin > peak_rss {
-            peak_rss = rss_fin;
-        }
-    }
-
     let elapsed = t0.elapsed();
     let rss_final = rss_kb();
     let _indexes = store.all_indexes(); // force retention
@@ -183,9 +169,6 @@ fn main() {
     println!();
     print_rss("RSS before", rss_before);
     print_rss("RSS after index", rss_after_index);
-    if codebase.is_some() {
-        print_rss("RSS after finalize", rss_final);
-    }
     print_rss("RSS peak (sampled)", peak_rss);
     println!();
     let delta = peak_rss.saturating_sub(rss_before);
@@ -193,9 +176,5 @@ fn main() {
     if let Some(post) = rss_after_index.checked_sub(rss_before) {
         print_rss("  DocumentStore share", post);
     }
-    if codebase.is_some()
-        && let Some(cb_share) = rss_final.checked_sub(rss_after_index)
-    {
-        print_rss("  Codebase share", cb_share);
-    }
+    let _ = (mir_db, rss_final);
 }

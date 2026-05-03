@@ -386,16 +386,20 @@ impl DocumentStore {
         self.workspace.set_php_version(host.db_mut()).to(version);
     }
 
-    /// Salsa-backed finalized Codebase. Aggregates every known file's
-    /// `StubSlice` via `codebase_from_parts`, memoized by salsa.
-    ///
-    /// Phase C step 3: this runs in parallel with Backend's imperative
-    /// `Arc<Codebase>`. Comparison tests validate parity; readers migrate in
-    /// a follow-up.
-    pub fn get_codebase_salsa(&self) -> Arc<mir_codebase::Codebase> {
+    /// Workspace-wide populated `MirDb`. Aggregates every known file's
+    /// `StubSlice`. Backed by the `RootDatabase`-level `LspDatabase::cached_mir_db`
+    /// cache, so concurrent `Backend` handlers and salsa queries
+    /// (`semantic_issues`, `file_refs`, `class_issues`) all share one populated
+    /// MirDb per workspace edit.
+    pub fn get_codebase_salsa(&self) -> mir_analyzer::db::MirDb {
+        use crate::db::analysis::LspDatabase;
         self.sync_workspace_files();
         let ws = self.workspace;
-        self.snapshot_query(move |db| crate::db::codebase::codebase(db, ws).0.clone())
+        self.snapshot_query(move |db| {
+            let php_version = ws.php_version(db);
+            let cb = crate::db::codebase::codebase(db, ws);
+            db.cached_mir_db(cb.0.clone(), php_version)
+        })
     }
 
     /// Salsa-backed reference lookup — drop-in replacement for
@@ -682,11 +686,8 @@ mod tests {
     }
 
     #[test]
-    fn salsa_codebase_matches_imperative_codebase() {
-        // Parity check for Phase C step 3: the salsa-built codebase should
-        // contain exactly the same class/interface/function FQNs as one
-        // built imperatively via DefinitionCollector against a fresh
-        // mir_codebase::Codebase.
+    fn salsa_codebase_aggregates_all_files() {
+        use mir_analyzer::db::{function_exists_via_db, type_exists_via_db};
         let store = DocumentStore::new();
         let sources = [
             (
@@ -705,30 +706,13 @@ mod tests {
 
         let salsa_cb = store.get_codebase_salsa();
 
-        let imperative_cb = mir_codebase::Codebase::new();
-        for (p, src) in &sources {
-            let (doc, _) = crate::diagnostics::parse_document(src);
-            let file: Arc<str> = Arc::from(uri(p).as_str());
-            let map = php_rs_parser::source_map::SourceMap::new(src);
-            let c =
-                mir_analyzer::collector::DefinitionCollector::new(&imperative_cb, file, src, &map);
-            let _ = c.collect(doc.program());
-        }
-        imperative_cb.resolve_pending_import_types();
-
         for fqn in ["A\\Foo", "A\\IX", "C\\Color"] {
-            assert_eq!(
-                salsa_cb.type_exists(fqn),
-                imperative_cb.type_exists(fqn),
-                "parity mismatch on type {fqn}"
+            assert!(
+                type_exists_via_db(&salsa_cb, fqn),
+                "{fqn} missing from salsa cb"
             );
-            assert!(salsa_cb.type_exists(fqn), "{fqn} missing from salsa cb");
         }
-        assert_eq!(
-            salsa_cb.functions.contains_key("B\\bar"),
-            imperative_cb.functions.contains_key("B\\bar"),
-        );
-        assert!(salsa_cb.functions.contains_key("B\\bar"));
+        assert!(function_exists_via_db(&salsa_cb, "B\\bar"));
     }
 
     #[test]
@@ -902,20 +886,21 @@ mod tests {
         };
         assert!(store.seed_cached_slice(&u, seeded));
 
+        use mir_analyzer::db::type_exists_via_db;
         // Codebase should contain the seeded class, not the real one.
         let cb = store.get_codebase_salsa();
-        assert!(cb.type_exists("Seeded"));
-        assert!(!cb.type_exists("Real"));
+        assert!(type_exists_via_db(&cb, "Seeded"));
+        assert!(!type_exists_via_db(&cb, "Real"));
 
         // Edit: mirror_text flips the text and also clears cached_slice.
         store.mirror_text(&u, "<?php\nclass Edited {}");
         let cb = store.get_codebase_salsa();
         assert!(
-            cb.type_exists("Edited"),
+            type_exists_via_db(&cb, "Edited"),
             "after edit, codebase must reflect fresh parse"
         );
         assert!(
-            !cb.type_exists("Seeded"),
+            !type_exists_via_db(&cb, "Seeded"),
             "mirror_text must clear cached_slice so stale data is gone"
         );
     }
