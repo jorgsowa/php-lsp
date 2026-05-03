@@ -148,6 +148,49 @@ async fn whitespace_position_returns_no_moniker() {
     expect!["<no moniker>"].assert_eq(&out);
 }
 
+// ── cursor-at-end-of-name regression ─────────────────────────────────────────
+
+#[tokio::test]
+async fn cursor_at_end_of_method_name_still_resolves_class_member() {
+    // Cursor right after `bar` (before `(`) is a common position. The
+    // member detector's `cursor_on_name` boundary check must accept it.
+    let mut s = TestServer::new().await;
+    let out = s
+        .check_moniker("<?php\nclass Foo {\n    public function bar$0(): void {}\n}\n")
+        .await;
+    expect!["php:Foo::bar kind=export unique=project"].assert_eq(&out);
+}
+
+// ── duplicate-name regressions (str_offset must use doc.source) ──────────────
+
+#[tokio::test]
+async fn member_name_appearing_in_earlier_comment_still_resolves() {
+    // Regression: cursor_on_name must use the AST's own source, not the
+    // caller-provided one. With caller source, `str_offset` falls back to
+    // `source.find("bar")` and returns the comment's offset, so the cursor
+    // (inside the real method) can't match.
+    let mut s = TestServer::new().await;
+    let out = s
+        .check_moniker(
+            "<?php\n// note: bar is the action name\nclass Foo {\n    public function ba$0r(): void {}\n}\n",
+        )
+        .await;
+    expect!["php:Foo::bar kind=export unique=project"].assert_eq(&out);
+}
+
+#[tokio::test]
+async fn same_method_name_in_two_classes_resolves_correct_owner() {
+    // Two classes share a method name. Without per-AST-node offsets the
+    // resolver could attribute every cursor to the first class's method.
+    let mut s = TestServer::new().await;
+    let out = s
+        .check_moniker(
+            "<?php\nclass A { public function shared(): void {} }\nclass B { public function sha$0red(): void {} }\n",
+        )
+        .await;
+    expect!["php:B::shared kind=export unique=project"].assert_eq(&out);
+}
+
 // ── member-name declaration sites ───────────────────────────────────────────
 // Cursor on a method/property/class-const/enum-case name produces
 // `Class::name` (or `Ns\\Class::name`, `Ns\\Class::$prop`).

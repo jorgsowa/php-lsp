@@ -1279,6 +1279,25 @@ impl TestServer {
         render_selection_range(&resp)
     }
 
+    /// Variant of `check_inline_value` taking explicit start/end positions.
+    /// Use when the snapshot needs to assert column boundaries that the
+    /// `$0…$0` fixture-range form can't express (it always defaults to the
+    /// full line on the start/end lines).
+    #[track_caller]
+    pub async fn check_inline_value_at(
+        &mut self,
+        src: &str,
+        start: (u32, u32),
+        end: (u32, u32),
+    ) -> String {
+        let opened = self.open_fixture(src).await;
+        let path = opened.fixture.files[0].path.clone();
+        let resp = self
+            .inline_value(&path, start.0, start.1, end.0, end.1)
+            .await;
+        render_inline_value(&resp)
+    }
+
     /// `textDocument/inlineValue` over the fixture's `$0…$0` range (or the
     /// entire first file when no markers are set), rendered as one
     /// `VariableLookup` per line sorted by start position.

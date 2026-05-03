@@ -30,9 +30,19 @@ pub fn moniker_at(
         return None;
     }
 
+    // Use the AST's own source for member detection. AST name slices
+    // point into `doc.source()`, so `str_offset`'s pointer arithmetic
+    // resolves to per-occurrence offsets only when the same allocation
+    // is used; mixing in the caller-provided `source` falls back to
+    // `source.find(name)`, which returns the first textual occurrence
+    // and silently misattributes cursors when names collide (comments
+    // mentioning the symbol, or the same method name in two classes).
+    let ast_source = doc.source();
+
     // Member-name declaration sites are checked first so that property
     // declarations (whose `word` starts with `$`) still produce a moniker.
-    let identifier = if let Some(id) = enclosing_member_identifier(source, doc, position, &word) {
+    let identifier = if let Some(id) = enclosing_member_identifier(ast_source, doc, position, &word)
+    {
         id
     } else if word.starts_with('$') {
         // Plain variable — no project-stable identifier.
@@ -214,7 +224,10 @@ fn match_class_member(
 fn cursor_on_name(source: &str, cursor_byte: u32, name: &str) -> bool {
     let start = str_offset(source, name);
     let end = start + name.len() as u32;
-    cursor_byte >= start && cursor_byte < end
+    // Inclusive on the right boundary so that a cursor positioned right
+    // after the name (e.g. between `bar` and `(`) — a common "just typed
+    // the name" position — still counts as on the name.
+    cursor_byte >= start && cursor_byte <= end
 }
 
 #[inline]

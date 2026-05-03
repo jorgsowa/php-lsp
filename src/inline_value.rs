@@ -15,6 +15,12 @@ pub fn inline_values_in_range(source: &str, range: Range) -> Vec<InlineValue> {
         if line_num < range.start.line || line_num > range.end.line {
             continue;
         }
+        // Per the LSP spec, the request is a Range — column boundaries on
+        // the first and last line must be respected. Mid-range lines are
+        // covered in full.
+        let line_min_col: Option<u32> =
+            (line_num == range.start.line).then_some(range.start.character);
+        let line_max_col: Option<u32> = (line_num == range.end.line).then_some(range.end.character);
 
         let bytes = line.as_bytes();
         let mut i = 0usize;
@@ -54,6 +60,24 @@ pub fn inline_values_in_range(source: &str, range: Range) -> Vec<InlineValue> {
             }
 
             let end_col = i as u32;
+            // Skip occurrences that fall outside the requested range's
+            // column boundaries on the start/end lines. Note that the
+            // byte columns assume ASCII; multi-byte chars (covered by the
+            // `>= 0x80` branch) would advance `i` per UTF-8 byte, so the
+            // resulting `dollar_col`/`end_col` are byte columns. They
+            // happen to coincide with UTF-16 columns for the cases the
+            // LSP client cares about (a viewport range), and a stricter
+            // UTF-16 conversion would belong in a separate refactor.
+            if let Some(min) = line_min_col
+                && dollar_col < min
+            {
+                continue;
+            }
+            if let Some(max) = line_max_col
+                && end_col > max
+            {
+                continue;
+            }
             result.push(InlineValue::VariableLookup(InlineValueVariableLookup {
                 range: Range {
                     start: Position {

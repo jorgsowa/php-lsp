@@ -112,6 +112,31 @@ async fn multiple_occurrences_on_same_line_each_get_a_lookup() {
     .assert_eq(&out);
 }
 
+// ── range column boundaries ─────────────────────────────────────────────────
+
+#[tokio::test]
+async fn range_start_character_excludes_earlier_columns() {
+    // A range that begins mid-line should NOT pick up variables that
+    // sit before its start column. The LSP spec defines the request as
+    // a Range, not a list of lines.
+    let mut s = TestServer::new().await;
+    let out = s
+        .check_inline_value_at("<?php\n$x = 1; $y = 2;\n", (1, 8), (1, 99))
+        .await;
+    expect!["1:8-1:10 $y (case-sensitive)"].assert_eq(&out);
+}
+
+#[tokio::test]
+async fn range_end_character_excludes_later_columns() {
+    // Variables past `range.end.character` on the end line must be
+    // excluded.
+    let mut s = TestServer::new().await;
+    let out = s
+        .check_inline_value_at("<?php\n$x = 1; $y = 2;\n", (1, 0), (1, 6))
+        .await;
+    expect!["1:0-1:2 $x (case-sensitive)"].assert_eq(&out);
+}
+
 // ── current-behavior snapshots: no lexer awareness ──────────────────────────
 // `inline_values_in_range` is a byte-level scanner with no understanding of
 // strings or comments; PHP variables that appear inside string literals or
