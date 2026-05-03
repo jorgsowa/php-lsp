@@ -74,15 +74,16 @@ async fn simple_namespace_function_moniker() {
 }
 
 #[tokio::test]
-async fn unknown_word_in_namespace_inherits_namespace_prefix() {
-    // Cursor sits on a word that has no local declaration and no `use`
-    // import — for namespaced files, the resolver still attaches the file's
-    // namespace prefix (PHP-style FQCN behavior).
+async fn unknown_word_in_namespace_does_not_inherit_namespace_prefix() {
+    // PHP's resolver falls back to global for unqualified function calls,
+    // and for classes the FQCN can't be inferred without explicit
+    // qualification. The moniker resolver therefore returns the bare word
+    // when no local declaration and no `use` import match.
     let mut s = TestServer::new().await;
     let out = s
         .check_moniker("<?php\nnamespace App;\nclass Foo {}\n$x = some$0Helper();\n")
         .await;
-    expect!["php:App\\someHelper kind=export unique=project"].assert_eq(&out);
+    expect!["php:someHelper kind=export unique=project"].assert_eq(&out);
 }
 
 #[tokio::test]
@@ -147,40 +148,91 @@ async fn whitespace_position_returns_no_moniker() {
     expect!["<no moniker>"].assert_eq(&out);
 }
 
-// ── current-behavior snapshots: positions the resolver is name-only ─────────
-// `moniker_at` resolves whatever bare word is under the cursor against
-// top-level declarations; it does NOT understand member context. The
-// snapshots below pin the present behavior so any future improvement
-// (e.g. emitting `Class::method`) shows up as a snapshot diff.
+// ── member-name declaration sites ───────────────────────────────────────────
+// Cursor on a method/property/class-const/enum-case name produces
+// `Class::name` (or `Ns\\Class::name`, `Ns\\Class::$prop`).
 
 #[tokio::test]
-async fn class_method_position_resolves_method_word_only() {
+async fn class_method_declaration_uses_class_member_form() {
     let mut s = TestServer::new().await;
     let out = s
         .check_moniker("<?php\nclass Foo {\n    public function ba$0r(): void {}\n}\n")
         .await;
-    expect!["php:bar kind=export unique=project"].assert_eq(&out);
+    expect!["php:Foo::bar kind=export unique=project"].assert_eq(&out);
 }
 
 #[tokio::test]
-async fn class_method_in_namespace_inherits_namespace_prefix() {
-    // The current resolver attaches the file's namespace prefix to ANY
-    // unresolved word — including method names, which is technically wrong
-    // (methods aren't independently namespaced). Pinned for visibility.
+async fn class_method_in_namespace_qualifies_with_class_fqcn() {
     let mut s = TestServer::new().await;
     let out = s
         .check_moniker(
             "<?php\nnamespace App;\nclass Foo {\n    public function ba$0r(): void {}\n}\n",
         )
         .await;
-    expect!["php:App\\bar kind=export unique=project"].assert_eq(&out);
+    expect!["php:App\\Foo::bar kind=export unique=project"].assert_eq(&out);
 }
 
 #[tokio::test]
-async fn enum_case_position_resolves_case_word_only() {
+async fn class_property_uses_dollar_prefix() {
+    let mut s = TestServer::new().await;
+    let out = s
+        .check_moniker("<?php\nclass Foo {\n    public int $cou$0nter = 0;\n}\n")
+        .await;
+    expect!["php:Foo::$counter kind=export unique=project"].assert_eq(&out);
+}
+
+#[tokio::test]
+async fn class_const_uses_class_member_form() {
+    let mut s = TestServer::new().await;
+    let out = s
+        .check_moniker("<?php\nclass Foo {\n    const VER$0SION = '1';\n}\n")
+        .await;
+    expect!["php:Foo::VERSION kind=export unique=project"].assert_eq(&out);
+}
+
+#[tokio::test]
+async fn interface_method_qualifies_with_interface_name() {
+    let mut s = TestServer::new().await;
+    let out = s
+        .check_moniker("<?php\ninterface Greeter {\n    public function gree$0t(): string;\n}\n")
+        .await;
+    expect!["php:Greeter::greet kind=export unique=project"].assert_eq(&out);
+}
+
+#[tokio::test]
+async fn trait_method_qualifies_with_trait_name() {
+    let mut s = TestServer::new().await;
+    let out = s
+        .check_moniker("<?php\ntrait Greets {\n    public function h$0i(): void {}\n}\n")
+        .await;
+    expect!["php:Greets::hi kind=export unique=project"].assert_eq(&out);
+}
+
+#[tokio::test]
+async fn enum_case_qualifies_with_enum_name() {
     let mut s = TestServer::new().await;
     let out = s
         .check_moniker("<?php\nenum Color {\n    case Re$0d;\n}\n")
         .await;
-    expect!["php:Red kind=export unique=project"].assert_eq(&out);
+    expect!["php:Color::Red kind=export unique=project"].assert_eq(&out);
+}
+
+#[tokio::test]
+async fn enum_method_qualifies_with_enum_name() {
+    let mut s = TestServer::new().await;
+    let out = s
+        .check_moniker(
+            "<?php\nenum Color {\n    case Red;\n    public function la$0bel(): string { return 'r'; }\n}\n",
+        )
+        .await;
+    expect!["php:Color::label kind=export unique=project"].assert_eq(&out);
+}
+
+#[tokio::test]
+async fn enum_case_in_namespace_qualifies_with_fqcn() {
+    let mut s = TestServer::new().await;
+    let out = s
+        .check_moniker("<?php\nnamespace App;\nenum Color {\n    case Re$0d;\n}\n")
+        .await;
+    expect!["php:App\\Color::Red kind=export unique=project"].assert_eq(&out);
 }
