@@ -1,15 +1,14 @@
-use php_ast::{ClassMemberKind, EnumMemberKind, NamespaceBody, Stmt, StmtKind};
+use php_ast::{
+    CallableCreateKind, ClassDecl, ClassMemberKind, EnumMemberKind, Expr, ExprKind, NamespaceBody,
+    Param, PropertyHookBody, Stmt, StmtKind, StringPart,
+};
 use tower_lsp::lsp_types::{Position, Range, SelectionRange};
 
 use crate::ast::{ParsedDoc, SourceView};
 
 /// Build a selection-range chain for each cursor position.
 /// Levels go from innermost to outermost via `parent` links.
-pub fn selection_ranges(
-    _source: &str,
-    doc: &ParsedDoc,
-    positions: &[Position],
-) -> Vec<SelectionRange> {
+pub fn selection_ranges(doc: &ParsedDoc, positions: &[Position]) -> Vec<SelectionRange> {
     let sv = doc.view();
     let fr = file_range(sv);
     positions
@@ -152,8 +151,19 @@ fn span_range(sv: SourceView<'_>, start: u32, end: u32) -> Range {
     }
 }
 
+#[inline]
 fn span_contains(start: u32, end: u32, off: u32) -> bool {
     off >= start && off < end
+}
+
+#[inline]
+fn push_if_contains(s: u32, e: u32, off: u32, out: &mut Vec<(u32, u32)>) -> bool {
+    if span_contains(s, e, off) {
+        out.push((s, e));
+        true
+    } else {
+        false
+    }
 }
 
 fn collect_spans_stmts(stmts: &[Stmt<'_, '_>], off: u32, out: &mut Vec<(u32, u32)>) {
@@ -168,71 +178,64 @@ fn collect_spans_stmt(stmt: &Stmt<'_, '_>, off: u32, out: &mut Vec<(u32, u32)>) 
     if !span_contains(s, e, off) {
         return;
     }
+    out.push((s, e));
     match &stmt.kind {
         StmtKind::Function(f) => {
-            out.push((s, e));
+            for p in f.params.iter() {
+                collect_spans_param(p, off, out);
+            }
             collect_spans_stmts(&f.body, off, out);
         }
-        StmtKind::Class(c) => {
-            out.push((s, e));
-            for member in c.members.iter() {
-                if !span_contains(member.span.start, member.span.end, off) {
-                    continue;
-                }
-                out.push((member.span.start, member.span.end));
-                if let ClassMemberKind::Method(m) = &member.kind
-                    && let Some(body) = &m.body
-                {
-                    collect_spans_stmts(body, off, out);
-                }
-            }
-        }
+        StmtKind::Class(c) => collect_class_members(c, off, out),
         StmtKind::Interface(i) => {
-            out.push((s, e));
             for member in i.members.iter() {
-                if span_contains(member.span.start, member.span.end, off) {
-                    out.push((member.span.start, member.span.end));
-                }
+                collect_class_member(member, off, out);
             }
         }
         StmtKind::Trait(t) => {
-            out.push((s, e));
             for member in t.members.iter() {
-                if !span_contains(member.span.start, member.span.end, off) {
-                    continue;
-                }
-                out.push((member.span.start, member.span.end));
-                if let ClassMemberKind::Method(m) = &member.kind
-                    && let Some(body) = &m.body
-                {
-                    collect_spans_stmts(body, off, out);
-                }
+                collect_class_member(member, off, out);
             }
         }
         StmtKind::Enum(en) => {
-            out.push((s, e));
             for member in en.members.iter() {
-                if !span_contains(member.span.start, member.span.end, off) {
+                if !push_if_contains(member.span.start, member.span.end, off, out) {
                     continue;
                 }
-                out.push((member.span.start, member.span.end));
-                if let EnumMemberKind::Method(m) = &member.kind
-                    && let Some(body) = &m.body
-                {
-                    collect_spans_stmts(body, off, out);
+                match &member.kind {
+                    EnumMemberKind::Method(m) => {
+                        for p in m.params.iter() {
+                            collect_spans_param(p, off, out);
+                        }
+                        if let Some(body) = &m.body {
+                            collect_spans_stmts(body, off, out);
+                        }
+                    }
+                    EnumMemberKind::Case(c) => {
+                        if let Some(v) = &c.value {
+                            collect_spans_expr(v, off, out);
+                        }
+                    }
+                    EnumMemberKind::ClassConst(c) => {
+                        collect_spans_expr(&c.value, off, out);
+                    }
+                    EnumMemberKind::TraitUse(_) => {}
                 }
             }
         }
         StmtKind::Namespace(ns) => {
-            out.push((s, e));
             if let NamespaceBody::Braced(inner) = &ns.body {
                 collect_spans_stmts(inner, off, out);
             }
         }
         StmtKind::If(i) => {
-            out.push((s, e));
+            collect_spans_expr(&i.condition, off, out);
             collect_spans_stmt(i.then_branch, off, out);
             for ei in i.elseif_branches.iter() {
+                if !push_if_contains(ei.span.start, ei.span.end, off, out) {
+                    continue;
+                }
+                collect_spans_expr(&ei.condition, off, out);
                 collect_spans_stmt(&ei.body, off, out);
             }
             if let Some(el) = &i.else_branch {
@@ -240,36 +243,378 @@ fn collect_spans_stmt(stmt: &Stmt<'_, '_>, off: u32, out: &mut Vec<(u32, u32)>) 
             }
         }
         StmtKind::While(w) => {
-            out.push((s, e));
+            collect_spans_expr(&w.condition, off, out);
             collect_spans_stmt(w.body, off, out);
         }
         StmtKind::For(f) => {
-            out.push((s, e));
+            for e in f.init.iter() {
+                collect_spans_expr(e, off, out);
+            }
+            for e in f.condition.iter() {
+                collect_spans_expr(e, off, out);
+            }
+            for e in f.update.iter() {
+                collect_spans_expr(e, off, out);
+            }
             collect_spans_stmt(f.body, off, out);
         }
         StmtKind::Foreach(f) => {
-            out.push((s, e));
+            collect_spans_expr(&f.expr, off, out);
+            if let Some(k) = &f.key {
+                collect_spans_expr(k, off, out);
+            }
+            collect_spans_expr(&f.value, off, out);
             collect_spans_stmt(f.body, off, out);
         }
         StmtKind::DoWhile(d) => {
-            out.push((s, e));
             collect_spans_stmt(d.body, off, out);
+            collect_spans_expr(&d.condition, off, out);
+        }
+        StmtKind::Switch(sw) => {
+            collect_spans_expr(&sw.expr, off, out);
+            for case in sw.cases.iter() {
+                if !push_if_contains(case.span.start, case.span.end, off, out) {
+                    continue;
+                }
+                if let Some(v) = &case.value {
+                    collect_spans_expr(v, off, out);
+                }
+                collect_spans_stmts(&case.body, off, out);
+            }
         }
         StmtKind::TryCatch(t) => {
-            out.push((s, e));
             collect_spans_stmts(&t.body, off, out);
             for catch in t.catches.iter() {
+                if !push_if_contains(catch.span.start, catch.span.end, off, out) {
+                    continue;
+                }
                 collect_spans_stmts(&catch.body, off, out);
             }
             if let Some(finally) = &t.finally {
                 collect_spans_stmts(finally, off, out);
             }
         }
-        StmtKind::Block(stmts) => {
-            out.push((s, e));
-            collect_spans_stmts(stmts, off, out);
+        StmtKind::Block(stmts) => collect_spans_stmts(stmts, off, out),
+        StmtKind::Expression(e) => collect_spans_expr(e, off, out),
+        StmtKind::Echo(args) => {
+            for a in args.iter() {
+                collect_spans_expr(a, off, out);
+            }
         }
-        _ => {}
+        StmtKind::Return(opt) => {
+            if let Some(e) = opt {
+                collect_spans_expr(e, off, out);
+            }
+        }
+        StmtKind::Break(opt) | StmtKind::Continue(opt) => {
+            if let Some(e) = opt {
+                collect_spans_expr(e, off, out);
+            }
+        }
+        StmtKind::Throw(e) => collect_spans_expr(e, off, out),
+        StmtKind::Unset(args) => {
+            for a in args.iter() {
+                collect_spans_expr(a, off, out);
+            }
+        }
+        StmtKind::Const(items) => {
+            for item in items.iter() {
+                collect_spans_expr(&item.value, off, out);
+            }
+        }
+        StmtKind::StaticVar(items) => {
+            for item in items.iter() {
+                if let Some(d) = &item.default {
+                    collect_spans_expr(d, off, out);
+                }
+            }
+        }
+        StmtKind::Declare(d) => {
+            for (_, e) in d.directives.iter() {
+                collect_spans_expr(e, off, out);
+            }
+            if let Some(body) = &d.body {
+                collect_spans_stmt(body, off, out);
+            }
+        }
+        // Variants whose payload is a name list, raw text, or empty: nothing
+        // useful to add beyond the statement span we already pushed.
+        StmtKind::Use(_)
+        | StmtKind::Global(_)
+        | StmtKind::Goto(_)
+        | StmtKind::Label(_)
+        | StmtKind::HaltCompiler(_)
+        | StmtKind::Nop
+        | StmtKind::InlineHtml(_)
+        | StmtKind::Error => {}
+    }
+}
+
+fn collect_class_members(c: &ClassDecl<'_, '_>, off: u32, out: &mut Vec<(u32, u32)>) {
+    for member in c.members.iter() {
+        collect_class_member(member, off, out);
+    }
+}
+
+fn collect_class_member(
+    member: &php_ast::ClassMember<'_, '_>,
+    off: u32,
+    out: &mut Vec<(u32, u32)>,
+) {
+    if !push_if_contains(member.span.start, member.span.end, off, out) {
+        return;
+    }
+    match &member.kind {
+        ClassMemberKind::Method(m) => {
+            for p in m.params.iter() {
+                collect_spans_param(p, off, out);
+            }
+            if let Some(body) = &m.body {
+                collect_spans_stmts(body, off, out);
+            }
+        }
+        ClassMemberKind::Property(p) => {
+            if let Some(d) = &p.default {
+                collect_spans_expr(d, off, out);
+            }
+            for hook in p.hooks.iter() {
+                if !push_if_contains(hook.span.start, hook.span.end, off, out) {
+                    continue;
+                }
+                for hp in hook.params.iter() {
+                    collect_spans_param(hp, off, out);
+                }
+                match &hook.body {
+                    PropertyHookBody::Block(stmts) => collect_spans_stmts(stmts, off, out),
+                    PropertyHookBody::Expression(e) => collect_spans_expr(e, off, out),
+                    PropertyHookBody::Abstract => {}
+                }
+            }
+        }
+        ClassMemberKind::ClassConst(c) => collect_spans_expr(&c.value, off, out),
+        ClassMemberKind::TraitUse(_) => {}
+    }
+}
+
+fn collect_spans_param(p: &Param<'_, '_>, off: u32, out: &mut Vec<(u32, u32)>) {
+    if !push_if_contains(p.span.start, p.span.end, off, out) {
+        return;
+    }
+    if let Some(d) = &p.default {
+        collect_spans_expr(d, off, out);
+    }
+    for hook in p.hooks.iter() {
+        if !push_if_contains(hook.span.start, hook.span.end, off, out) {
+            continue;
+        }
+        match &hook.body {
+            PropertyHookBody::Block(stmts) => collect_spans_stmts(stmts, off, out),
+            PropertyHookBody::Expression(e) => collect_spans_expr(e, off, out),
+            PropertyHookBody::Abstract => {}
+        }
+    }
+}
+
+fn collect_spans_expr(expr: &Expr<'_, '_>, off: u32, out: &mut Vec<(u32, u32)>) {
+    let s = expr.span.start;
+    let e = expr.span.end;
+    if !span_contains(s, e, off) {
+        return;
+    }
+    out.push((s, e));
+    match &expr.kind {
+        // Atoms — no children.
+        ExprKind::Int(_)
+        | ExprKind::Float(_)
+        | ExprKind::String(_)
+        | ExprKind::Bool(_)
+        | ExprKind::Null
+        | ExprKind::Variable(_)
+        | ExprKind::Identifier(_)
+        | ExprKind::MagicConst(_)
+        | ExprKind::Nowdoc { .. }
+        | ExprKind::Error => {}
+
+        ExprKind::InterpolatedString(parts) | ExprKind::ShellExec(parts) => {
+            for p in parts.iter() {
+                if let StringPart::Expr(inner) = p {
+                    collect_spans_expr(inner, off, out);
+                }
+            }
+        }
+        ExprKind::Heredoc { parts, .. } => {
+            for p in parts.iter() {
+                if let StringPart::Expr(inner) = p {
+                    collect_spans_expr(inner, off, out);
+                }
+            }
+        }
+
+        ExprKind::VariableVariable(inner) => collect_spans_expr(inner, off, out),
+        ExprKind::Assign(a) => {
+            collect_spans_expr(a.target, off, out);
+            collect_spans_expr(a.value, off, out);
+        }
+        ExprKind::Binary(b) => {
+            collect_spans_expr(b.left, off, out);
+            collect_spans_expr(b.right, off, out);
+        }
+        ExprKind::UnaryPrefix(u) => collect_spans_expr(u.operand, off, out),
+        ExprKind::UnaryPostfix(u) => collect_spans_expr(u.operand, off, out),
+        ExprKind::Ternary(t) => {
+            collect_spans_expr(t.condition, off, out);
+            if let Some(then_e) = t.then_expr {
+                collect_spans_expr(then_e, off, out);
+            }
+            collect_spans_expr(t.else_expr, off, out);
+        }
+        ExprKind::NullCoalesce(n) => {
+            collect_spans_expr(n.left, off, out);
+            collect_spans_expr(n.right, off, out);
+        }
+        ExprKind::FunctionCall(f) => {
+            collect_spans_expr(f.name, off, out);
+            for arg in f.args.iter() {
+                if !push_if_contains(arg.span.start, arg.span.end, off, out) {
+                    continue;
+                }
+                collect_spans_expr(&arg.value, off, out);
+            }
+        }
+        ExprKind::Array(elems) => {
+            for el in elems.iter() {
+                if !push_if_contains(el.span.start, el.span.end, off, out) {
+                    continue;
+                }
+                if let Some(k) = &el.key {
+                    collect_spans_expr(k, off, out);
+                }
+                collect_spans_expr(&el.value, off, out);
+            }
+        }
+        ExprKind::ArrayAccess(a) => {
+            collect_spans_expr(a.array, off, out);
+            if let Some(idx) = a.index {
+                collect_spans_expr(idx, off, out);
+            }
+        }
+        ExprKind::Print(e) => collect_spans_expr(e, off, out),
+        ExprKind::Parenthesized(e) => collect_spans_expr(e, off, out),
+        ExprKind::Cast(_, e) => collect_spans_expr(e, off, out),
+        ExprKind::ErrorSuppress(e) => collect_spans_expr(e, off, out),
+        ExprKind::Isset(es) => {
+            for e in es.iter() {
+                collect_spans_expr(e, off, out);
+            }
+        }
+        ExprKind::Empty(e) => collect_spans_expr(e, off, out),
+        ExprKind::Include(_, e) => collect_spans_expr(e, off, out),
+        ExprKind::Eval(e) => collect_spans_expr(e, off, out),
+        ExprKind::Exit(opt) => {
+            if let Some(e) = opt {
+                collect_spans_expr(e, off, out);
+            }
+        }
+        ExprKind::Clone(e) => collect_spans_expr(e, off, out),
+        ExprKind::New(n) => {
+            collect_spans_expr(n.class, off, out);
+            for arg in n.args.iter() {
+                if !push_if_contains(arg.span.start, arg.span.end, off, out) {
+                    continue;
+                }
+                collect_spans_expr(&arg.value, off, out);
+            }
+        }
+        ExprKind::PropertyAccess(p) | ExprKind::NullsafePropertyAccess(p) => {
+            collect_spans_expr(p.object, off, out);
+            collect_spans_expr(p.property, off, out);
+        }
+        ExprKind::MethodCall(m) | ExprKind::NullsafeMethodCall(m) => {
+            collect_spans_expr(m.object, off, out);
+            collect_spans_expr(m.method, off, out);
+            for arg in m.args.iter() {
+                if !push_if_contains(arg.span.start, arg.span.end, off, out) {
+                    continue;
+                }
+                collect_spans_expr(&arg.value, off, out);
+            }
+        }
+        ExprKind::StaticPropertyAccess(s) | ExprKind::ClassConstAccess(s) => {
+            collect_spans_expr(s.class, off, out);
+        }
+        ExprKind::StaticMethodCall(s) => {
+            collect_spans_expr(s.class, off, out);
+            for arg in s.args.iter() {
+                if !push_if_contains(arg.span.start, arg.span.end, off, out) {
+                    continue;
+                }
+                collect_spans_expr(&arg.value, off, out);
+            }
+        }
+        ExprKind::ClassConstAccessDynamic { class, member }
+        | ExprKind::StaticPropertyAccessDynamic { class, member } => {
+            collect_spans_expr(class, off, out);
+            collect_spans_expr(member, off, out);
+        }
+        ExprKind::Closure(c) => {
+            for p in c.params.iter() {
+                collect_spans_param(p, off, out);
+            }
+            collect_spans_stmts(&c.body, off, out);
+        }
+        ExprKind::ArrowFunction(a) => {
+            for p in a.params.iter() {
+                collect_spans_param(p, off, out);
+            }
+            collect_spans_expr(a.body, off, out);
+        }
+        ExprKind::Match(m) => {
+            collect_spans_expr(m.subject, off, out);
+            for arm in m.arms.iter() {
+                if !push_if_contains(arm.span.start, arm.span.end, off, out) {
+                    continue;
+                }
+                if let Some(conds) = &arm.conditions {
+                    for c in conds.iter() {
+                        collect_spans_expr(c, off, out);
+                    }
+                }
+                collect_spans_expr(&arm.body, off, out);
+            }
+        }
+        ExprKind::ThrowExpr(e) => collect_spans_expr(e, off, out),
+        ExprKind::Yield(y) => {
+            if let Some(k) = y.key {
+                collect_spans_expr(k, off, out);
+            }
+            if let Some(v) = y.value {
+                collect_spans_expr(v, off, out);
+            }
+        }
+        ExprKind::AnonymousClass(c) => collect_class_members(c, off, out),
+        ExprKind::CallableCreate(c) => match &c.kind {
+            CallableCreateKind::Function(e) => collect_spans_expr(e, off, out),
+            CallableCreateKind::Method { object, .. } => collect_spans_expr(object, off, out),
+            CallableCreateKind::NullsafeMethod { object, .. } => {
+                collect_spans_expr(object, off, out)
+            }
+            CallableCreateKind::StaticMethod { class, .. } => collect_spans_expr(class, off, out),
+        },
+        ExprKind::CloneWith(target, withs) => {
+            collect_spans_expr(target, off, out);
+            collect_spans_expr(withs, off, out);
+        }
+        ExprKind::StaticDynMethodCall(s) => {
+            collect_spans_expr(s.class, off, out);
+            collect_spans_expr(s.method, off, out);
+            for arg in s.args.iter() {
+                if !push_if_contains(arg.span.start, arg.span.end, off, out) {
+                    continue;
+                }
+                collect_spans_expr(&arg.value, off, out);
+            }
+        }
+        ExprKind::Omit => {}
     }
 }
 
@@ -300,7 +645,7 @@ mod tests {
         let src = "<?php\nfunction greet() {}";
         let d = doc(src);
         let positions = vec![pos(1, 10), pos(0, 0)];
-        let result = selection_ranges(src, &d, &positions);
+        let result = selection_ranges(&d, &positions);
         assert_eq!(result.len(), 2);
     }
 
@@ -308,7 +653,7 @@ mod tests {
     fn empty_file_returns_file_range() {
         let src = "<?php";
         let d = doc(src);
-        let result = selection_ranges(src, &d, &[pos(0, 0)]);
+        let result = selection_ranges(&d, &[pos(0, 0)]);
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].range.start.line, 0);
     }
@@ -317,7 +662,7 @@ mod tests {
     fn cursor_in_function_body_includes_function_range() {
         let src = "<?php\nfunction greet() {\n    echo 'hi';\n}";
         let d = doc(src);
-        let result = selection_ranges(src, &d, &[pos(2, 4)]);
+        let result = selection_ranges(&d, &[pos(2, 4)]);
         let ranges = chain_ranges(&result[0]);
         assert!(
             ranges.iter().any(|r| r.start.line == 1),
@@ -330,7 +675,7 @@ mod tests {
     fn cursor_in_method_body_includes_method_and_class_ranges() {
         let src = "<?php\nclass Foo {\n    public function bar() {\n        echo 1;\n    }\n}";
         let d = doc(src);
-        let result = selection_ranges(src, &d, &[pos(3, 8)]);
+        let result = selection_ranges(&d, &[pos(3, 8)]);
         let ranges = chain_ranges(&result[0]);
         assert!(
             ranges.iter().any(|r| r.start.line == 1),
@@ -348,7 +693,7 @@ mod tests {
     fn cursor_outside_all_nodes_returns_file_range_only() {
         let src = "<?php\n// comment\n";
         let d = doc(src);
-        let result = selection_ranges(src, &d, &[pos(1, 0)]);
+        let result = selection_ranges(&d, &[pos(1, 0)]);
         assert!(!result.is_empty());
         assert_eq!(result[0].range.start.line, 0);
     }
@@ -357,7 +702,7 @@ mod tests {
     fn chain_is_ordered_innermost_to_outermost() {
         let src = "<?php\nclass Foo {\n    public function bar() {\n        echo 1;\n    }\n}";
         let d = doc(src);
-        let result = selection_ranges(src, &d, &[pos(3, 8)]);
+        let result = selection_ranges(&d, &[pos(3, 8)]);
         let ranges = chain_ranges(&result[0]);
         for window in ranges.windows(2) {
             let inner = &window[0];
@@ -377,7 +722,7 @@ mod tests {
     fn multiple_positions_are_independent() {
         let src = "<?php\nfunction a() {}\nfunction b() {}";
         let d = doc(src);
-        let result = selection_ranges(src, &d, &[pos(1, 10), pos(2, 10)]);
+        let result = selection_ranges(&d, &[pos(1, 10), pos(2, 10)]);
         assert_eq!(result.len(), 2);
         assert_ne!(result[0].range, result[1].range);
     }
@@ -487,7 +832,7 @@ mod tests {
         let src = "<?php\nfunction hello(): void {}";
         //         line 0             line 1 (30 chars)
         let d = doc(src);
-        let result = selection_ranges(src, &d, &[pos(1, 10)]);
+        let result = selection_ranges(&d, &[pos(1, 10)]);
         let ranges = chain_ranges(&result[0]);
         let outermost = ranges.last().expect("should have at least one range");
         assert_ne!(

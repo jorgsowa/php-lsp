@@ -1886,7 +1886,7 @@ impl LanguageServer for Backend {
             Some(d) => d,
             None => return Ok(None),
         };
-        let ranges = selection_ranges(doc.source(), &doc, &params.positions);
+        let ranges = selection_ranges(&doc, &params.positions);
         Ok(if ranges.is_empty() {
             None
         } else {

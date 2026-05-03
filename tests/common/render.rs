@@ -396,6 +396,39 @@ pub(crate) fn render_folding_ranges(resp: &Value) -> String {
     rows.join("\n")
 }
 
+/// Render a `textDocument/selectionRange` response as one chain per request
+/// position. Each chain prints innermost → outermost as `L:C-L:C` lines, one
+/// per parent step. Multiple chains are separated by `---`.
+pub(crate) fn render_selection_range(resp: &Value) -> String {
+    if let Some(err) = resp.get("error").filter(|e| !e.is_null()) {
+        return format!("error: {err}");
+    }
+    let arr = resp["result"].as_array().cloned().unwrap_or_default();
+    if arr.is_empty() {
+        return "<no selection ranges>".to_owned();
+    }
+    let mut chains: Vec<String> = Vec::with_capacity(arr.len());
+    for chain in arr.iter() {
+        let mut lines: Vec<String> = Vec::new();
+        let mut node = chain;
+        loop {
+            let r = &node["range"];
+            let sl = r["start"]["line"].as_u64().unwrap_or(0);
+            let sc = r["start"]["character"].as_u64().unwrap_or(0);
+            let el = r["end"]["line"].as_u64().unwrap_or(0);
+            let ec = r["end"]["character"].as_u64().unwrap_or(0);
+            lines.push(format!("{sl}:{sc}-{el}:{ec}"));
+            let parent = &node["parent"];
+            if !parent.is_object() {
+                break;
+            }
+            node = parent;
+        }
+        chains.push(lines.join("\n"));
+    }
+    chains.join("\n---\n")
+}
+
 pub(crate) fn render_code_lens(resp: &Value) -> String {
     if let Some(err) = resp.get("error").filter(|e| !e.is_null()) {
         return format!("error: {err}");

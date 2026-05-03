@@ -12,7 +12,7 @@ use super::render::{
     collect_navigation_annotations, render_call_hierarchy, render_code_actions, render_code_lens,
     render_completion, render_document_symbols, render_folding_ranges, render_hover,
     render_inlay_hints, render_locations, render_prepare_call_hierarchy, render_prepare_rename,
-    render_signature_help, render_type_hierarchy, render_workspace_symbols,
+    render_selection_range, render_signature_help, render_type_hierarchy, render_workspace_symbols,
 };
 
 fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
@@ -1248,6 +1248,34 @@ impl TestServer {
         let path = opened.fixture.files[0].path.clone();
         let resp = self.folding_range(&path).await;
         render_folding_ranges(&resp)
+    }
+
+    /// `textDocument/selectionRange` at the `$0` cursor in `src`, rendered as
+    /// one innermost → outermost chain. For multi-position requests use the
+    /// lower-level `selection_range` API directly.
+    #[track_caller]
+    pub async fn check_selection_range(&mut self, src: &str) -> String {
+        let opened = self.open_fixture(src).await;
+        let c = opened.cursor().clone();
+        let resp = self
+            .selection_range(&c.path, vec![(c.line, c.character)])
+            .await;
+        render_selection_range(&resp)
+    }
+
+    /// Multi-position variant: `textDocument/selectionRange` over all
+    /// `(line, character)` pairs in `positions`, rendered one chain per
+    /// position separated by `---`.
+    #[track_caller]
+    pub async fn check_selection_range_at(
+        &mut self,
+        src: &str,
+        positions: Vec<(u32, u32)>,
+    ) -> String {
+        let opened = self.open_fixture(src).await;
+        let path = opened.fixture.files[0].path.clone();
+        let resp = self.selection_range(&path, positions).await;
+        render_selection_range(&resp)
     }
 
     #[track_caller]
