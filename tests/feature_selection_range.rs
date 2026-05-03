@@ -445,6 +445,135 @@ class C {
     .assert_eq(&out);
 }
 
+// ── closures, arrow functions, anonymous classes ────────────────────────────
+
+#[tokio::test]
+async fn closure_body_chain() {
+    let mut s = TestServer::new().await;
+    let out = s
+        .check_selection_range(
+            r#"<?php
+$f = function (int $n) use ($x): int {
+    return $n +$0 $x;
+};
+"#,
+        )
+        .await;
+    expect![[r#"
+        2:11-2:18
+        2:4-2:19
+        1:0-3:2
+        1:0-3:1
+        1:5-3:1
+        0:0-4:0"#]]
+    .assert_eq(&out);
+}
+
+#[tokio::test]
+async fn arrow_function_body_chain() {
+    let mut s = TestServer::new().await;
+    let out = s
+        .check_selection_range("<?php\n$square = fn(int $n): int => $n *$0 $n;\n")
+        .await;
+    expect![[r#"
+        1:29-1:36
+        1:10-1:36
+        1:0-1:36
+        1:0-1:37
+        0:0-2:0"#]]
+    .assert_eq(&out);
+}
+
+#[tokio::test]
+async fn anonymous_class_method_body_chain() {
+    let mut s = TestServer::new().await;
+    let out = s
+        .check_selection_range(
+            r#"<?php
+$obj = new class {
+    public function doIt(): int {
+        return 4$0 + 2;
+    }
+};
+"#,
+        )
+        .await;
+    expect![[r#"
+        3:15-3:20
+        3:8-3:21
+        2:4-4:5
+        1:0-5:2
+        1:0-5:1
+        1:7-5:1
+        0:0-6:0"#]]
+    .assert_eq(&out);
+}
+
+// ── interpolated strings & heredoc ──────────────────────────────────────────
+
+#[tokio::test]
+async fn interpolated_string_expression_chain() {
+    let mut s = TestServer::new().await;
+    let out = s
+        .check_selection_range(
+            "<?php\nfunction f(int $x): string {\n    return \"value: {$x +$0 1}\";\n}\n",
+        )
+        .await;
+    expect![[r#"
+        2:20-2:26
+        2:11-2:28
+        2:4-2:29
+        1:0-3:1
+        0:0-4:0"#]]
+    .assert_eq(&out);
+}
+
+// ── throw, declare, statics ─────────────────────────────────────────────────
+
+#[tokio::test]
+async fn throw_statement_expression_chain() {
+    let mut s = TestServer::new().await;
+    let out = s
+        .check_selection_range(
+            r#"<?php
+function f(): void {
+    throw new RuntimeException('bo$0om');
+}
+"#,
+        )
+        .await;
+    expect![[r#"
+        2:31-2:37
+        2:10-2:38
+        2:4-2:39
+        1:0-3:1
+        0:0-4:0"#]]
+    .assert_eq(&out);
+}
+
+#[tokio::test]
+async fn simple_namespace_chain_includes_subsequent_class() {
+    let mut s = TestServer::new().await;
+    let out = s
+        .check_selection_range(
+            r#"<?php
+namespace App;
+class Foo {
+    public function bar() {
+        echo$0 1;
+    }
+}
+"#,
+        )
+        .await;
+    expect![[r#"
+        4:8-4:15
+        3:4-5:5
+        2:0-6:1
+        0:0-7:0"#]]
+    .assert_eq(&out);
+}
+
 // ── switch / match / expression / parameter granularity ─────────────────────
 
 #[tokio::test]

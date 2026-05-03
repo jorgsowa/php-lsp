@@ -13,7 +13,7 @@ async fn class_with_only_declaration_yields_one_range() {
         .await;
     expect![[r#"
         1:6-1:17
-        pattern: [a-zA-Z_\x80-\xff][a-zA-Z0-9_\x80-\xff]*"#]]
+        pattern: [a-zA-Z_\u00A0-\uFFFF][a-zA-Z0-9_\u00A0-\uFFFF]*"#]]
     .assert_eq(&out);
 }
 
@@ -35,7 +35,7 @@ greet();
         1:9-1:14
         2:0-2:5
         3:0-3:5
-        pattern: [a-zA-Z_\x80-\xff][a-zA-Z0-9_\x80-\xff]*"#]]
+        pattern: [a-zA-Z_\u00A0-\uFFFF][a-zA-Z0-9_\u00A0-\uFFFF]*"#]]
     .assert_eq(&out);
 }
 
@@ -53,7 +53,7 @@ gr$0eet();
     expect![[r#"
         1:9-1:14
         2:0-2:5
-        pattern: [a-zA-Z_\x80-\xff][a-zA-Z0-9_\x80-\xff]*"#]]
+        pattern: [a-zA-Z_\u00A0-\uFFFF][a-zA-Z0-9_\u00A0-\uFFFF]*"#]]
     .assert_eq(&out);
 }
 
@@ -68,7 +68,7 @@ async fn class_decl_and_new_expression() {
     expect![[r#"
         1:6-1:9
         2:9-2:12
-        pattern: [a-zA-Z_\x80-\xff][a-zA-Z0-9_\x80-\xff]*"#]]
+        pattern: [a-zA-Z_\u00A0-\uFFFF][a-zA-Z0-9_\u00A0-\uFFFF]*"#]]
     .assert_eq(&out);
 }
 
@@ -89,7 +89,7 @@ $c->add();
     expect![[r#"
         2:20-2:23
         5:4-5:7
-        pattern: [a-zA-Z_\x80-\xff][a-zA-Z0-9_\x80-\xff]*"#]]
+        pattern: [a-zA-Z_\u00A0-\uFFFF][a-zA-Z0-9_\u00A0-\uFFFF]*"#]]
     .assert_eq(&out);
 }
 
@@ -113,7 +113,7 @@ function f(): void {
         2:4-2:8
         3:9-3:13
         4:4-4:8
-        pattern: \$[a-zA-Z_\x80-\xff][a-zA-Z0-9_\x80-\xff]*"#]]
+        pattern: \$[a-zA-Z_\u00A0-\uFFFF][a-zA-Z0-9_\u00A0-\uFFFF]*"#]]
     .assert_eq(&out);
 }
 
@@ -130,7 +130,7 @@ function g() { $x = 2; }
         .await;
     expect![[r#"
         1:15-1:17
-        pattern: \$[a-zA-Z_\x80-\xff][a-zA-Z0-9_\x80-\xff]*"#]]
+        pattern: \$[a-zA-Z_\u00A0-\uFFFF][a-zA-Z0-9_\u00A0-\uFFFF]*"#]]
     .assert_eq(&out);
 }
 
@@ -143,7 +143,7 @@ async fn cursor_on_dollar_sign_still_finds_variable() {
     expect![[r#"
         1:15-1:17
         1:28-1:30
-        pattern: \$[a-zA-Z_\x80-\xff][a-zA-Z0-9_\x80-\xff]*"#]]
+        pattern: \$[a-zA-Z_\u00A0-\uFFFF][a-zA-Z0-9_\u00A0-\uFFFF]*"#]]
     .assert_eq(&out);
 }
 
@@ -236,6 +236,62 @@ async fn variable_pattern_requires_dollar_sign() {
 // ── unicode identifier support ─────────────────────────────────────────────
 
 #[tokio::test]
+async fn method_in_one_class_does_not_link_unrelated_class_with_same_name() {
+    // Regression: two classes share a method name. Cursor on `bar` inside
+    // class A must NOT link to `bar` inside class B — typing in linked
+    // mode would otherwise corrupt B's method.
+    let mut s = TestServer::new().await;
+    let out = s
+        .check_linked_editing_range(
+            r#"<?php
+class A {
+    public function ba$0r(): void {}
+}
+class B {
+    public function bar(): void {}
+}
+"#,
+        )
+        .await;
+    expect![[r#"
+        2:20-2:23
+        pattern: [a-zA-Z_\u00A0-\uFFFF][a-zA-Z0-9_\u00A0-\uFFFF]*"#]]
+    .assert_eq(&out);
+}
+
+#[tokio::test]
+async fn class_name_itself_still_links_globally() {
+    // Cursor on the class header — the rename target IS the class. The
+    // class-scope filter must NOT apply (otherwise the `new Foo()` site
+    // gets dropped).
+    let mut s = TestServer::new().await;
+    let out = s
+        .check_linked_editing_range("<?php\nclass Fo$0o {}\n$x = new Foo();\n")
+        .await;
+    expect![[r#"
+        1:6-1:9
+        2:9-2:12
+        pattern: [a-zA-Z_\u00A0-\uFFFF][a-zA-Z0-9_\u00A0-\uFFFF]*"#]]
+    .assert_eq(&out);
+}
+
+#[tokio::test]
+async fn cjk_identifier_links_correctly() {
+    // Regression for the BMP word-pattern range: identifiers using
+    // characters beyond Latin-1 (e.g. CJK) must round-trip. The original
+    // `\x80-\xff` byte range silently rejected anything past U+00FF.
+    let mut s = TestServer::new().await;
+    let out = s
+        .check_linked_editing_range("<?php\nfunction 名$0前() {}\n名前();\n")
+        .await;
+    expect![[r#"
+        1:9-1:11
+        2:0-2:2
+        pattern: [a-zA-Z_\u00A0-\uFFFF][a-zA-Z0-9_\u00A0-\uFFFF]*"#]]
+    .assert_eq(&out);
+}
+
+#[tokio::test]
 async fn utf8_identifier_links_correctly() {
     let mut s = TestServer::new().await;
     let out = s
@@ -244,6 +300,6 @@ async fn utf8_identifier_links_correctly() {
     expect![[r#"
         1:9-1:13
         2:0-2:4
-        pattern: [a-zA-Z_\x80-\xff][a-zA-Z0-9_\x80-\xff]*"#]]
+        pattern: [a-zA-Z_\u00A0-\uFFFF][a-zA-Z0-9_\u00A0-\uFFFF]*"#]]
     .assert_eq(&out);
 }

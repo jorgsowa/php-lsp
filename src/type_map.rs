@@ -1046,6 +1046,80 @@ pub fn enclosing_class_at(_source: &str, doc: &ParsedDoc, position: Position) ->
     enclosing_class_in_stmts(sv, &doc.program().stmts, position)
 }
 
+/// Return the LSP range of the class/interface/trait/enum declaration
+/// whose body contains `position`, or `None` if the cursor is outside any.
+/// Used by linked-editing to scope same-name member rewrites to the
+/// enclosing class instead of every class in the file.
+pub fn enclosing_class_range_at(
+    doc: &ParsedDoc,
+    position: Position,
+) -> Option<tower_lsp::lsp_types::Range> {
+    let sv = doc.view();
+    enclosing_class_range_in_stmts(sv, &doc.program().stmts, position)
+}
+
+/// Return the LSP range of every class/interface/trait/enum declaration in
+/// the file (recursing into braced-namespace bodies). Used by linked-editing
+/// to drop highlights that fall inside an *other* class than the cursor's.
+pub fn collect_all_class_ranges(doc: &ParsedDoc) -> Vec<tower_lsp::lsp_types::Range> {
+    let sv = doc.view();
+    let mut out = Vec::new();
+    collect_class_ranges_in_stmts(sv, &doc.program().stmts, &mut out);
+    out
+}
+
+fn collect_class_ranges_in_stmts(
+    sv: SourceView<'_>,
+    stmts: &[Stmt<'_, '_>],
+    out: &mut Vec<tower_lsp::lsp_types::Range>,
+) {
+    for stmt in stmts {
+        match &stmt.kind {
+            StmtKind::Class(_)
+            | StmtKind::Interface(_)
+            | StmtKind::Trait(_)
+            | StmtKind::Enum(_) => {
+                out.push(sv.range_of(stmt.span));
+            }
+            StmtKind::Namespace(ns) => {
+                if let NamespaceBody::Braced(inner) = &ns.body {
+                    collect_class_ranges_in_stmts(sv, inner, out);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+fn enclosing_class_range_in_stmts(
+    sv: SourceView<'_>,
+    stmts: &[Stmt<'_, '_>],
+    pos: Position,
+) -> Option<tower_lsp::lsp_types::Range> {
+    for stmt in stmts {
+        match &stmt.kind {
+            StmtKind::Class(_)
+            | StmtKind::Interface(_)
+            | StmtKind::Trait(_)
+            | StmtKind::Enum(_) => {
+                let r = sv.range_of(stmt.span);
+                if pos.line >= r.start.line && pos.line <= r.end.line {
+                    return Some(r);
+                }
+            }
+            StmtKind::Namespace(ns) => {
+                if let NamespaceBody::Braced(inner) = &ns.body
+                    && let Some(r) = enclosing_class_range_in_stmts(sv, inner, pos)
+                {
+                    return Some(r);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 fn enclosing_class_in_stmts(
     sv: SourceView<'_>,
     stmts: &[Stmt<'_, '_>],

@@ -10,6 +10,12 @@ use tower_lsp::lsp_types::*;
 pub fn inline_values_in_range(source: &str, range: Range) -> Vec<InlineValue> {
     let mut result = Vec::new();
 
+    // First-character predicate matches PHP's `[a-zA-Z_\x80-\xff]` — extended
+    // here to any Unicode alphabetic char so multi-byte identifiers (PHP
+    // sources are usually UTF-8 in practice) are scanned correctly.
+    let is_ident_start = |c: char| c.is_alphabetic() || c == '_';
+    let is_ident_cont = |c: char| c.is_alphanumeric() || c == '_';
+
     for (line_idx, line) in source.lines().enumerate() {
         let line_num = line_idx as u32;
         if line_num < range.start.line || line_num > range.end.line {
@@ -17,57 +23,67 @@ pub fn inline_values_in_range(source: &str, range: Range) -> Vec<InlineValue> {
         }
         // Per the LSP spec, the request is a Range — column boundaries on
         // the first and last line must be respected. Mid-range lines are
-        // covered in full.
+        // covered in full. Columns are UTF-16 code units.
         let line_min_col: Option<u32> =
             (line_num == range.start.line).then_some(range.start.character);
         let line_max_col: Option<u32> = (line_num == range.end.line).then_some(range.end.character);
 
-        let bytes = line.as_bytes();
-        let mut i = 0usize;
+        // Walk per-character so columns track UTF-16 code units correctly
+        // even when the source contains multi-byte characters.
+        let chars: Vec<(u32, char)> = {
+            let mut out = Vec::with_capacity(line.len());
+            let mut col: u32 = 0;
+            for ch in line.chars() {
+                out.push((col, ch));
+                col += ch.len_utf16() as u32;
+            }
+            out
+        };
 
-        while i < bytes.len() {
-            if bytes[i] != b'$' {
+        let mut i = 0usize;
+        while i < chars.len() {
+            if chars[i].1 != '$' {
                 i += 1;
                 continue;
             }
-
             // Skip `$$` (variable variables) — too dynamic to be useful.
-            if bytes.get(i + 1) == Some(&b'$') {
+            if chars.get(i + 1).map(|(_, c)| *c) == Some('$') {
                 i += 2;
                 continue;
             }
-
-            let dollar_col = i as u32;
-            i += 1; // move past '$'
-
-            // Collect [a-zA-Z_\x80-\xff][a-zA-Z0-9_\x80-\xff]*
-            if i >= bytes.len()
-                || !(bytes[i].is_ascii_alphabetic() || bytes[i] == b'_' || bytes[i] >= 0x80)
-            {
+            let dollar_col = chars[i].0;
+            i += 1;
+            // Need at least one identifier-start character after the `$`.
+            let Some(&(_, first)) = chars.get(i) else {
+                continue;
+            };
+            if !is_ident_start(first) {
                 continue;
             }
-            let name_start = i;
-            while i < bytes.len()
-                && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_' || bytes[i] >= 0x80)
-            {
+            let name_start_idx = i;
+            while i < chars.len() && is_ident_cont(chars[i].1) {
                 i += 1;
             }
-            let var_name = &line[name_start..i];
+            let name_end_idx = i;
+            let var_name: String = chars[name_start_idx..name_end_idx]
+                .iter()
+                .map(|(_, c)| *c)
+                .collect();
 
             // Omit `$this` — every method has it and it adds noise without value.
             if var_name == "this" {
                 continue;
             }
 
-            let end_col = i as u32;
+            let end_col = chars.get(name_end_idx).map(|(c, _)| *c).unwrap_or_else(|| {
+                chars
+                    .last()
+                    .map(|(c, ch)| c + ch.len_utf16() as u32)
+                    .unwrap_or(0)
+            });
+
             // Skip occurrences that fall outside the requested range's
-            // column boundaries on the start/end lines. Note that the
-            // byte columns assume ASCII; multi-byte chars (covered by the
-            // `>= 0x80` branch) would advance `i` per UTF-8 byte, so the
-            // resulting `dollar_col`/`end_col` are byte columns. They
-            // happen to coincide with UTF-16 columns for the cases the
-            // LSP client cares about (a viewport range), and a stricter
-            // UTF-16 conversion would belong in a separate refactor.
+            // column boundaries on the start/end lines.
             if let Some(min) = line_min_col
                 && dollar_col < min
             {
@@ -91,7 +107,7 @@ pub fn inline_values_in_range(source: &str, range: Range) -> Vec<InlineValue> {
                 },
                 // Provide the name without '$' so the DAP adapter can look it up
                 // by name in the current stack frame.
-                variable_name: Some(var_name.to_string()),
+                variable_name: Some(var_name),
                 case_sensitive_lookup: true,
             }));
         }

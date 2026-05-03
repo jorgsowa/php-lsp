@@ -1989,14 +1989,45 @@ impl LanguageServer for Backend {
             return Ok(None);
         }
 
-        let ranges: Vec<Range> = highlights.into_iter().map(|h| h.range).collect();
+        // Scope class-member rewrites so that two unrelated classes sharing
+        // a method/property/const name aren't linked together — but keep
+        // legitimate call sites at module scope (`$obj->bar()` outside any
+        // class). The rule: drop highlights that fall inside *another*
+        // class than the cursor's. Highlights inside the cursor's class
+        // and at module scope (outside every class) are preserved.
+        // Class declarations themselves (cursor on the class header) stay
+        // global so renaming a class spans the whole file.
+        let scope_to_class = !is_variable
+            && crate::type_map::enclosing_class_at(&source, &doc, position).as_deref()
+                != Some(word.as_str());
+        let other_class_ranges: Vec<Range> = if scope_to_class {
+            let cursor_class = crate::type_map::enclosing_class_range_at(&doc, position);
+            crate::type_map::collect_all_class_ranges(&doc)
+                .into_iter()
+                .filter(|r| Some(*r) != cursor_class)
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let ranges: Vec<Range> = highlights
+            .into_iter()
+            .map(|h| h.range)
+            .filter(|r| !other_class_ranges.iter().any(|ocr| range_within(*r, *ocr)))
+            .collect();
+        if ranges.is_empty() {
+            return Ok(None);
+        }
+
         // Variables include the leading `$` in their range, so the pattern
         // must require it; for everything else (class/function/method names)
-        // a `$` would produce invalid PHP.
+        // a `$` would produce invalid PHP. The Unicode range covers the
+        // full BMP so that PHP identifiers using non-Latin alphabets
+        // (CJK, Cyrillic, Greek, …) round-trip through linked-mode
+        // typing rather than being rejected by the regex.
         let word_pattern = if is_variable {
-            r"\$[a-zA-Z_\x80-\xff][a-zA-Z0-9_\x80-\xff]*".to_string()
+            r"\$[a-zA-Z_\u00A0-\uFFFF][a-zA-Z0-9_\u00A0-\uFFFF]*".to_string()
         } else {
-            r"[a-zA-Z_\x80-\xff][a-zA-Z0-9_\x80-\xff]*".to_string()
+            r"[a-zA-Z_\u00A0-\uFFFF][a-zA-Z0-9_\u00A0-\uFFFF]*".to_string()
         };
         Ok(Some(LinkedEditingRanges {
             ranges,
@@ -2857,6 +2888,16 @@ fn symbol_kind_at(source: &str, position: Position, word: &str) -> Option<Symbol
 
 /// Convert an LSP `Position` to a byte offset within `source`.
 /// Returns `None` if the position is beyond the end of the source.
+/// Returns `true` when `inner` is fully contained inside `outer` (the LSP
+/// half-open `[start, end)` convention is irrelevant here — a range with
+/// the exact same bounds counts as contained).
+fn range_within(inner: Range, outer: Range) -> bool {
+    let start_ok =
+        (inner.start.line, inner.start.character) >= (outer.start.line, outer.start.character);
+    let end_ok = (inner.end.line, inner.end.character) <= (outer.end.line, outer.end.character);
+    start_ok && end_ok
+}
+
 fn position_to_offset(source: &str, position: Position) -> Option<u32> {
     let mut byte_offset = 0usize;
     for (idx, line) in source.split('\n').enumerate() {

@@ -137,6 +137,28 @@ async fn range_end_character_excludes_later_columns() {
     expect!["1:0-1:2 $x (case-sensitive)"].assert_eq(&out);
 }
 
+// ── UTF-16 column correctness ───────────────────────────────────────────────
+
+#[tokio::test]
+async fn variable_after_multibyte_char_uses_utf16_columns() {
+    // The crab emoji `🦀` is one UTF-16 surrogate pair = 2 code units. The
+    // returned range columns must reflect UTF-16 units, not bytes.
+    let mut s = TestServer::new().await;
+    let out = s.check_inline_value("<?php\n// 🦀 $0$x = 1;$0\n").await;
+    expect!["1:6-1:8 $x (case-sensitive)"].assert_eq(&out);
+}
+
+#[tokio::test]
+async fn unicode_identifier_name_is_returned_intact() {
+    // A PHP variable with a non-ASCII name must round-trip the chars and
+    // expose UTF-16 columns. Without the rewrite, byte columns would be
+    // 0-7 (`$café` = 1 + 4 ASCII + 0 extra for é since é is 2 bytes →
+    // byte-end 6) but UTF-16 columns are 0-5 (1 `$` + 4 chars).
+    let mut s = TestServer::new().await;
+    let out = s.check_inline_value("<?php\n$0$café = 1;$0\n").await;
+    expect!["1:0-1:5 $café (case-sensitive)"].assert_eq(&out);
+}
+
 // ── current-behavior snapshots: no lexer awareness ──────────────────────────
 // `inline_values_in_range` is a byte-level scanner with no understanding of
 // strings or comments; PHP variables that appear inside string literals or
