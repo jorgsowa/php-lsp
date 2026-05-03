@@ -1,7 +1,62 @@
 mod common;
 
 use common::TestServer;
+use common::render::assert_linked_editing_ranges_share_text;
 use expect_test::expect;
+
+// ── LSP-spec same-text invariant ────────────────────────────────────────────
+
+/// Every range in a `LinkedEditingRanges` response must cover identical
+/// text — linked-mode typing replicates one edit across all of them.
+async fn check_invariant(s: &mut TestServer, path: &str, src: &str, line: u32, character: u32) {
+    s.open(path, src).await;
+    let resp = s.linked_editing_range(path, line, character).await;
+    assert_linked_editing_ranges_share_text(&resp, src);
+}
+
+#[tokio::test]
+async fn linked_ranges_cover_same_text_across_fixtures() {
+    let mut s = TestServer::new().await;
+    // Function decl + calls.
+    check_invariant(
+        &mut s,
+        "fn.php",
+        "<?php\nfunction greet() {}\ngreet();\ngreet();\n",
+        1,
+        12,
+    )
+    .await;
+    // Method decl + same-class call.
+    let mut s = TestServer::new().await;
+    check_invariant(
+        &mut s,
+        "method.php",
+        "<?php\nclass Calc {\n    public function add(): void {}\n    public function self_call(): void { $this->add(); }\n}\n",
+        2,
+        22,
+    )
+    .await;
+    // Variable decl + uses.
+    let mut s = TestServer::new().await;
+    check_invariant(
+        &mut s,
+        "var.php",
+        "<?php\nfunction f(): void {\n    $foo = 1;\n    echo $foo;\n    $foo += 2;\n}\n",
+        2,
+        6,
+    )
+    .await;
+    // Unicode identifier.
+    let mut s = TestServer::new().await;
+    check_invariant(
+        &mut s,
+        "cjk.php",
+        "<?php\nfunction 名前() {}\n名前();\n",
+        1,
+        10,
+    )
+    .await;
+}
 
 // ── basic shape: declaration only ───────────────────────────────────────────
 

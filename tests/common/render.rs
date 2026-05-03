@@ -468,6 +468,76 @@ pub(crate) fn render_selection_range(resp: &Value) -> String {
     chains.join("\n---\n")
 }
 
+/// LSP-spec invariant: every range in a `LinkedEditingRanges` response
+/// must cover the *same text*, since linked-mode typing replicates one
+/// edit across all of them. This re-extracts each range's content from
+/// `source` and asserts they all match.
+#[track_caller]
+pub fn assert_linked_editing_ranges_share_text(resp: &Value, source: &str) {
+    let result = &resp["result"];
+    if result.is_null() {
+        return;
+    }
+    let Some(arr) = result["ranges"].as_array() else {
+        return;
+    };
+    let lines: Vec<&str> = source.split('\n').collect();
+    let extract = |r: &Value| -> Option<String> {
+        let sl = r["start"]["line"].as_u64()? as usize;
+        let sc = r["start"]["character"].as_u64()? as usize;
+        let el = r["end"]["line"].as_u64()? as usize;
+        let ec = r["end"]["character"].as_u64()? as usize;
+        if sl != el {
+            return Some(format!("<multiline {sl}:{sc}-{el}:{ec}>"));
+        }
+        let line = lines.get(sl)?;
+        let chars: Vec<char> = line.chars().collect();
+        let mut byte_at_col = vec![0usize; chars.len() + 1];
+        let mut col = 0u32;
+        let mut byte = 0usize;
+        for (i, ch) in chars.iter().enumerate() {
+            byte_at_col[i] = byte;
+            col += ch.len_utf16() as u32;
+            byte += ch.len_utf8();
+            let _ = col;
+        }
+        byte_at_col[chars.len()] = byte;
+        // Column-to-char index walk:
+        let mut start_idx = 0usize;
+        let mut col = 0usize;
+        for (i, ch) in chars.iter().enumerate() {
+            if col >= sc {
+                start_idx = i;
+                break;
+            }
+            col += ch.len_utf16() as usize;
+            start_idx = i + 1;
+        }
+        let mut end_idx = start_idx;
+        let mut col = sc;
+        for (i, ch) in chars.iter().enumerate().skip(start_idx) {
+            if col >= ec {
+                end_idx = i;
+                break;
+            }
+            col += ch.len_utf16() as usize;
+            end_idx = i + 1;
+        }
+        Some(chars[start_idx..end_idx].iter().collect())
+    };
+    let texts: Vec<String> = arr.iter().filter_map(extract).collect();
+    if texts.len() <= 1 {
+        return;
+    }
+    let first = &texts[0];
+    for (i, t) in texts.iter().enumerate().skip(1) {
+        assert_eq!(
+            t, first,
+            "linked-editing range[{i}] text {t:?} differs from first {first:?}"
+        );
+    }
+}
+
 /// Render a `textDocument/linkedEditingRange` response: one range per line
 /// as `L:C-L:C`, sorted by start position; the word pattern is appended on
 /// a final `pattern: …` line. `<no linked editing>` for null/empty.
