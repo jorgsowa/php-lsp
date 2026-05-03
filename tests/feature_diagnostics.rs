@@ -693,6 +693,75 @@ async fn circular_inheritance_three_class_cycle() {
     .await;
 }
 
+/// Baseline: the bare PHP built-in `restore_error_handler()` resolves via mir's
+/// bundled stubs and should produce no `UndefinedFunction` diagnostic.
+/// Currently fails — mir does not index symbols from `stubs/Core/Core.php`
+/// (`function_exists`, `restore_error_handler`, etc.). Tracked upstream.
+#[tokio::test]
+#[ignore = "mir bug: Core/Core.php stub symbols not indexed"]
+async fn builtin_restore_error_handler_is_known() {
+    let mut s = TestServer::new().await;
+    s.check_diagnostics(
+        r#"<?php
+function _wrap(): void {
+    restore_error_handler();
+}
+"#,
+    )
+    .await;
+}
+
+/// Reproducer: a project polyfill that conditionally redefines a built-in.
+/// If `ingest_stub_slice` is last-write-wins and the project file's parsed
+/// `function restore_error_handler` overrides mir's stub, the call site may
+/// still resolve — but the polyfill body is what ends up authoritative. This
+/// test asserts that the call is *not* flagged undefined when a user-land
+/// polyfill exists in the workspace. Currently fails because `function_exists`
+/// itself is reported undefined (same Core stub not loaded).
+#[tokio::test]
+#[ignore = "mir bug: Core/Core.php stub symbols not indexed"]
+async fn user_polyfill_does_not_break_builtin_restore_error_handler() {
+    let mut s = TestServer::new().await;
+    s.check_diagnostics(
+        r#"//- /src/polyfill.php
+<?php
+if (!function_exists('restore_error_handler')) {
+    function restore_error_handler(): bool { return true; }
+}
+
+//- /src/main.php
+<?php
+function _wrap(): void {
+    restore_error_handler();
+}
+"#,
+    )
+    .await;
+}
+
+/// Reproducer: an unconditional user-land redefinition of a built-in.
+/// PHP would refuse this at runtime, but the LSP still parses it; if the
+/// stub-ingest path is last-write-wins, the project's body silently replaces
+/// mir's stub. The call site should still resolve.
+#[tokio::test]
+#[ignore = "mir bug: relies on user-land definition because Core stub is not loaded"]
+async fn user_unconditional_redefinition_does_not_break_call() {
+    let mut s = TestServer::new().await;
+    s.check_diagnostics(
+        r#"//- /src/redef.php
+<?php
+function restore_error_handler(): bool { return true; }
+
+//- /src/main.php
+<?php
+function _wrap(): void {
+    restore_error_handler();
+}
+"#,
+    )
+    .await;
+}
+
 #[tokio::test]
 async fn circular_inheritance_suppressed_when_type_errors_disabled() {
     let (mut s, _resp) = TestServer::new_with_options(json!({
