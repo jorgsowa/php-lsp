@@ -429,6 +429,39 @@ pub(crate) fn render_selection_range(resp: &Value) -> String {
     chains.join("\n---\n")
 }
 
+/// Render a `textDocument/linkedEditingRange` response: one range per line
+/// as `L:C-L:C`, sorted by start position; the word pattern is appended on
+/// a final `pattern: …` line. `<no linked editing>` for null/empty.
+pub(crate) fn render_linked_editing_range(resp: &Value) -> String {
+    if let Some(err) = resp.get("error").filter(|e| !e.is_null()) {
+        return format!("error: {err}");
+    }
+    let result = &resp["result"];
+    if result.is_null() {
+        return "<no linked editing>".to_owned();
+    }
+    let arr = result["ranges"].as_array().cloned().unwrap_or_default();
+    if arr.is_empty() {
+        return "<no linked editing>".to_owned();
+    }
+    let mut rows: Vec<(u64, u64, String)> = arr
+        .iter()
+        .map(|r| {
+            let sl = r["start"]["line"].as_u64().unwrap_or(0);
+            let sc = r["start"]["character"].as_u64().unwrap_or(0);
+            let el = r["end"]["line"].as_u64().unwrap_or(0);
+            let ec = r["end"]["character"].as_u64().unwrap_or(0);
+            (sl, sc, format!("{sl}:{sc}-{el}:{ec}"))
+        })
+        .collect();
+    rows.sort_by_key(|(sl, sc, _)| (*sl, *sc));
+    let mut out: Vec<String> = rows.into_iter().map(|(_, _, s)| s).collect();
+    if let Some(p) = result["wordPattern"].as_str() {
+        out.push(format!("pattern: {p}"));
+    }
+    out.join("\n")
+}
+
 /// Render a `textDocument/moniker` response — one moniker per line as
 /// `<scheme>:<identifier> kind=<kind> unique=<unique>`. The string variants
 /// of `kind` and `unique` come straight from the JSON; missing optional

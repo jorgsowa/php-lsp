@@ -117,45 +117,6 @@ async fn shutdown_responds_correctly() {
     assert!(resp["result"].is_null(), "shutdown result should be null");
 }
 
-#[tokio::test]
-async fn linked_editing_range_returns_no_error() {
-    let mut server = TestServer::new().await;
-    server
-        .open("linked.php", "<?php\nclass LinkedClass {}\n")
-        .await;
-
-    let resp = server.linked_editing_range("linked.php", 1, 6).await;
-
-    assert!(
-        resp["error"].is_null(),
-        "linkedEditingRange error: {:?}",
-        resp
-    );
-    let result = &resp["result"];
-    assert!(
-        !result.is_null(),
-        "expected non-null LinkedEditingRanges for class name, got null"
-    );
-    let ranges = result["ranges"]
-        .as_array()
-        .expect("expected 'ranges' array in LinkedEditingRanges");
-    assert_eq!(
-        ranges.len(),
-        1,
-        "expected exactly one range for LinkedClass"
-    );
-    assert_eq!(
-        ranges[0]["start"],
-        serde_json::json!({"line": 1, "character": 6}),
-        "range start must point to the L in LinkedClass"
-    );
-    assert_eq!(
-        ranges[0]["end"],
-        serde_json::json!({"line": 1, "character": 17}),
-        "range end must be after the last char of LinkedClass"
-    );
-}
-
 // ── concurrency ──────────────────────────────────────────────────────────────
 
 #[tokio::test]

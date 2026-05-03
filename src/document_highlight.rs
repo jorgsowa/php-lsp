@@ -27,7 +27,14 @@ pub fn document_highlights(
         let byte_off = sv.byte_of_position(position) as usize;
         collect_var_refs_in_scope(&doc.program().stmts, bare, byte_off, &mut spans);
     } else {
-        refs_in_stmts(source, &doc.program().stmts, &word, &mut spans);
+        // Use `doc.source()` (the string the AST was parsed from), not the
+        // caller's `source`. `refs_in_stmts` resolves AST name slices via
+        // `str_offset` pointer arithmetic; if the parameter `source` is a
+        // separate allocation, the arithmetic falls back to a content
+        // search that returns the *first* textual occurrence — including
+        // hits inside comments and string literals — instead of the actual
+        // AST node location.
+        refs_in_stmts(doc.source(), &doc.program().stmts, &word, &mut spans);
     }
     spans
         .into_iter()

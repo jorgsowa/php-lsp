@@ -11,8 +11,8 @@ use super::render::{
     assert_highlights_match, assert_locations_match, canonicalize_workspace_edit,
     collect_navigation_annotations, render_call_hierarchy, render_code_actions, render_code_lens,
     render_completion, render_document_symbols, render_folding_ranges, render_hover,
-    render_inlay_hints, render_inline_value, render_locations, render_moniker,
-    render_prepare_call_hierarchy, render_prepare_rename, render_selection_range,
+    render_inlay_hints, render_inline_value, render_linked_editing_range, render_locations,
+    render_moniker, render_prepare_call_hierarchy, render_prepare_rename, render_selection_range,
     render_signature_help, render_type_hierarchy, render_workspace_symbols,
 };
 
@@ -1307,6 +1307,19 @@ impl TestServer {
         };
         let resp = self.inline_value(&path, sl, sc, el, ec).await;
         render_inline_value(&resp)
+    }
+
+    /// `textDocument/linkedEditingRange` at the `$0` cursor in `src`,
+    /// rendered as one range per line plus the word pattern; `<no linked
+    /// editing>` when the response is null/empty.
+    #[track_caller]
+    pub async fn check_linked_editing_range(&mut self, src: &str) -> String {
+        let opened = self.open_fixture(src).await;
+        let c = opened.cursor().clone();
+        let resp = self
+            .linked_editing_range(&c.path, c.line, c.character)
+            .await;
+        render_linked_editing_range(&resp)
     }
 
     /// `textDocument/moniker` at the `$0` cursor in `src`, rendered as one

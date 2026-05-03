@@ -1957,16 +1957,50 @@ impl LanguageServer for Backend {
             Some(d) => d,
             None => return Ok(None),
         };
+        // Need the word at the cursor to know if this is a variable rename
+        // (`$foo`) — the wordPattern we send back must require/forbid `$`
+        // accordingly so that linked-mode typing produces valid PHP.
+        let word = match crate::util::word_at(&source, position) {
+            Some(w) => w,
+            None => return Ok(None),
+        };
+        let is_variable = word.starts_with('$');
+        let cursor_word_range = match crate::util::word_range_at(&source, position) {
+            Some(r) => r,
+            None => return Ok(None),
+        };
+
         // Reuse document_highlights: every occurrence of the symbol is a linked range.
         let highlights = document_highlights(&source, &doc, position);
         if highlights.is_empty() {
             return Ok(None);
         }
+
+        // Bail when the cursor's word isn't itself one of the highlight
+        // ranges. `document_highlights` resolves the cursor to a word and
+        // walks the AST for occurrences of that name; if the cursor sits in
+        // a comment or string literal that happens to share a word with a
+        // real identifier, the AST occurrences would still come back and
+        // entering linked-edit mode would silently mirror unrelated ranges.
+        // Comparing against `word_range_at` (rather than a contains check)
+        // also accepts the half-open right boundary — a common cursor
+        // position right after typing the name.
+        if !highlights.iter().any(|h| h.range == cursor_word_range) {
+            return Ok(None);
+        }
+
         let ranges: Vec<Range> = highlights.into_iter().map(|h| h.range).collect();
+        // Variables include the leading `$` in their range, so the pattern
+        // must require it; for everything else (class/function/method names)
+        // a `$` would produce invalid PHP.
+        let word_pattern = if is_variable {
+            r"\$[a-zA-Z_\x80-\xff][a-zA-Z0-9_\x80-\xff]*".to_string()
+        } else {
+            r"[a-zA-Z_\x80-\xff][a-zA-Z0-9_\x80-\xff]*".to_string()
+        };
         Ok(Some(LinkedEditingRanges {
             ranges,
-            // PHP identifiers: letters, digits, underscore; variables also allow leading $
-            word_pattern: Some(r"[$a-zA-Z_\x80-\xff][a-zA-Z0-9_\x80-\xff]*".to_string()),
+            word_pattern: Some(word_pattern),
         }))
     }
 
