@@ -117,37 +117,6 @@ async fn shutdown_responds_correctly() {
     assert!(resp["result"].is_null(), "shutdown result should be null");
 }
 
-// ── protocol stubs ───────────────────────────────────────────────────────────
-
-#[tokio::test]
-async fn moniker_returns_no_error() {
-    let mut server = TestServer::new().await;
-    server
-        .open("moniker.php", "<?php\nfunction monikerFn(): void {}\n")
-        .await;
-
-    let resp = server.moniker("moniker.php", 1, 9).await;
-
-    assert!(resp["error"].is_null(), "moniker error: {:?}", resp);
-    let monikers = resp["result"].as_array().expect("expected moniker array");
-    assert_eq!(
-        monikers.len(),
-        1,
-        "expected exactly one moniker for monikerFn"
-    );
-    assert_eq!(
-        monikers[0]["identifier"].as_str().unwrap_or(""),
-        "monikerFn",
-        "expected moniker identifier 'monikerFn', got: {:?}",
-        monikers[0]
-    );
-    assert_eq!(
-        monikers[0]["scheme"].as_str().unwrap_or(""),
-        "php",
-        "expected moniker scheme 'php'"
-    );
-}
-
 #[tokio::test]
 async fn linked_editing_range_returns_no_error() {
     let mut server = TestServer::new().await;

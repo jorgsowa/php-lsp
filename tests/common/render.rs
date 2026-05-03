@@ -429,6 +429,36 @@ pub(crate) fn render_selection_range(resp: &Value) -> String {
     chains.join("\n---\n")
 }
 
+/// Render a `textDocument/moniker` response — one moniker per line as
+/// `<scheme>:<identifier> kind=<kind> unique=<unique>`. The string variants
+/// of `kind` and `unique` come straight from the JSON; missing optional
+/// fields render as `<unset>`.
+pub(crate) fn render_moniker(resp: &Value) -> String {
+    if let Some(err) = resp.get("error").filter(|e| !e.is_null()) {
+        return format!("error: {err}");
+    }
+    let result = &resp["result"];
+    if result.is_null() {
+        return "<no moniker>".to_owned();
+    }
+    let arr = result.as_array().cloned().unwrap_or_default();
+    if arr.is_empty() {
+        return "<no moniker>".to_owned();
+    }
+    let mut rows: Vec<String> = arr
+        .iter()
+        .map(|m| {
+            let scheme = m["scheme"].as_str().unwrap_or("<unset>");
+            let identifier = m["identifier"].as_str().unwrap_or("<unset>");
+            let kind = m["kind"].as_str().unwrap_or("<unset>");
+            let unique = m["unique"].as_str().unwrap_or("<unset>");
+            format!("{scheme}:{identifier} kind={kind} unique={unique}")
+        })
+        .collect();
+    rows.sort();
+    rows.join("\n")
+}
+
 pub(crate) fn render_code_lens(resp: &Value) -> String {
     if let Some(err) = resp.get("error").filter(|e| !e.is_null()) {
         return format!("error: {err}");

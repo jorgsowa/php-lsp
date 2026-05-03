@@ -11,8 +11,9 @@ use super::render::{
     assert_highlights_match, assert_locations_match, canonicalize_workspace_edit,
     collect_navigation_annotations, render_call_hierarchy, render_code_actions, render_code_lens,
     render_completion, render_document_symbols, render_folding_ranges, render_hover,
-    render_inlay_hints, render_locations, render_prepare_call_hierarchy, render_prepare_rename,
-    render_selection_range, render_signature_help, render_type_hierarchy, render_workspace_symbols,
+    render_inlay_hints, render_locations, render_moniker, render_prepare_call_hierarchy,
+    render_prepare_rename, render_selection_range, render_signature_help, render_type_hierarchy,
+    render_workspace_symbols,
 };
 
 fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
@@ -1276,6 +1277,17 @@ impl TestServer {
         let path = opened.fixture.files[0].path.clone();
         let resp = self.selection_range(&path, positions).await;
         render_selection_range(&resp)
+    }
+
+    /// `textDocument/moniker` at the `$0` cursor in `src`, rendered as one
+    /// moniker per line (`<scheme>:<identifier> kind=… unique=…`) or
+    /// `<no moniker>` when the server returns null/empty.
+    #[track_caller]
+    pub async fn check_moniker(&mut self, src: &str) -> String {
+        let opened = self.open_fixture(src).await;
+        let c = opened.cursor().clone();
+        let resp = self.moniker(&c.path, c.line, c.character).await;
+        render_moniker(&resp)
     }
 
     #[track_caller]
