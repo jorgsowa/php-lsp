@@ -9,7 +9,7 @@
 
 mod client;
 pub mod fixture;
-mod render;
+pub mod render;
 mod server;
 
 pub use client::TestClient;

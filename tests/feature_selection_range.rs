@@ -1,7 +1,39 @@
 mod common;
 
 use common::TestServer;
+use common::render::assert_selection_range_invariant;
 use expect_test::expect;
+
+// ── LSP-spec parent-contains-child invariant ────────────────────────────────
+
+/// Sanity test: across a deep, mixed-construct fixture, every parent in
+/// every chain must geometrically contain its child. This guards against
+/// the same-line-span sort regression that would otherwise sneak past the
+/// per-fixture snapshot diffs.
+#[tokio::test]
+async fn every_chain_satisfies_parent_contains_child() {
+    let mut s = TestServer::new().await;
+    let src = r#"<?php
+namespace App;
+class Foo {
+    public function bar(int $x): int {
+        if ($x > 0) {
+            foreach ([1, 2] as $i) {
+                while ($i > 0) {
+                    return $x + $i;
+                }
+            }
+        }
+        return 0;
+    }
+}
+"#;
+    s.open("invariant.php", src).await;
+    // A spread of cursors landing inside every nesting level.
+    let positions = vec![(7, 28), (5, 30), (4, 18), (3, 32), (2, 12)];
+    let resp = s.selection_range("invariant.php", positions).await;
+    assert_selection_range_invariant(&resp);
+}
 
 // ── basic shape ──────────────────────────────────────────────────────────────
 
@@ -204,12 +236,12 @@ function f(array $xs): void {
         .await;
     expect![[r#"
         5:16-5:24
-        4:12-7:13
         4:27-7:13
-        3:8-8:9
+        4:12-7:13
         3:28-8:9
-        2:4-9:5
+        3:8-8:9
         2:24-9:5
+        2:4-9:5
         1:0-10:1
         0:0-11:0"#]]
     .assert_eq(&out);
@@ -284,10 +316,10 @@ function f(): void {
         .await;
     expect![[r#"
         4:12-4:20
-        3:8-5:25
         3:11-5:9
-        2:4-6:5
+        3:8-5:25
         2:32-6:5
+        2:4-6:5
         1:0-7:1
         0:0-8:0"#]]
     .assert_eq(&out);
@@ -313,8 +345,8 @@ function f(int $x): void {
         .await;
     expect![[r#"
         5:8-5:15
-        4:13-6:5
         4:22-6:5
+        4:13-6:5
         2:4-8:5
         1:0-9:1
         0:0-10:0"#]]
@@ -437,8 +469,8 @@ class C {
         .await;
     expect![[r#"
         4:12-4:19
-        3:8-5:9
         3:18-5:9
+        3:8-5:9
         2:4-6:5
         1:0-7:1
         0:0-8:0"#]]
@@ -462,9 +494,9 @@ $f = function (int $n) use ($x): int {
     expect![[r#"
         2:11-2:18
         2:4-2:19
-        1:0-3:2
-        1:0-3:1
         1:5-3:1
+        1:0-3:1
+        1:0-3:2
         0:0-4:0"#]]
     .assert_eq(&out);
 }
@@ -502,9 +534,9 @@ $obj = new class {
         3:15-3:20
         3:8-3:21
         2:4-4:5
-        1:0-5:2
-        1:0-5:1
         1:7-5:1
+        1:0-5:1
+        1:0-5:2
         0:0-6:0"#]]
     .assert_eq(&out);
 }
@@ -642,8 +674,8 @@ function f(int $x): string {
     expect![[r#"
         3:13-3:18
         3:8-3:18
-        2:4-6:6
         2:11-6:5
+        2:4-6:6
         1:0-7:1
         0:0-8:0"#]]
     .assert_eq(&out);

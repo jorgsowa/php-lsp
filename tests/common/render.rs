@@ -396,6 +396,45 @@ pub(crate) fn render_folding_ranges(resp: &Value) -> String {
     rows.join("\n")
 }
 
+/// Verify the LSP-spec invariant: for every chain in a
+/// `textDocument/selectionRange` response, every parent range fully
+/// contains its child. Panics with a descriptive message otherwise.
+#[track_caller]
+pub fn assert_selection_range_invariant(resp: &Value) {
+    let Some(arr) = resp["result"].as_array() else {
+        return;
+    };
+    fn r_to_tuple(r: &Value) -> (u64, u64, u64, u64) {
+        let s = &r["start"];
+        let e = &r["end"];
+        (
+            s["line"].as_u64().unwrap_or(0),
+            s["character"].as_u64().unwrap_or(0),
+            e["line"].as_u64().unwrap_or(0),
+            e["character"].as_u64().unwrap_or(0),
+        )
+    }
+    fn contains(parent: (u64, u64, u64, u64), child: (u64, u64, u64, u64)) -> bool {
+        (parent.0, parent.1) <= (child.0, child.1) && (child.2, child.3) <= (parent.2, parent.3)
+    }
+    for (i, chain) in arr.iter().enumerate() {
+        let mut node = chain;
+        loop {
+            let parent = &node["parent"];
+            if !parent.is_object() {
+                break;
+            }
+            let cr = r_to_tuple(&node["range"]);
+            let pr = r_to_tuple(&parent["range"]);
+            assert!(
+                contains(pr, cr),
+                "chain[{i}]: parent {pr:?} does not contain child {cr:?}"
+            );
+            node = parent;
+        }
+    }
+}
+
 /// Render a `textDocument/selectionRange` response as one chain per request
 /// position. Each chain prints innermost → outermost as `L:C-L:C` lines, one
 /// per parent step. Multiple chains are separated by `---`.

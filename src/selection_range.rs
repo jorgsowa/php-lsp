@@ -92,22 +92,19 @@ fn build_chain(
 ) -> SelectionRange {
     let mut spans: Vec<(u32, u32)> = Vec::new();
     collect_spans_stmts(stmts, byte_off, &mut spans);
-    let mut ranges: Vec<Range> = spans
+    // Sort by byte width ascending so the innermost (smallest) span is
+    // first. Working in byte space — instead of mapping to LSP ranges
+    // first — keeps two same-line-span ranges (e.g. a `while` statement
+    // and its inner body block, both ending at the same `}`) correctly
+    // ordered: parent ranges always end up *outer* than their children
+    // even when the column-based key would tie.
+    spans.sort_by_key(|&(s, e)| e - s);
+    spans.dedup();
+    let ranges: Vec<Range> = spans
         .into_iter()
         .map(|(s, e)| span_range(sv, s, e))
         .collect();
-
-    // Sort from smallest span to largest (innermost first)
-    ranges.sort_by_key(|r| {
-        let lines = r.end.line.saturating_sub(r.start.line);
-        let chars = if r.start.line == r.end.line {
-            r.end.character.saturating_sub(r.start.character)
-        } else {
-            u32::MAX
-        };
-        (lines, chars)
-    });
-
+    let mut ranges = ranges;
     ranges.dedup();
 
     // Ensure file-level range is outermost
