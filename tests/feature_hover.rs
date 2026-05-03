@@ -453,6 +453,10 @@ async fn hover_past_eof_does_not_crash() {
     s.open("short.php", "<?php\nfunction f(): void {}\n").await;
     let resp = s.hover("short.php", 500, 500).await;
     assert!(resp["error"].is_null(), "hover past EOF errored: {resp:?}");
+    assert!(
+        resp["result"].is_null(),
+        "hover past EOF should have null result, got: {resp:?}"
+    );
 }
 
 // ── Backed enum ───────────────────────────────────────────────────────────────
@@ -1343,6 +1347,49 @@ if (true) {
     expect![[r#"
         ```php
         function(int $x): string
+        ```"#]]
+    .assert_eq(&v);
+}
+
+/// Hovering on `new Foo()` (the constructor call) must resolve to the class definition.
+#[tokio::test]
+async fn hover_on_constructor_call() {
+    let mut s = TestServer::new().await;
+    let v = s
+        .check_hover(
+            r#"<?php
+class Service {
+    public function __construct(private string $dsn) {}
+}
+$svc = new Serv$0ice('db://localhost');
+"#,
+        )
+        .await;
+    expect![[r#"
+        ```php
+        class Service
+        ```"#]]
+    .assert_eq(&v);
+}
+
+/// Hovering on a property access with union type should show the union.
+#[tokio::test]
+async fn hover_union_type_property() {
+    let mut s = TestServer::new().await;
+    let v = s
+        .check_hover(
+            r#"<?php
+class Config {
+    public string|int $setting = '';
+}
+$c = new Config();
+echo $c->se$0tting;
+"#,
+        )
+        .await;
+    expect![[r#"
+        ```php
+        (property) public Config::$setting: string|int
         ```"#]]
     .assert_eq(&v);
 }

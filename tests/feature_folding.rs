@@ -52,7 +52,7 @@ lensed();
 "#,
         )
         .await;
-    expect!["L1: 1 reference [editor.action.showReferences]"].assert_eq(&out);
+    expect!["L1:9-L1:15: 1 reference [editor.action.showReferences]"].assert_eq(&out);
 }
 
 #[tokio::test]
@@ -66,7 +66,7 @@ $w = new Widget();
 "#,
         )
         .await;
-    expect!["L1: 1 reference [editor.action.showReferences]"].assert_eq(&out);
+    expect!["L1:6-L1:12: 1 reference [editor.action.showReferences]"].assert_eq(&out);
 }
 
 fn render_resolved_lens(resp: &Value) -> String {

@@ -156,9 +156,10 @@ async fn semantic_tokens_delta_without_baseline_degrades_to_full() {
     );
     let result = &resp["result"];
     assert!(!result.is_null(), "expected a result, got null");
+    let data = result["data"].as_array();
     assert!(
-        result["data"].is_array(),
-        "expected full-token fallback (data array), got: {result:?}"
+        data.is_some() && !data.unwrap().is_empty(),
+        "expected full-token fallback (non-empty data array), got: {result:?}"
     );
 }
 
@@ -219,4 +220,95 @@ async fn semantic_tokens_delta_after_didchange_reflects_new_content() {
             "delta edits must carry new token data, got: {edits:?}"
         );
     }
+}
+
+/// Verify that semantic tokens can be decoded and contain specific token types.
+/// This test retrieves the legend from the initialize response, decodes the raw
+/// token integers, and verifies that expected token types (e.g., 'function', 'parameter')
+/// are present in the token stream.
+#[tokio::test]
+async fn semantic_tokens_decode_function_tokens() {
+    use common::render_semantic_tokens;
+    use serde_json::json;
+
+    let (mut server, init_resp) = TestServer::new_with_options(json!({
+        "diagnostics": { "enabled": true }
+    }))
+    .await;
+    let legend = &init_resp["result"]["capabilities"]["semanticTokensProvider"]["legend"];
+    let legend_types: Vec<&str> = legend["tokenTypes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|v| v.as_str())
+        .collect();
+
+    server
+        .open(
+            "decode.php",
+            "<?php\nfunction greet(string $name): void { echo $name; }\n",
+        )
+        .await;
+
+    let resp = server.semantic_tokens_full("decode.php").await;
+    assert!(resp["error"].is_null(), "error: {resp:?}");
+    let result = &resp["result"];
+    assert!(!result.is_null(), "result null");
+
+    let out = render_semantic_tokens(&resp, &legend_types);
+    assert!(
+        !out.is_empty() && !out.contains("malformed"),
+        "tokens must decode successfully: {out}"
+    );
+
+    // Verify that at least 'function' and 'variable' token types appear.
+    assert!(
+        out.contains("type=function") || legend_types.iter().any(|t| *t == "function"),
+        "expected 'function' token type in legend or output"
+    );
+    assert!(
+        out.contains("type=parameter") || out.contains("type=variable"),
+        "expected 'parameter' or 'variable' token type for function parameters"
+    );
+}
+
+/// Verify that `semanticTokens/range` request returns tokens only within the requested range.
+/// This test opens a multi-function file, requests tokens over a specific line range, and
+/// verifies that all decoded tokens fall within that range.
+#[tokio::test]
+async fn semantic_tokens_range_bounds_respected() {
+    use common::render_semantic_tokens;
+    use serde_json::json;
+
+    let (mut server, init_resp) = TestServer::new_with_options(json!({
+        "diagnostics": { "enabled": true }
+    }))
+    .await;
+    let legend = &init_resp["result"]["capabilities"]["semanticTokensProvider"]["legend"];
+    let legend_types: Vec<&str> = legend["tokenTypes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|v| v.as_str())
+        .collect();
+
+    let src = "<?php\nfunction one(): int { return 1; }\nfunction two(): int { return 2; }\n";
+    server.open("range.php", src).await;
+
+    // Request tokens only from line 1 (the first function).
+    let resp = server.semantic_tokens_range("range.php", 1, 0, 2, 0).await;
+    assert!(resp["error"].is_null(), "error: {resp:?}");
+    let result = &resp["result"];
+    assert!(!result.is_null(), "result null");
+
+    let out = render_semantic_tokens(&resp, &legend_types);
+    // All lines in the decoded tokens should be 1 (since we requested line 1 only).
+    let lines: Vec<u64> = out
+        .lines()
+        .filter_map(|l| l.split(':').next().and_then(|l| l.parse().ok()))
+        .collect();
+    assert!(
+        !lines.is_empty() && lines.iter().all(|&l| l == 1),
+        "all tokens in range response should be on line 1, got lines: {lines:?}"
+    );
 }

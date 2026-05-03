@@ -22,7 +22,7 @@ class U$0ser$0 {
     expect![[r#"
         refactor         Generate 4 getters/setters
         refactor         Generate constructor
-        refactor.extract Extract variable"#]]
+        refactor.extract Extract variable [edit]"#]]
     .assert_eq(&out);
 }
 
@@ -38,7 +38,7 @@ function f(): int {
 "#,
         )
         .await;
-    expect!["refactor.extract Extract variable"].assert_eq(&out);
+    expect!["refactor.extract Extract variable [edit]"].assert_eq(&out);
 }
 
 #[tokio::test]
@@ -54,7 +54,7 @@ function $0noReturn$0() { return 42; }
     expect![[r#"
         refactor         Add return type `: mixed`
         refactor         Generate PHPDoc
-        refactor.extract Extract variable"#]]
+        refactor.extract Extract variable [edit]"#]]
     .assert_eq(&out);
 }
 
@@ -71,6 +71,6 @@ class $0My$0 implements Writable {}
         .await;
     expect![[r#"
         quickfix         Implement missing method
-        refactor.extract Extract variable"#]]
+        refactor.extract Extract variable [edit]"#]]
     .assert_eq(&out);
 }

@@ -253,7 +253,31 @@ pub fn render_hover(resp: &Value) -> String {
     if result.is_null() {
         return "<no hover>".to_owned();
     }
-    let value = result["contents"]["value"].as_str().unwrap_or_default();
+    let contents = &result["contents"];
+    // Handle all three LSP Hover.contents variants:
+    // 1. MarkupContent { kind, value }
+    // 2. MarkedString (plain string)
+    // 3. MarkedString[] (array of strings or { language, value })
+    let value = if let Some(s) = contents.as_str() {
+        // MarkedString as plain string (deprecated but valid)
+        s.to_owned()
+    } else if let Some(arr) = contents.as_array() {
+        // MarkedString[] (deprecated but valid)
+        arr.iter()
+            .map(|item| {
+                if let Some(s) = item.as_str() {
+                    s.to_owned()
+                } else {
+                    item["value"].as_str().unwrap_or("").to_owned()
+                }
+            })
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join("\n---\n")
+    } else {
+        // MarkupContent { kind, value } — current and preferred form
+        contents["value"].as_str().unwrap_or("").to_owned()
+    };
     value
         .lines()
         .map(|l| l.trim_end())
@@ -364,10 +388,18 @@ pub(crate) fn render_code_actions(resp: &Value) -> String {
         .map(|a| {
             let title = a["title"].as_str().unwrap_or("?");
             let kind = a["kind"].as_str().unwrap_or("");
-            if kind.is_empty() {
-                title.to_owned()
+            // Add suffix indicating whether the action has an edit or command.
+            let edit_marker = if a["edit"].is_object() {
+                " [edit]"
+            } else if a["command"].is_object() {
+                " [cmd]"
             } else {
-                format!("{kind:<16} {title}")
+                ""
+            };
+            if kind.is_empty() {
+                format!("{title}{edit_marker}")
+            } else {
+                format!("{kind:<16} {title}{edit_marker}")
             }
         })
         .collect();
@@ -389,7 +421,14 @@ pub(crate) fn render_folding_ranges(resp: &Value) -> String {
             let sl = r["startLine"].as_u64().unwrap_or(0);
             let el = r["endLine"].as_u64().unwrap_or(0);
             let kind = r["kind"].as_str().unwrap_or("region");
-            format!("{sl}..{el} {kind}")
+            // Include character boundaries (LSP 3.17+) if present and non-zero.
+            let range_str = match (r["startCharacter"].as_u64(), r["endCharacter"].as_u64()) {
+                (Some(sc), Some(ec)) if sc > 0 || ec > 0 => {
+                    format!("{sl}:{sc}..{el}:{ec}")
+                }
+                _ => format!("{sl}..{el}"),
+            };
+            format!("{range_str} {kind}")
         })
         .collect();
     rows.sort();
@@ -429,6 +468,10 @@ pub fn assert_selection_range_invariant(resp: &Value) {
             assert!(
                 contains(pr, cr),
                 "chain[{i}]: parent {pr:?} does not contain child {cr:?}"
+            );
+            assert!(
+                pr != cr,
+                "chain[{i}]: parent and child have identical range {pr:?} — selection ranges must be strictly nested"
             );
             node = parent;
         }
@@ -492,17 +535,7 @@ pub fn assert_linked_editing_ranges_share_text(resp: &Value, source: &str) {
         }
         let line = lines.get(sl)?;
         let chars: Vec<char> = line.chars().collect();
-        let mut byte_at_col = vec![0usize; chars.len() + 1];
-        let mut col = 0u32;
-        let mut byte = 0usize;
-        for (i, ch) in chars.iter().enumerate() {
-            byte_at_col[i] = byte;
-            col += ch.len_utf16() as u32;
-            byte += ch.len_utf8();
-            let _ = col;
-        }
-        byte_at_col[chars.len()] = byte;
-        // Column-to-char index walk:
+        // Column-to-char index walk using UTF-16 column semantics:
         let mut start_idx = 0usize;
         let mut col = 0usize;
         for (i, ch) in chars.iter().enumerate() {
@@ -665,9 +698,12 @@ pub(crate) fn render_code_lens(resp: &Value) -> String {
         .iter()
         .map(|l| {
             let sl = l["range"]["start"]["line"].as_u64().unwrap_or(0);
+            let sc = l["range"]["start"]["character"].as_u64().unwrap_or(0);
+            let el = l["range"]["end"]["line"].as_u64().unwrap_or(0);
+            let ec = l["range"]["end"]["character"].as_u64().unwrap_or(0);
             let title = l["command"]["title"].as_str().unwrap_or("<unresolved>");
             let cmd = l["command"]["command"].as_str().unwrap_or("");
-            format!("L{sl}: {title} [{cmd}]")
+            format!("L{sl}:{sc}-L{el}:{ec}: {title} [{cmd}]")
         })
         .collect();
     rows.sort();
@@ -792,6 +828,39 @@ pub(crate) fn render_call_hierarchy(resp: &Value, side: &str, root_uri: &str) ->
     rows.join("\n")
 }
 
+/// Decode LSP `semanticTokens/full` response and render each token.
+/// LSP encodes tokens as 5-integer sequences: `[deltaLine, deltaStart, length, tokenType, tokenModifiers]`.
+/// `legend_types` is the `legend.tokenTypes` array from the initialize response, mapping type indices to names.
+pub fn render_semantic_tokens(resp: &Value, legend_types: &[&str]) -> String {
+    if let Some(err) = resp.get("error").filter(|e| !e.is_null()) {
+        return format!("error: {err}");
+    }
+    let data = resp["result"]["data"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    if data.is_empty() {
+        return "<no tokens>".to_owned();
+    }
+    let ints: Vec<u64> = data.iter().map(|v| v.as_u64().unwrap_or(0)).collect();
+    if ints.len() % 5 != 0 {
+        return format!("<malformed data: {} ints, not a multiple of 5>", ints.len());
+    }
+    let mut rows = Vec::new();
+    let (mut abs_line, mut abs_col) = (0u64, 0u64);
+    for chunk in ints.chunks_exact(5) {
+        let (dl, dc, len, tt, tm) = (chunk[0], chunk[1], chunk[2], chunk[3], chunk[4]);
+        abs_line += dl;
+        abs_col = if dl == 0 { abs_col + dc } else { dc };
+        let type_name = legend_types.get(tt as usize).copied().unwrap_or("?");
+        rows.push(format!(
+            "{}:{} len={} type={} mods={:#b}",
+            abs_line, abs_col, len, type_name, tm
+        ));
+    }
+    rows.join("\n")
+}
+
 // ---------- annotation-based assertion helpers ----------
 
 /// Collect `// ^^^ <tag>` annotations across every fixture file, filtered by
@@ -890,18 +959,31 @@ pub(crate) fn assert_locations_match(
     }
 }
 
-/// Is the expected caret line covered by the actual range? We intentionally
-/// do not compare character columns: server implementations vary widely on
-/// whether they return identifier spans, statement spans, or degenerate
-/// zero-width ranges. Line-granular matching still catches "wrong file" and
-/// "wrong line" regressions, which is what callers care about.
+/// Check whether annotation and server range overlap on the same line.
+/// The annotation line must fall within the server's line range. Additionally,
+/// when both are single-line ranges on the same line, their column intervals must
+/// overlap — this prevents matching two completely different identifiers that
+/// happen to share the same line.
 fn ranges_overlap_same_line(
     expected: &(u32, u32, u32, u32),
     actual: &(u32, u32, u32, u32),
 ) -> bool {
-    let (esl, _, _, _) = *expected;
-    let (asl, _, ael, _) = *actual;
-    esl >= asl && esl <= ael
+    let (esl, esc, _eel, eec) = *expected;
+    let (asl, asc, ael, aec) = *actual;
+    // Expected line must be within the actual range's line span.
+    if !(esl >= asl && esl <= ael) {
+        return false;
+    }
+    // When actual is a single-line range on the same line as the annotation,
+    // column intervals must overlap. This catches cases where two identifiers
+    // share the same line but different columns.
+    if asl == ael && asl == esl {
+        // Ranges overlap if neither ends before the other starts.
+        !(aec <= esc || eec <= asc)
+    } else {
+        // Multi-line range; line-containment is sufficient.
+        true
+    }
 }
 
 #[track_caller]
