@@ -1446,7 +1446,19 @@ impl LanguageServer for Backend {
                 let first_cls = cls.split('|').next().unwrap_or(&cls).to_owned();
                 let all_indexes = self.docs.all_indexes();
                 if let Some(loc) = find_method_in_class_hierarchy(&first_cls, &word, &all_indexes) {
-                    return Ok(Some(GotoDefinitionResponse::Scalar(loc)));
+                    let refined = self
+                        .docs
+                        .get_doc_salsa(&loc.uri)
+                        .and_then(|doc| {
+                            find_declaration_range(doc.source(), &doc, &word).map(|range| {
+                                Location {
+                                    uri: loc.uri.clone(),
+                                    range,
+                                }
+                            })
+                        })
+                        .unwrap_or(loc);
+                    return Ok(Some(GotoDefinitionResponse::Scalar(refined)));
                 }
             }
         }
@@ -1456,7 +1468,17 @@ impl LanguageServer for Backend {
         if let Some(word) = crate::util::word_at(&source, position)
             && let Some(loc) = find_in_indexes(&word, &other_indexes)
         {
-            return Ok(Some(GotoDefinitionResponse::Scalar(loc)));
+            let refined = self
+                .docs
+                .get_doc_salsa(&loc.uri)
+                .and_then(|doc| {
+                    find_declaration_range(doc.source(), &doc, &word).map(|range| Location {
+                        uri: loc.uri.clone(),
+                        range,
+                    })
+                })
+                .unwrap_or(loc);
+            return Ok(Some(GotoDefinitionResponse::Scalar(refined)));
         }
 
         // PSR-4 fallback: only useful for fully-qualified names (contain `\`)
