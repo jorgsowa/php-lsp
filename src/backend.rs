@@ -542,9 +542,9 @@ impl LanguageServer for Backend {
             let docs = Arc::clone(&self.docs);
             let open_files = self.open_files.clone();
             let client = self.client.clone();
-            let (exclude_paths, max_indexed_files) = {
+            let (exclude_paths, include_paths, max_indexed_files) = {
                 let cfg = self.config.read().unwrap();
-                (cfg.exclude_paths.clone(), cfg.max_indexed_files)
+                (cfg.exclude_paths.clone(), cfg.include_paths.clone(), cfg.max_indexed_files)
             };
             tokio::spawn(async move {
                 client
@@ -575,6 +575,7 @@ impl LanguageServer for Backend {
                         open_files.clone(),
                         cache,
                         &exclude_paths,
+                        &include_paths,
                         max_indexed_files,
                     )
                     .await;
@@ -707,9 +708,9 @@ impl LanguageServer for Backend {
         }
 
         // Add new folders and kick off background scans for each.
-        let (exclude_paths, max_indexed_files) = {
+        let (exclude_paths, include_paths, max_indexed_files) = {
             let cfg = self.config.read().unwrap();
-            (cfg.exclude_paths.clone(), cfg.max_indexed_files)
+            (cfg.exclude_paths.clone(), cfg.include_paths.clone(), cfg.max_indexed_files)
         };
         for added in &params.event.added {
             if let Ok(path) = added.uri.to_file_path() {
@@ -726,11 +727,12 @@ impl LanguageServer for Backend {
                     let docs = Arc::clone(&self.docs);
                     let open_files = self.open_files.clone();
                     let ex = exclude_paths.clone();
+                    let ip = include_paths.clone();
                     let path_clone = path.clone();
                     let client = self.client.clone();
                     tokio::spawn(async move {
                         let cache = crate::cache::WorkspaceCache::new(&path_clone);
-                        scan_workspace(path_clone, docs, open_files, cache, &ex, max_indexed_files)
+                        scan_workspace(path_clone, docs, open_files, cache, &ex, &ip, max_indexed_files)
                             .await;
                         send_refresh_requests(&client).await;
                     });
@@ -1472,11 +1474,7 @@ impl LanguageServer for Backend {
         // same `Arc` until a file changes.
         let wi = self.docs.get_workspace_index_salsa();
         let results = workspace_symbols_from_workspace(&params.query, &wi);
-        Ok(if results.is_empty() {
-            None
-        } else {
-            Some(results)
-        })
+        Ok(Some(results))
     }
 
     async fn symbol_resolve(&self, params: WorkspaceSymbol) -> Result<WorkspaceSymbol> {
@@ -3192,6 +3190,24 @@ mod tests {
     }
 
     #[test]
+    fn lsp_config_parses_include_paths() {
+        let cfg = LspConfig::from_value(&serde_json::json!({
+            "includePaths": ["vendor/yiisoft"]
+        }));
+        assert_eq!(cfg.include_paths, vec!["vendor/yiisoft"]);
+    }
+
+    #[test]
+    fn lsp_config_parses_both_exclude_and_include_paths() {
+        let cfg = LspConfig::from_value(&serde_json::json!({
+            "excludePaths": ["cache/*", "logs/*"],
+            "includePaths": ["vendor/yiisoft"]
+        }));
+        assert_eq!(cfg.exclude_paths, vec!["cache/*", "logs/*"]);
+        assert_eq!(cfg.include_paths, vec!["vendor/yiisoft"]);
+    }
+
+    #[test]
     fn lsp_config_parses_diagnostics_section() {
         let cfg = LspConfig::from_value(&serde_json::json!({
             "diagnostics": {"enabled": false}
@@ -3772,6 +3788,16 @@ mod tests {
         let cfg = LspConfig::from_value(&merged);
         // File entries come first, editor entries appended.
         assert_eq!(cfg.exclude_paths, vec!["cache/*", "logs/*"]);
+    }
+
+    #[test]
+    fn merge_include_paths_concat_not_replace() {
+        let file = serde_json::json!({"includePaths": ["vendor/yiisoft"]});
+        let editor = serde_json::json!({"includePaths": ["vendor/symfony"]});
+        let merged = LspConfig::merge_project_configs(Some(&file), Some(&editor));
+        let cfg = LspConfig::from_value(&merged);
+        // File entries come first, editor entries appended.
+        assert_eq!(cfg.include_paths, vec!["vendor/yiisoft", "vendor/symfony"]);
     }
 
     #[test]

@@ -285,6 +285,9 @@ impl DocumentStore {
         // allocates a fresh SourceFile with a new FileId. The ~40 bytes per
         // orphan is acceptable; revisit if workspace-churn profiling hurts.
         self.source_files.remove(uri);
+        // Sync workspace files so the deleted file is removed from the salsa
+        // `Workspace::files` list and won't appear in workspace symbols etc.
+        self.sync_workspace_files();
         self.text_cache.remove(uri);
         self.parsed_cache.remove(uri);
     }

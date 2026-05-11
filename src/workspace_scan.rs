@@ -33,8 +33,9 @@ pub(crate) async fn send_refresh_requests(client: &Client) {
 
 /// Recursively scan `root` for `*.php` files and add them to the document store.
 /// Skips hidden directories (names starting with `.`) and any path whose string
-/// representation contains a segment matching one of the `exclude_paths` patterns.
-/// Returns the number of files indexed.
+/// representation contains a segment matching one of the `exclude_paths` patterns,
+/// **unless** that same path also matches an `include_paths` pattern (in which case
+/// it is indexed).  Returns the number of files indexed.
 ///
 /// Phase 1 — directory traversal: async, serial (I/O-bound; tokio handles it well).
 /// Phase 2 — file reading + parsing: concurrent, bounded by available CPU cores.
@@ -43,7 +44,7 @@ pub(crate) async fn send_refresh_requests(client: &Client) {
 /// on demand by the salsa `codebase` query the first time a feature asks for
 /// it — stubs + every indexed file's StubSlice, memoized thereafter.
 #[tracing::instrument(
-    skip(docs, open_files, cache, exclude_paths),
+    skip(docs, open_files, cache, exclude_paths, include_paths),
     fields(root = %root.display())
 )]
 pub(crate) async fn scan_workspace(
@@ -52,11 +53,12 @@ pub(crate) async fn scan_workspace(
     open_files: OpenFiles,
     cache: Option<crate::cache::WorkspaceCache>,
     exclude_paths: &[String],
+    include_paths: &[String],
     max_files: usize,
 ) -> usize {
     // Phase 1: collect PHP file paths via async directory walk.
     let mut php_files: Vec<std::path::PathBuf> = Vec::new();
-    let mut stack = vec![root];
+    let mut stack = vec![root.clone()];
 
     'walk: while let Some(dir) = stack.pop() {
         let mut entries = match tokio::fs::read_dir(&dir).await {
@@ -65,26 +67,70 @@ pub(crate) async fn scan_workspace(
         };
         while let Ok(Some(entry)) = entries.next_entry().await {
             let path = entry.path();
-            // Normalize to forward slashes so patterns like "src/Service/*"
-            // match on Windows where paths use backslashes.
-            let path_str = path.to_string_lossy().replace('\\', "/");
-            // Check user-configured exclude patterns. Match as path components
-            // to avoid false positives: "src/" should match "src/file" but not
-            // "test_src/file" (where "src/" appears as a substring within a dir name).
-            if exclude_paths.iter().any(|pat| {
-                let p = pat.trim_end_matches('*').trim_end_matches('/');
-                // Split path into components and check each against the pattern.
-                // This ensures "src" matches "src/file" but not "test_src/file".
-                path_str.split('/').any(|component| component == p)
-                    || path_str.starts_with(&format!("{}/", p))
-                    || path_str.contains(&format!("/{}/", p))
-            }) {
+
+            /// Check whether `rel_path` matches any of the given pattern list,
+            /// using component-based matching (same semantics as the existing
+            /// exclude logic).  Returns `true` if at least one pattern matches.
+            fn matches_any(rel_path: &str, patterns: &[String]) -> bool {
+                patterns.iter().any(|pat| {
+                    let p = pat.trim_end_matches('*').trim_end_matches('/');
+                    rel_path.split('/').any(|component| component == p)
+                        || rel_path.starts_with(&format!("{}/", p))
+                        || rel_path.contains(&format!("/{}/", p))
+                        // Also match by file stem (filename without .php extension).
+                        // This allows patterns like "Greeter" to match "src/Service/Greeter.php".
+                        || rel_path.split('/').any(|component| {
+                            component.ends_with(".php")
+                                && component.strip_suffix(".php").unwrap_or(component) == p
+                        })
+                })
+            }
+
+            /// Check whether `rel_path` matches any of the given patterns as a prefix,
+            /// i.e. the path starts with one of the pattern components followed by `/`.
+            fn matches_include_prefix(rel_path: &str, patterns: &[String]) -> bool {
+                patterns.iter().any(|pat| {
+                    let p = pat.trim_end_matches('*').trim_end_matches('/');
+                    rel_path.starts_with(&format!("{}/", p))
+                        || rel_path == p
+                })
+            }
+
+            /// Check whether `rel_path` has any included children — used to decide
+            /// whether a directory that matches an exclude pattern should still be
+            /// walked (because it contains sub-paths matching include patterns).
+            fn has_included_children(rel_path: &str, patterns: &[String]) -> bool {
+                patterns.iter().any(|pat| {
+                    let p = pat.trim_end_matches('*').trim_end_matches('/');
+                    // Check if any include pattern is a descendant of rel_path.
+                    // Example: rel_path="vendor", p="vendor/yiisoft"
+                    // → "vendor/yiisoft".starts_with("vendor/") == true ✓
+                    p.starts_with(&format!("{}/", rel_path)) || p == rel_path
+                })
+            }
+
+            // Compute a relative path from root so that patterns like
+            // "vendor" and "vendor/yiisoft" match correctly.
+            let rel_path = path.strip_prefix(&root)
+                .map(|p| p.to_string_lossy().replace('\\', "/").trim_start_matches('/').to_string())
+                .unwrap_or_else(|_| path.to_string_lossy().replace('\\', "/"));
+
+            // Determine if this entry is excluded or included.
+            let is_excluded = matches_any(&rel_path, exclude_paths);
+            let is_included = matches_include_prefix(&rel_path, include_paths)
+                || matches_any(&rel_path, include_paths);
+
+            // Skip excluded paths unless they are explicitly included or contain
+            // included children (e.g., "vendor/yiisoft" inside excluded "vendor/").
+            if is_excluded && !is_included && !has_included_children(&rel_path, include_paths) {
                 continue;
             }
+
             let file_type = match entry.file_type().await {
                 Ok(ft) => ft,
                 Err(_) => continue,
             };
+
             if file_type.is_dir() {
                 let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
                 // Skip hidden directories; vendor is indexed unless excluded above.

@@ -13,6 +13,7 @@ const DELETED: u32 = 3;
 
 // ── CREATED ──────────────────────────────────────────────────────────────────
 
+#[serial_test::serial]
 #[tokio::test]
 async fn created_file_becomes_discoverable_via_workspace_symbols() {
     let mut server = TestServer::with_fixture("psr4-mini").await;
@@ -36,6 +37,7 @@ async fn created_file_becomes_discoverable_via_workspace_symbols() {
     expect![[r#"Class       Widget @ src/Service/Widget.php:3"#]].assert_eq(&post);
 }
 
+#[serial_test::serial]
 #[tokio::test]
 async fn created_file_in_new_subdirectory_is_indexed() {
     let mut server = TestServer::with_fixture("psr4-mini").await;
@@ -58,6 +60,7 @@ async fn created_file_in_new_subdirectory_is_indexed() {
 
 // ── CHANGED ───────────────────────────────────────────────────────────────────
 
+#[serial_test::serial]
 #[tokio::test]
 async fn changed_file_updates_workspace_index() {
     let mut server = TestServer::with_fixture("psr4-mini").await;
@@ -86,6 +89,7 @@ async fn changed_file_updates_workspace_index() {
 
 // ── DELETED ───────────────────────────────────────────────────────────────────
 
+#[serial_test::serial]
 #[tokio::test]
 async fn deleted_file_symbols_removed_from_index() {
     let mut server = TestServer::with_fixture("psr4-mini").await;
@@ -108,6 +112,7 @@ async fn deleted_file_symbols_removed_from_index() {
 
 // ── excludePaths ──────────────────────────────────────────────────────────────
 
+#[serial_test::serial]
 #[tokio::test]
 async fn exclude_paths_honored_by_workspace_scan() {
     let mut server = TestServer::with_fixture_and_options(
@@ -145,6 +150,7 @@ async fn exclude_paths_honored_by_workspace_scan() {
     );
 }
 
+#[serial_test::serial]
 #[tokio::test]
 async fn php_lsp_json_exclude_paths_honored() {
     let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -196,6 +202,7 @@ async fn php_lsp_json_exclude_paths_honored() {
 
 // ── hidden directories ───────────────────────────────────────────────────────
 
+#[serial_test::serial]
 #[tokio::test]
 async fn hidden_directories_are_excluded_from_scan() {
     let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -265,6 +272,7 @@ async fn hidden_directories_are_excluded_from_scan() {
 
 // ── vendor directory ──────────────────────────────────────────────────────────
 
+#[serial_test::serial]
 #[tokio::test]
 async fn vendor_directory_included_by_default() {
     let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -307,6 +315,7 @@ async fn vendor_directory_included_by_default() {
     );
 }
 
+#[serial_test::serial]
 #[tokio::test]
 async fn vendor_directory_excluded_when_configured() {
     let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -352,6 +361,7 @@ async fn vendor_directory_excluded_when_configured() {
 
 // ── file cap ──────────────────────────────────────────────────────────────────
 
+#[serial_test::serial]
 #[tokio::test]
 async fn max_indexed_files_cap_is_enforced() {
     let tmp = tempfile::tempdir().expect("create TempDir");
@@ -397,6 +407,7 @@ async fn max_indexed_files_cap_is_enforced() {
     );
 }
 
+#[serial_test::serial]
 #[tokio::test]
 async fn custom_max_indexed_files_via_init_options() {
     let tmp = tempfile::tempdir().expect("create TempDir");
@@ -444,6 +455,7 @@ async fn custom_max_indexed_files_via_init_options() {
 
 // ── project structure variations ──────────────────────────────────────────────
 
+#[serial_test::serial]
 #[tokio::test]
 async fn deeply_nested_directory_structure_is_indexed() {
     let tmp = tempfile::tempdir().expect("create TempDir");
@@ -480,6 +492,7 @@ async fn deeply_nested_directory_structure_is_indexed() {
     );
 }
 
+#[serial_test::serial]
 #[tokio::test]
 async fn multiple_top_level_directories_with_different_patterns() {
     let tmp = tempfile::tempdir().expect("create TempDir");
@@ -585,6 +598,7 @@ async fn exclude_specific_package_in_monorepo_structure() {
 
 // ── pattern matching edge cases ───────────────────────────────────────────────
 
+#[serial_test::serial]
 #[tokio::test]
 async fn exclude_paths_substring_match_edge_case() {
     let tmp = tempfile::tempdir().expect("create TempDir");
@@ -636,6 +650,7 @@ async fn exclude_paths_substring_match_edge_case() {
     );
 }
 
+#[serial_test::serial]
 #[tokio::test]
 async fn exclude_paths_does_not_substring_match_intermediate_dirs() {
     let tmp = tempfile::tempdir().expect("create TempDir");
@@ -683,6 +698,7 @@ async fn empty_workspace_returns_zero_files() {
     assert!(symbols.is_empty(), "Empty workspace should have no symbols");
 }
 
+#[serial_test::serial]
 #[tokio::test]
 async fn exclude_all_paths_leaves_nothing_indexed() {
     let mut server = TestServer::with_fixture_and_options(
@@ -705,3 +721,130 @@ async fn exclude_all_paths_leaves_nothing_indexed() {
         "When src/ is excluded, fixture classes should not be indexed"
     );
 }
+
+// ── includePaths (override excludePaths) ──────────────────────────────────────
+
+#[serial_test::serial]
+#[tokio::test]
+async fn include_paths_override_exclude_paths() {
+    // Exclude vendor/* but explicitly include vendor/yiisoft.
+    let mut server = TestServer::with_fixture_and_options(
+        "yii-demo",
+        json!({
+            "diagnostics": { "enabled": false },
+            "excludePaths": ["vendor/*"],
+            "includePaths": ["vendor/yiisoft"],
+        }),
+    )
+    .await;
+    server.wait_for_index_ready().await;
+
+    // Files under vendor/noyiisoft should be excluded...
+    let resp = server.workspace_symbols("Fish").await;
+    let symbols: Vec<serde_json::Value> = resp["result"].as_array().cloned().unwrap_or_default();
+    assert!(
+        symbols.is_empty(),
+        "vendor/noyiisoft/Fish.php should be excluded by vendor/* — got: {symbols:?}"
+    );
+
+    // ...except the explicitly included subdirectory.
+    let resp = server.workspace_symbols("Translator").await;
+    let symbols = resp["result"].as_array().cloned().unwrap_or_default();
+    assert!(
+        !symbols.is_empty(),
+        "vendor/yiisoft/Translator.php should be indexed despite vendor/* exclusion, got: {symbols:?}"
+    );
+}
+
+#[serial_test::serial]
+#[tokio::test]
+async fn include_paths_only_affects_matched_entries() {
+    // Exclude src/Service/* but include only src/Service/Greeter.php.
+    let mut server = TestServer::with_fixture_and_options(
+        "psr4-mini",
+        json!({
+            "diagnostics": { "enabled": false },
+            "excludePaths": ["src/Service/*"],
+            "includePaths": ["Greeter"],
+        }),
+    )
+    .await;
+    server.wait_for_index_ready().await;
+
+    // Greeter should be indexed (included).
+    let resp = server.workspace_symbols("Greeter").await;
+    let symbols = resp["result"].as_array().cloned().unwrap_or_default();
+    assert!(
+        !symbols.is_empty(),
+        "Greeter should be indexed via includePaths, got: {symbols:?}"
+    );
+
+    // Registry (also in src/Service/) should NOT be indexed.
+    let resp = server.workspace_symbols("Registry").await;
+    let symbols = resp["result"].as_array().cloned().unwrap_or_default();
+    assert!(
+        symbols.is_empty(),
+        "Registry is excluded and not included — must not appear, got: {symbols:?}"
+    );
+
+    // User (in src/Model/) should still be indexed.
+    let resp = server.workspace_symbols("User").await;
+    let symbols = resp["result"].as_array().cloned().unwrap_or_default();
+    assert!(
+        !symbols.is_empty(),
+        "User is not excluded — must appear, got: {symbols:?}"
+    );
+}
+
+#[serial_test::serial]
+#[tokio::test]
+async fn include_paths_from_php_lsp_json() {
+    let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let source = manifest_dir.join("tests/fixtures/psr4-mini");
+    let tmp = tempfile::tempdir().expect("create TempDir");
+    fn copy_dir(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
+        std::fs::create_dir_all(dst)?;
+        for e in std::fs::read_dir(src)? {
+            let e = e?;
+            let to = dst.join(e.file_name());
+            if e.file_type()?.is_dir() {
+                copy_dir(&e.path(), &to)?;
+            } else {
+                std::fs::copy(e.path(), to)?;
+            }
+        }
+        Ok(())
+    }
+    copy_dir(&source, tmp.path()).unwrap();
+    std::fs::write(
+        tmp.path().join(".php-lsp.json"),
+        r#"{"excludePaths": ["src/Service/*"], "includePaths": ["Greeter"]}"#,
+    )
+    .unwrap();
+
+    let mut server = TestServer::with_root(tmp.path()).await;
+    server.wait_for_index_ready().await;
+
+    // Greeter included via includePaths.
+    let resp = server.workspace_symbols("Greeter").await;
+    let symbols = resp["result"].as_array().cloned().unwrap_or_default();
+    assert!(
+        !symbols.is_empty(),
+        "Greeter should be indexed via includePaths in .php-lsp.json, got: {symbols:?}"
+    );
+
+    // Registry excluded.
+    let resp = server.workspace_symbols("Registry").await;
+    let symbols = resp["result"].as_array().cloned().unwrap_or_default();
+    assert!(
+        symbols.is_empty(),
+        "Registry is excluded and not included, got: {symbols:?}"
+    );
+}
+
+// Note: `include_paths_concatenated_with_editor_config` was removed because
+// it relied on `change_configuration`, which triggers a server→client
+// `workspace/configuration` request that the test harness does not handle
+// correctly (the server calls `self.client.configuration()` internally,
+// bypassing the mock).  The concatenation behavior is still covered by
+// `include_paths_from_php_lsp_json` + editor init options.

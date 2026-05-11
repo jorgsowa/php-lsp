@@ -171,6 +171,10 @@ pub struct LspConfig {
     pub php_version: Option<String>,
     /// Glob patterns for paths to exclude from workspace indexing.
     pub exclude_paths: Vec<String>,
+    /// Glob patterns for paths that must be indexed even if they match an
+    /// `excludePaths` entry.  Patterns are matched against path components
+    /// (same semantics as `excludePaths`).  Example: `["vendor/yiisoft"]`.
+    pub include_paths: Vec<String>,
     /// Per-category diagnostic toggles.
     pub diagnostics: DiagnosticsConfig,
     /// Per-feature capability toggles.
@@ -186,6 +190,7 @@ impl Default for LspConfig {
         LspConfig {
             php_version: None,
             exclude_paths: Vec::new(),
+            include_paths: Vec::new(),
             diagnostics: DiagnosticsConfig::default(),
             features: FeaturesConfig::default(),
             max_indexed_files: MAX_INDEXED_FILES,
@@ -215,9 +220,10 @@ impl LspConfig {
             .as_object_mut()
             .expect("merged base is always an object");
         for (key, val) in editor_obj {
-            if key == "excludePaths" {
+            // Both excludePaths and includePaths are concatenated rather than replaced.
+            if key == "excludePaths" || key == "includePaths" {
                 let file_arr = merged_obj
-                    .get("excludePaths")
+                    .get(key)
                     .and_then(|v| v.as_array())
                     .cloned()
                     .unwrap_or_default();
@@ -242,6 +248,12 @@ impl LspConfig {
         }
         if let Some(arr) = v.get("excludePaths").and_then(|x| x.as_array()) {
             cfg.exclude_paths = arr
+                .iter()
+                .filter_map(|x| x.as_str().map(str::to_string))
+                .collect();
+        }
+        if let Some(arr) = v.get("includePaths").and_then(|x| x.as_array()) {
+            cfg.include_paths = arr
                 .iter()
                 .filter_map(|x| x.as_str().map(str::to_string))
                 .collect();
