@@ -40,10 +40,10 @@ dhat = { version = "0.3", optional = true }
 mimalloc = { version = "0.1", default-features = false }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
-mir-analyzer = "0.25"
-mir-issues = "0.25"
-mir-codebase = "0.25"
-mir-types = "0.25"
+mir-analyzer = "0.26"
+mir-issues = "0.26"
+mir-codebase = "0.26"
+mir-types = "0.26"
 php-rs-parser = "0.12"
 php-ast = "0.12"
 bumpalo = { version = "3", features = ["collections"] }
