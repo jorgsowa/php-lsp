@@ -13,6 +13,17 @@ All options are optional.
 | `diagnostics` | `object` | see below | Per-category diagnostic toggles. |
 | `features` | `object` | see below | Per-feature capability toggles. |
 | `maxIndexedFiles` | `number` | `50000` | Hard cap on the number of PHP files indexed during a workspace scan. Set lower to reduce memory on projects with very large vendor trees. |
+| `autoload` | `object` | — | Extra autoload rules merged with `composer.json` PSR-4 (see below). |
+
+### `autoload` object
+
+Merged with Composer autoload for each workspace root. Use when runtime uses custom `spl_autoload_register` handlers that php-lsp cannot execute.
+
+| Key | Type | Description |
+|---|---|---|
+| `psr-4` | `object` | Composer-style namespace → path(s). Paths are relative to the workspace root. Merged into the existing PSR-4 map (extra base directories per namespace). |
+| `classmap` | `string[]` | JSON files mapping FQCN → relative `.php` path. Class names are matched case-insensitively (legacy classmaps). |
+| `caseInsensitive` | `boolean` | When `true`, if the exact PSR-4 file path is missing, try the lowercase relative path (mirrors common PHP bootstrap autoloaders). |
 
 ### `diagnostics` object
 
@@ -64,6 +75,13 @@ All flags default to `true` (enabled). Set a flag to `false` to suppress the cor
 {
   "phpVersion": "8.1",
   "excludePaths": ["cache/*", "storage/*", "tests/fixtures/*"],
+  "autoload": {
+    "psr-4": {
+      "WL\\": ["classes", "src", "mobile_apps/classes"]
+    },
+    "classmap": ["bootstrap/autoload/generated-classmap.json"],
+    "caseInsensitive": true
+  },
   "diagnostics": {
     "enabled": true,
     "undefinedVariables": true,

@@ -23,10 +23,14 @@ pub fn is_valid_php_version(v: &str) -> bool {
 ///
 /// Used to resolve a fully-qualified class name to a source file when the
 /// class is not yet in the workspace index.
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct Psr4Map {
     /// Sorted longest-prefix-first so the most-specific prefix always wins.
     entries: Vec<(String, Vec<PathBuf>)>,
+    /// When true, try a lowercase relative path if the exact PSR-4 path is missing.
+    case_insensitive: bool,
+    /// Lowercase FQCN → file path (from `autoload.classmap` in `.php-lsp.json`).
+    classmap: HashMap<String, PathBuf>,
 }
 
 impl mir_analyzer::ClassResolver for Psr4Map {
@@ -37,7 +41,80 @@ impl mir_analyzer::ClassResolver for Psr4Map {
 
 impl Psr4Map {
     pub fn empty() -> Self {
-        Psr4Map { entries: vec![] }
+        Psr4Map {
+            entries: vec![],
+            case_insensitive: false,
+            classmap: HashMap::new(),
+        }
+    }
+
+    fn sort_entries(&mut self) {
+        self.entries.sort_by_key(|e| std::cmp::Reverse(e.0.len()));
+    }
+
+    /// Merge extra PSR-4 namespaces, classmap files, and flags from `.php-lsp.json`
+    /// `autoload` or `initializationOptions.autoload` (Composer-compatible shape).
+    pub fn merge_project_autoload(&mut self, root: &Path, autoload: &serde_json::Value) {
+        if let Some(case_insensitive) = autoload.get("caseInsensitive").and_then(|v| v.as_bool())
+        {
+            self.case_insensitive = case_insensitive;
+        }
+
+        let mut extra: HashMap<String, Vec<PathBuf>> = HashMap::new();
+        if let Some(psr4) = autoload.get("psr-4") {
+            load_psr4_section(
+                &serde_json::json!({ "psr-4": psr4 }),
+                root,
+                &mut extra,
+            );
+        }
+        for (ns, dirs) in extra {
+            let entry = self
+                .entries
+                .iter_mut()
+                .find(|(prefix, _)| prefix == &ns);
+            if let Some((_, existing)) = entry {
+                for dir in dirs {
+                    if !existing.contains(&dir) {
+                        existing.push(dir);
+                    }
+                }
+            } else {
+                self.entries.push((ns, dirs));
+            }
+        }
+        self.sort_entries();
+
+        if let Some(files) = autoload.get("classmap").and_then(|v| v.as_array()) {
+            for file in files {
+                if let Some(rel) = file.as_str() {
+                    self.load_classmap_json(&root.join(rel));
+                }
+            }
+        }
+    }
+
+    fn load_classmap_json(&mut self, path: &Path) {
+        let Ok(text) = std::fs::read_to_string(path) else {
+            return;
+        };
+        let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) else {
+            return;
+        };
+        let Some(obj) = json.as_object() else {
+            return;
+        };
+        let base = path.parent().unwrap_or(Path::new("."));
+        for (class, file_val) in obj {
+            let Some(rel) = file_val.as_str() else {
+                continue;
+            };
+            let file_path = base.join(rel);
+            if file_path.exists() {
+                self.classmap
+                    .insert(class.trim_start_matches('\\').to_lowercase(), file_path);
+            }
+        }
     }
 
     /// Build a map from the project root. Reads:
@@ -82,13 +159,19 @@ impl Psr4Map {
         let mut entries: Vec<_> = map.into_iter().collect();
         entries.sort_by_key(|e| std::cmp::Reverse(e.0.len()));
 
-        Psr4Map { entries }
+        Psr4Map {
+            entries,
+            case_insensitive: false,
+            classmap: HashMap::new(),
+        }
     }
 
     /// Merge another map's entries into this one, maintaining longest-prefix-first order.
     pub fn extend(&mut self, other: Psr4Map) {
         self.entries.extend(other.entries);
-        self.entries.sort_by_key(|e| std::cmp::Reverse(e.0.len()));
+        self.sort_entries();
+        self.classmap.extend(other.classmap);
+        self.case_insensitive = self.case_insensitive || other.case_insensitive;
     }
 
     /// Reverse of `resolve`: given a file path, return the PSR-4 fully-qualified
@@ -116,6 +199,12 @@ impl Psr4Map {
     pub fn resolve(&self, class_name: &str) -> Option<PathBuf> {
         let class_name = class_name.trim_start_matches('\\');
 
+        if let Some(path) = self.classmap.get(&class_name.to_lowercase()) {
+            if path.exists() {
+                return Some(path.clone());
+            }
+        }
+
         for (prefix, base_dirs) in &self.entries {
             // Strip the trailing `\` from the namespace prefix for comparison
             let ns = prefix.trim_end_matches('\\');
@@ -136,10 +225,30 @@ impl Psr4Map {
                 if candidate.exists() {
                     return Some(candidate);
                 }
+                if self.case_insensitive {
+                    let relative_lower = remainder.to_lowercase().replace('\\', "/") + ".php";
+                    let candidate_lower = base.join(&relative_lower);
+                    if candidate_lower.exists() {
+                        return Some(candidate_lower);
+                    }
+                }
             }
         }
         None
     }
+}
+
+/// Build a merged PSR-4 map for all workspace roots, applying project autoload overrides.
+pub fn build_psr4_for_roots(roots: &[PathBuf], project_autoload: Option<&serde_json::Value>) -> Psr4Map {
+    let mut merged = Psr4Map::empty();
+    for root in roots {
+        let mut map = Psr4Map::load(root);
+        if let Some(autoload) = project_autoload {
+            map.merge_project_autoload(root, autoload);
+        }
+        merged.extend(map);
+    }
+    merged
 }
 
 fn add_from_composer_json(
@@ -795,5 +904,58 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let result = load_project_config_json(&[dir.path().to_path_buf()]);
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn project_autoload_adds_extra_psr4_base_dirs() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write(
+            &root.join("composer.json"),
+            r#"{"autoload": {"psr-4": {"App\\": "classes/"}}}"#,
+        );
+        write(&root.join("src/Extra/Foo.php"), "<?php namespace App\\Extra; class Foo {}");
+        write(
+            &root.join(".php-lsp.json"),
+            r#"{"autoload": {"psr-4": {"App\\": ["src/"]}}}"#,
+        );
+        let map = build_psr4_for_roots(
+            &[root.to_path_buf()],
+            Some(&serde_json::json!({
+                "psr-4": { "App\\": ["src/"] }
+            })),
+        );
+        assert!(map.resolve("App\\Extra\\Foo").is_some());
+    }
+
+    #[test]
+    fn case_insensitive_psr4_resolve() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write(&root.join("classes/logger/log_factory.php"), "<?php namespace WL\\Logger; class Log_factory {}");
+        write(
+            &root.join("composer.json"),
+            r#"{"autoload": {"psr-4": {"WL\\": "classes/"}}}"#,
+        );
+        let mut map = Psr4Map::load(root);
+        map.case_insensitive = true;
+        assert!(map.resolve("WL\\Logger\\Log_factory").is_some());
+    }
+
+    #[test]
+    fn classmap_json_resolves_lowercase_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        write(&root.join("legacy/foo.class.php"), "<?php class foo {}");
+        write(
+            &root.join("classmap.json"),
+            r#"{"foo": "legacy/foo.class.php"}"#,
+        );
+        let mut map = Psr4Map::empty();
+        map.merge_project_autoload(
+            root,
+            &serde_json::json!({ "classmap": ["classmap.json"] }),
+        );
+        assert!(map.resolve("foo").is_some());
     }
 }

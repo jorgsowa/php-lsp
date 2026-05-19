@@ -394,17 +394,6 @@ impl LanguageServer for Backend {
         // the race where didOpen runs before the initialized handler finishes its
         // register_capability round-trip.
         {
-            let roots = self.root_paths.read().unwrap().clone();
-            if !roots.is_empty() {
-                let mut merged = Psr4Map::empty();
-                for root in &roots {
-                    merged.extend(Psr4Map::load(root));
-                }
-                *self.psr4.write().unwrap() = merged;
-            }
-        }
-
-        {
             let opts = params.initialization_options.as_ref();
             let roots = self.root_paths.read().unwrap().clone();
             let file_cfg = crate::autoload::load_project_config_json(&roots);
@@ -453,6 +442,11 @@ impl LanguageServer for Backend {
             // excludePaths arrays are concatenated rather than replaced.
             let file_obj = file_cfg.as_ref().filter(|v| v.is_object());
             let merged = LspConfig::merge_project_configs(file_obj, opts);
+            if !roots.is_empty() {
+                let autoload = merged.get("autoload");
+                *self.psr4.write().unwrap() =
+                    crate::autoload::build_psr4_for_roots(&roots, autoload);
+            }
             let mut cfg = LspConfig::from_value(&merged);
 
             // Resolve the PHP version and log what was chosen and why.
@@ -660,11 +654,10 @@ impl LanguageServer for Backend {
         let roots = self.root_paths.read().unwrap().clone();
         if !roots.is_empty() {
             {
-                let mut merged = Psr4Map::empty();
-                for root in &roots {
-                    merged.extend(Psr4Map::load(root));
-                }
-                *self.psr4.write().unwrap() = merged;
+                let cfg_guard = self.config.read().unwrap();
+                let autoload = cfg_guard.autoload.as_ref();
+                *self.psr4.write().unwrap() =
+                    crate::autoload::build_psr4_for_roots(&roots, autoload);
             }
             *self.meta.write().unwrap() = PhpStormMeta::load(&roots[0]);
 
@@ -831,6 +824,11 @@ impl LanguageServer for Backend {
                         ),
                     )
                     .await;
+            }
+            if !roots.is_empty() {
+                let autoload = cfg.autoload.as_ref();
+                *self.psr4.write().unwrap() =
+                    crate::autoload::build_psr4_for_roots(&roots, autoload);
             }
             cfg.php_version = Some(ver.clone());
             if let Ok(pv) = ver.parse::<mir_analyzer::PhpVersion>() {

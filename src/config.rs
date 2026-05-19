@@ -193,6 +193,9 @@ pub struct LspConfig {
     /// Defaults to [`MAX_INDEXED_FILES`]. Set lower via `initializationOptions`
     /// to reduce memory on projects with very large vendor trees.
     pub max_indexed_files: usize,
+    /// Optional project autoload overrides (`autoload` in `.php-lsp.json` or
+    /// `initializationOptions`). Same shape as documented in configuration.md.
+    pub autoload: Option<serde_json::Value>,
 }
 
 impl Default for LspConfig {
@@ -204,6 +207,7 @@ impl Default for LspConfig {
             diagnostics: DiagnosticsConfig::default(),
             features: FeaturesConfig::default(),
             max_indexed_files: MAX_INDEXED_FILES,
+            autoload: None,
         }
     }
 }
@@ -279,6 +283,13 @@ impl LspConfig {
         }
         if let Some(n) = v.get("maxIndexedFiles").and_then(|x| x.as_u64()) {
             cfg.max_indexed_files = n as usize;
+        }
+        if let Some(autoload) = v.get("autoload") {
+            if autoload.is_null() {
+                cfg.autoload = None;
+            } else {
+                cfg.autoload = Some(autoload.clone());
+            }
         }
         cfg
     }
