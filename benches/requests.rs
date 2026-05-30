@@ -234,6 +234,7 @@ fn bench_completion(c: &mut Criterion) {
         file_imports: None,
         doc_returns: None,
         other_returns: None,
+        find_class_doc: None,
     };
 
     c.bench_function("completion/cross_file_arrow", |b| {
@@ -392,11 +393,32 @@ fn bench_completion_laravel(c: &mut Criterion) {
         );
         return;
     };
+    eprintln!("Laravel fixture: {} PHP files (completion)", docs.len());
     // Derive a parsed-only view for the completion API.
     let other_parsed: Vec<Arc<ParsedDoc>> = docs.iter().map(|(_, p)| Arc::clone(p)).collect();
 
+    // Build a class-name → doc map once so the indexed benchmark can use
+    // O(1) lookup instead of the O(n) linear scan. Mirrors what the backend
+    // does via get_workspace_index_salsa() + get_doc_salsa().
+    let class_doc_map: std::collections::HashMap<String, Arc<ParsedDoc>> = {
+        let mut map = std::collections::HashMap::new();
+        for (_, doc) in &docs {
+            let idx = FileIndex::extract(doc);
+            for cls in idx.classes {
+                map.entry(cls.name.to_string())
+                    .or_insert_with(|| Arc::clone(doc));
+            }
+        }
+        map
+    };
+
     let ctrl_doc = Arc::new(ParsedDoc::parse(CONTROLLER.to_owned()));
-    let ctx = CompletionCtx {
+
+    let mut group = c.benchmark_group("completion");
+    group.sample_size(10);
+
+    // Baseline: linear scan through all 1,609 docs per class in the hierarchy.
+    let ctx_linear = CompletionCtx {
         source: Some(CONTROLLER),
         position: Some(POS_ARROW),
         meta: None,
@@ -404,20 +426,102 @@ fn bench_completion_laravel(c: &mut Criterion) {
         file_imports: None,
         doc_returns: None,
         other_returns: None,
+        find_class_doc: None,
     };
-
-    let mut group = c.benchmark_group("completion");
-    group.sample_size(10);
     group.bench_function("laravel_framework", |b| {
         b.iter(|| {
             black_box(filtered_completions_at(
                 &ctrl_doc,
                 &other_parsed,
                 Some(">"),
-                &ctx,
+                &ctx_linear,
             ))
         });
     });
+
+    // Fast path: O(1) workspace-index lookup per class.
+    let find_fn = |name: &str| -> Option<Arc<ParsedDoc>> { class_doc_map.get(name).cloned() };
+    let ctx_indexed = CompletionCtx {
+        source: Some(CONTROLLER),
+        position: Some(POS_ARROW),
+        meta: None,
+        doc_uri: None,
+        file_imports: None,
+        doc_returns: None,
+        other_returns: None,
+        find_class_doc: Some(&find_fn),
+    };
+    group.bench_function("laravel_framework_indexed", |b| {
+        b.iter(|| {
+            black_box(filtered_completions_at(
+                &ctrl_doc,
+                &other_parsed,
+                Some(">"),
+                &ctx_indexed,
+            ))
+        });
+    });
+
+    // Realistic case: complete on Illuminate\Database\Eloquent\Builder which IS
+    // in the fixture, with pre-computed method returns (mirrors salsa cache in
+    // production). This isolates the class-member lookup cost from the
+    // build_method_returns overhead that dominates when other_returns is None.
+    const BUILDER_SRC: &str =
+        "<?php\nuse Illuminate\\Database\\Eloquent\\Builder;\n$b = new Builder();\n$b->";
+    let builder_doc = Arc::new(ParsedDoc::parse(BUILDER_SRC.to_owned()));
+    let builder_pos = tower_lsp::lsp_types::Position {
+        line: 3,
+        character: 4,
+    };
+    // Pre-compute once (not measured); mimics salsa memoization.
+    let other_returns_arc: Vec<Arc<MethodReturnsMap>> = other_parsed
+        .iter()
+        .map(|d| Arc::new(build_method_returns(d)))
+        .collect();
+    let builder_doc_returns = Arc::new(build_method_returns(&builder_doc));
+
+    let ctx_builder_linear = CompletionCtx {
+        source: Some(BUILDER_SRC),
+        position: Some(builder_pos),
+        meta: None,
+        doc_uri: None,
+        file_imports: None,
+        doc_returns: Some(&builder_doc_returns),
+        other_returns: Some(&other_returns_arc),
+        find_class_doc: None,
+    };
+    group.bench_function("laravel_builder_linear", |b| {
+        b.iter(|| {
+            black_box(filtered_completions_at(
+                &builder_doc,
+                &other_parsed,
+                Some(">"),
+                &ctx_builder_linear,
+            ))
+        });
+    });
+
+    let ctx_builder_indexed = CompletionCtx {
+        source: Some(BUILDER_SRC),
+        position: Some(builder_pos),
+        meta: None,
+        doc_uri: None,
+        file_imports: None,
+        doc_returns: Some(&builder_doc_returns),
+        other_returns: Some(&other_returns_arc),
+        find_class_doc: Some(&find_fn),
+    };
+    group.bench_function("laravel_builder_indexed", |b| {
+        b.iter(|| {
+            black_box(filtered_completions_at(
+                &builder_doc,
+                &other_parsed,
+                Some(">"),
+                &ctx_builder_indexed,
+            ))
+        });
+    });
+
     group.finish();
 }
 

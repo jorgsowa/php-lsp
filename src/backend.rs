@@ -1173,6 +1173,13 @@ impl LanguageServer for Backend {
                 Some(&**meta_loaded)
             };
             let imports = self.file_imports(uri);
+            let wi = self.docs.get_workspace_index_salsa();
+            let docs_for_lookup = Arc::clone(&self.docs);
+            let find_class_doc_fn = move |name: &str| -> Option<Arc<ParsedDoc>> {
+                let cr = *wi.classes_by_name.get(name)?.first()?;
+                let (uri, _) = wi.at(cr)?;
+                docs_for_lookup.get_doc_salsa(uri)
+            };
             let ctx = CompletionCtx {
                 source: Some(&source),
                 position: Some(position),
@@ -1181,6 +1188,7 @@ impl LanguageServer for Backend {
                 file_imports: Some(&imports),
                 doc_returns: doc_returns.as_deref(),
                 other_returns: Some(&other_returns),
+                find_class_doc: Some(&find_class_doc_fn),
             };
             Ok(Some(CompletionResponse::Array(filtered_completions_at(
                 &doc,

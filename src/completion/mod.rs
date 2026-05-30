@@ -204,6 +204,12 @@ pub struct CompletionCtx<'a> {
     /// Salsa-memoized method-return maps aligned with `other_docs`. Must be
     /// the same length as `other_docs` when set, or `None` to build inline.
     pub other_returns: Option<&'a [Arc<MethodReturnsMap>]>,
+    /// Optional O(1) class-document lookup backed by the workspace index.
+    /// When `Some`, `all_instance_members` and `all_static_members` use it
+    /// to find the defining doc directly instead of scanning `other_docs`
+    /// linearly (O(n files × inheritance depth) → O(depth)).
+    /// Pass `None` to fall back to the existing linear scan.
+    pub find_class_doc: Option<&'a dyn Fn(&str) -> Option<Arc<ParsedDoc>>>,
 }
 
 /// Completions filtered by trigger character, with optional context
@@ -270,7 +276,9 @@ pub fn filtered_completions_at(
                     let mut seen = std::collections::HashSet::new();
                     for class_name in class_names.split('|') {
                         let class_name = class_name.trim();
-                        for item in all_instance_members(class_name, doc, other_docs) {
+                        for item in
+                            all_instance_members(class_name, doc, other_docs, ctx.find_class_doc)
+                        {
                             if seen.insert(item.label.clone()) {
                                 items.push(item);
                             }
@@ -292,7 +300,7 @@ pub fn filtered_completions_at(
             if let (Some(src), Some(pos)) = (source, position)
                 && let Some(class_name) = resolve_static_receiver(src, doc, other_docs, pos)
             {
-                let items = all_static_members(&class_name, doc, other_docs);
+                let items = all_static_members(&class_name, doc, other_docs, ctx.find_class_doc);
                 if !items.is_empty() {
                     return items;
                 }
@@ -401,7 +409,12 @@ pub fn filtered_completions_at(
                         let mut items = Vec::new();
                         let mut seen = std::collections::HashSet::new();
                         for class_name in cls.split('|') {
-                            for item in all_instance_members(class_name.trim(), doc, other_docs) {
+                            for item in all_instance_members(
+                                class_name.trim(),
+                                doc,
+                                other_docs,
+                                ctx.find_class_doc,
+                            ) {
                                 if seen.insert(item.label.clone()) {
                                     items.push(item);
                                 }

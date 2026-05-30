@@ -5,7 +5,7 @@ use tower_lsp::lsp_types::{CompletionItem, CompletionItemKind, InsertTextFormat,
 use crate::ast::ParsedDoc;
 use crate::stubs::builtin_class_members;
 use crate::type_map::{
-    enclosing_class_at, is_backed_enum, is_enum, members_of_class, mixin_classes_of,
+    ClassMembers, enclosing_class_at, is_backed_enum, is_enum, members_of_class, mixin_classes_of,
     parent_class_name,
 };
 use crate::util::utf16_offset_to_byte;
@@ -16,6 +16,7 @@ pub(super) fn all_instance_members(
     class_name: &str,
     doc: &ParsedDoc,
     other_docs: &[Arc<ParsedDoc>],
+    find_class_doc: Option<&dyn Fn(&str) -> Option<Arc<ParsedDoc>>>,
 ) -> Vec<CompletionItem> {
     let all: Vec<&ParsedDoc> = std::iter::once(doc)
         .chain(other_docs.iter().map(|d| d.as_ref()))
@@ -23,7 +24,6 @@ pub(super) fn all_instance_members(
     let mut items = Vec::new();
     let mut seen_names: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut visited: std::collections::HashSet<String> = std::collections::HashSet::new();
-    // Queue: class names to process (inheritance chain + mixin chains).
     let mut queue: Vec<String> = vec![class_name.to_string()];
     while let Some(current) = queue.pop() {
         if !visited.insert(current.clone()) {
@@ -31,14 +31,26 @@ pub(super) fn all_instance_members(
         }
         let mut parent: Option<String> = None;
         let mut found_in_docs = false;
-        // PHP defines a class in exactly one file, so stop scanning once the
-        // defining doc is hit. Without the early break, member completion
-        // walks every workspace doc for every class in the inheritance chain.
-        for d in &all {
-            let members = members_of_class(d, &current);
-            if !members.found {
-                continue;
-            }
+
+        // Fast path: workspace-index lookup gives O(1) access to the one doc
+        // that defines `current`. Fallback: scan all docs linearly (original
+        // behaviour, used when the index is unavailable or the class is not
+        // yet indexed, e.g. built-ins or unsaved files).
+        let fast_doc: Option<Arc<ParsedDoc>> = find_class_doc.and_then(|f| f(&current));
+        let fast_ref: Option<&ParsedDoc> = fast_doc.as_deref();
+        let defining: Option<(&ParsedDoc, ClassMembers)> = if let Some(fd) = fast_ref {
+            let m = members_of_class(fd, &current);
+            m.found.then_some((fd, m))
+        } else {
+            // PHP defines a class in exactly one file, so stop scanning once
+            // the defining doc is hit.
+            all.iter().find_map(|d| {
+                let m = members_of_class(d, &current);
+                m.found.then_some((*d, m))
+            })
+        };
+
+        if let Some((d, members)) = defining {
             found_in_docs = true;
             parent = members.parent.clone();
             for (name, is_static) in members.methods {
@@ -86,16 +98,14 @@ pub(super) fn all_instance_members(
                     });
                 }
             }
-            // Collect @mixin classes for this class in this doc.
             for mixin in mixin_classes_of(d, &current) {
                 queue.push(mixin);
             }
-            // Queue trait names so their members are also included.
             for trait_name in members.trait_uses {
                 queue.push(trait_name);
             }
-            break;
         }
+
         // Built-in stubs only apply when the class is not defined in any user
         // document — a user class shadowing a built-in name wins.
         if !found_in_docs && let Some(stub) = builtin_class_members(&current) {
@@ -131,6 +141,7 @@ pub(super) fn all_static_members(
     class_name: &str,
     doc: &ParsedDoc,
     other_docs: &[Arc<ParsedDoc>],
+    find_class_doc: Option<&dyn Fn(&str) -> Option<Arc<ParsedDoc>>>,
 ) -> Vec<CompletionItem> {
     let all: Vec<&ParsedDoc> = std::iter::once(doc)
         .chain(other_docs.iter().map(|d| d.as_ref()))
@@ -145,11 +156,20 @@ pub(super) fn all_static_members(
         }
         let mut parent: Option<String> = None;
         let mut found_in_docs = false;
-        for d in &all {
-            let members = members_of_class(d, &current);
-            if !members.found {
-                continue;
-            }
+
+        let fast_doc: Option<Arc<ParsedDoc>> = find_class_doc.and_then(|f| f(&current));
+        let fast_ref: Option<&ParsedDoc> = fast_doc.as_deref();
+        let defining: Option<(&ParsedDoc, ClassMembers)> = if let Some(fd) = fast_ref {
+            let m = members_of_class(fd, &current);
+            m.found.then_some((fd, m))
+        } else {
+            all.iter().find_map(|d| {
+                let m = members_of_class(d, &current);
+                m.found.then_some((*d, m))
+            })
+        };
+
+        if let Some((_d, members)) = defining {
             found_in_docs = true;
             parent = members.parent.clone();
             for (name, is_static) in members.methods {
@@ -178,12 +198,11 @@ pub(super) fn all_static_members(
                     });
                 }
             }
-            // Queue trait names so their static members are also included.
             for trait_name in members.trait_uses {
                 queue.push(trait_name);
             }
-            break;
         }
+
         // Built-in stubs only apply when the class is not defined in any user
         // document — a user class shadowing a built-in name wins.
         if !found_in_docs && let Some(stub) = builtin_class_members(&current) {
