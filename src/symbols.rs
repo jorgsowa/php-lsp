@@ -10,6 +10,7 @@ use tower_lsp::lsp_types::{
 
 use crate::ast::{ParsedDoc, SourceView, name_range};
 use crate::docblock::{docblock_before, parse_docblock};
+use crate::util::zero_width_range;
 
 pub fn document_symbols(_source: &str, doc: &ParsedDoc) -> Vec<DocumentSymbol> {
     let sv = doc.view();
@@ -477,14 +478,6 @@ pub fn workspace_symbols_from_index(
     let (kind_filter, term) = parse_kind_filter(query);
     let matches_kind = |k: SymbolKind| kind_filter.is_none_or(|f| f == k);
 
-    let line_range = |line: u32| -> Range {
-        let pos = Position { line, character: 0 };
-        Range {
-            start: pos,
-            end: pos,
-        }
-    };
-
     let mut results = Vec::new();
     for (uri, idx) in indexes {
         if matches_kind(SymbolKind::FUNCTION) {
@@ -495,7 +488,7 @@ pub fn workspace_symbols_from_index(
                         kind: SymbolKind::FUNCTION,
                         location: Location {
                             uri: uri.clone(),
-                            range: line_range(f.start_line),
+                            range: zero_width_range(f.start_line),
                         },
                         tags: None,
                         deprecated: None,
@@ -516,7 +509,7 @@ pub fn workspace_symbols_from_index(
                     kind: class_kind,
                     location: Location {
                         uri: uri.clone(),
-                        range: line_range(cls.start_line),
+                        range: zero_width_range(cls.start_line),
                     },
                     tags: None,
                     deprecated: None,
@@ -531,7 +524,7 @@ pub fn workspace_symbols_from_index(
                             kind: SymbolKind::METHOD,
                             location: Location {
                                 uri: uri.clone(),
-                                range: line_range(m.start_line),
+                                range: zero_width_range(m.start_line),
                             },
                             tags: None,
                             deprecated: None,
@@ -548,7 +541,7 @@ pub fn workspace_symbols_from_index(
                             kind: SymbolKind::ENUM_MEMBER,
                             location: Location {
                                 uri: uri.clone(),
-                                range: line_range(cls.start_line),
+                                range: zero_width_range(cls.start_line),
                             },
                             tags: None,
                             deprecated: None,

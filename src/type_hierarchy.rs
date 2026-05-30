@@ -3,13 +3,7 @@ use std::sync::Arc;
 
 use tower_lsp::lsp_types::{Position, SymbolKind, TypeHierarchyItem, Url};
 
-fn line_range(line: u32) -> tower_lsp::lsp_types::Range {
-    let pos = Position { line, character: 0 };
-    tower_lsp::lsp_types::Range {
-        start: pos,
-        end: pos,
-    }
-}
+use crate::util::zero_width_range;
 
 fn make_item_from_index(
     name: &str,
@@ -17,7 +11,7 @@ fn make_item_from_index(
     uri: &Url,
     start_line: u32,
 ) -> TypeHierarchyItem {
-    let range = line_range(start_line);
+    let range = zero_width_range(start_line);
     TypeHierarchyItem {
         name: name.to_string(),
         kind,

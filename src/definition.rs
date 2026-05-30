@@ -4,19 +4,8 @@ use php_ast::{ClassMemberKind, EnumMemberKind, NamespaceBody, Stmt, StmtKind};
 use tower_lsp::lsp_types::{Location, Position, Range, Url};
 
 use crate::ast::{ParsedDoc, SourceView, str_offset};
-use crate::util::{strip_variable_sigil, utf16_code_units, word_at_position};
+use crate::util::{strip_variable_sigil, utf16_code_units, word_at_position, zero_width_location};
 use crate::walk::collect_var_refs_in_scope;
-
-fn zero_width_location(uri: &Url, line: u32) -> Location {
-    let pos = Position { line, character: 0 };
-    Location {
-        uri: uri.clone(),
-        range: Range {
-            start: pos,
-            end: pos,
-        },
-    }
-}
 
 /// Find the definition of the symbol under `position`.
 /// Searches the current document first, then `other_docs` for cross-file resolution.
@@ -215,33 +204,13 @@ pub fn find_in_indexes(
             // Class constants.
             for cc in &cls.constants {
                 if cc.as_ref() == name {
-                    let pos = tower_lsp::lsp_types::Position {
-                        line: cls.start_line,
-                        character: 0,
-                    };
-                    return Some(Location {
-                        uri: uri.clone(),
-                        range: Range {
-                            start: pos,
-                            end: pos,
-                        },
-                    });
+                    return Some(zero_width_location(uri, cls.start_line));
                 }
             }
             // Enum cases.
             for case in &cls.cases {
                 if case.as_ref() == name {
-                    let pos = tower_lsp::lsp_types::Position {
-                        line: cls.start_line,
-                        character: 0,
-                    };
-                    return Some(Location {
-                        uri: uri.clone(),
-                        range: Range {
-                            start: pos,
-                            end: pos,
-                        },
-                    });
+                    return Some(zero_width_location(uri, cls.start_line));
                 }
             }
         }
@@ -279,17 +248,7 @@ pub fn find_method_in_class_hierarchy(
                 }
                 for m in &cls.methods {
                     if m.name.as_ref() == method_name {
-                        let pos = tower_lsp::lsp_types::Position {
-                            line: m.start_line,
-                            character: 0,
-                        };
-                        return Some(Location {
-                            uri: uri.clone(),
-                            range: Range {
-                                start: pos,
-                                end: pos,
-                            },
-                        });
+                        return Some(zero_width_location(uri, m.start_line));
                     }
                 }
                 // Traits first (PHP MRO), then parent.

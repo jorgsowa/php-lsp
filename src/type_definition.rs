@@ -12,7 +12,7 @@ use crate::ast::{MethodReturnsMap, ParsedDoc, SourceView, format_type_hint, str_
 use crate::moniker::resolve_fqn;
 use crate::references::collect_class_imports;
 use crate::type_map::{TypeMap, build_method_returns};
-use crate::util::word_at_position;
+use crate::util::{word_at_position, zero_width_range};
 
 /// Given the cursor position, resolve the type of the symbol and return all
 /// matching locations for that type's class/interface declarations.
@@ -360,11 +360,6 @@ pub fn goto_type_definition_from_index(
         }
     };
 
-    let line_range = |line: u32| -> Range {
-        let p = Position { line, character: 0 };
-        Range { start: p, end: p }
-    };
-
     let mut results = Vec::new();
 
     // First pass: look for exact FQN match (high priority)
@@ -374,7 +369,7 @@ pub fn goto_type_definition_from_index(
             for cls in &idx.classes {
                 let cls_fqn = cls.fqn.as_ref().trim_start_matches('\\');
                 if cls_fqn == cand_fqn {
-                    let range = line_range(cls.start_line);
+                    let range = zero_width_range(cls.start_line);
                     results.push(Location {
                         uri: uri.clone(),
                         range,
@@ -412,7 +407,7 @@ pub fn goto_type_definition_from_index(
                         .next()
                         .unwrap_or(cls.name.as_ref());
                     if short == cn_short {
-                        let range = line_range(cls.start_line);
+                        let range = zero_width_range(cls.start_line);
                         results.push(Location {
                             uri: uri.clone(),
                             range,
