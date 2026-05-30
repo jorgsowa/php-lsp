@@ -13,7 +13,7 @@ use php_lsp::definition::goto_definition;
 use php_lsp::file_index::FileIndex;
 use php_lsp::hover::hover_info;
 use php_lsp::implementation::find_implementations;
-use php_lsp::references::{SymbolKind, find_references};
+use php_lsp::references::{SymbolKind, find_references, find_references_with_target};
 use php_lsp::rename::rename;
 use php_lsp::symbols::{document_symbols, workspace_symbols_from_index};
 use php_lsp::type_map::build_method_returns;
@@ -364,6 +364,21 @@ fn bench_references_laravel(c: &mut Criterion) {
                 &docs,
                 false,
                 Some(SymbolKind::Method),
+            ))
+        });
+    });
+    // Production-realistic: search for `Str` with its fully-qualified name so
+    // doc_can_reference_target filters out files that don't import
+    // Illuminate\Support\Str. Mirrors what backend.rs does via
+    // find_references_with_target after resolving the FQN at the cursor.
+    group.bench_function("laravel_framework_with_fqn", |b| {
+        b.iter(|| {
+            black_box(find_references_with_target(
+                "Str",
+                &docs,
+                false,
+                Some(SymbolKind::Class),
+                "Illuminate\\Support\\Str",
             ))
         });
     });

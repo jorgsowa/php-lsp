@@ -117,9 +117,15 @@ pub fn find_constructor_references(
     all_docs
         .par_iter()
         .flat_map_iter(|(uri, doc)| {
-            // Skip files that can't reference the target unless they may use the FQN
-            // directly (without a `use` statement). FQN-qualified identifiers in the
-            // AST are disambiguated inside `new_refs_in_stmts` via `class_fqn`.
+            // Cheap memchr gate before import AST walk.
+            if !doc.view().source().contains(short_name)
+                && !class_fqn
+                    .is_some_and(|f| doc.view().source().contains(f.trim_start_matches('\\')))
+            {
+                return Vec::new();
+            }
+            // Namespace filter: skip if the file's imports can't resolve the
+            // short name to the target FQN and the FQN doesn't appear literally.
             if let Some(fqn) = class_fqn
                 && !doc_can_reference_target(doc, short_name, fqn)
                 && !doc.view().source().contains(fqn.trim_start_matches('\\'))
@@ -243,6 +249,12 @@ fn find_references_inner(
     all_docs
         .par_iter()
         .flat_map_iter(|(uri, doc)| {
+            // Cheap memchr gate before any AST work. doc_can_reference_target
+            // walks use-statement nodes and must not run on files that can't
+            // possibly match.
+            if !doc.view().source().contains(word) {
+                return Vec::new();
+            }
             if namespace_filter_active
                 && let Some(target) = target_fqn
                 && !doc_can_reference_target(doc, word, target)
