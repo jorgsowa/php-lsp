@@ -188,6 +188,11 @@ fn resolve_call_params(
     params
 }
 
+/// Workspace-index-backed class lookup: maps a short class name to the
+/// `ParsedDoc` that defines it. Used by `all_instance_members` and
+/// `all_static_members` to avoid scanning all workspace docs linearly.
+pub type ClassDocLookup<'a> = &'a dyn Fn(&str) -> Option<Arc<ParsedDoc>>;
+
 /// Optional context for completion requests that enables richer results
 /// (e.g. auto-import edits, `->` scoping to a class).
 #[derive(Default)]
@@ -209,7 +214,7 @@ pub struct CompletionCtx<'a> {
     /// to find the defining doc directly instead of scanning `other_docs`
     /// linearly (O(n files × inheritance depth) → O(depth)).
     /// Pass `None` to fall back to the existing linear scan.
-    pub find_class_doc: Option<&'a dyn Fn(&str) -> Option<Arc<ParsedDoc>>>,
+    pub find_class_doc: Option<ClassDocLookup<'a>>,
 }
 
 /// Completions filtered by trigger character, with optional context

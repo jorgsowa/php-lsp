@@ -16,7 +16,7 @@ pub(super) fn all_instance_members(
     class_name: &str,
     doc: &ParsedDoc,
     other_docs: &[Arc<ParsedDoc>],
-    find_class_doc: Option<&dyn Fn(&str) -> Option<Arc<ParsedDoc>>>,
+    find_class_doc: Option<super::ClassDocLookup<'_>>,
 ) -> Vec<CompletionItem> {
     let all: Vec<&ParsedDoc> = std::iter::once(doc)
         .chain(other_docs.iter().map(|d| d.as_ref()))
@@ -141,7 +141,7 @@ pub(super) fn all_static_members(
     class_name: &str,
     doc: &ParsedDoc,
     other_docs: &[Arc<ParsedDoc>],
-    find_class_doc: Option<&dyn Fn(&str) -> Option<Arc<ParsedDoc>>>,
+    find_class_doc: Option<super::ClassDocLookup<'_>>,
 ) -> Vec<CompletionItem> {
     let all: Vec<&ParsedDoc> = std::iter::once(doc)
         .chain(other_docs.iter().map(|d| d.as_ref()))
