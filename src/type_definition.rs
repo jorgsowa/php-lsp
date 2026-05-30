@@ -252,18 +252,12 @@ fn param_type_for(stmts: &[Stmt<'_, '_>], word: &str) -> Option<String> {
 fn find_class_range(sv: SourceView<'_>, stmts: &[Stmt<'_, '_>], name: &str) -> Option<Range> {
     for stmt in stmts {
         match &stmt.kind {
-            StmtKind::Class(c)
-                if c.name.as_ref().map(|n| n.to_string()) == Some(name.to_string()) =>
-            {
+            StmtKind::Class(c) if c.name.map(|n| n.or_error()) == Some(name) => {
                 // Use statement span to find the name within the declaration context,
                 // not the first occurrence in the file (which might be a different use).
                 let stmt_range = sv.range_of(stmt.span);
-                let name_in_source = c
-                    .name
-                    .as_ref()
-                    .map(|n| n.to_string())
-                    .expect("match guard ensures Some");
-                if let Some(pos) = str_offset_in_range(sv.source(), stmt.span, &name_in_source) {
+                let name_in_source = c.name.expect("match guard ensures Some").or_error();
+                if let Some(pos) = str_offset_in_range(sv.source(), stmt.span, name_in_source) {
                     return Some(Range {
                         start: sv.position_of(pos),
                         end: sv.position_of(pos + name_in_source.len() as u32),
@@ -273,33 +267,33 @@ fn find_class_range(sv: SourceView<'_>, stmts: &[Stmt<'_, '_>], name: &str) -> O
             }
             StmtKind::Interface(i) if i.name == name => {
                 // Use statement span to find the name within the declaration context.
-                if let Some(pos) = str_offset_in_range(sv.source(), stmt.span, &i.name.to_string())
-                {
+                let name_str = i.name.or_error();
+                if let Some(pos) = str_offset_in_range(sv.source(), stmt.span, name_str) {
                     return Some(Range {
                         start: sv.position_of(pos),
-                        end: sv.position_of(pos + i.name.to_string().len() as u32),
+                        end: sv.position_of(pos + name_str.len() as u32),
                     });
                 }
                 return Some(sv.range_of(stmt.span));
             }
             StmtKind::Trait(t) if t.name == name => {
                 // Use statement span to find the name within the declaration context.
-                if let Some(pos) = str_offset_in_range(sv.source(), stmt.span, &t.name.to_string())
-                {
+                let name_str = t.name.or_error();
+                if let Some(pos) = str_offset_in_range(sv.source(), stmt.span, name_str) {
                     return Some(Range {
                         start: sv.position_of(pos),
-                        end: sv.position_of(pos + t.name.to_string().len() as u32),
+                        end: sv.position_of(pos + name_str.len() as u32),
                     });
                 }
                 return Some(sv.range_of(stmt.span));
             }
             StmtKind::Enum(e) if e.name == name => {
                 // Use statement span to find the name within the declaration context.
-                if let Some(pos) = str_offset_in_range(sv.source(), stmt.span, &e.name.to_string())
-                {
+                let name_str = e.name.or_error();
+                if let Some(pos) = str_offset_in_range(sv.source(), stmt.span, name_str) {
                     return Some(Range {
                         start: sv.position_of(pos),
-                        end: sv.position_of(pos + e.name.to_string().len() as u32),
+                        end: sv.position_of(pos + name_str.len() as u32),
                     });
                 }
                 return Some(sv.range_of(stmt.span));

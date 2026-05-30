@@ -34,9 +34,7 @@ fn scan_statements(stmts: &[Stmt<'_, '_>], word: &str) -> Option<String> {
                     .unwrap_or_default();
                 return Some(format!("function {}({}){}", word, params, ret));
             }
-            StmtKind::Class(c)
-                if c.name.as_ref().map(|n| n.to_string()) == Some(word.to_string()) =>
-            {
+            StmtKind::Class(c) if c.name.map(|n| n.or_error()) == Some(word) => {
                 let kw = if c.modifiers.is_abstract {
                     "abstract class"
                 } else if c.modifiers.is_final {

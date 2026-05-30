@@ -69,33 +69,29 @@ fn scan_statements(sv: SourceView<'_>, stmts: &[Stmt<'_, '_>], word: &str) -> Op
     for stmt in stmts {
         match &stmt.kind {
             StmtKind::Function(f) if f.name == word => {
-                return Some(sv.name_range_in_span(&f.name.to_string(), stmt.span));
+                return Some(sv.name_range_in_span(f.name.or_error(), stmt.span));
             }
-            StmtKind::Class(c)
-                if c.name.as_ref().map(|n| n.to_string()) == Some(word.to_string()) =>
-            {
+            StmtKind::Class(c) if c.name.map(|n| n.or_error()) == Some(word) => {
                 let name = c.name.expect("match guard ensures Some");
-                return Some(sv.name_range_in_span(&name.to_string(), stmt.span));
+                return Some(sv.name_range_in_span(name.or_error(), stmt.span));
             }
             StmtKind::Class(c) => {
                 for member in c.body.members.iter() {
                     match &member.kind {
                         ClassMemberKind::Method(m) if m.name == word => {
-                            return Some(sv.name_range_in_span(&m.name.to_string(), member.span));
+                            return Some(sv.name_range_in_span(m.name.or_error(), member.span));
                         }
                         ClassMemberKind::ClassConst(cc) if cc.name == word => {
-                            return Some(sv.name_range_in_span(&cc.name.to_string(), member.span));
+                            return Some(sv.name_range_in_span(cc.name.or_error(), member.span));
                         }
                         ClassMemberKind::Property(p) if p.name == bare => {
-                            return Some(sv.name_range_in_span(&p.name.to_string(), member.span));
+                            return Some(sv.name_range_in_span(p.name.or_error(), member.span));
                         }
                         // Constructor-promoted parameters act as property declarations.
                         ClassMemberKind::Method(m) if m.name == "__construct" => {
                             for p in m.params.iter() {
                                 if p.visibility.is_some() && p.name == bare {
-                                    return Some(
-                                        sv.name_range_in_span(&p.name.to_string(), p.span),
-                                    );
+                                    return Some(sv.name_range_in_span(p.name.or_error(), p.span));
                                 }
                             }
                         }
@@ -105,15 +101,15 @@ fn scan_statements(sv: SourceView<'_>, stmts: &[Stmt<'_, '_>], word: &str) -> Op
             }
             StmtKind::Interface(i) => {
                 if i.name == word {
-                    return Some(sv.name_range_in_span(&i.name.to_string(), stmt.span));
+                    return Some(sv.name_range_in_span(i.name.or_error(), stmt.span));
                 }
                 for member in i.body.members.iter() {
                     match &member.kind {
                         ClassMemberKind::Method(m) if m.name == word => {
-                            return Some(sv.name_range(&m.name.to_string()));
+                            return Some(sv.name_range(m.name.or_error()));
                         }
                         ClassMemberKind::ClassConst(cc) if cc.name == word => {
-                            return Some(sv.name_range(&cc.name.to_string()));
+                            return Some(sv.name_range(cc.name.or_error()));
                         }
                         _ => {}
                     }
@@ -121,34 +117,34 @@ fn scan_statements(sv: SourceView<'_>, stmts: &[Stmt<'_, '_>], word: &str) -> Op
             }
             StmtKind::Trait(t) => {
                 if t.name == word {
-                    return Some(sv.name_range_in_span(&t.name.to_string(), stmt.span));
+                    return Some(sv.name_range_in_span(t.name.or_error(), stmt.span));
                 }
                 for member in t.body.members.iter() {
                     match &member.kind {
                         ClassMemberKind::Method(m) if m.name == word => {
-                            return Some(sv.name_range(&m.name.to_string()));
+                            return Some(sv.name_range(m.name.or_error()));
                         }
                         ClassMemberKind::ClassConst(cc) if cc.name == word => {
-                            return Some(sv.name_range(&cc.name.to_string()));
+                            return Some(sv.name_range(cc.name.or_error()));
                         }
                         ClassMemberKind::Property(p) if p.name == bare => {
-                            return Some(sv.name_range(&p.name.to_string()));
+                            return Some(sv.name_range(p.name.or_error()));
                         }
                         _ => {}
                     }
                 }
             }
             StmtKind::Enum(e) if e.name == word => {
-                return Some(sv.name_range_in_span(&e.name.to_string(), stmt.span));
+                return Some(sv.name_range_in_span(e.name.or_error(), stmt.span));
             }
             StmtKind::Enum(e) => {
                 for member in e.body.members.iter() {
                     match &member.kind {
                         EnumMemberKind::Method(m) if m.name == word => {
-                            return Some(sv.name_range(&m.name.to_string()));
+                            return Some(sv.name_range(m.name.or_error()));
                         }
                         EnumMemberKind::Case(c) if c.name == word => {
-                            return Some(sv.name_range(&c.name.to_string()));
+                            return Some(sv.name_range(c.name.or_error()));
                         }
                         _ => {}
                     }
