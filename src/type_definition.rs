@@ -98,14 +98,7 @@ pub fn goto_type_definition(
 
     // If results found in FQN pass, return them
     if !results.is_empty() {
-        // Deduplicate and sort for consistent results
-        results.sort_by(|a, b| {
-            a.uri
-                .as_str()
-                .cmp(b.uri.as_str())
-                .then_with(|| a.range.start.line.cmp(&b.range.start.line))
-        });
-        results.dedup_by(|a, b| a.uri == b.uri && a.range.start.line == b.range.start.line);
+        dedup_locations(&mut results);
         return results;
     }
 
@@ -133,17 +126,20 @@ pub fn goto_type_definition(
             }
         }
 
-        // Deduplicate and sort for consistent results
-        results.sort_by(|a, b| {
-            a.uri
-                .as_str()
-                .cmp(b.uri.as_str())
-                .then_with(|| a.range.start.line.cmp(&b.range.start.line))
-        });
-        results.dedup_by(|a, b| a.uri == b.uri && a.range.start.line == b.range.start.line);
+        dedup_locations(&mut results);
     }
 
     results
+}
+
+fn dedup_locations(results: &mut Vec<Location>) {
+    results.sort_by(|a, b| {
+        a.uri
+            .as_str()
+            .cmp(b.uri.as_str())
+            .then_with(|| a.range.start.line.cmp(&b.range.start.line))
+    });
+    results.dedup_by(|a, b| a.uri == b.uri && a.range.start.line == b.range.start.line);
 }
 
 /// Return the namespace declared in a doc's top-level statements, if any.
@@ -375,13 +371,7 @@ pub fn goto_type_definition_from_index(
 
     // If found in first pass, deduplicate and return those
     if !results.is_empty() {
-        results.sort_by(|a, b| {
-            a.uri
-                .as_str()
-                .cmp(b.uri.as_str())
-                .then_with(|| a.range.start.line.cmp(&b.range.start.line))
-        });
-        results.dedup_by(|a, b| a.uri == b.uri && a.range.start.line == b.range.start.line);
+        dedup_locations(&mut results);
         return results;
     }
 
@@ -411,13 +401,7 @@ pub fn goto_type_definition_from_index(
             }
         }
 
-        results.sort_by(|a, b| {
-            a.uri
-                .as_str()
-                .cmp(b.uri.as_str())
-                .then_with(|| a.range.start.line.cmp(&b.range.start.line))
-        });
-        results.dedup_by(|a, b| a.uri == b.uri && a.range.start.line == b.range.start.line);
+        dedup_locations(&mut results);
     }
 
     results
