@@ -4,8 +4,7 @@ use std::sync::Arc;
 
 use php_ast::{ClassMemberKind, EnumMemberKind, NamespaceBody, Stmt, StmtKind};
 use tower_lsp::lsp_types::{
-    DocumentSymbol, Location, OneOf, Position, Range, SymbolInformation, SymbolKind, Url,
-    WorkspaceSymbol,
+    DocumentSymbol, Location, OneOf, Range, SymbolInformation, SymbolKind, Url, WorkspaceSymbol,
 };
 
 use crate::ast::{ParsedDoc, SourceView, name_range};
@@ -456,10 +455,6 @@ fn format_fn_signature(
         .map(|r| format!(": {}", format_type_hint(r)))
         .unwrap_or_default();
     format!("({}){}", params_str, ret_str)
-}
-
-fn _pos_from_offset(sv: SourceView<'_>, offset: u32) -> Position {
-    sv.position_of(offset)
 }
 
 // ── Index-based variants ──────────────────────────────────────────────────────

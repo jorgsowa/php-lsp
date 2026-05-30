@@ -3,8 +3,8 @@ use std::sync::Arc;
 use php_ast::{ClassMemberKind, EnumMemberKind, NamespaceBody, Stmt, StmtKind};
 use tower_lsp::lsp_types::{Location, Position, Range, Url};
 
-use crate::ast::{ParsedDoc, SourceView, str_offset};
-use crate::util::{strip_variable_sigil, utf16_code_units, word_at_position, zero_width_location};
+use crate::ast::{ParsedDoc, SourceView};
+use crate::util::{strip_variable_sigil, word_at_position, zero_width_location};
 use crate::walk::collect_var_refs_in_scope;
 
 /// Find the definition of the symbol under `position`.
@@ -258,18 +258,6 @@ pub fn find_method_in_class_hierarchy(
         }
     }
     None
-}
-
-fn _name_range_from_offset(sv: SourceView<'_>, name: &str) -> Range {
-    let start_offset = str_offset(sv.source(), name).unwrap_or(0);
-    let start = sv.position_of(start_offset);
-    Range {
-        start,
-        end: Position {
-            line: start.line,
-            character: start.character + utf16_code_units(name),
-        },
-    }
 }
 
 #[cfg(test)]
