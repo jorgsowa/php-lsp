@@ -1,9 +1,10 @@
 use std::sync::Arc;
 
-use php_ast::{ClassMemberKind, EnumMemberKind, NamespaceBody, Stmt, StmtKind};
+use php_ast::Stmt;
 use tower_lsp::lsp_types::{Location, Position, Range, Url};
 
 use crate::ast::{ParsedDoc, SourceView};
+use crate::resolve::{Container, Declaration, resolve_declaration};
 use crate::util::{strip_variable_sigil, word_at_position, zero_width_location};
 use crate::walk::collect_var_refs_in_scope;
 
@@ -36,7 +37,7 @@ pub fn goto_definition(
         }
     }
 
-    if let Some(range) = scan_statements(sv, &doc.program().stmts, &word) {
+    if let Some(range) = resolve_declaration_range(sv, &doc.program().stmts, &word) {
         return Some(Location {
             uri: uri.clone(),
             range,
@@ -45,7 +46,8 @@ pub fn goto_definition(
 
     for (other_uri, other_doc) in other_docs {
         let other_sv = other_doc.view();
-        if let Some(range) = scan_statements(other_sv, &other_doc.program().stmts, &word) {
+        if let Some(range) = resolve_declaration_range(other_sv, &other_doc.program().stmts, &word)
+        {
             return Some(Location {
                 uri: other_uri.clone(),
                 range,
@@ -60,112 +62,80 @@ pub fn goto_definition(
 /// Used by the PSR-4 fallback in the backend after resolving a class to a file.
 pub fn find_declaration_range(_source: &str, doc: &ParsedDoc, name: &str) -> Option<Range> {
     let sv = doc.view();
-    scan_statements(sv, &doc.program().stmts, name)
+    resolve_declaration_range(sv, &doc.program().stmts, name)
 }
 
-fn scan_statements(sv: SourceView<'_>, stmts: &[Stmt<'_, '_>], word: &str) -> Option<Range> {
-    // Strip a leading `$` so that `$name` matches property names stored without `$`.
-    let bare = strip_variable_sigil(word);
-    for stmt in stmts {
-        match &stmt.kind {
-            StmtKind::Function(f) if f.name == word => {
-                return Some(sv.name_range_in_span(f.name.or_error(), stmt.span));
+/// Resolve `word` to a declaration in `stmts` and return its precise name range.
+fn resolve_declaration_range(
+    sv: SourceView<'_>,
+    stmts: &[Stmt<'_, '_>],
+    word: &str,
+) -> Option<Range> {
+    // Definition resolves every declaration kind *except* enum constants
+    // (which the original walker never matched).
+    let decl = resolve_declaration(stmts, word, &|d| {
+        !matches!(
+            d,
+            Declaration::ClassConst {
+                container: Container::Enum,
+                ..
             }
-            StmtKind::Class(c) if c.name.map(|n| n.or_error()) == Some(word) => {
-                let name = c.name.expect("match guard ensures Some");
-                return Some(sv.name_range_in_span(name.or_error(), stmt.span));
-            }
-            StmtKind::Class(c) => {
-                for member in c.body.members.iter() {
-                    match &member.kind {
-                        ClassMemberKind::Method(m) if m.name == word => {
-                            return Some(sv.name_range_in_span(m.name.or_error(), member.span));
-                        }
-                        ClassMemberKind::ClassConst(cc) if cc.name == word => {
-                            return Some(sv.name_range_in_span(cc.name.or_error(), member.span));
-                        }
-                        ClassMemberKind::Property(p) if p.name == bare => {
-                            return Some(sv.name_range_in_span(p.name.or_error(), member.span));
-                        }
-                        // Constructor-promoted parameters act as property declarations.
-                        ClassMemberKind::Method(m) if m.name == "__construct" => {
-                            for p in m.params.iter() {
-                                if p.visibility.is_some() && p.name == bare {
-                                    return Some(sv.name_range_in_span(p.name.or_error(), p.span));
-                                }
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-            }
-            StmtKind::Interface(i) => {
-                if i.name == word {
-                    return Some(sv.name_range_in_span(i.name.or_error(), stmt.span));
-                }
-                for member in i.body.members.iter() {
-                    match &member.kind {
-                        ClassMemberKind::Method(m) if m.name == word => {
-                            return Some(sv.name_range(m.name.or_error()));
-                        }
-                        ClassMemberKind::ClassConst(cc) if cc.name == word => {
-                            return Some(sv.name_range(cc.name.or_error()));
-                        }
-                        _ => {}
-                    }
-                }
-            }
-            StmtKind::Trait(t) => {
-                if t.name == word {
-                    return Some(sv.name_range_in_span(t.name.or_error(), stmt.span));
-                }
-                for member in t.body.members.iter() {
-                    match &member.kind {
-                        ClassMemberKind::Method(m) if m.name == word => {
-                            return Some(sv.name_range(m.name.or_error()));
-                        }
-                        ClassMemberKind::ClassConst(cc) if cc.name == word => {
-                            return Some(sv.name_range(cc.name.or_error()));
-                        }
-                        ClassMemberKind::Property(p) if p.name == bare => {
-                            return Some(sv.name_range(p.name.or_error()));
-                        }
-                        _ => {}
-                    }
-                }
-            }
-            StmtKind::Enum(e) if e.name == word => {
-                return Some(sv.name_range_in_span(e.name.or_error(), stmt.span));
-            }
-            StmtKind::Enum(e) => {
-                for member in e.body.members.iter() {
-                    match &member.kind {
-                        EnumMemberKind::Method(m) if m.name == word => {
-                            return Some(sv.name_range(m.name.or_error()));
-                        }
-                        EnumMemberKind::Case(c) if c.name == word => {
-                            return Some(sv.name_range(c.name.or_error()));
-                        }
-                        _ => {}
-                    }
-                }
-            }
-            StmtKind::Namespace(ns) => {
-                if let NamespaceBody::Braced(inner) = &ns.body
-                    && let Some(range) = scan_statements(sv, &inner.stmts, word)
-                {
-                    return Some(range);
-                }
-            }
-            _ => {}
+        )
+    })?;
+    Some(declaration_name_range(sv, &decl))
+}
+
+/// Compute the name range for a resolved declaration.
+///
+/// Top-level declarations and class-body members use `name_range_in_span`
+/// (searches within the node's span, so a name repeated in an earlier docblock
+/// doesn't steal the match); interface/trait/enum members use the cheaper
+/// whole-source `name_range`. This mirrors the original per-arm choice exactly.
+fn declaration_name_range(sv: SourceView<'_>, decl: &Declaration<'_>) -> Range {
+    match decl {
+        Declaration::Function { decl, stmt_span } => {
+            sv.name_range_in_span(decl.name.or_error(), *stmt_span)
         }
+        Declaration::Class {
+            name, stmt_span, ..
+        } => sv.name_range_in_span(name.or_error(), *stmt_span),
+        Declaration::Interface { decl, stmt_span } => {
+            sv.name_range_in_span(decl.name.or_error(), *stmt_span)
+        }
+        Declaration::Trait { decl, stmt_span } => {
+            sv.name_range_in_span(decl.name.or_error(), *stmt_span)
+        }
+        Declaration::Enum { decl, stmt_span } => {
+            sv.name_range_in_span(decl.name.or_error(), *stmt_span)
+        }
+        Declaration::Method {
+            method,
+            container: Container::Class,
+            member_span,
+        } => sv.name_range_in_span(method.name.or_error(), *member_span),
+        Declaration::ClassConst {
+            konst,
+            container: Container::Class,
+            member_span,
+        } => sv.name_range_in_span(konst.name.or_error(), *member_span),
+        Declaration::Property {
+            property,
+            container: Container::Class,
+            member_span,
+        } => sv.name_range_in_span(property.name.or_error(), *member_span),
+        Declaration::PromotedParam { param } => {
+            sv.name_range_in_span(param.name.or_error(), param.span)
+        }
+        Declaration::Method { method, .. } => sv.name_range(method.name.or_error()),
+        Declaration::ClassConst { konst, .. } => sv.name_range(konst.name.or_error()),
+        Declaration::Property { property, .. } => sv.name_range(property.name.or_error()),
+        Declaration::EnumCase { case, .. } => sv.name_range(case.name.or_error()),
     }
-    None
 }
 
 /// Find a class/function declaration by name in a slice of `FileIndex` entries.
 /// Returns the URI and a line-level `Range`.
-pub fn find_in_indexes(
+pub fn find_declaration_in_indexes(
     name: &str,
     indexes: &[(
         tower_lsp::lsp_types::Url,

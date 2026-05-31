@@ -1,11 +1,12 @@
 use std::cell::OnceCell;
 use std::sync::Arc;
 
-use php_ast::{ClassMemberKind, EnumMemberKind, NamespaceBody, Stmt, StmtKind};
+use php_ast::MethodDecl;
 use tower_lsp::lsp_types::{Hover, HoverContents, MarkupContent, MarkupKind, Position};
 
 use crate::ast::{MethodReturnsMap, ParsedDoc, format_type_hint};
 use crate::docblock::find_docblock;
+use crate::resolve::{Declaration, resolve_declaration};
 use crate::type_map::TypeMap;
 use crate::util::{fqn_short_name, is_php_builtin, php_doc_url, word_at_position, word_range_at};
 
@@ -22,196 +23,105 @@ use super::parsing::{
     extract_receiver_var_before_cursor, extract_static_class_before_cursor, resolve_use_alias,
 };
 
-fn scan_statements(stmts: &[Stmt<'_, '_>], word: &str) -> Option<String> {
-    for stmt in stmts {
-        match &stmt.kind {
-            StmtKind::Function(f) if f.name == word => {
-                let params = format_params(&f.params);
-                let ret = f
-                    .return_type
-                    .as_ref()
-                    .map(|r| format!(": {}", format_type_hint(r)))
-                    .unwrap_or_default();
-                return Some(format!("function {}({}){}", word, params, ret));
-            }
-            StmtKind::Class(c) if c.name.map(|n| n.or_error()) == Some(word) => {
-                let kw = if c.modifiers.is_abstract {
-                    "abstract class"
-                } else if c.modifiers.is_final {
-                    "final class"
-                } else if c.modifiers.is_readonly {
-                    "readonly class"
-                } else {
-                    "class"
-                };
-                let mut sig = format!("{} {}", kw, word);
-                if let Some(ext) = &c.extends {
-                    sig.push_str(&format!(" extends {}", ext.to_string_repr()));
-                }
-                if !c.implements.is_empty() {
-                    let ifaces: Vec<String> = c
-                        .implements
-                        .iter()
-                        .map(|i| i.to_string_repr().into_owned())
-                        .collect();
-                    sig.push_str(&format!(" implements {}", ifaces.join(", ")));
-                }
-                return Some(sig);
-            }
-            StmtKind::Class(c) => {
-                for member in c.body.members.iter() {
-                    match &member.kind {
-                        ClassMemberKind::Method(m) if m.name == word => {
-                            let prefix = format_method_prefix(
-                                m.visibility.as_ref(),
-                                m.is_static,
-                                m.is_abstract,
-                                m.is_final,
-                            );
-                            let params = format_params(&m.params);
-                            let ret = m
-                                .return_type
-                                .as_ref()
-                                .map(|r| format!(": {}", format_type_hint(r)))
-                                .unwrap_or_default();
-                            return Some(format!(
-                                "{}function {}({}){}",
-                                prefix, m.name, params, ret
-                            ));
-                        }
-                        ClassMemberKind::ClassConst(const_decl) if const_decl.name == word => {
-                            return Some(format_class_const(const_decl));
-                        }
-                        _ => {}
-                    }
-                }
-            }
-            StmtKind::Interface(i) if i.name == word => {
-                return Some(format!("interface {}", word));
-            }
-            StmtKind::Interface(i) => {
-                for member in i.body.members.iter() {
-                    match &member.kind {
-                        ClassMemberKind::Method(m) if m.name == word => {
-                            let prefix = format_method_prefix(
-                                m.visibility.as_ref(),
-                                m.is_static,
-                                m.is_abstract,
-                                m.is_final,
-                            );
-                            let params = format_params(&m.params);
-                            let ret = m
-                                .return_type
-                                .as_ref()
-                                .map(|r| format!(": {}", format_type_hint(r)))
-                                .unwrap_or_default();
-                            return Some(format!(
-                                "{}function {}({}){}",
-                                prefix, m.name, params, ret
-                            ));
-                        }
-                        ClassMemberKind::ClassConst(const_decl) if const_decl.name == word => {
-                            return Some(format_class_const(const_decl));
-                        }
-                        _ => {}
-                    }
-                }
-            }
-            StmtKind::Trait(t) if t.name == word => {
-                return Some(format!("trait {}", word));
-            }
-            StmtKind::Trait(t) => {
-                for member in t.body.members.iter() {
-                    match &member.kind {
-                        ClassMemberKind::Method(m) if m.name == word => {
-                            let prefix = format_method_prefix(
-                                m.visibility.as_ref(),
-                                m.is_static,
-                                m.is_abstract,
-                                m.is_final,
-                            );
-                            let params = format_params(&m.params);
-                            let ret = m
-                                .return_type
-                                .as_ref()
-                                .map(|r| format!(": {}", format_type_hint(r)))
-                                .unwrap_or_default();
-                            return Some(format!(
-                                "{}function {}({}){}",
-                                prefix, m.name, params, ret
-                            ));
-                        }
-                        ClassMemberKind::ClassConst(const_decl) if const_decl.name == word => {
-                            return Some(format_class_const(const_decl));
-                        }
-                        _ => {}
-                    }
-                }
-            }
-            StmtKind::Enum(e) if e.name == word => {
-                let mut sig = if let Some(scalar) = &e.scalar_type {
-                    format!("enum {}: {}", word, scalar.to_string_repr())
-                } else {
-                    format!("enum {}", word)
-                };
-                if !e.implements.is_empty() {
-                    let ifaces: Vec<String> = e
-                        .implements
-                        .iter()
-                        .map(|i| i.to_string_repr().into_owned())
-                        .collect();
-                    sig.push_str(&format!(" implements {}", ifaces.join(", ")));
-                }
-                return Some(sig);
-            }
-            StmtKind::Enum(e) => {
-                for member in e.body.members.iter() {
-                    match &member.kind {
-                        EnumMemberKind::Case(c) if c.name == word => {
-                            let value_str = c
-                                .value
-                                .as_ref()
-                                .and_then(format_expr_literal)
-                                .map(|v| format!(" = {v}"))
-                                .unwrap_or_default();
-                            return Some(format!("case {}::{}{}", e.name, c.name, value_str));
-                        }
-                        EnumMemberKind::Method(m) if m.name == word => {
-                            let prefix = format_method_prefix(
-                                m.visibility.as_ref(),
-                                m.is_static,
-                                m.is_abstract,
-                                m.is_final,
-                            );
-                            let params = format_params(&m.params);
-                            let ret = m
-                                .return_type
-                                .as_ref()
-                                .map(|r| format!(": {}", format_type_hint(r)))
-                                .unwrap_or_default();
-                            return Some(format!(
-                                "{}function {}({}){}",
-                                prefix, m.name, params, ret
-                            ));
-                        }
-                        EnumMemberKind::ClassConst(k) if k.name == word => {
-                            return Some(format_class_const(k));
-                        }
-                        _ => {}
-                    }
-                }
-            }
-            StmtKind::Namespace(ns) => {
-                if let NamespaceBody::Braced(inner) = &ns.body
-                    && let Some(s) = scan_statements(&inner.stmts, word)
-                {
-                    return Some(s);
-                }
-            }
-            _ => {}
+/// Format a method/function-style member signature, e.g.
+/// `public static function foo(int $x): void`.
+fn method_signature(m: &MethodDecl<'_, '_>) -> String {
+    let prefix = format_method_prefix(
+        m.visibility.as_ref(),
+        m.is_static,
+        m.is_abstract,
+        m.is_final,
+    );
+    let params = format_params(&m.params);
+    let ret = m
+        .return_type
+        .as_ref()
+        .map(|r| format!(": {}", format_type_hint(r)))
+        .unwrap_or_default();
+    format!("{}function {}({}){}", prefix, m.name, params, ret)
+}
+
+/// Render the hover signature for a resolved declaration. Returns `None` for
+/// kinds hover handles elsewhere (properties via the type-map path).
+fn declaration_signature(decl: &Declaration<'_>, word: &str) -> Option<String> {
+    let sig = match decl {
+        Declaration::Function { decl: f, .. } => {
+            let params = format_params(&f.params);
+            let ret = f
+                .return_type
+                .as_ref()
+                .map(|r| format!(": {}", format_type_hint(r)))
+                .unwrap_or_default();
+            format!("function {}({}){}", word, params, ret)
         }
-    }
-    None
+        Declaration::Class { decl: c, .. } => {
+            let kw = if c.modifiers.is_abstract {
+                "abstract class"
+            } else if c.modifiers.is_final {
+                "final class"
+            } else if c.modifiers.is_readonly {
+                "readonly class"
+            } else {
+                "class"
+            };
+            let mut sig = format!("{} {}", kw, word);
+            if let Some(ext) = &c.extends {
+                sig.push_str(&format!(" extends {}", ext.to_string_repr()));
+            }
+            if !c.implements.is_empty() {
+                let ifaces: Vec<String> = c
+                    .implements
+                    .iter()
+                    .map(|i| i.to_string_repr().into_owned())
+                    .collect();
+                sig.push_str(&format!(" implements {}", ifaces.join(", ")));
+            }
+            sig
+        }
+        Declaration::Interface { .. } => format!("interface {}", word),
+        Declaration::Trait { .. } => format!("trait {}", word),
+        Declaration::Enum { decl: e, .. } => {
+            let mut sig = if let Some(scalar) = &e.scalar_type {
+                format!("enum {}: {}", word, scalar.to_string_repr())
+            } else {
+                format!("enum {}", word)
+            };
+            if !e.implements.is_empty() {
+                let ifaces: Vec<String> = e
+                    .implements
+                    .iter()
+                    .map(|i| i.to_string_repr().into_owned())
+                    .collect();
+                sig.push_str(&format!(" implements {}", ifaces.join(", ")));
+            }
+            sig
+        }
+        Declaration::Method { method, .. } => method_signature(method),
+        Declaration::ClassConst { konst, .. } => format_class_const(konst),
+        Declaration::EnumCase {
+            case, enum_name, ..
+        } => {
+            let value_str = case
+                .value
+                .as_ref()
+                .and_then(format_expr_literal)
+                .map(|v| format!(" = {v}"))
+                .unwrap_or_default();
+            format!("case {}::{}{}", enum_name, case.name, value_str)
+        }
+        // Properties are rendered through the type-map path, not here.
+        Declaration::Property { .. } | Declaration::PromotedParam { .. } => return None,
+    };
+    Some(sig)
+}
+
+/// Hover handles every declaration kind except properties (covered by the
+/// dedicated type-map path) and promoted parameters.
+fn is_hoverable(decl: &Declaration<'_>) -> bool {
+    !matches!(
+        decl,
+        Declaration::Property { .. } | Declaration::PromotedParam { .. }
+    )
 }
 
 pub fn hover_info(
@@ -587,10 +497,15 @@ pub fn hover_at(
     let resolved_word = resolve_use_alias(all_stmts, &word).unwrap_or_else(|| word.clone());
 
     // Search current document first, then cross-file (using resolved name).
-    let found = scan_statements(&doc.program().stmts, &resolved_word).map(|sig| (sig, source, doc));
+    let found = resolve_declaration(&doc.program().stmts, &resolved_word, &is_hoverable)
+        .and_then(|d| declaration_signature(&d, &resolved_word))
+        .map(|sig| (sig, source, doc));
     let found = found.or_else(|| {
         for (_, other, _) in other_docs {
-            if let Some(sig) = scan_statements(&other.program().stmts, &resolved_word) {
+            if let Some(sig) =
+                resolve_declaration(&other.program().stmts, &resolved_word, &is_hoverable)
+                    .and_then(|d| declaration_signature(&d, &resolved_word))
+            {
                 return Some((sig, other.source(), other.as_ref()));
             }
         }

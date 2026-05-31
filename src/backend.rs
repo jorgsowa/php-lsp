@@ -30,7 +30,8 @@ use crate::completion::{CompletionCtx, filtered_completions_at};
 use crate::config::LspConfig;
 use crate::declaration::{goto_declaration, goto_declaration_from_index};
 use crate::definition::{
-    find_declaration_range, find_in_indexes, find_method_in_class_hierarchy, goto_definition,
+    find_declaration_in_indexes, find_declaration_range, find_method_in_class_hierarchy,
+    goto_definition,
 };
 use crate::diagnostics::{parse_document, parse_document_no_diags};
 use crate::document_highlight::document_highlights;
@@ -1292,7 +1293,7 @@ impl LanguageServer for Backend {
             // Cross-file: use FileIndex (no disk I/O for background files).
             let other_indexes = self.docs.other_indexes(uri);
             if let Some(word) = crate::util::word_at_position(&source, position)
-                && let Some(loc) = find_in_indexes(&word, &other_indexes)
+                && let Some(loc) = find_declaration_in_indexes(&word, &other_indexes)
             {
                 let refined = self
                     .docs

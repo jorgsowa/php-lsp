@@ -42,6 +42,7 @@ mod phpstorm_meta;
 mod promote_action;
 mod references;
 mod rename;
+mod resolve;
 mod selection_range;
 mod semantic_diagnostics;
 mod semantic_tokens;

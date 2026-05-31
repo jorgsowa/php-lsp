@@ -15,6 +15,7 @@ pub mod docblock;
 pub mod document_store;
 pub mod hover;
 pub mod references;
+pub mod resolve;
 pub mod type_map;
 pub mod util;
 pub mod walk;

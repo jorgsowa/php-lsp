@@ -8,10 +8,10 @@
 /// result as go-to-definition so the request is never empty-handed.
 use std::sync::Arc;
 
-use php_ast::{ClassMemberKind, EnumMemberKind, NamespaceBody, Stmt, StmtKind};
 use tower_lsp::lsp_types::{Location, Position, Url};
 
-use crate::ast::{ParsedDoc, SourceView};
+use crate::ast::ParsedDoc;
+use crate::resolve::{Container, Declaration, resolve_declaration};
 use crate::util::{strip_variable_sigil, utf16_code_units, word_at_position};
 
 /// Find the abstract or interface declaration of `word`.
@@ -26,10 +26,12 @@ pub fn goto_declaration(
     // First pass: look for an abstract or interface declaration
     for (uri, doc) in all_docs {
         let sv = doc.view();
-        if let Some(range) = find_abstract_declaration(sv, &doc.program().stmts, &word) {
+        if let Some(decl) =
+            resolve_declaration(&doc.program().stmts, &word, &is_abstract_declaration)
+        {
             return Some(Location {
                 uri: uri.clone(),
-                range,
+                range: sv.name_range(decl.name()),
             });
         }
     }
@@ -37,10 +39,10 @@ pub fn goto_declaration(
     // Second pass: any declaration (same as goto_definition)
     for (uri, doc) in all_docs {
         let sv = doc.view();
-        if let Some(range) = find_any_declaration(sv, &doc.program().stmts, &word) {
+        if let Some(decl) = resolve_declaration(&doc.program().stmts, &word, &is_any_declaration) {
             return Some(Location {
                 uri: uri.clone(),
-                range,
+                range: sv.name_range(decl.name()),
             });
         }
     }
@@ -48,155 +50,33 @@ pub fn goto_declaration(
     None
 }
 
-fn find_abstract_declaration(
-    sv: SourceView<'_>,
-    stmts: &[Stmt<'_, '_>],
-    word: &str,
-) -> Option<tower_lsp::lsp_types::Range> {
-    for stmt in stmts {
-        match &stmt.kind {
-            StmtKind::Interface(i) => {
-                // Interface methods are declarations without bodies
-                for member in i.body.members.iter() {
-                    if let ClassMemberKind::Method(m) = &member.kind
-                        && m.name == word
-                    {
-                        return Some(sv.name_range(m.name.or_error()));
-                    }
-                }
-                if i.name == word {
-                    return Some(sv.name_range(i.name.or_error()));
-                }
-            }
-            StmtKind::Class(c) => {
-                for member in c.body.members.iter() {
-                    if let ClassMemberKind::Method(m) = &member.kind
-                        && m.is_abstract
-                        && m.name == word
-                    {
-                        return Some(sv.name_range(m.name.or_error()));
-                    }
-                }
-            }
-            StmtKind::Trait(t) => {
-                for member in t.body.members.iter() {
-                    if let ClassMemberKind::Method(m) = &member.kind
-                        && m.is_abstract
-                        && m.name == word
-                    {
-                        return Some(sv.name_range(m.name.or_error()));
-                    }
-                }
-            }
-            StmtKind::Namespace(ns) => {
-                if let NamespaceBody::Braced(inner) = &ns.body
-                    && let Some(r) = find_abstract_declaration(sv, &inner.stmts, word)
-                {
-                    return Some(r);
-                }
-            }
-            _ => {}
-        }
+/// Pass 1: abstract/interface declarations only — interface members and names,
+/// plus abstract methods on classes and traits.
+///
+/// `resolve_declaration` checks a type's name before its members, whereas the original
+/// walker checked interface members first. This only differs for an interface
+/// named the same as a method it contains — syntactically legal but absurd, and
+/// never seen in real PHP, so the order is harmless here.
+fn is_abstract_declaration(decl: &Declaration<'_>) -> bool {
+    match decl {
+        Declaration::Interface { .. } => true,
+        Declaration::Method {
+            container: Container::Interface,
+            ..
+        } => true,
+        Declaration::Method {
+            method,
+            container: Container::Class | Container::Trait,
+            ..
+        } => method.is_abstract,
+        _ => false,
     }
-    None
 }
 
-fn find_any_declaration(
-    sv: SourceView<'_>,
-    stmts: &[Stmt<'_, '_>],
-    word: &str,
-) -> Option<tower_lsp::lsp_types::Range> {
-    let bare = strip_variable_sigil(word);
-    for stmt in stmts {
-        match &stmt.kind {
-            StmtKind::Function(f) if f.name == word => {
-                return Some(sv.name_range(f.name.or_error()));
-            }
-            StmtKind::Class(c) if c.name.map(|n| n.or_error()) == Some(word) => {
-                let name = c.name.expect("match guard ensures Some");
-                return Some(sv.name_range(name.or_error()));
-            }
-            StmtKind::Class(c) => {
-                for member in c.body.members.iter() {
-                    match &member.kind {
-                        ClassMemberKind::Method(m) if m.name == word => {
-                            return Some(sv.name_range(m.name.or_error()));
-                        }
-                        ClassMemberKind::ClassConst(cc) if cc.name == word => {
-                            return Some(sv.name_range(cc.name.or_error()));
-                        }
-                        ClassMemberKind::Property(p) if p.name == bare => {
-                            return Some(sv.name_range(p.name.or_error()));
-                        }
-                        _ => {}
-                    }
-                }
-            }
-            StmtKind::Interface(i) => {
-                if i.name == word {
-                    return Some(sv.name_range(i.name.or_error()));
-                }
-                for member in i.body.members.iter() {
-                    match &member.kind {
-                        ClassMemberKind::Method(m) if m.name == word => {
-                            return Some(sv.name_range(m.name.or_error()));
-                        }
-                        ClassMemberKind::ClassConst(cc) if cc.name == word => {
-                            return Some(sv.name_range(cc.name.or_error()));
-                        }
-                        _ => {}
-                    }
-                }
-            }
-            StmtKind::Trait(t) => {
-                if t.name == word {
-                    return Some(sv.name_range(t.name.or_error()));
-                }
-                for member in t.body.members.iter() {
-                    match &member.kind {
-                        ClassMemberKind::Method(m) if m.name == word => {
-                            return Some(sv.name_range(m.name.or_error()));
-                        }
-                        ClassMemberKind::ClassConst(cc) if cc.name == word => {
-                            return Some(sv.name_range(cc.name.or_error()));
-                        }
-                        ClassMemberKind::Property(p) if p.name == bare => {
-                            return Some(sv.name_range(p.name.or_error()));
-                        }
-                        _ => {}
-                    }
-                }
-            }
-            StmtKind::Enum(e) if e.name == word => {
-                return Some(sv.name_range(e.name.or_error()));
-            }
-            StmtKind::Enum(e) => {
-                for member in e.body.members.iter() {
-                    match &member.kind {
-                        EnumMemberKind::Case(c) if c.name == word => {
-                            return Some(sv.name_range(c.name.or_error()));
-                        }
-                        EnumMemberKind::Method(m) if m.name == word => {
-                            return Some(sv.name_range(m.name.or_error()));
-                        }
-                        EnumMemberKind::ClassConst(cc) if cc.name == word => {
-                            return Some(sv.name_range(cc.name.or_error()));
-                        }
-                        _ => {}
-                    }
-                }
-            }
-            StmtKind::Namespace(ns) => {
-                if let NamespaceBody::Braced(inner) = &ns.body
-                    && let Some(r) = find_any_declaration(sv, &inner.stmts, word)
-                {
-                    return Some(r);
-                }
-            }
-            _ => {}
-        }
-    }
-    None
+/// Pass 2: any declaration. Constructor-promoted parameters are not surfaced as
+/// declarations here (the original `find_any_declaration` never matched them).
+fn is_any_declaration(decl: &Declaration<'_>) -> bool {
+    !matches!(decl, Declaration::PromotedParam { .. })
 }
 
 /// Find abstract or interface declaration using `FileIndex` entries.
