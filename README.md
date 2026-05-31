@@ -48,7 +48,7 @@ For full installation options see **[docs/getting-started.md](docs/getting-start
 | Zed | `lsp` block in `~/.config/zed/settings.json` |
 | Cursor | Settings → Features → Language Servers |
 | PHPStorm | [php-lsp](https://plugins.jetbrains.com/plugin/31223-php-lsp) plugin ([source](https://github.com/jorgsowa/php-lsp-phpstorm-plugin)) |
-| Claude Code | `claude plugin add https://github.com/jorgsowa/claude-php-lsp-plugin` |
+| Claude Code | `claude plugin marketplace add https://github.com/jorgsowa/claude-php-lsp-plugin` then `claude plugin install php-lsp` |
 
 Config snippets for every editor: **[docs/editors.md](docs/editors.md)**
 

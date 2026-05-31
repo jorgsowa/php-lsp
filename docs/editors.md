@@ -34,7 +34,8 @@ which php-lsp
 Install the official plugin:
 
 ```bash
-claude plugin add https://github.com/jorgsowa/claude-php-lsp-plugin
+claude plugin marketplace add https://github.com/jorgsowa/claude-php-lsp-plugin
+claude plugin install php-lsp
 ```
 
 The plugin configures everything automatically. The server binary must be on your PATH (or set the full path in the plugin's `.lsp.json` after installation).
