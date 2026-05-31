@@ -150,6 +150,47 @@ pub fn find_constructor_references(
         .collect()
 }
 
+/// Convert a session reference tuple `(file_uri, line, col_start, col_end)` —
+/// as produced by `DocumentStore::session_references_to` — into an LSP
+/// `Location`. Returns `None` when the file URI fails to parse.
+pub(crate) fn session_tuple_to_location(
+    (file, line, col_start, col_end): (Arc<str>, u32, u32, u32),
+) -> Option<Location> {
+    let uri = Url::parse(&file).ok()?;
+    Some(Location {
+        uri,
+        range: Range {
+            start: Position {
+                line,
+                character: col_start,
+            },
+            end: Position {
+                line,
+                character: col_end,
+            },
+        },
+    })
+}
+
+/// Dedup key for a reference location: `(uri, start line, start char, end char)`.
+/// Finer than `type_definition`'s `(uri, line)` key — two references on the same
+/// line (e.g. chained calls) are distinct results and must both survive.
+pub(crate) fn ref_location_key(loc: &Location) -> (String, u32, u32, u32) {
+    (
+        loc.uri.to_string(),
+        loc.range.start.line,
+        loc.range.start.character,
+        loc.range.end.character,
+    )
+}
+
+/// De-duplicate reference locations by [`ref_location_key`], preserving
+/// first-seen order.
+pub(crate) fn dedup_ref_locations(locations: &mut Vec<Location>) {
+    let mut seen = HashSet::new();
+    locations.retain(|loc| seen.insert(ref_location_key(loc)));
+}
+
 /// Fast path: look up pre-computed reference locations from the mir codebase index.
 ///
 /// Handles `Function`, `Class`, and (partially) `Method` kinds.  For `Function` and

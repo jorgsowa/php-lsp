@@ -180,6 +180,135 @@ impl Backend {
             .unwrap_or_default()
     }
 
+    /// Reference call sites for a class's `__construct`.
+    ///
+    /// The constructor's call sites are `new OwningClass(...)`, not
+    /// `->__construct()`, so name-only matching would return every class's
+    /// constructor declaration. We search for `new` expressions only, scoped to
+    /// the owning class.
+    ///
+    /// `class_name` is the FQN when the constructor is inside a namespace
+    /// (e.g. `"Shop\\Order"`). The AST walker searches for the *short* name
+    /// (`"Order"`) since that's what appears at call sites, while the FQN is
+    /// used only to scope the search and prevent collisions between two classes
+    /// with the same short name in different namespaces.
+    fn construct_references(
+        &self,
+        uri: &Url,
+        source: &str,
+        position: Position,
+        class_name: &str,
+        include_declaration: bool,
+    ) -> Vec<Location> {
+        let all_docs = self.docs.all_docs_for_scan();
+        let short_name = fqn_short_name(class_name).to_owned();
+        let class_fqn = class_name.contains('\\').then_some(class_name);
+        // `find_constructor_references` walks `new` expressions directly —
+        // bypasses the codebase/salsa index whose `ClassReference` key is too
+        // broad (covers type hints, `instanceof`, `extends`, `implements`).
+        let mut locations = find_constructor_references(&short_name, &all_docs, class_fqn);
+        // The cursor is already on the `__construct` name, so derive the span
+        // from the identifier under the cursor rather than re-searching via
+        // str_offset (which finds the first occurrence in the file and would
+        // point at the wrong constructor in files with more than one class).
+        if include_declaration && let Some(range) = crate::util::word_range_at(source, position) {
+            locations.push(Location {
+                uri: uri.clone(),
+                range,
+            });
+        }
+        locations
+    }
+
+    /// Resolve the FQN of the symbol at the cursor so reference lookups can match
+    /// by exact FQN instead of short name (fixes cross-namespace overmatch for
+    /// Function/Class and unrelated-class overmatch for Method via the owning
+    /// FQCN). Returns `None` when the kind doesn't carry an FQN or it can't be
+    /// resolved. For class constants, returns the owning class short name.
+    fn resolve_reference_target_fqn(
+        &self,
+        uri: &Url,
+        doc_opt: Option<&Arc<ParsedDoc>>,
+        word: &str,
+        kind: Option<crate::references::SymbolKind>,
+        position: Position,
+        constant_owner: Option<String>,
+    ) -> Option<String> {
+        use crate::references::SymbolKind;
+        let doc = doc_opt?;
+        let imports = self.file_imports(uri);
+        match kind {
+            Some(SymbolKind::Function) | Some(SymbolKind::Class) => {
+                let resolved = crate::moniker::resolve_fqn(doc, word, &imports);
+                resolved.contains('\\').then_some(resolved)
+            }
+            Some(SymbolKind::Method) => {
+                // Owning FQCN: the class/interface/trait/enum that contains the cursor.
+                let short_owner = crate::type_map::enclosing_class_at(doc.source(), doc, position)?;
+                // `resolve_fqn` walks the doc and applies the namespace prefix if any.
+                Some(crate::moniker::resolve_fqn(doc, &short_owner, &imports))
+            }
+            Some(SymbolKind::Constant) => {
+                if constant_owner.is_some() {
+                    // Class constant: the owning class short name as-is.
+                    constant_owner
+                } else {
+                    // Global/namespace constant: compute FQN so cross-namespace
+                    // references like `\Config\DB_HOST` can be found.
+                    let fqn = crate::moniker::resolve_fqn(doc, word, &imports);
+                    fqn.contains('\\').then_some(fqn)
+                }
+            }
+            _ => None,
+        }
+    }
+
+    /// Type-aware method call sites from the mir session.
+    ///
+    /// Method refs need type-aware filtering: `$mailer->process()` and
+    /// `$queue->process()` share a name, but only the one whose receiver type
+    /// matches the cursor's owning class is a real ref. Mir's `references_to` is
+    /// type-aware; use it as the primary source for Method+`target_fqn`.
+    ///
+    /// Returns `None` when the kind isn't `Method` or no mir symbol can be built;
+    /// otherwise the (possibly empty) call-site set, filtered to files that
+    /// actually mention `owner_short` (drops untyped/Mixed receivers — any file
+    /// where a receiver is legitimately typed as the owner must reference it by
+    /// name somewhere via import, `new`, or type hint).
+    fn session_method_references(
+        &self,
+        word: &str,
+        kind: Option<crate::references::SymbolKind>,
+        target_fqn: Option<&str>,
+        owner_short: Option<&str>,
+    ) -> Option<Vec<Location>> {
+        if !matches!(kind, Some(crate::references::SymbolKind::Method)) {
+            return None;
+        }
+        let sym = build_mir_symbol(word, kind, target_fqn)?;
+        let locs = self
+            .docs
+            .session_references_to(&sym)
+            .into_iter()
+            .filter_map(|tuple| {
+                let loc = crate::references::session_tuple_to_location(tuple)?;
+                if let Some(short) = owner_short {
+                    let mentions = self
+                        .docs
+                        .source_text(&loc.uri)
+                        .as_ref()
+                        .map(|src| src.contains(short))
+                        .unwrap_or(true);
+                    if !mentions {
+                        return None;
+                    }
+                }
+                Some(loc)
+            })
+            .collect();
+        Some(locs)
+    }
+
     /// Resolve the PHP version to use. See `autoload::resolve_php_version_from_roots`
     /// for the full priority order.
     fn resolve_php_version(&self, explicit: Option<&str>) -> (String, &'static str) {
@@ -234,6 +363,53 @@ fn build_mir_symbol(
         }),
         Some(SymbolKind::Property) | Some(SymbolKind::Constant) | None => None,
     }
+}
+
+/// Refine the cursor's `(word, kind)` for a references request using
+/// declaration-aware heuristics, returning the (possibly rewritten) word, its
+/// symbol kind, and — for class constants — the owning class short name.
+///
+/// Checks, in order: promoted constructor property params (so `$name` in
+/// `__construct(public string $name)` resolves to the `->name` property, not
+/// `$name` variable occurrences), then method / property / constant
+/// declarations, falling back to the character-based `symbol_kind_at` heuristic.
+fn resolve_reference_symbol(
+    doc_opt: Option<&Arc<ParsedDoc>>,
+    source: &str,
+    position: Position,
+    word: String,
+) -> (
+    String,
+    Option<crate::references::SymbolKind>,
+    Option<String>,
+) {
+    use crate::references::SymbolKind;
+    let mut constant_owner: Option<String> = None;
+    let (word, kind) = if let Some(doc) = doc_opt
+        && let Some(prop_name) =
+            promoted_property_at_cursor(doc.source(), &doc.program().stmts, position)
+    {
+        (prop_name, Some(SymbolKind::Property))
+    } else if let Some(doc) = doc_opt {
+        let stmts = &doc.program().stmts;
+        if cursor_is_on_method_decl(doc.source(), stmts, position) {
+            (word, Some(SymbolKind::Method))
+        } else if let Some(prop_name) = cursor_is_on_property_decl(doc.source(), stmts, position) {
+            (prop_name, Some(SymbolKind::Property))
+        } else if let Some((const_name, owner)) =
+            cursor_is_on_constant_decl(doc.source(), stmts, position)
+        {
+            constant_owner = owner;
+            (const_name, Some(SymbolKind::Constant))
+        } else {
+            let k = symbol_kind_at(source, position, &word);
+            (word, k)
+        }
+    } else {
+        let k = symbol_kind_at(source, position, &word);
+        (word, k)
+    };
+    (word, kind, constant_owner)
 }
 
 /// Off-`self` variant of `Backend::compute_dependent_publishes`. Needed
@@ -1330,153 +1506,46 @@ impl LanguageServer for Backend {
                 Some(w) => w,
                 None => return Ok(None),
             };
-            // Special case: cursor on a class's `__construct` method declaration.
-            // The constructor's call sites are `new OwningClass(...)`, not
-            // `->__construct()`, so name-only matching would return every class's
-            // constructor declaration (what issue reports describe as "references
-            // to __construct shows every class"). Redirect to Class-kind refs on
-            // the owning class and tack on the ctor's own decl span.
+            let include_declaration = params.context.include_declaration;
+
+            // Special case: cursor on a class's `__construct` declaration — its
+            // call sites are `new OwningClass(...)`, so name-only matching would
+            // otherwise return every class's constructor declaration.
             if word == "__construct"
                 && let Some(doc) = self.get_doc(uri)
                 && let Some(class_name) =
                     class_name_at_construct_decl(doc.source(), &doc.program().stmts, position)
             {
-                let all_docs = self.docs.all_docs_for_scan();
-                let include_declaration = params.context.include_declaration;
-                // `class_name` is the FQN when the constructor is inside a namespace
-                // (e.g. `"Shop\\Order"`). The AST walker must search for the *short*
-                // name (`"Order"`) since that's what appears in source at call sites,
-                // while the FQN is used only to scope the search and prevent collisions
-                // between two classes with the same short name in different namespaces.
-                let short_name = class_name
-                    .rsplit('\\')
-                    .next()
-                    .unwrap_or(class_name.as_str())
-                    .to_owned();
-                let class_fqn = if class_name.contains('\\') {
-                    Some(class_name.as_str())
-                } else {
-                    None
-                };
-                // Use `new_refs_in_stmts` directly — bypasses the codebase/salsa
-                // index whose `ClassReference` key is too broad (covers type hints,
-                // `instanceof`, `extends`, `implements` in addition to `new` calls).
-                let mut locations = find_constructor_references(&short_name, &all_docs, class_fqn);
-                if include_declaration {
-                    // The cursor is already on the `__construct` name (verified by
-                    // `class_name_at_construct_decl`), so derive the span from the
-                    // identifier under the cursor rather than re-searching via
-                    // str_offset (which finds the first occurrence in the file and
-                    // would point at the wrong constructor in files with more than
-                    // one class). Using the word boundaries — not the raw cursor
-                    // position — keeps the span correct when the cursor sits
-                    // mid-identifier.
-                    if let Some(range) = crate::util::word_range_at(&source, position) {
-                        locations.push(Location {
-                            uri: uri.clone(),
-                            range,
-                        });
-                    }
-                }
-                return Ok(if locations.is_empty() {
-                    None
-                } else {
-                    Some(locations)
-                });
+                let locations = self.construct_references(
+                    uri,
+                    &source,
+                    position,
+                    &class_name,
+                    include_declaration,
+                );
+                return Ok((!locations.is_empty()).then_some(locations));
             }
 
             let doc_opt = self.get_doc(uri);
-            // Check for promoted constructor property params before the character-based
-            // heuristic: `$name` in `public function __construct(public string $name)`
-            // should find `->name` property accesses, not `$name` variable occurrences.
-            let mut constant_owner: Option<String> = None;
-            let (word, kind) = if let Some(doc) = &doc_opt
-                && let Some(prop_name) =
-                    promoted_property_at_cursor(doc.source(), &doc.program().stmts, position)
-            {
-                (prop_name, Some(SymbolKind::Property))
-            } else if let Some(doc) = &doc_opt {
-                let stmts = &doc.program().stmts;
-                if cursor_is_on_method_decl(doc.source(), stmts, position) {
-                    (word, Some(SymbolKind::Method))
-                } else if let Some(prop_name) =
-                    cursor_is_on_property_decl(doc.source(), stmts, position)
-                {
-                    (prop_name, Some(SymbolKind::Property))
-                } else if let Some((const_name, owner)) =
-                    cursor_is_on_constant_decl(doc.source(), stmts, position)
-                {
-                    constant_owner = owner;
-                    (const_name, Some(SymbolKind::Constant))
-                } else {
-                    let k = symbol_kind_at(&source, position, &word);
-                    (word, k)
-                }
-            } else {
-                let k = symbol_kind_at(&source, position, &word);
-                (word, k)
-            };
+            let (word, kind, constant_owner) =
+                resolve_reference_symbol(doc_opt.as_ref(), &source, position, word);
             let all_docs = self.docs.all_docs_for_scan();
-            let include_declaration = params.context.include_declaration;
+            let target_fqn = self.resolve_reference_target_fqn(
+                uri,
+                doc_opt.as_ref(),
+                &word,
+                kind,
+                position,
+                constant_owner,
+            );
 
-            // Resolve the FQN at the cursor so `find_references_codebase_with_target`
-            // can match by exact FQN instead of short name. This fixes the
-            // cross-namespace overmatch for Function/Class and the unrelated-class
-            // overmatch for Method (via the owning FQCN).
-            let target_fqn: Option<String> = doc_opt.as_ref().and_then(|doc| {
-                let imports = self.file_imports(uri);
-                match kind {
-                    Some(SymbolKind::Function) | Some(SymbolKind::Class) => {
-                        let resolved = crate::moniker::resolve_fqn(doc, &word, &imports);
-                        if resolved.contains('\\') {
-                            Some(resolved)
-                        } else {
-                            None
-                        }
-                    }
-                    Some(SymbolKind::Method) => {
-                        // Owning FQCN: the class/interface/trait/enum that contains the cursor.
-                        let short_owner =
-                            crate::type_map::enclosing_class_at(doc.source(), doc, position)?;
-                        // `resolve_fqn` walks the doc and applies namespace prefix if any.
-                        Some(crate::moniker::resolve_fqn(doc, &short_owner, &imports))
-                    }
-                    Some(SymbolKind::Constant) => {
-                        let owner = constant_owner.take();
-                        if owner.is_some() {
-                            // Class constant: return the class short name as-is.
-                            owner
-                        } else {
-                            // Global/namespace constant: compute FQN so cross-namespace
-                            // references like `\Config\DB_HOST` can be found.
-                            let imports = self.file_imports(uri);
-                            let fqn = crate::moniker::resolve_fqn(doc, &word, &imports);
-                            if fqn.contains('\\') { Some(fqn) } else { None }
-                        }
-                    }
-                    _ => None,
-                }
-            });
-
-            // Method refs need type-aware filtering: `$mailer->process()`
-            // and `$queue->process()` share a name, but only the one whose
-            // receiver type matches the cursor's owning class is a real ref.
-            // Mir's session.references_to is type-aware; use it as the
-            // primary source for Method+target_fqn. The AST walker is only
-            // used to add the declaration span (sessions return call sites).
-            //
             // Ensure all workspace files are ingested before querying the
-            // session — the session only sees files that have been opened
-            // (via get_semantic_issues_salsa), so background-indexed files
-            // would otherwise be invisible to references_to.
+            // session — it only sees files that have been opened, so
+            // background-indexed files would otherwise be invisible to
+            // `references_to`.
             if matches!(kind, Some(SymbolKind::Method)) {
                 self.docs.ensure_all_files_ingested();
             }
-            // The short owner class name used to filter session results:
-            // any file where a receiver is typed as Owner must mention Owner by
-            // name (import, new expr, or type hint). Files with only
-            // `$unknown->method()` (no Owner reference) have untyped receivers
-            // and must be excluded.
             let owner_short: Option<String> = if matches!(kind, Some(SymbolKind::Method)) {
                 target_fqn
                     .as_deref()
@@ -1485,64 +1554,23 @@ impl LanguageServer for Backend {
                 None
             };
 
-            let session_method_refs: Option<Vec<Location>> =
-                if matches!(kind, Some(SymbolKind::Method))
-                    && let Some(sym) = build_mir_symbol(&word, kind, target_fqn.as_deref())
-                {
-                    let raw = self.docs.session_references_to(&sym);
-                    let session_locs: Vec<Location> = raw
-                        .into_iter()
-                        .filter_map(|(file, line, col_start, col_end)| {
-                            let uri_parsed = Url::parse(&file).ok()?;
-                            // Filter out call sites where the receiver is untyped
-                            // (Mixed). Any file where the receiver is legitimately
-                            // typed as Owner must reference Owner by name somewhere.
-                            if let Some(short) = &owner_short {
-                                let src_opt = self.docs.source_text(&uri_parsed);
-                                let mentions = src_opt
-                                    .as_ref()
-                                    .map(|src| src.contains(short.as_str()))
-                                    .unwrap_or(true);
-                                if !mentions {
-                                    return None;
-                                }
-                            }
-                            Some(Location {
-                                uri: uri_parsed,
-                                range: tower_lsp::lsp_types::Range {
-                                    start: tower_lsp::lsp_types::Position {
-                                        line,
-                                        character: col_start,
-                                    },
-                                    end: tower_lsp::lsp_types::Position {
-                                        line,
-                                        character: col_end,
-                                    },
-                                },
-                            })
-                        })
-                        .collect();
-                    Some(session_locs)
-                } else {
-                    None
-                };
+            let session_method_refs = self.session_method_references(
+                &word,
+                kind,
+                target_fqn.as_deref(),
+                owner_short.as_deref(),
+            );
 
             let mut locations = if let Some(session_locs) =
                 session_method_refs.filter(|l| !l.is_empty())
             {
-                // Use session results as the call-site source. Push the
-                // cursor's own method-name span as the declaration so the
-                // `include_declaration=true` case still surfaces the decl —
-                // the cursor is verified by `cursor_is_on_method_decl`
-                // upstream, so this maps to the right method in files with
-                // more than one same-named method.
+                // Session results are the authoritative call-site source for
+                // methods. Push the cursor's own method-name span as the decl so
+                // `include_declaration=true` still surfaces it — derived from the
+                // identifier under the cursor (not the raw cursor position) so a
+                // mid-identifier cursor doesn't shift the span right.
                 let mut combined = session_locs;
                 if include_declaration {
-                    // Derive the declaration span from the identifier under the
-                    // cursor, not the raw cursor position — otherwise a cursor
-                    // placed mid-identifier yields a span shifted right by its
-                    // in-word offset. Falls back to the cursor-anchored span if
-                    // word boundaries can't be resolved.
                     let range =
                         crate::util::word_range_at(&source, position).unwrap_or_else(|| Range {
                             start: position,
@@ -1555,15 +1583,7 @@ impl LanguageServer for Backend {
                         uri: uri.clone(),
                         range,
                     });
-                    let mut seen = std::collections::HashSet::new();
-                    combined.retain(|loc| {
-                        seen.insert((
-                            loc.uri.to_string(),
-                            loc.range.start.line,
-                            loc.range.start.character,
-                            loc.range.end.character,
-                        ))
-                    });
+                    crate::references::dedup_ref_locations(&mut combined);
                 }
                 combined
             } else {
@@ -1584,45 +1604,20 @@ impl LanguageServer for Backend {
                 if !extra.is_empty() {
                     let mut seen: std::collections::HashSet<(String, u32, u32, u32)> = locations
                         .iter()
-                        .map(|loc| {
-                            (
-                                loc.uri.to_string(),
-                                loc.range.start.line,
-                                loc.range.start.character,
-                                loc.range.end.character,
-                            )
-                        })
+                        .map(crate::references::ref_location_key)
                         .collect();
-                    for (file, line, col_start, col_end) in extra {
-                        let Ok(uri_parsed) = Url::parse(&file) else {
-                            continue;
-                        };
-                        let key = (uri_parsed.to_string(), line, col_start, col_end);
-                        if !seen.insert(key) {
-                            continue;
+                    for loc in extra
+                        .into_iter()
+                        .filter_map(crate::references::session_tuple_to_location)
+                    {
+                        if seen.insert(crate::references::ref_location_key(&loc)) {
+                            locations.push(loc);
                         }
-                        locations.push(Location {
-                            uri: uri_parsed,
-                            range: tower_lsp::lsp_types::Range {
-                                start: tower_lsp::lsp_types::Position {
-                                    line,
-                                    character: col_start,
-                                },
-                                end: tower_lsp::lsp_types::Position {
-                                    line,
-                                    character: col_end,
-                                },
-                            },
-                        });
                     }
                 }
             }
 
-            Ok(if locations.is_empty() {
-                None
-            } else {
-                Some(locations)
-            })
+            Ok((!locations.is_empty()).then_some(locations))
         })
         .await
     }
