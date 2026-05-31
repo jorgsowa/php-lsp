@@ -6,6 +6,8 @@ use tower_lsp::lsp_types::{
     CodeAction, CodeActionKind, CodeActionOrCommand, Position, Range, TextEdit, Url, WorkspaceEdit,
 };
 
+use crate::util::fqn_short_name;
+
 /// Analyse `source` and return an "Organize imports" code action if there is
 /// something to do (sort order is wrong or unused imports exist).
 pub fn organize_imports_action(source: &str, uri: &Url) -> Option<CodeActionOrCommand> {
@@ -251,7 +253,7 @@ fn parse_use_statement(text: &str, kind: UseKind) -> Option<UseStatement> {
 
     let short = match &alias {
         Some(a) => a.clone(),
-        None => fqn_part.rsplit('\\').next().unwrap_or(fqn_part).to_string(),
+        None => fqn_short_name(fqn_part).to_string(),
     };
 
     Some(UseStatement {

@@ -7,7 +7,7 @@ use tower_lsp::lsp_types::{Hover, HoverContents, MarkupContent, MarkupKind, Posi
 use crate::ast::{MethodReturnsMap, ParsedDoc, format_type_hint};
 use crate::docblock::find_docblock;
 use crate::type_map::TypeMap;
-use crate::util::{is_php_builtin, php_doc_url, word_at_position, word_range_at};
+use crate::util::{fqn_short_name, is_php_builtin, php_doc_url, word_at_position, word_range_at};
 
 use super::closures::closure_hover;
 use super::formatting::{
@@ -263,7 +263,7 @@ pub fn hover_at(
             let fqn = content.trim_end_matches(';').trim();
             if !fqn.is_empty() {
                 let maybe_word = word_at_position(source, position);
-                let alias = fqn.rsplit('\\').next().unwrap_or(fqn);
+                let alias = fqn_short_name(fqn);
                 let matches = match &maybe_word {
                     Some(w) => w == alias || fqn.contains(w.as_str()),
                     None => true,

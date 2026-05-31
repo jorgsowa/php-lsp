@@ -1,5 +1,7 @@
 use php_ast::{NamespaceBody, Stmt, StmtKind, UseKind};
 
+use crate::util::fqn_short_name;
+
 /// Extract the receiver variable from immediately before `->word` or `?->word`
 /// at the cursor's exact column position.  Uses the column rather than
 /// `str::find()` so multiple method calls on the same line are handled
@@ -96,7 +98,7 @@ pub(crate) fn extract_static_class_before_cursor(
     }
     let full: String = before_colons[start..end].iter().collect();
     // Return only the last segment so callers get a short name.
-    Some(full.rsplit('\\').next().unwrap_or(&full).to_owned())
+    Some(fqn_short_name(&full).to_owned())
 }
 
 /// Walk backwards through `chars`, skipping whitespace, and return the
@@ -144,7 +146,7 @@ pub fn resolve_use_alias(stmts: &[Stmt<'_, '_>], word: &str) -> Option<String> {
                         && alias == word
                     {
                         let fqn = item.name.to_string_repr();
-                        let short = fqn.rsplit('\\').next().unwrap_or(fqn.as_ref()).to_owned();
+                        let short = fqn_short_name(&fqn).to_owned();
                         return Some(short);
                     }
                 }

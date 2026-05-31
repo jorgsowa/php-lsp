@@ -3,6 +3,7 @@
 ///
 /// Works for variables assigned via `$var = new ClassName()` (leverages `TypeMap`)
 /// and for function parameters with a declared type hint.
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use php_ast::{ClassMemberKind, EnumMemberKind, NamespaceBody, Stmt, StmtKind};
@@ -12,36 +13,32 @@ use crate::ast::{MethodReturnsMap, ParsedDoc, SourceView, format_type_hint, str_
 use crate::moniker::resolve_fqn;
 use crate::references::collect_class_imports;
 use crate::type_map::{TypeMap, build_method_returns};
-use crate::util::{word_at_position, zero_width_range};
+use crate::util::{fqn_short_name, word_at_position, zero_width_range};
 
-/// Given the cursor position, resolve the type of the symbol and return all
-/// matching locations for that type's class/interface declarations.
-/// Returns empty vec if no type found, single-element vec for simple types,
-/// multiple elements for union types (e.g., Admin|User).
-pub fn goto_type_definition(
+/// Resolve the PHP type at `position` to a fully-qualified class name.
+/// Returns `(imports, fqn)` on success, or `None` if no type could be inferred.
+fn resolve_type_at_cursor(
     source: &str,
     doc: &ParsedDoc,
     doc_returns: Option<&MethodReturnsMap>,
-    all_docs: &[(Url, Arc<ParsedDoc>)],
     position: Position,
-) -> Vec<Location> {
+) -> Option<(HashMap<String, String>, String)> {
     let imports = collect_class_imports(doc);
     let type_map = TypeMap::from_doc_with_meta(doc, None, doc_returns);
 
     let class_name = if let Some(word) = word_at_position(source, position) {
-        // Named symbol (variable or parameter)
         if word.starts_with('$') {
             // TypeMap stores the short class name; resolve it to FQN using the
             // current file's namespace + use imports so that `User` in
             // `namespace App\Service` resolves to `App\Service\User`.
             match type_map.get(&word) {
                 Some(short) => resolve_fqn(doc, short, &imports),
-                None => return Vec::new(),
+                None => return None,
             }
         } else {
             match param_type_for(&doc.program().stmts, &word) {
                 Some(raw) => resolve_fqn(doc, &raw, &imports),
-                None => return Vec::new(),
+                None => return None,
             }
         }
     } else {
@@ -61,19 +58,34 @@ pub fn goto_type_definition(
             std::slice::from_ref(&chain_returns),
         ) {
             Some(ty) => resolve_fqn(doc, &ty, &imports),
-            None => return Vec::new(),
+            None => return None,
         }
+    };
+
+    Some((imports, class_name))
+}
+
+/// Given the cursor position, resolve the type of the symbol and return all
+/// matching locations for that type's class/interface declarations.
+/// Returns empty vec if no type found, single-element vec for simple types,
+/// multiple elements for union types (e.g., Admin|User).
+pub fn goto_type_definition(
+    source: &str,
+    doc: &ParsedDoc,
+    doc_returns: Option<&MethodReturnsMap>,
+    all_docs: &[(Url, Arc<ParsedDoc>)],
+    position: Position,
+) -> Vec<Location> {
+    let Some((imports, class_name)) = resolve_type_at_cursor(source, doc, doc_returns, position)
+    else {
+        return Vec::new();
     };
 
     let mut results = Vec::new();
 
     // Look only in files whose namespace + short class name matches the FQN.
     for candidate in type_candidates(&class_name) {
-        let cand_short = candidate
-            .trim_start_matches('\\')
-            .rsplit('\\')
-            .next()
-            .unwrap_or(candidate);
+        let cand_short = fqn_short_name(candidate.trim_start_matches('\\'));
         let cand_fqn = candidate.trim_start_matches('\\');
 
         for (uri, other_doc) in all_docs {
@@ -108,11 +120,7 @@ pub fn goto_type_definition(
     let is_from_import = imports.values().any(|v| v == &class_name);
     if !is_from_import {
         for candidate in type_candidates(&class_name) {
-            let cand_short = candidate
-                .trim_start_matches('\\')
-                .rsplit('\\')
-                .next()
-                .unwrap_or(candidate);
+            let cand_short = fqn_short_name(candidate.trim_start_matches('\\'));
             for (uri, other_doc) in all_docs {
                 let other_sv = other_doc.view();
                 if let Some(range) =
@@ -316,38 +324,9 @@ pub fn goto_type_definition_from_index(
     indexes: &[(Url, std::sync::Arc<crate::file_index::FileIndex>)],
     position: Position,
 ) -> Vec<Location> {
-    let imports = collect_class_imports(doc);
-    let type_map = TypeMap::from_doc_with_meta(doc, None, doc_returns);
-    let class_name = if let Some(word) = word_at_position(source, position) {
-        if word.starts_with('$') {
-            match type_map.get(&word) {
-                Some(short) => resolve_fqn(doc, short, &imports),
-                None => return Vec::new(),
-            }
-        } else {
-            match param_type_for(&doc.program().stmts, &word) {
-                Some(raw) => resolve_fqn(doc, &raw, &imports),
-                None => return Vec::new(),
-            }
-        }
-    } else {
-        let cursor_byte = doc.view().byte_of_position(position);
-        let owned_returns;
-        let chain_returns: &MethodReturnsMap = match doc_returns {
-            Some(r) => r,
-            None => {
-                owned_returns = build_method_returns(doc);
-                &owned_returns
-            }
-        };
-        match type_map.chain_type_at_cursor(
-            &doc.program().stmts,
-            cursor_byte,
-            std::slice::from_ref(&chain_returns),
-        ) {
-            Some(ty) => resolve_fqn(doc, &ty, &imports),
-            None => return Vec::new(),
-        }
+    let Some((imports, class_name)) = resolve_type_at_cursor(source, doc, doc_returns, position)
+    else {
+        return Vec::new();
     };
 
     let mut results = Vec::new();
@@ -381,15 +360,10 @@ pub fn goto_type_definition_from_index(
     let is_from_import = imports.values().any(|v| v == &class_name);
     if !is_from_import {
         for candidate in type_candidates(&class_name) {
-            let cn_short = candidate.rsplit('\\').next().unwrap_or(candidate);
+            let cn_short = fqn_short_name(candidate);
             for (uri, idx) in indexes {
                 for cls in &idx.classes {
-                    let short = cls
-                        .name
-                        .as_ref()
-                        .rsplit('\\')
-                        .next()
-                        .unwrap_or(cls.name.as_ref());
+                    let short = fqn_short_name(cls.name.as_ref());
                     if short == cn_short {
                         let range = zero_width_range(cls.start_line);
                         results.push(Location {

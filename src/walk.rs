@@ -15,6 +15,7 @@ use php_ast::{
 use tower_lsp::lsp_types::DocumentHighlightKind;
 
 use crate::ast::{str_offset, str_offset_in_range};
+use crate::util::fqn_short_name;
 
 // ── Public entry points ───────────────────────────────────────────────────────
 
@@ -102,7 +103,7 @@ impl<'arena, 'src> Visitor<'arena, 'src> for AllRefsVisitor<'_> {
                         }
                     } else {
                         // No alias: check if the last segment of FQN matches
-                        let last_seg = fqn.rsplit('\\').next().unwrap_or(&fqn);
+                        let last_seg = fqn_short_name(&fqn);
                         if last_seg == self.word {
                             let name_span = use_item.name.span();
                             let offset = (fqn.len() - last_seg.len()) as u32;
@@ -915,7 +916,7 @@ impl<'arena, 'src> Visitor<'arena, 'src> for NewRefsVisitor<'_> {
                 // Fully-qualified identifier: compare by FQN for exact namespace match.
                 id.trim_start_matches('\\') == fqn.trim_start_matches('\\')
             } else {
-                id.rsplit('\\').next().unwrap_or(id) == self.class_name
+                fqn_short_name(id) == self.class_name
             };
             if matches {
                 self.out.push(n.class.span);
@@ -1114,7 +1115,7 @@ impl ClassRefsVisitor<'_> {
     /// Push the span of the last segment of `name` if it matches `class_name`.
     fn collect_name<'a, 'b>(&mut self, name: &Name<'a, 'b>) {
         let repr = name.to_string_repr();
-        let last = repr.rsplit('\\').next().unwrap_or(repr.as_ref());
+        let last = fqn_short_name(&repr);
         if last == self.class_name {
             let span = name.span();
             let offset = (repr.len() - last.len()) as u32;
@@ -1151,7 +1152,7 @@ impl<'arena, 'src> Visitor<'arena, 'src> for ClassRefsVisitor<'_> {
         match &expr.kind {
             ExprKind::New(n) => {
                 if let ExprKind::Identifier(id) = &n.class.kind
-                    && id.rsplit('\\').next().unwrap_or(id) == self.class_name
+                    && fqn_short_name(id) == self.class_name
                 {
                     self.out.push(n.class.span);
                 }
@@ -1166,28 +1167,28 @@ impl<'arena, 'src> Visitor<'arena, 'src> for ClassRefsVisitor<'_> {
             }
             ExprKind::Binary(b) => {
                 if let ExprKind::Identifier(id) = &b.right.kind
-                    && id.rsplit('\\').next().unwrap_or(id) == self.class_name
+                    && fqn_short_name(id) == self.class_name
                 {
                     self.out.push(b.right.span);
                 }
             }
             ExprKind::StaticMethodCall(s) => {
                 if let ExprKind::Identifier(id) = &s.class.kind
-                    && id.rsplit('\\').next().unwrap_or(id) == self.class_name
+                    && fqn_short_name(id) == self.class_name
                 {
                     self.out.push(s.class.span);
                 }
             }
             ExprKind::StaticPropertyAccess(s) => {
                 if let ExprKind::Identifier(id) = &s.class.kind
-                    && id.rsplit('\\').next().unwrap_or(id) == self.class_name
+                    && fqn_short_name(id) == self.class_name
                 {
                     self.out.push(s.class.span);
                 }
             }
             ExprKind::ClassConstAccess(c) => {
                 if let ExprKind::Identifier(id) = &c.class.kind
-                    && id.rsplit('\\').next().unwrap_or(id) == self.class_name
+                    && fqn_short_name(id) == self.class_name
                 {
                     self.out.push(c.class.span);
                 }

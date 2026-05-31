@@ -15,6 +15,7 @@ use std::path::Path;
 use php_ast::{ExprKind, NamespaceBody, Stmt, StmtKind};
 
 use crate::ast::ParsedDoc;
+use crate::util::fqn_short_name;
 
 type MetaEntries = HashMap<(String, String), Vec<(Option<String>, String)>>;
 
@@ -146,7 +147,7 @@ fn extract_class_name(expr: &php_ast::Expr<'_, '_>) -> Option<String> {
         ExprKind::Identifier(name) => {
             // Strip leading `\` and use only the last component.
             let s = name.trim_start_matches('\\');
-            let short = s.rsplit('\\').next().unwrap_or(s);
+            let short = fqn_short_name(s);
             Some(short.to_string())
         }
         _ => None,
@@ -189,7 +190,7 @@ fn extract_string_or_class(expr: &php_ast::Expr<'_, '_>) -> Option<String> {
                 None
             } else {
                 // Use the short name (last component after `\`).
-                let short = raw.rsplit('\\').next().unwrap_or(raw);
+                let short = fqn_short_name(raw);
                 Some(short.to_string())
             }
         }

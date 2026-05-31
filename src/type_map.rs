@@ -13,6 +13,7 @@ use tower_lsp::lsp_types::Position;
 use crate::ast::{MethodReturnsMap, ParsedDoc, SourceView};
 use crate::docblock::{docblock_before, parse_docblock};
 use crate::phpstorm_meta::PhpStormMeta;
+use crate::util::fqn_short_name;
 
 /// Maps function name → return class name. Used for function call return type resolution.
 pub type FunctionReturnsMap = HashMap<String, String>;
@@ -469,7 +470,7 @@ fn extract_method_return_class(
         if let Some(ret) = db.return_type {
             for part in ret.type_hint.split('|') {
                 let part = part.trim().trim_start_matches('\\').trim_start_matches('?');
-                let short = part.rsplit('\\').next().unwrap_or(part);
+                let short = fqn_short_name(part);
                 if short == "self" || short == "static" {
                     return Some(enclosing_class.to_string());
                 }
@@ -501,7 +502,7 @@ fn extract_function_return_class(
         if let Some(ret) = db.return_type {
             for part in ret.type_hint.split('|') {
                 let part = part.trim().trim_start_matches('\\').trim_start_matches('?');
-                let short = part.rsplit('\\').next().unwrap_or(part);
+                let short = fqn_short_name(part);
                 let first = short.chars().next().unwrap_or('_');
                 if first.is_uppercase() && !matches!(short, "void" | "never" | "null") {
                     return Some(short.to_string());
@@ -533,23 +534,23 @@ fn type_hint_to_class_string(
             Atomic::TNamedObject { fqcn, .. }
             | Atomic::TSelf { fqcn }
             | Atomic::TStaticObject { fqcn } => {
-                let short = fqcn.rsplit('\\').next().unwrap_or(fqcn.as_ref());
+                let short = fqn_short_name(fqcn);
                 Some(short.to_string())
             }
             Atomic::TParent { fqcn } => {
                 // If we have the doc and enclosing class, resolve to the actual parent class
                 if let (Some(doc), Some(enc_class)) = (doc, enclosing_class) {
                     if let Some(parent) = parent_class_name(doc, enc_class) {
-                        let short = parent.rsplit('\\').next().unwrap_or(&parent);
+                        let short = fqn_short_name(&parent);
                         Some(short.to_string())
                     } else {
                         // No parent found, fall back to enclosing class short name
-                        let short = fqcn.rsplit('\\').next().unwrap_or(fqcn.as_ref());
+                        let short = fqn_short_name(fqcn);
                         Some(short.to_string())
                     }
                 } else {
                     // No doc context, use enclosing class as fallback
-                    let short = fqcn.rsplit('\\').next().unwrap_or(fqcn.as_ref());
+                    let short = fqn_short_name(fqcn);
                     Some(short.to_string())
                 }
             }
@@ -561,14 +562,14 @@ fn type_hint_to_class_string(
                             Atomic::TNamedObject { fqcn, .. }
                             | Atomic::TSelf { fqcn }
                             | Atomic::TStaticObject { fqcn } => {
-                                let short = fqcn.rsplit('\\').next().unwrap_or(fqcn.as_ref());
+                                let short = fqn_short_name(fqcn);
                                 Some(short.to_string())
                             }
                             Atomic::TParent { fqcn } => {
                                 // Same logic as above for parent in intersections
                                 if let (Some(doc), Some(enc_class)) = (doc, enclosing_class) {
                                     if let Some(parent) = parent_class_name(doc, enc_class) {
-                                        let short = parent.rsplit('\\').next().unwrap_or(&parent);
+                                        let short = fqn_short_name(&parent);
                                         Some(short.to_string())
                                     } else {
                                         let short =
@@ -576,7 +577,7 @@ fn type_hint_to_class_string(
                                         Some(short.to_string())
                                     }
                                 } else {
-                                    let short = fqcn.rsplit('\\').next().unwrap_or(fqcn.as_ref());
+                                    let short = fqn_short_name(fqcn);
                                     Some(short.to_string())
                                 }
                             }
@@ -1242,7 +1243,7 @@ fn extract_callback_return_type(expr: &php_ast::Expr<'_, '_>) -> Option<String> 
     if let TypeHintKind::Named(name) = &hint.kind {
         let s = name.to_string_repr();
         let base = s.trim_start_matches('\\');
-        let short = base.rsplit('\\').next().unwrap_or(base);
+        let short = fqn_short_name(base);
         if short
             .chars()
             .next()

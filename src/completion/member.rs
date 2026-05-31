@@ -8,7 +8,7 @@ use crate::type_map::{
     ClassMembers, enclosing_class_at, is_backed_enum, is_enum, members_of_class, mixin_classes_of,
     parent_class_name,
 };
-use crate::util::utf16_offset_to_byte;
+use crate::util::{fqn_short_name, utf16_offset_to_byte};
 
 use super::callable_item;
 
@@ -429,5 +429,5 @@ fn extract_new_class_before_arrow(text: &str) -> Option<String> {
         return None;
     }
     // Return short name
-    Some(class.rsplit('\\').next().unwrap_or(&class).to_string())
+    Some(fqn_short_name(&class).to_string())
 }

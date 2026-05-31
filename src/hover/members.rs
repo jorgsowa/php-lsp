@@ -2,6 +2,7 @@ use php_ast::{ClassMemberKind, EnumMemberKind, NamespaceBody, Stmt, StmtKind};
 
 use crate::ast::{ParsedDoc, format_type_hint};
 use crate::docblock::{Docblock, docblock_before, parse_docblock};
+use crate::util::fqn_short_name;
 
 use super::formatting::{
     format_class_const, format_expr_literal, format_params, format_prop_prefix,
@@ -23,9 +24,7 @@ fn find_property_info_in_stmts<'a>(
 ) -> Option<(String, String, Option<Docblock>)> {
     for stmt in stmts {
         match &stmt.kind {
-            StmtKind::Class(c)
-                if c.name.as_ref().map(|n| n.to_string()) == Some(class_name.to_string()) =>
-            {
+            StmtKind::Class(c) if c.name.map(|n| n.or_error()) == Some(class_name) => {
                 for member in c.body.members.iter() {
                     match &member.kind {
                         ClassMemberKind::Property(p) if p.name == prop_name => {
@@ -121,9 +120,7 @@ fn scan_method_of_class_impl<'a>(
 ) -> Option<String> {
     for stmt in stmts {
         match &stmt.kind {
-            StmtKind::Class(c)
-                if c.name.as_ref().map(|n| n.to_string()) == Some(class_name.to_string()) =>
-            {
+            StmtKind::Class(c) if c.name.map(|n| n.or_error()) == Some(class_name) => {
                 // 1. Direct method lookup.
                 for member in c.body.members.iter() {
                     if let ClassMemberKind::Method(m) = &member.kind
@@ -147,7 +144,7 @@ fn scan_method_of_class_impl<'a>(
                     if let ClassMemberKind::TraitUse(tu) = &member.kind {
                         for tn in tu.traits.iter() {
                             let s = tn.to_string_repr();
-                            let short = s.rsplit('\\').next().unwrap_or(s.as_ref()).to_owned();
+                            let short = fqn_short_name(&s).to_owned();
                             trait_names.push(short);
                         }
                     }
@@ -160,7 +157,7 @@ fn scan_method_of_class_impl<'a>(
                 // 3. Walk extends chain within the same document.
                 if let Some(parent) = &c.extends {
                     let pn = parent.to_string_repr();
-                    let short = pn.rsplit('\\').next().unwrap_or(pn.as_ref()).to_owned();
+                    let short = fqn_short_name(&pn).to_owned();
                     if let Some(sig) = scan_method_of_class_impl(root, root, &short, method_name) {
                         // Replace "Parent::" with "ClassName::" so the hover always
                         // shows the receiver type.
@@ -271,9 +268,7 @@ pub(crate) fn scan_class_const_of_class(
 ) -> Option<String> {
     for stmt in stmts {
         match &stmt.kind {
-            StmtKind::Class(c)
-                if c.name.as_ref().map(|n| n.to_string()) == Some(class_name.to_string()) =>
-            {
+            StmtKind::Class(c) if c.name.map(|n| n.or_error()) == Some(class_name) => {
                 for member in c.body.members.iter() {
                     if let ClassMemberKind::ClassConst(k) = &member.kind
                         && k.name == const_name
@@ -368,12 +363,10 @@ fn find_method_sig_in_trait(
 pub(crate) fn find_parent_class_name(stmts: &[Stmt<'_, '_>], class_name: &str) -> Option<String> {
     for stmt in stmts {
         match &stmt.kind {
-            StmtKind::Class(c)
-                if c.name.as_ref().map(|n| n.to_string()) == Some(class_name.to_string()) =>
-            {
+            StmtKind::Class(c) if c.name.map(|n| n.or_error()) == Some(class_name) => {
                 return c.extends.as_ref().map(|p| {
                     let pn = p.to_string_repr();
-                    pn.rsplit('\\').next().unwrap_or(pn.as_ref()).to_owned()
+                    fqn_short_name(&pn).to_owned()
                 });
             }
             StmtKind::Namespace(ns) => {
@@ -445,9 +438,7 @@ fn find_method_docblock_impl<'a>(
 ) -> Option<crate::docblock::Docblock> {
     for stmt in stmts {
         match &stmt.kind {
-            StmtKind::Class(c)
-                if c.name.as_ref().map(|n| n.to_string()) == Some(class_name.to_string()) =>
-            {
+            StmtKind::Class(c) if c.name.map(|n| n.or_error()) == Some(class_name) => {
                 // Direct lookup.
                 for member in c.body.members.iter() {
                     if let ClassMemberKind::Method(m) = &member.kind
@@ -462,7 +453,7 @@ fn find_method_docblock_impl<'a>(
                     if let ClassMemberKind::TraitUse(tu) = &member.kind {
                         for tn in tu.traits.iter() {
                             let s = tn.to_string_repr();
-                            let short = s.rsplit('\\').next().unwrap_or(s.as_ref()).to_owned();
+                            let short = fqn_short_name(&s).to_owned();
                             if let Some(db) =
                                 find_method_docblock_impl(source, root, root, &short, method_name)
                             {
@@ -474,7 +465,7 @@ fn find_method_docblock_impl<'a>(
                 // Walk extends.
                 if let Some(parent) = &c.extends {
                     let pn = parent.to_string_repr();
-                    let short = pn.rsplit('\\').next().unwrap_or(pn.as_ref()).to_owned();
+                    let short = fqn_short_name(&pn).to_owned();
                     if let Some(db) =
                         find_method_docblock_impl(source, root, root, &short, method_name)
                     {

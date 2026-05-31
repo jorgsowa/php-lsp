@@ -78,7 +78,7 @@ use crate::type_hierarchy::{
     prepare_type_hierarchy_from_workspace, subtypes_of_from_workspace, supertypes_of_from_workspace,
 };
 use crate::use_import::{build_use_import_edit, find_fqn_for_class};
-use crate::util::word_at_position;
+use crate::util::{fqn_short_name, word_at_position};
 use crate::workspace_scan::{scan_workspace, send_refresh_requests};
 
 pub struct Backend {
@@ -1479,8 +1479,7 @@ impl LanguageServer for Backend {
             let owner_short: Option<String> = if matches!(kind, Some(SymbolKind::Method)) {
                 target_fqn
                     .as_deref()
-                    .and_then(|fqn| fqn.trim_start_matches('\\').rsplit('\\').next())
-                    .map(|s| s.to_string())
+                    .map(|fqn| fqn_short_name(fqn.trim_start_matches('\\')).to_string())
             } else {
                 None
             };

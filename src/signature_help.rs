@@ -10,7 +10,7 @@ use crate::ast::ParsedDoc;
 use crate::docblock::find_docblock;
 use crate::file_index::FileIndex;
 use crate::hover::format_params_str;
-use crate::util::split_params;
+use crate::util::{fqn_short_name, split_params};
 
 /// Returns signature help for the function call the cursor is inside of.
 ///
@@ -156,7 +156,7 @@ fn extract_name_before(text: &[char], paren_pos: usize) -> String {
 /// `process($0)` and `\App\process($0)` resolve.
 fn find_params_in_index(name: &str, ws_indexes: &[(Url, Arc<FileIndex>)]) -> Option<String> {
     let bare = name.trim_start_matches('\\');
-    let local = bare.rsplit('\\').next().unwrap_or(bare);
+    let local = fqn_short_name(bare);
     for (_, idx) in ws_indexes {
         for f in &idx.functions {
             let f_name = f.name.as_ref();

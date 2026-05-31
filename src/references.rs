@@ -10,7 +10,7 @@ use rayon::prelude::*;
 use tower_lsp::lsp_types::{Location, Position, Range, Url};
 
 use crate::ast::{ParsedDoc, str_offset_in_range};
-use crate::util::utf16_code_units;
+use crate::util::{fqn_short_name, utf16_code_units};
 use crate::walk::{
     all_class_ref_names_in_stmts, class_refs_in_stmts, constant_refs_in_stmts,
     fqn_new_class_refs_in_stmts, function_refs_in_stmts, global_constant_refs_in_stmts,
@@ -305,7 +305,7 @@ impl<'arena, 'src> Visitor<'arena, 'src> for ImportsVisitor {
                     let short = item
                         .alias
                         .map(|a| a.to_string())
-                        .unwrap_or_else(|| fqn.rsplit('\\').next().unwrap_or(&fqn).to_string());
+                        .unwrap_or_else(|| fqn_short_name(&fqn).to_string());
                     self.out.insert(short, fqn);
                 }
                 ControlFlow::Continue(())

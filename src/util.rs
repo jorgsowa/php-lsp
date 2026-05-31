@@ -474,6 +474,12 @@ pub fn strip_variable_sigil(word: &str) -> &str {
     word.strip_prefix('$').unwrap_or(word)
 }
 
+/// Return the unqualified short name from a PHP fully-qualified name.
+/// `"\App\Service\Foo"` → `"Foo"`, `"Foo"` → `"Foo"`, `""` → `""`.
+pub(crate) fn fqn_short_name(fqn: &str) -> &str {
+    fqn.rsplit('\\').next().unwrap_or(fqn)
+}
+
 /// Build a zero-width LSP `Range` at the start of `line` (character 0).
 /// Used for index-backed features where only line-level precision is available.
 pub(crate) fn zero_width_range(line: u32) -> Range {

@@ -13,6 +13,7 @@ use tower_lsp::lsp_types::{
 
 use crate::ast::{ParsedDoc, SourceView, format_type_hint};
 use crate::hover::format_params_str;
+use crate::util::fqn_short_name;
 
 struct MethodStub {
     name: String,
@@ -82,7 +83,7 @@ fn collect_actions(
                 // Interfaces this class implements.
                 for iface in c.implements.iter() {
                     let iface_name = iface.to_string_repr().into_owned();
-                    let short = last_segment(&iface_name).to_string();
+                    let short = fqn_short_name(&iface_name).to_string();
                     // Try to resolve through `use` imports first; fall back to short-name scan.
                     let fqn = file_imports.get(&short).cloned();
                     for stub in abstract_methods_of(&short, fqn.as_deref(), all_docs) {
@@ -95,7 +96,7 @@ fn collect_actions(
                 // Abstract parent class (if any).
                 if let Some(parent) = &c.extends {
                     let parent_name = parent.to_string_repr().into_owned();
-                    let short = last_segment(&parent_name).to_string();
+                    let short = fqn_short_name(&parent_name).to_string();
                     let fqn = file_imports.get(&short).cloned();
                     for stub in abstract_methods_of(&short, fqn.as_deref(), all_docs) {
                         if !existing.contains(&stub.name) {
@@ -203,7 +204,7 @@ fn collect_abstract_methods_fqn(
     current_ns: &str,
 ) -> Option<Vec<MethodStub>> {
     // The expected short name is the last segment of the FQN.
-    let short = last_segment(fqn);
+    let short = fqn_short_name(fqn);
 
     for stmt in stmts {
         match &stmt.kind {
@@ -395,10 +396,6 @@ fn generate_stub_text(stubs: &[MethodStub]) -> String {
         ));
     }
     text
-}
-
-fn last_segment(name: &str) -> &str {
-    name.rsplit('\\').next().unwrap_or(name)
 }
 
 #[cfg(test)]
