@@ -67,6 +67,21 @@ pub struct DocumentStore {
     /// its bumpalo arena alive regardless of salsa's `lru = 2048` on the
     /// `parsed_doc` memo.
     parsed_cache: DashMap<Url, (Arc<str>, Arc<ParsedDoc>)>,
+    /// Cross-request read-through cache for a file's mir body analysis. Keyed
+    /// on `Url`, stored value is `(source_arc, Arc<FileAnalysis>)` — the source
+    /// Arc captured at analysis time. On read, compare against the current
+    /// `doc.source_arc()` via `Arc::ptr_eq`; a match means the cached analysis
+    /// matches the live content. A miss recomputes and overwrites, so the cache
+    /// self-evicts on edit (same discipline as `parsed_cache`).
+    ///
+    /// `FileAnalysis` carries BOTH the issues consumed by diagnostics and the
+    /// per-expression `ResolvedSymbol`s consumed by position features (hover,
+    /// type-definition, completion, inlay hints). Retaining it means mir's
+    /// `FileAnalyzer::analyze` runs once per content revision instead of being
+    /// re-run (for diagnostics) and then re-derived in a weaker form (for
+    /// position queries). Bounded by the set of analyzed files (open files plus
+    /// their open dependents); explicitly evicted in [`DocumentStore::remove`].
+    analysis_cache: DashMap<Url, (Arc<str>, Arc<mir_analyzer::FileAnalysis>)>,
     /// Monotonic allocator for `FileId`s (one per ever-seen URL).
     next_file_id: AtomicU32,
     /// Workspace salsa input. Tracks the full set of `SourceFile`s that
@@ -104,6 +119,7 @@ impl DocumentStore {
             source_files: DashMap::new(),
             text_cache: DashMap::new(),
             parsed_cache: DashMap::new(),
+            analysis_cache: DashMap::new(),
             next_file_id: AtomicU32::new(0),
             workspace,
             psr4: Arc::new(ArcSwap::from_pointee(Psr4Map::empty())),
@@ -207,6 +223,13 @@ impl DocumentStore {
             }
             drop(host);
             self.text_cache.insert(uri.clone(), text_arc);
+            // A content change to ANY file can invalidate cross-file analysis
+            // (mir resolves types/issues against other files). `cached_analysis`
+            // is validated only on a file's own `source_arc`, so a dependency
+            // edit wouldn't otherwise refresh an unchanged dependent's cached
+            // entry — drop the whole cache. Bounded by open files; recompute is
+            // ~6ms warm. Matches the salsa revision bump `set_text` just made.
+            self.analysis_cache.clear();
             sf
         } else {
             let id = FileId(self.next_file_id.fetch_add(1, Ordering::Relaxed));
@@ -217,6 +240,9 @@ impl DocumentStore {
             };
             self.source_files.insert(uri.clone(), sf);
             self.text_cache.insert(uri.clone(), text_arc);
+            // A newly-ingested file may resolve references that were previously
+            // unresolved in already-analyzed files; invalidate cross-file caches.
+            self.analysis_cache.clear();
             sf
         }
     }
@@ -338,6 +364,7 @@ impl DocumentStore {
         self.sync_workspace_files();
         self.text_cache.remove(uri);
         self.parsed_cache.remove(uri);
+        self.analysis_cache.remove(uri);
         // Also evict the file from the `AnalysisSession`'s internal state so
         // workspace symbol queries don't keep returning the deleted file's
         // declarations. Cheap when the session hasn't ingested this file.
@@ -606,16 +633,54 @@ impl DocumentStore {
     /// [`crate::semantic_diagnostics::issues_to_diagnostics`].
     #[tracing::instrument(skip_all)]
     pub fn get_semantic_issues_salsa(&self, uri: &Url) -> Option<Arc<[mir_issues::Issue]>> {
-        // Need the parsed doc for the analyzer.
+        let analysis = self.cached_analysis(uri)?;
+        let file: Arc<str> = Arc::from(uri.as_str());
+        // Workspace-level class issues for this file (circular inheritance,
+        // override violations, abstract-method gaps). These are session-wide
+        // (a dependency edit changes them without changing this file's bytes),
+        // so they are recomputed live rather than cached alongside the
+        // per-file body analysis.
+        let class_issues = {
+            let _s = tracing::debug_span!("session.class_issues_for").entered();
+            self.analysis_session(self.workspace_php_version())
+                .class_issues(std::slice::from_ref(&file))
+        };
+        let combined: Vec<mir_issues::Issue> = analysis
+            .issues
+            .iter()
+            .cloned()
+            .chain(class_issues)
+            .filter(|i| !i.suppressed)
+            .collect();
+        Some(Arc::from(combined))
+    }
+
+    /// Run (or reuse) mir's per-file body analysis, retaining the full
+    /// [`mir_analyzer::FileAnalysis`] — issues **and** resolved symbols — across
+    /// requests. Diagnostics read `.issues`; position features call
+    /// `.symbol_at(offset)` for the resolved type at a cursor.
+    ///
+    /// Cache hit when the entry's captured source `Arc` is pointer-equal to the
+    /// file's current `doc.source_arc()`. A miss recomputes and overwrites, so
+    /// the entry self-evicts on any content edit.
+    #[tracing::instrument(skip_all)]
+    pub fn cached_analysis(&self, uri: &Url) -> Option<Arc<mir_analyzer::FileAnalysis>> {
+        // Need the parsed doc both for the analyzer and as the cache key.
         let doc = self.get_doc_salsa(uri)?;
+        let source = doc.source_arc();
+
+        if let Some(entry) = self.analysis_cache.get(uri)
+            && Arc::ptr_eq(&entry.0, &source)
+        {
+            return Some(Arc::clone(&entry.1));
+        }
+
         let php_version = self.with_host(|h| self.workspace.php_version(h.db()));
         let session = self.analysis_session(php_version);
-
         let file: Arc<str> = Arc::from(uri.as_str());
-        let source = doc.source_arc();
         {
             let _s = tracing::debug_span!("session.ingest_file").entered();
-            session.ingest_file(file.clone(), source);
+            session.ingest_file(file.clone(), source.clone());
         }
         // Pre-load every imported class via PSR-4 so Pass-2 doesn't emit
         // spurious `UndefinedClass` for classes that ARE on disk but haven't
@@ -639,21 +704,11 @@ impl DocumentStore {
         let analysis = {
             let _s = tracing::debug_span!("FileAnalyzer::analyze").entered();
             let analyzer = mir_analyzer::FileAnalyzer::new(&session);
-            analyzer.analyze(file.clone(), doc.source(), &owned_program, &source_map)
+            Arc::new(analyzer.analyze(file.clone(), doc.source(), &owned_program, &source_map))
         };
-        // Workspace-level class issues for this file (circular inheritance,
-        // override violations, abstract-method gaps).
-        let class_issues = {
-            let _s = tracing::debug_span!("session.class_issues_for").entered();
-            session.class_issues(std::slice::from_ref(&file))
-        };
-        let combined: Vec<mir_issues::Issue> = analysis
-            .issues
-            .into_iter()
-            .chain(class_issues.into_iter())
-            .filter(|i| !i.suppressed)
-            .collect();
-        Some(Arc::from(combined))
+        self.analysis_cache
+            .insert(uri.clone(), (source, Arc::clone(&analysis)));
+        Some(analysis)
     }
 
     /// Returns `(uri, doc)` for files currently open in the editor.

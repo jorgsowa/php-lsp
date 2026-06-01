@@ -1357,6 +1357,7 @@ impl LanguageServer for Backend {
                 let (uri, _) = wi.at(cr)?;
                 docs_for_lookup.get_doc_salsa(uri)
             };
+            let analysis = self.docs.cached_analysis(uri);
             let ctx = CompletionCtx {
                 source: Some(&source),
                 position: Some(position),
@@ -1366,6 +1367,7 @@ impl LanguageServer for Backend {
                 doc_returns: doc_returns.as_deref(),
                 other_returns: Some(&other_returns),
                 find_class_doc: Some(&find_class_doc_fn),
+                analysis: analysis.as_deref(),
             };
             Ok(Some(CompletionResponse::Array(filtered_completions_at(
                 &doc,
@@ -1697,7 +1699,15 @@ impl LanguageServer for Backend {
                 .get_method_returns_salsa(uri)
                 .unwrap_or_else(|| std::sync::Arc::new(Default::default()));
             let other_docs = self.docs.other_docs_with_returns(uri, &self.open_urls());
-            let result = hover_info(&source, &doc, &doc_returns, position, &other_docs);
+            let analysis = self.docs.cached_analysis(uri);
+            let result = hover_info(
+                &source,
+                &doc,
+                &doc_returns,
+                analysis.as_deref(),
+                position,
+                &other_docs,
+            );
             if result.is_some() {
                 return Ok(result);
             }
@@ -1759,11 +1769,13 @@ impl LanguageServer for Backend {
             None => return Ok(None),
         };
         let doc_returns = self.docs.get_method_returns_salsa(uri);
+        let analysis = self.docs.cached_analysis(uri);
         let wi = self.docs.get_workspace_index_salsa();
         Ok(Some(inlay_hints(
             doc.source(),
             &doc,
             doc_returns.as_deref(),
+            analysis.as_deref(),
             params.range,
             &wi.files,
         )))
@@ -2106,11 +2118,11 @@ impl LanguageServer for Backend {
             Some(d) => d,
             None => return Ok(None),
         };
-        let doc_returns = self.docs.get_method_returns_salsa(uri);
+        let analysis = self.docs.cached_analysis(uri);
         // First pass: open-file ParsedDocs give accurate character positions.
         let open_docs = self.docs.docs_for(&self.open_urls());
         let mut results =
-            goto_type_definition(&source, &doc, doc_returns.as_deref(), &open_docs, position);
+            goto_type_definition(&source, &doc, analysis.as_deref(), &open_docs, position);
 
         // If no results from first pass, try background files via FileIndex (line-only positions).
         if results.is_empty() {
@@ -2118,7 +2130,7 @@ impl LanguageServer for Backend {
             results = goto_type_definition_from_index(
                 &source,
                 &doc,
-                doc_returns.as_deref(),
+                analysis.as_deref(),
                 &all_indexes,
                 position,
             );

@@ -17,6 +17,7 @@ pub mod hover;
 pub mod references;
 pub mod resolve;
 pub mod type_map;
+pub mod type_query;
 pub mod util;
 pub mod walk;
 

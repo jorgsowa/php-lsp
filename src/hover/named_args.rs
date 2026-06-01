@@ -2,6 +2,76 @@ use php_ast::{ClassMemberKind, NamespaceBody, Param, Stmt, StmtKind};
 use tower_lsp::lsp_types::Position;
 
 use crate::ast::{MethodReturnsMap, ParsedDoc, format_type_hint};
+use crate::util::{fqn_short_name, utf16_offset_to_byte};
+
+/// Resolve the class(es) of a named-argument call's receiver variable, for
+/// looking up the method's parameter signature. mir-primary: locate the
+/// receiver occurrence (`$recv->method(`) before the cursor and read mir's
+/// recorded type there; fall back to TypeMap for binding sites mir resolves to
+/// `mixed` (e.g. `$x = Enum::Case`). Returns short class names, `|`-joined for
+/// unions.
+fn resolve_method_receiver_class(
+    source: &str,
+    doc: &ParsedDoc,
+    doc_returns: &MethodReturnsMap,
+    other_docs: &[(
+        tower_lsp::lsp_types::Url,
+        std::sync::Arc<ParsedDoc>,
+        std::sync::Arc<MethodReturnsMap>,
+    )],
+    position: Position,
+    receiver_var: &str,
+    analysis: Option<&mir_analyzer::FileAnalysis>,
+) -> Option<String> {
+    if let Some(a) = analysis
+        && let Some(offset) = receiver_var_offset(source, doc, position, receiver_var)
+        && let Some(ty) = crate::type_query::type_at_offset(a, offset)
+    {
+        let names: Vec<String> = crate::type_query::class_names(ty)
+            .iter()
+            .map(|fqcn| fqn_short_name(fqcn).to_string())
+            .collect();
+        if !names.is_empty() {
+            return Some(names.join("|"));
+        }
+    }
+    // TypeMap fallback.
+    let type_map = crate::type_map::TypeMap::from_docs_at_position(
+        doc,
+        doc_returns,
+        other_docs.iter().map(|(_, d, r)| (d.as_ref(), r.as_ref())),
+        None,
+        position,
+    );
+    if receiver_var == "$this" {
+        crate::type_map::enclosing_class_at(source, doc, position)
+            .or_else(|| type_map.get(receiver_var).map(str::to_owned))
+    } else {
+        type_map.get(receiver_var).map(str::to_owned)
+    }
+}
+
+/// Byte offset of the last char of the `receiver_var` token in the nearest
+/// `receiver_var->` / `receiver_var?->` occurrence before the cursor — a
+/// position inside mir's end-exclusive variable span.
+fn receiver_var_offset(
+    source: &str,
+    doc: &ParsedDoc,
+    position: Position,
+    receiver_var: &str,
+) -> Option<u32> {
+    let line = source.lines().nth(position.line as usize)?;
+    let cursor_byte = utf16_offset_to_byte(line, position.character as usize).min(line.len());
+    let before = &line[..cursor_byte];
+    let p = before
+        .rfind(&format!("{receiver_var}?->"))
+        .or_else(|| before.rfind(&format!("{receiver_var}->")))?;
+    let line_start = doc.view().byte_of_position(Position {
+        line: position.line,
+        character: 0,
+    });
+    Some(line_start + (p + receiver_var.len()) as u32 - 1)
+}
 
 use super::formatting::{format_default_value, wrap_php};
 use super::members::find_parent_class_name;
@@ -165,6 +235,7 @@ fn callee_from_chars_before(chars: &[char]) -> Option<NamedArgCallee> {
 /// Build the hover string for a named argument label.
 ///
 /// Returns `None` when the callee or matching parameter cannot be found.
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn named_arg_hover_value(
     source: &str,
     doc: &ParsedDoc,
@@ -177,6 +248,7 @@ pub(crate) fn named_arg_hover_value(
     position: Position,
     callee: &NamedArgCallee,
     label: &str,
+    analysis: Option<&mir_analyzer::FileAnalysis>,
 ) -> Option<String> {
     let all_docs = || std::iter::once(doc).chain(other_docs.iter().map(|(_, d, _)| d.as_ref()));
 
@@ -192,19 +264,15 @@ pub(crate) fn named_arg_hover_value(
             None
         }
         NamedArgCallee::Method(receiver_var, method_name) => {
-            let type_map = crate::type_map::TypeMap::from_docs_at_position(
+            let class_name = resolve_method_receiver_class(
+                source,
                 doc,
                 doc_returns,
-                other_docs.iter().map(|(_, d, r)| (d.as_ref(), r.as_ref())),
-                None,
+                other_docs,
                 position,
-            );
-            let class_name = if receiver_var == "$this" {
-                crate::type_map::enclosing_class_at(source, doc, position)
-                    .or_else(|| type_map.get(receiver_var).map(|s| s.to_string()))
-            } else {
-                type_map.get(receiver_var.as_str()).map(|s| s.to_string())
-            }?;
+                receiver_var,
+                analysis,
+            )?;
             let first_class = class_name
                 .split('|')
                 .next()

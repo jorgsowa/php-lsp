@@ -10,6 +10,23 @@ use tower_lsp::lsp_types::{InlayHint, InlayHintKind, InlayHintLabel, Position, R
 use crate::ast::{MethodReturnsMap, ParsedDoc, SourceView, format_type_hint};
 use crate::file_index::FileIndex;
 use crate::type_map::TypeMap;
+use crate::util::fqn_short_name;
+
+/// Resolve a foreach value/key variable's class (short name) for its type hint.
+/// mir-primary at the variable's byte offset; TypeMap fallback for binding
+/// sites mir resolves to `mixed` (e.g. element type it can't infer).
+fn foreach_var_class(
+    type_map: &TypeMap,
+    analysis: Option<&mir_analyzer::FileAnalysis>,
+    var_key: &str,
+    var_offset: u32,
+) -> Option<String> {
+    analysis
+        .and_then(|a| crate::type_query::type_at_offset(a, var_offset))
+        .and_then(crate::type_query::primary_class_name)
+        .map(|fqcn| fqn_short_name(&fqcn).to_string())
+        .or_else(|| type_map.get(var_key).map(str::to_owned))
+}
 
 #[derive(Clone)]
 struct FuncDef {
@@ -29,6 +46,7 @@ pub fn inlay_hints(
     _source: &str,
     doc: &ParsedDoc,
     doc_returns: Option<&MethodReturnsMap>,
+    analysis: Option<&mir_analyzer::FileAnalysis>,
     range: Range,
     workspace_files: &[(Url, Arc<FileIndex>)],
 ) -> Vec<InlayHint> {
@@ -42,6 +60,7 @@ pub fn inlay_hints(
         &doc.program().stmts,
         &defs,
         &type_map,
+        analysis,
         range,
         &mut hints,
     );
@@ -250,11 +269,12 @@ fn hints_in_stmts(
     stmts: &[Stmt<'_, '_>],
     defs: &HashMap<String, FuncDef>,
     type_map: &TypeMap,
+    analysis: Option<&mir_analyzer::FileAnalysis>,
     range: Range,
     out: &mut Vec<InlayHint>,
 ) {
     for stmt in stmts {
-        hints_in_stmt(sv, stmt, defs, type_map, range, out);
+        hints_in_stmt(sv, stmt, defs, type_map, analysis, range, out);
     }
 }
 
@@ -263,26 +283,27 @@ fn hints_in_stmt(
     stmt: &Stmt<'_, '_>,
     defs: &HashMap<String, FuncDef>,
     type_map: &TypeMap,
+    analysis: Option<&mir_analyzer::FileAnalysis>,
     range: Range,
     out: &mut Vec<InlayHint>,
 ) {
     match &stmt.kind {
-        StmtKind::Expression(e) => hints_in_expr(sv, e, defs, type_map, range, out),
-        StmtKind::Return(Some(v)) => hints_in_expr(sv, v, defs, type_map, range, out),
+        StmtKind::Expression(e) => hints_in_expr(sv, e, defs, type_map, analysis, range, out),
+        StmtKind::Return(Some(v)) => hints_in_expr(sv, v, defs, type_map, analysis, range, out),
         StmtKind::Echo(exprs) => {
             for expr in exprs.iter() {
-                hints_in_expr(sv, expr, defs, type_map, range, out);
+                hints_in_expr(sv, expr, defs, type_map, analysis, range, out);
             }
         }
         StmtKind::Function(f) => {
-            hints_in_stmts(sv, &f.body.stmts, defs, type_map, range, out);
+            hints_in_stmts(sv, &f.body.stmts, defs, type_map, analysis, range, out);
         }
         StmtKind::Class(c) => {
             for member in c.body.members.iter() {
                 if let ClassMemberKind::Method(m) = &member.kind
                     && let Some(body) = &m.body
                 {
-                    hints_in_stmts(sv, &body.stmts, defs, type_map, range, out);
+                    hints_in_stmts(sv, &body.stmts, defs, type_map, analysis, range, out);
                 }
             }
         }
@@ -291,7 +312,7 @@ fn hints_in_stmt(
                 if let ClassMemberKind::Method(m) = &member.kind
                     && let Some(body) = &m.body
                 {
-                    hints_in_stmts(sv, &body.stmts, defs, type_map, range, out);
+                    hints_in_stmts(sv, &body.stmts, defs, type_map, analysis, range, out);
                 }
             }
         }
@@ -300,51 +321,51 @@ fn hints_in_stmt(
                 if let EnumMemberKind::Method(m) = &member.kind
                     && let Some(body) = &m.body
                 {
-                    hints_in_stmts(sv, &body.stmts, defs, type_map, range, out);
+                    hints_in_stmts(sv, &body.stmts, defs, type_map, analysis, range, out);
                 }
             }
         }
         StmtKind::Namespace(ns) => {
             if let NamespaceBody::Braced(inner) = &ns.body {
-                hints_in_stmts(sv, &inner.stmts, defs, type_map, range, out);
+                hints_in_stmts(sv, &inner.stmts, defs, type_map, analysis, range, out);
             }
         }
         StmtKind::If(i) => {
-            hints_in_expr(sv, &i.condition, defs, type_map, range, out);
-            hints_in_stmt(sv, i.then_branch, defs, type_map, range, out);
+            hints_in_expr(sv, &i.condition, defs, type_map, analysis, range, out);
+            hints_in_stmt(sv, i.then_branch, defs, type_map, analysis, range, out);
             for ei in i.elseif_branches.iter() {
-                hints_in_expr(sv, &ei.condition, defs, type_map, range, out);
-                hints_in_stmt(sv, &ei.body, defs, type_map, range, out);
+                hints_in_expr(sv, &ei.condition, defs, type_map, analysis, range, out);
+                hints_in_stmt(sv, &ei.body, defs, type_map, analysis, range, out);
             }
             if let Some(e) = &i.else_branch {
-                hints_in_stmt(sv, e, defs, type_map, range, out);
+                hints_in_stmt(sv, e, defs, type_map, analysis, range, out);
             }
         }
         StmtKind::While(w) => {
-            hints_in_expr(sv, &w.condition, defs, type_map, range, out);
-            hints_in_stmt(sv, w.body, defs, type_map, range, out);
+            hints_in_expr(sv, &w.condition, defs, type_map, analysis, range, out);
+            hints_in_stmt(sv, w.body, defs, type_map, analysis, range, out);
         }
         StmtKind::For(f) => {
             for e in f.init.iter() {
-                hints_in_expr(sv, e, defs, type_map, range, out);
+                hints_in_expr(sv, e, defs, type_map, analysis, range, out);
             }
             for cond in f.condition.iter() {
-                hints_in_expr(sv, cond, defs, type_map, range, out);
+                hints_in_expr(sv, cond, defs, type_map, analysis, range, out);
             }
             for e in f.update.iter() {
-                hints_in_expr(sv, e, defs, type_map, range, out);
+                hints_in_expr(sv, e, defs, type_map, analysis, range, out);
             }
-            hints_in_stmt(sv, f.body, defs, type_map, range, out);
+            hints_in_stmt(sv, f.body, defs, type_map, analysis, range, out);
         }
         StmtKind::Foreach(f) => {
-            hints_in_expr(sv, &f.expr, defs, type_map, range, out);
+            hints_in_expr(sv, &f.expr, defs, type_map, analysis, range, out);
             // Emit type hint after the value variable, e.g. `foreach ($arr as $item /* : Foo */)`.
             if let ExprKind::Variable(val_name) = &f.value.kind {
                 let key = format!("${}", val_name.as_str());
-                if let Some(ty) = type_map.get(&key) {
+                if let Some(ty) = foreach_var_class(type_map, analysis, &key, f.value.span.start) {
                     let pos = sv.position_of(f.value.span.end);
                     if pos_in_range(pos, range) {
-                        out.push(make_foreach_type_hint(pos, ty));
+                        out.push(make_foreach_type_hint(pos, &ty));
                     }
                 }
             }
@@ -353,25 +374,27 @@ fn hints_in_stmt(
                 && let ExprKind::Variable(key_name) = &key_expr.kind
             {
                 let key = format!("${}", key_name.as_str());
-                if let Some(ty) = type_map.get(&key) {
+                if let Some(ty) = foreach_var_class(type_map, analysis, &key, key_expr.span.start) {
                     let pos = sv.position_of(key_expr.span.end);
                     if pos_in_range(pos, range) {
-                        out.push(make_foreach_type_hint(pos, ty));
+                        out.push(make_foreach_type_hint(pos, &ty));
                     }
                 }
             }
-            hints_in_stmt(sv, f.body, defs, type_map, range, out);
+            hints_in_stmt(sv, f.body, defs, type_map, analysis, range, out);
         }
         StmtKind::TryCatch(t) => {
-            hints_in_stmts(sv, &t.body.stmts, defs, type_map, range, out);
+            hints_in_stmts(sv, &t.body.stmts, defs, type_map, analysis, range, out);
             for catch in t.catches.iter() {
-                hints_in_stmts(sv, &catch.body.stmts, defs, type_map, range, out);
+                hints_in_stmts(sv, &catch.body.stmts, defs, type_map, analysis, range, out);
             }
             if let Some(finally) = &t.finally {
-                hints_in_stmts(sv, &finally.stmts, defs, type_map, range, out);
+                hints_in_stmts(sv, &finally.stmts, defs, type_map, analysis, range, out);
             }
         }
-        StmtKind::Block(stmts) => hints_in_stmts(sv, &stmts.stmts, defs, type_map, range, out),
+        StmtKind::Block(stmts) => {
+            hints_in_stmts(sv, &stmts.stmts, defs, type_map, analysis, range, out)
+        }
         _ => {}
     }
 }
@@ -381,6 +404,7 @@ fn hints_in_expr(
     expr: &Expr<'_, '_>,
     defs: &HashMap<String, FuncDef>,
     type_map: &TypeMap,
+    analysis: Option<&mir_analyzer::FileAnalysis>,
     range: Range,
     out: &mut Vec<InlayHint>,
 ) {
@@ -399,9 +423,9 @@ fn hints_in_expr(
             {
                 emit_param_hints(sv, &f.args, def, &k, range, out);
             }
-            hints_in_expr(sv, f.name, defs, type_map, range, out);
+            hints_in_expr(sv, f.name, defs, type_map, analysis, range, out);
             for arg in f.args.iter() {
-                hints_in_expr(sv, &arg.value, defs, type_map, range, out);
+                hints_in_expr(sv, &arg.value, defs, type_map, analysis, range, out);
             }
         }
         ExprKind::MethodCall(m) | ExprKind::NullsafeMethodCall(m) => {
@@ -410,9 +434,9 @@ fn hints_in_expr(
             {
                 emit_param_hints(sv, &m.args, def, name, range, out);
             }
-            hints_in_expr(sv, m.object, defs, type_map, range, out);
+            hints_in_expr(sv, m.object, defs, type_map, analysis, range, out);
             for arg in m.args.iter() {
-                hints_in_expr(sv, &arg.value, defs, type_map, range, out);
+                hints_in_expr(sv, &arg.value, defs, type_map, analysis, range, out);
             }
         }
         ExprKind::StaticMethodCall(m) => {
@@ -421,9 +445,9 @@ fn hints_in_expr(
             {
                 emit_param_hints(sv, &m.args, def, name, range, out);
             }
-            hints_in_expr(sv, m.class, defs, type_map, range, out);
+            hints_in_expr(sv, m.class, defs, type_map, analysis, range, out);
             for arg in m.args.iter() {
-                hints_in_expr(sv, &arg.value, defs, type_map, range, out);
+                hints_in_expr(sv, &arg.value, defs, type_map, analysis, range, out);
             }
         }
         ExprKind::New(n) => {
@@ -433,44 +457,44 @@ fn hints_in_expr(
                 emit_param_hints(sv, &n.args, def, class_name, range, out);
             }
             for arg in n.args.iter() {
-                hints_in_expr(sv, &arg.value, defs, type_map, range, out);
+                hints_in_expr(sv, &arg.value, defs, type_map, analysis, range, out);
             }
         }
         ExprKind::Assign(a) => {
             // Emit return-type hint after a function call on the RHS
             emit_return_type_hint(sv, a.value, defs, range, out);
-            hints_in_expr(sv, a.target, defs, type_map, range, out);
-            hints_in_expr(sv, a.value, defs, type_map, range, out);
+            hints_in_expr(sv, a.target, defs, type_map, analysis, range, out);
+            hints_in_expr(sv, a.value, defs, type_map, analysis, range, out);
         }
         // Walk into closure bodies so nested function calls get hints.
         ExprKind::Closure(c) => {
-            hints_in_stmts(sv, &c.body.stmts, defs, type_map, range, out);
+            hints_in_stmts(sv, &c.body.stmts, defs, type_map, analysis, range, out);
         }
         // Walk into arrow function bodies so nested calls get hints.
         // No return-type hint: the annotation is already visible in the source,
         // and php-lsp has no type inference to supply hints for unannotated fns.
         ExprKind::ArrowFunction(a) => {
-            hints_in_expr(sv, a.body, defs, type_map, range, out);
+            hints_in_expr(sv, a.body, defs, type_map, analysis, range, out);
         }
-        ExprKind::Parenthesized(e) => hints_in_expr(sv, e, defs, type_map, range, out),
+        ExprKind::Parenthesized(e) => hints_in_expr(sv, e, defs, type_map, analysis, range, out),
         ExprKind::Ternary(t) => {
-            hints_in_expr(sv, t.condition, defs, type_map, range, out);
+            hints_in_expr(sv, t.condition, defs, type_map, analysis, range, out);
             if let Some(then_expr) = t.then_expr {
-                hints_in_expr(sv, then_expr, defs, type_map, range, out);
+                hints_in_expr(sv, then_expr, defs, type_map, analysis, range, out);
             }
-            hints_in_expr(sv, t.else_expr, defs, type_map, range, out);
+            hints_in_expr(sv, t.else_expr, defs, type_map, analysis, range, out);
         }
         ExprKind::NullCoalesce(n) => {
-            hints_in_expr(sv, n.left, defs, type_map, range, out);
-            hints_in_expr(sv, n.right, defs, type_map, range, out);
+            hints_in_expr(sv, n.left, defs, type_map, analysis, range, out);
+            hints_in_expr(sv, n.right, defs, type_map, analysis, range, out);
         }
         ExprKind::Binary(b) => {
-            hints_in_expr(sv, b.left, defs, type_map, range, out);
-            hints_in_expr(sv, b.right, defs, type_map, range, out);
+            hints_in_expr(sv, b.left, defs, type_map, analysis, range, out);
+            hints_in_expr(sv, b.right, defs, type_map, analysis, range, out);
         }
         ExprKind::CloneWith(target, withs) => {
-            hints_in_expr(sv, target, defs, type_map, range, out);
-            hints_in_expr(sv, withs, defs, type_map, range, out);
+            hints_in_expr(sv, target, defs, type_map, analysis, range, out);
+            hints_in_expr(sv, withs, defs, type_map, analysis, range, out);
         }
         _ => {}
     }

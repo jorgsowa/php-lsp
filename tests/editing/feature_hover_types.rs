@@ -220,3 +220,22 @@ echo $c->se$0tting;
     )
     .await;
 }
+
+/// mir-primary variable hover renders a *union* type. The legacy short-name
+/// tracker collapsed unions to a single class, so this is a resolution-quality
+/// gain that had no coverage. Guards the mir hover path.
+#[tokio::test]
+async fn hover_union_typed_variable_shows_union() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    s.check_hover_annotated(
+        r#"<?php
+class Cat {}
+class Dog {}
+function pet(Cat|Dog $a): void { $a$0; }
+"#,
+        expect![[r#"
+            `$a` `Cat|Dog`"#]],
+    )
+    .await;
+}

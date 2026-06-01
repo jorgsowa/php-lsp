@@ -355,6 +355,7 @@ pub(super) fn resolve_receiver_class(
     source: &str,
     doc: &ParsedDoc,
     position: Position,
+    analysis: Option<&mir_analyzer::FileAnalysis>,
     type_map: &crate::type_map::TypeMap,
 ) -> Option<String> {
     let line = source.lines().nth(position.line as usize)?;
@@ -387,14 +388,45 @@ pub(super) fn resolve_receiver_class(
     } else {
         format!("${var_name}")
     };
+    // `before` now ends with the receiver variable; its last byte lands strictly
+    // inside the (end-exclusive, identifier-only) mir symbol span.
+    let var_offset = line_byte_offset(doc, position.line, before.len());
     if var_name == "$this" {
-        // Prefer the enclosing class (standard method context).
-        // Fall back to type_map for top-level bound closures where
-        // Closure::bind / bindTo / call injected a $this mapping.
+        // Prefer the enclosing class (standard method context); then mir's
+        // recorded `$this`; then the TypeMap fallback for Closure::bind cases.
         return enclosing_class_at(source, doc, position)
-            .or_else(|| type_map.get("$this").map(|s| s.to_string()));
+            .or_else(|| analysis.and_then(|a| receiver_class_at(a, var_offset)))
+            .or_else(|| type_map.get("$this").map(str::to_owned));
     }
-    type_map.get(&var_name).map(|s| s.to_string())
+    // mir-primary; TypeMap covers gaps where mir records no type (e.g.
+    // `$x = Enum::Case`, which mir 0.30.0 resolves to `mixed`).
+    analysis
+        .and_then(|a| receiver_class_at(a, var_offset))
+        .or_else(|| type_map.get(&var_name).map(str::to_owned))
+}
+
+/// Resolve the class(es) of a receiver variable from mir's recorded symbol at
+/// `var_offset` (a byte offset inside the variable token), returning short
+/// names for member lookup. A union receiver yields `Foo|Bar`. `None` if mir
+/// recorded no class-typed symbol there.
+pub(super) fn receiver_class_at(
+    analysis: &mir_analyzer::FileAnalysis,
+    var_offset: u32,
+) -> Option<String> {
+    let ty = crate::type_query::type_at_offset(analysis, var_offset)?;
+    let names: Vec<String> = crate::type_query::class_names(ty)
+        .iter()
+        .map(|fqcn| fqn_short_name(fqcn).to_string())
+        .collect();
+    (!names.is_empty()).then(|| names.join("|"))
+}
+
+/// Doc byte offset of `byte_in_line` bytes into line `line`, minus one — i.e.
+/// the last source byte of a token that ends at `byte_in_line`. Used to land an
+/// offset strictly inside a receiver variable's end-exclusive mir span.
+pub(super) fn line_byte_offset(doc: &ParsedDoc, line: u32, byte_in_line: usize) -> u32 {
+    let line_start = doc.view().byte_of_position(Position { line, character: 0 });
+    line_start + byte_in_line.saturating_sub(1) as u32
 }
 
 /// Extract the class name from `(new ClassName(...))` or `new ClassName(...)` text

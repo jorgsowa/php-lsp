@@ -55,6 +55,7 @@ mod type_action;
 mod type_definition;
 mod type_hierarchy;
 mod type_map;
+mod type_query;
 mod use_import;
 mod util;
 mod walk;

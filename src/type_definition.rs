@@ -6,34 +6,56 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use php_ast::{ClassMemberKind, EnumMemberKind, NamespaceBody, Stmt, StmtKind};
+use php_ast::{ClassMemberKind, EnumMemberKind, Expr, ExprKind, NamespaceBody, Stmt, StmtKind};
 use tower_lsp::lsp_types::{Location, Position, Range, Url};
 
-use crate::ast::{MethodReturnsMap, ParsedDoc, SourceView, format_type_hint, str_offset_in_range};
+use crate::ast::{ParsedDoc, SourceView, format_type_hint, str_offset_in_range};
 use crate::moniker::resolve_fqn;
 use crate::references::collect_class_imports;
-use crate::type_map::{TypeMap, build_method_returns};
-use crate::util::{fqn_short_name, word_at_position, zero_width_range};
+use crate::type_map::TypeMap;
+use crate::util::{fqn_short_name, word_at_position, word_range_at, zero_width_range};
+use mir_analyzer::FileAnalysis;
 
 /// Resolve the PHP type at `position` to a fully-qualified class name.
 /// Returns `(imports, fqn)` on success, or `None` if no type could be inferred.
 fn resolve_type_at_cursor(
     source: &str,
     doc: &ParsedDoc,
-    doc_returns: Option<&MethodReturnsMap>,
+    analysis: Option<&FileAnalysis>,
     position: Position,
 ) -> Option<(HashMap<String, String>, String)> {
     let imports = collect_class_imports(doc);
-    let type_map = TypeMap::from_doc_with_meta(doc, None, doc_returns);
 
     let class_name = if let Some(word) = word_at_position(source, position) {
         if word.starts_with('$') {
-            // TypeMap stores the short class name; resolve it to FQN using the
-            // current file's namespace + use imports so that `User` in
-            // `namespace App\Service` resolves to `App\Service\User`.
-            match type_map.get(&word) {
-                Some(short) => resolve_fqn(doc, short, &imports),
-                None => return None,
+            // Primary: resolve the variable's type from mir's recorded symbols
+            // (flow-sensitive, carries generics/unions). mir produces a name
+            // already qualified through the file's namespace + `use` imports,
+            // so no `resolve_fqn` is needed. The query offset is the `$` (word
+            // range start), which lands strictly inside mir's end-exclusive
+            // variable span.
+            let from_mir = analysis.and_then(|a| {
+                let offset = word_range_at(source, position)
+                    .map(|r| doc.view().byte_of_position(r.start))
+                    .unwrap_or_else(|| doc.view().byte_of_position(position));
+                let names =
+                    crate::type_query::class_names(crate::type_query::type_at_offset(a, offset)?);
+                // Join named classes with `|`; the downstream `type_candidates`
+                // splits unions back apart for the declaration search.
+                (!names.is_empty()).then(|| names.join("|"))
+            });
+            match from_mir {
+                Some(joined) => joined,
+                // Fallback: parameter *declarations* record no mir symbol (mir
+                // records variable *uses* in bodies, not binding sites). Resolve
+                // the declared hint straight from the AST. Then fall back to
+                // TypeMap for assignments mir resolves to `mixed` — notably
+                // `$x = Enum::Case` (a `Name::member` const expr) in mir 0.30.0.
+                None => param_decl_type(source, doc, &imports, &word, position).or_else(|| {
+                    TypeMap::from_doc_with_meta(doc, None, None)
+                        .get(&word)
+                        .map(|short| resolve_fqn(doc, short, &imports))
+                })?,
             }
         } else {
             match param_type_for(&doc.program().stmts, &word) {
@@ -42,24 +64,20 @@ fn resolve_type_at_cursor(
             }
         }
     } else {
-        // Cursor is not on a word — try resolving the type from a method-call chain.
+        // Cursor is not on a word — it sits in a method-call chain gap such as
+        // `$q->where()$0->next()`. mir records a symbol at each call's method
+        // identifier; find the innermost call whose span contains the cursor and
+        // read mir's resolved type there. The AST walk is the glue that stays;
+        // the type resolution is mir's.
+        let analysis = analysis?;
         let cursor_byte = doc.view().byte_of_position(position);
-        let owned_returns;
-        let chain_returns: &MethodReturnsMap = match doc_returns {
-            Some(r) => r,
-            None => {
-                owned_returns = build_method_returns(doc);
-                &owned_returns
-            }
-        };
-        match type_map.chain_type_at_cursor(
-            &doc.program().stmts,
-            cursor_byte,
-            std::slice::from_ref(&chain_returns),
-        ) {
-            Some(ty) => resolve_fqn(doc, &ty, &imports),
-            None => return None,
+        let offset = innermost_call_method_offset(&doc.program().stmts, cursor_byte)?;
+        let names =
+            crate::type_query::class_names(crate::type_query::type_at_offset(analysis, offset)?);
+        if names.is_empty() {
+            return None;
         }
+        names.join("|")
     };
 
     Some((imports, class_name))
@@ -72,11 +90,11 @@ fn resolve_type_at_cursor(
 pub fn goto_type_definition(
     source: &str,
     doc: &ParsedDoc,
-    doc_returns: Option<&MethodReturnsMap>,
+    analysis: Option<&FileAnalysis>,
     all_docs: &[(Url, Arc<ParsedDoc>)],
     position: Position,
 ) -> Vec<Location> {
-    let Some((imports, class_name)) = resolve_type_at_cursor(source, doc, doc_returns, position)
+    let Some((imports, class_name)) = resolve_type_at_cursor(source, doc, analysis, position)
     else {
         return Vec::new();
     };
@@ -168,6 +186,113 @@ fn type_candidates(type_hint: &str) -> Vec<&str> {
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .collect()
+}
+
+/// Resolve the declared type of a parameter (or other binding site mir doesn't
+/// record) named `word` at `position`, to a `|`-joined string of FQNs that the
+/// downstream `type_candidates` search can consume.
+///
+/// This is the AST-only glue that replaces `TypeMap.get` for declaration sites:
+/// it reads the parameter's type hint, strips the nullable `?`, splits unions /
+/// intersections, resolves `self`/`static`/`parent` against the enclosing class
+/// (via the structural helpers that stay), and qualifies the rest through the
+/// file's namespace + `use` imports. It performs no flow/expression inference —
+/// that is mir's job, consulted first by the caller.
+fn param_decl_type(
+    source: &str,
+    doc: &ParsedDoc,
+    imports: &HashMap<String, String>,
+    word: &str,
+    position: Position,
+) -> Option<String> {
+    // Param names in the AST are stored without the leading `$`; accept both.
+    let raw = param_type_for(&doc.program().stmts, word)
+        .or_else(|| param_type_for(&doc.program().stmts, word.trim_start_matches('$')))?;
+    let bare = raw.trim_start_matches('?');
+    let resolved: Vec<String> = bare
+        .split(['|', '&'])
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|cand| match cand {
+            "self" | "static" => crate::type_map::enclosing_class_at(source, doc, position)
+                .map(|c| resolve_fqn(doc, &c, imports))
+                .unwrap_or_else(|| cand.to_string()),
+            "parent" => crate::type_map::enclosing_class_at(source, doc, position)
+                .and_then(|c| crate::type_map::parent_class_name(doc, &c))
+                .map(|p| resolve_fqn(doc, &p, imports))
+                .unwrap_or_else(|| cand.to_string()),
+            other => resolve_fqn(doc, other, imports),
+        })
+        .collect();
+    (!resolved.is_empty()).then(|| resolved.join("|"))
+}
+
+/// Find the innermost method-call expression whose span contains `cursor` and
+/// return the byte offset of its method-name identifier — a position mir
+/// recorded a `ResolvedSymbol` for (the call's resolved receiver/return type).
+///
+/// Used for the chain-gap case: when the cursor sits between calls
+/// (`$q->where()$0->next()`) there is no word under it, but the enclosing call's
+/// identifier carries the type. Descends receiver-first so the deepest call
+/// boundary that still contains the cursor wins, matching the previous
+/// `chain_type_at_cursor` semantics.
+fn innermost_call_method_offset(stmts: &[Stmt<'_, '_>], cursor: u32) -> Option<u32> {
+    for stmt in stmts {
+        if !span_contains_cursor(stmt.span, cursor) {
+            continue;
+        }
+        let found = match &stmt.kind {
+            StmtKind::Expression(e) => call_method_offset_in_expr(e, cursor),
+            StmtKind::Return(Some(e)) => call_method_offset_in_expr(e, cursor),
+            StmtKind::Echo(exprs) => exprs
+                .iter()
+                .find_map(|e| call_method_offset_in_expr(e, cursor)),
+            StmtKind::Function(f) => innermost_call_method_offset(&f.body.stmts, cursor),
+            StmtKind::Class(c) => c.body.members.iter().find_map(|m| {
+                if let ClassMemberKind::Method(method) = &m.kind
+                    && let Some(body) = &method.body
+                {
+                    innermost_call_method_offset(&body.stmts, cursor)
+                } else {
+                    None
+                }
+            }),
+            StmtKind::Namespace(ns) => {
+                if let NamespaceBody::Braced(inner) = &ns.body {
+                    innermost_call_method_offset(&inner.stmts, cursor)
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        };
+        if found.is_some() {
+            return found;
+        }
+    }
+    None
+}
+
+fn call_method_offset_in_expr(expr: &Expr<'_, '_>, cursor: u32) -> Option<u32> {
+    if !span_contains_cursor(expr.span, cursor) {
+        return None;
+    }
+    match &expr.kind {
+        ExprKind::MethodCall(mc) | ExprKind::NullsafeMethodCall(mc) => {
+            // Prefer a deeper call in the receiver; otherwise this call carries
+            // the type at the cursor.
+            call_method_offset_in_expr(mc.object, cursor).or(Some(mc.method.span.start))
+        }
+        ExprKind::Assign(a) => call_method_offset_in_expr(a.value, cursor),
+        _ => None,
+    }
+}
+
+#[inline]
+fn span_contains_cursor(span: php_ast::Span, cursor: u32) -> bool {
+    // Inclusive end so a cursor in the gap after a closing paren still matches
+    // the parent call (e.g. `$q->where()$0->next()`).
+    cursor >= span.start && cursor <= span.end
 }
 
 /// Look up the declared type hint for a parameter named `word` in any function/method.
@@ -320,11 +445,11 @@ fn find_class_range(sv: SourceView<'_>, stmts: &[Stmt<'_, '_>], name: &str) -> O
 pub fn goto_type_definition_from_index(
     source: &str,
     doc: &ParsedDoc,
-    doc_returns: Option<&MethodReturnsMap>,
+    analysis: Option<&FileAnalysis>,
     indexes: &[(Url, std::sync::Arc<crate::file_index::FileIndex>)],
     position: Position,
 ) -> Vec<Location> {
-    let Some((imports, class_name)) = resolve_type_at_cursor(source, doc, doc_returns, position)
+    let Some((imports, class_name)) = resolve_type_at_cursor(source, doc, analysis, position)
     else {
         return Vec::new();
     };

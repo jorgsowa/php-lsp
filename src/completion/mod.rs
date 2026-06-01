@@ -8,8 +8,8 @@ pub use symbols::{
 
 mod member;
 use member::{
-    all_instance_members, all_static_members, magic_method_completions, resolve_receiver_class,
-    resolve_static_receiver,
+    all_instance_members, all_static_members, line_byte_offset, magic_method_completions,
+    receiver_class_at, resolve_receiver_class, resolve_static_receiver,
 };
 
 mod namespace;
@@ -215,6 +215,10 @@ pub struct CompletionCtx<'a> {
     /// linearly (O(n files × inheritance depth) → O(depth)).
     /// Pass `None` to fall back to the existing linear scan.
     pub find_class_doc: Option<ClassDocLookup<'a>>,
+    /// Retained mir body analysis for the primary doc. Receiver-variable types
+    /// (`$obj->`, match subjects) are read from its `symbol_at`; `None` in unit
+    /// tests that don't supply it.
+    pub analysis: Option<&'a mir_analyzer::FileAnalysis>,
 }
 
 /// Completions filtered by trigger character, with optional context
@@ -227,13 +231,14 @@ pub fn filtered_completions_at(
 ) -> Vec<CompletionItem> {
     let source = ctx.source;
     let position = ctx.position;
-    let meta = ctx.meta;
     let doc_uri = ctx.doc_uri;
+    let meta = ctx.meta;
     let empty_imports = HashMap::new();
     let imports = ctx.file_imports.unwrap_or(&empty_imports);
 
-    // Materialize method-return maps either from the salsa-provided context
-    // or by building them inline (tests / callers that don't pass them).
+    // Method-return maps feed the `TypeMap` *fallback* used when mir's recorded
+    // symbols don't carry a type (e.g. `$x = Enum::Case`, which mir 0.30.0
+    // resolves to `mixed`). mir is consulted first; this is the safety net.
     let doc_returns_owned: Option<MethodReturnsMap> =
         ctx.doc_returns.is_none().then(|| build_method_returns(doc));
     let doc_returns_ref: &MethodReturnsMap = ctx
@@ -256,6 +261,7 @@ pub fn filtered_completions_at(
         .map(|d| d.as_ref())
         .zip(other_returns_refs.iter().copied())
         .collect();
+
     match trigger_character {
         Some("$") => {
             let mut items = superglobal_completions();
@@ -275,7 +281,9 @@ pub fn filtered_completions_at(
                     others_with_returns.iter().copied(),
                     meta,
                 );
-                if let Some(class_names) = resolve_receiver_class(src, doc, pos, &type_map) {
+                if let Some(class_names) =
+                    resolve_receiver_class(src, doc, pos, ctx.analysis, &type_map)
+                {
                     // Feature 5: support union types (Foo|Bar)
                     let mut items = Vec::new();
                     let mut seen = std::collections::HashSet::new();
@@ -376,12 +384,6 @@ pub fn filtered_completions_at(
                 let pre_arrow = before.trim_end_matches(|c: char| c.is_alphanumeric() || c == '_');
                 let has_arrow = pre_arrow.ends_with("->") || pre_arrow.ends_with("?->");
                 if has_arrow {
-                    let type_map = TypeMap::from_docs_with_meta(
-                        doc,
-                        doc_returns_ref,
-                        others_with_returns.iter().copied(),
-                        meta,
-                    );
                     // Extract receiver var from text before the arrow.
                     let arrow_stripped = pre_arrow
                         .strip_suffix("->")
@@ -402,11 +404,23 @@ pub fn filtered_completions_at(
                     } else {
                         String::new()
                     };
+                    // `arrow_stripped` ends with the receiver var; its last byte
+                    // lands inside the var's end-exclusive mir span.
+                    let var_offset = line_byte_offset(doc, pos.line, arrow_stripped.len());
+                    let type_map = TypeMap::from_docs_with_meta(
+                        doc,
+                        doc_returns_ref,
+                        others_with_returns.iter().copied(),
+                        meta,
+                    );
                     let class_name = if receiver == "$this" {
                         enclosing_class_at(src, doc, pos)
-                            .or_else(|| type_map.get("$this").map(|s| s.to_string()))
+                            .or_else(|| ctx.analysis.and_then(|a| receiver_class_at(a, var_offset)))
+                            .or_else(|| type_map.get("$this").map(str::to_owned))
                     } else if !receiver.is_empty() {
-                        type_map.get(&receiver).map(|s| s.to_string())
+                        ctx.analysis
+                            .and_then(|a| receiver_class_at(a, var_offset))
+                            .or_else(|| type_map.get(&receiver).map(str::to_owned))
                     } else {
                         None
                     };
@@ -562,6 +576,7 @@ pub fn filtered_completions_at(
                     &others_with_returns,
                     pos,
                     meta,
+                    ctx.analysis,
                 )
                 && !match_items.is_empty()
             {
@@ -752,6 +767,7 @@ fn attribute_completions(
     items
 }
 
+#[allow(clippy::too_many_arguments)]
 fn match_arm_completions(
     source: &str,
     doc: &ParsedDoc,
@@ -760,6 +776,7 @@ fn match_arm_completions(
     others_with_returns: &[(&ParsedDoc, &MethodReturnsMap)],
     position: Position,
     meta: Option<&PhpStormMeta>,
+    analysis: Option<&mir_analyzer::FileAnalysis>,
 ) -> Option<Vec<CompletionItem>> {
     let start_line = position.line as usize;
     let end_line = start_line.saturating_sub(5);
@@ -771,15 +788,24 @@ fn match_arm_completions(
             let class_name = if cap == "this" {
                 enclosing_class_at(source, doc, position)?
             } else {
-                let type_map = type_map_cell.get_or_init(|| {
-                    TypeMap::from_docs_with_meta(
-                        doc,
-                        doc_returns,
-                        others_with_returns.iter().copied(),
-                        meta,
-                    )
-                });
-                type_map.get(&format!("${cap}"))?.to_string()
+                // Resolve the match subject `$cap` via mir at its position on
+                // this line (`$cap` always appears on the matched line); fall
+                // back to TypeMap for types mir resolves to `mixed`.
+                let subject_byte = line.find(&format!("${cap}"))?;
+                let var_offset = line_byte_offset(doc, line_idx as u32, subject_byte + 1);
+                analysis
+                    .and_then(|a| receiver_class_at(a, var_offset))
+                    .or_else(|| {
+                        let type_map = type_map_cell.get_or_init(|| {
+                            TypeMap::from_docs_with_meta(
+                                doc,
+                                doc_returns,
+                                others_with_returns.iter().copied(),
+                                meta,
+                            )
+                        });
+                        type_map.get(&format!("${cap}")).map(str::to_owned)
+                    })?
             };
             let all_docs: Vec<&ParsedDoc> = std::iter::once(doc)
                 .chain(other_docs.iter().map(|d| d.as_ref()))

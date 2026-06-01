@@ -435,3 +435,125 @@ async fn document_link_returns_array() {
         "expected at least one link for require_once path"
     );
 }
+
+// --- cross-file analysis cache invalidation ---
+//
+// KNOWN GAP (mir 0.30.0): after a dependency's method *return type* changes
+// (without changing the dependent's diagnostics), the dependent's mir-resolved
+// cross-file variable type stays stale until the dependent itself is touched.
+// `ingest_file(dep)` refreshes the dependency's definitions but does not
+// invalidate dependents' analysis memos, and `invalidate_file` (which would)
+// also tears down the reverse-dependency graph that diagnostic republish needs.
+// The legacy salsa `method_returns` path invalidated correctly, so this is a
+// regression introduced by mir-primary var resolution — fixable only in mir
+// (a content-changed invalidation distinct from file-removed). The
+// `analysis_cache.clear()` on content change is still correct and necessary;
+// it just isn't sufficient while the mir session memo stays stale.
+// Un-ignore both tests once mir resolves this.
+
+/// Regression guard for cross-file type freshness after a dependency edit.
+/// Ignored pending the mir fix above.
+#[ignore = "mir 0.30.0: ingest_file does not refresh dependents' cross-file type memo"]
+#[tokio::test]
+async fn dependency_edit_refreshes_cross_file_hover_type() {
+    let mut server = TestServer::new().await;
+    server
+        .open(
+            "maker.php",
+            "<?php\nclass Maker { public function make(): Apple { return new Apple(); } }\nclass Apple {}\nclass Banana {}\n",
+        )
+        .await;
+    server
+        .open(
+            "use_maker.php",
+            "<?php\n$m = new Maker();\n$x = $m->make();\necho $x;\n",
+        )
+        .await;
+
+    // Hover `$x` (the use on line 3) — its type comes from Maker::make() in the
+    // other file.
+    let before = server.hover("use_maker.php", 3, 5).await;
+    let before_val = before["result"]["contents"]["value"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    assert!(
+        before_val.contains("Apple"),
+        "expected cross-file type Apple, got {before_val:?}"
+    );
+
+    // Change ONLY maker.php so make() returns Banana; use_maker.php is untouched.
+    server
+        .change(
+            "maker.php",
+            2,
+            "<?php\nclass Maker { public function make(): Banana { return new Banana(); } }\nclass Apple {}\nclass Banana {}\n",
+        )
+        .await;
+
+    let after = server.hover("use_maker.php", 3, 5).await;
+    let after_val = after["result"]["contents"]["value"]
+        .as_str()
+        .unwrap_or_default()
+        .to_string();
+    assert!(
+        after_val.contains("Banana"),
+        "dependency edit must refresh cross-file type to Banana, got {after_val:?} (stale cache?)"
+    );
+}
+
+/// Same cross-file freshness guard as the hover test, but for the *completion*
+/// surface (a separate code path that also reads `cached_analysis`). Ignored
+/// pending the same mir fix.
+#[ignore = "mir 0.30.0: ingest_file does not refresh dependents' cross-file type memo"]
+#[tokio::test]
+async fn dependency_edit_refreshes_cross_file_completion_members() {
+    fn labels(v: &Value) -> Vec<String> {
+        v["result"]
+            .as_array()
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(|i| i["label"].as_str().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    let mut server = TestServer::new().await;
+    server
+        .open(
+            "dep.php",
+            "<?php\nclass Maker { public function make(): Alpha { return new Alpha(); } }\nclass Alpha { public function alpha(): void {} }\nclass Beta { public function beta(): void {} }\n",
+        )
+        .await;
+    server
+        .open(
+            "uses.php",
+            "<?php\n$m = new Maker();\n$x = $m->make();\n$x->\n",
+        )
+        .await;
+
+    let before = server.completion("uses.php", 3, 4).await;
+    assert!(
+        labels(&before).iter().any(|l| l == "alpha"),
+        "expected Alpha::alpha before edit, got {:?}",
+        labels(&before)
+    );
+
+    // make() now returns Beta; uses.php is untouched.
+    server
+        .change(
+            "dep.php",
+            2,
+            "<?php\nclass Maker { public function make(): Beta { return new Beta(); } }\nclass Alpha { public function alpha(): void {} }\nclass Beta { public function beta(): void {} }\n",
+        )
+        .await;
+
+    let after = server.completion("uses.php", 3, 4).await;
+    assert!(
+        labels(&after).iter().any(|l| l == "beta"),
+        "dependency edit must refresh cross-file completion members to Beta::beta, got {:?} (stale cache?)",
+        labels(&after)
+    );
+}
