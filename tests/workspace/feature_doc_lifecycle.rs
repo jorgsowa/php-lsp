@@ -438,22 +438,13 @@ async fn document_link_returns_array() {
 
 // --- cross-file analysis cache invalidation ---
 //
-// KNOWN GAP (mir 0.30.0): after a dependency's method *return type* changes
-// (without changing the dependent's diagnostics), the dependent's mir-resolved
-// cross-file variable type stays stale until the dependent itself is touched.
-// `ingest_file(dep)` refreshes the dependency's definitions but does not
-// invalidate dependents' analysis memos, and `invalidate_file` (which would)
-// also tears down the reverse-dependency graph that diagnostic republish needs.
-// The legacy salsa `method_returns` path invalidated correctly, so this is a
-// regression introduced by mir-primary var resolution — fixable only in mir
-// (a content-changed invalidation distinct from file-removed). The
-// `analysis_cache.clear()` on content change is still correct and necessary;
-// it just isn't sufficient while the mir session memo stays stale.
-// Un-ignore both tests once mir resolves this.
+// When a dependency's method return type changes (without changing the
+// dependent's own diagnostics), the dependent's mir-resolved cross-file variable
+// type must refresh. mir-analyzer 0.31.0 fixed this: `ingest_file` now evicts
+// dependents' cached analysis on a content change, so the stale result is no
+// longer replayed across incremental re-analysis.
 
 /// Regression guard for cross-file type freshness after a dependency edit.
-/// Ignored pending the mir fix above.
-#[ignore = "mir 0.30.0: ingest_file does not refresh dependents' cross-file type memo"]
 #[tokio::test]
 async fn dependency_edit_refreshes_cross_file_hover_type() {
     let mut server = TestServer::new().await;
@@ -503,9 +494,7 @@ async fn dependency_edit_refreshes_cross_file_hover_type() {
 }
 
 /// Same cross-file freshness guard as the hover test, but for the *completion*
-/// surface (a separate code path that also reads `cached_analysis`). Ignored
-/// pending the same mir fix.
-#[ignore = "mir 0.30.0: ingest_file does not refresh dependents' cross-file type memo"]
+/// surface (a separate code path that also reads `cached_analysis`).
 #[tokio::test]
 async fn dependency_edit_refreshes_cross_file_completion_members() {
     fn labels(v: &Value) -> Vec<String> {

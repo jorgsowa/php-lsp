@@ -3,12 +3,10 @@ use serde_json::json;
 
 // ── PHP 8.0 functions (str_contains, str_starts_with, str_ends_with) ────────────
 
-// Root cause: published mir-analyzer 0.30.0 does not call set_php_version() on
-// the salsa db in AnalysisSession::new(), so collect_file_definitions_uncached
-// always reads the default "8.2" version and skips @since/@removed filtering.
-// Fixed in local mir by commit "wire php_version into salsa db". Re-enable once
-// a new mir version with this fix is published and this crate is updated.
-#[ignore]
+// PHP version-aware @since/@removed filtering: AnalysisSession::new() seeds the
+// configured PHP version into the salsa db, so stdlib functions are reported as
+// undefined below the version that introduced them. Fixed in mir-analyzer 0.31.0
+// ("wire php_version into salsa db").
 #[tokio::test]
 async fn str_contains_undefined_on_php74() {
     let (mut s, _) = TestServer::new_with_options(json!({
@@ -41,7 +39,6 @@ async fn str_contains_defined_on_php80() {
         .await;
 }
 
-#[ignore]
 #[tokio::test]
 async fn str_starts_with_undefined_on_php74() {
     let (mut s, _) = TestServer::new_with_options(json!({
@@ -64,7 +61,6 @@ async fn str_starts_with_undefined_on_php74() {
     );
 }
 
-#[ignore]
 #[tokio::test]
 async fn str_ends_with_undefined_on_php74() {
     let (mut s, _) = TestServer::new_with_options(json!({
@@ -161,7 +157,6 @@ async fn money_format_undefined_on_php80() {
 
 // ── PHP 8.1 functions (array_is_list) ──────────────────────────────────────────
 
-#[ignore]
 #[tokio::test]
 async fn array_is_list_undefined_on_php74() {
     let (mut s, _) = TestServer::new_with_options(json!({
@@ -184,7 +179,6 @@ async fn array_is_list_undefined_on_php74() {
     );
 }
 
-#[ignore]
 #[tokio::test]
 async fn array_is_list_undefined_on_php80() {
     let (mut s, _) = TestServer::new_with_options(json!({
@@ -371,7 +365,12 @@ async fn array_last_defined_on_php85() {
 
 // ── Version change re-triggers diagnostics ─────────────────────────────────────
 
-#[ignore]
+// Still failing after mir 0.31.0 — but for a php-lsp-side reason, not a mir one.
+// `did_change_configuration` bumps the salsa php_version yet never clears
+// `DocumentStore::analysis_cache` (the per-file `FileAnalysis` memo) nor
+// republishes diagnostics for already-open files, so the pre-change analysis is
+// replayed on the next request.
+#[ignore = "php-lsp: phpVersion config change does not invalidate analysis_cache / republish open-file diagnostics"]
 #[tokio::test]
 async fn version_change_clears_diagnostics() {
     let (mut s, _) = TestServer::new_with_options(json!({
