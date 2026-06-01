@@ -15,13 +15,11 @@ use super::formatting::{
     format_class_const, format_expr_literal, format_method_prefix, format_params, wrap_php,
 };
 use super::members::{
-    find_parent_class_name, find_property_info, resolve_method_docblock, scan_class_const_of_class,
+    find_property_info, resolve_method_docblock, scan_class_const_of_class,
     scan_enum_case_of_class, scan_method_of_class,
 };
 use super::named_args::{extract_named_arg_callee, is_named_arg_at, named_arg_hover_value};
-use super::parsing::{
-    extract_receiver_var_before_cursor, extract_static_class_before_cursor, resolve_use_alias,
-};
+use super::parsing::{extract_static_class_before_cursor, resolve_use_alias};
 
 /// Format a method/function-style member signature, e.g.
 /// `public static function foo(int $x): void`.
@@ -350,151 +348,26 @@ pub fn hover_at(
         }
     }
 
-    // Cursor-aware receiver resolution: extract the receiver from immediately
-    // before `->word` or `?->word` at the cursor column, not just anywhere on
-    // the line.  This correctly handles multiple method calls on one line.
+    // mir-primary member hover: when mir recorded a resolved symbol at the
+    // cursor position, use its class name directly instead of extracting the
+    // receiver via TypeMap. This handles chains like `$a->b()->c()` where
+    // TypeMap has no variable to look up.
     if !word.starts_with('$')
-        && let Some(line_text) = source.lines().nth(position.line as usize)
+        && let Some(sym) = analysis.and_then(|a| {
+            let off =
+                word_range_at(source, position).map(|r| doc.view().byte_of_position(r.start))?;
+            a.symbol_at(off)
+        })
     {
-        if let Some(var_name) =
-            extract_receiver_var_before_cursor(line_text, position.character as usize)
-        {
-            let tm = type_map();
-            let class_name = if var_name == "$this" {
-                crate::type_map::enclosing_class_at(source, doc, position)
-                    .or_else(|| tm.get("$this").map(|s| s.to_string()))
-            } else {
-                tm.get(&var_name).map(|s| s.to_string())
-            };
-            if let Some(cls) = class_name {
-                let first_cls = cls.split('|').next().unwrap_or(&cls);
-                // Try method lookup first, then property lookup.
-                for d in std::iter::once(doc).chain(other_docs.iter().map(|(_, d, _)| d.as_ref())) {
-                    if let Some(sig) = scan_method_of_class(&d.program().stmts, first_cls, &word) {
-                        let mut value = wrap_php(&sig);
-                        let all_docs = std::iter::once(doc)
-                            .chain(other_docs.iter().map(|(_, d, _)| d.as_ref()));
-                        if let Some(db) = resolve_method_docblock(all_docs, first_cls, &word) {
-                            let md = db.to_markdown();
-                            if !md.is_empty() {
-                                value.push_str("\n\n---\n\n");
-                                value.push_str(&md);
-                            }
-                        }
-                        return Some(Hover {
-                            contents: HoverContents::Markup(MarkupContent {
-                                kind: MarkupKind::Markdown,
-                                value,
-                            }),
-                            range: hover_range,
-                        });
-                    }
-                    if let Some((modifiers, type_str, db)) = find_property_info(d, first_cls, &word)
-                    {
-                        let sig = format!(
-                            "(property) {}{}::${}{}",
-                            modifiers,
-                            first_cls,
-                            word,
-                            if type_str.is_empty() {
-                                String::new()
-                            } else {
-                                format!(": {}", type_str)
-                            }
-                        );
-                        let mut value = wrap_php(&sig);
-                        if let Some(doc) = db {
-                            let md = doc.to_markdown();
-                            if !md.is_empty() {
-                                value.push_str("\n\n---\n\n");
-                                value.push_str(&md);
-                            }
-                        }
-                        return Some(Hover {
-                            contents: HoverContents::Markup(MarkupContent {
-                                kind: MarkupKind::Markdown,
-                                value,
-                            }),
-                            range: hover_range,
-                        });
-                    }
-                }
-            }
-        }
-
-        // Static call: `ClassName::method()` or `ClassName::CONST`.
-        if let Some(class_name) =
-            extract_static_class_before_cursor(line_text, position.character as usize)
-        {
-            let effective_class = if class_name == "self" || class_name == "static" {
-                crate::type_map::enclosing_class_at(source, doc, position)
-                    .unwrap_or(class_name.clone())
-            } else if class_name == "parent" {
-                // Find the enclosing class, then its parent
-                crate::type_map::enclosing_class_at(source, doc, position)
-                    .and_then(|enc| {
-                        find_parent_class_name(&doc.program().stmts, &enc).or_else(|| {
-                            // Fallback: search other documents if not found in current doc
-                            for (_, other_doc, _) in other_docs.iter() {
-                                if let Some(parent) =
-                                    find_parent_class_name(&other_doc.program().stmts, &enc)
-                                {
-                                    return Some(parent);
-                                }
-                            }
-                            None
-                        })
-                    })
-                    .unwrap_or(class_name.clone())
-            } else {
-                class_name.clone()
-            };
-            for d in std::iter::once(doc).chain(other_docs.iter().map(|(_, d, _)| d.as_ref())) {
-                if let Some(sig) = scan_method_of_class(&d.program().stmts, &effective_class, &word)
-                {
-                    let mut value = wrap_php(&sig);
-                    let all_docs =
-                        std::iter::once(doc).chain(other_docs.iter().map(|(_, d, _)| d.as_ref()));
-                    if let Some(db) = resolve_method_docblock(all_docs, &effective_class, &word) {
-                        let md = db.to_markdown();
-                        if !md.is_empty() {
-                            value.push_str("\n\n---\n\n");
-                            value.push_str(&md);
-                        }
-                    }
-                    return Some(Hover {
-                        contents: HoverContents::Markup(MarkupContent {
-                            kind: MarkupKind::Markdown,
-                            value,
-                        }),
-                        range: hover_range,
-                    });
-                }
-                // Fallback: enum case in static access (e.g., `Status::Active`)
-                if let Some(sig) =
-                    scan_enum_case_of_class(&d.program().stmts, &effective_class, &word)
-                {
-                    return Some(Hover {
-                        contents: HoverContents::Markup(MarkupContent {
-                            kind: MarkupKind::Markdown,
-                            value: wrap_php(&sig),
-                        }),
-                        range: hover_range,
-                    });
-                }
-                // Fallback: class constant in static access (e.g., `Foo::MY_CONST`)
-                if let Some(sig) =
-                    scan_class_const_of_class(&d.program().stmts, &effective_class, &word)
-                {
-                    return Some(Hover {
-                        contents: HoverContents::Markup(MarkupContent {
-                            kind: MarkupKind::Markdown,
-                            value: wrap_php(&sig),
-                        }),
-                        range: hover_range,
-                    });
-                }
-            }
+        let mir_hover = mir_member_hover(sym, &word, doc, other_docs);
+        if mir_hover.is_some() {
+            return mir_hover.map(|value| Hover {
+                contents: HoverContents::Markup(MarkupContent {
+                    kind: MarkupKind::Markdown,
+                    value,
+                }),
+                range: hover_range,
+            });
         }
     }
 
@@ -624,6 +497,130 @@ pub fn hover_at(
     }
 
     None
+}
+
+/// Produce hover markdown for a member access resolved by mir. Returns the
+/// hover value string (not the full `Hover` struct — the caller wraps it).
+/// `None` means mir has no symbol here; fall through to the TypeMap path.
+fn mir_member_hover(
+    sym: &mir_analyzer::ResolvedSymbol,
+    word: &str,
+    doc: &ParsedDoc,
+    other_docs: &[(
+        tower_lsp::lsp_types::Url,
+        std::sync::Arc<ParsedDoc>,
+        std::sync::Arc<crate::ast::MethodReturnsMap>,
+    )],
+) -> Option<String> {
+    let docs = || std::iter::once(doc).chain(other_docs.iter().map(|(_, d, _)| d.as_ref()));
+    match &sym.kind {
+        mir_analyzer::ReferenceKind::MethodCall { class, .. }
+        | mir_analyzer::ReferenceKind::StaticCall { class, .. } => {
+            let class_short = fqn_short_name(class);
+            for d in docs() {
+                if let Some(sig) = scan_method_of_class(&d.program().stmts, class_short, word) {
+                    // Augment declared return type with mir's inferred type when richer.
+                    let sig = augment_return_type(sig, &sym.resolved_type);
+                    let mut value = wrap_php(&sig);
+                    let all =
+                        std::iter::once(doc).chain(other_docs.iter().map(|(_, d, _)| d.as_ref()));
+                    if let Some(db) = resolve_method_docblock(all, class_short, word) {
+                        let md = db.to_markdown();
+                        if !md.is_empty() {
+                            value.push_str("\n\n---\n\n");
+                            value.push_str(&md);
+                        }
+                    }
+                    return Some(value);
+                }
+            }
+            None
+        }
+        mir_analyzer::ReferenceKind::PropertyAccess { class, property } => {
+            let class_short = fqn_short_name(class);
+            for d in docs() {
+                if let Some((modifiers, declared_type, db)) =
+                    find_property_info(d, class_short, property)
+                {
+                    // Use mir's resolved type when it's more specific than declared.
+                    let type_str = augment_property_type(declared_type, &sym.resolved_type);
+                    let sig = format!(
+                        "(property) {}{}::${}{}",
+                        modifiers,
+                        class_short,
+                        property,
+                        if type_str.is_empty() {
+                            String::new()
+                        } else {
+                            format!(": {}", type_str)
+                        }
+                    );
+                    let mut value = wrap_php(&sig);
+                    if let Some(doc_block) = db {
+                        let md = doc_block.to_markdown();
+                        if !md.is_empty() {
+                            value.push_str("\n\n---\n\n");
+                            value.push_str(&md);
+                        }
+                    }
+                    return Some(value);
+                }
+            }
+            None
+        }
+        mir_analyzer::ReferenceKind::ConstantAccess { class, constant } => {
+            let class_short = fqn_short_name(class);
+            for d in docs() {
+                if let Some(sig) =
+                    scan_enum_case_of_class(&d.program().stmts, class_short, constant)
+                {
+                    return Some(wrap_php(&sig));
+                }
+                if let Some(sig) =
+                    scan_class_const_of_class(&d.program().stmts, class_short, constant)
+                {
+                    return Some(wrap_php(&sig));
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+/// Override the return-type portion of a method signature string with mir's
+/// inferred type, when mir provides concrete (non-mixed, non-void) info.
+/// `sig` has the form `"Class::method(params): OldType"` or no return type.
+fn augment_return_type(sig: String, resolved: &mir_analyzer::Type) -> String {
+    let ty_str = format!("{resolved}");
+    if matches!(ty_str.as_str(), "mixed" | "void" | "never" | "null") {
+        return sig;
+    }
+    let Some(paren) = sig.rfind(')') else {
+        return sig;
+    };
+    let rest = &sig[paren + 1..];
+    if let Some(colon_pos) = rest.find(": ") {
+        let declared = rest[colon_pos + 2..].trim();
+        // static/self/parent are late-static-binding — mir resolves them to a
+        // concrete class, losing the polymorphic semantics. Keep declared.
+        if matches!(declared, "static" | "self" | "parent") {
+            return sig;
+        }
+        format!("{}: {}", &sig[..paren + 1 + colon_pos], ty_str)
+    } else {
+        format!("{}: {}", sig, ty_str)
+    }
+}
+
+/// Choose between the declared property type and mir's resolved type. Uses
+/// mir when it adds information (non-mixed, non-void).
+fn augment_property_type(declared: String, resolved: &mir_analyzer::Type) -> String {
+    let ty_str = format!("{resolved}");
+    if matches!(ty_str.as_str(), "mixed" | "void" | "never") {
+        return declared;
+    }
+    ty_str
 }
 
 #[cfg(test)]
@@ -1000,109 +997,10 @@ mod tests {
         assert!(text.contains("PDO"), "hover should mention PDO");
     }
 
-    #[test]
-    fn hover_on_property_shows_type() {
-        let src = "<?php\nclass User { public string $name; public int $age; }\n$u = new User();\n$u->name";
-        let doc = ParsedDoc::parse(src.to_string());
-        // "name" in "$u->name" — col 4 in "$u->name"
-        let h = hover_at(src, &doc, &build_method_returns(&doc), None, &[], pos(3, 5));
-        assert!(h.is_some(), "expected hover on property");
-        let text = match h.unwrap().contents {
-            HoverContents::Markup(m) => m.value,
-            _ => String::new(),
-        };
-        assert!(text.contains("User"), "should mention class name");
-        assert!(text.contains("name"), "should mention property name");
-        assert!(text.contains("string"), "should show type hint");
-    }
-
-    #[test]
-    fn hover_on_promoted_property_shows_type() {
-        let src = "<?php\nclass Point {\n    public function __construct(\n        public float $x,\n        public float $y,\n    ) {}\n}\n$p = new Point(1.0, 2.0);\n$p->x";
-        let doc = ParsedDoc::parse(src.to_string());
-        // "x" at the end of "$p->x"
-        let h = hover_at(src, &doc, &build_method_returns(&doc), None, &[], pos(8, 4));
-        assert!(h.is_some(), "expected hover on promoted property");
-        let text = match h.unwrap().contents {
-            HoverContents::Markup(m) => m.value,
-            _ => String::new(),
-        };
-        assert!(text.contains("Point"), "should mention class name");
-        assert!(text.contains("x"), "should mention property name");
-        assert!(
-            text.contains("float"),
-            "should show type hint for promoted property"
-        );
-    }
-
-    #[test]
-    fn hover_on_promoted_property_shows_only_its_param_docblock() {
-        // Issue #26: hovering a promoted property should show only the @param for
-        // that property, not the full constructor docblock (no @return, @throws,
-        // or @param entries for other parameters).
-        let src = "<?php\nclass User {\n    /**\n     * Create a user.\n     * @param string $name The user's display name\n     * @param int $age The user's age\n     * @return void\n     * @throws \\InvalidArgumentException\n     */\n    public function __construct(\n        public string $name,\n        public int $age,\n    ) {}\n}\n$u = new User('Alice', 30);\n$u->name";
-        let doc = ParsedDoc::parse(src.to_string());
-        // hover on "$u->name" — cursor on 'name' (line 15, char 4 after "$u->")
-        let h = hover_at(
-            src,
-            &doc,
-            &build_method_returns(&doc),
-            None,
-            &[],
-            pos(15, 4),
-        );
-        assert!(h.is_some(), "expected hover on promoted property");
-        let text = match h.unwrap().contents {
-            HoverContents::Markup(m) => m.value,
-            _ => String::new(),
-        };
-        assert!(
-            text.contains("@param") && text.contains("$name"),
-            "should show @param for $name"
-        );
-        assert!(
-            !text.contains("$age"),
-            "should NOT show @param for other parameters"
-        );
-        assert!(
-            !text.contains("@return"),
-            "should NOT show @return from constructor docblock"
-        );
-        assert!(
-            !text.contains("@throws"),
-            "should NOT show @throws from constructor docblock"
-        );
-        assert!(
-            !text.contains("Create a user"),
-            "should NOT show constructor description"
-        );
-    }
-
-    #[test]
-    fn hover_on_promoted_property_with_no_param_docblock_shows_type_only() {
-        // When the constructor has a docblock but no @param for this promoted property,
-        // hover should still work (showing type) without appending any docblock section.
-        let src = "<?php\nclass User {\n    /**\n     * Create a user.\n     * @return void\n     */\n    public function __construct(\n        public string $name,\n    ) {}\n}\n$u = new User('Alice');\n$u->name";
-        let doc = ParsedDoc::parse(src.to_string());
-        let h = hover_at(
-            src,
-            &doc,
-            &build_method_returns(&doc),
-            None,
-            &[],
-            pos(11, 4),
-        );
-        assert!(h.is_some(), "expected hover on promoted property");
-        let text = match h.unwrap().contents {
-            HoverContents::Markup(m) => m.value,
-            _ => String::new(),
-        };
-        assert!(text.contains("string"), "should show type hint");
-        assert!(
-            !text.contains("---"),
-            "should not append a docblock section"
-        );
-    }
+    // hover_on_property_shows_type, hover_on_promoted_property_*, and the
+    // @var-tag property tests all exercised the removed TypeMap receiver path.
+    // Equivalent coverage lives in tests/editing/feature_hover_types.rs which
+    // runs through TestServer (real mir analysis).
 
     #[test]
     fn hover_on_use_alias_shows_fqn() {
@@ -1161,115 +1059,9 @@ mod tests {
         );
     }
 
-    #[test]
-    fn hover_on_property_shows_docblock() {
-        let src = "<?php\nclass User {\n    /** The user's display name. */\n    public string $name;\n}\n$u = new User();\n$u->name";
-        let doc = ParsedDoc::parse(src.to_string());
-        // "name" in "$u->name" at the last line
-        let h = hover_at(src, &doc, &build_method_returns(&doc), None, &[], pos(6, 5));
-        assert!(h.is_some(), "expected hover on property with docblock");
-        let text = match h.unwrap().contents {
-            HoverContents::Markup(m) => m.value,
-            _ => String::new(),
-        };
-        assert!(text.contains("User"), "should mention class name");
-        assert!(text.contains("name"), "should mention property name");
-        assert!(text.contains("string"), "should show type hint");
-        assert!(
-            text.contains("display name"),
-            "should include docblock description, got: {}",
-            text
-        );
-    }
-
-    #[test]
-    fn hover_on_property_with_var_tag_shows_type_annotation() {
-        // A property with only `@var TypeHint` (no free-text description) must still
-        // surface the @var annotation in the hover — it was previously swallowed because
-        // to_markdown() never rendered var_type.
-        let src = "<?php\nclass User {\n    /** @var string */\n    public $name;\n}\n$u = new User();\n$u->name";
-        let doc = ParsedDoc::parse(src.to_string());
-        let h = hover_at(src, &doc, &build_method_returns(&doc), None, &[], pos(6, 5));
-        assert!(h.is_some(), "expected hover on @var-only property");
-        let text = match h.unwrap().contents {
-            HoverContents::Markup(m) => m.value,
-            _ => String::new(),
-        };
-        assert!(
-            text.contains("@var"),
-            "should show @var annotation, got: {}",
-            text
-        );
-        assert!(
-            text.contains("string"),
-            "should show var type, got: {}",
-            text
-        );
-    }
-
-    #[test]
-    fn hover_on_property_with_var_tag_and_description() {
-        let src = "<?php\nclass User {\n    /** @var string The display name. */\n    public $name;\n}\n$u = new User();\n$u->name";
-        let doc = ParsedDoc::parse(src.to_string());
-        let h = hover_at(src, &doc, &build_method_returns(&doc), None, &[], pos(6, 5));
-        assert!(
-            h.is_some(),
-            "expected hover on property with @var description"
-        );
-        let text = match h.unwrap().contents {
-            HoverContents::Markup(m) => m.value,
-            _ => String::new(),
-        };
-        assert!(
-            text.contains("@var"),
-            "should show @var annotation, got: {}",
-            text
-        );
-        assert!(
-            text.contains("The display name"),
-            "should show @var description, got: {}",
-            text
-        );
-    }
-
-    #[test]
-    fn hover_on_this_property_shows_type() {
-        let src = "<?php\nclass Counter {\n    public int $count = 0;\n    public function increment(): void {\n        $this->count;\n    }\n}";
-        let doc = ParsedDoc::parse(src.to_string());
-        // "$this->count" — "count" starts at col 15 in "        $this->count;"
-        let h = hover_at(
-            src,
-            &doc,
-            &build_method_returns(&doc),
-            None,
-            &[],
-            pos(4, 16),
-        );
-        assert!(h.is_some(), "expected hover on $this->property");
-        let text = match h.unwrap().contents {
-            HoverContents::Markup(m) => m.value,
-            _ => String::new(),
-        };
-        assert!(text.contains("Counter"), "should mention enclosing class");
-        assert!(text.contains("count"), "should mention property name");
-        assert!(text.contains("int"), "should show type hint");
-    }
-
-    #[test]
-    fn hover_on_nullsafe_property_shows_type() {
-        let src = "<?php\nclass Profile { public string $bio; }\n$p = new Profile();\n$p?->bio";
-        let doc = ParsedDoc::parse(src.to_string());
-        // "bio" in "$p?->bio" at line 3, col 5
-        let h = hover_at(src, &doc, &build_method_returns(&doc), None, &[], pos(3, 5));
-        assert!(h.is_some(), "expected hover on nullsafe property access");
-        let text = match h.unwrap().contents {
-            HoverContents::Markup(m) => m.value,
-            _ => String::new(),
-        };
-        assert!(text.contains("Profile"), "should mention class name");
-        assert!(text.contains("bio"), "should mention property name");
-        assert!(text.contains("string"), "should show type hint");
-    }
+    // Property and nullsafe hover tests removed — they relied on the deleted
+    // TypeMap receiver path. Replaced by integration tests in
+    // tests/editing/feature_hover_types.rs which exercise the mir-primary path.
 
     // ── Snapshot tests ───────────────────────────────────────────────────────
 
@@ -1531,41 +1323,7 @@ mod tests {
         }
     }
 
-    // Gap 2: hovering `->method()` should show the signature for the correct class.
-    #[test]
-    fn hover_method_call_shows_correct_class_signature() {
-        // Two classes both have a method named `process`. Hovering on `$mailer->process()`
-        // should show Mailer::process, not Queue::process.
-        let (src, p) = cursor(concat!(
-            "<?php\n",
-            "class Mailer { public function process(string $to): bool {} }\n",
-            "class Queue  { public function process(int $id): void {} }\n",
-            "$mailer = new Mailer();\n",
-            "$mailer->proc$0ess();\n",
-        ));
-        let doc = ParsedDoc::parse(src.clone());
-        let result = hover_info(&src, &doc, &build_method_returns(&doc), None, p, &[]);
-        assert!(result.is_some(), "expected hover on method call");
-        if let Some(Hover {
-            contents: HoverContents::Markup(mc),
-            ..
-        }) = result
-        {
-            assert!(
-                mc.value.contains("Mailer::process"),
-                "should show Mailer::process, got: {}",
-                mc.value
-            );
-            assert!(
-                mc.value.contains("string $to"),
-                "should show Mailer's params, got: {}",
-                mc.value
-            );
-            assert!(
-                !mc.value.contains("int $id"),
-                "must NOT show Queue::process params, got: {}",
-                mc.value
-            );
-        }
-    }
+    // hover_method_call_shows_correct_class_signature removed — it tested the
+    // TypeMap receiver path (analysis=None). The equivalent with mir is in
+    // tests/editing/feature_hover_advanced.rs.
 }

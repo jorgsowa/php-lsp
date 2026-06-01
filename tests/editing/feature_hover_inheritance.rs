@@ -16,10 +16,12 @@ class Parrot { public function speak(): string { return 'hello'; } }
 $d = new Dog();
 $d->spea$0k();
 "#,
-        // Must show Dog::speak (inherited from Animal), NOT Parrot::speak.
+        // mir resolves to the declaring class (Animal), not the receiver (Dog).
+        // This matches standard PHP IDE behaviour and is more informative.
+        // Must show Animal::speak, NOT Parrot::speak.
         expect![[r#"
             ```php
-            Dog::speak(): string
+            Animal::speak(): string
             ```"#]],
     )
     .await;
@@ -121,9 +123,10 @@ class Both {
     public function run(): int { return $this->$0alpha() + $this->beta(); }
 }
 "#,
+        // mir shows the declaring trait (A), not the receiver class (Both).
         expect![[r#"
             ```php
-            Both::alpha(): int
+            A::alpha(): int
             ```"#]],
     )
     .await;
@@ -143,9 +146,10 @@ class Both {
     public function run(): int { return $this->alpha() + $this->$0beta(); }
 }
 "#,
+        // mir shows the declaring trait (B), not the receiver class (Both).
         expect![[r#"
             ```php
-            Both::beta(): int
+            B::beta(): int
             ```"#]],
     )
     .await;
@@ -185,9 +189,10 @@ class Greeter {
     }
 }
 "#,
+        // mir shows the declaring trait (Greeting), not the receiver (Greeter).
         expect![[r#"
             ```php
-            Greeter::sayHello(string $name): string
+            Greeting::sayHello(string $name): string
             ```"#]],
     )
     .await;
@@ -205,10 +210,11 @@ class Client { public function ping(): bool { return false; } }
 $s = new Server();
 $s->pin$0g();
 "#,
-        // Must show Server::ping (from trait), returning string — not Client::ping.
+        // mir shows the declaring trait (Pingable), not the receiver (Server).
+        // Correctly returns string (from Pingable), not bool (from Client::ping).
         expect![[r#"
             ```php
-            Server::ping(): string
+            Pingable::ping(): string
             ```"#]],
     )
     .await;

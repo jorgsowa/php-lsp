@@ -239,3 +239,221 @@ function pet(Cat|Dog $a): void { $a$0; }
     )
     .await;
 }
+
+#[tokio::test]
+async fn hover_property_shows_docblock() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    s.check_hover_annotated(
+        r#"<?php
+class User {
+    /** The user's display name. */
+    public string $name = '';
+}
+$u = new User();
+echo $u->na$0me;
+"#,
+        expect![[r#"
+            ```php
+            (property) public User::$name: string
+            ```
+
+            ---
+
+            The user's display name."#]],
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn hover_property_with_var_tag_shows_type_annotation() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    s.check_hover_annotated(
+        r#"<?php
+class User {
+    /** @var string */
+    public $name = '';
+}
+$u = new User();
+echo $u->na$0me;
+"#,
+        expect![[r#"
+            ```php
+            (property) public User::$name: string
+            ```
+
+            ---
+
+            **@var** `string`"#]],
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn hover_property_with_var_tag_and_description() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    s.check_hover_annotated(
+        r#"<?php
+class User {
+    /** @var string The display name. */
+    public $name = '';
+}
+$u = new User();
+echo $u->na$0me;
+"#,
+        expect![[r#"
+            ```php
+            (property) public User::$name: string
+            ```
+
+            ---
+
+            **@var** `string` — The display name."#]],
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn hover_this_property_shows_type() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    s.check_hover_annotated(
+        r#"<?php
+class Counter {
+    public int $count = 0;
+    public function increment(): void {
+        $this->co$0unt;
+    }
+}
+"#,
+        expect![[r#"
+            ```php
+            (property) public Counter::$count: int
+            ```"#]],
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn hover_nullsafe_property_shows_type() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    s.check_hover_annotated(
+        r#"<?php
+class Profile { public string $bio = ''; }
+$p = new Profile();
+$p?->bi$0o;
+"#,
+        expect![[r#"
+            ```php
+            (property) public Profile::$bio: string|null
+            ```"#]],
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn hover_promoted_property_shows_type() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    s.check_hover_annotated(
+        r#"<?php
+class Point {
+    public function __construct(
+        public float $x,
+        public float $y,
+    ) {}
+}
+$p = new Point(1.0, 2.0);
+$p->$0x;
+"#,
+        expect![[r#"
+            ```php
+            (property) public Point::$x: float
+            ```"#]],
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn hover_promoted_property_shows_only_its_param_docblock() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    s.check_hover_annotated(
+        r#"<?php
+class User {
+    /**
+     * Create a user.
+     * @param string $name The user's display name
+     * @param int $age The user's age
+     * @return void
+     * @throws \InvalidArgumentException
+     */
+    public function __construct(
+        public string $name,
+        public int $age,
+    ) {}
+}
+$u = new User('Alice', 30);
+$u->na$0me;
+"#,
+        expect![[r#"
+            ```php
+            (property) public User::$name: string
+            ```
+
+            ---
+
+            **@param** `string` `$name` — The user's display name"#]],
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn hover_promoted_property_with_no_matching_param_docblock() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    s.check_hover_annotated(
+        r#"<?php
+class User {
+    /**
+     * Create a user.
+     * @return void
+     */
+    public function __construct(
+        public string $name,
+    ) {}
+}
+$u = new User('Alice');
+$u->na$0me;
+"#,
+        expect![[r#"
+            ```php
+            (property) public User::$name: string
+            ```"#]],
+    )
+    .await;
+}
+
+/// Method call disambiguation: two classes both define `process`. mir resolves
+/// to the declaring class, ensuring Mailer's params are shown not Queue's.
+#[tokio::test]
+async fn hover_method_call_shows_declaring_class() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    s.check_hover_annotated(
+        r#"<?php
+class Mailer { public function process(string $to): bool {} }
+class Queue  { public function process(int $id): void {} }
+$mailer = new Mailer();
+$mailer->proc$0ess();
+"#,
+        expect![[r#"
+            ```php
+            Mailer::process(string $to): bool
+            ```"#]],
+    )
+    .await;
+}
