@@ -58,20 +58,24 @@ async fn monorepo_workspace_scan_indexes_all_packages() {
 
     let out = s.snapshot_workspace_symbols("").await;
     // Verify that symbols from all packages are indexed
-    assert!(out.contains("User @"), "Expected User class");
-    assert!(
-        out.contains("UserRepository @"),
-        "Expected UserRepository class"
-    );
-    assert!(
-        out.contains("UserController @"),
-        "Expected UserController class"
-    );
-    assert!(
-        out.contains("ListUsersCommand @"),
-        "Expected ListUsersCommand class"
-    );
-    assert!(out.contains("UserTest @"), "Expected UserTest class");
+    expect![[r#"
+        Class       ListUsersCommand @ packages/cli/src/Command/ListUsersCommand.php:5
+        Class       User @ packages/core/src/Entity/User.php:3
+        Class       UserController @ packages/api/src/Controller/UserController.php:6
+        Class       UserRepository @ packages/core/src/Repository/UserRepository.php:5
+        Class       UserTest @ packages/tests/src/Integration/UserTest.php:6
+        Method      __construct @ packages/api/src/Controller/UserController.php:7
+        Method      __construct @ packages/cli/src/Command/ListUsersCommand.php:6
+        Method      __construct @ packages/core/src/Entity/User.php:4
+        Method      execute @ packages/cli/src/Command/ListUsersCommand.php:10
+        Method      findAll @ packages/core/src/Repository/UserRepository.php:18
+        Method      findById @ packages/core/src/Repository/UserRepository.php:9
+        Method      getDisplayName @ packages/core/src/Entity/User.php:10
+        Method      index @ packages/api/src/Controller/UserController.php:15
+        Method      save @ packages/core/src/Repository/UserRepository.php:22
+        Method      show @ packages/api/src/Controller/UserController.php:11
+        Method      testUserRepository @ packages/tests/src/Integration/UserTest.php:7"#]]
+    .assert_eq(&out);
 }
 
 #[tokio::test]

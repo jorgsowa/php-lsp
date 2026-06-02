@@ -395,11 +395,12 @@ async fn workspace_diagnostic_with_parse_error() {
     let resp = server.workspace_diagnostic().await;
     let out = render_workspace_diagnostic(&resp, &server.uri(""));
 
-    // Parse error should produce diagnostic
-    assert!(out.contains("ws_parse_error.php"));
-    // The exact message varies by parser; just verify it exists
-    let items = resp["result"]["items"].as_array().unwrap();
-    assert!(!items.is_empty(), "parse error should produce diagnostic");
+    expect![[r#"
+        ws_parse_error.php
+          1:12 expected variable, found '{' [<unset>] (error)
+          1:12 unclosed '')'' opened at Span { start: 16, end: 17 } [<unset>] (error)
+          2:0 unclosed ''}'' opened at Span { start: 18, end: 19 } [<unset>] (error)"#]]
+    .assert_eq(&out);
 }
 
 #[tokio::test]

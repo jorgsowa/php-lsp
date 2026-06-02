@@ -1066,9 +1066,20 @@ async fn semantic_tokens_nested_foreach() {
 
     let resp = server.semantic_tokens_full("nested_foreach.php").await;
     let out = render_semantic_tokens(&resp, &legend_types);
-    // Both $row (outer) and $k, $v (inner) must be tokenized as variables
-    assert!(out.contains("type=variable"));
-    assert!(out.matches("type=variable").count() >= 5); // $matrix, $row, $row, $k, $v, $k, $v
+    expect![[r#"
+        1:0 len=7 type=variable mods=0b0
+        1:12 len=1 type=number mods=0b0
+        1:15 len=1 type=number mods=0b0
+        1:20 len=1 type=number mods=0b0
+        1:23 len=1 type=number mods=0b0
+        2:9 len=7 type=variable mods=0b0
+        2:20 len=4 type=variable mods=0b0
+        3:13 len=4 type=variable mods=0b0
+        3:21 len=2 type=variable mods=0b0
+        3:27 len=2 type=variable mods=0b0
+        4:13 len=2 type=variable mods=0b0
+        4:18 len=2 type=variable mods=0b0"#]]
+    .assert_eq(&out);
 }
 
 /// Edge case: foreach with reference binding should tokenize the variable.

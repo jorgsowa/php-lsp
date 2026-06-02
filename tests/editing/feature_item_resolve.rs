@@ -149,17 +149,22 @@ function $0greet() {
         .map(|a| a.iter().cloned().collect())
         .unwrap_or_default();
 
+    let mut snapshots: Vec<String> = Vec::new();
     for action in actions {
         let resolved = s.code_action_resolve(action.clone()).await;
         assert!(
             resolved["error"].is_null(),
             "all actions should resolve successfully"
         );
-
-        let out = render_resolved_code_action(&resolved, &s.uri(""));
-        // All actions should resolve without error (some may have edit, some may not)
-        assert!(!out.contains("error:"), "action should not have error");
+        snapshots.push(render_resolved_code_action(&resolved, &s.uri("")));
     }
+    expect![[r#"
+        Generate PHPDoc (refactor)
+        edit: 1 file(s) modified
+        ---
+        Add return type `: void` (refactor)
+        edit: 1 file(s) modified"#]]
+    .assert_eq(&snapshots.join("\n---\n"));
 }
 
 // ============================================================================
@@ -329,20 +334,26 @@ $0process("Alice", 30);$0
         .map(|a| a.iter().cloned().collect())
         .unwrap_or_default();
 
+    let mut snapshots: Vec<String> = Vec::new();
     for hint in hints {
         let resolved = s.inlay_hint_resolve(hint.clone()).await;
-
-        // Verify resolve succeeded
         assert!(
             resolved["error"].is_null(),
             "hint should resolve without error"
         );
-
-        let out = render_resolved_inlay_hint(&resolved);
-
-        // Verify rendered output is valid
-        assert!(!out.contains("error:"), "hint should render without error");
+        snapshots.push(render_resolved_inlay_hint(&resolved));
     }
+    expect![[r#"
+        2:8 name:
+        tooltip: ```php
+        function process(string $name, int $age): void
+        ```
+        ---
+        2:17 age:
+        tooltip: ```php
+        function process(string $name, int $age): void
+        ```"#]]
+    .assert_eq(&snapshots.join("\n---\n"));
 }
 
 #[tokio::test]

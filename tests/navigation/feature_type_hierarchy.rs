@@ -255,6 +255,8 @@ class Cat implements Animal {}
 "#,
         )
         .await;
-    assert!(out.contains("Dog.php"), "Dog.php uri missing: {out}");
-    assert!(out.contains("Cat.php"), "Cat.php uri missing: {out}");
+    expect![[r#"
+        Cat (Class) @ src/Cat.php:1
+        Dog (Class) @ src/Dog.php:1"#]]
+    .assert_eq(&out);
 }

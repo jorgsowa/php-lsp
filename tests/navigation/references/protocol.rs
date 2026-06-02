@@ -69,10 +69,8 @@ sub(10, 3);
     let resp = server.references(&c.path, c.line, c.character, false).await;
 
     assert!(resp["error"].is_null(), "references error: {resp:?}");
-    let locs = resp["result"].as_array().expect("expected array").clone();
-    assert_eq!(locs.len(), 1, "expected one call-site reference: {locs:?}");
-    assert_eq!(locs[0]["range"]["start"]["line"].as_u64().unwrap(), 2);
-    assert_eq!(locs[0]["range"]["start"]["character"].as_u64().unwrap(), 0);
+    let out = render_locations(&resp, &server.uri(""));
+    expect!["main.php:2:0-2:3"].assert_eq(&out);
 }
 
 #[tokio::test]
@@ -94,30 +92,16 @@ $c->add();
 
     let resp = server.references(&c.path, c.line, c.character, true).await;
     assert!(resp["error"].is_null(), "references error: {resp:?}");
-    let lines = lines_of(resp["result"].as_array().expect("array"));
-
-    assert!(lines.contains(&3), "method decl line 3 missing: {lines:?}");
-    assert!(lines.contains(&6), "method call line 6 missing: {lines:?}");
-    assert!(
-        !lines.contains(&1),
-        "free-function decl line 1 must be excluded: {lines:?}"
-    );
-    assert!(
-        !lines.contains(&5),
-        "free-function call line 5 must be excluded: {lines:?}"
-    );
+    let out = render_locations(&resp, &server.uri(""));
+    expect![[r#"
+        main.php:3:20-3:23
+        main.php:6:4-6:7"#]]
+    .assert_eq(&out);
 
     let resp2 = server.references(&c.path, c.line, c.character, false).await;
     assert!(resp2["error"].is_null(), "references error: {resp2:?}");
-    let lines2 = lines_of(resp2["result"].as_array().expect("array"));
-    assert!(
-        lines2.contains(&6),
-        "method call line 6 missing: {lines2:?}"
-    );
-    assert!(
-        !lines2.contains(&3),
-        "method decl must be excluded when includeDeclaration=false: {lines2:?}"
-    );
+    let out2 = render_locations(&resp2, &server.uri(""));
+    expect!["main.php:6:4-6:7"].assert_eq(&out2);
 }
 
 #[tokio::test]

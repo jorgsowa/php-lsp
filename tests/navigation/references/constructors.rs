@@ -1,6 +1,7 @@
 //! Constructor-specific reference tests: scope isolation, namespaces, exclusions, FQN ranges.
 
 use super::*;
+use expect_test::expect;
 
 #[tokio::test]
 async fn references_constructor_decl_span_scoped_to_owning_class() {
@@ -110,26 +111,11 @@ $b = new Invoice(2);
     let resp = server.references(&c.path, c.line, c.character, false).await;
     assert!(resp["error"].is_null(), "references error: {resp:?}");
 
-    let hits: Vec<u32> = resp["result"]
-        .as_array()
-        .expect("expected array")
-        .iter()
-        .map(|l| l["range"]["start"]["line"].as_u64().unwrap() as u32)
-        .collect();
-
-    assert!(
-        hits.contains(&4),
-        "`new Invoice(1)` (line 4) missing: {hits:?}"
-    );
-    assert!(
-        hits.contains(&5),
-        "`new Invoice(2)` (line 5) missing: {hits:?}"
-    );
-    assert!(
-        !hits.contains(&2),
-        "__construct decl (line 2) must be excluded when includeDeclaration=false: {hits:?}"
-    );
-    assert_eq!(hits.len(), 2, "expected exactly 2 call sites: {hits:?}");
+    let out = render_locations(&resp, &server.uri(""));
+    expect![[r#"
+        main.php:4:9-4:16
+        main.php:5:9-5:16"#]]
+    .assert_eq(&out);
 }
 
 #[tokio::test]
