@@ -1,5 +1,5 @@
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 /// Supported PHP version strings.
 pub const PHP_7_4: &str = "7.4";
@@ -73,168 +73,121 @@ pub fn clamp_php_version(v: &str) -> &'static str {
     }
 }
 
-/// PSR-4 namespace-prefix → base-directory mapping built from `composer.json`
-/// and `vendor/composer/installed.json`.
+/// PSR-4 namespace-prefix → base-directory mapping.
 ///
-/// Used to resolve a fully-qualified class name to a source file when the
-/// class is not yet in the workspace index.
-#[derive(Clone)]
+/// Wraps `mir_analyzer::Psr4Map` for FQN→path resolution and `ClassResolver`,
+/// and maintains a lightweight project-only reverse index for the path→FQN
+/// lookup needed by file rename/delete handlers.
 pub struct Psr4Map {
-    /// Sorted longest-prefix-first so the most-specific prefix always wins.
-    entries: Vec<(String, Vec<PathBuf>)>,
+    /// One resolved map per workspace root. Used for `resolve` and as the
+    /// `ClassResolver` injected into the mir analyzer session.
+    inners: Vec<Arc<mir_analyzer::Psr4Map>>,
+    /// PSR-4 entries from the project's own `autoload`/`autoload-dev` sections
+    /// only. Vendor packages are excluded: rename/delete only targets project
+    /// files, so the reverse index never needs vendor entries.
+    project_entries: Vec<(String, PathBuf)>,
 }
 
 impl mir_analyzer::ClassResolver for Psr4Map {
     fn resolve(&self, fqcn: &str) -> Option<PathBuf> {
-        Psr4Map::resolve(self, fqcn)
+        self.inners.iter().find_map(|m| m.resolve(fqcn))
     }
 }
 
 impl Psr4Map {
     pub fn empty() -> Self {
-        Psr4Map { entries: vec![] }
-    }
-
-    /// Build a map from the project root. Reads:
-    /// - `<root>/composer.json`           (project namespaces, incl. autoload-dev)
-    /// - `<root>/vendor/composer/installed.json`  (all installed packages)
-    pub fn load(root: &Path) -> Self {
-        let mut map: HashMap<String, Vec<PathBuf>> = HashMap::new();
-
-        // Project's own composer.json (both autoload and autoload-dev)
-        add_from_composer_json(&root.join("composer.json"), root, &mut map);
-
-        // Installed packages via vendor/composer/installed.json
-        let installed_json = root.join("vendor").join("composer").join("installed.json");
-        if let Ok(text) = std::fs::read_to_string(&installed_json)
-            && let Ok(json) = serde_json::from_str::<serde_json::Value>(&text)
-        {
-            // Composer v2: {"packages": [...]}  |  Composer v1: [...]
-            let packages = json
-                .get("packages")
-                .and_then(|v| v.as_array())
-                .or_else(|| json.as_array());
-
-            if let Some(pkgs) = packages {
-                let vendor_composer = root.join("vendor").join("composer");
-                for pkg in pkgs {
-                    let install_path = pkg
-                        .get("install-path")
-                        .and_then(|v| v.as_str())
-                        .map(|p| vendor_composer.join(p));
-
-                    if let Some(pkg_root) = install_path {
-                        let pkg_root = std::fs::canonicalize(&pkg_root).unwrap_or(pkg_root);
-                        if let Some(autoload) = pkg.get("autoload") {
-                            load_psr4_section(autoload, &pkg_root, &mut map);
-                        }
-                    }
-                }
-            }
+        Psr4Map {
+            inners: vec![],
+            project_entries: vec![],
         }
-
-        // Longest-prefix-first so most-specific match wins
-        let mut entries: Vec<_> = map.into_iter().collect();
-        entries.sort_by_key(|e| std::cmp::Reverse(e.0.len()));
-
-        Psr4Map { entries }
     }
 
-    /// Merge another map's entries into this one, maintaining longest-prefix-first order.
+    /// Build a map from a workspace root. Delegates all resolution logic to
+    /// `mir_analyzer::Psr4Map` (which handles PSR-4, PSR-0, classmap, vendor
+    /// eager files, and `autoload_classmap.php`). Also extracts project PSR-4
+    /// entries for the `file_to_fqn` reverse index.
+    pub fn load(root: &Path) -> Self {
+        let mut inners = Vec::new();
+        if let Ok(map) = mir_analyzer::Psr4Map::from_composer(root) {
+            inners.push(Arc::new(map));
+        }
+        let project_entries = read_project_psr4_entries(root);
+        Psr4Map {
+            inners,
+            project_entries,
+        }
+    }
+
+    /// Merge another map's entries (for multi-root workspaces).
     pub fn extend(&mut self, other: Psr4Map) {
-        self.entries.extend(other.entries);
-        self.entries.sort_by_key(|e| std::cmp::Reverse(e.0.len()));
+        self.inners.extend(other.inners);
+        self.project_entries.extend(other.project_entries);
+        self.project_entries
+            .sort_by_key(|e| std::cmp::Reverse(e.0.len()));
     }
 
-    /// Reverse of `resolve`: given a file path, return the PSR-4 fully-qualified
-    /// class name that maps to it, or `None` if the path doesn't fall under any
-    /// known namespace prefix.
+    /// Reverse of `resolve`: given a file path, return the PSR-4 FQN, or
+    /// `None` if the path isn't under a known project namespace prefix.
     pub fn file_to_fqn(&self, path: &Path) -> Option<String> {
-        for (prefix, base_dirs) in &self.entries {
-            for base in base_dirs {
-                if let Ok(rel) = path.strip_prefix(base) {
-                    let rel_str = rel.to_string_lossy();
-                    let without_ext = rel_str.strip_suffix(".php")?;
-                    // Normalise path separators to backslashes (PSR-4 uses `\`)
-                    let class_path = without_ext.replace([std::path::MAIN_SEPARATOR, '/'], "\\");
-                    return Some(format!("{}{}", prefix, class_path));
-                }
+        for (prefix, dir) in &self.project_entries {
+            if let Ok(rel) = path.strip_prefix(dir) {
+                let rel_str = rel.to_string_lossy();
+                let without_ext = rel_str.strip_suffix(".php")?;
+                let class_path = without_ext.replace([std::path::MAIN_SEPARATOR, '/'], "\\");
+                return Some(format!("{}{}", prefix, class_path));
             }
         }
         None
     }
 
     /// Resolve a fully-qualified class name to an existing file on disk.
-    ///
-    /// `class_name` may or may not have a leading `\`.
-    /// Returns `None` if no prefix matches or the resolved file doesn't exist.
-    pub fn resolve(&self, class_name: &str) -> Option<PathBuf> {
-        let class_name = class_name.trim_start_matches('\\');
-
-        for (prefix, base_dirs) in &self.entries {
-            // Strip the trailing `\` from the namespace prefix for comparison
-            let ns = prefix.trim_end_matches('\\');
-            if !class_name.starts_with(ns) {
-                continue;
-            }
-            let after = &class_name[ns.len()..];
-            // Require `\` or end-of-string after the prefix so that "App" does
-            // not match "Application\Foo".
-            if !after.is_empty() && !after.starts_with('\\') {
-                continue;
-            }
-            let remainder = after.trim_start_matches('\\');
-            let relative = remainder.replace('\\', "/") + ".php";
-
-            for base in base_dirs {
-                let candidate = base.join(&relative);
-                if candidate.exists() {
-                    return Some(candidate);
-                }
-            }
-        }
-        None
+    pub fn resolve(&self, fqcn: &str) -> Option<PathBuf> {
+        self.inners.iter().find_map(|m| m.resolve(fqcn))
     }
 }
 
-fn add_from_composer_json(
-    composer_json: &Path,
-    root: &Path,
-    map: &mut HashMap<String, Vec<PathBuf>>,
-) {
-    let Ok(text) = std::fs::read_to_string(composer_json) else {
-        return;
+/// Extract PSR-4 project entries from `composer.json` at `root`.
+/// Only reads `autoload` and `autoload-dev` psr-4 sections; vendor packages
+/// are omitted because `file_to_fqn` is only called on project files.
+fn read_project_psr4_entries(root: &Path) -> Vec<(String, PathBuf)> {
+    let Ok(text) = std::fs::read_to_string(root.join("composer.json")) else {
+        return vec![];
     };
     let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) else {
-        return;
+        return vec![];
     };
+    let mut entries: Vec<(String, PathBuf)> = Vec::new();
     for section in ["autoload", "autoload-dev"] {
-        if let Some(autoload) = json.get(section) {
-            load_psr4_section(autoload, root, map);
+        let Some(psr4) = json
+            .get(section)
+            .and_then(|a| a.get("psr-4"))
+            .and_then(|v| v.as_object())
+        else {
+            continue;
+        };
+        for (ns, paths) in psr4 {
+            let prefix = if ns.ends_with('\\') {
+                ns.clone()
+            } else {
+                format!("{ns}\\")
+            };
+            match paths {
+                serde_json::Value::String(s) => {
+                    entries.push((prefix, root.join(s)));
+                }
+                serde_json::Value::Array(arr) => {
+                    for item in arr {
+                        if let Some(s) = item.as_str() {
+                            entries.push((prefix.clone(), root.join(s)));
+                        }
+                    }
+                }
+                _ => {}
+            }
         }
     }
-}
-
-fn load_psr4_section(
-    autoload: &serde_json::Value,
-    root: &Path,
-    map: &mut HashMap<String, Vec<PathBuf>>,
-) {
-    let Some(psr4) = autoload.get("psr-4").and_then(|v| v.as_object()) else {
-        return;
-    };
-    for (ns, paths) in psr4 {
-        let dirs: Vec<PathBuf> = match paths {
-            serde_json::Value::String(s) => vec![root.join(s)],
-            serde_json::Value::Array(arr) => arr
-                .iter()
-                .filter_map(|v| v.as_str())
-                .map(|s| root.join(s))
-                .collect(),
-            _ => continue,
-        };
-        map.entry(ns.clone()).or_default().extend(dirs);
-    }
+    entries.sort_by_key(|e| std::cmp::Reverse(e.0.len()));
+    entries
 }
 
 /// Detect PHP version from `config.platform.php` in `composer.json`.
@@ -403,7 +356,6 @@ mod tests {
     #[test]
     fn empty_map_resolves_nothing() {
         let m = Psr4Map::empty();
-        assert!(m.entries.is_empty());
         assert!(m.resolve("App\\Foo").is_none());
     }
 
@@ -422,8 +374,6 @@ mod tests {
         );
 
         let m = Psr4Map::load(root);
-        assert!(!m.entries.is_empty());
-
         let resolved = m.resolve("App\\Services\\Foo");
         assert!(resolved.is_some(), "should resolve App\\Services\\Foo");
         assert!(resolved.unwrap().ends_with("src/Services/Foo.php"));
@@ -476,7 +426,7 @@ mod tests {
     fn loads_empty_when_composer_json_absent() {
         let dir = tempfile::tempdir().unwrap();
         let m = Psr4Map::load(dir.path());
-        assert!(m.entries.is_empty());
+        assert!(m.resolve("App\\Foo").is_none());
     }
 
     #[test]
