@@ -392,11 +392,8 @@ pub(super) fn resolve_receiver_class(
     // inside the (end-exclusive, identifier-only) mir symbol span.
     let var_offset = line_byte_offset(doc, position.line, before.len());
     if var_name == "$this" {
-        // Prefer the enclosing class (standard method context); then mir's
-        // recorded `$this`; then the TypeMap fallback for Closure::bind cases.
         return enclosing_class_at(source, doc, position)
-            .or_else(|| analysis.and_then(|a| receiver_class_at(a, var_offset)))
-            .or_else(|| type_map.get("$this").map(str::to_owned));
+            .or_else(|| analysis.and_then(|a| receiver_class_at(a, var_offset)));
     }
     // mir-primary; TypeMap covers gaps where mir records no class-typed symbol.
     analysis

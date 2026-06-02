@@ -44,7 +44,6 @@ fn resolve_method_receiver_class(
     );
     if receiver_var == "$this" {
         crate::type_map::enclosing_class_at(source, doc, position)
-            .or_else(|| type_map.get(receiver_var).map(str::to_owned))
     } else {
         type_map.get(receiver_var).map(str::to_owned)
     }
