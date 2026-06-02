@@ -1395,14 +1395,11 @@ greet(na$0
         }))
         .await;
     let out = render_resolved_completion_item(&resp);
-    assert!(
-        out.contains("name:") || out.contains("name"),
-        "should keep label as-is in output"
-    );
-    assert!(
-        out.contains("detail"),
-        "should lookup stripped name and populate detail"
-    );
+    expect![[r#"
+        name: (Variable)
+        detail: <no detail>
+        docs: <no docs>"#]]
+    .assert_eq(&out);
 }
 
 #[tokio::test]
@@ -1423,14 +1420,17 @@ async fn completion_resolve_partial_detail_populates_docs() {
 
     let resp = server.completion_resolve(item).await;
     let out = render_resolved_completion_item(&resp);
-    assert!(
-        out.contains("My docs"),
-        "should populate docs when detail already exists"
-    );
-    assert!(
-        out.contains("function myFunc(): void"),
-        "should preserve existing detail"
-    );
+    expect![[r#"
+        myFunc (Function)
+        detail: function myFunc(): void
+        docs: ```php
+        function myFunc(): void
+        ```
+
+        ---
+
+        My docs"#]]
+    .assert_eq(&out);
 }
 
 #[tokio::test]
@@ -1451,11 +1451,11 @@ async fn completion_resolve_partial_docs_populates_detail() {
 
     let resp = server.completion_resolve(item).await;
     let out = render_resolved_completion_item(&resp);
-    assert!(out.contains("Some doc"), "should preserve existing docs");
-    assert!(
-        out.contains("function myFunc(): void"),
-        "should populate detail when docs already exist"
-    );
+    expect![[r#"
+        myFunc (Function)
+        detail: function myFunc(): void
+        docs: Some doc"#]]
+    .assert_eq(&out);
 }
 
 /// mir resolves the caught exception type for the catch variable so that
@@ -1494,7 +1494,7 @@ async fn completion_factory_method_return_type_resolved_by_mir() {
     let mut s = TestServer::new().await;
     s.validate_syntax(false);
     let out = s
-        .check_completion(
+        .check_completion_ordered(
             r#"//- /Factory.php
 <?php
 class User { public function getName(): string {} }
@@ -1510,10 +1510,7 @@ $user->$0
 "#,
         )
         .await;
-    assert!(
-        out.contains("getName"),
-        "expected getName in completions, got: {out}"
-    );
+    expect!["Method      getName"].assert_eq(&out);
 }
 
 #[tokio::test]
@@ -1521,7 +1518,7 @@ async fn completion_this_arrow_includes_trait_methods() {
     let mut s = TestServer::new().await;
     s.validate_syntax(false);
     let out = s
-        .check_completion(
+        .check_completion_ordered(
             r#"<?php
 trait Counter {
     public function tick(): void {}
@@ -1624,7 +1621,7 @@ async fn completion_attribute_bracket_excludes_non_class_types() {
     let mut s = TestServer::new().await;
     s.validate_syntax(false);
     let out = s
-        .check_completion(
+        .check_completion_ordered(
             r#"<?php
 #[\Attribute]
 class ValidAttr {}
@@ -1649,7 +1646,7 @@ async fn completion_attribute_bracket_target_filters_function_context() {
     let mut s = TestServer::new().await;
     s.validate_syntax(false);
     let out = s
-        .check_completion(
+        .check_completion_ordered(
             r#"<?php
 #[\Attribute(\Attribute::TARGET_CLASS)]
 class ClassOnlyAttr {}
@@ -1680,7 +1677,7 @@ async fn completion_attribute_bracket_returns_only_attribute_classes() {
     let mut s = TestServer::new().await;
     s.validate_syntax(false);
     let out = s
-        .check_completion(
+        .check_completion_ordered(
             r#"<?php
 #[\Attribute]
 class Middleware {}
@@ -4709,7 +4706,7 @@ async fn completion_include_path_relative_directory() {
     s.validate_syntax(false);
 
     let out = s
-        .check_completion(
+        .check_completion_ordered(
             r#"<?php
 require './lib/$0
 "#,
@@ -5147,7 +5144,7 @@ $remoteVar = 42;
 
 //- /main.php
 <?php
-$loc$0
+$remote$0
 "#,
         )
         .await;
