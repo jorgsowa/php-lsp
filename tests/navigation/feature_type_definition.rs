@@ -106,6 +106,23 @@ echo $w$0;
     .await;
 }
 
+/// Variable assigned from an enum case constant (`$x = Status::Active`).
+/// mir 0.31.0 synthesises a `TNamedObject` for enum-case assignments; this
+/// test guards that the mir path resolves the type (no TypeMap fallback needed).
+#[tokio::test]
+async fn type_definition_variable_from_enum_case_assignment() {
+    let mut s = TestServer::new().await;
+    s.check_type_definition_annotated(
+        r#"<?php
+enum Status { case Active; case Inactive; }
+//   ^^^^^^ type
+$s = Status::Active;
+echo $s$0;
+"#,
+    )
+    .await;
+}
+
 #[tokio::test]
 async fn type_definition_non_variable_without_type() {
     let mut s = TestServer::new().await;

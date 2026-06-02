@@ -461,6 +461,29 @@ greet(coun$0t: 3);
     .await;
 }
 
+/// Named-arg hover where the receiver is `$this`. Resolves the enclosing class
+/// via `enclosing_class_at` (no TypeMap `$this` fallback needed).
+#[tokio::test]
+async fn hover_named_arg_this_method_call() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    s.check_hover_annotated(
+        r#"<?php
+class Notifier {
+    public function send(string $to, string $subject): bool { return true; }
+    public function notify(): void {
+        $this->send(subje$0ct: 'Hi', to: 'a@b.com');
+    }
+}
+"#,
+        expect![[r#"
+            ```php
+            (parameter) string $subject
+            ```"#]],
+    )
+    .await;
+}
+
 #[tokio::test]
 async fn hover_named_arg_method_call() {
     let mut s = TestServer::new().await;
