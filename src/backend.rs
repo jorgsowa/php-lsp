@@ -571,22 +571,6 @@ impl LanguageServer for Backend {
             self.root_paths.store(Arc::new(roots));
         }
 
-        // Pre-load PSR-4 map synchronously during initialize so it is available
-        // before the first didOpen arrives. The initialized handler reloads it too
-        // (after workspace folders may be updated), but doing it here eliminates
-        // the race where didOpen runs before the initialized handler finishes its
-        // register_capability round-trip.
-        {
-            let roots = self.root_paths.load_full();
-            if !roots.is_empty() {
-                let mut merged = Psr4Map::empty();
-                for root in roots.iter() {
-                    merged.extend(Psr4Map::load(root));
-                }
-                self.psr4.store(Arc::new(merged));
-            }
-        }
-
         {
             let opts = params.initialization_options.as_ref();
             let roots = self.root_paths.load_full();
@@ -638,28 +622,47 @@ impl LanguageServer for Backend {
             let merged = LspConfig::merge_project_configs(file_obj, opts);
             let mut cfg = LspConfig::from_value(&merged);
 
-            // Resolve the PHP version and log what was chosen and why.
-            // phpVersion from initializationOptions is already in cfg.php_version (editor wins).
-            // If neither editor nor .php-lsp.json set it, resolve_php_version falls through
-            // to composer.json / php binary / default.
-            let (ver, source) = self.resolve_php_version(cfg.php_version.as_deref());
+            // PSR-4 loading and PHP version resolution both involve blocking I/O
+            // (filesystem reads, and potentially spawning `php --version`). Run
+            // them concurrently on the blocking thread pool so initialize responds
+            // in max(psr4_time, version_time) rather than psr4_time + version_time.
+            let roots_for_psr4 = (*roots).clone();
+            let roots_for_ver = (*roots).clone();
+            let explicit_version = cfg.php_version.clone();
+            let (psr4_result, ver_result) = tokio::join!(
+                tokio::task::spawn_blocking(move || {
+                    let mut merged = Psr4Map::empty();
+                    for root in &roots_for_psr4 {
+                        merged.extend(Psr4Map::load(root));
+                    }
+                    merged
+                }),
+                tokio::task::spawn_blocking(move || {
+                    crate::autoload::resolve_php_version_from_roots(
+                        &roots_for_ver,
+                        explicit_version.as_deref(),
+                    )
+                }),
+            );
+            if let Ok(psr4) = psr4_result {
+                self.psr4.store(Arc::new(psr4));
+            }
+            let (ver, source) =
+                ver_result.unwrap_or_else(|_| (crate::autoload::PHP_8_5.to_string(), "default"));
             self.client
                 .log_message(
                     tower_lsp::lsp_types::MessageType::INFO,
                     format!("php-lsp: using PHP {ver} ({source})"),
                 )
                 .await;
-            // Show a visible warning when auto-detection yields a version outside
-            // our supported range (e.g. a legacy project with ">=5.6" in composer.json),
-            // then clamp to the nearest supported version so analysis stays meaningful.
             let ver = if source != "set by editor" && !crate::autoload::is_valid_php_version(&ver) {
                 let clamped = crate::autoload::clamp_php_version(&ver);
                 self.client
                     .show_message(
                         tower_lsp::lsp_types::MessageType::WARNING,
                         format!(
-                            "php-lsp: detected PHP {ver} is outside the supported range ({}); \
-                             using PHP {clamped} for analysis",
+                            "php-lsp: detected PHP {ver} is outside the supported range \
+                                 ({}); using PHP {clamped} for analysis",
                             crate::autoload::SUPPORTED_PHP_VERSIONS.join(", ")
                         ),
                     )
