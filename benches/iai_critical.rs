@@ -7,7 +7,7 @@ use tower_lsp::lsp_types::Url;
 
 use php_lsp::ast::ParsedDoc;
 use php_lsp::document_store::DocumentStore;
-use php_lsp::hover::{hover_info, hover_info_with_maps};
+use php_lsp::hover::hover_info_with_maps;
 use php_lsp::symbol_map::SymbolMap;
 
 const MEDIUM: &str = include_str!("fixtures/medium_class.php");
@@ -47,35 +47,7 @@ fn index_get_all_docs(input: (DocumentStore, Vec<Url>)) {
 
 library_benchmark_group!(name = index_group; benchmarks = index_get_all_docs);
 
-// --- hover (AST-walk baseline) ---
-
-type HoverSetup = (Arc<ParsedDoc>, Vec<(Url, Arc<ParsedDoc>)>);
-
-fn setup_hover() -> HoverSetup {
-    let doc = Arc::new(ParsedDoc::parse(MEDIUM.to_owned()));
-    let other = [SERVICE, REPOSITORY]
-        .iter()
-        .enumerate()
-        .map(|(i, src)| {
-            let url = Url::parse(&format!("file:///iai/other{i}.php")).unwrap();
-            let parsed = Arc::new(ParsedDoc::parse((*src).to_owned()));
-            (url, parsed)
-        })
-        .collect();
-    (doc, other)
-}
-
-#[library_benchmark]
-#[bench::method_position(setup_hover())]
-fn hover_cross_file_ast((doc, others): HoverSetup) {
-    let pos = tower_lsp::lsp_types::Position {
-        line: 109,
-        character: 19,
-    };
-    black_box(hover_info(MEDIUM, &doc, None, pos, &others));
-}
-
-// --- hover (symbol_map indexed path) ---
+// --- hover ---
 
 type HoverMapSetup = (
     Arc<ParsedDoc>,
@@ -120,7 +92,7 @@ fn hover_cross_file_map((doc, other_docs, other_maps): HoverMapSetup) {
 
 library_benchmark_group!(
     name = hover_group;
-    benchmarks = hover_cross_file_ast, hover_cross_file_map
+    benchmarks = hover_cross_file_map
 );
 
 main!(

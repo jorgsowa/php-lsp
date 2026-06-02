@@ -7,7 +7,6 @@ mod parsing;
 mod symbols;
 
 pub use formatting::format_params_str;
-// Both are public API: hover_info for benchmark crates, hover_info_with_maps for the binary.
 pub use hover_impl::hover_info_with_maps;
 pub use parsing::extract_receiver_var_before_cursor;
 pub use parsing::resolve_use_alias;

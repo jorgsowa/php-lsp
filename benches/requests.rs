@@ -11,7 +11,7 @@ use php_lsp::call_hierarchy::{incoming_calls, outgoing_calls, prepare_call_hiera
 use php_lsp::completion::{CompletionCtx, filtered_completions_at};
 use php_lsp::definition::goto_definition;
 use php_lsp::file_index::FileIndex;
-use php_lsp::hover::{hover_info, hover_info_with_maps};
+use php_lsp::hover::hover_info_with_maps;
 use php_lsp::implementation::find_implementations;
 use php_lsp::references::{SymbolKind, find_references, find_references_with_target};
 use php_lsp::rename::rename;
@@ -107,40 +107,33 @@ fn bench_hover(c: &mut Criterion) {
         .collect();
 
     let mut group = c.benchmark_group("hover");
-    // Single-file: no cross-file lookup, same for both paths.
     group.bench_function("single_method", |b| {
-        b.iter(|| black_box(hover_info(MEDIUM, &medium_doc, None, POS_METHOD, &[])));
-    });
-    group.bench_function("single_member", |b| {
-        b.iter(|| black_box(hover_info(MEDIUM, &medium_doc, None, POS_MEMBER, &[])));
-    });
-
-    // Cross-file AST walk (baseline).
-    group.bench_function("cross_file_ast/service_type", |b| {
         b.iter(|| {
-            black_box(hover_info(
-                CONTROLLER,
-                &ctrl_doc,
+            black_box(hover_info_with_maps(
+                MEDIUM,
+                &medium_doc,
                 None,
-                POS_SERVICE_TYPE,
-                &other_docs,
+                POS_METHOD,
+                &[],
+                &[],
             ))
         });
     });
-    group.bench_function("cross_file_ast/ctor_param", |b| {
+    group.bench_function("single_member", |b| {
         b.iter(|| {
-            black_box(hover_info(
-                CONTROLLER,
-                &ctrl_doc,
+            black_box(hover_info_with_maps(
+                MEDIUM,
+                &medium_doc,
                 None,
-                POS_SERVICE_CTOR,
-                &other_docs,
+                POS_MEMBER,
+                &[],
+                &[],
             ))
         });
     });
 
     // Cross-file with precomputed symbol maps (O(1) lookup).
-    group.bench_function("cross_file_map/service_type", |b| {
+    group.bench_function("cross_file/service_type", |b| {
         b.iter(|| {
             black_box(hover_info_with_maps(
                 CONTROLLER,
@@ -152,7 +145,7 @@ fn bench_hover(c: &mut Criterion) {
             ))
         });
     });
-    group.bench_function("cross_file_map/ctor_param", |b| {
+    group.bench_function("cross_file/ctor_param", |b| {
         b.iter(|| {
             black_box(hover_info_with_maps(
                 CONTROLLER,
@@ -165,39 +158,20 @@ fn bench_hover(c: &mut Criterion) {
         });
     });
 
-    // Scale: 1 / 5 / 10 other files — shows how both paths scale.
+    // Scale: 1 / 5 / 10 other files.
     for &n in &[1usize, 5, 10] {
-        group.bench_with_input(
-            BenchmarkId::new("scale_ast", n),
-            &ten_docs[..n],
-            |b, docs| {
-                b.iter(|| {
-                    black_box(hover_info(
-                        CONTROLLER,
-                        &ctrl_doc,
-                        None,
-                        POS_SERVICE_TYPE,
-                        docs,
-                    ))
-                });
-            },
-        );
-        group.bench_with_input(
-            BenchmarkId::new("scale_map", n),
-            &ten_maps[..n],
-            |b, maps| {
-                b.iter(|| {
-                    black_box(hover_info_with_maps(
-                        CONTROLLER,
-                        &ctrl_doc,
-                        None,
-                        POS_SERVICE_TYPE,
-                        &[],
-                        maps,
-                    ))
-                });
-            },
-        );
+        group.bench_with_input(BenchmarkId::new("scale", n), &ten_maps[..n], |b, maps| {
+            b.iter(|| {
+                black_box(hover_info_with_maps(
+                    CONTROLLER,
+                    &ctrl_doc,
+                    None,
+                    POS_SERVICE_TYPE,
+                    &[],
+                    maps,
+                ))
+            });
+        });
     }
     group.finish();
 }
