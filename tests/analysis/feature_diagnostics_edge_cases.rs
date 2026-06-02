@@ -270,9 +270,12 @@ async fn regression_result_id_is_present() {
     server.open("test1.php", "<?php\n$x = 1;\n").await;
 
     let resp = server.workspace_diagnostic().await;
+    let out = render_workspace_diagnostic(&resp, &server.uri(""));
+    expect![[r#"
+        test1.php
+          <clean>"#]]
+    .assert_eq(&out);
     let items = resp["result"]["items"].as_array().unwrap();
-    assert_eq!(items.len(), 1);
-
     let result_id = &items[0]["resultId"];
     assert!(
         !result_id.is_null(),
@@ -327,16 +330,12 @@ async fn regression_result_id_reflects_all_diagnostic_properties() {
         .await;
 
     let resp1 = server.workspace_diagnostic().await;
+    let out1 = render_workspace_diagnostic(&resp1, &server.uri(""));
+    expect![[r#"
+        props1.php
+          2:0 Function undefined_func() is not defined [UndefinedFunction] (error)"#]]
+    .assert_eq(&out1);
     let items1 = resp1["result"]["items"].as_array().unwrap();
-    assert_eq!(items1.len(), 1);
-
-    // Get the diagnostic to verify its properties
-    let diags1 = items1[0]["items"].as_array().unwrap();
-    assert!(
-        !diags1.is_empty(),
-        "Should have undefined function diagnostic"
-    );
-
     let result_id_1 = items1[0]["resultId"].as_str().unwrap().to_string();
 
     // Open different file with undefined variable (different code/severity)
@@ -382,15 +381,16 @@ async fn regression_result_id_unique_per_file() {
     server.open("file2.php", "<?php\necho 'b';\n").await;
 
     let resp = server.workspace_diagnostic().await;
+    let out = render_workspace_diagnostic(&resp, &server.uri(""));
+    expect![[r#"
+        file1.php
+          <clean>
+        file2.php
+          <clean>"#]]
+    .assert_eq(&out);
     let items = resp["result"]["items"].as_array().unwrap();
-    assert_eq!(items.len(), 2);
-
     let id1 = items[0]["resultId"].as_str().unwrap();
     let id2 = items[1]["resultId"].as_str().unwrap();
-
-    // Each file must have a result_id
-    assert!(!id1.is_empty(), "file1 must have result_id");
-    assert!(!id2.is_empty(), "file2 must have result_id");
 
     // Different files should have different result_ids (different content)
     assert_ne!(

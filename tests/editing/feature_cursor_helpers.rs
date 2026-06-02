@@ -14,15 +14,14 @@ async fn use_insert_line_completion_after_namespace() {
     let mut s = TestServer::new().await;
     s.validate_syntax(false);
     let completion = s
-        .check_completion(
+        .check_completion_ordered(
             r#"<?php
 namespace App\Services;
 class Servi$0
 "#,
         )
         .await;
-    // Completion should work after namespace declaration
-    assert!(!completion.is_empty());
+    expect!["Class       Servi"].assert_eq(&completion);
 }
 
 // ── is_after_arrow tests ────────────────────────────────────────────────

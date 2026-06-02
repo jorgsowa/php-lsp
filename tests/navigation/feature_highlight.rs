@@ -1,6 +1,7 @@
 //! documentHighlight coverage using the `ref`/`read`/`write` annotation tags.
 
 use super::*;
+use expect_test::expect;
 
 #[tokio::test]
 async fn highlight_variable_occurrences_within_function() {
@@ -208,19 +209,26 @@ greet();
     let resp = s.document_highlight(&c.path, c.line, c.character).await;
     assert!(resp["error"].is_null(), "documentHighlight error: {resp:?}");
     let highlights = resp["result"].as_array().expect("array");
-    assert!(!highlights.is_empty(), "should have highlights");
-    let word_len = "greet".chars().map(|ch| ch.len_utf16() as u32).sum::<u32>();
-    for highlight in highlights {
-        let start_char = highlight["range"]["start"]["character"]
-            .as_u64()
-            .unwrap_or(0) as u32;
-        let end_char = highlight["range"]["end"]["character"].as_u64().unwrap_or(0) as u32;
-        let range_len = end_char - start_char;
-        assert_eq!(
-            range_len, word_len,
-            "highlight width should match word length: {range_len} != {word_len}"
-        );
-    }
+    let out = highlights
+        .iter()
+        .map(|h| {
+            let sl = h["range"]["start"]["line"].as_u64().unwrap_or(0);
+            let sc = h["range"]["start"]["character"].as_u64().unwrap_or(0);
+            let ec = h["range"]["end"]["character"].as_u64().unwrap_or(0);
+            let kind = match h["kind"].as_u64() {
+                Some(1) => "text",
+                Some(2) => "read",
+                Some(3) => "write",
+                _ => "?",
+            };
+            format!("{sl}:{sc}-{ec} ({kind})")
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    expect![[r#"
+        1:9-14 (text)
+        2:0-5 (text)"#]]
+    .assert_eq(&out);
 }
 
 #[tokio::test]

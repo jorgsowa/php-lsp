@@ -5,6 +5,24 @@ use super::*;
 use expect_test::expect;
 use serde_json::{Value, json};
 
+fn render_document_links(result: &Value) -> String {
+    let links = result.as_array().cloned().unwrap_or_default();
+    if links.is_empty() {
+        return "<no links>".to_owned();
+    }
+    links
+        .iter()
+        .map(|l| {
+            let sl = l["range"]["start"]["line"].as_u64().unwrap_or(0);
+            let sc = l["range"]["start"]["character"].as_u64().unwrap_or(0);
+            let ec = l["range"]["end"]["character"].as_u64().unwrap_or(0);
+            let target = l["target"].as_str().unwrap_or("<no target>");
+            format!("{sl}:{sc}-{ec} target={target}")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 #[tokio::test]
 async fn document_link_multiple_requires_produce_multiple_links() {
     let mut server = TestServer::new().await;
@@ -16,8 +34,10 @@ async fn document_link_multiple_requires_produce_multiple_links() {
         .await;
     let resp = server.document_link("multi.php").await;
     assert!(resp["error"].is_null(), "error: {resp:?}");
-    let links = resp["result"].as_array().expect("expected array of links");
-    assert_eq!(links.len(), 2, "expected 2 links, got: {links:?}");
+    expect![[r#"
+        1:14-33 target=file:///vendor/autoload.php
+        2:9-23 target=file:///lib/helper.php"#]]
+    .assert_eq(&render_document_links(&resp["result"]));
 }
 
 #[tokio::test]
@@ -31,14 +51,8 @@ async fn document_link_docblock_at_link_produces_http_link() {
         .await;
     let resp = server.document_link("doclink.php").await;
     assert!(resp["error"].is_null(), "error: {resp:?}");
-    let links = resp["result"].as_array().expect("array");
-    assert_eq!(links.len(), 1, "expected 1 link: {links:?}");
-    assert_eq!(
-        links[0]["target"].as_str().unwrap_or(""),
-        "https://php.net/array_map",
-        "link target mismatch: {:?}",
-        links[0]
-    );
+    expect!["1:10-35 target=https://php.net/array_map"]
+        .assert_eq(&render_document_links(&resp["result"]));
 }
 
 #[tokio::test]
