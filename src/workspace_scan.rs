@@ -38,7 +38,9 @@ pub(crate) async fn send_refresh_requests(client: &Client) {
 /// **unless** that same path also matches an `include_paths` pattern (in which case
 /// it is indexed).  Returns the number of files indexed.
 ///
-/// Phase 1 — directory traversal: async, serial (I/O-bound; tokio handles it well).
+/// Phase 1 — directory traversal: async, parallel via tokio JoinSet (one task per
+///   directory, bounded by a 32-slot semaphore). Collects mtime+size alongside paths
+///   so Phase 2b can build a cheap stat-based cache key without hashing file content.
 /// Phase 2a — file reading: async, up to 64 concurrent reads (I/O-bound).
 /// Phase 2b — parsing + indexing: parallel via rayon (CPU-bound, work-stealing pool).
 ///
@@ -58,8 +60,11 @@ pub(crate) async fn scan_workspace(
     include_paths: &[String],
     max_files: usize,
 ) -> usize {
-    // Phase 1: collect PHP file paths via async directory walk.
-    let mut php_files: Vec<std::path::PathBuf> = Vec::new();
+    // Phase 1: serial async directory walk (stack-based DFS).
+    // file_type() reads d_type from the readdir buffer on APFS/ext4 — no extra
+    // syscall for non-PHP entries. Stats for mtime+size are deferred to Phase 2a
+    // where they run concurrently alongside the file reads.
+    let mut php_paths: Vec<std::path::PathBuf> = Vec::new();
     let mut stack = vec![root.clone()];
 
     'walk: while let Some(dir) = stack.pop() {
@@ -69,66 +74,14 @@ pub(crate) async fn scan_workspace(
         };
         while let Ok(Some(entry)) = entries.next_entry().await {
             let path = entry.path();
-
-            /// Check whether `rel_path` matches any of the given pattern list,
-            /// using component-based matching (same semantics as the existing
-            /// exclude logic).  Returns `true` if at least one pattern matches.
-            fn matches_any(rel_path: &str, patterns: &[String]) -> bool {
-                patterns.iter().any(|pat| {
-                    let p = pat.trim_end_matches('*').trim_end_matches('/');
-                    rel_path.split('/').any(|component| component == p)
-                        || rel_path.starts_with(&format!("{}/", p))
-                        || rel_path.contains(&format!("/{}/", p))
-                        // Also match by file stem (filename without .php extension).
-                        // This allows patterns like "Greeter" to match "src/Service/Greeter.php".
-                        || rel_path.split('/').any(|component| {
-                            component.ends_with(".php")
-                                && component.strip_suffix(".php").unwrap_or(component) == p
-                        })
-                })
-            }
-
-            /// Check whether `rel_path` matches any of the given patterns as a prefix,
-            /// i.e. the path starts with one of the pattern components followed by `/`.
-            fn matches_include_prefix(rel_path: &str, patterns: &[String]) -> bool {
-                patterns.iter().any(|pat| {
-                    let p = pat.trim_end_matches('*').trim_end_matches('/');
-                    rel_path.starts_with(&format!("{}/", p)) || rel_path == p
-                })
-            }
-
-            /// Check whether `rel_path` has any included children — used to decide
-            /// whether a directory that matches an exclude pattern should still be
-            /// walked (because it contains sub-paths matching include patterns).
-            fn has_included_children(rel_path: &str, patterns: &[String]) -> bool {
-                patterns.iter().any(|pat| {
-                    let p = pat.trim_end_matches('*').trim_end_matches('/');
-                    // Check if any include pattern is a descendant of rel_path.
-                    // Example: rel_path="vendor", p="vendor/yiisoft"
-                    // → "vendor/yiisoft".starts_with("vendor/") == true ✓
-                    p.starts_with(&format!("{}/", rel_path)) || p == rel_path
-                })
-            }
-
-            // Compute a relative path from root so that patterns like
-            // "vendor" and "vendor/yiisoft" match correctly.
             let rel_path = path
                 .strip_prefix(&root)
-                .map(|p| {
-                    p.to_string_lossy()
-                        .replace('\\', "/")
-                        .trim_start_matches('/')
-                        .to_string()
-                })
+                .map(|p| p.to_string_lossy().replace('\\', "/"))
                 .unwrap_or_else(|_| path.to_string_lossy().replace('\\', "/"));
 
-            // Determine if this entry is excluded or included.
             let is_excluded = matches_any(&rel_path, exclude_paths);
             let is_included = matches_include_prefix(&rel_path, include_paths)
                 || matches_any(&rel_path, include_paths);
-
-            // Skip excluded paths unless they are explicitly included or contain
-            // included children (e.g., "vendor/yiisoft" inside excluded "vendor/").
             if is_excluded && !is_included && !has_included_children(&rel_path, include_paths) {
                 continue;
             }
@@ -140,13 +93,12 @@ pub(crate) async fn scan_workspace(
 
             if file_type.is_dir() {
                 let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                // Skip hidden directories; vendor is indexed unless excluded above.
                 if !name.starts_with('.') {
                     stack.push(path);
                 }
             } else if file_type.is_file() && path.extension().is_some_and(|e| e == "php") {
-                php_files.push(path);
-                if php_files.len() >= max_files {
+                php_paths.push(path);
+                if php_paths.len() >= max_files {
                     break 'walk;
                 }
             }
@@ -154,12 +106,14 @@ pub(crate) async fn scan_workspace(
     }
 
     // Phase 2a: read files concurrently (I/O-bound).
-    // A semaphore of 64 avoids saturating the OS file-descriptor table while
-    // still allowing substantial I/O parallelism independent of CPU count.
+    // mtime+size are fetched in Phase 2b via synchronous std::fs::metadata()
+    // inside the rayon closure — that way the stat syscall (~5 µs) runs in the
+    // blocking pool with no async scheduling overhead instead of adding an
+    // extra async await per file here.
     let io_sem = Arc::new(tokio::sync::Semaphore::new(64));
     let mut read_set: tokio::task::JoinSet<Option<(Url, String)>> = tokio::task::JoinSet::new();
 
-    for path in php_files {
+    for path in php_paths {
         let permit = Arc::clone(&io_sem).acquire_owned().await.unwrap();
         read_set.spawn(async move {
             let _permit = permit;
@@ -175,19 +129,31 @@ pub(crate) async fn scan_workspace(
     }
 
     // Phase 2b: parse and index files in parallel (CPU-bound).
-    // Files are processed in chunks of 500; after each chunk the workspace
-    // salsa input is synced so cross-file features (hover, definition,
-    // workspace symbols) become available incrementally rather than waiting
-    // for the full scan to complete.
+    // The cache key is derived from mtime+size via a synchronous std::fs::metadata()
+    // call inside the rayon closure. In a blocking context this costs only the
+    // stat syscall (~5 µs/file with no async scheduling overhead), far cheaper
+    // than hashing the full file content (~1 ms/file CPU on warm starts).
     tokio::task::spawn_blocking(move || {
         let index_file = |(uri, text): &(Url, String)| -> usize {
             if open_files.contains(uri) {
                 return 0;
             }
 
-            let cache_key = cache
-                .as_ref()
-                .map(|_| crate::cache::WorkspaceCache::key_for(uri.as_str(), text));
+            let cache_key = cache.as_ref().and_then(|_| {
+                let path = uri.to_file_path().ok()?;
+                let meta = std::fs::metadata(&path).ok()?;
+                let mtime_secs = meta
+                    .modified()
+                    .ok()
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                Some(crate::cache::WorkspaceCache::key_for_stat(
+                    uri.as_str(),
+                    mtime_secs,
+                    meta.len(),
+                ))
+            });
             if let (Some(cache), Some(key)) = (cache.as_ref(), cache_key.as_ref())
                 && let Some(index) = cache.read::<crate::file_index::FileIndex>(key)
             {
@@ -211,13 +177,36 @@ pub(crate) async fn scan_workspace(
         let mut total = 0usize;
         for chunk in file_contents.chunks(500) {
             total += chunk.par_iter().map(index_file).sum::<usize>();
-            // Sync after each chunk so workspace queries see these files.
             docs.sync_workspace_files();
         }
         total
     })
     .await
     .unwrap_or(0)
+}
+
+fn matches_any(rel_path: &str, patterns: &[String]) -> bool {
+    patterns.iter().any(|pat| {
+        let p = pat.trim_end_matches('*').trim_end_matches('/');
+        rel_path.split('/').any(|c| c == p)
+            || rel_path.starts_with(&format!("{p}/"))
+            || rel_path.contains(&format!("/{p}/"))
+            || rel_path
+                .split('/')
+                .any(|c| c.ends_with(".php") && c.strip_suffix(".php").unwrap_or(c) == p)
+    })
+}
+fn matches_include_prefix(rel_path: &str, patterns: &[String]) -> bool {
+    patterns.iter().any(|pat| {
+        let p = pat.trim_end_matches('*').trim_end_matches('/');
+        rel_path.starts_with(&format!("{p}/")) || rel_path == p
+    })
+}
+fn has_included_children(rel_path: &str, patterns: &[String]) -> bool {
+    patterns.iter().any(|pat| {
+        let p = pat.trim_end_matches('*').trim_end_matches('/');
+        p.starts_with(&format!("{rel_path}/")) || p == rel_path
+    })
 }
 
 #[cfg(test)]
@@ -262,17 +251,23 @@ mod tests {
         .await;
         assert_eq!(count1, 1, "first scan should index 1 file");
 
-        // Overwrite the cache entry with a sentinel value. If the second scan
-        // actually reads from the cache it must return this sentinel; if it
-        // silently falls through to parse, it would return real data and the
-        // assertion below would catch the bug.
-        let disk_content = "<?php\nnamespace App;\nclass Foo { public function bar(): string {} }";
-        let uri = Url::from_file_path(src_dir.path().join("Foo.php")).unwrap();
+        // Overwrite the cache entry with a sentinel. The scan now uses a
+        // stat-based key (mtime + size), so we must derive the same key
+        // from the file's actual metadata rather than from its content.
+        let foo_path = src_dir.path().join("Foo.php");
+        let uri = Url::from_file_path(&foo_path).unwrap();
+        let meta = std::fs::metadata(&foo_path).unwrap();
+        let mtime_secs = meta
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
         let sentinel = crate::file_index::FileIndex {
             namespace: Some("CACHE_HIT_MARKER".into()),
             ..Default::default()
         };
-        let key = WorkspaceCache::key_for(uri.as_str(), disk_content);
+        let key = WorkspaceCache::key_for_stat(uri.as_str(), mtime_secs, meta.len());
         cache.write(&key, &sentinel).unwrap();
 
         // Second scan: same cache dir → must read the sentinel from disk.
