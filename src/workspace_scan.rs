@@ -223,11 +223,15 @@ pub(crate) async fn scan_workspace(
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::Instant;
 
+    use rayon::prelude::*;
     use tower_lsp::lsp_types::Url;
 
     use super::scan_workspace;
     use crate::cache::WorkspaceCache;
+    use crate::diagnostics::parse_document_no_diags;
     use crate::document_store::DocumentStore;
     use crate::open_files::OpenFiles;
 
@@ -347,5 +351,192 @@ mod tests {
             2,
             "edit must invalidate cached_index so fresh parse + extract runs"
         );
+    }
+
+    /// Detailed phase-by-phase profiling of the scan pipeline.
+    ///
+    /// Run with:
+    ///   cargo test -p php-lsp profile_scan_phases -- --ignored --nocapture
+    ///
+    /// Requires /tmp/wordpress (see tests/workspace/feature_indexing_perf.rs).
+    #[ignore]
+    #[tokio::test]
+    async fn profile_scan_phases() {
+        const ROOT: &str = "/tmp/wordpress";
+        if !std::path::Path::new(ROOT).is_dir() {
+            println!("SKIP: {ROOT} not found");
+            return;
+        }
+
+        let root = std::path::PathBuf::from(ROOT);
+        let rayon_threads = rayon::current_num_threads();
+
+        // ── Phase 1: directory walk ──────────────────────────────────────────
+        let t0 = Instant::now();
+        let mut php_files: Vec<std::path::PathBuf> = Vec::new();
+        let mut stack = vec![root.clone()];
+        while let Some(dir) = stack.pop() {
+            let mut entries = match tokio::fs::read_dir(&dir).await {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
+            while let Ok(Some(entry)) = entries.next_entry().await {
+                let path = entry.path();
+                let file_type = match entry.file_type().await {
+                    Ok(ft) => ft,
+                    Err(_) => continue,
+                };
+                if file_type.is_dir() {
+                    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                    if !name.starts_with('.') {
+                        stack.push(path);
+                    }
+                } else if file_type.is_file() && path.extension().is_some_and(|e| e == "php") {
+                    php_files.push(path);
+                }
+            }
+        }
+        let t_walk = t0.elapsed();
+        let n_files = php_files.len();
+
+        // ── Phase 2a: concurrent file reads ────────────────────────────────
+        let t1 = Instant::now();
+        let sem = Arc::new(tokio::sync::Semaphore::new(64));
+        let mut set: tokio::task::JoinSet<Option<(Url, String, usize)>> =
+            tokio::task::JoinSet::new();
+        for path in php_files {
+            let permit = Arc::clone(&sem).acquire_owned().await.unwrap();
+            set.spawn(async move {
+                let _permit = permit;
+                let text = tokio::fs::read_to_string(&path).await.ok()?;
+                let bytes = text.len();
+                let uri = Url::from_file_path(&path).ok()?;
+                Some((uri, text, bytes))
+            });
+        }
+        let mut file_contents: Vec<(Url, String)> = Vec::new();
+        let mut total_bytes = 0usize;
+        while let Some(Ok(Some((uri, text, bytes)))) = set.join_next().await {
+            total_bytes += bytes;
+            file_contents.push((uri, text));
+        }
+        let t_read = t1.elapsed();
+
+        // ── Phase 2b-cold: parse only (no cache) ───────────────────────────
+        let t2 = Instant::now();
+        let parse_ns = Arc::new(AtomicU64::new(0));
+        let extract_ns = Arc::new(AtomicU64::new(0));
+        let _: Vec<_> = file_contents
+            .par_iter()
+            .map(|(_, text)| {
+                let tp = Instant::now();
+                let doc = parse_document_no_diags(text);
+                parse_ns.fetch_add(tp.elapsed().as_nanos() as u64, Ordering::Relaxed);
+                let te = Instant::now();
+                let _ = crate::file_index::FileIndex::extract(&doc);
+                extract_ns.fetch_add(te.elapsed().as_nanos() as u64, Ordering::Relaxed);
+            })
+            .collect();
+        let t_parse_wall = t2.elapsed();
+        let parse_cpu_ms = parse_ns.load(Ordering::Relaxed) / 1_000_000;
+        let extract_cpu_ms = extract_ns.load(Ordering::Relaxed) / 1_000_000;
+
+        // ── Phase 2b-warm: cache read only ─────────────────────────────────
+        let cache_dir = tempfile::tempdir().unwrap();
+        let cache = WorkspaceCache::with_dir(cache_dir.path().to_path_buf());
+        // Populate the cache first (silent pass).
+        let _: Vec<_> = file_contents
+            .par_iter()
+            .map(|(uri, text)| {
+                let key = WorkspaceCache::key_for(uri.as_str(), text);
+                let doc = parse_document_no_diags(text);
+                let idx = crate::file_index::FileIndex::extract(&doc);
+                let _ = cache.write(&key, &idx);
+            })
+            .collect();
+
+        // Now measure cache read path.
+        let t3 = Instant::now();
+        let hash_ns = Arc::new(AtomicU64::new(0));
+        let cache_read_ns = Arc::new(AtomicU64::new(0));
+        let cache_hits = Arc::new(AtomicU64::new(0));
+        let _: Vec<_> = file_contents
+            .par_iter()
+            .map(|(uri, text)| {
+                let th = Instant::now();
+                let key = WorkspaceCache::key_for(uri.as_str(), text);
+                hash_ns.fetch_add(th.elapsed().as_nanos() as u64, Ordering::Relaxed);
+                let tr = Instant::now();
+                let hit = cache.read::<crate::file_index::FileIndex>(&key).is_some();
+                cache_read_ns.fetch_add(tr.elapsed().as_nanos() as u64, Ordering::Relaxed);
+                if hit {
+                    cache_hits.fetch_add(1, Ordering::Relaxed);
+                }
+            })
+            .collect();
+        let t_cache_wall = t3.elapsed();
+
+        // ── Phase 2b: salsa sync cost ───────────────────────────────────────
+        let docs = Arc::new(DocumentStore::new());
+        let open = crate::open_files::OpenFiles::default();
+        // Populate docs with all files (mirrors text only, no parse).
+        for (uri, text) in &file_contents {
+            docs.mirror_text(uri, text);
+        }
+        let t4 = Instant::now();
+        docs.sync_workspace_files();
+        let t_salsa_sync = t4.elapsed();
+
+        // ── Report ──────────────────────────────────────────────────────────
+        let hits = cache_hits.load(Ordering::Relaxed) as usize;
+        let hash_ms = hash_ns.load(Ordering::Relaxed) / 1_000_000;
+        let cread_ms = cache_read_ns.load(Ordering::Relaxed) / 1_000_000;
+
+        println!();
+        println!("═══ Scan profile: {ROOT} ═══");
+        println!("  rayon threads   : {rayon_threads}");
+        println!("  files           : {n_files}");
+        println!(
+            "  total source    : {:.1} MB",
+            total_bytes as f64 / 1_048_576.0
+        );
+        println!();
+        println!("Phase 1  dir walk         : {t_walk:.2?}  (serial async)");
+        println!("Phase 2a file reads       : {t_read:.2?}  (64 concurrent, {n_files} files)");
+        println!();
+        println!("Phase 2b COLD (parse path):");
+        println!("  wall time (rayon)       : {t_parse_wall:.2?}");
+        println!(
+            "  CPU parse total         : {parse_cpu_ms} ms  ({:.1} ms/file avg)",
+            parse_cpu_ms as f64 / n_files as f64
+        );
+        println!(
+            "  CPU extract total       : {extract_cpu_ms} ms  ({:.1} ms/file avg)",
+            extract_cpu_ms as f64 / n_files as f64
+        );
+        println!(
+            "  parallelism gain        : {:.1}×  ({rayon_threads} threads)",
+            (parse_cpu_ms + extract_cpu_ms) as f64 / t_parse_wall.as_millis() as f64
+        );
+        println!();
+        println!("Phase 2b WARM (cache path):");
+        println!("  wall time (rayon)       : {t_cache_wall:.2?}  ({hits}/{n_files} hits)");
+        println!(
+            "  CPU blake3 hash total   : {hash_ms} ms  ({:.2} ms/file avg)",
+            hash_ms as f64 / n_files as f64
+        );
+        println!(
+            "  CPU cache read total    : {cread_ms} ms  ({:.2} ms/file avg)",
+            cread_ms as f64 / n_files as f64
+        );
+        println!();
+        println!("Salsa sync (one call, {n_files} files): {t_salsa_sync:.2?}");
+        println!();
+        println!(
+            "Bottleneck on cold start  : parse ({:.0}% of 2b wall)",
+            parse_cpu_ms as f64 / rayon_threads as f64 / t_parse_wall.as_millis() as f64 * 100.0
+        );
+        println!("Bottleneck on warm start  : cache read + blake3 hash");
+        println!("Mir involvement in scan   : NONE (mir runs on demand for diagnostics only)");
     }
 }
