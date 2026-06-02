@@ -1,7 +1,7 @@
 /// `textDocument/typeDefinition` — jump to the class declaration of the type
 /// of the symbol under the cursor.
 ///
-/// Works for variables assigned via `$var = new ClassName()` (leverages `TypeMap`)
+/// Works for variables resolved by mir (flow-sensitive, generics/unions)
 /// and for function parameters with a declared type hint.
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -12,7 +12,6 @@ use tower_lsp::lsp_types::{Location, Position, Range, Url};
 use crate::ast::{ParsedDoc, SourceView, format_type_hint, str_offset_in_range};
 use crate::moniker::resolve_fqn;
 use crate::references::collect_class_imports;
-use crate::type_map::TypeMap;
 use crate::util::{fqn_short_name, word_at_position, word_range_at, zero_width_range};
 use mir_analyzer::FileAnalysis;
 
@@ -48,14 +47,8 @@ fn resolve_type_at_cursor(
                 Some(joined) => joined,
                 // Fallback: parameter *declarations* record no mir symbol (mir
                 // records variable *uses* in bodies, not binding sites). Resolve
-                // the declared hint straight from the AST. Then fall back to
-                // TypeMap for assignments mir resolves to `mixed` — notably
-                // `$x = Enum::Case` (a `Name::member` const expr) in mir 0.30.0.
-                None => param_decl_type(source, doc, &imports, &word, position).or_else(|| {
-                    TypeMap::from_doc_with_meta(doc, None, None)
-                        .get(&word)
-                        .map(|short| resolve_fqn(doc, short, &imports))
-                })?,
+                // the declared hint straight from the AST.
+                None => param_decl_type(source, doc, &imports, &word, position)?,
             }
         } else {
             match param_type_for(&doc.program().stmts, &word) {
@@ -188,16 +181,14 @@ fn type_candidates(type_hint: &str) -> Vec<&str> {
         .collect()
 }
 
-/// Resolve the declared type of a parameter (or other binding site mir doesn't
-/// record) named `word` at `position`, to a `|`-joined string of FQNs that the
-/// downstream `type_candidates` search can consume.
+/// Resolve the declared type of a parameter named `word` at `position`, to a
+/// `|`-joined string of FQNs that the downstream `type_candidates` search can
+/// consume. mir records variable *uses* in bodies but not binding sites, so
+/// this AST fallback handles parameter declarations.
 ///
-/// This is the AST-only glue that replaces `TypeMap.get` for declaration sites:
-/// it reads the parameter's type hint, strips the nullable `?`, splits unions /
-/// intersections, resolves `self`/`static`/`parent` against the enclosing class
-/// (via the structural helpers that stay), and qualifies the rest through the
-/// file's namespace + `use` imports. It performs no flow/expression inference —
-/// that is mir's job, consulted first by the caller.
+/// Reads the type hint, strips nullable `?`, splits unions/intersections,
+/// resolves `self`/`static`/`parent` against the enclosing class, and
+/// qualifies the rest through the file's namespace + `use` imports.
 fn param_decl_type(
     source: &str,
     doc: &ParsedDoc,

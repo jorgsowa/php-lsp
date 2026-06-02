@@ -40,7 +40,7 @@ fn method_signature(m: &MethodDecl<'_, '_>) -> String {
 }
 
 /// Render the hover signature for a resolved declaration. Returns `None` for
-/// kinds hover handles elsewhere (properties via the type-map path).
+/// kinds hover handles elsewhere (properties via the mir-primary path).
 fn declaration_signature(decl: &Declaration<'_>, word: &str) -> Option<String> {
     let sig = match decl {
         Declaration::Function { decl: f, .. } => {
@@ -107,14 +107,14 @@ fn declaration_signature(decl: &Declaration<'_>, word: &str) -> Option<String> {
                 .unwrap_or_default();
             format!("case {}::{}{}", enum_name, case.name, value_str)
         }
-        // Properties are rendered through the type-map path, not here.
+        // Properties are rendered through the mir-primary path, not here.
         Declaration::Property { .. } | Declaration::PromotedParam { .. } => return None,
     };
     Some(sig)
 }
 
 /// Hover handles every declaration kind except properties (covered by the
-/// dedicated type-map path) and promoted parameters.
+/// dedicated mir-primary path) and promoted parameters.
 fn is_hoverable(decl: &Declaration<'_>) -> bool {
     !matches!(
         decl,
@@ -273,9 +273,8 @@ pub fn hover_at(
     // Hover on $variable shows its inferred type. mir-primary: when mir
     // recorded a class-typed symbol, show its full rendering (generics, unions,
     // narrowing — e.g. `Collection<User>`, `Foo|Bar`). Scalar/`mixed` types are
-    // skipped so we keep the legacy "no hover for untyped vars" behaviour and
-    // fall through to the TypeMap short-name path (which also covers binding
-    // sites mir resolves to `mixed`, e.g. `$x = Enum::Case`).
+    // skipped so we fall through to the TypeMap short-name fallback (covers
+    // bindings where mir records no class-typed symbol).
     if word.starts_with('$') {
         if let Some(ty) = analysis.and_then(|a| {
             let off =
@@ -501,7 +500,7 @@ pub fn hover_at(
 
 /// Produce hover markdown for a member access resolved by mir. Returns the
 /// hover value string (not the full `Hover` struct — the caller wraps it).
-/// `None` means mir has no symbol here; fall through to the TypeMap path.
+/// `None` means mir has no symbol here; the caller falls through to `resolve_declaration`.
 fn mir_member_hover(
     sym: &mir_analyzer::ResolvedSymbol,
     word: &str,
