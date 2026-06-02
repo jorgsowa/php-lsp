@@ -60,50 +60,60 @@ pub(crate) async fn scan_workspace(
     include_paths: &[String],
     max_files: usize,
 ) -> usize {
-    // Phase 1: serial async directory walk (stack-based DFS).
-    // file_type() reads d_type from the readdir buffer on APFS/ext4 — no extra
-    // syscall for non-PHP entries. Stats for mtime+size are deferred to Phase 2a
-    // where they run concurrently alongside the file reads.
-    let mut php_paths: Vec<std::path::PathBuf> = Vec::new();
-    let mut stack = vec![root.clone()];
-
-    'walk: while let Some(dir) = stack.pop() {
-        let mut entries = match tokio::fs::read_dir(&dir).await {
-            Ok(e) => e,
-            Err(_) => continue,
-        };
-        while let Ok(Some(entry)) = entries.next_entry().await {
-            let path = entry.path();
-            let rel_path = path
-                .strip_prefix(&root)
-                .map(|p| p.to_string_lossy().replace('\\', "/"))
-                .unwrap_or_else(|_| path.to_string_lossy().replace('\\', "/"));
-
-            let is_excluded = matches_any(&rel_path, exclude_paths);
-            let is_included = matches_include_prefix(&rel_path, include_paths)
-                || matches_any(&rel_path, include_paths);
-            if is_excluded && !is_included && !has_included_children(&rel_path, include_paths) {
-                continue;
-            }
-
-            let file_type = match entry.file_type().await {
-                Ok(ft) => ft,
+    // Phase 1: synchronous directory walk in the blocking pool.
+    //
+    // The async version called next_entry().await and file_type().await for
+    // every entry. On APFS/ext4 file_type() is a free readdir-buffer read, but
+    // each .await still pays a full tokio yield+schedule cycle (~50 µs).
+    // Across ~5 000 total entries that adds up to 100–200 ms of pure scheduler
+    // overhead with zero I/O benefit. Moving the walk to spawn_blocking cuts
+    // it to a handful of syscalls and eliminates the scheduler tax entirely.
+    let root2 = root.clone();
+    let excl: Vec<String> = exclude_paths.to_vec();
+    let incl: Vec<String> = include_paths.to_vec();
+    let php_paths: Vec<std::path::PathBuf> = tokio::task::spawn_blocking(move || {
+        let mut out = Vec::new();
+        let mut stack = vec![root2.clone()];
+        'walk: while let Some(dir) = stack.pop() {
+            let rd = match std::fs::read_dir(&dir) {
+                Ok(r) => r,
                 Err(_) => continue,
             };
+            for entry in rd.flatten() {
+                let path = entry.path();
+                let rel_path = path
+                    .strip_prefix(&root2)
+                    .map(|p| p.to_string_lossy().replace('\\', "/"))
+                    .unwrap_or_else(|_| path.to_string_lossy().replace('\\', "/"));
 
-            if file_type.is_dir() {
-                let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                if !name.starts_with('.') {
-                    stack.push(path);
+                let is_excluded = matches_any(&rel_path, &excl);
+                let is_included =
+                    matches_include_prefix(&rel_path, &incl) || matches_any(&rel_path, &incl);
+                if is_excluded && !is_included && !has_included_children(&rel_path, &incl) {
+                    continue;
                 }
-            } else if file_type.is_file() && path.extension().is_some_and(|e| e == "php") {
-                php_paths.push(path);
-                if php_paths.len() >= max_files {
-                    break 'walk;
+
+                let ft = match entry.file_type() {
+                    Ok(f) => f,
+                    Err(_) => continue,
+                };
+                if ft.is_dir() {
+                    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                    if !name.starts_with('.') {
+                        stack.push(path);
+                    }
+                } else if ft.is_file() && path.extension().is_some_and(|e| e == "php") {
+                    out.push(path);
+                    if out.len() >= max_files {
+                        break 'walk;
+                    }
                 }
             }
         }
-    }
+        out
+    })
+    .await
+    .unwrap_or_default();
 
     // Phase 2a: read files concurrently (I/O-bound).
     // mtime+size are fetched in Phase 2b via synchronous std::fs::metadata()
@@ -348,58 +358,88 @@ mod tests {
         );
     }
 
-    /// Detailed phase-by-phase profiling of the scan pipeline.
-    ///
-    /// Run with:
-    ///   cargo test -p php-lsp profile_scan_phases -- --ignored --nocapture
-    ///
-    /// Requires /tmp/wordpress (see tests/workspace/feature_indexing_perf.rs).
+    /// Phase-by-phase profiling. Run in release for meaningful numbers:
+    ///   cargo test -p php-lsp profile_scan_phases --release -- --ignored --nocapture
     #[ignore]
     #[tokio::test]
     async fn profile_scan_phases() {
-        const ROOT: &str = "/tmp/wordpress";
-        if !std::path::Path::new(ROOT).is_dir() {
-            println!("SKIP: {ROOT} not found");
-            return;
+        for root_str in ["/tmp/wordpress", "/tmp/laravel-framework"] {
+            if !std::path::Path::new(root_str).is_dir() {
+                println!("SKIP: {root_str} not found");
+                continue;
+            }
+            profile_one(root_str).await;
         }
+    }
 
-        let root = std::path::PathBuf::from(ROOT);
+    async fn profile_one(root_str: &str) {
+        let root = std::path::PathBuf::from(root_str);
         let rayon_threads = rayon::current_num_threads();
 
-        // ── Phase 1: directory walk ──────────────────────────────────────────
+        // ── Phase 1: async serial walk (current production code) ────────────
         let t0 = Instant::now();
-        let mut php_files: Vec<std::path::PathBuf> = Vec::new();
+        let mut php_paths: Vec<std::path::PathBuf> = Vec::new();
         let mut stack = vec![root.clone()];
         while let Some(dir) = stack.pop() {
-            let mut entries = match tokio::fs::read_dir(&dir).await {
+            let mut rd = match tokio::fs::read_dir(&dir).await {
                 Ok(e) => e,
                 Err(_) => continue,
             };
-            while let Ok(Some(entry)) = entries.next_entry().await {
+            while let Ok(Some(entry)) = rd.next_entry().await {
                 let path = entry.path();
-                let file_type = match entry.file_type().await {
-                    Ok(ft) => ft,
+                let ft = match entry.file_type().await {
+                    Ok(f) => f,
                     Err(_) => continue,
                 };
-                if file_type.is_dir() {
+                if ft.is_dir() {
                     let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
                     if !name.starts_with('.') {
                         stack.push(path);
                     }
-                } else if file_type.is_file() && path.extension().is_some_and(|e| e == "php") {
-                    php_files.push(path);
+                } else if ft.is_file() && path.extension().is_some_and(|e| e == "php") {
+                    php_paths.push(path);
                 }
             }
         }
-        let t_walk = t0.elapsed();
-        let n_files = php_files.len();
+        let t_walk_async = t0.elapsed();
 
-        // ── Phase 2a: concurrent file reads ────────────────────────────────
+        // ── Phase 1 alternative: sync walk in spawn_blocking ────────────────
+        let root2 = root.clone();
         let t1 = Instant::now();
+        let _php_sync: Vec<std::path::PathBuf> = tokio::task::spawn_blocking(move || {
+            let mut out = Vec::new();
+            let mut stack = vec![root2];
+            while let Some(dir) = stack.pop() {
+                if let Ok(rd) = std::fs::read_dir(&dir) {
+                    for entry in rd.flatten() {
+                        let path = entry.path();
+                        if let Ok(ft) = entry.file_type() {
+                            if ft.is_dir() {
+                                let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                                if !name.starts_with('.') {
+                                    stack.push(path);
+                                }
+                            } else if ft.is_file() && path.extension().is_some_and(|e| e == "php") {
+                                out.push(path);
+                            }
+                        }
+                    }
+                }
+            }
+            out
+        })
+        .await
+        .unwrap();
+        let t_walk_sync = t1.elapsed();
+        let n_files = php_paths.len();
+
+        // ── Phase 2a: concurrent reads ──────────────────────────────────────
+        let t2 = Instant::now();
         let sem = Arc::new(tokio::sync::Semaphore::new(64));
         let mut set: tokio::task::JoinSet<Option<(Url, String, usize)>> =
             tokio::task::JoinSet::new();
-        for path in php_files {
+        for path in &php_paths {
+            let path = path.clone();
             let permit = Arc::clone(&sem).acquire_owned().await.unwrap();
             set.spawn(async move {
                 let _permit = permit;
@@ -415,123 +455,136 @@ mod tests {
             total_bytes += bytes;
             file_contents.push((uri, text));
         }
-        let t_read = t1.elapsed();
+        let t_read = t2.elapsed();
 
-        // ── Phase 2b-cold: parse only (no cache) ───────────────────────────
-        let t2 = Instant::now();
+        // ── Phase 2b-cold: parse + extract (rayon) ──────────────────────────
+        let t3 = Instant::now();
         let parse_ns = Arc::new(AtomicU64::new(0));
         let extract_ns = Arc::new(AtomicU64::new(0));
-        let _: Vec<_> = file_contents
-            .par_iter()
-            .map(|(_, text)| {
-                let tp = Instant::now();
-                let doc = parse_document_no_diags(text);
-                parse_ns.fetch_add(tp.elapsed().as_nanos() as u64, Ordering::Relaxed);
-                let te = Instant::now();
-                let _ = crate::file_index::FileIndex::extract(&doc);
-                extract_ns.fetch_add(te.elapsed().as_nanos() as u64, Ordering::Relaxed);
-            })
-            .collect();
-        let t_parse_wall = t2.elapsed();
+        file_contents.par_iter().for_each(|(_, text)| {
+            let tp = Instant::now();
+            let doc = parse_document_no_diags(text);
+            parse_ns.fetch_add(tp.elapsed().as_nanos() as u64, Ordering::Relaxed);
+            let te = Instant::now();
+            let _ = crate::file_index::FileIndex::extract(&doc);
+            extract_ns.fetch_add(te.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        });
+        let t_parse_wall = t3.elapsed();
         let parse_cpu_ms = parse_ns.load(Ordering::Relaxed) / 1_000_000;
         let extract_cpu_ms = extract_ns.load(Ordering::Relaxed) / 1_000_000;
 
-        // ── Phase 2b-warm: cache read only ─────────────────────────────────
+        // ── Phase 2b-warm: mtime key + cache read (current production) ──────
         let cache_dir = tempfile::tempdir().unwrap();
         let cache = WorkspaceCache::with_dir(cache_dir.path().to_path_buf());
-        // Populate the cache first (silent pass).
-        let _: Vec<_> = file_contents
-            .par_iter()
-            .map(|(uri, text)| {
-                let key = WorkspaceCache::key_for(uri.as_str(), text);
-                let doc = parse_document_no_diags(text);
-                let idx = crate::file_index::FileIndex::extract(&doc);
-                let _ = cache.write(&key, &idx);
-            })
-            .collect();
-
-        // Now measure cache read path.
-        let t3 = Instant::now();
-        let hash_ns = Arc::new(AtomicU64::new(0));
-        let cache_read_ns = Arc::new(AtomicU64::new(0));
-        let cache_hits = Arc::new(AtomicU64::new(0));
-        let _: Vec<_> = file_contents
-            .par_iter()
-            .map(|(uri, text)| {
-                let th = Instant::now();
-                let key = WorkspaceCache::key_for(uri.as_str(), text);
-                hash_ns.fetch_add(th.elapsed().as_nanos() as u64, Ordering::Relaxed);
-                let tr = Instant::now();
-                let hit = cache.read::<crate::file_index::FileIndex>(&key).is_some();
-                cache_read_ns.fetch_add(tr.elapsed().as_nanos() as u64, Ordering::Relaxed);
-                if hit {
-                    cache_hits.fetch_add(1, Ordering::Relaxed);
+        // Populate cache via stat key.
+        file_contents.par_iter().for_each(|(uri, text)| {
+            if let Some(path) = uri.to_file_path().ok() {
+                if let Ok(meta) = std::fs::metadata(&path) {
+                    let mtime = meta
+                        .modified()
+                        .ok()
+                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                        .map(|d| d.as_secs())
+                        .unwrap_or(0);
+                    let key = WorkspaceCache::key_for_stat(uri.as_str(), mtime, meta.len());
+                    let doc = parse_document_no_diags(text);
+                    let idx = crate::file_index::FileIndex::extract(&doc);
+                    let _ = cache.write(&key, &idx);
                 }
-            })
-            .collect();
-        let t_cache_wall = t3.elapsed();
+            }
+        });
+        let t4 = Instant::now();
+        let stat_ns = Arc::new(AtomicU64::new(0));
+        let cache_read_ns = Arc::new(AtomicU64::new(0));
+        let hits = Arc::new(AtomicU64::new(0));
+        file_contents.par_iter().for_each(|(uri, _)| {
+            if let Some(path) = uri.to_file_path().ok() {
+                let ts = Instant::now();
+                let meta = std::fs::metadata(&path).ok();
+                stat_ns.fetch_add(ts.elapsed().as_nanos() as u64, Ordering::Relaxed);
+                if let Some(meta) = meta {
+                    let mtime = meta
+                        .modified()
+                        .ok()
+                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                        .map(|d| d.as_secs())
+                        .unwrap_or(0);
+                    let key = WorkspaceCache::key_for_stat(uri.as_str(), mtime, meta.len());
+                    let tr = Instant::now();
+                    if cache.read::<crate::file_index::FileIndex>(&key).is_some() {
+                        hits.fetch_add(1, Ordering::Relaxed);
+                    }
+                    cache_read_ns.fetch_add(tr.elapsed().as_nanos() as u64, Ordering::Relaxed);
+                }
+            }
+        });
+        let t_warm_wall = t4.elapsed();
 
-        // ── Phase 2b: salsa sync cost ───────────────────────────────────────
+        // ── Salsa sync ───────────────────────────────────────────────────────
         let docs = Arc::new(DocumentStore::new());
-        let open = crate::open_files::OpenFiles::default();
-        // Populate docs with all files (mirrors text only, no parse).
         for (uri, text) in &file_contents {
             docs.mirror_text(uri, text);
         }
-        let t4 = Instant::now();
+        let t5 = Instant::now();
         docs.sync_workspace_files();
-        let t_salsa_sync = t4.elapsed();
+        let t_salsa = t5.elapsed();
 
-        // ── Report ──────────────────────────────────────────────────────────
-        let hits = cache_hits.load(Ordering::Relaxed) as usize;
-        let hash_ms = hash_ns.load(Ordering::Relaxed) / 1_000_000;
+        // ── Report ───────────────────────────────────────────────────────────
+        let h = hits.load(Ordering::Relaxed) as usize;
+        let stat_ms = stat_ns.load(Ordering::Relaxed) / 1_000_000;
         let cread_ms = cache_read_ns.load(Ordering::Relaxed) / 1_000_000;
 
         println!();
-        println!("═══ Scan profile: {ROOT} ═══");
-        println!("  rayon threads   : {rayon_threads}");
-        println!("  files           : {n_files}");
+        println!("═══ {root_str} ═══");
         println!(
-            "  total source    : {:.1} MB",
+            "  {n_files} files  {:.1} MB  {rayon_threads} rayon threads",
             total_bytes as f64 / 1_048_576.0
         );
         println!();
-        println!("Phase 1  dir walk         : {t_walk:.2?}  (serial async)");
-        println!("Phase 2a file reads       : {t_read:.2?}  (64 concurrent, {n_files} files)");
+        println!("Phase 1  async walk (current)  : {t_walk_async:.2?}");
+        println!("Phase 1  sync  walk (blocking)  : {t_walk_sync:.2?}  ← potential gain");
+        println!("Phase 2a reads  (64-concurrent) : {t_read:.2?}");
         println!();
-        println!("Phase 2b COLD (parse path):");
-        println!("  wall time (rayon)       : {t_parse_wall:.2?}");
+        println!("Phase 2b COLD");
+        println!("  wall (rayon {rayon_threads}T)         : {t_parse_wall:.2?}");
         println!(
-            "  CPU parse total         : {parse_cpu_ms} ms  ({:.1} ms/file avg)",
+            "  CPU parse                   : {parse_cpu_ms} ms  ({:.2} ms/file)",
             parse_cpu_ms as f64 / n_files as f64
         );
         println!(
-            "  CPU extract total       : {extract_cpu_ms} ms  ({:.1} ms/file avg)",
+            "  CPU extract                 : {extract_cpu_ms} ms  ({:.2} ms/file)",
             extract_cpu_ms as f64 / n_files as f64
         );
         println!(
-            "  parallelism gain        : {:.1}×  ({rayon_threads} threads)",
+            "  parallelism gain            : {:.1}×",
             (parse_cpu_ms + extract_cpu_ms) as f64 / t_parse_wall.as_millis() as f64
         );
         println!();
-        println!("Phase 2b WARM (cache path):");
-        println!("  wall time (rayon)       : {t_cache_wall:.2?}  ({hits}/{n_files} hits)");
+        println!("Phase 2b WARM (mtime key)");
         println!(
-            "  CPU blake3 hash total   : {hash_ms} ms  ({:.2} ms/file avg)",
-            hash_ms as f64 / n_files as f64
+            "  wall (rayon {rayon_threads}T)         : {t_warm_wall:.2?}  ({h}/{n_files} hits)"
         );
         println!(
-            "  CPU cache read total    : {cread_ms} ms  ({:.2} ms/file avg)",
+            "  CPU stat total              : {stat_ms} ms  ({:.3} ms/file)",
+            stat_ms as f64 / n_files as f64
+        );
+        println!(
+            "  CPU cache read total        : {cread_ms} ms  ({:.3} ms/file)",
             cread_ms as f64 / n_files as f64
         );
         println!();
-        println!("Salsa sync (one call, {n_files} files): {t_salsa_sync:.2?}");
+        println!("Salsa sync ({n_files} files)          : {t_salsa:.2?}");
         println!();
         println!(
-            "Bottleneck on cold start  : parse ({:.0}% of 2b wall)",
-            parse_cpu_ms as f64 / rayon_threads as f64 / t_parse_wall.as_millis() as f64 * 100.0
+            "Cold bottleneck  parse {:.0}% + reads {:.0}% + walk {:.0}%",
+            t_parse_wall.as_millis() as f64
+                / (t_walk_async + t_read + t_parse_wall).as_millis() as f64
+                * 100.0,
+            t_read.as_millis() as f64 / (t_walk_async + t_read + t_parse_wall).as_millis() as f64
+                * 100.0,
+            t_walk_async.as_millis() as f64
+                / (t_walk_async + t_read + t_parse_wall).as_millis() as f64
+                * 100.0,
         );
-        println!("Bottleneck on warm start  : cache read + blake3 hash");
-        println!("Mir involvement in scan   : NONE (mir runs on demand for diagnostics only)");
     }
 }
