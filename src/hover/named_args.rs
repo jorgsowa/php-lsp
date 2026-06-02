@@ -1,7 +1,10 @@
+use std::cell::OnceCell;
+
 use php_ast::{ClassMemberKind, NamespaceBody, Param, Stmt, StmtKind};
 use tower_lsp::lsp_types::Position;
 
 use crate::ast::{ParsedDoc, format_type_hint};
+use crate::type_map::TypeMap;
 use crate::util::{fqn_short_name, utf16_offset_to_byte};
 
 /// Resolve the class(es) of a named-argument call's receiver variable, for
@@ -15,6 +18,7 @@ fn resolve_method_receiver_class(
     position: Position,
     receiver_var: &str,
     analysis: Option<&mir_analyzer::FileAnalysis>,
+    type_map_cell: &OnceCell<TypeMap>,
 ) -> Option<String> {
     if let Some(a) = analysis
         && let Some(offset) = receiver_var_offset(source, doc, position, receiver_var)
@@ -28,8 +32,8 @@ fn resolve_method_receiver_class(
             return Some(names.join("|"));
         }
     }
-    // TypeMap fallback.
-    let type_map = crate::type_map::TypeMap::from_doc_at_position(doc, None, position);
+    // TypeMap fallback — reuse the caller's OnceCell to avoid a second build.
+    let type_map = type_map_cell.get_or_init(|| TypeMap::from_doc_at_position(doc, None, position));
     if receiver_var == "$this" {
         crate::type_map::enclosing_class_at(source, doc, position)
     } else {
@@ -233,6 +237,7 @@ pub(crate) fn named_arg_hover_value(
     callee: &NamedArgCallee,
     label: &str,
     analysis: Option<&mir_analyzer::FileAnalysis>,
+    type_map_cell: &OnceCell<TypeMap>,
 ) -> Option<String> {
     let all_docs = || std::iter::once(doc).chain(other_docs.iter().map(|(_, d)| d.as_ref()));
 
@@ -248,8 +253,14 @@ pub(crate) fn named_arg_hover_value(
             None
         }
         NamedArgCallee::Method(receiver_var, method_name) => {
-            let class_name =
-                resolve_method_receiver_class(source, doc, position, receiver_var, analysis)?;
+            let class_name = resolve_method_receiver_class(
+                source,
+                doc,
+                position,
+                receiver_var,
+                analysis,
+                type_map_cell,
+            )?;
             let first_class = class_name
                 .split('|')
                 .next()

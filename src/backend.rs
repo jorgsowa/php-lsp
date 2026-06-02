@@ -1409,8 +1409,7 @@ impl LanguageServer for Backend {
                 None => return Ok(None),
             };
             // Search current file's ParsedDoc first (fast), then fall back to index search.
-            let empty_other_docs: Vec<(Url, Arc<ParsedDoc>)> = vec![];
-            if let Some(loc) = goto_definition(uri, &source, &doc, &empty_other_docs, position) {
+            if let Some(loc) = goto_definition(uri, &source, &doc, &[], position) {
                 return Ok(Some(GotoDefinitionResponse::Scalar(loc)));
             }
             // Receiver-aware method dispatch: `$var->method()` must jump to the

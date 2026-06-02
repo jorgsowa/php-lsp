@@ -220,14 +220,28 @@ pub fn hover_at(
         }
     }
 
+    // TypeMap is expensive; build lazily and reuse across branches (including
+    // named-arg resolution below, which also needs a TypeMap as a mir fallback).
+    let type_map_cell: OnceCell<TypeMap> = OnceCell::new();
+    let type_map =
+        || type_map_cell.get_or_init(|| TypeMap::from_doc_at_position(doc, None, position));
+
     // Named argument hover: `foo(label: $x)` — hovering the label shows the
     // parameter type and description.
     if let Some(line_text) = source.lines().nth(position.line as usize)
         && !word.starts_with('$')
         && is_named_arg_at(line_text, position.character as usize, &word)
         && let Some(callee) = extract_named_arg_callee(line_text, position.character as usize)
-        && let Some(value) =
-            named_arg_hover_value(source, doc, other_docs, position, &callee, &word, analysis)
+        && let Some(value) = named_arg_hover_value(
+            source,
+            doc,
+            other_docs,
+            position,
+            &callee,
+            &word,
+            analysis,
+            &type_map_cell,
+        )
     {
         return Some(Hover {
             contents: HoverContents::Markup(MarkupContent {
@@ -237,11 +251,6 @@ pub fn hover_at(
             range: hover_range,
         });
     }
-
-    // TypeMap is expensive; build lazily and reuse across branches.
-    let type_map_cell: OnceCell<TypeMap> = OnceCell::new();
-    let type_map =
-        || type_map_cell.get_or_init(|| TypeMap::from_doc_at_position(doc, None, position));
 
     // Hover on $variable shows its inferred type. mir-primary: when mir
     // recorded a class-typed symbol, show its full rendering (generics, unions,
