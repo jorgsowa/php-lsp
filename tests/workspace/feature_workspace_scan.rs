@@ -854,6 +854,49 @@ async fn include_paths_from_php_lsp_json() {
     );
 }
 
+// ── Chunked scan completeness ─────────────────────────────────────────────────
+
+/// Verify that every file in a multi-file workspace appears in the workspace
+/// index after `indexReady`.  The scan pipeline processes files in 500-file
+/// chunks; this test guards against the last partial chunk being silently
+/// dropped so that all declared classes remain discoverable.
+#[serial_test::serial]
+#[tokio::test]
+async fn all_scanned_files_appear_in_workspace_index_after_index_ready() {
+    let tmp = tempfile::tempdir().expect("create TempDir");
+    let mut server = TestServer::with_root(tmp.path()).await;
+
+    let classes = [
+        ("src/Alpha.php", "Alpha"),
+        ("src/Beta.php", "Beta"),
+        ("src/Gamma.php", "Gamma"),
+        ("src/Sub/Delta.php", "Delta"),
+        ("src/Sub/Epsilon.php", "Epsilon"),
+    ];
+
+    for (path, name) in &classes {
+        server.write_file(
+            path,
+            &format!("<?php\nnamespace App;\n\nclass {name} {{}}\n"),
+        );
+    }
+
+    server.wait_for_index_ready().await;
+
+    for (_, name) in &classes {
+        let resp = server.workspace_symbols(name).await;
+        let found = resp["result"]
+            .as_array()
+            .map(|a| !a.is_empty())
+            .unwrap_or(false);
+        assert!(
+            found,
+            "class {name} should appear in workspace index after indexReady, got: {:?}",
+            resp["result"]
+        );
+    }
+}
+
 // Note: `include_paths_concatenated_with_editor_config` was removed because
 // it relied on `change_configuration`, which triggers a server→client
 // `workspace/configuration` request that the test harness does not handle
