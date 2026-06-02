@@ -398,8 +398,7 @@ pub(super) fn resolve_receiver_class(
             .or_else(|| analysis.and_then(|a| receiver_class_at(a, var_offset)))
             .or_else(|| type_map.get("$this").map(str::to_owned));
     }
-    // mir-primary; TypeMap covers gaps where mir records no type (e.g.
-    // `$x = Enum::Case`, which mir 0.30.0 resolves to `mixed`).
+    // mir-primary; TypeMap covers gaps where mir records no class-typed symbol.
     analysis
         .and_then(|a| receiver_class_at(a, var_offset))
         .or_else(|| type_map.get(&var_name).map(str::to_owned))

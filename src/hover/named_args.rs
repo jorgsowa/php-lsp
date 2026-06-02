@@ -7,9 +7,8 @@ use crate::util::{fqn_short_name, utf16_offset_to_byte};
 /// Resolve the class(es) of a named-argument call's receiver variable, for
 /// looking up the method's parameter signature. mir-primary: locate the
 /// receiver occurrence (`$recv->method(`) before the cursor and read mir's
-/// recorded type there; fall back to TypeMap for binding sites mir resolves to
-/// `mixed` (e.g. `$x = Enum::Case`). Returns short class names, `|`-joined for
-/// unions.
+/// recorded type there; fall back to TypeMap for patterns mir does not yet
+/// resolve. Returns short class names, `|`-joined for unions.
 fn resolve_method_receiver_class(
     source: &str,
     doc: &ParsedDoc,
