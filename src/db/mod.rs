@@ -4,15 +4,13 @@
 //! issues, references) is owned by `AnalysisSession` in `DocumentStore`.
 //! Salsa here is now responsible for the LSP-side compact representations
 //! only: parsed AST cache (`parse`), per-file declaration index (`index`),
-//! method-return-type cache (`method_returns`), workspace aggregation
-//! (`workspace_index`). These power cross-file LSP features
-//! (workspace symbols, document symbols, find-implementations, hover from
-//! index) that don't require the analyzer's full type system.
+//! workspace aggregation (`workspace_index`). These power cross-file LSP
+//! features (workspace symbols, document symbols, find-implementations, hover
+//! from index) that don't require the analyzer's full type system.
 
 pub mod analysis;
 pub mod index;
 pub mod input;
-pub mod method_returns;
 pub mod parse;
 pub mod workspace_index;
 

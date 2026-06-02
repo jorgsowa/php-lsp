@@ -1,14 +1,9 @@
 /// Core AST infrastructure: arena-backed `ParsedDoc`, span utilities, and TypeHint formatting.
-use std::collections::HashMap;
 use std::mem::ManuallyDrop;
 use std::sync::{Arc, LazyLock, Mutex};
 
 use php_ast::{Program, Span, TypeHint, TypeHintKind};
 use tower_lsp::lsp_types::{Position, Range};
-
-/// Cached per-doc map of `class_name -> method_name -> return_class_name`.
-/// Exposed here (rather than in `type_map`) because it lives on `ParsedDoc`.
-pub type MethodReturnsMap = HashMap<String, HashMap<String, String>>;
 
 // ── BumpPool ──────────────────────────────────────────────────────────────────
 

@@ -1,7 +1,7 @@
 use php_ast::{ClassMemberKind, NamespaceBody, Param, Stmt, StmtKind};
 use tower_lsp::lsp_types::Position;
 
-use crate::ast::{MethodReturnsMap, ParsedDoc, format_type_hint};
+use crate::ast::{ParsedDoc, format_type_hint};
 use crate::util::{fqn_short_name, utf16_offset_to_byte};
 
 /// Resolve the class(es) of a named-argument call's receiver variable, for
@@ -12,12 +12,6 @@ use crate::util::{fqn_short_name, utf16_offset_to_byte};
 fn resolve_method_receiver_class(
     source: &str,
     doc: &ParsedDoc,
-    doc_returns: &MethodReturnsMap,
-    other_docs: &[(
-        tower_lsp::lsp_types::Url,
-        std::sync::Arc<ParsedDoc>,
-        std::sync::Arc<MethodReturnsMap>,
-    )],
     position: Position,
     receiver_var: &str,
     analysis: Option<&mir_analyzer::FileAnalysis>,
@@ -35,13 +29,7 @@ fn resolve_method_receiver_class(
         }
     }
     // TypeMap fallback.
-    let type_map = crate::type_map::TypeMap::from_docs_at_position(
-        doc,
-        doc_returns,
-        other_docs.iter().map(|(_, d, r)| (d.as_ref(), r.as_ref())),
-        None,
-        position,
-    );
+    let type_map = crate::type_map::TypeMap::from_doc_at_position(doc, None, position);
     if receiver_var == "$this" {
         crate::type_map::enclosing_class_at(source, doc, position)
     } else {
@@ -237,18 +225,16 @@ fn callee_from_chars_before(chars: &[char]) -> Option<NamedArgCallee> {
 pub(crate) fn named_arg_hover_value(
     source: &str,
     doc: &ParsedDoc,
-    doc_returns: &MethodReturnsMap,
     other_docs: &[(
         tower_lsp::lsp_types::Url,
         std::sync::Arc<crate::ast::ParsedDoc>,
-        std::sync::Arc<crate::ast::MethodReturnsMap>,
     )],
     position: Position,
     callee: &NamedArgCallee,
     label: &str,
     analysis: Option<&mir_analyzer::FileAnalysis>,
 ) -> Option<String> {
-    let all_docs = || std::iter::once(doc).chain(other_docs.iter().map(|(_, d, _)| d.as_ref()));
+    let all_docs = || std::iter::once(doc).chain(other_docs.iter().map(|(_, d)| d.as_ref()));
 
     match callee {
         NamedArgCallee::Function(name) => {
@@ -262,15 +248,8 @@ pub(crate) fn named_arg_hover_value(
             None
         }
         NamedArgCallee::Method(receiver_var, method_name) => {
-            let class_name = resolve_method_receiver_class(
-                source,
-                doc,
-                doc_returns,
-                other_docs,
-                position,
-                receiver_var,
-                analysis,
-            )?;
+            let class_name =
+                resolve_method_receiver_class(source, doc, position, receiver_var, analysis)?;
             let first_class = class_name
                 .split('|')
                 .next()

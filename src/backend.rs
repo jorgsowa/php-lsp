@@ -1329,16 +1329,12 @@ impl LanguageServer for Backend {
                 Some(d) => d,
                 None => return Ok(Some(CompletionResponse::Array(vec![]))),
             };
-            let other_with_returns = self.docs.other_docs_with_returns(uri, &self.open_urls());
-            let other_docs: Vec<Arc<ParsedDoc>> = other_with_returns
-                .iter()
-                .map(|(_, d, _)| d.clone())
+            let other_docs: Vec<Arc<ParsedDoc>> = self
+                .docs
+                .other_docs(uri, &self.open_urls())
+                .into_iter()
+                .map(|(_, d)| d)
                 .collect();
-            let other_returns: Vec<Arc<crate::ast::MethodReturnsMap>> = other_with_returns
-                .iter()
-                .map(|(_, _, r)| r.clone())
-                .collect();
-            let doc_returns = self.docs.get_method_returns_salsa(uri);
             let trigger = params
                 .context
                 .as_ref()
@@ -1364,8 +1360,6 @@ impl LanguageServer for Backend {
                 meta: meta_opt,
                 doc_uri: Some(uri),
                 file_imports: Some(&imports),
-                doc_returns: doc_returns.as_deref(),
-                other_returns: Some(&other_returns),
                 find_class_doc: Some(&find_class_doc_fn),
                 analysis: analysis.as_deref(),
             };
@@ -1432,17 +1426,7 @@ impl LanguageServer for Backend {
                 let class_name = if receiver == "$this" {
                     crate::type_map::enclosing_class_at(&source, &doc, position)
                 } else {
-                    let doc_returns = self
-                        .docs
-                        .get_method_returns_salsa(uri)
-                        .unwrap_or_else(|| std::sync::Arc::new(Default::default()));
-                    let tm = crate::type_map::TypeMap::from_docs_at_position(
-                        &doc,
-                        &doc_returns,
-                        std::iter::empty(),
-                        None,
-                        position,
-                    );
+                    let tm = crate::type_map::TypeMap::from_doc_at_position(&doc, None, position);
                     tm.get(&receiver).map(|s| s.to_string())
                 };
                 if let Some(cls) = class_name {
@@ -1694,20 +1678,9 @@ impl LanguageServer for Backend {
                 Some(d) => d,
                 None => return Ok(None),
             };
-            let doc_returns = self
-                .docs
-                .get_method_returns_salsa(uri)
-                .unwrap_or_else(|| std::sync::Arc::new(Default::default()));
-            let other_docs = self.docs.other_docs_with_returns(uri, &self.open_urls());
+            let other_docs = self.docs.other_docs(uri, &self.open_urls());
             let analysis = self.docs.cached_analysis(uri);
-            let result = hover_info(
-                &source,
-                &doc,
-                &doc_returns,
-                analysis.as_deref(),
-                position,
-                &other_docs,
-            );
+            let result = hover_info(&source, &doc, analysis.as_deref(), position, &other_docs);
             if result.is_some() {
                 return Ok(result);
             }
@@ -1768,13 +1741,11 @@ impl LanguageServer for Backend {
             Some(d) => d,
             None => return Ok(None),
         };
-        let doc_returns = self.docs.get_method_returns_salsa(uri);
         let analysis = self.docs.cached_analysis(uri);
         let wi = self.docs.get_workspace_index_salsa();
         Ok(Some(inlay_hints(
             doc.source(),
             &doc,
-            doc_returns.as_deref(),
             analysis.as_deref(),
             params.range,
             &wi.files,

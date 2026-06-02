@@ -27,13 +27,12 @@ use tower_lsp::lsp_types::{
 
 use tower_lsp::lsp_types::{Documentation, MarkupContent, MarkupKind};
 
-use crate::ast::{MethodReturnsMap, ParsedDoc, format_type_hint};
+use crate::ast::{ParsedDoc, format_type_hint};
 use crate::docblock::find_docblock;
 use crate::hover::format_params_str;
 use crate::phpstorm_meta::PhpStormMeta;
 use crate::type_map::{
-    TypeMap, build_method_returns, enclosing_class_at, members_of_class, params_of_function,
-    params_of_method,
+    TypeMap, enclosing_class_at, members_of_class, params_of_function, params_of_method,
 };
 use crate::util::{camel_sort_key, fuzzy_camel_match, utf16_offset_to_byte};
 use std::collections::HashMap;
@@ -202,13 +201,6 @@ pub struct CompletionCtx<'a> {
     pub meta: Option<&'a PhpStormMeta>,
     pub doc_uri: Option<&'a Url>,
     pub file_imports: Option<&'a HashMap<String, String>>,
-    /// Salsa-memoized method-return map for the primary doc. If `None`,
-    /// `filtered_completions_at` builds one inline. Production callers
-    /// pass the salsa-cached Arc to avoid recomputing per request.
-    pub doc_returns: Option<&'a MethodReturnsMap>,
-    /// Salsa-memoized method-return maps aligned with `other_docs`. Must be
-    /// the same length as `other_docs` when set, or `None` to build inline.
-    pub other_returns: Option<&'a [Arc<MethodReturnsMap>]>,
     /// Optional O(1) class-document lookup backed by the workspace index.
     /// When `Some`, `all_instance_members` and `all_static_members` use it
     /// to find the defining doc directly instead of scanning `other_docs`
@@ -236,32 +228,6 @@ pub fn filtered_completions_at(
     let empty_imports = HashMap::new();
     let imports = ctx.file_imports.unwrap_or(&empty_imports);
 
-    // Method-return maps feed the `TypeMap` *fallback* used when mir's recorded
-    // symbols don't carry a type (e.g. `$x = Enum::Case`, which mir 0.30.0
-    // resolves to `mixed`). mir is consulted first; this is the safety net.
-    let doc_returns_owned: Option<MethodReturnsMap> =
-        ctx.doc_returns.is_none().then(|| build_method_returns(doc));
-    let doc_returns_ref: &MethodReturnsMap = ctx
-        .doc_returns
-        .unwrap_or_else(|| doc_returns_owned.as_ref().expect("initialized above"));
-    let other_returns_owned: Option<Vec<MethodReturnsMap>> = ctx
-        .other_returns
-        .is_none()
-        .then(|| other_docs.iter().map(|d| build_method_returns(d)).collect());
-    let other_returns_refs: Vec<&MethodReturnsMap> = match ctx.other_returns {
-        Some(arcs) => arcs.iter().map(|a| a.as_ref()).collect(),
-        None => other_returns_owned
-            .as_ref()
-            .expect("initialized above")
-            .iter()
-            .collect(),
-    };
-    let others_with_returns: Vec<(&ParsedDoc, &MethodReturnsMap)> = other_docs
-        .iter()
-        .map(|d| d.as_ref())
-        .zip(other_returns_refs.iter().copied())
-        .collect();
-
     match trigger_character {
         Some("$") => {
             let mut items = superglobal_completions();
@@ -275,12 +241,7 @@ pub fn filtered_completions_at(
         Some(">") => {
             // Arrow: $obj->  or  $this->
             if let (Some(src), Some(pos)) = (source, position) {
-                let type_map = TypeMap::from_docs_with_meta(
-                    doc,
-                    doc_returns_ref,
-                    others_with_returns.iter().copied(),
-                    meta,
-                );
+                let type_map = TypeMap::from_doc_with_meta(doc, meta);
                 if let Some(class_names) =
                     resolve_receiver_class(src, doc, pos, ctx.analysis, &type_map)
                 {
@@ -407,12 +368,7 @@ pub fn filtered_completions_at(
                     // `arrow_stripped` ends with the receiver var; its last byte
                     // lands inside the var's end-exclusive mir span.
                     let var_offset = line_byte_offset(doc, pos.line, arrow_stripped.len());
-                    let type_map = TypeMap::from_docs_with_meta(
-                        doc,
-                        doc_returns_ref,
-                        others_with_returns.iter().copied(),
-                        meta,
-                    );
+                    let type_map = TypeMap::from_doc_with_meta(doc, meta);
                     let class_name = if receiver == "$this" {
                         enclosing_class_at(src, doc, pos)
                             .or_else(|| ctx.analysis.and_then(|a| receiver_class_at(a, var_offset)))
@@ -568,16 +524,8 @@ pub fn filtered_completions_at(
 
             // Feature 7: match arm completions
             if let (Some(src), Some(pos)) = (source, position)
-                && let Some(match_items) = match_arm_completions(
-                    src,
-                    doc,
-                    doc_returns_ref,
-                    other_docs,
-                    &others_with_returns,
-                    pos,
-                    meta,
-                    ctx.analysis,
-                )
+                && let Some(match_items) =
+                    match_arm_completions(src, doc, other_docs, pos, meta, ctx.analysis)
                 && !match_items.is_empty()
             {
                 let mut all = match_items;
@@ -771,9 +719,7 @@ fn attribute_completions(
 fn match_arm_completions(
     source: &str,
     doc: &ParsedDoc,
-    doc_returns: &MethodReturnsMap,
     other_docs: &[Arc<ParsedDoc>],
-    others_with_returns: &[(&ParsedDoc, &MethodReturnsMap)],
     position: Position,
     meta: Option<&PhpStormMeta>,
     analysis: Option<&mir_analyzer::FileAnalysis>,
@@ -796,14 +742,8 @@ fn match_arm_completions(
                 analysis
                     .and_then(|a| receiver_class_at(a, var_offset))
                     .or_else(|| {
-                        let type_map = type_map_cell.get_or_init(|| {
-                            TypeMap::from_docs_with_meta(
-                                doc,
-                                doc_returns,
-                                others_with_returns.iter().copied(),
-                                meta,
-                            )
-                        });
+                        let type_map =
+                            type_map_cell.get_or_init(|| TypeMap::from_doc_with_meta(doc, meta));
                         type_map.get(&format!("${cap}")).map(str::to_owned)
                     })?
             };

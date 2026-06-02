@@ -7,7 +7,7 @@ use php_ast::{
 use serde_json::json;
 use tower_lsp::lsp_types::{InlayHint, InlayHintKind, InlayHintLabel, Position, Range, Url};
 
-use crate::ast::{MethodReturnsMap, ParsedDoc, SourceView, format_type_hint};
+use crate::ast::{ParsedDoc, SourceView, format_type_hint};
 use crate::file_index::FileIndex;
 use crate::type_map::TypeMap;
 use crate::util::fqn_short_name;
@@ -45,7 +45,6 @@ struct FuncDef {
 pub fn inlay_hints(
     _source: &str,
     doc: &ParsedDoc,
-    doc_returns: Option<&MethodReturnsMap>,
     analysis: Option<&mir_analyzer::FileAnalysis>,
     range: Range,
     workspace_files: &[(Url, Arc<FileIndex>)],
@@ -53,7 +52,7 @@ pub fn inlay_hints(
     let sv = doc.view();
     let mut defs = collect_defs(&doc.program().stmts);
     collect_defs_from_workspace(workspace_files, &mut defs);
-    let type_map = TypeMap::from_doc_with_meta(doc, None, doc_returns);
+    let type_map = TypeMap::from_doc_with_meta(doc, None);
     let mut hints = Vec::new();
     hints_in_stmts(
         sv,

@@ -10,7 +10,7 @@ use php_ast::{
 };
 use tower_lsp::lsp_types::Position;
 
-use crate::ast::{MethodReturnsMap, ParsedDoc, SourceView};
+use crate::ast::{ParsedDoc, SourceView};
 use crate::docblock::{docblock_before, parse_docblock};
 use crate::phpstorm_meta::PhpStormMeta;
 use crate::util::fqn_short_name;
@@ -20,78 +20,34 @@ use crate::util::fqn_short_name;
 pub struct TypeMap(HashMap<String, String>);
 
 impl TypeMap {
-    /// Build from a parsed document. Method-return-type inference rebuilds
-    /// the per-doc map inline — prefer [`from_doc_with_meta`] with a salsa-
-    /// memoized `doc_returns` on hot paths.
     #[cfg(test)]
     pub fn from_doc(doc: &ParsedDoc) -> Self {
-        Self::from_doc_with_meta(doc, None, None)
+        Self::from_doc_with_meta(doc, None)
     }
 
     /// Build from a parsed document, optionally enriched by PHPStorm metadata
-    /// for factory-method return type inference. `doc_returns` is the
-    /// precomputed method-return map (typically from the salsa `method_returns`
-    /// query); pass `None` to build it inline.
-    pub fn from_doc_with_meta(
-        doc: &ParsedDoc,
-        meta: Option<&PhpStormMeta>,
-        doc_returns: Option<&MethodReturnsMap>,
-    ) -> Self {
-        let owned_returns;
-        let returns: &MethodReturnsMap = match doc_returns {
-            Some(r) => r,
-            None => {
-                owned_returns = build_method_returns(doc);
-                &owned_returns
-            }
-        };
+    /// for factory-method return type inference.
+    pub fn from_doc_with_meta(doc: &ParsedDoc, meta: Option<&PhpStormMeta>) -> Self {
         let mut map = HashMap::new();
         collect_types_stmts(
             doc.source(),
             &doc.program().stmts,
             &mut map,
             meta,
-            std::slice::from_ref(&returns),
             None,
             doc,
         );
         TypeMap(map)
     }
 
-    /// Build from a parsed document plus cross-file docs. Callers must supply
-    /// precomputed method-return maps for the primary doc and each other doc
-    /// (typically from the salsa `method_returns` query).
-    pub fn from_docs_with_meta<'a>(
-        doc: &ParsedDoc,
-        doc_returns: &MethodReturnsMap,
-        other_docs: impl IntoIterator<Item = (&'a ParsedDoc, &'a MethodReturnsMap)>,
-        meta: Option<&'a PhpStormMeta>,
-    ) -> Self {
-        let mut all_returns: Vec<&MethodReturnsMap> = vec![doc_returns];
-        all_returns.extend(other_docs.into_iter().map(|(_, r)| r));
-        let mut map = HashMap::new();
-        collect_types_stmts(
-            doc.source(),
-            &doc.program().stmts,
-            &mut map,
-            meta,
-            &all_returns,
-            None,
-            doc,
-        );
-        TypeMap(map)
-    }
-
-    /// Like [`from_docs_with_meta`] but scopes method-body variable collection
+    /// Like [`from_doc_with_meta`] but scopes method-body variable collection
     /// to the method (or function) containing `position`. Variables local to
     /// other method bodies are excluded so they cannot pollute the map with
     /// wrong types at the cursor site. Sets `$this` when the position is inside
     /// an instance method.
-    pub fn from_docs_at_position<'a>(
+    pub fn from_doc_at_position(
         doc: &ParsedDoc,
-        doc_returns: &MethodReturnsMap,
-        other_docs: impl IntoIterator<Item = (&'a ParsedDoc, &'a MethodReturnsMap)>,
-        meta: Option<&'a PhpStormMeta>,
+        meta: Option<&PhpStormMeta>,
         position: Position,
     ) -> Self {
         let cursor_byte = {
@@ -108,15 +64,12 @@ impl TypeMap {
                 None
             }
         };
-        let mut all_returns: Vec<&MethodReturnsMap> = vec![doc_returns];
-        all_returns.extend(other_docs.into_iter().map(|(_, r)| r));
         let mut map = HashMap::new();
         collect_types_stmts(
             doc.source(),
             &doc.program().stmts,
             &mut map,
             meta,
-            &all_returns,
             cursor_byte,
             doc,
         );
@@ -127,171 +80,6 @@ impl TypeMap {
     pub fn get<'a>(&'a self, var: &str) -> Option<&'a str> {
         self.0.get(var).map(|s| s.as_str())
     }
-}
-
-/// Pre-build a map of class_name → method_name → return_class_name for a single doc.
-pub fn build_method_returns(doc: &ParsedDoc) -> MethodReturnsMap {
-    let mut out = HashMap::new();
-    collect_method_returns_stmts(doc.source(), &doc.program().stmts, &mut out, doc);
-    out
-}
-
-/// Resolve the type of an arbitrary expression (variable, method call, etc).
-/// This enables method chaining: `$q->select()->where()` first resolves $q's type,
-/// then the return type of select(), then where() on that result.
-pub(crate) fn resolve_expr_type(
-    expr: &php_ast::Expr<'_, '_>,
-    map: &HashMap<String, String>,
-    method_returns: &[&MethodReturnsMap],
-) -> Option<String> {
-    match &expr.kind {
-        ExprKind::Variable(v) => map.get(&format!("${}", v.as_str())).cloned(),
-        ExprKind::MethodCall(mc) => {
-            let obj_type = resolve_expr_type(mc.object, map, method_returns)?;
-            let method_name = match &mc.method.kind {
-                ExprKind::Identifier(n) => n.as_str(),
-                _ => return None,
-            };
-            lookup_method_return(method_returns, &obj_type, method_name).map(|s| s.to_string())
-        }
-        ExprKind::StaticMethodCall(smc) => {
-            let class_name = match &smc.class.kind {
-                ExprKind::Identifier(n) => n.as_str(),
-                _ => return None,
-            };
-            let method_name = smc.method.name_str()?;
-            lookup_method_return(method_returns, class_name, method_name).map(|s| s.to_string())
-        }
-        // clone($obj, [...]) preserves the object's type
-        ExprKind::CloneWith(obj, _) => resolve_expr_type(obj, map, method_returns),
-        _ => None,
-    }
-}
-
-/// Look up `class.method() -> return_class` across a stack of per-doc maps.
-/// Returns the first match — later docs override earlier ones, matching the
-/// previous merge-based behavior. Works for both instance and static methods.
-fn lookup_method_return<'a>(
-    maps: &'a [&'a MethodReturnsMap],
-    class_name: &str,
-    method_name: &str,
-) -> Option<&'a str> {
-    for m in maps.iter().rev() {
-        if let Some(class_rets) = m.get(class_name)
-            && let Some(ret) = class_rets.get(method_name)
-        {
-            return Some(ret.as_str());
-        }
-    }
-    None
-}
-
-fn collect_method_returns_stmts(
-    source: &str,
-    stmts: &[Stmt<'_, '_>],
-    out: &mut HashMap<String, HashMap<String, String>>,
-    doc: &ParsedDoc,
-) {
-    for stmt in stmts {
-        match &stmt.kind {
-            StmtKind::Class(c) => {
-                let class_name = match c.name {
-                    Some(n) => n.to_string(),
-                    None => continue,
-                };
-                for member in c.body.members.iter() {
-                    if let ClassMemberKind::Method(m) = &member.kind
-                        && let Some(ret) = extract_method_return_class(
-                            source,
-                            member.span.start,
-                            m,
-                            &class_name,
-                            doc,
-                        )
-                    {
-                        out.entry(class_name.clone())
-                            .or_default()
-                            .insert(m.name.to_string(), ret);
-                    }
-                }
-            }
-            StmtKind::Trait(t) => {
-                let trait_name = t.name.to_string();
-                for member in t.body.members.iter() {
-                    if let ClassMemberKind::Method(m) = &member.kind
-                        && let Some(ret) = extract_method_return_class(
-                            source,
-                            member.span.start,
-                            m,
-                            &trait_name,
-                            doc,
-                        )
-                    {
-                        out.entry(trait_name.clone())
-                            .or_default()
-                            .insert(m.name.to_string(), ret);
-                    }
-                }
-            }
-            StmtKind::Enum(e) => {
-                let enum_name = e.name.to_string();
-                for member in e.body.members.iter() {
-                    if let EnumMemberKind::Method(m) = &member.kind
-                        && let Some(ret) = extract_method_return_class(
-                            source,
-                            member.span.start,
-                            m,
-                            &enum_name,
-                            doc,
-                        )
-                    {
-                        out.entry(enum_name.clone())
-                            .or_default()
-                            .insert(m.name.to_string(), ret);
-                    }
-                }
-            }
-            StmtKind::Namespace(ns) => {
-                if let NamespaceBody::Braced(inner) = &ns.body {
-                    collect_method_returns_stmts(source, &inner.stmts, out, doc);
-                }
-            }
-            _ => {}
-        }
-    }
-}
-
-fn extract_method_return_class(
-    source: &str,
-    member_start: u32,
-    m: &php_ast::MethodDecl<'_, '_>,
-    enclosing_class: &str,
-    doc: &ParsedDoc,
-) -> Option<String> {
-    // 1. AST return type hint takes priority
-    if let Some(hint) = &m.return_type
-        && let Some(s) = type_hint_to_class_string(hint, Some(enclosing_class), Some(doc))
-    {
-        return Some(s);
-    }
-    // 2. @return docblock fallback
-    if let Some(raw) = docblock_before(source, member_start) {
-        let db = parse_docblock(&raw);
-        if let Some(ret) = db.return_type {
-            for part in ret.type_hint.split('|') {
-                let part = part.trim().trim_start_matches('\\').trim_start_matches('?');
-                let short = fqn_short_name(part);
-                if short == "self" || short == "static" {
-                    return Some(enclosing_class.to_string());
-                }
-                let first = short.chars().next().unwrap_or('_');
-                if first.is_uppercase() && !matches!(short, "void" | "never" | "null") {
-                    return Some(short.to_string());
-                }
-            }
-        }
-    }
-    None
 }
 
 /// Extract a class-name string from a type hint using mir's type resolver.
@@ -388,7 +176,6 @@ fn collect_types_stmts(
     stmts: &[Stmt<'_, '_>],
     map: &mut HashMap<String, String>,
     meta: Option<&PhpStormMeta>,
-    method_returns: &[&MethodReturnsMap],
     cursor_byte: Option<u32>,
     doc: &ParsedDoc,
 ) {
@@ -422,9 +209,7 @@ fn collect_types_stmts(
         }
 
         match &stmt.kind {
-            StmtKind::Expression(e) => {
-                collect_types_expr(source, e, map, meta, method_returns, cursor_byte, doc)
-            }
+            StmtKind::Expression(e) => collect_types_expr(source, e, map, meta, cursor_byte, doc),
             StmtKind::Function(f) => {
                 // Only collect params/body when cursor is inside this function (or no cursor).
                 let in_scope =
@@ -461,15 +246,7 @@ fn collect_types_stmts(
                         map.insert(format!("${}", p.name), class_str);
                     }
                 }
-                collect_types_stmts(
-                    source,
-                    &f.body.stmts,
-                    map,
-                    meta,
-                    method_returns,
-                    cursor_byte,
-                    doc,
-                );
+                collect_types_stmts(source, &f.body.stmts, map, meta, cursor_byte, doc);
             }
             StmtKind::Class(c) => {
                 let class_name = c.name.map(|n| n.to_string());
@@ -525,15 +302,7 @@ fn collect_types_stmts(
                             map.insert("$this".to_string(), cname.clone());
                         }
                         if let Some(body) = &m.body {
-                            collect_types_stmts(
-                                source,
-                                &body.stmts,
-                                map,
-                                meta,
-                                method_returns,
-                                cursor_byte,
-                                doc,
-                            );
+                            collect_types_stmts(source, &body.stmts, map, meta, cursor_byte, doc);
                         }
                     }
                 }
@@ -555,15 +324,7 @@ fn collect_types_stmts(
                             }
                         }
                         if let Some(body) = &m.body {
-                            collect_types_stmts(
-                                source,
-                                &body.stmts,
-                                map,
-                                meta,
-                                method_returns,
-                                cursor_byte,
-                                doc,
-                            );
+                            collect_types_stmts(source, &body.stmts, map, meta, cursor_byte, doc);
                         }
                     }
                 }
@@ -585,30 +346,14 @@ fn collect_types_stmts(
                             }
                         }
                         if let Some(body) = &m.body {
-                            collect_types_stmts(
-                                source,
-                                &body.stmts,
-                                map,
-                                meta,
-                                method_returns,
-                                cursor_byte,
-                                doc,
-                            );
+                            collect_types_stmts(source, &body.stmts, map, meta, cursor_byte, doc);
                         }
                     }
                 }
             }
             StmtKind::Namespace(ns) => {
                 if let NamespaceBody::Braced(inner) = &ns.body {
-                    collect_types_stmts(
-                        source,
-                        &inner.stmts,
-                        map,
-                        meta,
-                        method_returns,
-                        cursor_byte,
-                        doc,
-                    );
+                    collect_types_stmts(source, &inner.stmts, map, meta, cursor_byte, doc);
                 }
             }
             // if ($x instanceof Foo) — narrow $x to Foo inside the then-branch
@@ -638,7 +383,6 @@ fn collect_types_stmts(
                     std::slice::from_ref(if_stmt.then_branch),
                     map,
                     meta,
-                    method_returns,
                     cursor_byte,
                     doc,
                 );
@@ -648,7 +392,6 @@ fn collect_types_stmts(
                         std::slice::from_ref(&elseif.body),
                         map,
                         meta,
-                        method_returns,
                         cursor_byte,
                         doc,
                     );
@@ -659,7 +402,6 @@ fn collect_types_stmts(
                         std::slice::from_ref(else_branch),
                         map,
                         meta,
-                        method_returns,
                         cursor_byte,
                         doc,
                     );
@@ -681,7 +423,6 @@ fn collect_types_stmts(
                     std::slice::from_ref(f.body),
                     map,
                     meta,
-                    method_returns,
                     cursor_byte,
                     doc,
                 );
@@ -689,15 +430,7 @@ fn collect_types_stmts(
             // try { ... } catch (FooException $e) { ... }
             // Map the catch variable to the first caught exception class.
             StmtKind::TryCatch(t) => {
-                collect_types_stmts(
-                    source,
-                    &t.body.stmts,
-                    map,
-                    meta,
-                    method_returns,
-                    cursor_byte,
-                    doc,
-                );
+                collect_types_stmts(source, &t.body.stmts, map, meta, cursor_byte, doc);
                 for catch in t.catches.iter() {
                     if let Some(var_name) = &catch.var
                         && let Some(first_type) = catch.types.first()
@@ -713,26 +446,10 @@ fn collect_types_stmts(
                             map.insert(format!("${}", var_name), class_name);
                         }
                     }
-                    collect_types_stmts(
-                        source,
-                        &catch.body.stmts,
-                        map,
-                        meta,
-                        method_returns,
-                        cursor_byte,
-                        doc,
-                    );
+                    collect_types_stmts(source, &catch.body.stmts, map, meta, cursor_byte, doc);
                 }
                 if let Some(finally) = &t.finally {
-                    collect_types_stmts(
-                        source,
-                        &finally.stmts,
-                        map,
-                        meta,
-                        method_returns,
-                        cursor_byte,
-                        doc,
-                    );
+                    collect_types_stmts(source, &finally.stmts, map, meta, cursor_byte, doc);
                 }
             }
 
@@ -763,7 +480,6 @@ fn collect_types_expr(
     expr: &php_ast::Expr<'_, '_>,
     map: &mut HashMap<String, String>,
     meta: Option<&PhpStormMeta>,
-    method_returns: &[&MethodReturnsMap],
     cursor_byte: Option<u32>,
     doc: &ParsedDoc,
 ) {
@@ -779,15 +495,7 @@ fn collect_types_expr(
                         map.entry(format!("${}", var_name.as_str()))
                             .or_insert(class_name);
                     }
-                    collect_types_expr(
-                        source,
-                        assign.value,
-                        map,
-                        meta,
-                        method_returns,
-                        cursor_byte,
-                        doc,
-                    );
+                    collect_types_expr(source, assign.value, map, meta, cursor_byte, doc);
                     return;
                 }
                 if let ExprKind::New(new_expr) = &assign.value.kind
@@ -806,26 +514,6 @@ fn collect_types_expr(
                     && let Some(src_type) = resolve_var_type_str(obj, map)
                 {
                     map.insert(format!("${}", var_name.as_str()), src_type);
-                }
-                // $result = $obj->method() or $result = $obj->m1()->m2() — infer result type from method's return type
-                // Supports method chaining via resolve_expr_type
-                if let ExprKind::MethodCall(mc) = &assign.value.kind
-                    && let ExprKind::Identifier(method_name) = &mc.method.kind
-                    && let Some(obj_type) = resolve_expr_type(mc.object, map, method_returns)
-                    && let Some(ret_type) =
-                        lookup_method_return(method_returns, &obj_type, method_name.as_str())
-                {
-                    map.insert(format!("${}", var_name.as_str()), ret_type.to_string());
-                }
-                // $result = SomeClass::staticMethod() — infer from static method return type.
-                // This handles factory methods like Foo::create(): Foo or Factory::make(): static
-                if let ExprKind::StaticMethodCall(smc) = &assign.value.kind
-                    && let ExprKind::Identifier(class_name) = &smc.class.kind
-                    && let Some(method_name) = smc.method.name_str()
-                    && let Some(ret_type) =
-                        lookup_method_return(method_returns, class_name.as_str(), method_name)
-                {
-                    map.insert(format!("${}", var_name.as_str()), ret_type.to_string());
                 }
                 // PHPStorm meta: `$var = $obj->make(SomeClass::class)`
                 if let Some(meta) = meta
@@ -865,15 +553,7 @@ fn collect_types_expr(
                     }
                 }
             }
-            collect_types_expr(
-                source,
-                assign.value,
-                map,
-                meta,
-                method_returns,
-                cursor_byte,
-                doc,
-            );
+            collect_types_expr(source, assign.value, map, meta, cursor_byte, doc);
         }
 
         // Closure::bind($fn, $obj) → $this maps to $obj's class
@@ -921,15 +601,7 @@ fn collect_types_expr(
                     map.get(&key).map(|ty| (key, ty.clone()))
                 })
                 .collect();
-            collect_types_stmts(
-                source,
-                &c.body.stmts,
-                map,
-                meta,
-                method_returns,
-                cursor_byte,
-                doc,
-            );
+            collect_types_stmts(source, &c.body.stmts, map, meta, cursor_byte, doc);
             // Restore captured variable types: inner assignments inside the closure
             // body should not affect the outer scope's type for completions.
             for (key, ty) in use_var_snapshot {
@@ -945,7 +617,7 @@ fn collect_types_expr(
                     map.insert(format!("${}", p.name), name.to_string_repr().to_string());
                 }
             }
-            collect_types_expr(source, af.body, map, meta, method_returns, cursor_byte, doc);
+            collect_types_expr(source, af.body, map, meta, cursor_byte, doc);
         }
 
         _ => {}
@@ -1927,35 +1599,11 @@ mod tests {
     }
 
     #[test]
-    fn method_chain_return_type_from_ast_hint() {
-        let src = "<?php\nclass Repo {\n    public function findFirst(): User { }\n}\nclass User { public function getName(): string {} }\n$repo = new Repo();\n$user = $repo->findFirst();";
-        let doc = ParsedDoc::parse(src.to_string());
-        let tm = TypeMap::from_doc(&doc);
-        assert_eq!(tm.get("$user"), Some("User"));
-    }
-
-    #[test]
-    fn method_chain_return_type_from_docblock() {
-        let src = "<?php\nclass Repo {\n    /** @return Product */\n    public function latest() {}\n}\n$repo = new Repo();\n$product = $repo->latest();";
-        let doc = ParsedDoc::parse(src.to_string());
-        let tm = TypeMap::from_doc(&doc);
-        assert_eq!(tm.get("$product"), Some("Product"));
-    }
-
-    #[test]
     fn not_null_check_preserves_existing_type() {
         let src = "<?php\n$x = new Foo();\nif ($x !== null) { $x-> }";
         let doc = ParsedDoc::parse(src.to_string());
         let tm = TypeMap::from_doc(&doc);
         assert_eq!(tm.get("$x"), Some("Foo"));
-    }
-
-    #[test]
-    fn self_return_type_resolves_to_class() {
-        let src = "<?php\nclass Builder {\n    public function setName(string $n): self { return $this; }\n}\n$b = new Builder();\n$b2 = $b->setName('x');";
-        let doc = ParsedDoc::parse(src.to_string());
-        let tm = TypeMap::from_doc(&doc);
-        assert_eq!(tm.get("$b2"), Some("Builder"));
     }
 
     #[test]
@@ -2022,26 +1670,6 @@ mod tests {
             tm.get("$x"),
             Some("Foo"),
             "nullable type hint ?Foo should map $x to Foo"
-        );
-    }
-
-    #[test]
-    fn static_return_type_resolves_to_class() {
-        // A method returning `: static` inside `class Builder` — result should map to `Builder`
-        let src = concat!(
-            "<?php\n",
-            "class Builder {\n",
-            "    public function build(): static { return $this; }\n",
-            "}\n",
-            "$b = new Builder();\n",
-            "$b2 = $b->build();\n",
-        );
-        let doc = ParsedDoc::parse(src.to_string());
-        let tm = TypeMap::from_doc(&doc);
-        assert_eq!(
-            tm.get("$b2"),
-            Some("Builder"),
-            "method returning :static should resolve to the enclosing class 'Builder'"
         );
     }
 

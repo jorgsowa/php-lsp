@@ -571,16 +571,6 @@ impl DocumentStore {
         }
     }
 
-    /// Salsa-backed per-file method-return-type map.
-    pub fn get_method_returns_salsa(&self, uri: &Url) -> Option<Arc<crate::ast::MethodReturnsMap>> {
-        let sf = self.source_file(uri)?;
-        Some(
-            self.snapshot_query(move |db| {
-                crate::db::method_returns::method_returns(db, sf).0.clone()
-            }),
-        )
-    }
-
     /// Cache the semantic tokens computed for a delta response.
     /// `result_id` is an opaque string (a hash of the token data) returned to the client.
     pub fn store_token_cache(&self, uri: &Url, result_id: String, tokens: Arc<Vec<SemanticToken>>) {
@@ -742,34 +732,6 @@ impl DocumentStore {
             .filter(|u| *u != uri)
             .filter_map(|u| self.get_doc_salsa(u).map(|d| (u.clone(), d)))
             .collect()
-    }
-
-    /// Batched salsa fetch for every entry in `open_urls` except `uri`:
-    /// returns each `(uri, ParsedDoc, MethodReturnsMap)` triple in a single
-    /// `snapshot_query` so cancellation retries don't run N times.
-    pub fn other_docs_with_returns(
-        &self,
-        uri: &Url,
-        open_urls: &[Url],
-    ) -> Vec<(Url, Arc<ParsedDoc>, Arc<crate::ast::MethodReturnsMap>)> {
-        let source_files: Vec<(Url, crate::db::input::SourceFile)> = open_urls
-            .iter()
-            .filter(|u| *u != uri)
-            .filter_map(|u| self.source_file(u).map(|sf| (u.clone(), sf)))
-            .collect();
-        if source_files.is_empty() {
-            return Vec::new();
-        }
-        self.snapshot_query(move |db| {
-            source_files
-                .iter()
-                .map(|(u, sf)| {
-                    let doc = crate::db::parse::parsed_doc(db, *sf).0.clone();
-                    let mr = crate::db::method_returns::method_returns(db, *sf).0.clone();
-                    (u.clone(), doc, mr)
-                })
-                .collect()
-        })
     }
 
     /// Compact symbol index for every mirrored file.
@@ -1052,7 +1014,6 @@ mod tests {
         let u = uri("/never-seen.php");
         assert!(store.get_doc_salsa(&u).is_none());
         assert!(store.get_index_salsa(&u).is_none());
-        assert!(store.get_method_returns_salsa(&u).is_none());
     }
 
     /// Phase E1: concurrent readers and writers must not deadlock, panic, or
