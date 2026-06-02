@@ -6,17 +6,17 @@ use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use rayon::prelude::*;
 use tower_lsp::lsp_types::{Position, Url};
 
-use php_lsp::ast::{MethodReturnsMap, ParsedDoc};
+use php_lsp::ast::ParsedDoc;
 use php_lsp::call_hierarchy::{incoming_calls, outgoing_calls, prepare_call_hierarchy};
 use php_lsp::completion::{CompletionCtx, filtered_completions_at};
 use php_lsp::definition::goto_definition;
 use php_lsp::file_index::FileIndex;
-use php_lsp::hover::hover_info;
+use php_lsp::hover::{hover_info, hover_info_with_maps};
 use php_lsp::implementation::find_implementations;
 use php_lsp::references::{SymbolKind, find_references, find_references_with_target};
 use php_lsp::rename::rename;
+use php_lsp::symbol_map::SymbolMap;
 use php_lsp::symbols::{document_symbols, workspace_symbols_from_index};
-use php_lsp::type_map::build_method_returns;
 
 const MEDIUM: &str = include_str!("fixtures/medium_class.php");
 const SMALL: &str = include_str!("fixtures/small_class.php");
@@ -59,14 +59,11 @@ const POS_ARROW: Position = Position {
 };
 
 type OtherDocs = Vec<(Url, Arc<ParsedDoc>)>;
-type HoverDocs = Vec<(Url, Arc<ParsedDoc>, Arc<MethodReturnsMap>)>;
+type SymbolMaps = Vec<(Url, Arc<SymbolMap>)>;
 
-fn to_hover_docs(docs: &OtherDocs) -> HoverDocs {
+fn to_symbol_maps(docs: &OtherDocs) -> SymbolMaps {
     docs.iter()
-        .map(|(u, d)| {
-            let mr = Arc::new(build_method_returns(d));
-            (u.clone(), Arc::clone(d), mr)
-        })
+        .map(|(u, d)| (u.clone(), Arc::new(SymbolMap::build(d))))
         .collect()
 }
 
@@ -90,63 +87,113 @@ fn cross_file_docs() -> OtherDocs {
 
 fn bench_hover(c: &mut Criterion) {
     let medium_doc = Arc::new(ParsedDoc::parse(MEDIUM.to_owned()));
-    let medium_mr = build_method_returns(&medium_doc);
     let ctrl_doc = Arc::new(ParsedDoc::parse(CONTROLLER.to_owned()));
-    let ctrl_mr = build_method_returns(&ctrl_doc);
     let other_docs = cross_file_docs();
-    let hover_others = to_hover_docs(&other_docs);
 
-    // Build a 10-entry context by cycling the 5 cross-file docs (mirrors the
-    // definition scale benchmark so the two are directly comparable).
-    let ten_hover_docs: HoverDocs = (0..10)
+    // Pre-computed symbol maps — simulates what salsa caches between requests.
+    let other_maps = to_symbol_maps(&other_docs);
+
+    // Build 10-entry contexts (5 docs cycled twice) for scale benchmarks.
+    let ten_docs: OtherDocs = (0..10)
         .map(|i| {
-            let (_, parsed, mr) = &hover_others[i % hover_others.len()];
+            let (_, parsed) = &other_docs[i % other_docs.len()];
             let url = Url::parse(&format!("file:///bench/extra_{i}.php")).unwrap();
-            (url, Arc::clone(parsed), Arc::clone(mr))
+            (url, Arc::clone(parsed))
         })
+        .collect();
+    let ten_maps: SymbolMaps = ten_docs
+        .iter()
+        .map(|(u, d)| (u.clone(), Arc::new(SymbolMap::build(d))))
         .collect();
 
     let mut group = c.benchmark_group("hover");
+    // Single-file: no cross-file lookup, same for both paths.
     group.bench_function("single_method", |b| {
-        b.iter(|| black_box(hover_info(MEDIUM, &medium_doc, &medium_mr, POS_METHOD, &[])));
+        b.iter(|| black_box(hover_info(MEDIUM, &medium_doc, None, POS_METHOD, &[])));
     });
     group.bench_function("single_member", |b| {
-        b.iter(|| black_box(hover_info(MEDIUM, &medium_doc, &medium_mr, POS_MEMBER, &[])));
+        b.iter(|| black_box(hover_info(MEDIUM, &medium_doc, None, POS_MEMBER, &[])));
     });
-    group.bench_function("cross_file_service_type", |b| {
+
+    // Cross-file AST walk (baseline).
+    group.bench_function("cross_file_ast/service_type", |b| {
         b.iter(|| {
             black_box(hover_info(
                 CONTROLLER,
                 &ctrl_doc,
-                &ctrl_mr,
+                None,
                 POS_SERVICE_TYPE,
-                &hover_others,
+                &other_docs,
             ))
         });
     });
-    group.bench_function("cross_file_ctor_param", |b| {
+    group.bench_function("cross_file_ast/ctor_param", |b| {
         b.iter(|| {
             black_box(hover_info(
                 CONTROLLER,
                 &ctrl_doc,
-                &ctrl_mr,
+                None,
                 POS_SERVICE_CTOR,
-                &hover_others,
+                &other_docs,
             ))
         });
     });
+
+    // Cross-file with precomputed symbol maps (O(1) lookup).
+    group.bench_function("cross_file_map/service_type", |b| {
+        b.iter(|| {
+            black_box(hover_info_with_maps(
+                CONTROLLER,
+                &ctrl_doc,
+                None,
+                POS_SERVICE_TYPE,
+                &other_docs,
+                &other_maps,
+            ))
+        });
+    });
+    group.bench_function("cross_file_map/ctor_param", |b| {
+        b.iter(|| {
+            black_box(hover_info_with_maps(
+                CONTROLLER,
+                &ctrl_doc,
+                None,
+                POS_SERVICE_CTOR,
+                &other_docs,
+                &other_maps,
+            ))
+        });
+    });
+
+    // Scale: 1 / 5 / 10 other files — shows how both paths scale.
     for &n in &[1usize, 5, 10] {
         group.bench_with_input(
-            BenchmarkId::new("scale", n),
-            &ten_hover_docs[..n],
+            BenchmarkId::new("scale_ast", n),
+            &ten_docs[..n],
             |b, docs| {
                 b.iter(|| {
                     black_box(hover_info(
                         CONTROLLER,
                         &ctrl_doc,
-                        &ctrl_mr,
+                        None,
                         POS_SERVICE_TYPE,
                         docs,
+                    ))
+                });
+            },
+        );
+        group.bench_with_input(
+            BenchmarkId::new("scale_map", n),
+            &ten_maps[..n],
+            |b, maps| {
+                b.iter(|| {
+                    black_box(hover_info_with_maps(
+                        CONTROLLER,
+                        &ctrl_doc,
+                        None,
+                        POS_SERVICE_TYPE,
+                        &[],
+                        maps,
                     ))
                 });
             },
@@ -232,9 +279,8 @@ fn bench_completion(c: &mut Criterion) {
         meta: None,
         doc_uri: None,
         file_imports: None,
-        doc_returns: None,
-        other_returns: None,
         find_class_doc: None,
+        analysis: None,
     };
 
     c.bench_function("completion/cross_file_arrow", |b| {
@@ -417,16 +463,15 @@ fn bench_completion_laravel(c: &mut Criterion) {
     let mut group = c.benchmark_group("completion");
     group.sample_size(10);
 
-    // Baseline: linear scan through all 1,609 docs per class in the hierarchy.
+    // Baseline: linear scan through all docs per class in the hierarchy.
     let ctx_linear = CompletionCtx {
         source: Some(CONTROLLER),
         position: Some(POS_ARROW),
         meta: None,
         doc_uri: None,
         file_imports: None,
-        doc_returns: None,
-        other_returns: None,
         find_class_doc: None,
+        analysis: None,
     };
     group.bench_function("laravel_framework", |b| {
         b.iter(|| {
@@ -447,9 +492,8 @@ fn bench_completion_laravel(c: &mut Criterion) {
         meta: None,
         doc_uri: None,
         file_imports: None,
-        doc_returns: None,
-        other_returns: None,
         find_class_doc: Some(&find_fn),
+        analysis: None,
     };
     group.bench_function("laravel_framework_indexed", |b| {
         b.iter(|| {
@@ -462,10 +506,7 @@ fn bench_completion_laravel(c: &mut Criterion) {
         });
     });
 
-    // Realistic case: complete on Illuminate\Database\Eloquent\Builder which IS
-    // in the fixture, with pre-computed method returns (mirrors salsa cache in
-    // production). This isolates the class-member lookup cost from the
-    // build_method_returns overhead that dominates when other_returns is None.
+    // Realistic case: complete on Illuminate\Database\Eloquent\Builder.
     const BUILDER_SRC: &str =
         "<?php\nuse Illuminate\\Database\\Eloquent\\Builder;\n$b = new Builder();\n$b->";
     let builder_doc = Arc::new(ParsedDoc::parse(BUILDER_SRC.to_owned()));
@@ -473,12 +514,6 @@ fn bench_completion_laravel(c: &mut Criterion) {
         line: 3,
         character: 4,
     };
-    // Pre-compute once (not measured); mimics salsa memoization.
-    let other_returns_arc: Vec<Arc<MethodReturnsMap>> = other_parsed
-        .iter()
-        .map(|d| Arc::new(build_method_returns(d)))
-        .collect();
-    let builder_doc_returns = Arc::new(build_method_returns(&builder_doc));
 
     let ctx_builder_linear = CompletionCtx {
         source: Some(BUILDER_SRC),
@@ -486,9 +521,8 @@ fn bench_completion_laravel(c: &mut Criterion) {
         meta: None,
         doc_uri: None,
         file_imports: None,
-        doc_returns: Some(&builder_doc_returns),
-        other_returns: Some(&other_returns_arc),
         find_class_doc: None,
+        analysis: None,
     };
     group.bench_function("laravel_builder_linear", |b| {
         b.iter(|| {
@@ -507,9 +541,8 @@ fn bench_completion_laravel(c: &mut Criterion) {
         meta: None,
         doc_uri: None,
         file_imports: None,
-        doc_returns: Some(&builder_doc_returns),
-        other_returns: Some(&other_returns_arc),
         find_class_doc: Some(&find_fn),
+        analysis: None,
     };
     group.bench_function("laravel_builder_indexed", |b| {
         b.iter(|| {
@@ -721,6 +754,53 @@ fn bench_workspace_parse(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_symbol_map(c: &mut Criterion) {
+    let other_docs = cross_file_docs();
+    let medium_doc = Arc::new(ParsedDoc::parse(MEDIUM.to_owned()));
+
+    let mut group = c.benchmark_group("symbol_map");
+
+    // Build cost (one-time per file, amortized over subsequent lookups).
+    group.bench_function("build/small_class", |b| {
+        let doc = Arc::new(ParsedDoc::parse(SMALL.to_owned()));
+        b.iter(|| black_box(SymbolMap::build(&doc)));
+    });
+    group.bench_function("build/medium_class", |b| {
+        b.iter(|| black_box(SymbolMap::build(&medium_doc)));
+    });
+    for (name, src) in &[
+        ("service", SERVICE),
+        ("repository", REPOSITORY),
+        ("events", EVENTS),
+        ("validator", VALIDATOR),
+    ] {
+        let doc = Arc::new(ParsedDoc::parse((*src).to_owned()));
+        group.bench_function(format!("build/{name}"), |b| {
+            b.iter(|| black_box(SymbolMap::build(&doc)));
+        });
+    }
+
+    // Lookup cost on a pre-built map (shows per-request savings).
+    let medium_map = Arc::new(SymbolMap::build(&medium_doc));
+    group.bench_function("lookup_hit/medium_class", |b| {
+        b.iter(|| black_box(medium_map.lookup("getTitle", |_| true)));
+    });
+    group.bench_function("lookup_miss/medium_class", |b| {
+        b.iter(|| black_box(medium_map.lookup("nonexistent_symbol_xyz", |_| true)));
+    });
+
+    // Build cost on all 5 cross-file fixtures (baseline for setup cost).
+    group.bench_function("build/all_5_fixtures", |b| {
+        b.iter(|| {
+            for (_, doc) in &other_docs {
+                black_box(SymbolMap::build(doc));
+            }
+        });
+    });
+
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_hover,
@@ -734,6 +814,7 @@ criterion_group!(
     bench_implementation,
     bench_document_symbol,
     bench_call_hierarchy,
-    bench_workspace_parse
+    bench_workspace_parse,
+    bench_symbol_map
 );
 criterion_main!(benches);

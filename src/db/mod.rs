@@ -12,6 +12,7 @@ pub mod analysis;
 pub mod index;
 pub mod input;
 pub mod parse;
+pub mod symbol_map;
 pub mod workspace_index;
 
 #[allow(unused_imports)]

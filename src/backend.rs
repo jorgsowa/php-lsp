@@ -45,7 +45,8 @@ use crate::folding::folding_ranges;
 use crate::formatting::{format_document, format_range};
 use crate::generate_action::{generate_constructor_actions, generate_getters_setters_actions};
 use crate::hover::{
-    class_hover_from_index, docs_for_symbol_from_index, hover_info, signature_for_symbol_from_index,
+    class_hover_from_index, docs_for_symbol_from_index, hover_info_with_maps,
+    signature_for_symbol_from_index,
 };
 use crate::implement_action::implement_missing_actions;
 use crate::implementation::{find_implementations, find_implementations_from_workspace};
@@ -1672,8 +1673,16 @@ impl LanguageServer for Backend {
                 None => return Ok(None),
             };
             let other_docs = self.docs.other_docs(uri, &self.open_urls());
+            let other_maps = self.docs.other_symbol_maps(uri, &self.open_urls());
             let analysis = self.docs.cached_analysis(uri);
-            let result = hover_info(&source, &doc, analysis.as_deref(), position, &other_docs);
+            let result = hover_info_with_maps(
+                &source,
+                &doc,
+                analysis.as_deref(),
+                position,
+                &other_docs,
+                &other_maps,
+            );
             if result.is_some() {
                 return Ok(result);
             }

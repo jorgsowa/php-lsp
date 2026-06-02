@@ -398,6 +398,26 @@ impl DocumentStore {
         Some(self.snapshot_query(move |db| crate::db::index::file_index(db, sf).0.clone()))
     }
 
+    /// Salsa-backed pre-computed symbol map (name → Vec<SymbolEntry>).
+    /// Memoized per revision: stable files serve from cache in O(1).
+    pub fn get_symbol_map_salsa(&self, uri: &Url) -> Option<Arc<crate::symbol_map::SymbolMap>> {
+        let sf = self.source_file(uri)?;
+        Some(self.snapshot_query(move |db| crate::db::symbol_map::symbol_map(db, sf).0.clone()))
+    }
+
+    /// Pre-computed symbol maps for every entry in `open_urls` except `uri`.
+    pub fn other_symbol_maps(
+        &self,
+        uri: &Url,
+        open_urls: &[Url],
+    ) -> Vec<(Url, Arc<crate::symbol_map::SymbolMap>)> {
+        open_urls
+            .iter()
+            .filter(|u| *u != uri)
+            .filter_map(|u| self.get_symbol_map_salsa(u).map(|m| (u.clone(), m)))
+            .collect()
+    }
+
     /// G3: shared implementation for `get_doc_salsa`.
     /// Tries the `parsed_cache` (lock-free) first; validates via
     /// `Arc::ptr_eq` against the G2 `text_cache` so a concurrent writer

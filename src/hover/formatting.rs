@@ -1,7 +1,8 @@
-use php_ast::{Param, Visibility};
+use php_ast::{MethodDecl, Param, Visibility};
 use tower_lsp::lsp_types::{Hover, HoverContents, MarkupContent, MarkupKind};
 
 use crate::ast::format_type_hint;
+use crate::resolve::Declaration;
 use crate::util::{is_php_builtin, php_doc_url};
 
 /// Format an expression literal value.
@@ -93,6 +94,97 @@ pub(crate) fn format_default_value(expr: &php_ast::Expr<'_, '_>) -> String {
 
 pub(crate) fn wrap_php(sig: &str) -> String {
     format!("```php\n{}\n```", sig)
+}
+
+/// Format a method/function-style member signature, e.g.
+/// `public static function foo(int $x): void`.
+pub(crate) fn method_signature(m: &MethodDecl<'_, '_>) -> String {
+    let prefix = format_method_prefix(
+        m.visibility.as_ref(),
+        m.is_static,
+        m.is_abstract,
+        m.is_final,
+    );
+    let params = format_params(&m.params);
+    let ret = m
+        .return_type
+        .as_ref()
+        .map(|r| format!(": {}", format_type_hint(r)))
+        .unwrap_or_default();
+    format!("{}function {}({}){}", prefix, m.name, params, ret)
+}
+
+/// Render the hover signature for a resolved declaration. Returns `None` for
+/// kinds rendered elsewhere (properties via mir-primary path).
+pub(crate) fn declaration_signature(decl: &Declaration<'_>, word: &str) -> Option<String> {
+    let sig = match decl {
+        Declaration::Function { decl: f, .. } => {
+            let params = format_params(&f.params);
+            let ret = f
+                .return_type
+                .as_ref()
+                .map(|r| format!(": {}", format_type_hint(r)))
+                .unwrap_or_default();
+            format!("function {}({}){}", word, params, ret)
+        }
+        Declaration::Class { decl: c, .. } => {
+            let kw = if c.modifiers.is_abstract {
+                "abstract class"
+            } else if c.modifiers.is_final {
+                "final class"
+            } else if c.modifiers.is_readonly {
+                "readonly class"
+            } else {
+                "class"
+            };
+            let mut sig = format!("{} {}", kw, word);
+            if let Some(ext) = &c.extends {
+                sig.push_str(&format!(" extends {}", ext.to_string_repr()));
+            }
+            if !c.implements.is_empty() {
+                let ifaces: Vec<String> = c
+                    .implements
+                    .iter()
+                    .map(|i| i.to_string_repr().into_owned())
+                    .collect();
+                sig.push_str(&format!(" implements {}", ifaces.join(", ")));
+            }
+            sig
+        }
+        Declaration::Interface { .. } => format!("interface {}", word),
+        Declaration::Trait { .. } => format!("trait {}", word),
+        Declaration::Enum { decl: e, .. } => {
+            let mut sig = if let Some(scalar) = &e.scalar_type {
+                format!("enum {}: {}", word, scalar.to_string_repr())
+            } else {
+                format!("enum {}", word)
+            };
+            if !e.implements.is_empty() {
+                let ifaces: Vec<String> = e
+                    .implements
+                    .iter()
+                    .map(|i| i.to_string_repr().into_owned())
+                    .collect();
+                sig.push_str(&format!(" implements {}", ifaces.join(", ")));
+            }
+            sig
+        }
+        Declaration::Method { method, .. } => method_signature(method),
+        Declaration::ClassConst { konst, .. } => format_class_const(konst),
+        Declaration::EnumCase {
+            case, enum_name, ..
+        } => {
+            let value_str = case
+                .value
+                .as_ref()
+                .and_then(format_expr_literal)
+                .map(|v| format!(" = {v}"))
+                .unwrap_or_default();
+            format!("case {}::{}{}", enum_name, case.name, value_str)
+        }
+        Declaration::Property { .. } | Declaration::PromotedParam { .. } => return None,
+    };
+    Some(sig)
 }
 
 fn visibility_str(v: &Visibility) -> &'static str {

@@ -24,6 +24,9 @@ pub mod walk;
 // Public module: compact symbol index for background-indexed files.
 pub mod file_index;
 
+// Public module: per-file memoized symbol map (name → Vec<SymbolEntry>).
+pub mod symbol_map;
+
 // Private modules needed transitively by the public ones.
 mod autoload;
 pub mod backend;
