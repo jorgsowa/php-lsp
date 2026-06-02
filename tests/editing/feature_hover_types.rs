@@ -491,3 +491,20 @@ $mailer->proc$0ess();
     )
     .await;
 }
+
+/// Enum that implements an interface should show the `implements` clause in hover.
+#[tokio::test]
+async fn hover_enum_with_implements_shows_interface() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    s.check_hover_annotated(
+        r#"<?php
+enum Stat$0us: string implements \Stringable {}
+"#,
+        expect![[r#"
+            ```php
+            enum Status: string implements \Stringable
+            ```"#]],
+    )
+    .await;
+}

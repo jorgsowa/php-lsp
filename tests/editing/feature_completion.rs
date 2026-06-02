@@ -5132,3 +5132,27 @@ Registry::$0
         "static $instance insertText must keep '$'; got {insert:?}"
     );
 }
+
+/// Variables declared in another file must not appear in completions for the current file.
+/// PHP variables are file-scoped — they are never part of the cross-file symbol index.
+#[tokio::test]
+async fn completion_cross_file_variables_not_leaked() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_completion_ordered(
+            r#"//- /other.php
+<?php
+$remoteVar = 42;
+
+//- /main.php
+<?php
+$loc$0
+"#,
+        )
+        .await;
+    assert!(
+        !out.contains("$remoteVar"),
+        "cross-file variable must not appear in completions, got:\n{out}"
+    );
+}

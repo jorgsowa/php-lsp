@@ -1105,10 +1105,7 @@ function test(User $u$0): void {}
     .assert_eq(&out);
 }
 
-// ── Factory Method & Method Chaining (Phase 2A Improvements) ────────────
-// TODO: These require implementing support for tracking static method and
-// function call return types in the type_map module. Currently TypeMap only
-// tracks direct `new ClassName()` assignments.
+// ── Factory Method & Method Chaining ────────────────────────────────────
 
 /// Factory method returns: `Foo::create()` should resolve to Foo's type.
 /// This is a common pattern where static factory methods return instances of their class.

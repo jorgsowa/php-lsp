@@ -541,6 +541,64 @@ function _wrap(): void {
     .await;
 }
 
+/// Duplicate class declaration in the same file should produce a warning.
+#[tokio::test]
+async fn duplicate_class_declaration_emits_warning() {
+    let mut s = TestServer::new().await;
+    s.check_diagnostics(
+        r#"<?php
+class Foo {}
+class Foo {}
+//    ^^^ warning: Duplicate declaration
+"#,
+    )
+    .await;
+}
+
+/// Duplicate interface declaration in the same file should produce a warning.
+#[tokio::test]
+async fn duplicate_interface_declaration_emits_warning() {
+    let mut s = TestServer::new().await;
+    s.check_diagnostics(
+        r#"<?php
+interface Logger {}
+interface Logger {}
+//        ^^^^^^ warning: Duplicate declaration
+"#,
+    )
+    .await;
+}
+
+/// Duplicate trait declaration in the same file should produce a warning.
+#[tokio::test]
+async fn duplicate_trait_declaration_emits_warning() {
+    let mut s = TestServer::new().await;
+    s.check_diagnostics(
+        r#"<?php
+trait Serializable {}
+trait Serializable {}
+//    ^^^^^^^^^^^^ warning: Duplicate declaration
+"#,
+    )
+    .await;
+}
+
+/// Classes with the same short name in different namespaces must NOT be flagged.
+#[tokio::test]
+async fn duplicate_class_different_namespaces_not_flagged() {
+    let mut s = TestServer::new().await;
+    s.check_no_diagnostics(
+        r#"<?php
+namespace AppA;
+class Foo {}
+
+namespace AppB;
+class Foo {}
+"#,
+    )
+    .await;
+}
+
 /// `abs(int)` returns `int` when the argument is an `int` literal or parameter.
 /// The mir analyzer currently reports `float|int` for the return type, causing a
 /// false-positive type-mismatch when the result is passed to an `int` parameter.
