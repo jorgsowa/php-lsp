@@ -16,7 +16,7 @@ use crate::ast::{ParsedDoc, format_type_hint};
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct FileIndex {
     pub namespace: Option<Box<str>>,
     pub functions: Vec<FunctionDef>,
@@ -24,7 +24,7 @@ pub struct FileIndex {
     pub constants: Vec<Box<str>>,
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct FunctionDef {
     pub name: Box<str>,
     /// Fully-qualified name: `\Namespace\function_name` or just `function_name`.
@@ -38,7 +38,7 @@ pub struct FunctionDef {
     pub name_char: u32,
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ParamDef {
     pub name: Box<str>,
     pub type_hint: Option<Box<str>>,
@@ -46,7 +46,7 @@ pub struct ParamDef {
     pub variadic: bool,
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct ClassDef {
     pub name: Box<str>,
     /// Fully-qualified name.
@@ -75,7 +75,7 @@ pub enum ClassKind {
     Enum,
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct MethodDef {
     pub name: Box<str>,
     pub is_static: bool,
@@ -96,7 +96,7 @@ pub enum Visibility {
     Private,
 }
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct PropertyDef {
     pub name: Box<str>,
     pub is_static: bool,
