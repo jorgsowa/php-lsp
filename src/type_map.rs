@@ -18,10 +18,6 @@ use crate::util::fqn_short_name;
 /// Maps function name → return class name. Used for function call return type resolution.
 pub type FunctionReturnsMap = HashMap<String, String>;
 
-/// Maps class name → static method name → return class name. Similar to MethodReturnsMap
-/// but for static methods, allowing factory method patterns like `Foo::create(): self`.
-pub type StaticMethodReturnsMap = HashMap<String, HashMap<String, String>>;
-
 /// Maps variable name (with `$`) → class name.
 #[derive(Debug, Default, Clone)]
 pub struct TypeMap(HashMap<String, String>);
@@ -140,18 +136,6 @@ impl TypeMap {
     pub fn get<'a>(&'a self, var: &str) -> Option<&'a str> {
         self.0.get(var).map(|s| s.as_str())
     }
-
-    /// Find the innermost `MethodCall`/`NullsafeMethodCall` expression whose span
-    /// contains `cursor_byte`, then resolve the type of its object. Used by
-    /// `typeDefinition` when the cursor sits in a chain gap rather than on a word.
-    pub(crate) fn chain_type_at_cursor(
-        &self,
-        stmts: &[php_ast::Stmt<'_, '_>],
-        cursor_byte: u32,
-        method_returns: &[&MethodReturnsMap],
-    ) -> Option<String> {
-        find_call_type_in_stmts(stmts, cursor_byte, &self.0, method_returns)
-    }
 }
 
 /// Pre-build a map of class_name → method_name → return_class_name for a single doc.
@@ -165,13 +149,6 @@ pub fn build_method_returns(doc: &ParsedDoc) -> MethodReturnsMap {
 pub fn build_function_returns(doc: &ParsedDoc) -> FunctionReturnsMap {
     let mut out = HashMap::new();
     collect_function_returns_stmts(doc.source(), &doc.program().stmts, &mut out, doc);
-    out
-}
-
-/// Pre-build a map of class_name → static_method_name → return_class_name for a single doc.
-pub fn build_static_method_returns(doc: &ParsedDoc) -> StaticMethodReturnsMap {
-    let mut out = HashMap::new();
-    collect_static_method_returns_stmts(doc.source(), &doc.program().stmts, &mut out, doc);
     out
 }
 
@@ -199,88 +176,12 @@ pub(crate) fn resolve_expr_type(
                 _ => return None,
             };
             let method_name = smc.method.name_str()?;
-            lookup_static_method_return(method_returns, class_name, method_name)
-                .map(|s| s.to_string())
+            lookup_method_return(method_returns, class_name, method_name).map(|s| s.to_string())
         }
         // clone($obj, [...]) preserves the object's type
         ExprKind::CloneWith(obj, _) => resolve_expr_type(obj, map, method_returns),
         _ => None,
     }
-}
-
-/// Walk statements to find the innermost MethodCall/NullsafeMethodCall whose span
-/// contains `cursor_byte`, then resolve the type of its object. Returns None if
-/// no such expression is found.
-fn find_call_type_in_stmts(
-    stmts: &[Stmt<'_, '_>],
-    cursor: u32,
-    vars: &HashMap<String, String>,
-    method_returns: &[&MethodReturnsMap],
-) -> Option<String> {
-    for stmt in stmts {
-        if !span_contains_cursor(stmt.span, cursor) {
-            continue;
-        }
-        let result = match &stmt.kind {
-            StmtKind::Expression(e) => find_call_type_in_expr(e, cursor, vars, method_returns),
-            StmtKind::Return(Some(e)) => find_call_type_in_expr(e, cursor, vars, method_returns),
-            StmtKind::Echo(exprs) => exprs
-                .iter()
-                .find_map(|e| find_call_type_in_expr(e, cursor, vars, method_returns)),
-            StmtKind::Function(f) => {
-                find_call_type_in_stmts(&f.body.stmts, cursor, vars, method_returns)
-            }
-            StmtKind::Class(c) => c.body.members.iter().find_map(|m| {
-                if let ClassMemberKind::Method(method) = &m.kind
-                    && let Some(body) = &method.body
-                {
-                    find_call_type_in_stmts(&body.stmts, cursor, vars, method_returns)
-                } else {
-                    None
-                }
-            }),
-            StmtKind::Namespace(ns) => {
-                if let NamespaceBody::Braced(inner) = &ns.body {
-                    find_call_type_in_stmts(&inner.stmts, cursor, vars, method_returns)
-                } else {
-                    None
-                }
-            }
-            _ => None,
-        };
-        if result.is_some() {
-            return result;
-        }
-    }
-    None
-}
-
-fn find_call_type_in_expr(
-    expr: &php_ast::Expr<'_, '_>,
-    cursor: u32,
-    vars: &HashMap<String, String>,
-    method_returns: &[&MethodReturnsMap],
-) -> Option<String> {
-    if !span_contains_cursor(expr.span, cursor) {
-        return None;
-    }
-    match &expr.kind {
-        ExprKind::MethodCall(mc) | ExprKind::NullsafeMethodCall(mc) => {
-            find_call_type_in_expr(mc.object, cursor, vars, method_returns)
-                // Cursor is in this call but not in a deeper sub-expression:
-                // resolve the full call (including its return type), not just the receiver.
-                .or_else(|| resolve_expr_type(expr, vars, method_returns))
-        }
-        ExprKind::Assign(a) => find_call_type_in_expr(a.value, cursor, vars, method_returns),
-        _ => None,
-    }
-}
-
-#[inline]
-fn span_contains_cursor(span: php_ast::Span, cursor: u32) -> bool {
-    // Use inclusive end so a cursor in the gap after a closing paren still matches
-    // the parent expression (e.g. `$q->where()$0->next()` — after `)` of where()).
-    cursor >= span.start && cursor <= span.end
 }
 
 /// Look up `class.method() -> return_class` across a stack of per-doc maps.
@@ -299,18 +200,6 @@ fn lookup_method_return<'a>(
         }
     }
     None
-}
-
-/// Look up `class::method() -> return_class` in the method returns map.
-/// This handles static method calls like `Foo::create(): Foo`.
-/// Since collect_method_returns_stmts collects both instance and static methods,
-/// we can use the same lookup with the class name and static method name.
-fn lookup_static_method_return<'a>(
-    maps: &'a [&'a MethodReturnsMap],
-    class_name: &str,
-    method_name: &str,
-) -> Option<&'a str> {
-    lookup_method_return(maps, class_name, method_name)
 }
 
 fn collect_method_returns_stmts(
@@ -404,46 +293,6 @@ fn collect_function_returns_stmts(
             StmtKind::Namespace(ns) => {
                 if let NamespaceBody::Braced(inner) = &ns.body {
                     collect_function_returns_stmts(source, &inner.stmts, out, doc);
-                }
-            }
-            _ => {}
-        }
-    }
-}
-
-fn collect_static_method_returns_stmts(
-    source: &str,
-    stmts: &[Stmt<'_, '_>],
-    out: &mut StaticMethodReturnsMap,
-    doc: &ParsedDoc,
-) {
-    for stmt in stmts {
-        match &stmt.kind {
-            StmtKind::Class(c) => {
-                let class_name = match c.name {
-                    Some(n) => n.to_string(),
-                    None => continue,
-                };
-                for member in c.body.members.iter() {
-                    if let ClassMemberKind::Method(m) = &member.kind
-                        && m.is_static
-                        && let Some(ret) = extract_method_return_class(
-                            source,
-                            member.span.start,
-                            m,
-                            &class_name,
-                            doc,
-                        )
-                    {
-                        out.entry(class_name.clone())
-                            .or_default()
-                            .insert(m.name.to_string(), ret);
-                    }
-                }
-            }
-            StmtKind::Namespace(ns) => {
-                if let NamespaceBody::Braced(inner) = &ns.body {
-                    collect_static_method_returns_stmts(source, &inner.stmts, out, doc);
                 }
             }
             _ => {}
@@ -1064,11 +913,8 @@ fn collect_types_expr(
                 if let ExprKind::StaticMethodCall(smc) = &assign.value.kind
                     && let ExprKind::Identifier(class_name) = &smc.class.kind
                     && let Some(method_name) = smc.method.name_str()
-                    && let Some(ret_type) = lookup_static_method_return(
-                        method_returns,
-                        class_name.as_str(),
-                        method_name,
-                    )
+                    && let Some(ret_type) =
+                        lookup_method_return(method_returns, class_name.as_str(), method_name)
                 {
                     map.insert(format!("${}", var_name.as_str()), ret_type.to_string());
                 }

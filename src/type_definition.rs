@@ -225,8 +225,7 @@ fn param_decl_type(
 /// Used for the chain-gap case: when the cursor sits between calls
 /// (`$q->where()$0->next()`) there is no word under it, but the enclosing call's
 /// identifier carries the type. Descends receiver-first so the deepest call
-/// boundary that still contains the cursor wins, matching the previous
-/// `chain_type_at_cursor` semantics.
+/// boundary that still contains the cursor wins.
 fn innermost_call_method_offset(stmts: &[Stmt<'_, '_>], cursor: u32) -> Option<u32> {
     for stmt in stmts {
         if !span_contains_cursor(stmt.span, cursor) {
