@@ -154,6 +154,12 @@ impl WorkspaceCache {
     /// Atomically publish an entry to the cache. Writes to a sibling
     /// temp file then renames, so readers never see a half-written
     /// payload even if the process dies mid-write.
+    ///
+    /// No fsync: the cache is advisory-only — a crash that loses a write
+    /// just produces a cache miss on the next startup, which safely falls
+    /// back to re-parsing. Skipping sync_all() avoids 5–15 ms per file on
+    /// macOS, which on a 1,500-file project accounts for most of the cold
+    /// indexing time.
     pub fn write<T: Serialize>(&self, key: &CacheKey, value: &T) -> io::Result<()> {
         let path = self.path_for(key);
         let tmp = path.with_extension("tmp");
@@ -163,7 +169,6 @@ impl WorkspaceCache {
         {
             let mut f = std::fs::File::create(&tmp)?;
             f.write_all(&bytes)?;
-            f.sync_all()?;
         }
         std::fs::rename(&tmp, &path)?;
         Ok(())

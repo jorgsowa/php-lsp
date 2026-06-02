@@ -415,6 +415,13 @@ impl TestServer {
         self
     }
 
+    /// Like `wait_for_index_ready` but with a caller-supplied timeout in seconds.
+    /// Use for large real-world codebases where the 10 s default is too short.
+    pub async fn wait_for_index_ready_secs(&mut self, secs: u64) -> &mut Self {
+        self.client.wait_for_index_ready_secs(secs).await;
+        self
+    }
+
     /// Enable or disable PHP syntax validation in test fixtures.
     /// Disabled by default (fixtures contain edge cases that aren't valid standalone PHP).
     /// When enabled, `open_fixture` and `check_*` methods will validate that all PHP code

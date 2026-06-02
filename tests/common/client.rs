@@ -275,6 +275,31 @@ impl TestClient {
         self.write.write_all(&frame(&response)).await.unwrap();
     }
 
+    /// Wait for `$/php-lsp/indexReady` with a custom timeout.
+    /// Useful for large real-world codebases where 10 s is not enough.
+    pub async fn wait_for_index_ready_secs(&mut self, secs: u64) {
+        tokio::time::timeout(tokio::time::Duration::from_secs(secs), async {
+            loop {
+                let msg = read_msg(&mut self.read).await;
+                if msg.get("method") == Some(&json!("$/php-lsp/indexReady")) {
+                    return;
+                }
+                if msg.get("method").is_some() {
+                    if let Some(id) = msg.get("id") {
+                        let response = json!({
+                            "jsonrpc": "2.0",
+                            "id": id,
+                            "result": null,
+                        });
+                        self.write.write_all(&frame(&response)).await.unwrap();
+                    }
+                }
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("timed out waiting for $/php-lsp/indexReady after {secs}s"))
+    }
+
     /// Wait for `$/php-lsp/indexReady` (10 s timeout). Auto-replies to any
     /// server-to-client requests sent during the workspace scan.
     pub async fn wait_for_index_ready(&mut self) {
