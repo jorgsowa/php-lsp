@@ -44,7 +44,7 @@ async fn indexing_perf_cold_start() {
 
     let start = std::time::Instant::now();
     let mut s = TestServer::with_root(WP_PATH).await;
-    s.wait_for_index_ready().await;
+    s.wait_for_index_ready_secs(30).await;
     let elapsed = start.elapsed();
 
     println!("COLD  {elapsed:.2?} — WordPress ({WP_PATH})");
@@ -68,13 +68,13 @@ async fn indexing_perf_warm_start() {
     // Cold pass — populate cache (don't time this one).
     {
         let mut s = TestServer::with_root(WP_PATH).await;
-        s.wait_for_index_ready().await;
+        s.wait_for_index_ready_secs(30).await;
     }
 
     // Warm pass — every file comes from the on-disk cache.
     let start = std::time::Instant::now();
     let mut s = TestServer::with_root(WP_PATH).await;
-    s.wait_for_index_ready().await;
+    s.wait_for_index_ready_secs(5).await;
     let elapsed = start.elapsed();
 
     println!("WARM  {elapsed:.2?} — WordPress ({WP_PATH})");
