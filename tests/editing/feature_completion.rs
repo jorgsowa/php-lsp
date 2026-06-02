@@ -1458,6 +1458,36 @@ async fn completion_resolve_partial_docs_populates_detail() {
     );
 }
 
+/// mir resolves the return type of a cross-file factory method so that
+/// member completion works on the result. Guards that MethodReturnsMap
+/// is not load-bearing for this pattern.
+#[tokio::test]
+async fn completion_factory_method_return_type_resolved_by_mir() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_completion(
+            r#"//- /Factory.php
+<?php
+class User { public function getName(): string {} }
+class Factory {
+    public function makeUser(): User { return new User(); }
+}
+
+//- /main.php
+<?php
+$factory = new Factory();
+$user = $factory->makeUser();
+$user->$0
+"#,
+        )
+        .await;
+    assert!(
+        out.contains("getName"),
+        "expected getName in completions, got: {out}"
+    );
+}
+
 #[tokio::test]
 async fn completion_this_arrow_includes_trait_methods() {
     let mut s = TestServer::new().await;

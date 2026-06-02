@@ -1,7 +1,7 @@
 /// Single-pass type inference: collects `$var = new ClassName()` assignments
 /// to map variable names to class names.  Used to scope method completions
-/// after `->`. Also tracks method return types, function return types, and
-/// static method return types for factory patterns and method chaining.
+/// after `->`. Also tracks method return types for factory patterns and
+/// method chaining.
 use std::collections::HashMap;
 
 use php_ast::{
@@ -14,9 +14,6 @@ use crate::ast::{MethodReturnsMap, ParsedDoc, SourceView};
 use crate::docblock::{docblock_before, parse_docblock};
 use crate::phpstorm_meta::PhpStormMeta;
 use crate::util::fqn_short_name;
-
-/// Maps function name → return class name. Used for function call return type resolution.
-pub type FunctionReturnsMap = HashMap<String, String>;
 
 /// Maps variable name (with `$`) → class name.
 #[derive(Debug, Default, Clone)]
@@ -48,7 +45,6 @@ impl TypeMap {
                 &owned_returns
             }
         };
-        let fn_returns = build_function_returns(doc);
         let mut map = HashMap::new();
         collect_types_stmts(
             doc.source(),
@@ -56,7 +52,6 @@ impl TypeMap {
             &mut map,
             meta,
             std::slice::from_ref(&returns),
-            &fn_returns,
             None,
             doc,
         );
@@ -74,7 +69,6 @@ impl TypeMap {
     ) -> Self {
         let mut all_returns: Vec<&MethodReturnsMap> = vec![doc_returns];
         all_returns.extend(other_docs.into_iter().map(|(_, r)| r));
-        let fn_returns = build_function_returns(doc);
         let mut map = HashMap::new();
         collect_types_stmts(
             doc.source(),
@@ -82,7 +76,6 @@ impl TypeMap {
             &mut map,
             meta,
             &all_returns,
-            &fn_returns,
             None,
             doc,
         );
@@ -117,7 +110,6 @@ impl TypeMap {
         };
         let mut all_returns: Vec<&MethodReturnsMap> = vec![doc_returns];
         all_returns.extend(other_docs.into_iter().map(|(_, r)| r));
-        let fn_returns = build_function_returns(doc);
         let mut map = HashMap::new();
         collect_types_stmts(
             doc.source(),
@@ -125,7 +117,6 @@ impl TypeMap {
             &mut map,
             meta,
             &all_returns,
-            &fn_returns,
             cursor_byte,
             doc,
         );
@@ -142,13 +133,6 @@ impl TypeMap {
 pub fn build_method_returns(doc: &ParsedDoc) -> MethodReturnsMap {
     let mut out = HashMap::new();
     collect_method_returns_stmts(doc.source(), &doc.program().stmts, &mut out, doc);
-    out
-}
-
-/// Pre-build a map of function_name → return_class_name for a single doc.
-pub fn build_function_returns(doc: &ParsedDoc) -> FunctionReturnsMap {
-    let mut out = HashMap::new();
-    collect_function_returns_stmts(doc.source(), &doc.program().stmts, &mut out, doc);
     out
 }
 
@@ -277,29 +261,6 @@ fn collect_method_returns_stmts(
     }
 }
 
-fn collect_function_returns_stmts(
-    source: &str,
-    stmts: &[Stmt<'_, '_>],
-    out: &mut FunctionReturnsMap,
-    doc: &ParsedDoc,
-) {
-    for stmt in stmts {
-        match &stmt.kind {
-            StmtKind::Function(f) => {
-                if let Some(ret) = extract_function_return_class(source, stmt.span.start, f, doc) {
-                    out.insert(f.name.to_string(), ret);
-                }
-            }
-            StmtKind::Namespace(ns) => {
-                if let NamespaceBody::Braced(inner) = &ns.body {
-                    collect_function_returns_stmts(source, &inner.stmts, out, doc);
-                }
-            }
-            _ => {}
-        }
-    }
-}
-
 fn extract_method_return_class(
     source: &str,
     member_start: u32,
@@ -323,35 +284,6 @@ fn extract_method_return_class(
                 if short == "self" || short == "static" {
                     return Some(enclosing_class.to_string());
                 }
-                let first = short.chars().next().unwrap_or('_');
-                if first.is_uppercase() && !matches!(short, "void" | "never" | "null") {
-                    return Some(short.to_string());
-                }
-            }
-        }
-    }
-    None
-}
-
-fn extract_function_return_class(
-    source: &str,
-    function_start: u32,
-    f: &php_ast::FunctionDecl<'_, '_>,
-    doc: &ParsedDoc,
-) -> Option<String> {
-    // 1. AST return type hint takes priority
-    if let Some(hint) = &f.return_type
-        && let Some(s) = type_hint_to_class_string(hint, None, Some(doc))
-    {
-        return Some(s);
-    }
-    // 2. @return docblock fallback
-    if let Some(raw) = docblock_before(source, function_start) {
-        let db = parse_docblock(&raw);
-        if let Some(ret) = db.return_type {
-            for part in ret.type_hint.split('|') {
-                let part = part.trim().trim_start_matches('\\').trim_start_matches('?');
-                let short = fqn_short_name(part);
                 let first = short.chars().next().unwrap_or('_');
                 if first.is_uppercase() && !matches!(short, "void" | "never" | "null") {
                     return Some(short.to_string());
@@ -457,7 +389,6 @@ fn collect_types_stmts(
     map: &mut HashMap<String, String>,
     meta: Option<&PhpStormMeta>,
     method_returns: &[&MethodReturnsMap],
-    function_returns: &FunctionReturnsMap,
     cursor_byte: Option<u32>,
     doc: &ParsedDoc,
 ) {
@@ -491,16 +422,9 @@ fn collect_types_stmts(
         }
 
         match &stmt.kind {
-            StmtKind::Expression(e) => collect_types_expr(
-                source,
-                e,
-                map,
-                meta,
-                method_returns,
-                function_returns,
-                cursor_byte,
-                doc,
-            ),
+            StmtKind::Expression(e) => {
+                collect_types_expr(source, e, map, meta, method_returns, cursor_byte, doc)
+            }
             StmtKind::Function(f) => {
                 // Only collect params/body when cursor is inside this function (or no cursor).
                 let in_scope =
@@ -543,7 +467,6 @@ fn collect_types_stmts(
                     map,
                     meta,
                     method_returns,
-                    function_returns,
                     cursor_byte,
                     doc,
                 );
@@ -608,7 +531,6 @@ fn collect_types_stmts(
                                 map,
                                 meta,
                                 method_returns,
-                                function_returns,
                                 cursor_byte,
                                 doc,
                             );
@@ -639,7 +561,6 @@ fn collect_types_stmts(
                                 map,
                                 meta,
                                 method_returns,
-                                function_returns,
                                 cursor_byte,
                                 doc,
                             );
@@ -670,7 +591,6 @@ fn collect_types_stmts(
                                 map,
                                 meta,
                                 method_returns,
-                                function_returns,
                                 cursor_byte,
                                 doc,
                             );
@@ -686,7 +606,6 @@ fn collect_types_stmts(
                         map,
                         meta,
                         method_returns,
-                        function_returns,
                         cursor_byte,
                         doc,
                     );
@@ -720,7 +639,6 @@ fn collect_types_stmts(
                     map,
                     meta,
                     method_returns,
-                    function_returns,
                     cursor_byte,
                     doc,
                 );
@@ -731,7 +649,6 @@ fn collect_types_stmts(
                         map,
                         meta,
                         method_returns,
-                        function_returns,
                         cursor_byte,
                         doc,
                     );
@@ -743,7 +660,6 @@ fn collect_types_stmts(
                         map,
                         meta,
                         method_returns,
-                        function_returns,
                         cursor_byte,
                         doc,
                     );
@@ -766,7 +682,6 @@ fn collect_types_stmts(
                     map,
                     meta,
                     method_returns,
-                    function_returns,
                     cursor_byte,
                     doc,
                 );
@@ -780,7 +695,6 @@ fn collect_types_stmts(
                     map,
                     meta,
                     method_returns,
-                    function_returns,
                     cursor_byte,
                     doc,
                 );
@@ -805,7 +719,6 @@ fn collect_types_stmts(
                         map,
                         meta,
                         method_returns,
-                        function_returns,
                         cursor_byte,
                         doc,
                     );
@@ -817,7 +730,6 @@ fn collect_types_stmts(
                         map,
                         meta,
                         method_returns,
-                        function_returns,
                         cursor_byte,
                         doc,
                     );
@@ -846,14 +758,12 @@ fn collect_types_stmts(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn collect_types_expr(
     source: &str,
     expr: &php_ast::Expr<'_, '_>,
     map: &mut HashMap<String, String>,
     meta: Option<&PhpStormMeta>,
     method_returns: &[&MethodReturnsMap],
-    function_returns: &FunctionReturnsMap,
     cursor_byte: Option<u32>,
     doc: &ParsedDoc,
 ) {
@@ -875,7 +785,6 @@ fn collect_types_expr(
                         map,
                         meta,
                         method_returns,
-                        function_returns,
                         cursor_byte,
                         doc,
                     );
@@ -917,13 +826,6 @@ fn collect_types_expr(
                         lookup_method_return(method_returns, class_name.as_str(), method_name)
                 {
                     map.insert(format!("${}", var_name.as_str()), ret_type.to_string());
-                }
-                // $result = functionName() — infer from function's return type
-                if let ExprKind::FunctionCall(fc) = &assign.value.kind
-                    && let ExprKind::Identifier(fn_name) = &fc.name.kind
-                    && let Some(ret_type) = function_returns.get(fn_name.as_str())
-                {
-                    map.insert(format!("${}", var_name.as_str()), ret_type.clone());
                 }
                 // PHPStorm meta: `$var = $obj->make(SomeClass::class)`
                 if let Some(meta) = meta
@@ -969,7 +871,6 @@ fn collect_types_expr(
                 map,
                 meta,
                 method_returns,
-                function_returns,
                 cursor_byte,
                 doc,
             );
@@ -1026,7 +927,6 @@ fn collect_types_expr(
                 map,
                 meta,
                 method_returns,
-                function_returns,
                 cursor_byte,
                 doc,
             );
@@ -1045,16 +945,7 @@ fn collect_types_expr(
                     map.insert(format!("${}", p.name), name.to_string_repr().to_string());
                 }
             }
-            collect_types_expr(
-                source,
-                af.body,
-                map,
-                meta,
-                method_returns,
-                function_returns,
-                cursor_byte,
-                doc,
-            );
+            collect_types_expr(source, af.body, map, meta, method_returns, cursor_byte, doc);
         }
 
         _ => {}
