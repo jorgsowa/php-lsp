@@ -92,10 +92,15 @@ fn all_members(
                         } else {
                             None
                         };
+                        // Static access (Class::$prop) keeps "$name" as the inserted text because
+                        // the $ is syntactically required. Instance access ($obj->prop) must NOT
+                        // insert the $, or the client produces `$obj->$prop` (invalid PHP).
+                        let insert_text = if is_static { None } else { Some(name.clone()) };
                         items.push(CompletionItem {
                             label,
                             kind: Some(CompletionItemKind::PROPERTY),
                             detail,
+                            insert_text,
                             ..Default::default()
                         });
                     }
@@ -156,9 +161,11 @@ fn all_members(
                 if *prop_is_static == is_static {
                     let label = format!("${name}");
                     if seen_names.insert(label.clone()) {
+                        let insert_text = if is_static { None } else { Some(name.clone()) };
                         items.push(CompletionItem {
                             label,
                             kind: Some(CompletionItemKind::PROPERTY),
+                            insert_text,
                             ..Default::default()
                         });
                     }

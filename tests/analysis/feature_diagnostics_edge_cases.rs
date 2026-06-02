@@ -540,3 +540,22 @@ function _wrap(): void {
     )
     .await;
 }
+
+/// `abs(int)` returns `int` when the argument is an `int` literal or parameter.
+/// The mir analyzer currently reports `float|int` for the return type, causing a
+/// false-positive type-mismatch when the result is passed to an `int` parameter.
+/// Tracked in the mir analyzer; this test documents the expected clean state.
+#[ignore = "mir bug: abs(int) return type inferred as float|int instead of int"]
+#[tokio::test]
+async fn abs_of_int_arg_not_flagged_as_float() {
+    let mut s = TestServer::new().await;
+    s.check_no_diagnostics(
+        r#"<?php
+function takesInt(int $x): void {}
+function test(int $n): void {
+    takesInt(abs($n));
+}
+"#,
+    )
+    .await;
+}

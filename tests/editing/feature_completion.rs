@@ -5050,3 +5050,85 @@ $i->$0
         Keyword     yield"#]]
     .assert_eq(&out);
 }
+
+// === Instance property insertText (bug: was inserting "$prop" via "->" giving "$obj->$prop") ===
+
+#[tokio::test]
+async fn completion_arrow_property_insert_text_has_no_dollar() {
+    // Instance property completion after `->` must set insertText=name (no "$")
+    // so that clients do not produce the invalid `$obj->$prop`.
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let opened = s
+        .open_fixture(
+            r#"<?php
+class Box {
+    public function __construct(
+        public string $label = '',
+        public int $count = 0,
+    ) {}
+}
+$b = new Box();
+$b->$0
+"#,
+        )
+        .await;
+    let c = opened.cursor().clone();
+    let resp = s.completion(&c.path, c.line, c.character).await;
+    let items: Vec<_> = match &resp["result"] {
+        v if v["items"].is_array() => v["items"].as_array().cloned().unwrap_or_default(),
+        v if v.is_array() => v.as_array().cloned().unwrap_or_default(),
+        _ => vec![],
+    };
+
+    for prop in ["label", "count"] {
+        let item = items
+            .iter()
+            .find(|i| i["label"].as_str() == Some(&format!("${prop}")))
+            .unwrap_or_else(|| panic!("${prop} not found in completions"));
+        let insert = item["insertText"].as_str().unwrap_or_else(|| {
+            panic!("${prop}: insertText must be set for instance properties; got null")
+        });
+        assert_eq!(
+            insert, prop,
+            "${prop}: insertText should be '{prop}' (no $), got '{insert}'"
+        );
+    }
+}
+
+#[tokio::test]
+async fn completion_static_property_insert_text_keeps_dollar() {
+    // Static property completion after `::` must keep the `$` in insertText
+    // (or omit insertText entirely) because `Class::$prop` is valid PHP.
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let opened = s
+        .open_fixture(
+            r#"<?php
+class Registry {
+    public static string $instance = '';
+}
+Registry::$0
+"#,
+        )
+        .await;
+    let c = opened.cursor().clone();
+    let resp = s.completion(&c.path, c.line, c.character).await;
+    let items: Vec<_> = match &resp["result"] {
+        v if v["items"].is_array() => v["items"].as_array().cloned().unwrap_or_default(),
+        v if v.is_array() => v.as_array().cloned().unwrap_or_default(),
+        _ => vec![],
+    };
+
+    let item = items
+        .iter()
+        .find(|i| i["label"].as_str() == Some("$instance"))
+        .expect("$instance not found in static completions");
+
+    // insertText must either be absent (client uses label "$instance") or explicitly "$instance"
+    let insert = item["insertText"].as_str();
+    assert!(
+        insert.is_none() || insert == Some("$instance"),
+        "static $instance insertText must keep '$'; got {insert:?}"
+    );
+}
