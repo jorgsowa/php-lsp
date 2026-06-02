@@ -1,85 +1,121 @@
-//! Indexing performance benchmarks against WordPress.
+//! Indexing performance benchmarks against real-world PHP codebases.
 //!
 //! Run with:
 //!   cargo test --test workspace indexing_perf -- --ignored --nocapture
 //!
-//! The tests are gated behind `#[ignore]` because they download nothing —
-//! WordPress must be present at /tmp/wordpress. Extract it once with:
-//!   curl -L https://wordpress.org/latest.zip -o /tmp/wordpress.zip
-//!   unzip /tmp/wordpress.zip -d /tmp/
-//!
-//! Each run prints timing so you can compare cold vs warm start.
+//! Prepare corpora once:
+//!   curl -L https://wordpress.org/latest.zip | unzip - -d /tmp/
+//!   curl -L https://github.com/laravel/framework/archive/refs/heads/11.x.zip | unzip - -d /tmp/
+//!   mv /tmp/framework-11.x /tmp/laravel-framework
 
 use super::*;
 
 const WP_PATH: &str = "/tmp/wordpress";
+const LF_PATH: &str = "/tmp/laravel-framework";
 
-fn wp_present() -> bool {
-    std::path::Path::new(WP_PATH).is_dir()
+fn cache_root() -> Option<std::path::PathBuf> {
+    std::env::var_os("XDG_CACHE_HOME")
+        .filter(|v| !v.is_empty())
+        .map(std::path::PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".cache")))
+        .map(|d| d.join("php-lsp"))
 }
 
-/// Cold-start index: wipe the cache dir, then measure time to `indexReady`.
-/// This is the worst case — every file must be parsed and the result written
-/// to the on-disk cache for the first time.
+fn wipe_cache() {
+    if let Some(d) = cache_root() {
+        if d.exists() {
+            let _ = std::fs::remove_dir_all(&d);
+        }
+    }
+}
+
+async fn measure(label: &str, path: &str, wipe: bool, timeout_secs: u64) -> std::time::Duration {
+    if wipe {
+        wipe_cache();
+    }
+    let start = std::time::Instant::now();
+    let mut s = TestServer::with_root(path).await;
+    s.wait_for_index_ready_secs(timeout_secs).await;
+    let elapsed = start.elapsed();
+    let n = std::fs::read_dir(path)
+        .map(|_| walkdir_count(path))
+        .unwrap_or(0);
+    println!("{label:<12}  {elapsed:.2?}   {n} PHP files   {path}");
+    elapsed
+}
+
+fn walkdir_count(root: &str) -> usize {
+    fn walk(dir: &std::path::Path, count: &mut usize) {
+        let Ok(rd) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in rd.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                if !name.starts_with('.') {
+                    walk(&path, count);
+                }
+            } else if path.extension().and_then(|e| e.to_str()) == Some("php") {
+                *count += 1;
+            }
+        }
+    }
+    let mut n = 0;
+    walk(std::path::Path::new(root), &mut n);
+    n
+}
+
+// ── WordPress ────────────────────────────────────────────────────────────────
+
 #[ignore]
 #[serial_test::serial]
 #[tokio::test]
 async fn indexing_perf_cold_start() {
-    if !wp_present() {
+    if !std::path::Path::new(WP_PATH).is_dir() {
         println!("SKIP: {WP_PATH} not found");
         return;
     }
-
-    // Wipe the cache so this is a true cold start.
-    let cache_dir = std::env::var_os("XDG_CACHE_HOME")
-        .filter(|v| !v.is_empty())
-        .map(std::path::PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".cache")))
-        .map(|d| d.join("php-lsp"));
-    if let Some(ref d) = cache_dir {
-        if d.exists() {
-            let _ = std::fs::remove_dir_all(d);
-        }
-    }
-
-    let start = std::time::Instant::now();
-    let mut s = TestServer::with_root(WP_PATH).await;
-    s.wait_for_index_ready_secs(30).await;
-    let elapsed = start.elapsed();
-
-    println!("COLD  {elapsed:.2?} — WordPress ({WP_PATH})");
-    assert!(
-        elapsed.as_secs() < 30,
-        "cold-start indexing took {elapsed:.2?}, expected < 30 s"
-    );
+    let elapsed = measure("WP COLD", WP_PATH, true, 30).await;
+    assert!(elapsed.as_secs() < 30, "cold-start took {elapsed:.2?}");
 }
 
-/// Warm-start index: run a cold start first (cache populated), then measure a
-/// second start where every file should be served from cache.
 #[ignore]
 #[serial_test::serial]
 #[tokio::test]
 async fn indexing_perf_warm_start() {
-    if !wp_present() {
+    if !std::path::Path::new(WP_PATH).is_dir() {
         println!("SKIP: {WP_PATH} not found");
         return;
     }
+    measure("WP COLD", WP_PATH, true, 30).await; // populate cache
+    let elapsed = measure("WP WARM", WP_PATH, false, 5).await;
+    assert!(elapsed.as_secs() < 5, "warm-start took {elapsed:.2?}");
+}
 
-    // Cold pass — populate cache (don't time this one).
-    {
-        let mut s = TestServer::with_root(WP_PATH).await;
-        s.wait_for_index_ready_secs(30).await;
+// ── Laravel framework ────────────────────────────────────────────────────────
+
+#[ignore]
+#[serial_test::serial]
+#[tokio::test]
+async fn indexing_perf_laravel_cold_start() {
+    if !std::path::Path::new(LF_PATH).is_dir() {
+        println!("SKIP: {LF_PATH} not found");
+        return;
     }
+    let elapsed = measure("LF COLD", LF_PATH, true, 30).await;
+    assert!(elapsed.as_secs() < 30, "cold-start took {elapsed:.2?}");
+}
 
-    // Warm pass — every file comes from the on-disk cache.
-    let start = std::time::Instant::now();
-    let mut s = TestServer::with_root(WP_PATH).await;
-    s.wait_for_index_ready_secs(5).await;
-    let elapsed = start.elapsed();
-
-    println!("WARM  {elapsed:.2?} — WordPress ({WP_PATH})");
-    assert!(
-        elapsed.as_secs() < 5,
-        "warm-start indexing took {elapsed:.2?}, expected < 5 s with cache"
-    );
+#[ignore]
+#[serial_test::serial]
+#[tokio::test]
+async fn indexing_perf_laravel_warm_start() {
+    if !std::path::Path::new(LF_PATH).is_dir() {
+        println!("SKIP: {LF_PATH} not found");
+        return;
+    }
+    measure("LF COLD", LF_PATH, true, 30).await; // populate cache
+    let elapsed = measure("LF WARM", LF_PATH, false, 5).await;
+    assert!(elapsed.as_secs() < 5, "warm-start took {elapsed:.2?}");
 }
