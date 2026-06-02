@@ -18,6 +18,29 @@ pub(super) fn all_instance_members(
     other_docs: &[Arc<ParsedDoc>],
     find_class_doc: Option<super::ClassDocLookup<'_>>,
 ) -> Vec<CompletionItem> {
+    all_members(class_name, doc, other_docs, find_class_doc, false)
+}
+
+pub(super) fn all_static_members(
+    class_name: &str,
+    doc: &ParsedDoc,
+    other_docs: &[Arc<ParsedDoc>],
+    find_class_doc: Option<super::ClassDocLookup<'_>>,
+) -> Vec<CompletionItem> {
+    all_members(class_name, doc, other_docs, find_class_doc, true)
+}
+
+/// Common class-hierarchy traversal for both instance (`->`) and static (`::`)
+/// member completion. `is_static` selects which subset of members to surface:
+/// - `false` (instance): non-static methods + properties, enum built-ins, mixins
+/// - `true`  (static):   static methods + properties, constants
+fn all_members(
+    class_name: &str,
+    doc: &ParsedDoc,
+    other_docs: &[Arc<ParsedDoc>],
+    find_class_doc: Option<super::ClassDocLookup<'_>>,
+    is_static: bool,
+) -> Vec<CompletionItem> {
     let all: Vec<&ParsedDoc> = std::iter::once(doc)
         .chain(other_docs.iter().map(|d| d.as_ref()))
         .collect();
@@ -53,149 +76,64 @@ pub(super) fn all_instance_members(
         if let Some((d, members)) = defining {
             found_in_docs = true;
             parent = members.parent.clone();
-            for (name, is_static) in members.methods {
-                if !is_static && seen_names.insert(name.clone()) {
+            for (name, meth_is_static) in members.methods {
+                if (meth_is_static == is_static) && seen_names.insert(name.clone()) {
                     // Method params unknown here; use has_params=true so
                     // snippet cursor lands inside parens.
                     items.push(callable_item(&name, CompletionItemKind::METHOD, true));
                 }
             }
-            for (name, is_static) in &members.properties {
-                if !is_static {
+            for (name, prop_is_static) in &members.properties {
+                if *prop_is_static == is_static {
                     let label = format!("${name}");
                     if seen_names.insert(label.clone()) {
-                        let is_readonly = members.readonly_properties.contains(name);
+                        let detail = if !is_static && members.readonly_properties.contains(name) {
+                            Some("readonly".to_string())
+                        } else {
+                            None
+                        };
                         items.push(CompletionItem {
                             label,
                             kind: Some(CompletionItemKind::PROPERTY),
-                            detail: if is_readonly {
-                                Some("readonly".to_string())
-                            } else {
-                                None
-                            },
+                            detail,
                             ..Default::default()
                         });
                     }
                 }
             }
-            // Built-in enum properties: every enum case has `->name: string`
-            // and backed enums also have `->value`.
-            if is_enum(d, &current) {
-                if seen_names.insert("name".to_string()) {
-                    items.push(CompletionItem {
-                        label: "name".to_string(),
-                        kind: Some(CompletionItemKind::PROPERTY),
-                        detail: Some("string".to_string()),
-                        ..Default::default()
-                    });
-                }
-                if is_backed_enum(d, &current) && seen_names.insert("value".to_string()) {
-                    items.push(CompletionItem {
-                        label: "value".to_string(),
-                        kind: Some(CompletionItemKind::PROPERTY),
-                        detail: Some("string|int".to_string()),
-                        ..Default::default()
-                    });
-                }
-            }
-            for mixin in mixin_classes_of(d, &current) {
-                queue.push(mixin);
-            }
-            for trait_name in members.trait_uses {
-                queue.push(trait_name);
-            }
-        }
-
-        // Built-in stubs only apply when the class is not defined in any user
-        // document — a user class shadowing a built-in name wins.
-        if !found_in_docs && let Some(stub) = builtin_class_members(&current) {
-            if parent.is_none() {
-                parent = stub.parent.clone();
-            }
-            for (name, is_static) in &stub.methods {
-                if !is_static && seen_names.insert(name.clone()) {
-                    items.push(callable_item(name, CompletionItemKind::METHOD, true));
-                }
-            }
-            for (name, is_static) in &stub.properties {
-                if !is_static {
-                    let label = format!("${name}");
-                    if seen_names.insert(label.clone()) {
+            if is_static {
+                for name in members.constants {
+                    if seen_names.insert(name.clone()) {
                         items.push(CompletionItem {
-                            label,
-                            kind: Some(CompletionItemKind::PROPERTY),
+                            label: name,
+                            kind: Some(CompletionItemKind::CONSTANT),
                             ..Default::default()
                         });
                     }
                 }
-            }
-        }
-        if let Some(p) = parent {
-            queue.push(p);
-        }
-    }
-    items
-}
-
-pub(super) fn all_static_members(
-    class_name: &str,
-    doc: &ParsedDoc,
-    other_docs: &[Arc<ParsedDoc>],
-    find_class_doc: Option<super::ClassDocLookup<'_>>,
-) -> Vec<CompletionItem> {
-    let all: Vec<&ParsedDoc> = std::iter::once(doc)
-        .chain(other_docs.iter().map(|d| d.as_ref()))
-        .collect();
-    let mut items = Vec::new();
-    let mut seen_names: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut visited: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut queue: Vec<String> = vec![class_name.to_string()];
-    while let Some(current) = queue.pop() {
-        if !visited.insert(current.clone()) {
-            continue;
-        }
-        let mut parent: Option<String> = None;
-        let mut found_in_docs = false;
-
-        let fast_doc: Option<Arc<ParsedDoc>> = find_class_doc.and_then(|f| f(&current));
-        let fast_ref: Option<&ParsedDoc> = fast_doc.as_deref();
-        let defining: Option<(&ParsedDoc, ClassMembers)> = if let Some(fd) = fast_ref {
-            let m = members_of_class(fd, &current);
-            m.found.then_some((fd, m))
-        } else {
-            all.iter().find_map(|d| {
-                let m = members_of_class(d, &current);
-                m.found.then_some((*d, m))
-            })
-        };
-
-        if let Some((_d, members)) = defining {
-            found_in_docs = true;
-            parent = members.parent.clone();
-            for (name, is_static) in members.methods {
-                if is_static && seen_names.insert(name.clone()) {
-                    items.push(callable_item(&name, CompletionItemKind::METHOD, true));
-                }
-            }
-            for (name, is_static) in members.properties {
-                if is_static {
-                    let label = format!("${name}");
-                    if seen_names.insert(label.clone()) {
+            } else {
+                // Built-in enum properties: every enum case has `->name: string`
+                // and backed enums also have `->value`.
+                if is_enum(d, &current) {
+                    if seen_names.insert("name".to_string()) {
                         items.push(CompletionItem {
-                            label,
+                            label: "name".to_string(),
                             kind: Some(CompletionItemKind::PROPERTY),
+                            detail: Some("string".to_string()),
+                            ..Default::default()
+                        });
+                    }
+                    if is_backed_enum(d, &current) && seen_names.insert("value".to_string()) {
+                        items.push(CompletionItem {
+                            label: "value".to_string(),
+                            kind: Some(CompletionItemKind::PROPERTY),
+                            detail: Some("string|int".to_string()),
                             ..Default::default()
                         });
                     }
                 }
-            }
-            for name in members.constants {
-                if seen_names.insert(name.clone()) {
-                    items.push(CompletionItem {
-                        label: name,
-                        kind: Some(CompletionItemKind::CONSTANT),
-                        ..Default::default()
-                    });
+                for mixin in mixin_classes_of(d, &current) {
+                    queue.push(mixin);
                 }
             }
             for trait_name in members.trait_uses {
@@ -209,13 +147,13 @@ pub(super) fn all_static_members(
             if parent.is_none() {
                 parent = stub.parent.clone();
             }
-            for (name, is_static) in &stub.methods {
-                if *is_static && seen_names.insert(name.clone()) {
+            for (name, meth_is_static) in &stub.methods {
+                if (*meth_is_static == is_static) && seen_names.insert(name.clone()) {
                     items.push(callable_item(name, CompletionItemKind::METHOD, true));
                 }
             }
-            for (name, is_static) in &stub.properties {
-                if *is_static {
+            for (name, prop_is_static) in &stub.properties {
+                if *prop_is_static == is_static {
                     let label = format!("${name}");
                     if seen_names.insert(label.clone()) {
                         items.push(CompletionItem {
@@ -226,13 +164,15 @@ pub(super) fn all_static_members(
                     }
                 }
             }
-            for name in &stub.constants {
-                if seen_names.insert(name.clone()) {
-                    items.push(CompletionItem {
-                        label: name.clone(),
-                        kind: Some(CompletionItemKind::CONSTANT),
-                        ..Default::default()
-                    });
+            if is_static {
+                for name in &stub.constants {
+                    if seen_names.insert(name.clone()) {
+                        items.push(CompletionItem {
+                            label: name.clone(),
+                            kind: Some(CompletionItemKind::CONSTANT),
+                            ..Default::default()
+                        });
+                    }
                 }
             }
         }
