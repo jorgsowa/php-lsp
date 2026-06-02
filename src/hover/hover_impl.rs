@@ -28,9 +28,7 @@ fn is_hoverable(decl: &Declaration<'_>) -> bool {
     )
 }
 
-/// AST-walk path kept as public API for benchmark crates comparing both paths.
-#[allow(dead_code)]
-pub fn hover_info(
+pub(crate) fn hover_info(
     source: &str,
     doc: &ParsedDoc,
     analysis: Option<&mir_analyzer::FileAnalysis>,
