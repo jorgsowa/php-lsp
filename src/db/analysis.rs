@@ -7,8 +7,7 @@
 //!
 //! After the mir 0.22 migration, this module no longer owns the workspace
 //! `MirDb` — that's the responsibility of `mir_analyzer::AnalysisSession`
-//! held by `DocumentStore`. Salsa is for parsed_doc / file_index / method_returns
-//! only.
+//! held by `DocumentStore`. Salsa is for parsed_doc / file_index only.
 
 use salsa::{Database, Storage};
 

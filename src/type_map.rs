@@ -1,7 +1,6 @@
-/// Single-pass type inference: collects `$var = new ClassName()` assignments
-/// to map variable names to class names.  Used to scope method completions
-/// after `->`. Also tracks method return types for factory patterns and
-/// method chaining.
+/// Single-pass type inference: collects `$var = new ClassName()` assignments,
+/// `@var` docblocks, `@param` hints, and PHPStorm meta factory calls to map
+/// variable names to class names. Used to scope method completions after `->`.
 use std::collections::HashMap;
 
 use php_ast::{

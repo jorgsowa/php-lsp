@@ -914,11 +914,6 @@ mod tests {
         assert!(text.contains("PDO"), "hover should mention PDO");
     }
 
-    // hover_on_property_shows_type, hover_on_promoted_property_*, and the
-    // @var-tag property tests all exercised the removed TypeMap receiver path.
-    // Equivalent coverage lives in tests/editing/feature_hover_types.rs which
-    // runs through TestServer (real mir analysis).
-
     #[test]
     fn hover_on_use_alias_shows_fqn() {
         let src = "<?php\nuse App\\Mail\\Mailer;\n$m = new Mailer();";
@@ -974,10 +969,6 @@ mod tests {
             "hover content should contain 'strlen', got: {text}"
         );
     }
-
-    // Property and nullsafe hover tests removed — they relied on the deleted
-    // TypeMap receiver path. Replaced by integration tests in
-    // tests/editing/feature_hover_types.rs which exercise the mir-primary path.
 
     // ── Snapshot tests ───────────────────────────────────────────────────────
 
@@ -1238,8 +1229,4 @@ mod tests {
             );
         }
     }
-
-    // hover_method_call_shows_correct_class_signature removed — it tested the
-    // TypeMap receiver path (analysis=None). The equivalent with mir is in
-    // tests/editing/feature_hover_advanced.rs.
 }
