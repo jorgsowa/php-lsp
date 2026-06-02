@@ -10,7 +10,7 @@ use tower_lsp::lsp_types::{
 };
 
 use crate::ast::{ParsedDoc, SourceView, str_offset};
-use crate::docblock::{docblock_before, parse_docblock};
+use crate::docblock::parse_docblock;
 use crate::util::utf16_code_units;
 
 // Token type indices — order must match `legend()` vec order
@@ -230,16 +230,15 @@ fn push_attributes(out: &mut Vec<RawToken>, sv: SourceView<'_>, attrs: &[Attribu
     }
 }
 
-fn deprecated_mod(source: &str, node_start: u32) -> u32 {
-    docblock_before(source, node_start)
-        .map(|raw| {
-            if parse_docblock(&raw).is_deprecated() {
-                MOD_DEPRECATED
-            } else {
-                0
-            }
-        })
-        .unwrap_or(0)
+fn deprecated_mod(doc: Option<&php_ast::Comment<'_>>) -> u32 {
+    doc.map(|c| {
+        if parse_docblock(c.text).is_deprecated() {
+            MOD_DEPRECATED
+        } else {
+            0
+        }
+    })
+    .unwrap_or(0)
 }
 
 /// Scan `sv.source()` for PHP comments (single-line `//` and `#`, multi-line `/* */`)
@@ -396,7 +395,7 @@ fn collect_stmt(sv: SourceView<'_>, stmt: &Stmt<'_, '_>, out: &mut Vec<RawToken>
     match &stmt.kind {
         StmtKind::Function(f) => {
             push_attributes(out, sv, &f.attributes);
-            let mods = MOD_DECLARATION | deprecated_mod(sv.source(), stmt.span.start);
+            let mods = MOD_DECLARATION | deprecated_mod(f.doc_comment.as_ref());
             push_name(out, sv, &f.name.to_string(), TT_FUNCTION, mods);
             for p in f.params.iter() {
                 push_attributes(out, sv, &p.attributes);
@@ -413,7 +412,7 @@ fn collect_stmt(sv: SourceView<'_>, stmt: &Stmt<'_, '_>, out: &mut Vec<RawToken>
         StmtKind::Class(c) => {
             push_attributes(out, sv, &c.attributes);
             if let Some(name) = c.name {
-                let mut mods = MOD_DECLARATION | deprecated_mod(sv.source(), stmt.span.start);
+                let mut mods = MOD_DECLARATION | deprecated_mod(c.doc_comment.as_ref());
                 if c.modifiers.is_abstract {
                     mods |= MOD_ABSTRACT;
                 }
@@ -425,12 +424,12 @@ fn collect_stmt(sv: SourceView<'_>, stmt: &Stmt<'_, '_>, out: &mut Vec<RawToken>
         }
         StmtKind::Interface(i) => {
             push_attributes(out, sv, &i.attributes);
-            let mods = MOD_DECLARATION | deprecated_mod(sv.source(), stmt.span.start);
+            let mods = MOD_DECLARATION | deprecated_mod(i.doc_comment.as_ref());
             push_name(out, sv, &i.name.to_string(), TT_INTERFACE, mods);
         }
         StmtKind::Trait(t) => {
             push_attributes(out, sv, &t.attributes);
-            let mods = MOD_DECLARATION | deprecated_mod(sv.source(), stmt.span.start);
+            let mods = MOD_DECLARATION | deprecated_mod(t.doc_comment.as_ref());
             push_name(out, sv, &t.name.to_string(), TT_CLASS, mods);
             for member in t.body.members.iter() {
                 collect_class_member(sv, member, out);
@@ -438,14 +437,13 @@ fn collect_stmt(sv: SourceView<'_>, stmt: &Stmt<'_, '_>, out: &mut Vec<RawToken>
         }
         StmtKind::Enum(e) => {
             push_attributes(out, sv, &e.attributes);
-            let mods = MOD_DECLARATION | deprecated_mod(sv.source(), stmt.span.start);
+            let mods = MOD_DECLARATION | deprecated_mod(e.doc_comment.as_ref());
             push_name(out, sv, &e.name.to_string(), TT_CLASS, mods);
             for member in e.body.members.iter() {
                 match &member.kind {
                     EnumMemberKind::Case(c) => {
                         push_attributes(out, sv, &c.attributes);
-                        let mmods =
-                            MOD_DECLARATION | deprecated_mod(sv.source(), member.span.start);
+                        let mmods = MOD_DECLARATION | deprecated_mod(c.doc_comment.as_ref());
                         push_name(out, sv, &c.name.to_string(), TT_ENUM_MEMBER, mmods);
                         if let Some(value) = &c.value {
                             collect_expr(sv, value, out);
@@ -453,8 +451,7 @@ fn collect_stmt(sv: SourceView<'_>, stmt: &Stmt<'_, '_>, out: &mut Vec<RawToken>
                     }
                     EnumMemberKind::Method(m) => {
                         push_attributes(out, sv, &m.attributes);
-                        let mut mmods =
-                            MOD_DECLARATION | deprecated_mod(sv.source(), member.span.start);
+                        let mut mmods = MOD_DECLARATION | deprecated_mod(m.doc_comment.as_ref());
                         if m.is_static {
                             mmods |= MOD_STATIC;
                         }
@@ -474,8 +471,7 @@ fn collect_stmt(sv: SourceView<'_>, stmt: &Stmt<'_, '_>, out: &mut Vec<RawToken>
                     }
                     EnumMemberKind::ClassConst(k) => {
                         push_attributes(out, sv, &k.attributes);
-                        let mmods =
-                            MOD_DECLARATION | deprecated_mod(sv.source(), member.span.start);
+                        let mmods = MOD_DECLARATION | deprecated_mod(k.doc_comment.as_ref());
                         if let Some(th) = &k.type_hint {
                             push_type_hint(out, sv, th);
                         }
@@ -567,7 +563,7 @@ fn collect_class_member(
 ) {
     if let ClassMemberKind::Method(m) = &member.kind {
         push_attributes(out, sv, &m.attributes);
-        let mut mods = MOD_DECLARATION | deprecated_mod(sv.source(), member.span.start);
+        let mut mods = MOD_DECLARATION | deprecated_mod(m.doc_comment.as_ref());
         if m.is_static {
             mods |= MOD_STATIC;
         }

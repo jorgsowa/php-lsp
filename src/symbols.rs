@@ -8,8 +8,18 @@ use tower_lsp::lsp_types::{
 };
 
 use crate::ast::{ParsedDoc, SourceView, name_range};
-use crate::docblock::{docblock_before, parse_docblock};
+use crate::docblock::parse_docblock;
 use crate::util::zero_width_range;
+
+fn is_deprecated_doc(doc: Option<&php_ast::Comment<'_>>) -> Option<bool> {
+    doc.and_then(|c| {
+        if parse_docblock(c.text).deprecated.is_some() {
+            Some(true)
+        } else {
+            None
+        }
+    })
+}
 
 pub fn document_symbols(_source: &str, doc: &ParsedDoc) -> Vec<DocumentSymbol> {
     let sv = doc.view();
@@ -116,9 +126,7 @@ fn statement_to_symbol(sv: SourceView<'_>, stmt: &Stmt<'_, '_>) -> Option<Docume
             let range = stmt_range(sv, stmt);
             let selection_range = sv.name_range(&f.name.to_string());
             let detail = Some(format_fn_signature(&f.params, f.return_type.as_ref()));
-            let is_deprecated = docblock_before(sv.source(), stmt.span.start)
-                .filter(|raw| parse_docblock(raw).deprecated.is_some())
-                .map(|_| true);
+            let is_deprecated = is_deprecated_doc(f.doc_comment.as_ref());
 
             let param_children: Vec<DocumentSymbol> = f
                 .params
@@ -159,9 +167,7 @@ fn statement_to_symbol(sv: SourceView<'_>, stmt: &Stmt<'_, '_>) -> Option<Docume
             let name = c.name?;
             let range = stmt_range(sv, stmt);
             let selection_range = sv.name_range(&name.to_string());
-            let class_deprecated = docblock_before(sv.source(), stmt.span.start)
-                .filter(|raw| parse_docblock(raw).deprecated.is_some())
-                .map(|_| true);
+            let class_deprecated = is_deprecated_doc(c.doc_comment.as_ref());
 
             let children: Vec<DocumentSymbol> = c
                 .body
@@ -174,9 +180,7 @@ fn statement_to_symbol(sv: SourceView<'_>, stmt: &Stmt<'_, '_>) -> Option<Docume
                             let msel = sv.name_range(&m.name.to_string());
                             let detail =
                                 Some(format_fn_signature(&m.params, m.return_type.as_ref()));
-                            let method_deprecated = docblock_before(sv.source(), member.span.start)
-                                .filter(|raw| parse_docblock(raw).deprecated.is_some())
-                                .map(|_| true);
+                            let method_deprecated = is_deprecated_doc(m.doc_comment.as_ref());
                             vec![DocumentSymbol {
                                 name: m.name.to_string(),
                                 detail,
@@ -191,9 +195,7 @@ fn statement_to_symbol(sv: SourceView<'_>, stmt: &Stmt<'_, '_>) -> Option<Docume
                         ClassMemberKind::Property(p) => {
                             let prange = member_range(sv, member);
                             let psel = sv.name_range(&p.name.to_string());
-                            let prop_deprecated = docblock_before(sv.source(), member.span.start)
-                                .filter(|raw| parse_docblock(raw).deprecated.is_some())
-                                .map(|_| true);
+                            let prop_deprecated = is_deprecated_doc(p.doc_comment.as_ref());
                             vec![DocumentSymbol {
                                 name: format!("${}", p.name),
                                 detail: None,
@@ -208,9 +210,7 @@ fn statement_to_symbol(sv: SourceView<'_>, stmt: &Stmt<'_, '_>) -> Option<Docume
                         ClassMemberKind::ClassConst(cc) => {
                             let crange = member_range(sv, member);
                             let csel = sv.name_range(&cc.name.to_string());
-                            let const_deprecated = docblock_before(sv.source(), member.span.start)
-                                .filter(|raw| parse_docblock(raw).deprecated.is_some())
-                                .map(|_| true);
+                            let const_deprecated = is_deprecated_doc(cc.doc_comment.as_ref());
                             vec![DocumentSymbol {
                                 name: cc.name.to_string(),
                                 detail: None,
@@ -246,9 +246,7 @@ fn statement_to_symbol(sv: SourceView<'_>, stmt: &Stmt<'_, '_>) -> Option<Docume
         StmtKind::Interface(i) => {
             let range = stmt_range(sv, stmt);
             let selection_range = sv.name_range(&i.name.to_string());
-            let iface_deprecated = docblock_before(sv.source(), stmt.span.start)
-                .filter(|raw| parse_docblock(raw).deprecated.is_some())
-                .map(|_| true);
+            let iface_deprecated = is_deprecated_doc(i.doc_comment.as_ref());
             let children: Vec<DocumentSymbol> = i
                 .body
                 .members
@@ -257,9 +255,7 @@ fn statement_to_symbol(sv: SourceView<'_>, stmt: &Stmt<'_, '_>) -> Option<Docume
                     ClassMemberKind::Method(m) => {
                         let mrange = member_range(sv, member);
                         let msel = sv.name_range(&m.name.to_string());
-                        let method_deprecated = docblock_before(sv.source(), member.span.start)
-                            .filter(|raw| parse_docblock(raw).deprecated.is_some())
-                            .map(|_| true);
+                        let method_deprecated = is_deprecated_doc(m.doc_comment.as_ref());
                         Some(DocumentSymbol {
                             name: m.name.to_string(),
                             detail: Some(format_fn_signature(&m.params, m.return_type.as_ref())),
@@ -274,9 +270,7 @@ fn statement_to_symbol(sv: SourceView<'_>, stmt: &Stmt<'_, '_>) -> Option<Docume
                     ClassMemberKind::ClassConst(cc) => {
                         let crange = member_range(sv, member);
                         let csel = sv.name_range(&cc.name.to_string());
-                        let const_deprecated = docblock_before(sv.source(), member.span.start)
-                            .filter(|raw| parse_docblock(raw).deprecated.is_some())
-                            .map(|_| true);
+                        let const_deprecated = is_deprecated_doc(cc.doc_comment.as_ref());
                         Some(DocumentSymbol {
                             name: cc.name.to_string(),
                             detail: None,
@@ -310,9 +304,7 @@ fn statement_to_symbol(sv: SourceView<'_>, stmt: &Stmt<'_, '_>) -> Option<Docume
         StmtKind::Trait(t) => {
             let range = stmt_range(sv, stmt);
             let selection_range = sv.name_range(&t.name.to_string());
-            let trait_deprecated = docblock_before(sv.source(), stmt.span.start)
-                .filter(|raw| parse_docblock(raw).deprecated.is_some())
-                .map(|_| true);
+            let trait_deprecated = is_deprecated_doc(t.doc_comment.as_ref());
             let children: Vec<DocumentSymbol> = t
                 .body
                 .members
@@ -321,9 +313,7 @@ fn statement_to_symbol(sv: SourceView<'_>, stmt: &Stmt<'_, '_>) -> Option<Docume
                     if let ClassMemberKind::Method(m) = &member.kind {
                         let mrange = member_range(sv, member);
                         let msel = sv.name_range(&m.name.to_string());
-                        let method_deprecated = docblock_before(sv.source(), member.span.start)
-                            .filter(|raw| parse_docblock(raw).deprecated.is_some())
-                            .map(|_| true);
+                        let method_deprecated = is_deprecated_doc(m.doc_comment.as_ref());
                         Some(DocumentSymbol {
                             name: m.name.to_string(),
                             detail: Some(format_fn_signature(&m.params, m.return_type.as_ref())),
@@ -359,9 +349,7 @@ fn statement_to_symbol(sv: SourceView<'_>, stmt: &Stmt<'_, '_>) -> Option<Docume
         StmtKind::Enum(e) => {
             let range = stmt_range(sv, stmt);
             let selection_range = sv.name_range(&e.name.to_string());
-            let enum_deprecated = docblock_before(sv.source(), stmt.span.start)
-                .filter(|raw| parse_docblock(raw).deprecated.is_some())
-                .map(|_| true);
+            let enum_deprecated = is_deprecated_doc(e.doc_comment.as_ref());
             let children: Vec<DocumentSymbol> = e
                 .body
                 .members
@@ -390,9 +378,7 @@ fn statement_to_symbol(sv: SourceView<'_>, stmt: &Stmt<'_, '_>) -> Option<Docume
                             end: sv.position_of(member.span.end),
                         };
                         let msel = sv.name_range(&m.name.to_string());
-                        let method_deprecated = docblock_before(sv.source(), member.span.start)
-                            .filter(|raw| parse_docblock(raw).deprecated.is_some())
-                            .map(|_| true);
+                        let method_deprecated = is_deprecated_doc(m.doc_comment.as_ref());
                         Some(DocumentSymbol {
                             name: m.name.to_string(),
                             detail: Some(format_fn_signature(&m.params, m.return_type.as_ref())),

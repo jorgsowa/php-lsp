@@ -472,46 +472,37 @@ pub fn docblock_before(source: &str, node_start: u32) -> Option<String> {
 }
 
 /// Walk an AST and return the parsed docblock for the declaration named `word`.
-pub fn find_docblock(
-    source: &str,
-    stmts: &[php_ast::Stmt<'_, '_>],
-    word: &str,
-) -> Option<Docblock> {
+///
+/// Uses `doc_comment` fields on AST nodes — no source scan, no allocation for
+/// the raw text. The `source` parameter has been removed; the parser already
+/// attached the docblock text to each declaration node.
+pub fn find_docblock(stmts: &[php_ast::Stmt<'_, '_>], word: &str) -> Option<Docblock> {
     use php_ast::{ClassMemberKind, EnumMemberKind, NamespaceBody, StmtKind};
     for stmt in stmts {
         match &stmt.kind {
             StmtKind::Function(f) if f.name == word => {
-                let raw = docblock_before(source, stmt.span.start)?;
-                return Some(parse_docblock(&raw));
+                return f.doc_comment.as_ref().map(|c| parse_docblock(c.text));
             }
-            StmtKind::Class(c)
-                if c.name.as_ref().map(|n| n.to_string()) == Some(word.to_string()) =>
-            {
-                let raw = docblock_before(source, stmt.span.start)?;
-                return Some(parse_docblock(&raw));
+            StmtKind::Class(c) if c.name.is_some_and(|n| n == word) => {
+                return c.doc_comment.as_ref().map(|c| parse_docblock(c.text));
             }
             StmtKind::Interface(i) if i.name == word => {
-                let raw = docblock_before(source, stmt.span.start)?;
-                return Some(parse_docblock(&raw));
+                return i.doc_comment.as_ref().map(|c| parse_docblock(c.text));
             }
             StmtKind::Trait(t) if t.name == word => {
-                let raw = docblock_before(source, stmt.span.start)?;
-                return Some(parse_docblock(&raw));
+                return t.doc_comment.as_ref().map(|c| parse_docblock(c.text));
             }
             StmtKind::Enum(e) if e.name == word => {
-                let raw = docblock_before(source, stmt.span.start)?;
-                return Some(parse_docblock(&raw));
+                return e.doc_comment.as_ref().map(|c| parse_docblock(c.text));
             }
             StmtKind::Class(c) => {
                 for member in c.body.members.iter() {
                     match &member.kind {
                         ClassMemberKind::Method(m) if m.name == word => {
-                            let raw = docblock_before(source, member.span.start)?;
-                            return Some(parse_docblock(&raw));
+                            return m.doc_comment.as_ref().map(|c| parse_docblock(c.text));
                         }
                         ClassMemberKind::ClassConst(k) if k.name == word => {
-                            let raw = docblock_before(source, member.span.start)?;
-                            return Some(parse_docblock(&raw));
+                            return k.doc_comment.as_ref().map(|c| parse_docblock(c.text));
                         }
                         _ => {}
                     }
@@ -521,12 +512,10 @@ pub fn find_docblock(
                 for member in i.body.members.iter() {
                     match &member.kind {
                         ClassMemberKind::Method(m) if m.name == word => {
-                            let raw = docblock_before(source, member.span.start)?;
-                            return Some(parse_docblock(&raw));
+                            return m.doc_comment.as_ref().map(|c| parse_docblock(c.text));
                         }
                         ClassMemberKind::ClassConst(k) if k.name == word => {
-                            let raw = docblock_before(source, member.span.start)?;
-                            return Some(parse_docblock(&raw));
+                            return k.doc_comment.as_ref().map(|c| parse_docblock(c.text));
                         }
                         _ => {}
                     }
@@ -537,8 +526,7 @@ pub fn find_docblock(
                     if let ClassMemberKind::Method(m) = &member.kind
                         && m.name == word
                     {
-                        let raw = docblock_before(source, member.span.start)?;
-                        return Some(parse_docblock(&raw));
+                        return m.doc_comment.as_ref().map(|c| parse_docblock(c.text));
                     }
                 }
             }
@@ -546,16 +534,13 @@ pub fn find_docblock(
                 for member in e.body.members.iter() {
                     match &member.kind {
                         EnumMemberKind::Method(m) if m.name == word => {
-                            let raw = docblock_before(source, member.span.start)?;
-                            return Some(parse_docblock(&raw));
+                            return m.doc_comment.as_ref().map(|c| parse_docblock(c.text));
                         }
                         EnumMemberKind::Case(c) if c.name == word => {
-                            let raw = docblock_before(source, member.span.start)?;
-                            return Some(parse_docblock(&raw));
+                            return c.doc_comment.as_ref().map(|c| parse_docblock(c.text));
                         }
                         EnumMemberKind::ClassConst(k) if k.name == word => {
-                            let raw = docblock_before(source, member.span.start)?;
-                            return Some(parse_docblock(&raw));
+                            return k.doc_comment.as_ref().map(|c| parse_docblock(c.text));
                         }
                         _ => {}
                     }
@@ -563,7 +548,7 @@ pub fn find_docblock(
             }
             StmtKind::Namespace(ns) => {
                 if let NamespaceBody::Braced(inner) = &ns.body
-                    && let Some(db) = find_docblock(source, &inner.stmts, word)
+                    && let Some(db) = find_docblock(&inner.stmts, word)
                 {
                     return Some(db);
                 }
@@ -695,7 +680,7 @@ mod tests {
         use crate::ast::ParsedDoc;
         let src = "<?php\n/** Greets someone. */\nfunction greet() {}";
         let doc = ParsedDoc::parse(src.to_string());
-        let db = find_docblock(src, &doc.program().stmts, "greet");
+        let db = find_docblock(&doc.program().stmts, "greet");
         assert!(db.is_some(), "expected docblock for greet");
         assert!(db.unwrap().description.contains("Greets"));
     }
@@ -705,7 +690,7 @@ mod tests {
         use crate::ast::ParsedDoc;
         let src = "<?php\nfunction greet() {}";
         let doc = ParsedDoc::parse(src.to_string());
-        let db = find_docblock(src, &doc.program().stmts, "greet");
+        let db = find_docblock(&doc.program().stmts, "greet");
         assert!(db.is_none());
     }
 

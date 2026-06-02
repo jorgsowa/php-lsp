@@ -17,7 +17,6 @@ use php_ast::{ClassMemberKind, EnumMemberKind, NamespaceBody, Stmt, StmtKind};
 use tower_lsp::lsp_types::Range;
 
 use crate::ast::ParsedDoc;
-use crate::docblock::docblock_before;
 use crate::hover::formatting::declaration_signature;
 use crate::resolve::{Container, Declaration};
 
@@ -71,9 +70,8 @@ impl SymbolMap {
     /// Walk `doc`'s AST once and build the complete symbol map.
     pub fn build(doc: &ParsedDoc) -> Self {
         let sv = doc.view();
-        let source = sv.source();
         let mut entries: HashMap<String, Vec<SymbolEntry>> = HashMap::new();
-        collect_stmts(&doc.program().stmts, source, sv, &mut entries);
+        collect_stmts(&doc.program().stmts, sv, &mut entries);
         SymbolMap { entries }
     }
 
@@ -94,11 +92,19 @@ impl SymbolMap {
     }
 }
 
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+/// Parse a doc-comment already attached by the parser and render it as markdown.
+/// Returns `None` when the docblock has no visible content.
+fn doc_to_markdown(c: &php_ast::Comment<'_>) -> Option<String> {
+    let md = crate::docblock::parse_docblock(c.text).to_markdown();
+    if md.is_empty() { None } else { Some(md) }
+}
+
 // ── AST walker ────────────────────────────────────────────────────────────────
 
 fn collect_stmts<'a>(
     stmts: &'a [Stmt<'a, 'a>],
-    source: &str,
     sv: crate::ast::SourceView<'_>,
     out: &mut HashMap<String, Vec<SymbolEntry>>,
 ) {
@@ -113,9 +119,7 @@ fn collect_stmts<'a>(
                     stmt_span: stmt.span,
                 };
                 let sig = declaration_signature(&decl, name);
-                let doc_markdown = docblock_before(source, stmt.span.start)
-                    .map(|raw| crate::docblock::parse_docblock(&raw).to_markdown())
-                    .filter(|md| !md.is_empty());
+                let doc_markdown = f.doc_comment.as_ref().and_then(doc_to_markdown);
                 push(
                     out,
                     name.to_owned(),
@@ -139,9 +143,7 @@ fn collect_stmts<'a>(
                         stmt_span: stmt.span,
                     };
                     let sig = declaration_signature(&decl, name);
-                    let doc_markdown = docblock_before(source, stmt.span.start)
-                        .map(|raw| crate::docblock::parse_docblock(&raw).to_markdown())
-                        .filter(|md| !md.is_empty());
+                    let doc_markdown = c.doc_comment.as_ref().and_then(doc_to_markdown);
                     push(
                         out,
                         name.to_owned(),
@@ -154,7 +156,7 @@ fn collect_stmts<'a>(
                         },
                     );
                 }
-                collect_members(c.body.members.iter(), source, sv, Container::Class, out);
+                collect_members(c.body.members.iter(), sv, Container::Class, out);
             }
 
             StmtKind::Interface(i) => {
@@ -164,9 +166,7 @@ fn collect_stmts<'a>(
                     stmt_span: stmt.span,
                 };
                 let sig = declaration_signature(&decl, name);
-                let doc_markdown = docblock_before(source, stmt.span.start)
-                    .map(|raw| crate::docblock::parse_docblock(&raw).to_markdown())
-                    .filter(|md| !md.is_empty());
+                let doc_markdown = i.doc_comment.as_ref().and_then(doc_to_markdown);
                 push(
                     out,
                     name.to_owned(),
@@ -178,7 +178,7 @@ fn collect_stmts<'a>(
                         doc_markdown,
                     },
                 );
-                collect_members(i.body.members.iter(), source, sv, Container::Interface, out);
+                collect_members(i.body.members.iter(), sv, Container::Interface, out);
             }
 
             StmtKind::Trait(t) => {
@@ -188,9 +188,7 @@ fn collect_stmts<'a>(
                     stmt_span: stmt.span,
                 };
                 let sig = declaration_signature(&decl, name);
-                let doc_markdown = docblock_before(source, stmt.span.start)
-                    .map(|raw| crate::docblock::parse_docblock(&raw).to_markdown())
-                    .filter(|md| !md.is_empty());
+                let doc_markdown = t.doc_comment.as_ref().and_then(doc_to_markdown);
                 push(
                     out,
                     name.to_owned(),
@@ -202,7 +200,7 @@ fn collect_stmts<'a>(
                         doc_markdown,
                     },
                 );
-                collect_members(t.body.members.iter(), source, sv, Container::Trait, out);
+                collect_members(t.body.members.iter(), sv, Container::Trait, out);
             }
 
             StmtKind::Enum(e) => {
@@ -212,9 +210,7 @@ fn collect_stmts<'a>(
                     stmt_span: stmt.span,
                 };
                 let sig = declaration_signature(&decl, name);
-                let doc_markdown = docblock_before(source, stmt.span.start)
-                    .map(|raw| crate::docblock::parse_docblock(&raw).to_markdown())
-                    .filter(|md| !md.is_empty());
+                let doc_markdown = e.doc_comment.as_ref().and_then(doc_to_markdown);
                 push(
                     out,
                     name.to_owned(),
@@ -237,9 +233,7 @@ fn collect_stmts<'a>(
                                 member_span: member.span,
                             };
                             let sig = declaration_signature(&case_decl, case_name);
-                            let doc_markdown = docblock_before(source, member.span.start)
-                                .map(|raw| crate::docblock::parse_docblock(&raw).to_markdown())
-                                .filter(|md| !md.is_empty());
+                            let doc_markdown = c.doc_comment.as_ref().and_then(doc_to_markdown);
                             push(
                                 out,
                                 case_name.to_owned(),
@@ -260,9 +254,7 @@ fn collect_stmts<'a>(
                                 member_span: member.span,
                             };
                             let sig = declaration_signature(&m_decl, mname);
-                            let doc_markdown = docblock_before(source, member.span.start)
-                                .map(|raw| crate::docblock::parse_docblock(&raw).to_markdown())
-                                .filter(|md| !md.is_empty());
+                            let doc_markdown = m.doc_comment.as_ref().and_then(doc_to_markdown);
                             push(
                                 out,
                                 mname.to_owned(),
@@ -285,9 +277,7 @@ fn collect_stmts<'a>(
                                 member_span: member.span,
                             };
                             let sig = declaration_signature(&cc_decl, cc_name);
-                            let doc_markdown = docblock_before(source, member.span.start)
-                                .map(|raw| crate::docblock::parse_docblock(&raw).to_markdown())
-                                .filter(|md| !md.is_empty());
+                            let doc_markdown = cc.doc_comment.as_ref().and_then(doc_to_markdown);
                             push(
                                 out,
                                 cc_name.to_owned(),
@@ -309,7 +299,7 @@ fn collect_stmts<'a>(
 
             StmtKind::Namespace(ns) => {
                 if let NamespaceBody::Braced(inner) = &ns.body {
-                    collect_stmts(&inner.stmts, source, sv, out);
+                    collect_stmts(&inner.stmts, sv, out);
                 }
             }
 
@@ -320,7 +310,6 @@ fn collect_stmts<'a>(
 
 fn collect_members<'a>(
     members: impl Iterator<Item = &'a php_ast::ClassMember<'a, 'a>>,
-    source: &str,
     sv: crate::ast::SourceView<'_>,
     container: Container,
     out: &mut HashMap<String, Vec<SymbolEntry>>,
@@ -335,9 +324,7 @@ fn collect_members<'a>(
                     member_span: member.span,
                 };
                 let sig = declaration_signature(&m_decl, mname);
-                let doc_markdown = docblock_before(source, member.span.start)
-                    .map(|raw| crate::docblock::parse_docblock(&raw).to_markdown())
-                    .filter(|md| !md.is_empty());
+                let doc_markdown = m.doc_comment.as_ref().and_then(doc_to_markdown);
                 let name_range = if container == Container::Class {
                     sv.name_range_in_span(mname, member.span)
                 } else {
@@ -390,9 +377,7 @@ fn collect_members<'a>(
                     member_span: member.span,
                 };
                 let sig = declaration_signature(&cc_decl, cc_name);
-                let doc_markdown = docblock_before(source, member.span.start)
-                    .map(|raw| crate::docblock::parse_docblock(&raw).to_markdown())
-                    .filter(|md| !md.is_empty());
+                let doc_markdown = cc.doc_comment.as_ref().and_then(doc_to_markdown);
                 let name_range = if container == Container::Class {
                     sv.name_range_in_span(cc_name, member.span)
                 } else {

@@ -5,7 +5,6 @@ use tower_lsp::lsp_types::{
 };
 
 use crate::ast::{ParsedDoc, SourceView, format_type_hint};
-use crate::docblock::docblock_before;
 
 /// Return "Generate PHPDoc" code actions for any function/method whose declaration line
 /// falls within `range` and does not already have a docblock.
@@ -32,9 +31,7 @@ fn collect(
         match &stmt.kind {
             StmtKind::Function(f) => {
                 let fn_line = sv.position_of(stmt.span.start).line;
-                if line_in_range(fn_line, range)
-                    && docblock_before(sv.source(), stmt.span.start).is_none()
-                {
+                if line_in_range(fn_line, range) && f.doc_comment.is_none() {
                     let ret = f.return_type.as_ref().map(|t| format_type_hint(t));
                     if let Some(action) = make_action(uri, sv.source(), fn_line, &f.params, ret) {
                         out.push(action);
@@ -45,9 +42,7 @@ fn collect(
                 for member in c.body.members.iter() {
                     if let ClassMemberKind::Method(m) = &member.kind {
                         let fn_line = sv.position_of(member.span.start).line;
-                        if line_in_range(fn_line, range)
-                            && docblock_before(sv.source(), member.span.start).is_none()
-                        {
+                        if line_in_range(fn_line, range) && m.doc_comment.is_none() {
                             let ret = m.return_type.as_ref().map(|t| format_type_hint(t));
                             if let Some(action) =
                                 make_action(uri, sv.source(), fn_line, &m.params, ret)
@@ -62,9 +57,7 @@ fn collect(
                 for member in t.body.members.iter() {
                     if let ClassMemberKind::Method(m) = &member.kind {
                         let fn_line = sv.position_of(member.span.start).line;
-                        if line_in_range(fn_line, range)
-                            && docblock_before(sv.source(), member.span.start).is_none()
-                        {
+                        if line_in_range(fn_line, range) && m.doc_comment.is_none() {
                             let ret = m.return_type.as_ref().map(|t| format_type_hint(t));
                             if let Some(action) =
                                 make_action(uri, sv.source(), fn_line, &m.params, ret)
@@ -79,9 +72,7 @@ fn collect(
                 for member in e.body.members.iter() {
                     if let EnumMemberKind::Method(m) = &member.kind {
                         let fn_line = sv.position_of(member.span.start).line;
-                        if line_in_range(fn_line, range)
-                            && docblock_before(sv.source(), member.span.start).is_none()
-                        {
+                        if line_in_range(fn_line, range) && m.doc_comment.is_none() {
                             let ret = m.return_type.as_ref().map(|t| format_type_hint(t));
                             if let Some(action) =
                                 make_action(uri, sv.source(), fn_line, &m.params, ret)

@@ -29,7 +29,7 @@ pub fn signature_help(
 
     let display_name = func_name.trim_start_matches('\\');
     let label = format!("{}({})", display_name, sig_text);
-    let docblock = find_docblock(source, &doc.program().stmts, &func_name);
+    let docblock = find_docblock(&doc.program().stmts, &func_name);
     let params: Vec<ParameterInformation> = split_params(&sig_text)
         .into_iter()
         .filter(|p| !p.is_empty())

@@ -15,7 +15,6 @@ use serde_json::json;
 use tower_lsp::lsp_types::{CodeLens, Command, Url};
 
 use crate::ast::{ParsedDoc, SourceView};
-use crate::docblock::docblock_before;
 use crate::implementation::find_implementations;
 use crate::references::{SymbolKind, find_references};
 use crate::type_map::parent_class_name;
@@ -81,7 +80,7 @@ fn collect_lenses(
                                     None,
                                 ));
 
-                                if is_test_method(sv.source(), m, member.span.start) {
+                                if is_test_method(sv.source(), m) {
                                     out.push(run_test_lens(
                                         method_range,
                                         uri,
@@ -453,7 +452,7 @@ fn find_method_name_range(
 /// A method is a test if its name starts with `test` (PHPUnit convention),
 /// if its leading docblock contains `@test`, or if it carries a `#[Test]`
 /// or `#[PHPUnit\Framework\Attributes\Test]` PHP attribute.
-fn is_test_method(source: &str, m: &php_ast::MethodDecl<'_, '_>, member_start: u32) -> bool {
+fn is_test_method(source: &str, m: &php_ast::MethodDecl<'_, '_>) -> bool {
     if m.name
         .as_str()
         .map(|s| s.starts_with("test"))
@@ -471,7 +470,7 @@ fn is_test_method(source: &str, m: &php_ast::MethodDecl<'_, '_>, member_start: u
     if has_test_attr {
         return true;
     }
-    docblock_before(source, member_start)
-        .map(|db| db.contains("@test"))
-        .unwrap_or(false)
+    m.doc_comment
+        .as_ref()
+        .is_some_and(|c| c.text.contains("@test"))
 }

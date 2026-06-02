@@ -118,7 +118,7 @@ fn build_function_sig(
 
 /// Build a `Documentation` value from a docblock found before `sym_name` in `doc`.
 fn docblock_docs(doc: &ParsedDoc, sym_name: &str) -> Option<Documentation> {
-    let db = find_docblock(doc.source(), &doc.program().stmts, sym_name)?;
+    let db = find_docblock(&doc.program().stmts, sym_name)?;
     let md = db.to_markdown();
     if md.is_empty() {
         None

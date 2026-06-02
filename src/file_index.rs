@@ -13,7 +13,6 @@ use std::sync::Arc;
 use php_ast::{ClassMemberKind, EnumMemberKind, NamespaceBody, Stmt, StmtKind};
 
 use crate::ast::{ParsedDoc, format_type_hint};
-use crate::docblock::docblock_before;
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -176,7 +175,7 @@ fn collect_stmts(
 
             // ── Top-level function ───────────────────────────────────────────
             StmtKind::Function(f) => {
-                let doc_text = docblock_before(source, stmt.span.start).map(|s| s.into());
+                let doc_text = f.doc_comment.as_ref().map(|c| c.text.into());
                 let start_line = view.position_of(stmt.span.start).line;
                 let ns = cur_ns.as_deref();
                 let f_name = f.name.to_string();
@@ -224,7 +223,7 @@ fn collect_stmts(
                 for member in c.body.members.iter() {
                     match &member.kind {
                         ClassMemberKind::Method(m) => {
-                            let mdoc = docblock_before(source, member.span.start).map(|s| s.into());
+                            let mdoc = m.doc_comment.as_ref().map(|c| c.text.into());
                             let mstart = view.position_of(member.span.start).line;
                             let vis = method_visibility(m.visibility);
                             let method_params = extract_params(&m.params);
@@ -316,7 +315,7 @@ fn collect_stmts(
                 for member in i.body.members.iter() {
                     match &member.kind {
                         ClassMemberKind::Method(m) => {
-                            let mdoc = docblock_before(source, member.span.start).map(|s| s.into());
+                            let mdoc = m.doc_comment.as_ref().map(|c| c.text.into());
                             let mstart = view.position_of(member.span.start).line;
                             iface_def.methods.push(MethodDef {
                                 name: m.name.to_string().into(),
@@ -366,7 +365,7 @@ fn collect_stmts(
                 for member in t.body.members.iter() {
                     match &member.kind {
                         ClassMemberKind::Method(m) => {
-                            let mdoc = docblock_before(source, member.span.start).map(|s| s.into());
+                            let mdoc = m.doc_comment.as_ref().map(|c| c.text.into());
                             let mstart = view.position_of(member.span.start).line;
                             let vis = method_visibility(m.visibility);
                             trait_def.methods.push(MethodDef {
@@ -442,7 +441,7 @@ fn collect_stmts(
                             enum_def.cases.push(c.name.to_string().into());
                         }
                         EnumMemberKind::Method(m) => {
-                            let mdoc = docblock_before(source, member.span.start).map(|s| s.into());
+                            let mdoc = m.doc_comment.as_ref().map(|c| c.text.into());
                             let mstart = view.position_of(member.span.start).line;
                             let vis = method_visibility(m.visibility);
                             enum_def.methods.push(MethodDef {

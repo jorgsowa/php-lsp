@@ -309,9 +309,9 @@ pub fn hover_at(
         None
     });
 
-    if let Some((sig, sig_source, sig_doc)) = found {
+    if let Some((sig, _sig_source, sig_doc)) = found {
         let mut value = wrap_php(&sig);
-        if let Some(db) = find_docblock(sig_source, &sig_doc.program().stmts, &resolved_word) {
+        if let Some(db) = find_docblock(&sig_doc.program().stmts, &resolved_word) {
             let md = db.to_markdown();
             if !md.is_empty() {
                 value.push_str("\n\n---\n\n");
@@ -624,7 +624,7 @@ fn hover_at_with_maps(
         resolve_declaration(&doc.program().stmts, &resolved_word, &is_hoverable)
             .and_then(|d| declaration_signature(&d, &resolved_word))
             .map(|sig| {
-                let doc_md = find_docblock(source, &doc.program().stmts, &resolved_word)
+                let doc_md = find_docblock(&doc.program().stmts, &resolved_word)
                     .map(|db| db.to_markdown())
                     .filter(|md| !md.is_empty());
                 (sig, doc_md)
