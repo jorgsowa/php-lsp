@@ -1,5 +1,5 @@
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use arc_swap::ArcSwap;
 
@@ -101,6 +101,10 @@ pub struct DocumentStore {
     /// Pass-2 analysis, and lazy-loads dependencies via PSR-4. Built lazily
     /// on first use; rebuilt when PHP version changes.
     analysis_session: Mutex<Option<(mir_analyzer::PhpVersion, Arc<mir_analyzer::AnalysisSession>)>>,
+    /// Cache directory shared with the workspace file-index cache. When set,
+    /// new `AnalysisSession`s are built with `with_cache_dir` so that stub
+    /// parsing results survive server restarts.
+    session_cache_dir: OnceLock<std::path::PathBuf>,
 }
 
 impl Default for DocumentStore {
@@ -129,7 +133,15 @@ impl DocumentStore {
             workspace,
             psr4: Arc::new(ArcSwap::from_pointee(Psr4Map::empty())),
             analysis_session: Mutex::new(None),
+            session_cache_dir: OnceLock::new(),
         }
+    }
+
+    /// Set the directory used to persist stub-parse and analysis results across
+    /// server restarts.  Must be called before the first `analysis_session` use;
+    /// subsequent calls are silently ignored (`OnceLock` semantics).
+    pub fn set_session_cache_dir(&self, dir: std::path::PathBuf) {
+        let _ = self.session_cache_dir.set(dir);
     }
 
     /// Get or build the `AnalysisSession` for the given PHP version. Rebuilds
@@ -150,8 +162,12 @@ impl DocumentStore {
         // lazy-resolve `UndefinedClass` candidates without us having to mirror
         // every vendor file upfront.
         let resolver: Arc<dyn mir_analyzer::ClassResolver> = self.psr4.load_full();
-        let session =
-            Arc::new(mir_analyzer::AnalysisSession::new(php_version).with_class_resolver(resolver));
+        let mut builder =
+            mir_analyzer::AnalysisSession::new(php_version).with_class_resolver(resolver);
+        if let Some(dir) = self.session_cache_dir.get() {
+            builder = builder.with_cache_dir(dir);
+        }
+        let session = Arc::new(builder);
         session.ensure_all_stubs();
         *guard = Some((php_version, Arc::clone(&session)));
         session

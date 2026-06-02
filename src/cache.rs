@@ -90,6 +90,11 @@ impl WorkspaceCache {
         Some(cache)
     }
 
+    /// The filesystem path of this workspace's cache directory.
+    pub fn cache_dir(&self) -> &std::path::Path {
+        &self.dir
+    }
+
     /// Total bytes consumed by `.bin` entries in this workspace's cache
     /// directory. Cheap (one `read_dir` pass, no recursion into
     /// subdirectories because the layout is flat).

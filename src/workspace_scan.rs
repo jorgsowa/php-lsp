@@ -175,42 +175,46 @@ pub(crate) async fn scan_workspace(
     }
 
     // Phase 2b: parse and index files in parallel (CPU-bound).
-    // A single spawn_blocking hands off to rayon's work-stealing pool,
-    // eliminating the per-file spawn_blocking overhead of the old approach.
+    // Files are processed in chunks of 500; after each chunk the workspace
+    // salsa input is synced so cross-file features (hover, definition,
+    // workspace symbols) become available incrementally rather than waiting
+    // for the full scan to complete.
     tokio::task::spawn_blocking(move || {
-        file_contents
-            .par_iter()
-            .map(|(uri, text)| -> usize {
-                // Skip files the editor has already opened — their buffer
-                // is authoritative; scan must not overwrite their salsa
-                // input with disk contents.
-                if open_files.contains(uri) {
-                    return 0;
-                }
+        let index_file = |(uri, text): &(Url, String)| -> usize {
+            if open_files.contains(uri) {
+                return 0;
+            }
 
-                let cache_key = cache
-                    .as_ref()
-                    .map(|_| crate::cache::WorkspaceCache::key_for(uri.as_str(), text));
-                if let (Some(cache), Some(key)) = (cache.as_ref(), cache_key.as_ref())
-                    && let Some(index) = cache.read::<crate::file_index::FileIndex>(key)
-                {
-                    docs.mirror_text(uri, text);
-                    docs.seed_cached_index(uri, Arc::new(index));
-                    return 1;
-                }
+            let cache_key = cache
+                .as_ref()
+                .map(|_| crate::cache::WorkspaceCache::key_for(uri.as_str(), text));
+            if let (Some(cache), Some(key)) = (cache.as_ref(), cache_key.as_ref())
+                && let Some(index) = cache.read::<crate::file_index::FileIndex>(key)
+            {
+                docs.mirror_text(uri, text);
+                docs.seed_cached_index(uri, Arc::new(index));
+                return 1;
+            }
 
-                let doc = parse_document_no_diags(text);
-                if let (Some(cache), Some(key)) = (cache.as_ref(), cache_key.as_ref()) {
-                    let index = crate::file_index::FileIndex::extract(&doc);
-                    let _ = cache.write(key, &index);
-                    docs.mirror_text(uri, text);
-                    docs.seed_cached_index(uri, Arc::new(index));
-                } else {
-                    docs.index_from_doc(uri.clone(), &doc);
-                }
-                1
-            })
-            .sum()
+            let doc = parse_document_no_diags(text);
+            if let (Some(cache), Some(key)) = (cache.as_ref(), cache_key.as_ref()) {
+                let index = crate::file_index::FileIndex::extract(&doc);
+                let _ = cache.write(key, &index);
+                docs.mirror_text(uri, text);
+                docs.seed_cached_index(uri, Arc::new(index));
+            } else {
+                docs.index_from_doc(uri.clone(), &doc);
+            }
+            1
+        };
+
+        let mut total = 0usize;
+        for chunk in file_contents.chunks(500) {
+            total += chunk.par_iter().map(index_file).sum::<usize>();
+            // Sync after each chunk so workspace queries see these files.
+            docs.sync_workspace_files();
+        }
+        total
     })
     .await
     .unwrap_or(0)

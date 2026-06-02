@@ -864,6 +864,15 @@ impl LanguageServer for Backend {
                 .await
                 .ok();
 
+            // Background-warm the mir AnalysisSession so the first did_open
+            // doesn't pay ~80ms of stub loading.  Fired before the scan so
+            // warm-up and file I/O overlap on separate blocking threads.
+            let warm_docs = Arc::clone(&self.docs);
+            tokio::task::spawn_blocking(move || {
+                let php_version = warm_docs.workspace_php_version();
+                warm_docs.analysis_session(php_version);
+            });
+
             let docs = Arc::clone(&self.docs);
             let open_files = self.open_files.clone();
             let client = self.client.clone();
@@ -896,6 +905,7 @@ impl LanguageServer for Backend {
                     .await;
 
                 let mut total = 0usize;
+                let mut session_cache_set = false;
                 for root in roots {
                     // Phase K2b: open the on-disk cache for this root. If the
                     // system has no usable cache dir (weird XDG env, sandboxed
@@ -903,6 +913,14 @@ impl LanguageServer for Backend {
                     // per-file `cache.as_ref()` guard below no-ops — scan still
                     // runs, just without persistence.
                     let cache = crate::cache::WorkspaceCache::new(&root);
+                    // Wire the first available cache directory into the
+                    // AnalysisSession builder so stub-parse results survive
+                    // server restarts.
+                    if !session_cache_set && let Some(ref c) = cache {
+                        let session_dir = c.cache_dir().join("session");
+                        docs.set_session_cache_dir(session_dir);
+                        session_cache_set = true;
+                    }
                     total += scan_workspace(
                         root,
                         Arc::clone(&docs),
