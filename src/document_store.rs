@@ -239,9 +239,19 @@ impl DocumentStore {
         } else {
             let id = FileId(self.next_file_id.fetch_add(1, Ordering::Relaxed));
             let uri_arc: Arc<str> = Arc::from(uri.as_str());
+            let is_vendor = uri.as_str().contains("/vendor/");
             let sf = {
-                let host = self.host.lock().unwrap();
-                SourceFile::new(host.db(), id, uri_arc, text_arc.clone(), None)
+                let mut host = self.host.lock().unwrap();
+                let sf = SourceFile::new(host.db(), id, uri_arc, text_arc.clone(), None);
+                if is_vendor {
+                    // Vendor files never change in a session — mark their text
+                    // as HIGH durability so salsa skips re-validating
+                    // parsed_doc/file_index for them on every user edit.
+                    sf.set_text(host.db_mut())
+                        .with_durability(salsa::Durability::HIGH)
+                        .to(Arc::clone(&text_arc));
+                }
+                sf
             };
             self.source_files.insert(uri.clone(), sf);
             self.text_cache.insert(uri.clone(), text_arc);
@@ -595,8 +605,7 @@ impl DocumentStore {
     /// salsa workspace. Used by the references handler to pre-filter session
     /// results by checking whether a file mentions the owning class name.
     pub fn source_text(&self, uri: &Url) -> Option<Arc<str>> {
-        let sf = self.source_file(uri)?;
-        Some(self.snapshot_query(move |db| sf.text(db)))
+        self.text_cache.get(uri).map(|e| Arc::clone(&e))
     }
 
     /// Run Pass 1 + Pass 2 analysis on every mirrored workspace file so that
@@ -788,22 +797,16 @@ impl DocumentStore {
 
     /// Compact symbol index for every mirrored file.
     pub fn all_indexes(&self) -> Vec<(Url, Arc<FileIndex>)> {
-        let urls: Vec<Url> = self.source_files.iter().map(|e| e.key().clone()).collect();
-        urls.into_iter()
-            .filter_map(|u| self.get_index_salsa(&u).map(|idx| (u, idx)))
-            .collect()
+        self.get_workspace_index_salsa().files.clone()
     }
 
     /// Same as `all_indexes` but excludes `uri`.
     pub fn other_indexes(&self, uri: &Url) -> Vec<(Url, Arc<FileIndex>)> {
-        let urls: Vec<Url> = self
-            .source_files
+        self.get_workspace_index_salsa()
+            .files
             .iter()
-            .filter(|e| e.key() != uri)
-            .map(|e| e.key().clone())
-            .collect();
-        urls.into_iter()
-            .filter_map(|u| self.get_index_salsa(&u).map(|idx| (u, idx)))
+            .filter(|(u, _)| u != uri)
+            .cloned()
             .collect()
     }
 
