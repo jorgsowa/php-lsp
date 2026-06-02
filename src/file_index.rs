@@ -178,28 +178,28 @@ fn collect_stmts(
                 let doc_text = f.doc_comment.as_ref().map(|c| c.text.into());
                 let start_line = view.position_of(stmt.span.start).line;
                 let ns = cur_ns.as_deref();
-                let f_name = f.name.to_string();
+                let f_name = f.name.or_error();
                 index.functions.push(FunctionDef {
-                    name: f_name.clone().into(),
-                    fqn: fqn(ns, &f_name),
+                    name: Box::from(f_name),
+                    fqn: fqn(ns, f_name),
                     params: extract_params(&f.params),
                     return_type: f.return_type.as_ref().map(|t| format_type_hint(t).into()),
                     doc: doc_text,
                     start_line,
-                    name_char: name_char(&f_name),
+                    name_char: name_char(f_name),
                 });
             }
 
             // ── Class ────────────────────────────────────────────────────────
             StmtKind::Class(c) => {
                 let Some(class_name) = c.name else { continue };
-                let class_name_str = class_name.to_string();
+                let class_name_str = class_name.or_error();
                 let start_line = view.position_of(stmt.span.start).line;
                 let ns = cur_ns.as_deref();
 
                 let mut class_def = ClassDef {
-                    name: class_name_str.clone().into(),
-                    fqn: fqn(ns, &class_name_str),
+                    name: Box::from(class_name_str),
+                    fqn: fqn(ns, class_name_str),
                     kind: ClassKind::Class,
                     is_abstract: c.modifiers.is_abstract,
                     parent: c
@@ -217,7 +217,7 @@ fn collect_stmts(
                     constants: Vec::new(),
                     cases: Vec::new(),
                     start_line,
-                    name_char: name_char(&class_name_str),
+                    name_char: name_char(class_name_str),
                 };
 
                 for member in c.body.members.iter() {
@@ -232,8 +232,9 @@ fn collect_stmts(
                                 if ast_param.visibility.is_some() {
                                     let pvis = method_visibility(ast_param.visibility);
                                     let pstart = view.position_of(ast_param.span.start).line;
+                                    let p_name = ast_param.name.or_error();
                                     class_def.properties.push(PropertyDef {
-                                        name: ast_param.name.to_string().into(),
+                                        name: Box::from(p_name),
                                         is_static: false,
                                         type_hint: ast_param
                                             .type_hint
@@ -241,12 +242,13 @@ fn collect_stmts(
                                             .map(|t| format_type_hint(t).into()),
                                         visibility: pvis,
                                         start_line: pstart,
-                                        name_char: name_char(&ast_param.name.to_string()),
+                                        name_char: name_char(p_name),
                                     });
                                 }
                             }
+                            let m_name = m.name.or_error();
                             class_def.methods.push(MethodDef {
-                                name: m.name.to_string().into(),
+                                name: Box::from(m_name),
                                 is_static: m.is_static,
                                 is_abstract: m.is_abstract,
                                 visibility: vis,
@@ -257,23 +259,24 @@ fn collect_stmts(
                                     .map(|t| format_type_hint(t).into()),
                                 doc: mdoc,
                                 start_line: mstart,
-                                name_char: name_char(&m.name.to_string()),
+                                name_char: name_char(m_name),
                             });
                         }
                         ClassMemberKind::Property(p) => {
                             let vis = method_visibility(p.visibility);
                             let pstart = view.position_of(member.span.start).line;
+                            let p_name = p.name.or_error();
                             class_def.properties.push(PropertyDef {
-                                name: p.name.to_string().into(),
+                                name: Box::from(p_name),
                                 is_static: p.is_static,
                                 type_hint: p.type_hint.as_ref().map(|t| format_type_hint(t).into()),
                                 visibility: vis,
                                 start_line: pstart,
-                                name_char: name_char(&p.name.to_string()),
+                                name_char: name_char(p_name),
                             });
                         }
                         ClassMemberKind::ClassConst(cc) => {
-                            class_def.constants.push(cc.name.to_string().into());
+                            class_def.constants.push(Box::from(cc.name.or_error()));
                         }
                         ClassMemberKind::TraitUse(tu) => {
                             for t in tu.traits.iter() {
@@ -292,9 +295,10 @@ fn collect_stmts(
                 let start_line = view.position_of(stmt.span.start).line;
                 let ns = cur_ns.as_deref();
 
+                let i_name = i.name.or_error();
                 let mut iface_def = ClassDef {
-                    name: i.name.to_string().into(),
-                    fqn: fqn(ns, &i.name.to_string()),
+                    name: Box::from(i_name),
+                    fqn: fqn(ns, i_name),
                     kind: ClassKind::Interface,
                     is_abstract: true,
                     parent: None,
@@ -309,7 +313,7 @@ fn collect_stmts(
                     constants: Vec::new(),
                     cases: Vec::new(),
                     start_line,
-                    name_char: name_char(&i.name.to_string()),
+                    name_char: name_char(i_name),
                 };
 
                 for member in i.body.members.iter() {
@@ -317,8 +321,9 @@ fn collect_stmts(
                         ClassMemberKind::Method(m) => {
                             let mdoc = m.doc_comment.as_ref().map(|c| c.text.into());
                             let mstart = view.position_of(member.span.start).line;
+                            let m_name = m.name.or_error();
                             iface_def.methods.push(MethodDef {
-                                name: m.name.to_string().into(),
+                                name: Box::from(m_name),
                                 is_static: m.is_static,
                                 is_abstract: true,
                                 visibility: Visibility::Public,
@@ -329,11 +334,11 @@ fn collect_stmts(
                                     .map(|t| format_type_hint(t).into()),
                                 doc: mdoc,
                                 start_line: mstart,
-                                name_char: name_char(&m.name.to_string()),
+                                name_char: name_char(m_name),
                             });
                         }
                         ClassMemberKind::ClassConst(cc) => {
-                            iface_def.constants.push(cc.name.to_string().into());
+                            iface_def.constants.push(Box::from(cc.name.or_error()));
                         }
                         _ => {}
                     }
@@ -346,9 +351,10 @@ fn collect_stmts(
                 let start_line = view.position_of(stmt.span.start).line;
                 let ns = cur_ns.as_deref();
 
+                let t_name = t.name.or_error();
                 let mut trait_def = ClassDef {
-                    name: t.name.to_string().into(),
-                    fqn: fqn(ns, &t.name.to_string()),
+                    name: Box::from(t_name),
+                    fqn: fqn(ns, t_name),
                     kind: ClassKind::Trait,
                     is_abstract: false,
                     parent: None,
@@ -359,7 +365,7 @@ fn collect_stmts(
                     constants: Vec::new(),
                     cases: Vec::new(),
                     start_line,
-                    name_char: name_char(&t.name.to_string()),
+                    name_char: name_char(t_name),
                 };
 
                 for member in t.body.members.iter() {
@@ -368,8 +374,9 @@ fn collect_stmts(
                             let mdoc = m.doc_comment.as_ref().map(|c| c.text.into());
                             let mstart = view.position_of(member.span.start).line;
                             let vis = method_visibility(m.visibility);
+                            let m_name = m.name.or_error();
                             trait_def.methods.push(MethodDef {
-                                name: m.name.to_string().into(),
+                                name: Box::from(m_name),
                                 is_static: m.is_static,
                                 is_abstract: m.is_abstract,
                                 visibility: vis,
@@ -380,23 +387,24 @@ fn collect_stmts(
                                     .map(|t| format_type_hint(t).into()),
                                 doc: mdoc,
                                 start_line: mstart,
-                                name_char: name_char(&m.name.to_string()),
+                                name_char: name_char(m_name),
                             });
                         }
                         ClassMemberKind::Property(p) => {
                             let vis = method_visibility(p.visibility);
                             let pstart = view.position_of(member.span.start).line;
+                            let p_name = p.name.or_error();
                             trait_def.properties.push(PropertyDef {
-                                name: p.name.to_string().into(),
+                                name: Box::from(p_name),
                                 is_static: p.is_static,
                                 type_hint: p.type_hint.as_ref().map(|t| format_type_hint(t).into()),
                                 visibility: vis,
                                 start_line: pstart,
-                                name_char: name_char(&p.name.to_string()),
+                                name_char: name_char(p_name),
                             });
                         }
                         ClassMemberKind::ClassConst(cc) => {
-                            trait_def.constants.push(cc.name.to_string().into());
+                            trait_def.constants.push(Box::from(cc.name.or_error()));
                         }
                         ClassMemberKind::TraitUse(tu) => {
                             for tr in tu.traits.iter() {
@@ -415,9 +423,10 @@ fn collect_stmts(
                 let start_line = view.position_of(stmt.span.start).line;
                 let ns = cur_ns.as_deref();
 
+                let e_name = e.name.or_error();
                 let mut enum_def = ClassDef {
-                    name: e.name.to_string().into(),
-                    fqn: fqn(ns, &e.name.to_string()),
+                    name: Box::from(e_name),
+                    fqn: fqn(ns, e_name),
                     kind: ClassKind::Enum,
                     is_abstract: false,
                     parent: None,
@@ -432,20 +441,21 @@ fn collect_stmts(
                     constants: Vec::new(),
                     cases: Vec::new(),
                     start_line,
-                    name_char: name_char(&e.name.to_string()),
+                    name_char: name_char(e_name),
                 };
 
                 for member in e.body.members.iter() {
                     match &member.kind {
                         EnumMemberKind::Case(c) => {
-                            enum_def.cases.push(c.name.to_string().into());
+                            enum_def.cases.push(Box::from(c.name.or_error()));
                         }
                         EnumMemberKind::Method(m) => {
                             let mdoc = m.doc_comment.as_ref().map(|c| c.text.into());
                             let mstart = view.position_of(member.span.start).line;
                             let vis = method_visibility(m.visibility);
+                            let m_name = m.name.or_error();
                             enum_def.methods.push(MethodDef {
-                                name: m.name.to_string().into(),
+                                name: Box::from(m_name),
                                 is_static: m.is_static,
                                 is_abstract: m.is_abstract,
                                 visibility: vis,
@@ -456,11 +466,11 @@ fn collect_stmts(
                                     .map(|t| format_type_hint(t).into()),
                                 doc: mdoc,
                                 start_line: mstart,
-                                name_char: name_char(&m.name.to_string()),
+                                name_char: name_char(m_name),
                             });
                         }
                         EnumMemberKind::ClassConst(cc) => {
-                            enum_def.constants.push(cc.name.to_string().into());
+                            enum_def.constants.push(Box::from(cc.name.or_error()));
                         }
                         _ => {}
                     }
@@ -471,7 +481,7 @@ fn collect_stmts(
             // ── Top-level const ──────────────────────────────────────────────
             StmtKind::Const(consts) => {
                 for c in consts.iter() {
-                    index.constants.push(c.name.to_string().into());
+                    index.constants.push(Box::from(c.name.or_error()));
                 }
             }
 
@@ -484,7 +494,7 @@ fn extract_params<'a, 'b>(params: &[php_ast::Param<'a, 'b>]) -> Vec<ParamDef> {
     params
         .iter()
         .map(|p| ParamDef {
-            name: p.name.to_string().into(),
+            name: Box::from(p.name.or_error()),
             type_hint: p.type_hint.as_ref().map(|t| format_type_hint(t).into()),
             has_default: p.default.is_some(),
             variadic: p.variadic,
