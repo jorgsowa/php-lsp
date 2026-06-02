@@ -53,6 +53,23 @@ pub fn diagnostics_from_doc(doc: &ParsedDoc) -> Vec<Diagnostic> {
         .collect()
 }
 
+/// Merge the three per-file diagnostic categories into one ordered Vec.
+///
+/// Consistent order: parse errors → duplicate-declaration errors → semantic issues.
+/// All call sites that publish diagnostics for a single file use this function
+/// so the ordering is uniform across `did_open`, `did_change`, `document_diagnostic`,
+/// `workspace_diagnostic`, and the dependent-republish path.
+pub fn merge_file_diagnostics(
+    parse: Vec<Diagnostic>,
+    dup_decl: Vec<Diagnostic>,
+    semantic: Vec<Diagnostic>,
+) -> Vec<Diagnostic> {
+    let mut all = parse;
+    all.extend(dup_decl);
+    all.extend(semantic);
+    all
+}
+
 /// Parse `source` and return the (owned) `ParsedDoc` plus any parse diagnostics.
 pub fn parse_document(source: &str) -> (ParsedDoc, Vec<Diagnostic>) {
     let doc = parse_document_no_diags(source);

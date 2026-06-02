@@ -33,7 +33,7 @@ use crate::definition::{
     find_declaration_in_indexes, find_declaration_range, find_method_in_class_hierarchy,
     goto_definition,
 };
-use crate::diagnostics::{parse_document, parse_document_no_diags};
+use crate::diagnostics::{merge_file_diagnostics, parse_document, parse_document_no_diags};
 use crate::document_highlight::document_highlights;
 use crate::document_link::document_links;
 use crate::document_store::DocumentStore;
@@ -475,15 +475,16 @@ async fn compute_dependent_publishes_owned(
 
         let mut out: Vec<(Url, Vec<Diagnostic>)> = Vec::with_capacity(dependents.len());
         for (url, analysis) in dependents {
-            let mut diags = open_files.parse_diagnostics(&url).unwrap_or_default();
-            if let Some(d) = open_files.get_doc(&docs, &url) {
-                let source = open_files.text(&url).unwrap_or_default();
-                diags.extend(
+            let parse = open_files.parse_diagnostics(&url).unwrap_or_default();
+            let dup_decl = open_files
+                .get_doc(&docs, &url)
+                .map(|d| {
+                    let source = open_files.text(&url).unwrap_or_default();
                     crate::semantic_diagnostics::duplicate_declaration_diagnostics(
                         &source, &d, &diag_cfg,
-                    ),
-                );
-            }
+                    )
+                })
+                .unwrap_or_default();
             let mut issues: Vec<mir_issues::Issue> = analysis
                 .issues
                 .into_iter()
@@ -492,10 +493,9 @@ async fn compute_dependent_publishes_owned(
             if let Some(extra) = class_issues_by_file.remove(&Arc::<str>::from(url.as_str())) {
                 issues.extend(extra);
             }
-            diags.extend(crate::semantic_diagnostics::issues_to_diagnostics(
-                &issues, &url, &diag_cfg,
-            ));
-            out.push((url, diags));
+            let semantic =
+                crate::semantic_diagnostics::issues_to_diagnostics(&issues, &url, &diag_cfg);
+            out.push((url, merge_file_diagnostics(parse, dup_decl, semantic)));
         }
         out
     })
@@ -1133,19 +1133,16 @@ impl LanguageServer for Backend {
             self.set_parse_diagnostics(&uri, parse_diags.clone());
             let stored_source = self.get_open_text(&uri).unwrap_or_default();
             let doc2 = self.get_doc(&uri);
-            let mut all_diags = parse_diags;
-            if let Some(ref d) = doc2 {
-                all_diags.extend(duplicate_declaration_diagnostics(
-                    &stored_source,
-                    d,
-                    &diag_cfg,
-                ));
-            }
-            if let Some(issues) = sem_issues {
-                all_diags.extend(crate::semantic_diagnostics::issues_to_diagnostics(
-                    &issues, &uri, &diag_cfg,
-                ));
-            }
+            let dup_decl = doc2
+                .as_ref()
+                .map(|d| duplicate_declaration_diagnostics(&stored_source, d, &diag_cfg))
+                .unwrap_or_default();
+            let semantic = sem_issues
+                .map(|issues| {
+                    crate::semantic_diagnostics::issues_to_diagnostics(&issues, &uri, &diag_cfg)
+                })
+                .unwrap_or_default();
+            let all_diags = merge_file_diagnostics(parse_diags, dup_decl, semantic);
             // Publish for the opened file FIRST — see did_change for why ordering matters.
             self.client
                 .publish_diagnostics(uri.clone(), all_diags, None)
@@ -1206,31 +1203,28 @@ impl LanguageServer for Backend {
                     let open_files_sem = open_files.clone();
                     let uri_sem = uri.clone();
                     let diag_cfg_sem = diag_cfg.clone();
-                    let extra = tokio::task::spawn_blocking(move || {
+                    let (extra_dup, extra_sem) = tokio::task::spawn_blocking(move || {
                         let Some(d) = open_files_sem.get_doc(&docs_sem, &uri_sem) else {
-                            return Vec::<Diagnostic>::new();
+                            return (Vec::<Diagnostic>::new(), Vec::<Diagnostic>::new());
                         };
                         let source = open_files_sem.text(&uri_sem).unwrap_or_default();
-                        let mut out = Vec::new();
-                        if let Some(issues) = docs_sem.get_semantic_issues_salsa(&uri_sem) {
-                            out.extend(crate::semantic_diagnostics::issues_to_diagnostics(
-                                &issues,
-                                &uri_sem,
-                                &diag_cfg_sem,
-                            ));
-                        }
-                        out.extend(duplicate_declaration_diagnostics(
-                            &source,
-                            &d,
-                            &diag_cfg_sem,
-                        ));
-                        out
+                        let dup = duplicate_declaration_diagnostics(&source, &d, &diag_cfg_sem);
+                        let sem = docs_sem
+                            .get_semantic_issues_salsa(&uri_sem)
+                            .map(|issues| {
+                                crate::semantic_diagnostics::issues_to_diagnostics(
+                                    &issues,
+                                    &uri_sem,
+                                    &diag_cfg_sem,
+                                )
+                            })
+                            .unwrap_or_default();
+                        (dup, sem)
                     })
                     .await
                     .unwrap_or_default();
 
-                    let mut all_diags = diagnostics;
-                    all_diags.extend(extra);
+                    let all_diags = merge_file_diagnostics(diagnostics, extra_dup, extra_sem);
                     // Publish for the changed file FIRST. Test harnesses (and
                     // some clients) consume publishDiagnostics for unrelated
                     // URIs while waiting for one specific URI; reversing this
@@ -2528,9 +2522,11 @@ impl LanguageServer for Backend {
             }
         })?;
 
-        let mut items = parse_diags;
-        items.extend(sem_diags);
-        items.extend(duplicate_declaration_diagnostics(&source, &doc, &diag_cfg));
+        let items = merge_file_diagnostics(
+            parse_diags,
+            duplicate_declaration_diagnostics(&source, &doc, &diag_cfg),
+            sem_diags,
+        );
 
         // Generate stable result_id for caching
         let _version = self
@@ -2603,13 +2599,11 @@ impl LanguageServer for Backend {
                             )
                         })
                         .unwrap_or_default();
-                    let mut all_diags = parse_diags;
-                    all_diags.extend(sem_diags);
-                    all_diags.extend(duplicate_declaration_diagnostics(
-                        &source,
-                        &doc,
-                        &diag_cfg_sweep,
-                    ));
+                    let all_diags = merge_file_diagnostics(
+                        parse_diags,
+                        duplicate_declaration_diagnostics(&source, &doc, &diag_cfg_sweep),
+                        sem_diags,
+                    );
 
                     let result_id = compute_diagnostic_result_id(&all_diags, uri.as_str());
 
