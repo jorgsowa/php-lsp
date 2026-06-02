@@ -1136,25 +1136,6 @@ mod tests {
     }
 
     #[test]
-    fn hover_on_catch_variable_shows_exception_class() {
-        let (src, p) = cursor("<?php\ntry { } catch (RuntimeException $e$0) { }");
-        let doc = ParsedDoc::parse(src.clone());
-        let result = hover_info(&src, &doc, None, p, &[]);
-        assert!(result.is_some(), "expected hover result for catch variable");
-        if let Some(Hover {
-            contents: HoverContents::Markup(mc),
-            ..
-        }) = result
-        {
-            assert!(
-                mc.value.contains("RuntimeException"),
-                "expected RuntimeException in hover, got: {}",
-                mc.value
-            );
-        }
-    }
-
-    #[test]
     fn hover_on_static_var_with_array_default_shows_array() {
         let (src, p) = cursor("<?php\nfunction counter() { static $cach$0e = []; }");
         let doc = ParsedDoc::parse(src.clone());

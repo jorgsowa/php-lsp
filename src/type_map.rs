@@ -426,25 +426,9 @@ fn collect_types_stmts(
                     doc,
                 );
             }
-            // try { ... } catch (FooException $e) { ... }
-            // Map the catch variable to the first caught exception class.
             StmtKind::TryCatch(t) => {
                 collect_types_stmts(source, &t.body.stmts, map, meta, cursor_byte, doc);
                 for catch in t.catches.iter() {
-                    if let Some(var_name) = &catch.var
-                        && let Some(first_type) = catch.types.first()
-                    {
-                        let class_name = first_type
-                            .to_string_repr()
-                            .trim_start_matches('\\')
-                            .rsplit('\\')
-                            .next()
-                            .unwrap_or("")
-                            .to_string();
-                        if !class_name.is_empty() {
-                            map.insert(format!("${}", var_name), class_name);
-                        }
-                    }
                     collect_types_stmts(source, &catch.body.stmts, map, meta, cursor_byte, doc);
                 }
                 if let Some(finally) = &t.finally {

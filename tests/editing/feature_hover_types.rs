@@ -457,6 +457,23 @@ $u->na$0me;
 /// Method call disambiguation: two classes both define `process`. mir resolves
 /// to the declaring class, ensuring Mailer's params are shown not Queue's.
 #[tokio::test]
+async fn hover_catch_variable_shows_exception_class() {
+    let mut s = TestServer::new().await;
+    s.check_hover_annotated(
+        r#"<?php
+class DatabaseException { public function getQuery(): string {} }
+try {
+    doWork();
+} catch (DatabaseException $e) {
+    $e$0;
+}
+"#,
+        expect![[r#"`$e` `DatabaseException`"#]],
+    )
+    .await;
+}
+
+#[tokio::test]
 async fn hover_method_call_shows_declaring_class() {
     let mut s = TestServer::new().await;
     s.validate_syntax(false);
