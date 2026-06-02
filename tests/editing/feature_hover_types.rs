@@ -240,6 +240,23 @@ function pet(Cat|Dog $a): void { $a$0; }
     .await;
 }
 
+/// mir 0.31.0 fix: `$x = Enum::Case` previously resolved to `mixed`; now
+/// synthesises `TNamedObject`. Hover directly asserts the inferred type.
+#[tokio::test]
+async fn hover_variable_from_enum_case_shows_type() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    s.check_hover_annotated(
+        r#"<?php
+enum Status { case Active; case Inactive; }
+$s = Status::Active;
+$s$0;
+"#,
+        expect![[r#"`$s` `Status`"#]],
+    )
+    .await;
+}
+
 #[tokio::test]
 async fn hover_property_shows_docblock() {
     let mut s = TestServer::new().await;
