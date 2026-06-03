@@ -10,11 +10,10 @@ use crate::db::input::SourceFile;
 use crate::db::parse::parsed_doc;
 use crate::file_index::FileIndex;
 
-/// Arc wrapper for `FileIndex`. `FileIndex` is structurally clone-able but
-/// doesn't implement salsa's `Update` — we wrap in `Arc` and compare pointers,
-/// mirroring the `ParsedArc` approach. A new extract always produces a fresh
-/// `Arc`, so pointer inequality is a safe "changed" signal.
-#[derive(Clone)]
+/// Arc wrapper for `FileIndex`. Uses structural equality on the inner
+/// `FileIndex` so salsa can short-circuit downstream queries (e.g.
+/// `workspace_index`) when a body-only edit produces an identical index.
+#[derive(Clone, PartialEq, Debug)]
 pub struct IndexArc(pub Arc<FileIndex>);
 
 impl IndexArc {
@@ -23,17 +22,29 @@ impl IndexArc {
     }
 }
 
-// SAFETY: same contract as `ParsedArc::maybe_update` — only writes through
-// `old_pointer` when returning `true`. `FileIndex` is `Send + Sync` by virtue
-// of its fields (all owned `String`/`Vec`).
-crate::impl_arc_update!(IndexArc);
+// SAFETY: writes through `old_pointer` only when returning `true`. Uses
+// structural equality on `FileIndex` so that body-only edits (no declaration
+// change) return `false` and don't cascade to `workspace_index`.
+unsafe impl salsa::Update for IndexArc {
+    unsafe fn maybe_update(old_pointer: *mut Self, new_value: Self) -> bool {
+        let old_ref = unsafe { &mut *old_pointer };
+        if *old_ref.0 == *new_value.0 {
+            false
+        } else {
+            *old_ref = new_value;
+            true
+        }
+    }
+}
 
-/// Build the compact symbol index for a file. `no_eq` so salsa doesn't try to
-/// compare `IndexArc` structurally; invalidation flows from `parsed_doc`.
+/// Build the compact symbol index for a file.  Salsa compares the returned
+/// `IndexArc` structurally via `FileIndex::PartialEq`; if declarations are
+/// unchanged (body-only edit) the comparison returns equal and `workspace_index`
+/// is not re-run.
 ///
 /// Fast path: if the workspace scan seeded a `cached_index` (loaded from the
 /// on-disk cache), return it directly — no parse, no extract.
-#[salsa::tracked(no_eq)]
+#[salsa::tracked]
 pub fn file_index(db: &dyn Database, file: SourceFile) -> IndexArc {
     if let Some(cached) = file.cached_index(db) {
         return IndexArc(cached);
@@ -108,5 +119,33 @@ mod tests {
 
         let idx = file_index(host.db(), file);
         assert_eq!(idx.get().classes.len(), 1);
+    }
+
+    #[test]
+    fn body_only_edit_produces_equal_index_arc() {
+        // Changing only the method body must not alter the FileIndex —
+        // verifying this directly is cleaner than counting salsa re-runs and
+        // avoids interference with the shared CALLS counter above.
+        let mut host = AnalysisHost::new();
+        let file = SourceFile::new(
+            host.db(),
+            FileId(2),
+            Arc::<str>::from("file:///t.php"),
+            Arc::<str>::from("<?php\nclass Foo { public function bar(): int { return 1; } }"),
+            None,
+        );
+
+        let before = file_index(host.db(), file);
+
+        // Change the method body only — no declaration-level change.
+        file.set_text(host.db_mut()).to(Arc::<str>::from(
+            "<?php\nclass Foo { public function bar(): int { return 2; } }",
+        ));
+        let after = file_index(host.db(), file);
+
+        assert_eq!(
+            before, after,
+            "body-only edit must produce an equal IndexArc so salsa can short-circuit workspace_index"
+        );
     }
 }

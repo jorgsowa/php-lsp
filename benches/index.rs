@@ -187,6 +187,83 @@ fn bench_get_doc_repeated(c: &mut Criterion) {
     });
 }
 
+/// Benchmark `sync_workspace_files` on the **clean path** (dirty flag clear).
+///
+/// Models the common case after workspace scan: no files added/removed.
+/// This is what every hover/symbol/hierarchy request pays per call to
+/// `get_workspace_index_salsa`. Should be O(1) — just an atomic swap.
+fn bench_sync_workspace_clean(c: &mut Criterion) {
+    let fixtures: &[(&str, &str)] = &[
+        ("small_class", SMALL),
+        ("medium_class", MEDIUM),
+        ("interface_large", LARGE_IFACE),
+    ];
+
+    let mut group = c.benchmark_group("index/sync_workspace_files/clean");
+
+    for &n in &[10usize, 100, 500] {
+        let store = DocumentStore::new();
+        let uris: Vec<Url> = (0..n)
+            .map(|i| Url::parse(&format!("file:///bench/clean_{i}.php")).unwrap())
+            .collect();
+        for (i, uri) in uris.iter().enumerate() {
+            let (_, src) = fixtures[i % fixtures.len()];
+            store.index(uri.clone(), src);
+        }
+        // Warm: initial sync so the dirty flag is clear.
+        let _ = store.get_workspace_index_salsa();
+
+        group.bench_with_input(
+            BenchmarkId::from_parameter(format!("{n}_files")),
+            &n,
+            |b, _| {
+                b.iter(|| black_box(store.sync_workspace_files()));
+            },
+        );
+    }
+    group.finish();
+}
+
+/// Benchmark `sync_workspace_files` on the **dirty path** (file set unchanged
+/// but flag set) — models O(N) collect-under-one-lock vs. the old O(N log N)
+/// lock-per-comparison. Before the fix this path ran on *every* call.
+fn bench_sync_workspace_dirty(c: &mut Criterion) {
+    let fixtures: &[(&str, &str)] = &[
+        ("small_class", SMALL),
+        ("medium_class", MEDIUM),
+        ("interface_large", LARGE_IFACE),
+    ];
+
+    let mut group = c.benchmark_group("index/sync_workspace_files/dirty");
+
+    for &n in &[10usize, 100, 500] {
+        let store = DocumentStore::new();
+        let uris: Vec<Url> = (0..n)
+            .map(|i| Url::parse(&format!("file:///bench/dirty_{i}.php")).unwrap())
+            .collect();
+        for (i, uri) in uris.iter().enumerate() {
+            let (_, src) = fixtures[i % fixtures.len()];
+            store.index(uri.clone(), src);
+        }
+        // Warm: initial sync so workspace salsa input is set.
+        let _ = store.get_workspace_index_salsa();
+
+        group.bench_with_input(
+            BenchmarkId::from_parameter(format!("{n}_files")),
+            &n,
+            |b, _| {
+                b.iter(|| {
+                    // Reset the dirty flag before each call to simulate the
+                    // old behaviour where sync always ran the full path.
+                    store.mark_workspace_files_dirty();
+                    black_box(store.sync_workspace_files());
+                });
+            },
+        );
+    }
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_index_single,
@@ -195,6 +272,8 @@ criterion_group!(
     bench_workspace_scan,
     bench_workspace_scan_laravel,
     bench_mirror_same_text_contended,
-    bench_get_doc_repeated
+    bench_get_doc_repeated,
+    bench_sync_workspace_clean,
+    bench_sync_workspace_dirty,
 );
 criterion_main!(benches);

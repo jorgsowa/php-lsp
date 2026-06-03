@@ -1,4 +1,4 @@
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 
 use arc_swap::ArcSwap;
@@ -84,6 +84,10 @@ pub struct DocumentStore {
     analysis_cache: DashMap<Url, (Arc<str>, Arc<mir_analyzer::FileAnalysis>)>,
     /// Monotonic allocator for `FileId`s (one per ever-seen URL).
     next_file_id: AtomicU32,
+    /// Set to `true` when the set of tracked files changes (add or remove).
+    /// `sync_workspace_files` skips the collect/sort/compare path when this
+    /// is `false`, avoiding a mutex acquisition on every LSP request.
+    workspace_files_dirty: AtomicBool,
     /// Workspace salsa input. Tracks the full set of `SourceFile`s that
     /// participate in whole-program queries (`codebase`, `file_refs`).
     /// Re-synced from `source_files` on demand by `sync_workspace_files`.
@@ -121,6 +125,7 @@ impl DocumentStore {
             parsed_cache: DashMap::new(),
             analysis_cache: DashMap::new(),
             next_file_id: AtomicU32::new(0),
+            workspace_files_dirty: AtomicBool::new(true),
             workspace,
             psr4: Arc::new(ArcSwap::from_pointee(Psr4Map::empty())),
             analysis_session: Mutex::new(None),
@@ -240,6 +245,7 @@ impl DocumentStore {
             };
             self.source_files.insert(uri.clone(), sf);
             self.text_cache.insert(uri.clone(), text_arc);
+            self.workspace_files_dirty.store(true, Ordering::Release);
             // A newly-ingested file may resolve references that were previously
             // unresolved in already-analyzed files; invalidate cross-file caches.
             self.analysis_cache.clear();
@@ -359,6 +365,7 @@ impl DocumentStore {
         // allocates a fresh SourceFile with a new FileId. The ~40 bytes per
         // orphan is acceptable; revisit if workspace-churn profiling hurts.
         self.source_files.remove(uri);
+        self.workspace_files_dirty.store(true, Ordering::Release);
         // Sync workspace files so the deleted file is removed from the salsa
         // `Workspace::files` list and won't appear in workspace symbols etc.
         self.sync_workspace_files();
@@ -471,20 +478,45 @@ impl DocumentStore {
 
     /// Refresh `workspace.files` to mirror the current `source_files` set.
     ///
-    /// Called by `get_codebase_salsa`. Skips the setter when the file list
-    /// hasn't changed — salsa's `set_field` unconditionally bumps revision,
-    /// which would invalidate every downstream query (codebase, file_refs).
-    /// Dedup is essential for memoization across LSP requests.
+    /// Skips all work when `workspace_files_dirty` is `false` (the common
+    /// case after the workspace scan completes — file-set changes are rare).
+    /// When the flag is set, collects file IDs under a single lock to avoid
+    /// the O(N log N) lock/unlock cycles that `sort_by_key` + `with_host`
+    /// previously caused, then sorts and compares without holding the lock.
     pub fn sync_workspace_files(&self) {
-        let mut files: Vec<SourceFile> = self.source_files.iter().map(|e| *e.value()).collect();
-        files.sort_by_key(|sf| self.with_host(|host| sf.id(host.db()).0));
-        let mut host = self.host.lock().unwrap();
-        let current = self.workspace.files(host.db());
-        if current.len() == files.len() && current.iter().zip(files.iter()).all(|(a, b)| a == b) {
+        // Atomically clear the flag.  If it was already false the file set
+        // hasn't changed since the last sync; nothing to do.
+        if !self.workspace_files_dirty.swap(false, Ordering::AcqRel) {
             return;
         }
-        let arc: Arc<[SourceFile]> = Arc::from(files);
-        self.workspace.set_files(host.db_mut()).to(arc);
+
+        // One lock to read all file IDs — O(N) acquisitions become one.
+        let mut files: Vec<(u32, SourceFile)> = {
+            let host = self.host.lock().unwrap();
+            self.source_files
+                .iter()
+                .map(|e| (e.value().id(host.db()).0, *e.value()))
+                .collect()
+        };
+        // Sort without holding the lock.
+        files.sort_unstable_by_key(|(id, _)| *id);
+        let sorted: Vec<SourceFile> = files.into_iter().map(|(_, sf)| sf).collect();
+
+        let mut host = self.host.lock().unwrap();
+        let current = self.workspace.files(host.db());
+        if current.len() == sorted.len() && current.iter().zip(sorted.iter()).all(|(a, b)| a == b) {
+            return;
+        }
+        self.workspace
+            .set_files(host.db_mut())
+            .to(Arc::from(sorted));
+    }
+
+    /// Mark the workspace file set as dirty so the next `sync_workspace_files`
+    /// call re-runs the collect/sort/compare path.  Exposed for benchmarks that
+    /// need to measure the dirty-path cost in isolation.
+    pub fn mark_workspace_files_dirty(&self) {
+        self.workspace_files_dirty.store(true, Ordering::Release);
     }
 
     /// Update the PHP version tracked by the workspace. Salsa will invalidate
