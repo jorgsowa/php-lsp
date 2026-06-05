@@ -2,6 +2,36 @@
 
 All notable changes to php-lsp are documented here.
 
+## [0.8.0] — 2026-06-06
+
+### Features
+
+- **mir-primary hover**: Member hover now resolves types through mir's type engine instead of the internal TypeMap, giving more accurate signatures for inherited and vendor methods.
+- **Variable type resolution via mir**: Variable types (including `$this`, enum case variables, and factory chains) are now resolved through mir symbols, eliminating a class of false `mixed` results in hover and completion.
+
+### Performance
+
+- **Dependencies**: Upgraded `mir-{analyzer,codebase,issues,types}` from 0.32.0 to 0.33.0, bringing 15–55% speedups across the board.
+- **Symbol map memoisation**: Per-file symbol table is now computed once via a salsa query and reused across hover, completion, and references — eliminating redundant rebuilds on repeated requests.
+- **Eager mir stub warm-up**: mir stubs are loaded once at initialisation and cached to disk, removing the cold-start penalty on the first hover or completion request.
+- **Parallel PSR-4 and PHP version probe**: Both operations during `initialize` now run concurrently, cutting startup latency on large projects.
+- **Incremental workspace sync**: Body-only edits no longer trigger a workspace index rebuild; the sync step is skipped entirely when the file set is unchanged.
+- **`O(1)` class-doc lookup**: Completion's class docblock lookup is now constant-time via the workspace index instead of a linear scan.
+- **References substring gate**: The references handler short-circuits on a fast string containment check before walking the full AST, cutting work on large workspaces.
+- **Async workspace scan**: Phase 2 directory walk replaced with `spawn_blocking`, freeing the tokio runtime during heavy I/O.
+- **Cache key**: On-disk cache now uses `mtime + size` instead of `blake3(content)` for the entry hash, avoiding a full file read on every cache lookup.
+
+### Refactoring
+
+- Removed `MethodReturnsMap`, `FunctionReturnsMap`, and the TypeMap fallback paths for completion, hover, named-arg resolution, and type definitions — mir is now the sole source of truth for all type inference.
+- Consolidated per-file diagnostic merging into a single `merge_file_diagnostics` helper.
+- Centralised cursor resolution and FQN short-name extraction across all feature modules.
+
+### Bug Fixes
+
+- **Completion**: `insertText` is now set correctly for instance property items.
+- **Definition**: Class and function name lookups are now scoped to the enclosing statement span, preventing false matches on identifiers that appear elsewhere in the file.
+
 ## [0.7.0] — 2026-05-30
 
 ### Features
