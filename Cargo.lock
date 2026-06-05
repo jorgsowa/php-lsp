@@ -681,6 +681,15 @@ dependencies = [
 
 [[package]]
 name = "hashbrown"
+version = "0.16.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "841d1cc9bed7f9236f321df977030373f4a4163ae1a7dbfe1a51a2c1a51d9100"
+dependencies = [
+ "foldhash 0.2.0",
+]
+
+[[package]]
+name = "hashbrown"
 version = "0.17.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
@@ -697,6 +706,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7382cf6263419f2d8df38c55d7da83da5c18aef87fc7a7fc1fb1e344edfe14c1"
 dependencies = [
  "hashbrown 0.15.5",
+]
+
+[[package]]
+name = "hashlink"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ea0b22561a9c04a7cb1a302c013e0259cd3b4bb619f145b32f72b8b4bcbed230"
+dependencies = [
+ "hashbrown 0.16.1",
 ]
 
 [[package]]
@@ -873,6 +891,15 @@ name = "intrusive-collections"
 version = "0.9.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "189d0897e4cbe8c75efedf3502c18c887b05046e59d28404d4d8e46cbc4d1e86"
+dependencies = [
+ "memoffset",
+]
+
+[[package]]
+name = "intrusive-collections"
+version = "0.10.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "80e165935eba36cb526af8389effd2005a741adcbb6ed32106cc68e3f7b92960"
 dependencies = [
  "memoffset",
 ]
@@ -1077,9 +1104,9 @@ dependencies = [
 
 [[package]]
 name = "mir-analyzer"
-version = "0.31.0"
+version = "0.33.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "04975c2754765dde573ad3172609221d1878d7f6da648331b3f1739e447f6b09"
+checksum = "464f025a10d371d0acf7e50cb38089bb881b9c10dfe2f6d40c108116a860a978"
 dependencies = [
  "bincode 1.3.3",
  "blake3",
@@ -1096,7 +1123,7 @@ dependencies = [
  "quick-xml",
  "rayon",
  "rustc-hash 2.1.2",
- "salsa",
+ "salsa 0.27.0",
  "serde",
  "serde_json",
  "thiserror",
@@ -1104,9 +1131,9 @@ dependencies = [
 
 [[package]]
 name = "mir-codebase"
-version = "0.31.0"
+version = "0.33.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1ae9fd3d0d5cf6f3f3c0c83aa9adf1722b84deef005b0dbf04abe72bd75235d7"
+checksum = "435ed6f573ed7cd9d5b1a8b95f903b093de07c9e5f720e8d62b5b452a89f2bab"
 dependencies = [
  "dashmap 6.2.1",
  "indexmap",
@@ -1117,9 +1144,9 @@ dependencies = [
 
 [[package]]
 name = "mir-issues"
-version = "0.31.0"
+version = "0.33.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "60b0b6206a5531c07ea8b0daeae7b6ff4f9293eaf2ead243846aa7dd713bc054"
+checksum = "6443c74c14801d3140b182d9be45d463537ca28c86c77b51eedea4e8aa4cd2f4"
 dependencies = [
  "mir-types",
  "owo-colors",
@@ -1129,9 +1156,9 @@ dependencies = [
 
 [[package]]
 name = "mir-types"
-version = "0.31.0"
+version = "0.33.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "31e25921b1c7a9bf66883e3248a546ea3957e179c1750d83be91786ddab26180"
+checksum = "23815919c4ddf8171f087726972aa6cc418c86727300bc354d311b1d23ecdf4b"
 dependencies = [
  "dashmap 6.2.1",
  "indexmap",
@@ -1227,9 +1254,9 @@ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 
 [[package]]
 name = "php-ast"
-version = "0.15.0"
+version = "0.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "49bae72b6ee954d1c95e25a26248d5647caa5e32685620bcf91c7318ee559a0f"
+checksum = "65f6bbff76ec2b9d43190f49e9be87c62875f81c1e62eb5b18e141fe7240a490"
 dependencies = [
  "bumpalo",
  "serde",
@@ -1237,9 +1264,9 @@ dependencies = [
 
 [[package]]
 name = "php-lexer"
-version = "0.15.0"
+version = "0.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f7e90537a97fdc473c593851a7f48279b4132774c17f76335d8e300ad6b185db"
+checksum = "24104c209886e0697b54a9db93843185a3861419430db3bd05c49742963909e5"
 dependencies = [
  "memchr",
  "php-ast",
@@ -1247,7 +1274,7 @@ dependencies = [
 
 [[package]]
 name = "php-lsp"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "arc-swap",
  "bincode 2.0.1",
@@ -1268,7 +1295,7 @@ dependencies = [
  "php-ast",
  "php-rs-parser",
  "rayon",
- "salsa",
+ "salsa 0.26.2",
  "serde",
  "serde_json",
  "serial_test",
@@ -1282,9 +1309,9 @@ dependencies = [
 
 [[package]]
 name = "php-rs-parser"
-version = "0.15.0"
+version = "0.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "77ccc403ef8d2ec2de0fc4dc880684fdae6360449fb4920527da73d00cda34d4"
+checksum = "4ef47551c4c83dbdad86cb905ff6378e00c3182ea79411990639dbb2f9a4e533"
 dependencies = [
  "bumpalo",
  "memchr",
@@ -1297,9 +1324,9 @@ dependencies = [
 
 [[package]]
 name = "phpdoc-parser"
-version = "0.15.0"
+version = "0.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ec4cccacd750405c8572b818786c0e0945c492578475fa5a35b4693712aac46e"
+checksum = "f6fd494534ef78dfb5408b302ca4c6bd8a5e9501afab885e8657444c7cd0d60d"
 dependencies = [
  "serde",
 ]
@@ -1558,16 +1585,42 @@ dependencies = [
  "crossbeam-queue",
  "crossbeam-utils",
  "hashbrown 0.17.1",
- "hashlink",
+ "hashlink 0.10.0",
  "indexmap",
- "intrusive-collections",
+ "intrusive-collections 0.9.7",
  "inventory",
  "parking_lot",
  "portable-atomic",
  "rayon",
  "rustc-hash 2.1.2",
- "salsa-macro-rules",
- "salsa-macros",
+ "salsa-macro-rules 0.26.2",
+ "salsa-macros 0.26.2",
+ "smallvec",
+ "thin-vec",
+ "tracing",
+ "typeid",
+]
+
+[[package]]
+name = "salsa"
+version = "0.27.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "adfc1e32b8d1a486e3a45a5480fb5dca7912f49262a8916a67378064da4fe1ab"
+dependencies = [
+ "boxcar",
+ "crossbeam-queue",
+ "crossbeam-utils",
+ "hashbrown 0.17.1",
+ "hashlink 0.11.0",
+ "indexmap",
+ "intrusive-collections 0.10.1",
+ "inventory",
+ "parking_lot",
+ "portable-atomic",
+ "rayon",
+ "rustc-hash 2.1.2",
+ "salsa-macro-rules 0.27.0",
+ "salsa-macros 0.27.0",
  "smallvec",
  "thin-vec",
  "tracing",
@@ -1581,10 +1634,28 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "58e354cbac6939b9b09cd9c11fb419a53e64b4a0f755d929f56a09f4cc752e41"
 
 [[package]]
+name = "salsa-macro-rules"
+version = "0.27.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "67dad477a3e3a484a7c2311c1d25160fb270214981be24022de7de8a206a3300"
+
+[[package]]
 name = "salsa-macros"
 version = "0.26.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3067861075c2b80608f84ad49fb88f2c7610b94cdf8b4201e79ddee87f8980c8"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+ "synstructure",
+]
+
+[[package]]
+name = "salsa-macros"
+version = "0.27.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "943f70e101fb3bd599960e79e719e70d85142730e5b45f3269246086ed218562"
 dependencies = [
  "proc-macro2",
  "quote",

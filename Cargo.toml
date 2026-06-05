@@ -1,6 +1,6 @@
 [package]
 name = "php-lsp"
-version = "0.7.0"
+version = "0.8.0"
 edition = "2024"
 description = "A PHP Language Server Protocol implementation"
 license = "MIT"
@@ -40,12 +40,12 @@ dhat = { version = "0.3", optional = true }
 mimalloc = { version = "0.1", default-features = false }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
-mir-analyzer = "=0.31.0"
-mir-issues = "=0.31.0"
-mir-codebase = "=0.31.0"
-mir-types = "=0.31.0"
-php-rs-parser = "0.15"
-php-ast = "0.15"
+mir-analyzer = "=0.33.0"
+mir-issues = "=0.33.0"
+mir-codebase = "=0.33.0"
+mir-types = "=0.33.0"
+php-rs-parser = "0.16"
+php-ast = "0.16"
 bumpalo = { version = "3", features = ["collections"] }
 tower-lsp = "0.20"
 tokio = { version = "1", features = ["full"] }
