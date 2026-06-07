@@ -223,9 +223,12 @@ pub fn find_method_in_class_hierarchy(
                         return Some(zero_width_location(uri, dm.start_line));
                     }
                 }
-                // Traits first (PHP MRO), then parent.
+                // Traits first (PHP MRO), then `@mixin` targets, then parent.
                 for trt in &cls.traits {
                     queue.push(trt.as_ref().to_owned());
+                }
+                for mx in &cls.mixins {
+                    queue.push(mx.as_ref().to_owned());
                 }
                 if let Some(parent) = &cls.parent {
                     queue.push(parent.as_ref().to_owned());

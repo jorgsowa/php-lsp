@@ -68,6 +68,8 @@ pub struct ClassDef {
     pub name_char: u32,
     /// Virtual methods declared via `@method` docblock tags.
     pub doc_methods: Vec<DocMethodEntry>,
+    /// Classes/traits pulled in via `@mixin ClassName` docblock tags.
+    pub mixins: Vec<Arc<str>>,
 }
 
 /// A method declared only via a `@method` docblock tag (no real body).
@@ -235,6 +237,7 @@ fn collect_stmts(
                     start_line,
                     name_char: name_char(class_name_str),
                     doc_methods: Vec::new(),
+                    mixins: Vec::new(),
                 };
 
                 for member in c.body.members.iter() {
@@ -304,8 +307,9 @@ fn collect_stmts(
                         }
                     }
                 }
-                // Extract `@method` docblock tags as virtual method entries so
-                // go-to-definition can navigate to the docblock line.
+                // Extract `@method` and `@mixin` docblock tags.
+                // `@method` tags become virtual method entries for go-to-definition.
+                // `@mixin` tags extend the class hierarchy walked by find_method_in_class_hierarchy.
                 if let Some(doc) = &c.doc_comment {
                     let db = parse_docblock(doc.text);
                     for dm in &db.methods {
@@ -321,6 +325,9 @@ fn collect_stmts(
                             return_type: ret,
                             start_line: line,
                         });
+                    }
+                    for mixin in &db.mixins {
+                        class_def.mixins.push(Arc::from(mixin.as_str()));
                     }
                 }
                 index.classes.push(class_def);
@@ -351,6 +358,7 @@ fn collect_stmts(
                     start_line,
                     name_char: name_char(i_name),
                     doc_methods: Vec::new(),
+                    mixins: Vec::new(),
                 };
 
                 for member in i.body.members.iter() {
@@ -404,6 +412,7 @@ fn collect_stmts(
                     start_line,
                     name_char: name_char(t_name),
                     doc_methods: Vec::new(),
+                    mixins: Vec::new(),
                 };
 
                 for member in t.body.members.iter() {
@@ -481,6 +490,7 @@ fn collect_stmts(
                     start_line,
                     name_char: name_char(e_name),
                     doc_methods: Vec::new(),
+                    mixins: Vec::new(),
                 };
 
                 for member in e.body.members.iter() {
@@ -755,5 +765,24 @@ mod tests {
         let doc = ParsedDoc::parse(src.to_string());
         let idx = FileIndex::extract(&doc);
         assert!(idx.classes[0].doc_methods.is_empty());
+    }
+
+    #[test]
+    fn extracts_mixins_from_class_docblock() {
+        let src = "<?php\n/**\n * @mixin Macroable\n * @mixin HasEvents\n */\nclass Builder {}";
+        let doc = ParsedDoc::parse(src.to_string());
+        let idx = FileIndex::extract(&doc);
+        let cls = &idx.classes[0];
+        assert_eq!(cls.mixins.len(), 2, "expected 2 @mixin entries");
+        assert!(cls.mixins.iter().any(|m| m.as_ref() == "Macroable"));
+        assert!(cls.mixins.iter().any(|m| m.as_ref() == "HasEvents"));
+    }
+
+    #[test]
+    fn class_without_docblock_has_no_mixins() {
+        let src = "<?php\nclass Plain {}";
+        let doc = ParsedDoc::parse(src.to_string());
+        let idx = FileIndex::extract(&doc);
+        assert!(idx.classes[0].mixins.is_empty());
     }
 }

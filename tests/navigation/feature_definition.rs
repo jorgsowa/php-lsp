@@ -1517,3 +1517,33 @@ async fn definition_doc_method_cross_file() {
     let out = common::render_locations(&resp, &s.uri(""));
     expect!["Model.php:2:0-2:0"].assert_eq(&out);
 }
+
+// ── @mixin docblock go-to-definition ─────────────────────────────────────────
+
+/// A method defined in a mixin class resolves through the `@mixin` chain when
+/// calling it on the class that declares `@mixin`.
+#[tokio::test]
+async fn definition_mixin_method_cross_file() {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        tmp.path().join("Macroable.php"),
+        "<?php\nclass Macroable {\n    public function macro(string $name): void {}\n}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        tmp.path().join("Builder.php"),
+        "<?php\n/**\n * @mixin Macroable\n */\nclass Builder {}\n",
+    )
+    .unwrap();
+    let caller_src = "<?php\nfunction use_builder(Builder $b): void { $b->macro('tap'); }\n";
+    std::fs::write(tmp.path().join("caller.php"), caller_src).unwrap();
+
+    let mut s = TestServer::with_root(tmp.path()).await;
+    s.wait_for_index_ready().await;
+    s.open("caller.php", caller_src).await;
+
+    let (_, line, ch) = s.locate("caller.php", "macro(", 0);
+    let resp = s.definition("caller.php", line, ch).await;
+    let out = common::render_locations(&resp, &s.uri(""));
+    expect!["Macroable.php:2:20-2:25"].assert_eq(&out);
+}
