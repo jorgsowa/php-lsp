@@ -236,7 +236,7 @@ fn cache_base_dir() -> Option<PathBuf> {
 /// `FileIndex` or any type it contains gains, loses, or renames a field.
 /// Rotating it causes every cached entry to be treated as a miss on the next
 /// cold start, regardless of whether the crate version changed.
-pub const FILE_INDEX_SCHEMA: &str = "fi-v1";
+pub const FILE_INDEX_SCHEMA: &str = "fi-v2";
 
 /// Schema marker: bumping `php-lsp` crate version, `mir-codebase` version,
 /// or [`FILE_INDEX_SCHEMA`] invalidates every cached entry. The hardcoded mir
@@ -247,7 +247,7 @@ pub const FILE_INDEX_SCHEMA: &str = "fi-v1";
 /// **Important**: the `"fi-v1"` literal here must stay in sync with
 /// `FILE_INDEX_SCHEMA`. `concat!` requires a literal — bump both together.
 fn schema_version() -> &'static str {
-    concat!(env!("CARGO_PKG_VERSION"), "-mir-0.7-fi-v1")
+    concat!(env!("CARGO_PKG_VERSION"), "-mir-0.7-fi-v2")
 }
 
 fn workspace_hash(root: &Path) -> String {

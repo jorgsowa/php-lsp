@@ -1447,3 +1447,73 @@ class Dog extends Animal {}
         .await;
     expect!["Dog.php:1:6-1:9"].assert_eq(&out);
 }
+
+// ── @method docblock go-to-definition ─────────────────────────────────────────
+
+/// Calling a method declared only via `@method` on a typed parameter navigates
+/// to the `@method` tag line in the same-file class docblock.
+#[tokio::test]
+async fn definition_doc_method_same_file() {
+    let mut s = TestServer::new().await;
+    let out = s
+        .check_definition(
+            r#"<?php
+/**
+ * @method User find(int $id)
+ * @method static Builder where(string $col, mixed $val)
+ */
+class Model {}
+
+function getUser(Model $m): void {
+    $m->fin$0d(1);
+}
+"#,
+        )
+        .await;
+    expect!["main.php:2:0-2:0"].assert_eq(&out);
+}
+
+/// `@method static` on a class: each tag navigates to its own line.
+#[tokio::test]
+async fn definition_doc_method_static_same_file() {
+    let mut s = TestServer::new().await;
+    let out = s
+        .check_definition(
+            r#"<?php
+/**
+ * @method User find(int $id)
+ * @method static Builder where(string $col, mixed $val)
+ */
+class Model {}
+
+function query(Model $m): void {
+    $m->whe$0re("id", 1);
+}
+"#,
+        )
+        .await;
+    expect!["main.php:3:0-3:0"].assert_eq(&out);
+}
+
+/// Cross-file: `@method` declared in an un-opened background-indexed file still
+/// resolves definition when the caller is open.
+#[tokio::test]
+async fn definition_doc_method_cross_file() {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        tmp.path().join("Model.php"),
+        "<?php\n/**\n * @method User find(int $id)\n */\nclass Model {}\n",
+    )
+    .unwrap();
+    let caller_src = "<?php\nfunction use_model(Model $m): void { $m->find(1); }\n";
+    std::fs::write(tmp.path().join("caller.php"), caller_src).unwrap();
+
+    let mut s = TestServer::with_root(tmp.path()).await;
+    s.wait_for_index_ready().await;
+    s.open("caller.php", caller_src).await;
+
+    let (_, line, ch) = s.locate("caller.php", "find(1)", 0);
+    let resp = s.definition("caller.php", line, ch).await;
+    let out = common::render_locations(&resp, &s.uri(""));
+    expect!["Model.php:2:0-2:0"].assert_eq(&out);
+}

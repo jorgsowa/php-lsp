@@ -190,6 +190,16 @@ pub fn goto_declaration_from_index(
                 }
             }
 
+            // `@method` docblock methods — zero-width location at the tag line.
+            for dm in &cls.doc_methods {
+                if dm.name.as_ref() == word {
+                    return Some(Location {
+                        uri: uri.clone(),
+                        range: crate::util::zero_width_range(dm.start_line),
+                    });
+                }
+            }
+
             // Properties.
             for p in &cls.properties {
                 if p.name.as_ref() == bare {

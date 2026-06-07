@@ -217,6 +217,12 @@ pub fn find_method_in_class_hierarchy(
                         return Some(zero_width_location(uri, m.start_line));
                     }
                 }
+                // `@method` docblock declarations — navigates to the tag line.
+                for dm in &cls.doc_methods {
+                    if dm.name.as_ref() == method_name {
+                        return Some(zero_width_location(uri, dm.start_line));
+                    }
+                }
                 // Traits first (PHP MRO), then parent.
                 for trt in &cls.traits {
                     queue.push(trt.as_ref().to_owned());
