@@ -24,7 +24,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@v1
         with:
-          toolchain: "1.95.0"
+          toolchain: "1.96.0"
 
       - name: Cache cargo registry
         uses: actions/cache@v5
@@ -37,7 +37,7 @@ jobs:
           restore-keys: ${{ runner.os }}-cargo-
 
       - name: Setup PHP
-        uses: shivammathur/setup-php@v2
+        uses: shivammathur/setup-php@f3e473d116dcccaddc5834248c87452386958240 # v2.37.2
         with:
           php-version: "8.5"
           tools: none
@@ -57,7 +57,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@v1
         with:
-          toolchain: "1.95.0"
+          toolchain: "1.96.0"
 
       - name: cargo install without --locked
         run: cargo install --path . --debug
@@ -76,7 +76,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@v1
         with:
-          toolchain: "1.95.0"
+          toolchain: "1.96.0"
           components: rustfmt, clippy
 
       - name: Cache cargo registry
