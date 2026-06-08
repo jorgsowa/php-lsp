@@ -238,7 +238,7 @@ fn collect_stmts<'a>(
                                 out,
                                 case_name.to_owned(),
                                 SymbolEntry {
-                                    name_range: sv.name_range(case_name),
+                                    name_range: sv.name_range_in_span(case_name, member.span),
                                     kind: SymbolEntryKind::EnumCase,
                                     is_abstract: false,
                                     signature: sig,
@@ -259,7 +259,7 @@ fn collect_stmts<'a>(
                                 out,
                                 mname.to_owned(),
                                 SymbolEntry {
-                                    name_range: sv.name_range(mname),
+                                    name_range: sv.name_range_in_span(mname, member.span),
                                     kind: SymbolEntryKind::Method {
                                         container: Container::Enum,
                                     },
@@ -282,7 +282,7 @@ fn collect_stmts<'a>(
                                 out,
                                 cc_name.to_owned(),
                                 SymbolEntry {
-                                    name_range: sv.name_range(cc_name),
+                                    name_range: sv.name_range_in_span(cc_name, member.span),
                                     kind: SymbolEntryKind::ClassConst {
                                         container: Container::Enum,
                                     },
@@ -325,11 +325,7 @@ fn collect_members<'a>(
                 };
                 let sig = declaration_signature(&m_decl, mname);
                 let doc_markdown = m.doc_comment.as_ref().and_then(doc_to_markdown);
-                let name_range = if container == Container::Class {
-                    sv.name_range_in_span(mname, member.span)
-                } else {
-                    sv.name_range(mname)
-                };
+                let name_range = sv.name_range_in_span(mname, member.span);
                 let is_abstract = match container {
                     Container::Interface => true,
                     Container::Class | Container::Trait => m.is_abstract,
@@ -378,11 +374,7 @@ fn collect_members<'a>(
                 };
                 let sig = declaration_signature(&cc_decl, cc_name);
                 let doc_markdown = cc.doc_comment.as_ref().and_then(doc_to_markdown);
-                let name_range = if container == Container::Class {
-                    sv.name_range_in_span(cc_name, member.span)
-                } else {
-                    sv.name_range(cc_name)
-                };
+                let name_range = sv.name_range_in_span(cc_name, member.span);
                 push(
                     out,
                     cc_name.to_owned(),
@@ -400,11 +392,7 @@ fn collect_members<'a>(
                 let pname = p.name.or_error();
                 let bare = pname.trim_start_matches('$');
                 // Properties: signature rendered via mir, not here.
-                let name_range = if container == Container::Class {
-                    sv.name_range_in_span(pname, member.span)
-                } else {
-                    sv.name_range(pname)
-                };
+                let name_range = sv.name_range_in_span(pname, member.span);
                 push(
                     out,
                     bare.to_owned(),

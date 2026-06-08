@@ -1547,3 +1547,24 @@ async fn definition_mixin_method_cross_file() {
     let out = common::render_locations(&resp, &s.uri(""));
     expect!["Macroable.php:2:20-2:25"].assert_eq(&out);
 }
+
+// ── implementation name-range regression ──────────────────────────────────────
+//
+// When the implementing class name also appears (as a word) in a string literal
+// *before* the class declaration in the file, the old global `name_range` scan
+// (using `.to_string()`) found the literal occurrence instead of the declaration.
+// The span-constrained fix restricts the search to the class stmt's span.
+
+#[tokio::test]
+async fn implementation_class_name_correct_when_name_appears_in_earlier_string_literal() {
+    let mut s = TestServer::new().await;
+    s.check_implementation_annotated(
+        r#"<?php
+interface Logg$0able {}
+$msg = 'Loggable is implemented by Logger right here';
+class Logger implements Loggable {}
+//    ^^^^^^ impl
+"#,
+    )
+    .await;
+}

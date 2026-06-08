@@ -120,7 +120,7 @@ fn find_declaration_item(
         match &stmt.kind {
             StmtKind::Function(f) if f.name == name => {
                 let range = sv.range_of(stmt.span);
-                let sel = sv.name_range(&f.name.to_string());
+                let sel = sv.name_range_in_span(&f.name.to_string(), stmt.span);
                 return Some(CallHierarchyItem {
                     name: name.to_string(),
                     kind: SymbolKind::FUNCTION,
@@ -138,7 +138,7 @@ fn find_declaration_item(
                         && m.name == name
                     {
                         let range = sv.range_of(member.span);
-                        let sel = sv.name_range(&m.name.to_string());
+                        let sel = sv.name_range_in_span(&m.name.to_string(), member.span);
                         return Some(CallHierarchyItem {
                             name: name.to_string(),
                             kind: SymbolKind::METHOD,
@@ -158,7 +158,7 @@ fn find_declaration_item(
                         && m.name == name
                     {
                         let range = sv.range_of(member.span);
-                        let sel = sv.name_range(&m.name.to_string());
+                        let sel = sv.name_range_in_span(&m.name.to_string(), member.span);
                         return Some(CallHierarchyItem {
                             name: name.to_string(),
                             kind: SymbolKind::METHOD,
@@ -178,7 +178,7 @@ fn find_declaration_item(
                         && m.name == name
                     {
                         let range = sv.range_of(member.span);
-                        let sel = sv.name_range(&m.name.to_string());
+                        let sel = sv.name_range_in_span(&m.name.to_string(), member.span);
                         return Some(CallHierarchyItem {
                             name: name.to_string(),
                             kind: SymbolKind::METHOD,
@@ -231,7 +231,7 @@ fn enclosing_in_stmt(
     }
     match &stmt.kind {
         StmtKind::Function(f) => {
-            let sel = sv.name_range(&f.name.to_string());
+            let sel = sv.name_range_in_span(&f.name.to_string(), stmt.span);
             Some(CallHierarchyItem {
                 name: f.name.to_string(),
                 kind: SymbolKind::FUNCTION,
@@ -249,7 +249,7 @@ fn enclosing_in_stmt(
                 if range_contains(m_range, pos)
                     && let ClassMemberKind::Method(m) = &member.kind
                 {
-                    let sel = sv.name_range(&m.name.to_string());
+                    let sel = sv.name_range_in_span(&m.name.to_string(), member.span);
                     return Some(CallHierarchyItem {
                         name: m.name.to_string(),
                         kind: SymbolKind::METHOD,
@@ -270,7 +270,7 @@ fn enclosing_in_stmt(
                 if range_contains(m_range, pos)
                     && let ClassMemberKind::Method(m) = &member.kind
                 {
-                    let sel = sv.name_range(&m.name.to_string());
+                    let sel = sv.name_range_in_span(&m.name.to_string(), member.span);
                     return Some(CallHierarchyItem {
                         name: m.name.to_string(),
                         kind: SymbolKind::METHOD,
@@ -291,7 +291,7 @@ fn enclosing_in_stmt(
                 if range_contains(m_range, pos)
                     && let EnumMemberKind::Method(m) = &member.kind
                 {
-                    let sel = sv.name_range(&m.name.to_string());
+                    let sel = sv.name_range_in_span(&m.name.to_string(), member.span);
                     return Some(CallHierarchyItem {
                         name: m.name.to_string(),
                         kind: SymbolKind::METHOD,

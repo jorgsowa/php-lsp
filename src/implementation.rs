@@ -147,7 +147,7 @@ fn collect_implementations(
                 {
                     out.push(Location {
                         uri: uri.clone(),
-                        range: sv.name_range(&class_name.to_string()),
+                        range: sv.name_range_in_span(class_name.or_error(), stmt.span),
                     });
                 }
             }
@@ -159,7 +159,7 @@ fn collect_implementations(
                 if implements_match {
                     out.push(Location {
                         uri: uri.clone(),
-                        range: sv.name_range(&e.name.to_string()),
+                        range: sv.name_range_in_span(e.name.or_error(), stmt.span),
                     });
                 }
             }
@@ -171,7 +171,7 @@ fn collect_implementations(
                 if extends_match {
                     out.push(Location {
                         uri: uri.clone(),
-                        range: sv.name_range(&i.name.to_string()),
+                        range: sv.name_range_in_span(i.name.or_error(), stmt.span),
                     });
                 }
             }

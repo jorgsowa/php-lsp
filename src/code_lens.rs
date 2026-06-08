@@ -345,7 +345,7 @@ fn collect_trait_usages_in_stmts(
                 if uses_trait && let Some(class_name) = c.name {
                     out.push(tower_lsp::lsp_types::Location {
                         uri: uri.clone(),
-                        range: sv.name_range(&class_name.to_string()),
+                        range: sv.name_range_in_span(class_name.or_error(), stmt.span),
                     });
                 }
             }

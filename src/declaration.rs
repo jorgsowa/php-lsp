@@ -31,7 +31,7 @@ pub fn goto_declaration(
         {
             return Some(Location {
                 uri: uri.clone(),
-                range: sv.name_range(decl.name()),
+                range: sv.name_range_in_span(decl.name(), decl.span()),
             });
         }
     }
@@ -42,7 +42,7 @@ pub fn goto_declaration(
         if let Some(decl) = resolve_declaration(&doc.program().stmts, &word, &is_any_declaration) {
             return Some(Location {
                 uri: uri.clone(),
-                range: sv.name_range(decl.name()),
+                range: sv.name_range_in_span(decl.name(), decl.span()),
             });
         }
     }

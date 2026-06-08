@@ -583,3 +583,77 @@ class Derived extends Base {
         .await;
     expect!["run @ main.php:5"].assert_eq(&out);
 }
+
+// ── selectionRange containment regression tests ────────────────────────────────
+//
+// When a method name text also appears in an earlier string literal inside the
+// same class/trait/enum, the old global `name_range` scan returned the literal's
+// position, violating the selectionRange ⊆ range invariant required by LSP.
+
+#[tokio::test]
+async fn prepare_class_method_selection_range_not_stolen_by_earlier_string_literal() {
+    let mut s = TestServer::new().await;
+    let out = s
+        .check_prepare_call_hierarchy(
+            r#"<?php
+class Mailer {
+    private string $template = 'please send this message';
+    public function sen$0d(): void {}
+}
+"#,
+        )
+        .await;
+    expect!["send (Method) [Mailer] @ main.php:3"].assert_eq(&out);
+}
+
+#[tokio::test]
+async fn prepare_trait_method_selection_range_not_stolen_by_earlier_string_literal() {
+    let mut s = TestServer::new().await;
+    let out = s
+        .check_prepare_call_hierarchy(
+            r#"<?php
+trait Sendable {
+    private string $default = 'send message to recipients';
+    public function sen$0d(): void {}
+}
+"#,
+        )
+        .await;
+    expect!["send (Method) [Sendable] @ main.php:3"].assert_eq(&out);
+}
+
+#[tokio::test]
+async fn prepare_enum_method_selection_range_not_stolen_by_earlier_string_literal() {
+    let mut s = TestServer::new().await;
+    let out = s
+        .check_prepare_call_hierarchy(
+            r#"<?php
+enum Status {
+    case Active;
+    const LABEL = 'process the item';
+    public function proce$0ss(): string { return ''; }
+}
+"#,
+        )
+        .await;
+    expect!["process (Method) [Status] @ main.php:4"].assert_eq(&out);
+}
+
+#[tokio::test]
+async fn incoming_calls_enclosing_method_selection_range_not_stolen_by_earlier_string_literal() {
+    let mut s = TestServer::new().await;
+    let out = s
+        .check_incoming_calls(
+            r#"<?php
+class EventBus {
+    private string $routing = 'dispatch to all listeners';
+    public function broadca$0st(): void {}
+    public function dispatch(): void {
+        $this->broadcast();
+    }
+}
+"#,
+        )
+        .await;
+    expect!["dispatch @ main.php:4"].assert_eq(&out);
+}

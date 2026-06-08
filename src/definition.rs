@@ -85,52 +85,8 @@ fn resolve_declaration_range(
     Some(declaration_name_range(sv, &decl))
 }
 
-/// Compute the name range for a resolved declaration.
-///
-/// Top-level declarations and class-body members use `name_range_in_span`
-/// (searches within the node's span, so a name repeated in an earlier docblock
-/// doesn't steal the match); interface/trait/enum members use the cheaper
-/// whole-source `name_range`. This mirrors the original per-arm choice exactly.
 fn declaration_name_range(sv: SourceView<'_>, decl: &Declaration<'_>) -> Range {
-    match decl {
-        Declaration::Function { decl, stmt_span } => {
-            sv.name_range_in_span(decl.name.or_error(), *stmt_span)
-        }
-        Declaration::Class {
-            name, stmt_span, ..
-        } => sv.name_range_in_span(name.or_error(), *stmt_span),
-        Declaration::Interface { decl, stmt_span } => {
-            sv.name_range_in_span(decl.name.or_error(), *stmt_span)
-        }
-        Declaration::Trait { decl, stmt_span } => {
-            sv.name_range_in_span(decl.name.or_error(), *stmt_span)
-        }
-        Declaration::Enum { decl, stmt_span } => {
-            sv.name_range_in_span(decl.name.or_error(), *stmt_span)
-        }
-        Declaration::Method {
-            method,
-            container: Container::Class,
-            member_span,
-        } => sv.name_range_in_span(method.name.or_error(), *member_span),
-        Declaration::ClassConst {
-            konst,
-            container: Container::Class,
-            member_span,
-        } => sv.name_range_in_span(konst.name.or_error(), *member_span),
-        Declaration::Property {
-            property,
-            container: Container::Class,
-            member_span,
-        } => sv.name_range_in_span(property.name.or_error(), *member_span),
-        Declaration::PromotedParam { param } => {
-            sv.name_range_in_span(param.name.or_error(), param.span)
-        }
-        Declaration::Method { method, .. } => sv.name_range(method.name.or_error()),
-        Declaration::ClassConst { konst, .. } => sv.name_range(konst.name.or_error()),
-        Declaration::Property { property, .. } => sv.name_range(property.name.or_error()),
-        Declaration::EnumCase { case, .. } => sv.name_range(case.name.or_error()),
-    }
+    sv.name_range_in_span(decl.name(), decl.span())
 }
 
 /// Find a class/function declaration by name in a slice of `FileIndex` entries.

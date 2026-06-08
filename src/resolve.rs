@@ -103,6 +103,21 @@ impl<'a> Declaration<'a> {
             Declaration::EnumCase { case, .. } => case.name.or_error(),
         }
     }
+
+    pub fn span(&self) -> Span {
+        match self {
+            Declaration::Function { stmt_span, .. } => *stmt_span,
+            Declaration::Class { stmt_span, .. } => *stmt_span,
+            Declaration::Interface { stmt_span, .. } => *stmt_span,
+            Declaration::Trait { stmt_span, .. } => *stmt_span,
+            Declaration::Enum { stmt_span, .. } => *stmt_span,
+            Declaration::Method { member_span, .. } => *member_span,
+            Declaration::ClassConst { member_span, .. } => *member_span,
+            Declaration::Property { member_span, .. } => *member_span,
+            Declaration::PromotedParam { param } => param.span,
+            Declaration::EnumCase { member_span, .. } => *member_span,
+        }
+    }
 }
 
 /// Find the first declaration named `word` that `accept` approves, scanning
