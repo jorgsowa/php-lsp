@@ -564,6 +564,46 @@ pub fn assert_selection_range_invariant(resp: &Value) {
     }
 }
 
+/// Verify the LSP-spec invariant for `textDocument/documentSymbol`: every
+/// symbol's `selectionRange` must be fully contained in its `range`.
+/// Panics with a descriptive message on violation.
+pub fn assert_document_symbol_containment(resp: &Value) {
+    if let Some(err) = resp.get("error").filter(|e| !e.is_null()) {
+        panic!("documentSymbol request failed: {err}");
+    }
+    let Some(arr) = resp["result"].as_array() else {
+        panic!(
+            "documentSymbol: result must be an array, got: {}",
+            resp["result"]
+        );
+    };
+    fn pos(p: &Value) -> (u64, u64) {
+        (
+            p["line"].as_u64().unwrap_or(0),
+            p["character"].as_u64().unwrap_or(0),
+        )
+    }
+    fn check(sym: &Value) {
+        let name = sym["name"].as_str().unwrap_or("?");
+        let r_start = pos(&sym["range"]["start"]);
+        let r_end = pos(&sym["range"]["end"]);
+        let s_start = pos(&sym["selectionRange"]["start"]);
+        let s_end = pos(&sym["selectionRange"]["end"]);
+        assert!(
+            r_start <= s_start && s_end <= r_end,
+            "symbol {name:?}: selectionRange {s_start:?}-{s_end:?} not contained in fullRange {r_start:?}-{r_end:?}"
+        );
+        if let Some(children) = sym["children"].as_array() {
+            for child in children {
+                check(child);
+            }
+        }
+    }
+    for sym in arr {
+        check(sym);
+    }
+}
+
 /// Render a `textDocument/selectionRange` response as one chain per request
 /// position. Each chain prints innermost → outermost as `L:C-L:C` lines, one
 /// per parent step. Multiple chains are separated by `---`.

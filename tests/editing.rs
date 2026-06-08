@@ -4,7 +4,8 @@
 mod common;
 
 pub use common::render::{
-    assert_linked_editing_ranges_share_text, assert_selection_range_invariant,
+    assert_document_symbol_containment, assert_linked_editing_ranges_share_text,
+    assert_selection_range_invariant,
 };
 pub use common::{
     TestServer, canonicalize_workspace_edit, lines_of, render_completion, render_document_symbols,

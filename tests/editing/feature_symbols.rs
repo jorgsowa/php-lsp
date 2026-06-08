@@ -557,3 +557,163 @@ async fn document_symbols_deprecated_method() {
         "deprecated method must have deprecated=true, got: {method}"
     );
 }
+
+/// Regression: when a class member name (method, property, constant) matches an
+/// earlier top-level function, `selectionRange` must fall inside the member's
+/// `fullRange`. VSCode's `Fr.validate` rejects the entire response otherwise.
+#[tokio::test]
+async fn document_symbols_selection_range_class_member_name_matches_earlier_function() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    s.open(
+        "test.php",
+        r#"<?php
+function process(): void {}
+class Pipeline {
+    private array $process = [];
+    public function process(): void {}
+    const process = 'noop';
+}
+"#,
+    )
+    .await;
+    let resp = s.document_symbols("test.php").await;
+    assert_document_symbol_containment(&resp);
+    expect![[r#"
+        Function process @L1
+        Class Pipeline @L2
+          Property $process @L3
+          Method process @L4
+          Constant process @L5"#]]
+    .assert_eq(&render_document_symbols(&resp));
+}
+
+/// Regression: when two classes share a method name, the second class's method
+/// `selectionRange` must not point into the first class.
+#[tokio::test]
+async fn document_symbols_selection_range_second_class_method_not_confused() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    s.open(
+        "test.php",
+        r#"<?php
+class Alpha {
+    public function process(): void {}
+}
+class Beta {
+    public function process(): void {}
+}
+"#,
+    )
+    .await;
+    let resp = s.document_symbols("test.php").await;
+    assert_document_symbol_containment(&resp);
+    expect![[r#"
+        Class Alpha @L1
+          Method process @L2
+        Class Beta @L4
+          Method process @L5"#]]
+    .assert_eq(&render_document_symbols(&resp));
+}
+
+/// Regression: interface method name matching an earlier top-level function
+/// must have `selectionRange` inside the interface member's `fullRange`.
+#[tokio::test]
+async fn document_symbols_selection_range_interface_method_matches_earlier_function() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    s.open(
+        "test.php",
+        r#"<?php
+function read(): string { return ''; }
+interface Reader {
+    public function read(): string;
+}
+"#,
+    )
+    .await;
+    let resp = s.document_symbols("test.php").await;
+    assert_document_symbol_containment(&resp);
+    expect![[r#"
+        Function read @L1
+        Interface Reader @L2
+          Method read @L3"#]]
+    .assert_eq(&render_document_symbols(&resp));
+}
+
+/// Regression: trait method name matching an earlier top-level function must
+/// have `selectionRange` inside the trait member's `fullRange`.
+#[tokio::test]
+async fn document_symbols_selection_range_trait_method_matches_earlier_function() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    s.open(
+        "test.php",
+        r#"<?php
+function format(): string { return ''; }
+trait Formatter {
+    public function format(): string { return ''; }
+}
+"#,
+    )
+    .await;
+    let resp = s.document_symbols("test.php").await;
+    assert_document_symbol_containment(&resp);
+    expect![[r#"
+        Function format @L1
+        Class Formatter @L2
+          Method format @L3"#]]
+    .assert_eq(&render_document_symbols(&resp));
+}
+
+/// Regression: enum case name matching an earlier top-level function must have
+/// `selectionRange` inside the enum member's `fullRange`.
+#[tokio::test]
+async fn document_symbols_selection_range_enum_case_matches_earlier_function() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    s.open(
+        "test.php",
+        r#"<?php
+function Active(): bool { return true; }
+enum Status {
+    case Active;
+}
+"#,
+    )
+    .await;
+    let resp = s.document_symbols("test.php").await;
+    assert_document_symbol_containment(&resp);
+    expect![[r#"
+        Function Active @L1
+        Enum Status @L2
+          EnumMember Active @L3"#]]
+    .assert_eq(&render_document_symbols(&resp));
+}
+
+/// Regression: enum method name matching an earlier top-level function must
+/// have `selectionRange` inside the enum member's `fullRange`.
+#[tokio::test]
+async fn document_symbols_selection_range_enum_method_matches_earlier_function() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    s.open(
+        "test.php",
+        r#"<?php
+function label(): string { return ''; }
+enum Priority {
+    case Low;
+    public function label(): string { return $this->name; }
+}
+"#,
+    )
+    .await;
+    let resp = s.document_symbols("test.php").await;
+    assert_document_symbol_containment(&resp);
+    expect![[r#"
+        Function label @L1
+        Enum Priority @L2
+          EnumMember Low @L3
+          Method label @L4"#]]
+    .assert_eq(&render_document_symbols(&resp));
+}
