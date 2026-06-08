@@ -2,6 +2,19 @@
 
 All notable changes to php-lsp are documented here.
 
+## [0.9.0] — 2026-06-08
+
+### Features
+
+- **`@mixin` traversal in file index**: `DocMethodEntry` now carries `return_type`, and workspace indexing follows `@mixin` tags so hover and completion resolve methods from mixed-in types across files.
+
+### Bug Fixes
+
+- **`documentSymbol` selectionRange containment**: Class, interface, trait, and enum members whose name text also appeared earlier in the file (e.g. a property default containing the method name as a string) returned a `selectionRange` pointing at the earlier occurrence, violating the LSP `selectionRange ⊆ range` invariant that VSCode enforces. All member kinds now use span-constrained search.
+- **Call hierarchy `selectionRange`**: `prepare/callHierarchy` and `callHierarchy/incomingCalls` had the same name-range bug for function, class-method, trait-method, and enum-method items — the selected line in the call hierarchy tree could point to a string literal rather than the actual method name.
+- **`textDocument/implementation` class location**: Implementing class names were located via an unconstrained content search; a same-name occurrence in a string literal before the class declaration caused the implementation link to target the wrong line.
+- **`@method` docblock navigation**: go-to-definition and go-to-declaration now resolve `@method` tags in class docblocks.
+
 ## [0.8.0] — 2026-06-06
 
 ### Features
