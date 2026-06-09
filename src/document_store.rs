@@ -1091,8 +1091,9 @@ mod tests {
 
         // `index_from_doc(url, &doc)` path (workspace-scan Phase 2).
         let u2 = uri("/bg2.php");
-        let doc =
-            crate::diagnostics::parse_document_no_diags("<?php\nclass Bg2 {}\nfunction f() {}");
+        let doc = crate::analysis::diagnostics::parse_document_no_diags(
+            "<?php\nclass Bg2 {}\nfunction f() {}",
+        );
         store.index_from_doc(u2.clone(), &doc);
         assert_eq!(
             salsa_index_names(&store, &u2),

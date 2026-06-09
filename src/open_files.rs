@@ -3,10 +3,10 @@ use std::sync::Arc;
 use dashmap::DashMap;
 use tower_lsp::lsp_types::{Diagnostic, Url};
 
+use crate::analysis::semantic_diagnostics::issues_to_diagnostics;
 use crate::ast::ParsedDoc;
 use crate::config::DiagnosticsConfig;
 use crate::document_store::DocumentStore;
-use crate::semantic_diagnostics::issues_to_diagnostics;
 
 /// Per-open-file state owned by `Backend` (Phase E4).
 ///
@@ -117,7 +117,7 @@ pub(crate) fn compute_open_file_diagnostics(
     uri: &Url,
     diag_cfg: &DiagnosticsConfig,
 ) -> Vec<Diagnostic> {
-    use crate::semantic_diagnostics::duplicate_declaration_diagnostics;
+    use crate::analysis::semantic_diagnostics::duplicate_declaration_diagnostics;
 
     let mut out = open_files.parse_diagnostics(uri).unwrap_or_default();
     let source = open_files.text(uri).unwrap_or_default();

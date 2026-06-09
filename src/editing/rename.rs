@@ -4,7 +4,7 @@ use std::sync::Arc;
 use tower_lsp::lsp_types::{Position, Range, TextEdit, Url, WorkspaceEdit};
 
 use crate::ast::ParsedDoc;
-use crate::references::find_references_with_use;
+use crate::navigation::references::find_references_with_use;
 use crate::util::utf16_code_units;
 use crate::walk::{collect_var_refs_in_scope, property_refs_in_stmts};
 
@@ -16,7 +16,7 @@ pub fn rename(
     all_docs: &[(Url, Arc<ParsedDoc>)],
     target_fqn: Option<&str>,
 ) -> WorkspaceEdit {
-    use crate::references::find_references_with_target;
+    use crate::navigation::references::find_references_with_target;
 
     let locations = match target_fqn {
         Some(fqn) => find_references_with_target(word, all_docs, true, None, fqn),

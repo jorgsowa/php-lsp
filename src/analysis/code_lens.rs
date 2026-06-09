@@ -15,8 +15,8 @@ use serde_json::json;
 use tower_lsp::lsp_types::{CodeLens, Command, Url};
 
 use crate::ast::{ParsedDoc, SourceView};
-use crate::implementation::find_implementations;
-use crate::references::{SymbolKind, find_references};
+use crate::navigation::implementation::find_implementations;
+use crate::navigation::references::{SymbolKind, find_references};
 use crate::type_map::parent_class_name;
 
 /// Build all code lenses for `uri`/`doc`, using `all_docs` for reference counts.

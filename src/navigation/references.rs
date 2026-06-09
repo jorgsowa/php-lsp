@@ -322,7 +322,7 @@ fn find_references_inner(
 fn doc_can_reference_target(doc: &ParsedDoc, word: &str, target_fqn: &str) -> bool {
     let target = target_fqn.trim_start_matches('\\');
     let imports = collect_file_imports(doc);
-    let resolved = crate::moniker::resolve_fqn(doc, word, &imports);
+    let resolved = crate::navigation::moniker::resolve_fqn(doc, word, &imports);
     // PHP falls back to the global namespace for unqualified *function* calls
     // when the namespaced version doesn't exist.  We don't know at this point
     // which symbol category the target is, so accept either an exact match
@@ -420,7 +420,7 @@ pub(crate) fn collect_referenced_class_fqns(doc: &ParsedDoc) -> Vec<String> {
             if let Some(stripped) = name.strip_prefix('\\') {
                 return stripped.to_string();
             }
-            let fqn = crate::moniker::resolve_fqn(doc, &name, &imports);
+            let fqn = crate::navigation::moniker::resolve_fqn(doc, &name, &imports);
             fqn.trim_start_matches('\\').to_string()
         })
         // Skip references that resolve to a type declared in this very file —

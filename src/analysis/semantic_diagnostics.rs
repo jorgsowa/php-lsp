@@ -5,9 +5,9 @@
 use php_ast::StmtKind;
 use tower_lsp::lsp_types::{Diagnostic, DiagnosticSeverity, NumberOrString, Position, Range, Url};
 
+use crate::analysis::diagnostics::PHP_LSP_SOURCE;
 use crate::ast::{ParsedDoc, SourceView};
 use crate::config::DiagnosticsConfig;
-use crate::diagnostics::PHP_LSP_SOURCE;
 
 /// Run semantic checks on `doc` against the supplied `AnalysisSession`.
 ///

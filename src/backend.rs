@@ -24,64 +24,74 @@ use php_ast::{
 
 use crate::ast::{ParsedDoc, str_offset};
 use crate::autoload::Psr4Map;
-use crate::call_hierarchy::{incoming_calls, outgoing_calls, prepare_call_hierarchy};
-use crate::code_lens::code_lenses;
 use crate::completion::{CompletionCtx, filtered_completions_at};
 use crate::config::LspConfig;
-use crate::declaration::{goto_declaration, goto_declaration_from_index};
-use crate::definition::{
-    find_declaration_in_indexes, find_declaration_range, find_method_in_class_hierarchy,
-    goto_definition,
-};
-use crate::diagnostics::{merge_file_diagnostics, parse_document, parse_document_no_diags};
-use crate::document_highlight::document_highlights;
-use crate::document_link::document_links;
 use crate::document_store::DocumentStore;
-use crate::extract_action::extract_variable_actions;
-use crate::extract_constant_action::extract_constant_actions;
-use crate::extract_method_action::extract_method_actions;
 use crate::file_rename::{use_edits_for_delete, use_edits_for_rename};
-use crate::folding::folding_ranges;
-use crate::formatting::{format_document, format_range};
-use crate::generate_action::{generate_constructor_actions, generate_getters_setters_actions};
 use crate::hover::{
     class_hover_from_index, docs_for_symbol_from_index, hover_info_with_maps,
     signature_for_symbol_from_index,
 };
-use crate::implement_action::implement_missing_actions;
-use crate::implementation::{find_implementations, find_implementations_from_workspace};
-use crate::inlay_hints::inlay_hints;
-use crate::inline_action::inline_variable_actions;
-use crate::inline_value::inline_values_in_range;
-use crate::moniker::moniker_at;
-use crate::on_type_format::on_type_format;
 use crate::open_files::{OpenFiles, compute_open_file_diagnostics};
-use crate::organize_imports::organize_imports_action;
 use crate::panic_guard::{guard_async, guard_async_result};
-use crate::phpdoc_action::phpdoc_actions;
 use crate::phpstorm_meta::PhpStormMeta;
-use crate::promote_action::promote_constructor_actions;
-use crate::references::{
-    SymbolKind, find_constructor_references, find_references, find_references_with_target,
-};
-use crate::rename::{prepare_rename, rename, rename_property, rename_variable};
-use crate::selection_range::selection_ranges;
-use crate::semantic_diagnostics::duplicate_declaration_diagnostics;
-use crate::semantic_tokens::{
-    compute_token_delta, legend, semantic_tokens, semantic_tokens_range, token_hash,
-};
-use crate::signature_help::signature_help;
 use crate::symbols::{
     document_symbols, resolve_workspace_symbol, workspace_symbols_from_workspace,
-};
-use crate::type_action::add_return_type_actions;
-use crate::type_definition::{goto_type_definition, goto_type_definition_from_index};
-use crate::type_hierarchy::{
-    prepare_type_hierarchy_from_workspace, subtypes_of_from_workspace, supertypes_of_from_workspace,
 };
 use crate::use_import::{build_use_import_edit, find_fqn_for_class};
 use crate::util::{fqn_short_name, word_at_position};
 use crate::workspace_scan::{scan_workspace, send_refresh_requests};
+
+use crate::actions::extract_action::extract_variable_actions;
+use crate::actions::extract_constant_action::extract_constant_actions;
+use crate::actions::extract_method_action::extract_method_actions;
+use crate::actions::generate_action::{
+    generate_constructor_actions, generate_getters_setters_actions,
+};
+use crate::actions::implement_action::implement_missing_actions;
+use crate::actions::inline_action::inline_variable_actions;
+use crate::actions::phpdoc_action::phpdoc_actions;
+use crate::actions::promote_action::promote_constructor_actions;
+use crate::actions::type_action::add_return_type_actions;
+
+use crate::navigation::call_hierarchy::{incoming_calls, outgoing_calls, prepare_call_hierarchy};
+use crate::navigation::declaration::{goto_declaration, goto_declaration_from_index};
+use crate::navigation::definition::{
+    find_declaration_in_indexes, find_declaration_range, find_method_in_class_hierarchy,
+    goto_definition,
+};
+use crate::navigation::implementation::{
+    find_implementations, find_implementations_from_workspace,
+};
+use crate::navigation::moniker::moniker_at;
+use crate::navigation::references::{
+    SymbolKind, find_constructor_references, find_references, find_references_with_target,
+};
+use crate::navigation::type_definition::{goto_type_definition, goto_type_definition_from_index};
+use crate::navigation::type_hierarchy::{
+    prepare_type_hierarchy_from_workspace, subtypes_of_from_workspace, supertypes_of_from_workspace,
+};
+
+use crate::analysis::code_lens::code_lenses;
+use crate::analysis::diagnostics::{
+    merge_file_diagnostics, parse_document, parse_document_no_diags,
+};
+use crate::analysis::document_highlight::document_highlights;
+use crate::analysis::inlay_hints::inlay_hints;
+use crate::analysis::inline_value::inline_values_in_range;
+use crate::analysis::semantic_diagnostics::duplicate_declaration_diagnostics;
+use crate::analysis::semantic_tokens::{
+    compute_token_delta, legend, semantic_tokens, semantic_tokens_range, token_hash,
+};
+
+use crate::editing::document_link::document_links;
+use crate::editing::folding::folding_ranges;
+use crate::editing::formatting::{format_document, format_range};
+use crate::editing::on_type_format::on_type_format;
+use crate::editing::organize_imports::organize_imports_action;
+use crate::editing::rename::{prepare_rename, rename, rename_property, rename_variable};
+use crate::editing::selection_range::selection_ranges;
+use crate::editing::signature_help::signature_help;
 
 pub struct Backend {
     client: Client,
@@ -231,23 +241,27 @@ impl Backend {
         uri: &Url,
         doc_opt: Option<&Arc<ParsedDoc>>,
         word: &str,
-        kind: Option<crate::references::SymbolKind>,
+        kind: Option<crate::navigation::references::SymbolKind>,
         position: Position,
         constant_owner: Option<String>,
     ) -> Option<String> {
-        use crate::references::SymbolKind;
+        use crate::navigation::references::SymbolKind;
         let doc = doc_opt?;
         let imports = self.file_imports(uri);
         match kind {
             Some(SymbolKind::Function) | Some(SymbolKind::Class) => {
-                let resolved = crate::moniker::resolve_fqn(doc, word, &imports);
+                let resolved = crate::navigation::moniker::resolve_fqn(doc, word, &imports);
                 resolved.contains('\\').then_some(resolved)
             }
             Some(SymbolKind::Method) => {
                 // Owning FQCN: the class/interface/trait/enum that contains the cursor.
                 let short_owner = crate::type_map::enclosing_class_at(doc.source(), doc, position)?;
                 // `resolve_fqn` walks the doc and applies the namespace prefix if any.
-                Some(crate::moniker::resolve_fqn(doc, &short_owner, &imports))
+                Some(crate::navigation::moniker::resolve_fqn(
+                    doc,
+                    &short_owner,
+                    &imports,
+                ))
             }
             Some(SymbolKind::Constant) => {
                 if constant_owner.is_some() {
@@ -256,7 +270,7 @@ impl Backend {
                 } else {
                     // Global/namespace constant: compute FQN so cross-namespace
                     // references like `\Config\DB_HOST` can be found.
-                    let fqn = crate::moniker::resolve_fqn(doc, word, &imports);
+                    let fqn = crate::navigation::moniker::resolve_fqn(doc, word, &imports);
                     fqn.contains('\\').then_some(fqn)
                 }
             }
@@ -279,11 +293,14 @@ impl Backend {
     fn session_method_references(
         &self,
         word: &str,
-        kind: Option<crate::references::SymbolKind>,
+        kind: Option<crate::navigation::references::SymbolKind>,
         target_fqn: Option<&str>,
         owner_short: Option<&str>,
     ) -> Option<Vec<Location>> {
-        if !matches!(kind, Some(crate::references::SymbolKind::Method)) {
+        if !matches!(
+            kind,
+            Some(crate::navigation::references::SymbolKind::Method)
+        ) {
             return None;
         }
         let sym = build_mir_symbol(word, kind, target_fqn)?;
@@ -344,10 +361,10 @@ impl Backend {
 /// - the required FQN piece isn't available.
 fn build_mir_symbol(
     word: &str,
-    kind: Option<crate::references::SymbolKind>,
+    kind: Option<crate::navigation::references::SymbolKind>,
     target_fqn: Option<&str>,
 ) -> Option<mir_analyzer::Name> {
-    use crate::references::SymbolKind;
+    use crate::navigation::references::SymbolKind;
     use std::sync::Arc as StdArc;
     match kind {
         Some(SymbolKind::Function) => {
@@ -381,10 +398,10 @@ fn resolve_reference_symbol(
     word: String,
 ) -> (
     String,
-    Option<crate::references::SymbolKind>,
+    Option<crate::navigation::references::SymbolKind>,
     Option<String>,
 ) {
-    use crate::references::SymbolKind;
+    use crate::navigation::references::SymbolKind;
     let mut constant_owner: Option<String> = None;
     let (word, kind) = if let Some(doc) = doc_opt
         && let Some(prop_name) =
@@ -1149,7 +1166,7 @@ impl LanguageServer for Backend {
             let parse_diags = self
                 .docs
                 .get_doc_salsa(&uri)
-                .map(|doc| crate::diagnostics::diagnostics_from_doc(&doc))
+                .map(|doc| crate::analysis::diagnostics::diagnostics_from_doc(&doc))
                 .unwrap_or_default();
 
             self.set_parse_diagnostics(&uri, parse_diags.clone());
@@ -1660,7 +1677,7 @@ impl LanguageServer for Backend {
             let doc_opt = self.get_doc(uri);
             let target_fqn: Option<String> = doc_opt.as_ref().map(|doc| {
                 let imports = self.file_imports(uri);
-                crate::moniker::resolve_fqn(doc, &word, &imports)
+                crate::navigation::moniker::resolve_fqn(doc, &word, &imports)
             });
             Ok(Some(rename(
                 &word,

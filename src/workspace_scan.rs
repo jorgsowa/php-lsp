@@ -8,7 +8,7 @@ use tower_lsp::lsp_types::request::{
     WorkspaceDiagnosticRefresh,
 };
 
-use crate::diagnostics::parse_document_no_diags;
+use crate::analysis::diagnostics::parse_document_no_diags;
 use crate::document_store::DocumentStore;
 use crate::open_files::OpenFiles;
 
@@ -229,8 +229,8 @@ mod tests {
     use tower_lsp::lsp_types::Url;
 
     use super::scan_workspace;
+    use crate::analysis::diagnostics::parse_document_no_diags;
     use crate::cache::WorkspaceCache;
-    use crate::diagnostics::parse_document_no_diags;
     use crate::document_store::DocumentStore;
     use crate::open_files::OpenFiles;
 
