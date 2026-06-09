@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use arc_swap::ArcSwap;
 
-use dashmap::DashMap;
+use dashmap::{DashMap, DashSet};
 use salsa::Setter;
 use tower_lsp::lsp_types::{SemanticToken, Url};
 
@@ -43,6 +43,11 @@ pub struct DocumentStore {
     /// `Url -> SourceFile` lookup. The `SourceFile` is a salsa-id handle; the
     /// underlying input lives in `host.db` for the lifetime of the database.
     source_files: DashMap<Url, SourceFile>,
+    /// URIs that have been removed but whose `SourceFile` handles are kept alive
+    /// to prevent salsa input orphan amplification. Re-opening a deleted URI
+    /// un-deletes it here and reuses the existing handle rather than calling
+    /// `SourceFile::new()` again.
+    deleted_uris: DashSet<Url>,
     /// G2: lock-free mirror of each `SourceFile`'s last-set text. Lets
     /// `mirror_text` dedup repeated no-op updates (common during workspace
     /// scan and `did_open` for already-indexed files) without taking
@@ -125,6 +130,7 @@ impl DocumentStore {
             token_cache: DashMap::new(),
             host: Mutex::new(host),
             source_files: DashMap::new(),
+            deleted_uris: DashSet::new(),
             text_cache: DashMap::new(),
             parsed_cache: DashMap::new(),
             analysis_cache: DashMap::new(),
@@ -204,6 +210,7 @@ impl DocumentStore {
         // the handle exists.
         if let Some(cached) = self.text_cache.get(uri)
             && **cached == *text
+            && !self.deleted_uris.contains(uri)
             && let Some(sf) = self.source_files.get(uri)
         {
             return *sf;
@@ -221,6 +228,7 @@ impl DocumentStore {
         if let Some(existing) = self.source_files.get(uri) {
             let sf = *existing;
             drop(existing);
+            self.deleted_uris.remove(uri);
             // Slow path: another writer may have raced us; re-check inside
             // the mutex. Salsa's `set_text` unconditionally bumps the
             // revision, so every spurious setter invalidates every
@@ -280,7 +288,11 @@ impl DocumentStore {
     }
 
     /// Return the salsa `SourceFile` handle for a URL, if one exists.
+    /// Returns `None` for URIs that have been removed but not yet re-opened.
     pub fn source_file(&self, uri: &Url) -> Option<SourceFile> {
+        if self.deleted_uris.contains(uri) {
+            return None;
+        }
         self.source_files.get(uri).map(|e| *e)
     }
 
@@ -384,13 +396,11 @@ impl DocumentStore {
 
     pub fn remove(&self, uri: &Url) {
         self.token_cache.remove(uri);
-        // Also drop the Url→SourceFile mapping so the file stops contributing
-        // to the workspace codebase query. Salsa inputs themselves remain
-        // alive (salsa doesn't expose input removal in 0.26), but they're
-        // orphaned — no query keys them anymore, and re-opening the file
-        // allocates a fresh SourceFile with a new FileId. The ~40 bytes per
-        // orphan is acceptable; revisit if workspace-churn profiling hurts.
-        self.source_files.remove(uri);
+        // Mark the URI as deleted but keep the `source_files` entry so the
+        // salsa `SourceFile` handle remains alive. Re-opening the file reuses
+        // the same handle instead of calling `SourceFile::new()` again, which
+        // would create a new orphaned salsa input on every delete-reopen cycle.
+        self.deleted_uris.insert(uri.clone());
         self.workspace_files_dirty.store(true, Ordering::Release);
         // Sync workspace files so the deleted file is removed from the salsa
         // `Workspace::files` list and won't appear in workspace symbols etc.
@@ -521,6 +531,7 @@ impl DocumentStore {
             let host = self.host.lock().unwrap();
             self.source_files
                 .iter()
+                .filter(|e| !self.deleted_uris.contains(e.key()))
                 .map(|e| (e.value().id(host.db()).0, *e.value()))
                 .collect()
         };
@@ -634,7 +645,12 @@ impl DocumentStore {
     pub fn ensure_all_files_ingested(&self) {
         let php_version = self.workspace_php_version();
         let session = self.analysis_session(php_version);
-        let urls: Vec<Url> = self.source_files.iter().map(|e| e.key().clone()).collect();
+        let urls: Vec<Url> = self
+            .source_files
+            .iter()
+            .filter(|e| !self.deleted_uris.contains(e.key()))
+            .map(|e| e.key().clone())
+            .collect();
         for uri in &urls {
             let Some(doc) = self.get_doc_salsa(uri) else {
                 continue;
@@ -684,7 +700,7 @@ impl DocumentStore {
             let Ok(dep_url) = Url::from_file_path(&path) else {
                 continue;
             };
-            if self.source_files.contains_key(&dep_url) {
+            if self.source_files.contains_key(&dep_url) && !self.deleted_uris.contains(&dep_url) {
                 continue;
             }
             if let Ok(text) = std::fs::read_to_string(&path) {
@@ -830,7 +846,12 @@ impl DocumentStore {
     /// Suitable for full-scan operations: find-references, rename,
     /// call_hierarchy, code_lens.
     pub fn all_docs_for_scan(&self) -> Vec<(Url, Arc<ParsedDoc>)> {
-        let urls: Vec<Url> = self.source_files.iter().map(|e| e.key().clone()).collect();
+        let urls: Vec<Url> = self
+            .source_files
+            .iter()
+            .filter(|e| !self.deleted_uris.contains(e.key()))
+            .map(|e| e.key().clone())
+            .collect();
         urls.into_iter()
             .filter_map(|u| self.get_doc_salsa(&u).map(|d| (u, d)))
             .collect()
@@ -885,11 +906,31 @@ mod tests {
     }
 
     #[test]
-    fn remove_drops_salsa_input() {
+    fn remove_hides_file_from_index() {
         let store = DocumentStore::new();
-        store.index(uri("/lib.php"), "<?php");
-        store.remove(&uri("/lib.php"));
-        assert!(store.get_index_salsa(&uri("/lib.php")).is_none());
+        let u = uri("/lib.php");
+        store.index(u.clone(), "<?php");
+        store.remove(&u);
+        assert!(store.get_index_salsa(&u).is_none());
+    }
+
+    #[test]
+    fn remove_and_reopen_reuses_source_file_handle() {
+        let store = DocumentStore::new();
+        let u = uri("/lib.php");
+        store.index(u.clone(), "<?php");
+        let sf_before = store.source_file(&u).unwrap();
+        store.remove(&u);
+        assert!(
+            store.source_file(&u).is_none(),
+            "deleted file should be hidden"
+        );
+        store.mirror_text(&u, "<?php");
+        let sf_after = store.source_file(&u).unwrap();
+        assert!(
+            sf_before == sf_after,
+            "reopen must reuse the same SourceFile handle"
+        );
     }
 
     #[test]

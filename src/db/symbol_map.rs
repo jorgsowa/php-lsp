@@ -26,7 +26,7 @@ crate::impl_arc_update!(SymbolMapArc);
 
 /// Build the symbol map for a file. `no_eq` because `SymbolMapArc` has no
 /// structural equality — invalidation flows from `parsed_doc`.
-#[salsa::tracked(no_eq)]
+#[salsa::tracked(no_eq, lru = 2048)]
 pub fn symbol_map(db: &dyn Database, file: SourceFile) -> SymbolMapArc {
     let doc = parsed_doc(db, file);
     SymbolMapArc(Arc::new(SymbolMap::build(doc.get())))

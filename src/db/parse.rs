@@ -56,7 +56,7 @@ pub fn parsed_doc(db: &dyn Database, file: SourceFile) -> ParsedArc {
 
 /// Parse-error count, derived from `parsed_doc`. Kept as a separate query so
 /// callers that only need the diagnostic count don't clone the parsed AST.
-#[salsa::tracked]
+#[salsa::tracked(lru = 2048)]
 pub fn parse_error_count(db: &dyn Database, file: SourceFile) -> usize {
     parsed_doc(db, file).get().errors.len()
 }
