@@ -19,7 +19,7 @@ pub mod workspace_index;
 mod gc_gate_test;
 
 #[allow(unused_imports)]
-pub use input::{FileText, SourceFile, Workspace, workspace_files};
+pub use input::{FileText, SourceFile, Workspace, find_source_file, workspace_files};
 
 /// Implement the `salsa::Update` trait for Arc-wrapped types using pointer equality.
 /// This reduces boilerplate for types that wrap a single Arc field and should only

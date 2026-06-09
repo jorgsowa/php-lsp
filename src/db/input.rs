@@ -58,3 +58,20 @@ pub fn workspace_files<'db>(db: &'db dyn salsa::Database, ws: Workspace) -> Vec<
         .map(|(uri, ft)| SourceFile::new(db, uri.clone(), *ft))
         .collect()
 }
+
+/// O(log N) lookup of a single `SourceFile` by URI string.
+///
+/// `Workspace::files` is kept sorted by URI (see `DocumentStore::sync_workspace_files`),
+/// so binary search gives the index in O(log N). `workspace_files` outputs in the
+/// same 1:1 order, so the same index addresses both slices.
+pub fn find_source_file<'db>(
+    db: &'db dyn salsa::Database,
+    ws: Workspace,
+    uri_str: &str,
+) -> Option<SourceFile<'db>> {
+    let ws_files = ws.files(db);
+    let idx = ws_files
+        .binary_search_by(|(u, _)| u.as_ref().cmp(uri_str))
+        .ok()?;
+    workspace_files(db, ws).into_iter().nth(idx)
+}

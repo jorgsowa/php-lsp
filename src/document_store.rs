@@ -10,7 +10,7 @@ use tower_lsp::lsp_types::{SemanticToken, Url};
 use crate::ast::ParsedDoc;
 use crate::autoload::Psr4Map;
 use crate::db::analysis::AnalysisHost;
-use crate::db::input::{FileText, Workspace, workspace_files};
+use crate::db::input::{FileText, Workspace, find_source_file};
 use crate::file_index::FileIndex;
 
 /// Upper bound on `parsed_cache` entries. Matched to the `lru = 2048` on
@@ -367,9 +367,8 @@ impl DocumentStore {
         let uri_str: Arc<str> = Arc::from(uri.as_str());
         let ws = self.workspace;
         self.snapshot_query(move |db| {
-            let files = workspace_files(db, ws);
-            let sf = files.iter().find(|sf| sf.uri(db) == uri_str)?;
-            Some(crate::db::index::file_index(db, *sf).get().clone())
+            let sf = find_source_file(db, ws, &uri_str)?;
+            Some(crate::db::index::file_index(db, sf).get().clone())
         })
     }
 
@@ -446,9 +445,8 @@ impl DocumentStore {
         let uri_str: Arc<str> = Arc::from(uri.as_str());
         let ws = self.workspace;
         self.snapshot_query(move |db| {
-            let files = workspace_files(db, ws);
-            let sf = files.iter().find(|sf| sf.uri(db) == uri_str)?;
-            Some(crate::db::index::file_index(db, *sf).0.clone())
+            let sf = find_source_file(db, ws, &uri_str)?;
+            Some(crate::db::index::file_index(db, sf).0.clone())
         })
     }
 
@@ -465,9 +463,8 @@ impl DocumentStore {
         let uri_str: Arc<str> = Arc::from(uri.as_str());
         let ws = self.workspace;
         self.snapshot_query(move |db| {
-            let files = workspace_files(db, ws);
-            let sf = files.iter().find(|sf| sf.uri(db) == uri_str)?;
-            Some(crate::db::symbol_map::symbol_map(db, *sf).0.clone())
+            let sf = find_source_file(db, ws, &uri_str)?;
+            Some(crate::db::symbol_map::symbol_map(db, sf).0.clone())
         })
     }
 
@@ -508,10 +505,9 @@ impl DocumentStore {
         let uri_str: Arc<str> = Arc::from(uri.as_str());
         let ws = self.workspace;
         let (text, doc) = self.snapshot_query(move |db| {
-            let files = workspace_files(db, ws);
-            let sf = files.iter().find(|sf| sf.uri(db) == uri_str)?;
+            let sf = find_source_file(db, ws, &uri_str)?;
             let text = sf.text_input(db).text(db);
-            let doc = crate::db::parse::parsed_doc(db, *sf).0.clone();
+            let doc = crate::db::parse::parsed_doc(db, sf).0.clone();
             Some((text, doc))
         })?;
         self.insert_parsed_cache(uri.clone(), text, doc.clone());
