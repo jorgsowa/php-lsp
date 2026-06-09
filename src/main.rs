@@ -1,67 +1,3 @@
-// Matches the crate-level suppression on `lib.rs`: private items only reached
-// through other modules look dead from either entry point.
-#![allow(dead_code)]
-
-mod ast;
-mod autoload;
-mod backend;
-mod cache;
-mod call_hierarchy;
-mod code_lens;
-mod completion;
-mod config;
-mod db;
-mod declaration;
-mod definition;
-mod diagnostics;
-mod docblock;
-mod document_highlight;
-mod document_link;
-mod document_store;
-mod extract_action;
-mod extract_constant_action;
-mod extract_method_action;
-mod file_index;
-mod file_rename;
-mod folding;
-mod formatting;
-mod generate_action;
-mod hover;
-mod implement_action;
-mod implementation;
-mod inlay_hints;
-mod inline_action;
-mod inline_value;
-mod moniker;
-mod on_type_format;
-mod open_files;
-mod organize_imports;
-mod panic_guard;
-mod phpdoc_action;
-mod phpstorm_meta;
-mod promote_action;
-mod references;
-mod rename;
-mod resolve;
-mod selection_range;
-mod semantic_diagnostics;
-mod semantic_tokens;
-mod signature_help;
-mod stubs;
-mod symbol_map;
-mod symbols;
-#[cfg(test)]
-mod test_utils;
-mod type_action;
-mod type_definition;
-mod type_hierarchy;
-mod type_map;
-mod type_query;
-mod use_import;
-mod util;
-mod walk;
-mod workspace_scan;
-
 #[cfg(not(feature = "dhat-heap"))]
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
@@ -70,7 +6,7 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 #[global_allocator]
 static ALLOC: dhat::Alloc = dhat::Alloc;
 
-use backend::Backend;
+use php_lsp::backend::Backend;
 use tower_lsp::{LspService, Server};
 
 #[tokio::main]

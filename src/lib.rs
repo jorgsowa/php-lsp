@@ -10,11 +10,9 @@ pub mod cache;
 pub mod completion;
 pub mod config;
 pub mod db;
-pub mod definition;
 pub mod docblock;
 pub mod document_store;
 pub mod hover;
-pub mod references;
 pub mod resolve;
 pub mod type_map;
 pub mod type_query;
@@ -27,46 +25,60 @@ pub mod file_index;
 // Public module: per-file memoized symbol map (name → Vec<SymbolEntry>).
 pub mod symbol_map;
 
-// Private modules needed transitively by the public ones.
+// Feature groups.
+pub mod actions;
+pub mod analysis;
+pub mod editing;
+pub mod navigation;
+
+// Infrastructure modules.
 mod autoload;
 pub mod backend;
-pub mod call_hierarchy;
-mod code_lens;
-mod declaration;
-mod diagnostics;
-mod document_highlight;
-mod document_link;
-mod extract_action;
-mod extract_constant_action;
-mod extract_method_action;
 mod file_rename;
-mod folding;
-mod formatting;
-mod generate_action;
-mod implement_action;
-pub mod implementation;
-mod inlay_hints;
-mod inline_action;
-mod inline_value;
-mod moniker;
-mod on_type_format;
 mod open_files;
-mod organize_imports;
 pub mod panic_guard;
-mod phpdoc_action;
 mod phpstorm_meta;
-mod promote_action;
-pub mod rename;
-mod selection_range;
-pub mod semantic_diagnostics;
-mod semantic_tokens;
-mod signature_help;
 mod stubs;
 pub mod symbols;
 #[cfg(test)]
 mod test_utils;
-mod type_action;
-mod type_definition;
-mod type_hierarchy;
 mod use_import;
 mod workspace_scan;
+
+// Re-exports so that existing `crate::X` paths in backend.rs, bench crates, and
+// cross-module references within moved files all continue to resolve unchanged.
+pub use actions::extract_action;
+pub use actions::extract_constant_action;
+pub use actions::extract_method_action;
+pub use actions::generate_action;
+pub use actions::implement_action;
+pub use actions::inline_action;
+pub use actions::phpdoc_action;
+pub use actions::promote_action;
+pub use actions::type_action;
+
+pub use navigation::call_hierarchy;
+pub use navigation::declaration;
+pub use navigation::definition;
+pub use navigation::implementation;
+pub use navigation::moniker;
+pub use navigation::references;
+pub use navigation::type_definition;
+pub use navigation::type_hierarchy;
+
+pub use analysis::code_lens;
+pub use analysis::diagnostics;
+pub use analysis::document_highlight;
+pub use analysis::inlay_hints;
+pub use analysis::inline_value;
+pub use analysis::semantic_diagnostics;
+pub use analysis::semantic_tokens;
+
+pub use editing::document_link;
+pub use editing::folding;
+pub use editing::formatting;
+pub use editing::on_type_format;
+pub use editing::organize_imports;
+pub use editing::rename;
+pub use editing::selection_range;
+pub use editing::signature_help;
