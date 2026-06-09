@@ -27,7 +27,7 @@ crate::impl_arc_update!(SymbolMapArc);
 /// Build the symbol map for a file. `no_eq` because `SymbolMapArc` has no
 /// structural equality — invalidation flows from `parsed_doc`.
 #[salsa::tracked(no_eq, lru = 2048)]
-pub fn symbol_map(db: &dyn Database, file: SourceFile) -> SymbolMapArc {
+pub fn symbol_map(db: &dyn Database, file: SourceFile<'_>) -> SymbolMapArc {
     let doc = parsed_doc(db, file);
     SymbolMapArc(Arc::new(SymbolMap::build(doc.get())))
 }
@@ -41,13 +41,13 @@ mod tests {
 
     use super::*;
     use crate::db::analysis::AnalysisHost;
-    use crate::db::input::{FileId, SourceFile};
+    use crate::db::input::{FileText, Workspace, workspace_files};
 
     static MEMO_CALLS: AtomicUsize = AtomicUsize::new(0);
     static INVAL_CALLS: AtomicUsize = AtomicUsize::new(0);
 
     #[salsa::tracked]
-    fn counted_memo(db: &dyn Database, file: SourceFile) -> usize {
+    fn counted_memo(db: &dyn Database, file: SourceFile<'_>) -> usize {
         MEMO_CALLS.fetch_add(1, Ordering::SeqCst);
         symbol_map(db, file)
             .get()
@@ -56,7 +56,7 @@ mod tests {
     }
 
     #[salsa::tracked]
-    fn counted_inval(db: &dyn Database, file: SourceFile) -> usize {
+    fn counted_inval(db: &dyn Database, file: SourceFile<'_>) -> usize {
         INVAL_CALLS.fetch_add(1, Ordering::SeqCst);
         symbol_map(db, file)
             .get()
@@ -64,20 +64,27 @@ mod tests {
             .is_some() as usize
     }
 
+    fn make_ws(host: &AnalysisHost, uri: &str, ft: FileText) -> Workspace {
+        Workspace::new(
+            host.db(),
+            std::sync::Arc::from([(Arc::<str>::from(uri), ft)]),
+            mir_analyzer::PhpVersion::LATEST,
+        )
+    }
+
     #[test]
     fn symbol_map_builds_and_memoizes() {
         MEMO_CALLS.store(0, Ordering::SeqCst);
-        let mut host = AnalysisHost::new();
-        let file = SourceFile::new(
+        let host = AnalysisHost::new();
+        let ft = FileText::new(
             host.db(),
-            FileId(100),
-            Arc::<str>::from("file:///memo.php"),
             Arc::<str>::from("<?php\nfunction greet(): void {}"),
             None,
         );
-
-        let _ = counted_memo(host.db(), file);
-        let _ = counted_memo(host.db(), file);
+        let ws = make_ws(&host, "file:///memo.php", ft);
+        let files = workspace_files(host.db(), ws);
+        let _ = counted_memo(host.db(), files[0]);
+        let _ = counted_memo(host.db(), files[0]);
         assert_eq!(
             MEMO_CALLS.load(Ordering::SeqCst),
             1,
@@ -89,24 +96,28 @@ mod tests {
     fn symbol_map_invalidates_on_edit() {
         INVAL_CALLS.store(0, Ordering::SeqCst);
         let mut host = AnalysisHost::new();
-        let file = SourceFile::new(
+        let ft = FileText::new(
             host.db(),
-            FileId(101),
-            Arc::<str>::from("file:///inval.php"),
             Arc::<str>::from("<?php\nfunction greet(): void {}"),
             None,
         );
+        let ws = make_ws(&host, "file:///inval.php", ft);
+        {
+            let files = workspace_files(host.db(), ws);
+            let _ = counted_inval(host.db(), files[0]);
+            assert_eq!(INVAL_CALLS.load(Ordering::SeqCst), 1);
+        }
 
-        let _ = counted_inval(host.db(), file);
-        assert_eq!(INVAL_CALLS.load(Ordering::SeqCst), 1);
-
-        file.set_text(host.db_mut())
+        ft.set_text(host.db_mut())
             .to(Arc::<str>::from("<?php\nfunction farewell(): void {}"));
-        let _ = counted_inval(host.db(), file);
-        assert_eq!(
-            INVAL_CALLS.load(Ordering::SeqCst),
-            2,
-            "symbol_map should re-run after source text change"
-        );
+        {
+            let files = workspace_files(host.db(), ws);
+            let _ = counted_inval(host.db(), files[0]);
+            assert_eq!(
+                INVAL_CALLS.load(Ordering::SeqCst),
+                2,
+                "symbol_map should re-run after source text change"
+            );
+        }
     }
 }

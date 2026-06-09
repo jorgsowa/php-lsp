@@ -6,18 +6,8 @@ use mir_analyzer::PhpVersion;
 
 use crate::file_index::FileIndex;
 
-/// Opaque file identifier used as a stable key for a source file across edits.
-/// Backend will map `Url` <-> `FileId`; salsa queries key on `SourceFile` which
-/// wraps this id plus the current text.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct FileId(pub u32);
-
-/// Per-file salsa input. A new revision is observed whenever `text` is set.
-///
-/// `uri` is the LSP document URI as a string (e.g. `file:///path/Foo.php`).
-/// It lives on the input so that tracked queries like `file_refs` can emit
-/// per-symbol location records keyed by URI without needing a separate
-/// FileId→URI map outside salsa.
+/// Immortal per-file text input. One per unique URI ever seen.
+/// Holds the raw source text and the optional K2 on-disk cache seed.
 ///
 /// `cached_index` (Phase K2): when `Some`, holds a pre-computed `FileIndex`
 /// loaded from the on-disk cache. `file_index` checks this field first and
@@ -27,26 +17,44 @@ pub struct FileId(pub u32);
 /// `DocumentStore::seed_cached_index` before the first `file_index` call for
 /// that file.
 #[salsa::input]
-pub struct SourceFile {
-    pub id: FileId,
-    pub uri: Arc<str>,
+pub struct FileText {
     pub text: Arc<str>,
     pub cached_index: Option<Arc<FileIndex>>,
 }
 
-/// Workspace-level input: the set of files that participate in whole-program
-/// analyses (codebase, references). Updated by the backend when files are
-/// discovered (workspace scan, did_open on previously-unseen file) or removed
-/// (watched-files delete).
+/// Tracked struct representing one active workspace file.
+/// Produced by `workspace_files`; salsa GC's it (and all downstream memos)
+/// when the file is removed from the workspace.
+/// Identity fields: uri + text_input (both stable per unique URI).
+#[salsa::tracked]
+pub struct SourceFile<'db> {
+    pub uri: Arc<str>,
+    pub text_input: FileText,
+}
+
+/// Workspace-level input: the set of active (non-deleted) files.
+/// Each entry is (uri_arc, FileText_handle) — sorted by uri for stable ordering.
+/// Only changed when files are added or removed, not on text edits.
 ///
 /// Uses `durability = HIGH` conceptually — the file list changes rarely
 /// (workspace scan, deletions), not on every edit. Salsa's default durability
 /// is LOW; backend can opt into HIGH via `set_files` if churn becomes an issue.
 #[salsa::input]
 pub struct Workspace {
-    pub files: Arc<[SourceFile]>,
+    pub files: Arc<[(Arc<str>, FileText)]>,
     /// Target PHP version for analysis. Changing this invalidates all
     /// `semantic_issues` queries so diagnostics are re-evaluated against the
     /// new version's rules.
     pub php_version: PhpVersion,
+}
+
+/// Produce SourceFile tracked structs for all active workspace files.
+/// Salsa GC removes SourceFile entities (and cascades to parsed_doc, file_index,
+/// symbol_map, parse_error_count) when they are absent from this function's output.
+#[salsa::tracked]
+pub fn workspace_files<'db>(db: &'db dyn salsa::Database, ws: Workspace) -> Vec<SourceFile<'db>> {
+    ws.files(db)
+        .iter()
+        .map(|(uri, ft)| SourceFile::new(db, uri.clone(), *ft))
+        .collect()
 }

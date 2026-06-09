@@ -45,8 +45,8 @@ unsafe impl salsa::Update for IndexArc {
 /// Fast path: if the workspace scan seeded a `cached_index` (loaded from the
 /// on-disk cache), return it directly — no parse, no extract.
 #[salsa::tracked]
-pub fn file_index(db: &dyn Database, file: SourceFile) -> IndexArc {
-    if let Some(cached) = file.cached_index(db) {
+pub fn file_index(db: &dyn Database, file: SourceFile<'_>) -> IndexArc {
+    if let Some(cached) = file.text_input(db).cached_index(db) {
         return IndexArc(cached);
     }
     let doc = parsed_doc(db, file);
@@ -60,7 +60,7 @@ mod tests {
 
     use super::*;
     use crate::db::analysis::AnalysisHost;
-    use crate::db::input::{FileId, SourceFile};
+    use crate::db::input::{FileText, Workspace, workspace_files};
     use crate::db::parse::parsed_doc;
     use salsa::Setter;
 
@@ -69,22 +69,30 @@ mod tests {
     /// Wrap `file_index` with a counter to verify salsa shares the `parsed_doc`
     /// memoization between `file_index` and other downstream queries.
     #[salsa::tracked]
-    fn counted_index_len(db: &dyn Database, file: SourceFile) -> usize {
+    fn counted_index_len(db: &dyn Database, file: SourceFile<'_>) -> usize {
         CALLS.fetch_add(1, Ordering::SeqCst);
         file_index(db, file).get().classes.len()
+    }
+
+    fn make_ws(host: &AnalysisHost, uri: &str, ft: FileText) -> Workspace {
+        Workspace::new(
+            host.db(),
+            std::sync::Arc::from([(Arc::<str>::from(uri), ft)]),
+            mir_analyzer::PhpVersion::LATEST,
+        )
     }
 
     #[test]
     fn file_index_extracts_class() {
         let host = AnalysisHost::new();
-        let file = SourceFile::new(
+        let ft = FileText::new(
             host.db(),
-            FileId(0),
-            Arc::<str>::from("file:///t.php"),
             Arc::<str>::from("<?php\nclass Foo { public function bar() {} }"),
             None,
         );
-        let idx = file_index(host.db(), file);
+        let ws = make_ws(&host, "file:///t.php", ft);
+        let files = workspace_files(host.db(), ws);
+        let idx = file_index(host.db(), files[0]);
         assert_eq!(idx.get().classes.len(), 1);
         assert_eq!(idx.get().classes[0].name, "Foo".into());
     }
@@ -93,55 +101,59 @@ mod tests {
     fn file_index_memoizes_and_shares_parse_with_downstream() {
         CALLS.store(0, Ordering::SeqCst);
         let mut host = AnalysisHost::new();
-        let file = SourceFile::new(
+        let ft = FileText::new(
             host.db(),
-            FileId(1),
-            Arc::<str>::from("file:///t.php"),
             Arc::<str>::from("<?php\nclass A {} class B {}"),
             None,
         );
-
-        // Fetch the parsed doc, then the index — salsa should parse once.
-        let _ = parsed_doc(host.db(), file);
-        let _ = counted_index_len(host.db(), file);
-        let _ = counted_index_len(host.db(), file);
-        assert_eq!(
-            CALLS.load(Ordering::SeqCst),
-            1,
-            "index query should memoize within a revision"
-        );
+        let ws = make_ws(&host, "file:///t.php", ft);
+        {
+            let files = workspace_files(host.db(), ws);
+            // Fetch the parsed doc, then the index — salsa should parse once.
+            let _ = parsed_doc(host.db(), files[0]);
+            let _ = counted_index_len(host.db(), files[0]);
+            let _ = counted_index_len(host.db(), files[0]);
+            assert_eq!(
+                CALLS.load(Ordering::SeqCst),
+                1,
+                "index query should memoize within a revision"
+            );
+        }
 
         // Edit the file — both the parse and the index should re-run.
-        file.set_text(host.db_mut())
+        ft.set_text(host.db_mut())
             .to(Arc::<str>::from("<?php\nclass A {}"));
-        let _ = counted_index_len(host.db(), file);
-        assert_eq!(CALLS.load(Ordering::SeqCst), 2);
-
-        let idx = file_index(host.db(), file);
-        assert_eq!(idx.get().classes.len(), 1);
+        {
+            let files = workspace_files(host.db(), ws);
+            let _ = counted_index_len(host.db(), files[0]);
+            assert_eq!(CALLS.load(Ordering::SeqCst), 2);
+            let idx = file_index(host.db(), files[0]);
+            assert_eq!(idx.get().classes.len(), 1);
+        }
     }
 
     #[test]
     fn body_only_edit_produces_equal_index_arc() {
-        // Changing only the method body must not alter the FileIndex —
-        // verifying this directly is cleaner than counting salsa re-runs and
-        // avoids interference with the shared CALLS counter above.
         let mut host = AnalysisHost::new();
-        let file = SourceFile::new(
+        let ft = FileText::new(
             host.db(),
-            FileId(2),
-            Arc::<str>::from("file:///t.php"),
             Arc::<str>::from("<?php\nclass Foo { public function bar(): int { return 1; } }"),
             None,
         );
-
-        let before = file_index(host.db(), file);
+        let ws = make_ws(&host, "file:///t.php", ft);
+        let before = {
+            let files = workspace_files(host.db(), ws);
+            file_index(host.db(), files[0])
+        };
 
         // Change the method body only — no declaration-level change.
-        file.set_text(host.db_mut()).to(Arc::<str>::from(
+        ft.set_text(host.db_mut()).to(Arc::<str>::from(
             "<?php\nclass Foo { public function bar(): int { return 2; } }",
         ));
-        let after = file_index(host.db(), file);
+        let after = {
+            let files = workspace_files(host.db(), ws);
+            file_index(host.db(), files[0])
+        };
 
         assert_eq!(
             before, after,

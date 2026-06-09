@@ -122,7 +122,7 @@ crate::impl_arc_update!(WorkspaceIndexArc);
 /// callers that already held one are guaranteed pointer-equality here.
 #[salsa::tracked(no_eq)]
 pub fn workspace_index(db: &dyn Database, ws: Workspace) -> WorkspaceIndexArc {
-    let files_input = ws.files(db);
+    let files_input = crate::db::input::workspace_files(db, ws);
 
     let mut files: Vec<(Url, Arc<FileIndex>)> = Vec::with_capacity(files_input.len());
     for sf in files_input.iter() {
@@ -177,26 +177,20 @@ mod tests {
 
     use super::*;
     use crate::db::analysis::AnalysisHost;
-    use crate::db::input::{FileId, SourceFile};
+    use crate::db::input::FileText;
     use salsa::Setter;
 
-    fn new_file(host: &AnalysisHost, id: u32, uri: &str, src: &str) -> SourceFile {
-        SourceFile::new(
-            host.db(),
-            FileId(id),
-            Arc::<str>::from(uri),
-            Arc::<str>::from(src),
-            None,
-        )
+    fn new_file(host: &AnalysisHost, uri: &str, src: &str) -> (Arc<str>, FileText) {
+        let ft = FileText::new(host.db(), Arc::<str>::from(src), None);
+        (Arc::<str>::from(uri), ft)
     }
 
     #[test]
     fn workspace_index_builds_name_and_subtype_maps() {
         let host = AnalysisHost::new();
-        let f1 = new_file(&host, 0, "file:///a.php", "<?php\nclass Animal {}");
+        let f1 = new_file(&host, "file:///a.php", "<?php\nclass Animal {}");
         let f2 = new_file(
             &host,
-            1,
             "file:///b.php",
             "<?php\nclass Dog extends Animal {}\nclass Cat extends Animal {}",
         );
@@ -229,8 +223,12 @@ mod tests {
     #[test]
     fn workspace_index_memoizes_and_invalidates() {
         let mut host = AnalysisHost::new();
-        let f1 = new_file(&host, 0, "file:///a.php", "<?php\nclass A {}");
-        let ws = Workspace::new(host.db(), Arc::from([f1]), mir_analyzer::PhpVersion::LATEST);
+        let (uri_arc, ft1) = new_file(&host, "file:///a.php", "<?php\nclass A {}");
+        let ws = Workspace::new(
+            host.db(),
+            Arc::from([(uri_arc, ft1)]),
+            mir_analyzer::PhpVersion::LATEST,
+        );
 
         let a = workspace_index(host.db(), ws);
         let b = workspace_index(host.db(), ws);
@@ -239,7 +237,7 @@ mod tests {
             "unchanged inputs must return the memoized Arc"
         );
 
-        f1.set_text(host.db_mut())
+        ft1.set_text(host.db_mut())
             .to(Arc::<str>::from("<?php\nclass B {}"));
         let c = workspace_index(host.db(), ws);
         assert!(!Arc::ptr_eq(&a.0, &c.0), "an edit must produce a fresh Arc");
@@ -256,7 +254,7 @@ mod tests {
             "trait Shouting {}\n",
             "class Hi implements Greeter { use Shouting; }\n",
         );
-        let f = new_file(&host, 0, "file:///m.php", src);
+        let f = new_file(&host, "file:///m.php", src);
         let ws = Workspace::new(host.db(), Arc::from([f]), mir_analyzer::PhpVersion::LATEST);
         let wi = workspace_index(host.db(), ws);
         let data = wi.get();
