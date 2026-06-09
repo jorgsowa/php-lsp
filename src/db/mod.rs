@@ -15,6 +15,9 @@ pub mod parse;
 pub mod symbol_map;
 pub mod workspace_index;
 
+#[cfg(test)]
+mod gc_gate_test;
+
 #[allow(unused_imports)]
 pub use input::{FileId, SourceFile, Workspace};
 
