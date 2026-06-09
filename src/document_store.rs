@@ -368,6 +368,11 @@ impl DocumentStore {
     /// Test-only — production code uses the salsa query directly via
     /// `snapshot_query`.
     #[cfg(test)]
+    pub fn source_files_len(&self) -> usize {
+        self.source_files.len()
+    }
+
+    #[cfg(test)]
     pub fn snapshot_query_file_index(&self, uri: &Url) -> Option<crate::file_index::FileIndex> {
         let sf = self.source_files.get(uri).map(|e| *e)?;
         let idx = self.snapshot_query(|db| crate::db::index::file_index(db, sf));
@@ -930,6 +935,29 @@ mod tests {
         assert!(
             sf_before == sf_after,
             "reopen must reuse the same SourceFile handle"
+        );
+    }
+
+    #[test]
+    fn delete_reopen_churn_does_not_amplify_salsa_inputs() {
+        let store = DocumentStore::new();
+        let uris: Vec<Url> = (0..20).map(|i| uri(&format!("/churn/f{i}.php"))).collect();
+        for u in &uris {
+            store.index(u.clone(), "<?php class A {}");
+        }
+        let count_before = store.source_files_len();
+        for _ in 0..10 {
+            for u in &uris {
+                store.remove(u);
+            }
+            for u in &uris {
+                store.index(u.clone(), "<?php class A {}");
+            }
+        }
+        assert_eq!(
+            store.source_files_len(),
+            count_before,
+            "delete-reopen cycles must not create new salsa inputs (L1-B regression guard)"
         );
     }
 
