@@ -701,15 +701,6 @@ dependencies = [
 
 [[package]]
 name = "hashlink"
-version = "0.10.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7382cf6263419f2d8df38c55d7da83da5c18aef87fc7a7fc1fb1e344edfe14c1"
-dependencies = [
- "hashbrown 0.15.5",
-]
-
-[[package]]
-name = "hashlink"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ea0b22561a9c04a7cb1a302c013e0259cd3b4bb619f145b32f72b8b4bcbed230"
@@ -884,15 +875,6 @@ dependencies = [
  "hashbrown 0.17.1",
  "serde",
  "serde_core",
-]
-
-[[package]]
-name = "intrusive-collections"
-version = "0.9.7"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "189d0897e4cbe8c75efedf3502c18c887b05046e59d28404d4d8e46cbc4d1e86"
-dependencies = [
- "memoffset",
 ]
 
 [[package]]
@@ -1123,7 +1105,7 @@ dependencies = [
  "quick-xml",
  "rayon",
  "rustc-hash 2.1.2",
- "salsa 0.27.0",
+ "salsa",
  "serde",
  "serde_json",
  "thiserror",
@@ -1295,7 +1277,7 @@ dependencies = [
  "php-ast",
  "php-rs-parser",
  "rayon",
- "salsa 0.26.2",
+ "salsa",
  "serde",
  "serde_json",
  "serial_test",
@@ -1577,32 +1559,6 @@ checksum = "b39cdef0fa800fc44525c84ccb54a029961a8215f9619753635a9c0d2538d46d"
 
 [[package]]
 name = "salsa"
-version = "0.26.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4612ff789805e65c87e9b38cb749a293212a615af065bed8a2001086801498c3"
-dependencies = [
- "boxcar",
- "crossbeam-queue",
- "crossbeam-utils",
- "hashbrown 0.17.1",
- "hashlink 0.10.0",
- "indexmap",
- "intrusive-collections 0.9.7",
- "inventory",
- "parking_lot",
- "portable-atomic",
- "rayon",
- "rustc-hash 2.1.2",
- "salsa-macro-rules 0.26.2",
- "salsa-macros 0.26.2",
- "smallvec",
- "thin-vec",
- "tracing",
- "typeid",
-]
-
-[[package]]
-name = "salsa"
 version = "0.27.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "adfc1e32b8d1a486e3a45a5480fb5dca7912f49262a8916a67378064da4fe1ab"
@@ -1611,16 +1567,16 @@ dependencies = [
  "crossbeam-queue",
  "crossbeam-utils",
  "hashbrown 0.17.1",
- "hashlink 0.11.0",
+ "hashlink",
  "indexmap",
- "intrusive-collections 0.10.1",
+ "intrusive-collections",
  "inventory",
  "parking_lot",
  "portable-atomic",
  "rayon",
  "rustc-hash 2.1.2",
- "salsa-macro-rules 0.27.0",
- "salsa-macros 0.27.0",
+ "salsa-macro-rules",
+ "salsa-macros",
  "smallvec",
  "thin-vec",
  "tracing",
@@ -1629,27 +1585,9 @@ dependencies = [
 
 [[package]]
 name = "salsa-macro-rules"
-version = "0.26.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "58e354cbac6939b9b09cd9c11fb419a53e64b4a0f755d929f56a09f4cc752e41"
-
-[[package]]
-name = "salsa-macro-rules"
 version = "0.27.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "67dad477a3e3a484a7c2311c1d25160fb270214981be24022de7de8a206a3300"
-
-[[package]]
-name = "salsa-macros"
-version = "0.26.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3067861075c2b80608f84ad49fb88f2c7610b94cdf8b4201e79ddee87f8980c8"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn",
- "synstructure",
-]
 
 [[package]]
 name = "salsa-macros"
