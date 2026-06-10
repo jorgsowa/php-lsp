@@ -104,6 +104,7 @@ fn issue_passes_filter(issue: &mir_issues::Issue, cfg: &DiagnosticsConfig) -> bo
         | IssueKind::DeprecatedMethod { .. }
         | IssueKind::DeprecatedClass { .. } => cfg.deprecated_calls,
         IssueKind::CircularInheritance { .. } => cfg.type_errors,
+        IssueKind::DuplicateClass { .. } => cfg.duplicate_declarations,
         // mir 0.22 unused-symbol warnings. Off by default; opt in via
         // `diagnostics.unusedSymbols` in initializationOptions.
         IssueKind::UnusedVariable { .. }
@@ -143,7 +144,6 @@ fn collect_duplicate_decls(
 
     for stmt in stmts {
         let name_and_span: Option<(String, u32)> = match &stmt.kind {
-            StmtKind::Class(c) => c.name.as_ref().map(|n| (n.to_string(), stmt.span.start)),
             StmtKind::Interface(i) => Some((i.name.to_string(), stmt.span.start)),
             StmtKind::Trait(t) => Some((t.name.to_string(), stmt.span.start)),
             StmtKind::Enum(e) => Some((e.name.to_string(), stmt.span.start)),
@@ -247,7 +247,7 @@ fn uses_codebase_location(kind: &mir_issues::IssueKind) -> bool {
     matches!(
         kind,
         IssueKind::CircularInheritance { .. }
-            | IssueKind::FinalClassExtended { .. }
+            | IssueKind::InvalidExtendClass { .. }
             | IssueKind::UnimplementedAbstractMethod { .. }
             | IssueKind::UnimplementedInterfaceMethod { .. }
             | IssueKind::FinalMethodOverridden { .. }
@@ -299,45 +299,6 @@ fn to_lsp_diagnostic(issue: mir_issues::Issue) -> Diagnostic {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn duplicate_class_emits_warning() {
-        let src = "<?php\nclass Foo {}\nclass Foo {}";
-        let doc = ParsedDoc::parse(src.to_string());
-        let diags = duplicate_declaration_diagnostics(src, &doc, &DiagnosticsConfig::all_enabled());
-        assert_eq!(
-            diags.len(),
-            1,
-            "expected exactly 1 duplicate warning, got: {:?}",
-            diags
-        );
-        assert_eq!(diags[0].severity, Some(DiagnosticSeverity::WARNING));
-        assert!(
-            diags[0].message.contains("Foo"),
-            "message should mention 'Foo'"
-        );
-    }
-
-    #[test]
-    fn no_duplicate_for_unique_declarations() {
-        let src = "<?php\nclass Foo {}\nclass Bar {}";
-        let doc = ParsedDoc::parse(src.to_string());
-        let diags = duplicate_declaration_diagnostics(src, &doc, &DiagnosticsConfig::all_enabled());
-        assert!(diags.is_empty());
-    }
-
-    #[test]
-    fn namespace_scoped_duplicate_not_flagged() {
-        // Two classes named `Foo` in different namespaces — should produce zero diagnostics.
-        let src = "<?php\nnamespace App\\A {\nclass Foo {}\n}\nnamespace App\\B {\nclass Foo {}\n}";
-        let doc = ParsedDoc::parse(src.to_string());
-        let diags = duplicate_declaration_diagnostics(src, &doc, &DiagnosticsConfig::all_enabled());
-        assert!(
-            diags.is_empty(),
-            "classes with same name in different namespaces should not be flagged, got: {:?}",
-            diags
-        );
-    }
 
     #[test]
     fn duplicate_interface_declaration() {
@@ -401,64 +362,6 @@ mod tests {
     }
 
     #[test]
-    fn unbraced_namespace_classes_with_same_name_not_flagged() {
-        // Two classes named `Foo` in different unbraced namespaces — should not be a duplicate.
-        let src = "<?php\nnamespace App\\A;\nclass Foo {}\nnamespace App\\B;\nclass Foo {}";
-        let doc = ParsedDoc::parse(src.to_string());
-        let diags = duplicate_declaration_diagnostics(src, &doc, &DiagnosticsConfig::all_enabled());
-        assert!(
-            diags.is_empty(),
-            "classes with same name in different unbraced namespaces should not be flagged, got: {:?}",
-            diags
-        );
-    }
-
-    #[test]
-    fn unbraced_namespace_duplicate_in_same_namespace_is_flagged() {
-        // Two classes named `Foo` in the same unbraced namespace — should produce one warning.
-        let src = "<?php\nnamespace App;\nclass Foo {}\nclass Foo {}";
-        let doc = ParsedDoc::parse(src.to_string());
-        let diags = duplicate_declaration_diagnostics(src, &doc, &DiagnosticsConfig::all_enabled());
-        assert_eq!(
-            diags.len(),
-            1,
-            "expected 1 duplicate-declaration diagnostic, got: {:?}",
-            diags
-        );
-        assert!(diags[0].message.contains("Foo"));
-    }
-
-    #[test]
-    fn duplicate_declaration_range_spans_full_name() {
-        // Duplicate declaration diagnostic range should span the entire name, not just first character.
-        let src = "<?php\nclass Foo {}\nclass Foo {}";
-        let doc = ParsedDoc::parse(src.to_string());
-        let diags = duplicate_declaration_diagnostics(src, &doc, &DiagnosticsConfig::all_enabled());
-        assert_eq!(diags.len(), 1, "expected exactly 1 duplicate diagnostic");
-
-        let d = &diags[0];
-        let range_len = d.range.end.character - d.range.start.character;
-        let expected_len = "Foo".chars().map(|c| c.len_utf16() as u32).sum::<u32>();
-        assert_eq!(
-            range_len, expected_len,
-            "range length {} should match 'Foo' length {}",
-            range_len, expected_len
-        );
-
-        // Verify the range actually points to "Foo", not "class"
-        // "Foo" appears at character position 6 on line 2: "class Foo {}"
-        //                                          012345678...
-        assert_eq!(
-            d.range.start.character, 6,
-            "range should start at 'F' in 'Foo'"
-        );
-        assert_eq!(
-            d.range.end.character, 9,
-            "range should end after 'o' in 'Foo'"
-        );
-    }
-
-    #[test]
     fn duplicate_function_declaration_range_spans_name() {
         // Function duplicate should also span the full function name.
         let src = "<?php\nfunction doWork() {}\nfunction doWork() {}";
@@ -515,26 +418,6 @@ mod tests {
         assert_eq!(
             d.range.end.character, 16,
             "range should end after 'r' in 'Logger'"
-        );
-    }
-
-    #[test]
-    fn duplicate_declaration_range_on_correct_line() {
-        // Diagnostic range should be on the correct line.
-        let src = "<?php\nclass Foo {}\n\nclass Foo {}";
-        let doc = ParsedDoc::parse(src.to_string());
-        let diags = duplicate_declaration_diagnostics(src, &doc, &DiagnosticsConfig::all_enabled());
-        assert_eq!(diags.len(), 1, "expected exactly 1 duplicate diagnostic");
-
-        let d = &diags[0];
-        // The second "class Foo" is on line 3 (0-indexed: line 3)
-        assert_eq!(
-            d.range.start.line, 3,
-            "duplicate should be reported on line 3 (0-indexed)"
-        );
-        assert_eq!(
-            d.range.end.line, 3,
-            "range end should be on same line as start"
         );
     }
 

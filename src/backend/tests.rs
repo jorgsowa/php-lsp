@@ -2,7 +2,7 @@ use super::helpers::*;
 use super::*;
 use crate::ast::ParsedDoc;
 use crate::config::{DiagnosticsConfig, FeaturesConfig, MAX_INDEXED_FILES};
-use crate::use_import::find_use_insert_line;
+use crate::use_import::{build_use_import_edit, find_use_insert_line};
 use tower_lsp::lsp_types::{Position, Range, Url};
 
 // DiagnosticsConfig::from_value tests

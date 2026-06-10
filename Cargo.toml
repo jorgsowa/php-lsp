@@ -40,12 +40,12 @@ dhat = { version = "0.3", optional = true }
 mimalloc = { version = "0.1", default-features = false }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
-mir-analyzer = "=0.33.0"
-mir-issues = "=0.33.0"
-mir-codebase = "=0.33.0"
-mir-types = "=0.33.0"
-php-rs-parser = "0.16"
-php-ast = "0.16"
+mir-analyzer = { git = "https://github.com/jorgsowa/mir", tag = "v0.35.1" }
+mir-issues = { git = "https://github.com/jorgsowa/mir", tag = "v0.35.1" }
+mir-codebase = { git = "https://github.com/jorgsowa/mir", tag = "v0.35.1" }
+mir-types = { git = "https://github.com/jorgsowa/mir", tag = "v0.35.1" }
+php-rs-parser = "0.17"
+php-ast = "0.17"
 bumpalo = { version = "3", features = ["collections"] }
 tower-lsp = "0.20"
 tokio = { version = "1", features = ["full"] }

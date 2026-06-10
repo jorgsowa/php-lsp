@@ -541,18 +541,44 @@ function _wrap(): void {
     .await;
 }
 
-/// Duplicate class declaration in the same file should produce a warning.
+/// Duplicate class declaration in the same file should produce an error.
+/// mir emits DuplicateClass over the whole declaration span (col 0–12), which
+/// the `// ^^^` DSL cannot represent (minimum addressable col is 2), so we
+/// check the raw notification instead.
 #[tokio::test]
 async fn duplicate_class_declaration_emits_warning() {
     let mut s = TestServer::new().await;
-    s.check_diagnostics(
-        r#"<?php
+    let opened = s
+        .open_fixture(
+            r#"<?php
 class Foo {}
 class Foo {}
-//    ^^^ warning: Duplicate declaration
 "#,
-    )
-    .await;
+        )
+        .await;
+    let diags = opened.diagnostics_for("main.php");
+    let items = diags["params"]["diagnostics"].as_array().unwrap();
+    let dup = items
+        .iter()
+        .find(|d| {
+            d["code"].as_str() == Some("DuplicateClass")
+                && d["range"]["start"]["line"].as_u64() == Some(2)
+                && d["severity"].as_u64() == Some(1)
+        })
+        .unwrap_or_else(|| {
+            panic!(
+                "expected a DuplicateClass error on line 2, got: {:#?}",
+                diags["params"]["diagnostics"]
+            )
+        });
+    assert!(
+        dup["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("has already been defined"),
+        "unexpected message: {}",
+        dup["message"]
+    );
 }
 
 /// Duplicate interface declaration in the same file should produce a warning.
@@ -603,7 +629,6 @@ class Foo {}
 /// The mir analyzer currently reports `float|int` for the return type, causing a
 /// false-positive type-mismatch when the result is passed to an `int` parameter.
 /// Tracked in the mir analyzer; this test documents the expected clean state.
-#[ignore = "mir bug: abs(int) return type inferred as float|int instead of int"]
 #[tokio::test]
 async fn abs_of_int_arg_not_flagged_as_float() {
     let mut s = TestServer::new().await;

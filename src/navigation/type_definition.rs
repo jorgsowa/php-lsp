@@ -33,22 +33,40 @@ fn resolve_type_at_cursor(
             // so no `resolve_fqn` is needed. The query offset is the `$` (word
             // range start), which lands strictly inside mir's end-exclusive
             // variable span.
-            let from_mir = analysis.and_then(|a| {
-                let offset = word_range_at(source, position)
-                    .map(|r| doc.view().byte_of_position(r.start))
-                    .unwrap_or_else(|| doc.view().byte_of_position(position));
-                let names =
-                    crate::type_query::class_names(crate::type_query::type_at_offset(a, offset)?);
-                // Join named classes with `|`; the downstream `type_candidates`
-                // splits unions back apart for the declaration search.
-                (!names.is_empty()).then(|| names.join("|"))
+            // For parameters whose declared type hint is a late-binding keyword
+            // (parent/self/static), resolve via the AST directly. mir 0.35.1
+            // records parameter declaration symbols but resolves `parent` to the
+            // enclosing class rather than its parent; the AST path handles these
+            // keywords correctly.
+            let bare_word = word.trim_start_matches('$');
+            let hint = param_type_for(&doc.program().stmts, bare_word)
+                .or_else(|| param_type_for(&doc.program().stmts, &word));
+            let is_late_binding = hint.as_deref().is_some_and(|h| {
+                h.split(['|', '&']).any(|p| {
+                    matches!(
+                        p.trim().trim_start_matches('?'),
+                        "parent" | "self" | "static"
+                    )
+                })
             });
-            match from_mir {
-                Some(joined) => joined,
-                // Fallback: parameter *declarations* record no mir symbol (mir
-                // records variable *uses* in bodies, not binding sites). Resolve
-                // the declared hint straight from the AST.
-                None => param_decl_type(source, doc, &imports, &word, position)?,
+            if is_late_binding {
+                param_decl_type(source, doc, &imports, &word, position)?
+            } else {
+                let from_mir = analysis.and_then(|a| {
+                    let offset = word_range_at(source, position)
+                        .map(|r| doc.view().byte_of_position(r.start))
+                        .unwrap_or_else(|| doc.view().byte_of_position(position));
+                    let names = crate::type_query::class_names(crate::type_query::type_at_offset(
+                        a, offset,
+                    )?);
+                    // Join named classes with `|`; the downstream `type_candidates`
+                    // splits unions back apart for the declaration search.
+                    (!names.is_empty()).then(|| names.join("|"))
+                });
+                match from_mir {
+                    Some(joined) => joined,
+                    None => param_decl_type(source, doc, &imports, &word, position)?,
+                }
             }
         } else {
             match param_type_for(&doc.program().stmts, &word) {
@@ -181,43 +199,6 @@ fn type_candidates(type_hint: &str) -> Vec<&str> {
         .collect()
 }
 
-/// Resolve the declared type of a parameter named `word` at `position`, to a
-/// `|`-joined string of FQNs that the downstream `type_candidates` search can
-/// consume. mir records variable *uses* in bodies but not binding sites, so
-/// this AST fallback handles parameter declarations.
-///
-/// Reads the type hint, strips nullable `?`, splits unions/intersections,
-/// resolves `self`/`static`/`parent` against the enclosing class, and
-/// qualifies the rest through the file's namespace + `use` imports.
-fn param_decl_type(
-    source: &str,
-    doc: &ParsedDoc,
-    imports: &HashMap<String, String>,
-    word: &str,
-    position: Position,
-) -> Option<String> {
-    // Param names in the AST are stored without the leading `$`; accept both.
-    let raw = param_type_for(&doc.program().stmts, word)
-        .or_else(|| param_type_for(&doc.program().stmts, word.trim_start_matches('$')))?;
-    let bare = raw.trim_start_matches('?');
-    let resolved: Vec<String> = bare
-        .split(['|', '&'])
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(|cand| match cand {
-            "self" | "static" => crate::type_map::enclosing_class_at(source, doc, position)
-                .map(|c| resolve_fqn(doc, &c, imports))
-                .unwrap_or_else(|| cand.to_string()),
-            "parent" => crate::type_map::enclosing_class_at(source, doc, position)
-                .and_then(|c| crate::type_map::parent_class_name(doc, &c))
-                .map(|p| resolve_fqn(doc, &p, imports))
-                .unwrap_or_else(|| cand.to_string()),
-            other => resolve_fqn(doc, other, imports),
-        })
-        .collect();
-    (!resolved.is_empty()).then(|| resolved.join("|"))
-}
-
 /// Find the innermost method-call expression whose span contains `cursor` and
 /// return the byte offset of its method-name identifier — a position mir
 /// recorded a `ResolvedSymbol` for (the call's resolved receiver/return type).
@@ -283,6 +264,43 @@ fn span_contains_cursor(span: php_ast::Span, cursor: u32) -> bool {
     // Inclusive end so a cursor in the gap after a closing paren still matches
     // the parent call (e.g. `$q->where()$0->next()`).
     cursor >= span.start && cursor <= span.end
+}
+
+/// Resolve the declared type of a parameter named `word` at `position`, to a
+/// `|`-joined string of FQNs that the downstream `type_candidates` search can
+/// consume. Used when the mir symbol path is skipped (e.g. late-binding type
+/// hints: `parent`/`self`/`static`) or when mir returns no symbol.
+///
+/// Reads the type hint, strips nullable `?`, splits unions/intersections,
+/// resolves `self`/`static`/`parent` against the enclosing class, and
+/// qualifies the rest through the file's namespace + `use` imports.
+fn param_decl_type(
+    source: &str,
+    doc: &ParsedDoc,
+    imports: &HashMap<String, String>,
+    word: &str,
+    position: Position,
+) -> Option<String> {
+    // Param names in the AST are stored without the leading `$`; accept both.
+    let raw = param_type_for(&doc.program().stmts, word)
+        .or_else(|| param_type_for(&doc.program().stmts, word.trim_start_matches('$')))?;
+    let bare = raw.trim_start_matches('?');
+    let resolved: Vec<String> = bare
+        .split(['|', '&'])
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|cand| match cand {
+            "self" | "static" => crate::type_map::enclosing_class_at(source, doc, position)
+                .map(|c| resolve_fqn(doc, &c, imports))
+                .unwrap_or_else(|| cand.to_string()),
+            "parent" => crate::type_map::enclosing_class_at(source, doc, position)
+                .and_then(|c| crate::type_map::parent_class_name(doc, &c))
+                .map(|p| resolve_fqn(doc, &p, imports))
+                .unwrap_or_else(|| cand.to_string()),
+            other => resolve_fqn(doc, other, imports),
+        })
+        .collect();
+    (!resolved.is_empty()).then(|| resolved.join("|"))
 }
 
 /// Look up the declared type hint for a parameter named `word` in any function/method.
