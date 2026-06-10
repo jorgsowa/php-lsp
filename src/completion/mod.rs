@@ -211,6 +211,24 @@ pub struct CompletionCtx<'a> {
     /// (`$obj->`, match subjects) are read from its `symbol_at`; `None` in unit
     /// tests that don't supply it.
     pub analysis: Option<&'a mir_analyzer::FileAnalysis>,
+    /// Optional cross-request cache for the whole-doc [`TypeMap`]. The backend
+    /// wires this to `DocumentStore::cached_type_map` so the receiver-type
+    /// paths (`->`, `::`, match arms) reuse one map per document revision
+    /// instead of walking the full AST on every completion request. `None`
+    /// (unit tests) builds the map fresh.
+    pub type_map: Option<&'a dyn Fn() -> Arc<TypeMap>>,
+}
+
+/// Whole-doc [`TypeMap`] through the ctx cache when wired, else a fresh build.
+fn whole_doc_type_map(
+    ctx: &CompletionCtx<'_>,
+    doc: &ParsedDoc,
+    meta: Option<&PhpStormMeta>,
+) -> Arc<TypeMap> {
+    match ctx.type_map {
+        Some(get) => get(),
+        None => Arc::new(TypeMap::from_doc_with_meta(doc, meta)),
+    }
 }
 
 /// Returns `true` when `cursor_byte` falls inside a PHP string literal or
@@ -344,7 +362,7 @@ pub fn filtered_completions_at(
         Some(">") => {
             // Arrow: $obj->  or  $this->
             if let (Some(src), Some(pos)) = (source, position) {
-                let type_map = TypeMap::from_doc_with_meta(doc, meta);
+                let type_map = whole_doc_type_map(ctx, doc, meta);
                 if let Some(class_names) =
                     resolve_receiver_class(src, doc, pos, ctx.analysis, &type_map)
                 {
@@ -471,7 +489,7 @@ pub fn filtered_completions_at(
                     // `arrow_stripped` ends with the receiver var; its last byte
                     // lands inside the var's end-exclusive mir span.
                     let var_offset = line_byte_offset(doc, pos.line, arrow_stripped.len());
-                    let type_map = TypeMap::from_doc_with_meta(doc, meta);
+                    let type_map = whole_doc_type_map(ctx, doc, meta);
                     let class_name = if receiver == "$this" {
                         enclosing_class_at(src, doc, pos)
                             .or_else(|| ctx.analysis.and_then(|a| receiver_class_at(a, var_offset)))
@@ -627,8 +645,14 @@ pub fn filtered_completions_at(
 
             // Feature 7: match arm completions
             if let (Some(src), Some(pos)) = (source, position)
-                && let Some(match_items) =
-                    match_arm_completions(src, doc, other_docs, pos, meta, ctx.analysis)
+                && let Some(match_items) = match_arm_completions(
+                    src,
+                    doc,
+                    other_docs,
+                    pos,
+                    &|| whole_doc_type_map(ctx, doc, meta),
+                    ctx.analysis,
+                )
                 && !match_items.is_empty()
             {
                 let mut all = match_items;
@@ -824,13 +848,13 @@ fn match_arm_completions(
     doc: &ParsedDoc,
     other_docs: &[Arc<ParsedDoc>],
     position: Position,
-    meta: Option<&PhpStormMeta>,
+    get_type_map: &dyn Fn() -> Arc<TypeMap>,
     analysis: Option<&mir_analyzer::FileAnalysis>,
 ) -> Option<Vec<CompletionItem>> {
     let start_line = position.line as usize;
     let end_line = start_line.saturating_sub(5);
     let all_lines: Vec<&str> = source.lines().collect();
-    let type_map_cell: std::cell::OnceCell<TypeMap> = std::cell::OnceCell::new();
+    let type_map_cell: std::cell::OnceCell<Arc<TypeMap>> = std::cell::OnceCell::new();
     for line_idx in (end_line..=start_line).rev() {
         let line = all_lines.get(line_idx).copied()?;
         if let Some(cap) = extract_match_subject(line) {
@@ -845,8 +869,7 @@ fn match_arm_completions(
                 analysis
                     .and_then(|a| receiver_class_at(a, var_offset))
                     .or_else(|| {
-                        let type_map =
-                            type_map_cell.get_or_init(|| TypeMap::from_doc_with_meta(doc, meta));
+                        let type_map = type_map_cell.get_or_init(get_type_map);
                         type_map.get(&format!("${cap}")).map(str::to_owned)
                     })?
             };

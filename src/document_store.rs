@@ -86,6 +86,13 @@ pub struct DocumentStore {
     /// position queries). Bounded by the set of analyzed files (open files plus
     /// their open dependents); explicitly evicted in [`DocumentStore::remove`].
     analysis_cache: DashMap<Url, (Arc<str>, Arc<mir_analyzer::FileAnalysis>)>,
+    /// Cross-request cache for the whole-doc completion [`crate::type_map::TypeMap`]
+    /// (`TypeMap::from_doc_with_meta`). Unlike `analysis_cache`, validity is
+    /// purely per-file (the map reads only this doc plus PHPStorm meta), so the
+    /// entry needs no cross-file invalidation: it is fresh when its captured
+    /// source `Arc` is pointer-equal to the doc's current `source_arc()` and
+    /// the meta pointer is unchanged, self-evicting on any content/meta edit.
+    type_map_cache: DashMap<Url, (Arc<str>, usize, Arc<crate::type_map::TypeMap>)>,
     /// Set to `true` when the set of tracked files changes (add or remove).
     /// `sync_workspace_files` skips the collect/sort/compare path when this
     /// is `false`, avoiding a mutex acquisition on every LSP request.
@@ -131,6 +138,7 @@ impl DocumentStore {
             text_cache: DashMap::new(),
             parsed_cache: DashMap::new(),
             analysis_cache: DashMap::new(),
+            type_map_cache: DashMap::new(),
             workspace_files_dirty: AtomicBool::new(true),
             workspace,
             psr4: Arc::new(ArcSwap::from_pointee(Psr4Map::empty())),
@@ -406,6 +414,7 @@ impl DocumentStore {
         self.text_cache.remove(uri);
         self.parsed_cache.remove(uri);
         self.analysis_cache.remove(uri);
+        self.type_map_cache.remove(uri);
         // Also evict the file from the `AnalysisSession`'s internal state so
         // workspace symbol queries don't keep returning the deleted file's
         // declarations. Cheap when the session hasn't ingested this file.
@@ -777,6 +786,32 @@ impl DocumentStore {
     /// Cache hit when the entry's captured source `Arc` is pointer-equal to the
     /// file's current `doc.source_arc()`. A miss recomputes and overwrites, so
     /// the entry self-evicts on any content edit.
+    /// Build (or reuse) the whole-doc completion [`crate::type_map::TypeMap`]
+    /// for `uri`. Cache hit when the entry's captured source `Arc` is
+    /// pointer-equal to `doc.source_arc()` and the PHPStorm-meta pointer is
+    /// unchanged (meta lives behind `ArcSwap`, so its address is stable until
+    /// `.phpstorm.meta.php` is reloaded). A miss rebuilds and overwrites, so
+    /// the entry self-evicts on any content edit.
+    pub fn cached_type_map(
+        &self,
+        uri: &Url,
+        doc: &crate::ast::ParsedDoc,
+        meta: Option<&crate::phpstorm_meta::PhpStormMeta>,
+    ) -> Arc<crate::type_map::TypeMap> {
+        let source = doc.source_arc();
+        let meta_key = meta.map_or(0usize, |m| std::ptr::from_ref(m) as usize);
+        if let Some(entry) = self.type_map_cache.get(uri)
+            && Arc::ptr_eq(&entry.0, &source)
+            && entry.1 == meta_key
+        {
+            return Arc::clone(&entry.2);
+        }
+        let map = Arc::new(crate::type_map::TypeMap::from_doc_with_meta(doc, meta));
+        self.type_map_cache
+            .insert(uri.clone(), (source, meta_key, Arc::clone(&map)));
+        map
+    }
+
     /// Cache-hit-only variant of [`Self::cached_analysis`]: returns the cached
     /// analysis when the entry is current for the file's text, never computes.
     /// Lets async handlers take the warm path synchronously and reserve

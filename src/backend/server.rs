@@ -918,6 +918,14 @@ impl LanguageServer for Backend {
                 docs_for_lookup.get_doc_salsa(uri)
             };
             let analysis = self.cached_analysis_async(uri).await;
+            // Cross-request TypeMap cache: rebuilt only when the document text
+            // (or PHPStorm meta) changes, instead of one full AST walk per
+            // completion request.
+            let docs_for_tm = Arc::clone(&self.docs);
+            let doc_for_tm = Arc::clone(&doc);
+            let uri_for_tm = uri.clone();
+            let get_type_map =
+                move || docs_for_tm.cached_type_map(&uri_for_tm, &doc_for_tm, meta_opt);
             let ctx = CompletionCtx {
                 source: Some(&source),
                 position: Some(position),
@@ -926,6 +934,7 @@ impl LanguageServer for Backend {
                 file_imports: Some(&imports),
                 find_class_doc: Some(&find_class_doc_fn),
                 analysis: analysis.as_deref(),
+                type_map: Some(&get_type_map),
             };
             Ok(Some(CompletionResponse::Array(filtered_completions_at(
                 &doc,
