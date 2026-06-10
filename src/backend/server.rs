@@ -1613,8 +1613,24 @@ impl LanguageServer for Backend {
         let position = params.text_document_position_params.position;
         let source = self.get_open_text(uri).unwrap_or_default();
         let imports = self.file_imports(uri);
-        let word = crate::util::word_at_position(&source, position).unwrap_or_default();
-        let fqn = imports.get(&word).map(|s| s.as_str());
+        let raw_word = crate::util::word_at_position(&source, position).unwrap_or_default();
+        // `word_at_position` includes `\` as a word character, so the cursor on
+        // a use-statement import (`use A\B\Foo`) returns the full qualified name.
+        // Split to recover the short name and treat the rest as the FQN so the
+        // workspace index lookup (keyed by short name) still finds subtypes.
+        let (word, fqn_owned): (String, Option<String>) = if raw_word.contains('\\') {
+            let short = raw_word
+                .rsplit('\\')
+                .next()
+                .unwrap_or(&raw_word)
+                .to_string();
+            let full = raw_word.trim_start_matches('\\').to_string();
+            (short, Some(full))
+        } else {
+            let fqn = imports.get(&raw_word).cloned();
+            (raw_word, fqn)
+        };
+        let fqn = fqn_owned.as_deref();
         // First pass: open-file ParsedDocs give accurate character positions.
         let open_docs = self.docs.docs_for(&self.open_urls());
         let mut locs = find_implementations(&word, fqn, &open_docs);

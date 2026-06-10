@@ -298,20 +298,53 @@ mod hover {
 mod implementation {
     use super::*;
 
+    /// `User implements UserInterface` — cursor on the `implements` clause
+    /// (occurrence=1) should return at least `App\Entity\User`.
     #[tokio::test]
-    #[ignore = "returns empty impls even with indexVendor=true (verified); needs investigation — either the cursor position (occurrence=0 of 'UserInterface' lands in the use statement) is wrong, or find-implementations doesn't traverse `implements` clauses for vendor interfaces"]
     async fn implementations_of_user_interface_include_app_user() {
         let mut server = TestServer::with_fixture("symfony-demo").await;
         server.wait_for_index_ready().await;
 
         let path = "src/Entity/User.php";
+        // occurrence=1: the `implements UserInterface` clause, not the `use` import.
+        let (text, line, ch) = server.locate(path, "UserInterface", 1);
+        server.open(path, &text).await;
+
+        let resp = server.implementation(path, line, ch).await;
+        assert!(resp["error"].is_null());
+        let impls = resp["result"].as_array().cloned().unwrap_or_default();
+        assert!(
+            !impls.is_empty(),
+            "expected App\\Entity\\User in impls, got: {impls:?}"
+        );
+        let found = impls.iter().any(|loc| {
+            loc["uri"]
+                .as_str()
+                .map(|u| u.ends_with("src/Entity/User.php"))
+                .unwrap_or(false)
+        });
+        assert!(found, "App\\Entity\\User not in impls: {impls:?}");
+    }
+
+    /// Cursor on the `use` import line (`use A\B\Foo`) must also work — the
+    /// handler splits on `\` to recover the short name for the index lookup.
+    #[tokio::test]
+    async fn implementations_via_use_statement_cursor() {
+        let mut server = TestServer::with_fixture("symfony-demo").await;
+        server.wait_for_index_ready().await;
+
+        let path = "src/Entity/User.php";
+        // occurrence=0: the `use …\UserInterface` line.
         let (text, line, ch) = server.locate(path, "UserInterface", 0);
         server.open(path, &text).await;
 
         let resp = server.implementation(path, line, ch).await;
         assert!(resp["error"].is_null());
         let impls = resp["result"].as_array().cloned().unwrap_or_default();
-        assert!(!impls.is_empty());
+        assert!(
+            !impls.is_empty(),
+            "cursor on use-statement should find implementations, got empty"
+        );
     }
 }
 
