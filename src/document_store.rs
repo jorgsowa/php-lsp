@@ -777,6 +777,18 @@ impl DocumentStore {
     /// Cache hit when the entry's captured source `Arc` is pointer-equal to the
     /// file's current `doc.source_arc()`. A miss recomputes and overwrites, so
     /// the entry self-evicts on any content edit.
+    /// Cache-hit-only variant of [`Self::cached_analysis`]: returns the cached
+    /// analysis when the entry is current for the file's text, never computes.
+    /// Lets async handlers take the warm path synchronously and reserve
+    /// `spawn_blocking` for the cold path (mir Pass 1 + Pass 2 can take
+    /// hundreds of ms on large files).
+    pub fn cached_analysis_if_fresh(&self, uri: &Url) -> Option<Arc<mir_analyzer::FileAnalysis>> {
+        let doc = self.get_doc_salsa(uri)?;
+        let source = doc.source_arc();
+        let entry = self.analysis_cache.get(uri)?;
+        Arc::ptr_eq(&entry.0, &source).then(|| Arc::clone(&entry.1))
+    }
+
     #[tracing::instrument(skip_all)]
     pub fn cached_analysis(&self, uri: &Url) -> Option<Arc<mir_analyzer::FileAnalysis>> {
         // Need the parsed doc both for the analyzer and as the cache key.

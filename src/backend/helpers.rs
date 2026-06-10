@@ -640,6 +640,42 @@ pub(super) const DEFERRED_ACTION_TAGS: &[&str] = &[
 ];
 
 impl Backend {
+    /// Run [`crate::document_store::DocumentStore::cached_analysis`] without
+    /// blocking the async executor. The warm path (cache entry current for the
+    /// file's text) resolves synchronously; the cold path — mir Pass 1 + Pass 2,
+    /// which can take hundreds of ms on large files and is hit after every
+    /// keystroke because edits clear the analysis cache — runs on the blocking
+    /// pool so it doesn't stall other in-flight requests.
+    pub(super) async fn cached_analysis_async(
+        &self,
+        uri: &Url,
+    ) -> Option<Arc<mir_analyzer::FileAnalysis>> {
+        if let Some(hit) = self.docs.cached_analysis_if_fresh(uri) {
+            return Some(hit);
+        }
+        let docs = Arc::clone(&self.docs);
+        let uri = uri.clone();
+        tokio::task::spawn_blocking(move || docs.cached_analysis(&uri))
+            .await
+            .unwrap_or(None)
+    }
+
+    /// Fetch the salsa-memoized workspace aggregate without blocking the async
+    /// executor. A warm memo returns quickly, but the cold rebuild after any
+    /// file change walks every `FileIndex` in the workspace — run it on the
+    /// blocking pool.
+    pub(super) async fn workspace_index_async(
+        &self,
+    ) -> Arc<crate::db::workspace_index::WorkspaceIndexData> {
+        let docs = Arc::clone(&self.docs);
+        match tokio::task::spawn_blocking(move || docs.get_workspace_index_salsa()).await {
+            Ok(wi) => wi,
+            // JoinError (panicked/cancelled blocking task): retry inline so a
+            // panic surfaces through the caller's panic guard.
+            Err(_) => self.docs.get_workspace_index_salsa(),
+        }
+    }
+
     /// Tag → generator mapping for deferred code actions.
     pub(super) fn generate_deferred_actions(
         &self,

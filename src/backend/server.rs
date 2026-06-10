@@ -910,14 +910,14 @@ impl LanguageServer for Backend {
                 Some(&**meta_loaded)
             };
             let imports = self.file_imports(uri);
-            let wi = self.docs.get_workspace_index_salsa();
+            let wi = self.workspace_index_async().await;
             let docs_for_lookup = Arc::clone(&self.docs);
             let find_class_doc_fn = move |name: &str| -> Option<Arc<ParsedDoc>> {
                 let cr = *wi.classes_by_name.get(name)?.first()?;
                 let (uri, _) = wi.at(cr)?;
                 docs_for_lookup.get_doc_salsa(uri)
             };
-            let analysis = self.docs.cached_analysis(uri);
+            let analysis = self.cached_analysis_async(uri).await;
             let ctx = CompletionCtx {
                 source: Some(&source),
                 position: Some(position),
@@ -1098,7 +1098,12 @@ impl LanguageServer for Backend {
             // background-indexed files would otherwise be invisible to
             // `references_to`.
             if matches!(kind, Some(SymbolKind::Method)) {
-                self.docs.ensure_all_files_ingested();
+                // Full-workspace mir Pass 1 + Pass 2 — by far the heaviest
+                // synchronous call in any handler. Run it on the blocking pool
+                // so it doesn't stall the executor; a JoinError (panic) falls
+                // through and the session simply sees fewer files.
+                let docs = Arc::clone(&self.docs);
+                let _ = tokio::task::spawn_blocking(move || docs.ensure_all_files_ingested()).await;
             }
             let owner_short: Option<String> = if matches!(kind, Some(SymbolKind::Method)) {
                 target_fqn
@@ -1248,7 +1253,7 @@ impl LanguageServer for Backend {
             };
             let other_docs = self.docs.other_docs(uri, &self.open_urls());
             let other_maps = self.docs.other_symbol_maps(uri, &self.open_urls());
-            let analysis = self.docs.cached_analysis(uri);
+            let analysis = self.cached_analysis_async(uri).await;
             let result = hover_info_with_maps(
                 &source,
                 &doc,
@@ -1265,7 +1270,7 @@ impl LanguageServer for Backend {
             // file is never opened.  Also try the alias-resolved name so that
             // `use Foo as Bar` works even when Foo is only in the index.
             if let Some(word) = crate::util::word_at_position(&source, position) {
-                let wi = self.docs.get_workspace_index_salsa();
+                let wi = self.workspace_index_async().await;
                 // Try the literal word first.
                 if let Some(h) = class_hover_from_index(&word, &wi.files) {
                     return Ok(Some(h));
@@ -1317,8 +1322,8 @@ impl LanguageServer for Backend {
             Some(d) => d,
             None => return Ok(None),
         };
-        let analysis = self.docs.cached_analysis(uri);
-        let wi = self.docs.get_workspace_index_salsa();
+        let analysis = self.cached_analysis_async(uri).await;
+        let wi = self.workspace_index_async().await;
         Ok(Some(inlay_hints(
             doc.source(),
             &doc,
@@ -1357,7 +1362,7 @@ impl LanguageServer for Backend {
         // Phase J: read through the salsa-memoized aggregate so repeated
         // workspace-symbol queries (every keystroke in the picker) share the
         // same `Arc` until a file changes.
-        let wi = self.docs.get_workspace_index_salsa();
+        let wi = self.workspace_index_async().await;
         let results = workspace_symbols_from_workspace(&params.query, &wi);
         Ok(Some(results))
     }
@@ -1642,7 +1647,7 @@ impl LanguageServer for Backend {
         if locs.is_empty() {
             // Second pass: background files via the salsa-memoized workspace
             // aggregate's `subtypes_of` reverse map (line-only positions).
-            let wi = self.docs.get_workspace_index_salsa();
+            let wi = self.workspace_index_async().await;
             locs = find_implementations_from_workspace(&word, fqn, &wi);
         }
         if locs.is_empty() {
@@ -1681,7 +1686,7 @@ impl LanguageServer for Backend {
             Some(d) => d,
             None => return Ok(None),
         };
-        let analysis = self.docs.cached_analysis(uri);
+        let analysis = self.cached_analysis_async(uri).await;
         // First pass: open-file ParsedDocs give accurate character positions.
         let open_docs = self.docs.docs_for(&self.open_urls());
         let mut results =
@@ -1718,7 +1723,7 @@ impl LanguageServer for Backend {
         let position = params.text_document_position_params.position;
         let source = self.get_open_text(uri).unwrap_or_default();
         // Phase J: use the salsa-memoized aggregate's `classes_by_name` map.
-        let wi = self.docs.get_workspace_index_salsa();
+        let wi = self.workspace_index_async().await;
         Ok(prepare_type_hierarchy_from_workspace(&source, &wi, position).map(|item| vec![item]))
     }
 
@@ -1727,7 +1732,7 @@ impl LanguageServer for Backend {
         params: TypeHierarchySupertypesParams,
     ) -> Result<Option<Vec<TypeHierarchyItem>>> {
         // Phase J: resolve parents via the aggregate's `classes_by_name` map.
-        let wi = self.docs.get_workspace_index_salsa();
+        let wi = self.workspace_index_async().await;
         let result = supertypes_of_from_workspace(&params.item, &wi);
         Ok(if result.is_empty() {
             None
@@ -1741,7 +1746,7 @@ impl LanguageServer for Backend {
         params: TypeHierarchySubtypesParams,
     ) -> Result<Option<Vec<TypeHierarchyItem>>> {
         // Phase J: O(matches) lookup via the aggregate's `subtypes_of` map.
-        let wi = self.docs.get_workspace_index_salsa();
+        let wi = self.workspace_index_async().await;
         let result = subtypes_of_from_workspace(&params.item, &wi);
         Ok(if result.is_empty() {
             None
