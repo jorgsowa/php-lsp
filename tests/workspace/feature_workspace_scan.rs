@@ -11,6 +11,20 @@ const CREATED: u32 = 1;
 const CHANGED: u32 = 2;
 const DELETED: u32 = 3;
 
+// ── indexReady timing ────────────────────────────────────────────────────────
+
+/// `$/php-lsp/indexReady` must fire as soon as the scan (parse + index) phase
+/// completes, not after the background salsa warmup.  On large workspaces the
+/// warmup can take tens of seconds; blocking on it caused the notification to
+/// never arrive within normal test timeouts.
+#[tokio::test]
+async fn index_ready_fires_after_scan_and_workspace_symbols_work() {
+    let mut s = TestServer::with_fixture("psr4-mini").await;
+    s.wait_for_index_ready().await;
+    let out = s.snapshot_workspace_symbols("User").await;
+    expect![[r#"Class       User @ src/Model/User.php:4"#]].assert_eq(&out);
+}
+
 // ── CREATED ──────────────────────────────────────────────────────────────────
 
 #[serial_test::serial]

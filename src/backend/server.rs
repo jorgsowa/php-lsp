@@ -517,16 +517,16 @@ impl LanguageServer for Backend {
                 // salsa's memo. Fire-and-forget: a reference request that
                 // arrives mid-warmup just retries through
                 // `snapshot_query`'s `salsa::Cancelled` handling.
-                let warm_docs = Arc::clone(&docs);
-                tokio::task::spawn_blocking(move || {
-                    // Pre-compute file_index for every workspace file so the first
-                    // hover/completion does not pay the full parse cost at request time.
-                    warm_docs.get_workspace_index_salsa();
-                })
-                .await
-                .ok();
+                let salsa_docs = Arc::clone(&docs);
                 drop(docs);
                 client.send_notification::<IndexReadyNotification>(()).await;
+                // Pre-warm salsa cache in the background so subsequent workspace
+                // requests don't pay the full parse cost on the first hit.
+                // Fire-and-forget: a request arriving mid-warmup retries via
+                // snapshot_query's salsa::Cancelled handling.
+                let _ = tokio::task::spawn_blocking(move || {
+                    salsa_docs.get_workspace_index_salsa();
+                });
             });
         }
 
