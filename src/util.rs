@@ -1,30 +1,40 @@
 use tower_lsp::lsp_types::{Location, Position, Range, Url};
 
 /// Returns `true` if `query` matches `candidate` using camelCase/underscore
-/// abbreviation rules.
+/// abbreviation rules with a substring fallback.
 ///
 /// Rules (applied in order, first match wins):
 /// 1. `candidate` starts with `query` (case-insensitive prefix match).
-/// 2. Every character of `query` matches either the start of a camelCase word
-///    (uppercase letter preceded by lowercase) or the character after `_` in
-///    the candidate.
+/// 2. Every character of `query` matches a camelCase word boundary or
+///    character after `_` / `$` in the candidate.
+/// 3. `candidate` contains `query` as a contiguous substring (case-insensitive).
 ///
 /// Examples:
 /// - `"GRF"` matches `"getRecentFiles"`
-/// - `"str_r"` matches `"str_replace"`
-/// - `"srp"` matches `"str_replace"`
+/// - `"str_r"` matches `"str_replace"` (boundary after `_`)
+/// - `"Controller"` matches `"BlogController"` (substring fallback)
 pub(crate) fn fuzzy_camel_match(query: &str, candidate: &str) -> bool {
     if query.is_empty() {
         return true;
     }
     let ql: String = query.to_lowercase();
     let cl: String = candidate.to_lowercase();
-    // Fast path: plain prefix
+    // Rule 1: plain prefix
     if cl.starts_with(&ql) {
         return true;
     }
-    // Camel / underscore abbreviation
-    let qchars: Vec<char> = ql.chars().collect();
+    // Rule 2: camel / underscore abbreviation
+    if fuzzy_camel_abbrev(&ql, candidate) {
+        return true;
+    }
+    // Rule 3: substring fallback ("Controller" matches "BlogController")
+    cl.contains(ql.as_str())
+}
+
+/// Core camel/underscore abbreviation check.  `query_lower` must already be
+/// lowercased; `candidate` is used as-is to detect uppercase word boundaries.
+fn fuzzy_camel_abbrev(query_lower: &str, candidate: &str) -> bool {
+    let qchars: Vec<char> = query_lower.chars().collect();
     let cchars: Vec<char> = candidate.chars().collect();
     let mut qi = 0usize;
     let mut ci = 0usize;
@@ -44,16 +54,17 @@ pub(crate) fn fuzzy_camel_match(query: &str, candidate: &str) -> bool {
     qi == qchars.len()
 }
 
-/// Compute a sort key for a completion item so that items matching the query
-/// by plain prefix sort before camel/underscore abbreviation matches.
-/// Lower string = higher priority.
+/// Compute a sort key so prefix > camel-abbreviation > substring matches sort
+/// in that priority order.  Lower string = higher priority.
 pub(crate) fn camel_sort_key(query: &str, label: &str) -> String {
     let lq = query.to_lowercase();
     let ll = label.to_lowercase();
     if ll.starts_with(&lq) {
         format!("0{}", ll)
-    } else {
+    } else if fuzzy_camel_abbrev(&lq, label) {
         format!("1{}", ll)
+    } else {
+        format!("2{}", ll)
     }
 }
 
@@ -618,5 +629,33 @@ mod tests {
             is_php_builtin("strip_tags"),
             "strip_tags must be recognised as a PHP builtin"
         );
+    }
+
+    #[test]
+    fn fuzzy_camel_match_prefix() {
+        assert!(fuzzy_camel_match("Blog", "BlogController"));
+        assert!(fuzzy_camel_match("blog", "BlogController"));
+    }
+
+    #[test]
+    fn fuzzy_camel_match_abbreviation() {
+        assert!(fuzzy_camel_match("BC", "BlogController"));
+        assert!(fuzzy_camel_match("GRF", "getRecentFiles"));
+        assert!(fuzzy_camel_match("str_r", "str_replace")); // boundary after '_'
+    }
+
+    #[test]
+    fn fuzzy_camel_match_substring_fallback() {
+        // "Controller" does not start with or abbreviate to "BlogController",
+        // but it IS a substring — the fallback must catch this.
+        assert!(fuzzy_camel_match("Controller", "BlogController"));
+        assert!(fuzzy_camel_match("controller", "BlogController"));
+        assert!(fuzzy_camel_match("controller", "UserController"));
+    }
+
+    #[test]
+    fn fuzzy_camel_match_no_match() {
+        assert!(!fuzzy_camel_match("xyz", "BlogController"));
+        assert!(!fuzzy_camel_match("Widget", "BlogController"));
     }
 }

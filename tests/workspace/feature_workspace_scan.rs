@@ -911,6 +911,21 @@ async fn all_scanned_files_appear_in_workspace_index_after_index_ready() {
     }
 }
 
+// ── workspace/symbol substring matching ──────────────────────────────────────
+
+/// A query that is a substring (not a prefix) of a class name must still return
+/// a match.  Previously `fuzzy_camel_match` only matched prefixes and camelCase
+/// abbreviations, so "reeter" never matched "Greeter" and "Controller" never
+/// matched "BlogController".
+#[tokio::test]
+async fn workspace_symbols_substring_match() {
+    let mut s = TestServer::with_fixture("psr4-mini").await;
+    s.wait_for_index_ready().await;
+    // "reeter" is a suffix of "Greeter" — must match via substring fallback
+    let out = s.snapshot_workspace_symbols("reeter").await;
+    expect![[r#"Class       Greeter @ src/Service/Greeter.php:6"#]].assert_eq(&out);
+}
+
 // Note: `include_paths_concatenated_with_editor_config` was removed because
 // it relied on `change_configuration`, which triggers a server→client
 // `workspace/configuration` request that the test harness does not handle
