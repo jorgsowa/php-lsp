@@ -353,3 +353,64 @@ function transform(array $data, bool $strict): string { return ''; }
         .await;
     expect!["▶ App\\Lib\\transform(array $data, bool $strict)  @param0"].assert_eq(&out);
 }
+
+/// Cross-file method call: `$obj->method(` must show the signature from the
+/// class that `$obj` is typed as, not a different class with the same method name.
+#[tokio::test]
+async fn signature_help_cross_file_method_picks_receiver_class() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_signature_help(
+            r#"
+//- /src/Alpha.php
+<?php
+class Alpha {
+    public function process(string $label, int $limit): void {}
+}
+
+//- /src/Beta.php
+<?php
+class Beta {
+    public function process(int $id): void {}
+}
+
+//- /main.php
+<?php
+$b = new Beta();
+$b->process($0);
+"#,
+        )
+        .await;
+    // Beta::process has one param ($id), not Alpha::process's two params
+    expect!["▶ process(int $id)  @param0"].assert_eq(&out);
+}
+
+/// Inherited method: cursor inside `$this->method(` inside a subclass body
+/// must show the signature from the parent class where the method is defined.
+#[tokio::test]
+async fn signature_help_this_method_walks_inheritance_chain() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_signature_help(
+            r#"
+//- /src/Base.php
+<?php
+class Base {
+    public function render(string $template, array $vars = []): string { return ''; }
+}
+
+//- /main.php
+<?php
+class Page extends Base {
+    public function show(): void {
+        $this->render($0);
+    }
+}
+"#,
+        )
+        .await;
+    // FileIndex stores has_default:bool, not the actual default value text.
+    expect!["▶ render(string $template, array $vars = ...)  @param0"].assert_eq(&out);
+}

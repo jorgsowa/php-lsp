@@ -8,24 +8,40 @@ use tower_lsp::lsp_types::{
 
 use crate::ast::ParsedDoc;
 use crate::docblock::find_docblock;
-use crate::file_index::FileIndex;
+use crate::file_index::{FileIndex, ParamDef};
 use crate::hover::format_params_str;
 use crate::util::{fqn_short_name, split_params};
 
 /// Returns signature help for the function call the cursor is inside of.
 ///
 /// Falls back to `ws_indexes` for cross-file function lookup when the function
-/// is not defined in the current file.
+/// is not defined in the current file. For method calls (`$obj->method()`),
+/// the receiver type is resolved so the correct class's method signature is
+/// returned even when multiple classes define a method with the same name.
 pub fn signature_help(
     source: &str,
     doc: &ParsedDoc,
     position: Position,
     ws_indexes: &[(Url, Arc<FileIndex>)],
 ) -> Option<SignatureHelp> {
-    let (func_name, active_param) = call_context(source, position)?;
+    let (func_name, active_param, receiver) = call_context(source, position)?;
     let sig_text = find_signature(&doc.program().stmts, &func_name)
         .or_else(|| builtin_signature(&func_name).map(|s| s.to_string()))
-        .or_else(|| find_params_in_index(&func_name, ws_indexes))?;
+        .or_else(|| {
+            if let Some(recv) = receiver.as_deref() {
+                // Receiver-typed method call: resolve the receiver class then walk
+                // the inheritance chain to find the matching method signature.
+                let class_name = if recv == "$this" || recv == "self" || recv == "static" {
+                    crate::type_map::enclosing_class_at(source, doc, position)
+                } else {
+                    let tm = crate::type_map::TypeMap::from_doc_at_position(doc, None, position);
+                    tm.get(recv).map(|s| s.to_string())
+                }?;
+                find_method_params_in_hierarchy(&class_name, &func_name, ws_indexes)
+            } else {
+                find_params_in_index(&func_name, ws_indexes)
+            }
+        })?;
 
     let display_name = func_name.trim_start_matches('\\');
     let label = format!("{}({})", display_name, sig_text);
@@ -81,9 +97,10 @@ pub fn signature_help(
     })
 }
 
-/// Scan backward from the cursor to find the enclosing function call name
-/// and the index of the current parameter (0-based comma count).
-fn call_context(source: &str, position: Position) -> Option<(String, usize)> {
+/// Scan backward from the cursor to find the enclosing function call name,
+/// the index of the current parameter (0-based comma count), and — for method
+/// calls — the receiver token (e.g. `"$this"`, `"$obj"`, `"ClassName"`).
+fn call_context(source: &str, position: Position) -> Option<(String, usize, Option<String>)> {
     let mut chars_before = String::new();
     for (i, line) in source.lines().enumerate() {
         if i < position.line as usize {
@@ -119,7 +136,8 @@ fn call_context(source: &str, position: Position) -> Option<(String, usize)> {
             '(' if depth == 0 => {
                 let name = extract_name_before(&text, i);
                 if !name.is_empty() {
-                    return Some((name, commas));
+                    let receiver = extract_receiver_before(&text, i, name.chars().count());
+                    return Some((name, commas, receiver));
                 }
                 return None;
             }
@@ -128,6 +146,36 @@ fn call_context(source: &str, position: Position) -> Option<(String, usize)> {
         }
     }
     None
+}
+
+/// Extract the receiver token that precedes `->` or `::` just before the
+/// method name at `text[name_start..paren_pos]`.  Returns `None` for plain
+/// function calls (no arrow/double-colon operator before the name).
+fn extract_receiver_before(text: &[char], paren_pos: usize, name_len: usize) -> Option<String> {
+    let name_start = paren_pos.checked_sub(name_len)?;
+    // skip any spaces between receiver operator and method name
+    let mut end = name_start;
+    while end > 0 && text[end - 1] == ' ' {
+        end -= 1;
+    }
+    if end < 2 {
+        return None;
+    }
+    let is_arrow = text[end - 2] == '-' && text[end - 1] == '>';
+    let is_static = text[end - 2] == ':' && text[end - 1] == ':';
+    if !is_arrow && !is_static {
+        return None;
+    }
+    let recv_end = end - 2;
+    let is_recv_char = |c: char| c.is_alphanumeric() || c == '_' || c == '$';
+    let mut recv_start = recv_end;
+    while recv_start > 0 && is_recv_char(text[recv_start - 1]) {
+        recv_start -= 1;
+    }
+    if recv_start == recv_end {
+        return None;
+    }
+    Some(text[recv_start..recv_end].iter().collect())
 }
 
 fn extract_name_before(text: &[char], paren_pos: usize) -> String {
@@ -165,23 +213,75 @@ fn find_params_in_index(name: &str, ws_indexes: &[(Url, Arc<FileIndex>)]) -> Opt
                 let params = f
                     .params
                     .iter()
-                    .map(|p| {
-                        let mut s = String::new();
-                        if let Some(t) = &p.type_hint {
-                            s.push_str(t);
-                            s.push(' ');
-                        }
-                        if p.variadic {
-                            s.push_str("...");
-                        }
-                        s.push('$');
-                        s.push_str(&p.name);
-                        s
-                    })
+                    .map(format_param)
                     .collect::<Vec<_>>()
                     .join(", ");
                 return Some(params);
             }
+        }
+    }
+    None
+}
+
+fn format_param(p: &ParamDef) -> String {
+    let mut s = String::new();
+    if let Some(t) = &p.type_hint {
+        s.push_str(t);
+        s.push(' ');
+    }
+    if p.variadic {
+        s.push_str("...");
+    }
+    s.push('$');
+    s.push_str(&p.name);
+    if p.has_default {
+        s.push_str(" = ...");
+    }
+    s
+}
+
+/// Walk the class hierarchy starting from `class_name` (short name) and return
+/// the parameter list string of the first matching method. Follows `parent`
+/// links stored in `FileIndex` up to 10 levels deep to handle inherited methods.
+fn find_method_params_in_hierarchy(
+    class_name: &str,
+    method_name: &str,
+    ws_indexes: &[(Url, Arc<FileIndex>)],
+) -> Option<String> {
+    let short = fqn_short_name(class_name);
+    let mut current = short.to_string();
+    let mut seen = std::collections::HashSet::new();
+    for _ in 0..10 {
+        if !seen.insert(current.clone()) {
+            break;
+        }
+        let mut parent: Option<String> = None;
+        for (_, idx) in ws_indexes {
+            for cls in &idx.classes {
+                if cls.name.as_ref() != current.as_str() {
+                    continue;
+                }
+                for m in &cls.methods {
+                    if m.name.as_ref() == method_name {
+                        return Some(
+                            m.params
+                                .iter()
+                                .map(format_param)
+                                .collect::<Vec<_>>()
+                                .join(", "),
+                        );
+                    }
+                }
+                if parent.is_none()
+                    && let Some(p) = &cls.parent
+                {
+                    parent = Some(fqn_short_name(p.as_ref()).to_string());
+                }
+            }
+        }
+        match parent {
+            Some(p) => current = p,
+            None => break,
         }
     }
     None
