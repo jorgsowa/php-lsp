@@ -33,11 +33,18 @@ fn resolve_type_at_cursor(
             // so no `resolve_fqn` is needed. The query offset is the `$` (word
             // range start), which lands strictly inside mir's end-exclusive
             // variable span.
-            // For parameters whose declared type hint is a late-binding keyword
-            // (parent/self/static), resolve via the AST directly. mir 0.35.1
-            // records parameter declaration symbols but resolves `parent` to the
-            // enclosing class rather than its parent; the AST path handles these
-            // keywords correctly.
+            // For parameters whose declared type hint is `parent`, resolve via
+            // the AST directly. mir correctly represents the type as
+            // `TParent { fqcn: "ChildClass" }` (the containing class), but
+            // `named_object_fqcn()` returns that same fqcn, so `class_names()`
+            // would navigate to the child rather than the actual parent.
+            // The fix belongs in mir: `AnalysisSession::resolve_parent_fqcn(fqcn)`
+            // would look up the extends chain and return the real parent FQCN.
+            // Once that API exists, `type_query::class_names` can handle TParent
+            // correctly and this bypass can be removed.
+            // `self`/`static` type hints are included for symmetry (they also
+            // carry the containing class as fqcn and navigate correctly today,
+            // but the same API would unify all three cases).
             let bare_word = word.trim_start_matches('$');
             let hint = param_type_for(&doc.program().stmts, bare_word)
                 .or_else(|| param_type_for(&doc.program().stmts, &word));
