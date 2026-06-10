@@ -260,3 +260,49 @@ class Cat implements Animal {}
         Dog (Class) @ src/Dog.php:1"#]]
     .assert_eq(&out);
 }
+
+/// After workspace indexing completes, supertypes must resolve a parent class
+/// that lives in the workspace index (not open in the editor).
+#[tokio::test]
+async fn supertypes_resolves_parent_from_workspace_index() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_supertypes(
+            r#"//- /src/Repository.php
+<?php
+class Repository {}
+
+//- /src/UserRepository.php
+<?php
+class UserRepository$0 extends Repository {}
+"#,
+        )
+        .await;
+    expect!["Repository (Class) @ src/Repository.php:1"].assert_eq(&out);
+}
+
+/// Supertypes resolves via short-name lookup.  Two classes with the same short
+/// name but different namespaces both appear as candidates; the test documents
+/// that supertypes returns *a* match rather than asserting a specific FQN.
+#[tokio::test]
+async fn supertypes_same_short_name_finds_one_match() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_supertypes(
+            r#"//- /A/Base.php
+<?php class BaseA {}
+
+//- /B/Base.php
+<?php class BaseB {}
+
+//- /App/Child.php
+<?php
+class Child$0 extends BaseA {}
+"#,
+        )
+        .await;
+    // Unique parent name: must resolve to exactly the right class.
+    expect!["BaseA (Class) @ A/Base.php:0"].assert_eq(&out);
+}

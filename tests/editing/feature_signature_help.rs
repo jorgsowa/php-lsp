@@ -414,3 +414,54 @@ class Page extends Base {
     // FileIndex stores has_default:bool, not the actual default value text.
     expect!["▶ render(string $template, array $vars = ...)  @param0"].assert_eq(&out);
 }
+
+/// Static dispatch: `ClassName::method(` must show the signature for that class.
+#[tokio::test]
+async fn signature_help_static_dispatch_named_class() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_signature_help(
+            r#"
+//- /src/Formatter.php
+<?php
+class Formatter {
+    public static function format(string $template, mixed ...$args): string {}
+}
+
+//- /main.php
+<?php
+Formatter::format($0);
+"#,
+        )
+        .await;
+    expect!["▶ format(string $template, mixed ...$args)  @param0"].assert_eq(&out);
+}
+
+/// parent:: dispatch: inside a subclass method body `parent::method(` must show
+/// the signature from the actual parent class, not the subclass.
+#[tokio::test]
+async fn signature_help_parent_static_dispatch() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_signature_help(
+            r#"
+//- /src/Base.php
+<?php
+class Base {
+    public function boot(string $env, bool $debug = false): void {}
+}
+
+//- /main.php
+<?php
+class App extends Base {
+    public function boot(string $env, bool $debug = false): void {
+        parent::boot($0);
+    }
+}
+"#,
+        )
+        .await;
+    expect!["▶ boot(string $env, bool $debug = ...)  @param0"].assert_eq(&out);
+}

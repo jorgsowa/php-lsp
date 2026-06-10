@@ -64,17 +64,16 @@ fn fuzzy_camel_abbrev(query_lower: &str, candidate: &str) -> bool {
     qi == qchars.len()
 }
 
-/// Compute a sort key so prefix > camel-abbreviation > substring matches sort
-/// in that priority order.  Lower string = higher priority.
+/// Compute a sort key so prefix matches sort before camel-abbreviation matches.
+/// Lower string = higher priority.  Only called on items that passed
+/// [`fuzzy_camel_match`], so the `else` branch (substring) is unreachable here.
 pub(crate) fn camel_sort_key(query: &str, label: &str) -> String {
     let lq = query.to_lowercase();
     let ll = label.to_lowercase();
     if ll.starts_with(&lq) {
         format!("0{}", ll)
-    } else if fuzzy_camel_abbrev(&lq, label) {
-        format!("1{}", ll)
     } else {
-        format!("2{}", ll)
+        format!("1{}", ll)
     }
 }
 

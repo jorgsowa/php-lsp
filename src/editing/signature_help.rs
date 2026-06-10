@@ -25,23 +25,53 @@ pub fn signature_help(
     ws_indexes: &[(Url, Arc<FileIndex>)],
 ) -> Option<SignatureHelp> {
     let (func_name, active_param, receiver) = call_context(source, position)?;
-    let sig_text = find_signature(&doc.program().stmts, &func_name)
-        .or_else(|| builtin_signature(&func_name).map(|s| s.to_string()))
-        .or_else(|| {
-            if let Some(recv) = receiver.as_deref() {
-                // Receiver-typed method call: resolve the receiver class then walk
-                // the inheritance chain to find the matching method signature.
-                let class_name = if recv == "$this" || recv == "self" || recv == "static" {
-                    crate::type_map::enclosing_class_at(source, doc, position)
+
+    // When the receiver explicitly names another class (`parent::` or
+    // `ClassName::`) we must skip the in-file `find_signature` lookup because
+    // that would return the *current* class's override, not the target class.
+    let explicit_class_receiver = receiver
+        .as_deref()
+        .is_some_and(|r| !r.starts_with('$') && r != "self" && r != "static");
+
+    let sig_text = if explicit_class_receiver {
+        let recv = receiver.as_deref().unwrap();
+        let class_name = if recv == "parent" {
+            // parent:: → find the enclosing class's parent in the workspace index
+            let enclosing = crate::type_map::enclosing_class_at(source, doc, position)?;
+            let short = fqn_short_name(&enclosing);
+            ws_indexes.iter().find_map(|(_, idx)| {
+                idx.classes
+                    .iter()
+                    .find(|cls| cls.name.as_ref() == short)
+                    .and_then(|cls| cls.parent.as_ref())
+                    .map(|p| fqn_short_name(p.as_ref()).to_string())
+            })?
+        } else {
+            // ClassName:: - use the short name directly
+            recv.to_string()
+        };
+        find_method_params_in_hierarchy(&class_name, &func_name, ws_indexes)?
+    } else {
+        find_signature(&doc.program().stmts, &func_name)
+            .or_else(|| builtin_signature(&func_name).map(|s| s.to_string()))
+            .or_else(|| {
+                if let Some(recv) = receiver.as_deref() {
+                    // Receiver-typed method call ($this / $var): resolve the
+                    // receiver class then walk the inheritance chain.
+                    let class_name = if recv == "$this" || recv == "self" || recv == "static" {
+                        crate::type_map::enclosing_class_at(source, doc, position)
+                    } else {
+                        // $var: resolve via TypeMap
+                        let tm =
+                            crate::type_map::TypeMap::from_doc_at_position(doc, None, position);
+                        tm.get(recv).map(|s| s.to_string())
+                    }?;
+                    find_method_params_in_hierarchy(&class_name, &func_name, ws_indexes)
                 } else {
-                    let tm = crate::type_map::TypeMap::from_doc_at_position(doc, None, position);
-                    tm.get(recv).map(|s| s.to_string())
-                }?;
-                find_method_params_in_hierarchy(&class_name, &func_name, ws_indexes)
-            } else {
-                find_params_in_index(&func_name, ws_indexes)
-            }
-        })?;
+                    find_params_in_index(&func_name, ws_indexes)
+                }
+            })?
+    };
 
     let display_name = func_name.trim_start_matches('\\');
     let label = format!("{}({})", display_name, sig_text);
