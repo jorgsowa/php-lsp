@@ -1033,12 +1033,17 @@ impl LanguageServer for Backend {
                 return Ok(Some(GotoDefinitionResponse::Scalar(refined)));
             }
 
-            // PSR-4 fallback: only useful for fully-qualified names (contain `\`)
+            // PSR-4 fallback: handles FQN and aliased-namespace references such as
+            // PHP 8 attributes (`#[ORM\Column]` with `use Doctrine\ORM\Mapping as ORM`).
             if let Some(word) = word_at_position(&source, position)
                 && word.contains('\\')
-                && let Some(loc) = self.psr4_goto(&word).await
             {
-                return Ok(Some(GotoDefinitionResponse::Scalar(loc)));
+                // Expand alias prefix: `ORM\Column` → `Doctrine\ORM\Mapping\Column`
+                let imports = crate::navigation::references::collect_class_imports(&doc);
+                let expanded = expand_alias_prefix(&word, &imports);
+                if let Some(loc) = self.psr4_goto(&expanded).await {
+                    return Ok(Some(GotoDefinitionResponse::Scalar(loc)));
+                }
             }
 
             Ok(None)
@@ -2389,4 +2394,19 @@ impl LanguageServer for Backend {
 
         Ok(item)
     }
+}
+
+/// Expand an aliased namespace prefix in `word` using the file's import map.
+///
+/// `use Doctrine\ORM\Mapping as ORM;` + `ORM\Column` → `Doctrine\ORM\Mapping\Column`
+///
+/// Only the first segment is checked against the alias map; if no alias matches
+/// the word is returned unchanged (including already-FQN words like `\Foo\Bar`).
+fn expand_alias_prefix(word: &str, imports: &std::collections::HashMap<String, String>) -> String {
+    if let Some((first, rest)) = word.split_once('\\')
+        && let Some(ns_prefix) = imports.get(first)
+    {
+        return format!("{}\\{}", ns_prefix, rest);
+    }
+    word.to_string()
 }

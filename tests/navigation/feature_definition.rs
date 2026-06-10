@@ -1552,6 +1552,55 @@ async fn definition_mixin_method_cross_file() {
 //
 // When the implementing class name also appears (as a word) in a string literal
 // *before* the class declaration in the file, the old global `name_range` scan
+// --- PHP 8 attribute alias expansion ---
+
+/// `#[ORM\Column]` with `use Doctrine\ORM\Mapping as ORM` must jump to the
+/// `Column` class, not silently fail.  The PSR-4 fallback must expand the alias
+/// prefix before resolving the FQN.
+#[tokio::test]
+async fn definition_php8_attribute_aliased_namespace() {
+    use std::fs;
+    let tmp = tempfile::tempdir().expect("TempDir");
+    let root = tmp.path();
+
+    fs::write(
+        root.join("composer.json"),
+        r#"{"autoload":{"psr-4":{"App\\":""}}}"#,
+    )
+    .unwrap();
+    fs::create_dir_all(root.join("Mapping")).unwrap();
+    fs::write(
+        root.join("Mapping/Column.php"),
+        "<?php\nnamespace App\\Mapping;\nclass Column {}\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("Entity.php"),
+        "<?php\nuse App\\Mapping as ORM;\n#[ORM\\Column]\nclass Entity {}\n",
+    )
+    .unwrap();
+
+    let mut server = TestServer::with_root(root).await;
+    server.wait_for_index_ready().await;
+    let (entity_src, _, _) = server.locate("Entity.php", "<?php", 0);
+    server.open("Entity.php", &entity_src).await;
+
+    // cursor on `Column` inside `#[ORM\Column]` — line 2, char 5 (the 'C')
+    let resp = server.definition("Entity.php", 2, 5).await;
+    let result = &resp["result"];
+    assert!(!result.is_null(), "expected definition: {resp:?}");
+    let loc = if result.is_array() {
+        &result[0]
+    } else {
+        result
+    };
+    let uri = loc["uri"].as_str().unwrap_or("");
+    assert!(
+        uri.ends_with("Mapping/Column.php"),
+        "expected Column.php, got: {uri}"
+    );
+}
+
 // (using `.to_string()`) found the literal occurrence instead of the declaration.
 // The span-constrained fix restricts the search to the class stmt's span.
 
