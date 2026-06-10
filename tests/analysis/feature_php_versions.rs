@@ -365,12 +365,6 @@ async fn array_last_defined_on_php85() {
 
 // ── Version change re-triggers diagnostics ─────────────────────────────────────
 
-// Still failing after mir 0.31.0 — but for a php-lsp-side reason, not a mir one.
-// `did_change_configuration` bumps the salsa php_version yet never clears
-// `DocumentStore::analysis_cache` (the per-file `FileAnalysis` memo) nor
-// republishes diagnostics for already-open files, so the pre-change analysis is
-// replayed on the next request.
-#[ignore = "php-lsp: phpVersion config change does not invalidate analysis_cache / republish open-file diagnostics"]
 #[tokio::test]
 async fn version_change_clears_diagnostics() {
     let (mut s, _) = TestServer::new_with_options(json!({

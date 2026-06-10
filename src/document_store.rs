@@ -592,6 +592,11 @@ impl DocumentStore {
             return;
         }
         self.workspace.set_php_version(host.db_mut()).to(version);
+        // The analysis_cache validates against source content only, so stale
+        // FileAnalysis results from the old PHP version would survive unchanged
+        // files. Clear it so the next request re-runs with the new version.
+        drop(host);
+        self.analysis_cache.clear();
     }
 
     /// Stub kept for the legacy `RefLookup` closure shape consumed by
