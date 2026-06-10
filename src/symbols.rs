@@ -454,16 +454,18 @@ pub fn workspace_symbols_from_index(
     indexes: &[(Url, Arc<crate::file_index::FileIndex>)],
 ) -> Vec<SymbolInformation> {
     use crate::file_index::ClassKind;
-    use crate::util::fuzzy_symbol_match;
 
     let (kind_filter, term) = parse_kind_filter(query);
     let matches_kind = |k: SymbolKind| kind_filter.is_none_or(|f| f == k);
+    // Lowercase the query once; the per-candidate match is allocation-free.
+    // This loop visits every symbol of every FileIndex on each picker keystroke.
+    let fq = crate::util::FuzzyQuery::new(term);
 
     let mut results = Vec::new();
     for (uri, idx) in indexes {
         if matches_kind(SymbolKind::FUNCTION) {
             for f in &idx.functions {
-                if fuzzy_symbol_match(term, &f.name) {
+                if fq.symbol_match(&f.name) {
                     results.push(SymbolInformation {
                         name: f.name.to_string(),
                         kind: SymbolKind::FUNCTION,
@@ -484,7 +486,7 @@ pub fn workspace_symbols_from_index(
                 ClassKind::Interface => SymbolKind::INTERFACE,
                 ClassKind::Enum => SymbolKind::ENUM,
             };
-            if matches_kind(class_kind) && fuzzy_symbol_match(term, &cls.name) {
+            if matches_kind(class_kind) && fq.symbol_match(&cls.name) {
                 results.push(SymbolInformation {
                     name: cls.name.to_string(),
                     kind: class_kind,
@@ -499,7 +501,7 @@ pub fn workspace_symbols_from_index(
             }
             if matches_kind(SymbolKind::METHOD) {
                 for m in &cls.methods {
-                    if fuzzy_symbol_match(term, &m.name) {
+                    if fq.symbol_match(&m.name) {
                         results.push(SymbolInformation {
                             name: m.name.to_string(),
                             kind: SymbolKind::METHOD,
@@ -516,7 +518,7 @@ pub fn workspace_symbols_from_index(
             }
             if matches_kind(SymbolKind::ENUM_MEMBER) && cls.kind == ClassKind::Enum {
                 for case in &cls.cases {
-                    if fuzzy_symbol_match(term, case) {
+                    if fq.symbol_match(case) {
                         results.push(SymbolInformation {
                             name: case.to_string(),
                             kind: SymbolKind::ENUM_MEMBER,
