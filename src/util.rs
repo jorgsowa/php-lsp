@@ -1,18 +1,19 @@
 use tower_lsp::lsp_types::{Location, Position, Range, Url};
 
 /// Returns `true` if `query` matches `candidate` using camelCase/underscore
-/// abbreviation rules with a substring fallback.
+/// abbreviation rules (no substring fallback).
 ///
 /// Rules (applied in order, first match wins):
 /// 1. `candidate` starts with `query` (case-insensitive prefix match).
 /// 2. Every character of `query` matches a camelCase word boundary or
 ///    character after `_` / `$` in the candidate.
-/// 3. `candidate` contains `query` as a contiguous substring (case-insensitive).
 ///
 /// Examples:
 /// - `"GRF"` matches `"getRecentFiles"`
 /// - `"str_r"` matches `"str_replace"` (boundary after `_`)
-/// - `"Controller"` matches `"BlogController"` (substring fallback)
+///
+/// See [`fuzzy_symbol_match`] for the variant that also accepts substrings,
+/// which is appropriate for workspace symbol search but not for completions.
 pub(crate) fn fuzzy_camel_match(query: &str, candidate: &str) -> bool {
     if query.is_empty() {
         return true;
@@ -24,10 +25,19 @@ pub(crate) fn fuzzy_camel_match(query: &str, candidate: &str) -> bool {
         return true;
     }
     // Rule 2: camel / underscore abbreviation
-    if fuzzy_camel_abbrev(&ql, candidate) {
+    fuzzy_camel_abbrev(&ql, candidate)
+}
+
+/// Like [`fuzzy_camel_match`] but also accepts contiguous substrings as a
+/// fallback.  Use for workspace symbol search (where "Controller" should match
+/// "BlogController") but NOT for completions (substring produces too many hits).
+pub(crate) fn fuzzy_symbol_match(query: &str, candidate: &str) -> bool {
+    if fuzzy_camel_match(query, candidate) {
         return true;
     }
-    // Rule 3: substring fallback ("Controller" matches "BlogController")
+    // Substring fallback: "Controller" matches "BlogController"
+    let ql = query.to_lowercase();
+    let cl = candidate.to_lowercase();
     cl.contains(ql.as_str())
 }
 
@@ -645,17 +655,22 @@ mod tests {
     }
 
     #[test]
-    fn fuzzy_camel_match_substring_fallback() {
-        // "Controller" does not start with or abbreviate to "BlogController",
-        // but it IS a substring — the fallback must catch this.
-        assert!(fuzzy_camel_match("Controller", "BlogController"));
-        assert!(fuzzy_camel_match("controller", "BlogController"));
-        assert!(fuzzy_camel_match("controller", "UserController"));
+    fn fuzzy_camel_match_no_substring() {
+        // fuzzy_camel_match (used for completions) must NOT match substrings
+        assert!(!fuzzy_camel_match("Controller", "BlogController"));
+        assert!(!fuzzy_camel_match("xyz", "BlogController"));
     }
 
     #[test]
-    fn fuzzy_camel_match_no_match() {
-        assert!(!fuzzy_camel_match("xyz", "BlogController"));
-        assert!(!fuzzy_camel_match("Widget", "BlogController"));
+    fn fuzzy_symbol_match_substring_fallback() {
+        // fuzzy_symbol_match (used for workspace symbols) DOES match substrings
+        assert!(fuzzy_symbol_match("Controller", "BlogController"));
+        assert!(fuzzy_symbol_match("controller", "BlogController"));
+        assert!(fuzzy_symbol_match("controller", "UserController"));
+        // prefix and camel still work
+        assert!(fuzzy_symbol_match("Blog", "BlogController"));
+        assert!(fuzzy_symbol_match("BC", "BlogController"));
+        // no match
+        assert!(!fuzzy_symbol_match("xyz", "BlogController"));
     }
 }
