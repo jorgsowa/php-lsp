@@ -311,10 +311,8 @@ fn param_decl_type(
 }
 
 /// Look up the declared type hint for a parameter named `word` in any function/method.
-/// Note: Returns the type hint as-is from format_type_hint. Unqualified type names
-/// in non-global namespaces are not automatically qualified with namespace context.
-/// This is a known limitation: resolving `Logger` in `namespace App\Service` to
-/// `App\Service\Logger` would require source context to extract namespace names.
+/// Returns the raw string from `format_type_hint`; callers are responsible for
+/// resolving unqualified names against namespace/import context via `resolve_fqn`.
 fn param_type_for(stmts: &[Stmt<'_, '_>], word: &str) -> Option<String> {
     for stmt in stmts {
         match &stmt.kind {

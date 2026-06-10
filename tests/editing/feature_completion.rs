@@ -4585,23 +4585,83 @@ match ($s) {
     .assert_eq(&out);
 }
 
-/// NOTE: Completion filtering in string literals is not yet implemented.
-/// Currently: typing inside a string still returns code completions (known limitation).
-/// TODO: Implement context-aware filtering to suppress completions in strings/comments.
+/// Completions inside string literals must be suppressed — there are no PHP
+/// identifier completions that make sense inside `"..."` or `'...'`.
 #[tokio::test]
-#[ignore = "completion in strings not yet implemented"]
 async fn completion_in_string_literal_returns_empty() {
-    let mut _s = TestServer::new().await;
-    // TODO: once string context detection is added, verify empty or minimal results
+    let mut s = TestServer::new().await;
+    // cursor inside double-quoted string
+    let out = s
+        .check_completion(
+            r#"<?php
+$x = "hell$0";
+"#,
+        )
+        .await;
+    assert_eq!(
+        out, "<no completions>",
+        "expected no completions inside string, got:\n{out}"
+    );
+
+    // cursor inside single-quoted string
+    let out = s
+        .check_completion(
+            r#"<?php
+$x = 'hell$0';
+"#,
+        )
+        .await;
+    assert_eq!(
+        out, "<no completions>",
+        "expected no completions inside single-quoted string, got:\n{out}"
+    );
 }
 
-/// NOTE: Completion filtering in comments is not yet implemented.
-/// Currently: typing inside a comment still returns code completions (known limitation).
+/// Completions inside comments must be suppressed.
 #[tokio::test]
-#[ignore = "completion in comments not yet implemented"]
 async fn completion_in_comment_returns_empty() {
-    let mut _s = TestServer::new().await;
-    // TODO: once comment context detection is added, verify empty or minimal results
+    let mut s = TestServer::new().await;
+    // cursor inside line comment
+    let out = s
+        .check_completion(
+            r#"<?php
+// hell$0
+$x = 1;
+"#,
+        )
+        .await;
+    assert_eq!(
+        out, "<no completions>",
+        "expected no completions inside // comment, got:\n{out}"
+    );
+
+    // cursor inside block comment
+    let out = s
+        .check_completion(
+            r#"<?php
+/* hell$0 */
+$x = 1;
+"#,
+        )
+        .await;
+    assert_eq!(
+        out, "<no completions>",
+        "expected no completions inside /* comment, got:\n{out}"
+    );
+
+    // cursor inside # comment
+    let out = s
+        .check_completion(
+            r#"<?php
+# hell$0
+$x = 1;
+"#,
+        )
+        .await;
+    assert_eq!(
+        out, "<no completions>",
+        "expected no completions inside # comment, got:\n{out}"
+    );
 }
 
 /// Instance method completions are available for class instances.

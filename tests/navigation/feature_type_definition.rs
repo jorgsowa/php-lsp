@@ -199,6 +199,22 @@ function process(\App\Service $s$0): void {}
     .await;
 }
 
+/// Unqualified type hint inside a namespace resolves to the namespace-prefixed FQCN.
+/// `Logger` in `namespace App\Service` → `App\Service\Logger`.
+#[tokio::test]
+async fn type_definition_unqualified_param_in_namespace() {
+    let mut s = TestServer::new().await;
+    s.check_type_definition_annotated(
+        r#"<?php
+namespace App\Service;
+class Logger {}
+//    ^^^^^^ type
+function write_log(Logger $l$0): void {}
+"#,
+    )
+    .await;
+}
+
 #[tokio::test]
 async fn type_definition_cursor_on_param_name() {
     let mut s = TestServer::new().await;

@@ -213,6 +213,97 @@ pub struct CompletionCtx<'a> {
     pub analysis: Option<&'a mir_analyzer::FileAnalysis>,
 }
 
+/// Returns `true` when `cursor_byte` falls inside a PHP string literal or
+/// comment. Scans the source from the beginning with a simple state machine;
+/// handles single/double-quoted strings (with backslash escapes), `// …` and
+/// `# …` line comments, and `/* … */` block comments. Heredoc/nowdoc are not
+/// tracked — they are too rare in interactive editing contexts to warrant the
+/// complexity, and missing them produces a false-negative (completions shown
+/// inside a heredoc), not a false-positive (completions suppressed outside one).
+pub(crate) fn cursor_in_string_or_comment(source: &str, cursor_byte: usize) -> bool {
+    #[derive(PartialEq)]
+    enum S {
+        Normal,
+        Single,
+        Double,
+        Line,
+        Block,
+    }
+    let bytes = source.as_bytes();
+    let limit = bytes.len().min(cursor_byte);
+    let mut i = 0usize;
+    let mut state = S::Normal;
+    while i < limit {
+        match state {
+            S::Normal => match bytes[i] {
+                b'\'' => {
+                    state = S::Single;
+                    i += 1;
+                }
+                b'"' => {
+                    state = S::Double;
+                    i += 1;
+                }
+                b'/' if i + 1 < limit && bytes[i + 1] == b'/' => {
+                    state = S::Line;
+                    i += 2;
+                }
+                // `#[` is a PHP 8 attribute — not a comment.
+                b'#' if !(i + 1 < limit && bytes[i + 1] == b'[') => {
+                    state = S::Line;
+                    i += 1;
+                }
+                b'/' if i + 1 < limit && bytes[i + 1] == b'*' => {
+                    state = S::Block;
+                    i += 2;
+                }
+                _ => {
+                    i += 1;
+                }
+            },
+            S::Single => match bytes[i] {
+                b'\\' => {
+                    i += 2;
+                }
+                b'\'' => {
+                    state = S::Normal;
+                    i += 1;
+                }
+                _ => {
+                    i += 1;
+                }
+            },
+            S::Double => match bytes[i] {
+                b'\\' => {
+                    i += 2;
+                }
+                b'"' => {
+                    state = S::Normal;
+                    i += 1;
+                }
+                _ => {
+                    i += 1;
+                }
+            },
+            S::Line => {
+                if bytes[i] == b'\n' {
+                    state = S::Normal;
+                }
+                i += 1;
+            }
+            S::Block => {
+                if bytes[i] == b'*' && i + 1 < limit && bytes[i + 1] == b'/' {
+                    state = S::Normal;
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+        }
+    }
+    state != S::Normal
+}
+
 /// Completions filtered by trigger character, with optional context
 /// so that `->` completions can be scoped to the variable's class.
 pub fn filtered_completions_at(
@@ -223,7 +314,19 @@ pub fn filtered_completions_at(
 ) -> Vec<CompletionItem> {
     let source = ctx.source;
     let position = ctx.position;
+
     let doc_uri = ctx.doc_uri;
+
+    // Suppress all completions when the cursor is inside a string literal or
+    // comment — except for include/require path strings, where file-path
+    // completions are legitimate inside the string argument.
+    if let (Some(src), Some(pos)) = (source, position) {
+        let cursor_byte = doc.view().byte_of_position(pos) as usize;
+        if cursor_in_string_or_comment(src, cursor_byte) && include_path_prefix(src, pos).is_none()
+        {
+            return vec![];
+        }
+    }
     let meta = ctx.meta;
     let empty_imports = HashMap::new();
     let imports = ctx.file_imports.unwrap_or(&empty_imports);
