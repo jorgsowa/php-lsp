@@ -78,9 +78,21 @@ pub fn semantic_tokens(_source: &str, doc: &ParsedDoc) -> Vec<SemanticToken> {
 /// Useful for editors that only request tokens for the visible viewport.
 pub fn semantic_tokens_range(_source: &str, doc: &ParsedDoc, range: Range) -> Vec<SemanticToken> {
     let sv = doc.view();
+    // byte_of_position maps lines beyond EOF to byte 0 (`line_starts.get(..)
+    // .unwrap_or(0)`); clamp those to the end of the source so an open-ended
+    // viewport (end line u32::MAX style) prunes nothing instead of everything.
+    let byte_of = |pos: tower_lsp::lsp_types::Position| -> u32 {
+        if (pos.line as usize) < doc.line_starts().len() {
+            sv.byte_of_position(pos)
+        } else {
+            doc.source().len() as u32
+        }
+    };
+    let start_byte = byte_of(range.start);
+    let end_byte = byte_of(range.end);
     let mut raw: Vec<RawToken> = Vec::new();
     collect_comments(sv, &mut raw);
-    collect_stmts(sv, &doc.program().stmts, &mut raw);
+    collect_stmts_pruned(sv, &doc.program().stmts, start_byte, end_byte, &mut raw);
     raw.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
 
     let filtered: Vec<RawToken> = raw
@@ -388,6 +400,65 @@ fn push_type_hint(out: &mut Vec<RawToken>, sv: SourceView<'_>, hint: &TypeHint<'
 fn collect_stmts(sv: SourceView<'_>, stmts: &[Stmt<'_, '_>], out: &mut Vec<RawToken>) {
     for stmt in stmts {
         collect_stmt(sv, stmt, out);
+    }
+}
+
+/// Walk only the statements / class-like members whose spans overlap
+/// `start..=end` (byte offsets). Used by [`semantic_tokens_range`] so a
+/// viewport request on a large single-class file doesn't pay the full
+/// document walk: out-of-range top-level statements and class/trait members
+/// are skipped entirely. In-range nodes are collected fully — the caller's
+/// exact per-token filter trims any spill-over, so the final token set is
+/// identical to the unpruned walk (every token's span lies within its
+/// owning statement/member).
+///
+/// The `Class` / `Trait` header blocks mirror the corresponding arms in
+/// [`collect_stmt`] — keep them in sync when token kinds change there.
+fn collect_stmts_pruned(
+    sv: SourceView<'_>,
+    stmts: &[Stmt<'_, '_>],
+    start: u32,
+    end: u32,
+    out: &mut Vec<RawToken>,
+) {
+    let member_in_range = |member: &php_ast::ClassMember<'_, '_>| {
+        member.span.end >= start && member.span.start <= end
+    };
+    for stmt in stmts {
+        if stmt.span.end < start || stmt.span.start > end {
+            continue;
+        }
+        match &stmt.kind {
+            StmtKind::Class(c) => {
+                push_attributes(out, sv, &c.attributes);
+                if let Some(name) = c.name {
+                    let mut mods = MOD_DECLARATION | deprecated_mod(c.doc_comment.as_ref());
+                    if c.modifiers.is_abstract {
+                        mods |= MOD_ABSTRACT;
+                    }
+                    push_name(out, sv, &name.to_string(), TT_CLASS, mods);
+                }
+                for member in c.body.members.iter().filter(|m| member_in_range(m)) {
+                    collect_class_member(sv, member, out);
+                }
+            }
+            StmtKind::Trait(t) => {
+                push_attributes(out, sv, &t.attributes);
+                let mods = MOD_DECLARATION | deprecated_mod(t.doc_comment.as_ref());
+                push_name(out, sv, &t.name.to_string(), TT_CLASS, mods);
+                for member in t.body.members.iter().filter(|m| member_in_range(m)) {
+                    collect_class_member(sv, member, out);
+                }
+            }
+            StmtKind::Namespace(ns) => {
+                if let NamespaceBody::Braced(inner) = &ns.body {
+                    collect_stmts_pruned(sv, &inner.stmts, start, end, out);
+                }
+            }
+            // Enums are typically small; interfaces have no bodies to prune.
+            // Everything else overlapped the range, so collect it fully.
+            _ => collect_stmt(sv, stmt, out),
+        }
     }
 }
 
@@ -801,6 +872,54 @@ mod tests {
     use super::*;
     fn doc(src: &str) -> ParsedDoc {
         ParsedDoc::parse(src.to_string())
+    }
+
+    /// The pruned range walk must produce exactly what the old
+    /// collect-everything-then-filter implementation produced: the full token
+    /// list filtered to the range. Exercises class members on both sides of
+    /// the range boundary, a second top-level class entirely outside it, and
+    /// a braced namespace.
+    #[test]
+    fn range_pruned_walk_matches_filtered_full_walk() {
+        use tower_lsp::lsp_types::Position;
+        let src = "<?php\nnamespace App {\nclass A {\n    public function one(): int { return 1; }\n    public function two(): string { return 'x'; }\n    public function three(): bool { return true; }\n}\nclass B {\n    public function four(): void {}\n}\n}\n";
+        let d = doc(src);
+        // Several windows, including degenerate and out-of-bounds ones.
+        let windows = [(0u32, 4u32), (3, 5), (4, 9), (7, 11), (0, 99), (8, 8)];
+        for (start_line, end_line) in windows {
+            let range = Range {
+                start: Position {
+                    line: start_line,
+                    character: 0,
+                },
+                end: Position {
+                    line: end_line,
+                    character: 0,
+                },
+            };
+            let pruned = semantic_tokens_range(src, &d, range);
+            // Reference: full walk + the same exact filter + re-encode.
+            let sv = d.view();
+            let mut raw: Vec<RawToken> = Vec::new();
+            collect_comments(sv, &mut raw);
+            collect_stmts(sv, &d.program().stmts, &mut raw);
+            raw.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+            let filtered: Vec<RawToken> = raw
+                .into_iter()
+                .filter(|(line, col, _len, _, _)| {
+                    let after_start = *line > range.start.line
+                        || (*line == range.start.line && *col >= range.start.character);
+                    let before_end = *line < range.end.line
+                        || (*line == range.end.line && *col < range.end.character);
+                    after_start && before_end
+                })
+                .collect();
+            let reference = delta_encode(filtered);
+            assert_eq!(
+                pruned, reference,
+                "range ({start_line},{end_line}) pruned walk diverged from filtered full walk"
+            );
+        }
     }
 
     #[test]
