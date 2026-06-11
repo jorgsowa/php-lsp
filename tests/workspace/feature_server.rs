@@ -214,3 +214,50 @@ async fn request_after_close_and_reopen_returns_fresh_data() {
         "hover must NOT see stale `first` from closed session, got: {contents}"
     );
 }
+
+// ── $/cancelRequest ──────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn cancel_request_returns_request_cancelled_and_server_stays_alive() {
+    let mut server = TestServer::new().await;
+    // Enough open files that the references handler (workspace scan + mir
+    // ingestion across several spawn_blocking await points) is still pending
+    // when the cancel notification — sent in the very next frame — is
+    // processed by tower-lsp's Cancellable layer.
+    for i in 0..30 {
+        let src =
+            format!("<?php\nclass Worker{i} {{\n    public function doWork(): void {{}}\n}}\n");
+        server.open(&format!("w{i}.php"), &src).await;
+    }
+    server
+        .open(
+            "cancel_main.php",
+            "<?php\n$w = new Worker0();\n$w->doWork();\n",
+        )
+        .await;
+
+    let uri = server.uri("cancel_main.php");
+    let resp = server
+        .request_then_cancel(
+            "textDocument/references",
+            serde_json::json!({
+                "textDocument": { "uri": uri },
+                "position": { "line": 2, "character": 5 },
+                "context": { "includeDeclaration": true },
+            }),
+        )
+        .await;
+    assert_eq!(
+        resp["error"]["code"],
+        serde_json::json!(-32800),
+        "expected RequestCancelled (-32800), got: {resp}"
+    );
+
+    // A cancelled request must not wedge the server: a follow-up request on
+    // the same document still answers normally.
+    let hover = server.hover("cancel_main.php", 2, 5).await;
+    assert!(
+        hover.get("error").is_none(),
+        "hover after cancellation must succeed, got: {hover}"
+    );
+}

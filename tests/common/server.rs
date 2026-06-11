@@ -445,6 +445,12 @@ impl TestServer {
         self.client.wait_for_diagnostics(&uri).await
     }
 
+    /// Send a request immediately followed by `$/cancelRequest` for its id;
+    /// returns the response (see [`TestClient::request_then_cancel`]).
+    pub async fn request_then_cancel(&mut self, method: &str, params: serde_json::Value) -> Value {
+        self.client.request_then_cancel(method, params).await
+    }
+
     pub async fn wait_for_index_ready(&mut self) -> &mut Self {
         self.client.wait_for_index_ready().await;
         self

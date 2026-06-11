@@ -115,6 +115,51 @@ impl TestClient {
         .unwrap_or_else(|_| panic!("timed out waiting for response to {method_owned}"))
     }
 
+    /// Send a request and immediately follow it with `$/cancelRequest` for
+    /// the same id — without waiting in between — then return the response
+    /// for that id. Pins tower-lsp's cancellation semantics: a request whose
+    /// handler is still pending when the cancel is processed resolves to a
+    /// `RequestCancelled` (-32800) error.
+    pub async fn request_then_cancel(&mut self, method: &str, params: Value) -> Value {
+        let id = self.next_id;
+        self.next_id += 1;
+        let msg = json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": method,
+            "params": params,
+        });
+        self.write.write_all(&frame(&msg)).await.unwrap();
+        let cancel = json!({
+            "jsonrpc": "2.0",
+            "method": "$/cancelRequest",
+            "params": { "id": id },
+        });
+        self.write.write_all(&frame(&cancel)).await.unwrap();
+        let method_owned = method.to_owned();
+        tokio::time::timeout(tokio::time::Duration::from_secs(10), async {
+            loop {
+                let resp = read_msg(&mut self.read).await;
+                if resp.get("method").is_some() {
+                    if let Some(srv_id) = resp.get("id") {
+                        let ack = json!({
+                            "jsonrpc": "2.0",
+                            "id": srv_id,
+                            "result": null,
+                        });
+                        self.write.write_all(&frame(&ack)).await.unwrap();
+                    }
+                    continue;
+                }
+                if resp.get("id") == Some(&json!(id)) {
+                    return resp;
+                }
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("timed out waiting for response to {method_owned}"))
+    }
+
     pub async fn notify(&mut self, method: &str, params: Value) {
         let msg = json!({
             "jsonrpc": "2.0",
