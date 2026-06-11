@@ -424,13 +424,11 @@ impl DocumentStore {
         }
     }
 
-    // ── B4b salsa-backed accessors ─────────────────────────────────────────
+    // ── Salsa-backed accessors ─────────────────────────────────────────────
     //
-    // These are additive and not yet called from production code. They go
-    // through the salsa layer — reads run the memoized `parsed_doc` /
-    // `file_index` / `method_returns` queries, parsing only on first access
-    // per revision. B4c will migrate feature modules to call these instead of
-    // the legacy `get_doc` / `get_index`.
+    // Reads run the memoized `parsed_doc` / `file_index` queries, parsing
+    // only on first access per revision. These are the production accessors
+    // used by every handler.
 
     /// Salsa-backed parsed document.
     ///

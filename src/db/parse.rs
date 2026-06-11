@@ -1,5 +1,5 @@
 //! The `parsed_doc` salsa query: parses a `SourceFile` into an `Arc<ParsedDoc>`
-//! under salsa memoization. Downstream queries (file_index, method_returns,
+//! under salsa memoization. Downstream queries (file_index, symbol_map,
 //! semantic diagnostics) depend on this one, so each file is parsed at most
 //! once per revision.
 //!
