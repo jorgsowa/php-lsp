@@ -99,13 +99,9 @@ impl OpenFiles {
 /// Build the full diagnostic bundle for an already-open file.
 ///
 /// Reuses cached parse diagnostics from `OpenFiles` (set by the file's own
-/// debounced parse) and recomputes the rest:
-/// - `duplicate_declaration_diagnostics` is intra-file (AST walk over the
-///   doc's own statements), so a dependency change does NOT change its
-///   result — but it's cheap and keeps this helper a single source of
-///   truth for "the diagnostic bundle for `uri`".
-/// - `semantic_issues` is salsa-cached; for files unaffected by the
-///   triggering change it's a cache hit.
+/// debounced parse) and recomputes the rest. `semantic_issues` is
+/// salsa-cached; for files unaffected by the triggering change it's a cache
+/// hit.
 ///
 /// Used both for the originating file (during `did_open`/`did_change`) and
 /// when proactively republishing diagnostics to other open files after a
@@ -117,13 +113,7 @@ pub(crate) fn compute_open_file_diagnostics(
     uri: &Url,
     diag_cfg: &DiagnosticsConfig,
 ) -> Vec<Diagnostic> {
-    use crate::analysis::semantic_diagnostics::duplicate_declaration_diagnostics;
-
     let mut out = open_files.parse_diagnostics(uri).unwrap_or_default();
-    let source = open_files.text(uri).unwrap_or_default();
-    if let Some(d) = open_files.get_doc(docs, uri) {
-        out.extend(duplicate_declaration_diagnostics(&source, &d, diag_cfg));
-    }
     if let Some(issues) = docs.get_semantic_issues_salsa(uri) {
         out.extend(issues_to_diagnostics(&issues, uri, diag_cfg));
     }

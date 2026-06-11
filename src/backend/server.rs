@@ -74,7 +74,6 @@ use crate::analysis::diagnostics::{
 use crate::analysis::document_highlight::document_highlights;
 use crate::analysis::inlay_hints::inlay_hints;
 use crate::analysis::inline_value::inline_values_in_range;
-use crate::analysis::semantic_diagnostics::duplicate_declaration_diagnostics;
 use crate::analysis::semantic_tokens::{
     compute_token_delta, legend, semantic_tokens, semantic_tokens_range, token_hash,
 };
@@ -703,18 +702,12 @@ impl LanguageServer for Backend {
                 .unwrap_or_default();
 
             self.set_parse_diagnostics(&uri, parse_diags.clone());
-            let stored_source = self.get_open_text(&uri).unwrap_or_default();
-            let doc2 = self.get_doc(&uri);
-            let dup_decl = doc2
-                .as_ref()
-                .map(|d| duplicate_declaration_diagnostics(&stored_source, d, &diag_cfg))
-                .unwrap_or_default();
             let semantic = sem_issues
                 .map(|issues| {
                     crate::semantic_diagnostics::issues_to_diagnostics(&issues, &uri, &diag_cfg)
                 })
                 .unwrap_or_default();
-            let all_diags = merge_file_diagnostics(parse_diags, dup_decl, semantic);
+            let all_diags = merge_file_diagnostics(parse_diags, semantic);
             // Publish for the opened file FIRST — see did_change for why ordering matters.
             self.client
                 .publish_diagnostics(uri.clone(), all_diags, None)
@@ -787,16 +780,10 @@ impl LanguageServer for Backend {
                     // full diagnostic bundle (semantic + dup-decl + deprecated
                     // calls), all computed off-thread.
                     let docs_sem = Arc::clone(&docs);
-                    let open_files_sem = open_files.clone();
                     let uri_sem = uri.clone();
                     let diag_cfg_sem = diag_cfg.clone();
-                    let (extra_dup, extra_sem) = tokio::task::spawn_blocking(move || {
-                        let Some(d) = open_files_sem.get_doc(&docs_sem, &uri_sem) else {
-                            return (Vec::<Diagnostic>::new(), Vec::<Diagnostic>::new());
-                        };
-                        let source = open_files_sem.text(&uri_sem).unwrap_or_default();
-                        let dup = duplicate_declaration_diagnostics(&source, &d, &diag_cfg_sem);
-                        let sem = docs_sem
+                    let extra_sem = tokio::task::spawn_blocking(move || {
+                        docs_sem
                             .get_semantic_issues_salsa(&uri_sem)
                             .map(|issues| {
                                 crate::semantic_diagnostics::issues_to_diagnostics(
@@ -805,13 +792,12 @@ impl LanguageServer for Backend {
                                     &diag_cfg_sem,
                                 )
                             })
-                            .unwrap_or_default();
-                        (dup, sem)
+                            .unwrap_or_default()
                     })
                     .await
                     .unwrap_or_default();
 
-                    let all_diags = merge_file_diagnostics(diagnostics, extra_dup, extra_sem);
+                    let all_diags = merge_file_diagnostics(diagnostics, extra_sem);
                     // Publish for the changed file FIRST. Test harnesses (and
                     // some clients) consume publishDiagnostics for unrelated
                     // URIs while waiting for one specific URI; reversing this
@@ -2126,10 +2112,8 @@ impl LanguageServer for Backend {
         params: DocumentDiagnosticParams,
     ) -> Result<DocumentDiagnosticReportResult> {
         let uri = &params.text_document.uri;
-        let source = self.get_open_text(uri).unwrap_or_default();
-
         let parse_diags = self.get_parse_diagnostics(uri).unwrap_or_default();
-        let doc = match self.get_doc(uri) {
+        let _doc = match self.get_doc(uri) {
             Some(d) => d,
             None => {
                 // Even if document not fully indexed, compute result_id for parse diagnostics
@@ -2184,11 +2168,7 @@ impl LanguageServer for Backend {
             }
         })?;
 
-        let items = merge_file_diagnostics(
-            parse_diags,
-            duplicate_declaration_diagnostics(&source, &doc, &diag_cfg),
-            sem_diags,
-        );
+        let items = merge_file_diagnostics(parse_diags, sem_diags);
 
         // Generate stable result_id for caching
         let _version = self
@@ -2248,9 +2228,6 @@ impl LanguageServer for Backend {
             all_parse_diags
                 .into_iter()
                 .filter_map(|(uri, parse_diags, version)| {
-                    let doc = docs.get_doc_salsa(&uri)?;
-
-                    let source = doc.source().to_string();
                     let sem_diags = docs
                         .get_semantic_issues_salsa(&uri)
                         .map(|issues| {
@@ -2261,11 +2238,7 @@ impl LanguageServer for Backend {
                             )
                         })
                         .unwrap_or_default();
-                    let all_diags = merge_file_diagnostics(
-                        parse_diags,
-                        duplicate_declaration_diagnostics(&source, &doc, &diag_cfg_sweep),
-                        sem_diags,
-                    );
+                    let all_diags = merge_file_diagnostics(parse_diags, sem_diags);
 
                     let result_id = compute_diagnostic_result_id(&all_diags, uri.as_str());
 

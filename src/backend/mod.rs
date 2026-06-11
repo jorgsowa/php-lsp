@@ -429,15 +429,6 @@ async fn compute_dependent_publishes_owned(
         let mut out: Vec<(Url, Vec<Diagnostic>)> = Vec::with_capacity(dependents.len());
         for (url, analysis) in dependents {
             let parse = open_files.parse_diagnostics(&url).unwrap_or_default();
-            let dup_decl = open_files
-                .get_doc(&docs, &url)
-                .map(|d| {
-                    let source = open_files.text(&url).unwrap_or_default();
-                    crate::semantic_diagnostics::duplicate_declaration_diagnostics(
-                        &source, &d, &diag_cfg,
-                    )
-                })
-                .unwrap_or_default();
             let mut issues: Vec<mir_issues::Issue> = analysis
                 .issues
                 .into_iter()
@@ -448,7 +439,7 @@ async fn compute_dependent_publishes_owned(
             }
             let semantic =
                 crate::semantic_diagnostics::issues_to_diagnostics(&issues, &url, &diag_cfg);
-            out.push((url, merge_file_diagnostics(parse, dup_decl, semantic)));
+            out.push((url, merge_file_diagnostics(parse, semantic)));
         }
         out
     })

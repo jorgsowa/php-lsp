@@ -581,37 +581,29 @@ class Foo {}
     );
 }
 
-/// Duplicate interface declaration in the same file should produce a warning.
+/// Duplicate interface declaration in the same file should produce an error.
 #[tokio::test]
 async fn duplicate_interface_declaration_emits_warning() {
     let mut s = TestServer::new().await;
-    // The duplicate is indented so both ranges are expressible as annotations
-    // (the `//` prefix occupies columns 0-1). mir ≥0.36 reports its own
-    // DuplicateInterface error alongside php-lsp's duplicate-declaration
-    // warning.
     s.check_diagnostics(
         r#"<?php
 interface Logger {}
   interface Logger {}
 //^^^^^^^^^^^^^^^^^^^ error: Interface Logger has already been defined
-//          ^^^^^^ warning: Duplicate declaration
 "#,
     )
     .await;
 }
 
-/// Duplicate trait declaration in the same file should produce a warning.
+/// Duplicate trait declaration in the same file should produce an error.
 #[tokio::test]
 async fn duplicate_trait_declaration_emits_warning() {
     let mut s = TestServer::new().await;
-    // See duplicate_interface_declaration_emits_warning for the indentation
-    // rationale; mir ≥0.36 adds its own DuplicateTrait error.
     s.check_diagnostics(
         r#"<?php
 trait Serializable {}
   trait Serializable {}
 //^^^^^^^^^^^^^^^^^^^^^ error: Trait Serializable has already been defined
-//      ^^^^^^^^^^^^ warning: Duplicate declaration
 "#,
     )
     .await;
