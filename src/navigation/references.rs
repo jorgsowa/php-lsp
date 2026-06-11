@@ -18,10 +18,6 @@ use crate::walk::{
     refs_in_stmts_with_use,
 };
 
-/// Callback signature for the mir-codebase reference-lookup fast path:
-/// `(key) -> Vec<(file_uri, start_byte, end_byte)>`.
-pub type RefLookup<'a> = dyn Fn(&str) -> Vec<(Arc<str>, u32, u16, u16)> + 'a;
-
 /// What kind of symbol the cursor is on.  Used to dispatch to the
 /// appropriate semantic walker so that, e.g., searching for `get` as a
 /// *method* doesn't return free-function calls named `get`.
@@ -37,14 +33,6 @@ pub enum SymbolKind {
     Property,
     /// A class, interface, enum, or trait constant (`Class::CONST`, `self::CONST`).
     Constant,
-}
-
-fn class_has_ancestor(
-    codebase: &mir_analyzer::db::MirDbStorage,
-    class_fqcn: &str,
-    target_fqcn: &str,
-) -> bool {
-    mir_analyzer::db::extends_or_implements(codebase, class_fqcn, target_fqcn)
 }
 
 /// Find all locations where `word` is referenced across the given documents.
@@ -191,83 +179,12 @@ pub(crate) fn dedup_ref_locations(locations: &mut Vec<Location>) {
     locations.retain(|loc| seen.insert(ref_location_key(loc)));
 }
 
-/// Fast path: look up pre-computed reference locations from the mir codebase index.
-///
-/// Handles `Function`, `Class`, and (partially) `Method` kinds.  For `Function` and
-/// `Class` the mir analyzer records every call-site / instantiation via
-/// `mark_*_referenced_at` and the index is authoritative.
-///
-/// For `Method`, the index is used as a pre-filter: only files that contain a tracked
-/// call site for the method are scanned with the AST walker.  This fast path is
-/// activated for two cases where the tracked set is reliably complete or narrows the
-/// search scope without missing real references:
-///   • `private` methods — PHP semantics guarantee that private methods are only
-///     callable from within the class body, so mir always resolves the receiver type.
-///   • methods on `final` classes — no subclassing means call sites on the concrete
-///     type are unambiguous; the codebase set covers all statically-typed callers.
-///
-/// Returns `None` for public/protected methods on non-final classes and for `None`
-/// kind (caller should use the general AST walker instead).  Also returns `None` when
-/// no matching symbol is found in the codebase.
-pub fn find_references_codebase(
-    word: &str,
-    all_docs: &[(Url, Arc<ParsedDoc>)],
-    include_declaration: bool,
-    kind: Option<SymbolKind>,
-    codebase: &mir_analyzer::db::MirDbStorage,
-    lookup_refs: &RefLookup<'_>,
-) -> Option<Vec<Location>> {
-    find_references_codebase_with_target(
-        word,
-        all_docs,
-        include_declaration,
-        kind,
-        None,
-        codebase,
-        lookup_refs,
-    )
-}
-
-/// Like [`find_references_codebase`] but accepts an exact FQN (for Function/Class)
-/// or owning FQCN (for Method) to avoid short-name collisions across namespaces
-/// and unrelated classes. When `target_fqn` is `None`, behaves identically to
-/// `find_references_codebase`.
-pub fn find_references_codebase_with_target(
-    _word: &str,
-    _all_docs: &[(Url, Arc<ParsedDoc>)],
-    _include_declaration: bool,
-    kind: Option<SymbolKind>,
-    _target_fqn: Option<&str>,
-    _codebase: &mir_analyzer::db::MirDbStorage,
-    _lookup_refs: &RefLookup<'_>,
-) -> Option<Vec<Location>> {
-    match kind {
-        Some(SymbolKind::Function) => {
-            // For now, fall back to the AST walker for functions.
-            // In the future, we could query the MirDb for function info.
-            None
-        }
-
-        // The mir index records ClassReference only for `new Foo()` expressions, not
-        // for type hints, `extends`, `implements`, or `instanceof`. Using the index
-        // would silently drop those sites when any `new` call exists. Always fall
-        // through to the AST walker (class_refs_in_stmts) which covers all sites.
-        Some(SymbolKind::Class) => None,
-
-        Some(SymbolKind::Method) => {
-            // For now, fall back to the AST walker for methods.
-            // In the future, we could use the MirDb to optimize this.
-            None
-        }
-
-        // General walker already handles None kind; codebase index adds no value.
-        None => None,
-
-        // Properties and constants aren't tracked in the mir codebase index; fall
-        // through to the AST walker.
-        Some(SymbolKind::Property) | Some(SymbolKind::Constant) => None,
-    }
-}
+// NOTE: a mir-codebase fast path for references (find_references_codebase)
+// previously lived here, fully stubbed: every symbol kind fell through to the
+// AST walker, and nothing called it. Removed. A real fast path needs mir to
+// record ClassReference for type hints / `extends` / `implements` /
+// `instanceof` (today it only records `new Foo()` sites), so using the index
+// for Class kind would silently drop references.
 
 fn find_references_inner(
     word: &str,

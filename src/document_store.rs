@@ -608,14 +608,6 @@ impl DocumentStore {
         self.analysis_cache.clear();
     }
 
-    /// Stub kept for the legacy `RefLookup` closure shape consumed by
-    /// `find_references_codebase_with_target`. Always returns empty; the
-    /// AST walker handles all reference scanning. Session-backed refs go
-    /// through [`Self::session_references_to`] instead.
-    pub fn get_symbol_refs_salsa(&self, _key: &str) -> Vec<(Arc<str>, u32, u16, u16)> {
-        Vec::new()
-    }
-
     /// Session-backed workspace reference lookup. Returns `(file, line, col)`
     /// locations for every occurrence of `symbol` in the files that the
     /// `AnalysisSession` has ingested so far. The session's reference index
@@ -1234,10 +1226,8 @@ mod tests {
     /// running on cloned snapshots; any `salsa::Cancelled` raised on the
     /// reader side must be caught and retried by `snapshot_query`.
     ///
-    /// Post mir 0.22: `get_symbol_refs_salsa` is a no-op stub (returns empty
-    /// vec), so reader threads cannot exhaust the retry cap or panic on that
-    /// path. The remaining salsa surface (`get_doc_salsa`, `get_index_salsa`)
-    /// is protected by `snapshot_query`'s last-resort host-lock fallback.
+    /// The salsa surface (`get_doc_salsa`, `get_index_salsa`) is protected by
+    /// `snapshot_query`'s last-resort host-lock fallback.
     #[test]
     fn concurrent_reads_and_writes_do_not_panic() {
         use std::sync::Arc;
@@ -1280,9 +1270,8 @@ mod tests {
                         let _ = store.get_index_salsa(u);
                     }
                     // Post mir 0.22: codebase + refs live in the session,
-                    // not salsa. Concurrent-read smoke is now limited to the
+                    // not salsa. Concurrent-read smoke is limited to the
                     // remaining salsa surface (parsed_doc, file_index).
-                    let _ = store.get_symbol_refs_salsa("C0");
                 }
             }));
         }
