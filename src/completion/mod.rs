@@ -594,6 +594,26 @@ pub fn filtered_completions_at(
                 return items;
             }
 
+            // Classes (label, kind, FQN) per other doc, collected lazily once
+            // per request: the sub-namespace branch below falls through to the
+            // default cross-file loop when nothing matches, which previously
+            // re-collected the same lists from every doc's AST a second time.
+            let other_classes_cell: std::cell::OnceCell<
+                Vec<Vec<(String, CompletionItemKind, String)>>,
+            > = std::cell::OnceCell::new();
+            let other_classes = || {
+                other_classes_cell.get_or_init(|| {
+                    other_docs
+                        .iter()
+                        .map(|other| {
+                            let mut classes = Vec::new();
+                            collect_classes_with_ns(&other.program().stmts, "", &mut classes);
+                            classes
+                        })
+                        .collect()
+                })
+            };
+
             // Feature 3: Sub-namespace \ completions outside use statement
             if let (Some(src), Some(pos)) = (source, position)
                 && let Some(prefix) = typed_prefix(Some(src), Some(pos))
@@ -604,9 +624,7 @@ pub fn filtered_completions_at(
                 if !is_use {
                     let prefix_lc = prefix.trim_start_matches('\\').to_lowercase();
                     let mut ns_items: Vec<CompletionItem> = Vec::new();
-                    for other in other_docs {
-                        let mut classes = Vec::new();
-                        collect_classes_with_ns(&other.program().stmts, "", &mut classes);
+                    for classes in other_classes() {
                         for (label, kind, fqn) in classes {
                             if fqn
                                 .get(..prefix_lc.len())
@@ -614,9 +632,9 @@ pub fn filtered_completions_at(
                             {
                                 ns_items.push(CompletionItem {
                                     label: label.clone(),
-                                    kind: Some(kind),
-                                    insert_text: Some(label),
-                                    detail: Some(fqn),
+                                    kind: Some(*kind),
+                                    insert_text: Some(label.clone()),
+                                    detail: Some(fqn.clone()),
                                     ..Default::default()
                                 });
                             }
@@ -695,16 +713,14 @@ pub fn filtered_completions_at(
 
             let cur_ns = current_file_namespace(&doc.program().stmts);
 
-            for other in other_docs {
+            for (other, classes) in other_docs.iter().zip(other_classes()) {
                 // Class-like symbols: add `use` insertion when needed.
-                let mut classes: Vec<(String, CompletionItemKind, String)> = Vec::new();
-                collect_classes_with_ns(&other.program().stmts, "", &mut classes);
                 for (label, kind, fqn) in classes {
                     let additional_text_edits = if let Some(src) = source {
                         let in_same_ns =
-                            !cur_ns.is_empty() && fqn == format!("{}\\{}", cur_ns, label);
+                            !cur_ns.is_empty() && *fqn == format!("{}\\{}", cur_ns, label);
                         let is_global = !fqn.contains('\\');
-                        let already = imports.contains_key(&label);
+                        let already = imports.contains_key(label);
                         if !in_same_ns && !is_global && !already {
                             let pos = use_insert_position(src);
                             Some(vec![TextEdit {
@@ -721,9 +737,13 @@ pub fn filtered_completions_at(
                         None
                     };
                     items.push(CompletionItem {
-                        label,
-                        kind: Some(kind),
-                        detail: if fqn.contains('\\') { Some(fqn) } else { None },
+                        label: label.clone(),
+                        kind: Some(*kind),
+                        detail: if fqn.contains('\\') {
+                            Some(fqn.clone())
+                        } else {
+                            None
+                        },
                         additional_text_edits,
                         ..Default::default()
                     });
