@@ -808,12 +808,34 @@ fn bench_call_hierarchy(c: &mut Criterion) {
         group.bench_function("prepare/laravel_framework", |b| {
             b.iter(|| black_box(prepare_call_hierarchy("Str", &docs)));
         });
-        if let Some(item) = prepare_call_hierarchy("Str", &docs) {
+        // `Str` is a class name; prepare only yields items for functions and
+        // methods, so the incoming/outgoing benches need a method symbol.
+        let method_item = prepare_call_hierarchy("camel", &docs);
+        assert!(
+            method_item.is_some(),
+            "expected `camel` (Str::camel) to resolve in the Laravel fixture"
+        );
+        if let Some(item) = method_item {
             group.bench_function("incoming/laravel_framework", |b| {
                 b.iter(|| black_box(incoming_calls(&item, &docs)));
             });
             group.bench_function("outgoing/laravel_framework", |b| {
                 b.iter(|| black_box(outgoing_calls(&item, &docs)));
+            });
+
+            // Indexed variants: decls_by_name lookups instead of per-callee
+            // workspace scans — the path the server handlers use.
+            use php_lsp::call_hierarchy::{outgoing_calls_indexed, prepare_call_hierarchy_indexed};
+            let wi =
+                php_lsp::db::workspace_index::WorkspaceIndexData::from_files(to_indexes(&docs));
+            let doc_map: std::collections::HashMap<Url, Arc<ParsedDoc>> =
+                docs.iter().cloned().collect();
+            let get_doc = |u: &Url| doc_map.get(u).cloned();
+            group.bench_function("prepare_indexed/laravel_framework", |b| {
+                b.iter(|| black_box(prepare_call_hierarchy_indexed("camel", &wi, &get_doc)));
+            });
+            group.bench_function("outgoing_indexed/laravel_framework", |b| {
+                b.iter(|| black_box(outgoing_calls_indexed(&item, &wi, &get_doc)));
             });
         }
     } else {

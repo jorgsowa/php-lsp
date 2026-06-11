@@ -26,6 +26,70 @@ pub fn prepare_call_hierarchy(
     None
 }
 
+/// Like [`prepare_call_hierarchy`] but resolves candidate declaring files via
+/// the workspace aggregate's `decls_by_name` map instead of walking every
+/// document's AST: O(matches) docs fetched and scanned instead of O(workspace).
+/// `get_doc` resolves a candidate file to its parsed doc (typically
+/// `DocumentStore::get_doc_salsa` — a memo hit for indexed files).
+pub fn prepare_call_hierarchy_indexed(
+    name: &str,
+    wi: &crate::db::workspace_index::WorkspaceIndexData,
+    get_doc: &dyn Fn(&Url) -> Option<Arc<ParsedDoc>>,
+) -> Option<CallHierarchyItem> {
+    let refs = wi.decls_by_name.get(name)?;
+    // Visit each candidate file once, in declaration encounter order.
+    let mut last_file = u32::MAX;
+    for r in refs {
+        if r.file == last_file {
+            continue;
+        }
+        last_file = r.file;
+        let (uri, _) = wi.files.get(r.file as usize)?;
+        let doc = get_doc(uri)?;
+        if let Some(item) = find_declaration_item(name, &doc.program().stmts, doc.view(), uri) {
+            return Some(item);
+        }
+    }
+    None
+}
+
+/// Like [`outgoing_calls`] but resolves the item's own document and every
+/// callee declaration through the workspace aggregate instead of a
+/// pre-materialised all-docs list. Avoids the per-callee O(workspace) scan
+/// that made outgoing calls quadratic in practice.
+pub fn outgoing_calls_indexed(
+    item: &CallHierarchyItem,
+    wi: &crate::db::workspace_index::WorkspaceIndexData,
+    get_doc: &dyn Fn(&Url) -> Option<Arc<ParsedDoc>>,
+) -> Vec<CallHierarchyOutgoingCall> {
+    let Some(doc) = get_doc(&item.uri) else {
+        return Vec::new();
+    };
+    let item_source = doc.source();
+    let mut calls: Vec<(String, Span)> = Vec::new();
+    collect_calls_for(&item.name, &doc.program().stmts, &mut calls);
+
+    let mut result: Vec<CallHierarchyOutgoingCall> = Vec::new();
+    let mut index: HashMap<String, usize> = HashMap::new();
+    let item_line_starts = doc.line_starts();
+    for (callee_name, span) in calls {
+        let call_range = span_to_range(item_source, item_line_starts, span);
+        if let Some(&idx) = index.get(&callee_name) {
+            result[idx].from_ranges.push(call_range);
+        } else if let Some(callee_item) = prepare_call_hierarchy_indexed(&callee_name, wi, get_doc)
+        {
+            let idx = result.len();
+            index.insert(callee_name, idx);
+            result.push(CallHierarchyOutgoingCall {
+                to: callee_item,
+                from_ranges: vec![call_range],
+            });
+        }
+    }
+
+    result
+}
+
 /// Find all callers of `item.name` and return them grouped by enclosing function.
 pub fn incoming_calls(
     item: &CallHierarchyItem,

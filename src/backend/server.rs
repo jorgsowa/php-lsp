@@ -48,7 +48,9 @@ use crate::actions::phpdoc_action::phpdoc_actions;
 use crate::actions::promote_action::promote_constructor_actions;
 use crate::actions::type_action::add_return_type_actions;
 
-use crate::navigation::call_hierarchy::{incoming_calls, outgoing_calls, prepare_call_hierarchy};
+use crate::navigation::call_hierarchy::{
+    incoming_calls, outgoing_calls_indexed, prepare_call_hierarchy_indexed,
+};
 use crate::navigation::declaration::{goto_declaration, goto_declaration_from_index};
 use crate::navigation::definition::{
     find_declaration_range, find_method_in_class_hierarchy, goto_definition,
@@ -1512,16 +1514,28 @@ impl LanguageServer for Backend {
             Some(w) => w,
             None => return Ok(None),
         };
-        let all_docs = self.docs.all_docs_for_scan();
-        Ok(prepare_call_hierarchy(&word, &all_docs).map(|item| vec![item]))
+        // O(matches) lookup via the aggregate's `decls_by_name` map instead
+        // of scanning every workspace doc.
+        let wi = self.workspace_index_async().await;
+        let docs = Arc::clone(&self.docs);
+        let get_doc = move |u: &Url| docs.get_doc_salsa(u);
+        Ok(prepare_call_hierarchy_indexed(&word, &wi, &get_doc).map(|item| vec![item]))
     }
 
     async fn incoming_calls(
         &self,
         params: CallHierarchyIncomingCallsParams,
     ) -> Result<Option<Vec<CallHierarchyIncomingCall>>> {
-        let all_docs = self.docs.all_docs_for_scan();
-        let calls = incoming_calls(&params.item, &all_docs);
+        // Genuinely needs every doc (call sites are body-level, not indexed);
+        // run the workspace scan on the blocking pool.
+        let docs = Arc::clone(&self.docs);
+        let item = params.item;
+        let calls = tokio::task::spawn_blocking(move || {
+            let all_docs = docs.all_docs_for_scan();
+            incoming_calls(&item, &all_docs)
+        })
+        .await
+        .unwrap_or_default();
         Ok(if calls.is_empty() { None } else { Some(calls) })
     }
 
@@ -1529,8 +1543,17 @@ impl LanguageServer for Backend {
         &self,
         params: CallHierarchyOutgoingCallsParams,
     ) -> Result<Option<Vec<CallHierarchyOutgoingCall>>> {
-        let all_docs = self.docs.all_docs_for_scan();
-        let calls = outgoing_calls(&params.item, &all_docs);
+        // Per-callee declaration lookups go through `decls_by_name` — the old
+        // path re-scanned the whole workspace once per distinct callee.
+        let wi = self.workspace_index_async().await;
+        let docs = Arc::clone(&self.docs);
+        let item = params.item;
+        let calls = tokio::task::spawn_blocking(move || {
+            let get_doc = |u: &Url| docs.get_doc_salsa(u);
+            outgoing_calls_indexed(&item, &wi, &get_doc)
+        })
+        .await
+        .unwrap_or_default();
         Ok(if calls.is_empty() { None } else { Some(calls) })
     }
 
@@ -1788,8 +1811,16 @@ impl LanguageServer for Backend {
             Some(d) => d,
             None => return Ok(None),
         };
-        let all_docs = self.docs.all_docs_for_scan();
-        let lenses = code_lenses(uri, &doc, &all_docs);
+        // Reference-count lenses scan every doc per declaration; run the
+        // whole computation on the blocking pool.
+        let docs = Arc::clone(&self.docs);
+        let uri_owned = uri.clone();
+        let lenses = tokio::task::spawn_blocking(move || {
+            let all_docs = docs.all_docs_for_scan();
+            code_lenses(&uri_owned, &doc, &all_docs)
+        })
+        .await
+        .unwrap_or_default();
         Ok(if lenses.is_empty() {
             None
         } else {
