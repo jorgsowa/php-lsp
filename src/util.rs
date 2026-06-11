@@ -381,6 +381,33 @@ pub(crate) fn utf16_offset_to_byte(s: &str, utf16_offset: usize) -> usize {
     s.len()
 }
 
+/// Convert an LSP `Position` (line + UTF-16 character column) into a byte
+/// offset in `text`. Out-of-range lines clamp to `text.len()`; out-of-range
+/// columns clamp to the end of the line (before its `\n`). Used by
+/// incremental text sync.
+pub(crate) fn position_to_byte_offset(text: &str, pos: Position) -> usize {
+    let mut line_start = 0usize;
+    for _ in 0..pos.line {
+        match text[line_start..].find('\n') {
+            Some(i) => line_start += i + 1,
+            None => return text.len(),
+        }
+    }
+    let line_end = text[line_start..]
+        .find('\n')
+        .map_or(text.len(), |i| line_start + i);
+    line_start + utf16_offset_to_byte(&text[line_start..line_end], pos.character as usize)
+}
+
+/// Apply one LSP incremental content change (replace `range` with `new_text`)
+/// to `text`. A malformed range whose end precedes its start degrades to an
+/// insertion at `start`.
+pub(crate) fn apply_content_change(text: &mut String, range: Range, new_text: &str) {
+    let start = position_to_byte_offset(text, range.start);
+    let end = position_to_byte_offset(text, range.end).max(start);
+    text.replace_range(start..end, new_text);
+}
+
 /// Convert a UTF-8 byte offset into a UTF-16 code unit count.
 ///
 /// LSP `Position.character` is measured in UTF-16 code units.  Given a string
@@ -609,6 +636,61 @@ mod tests {
         let s = "a😀b";
         assert_eq!(utf16_offset_to_byte(s, 1), 1);
         assert_eq!(utf16_offset_to_byte(s, 3), 5);
+    }
+
+    #[test]
+    fn position_to_byte_offset_basic() {
+        let s = "<?php\necho 1;\n";
+        let p = |line, character| Position { line, character };
+        assert_eq!(position_to_byte_offset(s, p(0, 0)), 0);
+        assert_eq!(position_to_byte_offset(s, p(0, 5)), 5);
+        assert_eq!(position_to_byte_offset(s, p(1, 0)), 6);
+        assert_eq!(position_to_byte_offset(s, p(1, 4)), 10);
+        // Column past end of line clamps to before the newline.
+        assert_eq!(position_to_byte_offset(s, p(0, 99)), 5);
+        // Line past end of text clamps to text length.
+        assert_eq!(position_to_byte_offset(s, p(9, 0)), s.len());
+    }
+
+    #[test]
+    fn position_to_byte_offset_multibyte() {
+        // 😀 is one char, 4 UTF-8 bytes, 2 UTF-16 units.
+        let s = "a😀b\nx";
+        let p = |line, character| Position { line, character };
+        assert_eq!(position_to_byte_offset(s, p(0, 1)), 1);
+        assert_eq!(position_to_byte_offset(s, p(0, 3)), 5);
+        assert_eq!(position_to_byte_offset(s, p(1, 0)), 7);
+        assert_eq!(position_to_byte_offset(s, p(1, 1)), 8);
+    }
+
+    #[test]
+    fn apply_content_change_replaces_inserts_deletes() {
+        let r = |sl, sc, el, ec| Range {
+            start: Position {
+                line: sl,
+                character: sc,
+            },
+            end: Position {
+                line: el,
+                character: ec,
+            },
+        };
+        // Replacement within a line.
+        let mut s = String::from("<?php\necho one;\n");
+        apply_content_change(&mut s, r(1, 5, 1, 8), "two");
+        assert_eq!(s, "<?php\necho two;\n");
+        // Pure insertion (empty range).
+        let mut s = String::from("ab\ncd\n");
+        apply_content_change(&mut s, r(1, 1, 1, 1), "X");
+        assert_eq!(s, "ab\ncXd\n");
+        // Deletion spanning a newline (end position at start of next line).
+        let mut s = String::from("ab\ncd\nef\n");
+        apply_content_change(&mut s, r(0, 2, 1, 0), "");
+        assert_eq!(s, "abcd\nef\n");
+        // Malformed range (end before start) degrades to insertion.
+        let mut s = String::from("abc");
+        apply_content_change(&mut s, r(0, 2, 0, 1), "X");
+        assert_eq!(s, "abXc");
     }
 
     #[test]

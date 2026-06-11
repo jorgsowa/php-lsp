@@ -231,7 +231,7 @@ impl LanguageServer for Backend {
                 text_document_sync: Some(TextDocumentSyncCapability::Options(
                     TextDocumentSyncOptions {
                         open_close: Some(true),
-                        change: Some(TextDocumentSyncKind::FULL),
+                        change: Some(TextDocumentSyncKind::INCREMENTAL),
                         will_save: Some(true),
                         will_save_wait_until: Some(true),
                         save: Some(TextDocumentSyncSaveOptions::SaveOptions(SaveOptions {
@@ -734,10 +734,25 @@ impl LanguageServer for Backend {
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
         guard_async("did_change", async move {
             let uri = params.text_document.uri;
-            let text = match params.content_changes.into_iter().last() {
-                Some(c) => c.text,
-                None => return,
-            };
+            // Incremental sync: apply changes in order to the live buffer.
+            // Each ranged change refers to the document state produced by the
+            // previous one; a change without a range is a full-document
+            // replacement (clients may still send those under INCREMENTAL).
+            let mut updated: Option<String> = None;
+            for change in params.content_changes {
+                match change.range {
+                    None => updated = Some(change.text),
+                    Some(range) => {
+                        let mut cur = match updated.take() {
+                            Some(t) => t,
+                            None => self.get_open_text(&uri).unwrap_or_default(),
+                        };
+                        crate::util::apply_content_change(&mut cur, range, &change.text);
+                        updated = Some(cur);
+                    }
+                }
+            }
+            let Some(text) = updated else { return };
 
             // Store text immediately and capture the version token.
             // Features (completion, hover, …) see the new text instantly while

@@ -410,6 +410,41 @@ impl TestServer {
         self.client.wait_for_diagnostics(&uri).await
     }
 
+    /// Send an incremental `didChange` with ranged content changes and wait
+    /// for the resulting `publishDiagnostics`. Each entry is
+    /// `(start_line, start_char, end_line, end_char, new_text)`; changes are
+    /// applied in order, each against the result of the previous one.
+    pub async fn change_incremental(
+        &mut self,
+        path: &str,
+        version: i32,
+        changes: &[(u32, u32, u32, u32, &str)],
+    ) -> Value {
+        let uri = self.uri(path);
+        let content_changes: Vec<Value> = changes
+            .iter()
+            .map(|(sl, sc, el, ec, text)| {
+                json!({
+                    "range": {
+                        "start": { "line": sl, "character": sc },
+                        "end": { "line": el, "character": ec },
+                    },
+                    "text": text,
+                })
+            })
+            .collect();
+        self.client
+            .notify(
+                "textDocument/didChange",
+                json!({
+                    "textDocument": { "uri": uri, "version": version },
+                    "contentChanges": content_changes,
+                }),
+            )
+            .await;
+        self.client.wait_for_diagnostics(&uri).await
+    }
+
     pub async fn wait_for_index_ready(&mut self) -> &mut Self {
         self.client.wait_for_index_ready().await;
         self

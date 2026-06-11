@@ -17,6 +17,80 @@ fn render_def_location(resp: &serde_json::Value, root_uri: &str) -> String {
 }
 
 #[tokio::test]
+async fn incremental_ranged_change_applies_to_buffer() {
+    let mut server = TestServer::new().await;
+    server
+        .open(
+            "inc.php",
+            "<?php\nfunction oldName(): void {}\noldName();\n",
+        )
+        .await;
+
+    // Replace `oldName` with `newName` in both the declaration (line 1,
+    // cols 9..16) and the call (line 2, cols 0..7) — two ranged changes in
+    // one didChange, second range valid against the result of the first.
+    server
+        .change_incremental(
+            "inc.php",
+            2,
+            &[(1, 9, 1, 16, "newName"), (2, 0, 2, 7, "newName")],
+        )
+        .await;
+
+    let out = server.hover("inc.php", 2, 1).await;
+    let rendered = common::render_hover(&out);
+    expect![[r#"
+        ```php
+        function newName(): void
+        ```"#]]
+    .assert_eq(&rendered);
+}
+
+#[tokio::test]
+async fn incremental_insertion_and_newline_deletion() {
+    let mut server = TestServer::new().await;
+    let root_uri = server.uri("");
+    server
+        .open("ins.php", "<?php\nfunction target(): void {}\n\n\n")
+        .await;
+
+    // Insert a call on line 2 (empty), then delete the now-trailing blank
+    // line 3 by removing its newline span.
+    server
+        .change_incremental("ins.php", 2, &[(2, 0, 2, 0, "target();"), (3, 0, 4, 0, "")])
+        .await;
+
+    let resp = server.definition("ins.php", 2, 2).await;
+    let out = render_def_location(&resp, &root_uri);
+    expect!["ins.php:1:9-1:15"].assert_eq(&out);
+}
+
+#[tokio::test]
+async fn incremental_change_with_multibyte_text() {
+    let mut server = TestServer::new().await;
+    server
+        .open(
+            "emoji.php",
+            "<?php\n// 😀 marker\nfunction greeter(): string { return ''; }\n",
+        )
+        .await;
+
+    // Replace `''` (line 2, cols 36..38) with a multibyte literal; the range
+    // is in UTF-16 columns and must land after the emoji comment untouched.
+    server
+        .change_incremental("emoji.php", 2, &[(2, 36, 2, 38, "'héllo'")])
+        .await;
+
+    let out = server.hover("emoji.php", 2, 10).await;
+    let rendered = common::render_hover(&out);
+    expect![[r#"
+        ```php
+        function greeter(): string
+        ```"#]]
+    .assert_eq(&rendered);
+}
+
+#[tokio::test]
 async fn hover_reflects_didchange_new_symbol() {
     let mut server = TestServer::new().await;
     server.open("edit.php", "<?php\n").await;
