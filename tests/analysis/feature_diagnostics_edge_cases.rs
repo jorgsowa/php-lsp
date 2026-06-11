@@ -642,3 +642,77 @@ function test(int $n): void {
     )
     .await;
 }
+
+// ── diagnostics.missingTypes ──────────────────────────────────────────────────
+
+/// `diagnostics.missingTypes` is off by default — interface methods without
+/// return/param annotations are not flagged unless opted in.
+#[tokio::test]
+async fn missing_types_off_by_default() {
+    let mut s = TestServer::new().await;
+    s.check_no_diagnostics(
+        r#"<?php
+interface Logger {
+    public function log($message);
+}
+"#,
+    )
+    .await;
+}
+
+/// With `diagnostics.missingTypes` on, missing param type annotations on
+/// interface methods are reported (return type is provided to isolate the param lint).
+#[tokio::test]
+async fn missing_types_opt_in_flags_interface_method() {
+    let (mut s, _) = TestServer::new_with_options(json!({
+        "diagnostics": { "missingTypes": true }
+    }))
+    .await;
+    s.check_diagnostics(
+        r#"<?php
+interface Logger {
+    public function log($message): void;
+//                      ^^^^^^^^ info: Parameter $message of Logger::log() has no type annotation
+}
+"#,
+    )
+    .await;
+}
+
+// ── diagnostics.mixedUsage ────────────────────────────────────────────────────
+
+/// `diagnostics.mixedUsage` is off by default — passing `mixed` to a typed
+/// parameter produces no diagnostic unless opted in.
+#[tokio::test]
+async fn mixed_usage_off_by_default() {
+    let mut s = TestServer::new().await;
+    s.check_no_diagnostics(
+        r#"<?php
+function takesString(string $s): void {}
+function test(mixed $v): void {
+    takesString($v);
+}
+"#,
+    )
+    .await;
+}
+
+/// With `diagnostics.mixedUsage` on, passing `mixed` to a typed parameter
+/// emits a MixedArgument info diagnostic.
+#[tokio::test]
+async fn mixed_usage_opt_in_flags_mixed_argument() {
+    let (mut s, _) = TestServer::new_with_options(json!({
+        "diagnostics": { "mixedUsage": true }
+    }))
+    .await;
+    s.check_diagnostics(
+        r#"<?php
+function takesString(string $s): void {}
+function test(mixed $v): void {
+    takesString($v);
+//              ^^ info: Argument $s of takesString() is mixed
+}
+"#,
+    )
+    .await;
+}

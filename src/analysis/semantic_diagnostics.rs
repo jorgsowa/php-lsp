@@ -115,6 +115,20 @@ fn issue_passes_filter(issue: &mir_issues::Issue, cfg: &DiagnosticsConfig) -> bo
         | IssueKind::UnusedMethod { .. }
         | IssueKind::UnusedProperty { .. }
         | IssueKind::UnusedFunction { .. } => cfg.unused_symbols,
+        // mir 0.36 missing-type-annotation lints. Off by default; opt in via
+        // `diagnostics.missingTypes`.
+        IssueKind::MissingReturnType { .. }
+        | IssueKind::MissingParamType { .. }
+        | IssueKind::MissingPropertyType { .. } => cfg.missing_types,
+        // mir 0.36 mixed-type usage lints. Off by default; opt in via
+        // `diagnostics.mixedUsage`.
+        IssueKind::MixedArgument { .. }
+        | IssueKind::MixedAssignment { .. }
+        | IssueKind::MixedMethodCall { .. }
+        | IssueKind::MixedPropertyFetch { .. }
+        | IssueKind::MixedPropertyAssignment { .. }
+        | IssueKind::MixedArrayAccess
+        | IssueKind::MixedArrayOffset => cfg.mixed_usage,
         _ => true,
     }
 }

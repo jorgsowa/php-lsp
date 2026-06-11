@@ -469,16 +469,13 @@ async fn multi_psr4_php81_array_is_list_available() {
     s.wait_for_index_ready().await;
 
     // array_is_list must resolve under PHP 8.1 (no UnknownFunction error).
-    // mir ≥0.36 additionally reports an info-level MixedArgument lint for the
-    // `mixed` parameter — expected, and unrelated to availability.
-    s.check_diagnostics(
+    s.check_no_diagnostics(
         r#"<?php
 namespace Lib\Util;
 
 class ArrayHelper {
     public function isList(mixed $value): bool {
         if (array_is_list($value)) {
-//                        ^^^^^^ info: Argument $array of array_is_list() is mixed
             return true;
         }
         return false;

@@ -26,6 +26,14 @@ pub struct DiagnosticsConfig {
     /// LSP doesn't add noisy warnings to existing workspaces without an
     /// opt-in. Toggle via `diagnostics.unusedSymbols` in initializationOptions.
     pub unused_symbols: bool,
+    /// Missing type annotations on interface methods and class properties
+    /// (MissingReturnType, MissingParamType, MissingPropertyType). Off by
+    /// default; opt in via `diagnostics.missingTypes`.
+    pub missing_types: bool,
+    /// Mixed-type usage lints: passing `mixed` to a typed parameter, assigning
+    /// mixed to a typed property, array/property access on mixed, etc. Off by
+    /// default; opt in via `diagnostics.mixedUsage`.
+    pub mixed_usage: bool,
 }
 
 impl Default for DiagnosticsConfig {
@@ -40,6 +48,8 @@ impl Default for DiagnosticsConfig {
             deprecated_calls: true,
             duplicate_declarations: true,
             unused_symbols: false,
+            missing_types: false,
+            mixed_usage: false,
         }
     }
 }
@@ -69,6 +79,14 @@ impl DiagnosticsConfig {
         cfg.duplicate_declarations = flag("duplicateDeclarations");
         cfg.unused_symbols = obj
             .get("unusedSymbols")
+            .and_then(|x| x.as_bool())
+            .unwrap_or(false);
+        cfg.missing_types = obj
+            .get("missingTypes")
+            .and_then(|x| x.as_bool())
+            .unwrap_or(false);
+        cfg.mixed_usage = obj
+            .get("mixedUsage")
             .and_then(|x| x.as_bool())
             .unwrap_or(false);
         cfg
