@@ -153,11 +153,11 @@ pub fn find_method_in_class_hierarchy(
         std::sync::Arc<crate::file_index::FileIndex>,
     )],
 ) -> Option<Location> {
-    let mut queue: Vec<String> = vec![class_name.to_owned()];
+    let mut queue: std::collections::VecDeque<String> =
+        std::collections::VecDeque::from([class_name.to_owned()]);
     let mut visited = std::collections::HashSet::new();
 
-    while !queue.is_empty() {
-        let current = queue.remove(0);
+    while let Some(current) = queue.pop_front() {
         if !visited.insert(current.clone()) {
             continue;
         }
@@ -181,13 +181,13 @@ pub fn find_method_in_class_hierarchy(
                 }
                 // Traits first (PHP MRO), then `@mixin` targets, then parent.
                 for trt in &cls.traits {
-                    queue.push(trt.as_ref().to_owned());
+                    queue.push_back(trt.as_ref().to_owned());
                 }
                 for mx in &cls.mixins {
-                    queue.push(mx.as_ref().to_owned());
+                    queue.push_back(mx.as_ref().to_owned());
                 }
                 if let Some(parent) = &cls.parent {
-                    queue.push(parent.as_ref().to_owned());
+                    queue.push_back(parent.as_ref().to_owned());
                 }
             }
         }
