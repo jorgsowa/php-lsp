@@ -1085,8 +1085,8 @@ dependencies = [
 
 [[package]]
 name = "mir-analyzer"
-version = "0.35.1"
-source = "git+https://github.com/jorgsowa/mir?tag=v0.35.1#2c49e6897e06da24a4f801f51a6eb5d5aa8a9373"
+version = "0.36.0"
+source = "git+https://github.com/jorgsowa/mir?tag=v0.36.0#f853bf661b65e3ae519de3ae882f12cba872395d"
 dependencies = [
  "bincode 1.3.3",
  "blake3",
@@ -1111,8 +1111,8 @@ dependencies = [
 
 [[package]]
 name = "mir-codebase"
-version = "0.35.1"
-source = "git+https://github.com/jorgsowa/mir?tag=v0.35.1#2c49e6897e06da24a4f801f51a6eb5d5aa8a9373"
+version = "0.36.0"
+source = "git+https://github.com/jorgsowa/mir?tag=v0.36.0#f853bf661b65e3ae519de3ae882f12cba872395d"
 dependencies = [
  "dashmap 6.2.1",
  "indexmap",
@@ -1123,8 +1123,8 @@ dependencies = [
 
 [[package]]
 name = "mir-issues"
-version = "0.35.1"
-source = "git+https://github.com/jorgsowa/mir?tag=v0.35.1#2c49e6897e06da24a4f801f51a6eb5d5aa8a9373"
+version = "0.36.0"
+source = "git+https://github.com/jorgsowa/mir?tag=v0.36.0#f853bf661b65e3ae519de3ae882f12cba872395d"
 dependencies = [
  "mir-types",
  "owo-colors",
@@ -1134,8 +1134,8 @@ dependencies = [
 
 [[package]]
 name = "mir-types"
-version = "0.35.1"
-source = "git+https://github.com/jorgsowa/mir?tag=v0.35.1#2c49e6897e06da24a4f801f51a6eb5d5aa8a9373"
+version = "0.36.0"
+source = "git+https://github.com/jorgsowa/mir?tag=v0.36.0#f853bf661b65e3ae519de3ae882f12cba872395d"
 dependencies = [
  "dashmap 6.2.1",
  "indexmap",
