@@ -345,6 +345,7 @@ impl LanguageServer for Backend {
                     file_operations: Some(WorkspaceFileOperationsServerCapabilities {
                         will_rename: Some(php_file_op()),
                         did_rename: Some(php_file_op()),
+                        will_create: Some(php_file_op()),
                         did_create: Some(php_file_op()),
                         will_delete: Some(php_file_op()),
                         did_delete: Some(php_file_op()),

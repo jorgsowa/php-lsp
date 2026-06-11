@@ -146,3 +146,25 @@ async fn will_create_files_multiple_files_get_independent_stubs() {
         0:0-0:0 → "<?php\n\ndeclare(strict_types=1);\n\nnamespace App;\n\nclass Beta\n{\n}\n""#]]
     .assert_eq(&snap);
 }
+
+/// The willCreateFiles handler is only reachable when the capability is
+/// advertised — spec-compliant clients gate on it. Regression pin for the
+/// capability registration (the handler itself is tested above).
+#[tokio::test]
+async fn file_operation_capabilities_include_will_create() {
+    let (_server, resp) = TestServer::new_with_options(serde_json::json!({})).await;
+    let ops = &resp["result"]["capabilities"]["workspace"]["fileOperations"];
+    for cap in [
+        "willCreate",
+        "didCreate",
+        "willRename",
+        "didRename",
+        "willDelete",
+        "didDelete",
+    ] {
+        assert!(
+            ops[cap].is_object(),
+            "missing workspace.fileOperations.{cap} capability, got: {ops}"
+        );
+    }
+}
