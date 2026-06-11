@@ -82,13 +82,13 @@ pub struct WorkspaceIndexData {
     pub decls_by_name: HashMap<String, Vec<DeclRef>>,
 }
 
-fn build_maps(
-    files: &[(Url, Arc<FileIndex>)],
-) -> (
+type BuildMapsResult = (
     HashMap<String, Vec<ClassRef>>,
     HashMap<Arc<str>, Vec<ClassRef>>,
     HashMap<String, Vec<DeclRef>>,
-) {
+);
+
+fn build_maps(files: &[(Url, Arc<FileIndex>)]) -> BuildMapsResult {
     let mut classes_by_name: HashMap<String, Vec<ClassRef>> = HashMap::new();
     let mut subtypes_of: HashMap<Arc<str>, Vec<ClassRef>> = HashMap::new();
     let mut decls_by_name: HashMap<String, Vec<DeclRef>> = HashMap::new();

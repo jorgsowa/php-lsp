@@ -2,6 +2,41 @@
 
 All notable changes to php-lsp are documented here.
 
+## [0.10.0] — 2026-06-12
+
+### Features
+
+- **Salsa GC — tracked `SourceFile`**: `SourceFile` is now a `#[salsa::tracked]` struct produced by `workspace_files()`, so salsa GC frees its memo heap (`parsed_doc`, `file_index`, `symbol_map`) when a file is removed from the workspace. A separate immortal `FileText` input per URI survives delete/reopen cycles so no new salsa inputs accumulate on churn. Delete/reopen cycles no longer grow memory.
+- **Completion inside strings/comments suppressed**: A state-machine scanner (`cursor_in_string_or_comment`) prevents completion from triggering inside string literals, `//`/`#` line comments, and `/* */` block comments. PHP 8 `#[…]` attribute syntax is correctly excluded from comment detection.
+- **`missingTypes` and `mixedUsage` diagnostic toggles**: mir v0.36.0's `MissingReturnType`/`MissingParamType`/`MissingPropertyType` and `Mixed*` lints are now surfaced as opt-in categories (`diagnostics.missingTypes`, `diagnostics.mixedUsage`), both off by default to avoid noise on existing codebases.
+
+### Performance
+
+- **Blocking pool for mir and workspace-index rebuilds**: `cached_analysis` (mir Pass 1+2) and `get_workspace_index_salsa` (cold FileIndex walk) now run via `spawn_blocking` so they no longer stall the tokio executor under concurrent requests.
+- **Incremental text sync**: `TextDocumentSyncKind::INCREMENTAL` — clients send only changed ranges instead of full document text on every keystroke, significantly reducing serialisation overhead for large files.
+- **Allocation-free fuzzy matching**: `fuzzy_camel_match` previously allocated two lowercase `String`s and two `Vec<char>` per candidate. `FuzzyQuery` now holds the pattern pre-processed once; matching against candidates is heap-free — cuts hundreds of thousands of allocations per workspace-symbol picker keystroke at Laravel scale.
+- **`O(1)` definition cross-file fallback**: `find_declaration_in_indexes` now looks up candidates through a `decls_by_name` reverse map on the salsa-memoised `WorkspaceIndexData` instead of scanning every `FileIndex` linearly.
+- **`TypeMap` cached per document revision**: `TypeMap::from_doc_with_meta` was called up to twice per completion request; it is now memoised in `DocumentStore::cached_type_map`, keyed by source-`Arc` pointer equality, and shared across all completion paths for the same document revision.
+- **Per-request class-list collected once**: The sub-namespace and cross-file completion branches previously each collected class lists from all open docs; both now share a single `OnceCell`-backed collection per request.
+- **`O(log N)` source-file lookup**: Four `DocumentStore` accessors replaced a linear `.find(|sf| sf.uri == uri)` scan with a binary search over `Workspace::files` (kept sorted by URI by `sync_workspace_files`).
+- **Semantic-tokens range pruning**: `semantic_tokens_range` now skips top-level statements and class/trait members whose spans don't overlap the requested range instead of walking the full AST and post-filtering.
+- **Call-hierarchy index-backed**: `prepare_call_hierarchy` and `outgoing_calls` resolve candidate files through `decls_by_name` and fetch only those documents; full-workspace scans route through `spawn_blocking`.
+- **Definition BFS queue**: Class-hierarchy BFS in `goto_definition` switched from `Vec::remove(0)` (O(n²)) to `VecDeque::pop_front` (O(1)).
+
+### Bug Fixes
+
+- **`goto_implementation` with FQN cursor**: Hovering a use-import line returns a fully-qualified name; the workspace index keys `subtypes_of` by short name, so the lookup was empty. The FQN is now shortened before the index lookup.
+- **Stale diagnostics after `phpVersion` change**: `analysis_cache` keyed entries by source-content pointer only; changing `phpVersion` left cached `FileAnalysis` results from the old version alive for unchanged files. The cache is now cleared on `phpVersion` change.
+- **`indexReady` delayed by salsa warmup**: The `$/php-lsp/indexReady` notification was blocked behind a full per-file salsa warmup, causing workspace features to be permanently unavailable on large codebases within normal timeouts. The notification is now sent before warmup begins.
+- **`signatureHelp` method resolution**: `find_params_in_index` only searched `idx.functions`; method calls (`$obj->method()`) never returned a signature. The receiver type is now resolved and the correct class's methods are searched.
+- **`definition` aliased namespace prefix**: `#[ORM\Column]` with `use Doctrine\ORM\Mapping as ORM` silently failed — `psr4_goto` received `"ORM\Column"` which has no PSR-4 mapping. The first segment is now expanded through the file's class import map before PSR-4 resolution.
+- **Workspace symbol substring match**: `fuzzy_camel_match` only matched prefixes and abbreviations; querying `"Controller"` never matched `"BlogController"`. A substring fallback is now applied when prefix/abbreviation matching fails.
+- **`workspace/willCreateFiles` capability**: The will-create handler was fully implemented but the capability was never registered in `workspace.fileOperations`, so spec-compliant clients never sent the notification. All six `fileOperations` capabilities are now advertised.
+
+### Dependencies
+
+- Upgraded `mir-{analyzer,codebase,issues,types}` from 0.35.1 to 0.36.0: adds `DuplicateInterface`, `DuplicateTrait`, `DuplicateEnum`, and `DuplicateFunction` issue kinds (the local duplicate-declaration AST walk is removed), plus `MissingReturnType`/`MissingParamType`/`MissingPropertyType` and `Mixed*` lints.
+
 ## [0.9.0] — 2026-06-08
 
 ### Features

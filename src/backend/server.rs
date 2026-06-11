@@ -350,7 +350,6 @@ impl LanguageServer for Backend {
                         did_create: Some(php_file_op()),
                         will_delete: Some(php_file_op()),
                         did_delete: Some(php_file_op()),
-                        ..Default::default()
                     }),
                 }),
                 linked_editing_range_provider: feat
@@ -525,9 +524,9 @@ impl LanguageServer for Backend {
                 // requests don't pay the full parse cost on the first hit.
                 // Fire-and-forget: a request arriving mid-warmup retries via
                 // snapshot_query's salsa::Cancelled handling.
-                let _ = tokio::task::spawn_blocking(move || {
+                drop(tokio::task::spawn_blocking(move || {
                     salsa_docs.get_workspace_index_salsa();
-                });
+                }));
             });
         }
 
@@ -2227,7 +2226,7 @@ impl LanguageServer for Backend {
         let items = tokio::task::spawn_blocking(move || {
             all_parse_diags
                 .into_iter()
-                .filter_map(|(uri, parse_diags, version)| {
+                .map(|(uri, parse_diags, version)| {
                     let sem_diags = docs
                         .get_semantic_issues_salsa(&uri)
                         .map(|issues| {
@@ -2245,16 +2244,16 @@ impl LanguageServer for Backend {
                     // Per LSP §3.17.7: return Unchanged only when the client already has
                     // this exact result_id cached for this URI; otherwise return Full.
                     if previous_map.get(&uri) == Some(&result_id) {
-                        Some(WorkspaceDocumentDiagnosticReport::Unchanged(
+                        WorkspaceDocumentDiagnosticReport::Unchanged(
                             WorkspaceUnchangedDocumentDiagnosticReport {
                                 uri,
                                 version,
                                 unchanged_document_diagnostic_report:
                                     UnchangedDocumentDiagnosticReport { result_id },
                             },
-                        ))
+                        )
                     } else {
-                        Some(WorkspaceDocumentDiagnosticReport::Full(
+                        WorkspaceDocumentDiagnosticReport::Full(
                             WorkspaceFullDocumentDiagnosticReport {
                                 uri,
                                 version,
@@ -2263,7 +2262,7 @@ impl LanguageServer for Backend {
                                     items: all_diags,
                                 },
                             },
-                        ))
+                        )
                     }
                 })
                 .collect::<Vec<_>>()
