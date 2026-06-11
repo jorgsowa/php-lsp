@@ -600,6 +600,83 @@ fn to_indexes(docs: &OtherDocs) -> Vec<(Url, Arc<FileIndex>)> {
         .collect()
 }
 
+fn bench_semantic_tokens(c: &mut Criterion) {
+    use php_lsp::analysis::semantic_tokens::{semantic_tokens, semantic_tokens_range};
+
+    let mut group = c.benchmark_group("semantic_tokens");
+    let medium = Arc::new(ParsedDoc::parse(MEDIUM.to_owned()));
+    group.bench_function("full_medium", |b| {
+        b.iter(|| black_box(semantic_tokens(MEDIUM, &medium)));
+    });
+
+    if let Some(docs) = laravel_docs() {
+        // Largest file in the fixture — worst case for full-document requests
+        // and for the collect-then-filter cost of range requests.
+        let (_, big) = docs
+            .iter()
+            .max_by_key(|(_, d)| d.source().len())
+            .expect("laravel fixture is non-empty");
+        eprintln!(
+            "semantic_tokens largest laravel file: {} bytes",
+            big.source().len()
+        );
+        group.sample_size(20);
+        group.bench_function("full_laravel_largest", |b| {
+            b.iter(|| black_box(semantic_tokens(big.source(), big)));
+        });
+        // Viewport-sized range request: editors ask for ~50-100 lines.
+        let viewport = tower_lsp::lsp_types::Range {
+            start: Position {
+                line: 0,
+                character: 0,
+            },
+            end: Position {
+                line: 50,
+                character: 0,
+            },
+        };
+        group.bench_function("range_viewport_laravel_largest", |b| {
+            b.iter(|| black_box(semantic_tokens_range(big.source(), big, viewport)));
+        });
+    } else {
+        eprintln!("Laravel fixture not found — skipping semantic_tokens/laravel benches");
+    }
+    group.finish();
+}
+
+fn bench_inlay_hints(c: &mut Criterion) {
+    use php_lsp::analysis::inlay_hints::inlay_hints;
+
+    let full_range = tower_lsp::lsp_types::Range {
+        start: Position {
+            line: 0,
+            character: 0,
+        },
+        end: Position {
+            line: u32::MAX,
+            character: 0,
+        },
+    };
+
+    let mut group = c.benchmark_group("inlay_hints");
+    let medium = Arc::new(ParsedDoc::parse(MEDIUM.to_owned()));
+    group.bench_function("medium_no_workspace", |b| {
+        b.iter(|| black_box(inlay_hints(MEDIUM, &medium, None, full_range, &[])));
+    });
+
+    if let Some(docs) = laravel_docs() {
+        let indexes = to_indexes(&docs);
+        let ctrl = Arc::new(ParsedDoc::parse(CONTROLLER.to_owned()));
+        group.sample_size(20);
+        group.bench_function("controller_laravel_workspace", |b| {
+            b.iter(|| black_box(inlay_hints(CONTROLLER, &ctrl, None, full_range, &indexes)));
+        });
+    } else {
+        eprintln!("Laravel fixture not found — skipping inlay_hints/laravel bench");
+    }
+    group.finish();
+}
+
 fn bench_definition_index_fallback(c: &mut Criterion) {
     let Some(docs) = laravel_docs() else {
         eprintln!("Laravel fixture not found — skipping definition/index_fallback_*");
@@ -855,6 +932,8 @@ criterion_group!(
     bench_hover,
     bench_definition,
     bench_definition_index_fallback,
+    bench_semantic_tokens,
+    bench_inlay_hints,
     bench_completion,
     bench_references,
     bench_references_laravel,
