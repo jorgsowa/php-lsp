@@ -51,8 +51,7 @@ use crate::actions::type_action::add_return_type_actions;
 use crate::navigation::call_hierarchy::{incoming_calls, outgoing_calls, prepare_call_hierarchy};
 use crate::navigation::declaration::{goto_declaration, goto_declaration_from_index};
 use crate::navigation::definition::{
-    find_declaration_in_indexes, find_declaration_range, find_method_in_class_hierarchy,
-    goto_definition,
+    find_declaration_range, find_method_in_class_hierarchy, goto_definition,
 };
 use crate::navigation::implementation::{
     find_implementations, find_implementations_from_workspace,
@@ -1024,10 +1023,13 @@ impl LanguageServer for Backend {
                 }
             }
 
-            // Cross-file: use FileIndex (no disk I/O for background files).
-            let other_indexes = self.docs.other_indexes(uri);
+            // Cross-file: O(1) lookup in the salsa-memoized aggregate's
+            // `decls_by_name` map (no disk I/O for background files). The
+            // current file is excluded — it was already searched above with
+            // accurate AST ranges.
+            let wi = self.workspace_index_async().await;
             if let Some(word) = crate::util::word_at_position(&source, position)
-                && let Some(loc) = find_declaration_in_indexes(&word, &other_indexes)
+                && let Some(loc) = wi.find_declaration(&word, Some(uri))
             {
                 let refined = self
                     .docs

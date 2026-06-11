@@ -39,6 +39,32 @@ pub struct ClassRef {
     pub class: u32,
 }
 
+/// What kind of declaration a [`DeclRef`] points at. Drives the per-kind
+/// matching rules in [`WorkspaceIndexData::find_declaration`] (e.g. a `$foo`
+/// query matches properties and functions/classes named `foo`, but never
+/// methods or constants).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DeclKind {
+    Function,
+    Class,
+    Method,
+    Property,
+    Constant,
+    EnumCase,
+}
+
+/// One named declaration, pre-resolved to its file and (zero-width) line.
+/// Stored in encounter order — file order, then within a file: functions
+/// first, then per class: the class itself, methods, properties, constants,
+/// enum cases — which is exactly the precedence the old linear scan in
+/// `find_declaration_in_indexes` had.
+#[derive(Debug, Clone, Copy)]
+pub struct DeclRef {
+    pub file: u32,
+    pub line: u32,
+    pub kind: DeclKind,
+}
+
 /// Aggregated workspace-level index. Constructed once per salsa revision by
 /// `workspace_index` and held behind an `Arc` for cheap cross-request sharing.
 pub struct WorkspaceIndexData {
@@ -49,6 +75,107 @@ pub struct WorkspaceIndexData {
     /// under both keys. Keyed by `Arc<str>` so insertions from `ClassDef`'s
     /// already-interned fields are pointer copies rather than heap allocations.
     pub subtypes_of: HashMap<Arc<str>, Vec<ClassRef>>,
+    /// `declared_name → [DeclRef]` over every function, class, method,
+    /// property (stored without `$`), class constant, and enum case in the
+    /// workspace. Replaces the O(workspace) linear scan in the go-to-definition
+    /// index fallback with an O(1) lookup.
+    pub decls_by_name: HashMap<String, Vec<DeclRef>>,
+}
+
+fn build_maps(
+    files: &[(Url, Arc<FileIndex>)],
+) -> (
+    HashMap<String, Vec<ClassRef>>,
+    HashMap<Arc<str>, Vec<ClassRef>>,
+    HashMap<String, Vec<DeclRef>>,
+) {
+    let mut classes_by_name: HashMap<String, Vec<ClassRef>> = HashMap::new();
+    let mut subtypes_of: HashMap<Arc<str>, Vec<ClassRef>> = HashMap::new();
+    let mut decls_by_name: HashMap<String, Vec<DeclRef>> = HashMap::new();
+    let push_decl = |map: &mut HashMap<String, Vec<DeclRef>>,
+                     name: &str,
+                     file: u32,
+                     line: u32,
+                     kind: DeclKind| {
+        map.entry(name.to_string())
+            .or_default()
+            .push(DeclRef { file, line, kind });
+    };
+    for (file_idx, (_, idx)) in files.iter().enumerate() {
+        let file_idx = file_idx as u32;
+        for f in &idx.functions {
+            push_decl(
+                &mut decls_by_name,
+                &f.name,
+                file_idx,
+                f.start_line,
+                DeclKind::Function,
+            );
+        }
+        for (cls_idx, cls) in idx.classes.iter().enumerate() {
+            let cr = ClassRef {
+                file: file_idx,
+                class: cls_idx as u32,
+            };
+            classes_by_name
+                .entry(cls.name.as_ref().to_string())
+                .or_default()
+                .push(cr);
+            if let Some(parent) = &cls.parent {
+                subtypes_of.entry(Arc::clone(parent)).or_default().push(cr);
+            }
+            for iface in &cls.implements {
+                subtypes_of.entry(Arc::clone(iface)).or_default().push(cr);
+            }
+            for trt in &cls.traits {
+                subtypes_of.entry(Arc::clone(trt)).or_default().push(cr);
+            }
+            push_decl(
+                &mut decls_by_name,
+                &cls.name,
+                file_idx,
+                cls.start_line,
+                DeclKind::Class,
+            );
+            for m in &cls.methods {
+                push_decl(
+                    &mut decls_by_name,
+                    &m.name,
+                    file_idx,
+                    m.start_line,
+                    DeclKind::Method,
+                );
+            }
+            for p in &cls.properties {
+                push_decl(
+                    &mut decls_by_name,
+                    &p.name,
+                    file_idx,
+                    p.start_line,
+                    DeclKind::Property,
+                );
+            }
+            for cc in &cls.constants {
+                push_decl(
+                    &mut decls_by_name,
+                    cc,
+                    file_idx,
+                    cls.start_line,
+                    DeclKind::Constant,
+                );
+            }
+            for case in &cls.cases {
+                push_decl(
+                    &mut decls_by_name,
+                    case,
+                    file_idx,
+                    cls.start_line,
+                    DeclKind::EnumCase,
+                );
+            }
+        }
+    }
+    (classes_by_name, subtypes_of, decls_by_name)
 }
 
 impl WorkspaceIndexData {
@@ -59,41 +186,54 @@ impl WorkspaceIndexData {
         Some((uri, cls))
     }
 
-    /// Test-only constructor that builds `classes_by_name` + `subtypes_of`
-    /// from an already-materialised `(Url, Arc<FileIndex>)` slice. Exposed
-    /// so callers that don't want to spin up a full `AnalysisHost` (unit
-    /// tests of `find_implementations_from_workspace` etc.) can exercise
-    /// the aggregate-shaped helpers directly.
-    #[cfg(test)]
-    pub fn from_files(files: Vec<(Url, Arc<FileIndex>)>) -> Self {
-        let mut classes_by_name: HashMap<String, Vec<ClassRef>> = HashMap::new();
-        let mut subtypes_of: HashMap<Arc<str>, Vec<ClassRef>> = HashMap::new();
-        for (file_idx, (_, idx)) in files.iter().enumerate() {
-            let file_idx = file_idx as u32;
-            for (cls_idx, cls) in idx.classes.iter().enumerate() {
-                let cr = ClassRef {
-                    file: file_idx,
-                    class: cls_idx as u32,
-                };
-                classes_by_name
-                    .entry(cls.name.as_ref().to_string())
-                    .or_default()
-                    .push(cr);
-                if let Some(parent) = &cls.parent {
-                    subtypes_of.entry(Arc::clone(parent)).or_default().push(cr);
-                }
-                for iface in &cls.implements {
-                    subtypes_of.entry(Arc::clone(iface)).or_default().push(cr);
-                }
-                for trt in &cls.traits {
-                    subtypes_of.entry(Arc::clone(trt)).or_default().push(cr);
-                }
+    /// O(1) replacement for the linear `find_declaration_in_indexes` scan:
+    /// find a declaration by name, optionally excluding one file (the current
+    /// document, which the caller has already searched with accurate AST
+    /// ranges). Matching rules mirror the old scan: a sigil query (`$foo`)
+    /// matches functions, classes, and properties named `foo`; a bare query
+    /// matches every declaration kind. Returns a zero-width line `Location`.
+    pub fn find_declaration(
+        &self,
+        name: &str,
+        exclude: Option<&Url>,
+    ) -> Option<tower_lsp::lsp_types::Location> {
+        let bare = crate::util::strip_variable_sigil(name);
+        let sigil = bare != name;
+        let refs = self.decls_by_name.get(bare)?;
+        for r in refs {
+            if sigil
+                && !matches!(
+                    r.kind,
+                    DeclKind::Function | DeclKind::Class | DeclKind::Property
+                )
+            {
+                continue;
             }
+            let (uri, _) = self.files.get(r.file as usize)?;
+            if exclude.is_some_and(|e| e == uri) {
+                continue;
+            }
+            return Some(tower_lsp::lsp_types::Location {
+                uri: uri.clone(),
+                range: crate::util::zero_width_range(r.line),
+            });
         }
+        None
+    }
+
+    /// Constructor that builds the reverse maps from an already-materialised
+    /// `(Url, Arc<FileIndex>)` slice. Exposed so callers that don't want to
+    /// spin up a full `AnalysisHost` (unit tests of
+    /// `find_implementations_from_workspace`, benchmark crates) can exercise
+    /// the aggregate-shaped helpers directly. Production code goes through
+    /// the `workspace_index` salsa query instead.
+    pub fn from_files(files: Vec<(Url, Arc<FileIndex>)>) -> Self {
+        let (classes_by_name, subtypes_of, decls_by_name) = build_maps(&files);
         Self {
             files,
             classes_by_name,
             subtypes_of,
+            decls_by_name,
         }
     }
 }
@@ -138,36 +278,13 @@ pub fn workspace_index(db: &dyn Database, ws: Workspace) -> WorkspaceIndexArc {
         files.push((url, idx));
     }
 
-    let mut classes_by_name: HashMap<String, Vec<ClassRef>> = HashMap::new();
-    let mut subtypes_of: HashMap<Arc<str>, Vec<ClassRef>> = HashMap::new();
-
-    for (file_idx, (_, idx)) in files.iter().enumerate() {
-        let file_idx = file_idx as u32;
-        for (cls_idx, cls) in idx.classes.iter().enumerate() {
-            let cr = ClassRef {
-                file: file_idx,
-                class: cls_idx as u32,
-            };
-            classes_by_name
-                .entry(cls.name.as_ref().to_string())
-                .or_default()
-                .push(cr);
-            if let Some(parent) = &cls.parent {
-                subtypes_of.entry(Arc::clone(parent)).or_default().push(cr);
-            }
-            for iface in &cls.implements {
-                subtypes_of.entry(Arc::clone(iface)).or_default().push(cr);
-            }
-            for trt in &cls.traits {
-                subtypes_of.entry(Arc::clone(trt)).or_default().push(cr);
-            }
-        }
-    }
+    let (classes_by_name, subtypes_of, decls_by_name) = build_maps(&files);
 
     WorkspaceIndexArc(Arc::new(WorkspaceIndexData {
         files,
         classes_by_name,
         subtypes_of,
+        decls_by_name,
     }))
 }
 

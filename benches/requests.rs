@@ -600,6 +600,48 @@ fn to_indexes(docs: &OtherDocs) -> Vec<(Url, Arc<FileIndex>)> {
         .collect()
 }
 
+fn bench_definition_index_fallback(c: &mut Criterion) {
+    let Some(docs) = laravel_docs() else {
+        eprintln!("Laravel fixture not found — skipping definition/index_fallback_*");
+        return;
+    };
+    eprintln!(
+        "Laravel fixture: {} PHP files (definition fallback)",
+        docs.len()
+    );
+    let indexes = to_indexes(&docs);
+    let wi = php_lsp::db::workspace_index::WorkspaceIndexData::from_files(indexes.clone());
+
+    let mut group = c.benchmark_group("definition");
+    group.sample_size(10);
+    // Worst case for the linear scan: a name that matches nothing forces a
+    // full walk over every declaration in every FileIndex.
+    group.bench_function("index_fallback_linear_miss", |b| {
+        b.iter(|| {
+            black_box(php_lsp::definition::find_declaration_in_indexes(
+                "zzz_no_such_symbol",
+                &indexes,
+            ))
+        });
+    });
+    group.bench_function("index_fallback_map_miss", |b| {
+        b.iter(|| black_box(wi.find_declaration("zzz_no_such_symbol", None)));
+    });
+    // Typical hit: a method name defined deep in the framework.
+    group.bench_function("index_fallback_linear_hit", |b| {
+        b.iter(|| {
+            black_box(php_lsp::definition::find_declaration_in_indexes(
+                "firstOrCreate",
+                &indexes,
+            ))
+        });
+    });
+    group.bench_function("index_fallback_map_hit", |b| {
+        b.iter(|| black_box(wi.find_declaration("firstOrCreate", None)));
+    });
+    group.finish();
+}
+
 fn bench_workspace_symbol(c: &mut Criterion) {
     let other_docs = cross_file_docs();
     let other_indexes = to_indexes(&other_docs);
@@ -812,6 +854,7 @@ criterion_group!(
     benches,
     bench_hover,
     bench_definition,
+    bench_definition_index_fallback,
     bench_completion,
     bench_references,
     bench_references_laravel,
