@@ -181,10 +181,11 @@ pub(crate) fn dedup_ref_locations(locations: &mut Vec<Location>) {
 
 // NOTE: a mir-codebase fast path for references (find_references_codebase)
 // previously lived here, fully stubbed: every symbol kind fell through to the
-// AST walker, and nothing called it. Removed. A real fast path needs mir to
-// record ClassReference for type hints / `extends` / `implements` /
-// `instanceof` (today it only records `new Foo()` sites), so using the index
-// for Class kind would silently drop references.
+// AST walker, and nothing called it. Removed. A real fast path for Class kind
+// would need mir's ClassReference index to be exhaustive (mir v0.38.0 covers
+// type hints, `instanceof`, `extends`, `implements`, and `new` calls), but the
+// AST walker is authoritative and already augmented with session refs for Class
+// and Function — there is no coverage gap to fill.
 
 fn find_references_inner(
     word: &str,

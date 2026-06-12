@@ -198,6 +198,21 @@ impl Backend {
                     &imports,
                 ))
             }
+            Some(SymbolKind::Property) => {
+                // Only resolve the owning class when the cursor is on a property
+                // declaration — for access sites (`$obj->prop`) enclosing_class_at
+                // returns the accessing class, not the declaring class, so the session
+                // would be queried with the wrong key. Access sites fall back to the
+                // AST walker which finds all `->prop` occurrences.
+                let stmts = &doc.program().stmts;
+                crate::backend::helpers::cursor_is_on_property_decl(doc.source(), stmts, position)?;
+                let short_owner = crate::type_map::enclosing_class_at(doc.source(), doc, position)?;
+                Some(crate::navigation::moniker::resolve_fqn(
+                    doc,
+                    &short_owner,
+                    &imports,
+                ))
+            }
             Some(SymbolKind::Constant) => {
                 if constant_owner.is_some() {
                     // Class constant: the owning class short name as-is.
@@ -262,6 +277,39 @@ impl Backend {
         Some(locs)
     }
 
+    /// Type-aware property access sites from the mir session.
+    ///
+    /// Property refs need type-aware filtering: `$mailer->status` and
+    /// `$order->status` share a name but belong to different classes. Mir keys
+    /// property references on the declaring class (since v0.38.0), so
+    /// `references_to(Name::Property { class: fqcn, name })` returns only
+    /// accesses whose receiver type resolved to the correct owner.
+    ///
+    /// Returns `None` when the kind isn't `Property` or no mir symbol can be
+    /// built (i.e. the cursor is on an access site where the owning class is
+    /// unknown rather than on a declaration).
+    fn session_property_references(
+        &self,
+        word: &str,
+        kind: Option<crate::navigation::references::SymbolKind>,
+        target_fqn: Option<&str>,
+    ) -> Option<Vec<Location>> {
+        if !matches!(
+            kind,
+            Some(crate::navigation::references::SymbolKind::Property)
+        ) {
+            return None;
+        }
+        let sym = build_mir_symbol(word, kind, target_fqn)?;
+        let locs = self
+            .docs
+            .session_references_to(&sym)
+            .into_iter()
+            .filter_map(crate::references::session_tuple_to_location)
+            .collect();
+        Some(locs)
+    }
+
     /// Resolve the PHP version to use. See `autoload::resolve_php_version_from_roots`
     /// for the full priority order.
     fn resolve_php_version(&self, explicit: Option<&str>) -> (String, &'static str) {
@@ -291,8 +339,7 @@ impl Backend {
 /// Build a `mir_analyzer::Name` from the cursor-resolved `(word, kind,
 /// target_fqn)` triple, when there's enough information to construct one.
 /// Returns `None` when:
-/// - `kind` is `None` (cursor not on a recognizable symbol) or `Property`
-///   (mir doesn't track property refs at the session-API level), or
+/// - `kind` is `None` (cursor not on a recognizable symbol),
 /// - the required FQN piece isn't available.
 fn build_mir_symbol(
     word: &str,
@@ -314,7 +361,11 @@ fn build_mir_symbol(
             // normalizes the name. The constructor function does this for us.
             name: StdArc::from(word.to_ascii_lowercase()),
         }),
-        Some(SymbolKind::Property) | Some(SymbolKind::Constant) | None => None,
+        Some(SymbolKind::Property) => target_fqn.map(|owning| mir_analyzer::Name::Property {
+            class: StdArc::from(owning),
+            name: StdArc::from(word),
+        }),
+        Some(SymbolKind::Constant) | None => None,
     }
 }
 

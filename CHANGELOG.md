@@ -9,6 +9,8 @@ All notable changes to php-lsp are documented here.
 - **Salsa GC — tracked `SourceFile`**: `SourceFile` is now a `#[salsa::tracked]` struct produced by `workspace_files()`, so salsa GC frees its memo heap (`parsed_doc`, `file_index`, `symbol_map`) when a file is removed from the workspace. A separate immortal `FileText` input per URI survives delete/reopen cycles so no new salsa inputs accumulate on churn. Delete/reopen cycles no longer grow memory.
 - **Completion inside strings/comments suppressed**: A state-machine scanner (`cursor_in_string_or_comment`) prevents completion from triggering inside string literals, `//`/`#` line comments, and `/* */` block comments. PHP 8 `#[…]` attribute syntax is correctly excluded from comment detection.
 - **`missingTypes` and `mixedUsage` diagnostic toggles**: mir v0.36.0's `MissingReturnType`/`MissingParamType`/`MissingPropertyType` and `Mixed*` lints are now surfaced as opt-in categories (`diagnostics.missingTypes`, `diagnostics.mixedUsage`), both off by default to avoid noise on existing codebases.
+- **`__get` magic property hover**: Hovering `->propName` when the property has no explicit declaration now surfaces the class and type derived from mir's resolved `__get` return type, showing `(property) ClassName::$prop: T` instead of falling through to no hover.
+- **`insteadof` goto-definition**: Go-to-definition on a trait-use alias or conflict-resolution (`insteadof`) now resolves through mir's symbol dispatch to the precise method span in the winning trait, correctly respecting conflict resolution where the plain AST walk would pick the wrong trait.
 
 ### Performance
 
@@ -33,9 +35,16 @@ All notable changes to php-lsp are documented here.
 - **Workspace symbol substring match**: `fuzzy_camel_match` only matched prefixes and abbreviations; querying `"Controller"` never matched `"BlogController"`. A substring fallback is now applied when prefix/abbreviation matching fails.
 - **`workspace/willCreateFiles` capability**: The will-create handler was fully implemented but the capability was never registered in `workspace.fileOperations`, so spec-compliant clients never sent the notification. All six `fileOperations` capabilities are now advertised.
 
+### Bug Fixes
+
+- **Reference scan cancellation**: `textDocument/references` now yields to the tokio scheduler before starting the synchronous AST scan, so a queued `$/cancelRequest` can interrupt the handler before any CPU-bound work begins.
+
 ### Dependencies
 
-- Upgraded `mir-{analyzer,codebase,issues,types}` from 0.35.1 to 0.36.0: adds `DuplicateInterface`, `DuplicateTrait`, `DuplicateEnum`, and `DuplicateFunction` issue kinds (the local duplicate-declaration AST walk is removed), plus `MissingReturnType`/`MissingParamType`/`MissingPropertyType` and `Mixed*` lints.
+- Upgraded `mir-{analyzer,codebase,issues,types}` from 0.35.1 to 0.38.0.
+  - 0.36.0: adds `DuplicateInterface`, `DuplicateTrait`, `DuplicateEnum`, and `DuplicateFunction` issue kinds (the local duplicate-declaration AST walk is removed), plus `MissingReturnType`/`MissingParamType`/`MissingPropertyType` and `Mixed*` lints.
+  - 0.37.0: `RefIndex` consolidates three independent reference maps into one tracked structure; reverse dependencies are now a tracked salsa query (`file_structural_deps`), improving incremental re-analysis.
+  - 0.38.0: property references are keyed on the declaring class (fixes find-references for inherited properties accessed through subtypes); `instanceof` and closure/arrow-function type hints now generate `ClassReference` symbols; property- and method-access symbol recording no longer redundantly re-walks the inheritance chain.
 
 ## [0.9.0] — 2026-06-08
 
