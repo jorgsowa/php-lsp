@@ -55,43 +55,9 @@ jobs:
       - name: Run tests
         run: cargo test
 
-  create-release:
-    name: Create GitHub Release
-    needs: test
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
-      - name: Check tag is on main
-        run: |
-          git fetch origin main
-          git merge-base --is-ancestor ${{ github.sha }} origin/main || { echo "Tag is not on main branch"; exit 1; }
-
-      - name: Extract changelog entry
-        id: changelog
-        run: |
-          version="${GITHUB_REF_NAME#v}"
-          notes=$(awk "/^## \[${version}\]/{found=1; next} found && /^## \[/{exit} found{print}" CHANGELOG.md)
-          printf 'notes<<EOF\n%s\nEOF\n' "$notes" >> "$GITHUB_OUTPUT"
-
-      - name: Create release
-        run: |
-          gh release create "$GITHUB_REF_NAME" \
-            --title "$GITHUB_REF_NAME" \
-            --notes "$NOTES" \
-          || gh release edit "$GITHUB_REF_NAME" \
-            --title "$GITHUB_REF_NAME" \
-            --notes "$NOTES"
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          NOTES: ${{ steps.changelog.outputs.notes }}
-
   build:
     name: Build (${{ matrix.target }})
-    needs: create-release
+    needs: test
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     permissions:
@@ -230,3 +196,37 @@ jobs:
         run: cargo publish --package php-lsp
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+  create-release:
+    name: Create GitHub Release
+    needs: publish-crates
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Check tag is on main
+        run: |
+          git fetch origin main
+          git merge-base --is-ancestor ${{ github.sha }} origin/main || { echo "Tag is not on main branch"; exit 1; }
+
+      - name: Extract changelog entry
+        id: changelog
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          notes=$(awk "/^## \[${version}\]/{found=1; next} found && /^## \[/{exit} found{print}" CHANGELOG.md)
+          printf 'notes<<EOF\n%s\nEOF\n' "$notes" >> "$GITHUB_OUTPUT"
+
+      - name: Create release
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --notes "$NOTES" \
+          || gh release edit "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --notes "$NOTES"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NOTES: ${{ steps.changelog.outputs.notes }}
