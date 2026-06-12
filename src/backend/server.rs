@@ -1114,6 +1114,12 @@ impl LanguageServer for Backend {
 
     async fn references(&self, params: ReferenceParams) -> Result<Option<Vec<Location>>> {
         guard_async_result("references", async move {
+            // Yield before any work so that a queued $/cancelRequest notification
+            // can be processed by tower-lsp's cancellation layer before we start
+            // the synchronous reference scan.  Without this, fast runtimes (Linux
+            // CI) complete the entire handler without an await point, making
+            // cancellation impossible.
+            tokio::task::yield_now().await;
             let uri = &params.text_document_position.text_document.uri;
             let position = params.text_document_position.position;
             let source = self.get_open_text(uri).unwrap_or_default();

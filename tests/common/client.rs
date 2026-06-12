@@ -130,13 +130,6 @@ impl TestClient {
             "params": params,
         });
         self.write.write_all(&frame(&msg)).await.unwrap();
-        self.write.flush().await.unwrap();
-        // Yield to the runtime so the server can start processing the request
-        // before the cancel arrives. Without this, fast Linux runners complete
-        // the entire request before the cancellation is dispatched.
-        for _ in 0..4 {
-            tokio::task::yield_now().await;
-        }
         let cancel = json!({
             "jsonrpc": "2.0",
             "method": "$/cancelRequest",
