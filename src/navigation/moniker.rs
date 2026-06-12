@@ -3,7 +3,7 @@ use tower_lsp::lsp_types::*;
 
 use std::collections::HashMap;
 
-use crate::ast::{ParsedDoc, str_offset};
+use crate::ast::ParsedDoc;
 use crate::util::word_at_position;
 
 /// Return a moniker for the symbol at `position`.
@@ -264,17 +264,6 @@ fn cursor_on_name_in_span(
     // Inclusive on the right boundary so that a cursor positioned right
     // after the name (e.g. between `bar` and `(`) — a common "just typed
     // the name" position — still resolves.
-    cursor_byte >= start && cursor_byte <= end
-}
-
-#[inline]
-#[allow(dead_code)]
-fn cursor_on_name(source: &str, cursor_byte: u32, name: &str) -> bool {
-    let start = str_offset(source, name).unwrap_or(0);
-    let end = start + name.len() as u32;
-    // Inclusive on the right boundary so that a cursor positioned right
-    // after the name (e.g. between `bar` and `(`) — a common "just typed
-    // the name" position — still counts as on the name.
     cursor_byte >= start && cursor_byte <= end
 }
 
