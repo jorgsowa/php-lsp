@@ -53,7 +53,8 @@ use crate::navigation::call_hierarchy::{
 };
 use crate::navigation::declaration::{goto_declaration, goto_declaration_from_index};
 use crate::navigation::definition::{
-    find_declaration_range, find_method_in_class_hierarchy, goto_definition,
+    find_declaration_range, find_method_in_class_hierarchy, find_method_range_in_class,
+    goto_definition,
 };
 use crate::navigation::implementation::{
     find_implementations, find_implementations_from_workspace,
@@ -983,7 +984,53 @@ impl LanguageServer for Backend {
                 Some(d) => d,
                 None => return Ok(None),
             };
-            // Search current file's ParsedDoc first (fast), then fall back to index search.
+            // mir-backed method dispatch: use FileAnalysis::symbol_at to resolve
+            // the declaring class before touching the in-file AST walk.  This
+            // respects `insteadof` conflict resolution (which the AST walk ignores
+            // because it returns the first declaration it encounters by name).
+            if let Some(word) = crate::util::word_at_position(&source, position)
+                && !word.starts_with('$')
+            {
+                let analysis = self.cached_analysis_async(uri).await;
+                let resolved_class = analysis.as_deref().and_then(|a| {
+                    let off = crate::util::word_range_at(&source, position)
+                        .map(|r| doc.view().byte_of_position(r.start))?;
+                    let sym = a.symbol_at(off)?;
+                    match &sym.kind {
+                        mir_analyzer::ReferenceKind::MethodCall { class, .. }
+                        | mir_analyzer::ReferenceKind::StaticCall { class, .. } => {
+                            Some(fqn_short_name(class).to_string())
+                        }
+                        _ => None,
+                    }
+                });
+                if let Some(cls) = resolved_class {
+                    let all_indexes = self.docs.all_indexes();
+                    if let Some(loc) = find_method_in_class_hierarchy(&cls, &word, &all_indexes) {
+                        let refined = self
+                            .docs
+                            .get_doc_salsa(&loc.uri)
+                            .and_then(|d| {
+                                // Try class-specific lookup first: needed when the same
+                                // method name exists in multiple classes in the same file
+                                // (e.g. insteadof — both A::hello and B::hello present).
+                                // Fall back to global name search for cases where the mir
+                                // class is the receiver type, not the declaring type in
+                                // the target file (e.g. @mixin, interface calls).
+                                let range = find_method_range_in_class(&d, &cls, &word)
+                                    .or_else(|| find_declaration_range(d.source(), &d, &word));
+                                range.map(|range| Location {
+                                    uri: loc.uri.clone(),
+                                    range,
+                                })
+                            })
+                            .unwrap_or(loc);
+                        return Ok(Some(GotoDefinitionResponse::Scalar(refined)));
+                    }
+                }
+            }
+
+            // Search current file's ParsedDoc (fast), then fall back to index search.
             if let Some(loc) = goto_definition(uri, &source, &doc, &[], position) {
                 return Ok(Some(GotoDefinitionResponse::Scalar(loc)));
             }

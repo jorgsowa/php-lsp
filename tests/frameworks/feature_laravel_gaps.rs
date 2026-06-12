@@ -96,32 +96,6 @@ class HtmlView implements Renderable {
     expect!["main.php:11:6-11:14"].assert_eq(&out);
 }
 
-// ── Gap #4 — __get / __set type inference ────────────────────────────────────
-
-/// Accessing a property through `__get` returns `mixed` because mir-php treats
-/// magic accessor return types as opaque.
-///
-/// **Gap**: requires mir-php to model magic accessor return types.
-#[tokio::test]
-async fn gap_magic_get_hover_shows_no_typed_property() {
-    let mut s = TestServer::new().await;
-    let out = s
-        .check_hover(
-            r#"<?php
-class DynamicModel {
-    private array $data = [];
-    public function __get(string $name): mixed { return $this->data[$name] ?? null; }
-}
-
-$m = new DynamicModel();
-$v = $m->nam$0e;
-"#,
-        )
-        .await;
-    // `name` resolves through __get which returns mixed; hover shows nothing useful.
-    expect!["<no hover>"].assert_eq(&out);
-}
-
 // ── Gap #6 — Service container app() / resolve() ─────────────────────────────
 
 /// `app(Foo::class)` should resolve to `Foo`, but the LSP cannot trace the
@@ -153,11 +127,13 @@ function bootstrap(): void {
 
 /// Eloquent model attributes (columns) are determined at runtime from the
 /// database schema.  Hovering over `$user->name` on an Eloquent-style model
-/// shows nothing because there is no static PHP declaration for `name`.
+/// now shows `mixed` — the return type of the inherited `__get` accessor.
+/// The actual column type (e.g. `string`) cannot be inferred without a
+/// schema-to-stub pipeline or IDE helpers.
 ///
 /// **Gap**: column types require a schema-to-stub pipeline or IDE helpers.
 #[tokio::test]
-async fn gap_eloquent_attribute_hover_shows_nothing() {
+async fn gap_eloquent_attribute_hover_shows_magic_get_type() {
     let mut s = TestServer::new().await;
     let out = s
         .check_hover(
@@ -175,44 +151,12 @@ $n = $user->nam$0e;
 "#,
         )
         .await;
-    // `name` is a database column, not a PHP property — hover shows nothing.
-    expect!["<no hover>"].assert_eq(&out);
-}
-
-// ── Gap #9 — Trait conflict resolution (insteadof) ───────────────────────────
-
-/// When two traits both declare `hello()` and one is excluded with `insteadof`,
-/// go-to-definition should navigate to the winning trait.  Currently both
-/// definitions are found in declaration order (no conflict resolution).
-///
-/// **Gap**: `insteadof` / `as` in trait-use blocks are parsed but not stored
-/// in FileIndex; the resolution order is not applied during method lookup.
-#[tokio::test]
-async fn gap_trait_insteadof_definition_ignores_conflict_resolution() {
-    let mut s = TestServer::new().await;
-    let out = s
-        .check_definition(
-            r#"<?php
-trait A {
-    public function hello(): string { return 'A'; }
-}
-trait B {
-    public function hello(): string { return 'B'; }
-}
-class MyClass {
-    use A, B {
-        B::hello insteadof A;  // B wins; A::hello is excluded
-    }
-}
-
-$c = new MyClass();
-$c->hel$0lo();
-"#,
-        )
-        .await;
-    // Without conflict resolution both A and B are in the search order;
-    // whichever trait is encountered first in the index wins (currently A).
-    expect!["main.php:2:20-2:25"].assert_eq(&out);
+    // `name` is a database column, but __get returns mixed; hover shows that type.
+    expect![[r#"
+        ```php
+        (property) User::$name: mixed
+        ```"#]]
+    .assert_eq(&out);
 }
 
 // ── Gap #10 — Abstract class method contract enforcement ─────────────────────

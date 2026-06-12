@@ -508,3 +508,31 @@ enum Stat$0us: string implements \Stringable {}
     )
     .await;
 }
+
+// ── __get magic property access ───────────────────────────────────────────────
+
+/// Accessing a property through `__get` shows the `__get` return type in hover.
+/// mir-php propagates the magic accessor return type to the PropertyAccess symbol,
+/// and the LSP surfaces it even when there is no declared PHP property.
+#[tokio::test]
+async fn magic_get_hover_shows_return_type() {
+    let mut s = TestServer::new().await;
+    let out = s
+        .check_hover(
+            r#"<?php
+class DynamicModel {
+    private array $data = [];
+    public function __get(string $name): mixed { return $this->data[$name] ?? null; }
+}
+
+$m = new DynamicModel();
+$v = $m->nam$0e;
+"#,
+        )
+        .await;
+    expect![[r#"
+        ```php
+        (property) DynamicModel::$name: mixed
+        ```"#]]
+    .assert_eq(&out);
+}

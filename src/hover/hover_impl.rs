@@ -794,6 +794,13 @@ fn mir_member_hover(
                     return Some(value);
                 }
             }
+            // No declared property — dynamic access via __get. Show mir's resolved
+            // type (the __get return type) rather than falling through to no hover.
+            let ty_str = format!("{}", sym.resolved_type);
+            if !matches!(ty_str.as_str(), "" | "void" | "never") {
+                let sig = format!("(property) {}::${}: {}", class_short, property, ty_str);
+                return Some(wrap_php(&sig));
+            }
             None
         }
         mir_analyzer::ReferenceKind::ConstantAccess { class, constant } => {

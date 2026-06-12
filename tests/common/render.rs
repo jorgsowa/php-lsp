@@ -1424,7 +1424,7 @@ pub fn render_workspace_diagnostic(resp: &Value, root_uri: &str) -> String {
 
 /// Render a resolved `codeAction/resolve` response as snapshot-friendly text.
 /// Shows title, kind, and whether an edit was resolved.
-pub fn render_resolved_code_action(resp: &Value, root_uri: &str) -> String {
+pub fn render_resolved_code_action(resp: &Value, _root_uri: &str) -> String {
     if let Some(err) = resp.get("error").filter(|e| !e.is_null()) {
         return format!("error: {err}");
     }

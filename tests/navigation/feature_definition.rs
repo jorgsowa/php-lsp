@@ -1617,3 +1617,36 @@ class Logger implements Loggable {}
     )
     .await;
 }
+
+// ── Trait conflict resolution (insteadof) ────────────────────────────────────
+
+/// When two traits both declare `hello()` and one is excluded with `insteadof`,
+/// go-to-definition navigates to the winning trait method.  mir-php resolves the
+/// declaring class through insteadof rules; the LSP uses that resolved class to
+/// look up the precise method location rather than walking traits in declaration order.
+#[tokio::test]
+async fn insteadof_conflict_resolution_navigates_to_winning_trait() {
+    let mut s = TestServer::new().await;
+    let out = s
+        .check_definition(
+            r#"<?php
+trait A {
+    public function hello(): string { return 'A'; }
+}
+trait B {
+    public function hello(): string { return 'B'; }
+}
+class MyClass {
+    use A, B {
+        B::hello insteadof A;  // B wins; A::hello is excluded
+    }
+}
+
+$c = new MyClass();
+$c->hel$0lo();
+"#,
+        )
+        .await;
+    // B wins the insteadof conflict; definition must point to B::hello on line 5.
+    expect!["main.php:5:20-5:25"].assert_eq(&out);
+}

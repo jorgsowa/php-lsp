@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use php_ast::Stmt;
+use php_ast::{ClassMemberKind, EnumMemberKind, NamespaceBody, Stmt, StmtKind};
 use tower_lsp::lsp_types::{Location, Position, Range, Url};
 
 use crate::ast::{ParsedDoc, SourceView};
@@ -190,6 +190,68 @@ pub fn find_method_in_class_hierarchy(
                     queue.push_back(parent.as_ref().to_owned());
                 }
             }
+        }
+    }
+    None
+}
+
+/// Find the name range of method `method_name` declared directly on
+/// `class_name` (class or trait) in `doc`. Does NOT walk the class hierarchy.
+/// Used by the mir-backed goto-definition path to precisely locate the
+/// winning trait method after insteadof conflict resolution.
+pub fn find_method_range_in_class(
+    doc: &ParsedDoc,
+    class_name: &str,
+    method_name: &str,
+) -> Option<Range> {
+    let sv = doc.view();
+    find_method_range_impl(sv, &doc.program().stmts, class_name, method_name)
+}
+
+fn find_method_range_impl(
+    sv: SourceView<'_>,
+    stmts: &[Stmt<'_, '_>],
+    class_name: &str,
+    method_name: &str,
+) -> Option<Range> {
+    for stmt in stmts {
+        match &stmt.kind {
+            StmtKind::Class(c) if c.name.as_ref().and_then(|n| n.as_str()) == Some(class_name) => {
+                for member in c.body.members.iter() {
+                    if let ClassMemberKind::Method(m) = &member.kind
+                        && m.name == method_name
+                    {
+                        return Some(sv.name_range_in_span(method_name, member.span));
+                    }
+                }
+            }
+            StmtKind::Trait(t) if t.name == class_name => {
+                for member in t.body.members.iter() {
+                    if let ClassMemberKind::Method(m) = &member.kind
+                        && m.name == method_name
+                    {
+                        return Some(sv.name_range_in_span(method_name, member.span));
+                    }
+                }
+            }
+            StmtKind::Enum(e) if e.name == class_name => {
+                for member in e.body.members.iter() {
+                    if let EnumMemberKind::Method(m) = &member.kind
+                        && m.name == method_name
+                    {
+                        return Some(sv.name_range_in_span(method_name, member.span));
+                    }
+                }
+            }
+            StmtKind::Namespace(ns) => {
+                if let NamespaceBody::Braced(block) = &ns.body
+                    && let Some(r) =
+                        find_method_range_impl(sv, &block.stmts, class_name, method_name)
+                {
+                    return Some(r);
+                }
+            }
+            _ => {}
         }
     }
     None

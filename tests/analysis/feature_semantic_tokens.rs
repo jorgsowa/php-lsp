@@ -1596,7 +1596,7 @@ async fn semantic_tokens_delta_large_file_changes() {
         .as_str()
         .expect("resultId")
         .to_string();
-    let pre_count = full["result"]["data"]
+    let _pre_count = full["result"]["data"]
         .as_array()
         .map(|a| a.len())
         .unwrap_or(0);

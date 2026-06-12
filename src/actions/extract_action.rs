@@ -122,7 +122,6 @@ fn line_indent(source: &str, line: u32) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tower_lsp::lsp_types::Position;
 
     fn range(sl: u32, sc: u32, el: u32, ec: u32) -> Range {
         use tower_lsp::lsp_types::Position;
