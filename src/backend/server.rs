@@ -1223,8 +1223,9 @@ impl LanguageServer for Backend {
 
             // For Class / Function kinds: AST walker is authoritative; augment
             // with session refs to catch type-resolved sites the walker misses.
-            // Property is excluded: mir's property spans include `$` (off-by-one
-            // vs AST walker) which defeats dedup and produces duplicate results.
+            // Property is excluded: mir's property spans include `$` for static
+            // accesses (`Foo::$prop`), which is off-by-one vs the AST walker's
+            // sigil-stripped spans, defeating dedup and producing duplicates.
             if !matches!(kind, Some(SymbolKind::Method) | Some(SymbolKind::Property))
                 && let Some(sym) = build_mir_symbol(&word, kind, target_fqn.as_deref())
             {

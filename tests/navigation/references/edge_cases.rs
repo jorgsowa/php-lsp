@@ -97,6 +97,28 @@ $x = new class extends Base {};
 }
 
 #[tokio::test]
+async fn references_class_in_closure_type_hints() {
+    // Class names in closure parameter and return type hints must appear in
+    // find-references results — mir v0.38 added ClassReference tracking for
+    // closure/arrow-function type positions; the AST walker covers them too.
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    s.check_references_annotated(
+        r#"<?php
+class Pay$0load {}
+//    ^^^^^^^ def
+$handler = function(Payload $p): Payload { return $p; };
+//                  ^^^^^^^ ref
+//                               ^^^^^^^ ref
+$mapper = fn(Payload $x): Payload => $x;
+//           ^^^^^^^ ref
+//                        ^^^^^^^ ref
+"#,
+    )
+    .await;
+}
+
+#[tokio::test]
 async fn references_method_excludes_cross_file_free_function() {
     // Method refs on C::add must not include the free-function `add()`.
     let mut s = TestServer::new().await;
