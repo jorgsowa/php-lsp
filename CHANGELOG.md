@@ -41,10 +41,7 @@ All notable changes to php-lsp are documented here.
 
 ### Dependencies
 
-- Upgraded `mir-{analyzer,codebase,issues,types}` from 0.35.1 to 0.38.0.
-  - 0.36.0: adds `DuplicateInterface`, `DuplicateTrait`, `DuplicateEnum`, and `DuplicateFunction` issue kinds (the local duplicate-declaration AST walk is removed), plus `MissingReturnType`/`MissingParamType`/`MissingPropertyType` and `Mixed*` lints.
-  - 0.37.0: `RefIndex` consolidates three independent reference maps into one tracked structure; reverse dependencies are now a tracked salsa query (`file_structural_deps`), improving incremental re-analysis.
-  - 0.38.0: property references are keyed on the declaring class (fixes find-references for inherited properties accessed through subtypes); `instanceof` and closure/arrow-function type hints now generate `ClassReference` symbols; property- and method-access symbol recording no longer redundantly re-walks the inheritance chain.
+- Upgraded `mir-{analyzer,codebase,issues,types}` from 0.35.1 to 0.36.0: adds `DuplicateInterface`, `DuplicateTrait`, `DuplicateEnum`, and `DuplicateFunction` issue kinds (the local duplicate-declaration AST walk is removed), plus `MissingReturnType`/`MissingParamType`/`MissingPropertyType` and `Mixed*` lints.
 
 ## [0.9.0] — 2026-06-08
 
