@@ -6,7 +6,7 @@
 [![Crates.io](https://img.shields.io/crates/v/php-lsp.svg)](https://crates.io/crates/php-lsp)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-**[Getting Started](docs/getting-started.md)** · **[Features](docs/features.md)** · **[Editors & AI Clients](docs/editors.md)** · **[Configuration](docs/configuration.md)** · **[Architecture](docs/architecture.md)** · **[Benchmarks](https://jorgsowa.github.io/php-lsp/dev/bench/)** · **[Contributing](CONTRIBUTING.md)**
+**[Getting Started](docs/getting-started.md)** · **[Features](docs/features.md)** · **[Editors & AI Clients](docs/editors.md)** · **[Configuration](docs/configuration.md)** · **[Architecture](docs/architecture.md)** · **[Contributing](CONTRIBUTING.md)**
 
 ---
 
