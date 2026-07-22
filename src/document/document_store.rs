@@ -690,6 +690,22 @@ impl DocumentStore {
         let guard = self.analysis_session.lock().unwrap();
         if let Some((_, session)) = guard.as_ref() {
             session.invalidate_file(uri.as_str());
+            // `file_index` has no LRU cap (unlike `parsed_doc`/`symbol_map`),
+            // so without this it would keep holding this file's pre-deletion
+            // `FileIndex` (and any seeded on-disk `cached_index`) in memory
+            // for the rest of the process's life. Clear the seed and force
+            // one recompute against the now-emptied text (`invalidate_file`
+            // above already cleared it via mir's `remove_source_file`) to
+            // shrink the memo to near-nothing immediately.
+            if let Some(wf) = self.lsp_ws_files.get(uri).map(|e| *e) {
+                session.with_db_mut(|db| {
+                    if wf.cached_index(db).is_some() {
+                        wf.set_cached_index(db).to(None);
+                    }
+                });
+                let db = session.snapshot_db();
+                let _ = crate::db::mir_queries::file_index(&db, wf);
+            }
         }
         self.write_revision.fetch_add(1, Ordering::Release);
     }
@@ -1609,6 +1625,28 @@ mod tests {
         assert_eq!(
             len_after, 0,
             "remove() must free mir's SourceFile text, not just hide the file from indexes"
+        );
+    }
+
+    #[test]
+    fn remove_shrinks_file_index_memo() {
+        let store = DocumentStore::new();
+        let u = uri("/lib.php");
+        store.ingest(u.clone(), "<?php\nclass BigClassBeforeDelete {}\n");
+
+        let wf = store.lsp_ws_files.get(&u).map(|e| *e).unwrap();
+        let idx_before =
+            store.snapshot_mir_query(|db| crate::db::mir_queries::file_index(db, wf).0.clone());
+        assert_eq!(idx_before.classes.len(), 1, "sanity: class should be indexed");
+
+        store.remove(&u);
+
+        let idx_after =
+            store.snapshot_mir_query(|db| crate::db::mir_queries::file_index(db, wf).0.clone());
+        assert!(
+            idx_after.classes.is_empty(),
+            "remove() must shrink file_index's memo (no LRU cap, unlike parsed_doc/symbol_map) \
+             against the emptied text, not hold the pre-deletion FileIndex forever"
         );
     }
 
