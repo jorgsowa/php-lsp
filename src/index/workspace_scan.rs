@@ -1,4 +1,5 @@
-use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+use std::sync::{Arc, Mutex};
 
 use rayon::prelude::*;
 use tower_lsp::Client;
@@ -131,45 +132,10 @@ pub(crate) async fn scan_workspace(
     let excl: Vec<String> = exclude_paths.to_vec();
     let incl: Vec<String> = include_paths.to_vec();
     let php_paths: Vec<std::path::PathBuf> = tokio::task::spawn_blocking(move || {
-        let mut out = Vec::new();
-        let mut stack = vec![root2.clone()];
-        'walk: while let Some(dir) = stack.pop() {
-            let rd = match std::fs::read_dir(&dir) {
-                Ok(r) => r,
-                Err(_) => continue,
-            };
-            for entry in rd.flatten() {
-                let path = entry.path();
-                let rel_path = path
-                    .strip_prefix(&root2)
-                    .map(|p| p.to_string_lossy().replace('\\', "/"))
-                    .unwrap_or_else(|_| path.to_string_lossy().replace('\\', "/"));
-
-                let is_excluded = matches_any(&rel_path, &excl);
-                let is_included =
-                    matches_include_prefix(&rel_path, &incl) || matches_any(&rel_path, &incl);
-                if is_excluded && !is_included && !has_included_children(&rel_path, &incl) {
-                    continue;
-                }
-
-                let ft = match entry.file_type() {
-                    Ok(f) => f,
-                    Err(_) => continue,
-                };
-                if ft.is_dir() {
-                    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                    if !name.starts_with('.') {
-                        stack.push(path);
-                    }
-                } else if ft.is_file() && path.extension().is_some_and(|e| e == "php") {
-                    out.push(path);
-                    if out.len() >= max_files {
-                        break 'walk;
-                    }
-                }
-            }
-        }
-        out
+        let out = Mutex::new(Vec::new());
+        let count = AtomicUsize::new(0);
+        walk_dir_parallel(root2.clone(), &root2, &excl, &incl, max_files, &out, &count);
+        out.into_inner().unwrap()
     })
     .await
     .unwrap_or_else(|e| {
@@ -270,6 +236,95 @@ pub(crate) async fn scan_workspace(
         tracing::warn!("workspace scan (phase 2b index) panicked: {e}");
         (0, 0)
     })
+}
+
+/// Recursively walk `dir`, collecting matching `.php` paths into `out`. One
+/// directory's `read_dir` (a syscall-bound, inherently serial operation) runs
+/// per call; the fan-out across its subdirectories runs on the rayon pool, so
+/// a workspace with many directories (the common case — namespaces mirror
+/// directory structure) parallelizes across cores instead of one thread
+/// walking the whole tree. Real-world PHP corpora are typically 20-40 files
+/// per directory but thousands of directories, so this is where the
+/// parallelism actually pays off — a single huge flat directory would not
+/// benefit, but also would not regress (falls back to one recursive call
+/// doing all the work itself).
+///
+/// `max_files` is enforced exactly (matching the old serial walk's contract)
+/// via a compare-exchange reservation on `count`: each directory's file batch
+/// atomically claims only as much of the remaining budget as is left, so the
+/// total pushed to `out` across every parallel branch never exceeds the cap.
+fn walk_dir_parallel(
+    dir: std::path::PathBuf,
+    root: &std::path::Path,
+    excl: &[String],
+    incl: &[String],
+    max_files: usize,
+    out: &Mutex<Vec<std::path::PathBuf>>,
+    count: &AtomicUsize,
+) {
+    if count.load(AtomicOrdering::Relaxed) >= max_files {
+        return;
+    }
+    let rd = match std::fs::read_dir(&dir) {
+        Ok(r) => r,
+        Err(_) => return,
+    };
+
+    let mut subdirs = Vec::new();
+    let mut files = Vec::new();
+    for entry in rd.flatten() {
+        let path = entry.path();
+        let rel_path = path
+            .strip_prefix(root)
+            .map(|p| p.to_string_lossy().replace('\\', "/"))
+            .unwrap_or_else(|_| path.to_string_lossy().replace('\\', "/"));
+
+        let is_excluded = matches_any(&rel_path, excl);
+        let is_included = matches_include_prefix(&rel_path, incl) || matches_any(&rel_path, incl);
+        if is_excluded && !is_included && !has_included_children(&rel_path, incl) {
+            continue;
+        }
+
+        let ft = match entry.file_type() {
+            Ok(f) => f,
+            Err(_) => continue,
+        };
+        if ft.is_dir() {
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if !name.starts_with('.') {
+                subdirs.push(path);
+            }
+        } else if ft.is_file() && path.extension().is_some_and(|e| e == "php") {
+            files.push(path);
+        }
+    }
+
+    if !files.is_empty() {
+        let mut current = count.load(AtomicOrdering::Relaxed);
+        let claimed = loop {
+            if current >= max_files {
+                break 0;
+            }
+            let take = files.len().min(max_files - current);
+            match count.compare_exchange_weak(
+                current,
+                current + take,
+                AtomicOrdering::Relaxed,
+                AtomicOrdering::Relaxed,
+            ) {
+                Ok(_) => break take,
+                Err(actual) => current = actual,
+            }
+        };
+        if claimed > 0 {
+            files.truncate(claimed);
+            out.lock().unwrap().extend(files);
+        }
+    }
+
+    subdirs.into_par_iter().for_each(|sub| {
+        walk_dir_parallel(sub, root, excl, incl, max_files, out, count);
+    });
 }
 
 fn matches_any(rel_path: &str, patterns: &[String]) -> bool {
@@ -473,12 +528,16 @@ mod tests {
     #[ignore]
     #[tokio::test]
     async fn profile_scan_phases() {
-        for root_str in ["/tmp/wordpress", "/tmp/laravel-framework"] {
-            if !std::path::Path::new(root_str).is_dir() {
-                println!("SKIP: {root_str} not found");
+        let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        for root in [
+            manifest.join("benches/fixtures/laravel"),
+            manifest.join("tests/fixtures/symfony-demo"),
+        ] {
+            if !root.is_dir() {
+                println!("SKIP: {} not found", root.display());
                 continue;
             }
-            profile_one(root_str).await;
+            profile_one(root.to_str().unwrap()).await;
         }
     }
 
@@ -542,6 +601,24 @@ mod tests {
         .unwrap();
         let t_walk_sync = t1.elapsed();
         let n_files = php_paths.len();
+
+        // ── Phase 1 alternative: rayon-parallel walk (new production code) ──
+        let root3 = root.clone();
+        let t1b = Instant::now();
+        let php_parallel: Vec<std::path::PathBuf> = tokio::task::spawn_blocking(move || {
+            let out = super::Mutex::new(Vec::new());
+            let count = super::AtomicUsize::new(0);
+            super::walk_dir_parallel(root3.clone(), &root3, &[], &[], 50_000, &out, &count);
+            out.into_inner().unwrap()
+        })
+        .await
+        .unwrap();
+        let t_walk_parallel = t1b.elapsed();
+        assert_eq!(
+            php_parallel.len(),
+            n_files,
+            "parallel walk must find the same file count as the serial walks"
+        );
 
         // ── Phase 2a: concurrent reads ──────────────────────────────────────
         let t2 = Instant::now();
@@ -633,8 +710,12 @@ mod tests {
             total_bytes as f64 / 1_048_576.0
         );
         println!();
-        println!("Phase 1  async walk (current)  : {t_walk_async:.2?}");
-        println!("Phase 1  sync  walk (blocking)  : {t_walk_sync:.2?}  ← potential gain");
+        println!("Phase 1  async walk (old prod)  : {t_walk_async:.2?}");
+        println!("Phase 1  sync  walk (serial)    : {t_walk_sync:.2?}");
+        println!(
+            "Phase 1  rayon walk (new prod)  : {t_walk_parallel:.2?}  ← {:.1}x vs sync serial",
+            t_walk_sync.as_secs_f64() / t_walk_parallel.as_secs_f64().max(1e-9)
+        );
         println!("Phase 2a reads  (64-concurrent) : {t_read:.2?}");
         println!();
         println!("Phase 2b COLD");
