@@ -5,10 +5,10 @@
 //! text-matching files actually reference the target `App\Service`. This is the
 //! case where the reachability pre-filter helps.
 //!
-//!   BEFORE — analyze `references_to_in_files` over *every* file that
-//!     text-matches the method name (the old post-filter behavior).
+//!   BEFORE — hand mir the whole workspace as the candidate scope; its
+//!     internal gate admits every file that text-matches the method name.
 //!   AFTER  — analyze only files that also mention the owner class `Service`
-//!     (the new pre-filter in `ReferenceQuery::collect`).
+//!     (the reachability upper bound a smarter gate could reach).
 //!
 //! Both produce the same references (a file that never names `Service` can't
 //! resolve `Service::process`), so this is pure speedup. Reports the cold
@@ -109,10 +109,6 @@ fn build(n: usize) -> (DocumentStore, HashSet<String>) {
     (store, reachable)
 }
 
-fn arc_urls(urls: impl IntoIterator<Item = Url>) -> Vec<Arc<str>> {
-    urls.into_iter().map(|u| Arc::from(u.as_str())).collect()
-}
-
 fn median_ms(mut s: Vec<Duration>) -> f64 {
     s.sort();
     s[s.len() / 2].as_secs_f64() * 1000.0
@@ -152,15 +148,13 @@ fn main() {
         "files", "before_n", "after_n", "before_ms", "after_ms", "speedup"
     );
     for &n in &[100usize, 500, 1000, 3000] {
-        let (before_n, before_ms) = cold_ms(n, reps, &sym, |s, _| {
-            arc_urls(s.candidate_urls_for(HOT_METHOD))
-        });
+        let (before_n, before_ms) =
+            cold_ms(n, reps, &sym, |s, _| s.workspace_file_paths());
         let (after_n, after_ms) = cold_ms(n, reps, &sym, |s, reach| {
-            arc_urls(
-                s.candidate_urls_for(HOT_METHOD)
-                    .into_iter()
-                    .filter(|u| reach.contains(u.as_str())),
-            )
+            s.workspace_file_paths()
+                .into_iter()
+                .filter(|u| reach.contains(u.as_ref()))
+                .collect()
         });
         println!(
             "{n:>7}  {before_n:>10} {after_n:>10}  {before_ms:>12.3} {after_ms:>12.3}  {:>7.2}x",
@@ -178,12 +172,11 @@ fn main() {
     for &n in &[500usize, 1000, 3000] {
         // Cold: first query pays per-candidate analyze_file.
         let (store, reachable) = build(n);
-        let files: Vec<Arc<str>> = arc_urls(
-            store
-                .candidate_urls_for(HOT_METHOD)
-                .into_iter()
-                .filter(|u| reachable.contains(u.as_str())),
-        );
+        let files: Vec<Arc<str>> = store
+            .workspace_file_paths()
+            .into_iter()
+            .filter(|u| reachable.contains(u.as_ref()))
+            .collect();
         let t = Instant::now();
         std::hint::black_box(store.indexed_references(&sym, &files, false, None));
         let cold_ms = t.elapsed().as_secs_f64() * 1000.0;
@@ -191,12 +184,11 @@ fn main() {
         // Warmed: the sweep runs in the background after indexing; the first
         // user-visible query is then a memo hit.
         let (store, reachable) = build(n);
-        let files: Vec<Arc<str>> = arc_urls(
-            store
-                .candidate_urls_for(HOT_METHOD)
-                .into_iter()
-                .filter(|u| reachable.contains(u.as_str())),
-        );
+        let files: Vec<Arc<str>> = store
+            .workspace_file_paths()
+            .into_iter()
+            .filter(|u| reachable.contains(u.as_ref()))
+            .collect();
         let t = Instant::now();
         let cancel = store.begin_warm_sweep();
         store.warm_analysis_sweep(&[], &cancel);
@@ -237,12 +229,11 @@ fn main() {
 
     println!("\n=== SESSION AXIS: repeated references after unrelated edits (N=1000) ===");
     let (store, reachable) = build(1000);
-    let after: Vec<Arc<str>> = arc_urls(
-        store
-            .candidate_urls_for(HOT_METHOD)
-            .into_iter()
-            .filter(|u| reachable.contains(u.as_str())),
-    );
+    let after: Vec<Arc<str>> = store
+        .workspace_file_paths()
+        .into_iter()
+        .filter(|u| reachable.contains(u.as_ref()))
+        .collect();
     for _ in 0..3 {
         std::hint::black_box(store.indexed_references(&sym, &after, false, None));
     }
@@ -309,12 +300,11 @@ fn long_session_gate(sym: &Name) -> bool {
     const RATIO_MAX: f64 = 1.5;
 
     let (store, reachable) = build(N);
-    let files: Vec<Arc<str>> = arc_urls(
-        store
-            .candidate_urls_for(HOT_METHOD)
-            .into_iter()
-            .filter(|u| reachable.contains(u.as_str())),
-    );
+    let files: Vec<Arc<str>> = store
+        .workspace_file_paths()
+        .into_iter()
+        .filter(|u| reachable.contains(u.as_ref()))
+        .collect();
     let cancel = store.begin_warm_sweep();
     store.warm_analysis_sweep(&[], &cancel);
 

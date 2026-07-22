@@ -202,6 +202,41 @@ class Form {
     .await;
 }
 
+/// A `new X(...)` call site living inside a PHP 8 attribute's argument list
+/// (e.g. PHPUnit's `#[TestWith([new Spread(...)])]`) must be found by
+/// find-references on `X`, exactly like an identical `new X(...)` in regular
+/// code. This was a confirmed gap against a real ~15K-file codebase
+/// (app-server verification, 2026-07-21): the plain-code instantiation was
+/// found, the attribute-nested one silently was not. Regression pin — this
+/// currently passes.
+#[tokio::test]
+async fn attribute_argument_new_expression_is_a_reference() {
+    let mut s = TestServer::new().await;
+    s.check_references_annotated(
+        r#"<?php
+class Spread$0 {
+//    ^^^^^^ def
+
+    public function __construct(public string $id) {}
+}
+
+class IntermediateJson {
+    public function __construct(public array $spreads) {}
+}
+
+function plain(): IntermediateJson {
+    return new IntermediateJson([new Spread('s0')]);
+//                                   ^^^^^^ ref
+}
+
+#[TestWith([new Spread('s1')])]
+//              ^^^^^^ ref
+function attributeArg(): void {}
+"#,
+    )
+    .await;
+}
+
 #[tokio::test]
 async fn attribute_repeatable() {
     let mut s = TestServer::new().await;

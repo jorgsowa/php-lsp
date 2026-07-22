@@ -671,10 +671,14 @@ impl DocumentStore {
 
     pub fn remove(&self, uri: &Url) {
         self.caches.evict(uri);
-        // Mark the URI as deleted but keep the `source_files` entry so the
-        // salsa `SourceFile` handle remains alive. Re-opening the file reuses
-        // the same handle instead of calling `SourceFile::new()` again, which
-        // would create a new orphaned salsa input on every delete-reopen cycle.
+        // Mark the URI as deleted but keep the `lsp_ws_files` entry so the
+        // salsa `LspWsFile`/`SourceFile` handles remain alive. Re-opening the
+        // file reuses the same handle instead of calling `LspWsFile::new()`
+        // again, which would create a new orphaned salsa input on every
+        // delete-reopen cycle. `session.invalidate_file` below already frees
+        // the (potentially large) text this handle holds via mir's own
+        // `remove_source_file`, so keeping the handle costs only its own
+        // small footprint, not the file's content.
         self.deleted_uris.insert(uri.clone());
         self.workspace_files_dirty.store(true, Ordering::Release);
         // Sync workspace files so the deleted file is removed from the salsa
@@ -979,36 +983,25 @@ impl DocumentStore {
         session.warm_start_files(&files);
     }
 
-    /// Candidate file scope for a posting lookup on `symbol` (whose cursor /
-    /// declaration word is `word`). Private/protected methods narrow to their
-    /// visibility scope. After the analysis warm sweep has committed every
-    /// file's postings the freshness pass is a cheap per-file check, so the
-    /// whole workspace is passed directly; before that, the text pre-filter
-    /// bounds the on-demand analysis a cold query would otherwise pay across
-    /// the full workspace.
-    pub(crate) fn reference_candidate_files(
-        &self,
-        symbol: &mir_analyzer::Name,
-        word: &str,
-    ) -> Vec<Arc<str>> {
+    /// Candidate file scope for a posting lookup on `symbol`.
+    /// Private/protected methods narrow to their visibility scope; everything
+    /// else gets the whole workspace. mir gates never-committed candidates on
+    /// a symbol-name text mention internally (with PHP's case-insensitive
+    /// matching semantics), so a host-side text prefilter would only re-scan
+    /// the same bytes with weaker semantics.
+    pub(crate) fn reference_candidate_files(&self, symbol: &mir_analyzer::Name) -> Vec<Arc<str>> {
         if let mir_analyzer::Name::Method { class, name } = symbol
             && let Some(urls) = self.method_reference_scope(class, name)
         {
             return urls.iter().map(|u| Arc::from(u.as_str())).collect();
         }
-        if self.warm_sweeps_completed() > 0 {
-            self.workspace_file_paths()
-        } else {
-            self.candidate_urls_for(word)
-                .iter()
-                .map(|u| Arc::from(u.as_str()))
-                .collect()
-        }
+        self.workspace_file_paths()
     }
 
     /// Every active workspace file as a mir path (`Arc<str>` of the URI).
-    /// The candidate scope handed to mir's subtype queries.
-    pub(crate) fn workspace_file_paths(&self) -> Vec<Arc<str>> {
+    /// The candidate scope handed to mir's queries — mir gates uncommitted
+    /// candidates on symbol-name mention internally, so this is always safe.
+    pub fn workspace_file_paths(&self) -> Vec<Arc<str>> {
         self.lsp_ws_files
             .iter()
             .filter(|e| !self.deleted_uris.contains(e.key()))
@@ -1475,70 +1468,23 @@ impl DocumentStore {
             .collect()
     }
 
-    /// URLs of workspace files whose raw source text mentions `word` as a whole
-    /// identifier — **no parsing**. Uses a precompiled `memmem` finder (the same
-    /// needle is scanned across the whole workspace) plus a word-boundary check,
-    /// so `save` does not match inside `saveAll`/`unsaved`; the scan runs in
-    /// parallel over the file set. The references read path narrows this list by
-    /// symbol visibility and hands it to mir's per-file `analyze_file`, so a
-    /// method lookup never materializes a `ParsedDoc` for the workspace.
-    ///
-    /// Files whose text is not yet in `text_cache` are included conservatively
-    /// (safe superset — never produces false negatives).
-    pub fn candidate_urls_for(&self, word: &str) -> Vec<Url> {
-        use rayon::prelude::*;
-        let urls: Vec<Url> = self
-            .lsp_ws_files
+    /// Files whose `use` imports include `fqn` (leading `\` and ASCII case
+    /// ignored — PHP names are case-insensitive), from the workspace symbol
+    /// index — no parsing, no text scan. The candidate scope for `use`-line
+    /// rewrites on file rename/delete: only importers can carry such a line.
+    pub fn files_importing(&self, fqn: &str) -> Vec<Url> {
+        let target = fqn.trim_start_matches('\\');
+        self.get_workspace_index_salsa()
+            .files
             .iter()
-            .filter(|e| !self.deleted_uris.contains(e.key()))
-            .map(|e| e.key().clone())
-            .collect();
-        let finder = memchr::memmem::Finder::new(word.as_bytes());
-        let wlen = word.len();
-        urls.into_par_iter()
-            .filter(|u| match self.caches.text_cache.get(u) {
-                Some(src) => mentions_identifier(src.as_bytes(), &finder, wlen),
-                None => true,
+            .filter(|(_, idx)| {
+                idx.use_imports
+                    .iter()
+                    .any(|(_, f)| f.trim_start_matches('\\').eq_ignore_ascii_case(target))
             })
+            .map(|(u, _)| u.clone())
             .collect()
     }
-
-    /// Parsed documents limited to files whose raw source text contains `word`.
-    ///
-    /// [`Self::candidate_urls_for`] + a salsa parse per survivor. Used by the
-    /// AST-walker reference paths (constructor refs, non-method kinds) that
-    /// genuinely need the parsed AST. The method reference path uses
-    /// `candidate_urls_for` directly and avoids these parses entirely.
-    ///
-    /// Files whose text is not yet in `text_cache` are included conservatively
-    /// (safe superset — never produces false negatives).
-    pub fn candidate_docs_for(&self, word: &str) -> Vec<(Url, Arc<ParsedDoc>)> {
-        self.candidate_urls_for(word)
-            .into_iter()
-            .filter_map(|u| self.get_doc_salsa(&u).map(|d| (u, d)))
-            .collect()
-    }
-}
-
-/// Whether `hay` contains `finder`'s needle (length `wlen`) as a whole
-/// identifier — i.e. not immediately preceded or followed by an ASCII
-/// identifier byte (`[A-Za-z0-9_]`). Only ASCII bytes count as identifier
-/// boundaries, so the check can over-accept near multibyte text but never
-/// rejects a real whole-word match.
-fn mentions_identifier(hay: &[u8], finder: &memchr::memmem::Finder, wlen: usize) -> bool {
-    let is_ident = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
-    let mut from = 0;
-    while let Some(rel) = finder.find(&hay[from..]) {
-        let idx = from + rel;
-        let before_ok = idx == 0 || !is_ident(hay[idx - 1]);
-        let end = idx + wlen;
-        let after_ok = end >= hay.len() || !is_ident(hay[end]);
-        if before_ok && after_ok {
-            return true;
-        }
-        from = idx + 1;
-    }
-    false
 }
 
 #[cfg(test)]
@@ -1547,22 +1493,6 @@ mod tests {
 
     fn uri(path: &str) -> Url {
         Url::parse(&format!("file://{path}")).unwrap()
-    }
-
-    #[test]
-    fn mentions_identifier_respects_word_boundaries() {
-        let m = |hay: &str, word: &str| {
-            let f = memchr::memmem::Finder::new(word.as_bytes());
-            mentions_identifier(hay.as_bytes(), &f, word.len())
-        };
-        assert!(m("$this->save();", "save"));
-        assert!(m("function save() {}", "save"));
-        assert!(m("save", "save"));
-        // substrings inside a larger identifier must not match
-        assert!(!m("$this->saveAll();", "save"));
-        assert!(!m("return $unsaved;", "save"));
-        assert!(!m("class Saver {}", "save"));
-        assert!(!m("no occurrence here", "save"));
     }
 
     /// Phase E4: open-file state lives on `Backend`, not `DocumentStore`.
@@ -1659,6 +1589,27 @@ mod tests {
         store.ingest(u.clone(), "<?php");
         store.remove(&u);
         assert!(store.get_index_salsa(&u).is_none());
+    }
+
+    #[test]
+    fn remove_frees_mir_source_text() {
+        let store = DocumentStore::new();
+        let u = uri("/lib.php");
+        let big_text = format!("<?php\n{}", "// pad\n".repeat(1000));
+        store.ingest(u.clone(), &big_text);
+
+        let session = store.analysis_session(store.workspace_php_version());
+        let sf = session.lookup_source_file(u.as_str()).unwrap();
+        let len_before = store.snapshot_mir_query(|db| sf.text(db).len());
+        assert!(len_before > 1000, "sanity: source text should be mirrored");
+
+        store.remove(&u);
+
+        let len_after = store.snapshot_mir_query(|db| sf.text(db).len());
+        assert_eq!(
+            len_after, 0,
+            "remove() must free mir's SourceFile text, not just hide the file from indexes"
+        );
     }
 
     #[test]

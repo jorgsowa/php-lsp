@@ -550,13 +550,13 @@ impl Backend {
             };
 
             // `use` lines rewrite the full import path (the namespace may
-            // change, not just the class name). Text-level per candidate —
-            // a `use` line necessarily contains the FQN's final segment, so
-            // the text prefilter can't miss one; no parse of the workspace.
+            // change, not just the class name). Only importers of the old
+            // FQN can carry such a line, and the workspace index already
+            // records per-file imports — no text scan, parse only matches.
             let old_short = fqn_short_name(&old_fqn).to_string();
             let new_short = fqn_short_name(&new_fqn).to_string();
             if old_fqn != new_fqn {
-                for uri in self.docs.candidate_urls_for(&old_short) {
+                for uri in self.docs.files_importing(&old_fqn) {
                     let Some(doc) = self.docs.get_doc_salsa(&uri) else {
                         continue;
                     };
@@ -575,7 +575,7 @@ impl Backend {
                 let symbol =
                     mir_analyzer::Name::class(old_fqn.trim_start_matches('\\').to_string());
                 let files: Vec<std::sync::Arc<str>> =
-                    self.docs.reference_candidate_files(&symbol, &old_short);
+                    self.docs.reference_candidate_files(&symbol);
                 let docs = std::sync::Arc::clone(&self.docs);
                 let locations = tokio::task::spawn_blocking(move || {
                     let (_interactive, cancel_rev) = docs.settled_write_rev_guard();
@@ -724,9 +724,9 @@ impl Backend {
                 continue;
             };
 
-            // A `use` line necessarily contains the FQN's final segment, so
-            // the text prefilter bounds the scan without a workspace parse.
-            for uri in self.docs.candidate_urls_for(fqn_short_name(&fqn)) {
+            // Only importers of the FQN can carry a deletable `use` line;
+            // the workspace index records per-file imports — no text scan.
+            for uri in self.docs.files_importing(&fqn) {
                 let Some(doc) = self.docs.get_doc_salsa(&uri) else {
                     continue;
                 };

@@ -801,6 +801,37 @@ interface Cat extends Animal {}
     .await;
 }
 
+/// An implementor that satisfies an interface method purely by *inheriting*
+/// it from an ancestor which itself does not declare `implements` — the
+/// ancestor never overrides the method locally. Confirmed live gap against a
+/// real ~15K-file codebase (app-server verification, 2026-07-21): 11 of 15
+/// real implementors of `Indexable::serializeToElasticsearchDocument` were
+/// invisible because they relied on an inherited, non-overriding ancestor
+/// method. mir commit 7b5ce9e8 ("indexed_method_implementations walks the
+/// inheritance chain") closes this for the mir 0.61.0 bump.
+#[tokio::test]
+async fn implementation_via_inherited_non_overriding_method() {
+    let mut s = TestServer::new().await;
+    s.check_implementation_annotated(
+        r#"<?php
+interface Indexable$0 {
+    public function serialize(): array;
+}
+
+abstract class DocumentBlock {
+    public function serialize(): array { return []; }
+}
+
+final class DocumentBlockText extends DocumentBlock implements Indexable {}
+//          ^^^^^^^^^^^^^^^^^ impl
+
+final class DocumentBlockImage extends DocumentBlock implements Indexable {}
+//          ^^^^^^^^^^^^^^^^^^ impl
+"#,
+    )
+    .await;
+}
+
 #[tokio::test]
 async fn definition_trait_use_resolves_to_trait_decl() {
     let mut s = TestServer::new().await;

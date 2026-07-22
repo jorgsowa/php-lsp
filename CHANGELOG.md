@@ -2,6 +2,21 @@
 
 All notable changes to php-lsp are documented here.
 
+## [Unreleased]
+
+### Changed
+
+- **The whole-workspace text prefilter for references/rename is gone**: mir 0.61 gates cold candidate files on a symbol-name text mention internally (with PHP's case-insensitive matching semantics), so all reference-shaped handlers — references, rename, constructor references, code lens, call hierarchy — now hand mir the workspace scope through one consolidated `reference_candidate_files` path. Removes one or two full workspace text scans per query and closes a correctness hole where case-divergent mentions (`new COLOR()`) were dropped from the cold candidate set by the case-sensitive scan.
+- **`willRenameFiles`/`willDeleteFiles` `use`-line rewrites now look up importers in the workspace index** instead of text-scanning the workspace and parsing every file that mentions the class's short name — renaming or deleting a file whose class has a common short name no longer parses unrelated files while the editor waits on the rename dialog.
+
+### Performance
+
+- **Workspace scan's directory walk is now parallel** (`src/index/workspace_scan.rs`): one `read_dir` per directory still runs serially, but the fan-out across subdirectories runs on the rayon pool instead of a single thread walking the whole tree — 1.3–1.5x faster on real Laravel/Symfony corpora, on top of the already-parallel parse+index phase.
+
+### Dependencies
+
+- **mir updated to 0.61.0** (from 0.60.0): `indexed_references_to` skips analysis of never-committed files whose text cannot name the queried symbol, so cold reference queries on common names stop paying a full per-file analysis across the workspace. Includes further mir-side work landed after the initial 0.61.0 tag: a parallelized workspace-symbol-index seed (fixes a 1.5s+ serial sweep on the first cold query of a session), `freeze_workspace_index` applied to the two remaining parallel body-analysis passes (avoids per-file symbol-index clone traffic under rayon), and a single-pass multi-needle scan for the reference-scoping freshness gate (a 2.9s CPU round collapses to ~0.15s). Cold `indexed_references_to` on mir's Laravel benchmark: 1.5s → 0.63s.
+
 ## [0.20.0] — 2026-07-19
 
 ### Fixed
