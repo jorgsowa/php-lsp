@@ -119,7 +119,7 @@ pub fn incoming_calls_indexed(
         mir_analyzer::Name::function(resolve(&item.name))
     };
 
-    let files = store.reference_candidate_files(&symbol, &item.name);
+    let files = store.reference_candidate_files(&symbol);
     let mut call_sites: Vec<tower_lsp::lsp_types::Location> = store
         .indexed_references(&symbol, &files, false, cancel_rev)
         .into_iter()

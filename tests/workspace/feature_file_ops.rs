@@ -202,3 +202,126 @@ async fn file_operation_capabilities_include_will_create() {
         );
     }
 }
+
+// ── importer-lookup regression pins ──────────────────────────────────────────
+//
+// willRename/willDelete `use`-line rewrites resolve their candidate files from
+// the workspace index's recorded imports (`files_importing`), not a workspace
+// text scan + parse. These pin the behaviors that lookup must preserve.
+
+/// Build a tempdir PSR-4 workspace (`App\` → `src/`) from `(path, text)` pairs.
+fn psr4_workspace(files: &[(&str, &str)]) -> tempfile::TempDir {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("composer.json"),
+        r#"{ "autoload": { "psr-4": { "App\\": "src/" } } }"#,
+    )
+    .unwrap();
+    for (path, text) in files {
+        let full = dir.path().join(path);
+        std::fs::create_dir_all(full.parent().unwrap()).unwrap();
+        std::fs::write(full, text).unwrap();
+    }
+    dir
+}
+
+/// An aliased import (`use App\Model\User as Person;`) must still be found by
+/// the importer lookup — the index records the FQN, not the alias — and its
+/// `use` line rewritten on rename. The decoy file mentions `User` only in a
+/// comment and a same-short-name string: under the old text scan it was
+/// parsed as a candidate; now it must simply produce no edits.
+#[tokio::test]
+async fn will_rename_files_rewrites_aliased_import() {
+    let dir = psr4_workspace(&[
+        (
+            "src/Model/User.php",
+            "<?php\n\nnamespace App\\Model;\n\nclass User\n{\n}\n",
+        ),
+        (
+            "src/Consumer.php",
+            "<?php\n\nnamespace App;\n\nuse App\\Model\\User as Person;\n\nclass Consumer\n{\n    public function make(): Person\n    {\n        return new Person();\n    }\n}\n",
+        ),
+        (
+            "src/Decoy.php",
+            "<?php\n\nnamespace App;\n\n// User is renamed elsewhere; $user strings only\nclass Decoy\n{\n    public string $note = 'User';\n}\n",
+        ),
+    ]);
+    let mut server = TestServer::with_root(dir.path()).await;
+    server.wait_for_index_ready().await;
+
+    let old_uri = server.uri("src/Model/User.php");
+    let new_uri = server.uri("src/Model/Account.php");
+    let resp = server.will_rename_files(vec![(old_uri, new_uri)]).await;
+
+    assert!(resp["error"].is_null(), "willRenameFiles error: {resp:?}");
+    let snap = canonicalize_workspace_edit(&resp["result"], &server.uri(""));
+    expect![[r#"
+        // src/Consumer.php
+        4:4-4:18 → "App\\Model\\Account"
+
+        // src/Model/User.php
+        4:6-4:10 → "Account""#]].assert_eq(&snap);
+}
+
+/// Deleting an aliased-import target must remove the whole `use ... as ...;`
+/// line, found via the importer lookup.
+#[tokio::test]
+async fn will_delete_files_removes_aliased_import_line() {
+    let dir = psr4_workspace(&[
+        (
+            "src/Model/User.php",
+            "<?php\n\nnamespace App\\Model;\n\nclass User\n{\n}\n",
+        ),
+        (
+            "src/Consumer.php",
+            "<?php\n\nnamespace App;\n\nuse App\\Model\\User as Person;\n\nclass Consumer\n{\n}\n",
+        ),
+    ]);
+    let mut server = TestServer::with_root(dir.path()).await;
+    server.wait_for_index_ready().await;
+
+    let uri = server.uri("src/Model/User.php");
+    let resp = server.will_delete_files(vec![uri]).await;
+
+    assert!(resp["error"].is_null(), "willDeleteFiles error: {resp:?}");
+    let snap = canonicalize_workspace_edit(&resp["result"], &server.uri(""));
+    expect![[r#"
+        // src/Consumer.php
+        4:0-5:0 → """#]].assert_eq(&snap);
+}
+
+/// Known-gap pin: group `use App\Model\{User};` lines are not rewritten by
+/// the text-level `use` editor (before or after the importer-lookup change) —
+/// note the snapshot has no line-4 edit for Grouped.php. Reference sites and
+/// the declaration are still renamed via mir's postings, so the import line
+/// is the one stale remnant. If a `4:…` edit ever appears here, the gap was
+/// closed — update the docs alongside it.
+#[tokio::test]
+async fn will_rename_files_group_use_import_pins_known_gap() {
+    let dir = psr4_workspace(&[
+        (
+            "src/Model/User.php",
+            "<?php\n\nnamespace App\\Model;\n\nclass User\n{\n}\n",
+        ),
+        (
+            "src/Grouped.php",
+            "<?php\n\nnamespace App;\n\nuse App\\Model\\{User};\n\nclass Grouped\n{\n    public function make(): User\n    {\n        return new User();\n    }\n}\n",
+        ),
+    ]);
+    let mut server = TestServer::with_root(dir.path()).await;
+    server.wait_for_index_ready().await;
+
+    let old_uri = server.uri("src/Model/User.php");
+    let new_uri = server.uri("src/Model/Account.php");
+    let resp = server.will_rename_files(vec![(old_uri, new_uri)]).await;
+
+    assert!(resp["error"].is_null(), "willRenameFiles error: {resp:?}");
+    let snap = canonicalize_workspace_edit(&resp["result"], &server.uri(""));
+    expect![[r#"
+        // src/Grouped.php
+        8:28-8:32 → "Account"
+        10:19-10:23 → "Account"
+
+        // src/Model/User.php
+        4:6-4:10 → "Account""#]].assert_eq(&snap);
+}

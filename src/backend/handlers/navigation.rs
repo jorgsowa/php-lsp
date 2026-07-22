@@ -308,12 +308,7 @@ impl Backend {
                             .to_string()
                     };
                     let sym = mir_analyzer::Name::method(fqn.as_str(), "__construct");
-                    let short = fqn_short_name(&class_name).to_owned();
-                    let candidate_urls = self.docs.candidate_urls_for(&short);
-                    let files: Vec<Arc<str>> = candidate_urls
-                        .iter()
-                        .map(|u| Arc::from(u.as_str()))
-                        .collect();
+                    let files: Vec<Arc<str>> = self.docs.reference_candidate_files(&sym);
                     let docs = Arc::clone(&self.docs);
                     let locations = tokio::task::spawn_blocking(move || {
                         let (_interactive, cancel_rev) = docs.settled_write_rev_guard();
@@ -431,42 +426,10 @@ impl Backend {
                 }
             };
 
-            // Visibility scoping: a private/protected method can only be
-            // referenced from its declaring class file (+ subtype files for
-            // protected). When that scope is known, use it directly as the
-            // candidate set — skipping the whole-workspace text sweep in
-            // `candidate_urls_for`. Public symbols fall back to the
-            // text-filtered workspace scope, unioned over the cursor word and
-            // the symbol's short name (they differ under `use ... as` aliases).
-            let method_scope = if let mir_analyzer::Name::Method { class, name } = &symbol {
-                self.docs.method_reference_scope(class, name)
-            } else {
-                None
-            };
-            let candidate_urls = method_scope.unwrap_or_else(|| {
-                let mut urls = self.docs.candidate_urls_for(&word);
-                let short = match &symbol {
-                    mir_analyzer::Name::Class(f)
-                    | mir_analyzer::Name::Function(f)
-                    | mir_analyzer::Name::GlobalConstant(f) => {
-                        fqn_short_name(f.trim_start_matches('\\')).to_string()
-                    }
-                    mir_analyzer::Name::Method { name, .. }
-                    | mir_analyzer::Name::Property { name, .. }
-                    | mir_analyzer::Name::ClassConstant { name, .. } => name.to_string(),
-                };
-                if short != word.as_str() {
-                    let mut extra = self.docs.candidate_urls_for(&short);
-                    urls.append(&mut extra);
-                    urls.sort_unstable_by(|a, b| a.as_str().cmp(b.as_str()));
-                    urls.dedup();
-                }
-                urls
-            });
-            let files: Vec<Arc<str>> = candidate_urls
-                .iter()
-                .map(|u| Arc::from(u.as_str()))
-                .collect();
+            // Candidate scope: visibility narrowing for private/protected
+            // methods, else the whole workspace — mir gates never-committed
+            // candidates on a symbol-name text mention internally.
+            let files: Vec<Arc<str>> = self.docs.reference_candidate_files(&symbol);
 
             // Declaration coverage comes from mir's definitions index (the
             // `include_declaration` flag below) — never from the raw cursor
@@ -543,37 +506,9 @@ impl Backend {
         };
 
         // Candidate scope: same shape as the references handler — visibility
-        // narrowing for methods, else the text-filtered workspace scope
-        // unioned over the cursor word and the symbol's short name.
-        let method_scope = if let mir_analyzer::Name::Method { class, name } = &symbol {
-            self.docs.method_reference_scope(class, name)
-        } else {
-            None
-        };
-        let candidate_urls = method_scope.unwrap_or_else(|| {
-            let mut urls = self.docs.candidate_urls_for(&word);
-            let short = match &symbol {
-                mir_analyzer::Name::Class(f)
-                | mir_analyzer::Name::Function(f)
-                | mir_analyzer::Name::GlobalConstant(f) => {
-                    fqn_short_name(f.trim_start_matches('\\')).to_string()
-                }
-                mir_analyzer::Name::Method { name, .. }
-                | mir_analyzer::Name::Property { name, .. }
-                | mir_analyzer::Name::ClassConstant { name, .. } => name.to_string(),
-            };
-            if short != word.as_str() {
-                let mut extra = self.docs.candidate_urls_for(&short);
-                urls.append(&mut extra);
-                urls.sort_unstable_by(|a, b| a.as_str().cmp(b.as_str()));
-                urls.dedup();
-            }
-            urls
-        });
-        let files: Vec<Arc<str>> = candidate_urls
-            .iter()
-            .map(|u| Arc::from(u.as_str()))
-            .collect();
+        // narrowing for private/protected methods, else the whole workspace
+        // (mir gates never-committed candidates internally).
+        let files: Vec<Arc<str>> = self.docs.reference_candidate_files(&symbol);
 
         // `use` imports are recorded under separate `use:` keys so plain
         // find-references stays blind to them; a rename must edit them too.

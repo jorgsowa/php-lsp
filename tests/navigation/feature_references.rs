@@ -34,6 +34,9 @@ mod protocol;
 #[path = "references/workspace_scan.rs"]
 mod workspace_scan;
 
+#[path = "references/cold_candidate_gating.rs"]
+mod cold_candidate_gating;
+
 #[path = "references/expressions.rs"]
 mod expressions;
 
