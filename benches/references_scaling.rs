@@ -1,18 +1,28 @@
 //! Fixture-free find-references improvement benchmark.
 //!
-//! Models the real cost driver localized earlier: a *common* public method name
-//! (`process`) shared across unrelated classes, where only a fraction of the
-//! text-matching files actually reference the target `App\Service`. This is the
-//! case where the reachability pre-filter helps.
+//! Models the real cost driver behind the app-server verification's 5-41s
+//! references cliff on generic short names (`Color`, `Node`, `Asset`, ...): a
+//! *common* public method name (`process`) shared across unrelated classes,
+//! where only a fraction of the text-matching files actually reference the
+//! target `App\Service`.
 //!
-//!   BEFORE — hand mir the whole workspace as the candidate scope; its
-//!     internal gate admits every file that text-matches the method name.
-//!   AFTER  — analyze only files that also mention the owner class `Service`
-//!     (the reachability upper bound a smarter gate could reach).
+//! Neither the pre-0.61 host-side gate (`candidate_urls_for`, deleted in
+//! `85880a6`) nor mir 0.61's own internal cold-candidate gate
+//! (`indexed_references_to`'s `reference_gate_needles`) filter on more than
+//! the bare symbol name — both admit every candidate that merely text-matches
+//! `process`, including files that only define their *own*, unrelated
+//! `process()` method. This bench does not compare two real code paths; it
+//! measures the *unimplemented* upper bound:
+//!
+//!   BEFORE — hand mir the whole workspace; its gate admits every file that
+//!     text-matches the method name (what ships today).
+//!   AFTER  — additionally require the file to mention the owner class
+//!     `Service` (a reachability gate nothing currently implements).
 //!
 //! Both produce the same references (a file that never names `Service` can't
-//! resolve `Service::process`), so this is pure speedup. Reports the cold
-//! (first-query) latency the user feels, and the SESSION axis for regression.
+//! resolve `Service::process`), so AFTER is pure, currently-unrealized
+//! speedup. Reports the cold (first-query) latency the user feels, and the
+//! SESSION axis for regression.
 //!
 //! Run: `cargo bench --bench references_scaling`
 
