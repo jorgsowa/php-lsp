@@ -290,3 +290,60 @@ async fn warm_start_replays_reference_postings_from_first_session() {
         expect![[r#"caller.php:2:4-2:8"#]].assert_eq(&out);
     }
 }
+
+/// Postings staged by an on-demand references query (not a warm sweep) must
+/// still reach disk without a clean `shutdown` — the background flush loop
+/// added to close the "not amortized" cliff (an unclean exit on a workspace
+/// that never ran a warm sweep previously lost everything, since a flush
+/// only ever happened on sweep completion or `shutdown`). `warmAnalysis` is
+/// off so the only source of staged postings is the references query
+/// itself, and the first session is dropped without calling `shutdown`,
+/// simulating a crash/kill.
+#[tokio::test]
+async fn periodic_flush_persists_query_commits_without_shutdown() {
+    let workspace = tempfile::tempdir().expect("workspace tempdir");
+    let cache_dir = tempfile::tempdir().expect("cache tempdir");
+    let widget = "<?php\nclass Widget {\n    public function spin(): void {}\n}\n";
+    let caller = "<?php\n$w = new Widget();\n$w->spin();\n";
+    std::fs::write(workspace.path().join("widget.php"), widget).expect("write widget.php");
+    std::fs::write(workspace.path().join("caller.php"), caller).expect("write caller.php");
+
+    let opts = json!({
+        "cachePath": cache_dir.path().to_str().unwrap(),
+        "diagnostics": {"enabled": false},
+        "phpVersion": "8.3",
+        "warmAnalysis": false,
+        "analysisCacheFlushIntervalMs": 50,
+    });
+
+    let caller_uri = {
+        let mut s = TestServer::with_root_and_options(workspace.path(), opts).await;
+        s.wait_for_index_ready().await;
+        s.open("widget.php", widget).await;
+        // Cursor on `spin` in its declaration — stages caller.php's postings
+        // into the in-memory AnalysisCache via the on-demand freshness pass.
+        s.references("widget.php", 2, 20, false).await;
+        let uri = s.uri("caller.php");
+
+        // Give the background flush loop (50 ms interval) at least one tick
+        // before dropping — no `shutdown()` call, unlike every other test in
+        // this file.
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        uri
+        // `s` drops here uncleanly.
+    };
+
+    let session_dir = cache_dir.path().join("session");
+    let php_v = "8.3"
+        .parse::<mir_analyzer::PhpVersion>()
+        .expect("valid version")
+        .cache_byte();
+    let mir_cache = mir_analyzer::cache::AnalysisCache::open(&session_dir, php_v, 0);
+    let (_, ref_locs) = mir_cache
+        .get(&caller_uri, &mir_analyzer::cache::hash_content(caller))
+        .expect("periodic flush must persist the query-staged entry for caller.php");
+    assert!(
+        !ref_locs.is_empty(),
+        "persisted entry must carry caller.php's reference postings"
+    );
+}

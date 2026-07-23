@@ -327,7 +327,15 @@ impl Backend {
                 .await
                 .ok();
 
-            let (exclude_paths, include_paths, max_indexed_files, debug, cache_path, warm_analysis) = {
+            let (
+                exclude_paths,
+                include_paths,
+                max_indexed_files,
+                debug,
+                cache_path,
+                warm_analysis,
+                flush_interval_ms,
+            ) = {
                 let cfg = self.config.load();
                 let mut exclude = cfg.exclude_paths.clone();
                 if !cfg.index_vendor && !exclude.iter().any(|p| p == "vendor" || p == "vendor/") {
@@ -340,6 +348,7 @@ impl Backend {
                     cfg.debug,
                     cfg.cache_path.clone(),
                     cfg.warm_analysis,
+                    cfg.flush_interval_ms,
                 )
             };
 
@@ -358,6 +367,25 @@ impl Backend {
                 self.docs
                     .set_session_cache_dir(c.cache_dir().join("session"));
             }
+
+            // Postings staged by an in-progress warm sweep or an on-demand
+            // reference-query freshness pass only reach disk on sweep
+            // completion or clean shutdown (see `flush_analysis_cache`). A
+            // 15K-file workspace's first sweep can run far longer than an
+            // editor session lasts, and an unclean exit (crash, kill) skips
+            // `shutdown` entirely — so without this, a still-warming
+            // workspace pays its cold-analysis cost again on every restart.
+            // `flush_analysis_cache` is a no-op unless something changed
+            // since the last flush, so this loop costs nothing once the
+            // workspace is fully warm and idle.
+            let periodic_flush_docs = Arc::clone(&self.docs);
+            tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_millis(flush_interval_ms)).await;
+                    let docs = Arc::clone(&periodic_flush_docs);
+                    let _ = tokio::task::spawn_blocking(move || docs.flush_analysis_cache()).await;
+                }
+            });
 
             let warm_docs = Arc::clone(&self.docs);
             tokio::task::spawn_blocking(move || {

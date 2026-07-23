@@ -243,6 +243,12 @@ pub struct LspConfig {
     /// When absent, falls back to the platform default (`$XDG_CACHE_HOME` /
     /// `$HOME/.cache` on Unix, `%LOCALAPPDATA%` on Windows).
     pub cache_path: Option<std::path::PathBuf>,
+    /// How often the background loop persists staged analysis-cache postings
+    /// (reference postings from an in-progress warm sweep or an on-demand
+    /// query freshness pass) to disk. Bounds data loss on an unclean exit
+    /// (crash, kill — anything that skips `shutdown`) to roughly one
+    /// interval. Defaults to 20 s; lower mainly useful in tests.
+    pub flush_interval_ms: u64,
 }
 
 impl Default for LspConfig {
@@ -259,6 +265,7 @@ impl Default for LspConfig {
             debounce_ms: 100,
             warm_analysis: true,
             cache_path: None,
+            flush_interval_ms: 20_000,
         }
     }
 }
@@ -349,6 +356,9 @@ impl LspConfig {
         }
         if let Some(s) = v.get("cachePath").and_then(|x| x.as_str()) {
             cfg.cache_path = Some(std::path::PathBuf::from(s));
+        }
+        if let Some(n) = v.get("analysisCacheFlushIntervalMs").and_then(|x| x.as_u64()) {
+            cfg.flush_interval_ms = n.max(1);
         }
         cfg
     }
