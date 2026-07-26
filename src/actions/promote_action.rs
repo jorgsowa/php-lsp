@@ -46,6 +46,9 @@ struct Promotion {
     prop_span_end: u32,
     /// Constructor param span start — we insert the visibility prefix here.
     param_span_start: u32,
+    /// Constructor param span end — we insert the property's default value
+    /// here, when the param doesn't already declare its own.
+    param_span_end: u32,
     /// Visibility modifier to prepend to the param.
     visibility: &'static str,
     /// Whether to also insert `readonly `.
@@ -54,6 +57,11 @@ struct Promotion {
     /// the constructor parameter already declares a type — emitting the
     /// property's type in that case would produce `private string string $x`.
     type_hint: Option<String>,
+    /// Property default value source text (e.g., "3", "'foo'"). `None` here
+    /// when the constructor parameter already declares its own default —
+    /// carried over so promoting a property with `= 3` doesn't silently drop
+    /// the default (the promoted param would take `null`/nothing instead).
+    default: Option<String>,
     /// Assignment statement span — used to remove the whole line.
     assign_span_start: u32,
     assign_span_end: u32,
@@ -98,10 +106,10 @@ fn collect_promote<'a>(
                     None => continue,
                 };
 
-                // Build a map from property name -> (member span start, member span end, visibility, is_readonly, type_hint)
+                // Build a map from property name -> (member span start, member span end, visibility, is_readonly, type_hint, default text)
                 // Only include non-static properties that have a visibility modifier.
-                let mut prop_info: HashMap<String, (u32, u32, &'static str, bool, Option<String>)> =
-                    HashMap::new();
+                type PropInfo = (u32, u32, &'static str, bool, Option<String>, Option<String>);
+                let mut prop_info: HashMap<String, PropInfo> = HashMap::new();
                 for member in c.body.members.iter() {
                     if let ClassMemberKind::Property(p) = &member.kind
                         && !p.is_static
@@ -116,6 +124,9 @@ fn collect_promote<'a>(
                             .type_hint
                             .as_ref()
                             .map(|t| crate::document::ast::format_type_hint(t));
+                        let default = p.default.as_ref().map(|d| {
+                            sv.source()[d.span.start as usize..d.span.end as usize].to_string()
+                        });
                         prop_info.insert(
                             p.name.to_string(),
                             (
@@ -124,6 +135,7 @@ fn collect_promote<'a>(
                                 vis,
                                 p.is_readonly,
                                 type_hint,
+                                default,
                             ),
                         );
                     }
@@ -147,7 +159,7 @@ fn collect_promote<'a>(
                     let param_name = param.name;
 
                     // Check if there's a matching property.
-                    let (prop_start, prop_end, vis, is_readonly, type_hint) =
+                    let (prop_start, prop_end, vis, is_readonly, type_hint, default) =
                         match prop_info.get(param_name.to_string().as_str()) {
                             Some(info) => info.clone(),
                             None => continue,
@@ -170,13 +182,23 @@ fn collect_promote<'a>(
                         type_hint
                     };
 
+                    // Same precedence as the type hint: a param that already
+                    // declares its own default keeps it untouched.
+                    let effective_default = if param.default.is_some() {
+                        None
+                    } else {
+                        default
+                    };
+
                     promotions.push(Promotion {
                         prop_span_start: prop_start,
                         prop_span_end: prop_end,
                         param_span_start: param.span.start,
+                        param_span_end: param.span.end,
                         visibility: vis,
                         is_readonly,
                         type_hint: effective_type_hint,
+                        default: effective_default,
                         assign_span_start: assign_start,
                         assign_span_end: assign_end,
                     });
@@ -266,6 +288,19 @@ fn build_action(
             },
             new_text: prefix,
         });
+
+        // 2b. Carry over the property's default value, when the param
+        // doesn't already declare its own — otherwise it's silently dropped.
+        if let Some(default) = &p.default {
+            let end_pos = sv.position_of(p.param_span_end);
+            edits.push(TextEdit {
+                range: Range {
+                    start: end_pos,
+                    end: end_pos,
+                },
+                new_text: format!(" = {default}"),
+            });
+        }
 
         // 3. Remove the `$this->prop = $param;` assignment (whole line including newline).
         let assign_remove_range = whole_line_range(sv, p.assign_span_start, p.assign_span_end);

@@ -584,6 +584,65 @@ class Config {
     .assert_eq(&out);
 }
 
+/// A property's own default value (`= 3`) must carry over onto the promoted
+/// parameter, not be silently dropped — the property declaration line is
+/// deleted entirely, so its default only survives if explicitly copied onto
+/// the parameter.
+#[tokio::test]
+async fn promote_action_carries_over_property_default_value() {
+    let mut server = TestServer::new().await;
+    let out = server
+        .check_code_action_apply(
+            r#"<?php
+class Config {
+    private int $retries$0 = 3;
+    public function __construct(int $retries) {
+        $this->retries = $retries;
+    }
+}
+"#,
+            "Promote constructor parameter",
+        )
+        .await;
+    expect![[r#"
+        <?php
+        class Config {
+            public function __construct(private int $retries = 3) {
+            }
+        }
+    "#]]
+    .assert_eq(&out);
+}
+
+/// When the constructor parameter already declares its own default, that
+/// default wins — the property's default (if different) is not appended,
+/// matching the existing type-hint precedence (param's own annotation wins).
+#[tokio::test]
+async fn promote_action_param_own_default_wins_over_property_default() {
+    let mut server = TestServer::new().await;
+    let out = server
+        .check_code_action_apply(
+            r#"<?php
+class Config {
+    private int $retries$0 = 3;
+    public function __construct(int $retries = 5) {
+        $this->retries = $retries;
+    }
+}
+"#,
+            "Promote constructor parameter",
+        )
+        .await;
+    expect![[r#"
+        <?php
+        class Config {
+            public function __construct(private int $retries = 5) {
+            }
+        }
+    "#]]
+    .assert_eq(&out);
+}
+
 /// Properties without trailing newline before constructor should work.
 /// Regression: whole_line_range logic handles files without trailing newlines.
 #[tokio::test]
