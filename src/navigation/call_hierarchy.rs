@@ -607,6 +607,23 @@ impl<'arena, 'src> Visitor<'arena, 'src> for CallCollector<'_> {
                     self.out.push((class_name.to_string(), n.class.span));
                 }
             }
+            // First-class callable syntax (PHP 8.1): `foo(...)`, `$obj->method(...)`,
+            // `$obj?->method(...)`, `Foo::bar(...)` — same callee-name extraction as
+            // the corresponding regular call, just without arguments.
+            ExprKind::CallableCreate(cc) => match &cc.kind {
+                php_ast::CallableCreateKind::Function(f) => {
+                    if let ExprKind::Identifier(name) = &f.kind {
+                        self.out.push((name.to_string(), f.span));
+                    }
+                }
+                php_ast::CallableCreateKind::Method { method, .. }
+                | php_ast::CallableCreateKind::NullsafeMethod { method, .. }
+                | php_ast::CallableCreateKind::StaticMethod { method, .. } => {
+                    if let ExprKind::Identifier(name) = &method.kind {
+                        self.out.push((name.to_string(), method.span));
+                    }
+                }
+            },
             _ => {}
         }
         walk_expr(self, expr)

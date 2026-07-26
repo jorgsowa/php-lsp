@@ -170,6 +170,41 @@ function caller$0(): void { leaf(); }
     expect!["leaf @ main.php:1:9 fromRanges=[2:26-2:30]"].assert_eq(&out);
 }
 
+/// First-class callable syntax (PHP 8.1 `foo(...)`) must count as an
+/// outgoing call, same as a regular `foo()` invocation.
+#[tokio::test]
+async fn outgoing_calls_includes_first_class_callable() {
+    let mut s = TestServer::new().await;
+    let out = s
+        .check_outgoing_calls(
+            r#"<?php
+function leaf(): void {}
+function caller$0(): void { $f = leaf(...); }
+"#,
+        )
+        .await;
+    expect!["leaf @ main.php:1:9 fromRanges=[2:31-2:35]"].assert_eq(&out);
+}
+
+/// First-class callable syntax on a method call (`$obj->method(...)`).
+#[tokio::test]
+async fn outgoing_calls_includes_first_class_callable_method() {
+    let mut s = TestServer::new().await;
+    let out = s
+        .check_outgoing_calls(
+            r#"<?php
+class Greeter {
+    public function hello(): void {}
+}
+class Service {
+    public function run$0(Greeter $g): void { $f = $g->hello(...); }
+}
+"#,
+        )
+        .await;
+    expect!["hello @ main.php:2:20 fromRanges=[5:53-5:58]"].assert_eq(&out);
+}
+
 #[tokio::test]
 async fn outgoing_calls_empty_for_leaf_function() {
     let mut s = TestServer::new().await;
