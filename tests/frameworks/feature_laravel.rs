@@ -1522,7 +1522,24 @@ async fn laravel_workspace_symbols_partial_query() {
         Method      reguard @ Illuminate/Database/Eloquent/Concerns/GuardsAttributes.php:152
         Method      totallyGuarded @ Illuminate/Database/Eloquent/Concerns/GuardsAttributes.php:270
         Method      unguard @ Illuminate/Database/Eloquent/Concerns/GuardsAttributes.php:142
-        Method      unguarded @ Illuminate/Database/Eloquent/Concerns/GuardsAttributes.php:175"#]].assert_eq(&out);
+        Method      unguarded @ Illuminate/Database/Eloquent/Concerns/GuardsAttributes.php:175
+        Property    $guard @ Illuminate/Auth/Events/Attempting.php:14
+        Property    $guard @ Illuminate/Auth/Events/Authenticated.php:17
+        Property    $guard @ Illuminate/Auth/Events/CurrentDeviceLogout.php:17
+        Property    $guard @ Illuminate/Auth/Events/Failed.php:14
+        Property    $guard @ Illuminate/Auth/Events/Login.php:18
+        Property    $guard @ Illuminate/Auth/Events/Logout.php:17
+        Property    $guard @ Illuminate/Auth/Events/OtherDeviceLogout.php:17
+        Property    $guard @ Illuminate/Auth/Events/Validated.php:17
+        Property    $guard @ Illuminate/Container/Attributes/Auth.php:15
+        Property    $guard @ Illuminate/Container/Attributes/Authenticated.php:15
+        Property    $guardableColumns @ Illuminate/Database/Eloquent/Concerns/GuardsAttributes.php:37
+        Property    $guarded @ Illuminate/Database/Eloquent/Concerns/GuardsAttributes.php:23
+        Property    $guarded @ Illuminate/Database/Eloquent/Relations/Pivot.php:23
+        Property    $guarded @ Illuminate/Notifications/DatabaseNotification.php:39
+        Property    $guards @ Illuminate/Auth/AuthManager.php:40
+        Property    $guards @ Illuminate/Auth/AuthenticationException.php:14
+        Property    $unguarded @ Illuminate/Database/Eloquent/Concerns/GuardsAttributes.php:30"#]].assert_eq(&out);
 }
 
 /// `workspace/symbol` for the `Str` class returns the class from Support.
@@ -2568,7 +2585,58 @@ async fn laravel_workspace_symbols_str_class() {
         Method      withQueryString @ Illuminate/Pagination/AbstractPaginator.php:259
         Method      withoutForeignKeyConstraints @ Illuminate/Database/Schema/Builder.php:654
         Method      writeStream @ Illuminate/Contracts/Filesystem/Filesystem.php:91
-        Method      writeStream @ Illuminate/Filesystem/FilesystemAdapter.php:715"#]].assert_eq(&out);
+        Method      writeStream @ Illuminate/Filesystem/FilesystemAdapter.php:715
+        Property    $abstractAliases @ Illuminate/Container/Container.php:82
+        Property    $allowedStrayRequestUrls @ Illuminate/Http/Client/Factory.php:90
+        Property    $allowedStrayRequestUrls @ Illuminate/Http/Client/PendingRequest.php:195
+        Property    $alwaysTrust @ Illuminate/Http/Middleware/TrustHosts.php:21
+        Property    $alwaysTrustHeaders @ Illuminate/Http/Middleware/TrustProxies.php:40
+        Property    $alwaysTrustProxies @ Illuminate/Http/Middleware/TrustProxies.php:33
+        Property    $assertionableRenderStrings @ Illuminate/Mail/Mailable.php:186
+        Property    $beforeApplicationDestroyedCallbacks @ Illuminate/Foundation/Testing/Concerns/InteractsWithTestCaseLifecycle.php:72
+        Property    $bindingRegistrar @ Illuminate/Broadcasting/Broadcasters/Broadcaster.php:46
+        Property    $bootstrapPath @ Illuminate/Foundation/Application.php:124
+        Property    $bootstrapProviderPath @ Illuminate/Foundation/Bootstrap/RegisterProviders.php:21
+        Property    $bootstrappers @ Illuminate/Console/Application.php:52
+        Property    $bootstrappers @ Illuminate/Foundation/Console/Kernel.php:119
+        Property    $bootstrappers @ Illuminate/Foundation/Http/Kernel.php:42
+        Property    $connectionsTransacting @ Illuminate/Foundation/Testing/DatabaseTransactionsManager.php:11
+        Property    $constraints @ Illuminate/Database/Eloquent/Relations/Relation.php:62
+        Property    $constraints @ Illuminate/Validation/Rules/Date.php:22
+        Property    $constraints @ Illuminate/Validation/Rules/Dimensions.php:16
+        Property    $constraints @ Illuminate/Validation/Rules/Numeric.php:15
+        Property    $constraints @ Illuminate/Validation/Rules/StringRule.php:15
+        Property    $constructorParametersCache @ Illuminate/View/Component.php:77
+        Property    $defaultStringLength @ Illuminate/Database/Schema/Builder.php:43
+        Property    $escapeWhenCastingToString @ Illuminate/Collections/Traits/EnumeratesValues.php:67
+        Property    $escapeWhenCastingToString @ Illuminate/Database/Eloquent/Model.php:139
+        Property    $escapeWhenCastingToString @ Illuminate/Pagination/AbstractPaginator.php:80
+        Property    $expectedOutputSubstrings @ Illuminate/Foundation/Testing/Concerns/InteractsWithConsole.php:36
+        Property    $hasBeenBootstrapped @ Illuminate/Foundation/Application.php:68
+        Property    $htmlString @ Illuminate/Mail/Mailables/Content.php:45
+        Property    $lastRendered @ Illuminate/View/Engines/Engine.php:11
+        Property    $morphableConstraints @ Illuminate/Database/Eloquent/Relations/MorphTo.php:75
+        Property    $prefetchStrategy @ Illuminate/Foundation/Vite.php:118
+        Property    $prepareStringsForCompilationUsing @ Illuminate/View/Compilers/BladeCompiler.php:69
+        Property    $preventStrayProcesses @ Illuminate/Process/Factory.php:42
+        Property    $preventStrayRequests @ Illuminate/Http/Client/Factory.php:83
+        Property    $preventStrayRequests @ Illuminate/Http/Client/PendingRequest.php:188
+        Property    $queryStringResolver @ Illuminate/Pagination/AbstractPaginator.php:115
+        Property    $randomStringFactory @ Illuminate/Support/Str.php:73
+        Property    $registrar @ Illuminate/Routing/PendingResourceRegistration.php:16
+        Property    $registrar @ Illuminate/Routing/PendingSingletonResourceRegistration.php:16
+        Property    $registry @ Illuminate/Console/Signals.php:14
+        Property    $scriptTagAttributesResolvers @ Illuminate/Foundation/Vite.php:69
+        Property    $sizeToReport @ Illuminate/Http/Testing/File.php:27
+        Property    $streamedContent @ Illuminate/Testing/TestResponse.php:68
+        Property    $strict @ Illuminate/Testing/Constraints/ArraySubset.php:20
+        Property    $strictRfcCompliant @ Illuminate/Validation/Rules/Email.php:22
+        Property    $string @ Illuminate/Translation/PotentiallyTranslatedString.php:13
+        Property    $stringCallbacks @ Illuminate/Auth/Access/Gate.php:71
+        Property    $stringableHandlers @ Illuminate/Translation/Translator.php:67
+        Property    $styleTagAttributesResolvers @ Illuminate/Foundation/Vite.php:76
+        Property    $unexpectedOutputSubstrings @ Illuminate/Foundation/Testing/Concerns/InteractsWithConsole.php:50
+        Property    $usesRequestQueryString @ Illuminate/Http/Resources/JsonApi/Concerns/ResolvesJsonApiElements.php:29"#]].assert_eq(&out);
 }
 
 // ── Code Actions ──────────────────────────────────────────────────────────────
