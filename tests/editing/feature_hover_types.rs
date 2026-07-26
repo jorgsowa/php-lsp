@@ -382,6 +382,28 @@ $p->$0x;
 }
 
 #[tokio::test]
+async fn hover_readonly_promoted_property_shows_readonly_modifier() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    s.check_hover_annotated(
+        r#"<?php
+class Point {
+    public function __construct(
+        public readonly float $x,
+    ) {}
+}
+$p = new Point(1.0);
+$p->$0x;
+"#,
+        expect![[r#"
+            ```php
+            (property) public readonly Point::$x: float
+            ```"#]],
+    )
+    .await;
+}
+
+#[tokio::test]
 async fn hover_promoted_property_shows_only_its_param_docblock() {
     let mut s = TestServer::new().await;
     s.validate_syntax(false);

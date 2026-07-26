@@ -46,8 +46,11 @@ fn find_property_info_in_stmts<'a>(
                             // Check promoted constructor parameters
                             for p in m.params.iter() {
                                 if p.name == prop_name && p.visibility.is_some() {
-                                    let modifiers =
-                                        format_prop_prefix(p.visibility.as_ref(), false, false);
+                                    let modifiers = format_prop_prefix(
+                                        p.visibility.as_ref(),
+                                        false,
+                                        p.is_readonly,
+                                    );
                                     let type_str = p
                                         .type_hint
                                         .as_ref()
