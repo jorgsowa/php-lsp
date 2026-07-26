@@ -98,7 +98,48 @@ async fn workspace_symbol_finds_class_by_short_name() {
             "User",
         )
         .await;
-    expect!["Class       User @ src/Model/User.php:4"].assert_eq(&out);
+    expect![[r#"
+        Class       User @ src/Model/User.php:4
+        Property    $users @ src/Service/Registry.php:9"#]]
+    .assert_eq(&out);
+}
+
+/// `workspace/symbol` must find class properties, not just methods/classes —
+/// `workspace_symbols_from_index` reads `FileIndex` directly and previously
+/// never iterated `cls.properties` at all.
+#[tokio::test]
+async fn workspace_symbols_finds_class_property() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_workspace_symbols(
+            r#"<?php
+class Config {
+    public string $apiKey = '';
+}
+"#,
+            "apiKey",
+        )
+        .await;
+    expect!["Property    $apiKey @ main.php:2"].assert_eq(&out);
+}
+
+/// `workspace/symbol` must find class constants — same gap as properties.
+#[tokio::test]
+async fn workspace_symbols_finds_class_constant() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_workspace_symbols(
+            r#"<?php
+class Config {
+    const MAX_RETRIES = 3;
+}
+"#,
+            "MAX_RETRIES",
+        )
+        .await;
+    expect!["Constant    MAX_RETRIES @ main.php:1"].assert_eq(&out);
 }
 
 /// workspace/symbol with no matches returns `[]`, not `null`.

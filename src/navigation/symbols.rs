@@ -577,6 +577,40 @@ pub fn workspace_symbols_from_index(
                     }
                 }
             }
+            if matches_kind(SymbolKind::PROPERTY) {
+                for p in &cls.properties {
+                    if fq.symbol_match(&p.name) {
+                        results.push(SymbolInformation {
+                            name: format!("${}", p.name),
+                            kind: SymbolKind::PROPERTY,
+                            location: Location {
+                                uri: uri.clone(),
+                                range: zero_width_range(p.start_line),
+                            },
+                            tags: None,
+                            deprecated: None,
+                            container_name: Some(cls.name.to_string()),
+                        });
+                    }
+                }
+            }
+            if matches_kind(SymbolKind::CONSTANT) {
+                for c in &cls.constants {
+                    if fq.symbol_match(c) {
+                        results.push(SymbolInformation {
+                            name: c.to_string(),
+                            kind: SymbolKind::CONSTANT,
+                            location: Location {
+                                uri: uri.clone(),
+                                range: zero_width_range(cls.start_line),
+                            },
+                            tags: None,
+                            deprecated: None,
+                            container_name: Some(cls.name.to_string()),
+                        });
+                    }
+                }
+            }
         }
     }
     results
