@@ -70,6 +70,84 @@ class $0Repository$0 {
     .assert_eq(&out);
 }
 
+/// A public method brought in via `use SomeTrait;` is genuinely part of the
+/// class's public API and must appear in the extracted interface, not just
+/// methods declared directly in the class body.
+#[tokio::test]
+async fn extract_interface_includes_trait_provided_public_method() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_code_action_apply(
+            r#"<?php
+trait Greets {
+    public function greet(): string { return 'hi'; }
+}
+class $0Person$0 {
+    use Greets;
+    public function name(): string { return 'Bob'; }
+}
+"#,
+            "Extract interface 'PersonInterface'",
+        )
+        .await;
+    expect![[r#"
+        <?php
+        trait Greets {
+            public function greet(): string { return 'hi'; }
+        }
+        interface PersonInterface
+        {
+            public function name(): string;
+            public function greet(): string;
+        }
+
+        class Person implements PersonInterface {
+            use Greets;
+            public function name(): string { return 'Bob'; }
+        }
+    "#]]
+    .assert_eq(&out);
+}
+
+/// A class's own override of a trait method wins — the trait's signature
+/// must not also appear, which would produce a duplicate interface member.
+#[tokio::test]
+async fn extract_interface_class_override_of_trait_method_not_duplicated() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_code_action_apply(
+            r#"<?php
+trait Greets {
+    public function greet(): string { return 'hi'; }
+}
+class $0Person$0 {
+    use Greets;
+    public function greet(): string { return 'hello'; }
+}
+"#,
+            "Extract interface 'PersonInterface'",
+        )
+        .await;
+    expect![[r#"
+        <?php
+        trait Greets {
+            public function greet(): string { return 'hi'; }
+        }
+        interface PersonInterface
+        {
+            public function greet(): string;
+        }
+
+        class Person implements PersonInterface {
+            use Greets;
+            public function greet(): string { return 'hello'; }
+        }
+    "#]]
+    .assert_eq(&out);
+}
+
 #[tokio::test]
 async fn extract_interface_excludes_non_public_methods() {
     let mut s = TestServer::new().await;

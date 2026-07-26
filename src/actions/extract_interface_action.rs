@@ -13,6 +13,7 @@ use tower_lsp::lsp_types::{
 
 use crate::document::ast::{ParsedDoc, SourceView, format_type_hint};
 use crate::hover::format_params_str;
+use crate::text::fqn_short_name;
 
 struct MethodSig {
     name: String,
@@ -30,12 +31,14 @@ pub fn extract_interface_actions(
 ) -> Vec<CodeActionOrCommand> {
     let sv = doc.view();
     let mut out = Vec::new();
-    collect(&doc.program().stmts, source, sv, range, uri, &mut out);
+    let root = &doc.program().stmts;
+    collect(root, root, source, sv, range, uri, &mut out);
     out
 }
 
 fn collect<'a>(
     stmts: &[Stmt<'a, 'a>],
+    root: &[Stmt<'a, 'a>],
     source: &str,
     sv: SourceView<'_>,
     range: Range,
@@ -63,31 +66,26 @@ fn collect<'a>(
                     continue;
                 }
 
-                let methods: Vec<MethodSig> = c
-                    .body
-                    .members
-                    .iter()
-                    .filter_map(|member| {
-                        let ClassMemberKind::Method(m) = &member.kind else {
-                            return None;
-                        };
-                        // Skip non-public and lifecycle methods.
-                        if !matches!(m.visibility, Some(Visibility::Public) | None) {
-                            return None;
+                let mut methods = public_method_sigs(c.body.members.iter());
+                let mut seen: std::collections::HashSet<String> =
+                    methods.iter().map(|m| m.name.clone()).collect();
+
+                // Public methods brought in via `use SomeTrait;` are genuinely
+                // part of the class's public API too — a class's own method of
+                // the same name (an override) wins, matching PHP's own
+                // real-member-wins-over-trait-member resolution order.
+                for member in c.body.members.iter() {
+                    if let ClassMemberKind::TraitUse(tu) = &member.kind {
+                        for trait_name in tu.traits.iter() {
+                            let short = fqn_short_name(&trait_name.to_string_repr()).to_string();
+                            for m in find_trait_methods(root, &short) {
+                                if seen.insert(m.name.clone()) {
+                                    methods.push(m);
+                                }
+                            }
                         }
-                        let name = m.name.to_string();
-                        if name == "__construct" || name == "__destruct" {
-                            return None;
-                        }
-                        Some(MethodSig {
-                            name,
-                            is_static: m.is_static,
-                            by_ref: m.by_ref,
-                            params: format_params_str(&m.params),
-                            return_type: m.return_type.as_ref().map(format_type_hint),
-                        })
-                    })
-                    .collect();
+                    }
+                }
 
                 if methods.is_empty() {
                     continue;
@@ -142,12 +140,64 @@ fn collect<'a>(
             }
             StmtKind::Namespace(ns) => {
                 if let NamespaceBody::Braced(inner) = &ns.body {
-                    collect(&inner.stmts, source, sv, range, uri, out);
+                    collect(&inner.stmts, root, source, sv, range, uri, out);
                 }
             }
             _ => {}
         }
     }
+}
+
+/// Extracts public, non-lifecycle method signatures from a class or trait's
+/// member list (shared by the class itself and by any traits it uses).
+fn public_method_sigs<'a>(
+    members: impl Iterator<Item = &'a php_ast::ClassMember<'a, 'a>>,
+) -> Vec<MethodSig> {
+    members
+        .filter_map(|member| {
+            let ClassMemberKind::Method(m) = &member.kind else {
+                return None;
+            };
+            // Skip non-public and lifecycle methods.
+            if !matches!(m.visibility, Some(Visibility::Public) | None) {
+                return None;
+            }
+            let name = m.name.to_string();
+            if name == "__construct" || name == "__destruct" {
+                return None;
+            }
+            Some(MethodSig {
+                name,
+                is_static: m.is_static,
+                by_ref: m.by_ref,
+                params: format_params_str(&m.params),
+                return_type: m.return_type.as_ref().map(format_type_hint),
+            })
+        })
+        .collect()
+}
+
+/// Searches `stmts` (recursing into braced namespaces) for a `trait` declared
+/// with short name `name` and returns its public method signatures. No
+/// cross-file resolution — matches this action's existing single-file scope.
+fn find_trait_methods<'a>(stmts: &[Stmt<'a, 'a>], name: &str) -> Vec<MethodSig> {
+    for stmt in stmts {
+        match &stmt.kind {
+            StmtKind::Trait(t) if t.name.to_string() == name => {
+                return public_method_sigs(t.body.members.iter());
+            }
+            StmtKind::Namespace(ns) => {
+                if let NamespaceBody::Braced(inner) = &ns.body {
+                    let found = find_trait_methods(&inner.stmts, name);
+                    if !found.is_empty() {
+                        return found;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    Vec::new()
 }
 
 fn generate_interface_text(name: &str, methods: &[MethodSig]) -> String {
