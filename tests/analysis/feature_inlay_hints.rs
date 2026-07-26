@@ -539,6 +539,47 @@ greet(name: 'Alice');
     expect!["<no hints>"].assert_eq(&out);
 }
 
+/// A spread/unpack argument (`...$args`) maps to an unknown number of
+/// positional parameters, so it must not get a hint labeling it with
+/// whichever single parameter happens to sit at that argument index.
+#[tokio::test]
+async fn inlay_hints_skips_unpacked_argument() {
+    let mut s = TestServer::new().await;
+    let out = s
+        .check_inlay_hints(
+            r#"<?php
+function greet(string $name, string $greeting): void {}
+$args = ['World', 'Hello'];
+greet(...$args);
+"#,
+        )
+        .await;
+    expect!["<no hints>"].assert_eq(&out);
+}
+
+/// Once an unpack argument appears, a positional argument that follows it
+/// also gets no hint — the unpacked array consumes an unknown number of
+/// parameter slots at runtime, so the trailing argument's real parameter
+/// can't be determined statically (labeling it via raw arg-list index would
+/// be a wrong hint, not just a missing one).
+#[tokio::test]
+async fn inlay_hints_skips_positional_argument_trailing_an_unpack() {
+    let mut s = TestServer::new().await;
+    // Real PHP rejects a positional argument after unpacking, but the parser
+    // must still tolerate it as a transient state while the user is editing.
+    s.validate_syntax(false);
+    let out = s
+        .check_inlay_hints(
+            r#"<?php
+function greet(string $name, string $greeting, int $times): void {}
+$args = ['World', 'Hello'];
+greet(...$args, 3);
+"#,
+        )
+        .await;
+    expect!["<no hints>"].assert_eq(&out);
+}
+
 #[tokio::test]
 async fn inlay_hints_fewer_args_than_params() {
     let mut s = TestServer::new().await;

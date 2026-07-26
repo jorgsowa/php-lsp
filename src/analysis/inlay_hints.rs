@@ -490,7 +490,14 @@ fn emit_param_hints(
     out: &mut Vec<InlayHint>,
 ) {
     for (i, arg) in args.iter().enumerate() {
-        // Skip named arguments (they already have the label in sv.source())
+        // An unpacked/spread argument (`...$args`) consumes an unknown number
+        // of positional parameters, so raw arg-list index no longer lines up
+        // with the real parameter index for it *or anything after it* —
+        // suppress hints for the rest of the call, not just the unpack itself.
+        if arg.unpack {
+            break;
+        }
+        // Skip named arguments (they already have the label in sv.source()).
         if arg.name.is_some() {
             continue;
         }
