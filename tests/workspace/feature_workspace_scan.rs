@@ -22,7 +22,9 @@ async fn index_ready_fires_after_scan_and_workspace_symbols_work() {
     let mut s = TestServer::with_fixture("psr4-mini").await;
     s.wait_for_index_ready().await;
     let out = s.snapshot_workspace_symbols("User").await;
-    expect![[r#"Class       User @ src/Model/User.php:4"#]].assert_eq(&out);
+    expect![[r#"
+        Class       User @ src/Model/User.php:4
+        Property    $users @ src/Service/Registry.php:9"#]].assert_eq(&out);
 }
 
 /// The workspace scan must emit standard `$/progress` Report notifications

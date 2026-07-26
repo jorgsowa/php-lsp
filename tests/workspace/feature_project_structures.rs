@@ -27,7 +27,13 @@ async fn monorepo_workspace_scan_indexes_all_packages() {
         Method      index @ packages/api/src/Controller/UserController.php:15
         Method      save @ packages/core/src/Repository/UserRepository.php:22
         Method      show @ packages/api/src/Controller/UserController.php:11
-        Method      testUserRepository @ packages/tests/src/Integration/UserTest.php:7"#]]
+        Method      testUserRepository @ packages/tests/src/Integration/UserTest.php:7
+        Property    $email @ packages/core/src/Entity/User.php:7
+        Property    $id @ packages/core/src/Entity/User.php:5
+        Property    $name @ packages/core/src/Entity/User.php:6
+        Property    $repository @ packages/api/src/Controller/UserController.php:8
+        Property    $repository @ packages/cli/src/Command/ListUsersCommand.php:7
+        Property    $users @ packages/core/src/Repository/UserRepository.php:7"#]]
     .assert_eq(&out);
 }
 
@@ -208,7 +214,8 @@ async fn multi_psr4_all_mappings_indexed() {
         Method      __construct @ src/Service/Mailer.php:6
         Method      deliver @ lib/Transport/SmtpClient.php:4
         Method      send @ src/Service/Mailer.php:10
-        Method      testSend @ tests/Unit/MailerTest.php:7"#]]
+        Method      testSend @ tests/Unit/MailerTest.php:7
+        Property    $client @ src/Service/Mailer.php:7"#]]
     .assert_eq(&out);
 }
 
@@ -296,7 +303,8 @@ async fn multi_psr4_array_all_bases_indexed() {
         Class       Beta @ lib/Beta.php:3
         Method      __construct @ lib/Beta.php:4
         Method      describe @ src/Alpha.php:4
-        Method      run @ lib/Beta.php:8"#]]
+        Method      run @ lib/Beta.php:8
+        Property    $alpha @ lib/Beta.php:5"#]]
     .assert_eq(&out);
 }
 
@@ -461,7 +469,12 @@ async fn monorepo_exclude_one_package() {
         Method      index @ packages/api/src/Controller/UserController.php:15
         Method      save @ packages/core/src/Repository/UserRepository.php:22
         Method      show @ packages/api/src/Controller/UserController.php:11
-        Method      testUserRepository @ packages/tests/src/Integration/UserTest.php:7"#]]
+        Method      testUserRepository @ packages/tests/src/Integration/UserTest.php:7
+        Property    $email @ packages/core/src/Entity/User.php:7
+        Property    $id @ packages/core/src/Entity/User.php:5
+        Property    $name @ packages/core/src/Entity/User.php:6
+        Property    $repository @ packages/api/src/Controller/UserController.php:8
+        Property    $users @ packages/core/src/Repository/UserRepository.php:7"#]]
     .assert_eq(&out);
 }
 
@@ -483,7 +496,8 @@ async fn multi_psr4_exclude_tests_dir() {
         Class       SmtpClient @ lib/Transport/SmtpClient.php:3
         Method      __construct @ src/Service/Mailer.php:6
         Method      deliver @ lib/Transport/SmtpClient.php:4
-        Method      send @ src/Service/Mailer.php:10"#]]
+        Method      send @ src/Service/Mailer.php:10
+        Property    $client @ src/Service/Mailer.php:7"#]]
     .assert_eq(&out);
 }
 
@@ -501,7 +515,8 @@ async fn monorepo_multiple_files_same_namespace_different_packages() {
         Class       UserController @ packages/api/src/Controller/UserController.php:6
         Class       UserRepository @ packages/core/src/Repository/UserRepository.php:5
         Class       UserTest @ packages/tests/src/Integration/UserTest.php:6
-        Method      testUserRepository @ packages/tests/src/Integration/UserTest.php:7"#]]
+        Method      testUserRepository @ packages/tests/src/Integration/UserTest.php:7
+        Property    $users @ packages/core/src/Repository/UserRepository.php:7"#]]
     .assert_eq(&out);
 }
 

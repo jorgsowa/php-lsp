@@ -54,7 +54,9 @@ async fn warm_start_serves_symbols_correctly() {
         let mut s = TestServer::with_root_and_options(workspace.path(), opts.clone()).await;
         s.wait_for_index_ready().await;
         let syms = s.snapshot_workspace_symbols("User").await;
-        expect![[r#"Class       User @ src/Model/User.php:4"#]].assert_eq(&syms);
+        expect![[r#"
+            Class       User @ src/Model/User.php:4
+            Property    $users @ src/Service/Registry.php:9"#]].assert_eq(&syms);
         // Server drops; both tempdirs remain alive so cache files persist.
     }
 
@@ -64,7 +66,9 @@ async fn warm_start_serves_symbols_correctly() {
         s.wait_for_index_ready().await;
         // Symbols must be fully resolvable from the warm-loaded index.
         let syms = s.snapshot_workspace_symbols("User").await;
-        expect![[r#"Class       User @ src/Model/User.php:4"#]].assert_eq(&syms);
+        expect![[r#"
+            Class       User @ src/Model/User.php:4
+            Property    $users @ src/Service/Registry.php:9"#]].assert_eq(&syms);
     }
 }
 
@@ -221,7 +225,9 @@ async fn did_save_cache_is_found_by_subsequent_scan() {
         s.wait_for_index_ready().await;
         // User class still visible (cache hit from did_save write).
         let syms = s.snapshot_workspace_symbols("User").await;
-        expect![[r#"Class       User @ src/Model/User.php:3"#]].assert_eq(&syms);
+        expect![[r#"
+            Class       User @ src/Model/User.php:3
+            Property    $users @ src/Service/Registry.php:9"#]].assert_eq(&syms);
     }
 }
 
