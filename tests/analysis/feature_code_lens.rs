@@ -201,6 +201,36 @@ class Child extends Base {
     .assert_eq(&out);
 }
 
+/// A method redeclared two levels below its original declaration (the direct
+/// parent doesn't redeclare it) must still get an "overrides" lens pointing
+/// at the ancestor that actually declares it — `parent_method_location`
+/// previously only checked the direct supertype.
+#[tokio::test]
+async fn lens_for_overriding_method_two_levels_up() {
+    let mut s = TestServer::new().await;
+    let out = s
+        .check_code_lens(
+            r#"<?php
+class Grandparent {
+    public function greet(): string { return 'hi'; }
+}
+class Parent1 extends Grandparent {}
+class Child extends Parent1 {
+    public function greet(): string { return 'hello'; }
+}
+"#,
+        )
+        .await;
+    expect![[r#"
+        L1:6-L1:17: 1 reference [editor.action.showReferences]
+        L2:20-L2:25: 0 references [editor.action.showReferences]
+        L4:6-L4:13: 1 reference [editor.action.showReferences]
+        L5:6-L5:11: 0 references [editor.action.showReferences]
+        L6:20-L6:25: 0 references [editor.action.showReferences]
+        L6:20-L6:25: overrides Grandparent::greet [editor.action.showReferences]"#]]
+    .assert_eq(&out);
+}
+
 #[tokio::test]
 async fn lens_for_enum_with_method() {
     let mut s = TestServer::new().await;

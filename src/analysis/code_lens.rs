@@ -119,39 +119,60 @@ impl LensEnv<'_> {
     /// Declaration location of `method` on the class/trait `parent_fqn`,
     /// from the salsa workspace index. Prefers the exact-FQN class entry;
     /// falls back to any same-short-name class declaring the method.
-    fn parent_method_location(&self, parent_fqn: &str, method: &str) -> Option<Location> {
+    /// Walks the full `extends` ancestor chain starting at `parent_fqn` (not
+    /// just the direct parent), so a method inherited unchanged from a
+    /// grandparent (or further) still gets an "overrides" lens — a class two
+    /// or more levels below the declaring ancestor previously got none at all.
+    /// Returns the FQN of the ancestor that actually declares the method
+    /// (which may differ from `parent_fqn` itself) alongside its location.
+    fn parent_method_location(&self, parent_fqn: &str, method: &str) -> Option<(String, Location)> {
         let ws = self.store.get_workspace_index_salsa();
-        let parent_fqn = parent_fqn.trim_start_matches('\\');
-        let candidates = ws.classes_by_name.get(fqn_short_name(parent_fqn))?;
-        let method_loc = |r: &crate::db::workspace_index::ClassRef| {
-            let (uri, cls) = ws.at(*r)?;
-            let m = cls.methods.iter().find(|m| m.name.as_ref() == method)?;
-            let start = tower_lsp::lsp_types::Position {
-                line: m.start_line,
-                character: m.name_char,
+        let mut current = parent_fqn.trim_start_matches('\\').to_string();
+        let mut seen = std::collections::HashSet::new();
+        loop {
+            if !seen.insert(current.clone()) {
+                return None;
+            }
+            let candidates = ws.classes_by_name.get(fqn_short_name(&current))?;
+            let class_loc = |r: &crate::db::workspace_index::ClassRef| {
+                let (uri, cls) = ws.at(*r)?;
+                Some((uri, cls))
             };
-            let end = tower_lsp::lsp_types::Position {
-                line: m.start_line,
-                character: m.name_char + m.name.encode_utf16().count() as u32,
-            };
-            Some((
-                cls.fqn.trim_start_matches('\\').to_string(),
-                Location {
-                    uri: uri.clone(),
-                    range: tower_lsp::lsp_types::Range { start, end },
-                },
-            ))
-        };
-        let mut fallback = None;
-        for r in candidates {
-            if let Some((fqn, loc)) = method_loc(r) {
-                if fqn == parent_fqn {
-                    return Some(loc);
+            let mut fallback = None;
+            let mut chosen = None;
+            for r in candidates {
+                if let Some((uri, cls)) = class_loc(r) {
+                    if cls.fqn.trim_start_matches('\\') == current {
+                        chosen = Some((uri, cls));
+                        break;
+                    }
+                    fallback.get_or_insert((uri, cls));
                 }
-                fallback.get_or_insert(loc);
+            }
+            let (uri, cls) = chosen.or(fallback)?;
+            let declaring_fqn = cls.fqn.trim_start_matches('\\').to_string();
+            if let Some(m) = cls.methods.iter().find(|m| m.name.as_ref() == method) {
+                let start = tower_lsp::lsp_types::Position {
+                    line: m.start_line,
+                    character: m.name_char,
+                };
+                let end = tower_lsp::lsp_types::Position {
+                    line: m.start_line,
+                    character: m.name_char + m.name.encode_utf16().count() as u32,
+                };
+                return Some((
+                    declaring_fqn,
+                    Location {
+                        uri: uri.clone(),
+                        range: tower_lsp::lsp_types::Range { start, end },
+                    },
+                ));
+            }
+            match &cls.parent {
+                Some(p) => current = p.trim_start_matches('\\').to_string(),
+                None => return None,
             }
         }
-        fallback
     }
 }
 
@@ -221,13 +242,13 @@ fn collect_lenses(
                                 // Overrides lens: emit for each direct supertype (parent class
                                 // or used trait) that declares a method with the same name.
                                 for parent_fqn in &parents {
-                                    if let Some(parent_loc) =
+                                    if let Some((declaring_fqn, parent_loc)) =
                                         env.parent_method_location(parent_fqn, method_name)
                                     {
                                         out.push(overrides_lens(
                                             method_range,
                                             env.uri,
-                                            fqn_short_name(parent_fqn),
+                                            fqn_short_name(&declaring_fqn),
                                             method_name,
                                             parent_loc,
                                         ));
