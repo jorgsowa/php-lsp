@@ -56,7 +56,7 @@ bincode = { version = "2", features = ["serde"] }
 blake3 = "1"
 dashmap = "6"
 rayon = "1"
-salsa = "=0.28.0"
+salsa = "=0.28.1"
 arc-swap = "1"
 
 [dependencies.walkdir]
