@@ -670,6 +670,14 @@ fn collect_class_member(
             mods |= MOD_READONLY;
         }
         push_param(out, sv, &p.name.to_string(), TT_PROPERTY, mods);
+    } else if let ClassMemberKind::ClassConst(k) = &member.kind {
+        push_attributes(out, sv, &k.attributes);
+        let mmods = MOD_DECLARATION | deprecated_mod(k.doc_comment.as_ref());
+        if let Some(th) = &k.type_hint {
+            push_type_hint(out, sv, th);
+        }
+        push_name(out, sv, &k.name.to_string(), TT_PROPERTY, mmods);
+        collect_expr(sv, &k.value, out);
     }
 }
 

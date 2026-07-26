@@ -430,6 +430,35 @@ async fn semantic_tokens_class_properties() {
     .assert_eq(&out);
 }
 
+/// A plain class's own `const` members must be tokenized — `collect_class_member`
+/// previously handled `Method`/`Property` but silently dropped `ClassConst`,
+/// even though the identical enum-const case (`EnumMemberKind::ClassConst`)
+/// was already handled.
+#[tokio::test]
+async fn semantic_tokens_class_constant() {
+    use common::render_semantic_tokens;
+    use serde_json::json;
+
+    let (mut server, init_resp) = TestServer::new_with_options(json!({
+        "diagnostics": { "enabled": true }
+    }))
+    .await;
+    let legend_types = get_legend_types(&init_resp).await;
+
+    server
+        .open("consts.php", "<?php\nclass Status { const int PENDING = 0; }\n")
+        .await;
+
+    let resp = server.semantic_tokens_full("consts.php").await;
+    let out = render_semantic_tokens(&resp, &legend_types);
+    expect![[r#"
+        1:6 len=6 type=class mods=0b1
+        1:21 len=3 type=type mods=0b0
+        1:25 len=7 type=property mods=0b1
+        1:35 len=1 type=number mods=0b0"#]]
+    .assert_eq(&out);
+}
+
 /// Verify that enum declarations and cases are tokenized properly.
 /// Enum cases are tokenized as `type=property` (similar to class properties).
 #[tokio::test]
