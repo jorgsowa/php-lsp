@@ -1,5 +1,8 @@
 /// Document links: clickable paths in require/include expressions and @link/@see docblock tags.
-use php_ast::{ExprKind, NamespaceBody, Stmt, StmtKind};
+use std::ops::ControlFlow;
+
+use php_ast::visitor::{Visitor, walk_expr};
+use php_ast::ExprKind;
 use tower_lsp::lsp_types::{DocumentLink, Position, Range, Url};
 
 use crate::document::ast::{ParsedDoc, SourceView};
@@ -7,67 +10,35 @@ use crate::text::byte_to_utf16;
 
 pub fn document_links(uri: &Url, doc: &ParsedDoc, _source: &str) -> Vec<DocumentLink> {
     let sv = doc.view();
-    let mut links = Vec::new();
-    collect_in_stmts(&doc.program().stmts, sv, uri, &mut links);
+    let mut collector = LinkCollector { sv, uri, out: Vec::new() };
+    for stmt in doc.program().stmts.iter() {
+        let _ = collector.visit_stmt(stmt);
+    }
+    let mut links = collector.out;
     collect_docblock_links(sv.source(), &mut links);
     links
 }
 
-fn collect_in_stmts(
-    stmts: &[Stmt<'_, '_>],
-    sv: SourceView<'_>,
-    uri: &Url,
-    out: &mut Vec<DocumentLink>,
-) {
-    for stmt in stmts {
-        collect_in_stmt(stmt, sv, uri, out);
-    }
+/// Walks every statement and expression via the generic `Visitor` trait
+/// (rather than hand-matching each `StmtKind`) so `require`/`include` is
+/// found no matter how deeply it's nested — inside `if`/loop bodies,
+/// `try`/`catch`, `match` arms, traits, enums, etc. A prior hand-rolled
+/// version only recursed into a handful of statement kinds and silently
+/// missed `require` inside any conditional.
+struct LinkCollector<'a> {
+    sv: SourceView<'a>,
+    uri: &'a Url,
+    out: Vec<DocumentLink>,
 }
 
-fn collect_in_stmt(
-    stmt: &Stmt<'_, '_>,
-    sv: SourceView<'_>,
-    uri: &Url,
-    out: &mut Vec<DocumentLink>,
-) {
-    match &stmt.kind {
-        StmtKind::Expression(e) => collect_in_expr(e, sv, uri, out),
-        StmtKind::Return(Some(v)) => collect_in_expr(v, sv, uri, out),
-        StmtKind::Echo(exprs) => {
-            for expr in exprs.iter() {
-                collect_in_expr(expr, sv, uri, out);
-            }
+impl<'arena, 'src> Visitor<'arena, 'src> for LinkCollector<'_> {
+    fn visit_expr(&mut self, expr: &php_ast::Expr<'arena, 'src>) -> ControlFlow<()> {
+        if let ExprKind::Include(_, path_expr) = &expr.kind
+            && let Some(link) = link_from_path_expr(path_expr, self.sv, self.uri)
+        {
+            self.out.push(link);
         }
-        StmtKind::Function(f) => collect_in_stmts(&f.body.stmts, sv, uri, out),
-        StmtKind::Class(c) => {
-            use php_ast::ClassMemberKind;
-            for member in c.body.members.iter() {
-                if let ClassMemberKind::Method(m) = &member.kind
-                    && let Some(body) = &m.body
-                {
-                    collect_in_stmts(&body.stmts, sv, uri, out);
-                }
-            }
-        }
-        StmtKind::Namespace(ns) => {
-            if let NamespaceBody::Braced(inner) = &ns.body {
-                collect_in_stmts(&inner.stmts, sv, uri, out);
-            }
-        }
-        _ => {}
-    }
-}
-
-fn collect_in_expr(
-    expr: &php_ast::Expr<'_, '_>,
-    sv: SourceView<'_>,
-    uri: &Url,
-    out: &mut Vec<DocumentLink>,
-) {
-    if let ExprKind::Include(_, path_expr) = &expr.kind
-        && let Some(link) = link_from_path_expr(path_expr, sv, uri)
-    {
-        out.push(link);
+        walk_expr(self, expr)
     }
 }
 

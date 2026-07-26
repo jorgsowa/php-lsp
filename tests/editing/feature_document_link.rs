@@ -54,6 +54,57 @@ async fn document_link_multiple_requires_produce_multiple_links() {
     .assert_eq(&render_document_links(&resp["result"]));
 }
 
+/// `require` inside an `if` body must still be found — a prior hand-rolled
+/// statement walk only recursed into a handful of `StmtKind`s and silently
+/// skipped conditionals, one of the most common places `require` appears
+/// (bootstrap-file-exists guards).
+#[tokio::test]
+async fn document_link_require_inside_if_block() {
+    let mut server = TestServer::new().await;
+    server
+        .open(
+            "cond.php",
+            "<?php\nif (true) {\n    require 'config.php';\n}\n",
+        )
+        .await;
+    let resp = server.document_link("cond.php").await;
+    assert!(resp["error"].is_null(), "error: {resp:?}");
+    expect!["2:13-23 target=file:///config.php"].assert_eq(&render_document_links(&resp["result"]));
+}
+
+/// `require` inside a `foreach` loop body, a `try` block, and a trait method
+/// — all previously-unwalked statement kinds — must all be found.
+#[tokio::test]
+async fn document_link_require_inside_loop_try_and_trait() {
+    let mut server = TestServer::new().await;
+    server
+        .open(
+            "nested.php",
+            r#"<?php
+foreach ($paths as $p) {
+    require 'loop.php';
+}
+try {
+    require 'tried.php';
+} catch (\Throwable $e) {
+}
+trait Loader {
+    public function load(): void {
+        require 'trait.php';
+    }
+}
+"#,
+        )
+        .await;
+    let resp = server.document_link("nested.php").await;
+    assert!(resp["error"].is_null(), "error: {resp:?}");
+    expect![[r#"
+        2:13-21 target=file:///loop.php
+        5:13-22 target=file:///tried.php
+        10:17-26 target=file:///trait.php"#]]
+    .assert_eq(&render_document_links(&resp["result"]));
+}
+
 #[tokio::test]
 async fn document_link_docblock_at_link_produces_http_link() {
     let mut server = TestServer::new().await;
