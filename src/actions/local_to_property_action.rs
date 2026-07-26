@@ -140,7 +140,10 @@ fn collect_nested_closure_spans(stmts: &[Stmt<'_, '_>]) -> Vec<(u32, u32)> {
     }
     impl<'arena, 'src> Visitor<'arena, 'src> for Collector {
         fn visit_expr(&mut self, expr: &php_ast::Expr<'arena, 'src>) -> ControlFlow<()> {
-            if matches!(&expr.kind, ExprKind::Closure(_) | ExprKind::ArrowFunction(_)) {
+            if matches!(
+                &expr.kind,
+                ExprKind::Closure(_) | ExprKind::ArrowFunction(_)
+            ) {
                 self.spans.push((expr.span.start, expr.span.end));
             }
             walk_expr(self, expr)

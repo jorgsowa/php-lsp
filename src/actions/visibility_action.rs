@@ -77,7 +77,10 @@ fn visit_members<'a>(
             // visibility keyword — an attribute argument string containing
             // "private"/"public"/"protected" (e.g. an Assert\Choice list)
             // would otherwise be matched instead of the real modifier.
-            let search_start = attrs.last().map(|a| a.span.end as usize).unwrap_or(span_start);
+            let search_start = attrs
+                .last()
+                .map(|a| a.span.end as usize)
+                .unwrap_or(span_start);
             push_actions(source, uri, sv, search_start, cursor_byte, vis, out);
         }
         break;

@@ -56,7 +56,8 @@ async fn warm_start_serves_symbols_correctly() {
         let syms = s.snapshot_workspace_symbols("User").await;
         expect![[r#"
             Class       User @ src/Model/User.php:4
-            Property    $users @ src/Service/Registry.php:9"#]].assert_eq(&syms);
+            Property    $users @ src/Service/Registry.php:9"#]]
+        .assert_eq(&syms);
         // Server drops; both tempdirs remain alive so cache files persist.
     }
 
@@ -68,7 +69,8 @@ async fn warm_start_serves_symbols_correctly() {
         let syms = s.snapshot_workspace_symbols("User").await;
         expect![[r#"
             Class       User @ src/Model/User.php:4
-            Property    $users @ src/Service/Registry.php:9"#]].assert_eq(&syms);
+            Property    $users @ src/Service/Registry.php:9"#]]
+        .assert_eq(&syms);
     }
 }
 
@@ -227,7 +229,8 @@ async fn did_save_cache_is_found_by_subsequent_scan() {
         let syms = s.snapshot_workspace_symbols("User").await;
         expect![[r#"
             Class       User @ src/Model/User.php:3
-            Property    $users @ src/Service/Registry.php:9"#]].assert_eq(&syms);
+            Property    $users @ src/Service/Registry.php:9"#]]
+        .assert_eq(&syms);
     }
 }
 

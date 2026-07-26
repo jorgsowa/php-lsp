@@ -50,8 +50,7 @@ pub fn prepare_call_hierarchy_indexed(
                 continue;
             };
             let Some(doc) = get_doc(uri) else { continue };
-            if let Some(item) = find_declaration_item(name, &doc.program().stmts, doc.view(), uri)
-            {
+            if let Some(item) = find_declaration_item(name, &doc.program().stmts, doc.view(), uri) {
                 return Some(item);
             }
         }

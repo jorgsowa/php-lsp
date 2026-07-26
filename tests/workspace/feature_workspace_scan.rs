@@ -24,7 +24,8 @@ async fn index_ready_fires_after_scan_and_workspace_symbols_work() {
     let out = s.snapshot_workspace_symbols("User").await;
     expect![[r#"
         Class       User @ src/Model/User.php:4
-        Property    $users @ src/Service/Registry.php:9"#]].assert_eq(&out);
+        Property    $users @ src/Service/Registry.php:9"#]]
+    .assert_eq(&out);
 }
 
 /// The workspace scan must emit standard `$/progress` Report notifications

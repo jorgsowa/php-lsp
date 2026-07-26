@@ -90,7 +90,8 @@ async fn add_empty_workspace_folder_does_not_crash() {
     let out = server.snapshot_workspace_symbols("User").await;
     expect![[r#"
         Class       User @ src/Model/User.php:4
-        Property    $users @ src/Service/Registry.php:9"#]].assert_eq(&out);
+        Property    $users @ src/Service/Registry.php:9"#]]
+    .assert_eq(&out);
 
     let out = server.snapshot_workspace_symbols("NonExistent").await;
     expect![[r#"<no symbols>"#]].assert_eq(&out);
@@ -139,7 +140,8 @@ async fn remove_workspace_folder_keeps_already_indexed_docs_queryable() {
     let out = server.snapshot_workspace_symbols("User").await;
     expect![[r#"
         Class       User @ src/Model/User.php:4
-        Property    $users @ src/Service/Registry.php:9"#]].assert_eq(&out);
+        Property    $users @ src/Service/Registry.php:9"#]]
+    .assert_eq(&out);
 }
 
 // ── workspace-scan edge cases ─────────────────────────────────────────────────
@@ -276,7 +278,8 @@ async fn did_rename_files_updates_index_to_new_path() {
     let out = server.snapshot_workspace_symbols("User").await;
     expect![[r#"
         Class       User @ src/Entity/User.php:4
-        Property    $users @ src/Service/Registry.php:9"#]].assert_eq(&out);
+        Property    $users @ src/Service/Registry.php:9"#]]
+    .assert_eq(&out);
 }
 
 /// A renamed file's diagnostics under its old URI must be cleared, same as

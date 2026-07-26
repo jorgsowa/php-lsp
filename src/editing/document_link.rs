@@ -1,8 +1,8 @@
 /// Document links: clickable paths in require/include expressions and @link/@see docblock tags.
 use std::ops::ControlFlow;
 
-use php_ast::visitor::{Visitor, walk_expr};
 use php_ast::ExprKind;
+use php_ast::visitor::{Visitor, walk_expr};
 use tower_lsp::lsp_types::{DocumentLink, Position, Range, Url};
 
 use crate::document::ast::{ParsedDoc, SourceView};
@@ -10,7 +10,11 @@ use crate::text::byte_to_utf16;
 
 pub fn document_links(uri: &Url, doc: &ParsedDoc, _source: &str) -> Vec<DocumentLink> {
     let sv = doc.view();
-    let mut collector = LinkCollector { sv, uri, out: Vec::new() };
+    let mut collector = LinkCollector {
+        sv,
+        uri,
+        out: Vec::new(),
+    };
     for stmt in doc.program().stmts.iter() {
         let _ = collector.visit_stmt(stmt);
     }

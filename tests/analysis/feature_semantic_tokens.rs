@@ -446,7 +446,10 @@ async fn semantic_tokens_class_constant() {
     let legend_types = get_legend_types(&init_resp).await;
 
     server
-        .open("consts.php", "<?php\nclass Status { const int PENDING = 0; }\n")
+        .open(
+            "consts.php",
+            "<?php\nclass Status { const int PENDING = 0; }\n",
+        )
         .await;
 
     let resp = server.semantic_tokens_full("consts.php").await;
