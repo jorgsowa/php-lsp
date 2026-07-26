@@ -677,3 +677,59 @@ function test(Base $x): void {
         .await;
     expect!["▶ bar(int $a, string $b)  @param0"].assert_eq(&out);
 }
+
+/// Nullsafe method calls (`?->`) must resolve a receiver just like `->` —
+/// `extract_receiver_before` has to skip the `?` before the arrow, not just
+/// the arrow itself, or the receiver scan stops dead and no signature shows.
+#[tokio::test]
+async fn signature_help_nullsafe_method_call() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_signature_help(
+            r#"<?php
+class Foo {
+    public function bar(string $a, int $b): void {}
+}
+function test(?Foo $f): void {
+    $f?->bar($0);
+}
+"#,
+        )
+        .await;
+    expect!["▶ bar(string $a, int $b)  @param0"].assert_eq(&out);
+}
+
+/// A comma inside a string-literal argument must not be counted as a
+/// parameter separator by the backward call-context scan.
+#[tokio::test]
+async fn signature_help_comma_inside_string_argument_not_counted() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_signature_help(
+            r#"<?php
+function greet(string $target, string $greeting, int $times) { return $target; }
+greet("Hello, World", $0);
+"#,
+        )
+        .await;
+    expect!["▶ greet(string $target, string $greeting, int $times)  @param1"].assert_eq(&out);
+}
+
+/// A `)` inside a string-literal argument must not corrupt paren-depth
+/// tracking and swallow the enclosing call.
+#[tokio::test]
+async fn signature_help_paren_inside_string_argument_not_counted() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_signature_help(
+            r#"<?php
+function greet(string $target, int $times) { return $target; }
+greet("oops)", $0);
+"#,
+        )
+        .await;
+    expect!["▶ greet(string $target, int $times)  @param1"].assert_eq(&out);
+}

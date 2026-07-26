@@ -179,12 +179,16 @@ fn call_context(source: &str, position: Position) -> Option<(String, usize, Opti
     }
 
     let text: Vec<char> = chars_before.chars().collect();
+    let in_string = string_literal_mask(&text);
     let mut depth = 0i32;
     let mut commas = 0usize;
     let mut i = text.len();
 
     while i > 0 {
         i -= 1;
+        if in_string[i] {
+            continue;
+        }
         match text[i] {
             ')' | ']' => depth += 1,
             '(' | '[' if depth > 0 => depth -= 1,
@@ -201,6 +205,113 @@ fn call_context(source: &str, position: Position) -> Option<(String, usize, Opti
         }
     }
     None
+}
+
+/// Marks which positions in `text` fall inside a string literal or comment,
+/// so the backward scan in `call_context` doesn't miscount parens or commas
+/// that happen to appear inside an argument string (or a docblock — e.g. an
+/// apostrophe in "the user's name" must not be mistaken for the start of an
+/// unterminated `'` string). Mirrors `completion::cursor_in_string_or_comment`
+/// but as a full forward-scan mask instead of a single point-query. Heredoc/
+/// nowdoc are not tracked, matching that function's documented tradeoff.
+fn string_literal_mask(text: &[char]) -> Vec<bool> {
+    enum S {
+        Normal,
+        Single,
+        Double,
+        Line,
+        Block,
+    }
+    let len = text.len();
+    let mut mask = vec![false; len];
+    let mut state = S::Normal;
+    let mut i = 0usize;
+    while i < len {
+        match state {
+            S::Normal => match text[i] {
+                '\'' => {
+                    mask[i] = true;
+                    state = S::Single;
+                    i += 1;
+                }
+                '"' => {
+                    mask[i] = true;
+                    state = S::Double;
+                    i += 1;
+                }
+                '/' if i + 1 < len && text[i + 1] == '/' => {
+                    mask[i] = true;
+                    mask[i + 1] = true;
+                    state = S::Line;
+                    i += 2;
+                }
+                // `#[` is a PHP 8 attribute — not a comment.
+                '#' if !(i + 1 < len && text[i + 1] == '[') => {
+                    mask[i] = true;
+                    state = S::Line;
+                    i += 1;
+                }
+                '/' if i + 1 < len && text[i + 1] == '*' => {
+                    mask[i] = true;
+                    mask[i + 1] = true;
+                    state = S::Block;
+                    i += 2;
+                }
+                _ => i += 1,
+            },
+            S::Single => {
+                mask[i] = true;
+                match text[i] {
+                    '\\' => {
+                        if i + 1 < len {
+                            mask[i + 1] = true;
+                        }
+                        i += 2;
+                    }
+                    '\'' => {
+                        state = S::Normal;
+                        i += 1;
+                    }
+                    _ => i += 1,
+                }
+            }
+            S::Double => {
+                mask[i] = true;
+                match text[i] {
+                    '\\' => {
+                        if i + 1 < len {
+                            mask[i + 1] = true;
+                        }
+                        i += 2;
+                    }
+                    '"' => {
+                        state = S::Normal;
+                        i += 1;
+                    }
+                    _ => i += 1,
+                }
+            }
+            S::Line => {
+                mask[i] = true;
+                if text[i] == '\n' {
+                    state = S::Normal;
+                }
+                i += 1;
+            }
+            S::Block => {
+                if text[i] == '*' && i + 1 < len && text[i + 1] == '/' {
+                    mask[i] = true;
+                    mask[i + 1] = true;
+                    state = S::Normal;
+                    i += 2;
+                } else {
+                    mask[i] = true;
+                    i += 1;
+                }
+            }
+        }
+    }
+    mask
 }
 
 /// Byte offset of the last char of `receiver_var` in the nearest
@@ -245,7 +356,12 @@ fn extract_receiver_before(text: &[char], paren_pos: usize, name_len: usize) -> 
     if !is_arrow && !is_static {
         return None;
     }
-    let recv_end = end - 2;
+    // Nullsafe `?->` — skip the `?` too so the receiver scan doesn't stop dead.
+    let recv_end = if is_arrow && end >= 3 && text[end - 3] == '?' {
+        end - 3
+    } else {
+        end - 2
+    };
     let is_recv_char = |c: char| c.is_alphanumeric() || c == '_' || c == '$';
     let mut recv_start = recv_end;
     while recv_start > 0 && is_recv_char(text[recv_start - 1]) {
