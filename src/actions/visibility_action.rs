@@ -66,14 +66,19 @@ fn visit_members<'a>(
         if cursor_byte < span_start || cursor_byte >= span_end {
             continue;
         }
-        let vis = match &member.kind {
-            ClassMemberKind::Method(m) => m.visibility,
-            ClassMemberKind::Property(p) => p.visibility,
-            ClassMemberKind::ClassConst(c) => c.visibility,
+        let vis_and_attrs = match &member.kind {
+            ClassMemberKind::Method(m) => m.visibility.map(|v| (v, &m.attributes)),
+            ClassMemberKind::Property(p) => p.visibility.map(|v| (v, &p.attributes)),
+            ClassMemberKind::ClassConst(c) => c.visibility.map(|v| (v, &c.attributes)),
             ClassMemberKind::TraitUse(_) => None,
         };
-        if let Some(vis) = vis {
-            push_actions(source, uri, sv, span_start, cursor_byte, vis, out);
+        if let Some((vis, attrs)) = vis_and_attrs {
+            // Skip past any leading attributes before searching for the
+            // visibility keyword — an attribute argument string containing
+            // "private"/"public"/"protected" (e.g. an Assert\Choice list)
+            // would otherwise be matched instead of the real modifier.
+            let search_start = attrs.last().map(|a| a.span.end as usize).unwrap_or(span_start);
+            push_actions(source, uri, sv, search_start, cursor_byte, vis, out);
         }
         break;
     }
@@ -132,8 +137,9 @@ fn push_actions(
 }
 
 /// Find the byte range of the visibility keyword within a member's span.
-/// Searches up to 256 bytes from `span_start` to accommodate PHP attributes
-/// and other leading tokens before the visibility keyword.
+/// `span_start` is expected to already be past any leading attributes (see
+/// the caller); searches up to 256 bytes from there to accommodate other
+/// leading modifiers (`final`, `static`, `readonly`, …) before the keyword.
 fn find_visibility_range(
     source: &str,
     span_start: usize,

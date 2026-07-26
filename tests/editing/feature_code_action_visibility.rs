@@ -87,6 +87,35 @@ class User {
     );
 }
 
+/// An attribute argument string containing a visibility keyword (e.g. an
+/// `Assert\Choice(choices: ["private", "public"])` list) must not be matched
+/// instead of the real modifier — `find_visibility_range` used to search from
+/// the member's span start, which includes leading attributes.
+#[tokio::test]
+async fn change_visibility_ignores_keyword_inside_attribute_string() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_code_action_apply(
+            r#"<?php
+class User {
+    #[Assert\Choice(choices: ["private", "public"])]
+    $0private string $mode = '';
+}
+"#,
+            "Make public",
+        )
+        .await;
+    expect![[r#"
+        <?php
+        class User {
+            #[Assert\Choice(choices: ["private", "public"])]
+            public string $mode = '';
+        }
+    "#]]
+    .assert_eq(&out);
+}
+
 #[tokio::test]
 async fn change_visibility_no_action_inside_method_body() {
     let mut s = TestServer::new().await;
