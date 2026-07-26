@@ -1022,8 +1022,8 @@ dependencies = [
 
 [[package]]
 name = "mir-analyzer"
-version = "0.61.0"
-source = "git+https://github.com/jorgsowa/mir#8091f9da2732266e7a4da160f04f91fc83e3ea23"
+version = "0.62.0"
+source = "git+https://github.com/jorgsowa/mir#ec8de820d3f6cc7467b91f6a215ba9806ce60f51"
 dependencies = [
  "aho-corasick",
  "bincode 1.3.3",
@@ -1050,8 +1050,8 @@ dependencies = [
 
 [[package]]
 name = "mir-codebase"
-version = "0.61.0"
-source = "git+https://github.com/jorgsowa/mir#8091f9da2732266e7a4da160f04f91fc83e3ea23"
+version = "0.62.0"
+source = "git+https://github.com/jorgsowa/mir#ec8de820d3f6cc7467b91f6a215ba9806ce60f51"
 dependencies = [
  "dashmap 6.2.1",
  "indexmap",
@@ -1062,8 +1062,8 @@ dependencies = [
 
 [[package]]
 name = "mir-issues"
-version = "0.61.0"
-source = "git+https://github.com/jorgsowa/mir#8091f9da2732266e7a4da160f04f91fc83e3ea23"
+version = "0.62.0"
+source = "git+https://github.com/jorgsowa/mir#ec8de820d3f6cc7467b91f6a215ba9806ce60f51"
 dependencies = [
  "mir-types",
  "serde",
@@ -1071,8 +1071,8 @@ dependencies = [
 
 [[package]]
 name = "mir-plugin"
-version = "0.61.0"
-source = "git+https://github.com/jorgsowa/mir#8091f9da2732266e7a4da160f04f91fc83e3ea23"
+version = "0.62.0"
+source = "git+https://github.com/jorgsowa/mir#ec8de820d3f6cc7467b91f6a215ba9806ce60f51"
 dependencies = [
  "mir-issues",
  "mir-types",
@@ -1084,8 +1084,8 @@ dependencies = [
 
 [[package]]
 name = "mir-types"
-version = "0.61.0"
-source = "git+https://github.com/jorgsowa/mir#8091f9da2732266e7a4da160f04f91fc83e3ea23"
+version = "0.62.0"
+source = "git+https://github.com/jorgsowa/mir#ec8de820d3f6cc7467b91f6a215ba9806ce60f51"
 dependencies = [
  "dashmap 6.2.1",
  "indexmap",

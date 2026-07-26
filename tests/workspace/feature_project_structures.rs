@@ -182,7 +182,7 @@ namespace Acme\Api\Controller;
 
 use Acme\Core\Entity\NonexistentUser;
 
-class UserController {
+class GuestController {
     public function __construct(
         private NonexistentUser $user,
         //      ^^^^^^^^^^^^^^^ error: Class Acme\Core\Entity\NonexistentUser does not exist
