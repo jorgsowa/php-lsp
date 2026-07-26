@@ -256,7 +256,11 @@ async fn run() {
 
     println!(
         "\ngates: {}",
-        if all_ok { "OK" } else { "OVER — file-churn RSS growth is unbounded!" }
+        if all_ok {
+            "OK"
+        } else {
+            "OVER — file-churn RSS growth is unbounded!"
+        }
     );
     if !all_ok {
         std::process::exit(1);

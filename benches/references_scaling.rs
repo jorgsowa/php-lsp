@@ -158,8 +158,7 @@ fn main() {
         "files", "before_n", "after_n", "before_ms", "after_ms", "speedup"
     );
     for &n in &[100usize, 500, 1000, 3000] {
-        let (before_n, before_ms) =
-            cold_ms(n, reps, &sym, |s, _| s.workspace_file_paths());
+        let (before_n, before_ms) = cold_ms(n, reps, &sym, |s, _| s.workspace_file_paths());
         let (after_n, after_ms) = cold_ms(n, reps, &sym, |s, reach| {
             s.workspace_file_paths()
                 .into_iter()
