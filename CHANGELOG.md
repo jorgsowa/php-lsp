@@ -2,7 +2,11 @@
 
 All notable changes to php-lsp are documented here.
 
-## [Unreleased]
+## [0.21.0] — 2026-07-26
+
+### Added
+
+- **Analysis cache now flushes on a periodic background interval** (`analysisCacheFlushIntervalMs`, default 20s) instead of only after a fully-settled warm sweep or clean shutdown, bounding data loss on an unclean exit to roughly one interval regardless of session length.
 
 ### Changed
 
@@ -12,10 +16,11 @@ All notable changes to php-lsp are documented here.
 ### Performance
 
 - **Workspace scan's directory walk is now parallel** (`src/index/workspace_scan.rs`): one `read_dir` per directory still runs serially, but the fan-out across subdirectories runs on the rayon pool instead of a single thread walking the whole tree — 1.3–1.5x faster on real Laravel/Symfony corpora, on top of the already-parallel parse+index phase.
+- **`document_store`'s `file_index` memo shrinks on file removal**: previously unbounded (unlike the LRU-capped `parsed_doc`/`symbol_map`), so a permanently abandoned file — the common case for a rename — pinned its pre-deletion `FileIndex` for the rest of the process's life. Now cleared and recomputed against the emptied text right after removal.
 
 ### Dependencies
 
-- **mir updated to 0.61.0** (from 0.60.0): `indexed_references_to` skips analysis of never-committed files whose text cannot name the queried symbol, so cold reference queries on common names stop paying a full per-file analysis across the workspace. Includes further mir-side work landed after the initial 0.61.0 tag: a parallelized workspace-symbol-index seed (fixes a 1.5s+ serial sweep on the first cold query of a session), `freeze_workspace_index` applied to the two remaining parallel body-analysis passes (avoids per-file symbol-index clone traffic under rayon), and a single-pass multi-needle scan for the reference-scoping freshness gate (a 2.9s CPU round collapses to ~0.15s). Cold `indexed_references_to` on mir's Laravel benchmark: 1.5s → 0.63s.
+- **mir updated to 0.62.0** (from 0.60.0): adds a class-mention index that memoizes the reference-query gate's textual predicate per file, so repeat single-needle queries (classes, `__construct`) answer from recorded mention sets instead of rescanning every candidate's raw text (~5 MB of index instead of ~100 MB of text at Laravel scale). Also includes the 0.61.0 work: `indexed_references_to` skips analysis of never-committed files whose text cannot name the queried symbol, a parallelized workspace-symbol-index seed, `freeze_workspace_index` applied to the two remaining parallel body-analysis passes, and a single-pass multi-needle scan for the reference-scoping freshness gate. Cold `indexed_references_to` on mir's Laravel benchmark: 1.5s → 0.63s.
 
 ## [0.20.0] — 2026-07-19
 
