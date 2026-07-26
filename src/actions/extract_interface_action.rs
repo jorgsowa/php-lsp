@@ -183,7 +183,7 @@ fn public_method_sigs<'a>(
 fn find_trait_methods<'a>(stmts: &[Stmt<'a, 'a>], name: &str) -> Vec<MethodSig> {
     for stmt in stmts {
         match &stmt.kind {
-            StmtKind::Trait(t) if t.name.to_string() == name => {
+            StmtKind::Trait(t) if t.name.as_str() == Some(name) => {
                 return public_method_sigs(t.body.members.iter());
             }
             StmtKind::Namespace(ns) => {
