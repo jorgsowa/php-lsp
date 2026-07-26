@@ -174,20 +174,21 @@ fn collect_lenses(
             StmtKind::Function(f) => {
                 let name = f.name.as_str().unwrap_or_default();
                 let range = sv.name_range(name);
-                out.push(env.ref_count_lens(
-                    range,
-                    mir_analyzer::Name::function(fqn_in(&ns, name)),
-                ));
+                out.push(
+                    env.ref_count_lens(range, mir_analyzer::Name::function(fqn_in(&ns, name))),
+                );
             }
             StmtKind::Class(c) => {
                 if let Some(class_name) = c.name {
                     let class_name_str = class_name.as_str().unwrap_or_default();
                     let class_fqn = fqn_in(&ns, class_name_str);
                     let class_range = sv.name_range(class_name_str);
-                    out.push(env.ref_count_lens(
-                        class_range,
-                        mir_analyzer::Name::class(class_fqn.clone()),
-                    ));
+                    out.push(
+                        env.ref_count_lens(
+                            class_range,
+                            mir_analyzer::Name::class(class_fqn.clone()),
+                        ),
+                    );
 
                     // Implementations count for abstract classes (classes extending this).
                     if c.modifiers.is_abstract {
@@ -272,10 +273,7 @@ fn collect_lenses(
                 let trait_name = t.name.as_str().unwrap_or_default();
                 let trait_fqn = fqn_in(&ns, trait_name);
                 let range = sv.name_range(trait_name);
-                out.push(env.ref_count_lens(
-                    range,
-                    mir_analyzer::Name::class(trait_fqn.clone()),
-                ));
+                out.push(env.ref_count_lens(range, mir_analyzer::Name::class(trait_fqn.clone())));
                 // Usages: classes that `use` this trait (trait edges included).
                 out.push(env.impl_count_lens(range, &trait_fqn, true));
                 for member in t.body.members.iter() {
@@ -291,10 +289,12 @@ fn collect_lenses(
                         ClassMemberKind::Property(p) => {
                             let prop_name = p.name.as_str().unwrap_or_default();
                             let prop_range = sv.name_range(prop_name);
-                            out.push(env.ref_count_lens(
-                                prop_range,
-                                property_name(&trait_fqn, prop_name),
-                            ));
+                            out.push(
+                                env.ref_count_lens(
+                                    prop_range,
+                                    property_name(&trait_fqn, prop_name),
+                                ),
+                            );
                         }
                         _ => {}
                     }
@@ -304,10 +304,7 @@ fn collect_lenses(
                 let enum_name = e.name.as_str().unwrap_or_default();
                 let enum_fqn = fqn_in(&ns, enum_name);
                 let range = sv.name_range(enum_name);
-                out.push(env.ref_count_lens(
-                    range,
-                    mir_analyzer::Name::class(enum_fqn.clone()),
-                ));
+                out.push(env.ref_count_lens(range, mir_analyzer::Name::class(enum_fqn.clone())));
                 for member in e.body.members.iter() {
                     match &member.kind {
                         EnumMemberKind::Method(m) => {

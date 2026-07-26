@@ -260,7 +260,8 @@ async fn will_rename_files_rewrites_aliased_import() {
         4:4-4:18 → "App\\Model\\Account"
 
         // src/Model/User.php
-        4:6-4:10 → "Account""#]].assert_eq(&snap);
+        4:6-4:10 → "Account""#]]
+    .assert_eq(&snap);
 }
 
 /// Deleting an aliased-import target must remove the whole `use ... as ...;`
@@ -287,7 +288,8 @@ async fn will_delete_files_removes_aliased_import_line() {
     let snap = canonicalize_workspace_edit(&resp["result"], &server.uri(""));
     expect![[r#"
         // src/Consumer.php
-        4:0-5:0 → """#]].assert_eq(&snap);
+        4:0-5:0 → """#]]
+    .assert_eq(&snap);
 }
 
 /// Known-gap pin: group `use App\Model\{User};` lines are not rewritten by
@@ -323,5 +325,6 @@ async fn will_rename_files_group_use_import_pins_known_gap() {
         10:19-10:23 → "Account"
 
         // src/Model/User.php
-        4:6-4:10 → "Account""#]].assert_eq(&snap);
+        4:6-4:10 → "Account""#]]
+    .assert_eq(&snap);
 }

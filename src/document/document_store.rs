@@ -1637,7 +1637,11 @@ mod tests {
         let wf = store.lsp_ws_files.get(&u).map(|e| *e).unwrap();
         let idx_before =
             store.snapshot_mir_query(|db| crate::db::mir_queries::file_index(db, wf).0.clone());
-        assert_eq!(idx_before.classes.len(), 1, "sanity: class should be indexed");
+        assert_eq!(
+            idx_before.classes.len(),
+            1,
+            "sanity: class should be indexed"
+        );
 
         store.remove(&u);
 

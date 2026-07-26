@@ -357,7 +357,10 @@ impl LspConfig {
         if let Some(s) = v.get("cachePath").and_then(|x| x.as_str()) {
             cfg.cache_path = Some(std::path::PathBuf::from(s));
         }
-        if let Some(n) = v.get("analysisCacheFlushIntervalMs").and_then(|x| x.as_u64()) {
+        if let Some(n) = v
+            .get("analysisCacheFlushIntervalMs")
+            .and_then(|x| x.as_u64())
+        {
             cfg.flush_interval_ms = n.max(1);
         }
         cfg

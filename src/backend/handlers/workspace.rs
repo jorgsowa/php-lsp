@@ -602,8 +602,7 @@ impl Backend {
             if old_short != new_short {
                 let symbol =
                     mir_analyzer::Name::class(old_fqn.trim_start_matches('\\').to_string());
-                let files: Vec<std::sync::Arc<str>> =
-                    self.docs.reference_candidate_files(&symbol);
+                let files: Vec<std::sync::Arc<str>> = self.docs.reference_candidate_files(&symbol);
                 let docs = std::sync::Arc::clone(&self.docs);
                 let locations = tokio::task::spawn_blocking(move || {
                     let (_interactive, cancel_rev) = docs.settled_write_rev_guard();
