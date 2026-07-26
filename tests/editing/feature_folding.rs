@@ -104,6 +104,29 @@ foreach ([1, 2, 3] as $i) {
     expect!["1..3 region"].assert_eq(&out);
 }
 
+/// `switch` fell into fold_stmt's catch-all `_ => {}` arm — no fold range
+/// was ever produced for it, however long the body.
+#[tokio::test]
+async fn folding_switch_statement() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_folding(
+            r#"<?php
+switch ($x) {
+    case 1:
+        foo();
+        break;
+    case 2:
+        bar();
+        break;
+}
+"#,
+        )
+        .await;
+    expect!["1..8 region"].assert_eq(&out);
+}
+
 #[tokio::test]
 async fn folding_try_catch() {
     let mut s = TestServer::new().await;

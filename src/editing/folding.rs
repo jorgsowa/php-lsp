@@ -147,6 +147,14 @@ fn fold_stmt(stmt: &Stmt<'_, '_>, sv: SourceView<'_>, out: &mut Vec<FoldingRange
                 fold_stmts(&finally.stmts, sv, out);
             }
         }
+        StmtKind::Switch(s) => {
+            let start_line = sv.line_of(stmt.span.start);
+            let end_line = sv.line_of(stmt.span.end);
+            push(out, start_line, end_line, None);
+            for case in s.body.cases.iter() {
+                fold_stmts(&case.body, sv, out);
+            }
+        }
         StmtKind::Block(stmts) => {
             let start_line = sv.line_of(stmt.span.start);
             let end_line = sv.line_of(stmt.span.end);
