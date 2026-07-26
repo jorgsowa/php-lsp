@@ -425,6 +425,49 @@ class Service {
     expect!["log @ main.php:2:20 fromRanges=[6:41-6:44]"].assert_eq(&out);
 }
 
+/// `use Trait { method as alias; }` — a call through the alias name must
+/// resolve outgoing calls to the trait's real method, since the alias itself
+/// never appears as a literal method declaration anywhere in the AST.
+#[tokio::test]
+async fn outgoing_calls_through_trait_method_alias() {
+    let mut s = TestServer::new().await;
+    let out = s
+        .check_outgoing_calls(
+            r#"<?php
+trait Logger {
+    public function log(): void {}
+}
+class Service {
+    use Logger { log as debugLog; }
+    public function ru$0n(): void { $this->debugLog(); }
+}
+"#,
+        )
+        .await;
+    expect!["log @ main.php:2:20 fromRanges=[6:41-6:49]"].assert_eq(&out);
+}
+
+/// `prepareCallHierarchy` invoked directly on an aliased call site (cursor on
+/// the alias name, not the trait's real method name) must still resolve.
+#[tokio::test]
+async fn prepare_call_hierarchy_on_trait_method_alias_call_site() {
+    let mut s = TestServer::new().await;
+    let out = s
+        .check_prepare_call_hierarchy(
+            r#"<?php
+trait Logger {
+    public function log(): void {}
+}
+class Service {
+    use Logger { log as debugLog; }
+    public function run(): void { $this->debu$0gLog(); }
+}
+"#,
+        )
+        .await;
+    expect!["log (Method) [Logger] @ main.php:2:20"].assert_eq(&out);
+}
+
 /// Method with no calls to other functions must report empty outgoing calls.
 #[tokio::test]
 async fn outgoing_calls_from_leaf_method() {

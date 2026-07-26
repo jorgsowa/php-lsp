@@ -3,7 +3,10 @@ use std::ops::ControlFlow;
 use std::sync::Arc;
 
 use php_ast::visitor::{Visitor, walk_expr, walk_stmt};
-use php_ast::{ClassMemberKind, EnumMemberKind, ExprKind, NamespaceBody, Span, Stmt, StmtKind};
+use php_ast::{
+    ClassMemberKind, EnumMemberKind, ExprKind, NamespaceBody, Span, Stmt, StmtKind,
+    TraitAdaptationKind,
+};
 use tower_lsp::lsp_types::{
     CallHierarchyIncomingCall, CallHierarchyItem, CallHierarchyOutgoingCall, Position, Range,
     SymbolKind, Url,
@@ -35,18 +38,49 @@ pub fn prepare_call_hierarchy_indexed(
     wi: &crate::db::workspace_index::WorkspaceIndexData,
     get_doc: &dyn Fn(&Url) -> Option<Arc<ParsedDoc>>,
 ) -> Option<CallHierarchyItem> {
-    let refs = wi.decls_by_name.get(name)?;
-    // Visit each candidate file once, in declaration encounter order.
-    let mut last_file = u32::MAX;
-    for r in refs {
-        if r.file == last_file {
-            continue;
+    if let Some(refs) = wi.decls_by_name.get(name) {
+        // Visit each candidate file once, in declaration encounter order.
+        let mut last_file = u32::MAX;
+        for r in refs {
+            if r.file == last_file {
+                continue;
+            }
+            last_file = r.file;
+            let Some((uri, _)) = wi.files.get(r.file as usize) else {
+                continue;
+            };
+            let Some(doc) = get_doc(uri) else { continue };
+            if let Some(item) = find_declaration_item(name, &doc.program().stmts, doc.view(), uri)
+            {
+                return Some(item);
+            }
         }
-        last_file = r.file;
-        let (uri, _) = wi.files.get(r.file as usize)?;
-        let doc = get_doc(uri)?;
-        if let Some(item) = find_declaration_item(name, &doc.program().stmts, doc.view(), uri) {
-            return Some(item);
+    }
+    // `name` might be a `use Trait { method as name; }` alias, which never
+    // appears as a literal declaration in `decls_by_name`.
+    if let Some(original) = resolve_trait_alias_indexed(name, wi)
+        && original != name
+    {
+        return prepare_call_hierarchy_indexed(&original, wi, get_doc);
+    }
+    None
+}
+
+/// Resolves `name` against every class's recorded trait-method aliases in
+/// the workspace index (`FileIndex::extract` already collects these from
+/// `use Trait { method as alias; }`). Fallback only — the common path
+/// resolves via `decls_by_name`, which has no entry for alias spellings.
+fn resolve_trait_alias_indexed(
+    name: &str,
+    wi: &crate::db::workspace_index::WorkspaceIndexData,
+) -> Option<String> {
+    for (_, idx) in &wi.files {
+        for cls in &idx.classes {
+            for alias in &cls.trait_method_aliases {
+                if alias.alias.as_ref() == name {
+                    return Some(alias.original.to_string());
+                }
+            }
         }
     }
     None
@@ -307,6 +341,50 @@ fn find_declaration_item(
                     && let Some(item) = find_declaration_item(name, &inner.stmts, sv, uri)
                 {
                     return Some(item);
+                }
+            }
+            _ => {}
+        }
+    }
+    // `name` may be a `use Trait { method as name; }` alias rather than a
+    // literal declaration anywhere — retry under the trait method's real name.
+    if let Some(original) = resolve_trait_alias(name, stmts)
+        && original != name
+    {
+        return find_declaration_item(&original, stmts, sv, uri);
+    }
+    None
+}
+
+/// If `name` is introduced by `use Trait { method as name; }` on some class
+/// in `stmts`, returns the trait method's real declared name. Without this,
+/// a call site written under the alias (the only spelling that exists in
+/// source) can never resolve — no AST node is literally named the alias.
+fn resolve_trait_alias(name: &str, stmts: &[Stmt<'_, '_>]) -> Option<String> {
+    for stmt in stmts {
+        match &stmt.kind {
+            StmtKind::Class(c) => {
+                for member in c.body.members.iter() {
+                    if let ClassMemberKind::TraitUse(tu) = &member.kind {
+                        for adaptation in tu.adaptations.iter() {
+                            if let TraitAdaptationKind::Alias {
+                                method,
+                                new_name: Some(new_name),
+                                ..
+                            } = &adaptation.kind
+                                && new_name.to_string_repr() == name
+                            {
+                                return Some(method.to_string_repr().into_owned());
+                            }
+                        }
+                    }
+                }
+            }
+            StmtKind::Namespace(ns) => {
+                if let NamespaceBody::Braced(inner) = &ns.body
+                    && let Some(found) = resolve_trait_alias(name, &inner.stmts)
+                {
+                    return Some(found);
                 }
             }
             _ => {}
