@@ -95,6 +95,56 @@ class Factory {
     );
 }
 
+/// A blind text-scan replacement inside a nested closure's `use ($var)`
+/// capture clause would produce `use ($this->prop)` — a syntax error. The
+/// action must not be offered at all when the variable is referenced inside
+/// a nested closure.
+#[tokio::test]
+async fn local_to_property_not_offered_when_used_inside_nested_closure() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_code_actions(
+            r#"<?php
+class Counter {
+    public function bar(): void {
+        $coun$0t = 0;
+        $add = function () use ($count) { return $count + 1; };
+    }
+}
+"#,
+        )
+        .await;
+    assert!(
+        !out.contains("Convert '$count' to instance property"),
+        "should not offer when var is captured by a nested closure, got: {out}"
+    );
+}
+
+/// Same hazard via an arrow function, which implicitly captures outer
+/// variables by value without a `use` clause — still not safe to rewrite.
+#[tokio::test]
+async fn local_to_property_not_offered_when_used_inside_arrow_function() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_code_actions(
+            r#"<?php
+class Counter {
+    public function bar(): void {
+        $coun$0t = 0;
+        $add = fn($x) => $x + $count;
+    }
+}
+"#,
+        )
+        .await;
+    assert!(
+        !out.contains("Convert '$count' to instance property"),
+        "should not offer when var is used inside a nested arrow function, got: {out}"
+    );
+}
+
 #[tokio::test]
 async fn local_to_property_not_offered_when_property_already_exists() {
     let mut s = TestServer::new().await;

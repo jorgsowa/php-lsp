@@ -1,6 +1,8 @@
 use std::collections::HashMap;
+use std::ops::ControlFlow;
 
-use php_ast::{ClassBody, ClassMemberKind, NamespaceBody, Stmt, StmtKind};
+use php_ast::visitor::{Visitor, walk_expr};
+use php_ast::{ClassBody, ClassMemberKind, ExprKind, NamespaceBody, Stmt, StmtKind};
 use tower_lsp::lsp_types::{
     CodeAction, CodeActionKind, CodeActionOrCommand, Range, TextEdit, Url, WorkspaceEdit,
 };
@@ -93,6 +95,23 @@ fn collect_in_stmts<'a>(
                         return true;
                     }
 
+                    // Bail if the variable is referenced inside a nested closure
+                    // or arrow function: blindly rewriting `$var` to `$this->prop`
+                    // there would corrupt a `use ($var)` capture clause, and a
+                    // `static function`/`static fn` closure has no `$this` at all.
+                    // Text-scan replacement can't distinguish "capture clause" from
+                    // "body reference" from outside the AST, so the whole action
+                    // is withheld rather than emitting a plausibly-broken edit.
+                    let nested_closure_spans = collect_nested_closure_spans(&body.stmts);
+                    let touches_nested_closure = occurrences.iter().any(|(start, _)| {
+                        nested_closure_spans
+                            .iter()
+                            .any(|(cs, ce)| (*start as u32) >= *cs && (*start as u32) < *ce)
+                    });
+                    if touches_nested_closure {
+                        return true;
+                    }
+
                     if let Some(action) = build_action(source, sv, ctx, &c.body, occurrences) {
                         out.push(action);
                     }
@@ -111,6 +130,27 @@ fn collect_in_stmts<'a>(
         }
     }
     false
+}
+
+/// Byte spans of every `Closure`/`ArrowFunction` expression nested anywhere
+/// within `stmts`.
+fn collect_nested_closure_spans(stmts: &[Stmt<'_, '_>]) -> Vec<(u32, u32)> {
+    struct Collector {
+        spans: Vec<(u32, u32)>,
+    }
+    impl<'arena, 'src> Visitor<'arena, 'src> for Collector {
+        fn visit_expr(&mut self, expr: &php_ast::Expr<'arena, 'src>) -> ControlFlow<()> {
+            if matches!(&expr.kind, ExprKind::Closure(_) | ExprKind::ArrowFunction(_)) {
+                self.spans.push((expr.span.start, expr.span.end));
+            }
+            walk_expr(self, expr)
+        }
+    }
+    let mut collector = Collector { spans: Vec::new() };
+    for stmt in stmts {
+        let _ = collector.visit_stmt(stmt);
+    }
+    collector.spans
 }
 
 fn collect_var_occurrences(
