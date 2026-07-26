@@ -36,6 +36,83 @@ class Repo {
     );
 }
 
+/// `throw new self()` must resolve to the enclosing class's real name, not
+/// offer the nonsensical "Add @throws self" — and must dedupe correctly
+/// against an existing `@throws MyException` tag that already documents it.
+#[tokio::test]
+async fn add_throws_self_resolves_to_enclosing_class_and_dedupes() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_code_actions(
+            r#"<?php
+class MyException extends \Exception {
+    /**
+     * @throws MyException
+     */
+    public static function $0throwSelf$0(): void
+    {
+        throw new self();
+    }
+}
+"#,
+        )
+        .await;
+    assert!(
+        !out.contains("Add @throws"),
+        "throw new self() should resolve to MyException, already documented: {out}"
+    );
+}
+
+/// `throw new static()` resolves the same way as `self`.
+#[tokio::test]
+async fn add_throws_static_resolves_to_enclosing_class() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_code_actions(
+            r#"<?php
+class MyException extends \Exception {
+    /** doc */
+    public static function $0throwStatic$0(): void
+    {
+        throw new static();
+    }
+}
+"#,
+        )
+        .await;
+    assert!(
+        out.contains("Add @throws MyException to PHPDoc"),
+        "expected 'MyException', not the literal 'static', got: {out}"
+    );
+}
+
+/// `throw new parent()` resolves to the class's `extends` name.
+#[tokio::test]
+async fn add_throws_parent_resolves_to_extends_class() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_code_actions(
+            r#"<?php
+class BaseException extends \Exception {}
+class SpecificException extends BaseException {
+    /** doc */
+    public function rethrow$0(): void
+    {
+        throw new parent();
+    }
+}
+"#,
+        )
+        .await;
+    assert!(
+        out.contains("Add @throws BaseException to PHPDoc"),
+        "expected 'BaseException', not the literal 'parent', got: {out}"
+    );
+}
+
 #[tokio::test]
 async fn add_throws_offered_for_multiple_missing() {
     let mut s = TestServer::new().await;

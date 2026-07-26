@@ -40,39 +40,51 @@ fn collect_stmts<'a>(
                 if line_in_range(sv.position_of(stmt.span.start).line, range)
                     && let Some(dc) = &f.doc_comment
                 {
-                    maybe_push(uri, sv, dc, f.body, out);
+                    maybe_push(uri, sv, dc, f.body, None, None, out);
                 }
             }
             StmtKind::Class(c) => {
+                let self_name = c.name.map(|n| n.to_string());
+                let parent_name = c.extends.as_ref().map(|p| p.to_string_repr().into_owned());
                 for member in c.body.members.iter() {
                     if let ClassMemberKind::Method(m) = &member.kind
                         && line_in_range(sv.position_of(member.span.start).line, range)
                         && let Some(dc) = &m.doc_comment
                         && let Some(body) = m.body
                     {
-                        maybe_push(uri, sv, dc, body, out);
+                        maybe_push(
+                            uri,
+                            sv,
+                            dc,
+                            body,
+                            self_name.as_deref(),
+                            parent_name.as_deref(),
+                            out,
+                        );
                     }
                 }
             }
             StmtKind::Trait(t) => {
+                let self_name = Some(t.name.to_string());
                 for member in t.body.members.iter() {
                     if let ClassMemberKind::Method(m) = &member.kind
                         && line_in_range(sv.position_of(member.span.start).line, range)
                         && let Some(dc) = &m.doc_comment
                         && let Some(body) = m.body
                     {
-                        maybe_push(uri, sv, dc, body, out);
+                        maybe_push(uri, sv, dc, body, self_name.as_deref(), None, out);
                     }
                 }
             }
             StmtKind::Enum(e) => {
+                let self_name = Some(e.name.to_string());
                 for member in e.body.members.iter() {
                     if let EnumMemberKind::Method(m) = &member.kind
                         && line_in_range(sv.position_of(member.span.start).line, range)
                         && let Some(dc) = &m.doc_comment
                         && let Some(body) = m.body
                     {
-                        maybe_push(uri, sv, dc, body, out);
+                        maybe_push(uri, sv, dc, body, self_name.as_deref(), None, out);
                     }
                 }
             }
@@ -91,6 +103,8 @@ fn maybe_push(
     sv: SourceView<'_>,
     doc_comment: &php_ast::Comment<'_>,
     body: &php_ast::Block<'_, '_>,
+    self_name: Option<&str>,
+    parent_name: Option<&str>,
     out: &mut Vec<CodeActionOrCommand>,
 ) {
     let parsed = parse_docblock(doc_comment.text);
@@ -100,7 +114,11 @@ fn maybe_push(
 
     let existing: HashSet<&str> = parsed.throws.iter().map(|t| t.class.as_str()).collect();
 
-    let mut collector = ThrowCollector::default();
+    let mut collector = ThrowCollector {
+        self_name: self_name.map(str::to_string),
+        parent_name: parent_name.map(str::to_string),
+        ..Default::default()
+    };
     let _ = collector.visit_block(body);
 
     let mut missing: Vec<String> = collector
@@ -181,6 +199,10 @@ fn maybe_push(
 #[derive(Default)]
 struct ThrowCollector {
     classes: Vec<String>,
+    /// Enclosing class/trait/enum short name — resolves `self`/`static`.
+    self_name: Option<String>,
+    /// Enclosing class's `extends` name, if any — resolves `parent`.
+    parent_name: Option<String>,
 }
 
 impl ThrowCollector {
@@ -188,7 +210,17 @@ impl ThrowCollector {
         match &expr.kind {
             ExprKind::New(n) => {
                 if let ExprKind::Identifier(name) = &n.class.kind {
-                    self.classes.push(name.as_str().to_string());
+                    // `self`/`static`/`parent` resolve to the real class name where
+                    // known, so `@throws self` (nonsensical to a reader) isn't
+                    // offered and dedup against an existing `@throws RealName`
+                    // tag actually works.
+                    let resolved = match name.as_str() {
+                        "self" | "static" => self.self_name.clone(),
+                        "parent" => self.parent_name.clone(),
+                        _ => None,
+                    };
+                    self.classes
+                        .push(resolved.unwrap_or_else(|| name.as_str().to_string()));
                 }
             }
             ExprKind::Parenthesized(inner) => self.collect_from_expr(inner),
