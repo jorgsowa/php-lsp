@@ -1209,8 +1209,10 @@ impl TestServer {
     /// The handler runs asynchronously and indexes files before calling
     /// `send_refresh_requests`. Use `workspace_symbols` in a polling loop to
     /// confirm the effect has landed.
-    /// Send `workspace/didRenameFiles` notification.
-    pub async fn did_rename_files(&mut self, renames: Vec<(String, String)>) {
+    /// Send `workspace/didRenameFiles` notification and wait for the
+    /// publishDiagnostics the server sends to clear each old (pre-rename) URI.
+    pub async fn did_rename_files(&mut self, renames: Vec<(String, String)>) -> Vec<Value> {
+        let old_uris: Vec<String> = renames.iter().map(|(old, _)| old.clone()).collect();
         let files: Vec<Value> = renames
             .into_iter()
             .map(|(old, new)| json!({ "oldUri": old, "newUri": new }))
@@ -1218,6 +1220,11 @@ impl TestServer {
         self.client
             .notify("workspace/didRenameFiles", json!({ "files": files }))
             .await;
+        let mut results = Vec::new();
+        for uri in &old_uris {
+            results.push(self.client.wait_for_diagnostics(uri).await);
+        }
+        results
     }
 
     /// Send `workspace/didCreateFiles` notification.

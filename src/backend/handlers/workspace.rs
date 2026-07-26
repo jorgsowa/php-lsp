@@ -650,6 +650,11 @@ impl Backend {
         for file_rename in &params.files {
             if let Ok(old_uri) = Url::parse(&file_rename.old_uri) {
                 self.docs.remove(&old_uri);
+                // Clear diagnostics under the old path — same as did_delete_files —
+                // or a client keeps showing them for a URI that no longer exists.
+                self.open_files
+                    .note_published(&old_uri, crate::backend::diagnostics_content_hash(&[]));
+                self.client.publish_diagnostics(old_uri, vec![], None).await;
             }
             if let Ok(new_uri) = Url::parse(&file_rename.new_uri)
                 && let Ok(path) = new_uri.to_file_path()
@@ -658,6 +663,7 @@ impl Backend {
                 self.ingest_if_not_open(new_uri, &text);
             }
         }
+        send_refresh_requests(&self.client).await;
     }
 
     pub(crate) async fn handle_will_create_files(

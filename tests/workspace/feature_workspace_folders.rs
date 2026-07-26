@@ -88,7 +88,9 @@ async fn add_empty_workspace_folder_does_not_crash() {
         .await;
 
     let out = server.snapshot_workspace_symbols("User").await;
-    expect!["Class       User @ src/Model/User.php:4"].assert_eq(&out);
+    expect![[r#"
+        Class       User @ src/Model/User.php:4
+        Property    $users @ src/Service/Registry.php:9"#]].assert_eq(&out);
 
     let out = server.snapshot_workspace_symbols("NonExistent").await;
     expect![[r#"<no symbols>"#]].assert_eq(&out);
@@ -135,7 +137,9 @@ async fn remove_workspace_folder_keeps_already_indexed_docs_queryable() {
     server.remove_workspace_folder(&root_uri).await;
 
     let out = server.snapshot_workspace_symbols("User").await;
-    expect!["Class       User @ src/Model/User.php:4"].assert_eq(&out);
+    expect![[r#"
+        Class       User @ src/Model/User.php:4
+        Property    $users @ src/Service/Registry.php:9"#]].assert_eq(&out);
 }
 
 // ── workspace-scan edge cases ─────────────────────────────────────────────────
@@ -270,7 +274,39 @@ async fn did_rename_files_updates_index_to_new_path() {
     .await;
 
     let out = server.snapshot_workspace_symbols("User").await;
-    expect!["Class       User @ src/Entity/User.php:4"].assert_eq(&out);
+    expect![[r#"
+        Class       User @ src/Entity/User.php:4
+        Property    $users @ src/Service/Registry.php:9"#]].assert_eq(&out);
+}
+
+/// A renamed file's diagnostics under its old URI must be cleared, same as
+/// did_delete_files — otherwise a client keeps showing stale diagnostics for
+/// a path that no longer exists.
+#[tokio::test]
+async fn did_rename_files_clears_diagnostics_under_old_uri() {
+    let mut server = TestServer::with_fixture("psr4-mini").await;
+    server.wait_for_index_ready().await;
+
+    let (content, _, _) = server.locate("src/Model/User.php", "<?php", 0);
+    server.open("src/Model/User.php", &content).await;
+
+    let old_uri = server.uri("src/Model/User.php");
+    let new_uri = server.uri("src/Entity/User.php");
+
+    server.write_file("src/Entity/User.php", &content);
+    server.remove_file("src/Model/User.php");
+
+    let results = server
+        .did_rename_files(vec![(old_uri.clone(), new_uri.clone())])
+        .await;
+
+    let diag_notif = &results[0];
+    let notif_uri = diag_notif["params"]["uri"].as_str().unwrap_or("");
+    assert!(
+        notif_uri.ends_with("Model/User.php"),
+        "publishDiagnostics must be for the old URI, got: {notif_uri}"
+    );
+    expect!["<empty>"].assert_eq(&render_diagnostics_notification(diag_notif));
 }
 
 #[tokio::test]
@@ -316,11 +352,14 @@ async fn did_delete_files_removes_class_and_clears_diagnostics() {
     );
     expect!["<empty>"].assert_eq(&render_diagnostics_notification(diag_notif));
 
+    // `#class:` scopes the query to the Class kind — plain "User" would also
+    // match Registry.php's `$users` property (a real, correct match since the
+    // properties/constants workspace/symbol fix), which never goes away here.
     server
-        .wait_until_symbol_absent("User", Duration::from_secs(3))
+        .wait_until_symbol_absent("#class:User", Duration::from_secs(3))
         .await;
 
-    expect!["<no symbols>"].assert_eq(&server.snapshot_workspace_symbols("User").await);
+    expect!["<no symbols>"].assert_eq(&server.snapshot_workspace_symbols("#class:User").await);
 }
 
 // ── didChangeWatchedFiles edge cases ──────────────────────────────────────────
