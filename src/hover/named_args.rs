@@ -2,7 +2,7 @@ use php_ast::{ClassMemberKind, NamespaceBody, Param, Stmt, StmtKind};
 use tower_lsp::lsp_types::Position;
 
 use crate::document::ast::{ParsedDoc, format_type_hint};
-use crate::text::{fqn_short_name, utf16_offset_to_byte};
+use crate::text::fqn_short_name;
 
 /// Resolve the class(es) of a named-argument call's receiver variable, for
 /// looking up the method's parameter signature. Locates the receiver
@@ -16,7 +16,7 @@ fn resolve_method_receiver_class(
     analysis: Option<&mir_analyzer::FileAnalysis>,
 ) -> Option<String> {
     if let Some(a) = analysis
-        && let Some(offset) = receiver_var_offset(source, doc, position, receiver_var)
+        && let Some(offset) = receiver_var_offset(source, position, receiver_var)
         && let Some(ty) = crate::types::type_query::type_at_offset(a, offset)
     {
         let names: Vec<String> = crate::types::type_query::class_names(ty)
@@ -36,23 +36,17 @@ fn resolve_method_receiver_class(
 /// Byte offset of the last char of the `receiver_var` token in the nearest
 /// `receiver_var->` / `receiver_var?->` occurrence before the cursor — a
 /// position inside mir's end-exclusive variable span.
-fn receiver_var_offset(
-    source: &str,
-    doc: &ParsedDoc,
-    position: Position,
-    receiver_var: &str,
-) -> Option<u32> {
-    let line = source.lines().nth(position.line as usize)?;
-    let cursor_byte = utf16_offset_to_byte(line, position.character as usize).min(line.len());
-    let before = &line[..cursor_byte];
+///
+/// Searches the whole document rather than just the cursor's line: a wrapped
+/// call — `$m->send(\n    to: '...',\n)` — puts the receiver on an earlier
+/// line than the named-arg label being hovered.
+fn receiver_var_offset(source: &str, position: Position, receiver_var: &str) -> Option<u32> {
+    let cursor_byte = crate::text::position_to_byte_offset(source, position).min(source.len());
+    let before = &source[..cursor_byte];
     let p = before
         .rfind(&format!("{receiver_var}?->"))
         .or_else(|| before.rfind(&format!("{receiver_var}->")))?;
-    let line_start = doc.view().byte_of_position(Position {
-        line: position.line,
-        character: 0,
-    });
-    Some(line_start + (p + receiver_var.len()) as u32 - 1)
+    Some((p + receiver_var.len()) as u32 - 1)
 }
 
 use super::formatting::{format_default_value, wrap_php};
@@ -102,25 +96,17 @@ pub(crate) fn is_named_arg_at(line: &str, cursor_col_utf16: usize, _word: &str) 
         && !(char_idx + 1 < chars.len() && chars[char_idx + 1] == ':')
 }
 
-/// Scan backward from `cursor_col_utf16` (which is within the named-arg label
-/// word) to find the opening `(` of the enclosing function call, then extract
-/// the callee information from the text before that `(`.
-pub(crate) fn extract_named_arg_callee(
-    line: &str,
-    cursor_col_utf16: usize,
-) -> Option<NamedArgCallee> {
-    let chars: Vec<char> = line.chars().collect();
+/// Scan backward from `position` (which is within the named-arg label word)
+/// to find the opening `(` of the enclosing function call, then extract the
+/// callee information from the text before that `(`. Scans the whole
+/// document rather than just the cursor's line, since a wrapped call —
+/// `$m->send(\n    to: '...',\n)` — puts the callee on an earlier line than
+/// the label being hovered.
+pub(crate) fn extract_named_arg_callee(source: &str, position: Position) -> Option<NamedArgCallee> {
+    let chars: Vec<char> = source.chars().collect();
+    let cursor_byte = crate::text::position_to_byte_offset(source, position);
+    let mut char_idx = source[..cursor_byte.min(source.len())].chars().count();
 
-    // Convert cursor position to char index.
-    let mut utf16 = 0usize;
-    let mut char_idx = 0usize;
-    for ch in &chars {
-        if utf16 >= cursor_col_utf16 {
-            break;
-        }
-        utf16 += ch.len_utf16();
-        char_idx += 1;
-    }
     // Back up to the start of the word.
     let is_word_char = |c: char| c.is_alphanumeric() || c == '_';
     while char_idx > 0 && is_word_char(chars[char_idx - 1]) {

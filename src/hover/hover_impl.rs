@@ -249,7 +249,7 @@ fn hover_at_core(
     if let Some(line_text) = source.lines().nth(position.line as usize)
         && !word.starts_with('$')
         && is_named_arg_at(line_text, position.character as usize, &word)
-        && let Some(callee) = extract_named_arg_callee(line_text, position.character as usize)
+        && let Some(callee) = extract_named_arg_callee(source, position)
         && let Some(value) =
             named_arg_hover_value(source, doc, other_docs, position, &callee, &word, analysis)
     {

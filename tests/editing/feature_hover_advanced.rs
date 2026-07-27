@@ -592,6 +592,32 @@ $m->send(subje$0ct: 'Hello', to: 'a@b.com');
     .await;
 }
 
+/// A wrapped call (common after formatter line-wrapping for long argument
+/// lists) puts the callee on an earlier line than the label being hovered —
+/// the backward scan for the enclosing `(` must cross that line boundary.
+#[tokio::test]
+async fn hover_named_arg_method_call_wrapped_across_lines() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    s.check_hover_annotated(
+        r#"<?php
+class Mailer {
+    public function send(string $to, string $subject): bool { return true; }
+}
+$m = new Mailer();
+$m->send(
+    to: 'a@b.com',
+    subje$0ct: 'Hello',
+);
+"#,
+        expect![[r#"
+            ```php
+            (parameter) string $subject
+            ```"#]],
+    )
+    .await;
+}
+
 #[tokio::test]
 async fn hover_named_arg_nested_call() {
     // Named arg inside a nested function call — cursor on inner call's arg.
