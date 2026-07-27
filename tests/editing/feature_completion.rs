@@ -4494,6 +4494,93 @@ createUser($0
     .assert_eq(&out);
 }
 
+/// Named-argument completion after `$obj->method(` must be scoped to the
+/// receiver's own class, not to whichever same-named method the naive
+/// text scan finds first in the workspace. `Logger::send` and
+/// `Mailer::send` have different parameter lists; completing on a
+/// `Mailer`-typed receiver must offer `Mailer`'s params, never `Logger`'s.
+#[tokio::test]
+async fn completion_named_argument_scoped_to_receiver_class() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let opened = s
+        .open_fixture(
+            r#"<?php
+class Logger {
+    public function send(string $level, string $message): void {}
+}
+class Mailer {
+    public function send(string $to, string $subject, string $body): void {}
+}
+function notify(Mailer $mailer): void {
+    $mailer->send($0
+}
+"#,
+        )
+        .await;
+    let c = opened.cursor().clone();
+    let uri = s.uri(&c.path);
+    let resp = s
+        .client()
+        .request(
+            "textDocument/completion",
+            serde_json::json!({
+                "textDocument": { "uri": uri },
+                "position": { "line": c.line, "character": c.character },
+                "context": { "triggerKind": 2, "triggerCharacter": "(" },
+            }),
+        )
+        .await;
+    let out = render_completion(&resp);
+    expect![[r#"
+        Variable    body:
+        Variable    subject:
+        Variable    to:"#]]
+    .assert_eq(&out);
+}
+
+/// Same as above but for a static call (`Class::method(`) — the receiver
+/// class name comes from before `::`, not from mir's variable-type
+/// tracking, but must still scope the lookup instead of matching whichever
+/// same-named method is found first.
+#[tokio::test]
+async fn completion_named_argument_scoped_to_static_receiver_class() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let opened = s
+        .open_fixture(
+            r#"<?php
+class Logger {
+    public static function send(string $level, string $message): void {}
+}
+class Mailer {
+    public static function send(string $to, string $subject, string $body): void {}
+}
+Mailer::send($0
+"#,
+        )
+        .await;
+    let c = opened.cursor().clone();
+    let uri = s.uri(&c.path);
+    let resp = s
+        .client()
+        .request(
+            "textDocument/completion",
+            serde_json::json!({
+                "textDocument": { "uri": uri },
+                "position": { "line": c.line, "character": c.character },
+                "context": { "triggerKind": 2, "triggerCharacter": "(" },
+            }),
+        )
+        .await;
+    let out = render_completion(&resp);
+    expect![[r#"
+        Variable    body:
+        Variable    subject:
+        Variable    to:"#]]
+    .assert_eq(&out);
+}
+
 // ── member/static completion via the workspace index ─────────────────────────
 
 /// Member completion when the class is index-only, global namespace.

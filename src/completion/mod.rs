@@ -166,6 +166,7 @@ fn resolve_call_params(
     doc: &ParsedDoc,
     other_docs: &[Arc<ParsedDoc>],
     position: Position,
+    ctx: &CompletionCtx<'_>,
 ) -> Vec<String> {
     let line = match source.lines().nth(position.line as usize) {
         Some(l) => l,
@@ -185,6 +186,35 @@ fn resolve_call_params(
     if func_name.is_empty() {
         return vec![];
     }
+
+    // A receiver (`$obj->method(` / `Class::method(`) scopes the lookup to
+    // that specific class. Without this, a bare name-only scan returns
+    // whichever same-named method it finds first in the workspace — which
+    // can belong to a completely unrelated class (e.g. `Logger::send` vs
+    // `Mailer::send`) and offer that class's parameter names instead.
+    let before_receiver = &before[..before.len() - func_name.len()];
+    let receiver_col = crate::text::byte_to_utf16(line, before_receiver.len());
+    let receiver_pos = Position {
+        line: position.line,
+        character: receiver_col,
+    };
+    if before_receiver.ends_with("->") || before_receiver.ends_with("?->") {
+        return resolve_receiver_class(source, doc, receiver_pos, ctx.analysis)
+            .map(|class_name| {
+                params_of_method_anywhere(&class_name, &func_name, doc, other_docs, ctx)
+            })
+            .unwrap_or_default();
+    }
+    if before_receiver.ends_with("::") {
+        let empty_imports = HashMap::new();
+        let imports = ctx.file_imports.unwrap_or(&empty_imports);
+        return resolve_static_receiver(source, doc, other_docs, receiver_pos, imports)
+            .map(|class_name| {
+                params_of_method_anywhere(&class_name, &func_name, doc, other_docs, ctx)
+            })
+            .unwrap_or_default();
+    }
+
     let mut params = params_of_function(doc, &func_name);
     if params.is_empty() {
         for other in other_docs {
@@ -195,6 +225,40 @@ fn resolve_call_params(
         }
     }
     params
+}
+
+/// Find `method_name`'s parameter names on exactly `class_name` — the
+/// current doc, then the workspace-index-backed lookup, then every other
+/// open doc. Deliberately does *not* fall back further (e.g. to an
+/// unrelated same-named method, or to a superclass): a resolved receiver
+/// class that doesn't declare the method directly should offer no
+/// named-argument completions rather than risk a wrong class's parameters.
+fn params_of_method_anywhere(
+    class_name: &str,
+    method_name: &str,
+    doc: &ParsedDoc,
+    other_docs: &[Arc<ParsedDoc>],
+    ctx: &CompletionCtx<'_>,
+) -> Vec<String> {
+    let params = params_of_method(doc, class_name, method_name);
+    if !params.is_empty() {
+        return params;
+    }
+    if let Some(find) = ctx.find_class_doc
+        && let Some(class_doc) = find(class_name)
+    {
+        let params = params_of_method(&class_doc, class_name, method_name);
+        if !params.is_empty() {
+            return params;
+        }
+    }
+    for other in other_docs {
+        let params = params_of_method(other, class_name, method_name);
+        if !params.is_empty() {
+            return params;
+        }
+    }
+    vec![]
 }
 
 /// Workspace-index-backed class lookup: maps a short class name to the
@@ -447,7 +511,7 @@ pub fn filtered_completions_at(
         Some("(") => {
             // Named argument: funcName(
             if let (Some(src), Some(pos)) = (source, position) {
-                let params = resolve_call_params(src, doc, other_docs, pos);
+                let params = resolve_call_params(src, doc, other_docs, pos, ctx);
                 if !params.is_empty() {
                     return params
                         .into_iter()
