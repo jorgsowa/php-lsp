@@ -57,3 +57,6 @@ mod attributes_complete;
 
 #[path = "references/variables.rs"]
 mod variables;
+
+#[path = "references/partial_result.rs"]
+mod partial_result;

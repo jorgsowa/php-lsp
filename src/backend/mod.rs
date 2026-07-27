@@ -13,6 +13,42 @@ impl tower_lsp::lsp_types::notification::Notification for IndexReadyNotification
     type Params = ();
     const METHOD: &'static str = "$/php-lsp/indexReady";
 }
+
+/// A `$/progress` partial-result batch for `textDocument/references`.
+///
+/// `lsp_types::ProgressParamsValue` only has a `WorkDone` variant (it can't
+/// carry an arbitrary partial-result payload), so partial results use this
+/// hand-rolled notification instead — same `$/progress` method, but `value`
+/// is the request's own result type unwrapped, per the LSP spec's
+/// partial-result shape.
+enum ReferencesPartialResult {}
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ReferencesPartialResultParams {
+    token: tower_lsp::lsp_types::NumberOrString,
+    value: Vec<tower_lsp::lsp_types::Location>,
+}
+impl tower_lsp::lsp_types::notification::Notification for ReferencesPartialResult {
+    type Params = ReferencesPartialResultParams;
+    const METHOD: &'static str = "$/progress";
+}
+
+/// Stream a batch of reference locations to the client as a `$/progress`
+/// partial result. Best-effort: the final response is always sent
+/// separately and is unaffected if the client ignores this.
+pub(crate) async fn send_references_partial_result(
+    client: &Client,
+    token: tower_lsp::lsp_types::NumberOrString,
+    locations: Vec<tower_lsp::lsp_types::Location>,
+) {
+    client
+        .send_notification::<ReferencesPartialResult>(ReferencesPartialResultParams {
+            token,
+            value: locations,
+        })
+        .await;
+}
+
 use tower_lsp::Client;
 use tower_lsp::lsp_types::*;
 

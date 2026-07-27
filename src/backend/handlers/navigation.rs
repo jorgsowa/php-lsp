@@ -431,9 +431,70 @@ impl Backend {
             // candidates on a symbol-name text mention internally.
             let files: Vec<Arc<str>> = self.docs.reference_candidate_files(&symbol);
 
+            // Priority streaming: if the client asked for partial results,
+            // analyze the subset of candidates that already mention the
+            // owner's short name first and stream those ahead of the full
+            // (authoritative) query below — those files are the likely hits
+            // when the owner name is a common word shared by many unrelated
+            // classes, so this is where the user-visible latency lives.
+            // Skipped entirely (no extra mir call) when no token is present.
+            if let Some(token) = params.partial_result_params.partial_result_token.clone() {
+                let owner_short = match &symbol {
+                    mir_analyzer::Name::Method { class, .. } if !class.is_empty() => {
+                        Some(fqn_short_name(class).to_string())
+                    }
+                    _ => None,
+                };
+                if let Some(owner_short) = owner_short {
+                    let priority_files: Vec<Arc<str>> = files
+                        .iter()
+                        .filter(|f| {
+                            Url::parse(f.as_ref())
+                                .ok()
+                                .and_then(|u| self.docs.source_text(&u))
+                                .is_some_and(|t| t.contains(owner_short.as_str()))
+                        })
+                        .cloned()
+                        .collect();
+                    if !priority_files.is_empty() {
+                        let sym = symbol.clone();
+                        let docs = Arc::clone(&self.docs);
+                        let priority_locations = tokio::task::spawn_blocking(move || {
+                            let (_interactive, cancel_rev) = docs.settled_write_rev_guard();
+                            let mut locs: Vec<Location> = docs
+                                .indexed_references(
+                                    &sym,
+                                    &priority_files,
+                                    include_declaration,
+                                    Some(cancel_rev),
+                                )
+                                .into_iter()
+                                .filter_map(session_tuple_to_location)
+                                .collect();
+                            dedup_ref_locations(&mut locs);
+                            locs
+                        })
+                        .await
+                        .unwrap_or_default();
+                        if !priority_locations.is_empty() {
+                            super::super::send_references_partial_result(
+                                &self.client,
+                                token,
+                                priority_locations,
+                            )
+                            .await;
+                        }
+                    }
+                }
+            }
+
             // Declaration coverage comes from mir's definitions index (the
             // `include_declaration` flag below) — never from the raw cursor
             // span, which on a `use` import line is not a reference at all.
+            // Always the full candidate set, run unconditionally: this is the
+            // authoritative response, identical whether or not a priority
+            // batch was streamed above — `analyze_file`'s LRU makes
+            // re-analyzing the priority subset here nearly free.
             let docs = Arc::clone(&self.docs);
             let locations = tokio::task::spawn_blocking(move || {
                 // Pause the background scan and snapshot a settled revision so

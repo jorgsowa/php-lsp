@@ -87,6 +87,10 @@ name = "references_scaling"
 harness = false
 
 [[bench]]
+name = "references_scaling_static"
+harness = false
+
+[[bench]]
 name = "republish_scaling"
 harness = false
 

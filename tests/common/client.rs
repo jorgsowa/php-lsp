@@ -169,6 +169,57 @@ impl TestClient {
         self.write.write_all(&frame(&msg)).await.unwrap();
     }
 
+    /// Like `request`, but also collects every notification matching
+    /// `capture_method` seen while waiting for the response (instead of
+    /// silently discarding it, as `request` does). Returns
+    /// `(response, captured_notifications)` in arrival order. Use for
+    /// protocol tests asserting on server-sent notifications tied to a
+    /// specific in-flight request (e.g. `$/progress` partial results).
+    pub async fn request_capturing_notifications(
+        &mut self,
+        method: &str,
+        params: Value,
+        capture_method: &str,
+    ) -> (Value, Vec<Value>) {
+        let id = self.next_id;
+        self.next_id += 1;
+        let msg = json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": method,
+            "params": params,
+        });
+        self.write.write_all(&frame(&msg)).await.unwrap();
+        let method_owned = method.to_owned();
+        let mut captured = Vec::new();
+        let resp = tokio::time::timeout(tokio::time::Duration::from_secs(10), async {
+            loop {
+                let msg = read_msg(&mut self.read).await;
+                if msg.get("method") == Some(&json!(capture_method)) {
+                    captured.push(msg);
+                    continue;
+                }
+                if msg.get("method").is_some() {
+                    if let Some(srv_id) = msg.get("id") {
+                        let ack = json!({
+                            "jsonrpc": "2.0",
+                            "id": srv_id,
+                            "result": null,
+                        });
+                        self.write.write_all(&frame(&ack)).await.unwrap();
+                    }
+                    continue;
+                }
+                if msg.get("id") == Some(&json!(id)) {
+                    return msg;
+                }
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("timed out waiting for response to {method_owned}"));
+        (resp, captured)
+    }
+
     /// Block until a notification with `method` arrives. 5 s timeout.
     pub async fn read_notification(&mut self, method: &str) -> Value {
         tokio::time::timeout(tokio::time::Duration::from_secs(5), async {
