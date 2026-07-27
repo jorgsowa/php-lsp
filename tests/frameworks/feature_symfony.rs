@@ -63,10 +63,23 @@ mod symbols {
         expect![[r#"
             Class BlogController @L39
               Method index @L51
+                Variable $request @L51
+                Variable $page @L51
+                Variable $_format @L51
+                Variable $posts @L51
+                Variable $tags @L51
               Method postShow @L80
+                Variable $post @L80
               Method commentNew @L107
+                Variable $user @L108
+                Variable $request @L109
+                Variable $post @L110
+                Variable $eventDispatcher @L111
+                Variable $entityManager @L112
               Method commentForm @L150
-              Method search @L161"#]]
+                Variable $post @L150
+              Method search @L161
+                Variable $request @L161"#]]
         .assert_eq(&out);
     }
 }

@@ -1215,24 +1215,46 @@ async fn laravel_document_symbols_hierarchical() {
           Property $guards @L40
           Property $userResolver @L49
           Method __construct @L56
+            Variable $app @L56
           Method guard @L69
+            Variable $name @L69
           Method resolve @L84
+            Variable $name @L84
           Method callCustomCreator @L114
+            Variable $name @L114
+            Variable $config @L114
           Method createSessionDriver @L126
+            Variable $name @L126
+            Variable $config @L126
           Method createTokenDriver @L160
+            Variable $name @L160
+            Variable $config @L160
           Method getConfig @L184
+            Variable $name @L184
           Method getDefaultDriver @L194
           Method shouldUse @L205
+            Variable $name @L205
           Method setDefaultDriver @L220
+            Variable $name @L220
           Method viaRequest @L232
+            Variable $driver @L232
+            Variable $callback @L232
           Method userResolver @L248
           Method resolveUsersUsing @L259
+            Variable $userResolver @L259
           Method extend @L276
+            Variable $driver @L276
+            Variable $callback @L276
           Method provider @L296
+            Variable $name @L296
+            Variable $callback @L296
           Method hasResolvedGuards @L308
           Method forgetGuards @L318
           Method setApplication @L331
-          Method __call @L345"#]]
+            Variable $app @L331
+          Method __call @L345
+            Variable $method @L345
+            Variable $parameters @L345"#]]
     .assert_eq(&out);
 }
 
@@ -1296,6 +1318,7 @@ async fn laravel_document_symbols_large_file() {
           Constant CREATED_AT @L300
           Constant UPDATED_AT @L307
           Method __construct @L314
+            Variable $attributes @L314
           Method bootIfNotBooted @L330
           Method booting @L364
           Method boot @L374
@@ -1304,119 +1327,251 @@ async fn laravel_document_symbols_large_file() {
           Method initializeModelAttributes @L433
           Method booted @L470
           Method whenBooted @L481
+            Variable $callback @L481
           Method clearBootedModels @L493
           Method withoutTouching @L507
+            Variable $callback @L507
           Method withoutTouchingOn @L519
+            Variable $models @L519
+            Variable $callback @L519
           Method isIgnoringTouch @L536
+            Variable $class @L536
           Method shouldBeStrict @L566
+            Variable $shouldBeStrict @L566
           Method preventLazyLoading @L579
+            Variable $value @L579
           Method automaticallyEagerLoadRelationships @L590
+            Variable $value @L590
           Method handleLazyLoadingViolationUsing @L601
+            Variable $callback @L601
           Method preventSilentlyDiscardingAttributes @L612
+            Variable $value @L612
           Method handleDiscardedAttributeViolationUsing @L623
+            Variable $callback @L623
           Method preventAccessingMissingAttributes @L634
+            Variable $value @L634
           Method handleMissingAttributeViolationUsing @L645
+            Variable $callback @L645
           Method withoutBroadcasting @L658
+            Variable $callback @L658
           Method fill @L679
+            Variable $attributes @L679
           Method forceFill @L727
+            Variable $attributes @L727
           Method qualifyColumn @L738
+            Variable $column @L738
           Method qualifyColumns @L753
+            Variable $columns @L753
           Method newInstance @L767
+            Variable $attributes @L767
+            Variable $exists @L767
           Method newFromBuilder @L796
+            Variable $attributes @L796
+            Variable $connection @L796
           Method on @L815
+            Variable $connection @L815
           Method onWriteConnection @L828
           Method all @L839
+            Variable $columns @L839
           Method with @L852
+            Variable $relations @L852
           Method load @L865
+            Variable $relations @L865
           Method loadMorph @L883
+            Variable $relation @L883
+            Variable $relations @L883
           Method loadMissing @L902
+            Variable $relations @L902
           Method loadAggregate @L919
+            Variable $relations @L919
+            Variable $column @L919
+            Variable $function @L919
           Method loadCount @L932
+            Variable $relations @L932
           Method loadMax @L946
+            Variable $relations @L946
+            Variable $column @L946
           Method loadMin @L958
+            Variable $relations @L958
+            Variable $column @L958
           Method loadSum @L970
+            Variable $relations @L970
+            Variable $column @L970
           Method loadAvg @L982
+            Variable $relations @L982
+            Variable $column @L982
           Method loadExists @L993
+            Variable $relations @L993
           Method loadMorphAggregate @L1007
+            Variable $relation @L1007
+            Variable $relations @L1007
+            Variable $column @L1007
+            Variable $function @L1007
           Method loadMorphCount @L1027
+            Variable $relation @L1027
+            Variable $relations @L1027
           Method loadMorphMax @L1040
+            Variable $relation @L1040
+            Variable $relations @L1040
+            Variable $column @L1040
           Method loadMorphMin @L1053
+            Variable $relation @L1053
+            Variable $relations @L1053
+            Variable $column @L1053
           Method loadMorphSum @L1066
+            Variable $relation @L1066
+            Variable $relations @L1066
+            Variable $column @L1066
           Method loadMorphAvg @L1079
+            Variable $relation @L1079
+            Variable $relations @L1079
+            Variable $column @L1079
           Method increment @L1092
+            Variable $column @L1092
+            Variable $amount @L1092
+            Variable $extra @L1092
           Method decrement @L1105
+            Variable $column @L1105
+            Variable $amount @L1105
+            Variable $extra @L1105
           Method incrementOrDecrement @L1119
+            Variable $column @L1119
+            Variable $amount @L1119
+            Variable $extra @L1119
+            Variable $method @L1119
           Method update @L1155
+            Variable $attributes @L1155
+            Variable $options @L1155
           Method updateOrFail @L1173
+            Variable $attributes @L1173
+            Variable $options @L1173
           Method updateQuietly @L1189
+            Variable $attributes @L1189
+            Variable $options @L1189
           Method incrementQuietly @L1206
+            Variable $column @L1206
+            Variable $amount @L1206
+            Variable $extra @L1206
           Method decrementQuietly @L1221
+            Variable $column @L1221
+            Variable $amount @L1221
+            Variable $extra @L1221
           Method incrementEach @L1235
+            Variable $columns @L1235
+            Variable $extra @L1235
           Method decrementEach @L1247
+            Variable $columns @L1247
+            Variable $extra @L1247
           Method incrementOrDecrementEach @L1260
+            Variable $columns @L1260
+            Variable $extra @L1260
+            Variable $method @L1260
           Method push @L1303
           Method pushQuietly @L1334
           Method saveQuietly @L1345
+            Variable $options @L1345
           Method save @L1356
+            Variable $options @L1356
           Method saveOrIgnore @L1406
+            Variable $options @L1406
+            Variable $uniqueBy @L1406
           Method saveOrFail @L1442
+            Variable $options @L1442
           Method finishSave @L1453
+            Variable $options @L1453
           Method performUpdate @L1470
+            Variable $query @L1470
           Method setKeysForSelectQuery @L1508
+            Variable $query @L1508
           Method getKeyForSelectQuery @L1520
           Method setKeysForSaveQuery @L1531
+            Variable $query @L1531
           Method getKeyForSaveQuery @L1543
           Method performInsert @L1554
+            Variable $query @L1554
           Method performInsertOrIgnore @L1610
+            Variable $query @L1610
+            Variable $uniqueBy @L1610
           Method insertAndSetId @L1659
+            Variable $query @L1659
+            Variable $attributes @L1659
           Method destroy @L1672
+            Variable $ids @L1672
           Method delete @L1711
           Method deleteQuietly @L1750
           Method deleteOrFail @L1762
           Method forceDelete @L1778
           Method forceDestroy @L1791
+            Variable $ids @L1791
           Method performDeleteOnModel @L1801
           Method query @L1813
           Method newQuery @L1823
           Method newModelQuery @L1833
           Method newQueryWithoutRelationships @L1845
           Method registerGlobalScopes @L1856
+            Variable $builder @L1856
           Method newQueryWithoutScopes @L1870
           Method newQueryWithoutScope @L1883
+            Variable $scope @L1883
           Method newQueryForRestoration @L1894
+            Variable $ids @L1894
           Method newEloquentBuilder @L1905
+            Variable $query @L1905
           Method resolveCustomBuilderClass @L1921
           Method newBaseQueryBuilder @L1936
           Method newPivot @L1951
+            Variable $parent @L1951
+            Variable $attributes @L1951
+            Variable $table @L1951
+            Variable $exists @L1951
+            Variable $using @L1951
           Method hasNamedScope @L1963
+            Variable $scope @L1963
           Method callNamedScope @L1976
+            Variable $scope @L1976
+            Variable $parameters @L1976
           Method isScopeMethodWithAttribute @L1991
+            Variable $method @L1991
           Method toArray @L2007
           Method toJson @L2023
+            Variable $options @L2023
           Method toPrettyJson @L2042
+            Variable $options @L2042
           Method jsonSerialize @L2052
           Method fresh @L2063
+            Variable $with @L2063
           Method refresh @L2080
           Method replicate @L2109
+            Variable $except @L2109
           Method replicateQuietly @L2138
+            Variable $except @L2138
           Method is @L2149
+            Variable $model @L2149
           Method isNot @L2163
+            Variable $model @L2163
           Method getConnection @L2173
           Method getConnectionName @L2183
           Method setConnection @L2194
+            Variable $name @L2194
           Method resolveConnection @L2207
+            Variable $connection @L2207
           Method getConnectionResolver @L2217
           Method setConnectionResolver @L2228
+            Variable $resolver @L2228
           Method unsetConnectionResolver @L2238
           Method getTable @L2248
           Method setTable @L2259
+            Variable $table @L2259
           Method getKeyName @L2271
           Method setKeyName @L2282
+            Variable $key @L2282
           Method getQualifiedKeyName @L2294
           Method getKeyType @L2304
           Method setKeyType @L2315
+            Variable $type @L2315
           Method getIncrementing @L2327
           Method setIncrementing @L2338
+            Variable $value @L2338
           Method getKey @L2350
           Method getQueueableId @L2360
           Method getQueueableRelations @L2370
@@ -1424,15 +1579,33 @@ async fn laravel_document_symbols_large_file() {
           Method getRouteKey @L2414
           Method getRouteKeyName @L2424
           Method resolveRouteBinding @L2436
+            Variable $value @L2436
+            Variable $field @L2436
           Method resolveSoftDeletableRouteBinding @L2448
+            Variable $value @L2448
+            Variable $field @L2448
           Method resolveChildRouteBinding @L2461
+            Variable $childType @L2461
+            Variable $value @L2461
+            Variable $field @L2461
           Method resolveSoftDeletableChildRouteBinding @L2474
+            Variable $childType @L2474
+            Variable $value @L2474
+            Variable $field @L2474
           Method resolveChildRouteBindingQuery @L2487
+            Variable $childType @L2487
+            Variable $value @L2487
+            Variable $field @L2487
           Method childRouteBindingRelationshipName @L2509
+            Variable $childType @L2509
           Method resolveRouteBindingQuery @L2522
+            Variable $query @L2522
+            Variable $value @L2522
+            Variable $field @L2522
           Method getForeignKey @L2532
           Method getPerPage @L2542
           Method setPerPage @L2553
+            Variable $perPage @L2553
           Method isSoftDeletable @L2563
           Method isPrunable @L2571
           Method isMassPrunable @L2579
@@ -1443,18 +1616,36 @@ async fn laravel_document_symbols_large_file() {
           Method broadcastChannelRoute @L2629
           Method broadcastChannel @L2639
           Method resolveClassAttribute @L2654
+            Variable $attributeClass @L2654
+            Variable $property @L2654
+            Variable $class @L2654
           Method __get @L2689
+            Variable $key @L2689
           Method __set @L2701
+            Variable $key @L2701
+            Variable $value @L2701
           Method offsetExists @L2712
+            Variable $offset @L2712
           Method offsetGet @L2731
+            Variable $offset @L2731
           Method offsetSet @L2743
+            Variable $offset @L2743
+            Variable $value @L2743
           Method offsetUnset @L2754
+            Variable $offset @L2754
           Method __isset @L2770
+            Variable $key @L2770
           Method __unset @L2781
+            Variable $key @L2781
           Method __call @L2793
+            Variable $method @L2793
+            Variable $parameters @L2793
           Method __callStatic @L2818
+            Variable $method @L2818
+            Variable $parameters @L2818
           Method __toString @L2832
           Method escapeWhenCastingToString @L2845
+            Variable $escape @L2845
           Method __sleep @L2857
           Method __wakeup @L2884"#]]
     .assert_eq(&out);

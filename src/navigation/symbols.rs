@@ -128,6 +128,34 @@ fn param_range(sv: SourceView<'_>, param: &php_ast::Param<'_, '_>) -> Range {
     Range { start, end }
 }
 
+/// Per-parameter document symbols, used both for top-level functions and for
+/// class/trait methods — most importantly `__construct`, whose promoted
+/// properties (`public readonly Foo $foo`) exist only as `Param` nodes and
+/// would otherwise be entirely invisible in the outline.
+fn param_children_for(
+    sv: SourceView<'_>,
+    params: &[php_ast::Param<'_, '_>],
+) -> Option<Vec<DocumentSymbol>> {
+    let children: Vec<DocumentSymbol> = params
+        .iter()
+        .map(|p| {
+            let prange = param_range(sv, p);
+            let psel = sv.name_range_after_attrs(&p.name.to_string(), &p.attributes, p.span);
+            DocumentSymbol {
+                name: format!("${}", p.name),
+                detail: None,
+                kind: SymbolKind::VARIABLE,
+                tags: None,
+                deprecated: None,
+                range: prange,
+                selection_range: psel,
+                children: None,
+            }
+        })
+        .collect();
+    if children.is_empty() { None } else { Some(children) }
+}
+
 fn statement_to_symbol(sv: SourceView<'_>, stmt: &Stmt<'_, '_>) -> Option<DocumentSymbol> {
     match &stmt.kind {
         StmtKind::Function(f) => {
@@ -137,26 +165,6 @@ fn statement_to_symbol(sv: SourceView<'_>, stmt: &Stmt<'_, '_>) -> Option<Docume
             let detail = Some(format_fn_signature(&f.params, f.return_type.as_ref()));
             let is_deprecated = is_deprecated_doc(f.doc_comment.as_ref());
 
-            let param_children: Vec<DocumentSymbol> = f
-                .params
-                .iter()
-                .map(|p| {
-                    let prange = param_range(sv, p);
-                    let psel =
-                        sv.name_range_after_attrs(&p.name.to_string(), &p.attributes, p.span);
-                    DocumentSymbol {
-                        name: format!("${}", p.name),
-                        detail: None,
-                        kind: SymbolKind::VARIABLE,
-                        tags: None,
-                        deprecated: None,
-                        range: prange,
-                        selection_range: psel,
-                        children: None,
-                    }
-                })
-                .collect();
-
             Some(DocumentSymbol {
                 name: f.name.to_string(),
                 detail,
@@ -165,11 +173,7 @@ fn statement_to_symbol(sv: SourceView<'_>, stmt: &Stmt<'_, '_>) -> Option<Docume
                 deprecated: is_deprecated,
                 range,
                 selection_range,
-                children: if param_children.is_empty() {
-                    None
-                } else {
-                    Some(param_children)
-                },
+                children: param_children_for(sv, &f.params),
             })
         }
 
@@ -204,7 +208,7 @@ fn statement_to_symbol(sv: SourceView<'_>, stmt: &Stmt<'_, '_>) -> Option<Docume
                                 deprecated: method_deprecated,
                                 range: mrange,
                                 selection_range: msel,
-                                children: None,
+                                children: param_children_for(sv, &m.params),
                             }]
                         }
                         ClassMemberKind::Property(p) => {
@@ -359,7 +363,7 @@ fn statement_to_symbol(sv: SourceView<'_>, stmt: &Stmt<'_, '_>) -> Option<Docume
                             deprecated: method_deprecated,
                             range: mrange,
                             selection_range: msel,
-                            children: None,
+                            children: param_children_for(sv, &m.params),
                         })
                     } else {
                         None

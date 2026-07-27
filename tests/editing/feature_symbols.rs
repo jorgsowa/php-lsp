@@ -49,6 +49,29 @@ enum Status {
     .assert_eq(&out);
 }
 
+/// Promoted constructor properties exist only as `Param` nodes on
+/// `__construct`; they must still surface somewhere in the outline.
+#[tokio::test]
+async fn document_symbols_promoted_constructor_properties() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_document_symbols(
+            r#"<?php
+class Point {
+    public function __construct(public readonly float $x, public readonly float $y) {}
+}
+"#,
+        )
+        .await;
+    expect![[r#"
+        Class Point @L1
+          Method __construct @L2
+            Variable $x @L2
+            Variable $y @L2"#]]
+    .assert_eq(&out);
+}
+
 #[tokio::test]
 async fn document_symbols_interface() {
     let mut s = TestServer::new().await;
@@ -483,7 +506,8 @@ trait Serializable {
     expect![[r#"
         Class Serializable @L1
           Method serialize @L2
-          Method unserialize @L3"#]]
+          Method unserialize @L3
+            Variable $data @L3"#]]
     .assert_eq(&out);
 }
 
