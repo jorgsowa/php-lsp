@@ -214,7 +214,7 @@ fn call_context(source: &str, position: Position) -> Option<(String, usize, Opti
 /// unterminated `'` string). Mirrors `completion::cursor_in_string_or_comment`
 /// but as a full forward-scan mask instead of a single point-query. Heredoc/
 /// nowdoc are not tracked, matching that function's documented tradeoff.
-fn string_literal_mask(text: &[char]) -> Vec<bool> {
+pub(crate) fn string_literal_mask(text: &[char]) -> Vec<bool> {
     enum S {
         Normal,
         Single,

@@ -159,6 +159,54 @@ async fn on_type_formatting_close_brace_already_aligned() {
     );
 }
 
+/// A stray `}` inside a string literal earlier in the block must not throw
+/// off the brace-depth scan used to find the matching `{`. Nested one level
+/// deeper than the string so a miscounted depth would match the *outer*
+/// class's brace (column 0) instead of the inner method's (column 4) —
+/// distinguishing a real bug from the "no match found" fallback, which also
+/// happens to be column 0.
+#[tokio::test]
+async fn on_type_formatting_close_brace_ignores_brace_in_string() {
+    let mut server = TestServer::new().await;
+    server
+        .open(
+            "otfmt_string_brace.php",
+            "<?php\nclass Foo {\n    public function bar() {\n        $x = \"}\";\n        }\n}\n",
+        )
+        .await;
+
+    let resp = server
+        .on_type_formatting("otfmt_string_brace.php", 4, 9, "}")
+        .await;
+
+    assert!(
+        resp["error"].is_null(),
+        "onTypeFormatting error: {:?}",
+        resp
+    );
+    let edits = resp["result"]
+        .as_array()
+        .expect("} trigger must produce a TextEdit array");
+    assert_eq!(edits.len(), 1, "expected exactly one de-indent edit");
+
+    let edit = &edits[0];
+    assert_eq!(
+        edit["range"]["start"],
+        serde_json::json!({"line": 4, "character": 0}),
+    );
+    assert_eq!(
+        edit["range"]["end"],
+        serde_json::json!({"line": 4, "character": 8}),
+    );
+    assert_eq!(
+        edit["newText"].as_str().unwrap(),
+        "    ",
+        "must de-indent to match the `function bar()` opening brace at column 4, \
+         not be thrown off by the closing brace inside the string literal above \
+         into matching the outer `class Foo` brace instead"
+    );
+}
+
 /// Range formatting with a single-line range.
 ///
 /// No formatter is installed in this suite's environment (see

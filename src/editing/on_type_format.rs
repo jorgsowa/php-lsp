@@ -1,5 +1,7 @@
 use tower_lsp::lsp_types::{FormattingOptions, Position, Range, TextEdit};
 
+use super::signature_help::string_literal_mask;
+
 /// Compute formatting edits triggered by typing a single character.
 ///
 /// Supported trigger characters:
@@ -38,7 +40,9 @@ fn indent_unit(options: &FormattingOptions) -> String {
 /// De-indent the line containing `}` to match its corresponding `{`.
 ///
 /// Scans backward through the source, tracking brace depth, to find the
-/// opening brace and copies its line's indentation.
+/// opening brace and copies its line's indentation. Braces inside string
+/// literals or comments (e.g. a property default of `"}"`) are skipped via
+/// `string_literal_mask`, so they can't be mistaken for real block delimiters.
 fn close_brace(source: &str, position: Position) -> Vec<TextEdit> {
     let lines: Vec<&str> = source.lines().collect();
     let cur_idx = position.line as usize;
@@ -48,28 +52,52 @@ fn close_brace(source: &str, position: Position) -> Vec<TextEdit> {
     };
     let cur_indent = leading_whitespace(cur_line);
 
-    // Backward scan: depth=1 because we're looking for the `{` that opened
-    // the block the just-typed `}` closes.
-    let mut depth: i32 = 1;
-    let mut match_indent: Option<&str> = None;
+    let chars: Vec<char> = source.chars().collect();
+    let mask = string_literal_mask(&chars);
 
-    'outer: for i in (0..cur_idx).rev() {
-        for ch in lines[i].chars().rev() {
-            match ch {
-                '}' => depth += 1,
-                '{' => {
-                    depth -= 1;
-                    if depth == 0 {
-                        match_indent = Some(leading_whitespace(lines[i]));
-                        break 'outer;
-                    }
-                }
-                _ => {}
-            }
+    // Global char index of the start of `cur_idx`'s line.
+    let mut line_start = chars.len();
+    let mut line_no = 0usize;
+    for (i, &c) in chars.iter().enumerate() {
+        if line_no == cur_idx {
+            line_start = i;
+            break;
+        }
+        if c == '\n' {
+            line_no += 1;
         }
     }
 
-    let new_indent = match_indent.unwrap_or("");
+    // Backward scan: depth=1 because we're looking for the `{` that opened
+    // the block the just-typed `}` closes.
+    let mut depth: i32 = 1;
+    let mut match_line: Option<usize> = None;
+    let mut scan_line = cur_idx;
+    let mut idx = line_start;
+    while idx > 0 {
+        idx -= 1;
+        let c = chars[idx];
+        if c == '\n' {
+            scan_line -= 1;
+            continue;
+        }
+        if mask[idx] {
+            continue;
+        }
+        match c {
+            '}' => depth += 1,
+            '{' => {
+                depth -= 1;
+                if depth == 0 {
+                    match_line = Some(scan_line);
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let new_indent = match_line.and_then(|l| lines.get(l)).map_or("", |l| leading_whitespace(l));
 
     if new_indent == cur_indent {
         return vec![];
