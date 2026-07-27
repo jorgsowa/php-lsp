@@ -99,10 +99,7 @@ fn collect_members_stmts(
                                 for p in m.params.iter() {
                                     if p.visibility.is_some() {
                                         out.properties.push((p.name.to_string(), false));
-                                        // AST does not expose the `readonly` flag on Param; scan the raw span text.
-                                        let param_src =
-                                            &source[p.span.start as usize..p.span.end as usize];
-                                        if param_src.contains("readonly") {
+                                        if p.is_readonly {
                                             out.readonly_properties.push(p.name.to_string());
                                         }
                                     }

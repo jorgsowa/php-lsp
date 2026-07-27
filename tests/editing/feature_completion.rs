@@ -1726,6 +1726,43 @@ $c = new Config(); $c->$0
     );
 }
 
+/// A promoted constructor param that is NOT `readonly` but whose default
+/// value's text happens to contain the word "readonly" must not be shown
+/// as readonly — the check must use the param's actual `is_readonly` flag,
+/// not a substring scan over its raw source span.
+#[tokio::test]
+async fn completion_non_readonly_property_with_readonly_in_default_value() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let opened = s
+        .open_fixture(
+            r#"<?php
+class Config {
+    public function __construct(public string $mode = 'readonly') {}
+}
+$c = new Config(); $c->$0
+"#,
+        )
+        .await;
+    let c = opened.cursor().clone();
+    let resp = s.completion(&c.path, c.line, c.character).await;
+    let items = match &resp["result"] {
+        v if v.is_array() => v.as_array().cloned().unwrap_or_default(),
+        v if v["items"].is_array() => v["items"].as_array().cloned().unwrap_or_default(),
+        _ => vec![],
+    };
+    let mode_item = items
+        .iter()
+        .find(|i| i["label"].as_str() == Some("$mode") || i["label"].as_str() == Some("mode"))
+        .expect("$mode property must be in completions");
+    assert_eq!(
+        mode_item["detail"].as_str(),
+        None,
+        "non-readonly property must not be labeled readonly just because its \
+         default value contains that word"
+    );
+}
+
 // === Variable cursor-line scoping ===
 
 #[tokio::test]
