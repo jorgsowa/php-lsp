@@ -1,5 +1,8 @@
 use std::collections::HashMap;
+use std::ops::ControlFlow;
 
+use php_ast::visitor::{Visitor, walk_expr};
+use php_ast::{Expr, ExprKind};
 use tower_lsp::lsp_types::{Position, Range, TextEdit, Url, WorkspaceEdit};
 
 use crate::document::ast::ParsedDoc;
@@ -74,8 +77,9 @@ pub fn narrow_range_to_word(source: &str, range: Range, word: &str) -> Option<Ra
 
 /// Returns the range of the word at `position` if it's a renameable symbol.
 /// Used for `textDocument/prepareRename`.
-pub fn prepare_rename(source: &str, position: Position) -> Option<Range> {
+pub fn prepare_rename(doc: &ParsedDoc, position: Position) -> Option<Range> {
     use crate::text::word_at_position;
+    let source = doc.source();
     let word = word_at_position(source, position)?;
     if word.contains('\\') {
         return None;
@@ -84,7 +88,7 @@ pub fn prepare_rename(source: &str, position: Position) -> Option<Range> {
     // of them (`match`, `list`, `enum`, `static`, `readonly`, `default`, ...)
     // are valid method names, and any keyword-named method call/declaration
     // is therefore a real renameable symbol, not a keyword use.
-    if is_php_keyword(&word) && !is_member_name_position(source, position) {
+    if is_php_keyword(&word) && !is_member_name_position(doc, position) {
         return None;
     }
     // PHP superglobals ($_GET, $_POST, etc.) are part of the language runtime;
@@ -136,24 +140,33 @@ pub fn prepare_rename(source: &str, position: Position) -> Option<Range> {
 }
 
 /// True when the word at `position` sits in a position where PHP allows a
-/// keyword as an ordinary identifier: right after a member-access operator
-/// (`->`, `?->`, `::` — covers method calls, static method/const access, and
-/// dynamic property access) or right after the `function` keyword (a method
-/// declaration — `function match(): void {}` only parses inside a
-/// class/trait/interface/enum body, since the same name at true top level is
-/// a syntax error, so this check needs no extra nesting context).
-fn is_member_name_position(source: &str, position: Position) -> bool {
+/// keyword as an ordinary identifier: the member-name side of a method call,
+/// static method/const access, or property access (`->`, `?->`, `::`), or
+/// right after the `function` keyword (a method declaration — `function
+/// match(): void {}` only parses inside a class/trait/interface/enum body,
+/// since the same name at true top level is a syntax error, so this check
+/// needs no extra nesting context).
+///
+/// Member access is checked via the AST rather than the cursor's own line,
+/// so a receiver wrapped across lines (`$obj\n    ->list()`) still resolves
+/// — a same-line text check would miss the `->` on the previous line and
+/// wrongly block renaming a keyword-named method. Declarations stay a
+/// same-line text check: `function` and the method name are always adjacent
+/// tokens, and `Ident` carries no span for an AST-based lookup.
+fn is_member_name_position(doc: &ParsedDoc, position: Position) -> bool {
     use crate::text::word_range_at;
+    let source = doc.source();
     let Some(range) = word_range_at(source, position) else {
         return false;
     };
+    let offset = doc.view().byte_of_position(range.start);
+    if is_member_access_name(doc, offset) {
+        return true;
+    }
     let Some(line) = source.lines().nth(range.start.line as usize) else {
         return false;
     };
     let before = utf16_prefix(line, range.start.character).trim_end();
-    if before.ends_with("->") || before.ends_with("::") {
-        return true;
-    }
     match before.strip_suffix("function") {
         Some(rest) => rest
             .chars()
@@ -161,6 +174,55 @@ fn is_member_name_position(source: &str, position: Position) -> bool {
             .is_none_or(|c| !c.is_alphanumeric() && c != '_'),
         None => false,
     }
+}
+
+/// True when `offset` lands inside the member-name token of a method call,
+/// static method/const access, or property access anywhere in `doc`.
+fn is_member_access_name(doc: &ParsedDoc, offset: u32) -> bool {
+    struct Finder {
+        offset: u32,
+        found: bool,
+    }
+
+    fn at(span: php_ast::Span, offset: u32) -> bool {
+        span.start <= offset && offset < span.end
+    }
+
+    impl<'arena, 'src> Visitor<'arena, 'src> for Finder {
+        fn visit_expr(&mut self, expr: &Expr<'arena, 'src>) -> ControlFlow<()> {
+            if self.found {
+                return ControlFlow::Break(());
+            }
+            let hit = match &expr.kind {
+                ExprKind::MethodCall(m) | ExprKind::NullsafeMethodCall(m) => {
+                    at(m.method.span, self.offset)
+                }
+                ExprKind::StaticMethodCall(s) => at(s.method.span, self.offset),
+                ExprKind::StaticDynMethodCall(s) => at(s.method.span, self.offset),
+                ExprKind::PropertyAccess(p) | ExprKind::NullsafePropertyAccess(p) => {
+                    at(p.property.span, self.offset)
+                }
+                ExprKind::StaticPropertyAccess(s) | ExprKind::ClassConstAccess(s) => {
+                    at(s.member.span, self.offset)
+                }
+                _ => false,
+            };
+            if hit {
+                self.found = true;
+                return ControlFlow::Break(());
+            }
+            walk_expr(self, expr)
+        }
+    }
+
+    let mut finder = Finder {
+        offset,
+        found: false,
+    };
+    for stmt in doc.program().stmts.iter() {
+        let _ = finder.visit_stmt(stmt);
+    }
+    finder.found
 }
 
 /// The substring of `line` up to UTF-16 column `col`.

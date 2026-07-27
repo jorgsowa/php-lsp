@@ -243,6 +243,26 @@ function use_it(): void {
         static_out, "<not renameable>",
         "a `Handler::match()` static call site must be renameable"
     );
+
+    // Trailing-arrow wrap style — `->` ends the receiver's line, so the
+    // method name's own line carries only leading whitespace before it.
+    let wrapped_out = s
+        .check_prepare_rename(
+            r#"<?php
+class Handler {
+    public function match(): void {}
+}
+function use_it(Handler $h): void {
+    $h->
+        mat$0ch();
+}
+"#,
+        )
+        .await;
+    assert_ne!(
+        wrapped_out, "<not renameable>",
+        "a `->match()` call site wrapped across lines must be renameable"
+    );
 }
 
 /// `prepareRename` on a variable should return the range covering the

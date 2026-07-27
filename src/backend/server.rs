@@ -657,8 +657,11 @@ impl LanguageServer for Backend {
     ) -> Result<Option<PrepareRenameResponse>> {
         guard_async_result("prepare_rename", async move {
             let uri = &params.text_document.uri;
-            let source = self.get_open_text(uri).unwrap_or_default();
-            Ok(prepare_rename(&source, params.position).map(PrepareRenameResponse::Range))
+            let doc = match self.get_doc(uri) {
+                Some(d) => d,
+                None => return Ok(None),
+            };
+            Ok(prepare_rename(&doc, params.position).map(PrepareRenameResponse::Range))
         })
         .await
     }
