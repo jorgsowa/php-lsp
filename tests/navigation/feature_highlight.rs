@@ -128,6 +128,26 @@ function bar() {
     .await;
 }
 
+/// An arrow function's own parameter shadows an outer variable of the same
+/// name — the two must not be merged into one highlight group, even though
+/// arrow functions otherwise auto-capture (and so are normally traversed).
+#[tokio::test]
+async fn highlight_variable_does_not_cross_arrow_function_param_shadow() {
+    let mut s = TestServer::new().await;
+    s.check_highlight_annotated(
+        r#"<?php
+function foo() {
+    $x$0 = 1;
+//  ^^ write
+    $inner = fn($x) => $x + 1;
+    echo $x;
+//       ^^ read
+}
+"#,
+    )
+    .await;
+}
+
 #[tokio::test]
 async fn highlight_variable_compound_assignment() {
     let mut s = TestServer::new().await;

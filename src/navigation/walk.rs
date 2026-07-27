@@ -323,8 +323,17 @@ impl<'arena, 'src> Visitor<'arena, 'src> for VarRefsVisitor<'_> {
                 }
                 ControlFlow::Continue(())
             }
-            // Arrow functions auto-capture and should be traversed.
-            ExprKind::ArrowFunction(_) => walk_expr(self, expr),
+            // Arrow functions auto-capture and should be traversed — unless
+            // the arrow function's own parameter shadows `var_name`, in
+            // which case its body refers to a different variable and must
+            // not be merged into the outer variable's highlight group.
+            ExprKind::ArrowFunction(af) => {
+                if af.params.iter().any(|p| p.name == self.var_name) {
+                    ControlFlow::Continue(())
+                } else {
+                    walk_expr(self, expr)
+                }
+            }
             _ => walk_expr(self, expr),
         }
     }
