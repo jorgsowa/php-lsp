@@ -199,6 +199,24 @@ async fn subtypes_trait_returns_using_classes() {
     expect!["Post (Class) @ Post.php:0"].assert_eq(&out);
 }
 
+/// Symmetric with `subtypes_trait_returns_using_classes`: requesting
+/// supertypes of a class that `use`s a trait must list the trait, the same
+/// way requesting subtypes of the trait lists the using class.
+#[tokio::test]
+async fn supertypes_class_using_trait_returns_trait() {
+    let mut s = TestServer::new().await;
+    let out = s
+        .check_supertypes(
+            r#"//- /Timestamps.php
+<?php trait Timestamps {}
+//- /Post.php
+<?php class Po$0st { use Timestamps; }
+"#,
+        )
+        .await;
+    expect!["Timestamps (Class) @ Timestamps.php:0"].assert_eq(&out);
+}
+
 /// Partial class name must not be confused with a supertype — "Animal" must not
 /// match a class named "AnimalHouse" (which extends an unrelated "Creature").
 #[tokio::test]

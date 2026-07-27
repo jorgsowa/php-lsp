@@ -77,6 +77,9 @@ pub fn supertypes_of_from_workspace(
                 for iface in &cls.implements {
                     super_pairs.push((Arc::clone(iface), file_idx));
                 }
+                for used_trait in &cls.traits {
+                    super_pairs.push((Arc::clone(used_trait), file_idx));
+                }
             }
         }
     }

@@ -3075,7 +3075,7 @@ async fn laravel_type_hierarchy_supertypes() {
         .as_array()
         .map(|a| a.iter().filter_map(|i| i["name"].as_str()).collect())
         .unwrap_or_default();
-    expect!["Factory"].assert_eq(&names.join(", "));
+    expect!["Factory, CreatesUserProviders, RebindsCallbacksToSelf"].assert_eq(&names.join(", "));
 }
 
 /// Subtypes of the `Factory` interface includes `AuthManager`.
