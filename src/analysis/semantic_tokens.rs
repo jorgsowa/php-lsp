@@ -652,7 +652,14 @@ fn collect_class_member(
             if let Some(th) = &p.type_hint {
                 push_type_hint(out, sv, th);
             }
-            push_param(out, sv, &p.name.to_string(), TT_PARAMETER, MOD_DECLARATION);
+            // A promoted constructor param (`public readonly Foo $foo`) is
+            // also a property declaration — its readonly-ness must show up
+            // in tokens the same way a plain property's does.
+            let mut pmods = MOD_DECLARATION;
+            if p.is_readonly {
+                pmods |= MOD_READONLY;
+            }
+            push_param(out, sv, &p.name.to_string(), TT_PARAMETER, pmods);
         }
         if let Some(rt) = &m.return_type {
             push_type_hint(out, sv, rt);

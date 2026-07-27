@@ -747,6 +747,38 @@ async fn semantic_tokens_readonly_property() {
     .assert_eq(&out);
 }
 
+/// A promoted constructor param (`public readonly Foo $foo`) is also a
+/// property declaration — its readonly-ness must appear in the token
+/// modifiers the same way a plain readonly property's does, not just
+/// `declaration`.
+#[tokio::test]
+async fn semantic_tokens_readonly_promoted_param() {
+    use common::render_semantic_tokens;
+    use serde_json::json;
+
+    let (mut server, init_resp) = TestServer::new_with_options(json!({
+        "diagnostics": { "enabled": true }
+    }))
+    .await;
+    let legend_types = get_legend_types(&init_resp).await;
+
+    server
+        .open(
+            "promoted.php",
+            "<?php\nclass Point {\n    public function __construct(public readonly float $x) {}\n}\n",
+        )
+        .await;
+
+    let resp = server.semantic_tokens_full("promoted.php").await;
+    let out = render_semantic_tokens(&resp, &legend_types);
+    expect![[r#"
+        1:6 len=5 type=class mods=0b1
+        2:20 len=11 type=method mods=0b1
+        2:48 len=5 type=type mods=0b0
+        2:54 len=2 type=parameter mods=0b1001"#]]
+    .assert_eq(&out);
+}
+
 /// Verify that abstract methods are tokenized with declaration modifier.
 #[tokio::test]
 async fn semantic_tokens_abstract_method() {
