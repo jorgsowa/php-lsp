@@ -272,7 +272,7 @@ fn is_php_keyword(word: &str) -> bool {
     )
 }
 
-fn is_superglobal(word: &str) -> bool {
+pub(crate) fn is_superglobal(word: &str) -> bool {
     matches!(
         word,
         "$_GET"

@@ -518,6 +518,54 @@ class Greeter {
     .assert_eq(&out);
 }
 
+/// Superglobals (`$_GET`, `$_SERVER`, `$GLOBALS`, ...) are part of the PHP
+/// runtime and always in scope — `use ($_GET)` is a compile-time fatal error
+/// ("Cannot use $_GET as lexical variable as it is a superglobal"). They
+/// must never be added to the synthesized `use` clause.
+#[tokio::test]
+async fn to_closure_does_not_capture_superglobal() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_code_action_apply(
+            r#"<?php
+$fn = $0fn() => $_GET['id']$0;
+"#,
+            "Convert to closure",
+        )
+        .await;
+    expect![[r#"
+        <?php
+        $fn = function() { return $_GET['id']; };
+    "#]]
+    .assert_eq(&out);
+}
+
+/// A superglobal alongside a genuine outer variable: only the outer
+/// variable belongs in the `use` clause.
+#[tokio::test]
+async fn to_closure_captures_only_non_superglobal_variable() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_code_action_apply(
+            r#"<?php
+function make($prefix) {
+    return $0fn() => $prefix . $_SERVER['HTTP_HOST']$0;
+}
+"#,
+            "Convert to closure",
+        )
+        .await;
+    expect![[r#"
+        <?php
+        function make($prefix) {
+            return function() use ($prefix) { return $prefix . $_SERVER['HTTP_HOST']; };
+        }
+    "#]]
+    .assert_eq(&out);
+}
+
 #[tokio::test]
 async fn to_closure_with_nullable_return_type() {
     let mut s = TestServer::new().await;

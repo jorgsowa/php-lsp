@@ -616,7 +616,13 @@ fn collect_vars(text: &str) -> Vec<String> {
             if end > start {
                 let name = &text[start..end];
                 let full = format!("${name}");
-                if name != "this" && !vars.contains(&full) {
+                // `$this` is always implicitly bound; superglobals
+                // (`$_GET`, `$_SERVER`, `$GLOBALS`, ...) are part of the PHP
+                // runtime and are a compile-time error in a `use (...)`
+                // clause ("Cannot use $_GET as lexical variable as it is a
+                // superglobal") — neither belongs in the generated closure's
+                // capture list.
+                if name != "this" && !crate::editing::rename::is_superglobal(&full) && !vars.contains(&full) {
                     vars.push(full);
                 }
             }
