@@ -208,3 +208,45 @@ if ($x == 2) {
     "#]]
     .assert_eq(&out);
 }
+
+/// A second statement on the same line as the assignment (`$x = foo();
+/// doSomethingElse();`) must not be swallowed into the RHS — deleting the
+/// whole line to inline would silently destroy `doSomethingElse()`, so the
+/// action must refuse rather than guess.
+#[tokio::test]
+async fn inline_variable_no_action_when_second_statement_on_same_line() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_code_action_apply(
+            r#"<?php
+$x = foo(); doSomethingElse();
+echo $0$x$0;
+"#,
+            "Inline variable '$x'",
+        )
+        .await;
+    expect!["<action not found: Inline variable '$x'>"].assert_eq(&out);
+}
+
+/// A semicolon inside a nested call's string argument must not be mistaken
+/// for the statement terminator when extracting the RHS.
+#[tokio::test]
+async fn inline_variable_rhs_with_semicolon_in_string_argument() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_code_action_apply(
+            r#"<?php
+$x = foo("a;b");
+echo $0$x$0;
+"#,
+            "Inline variable '$x'",
+        )
+        .await;
+    expect![[r#"
+        <?php
+        echo foo("a;b");
+    "#]]
+    .assert_eq(&out);
+}

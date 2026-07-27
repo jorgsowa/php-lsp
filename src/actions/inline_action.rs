@@ -93,8 +93,19 @@ fn find_unique_assignment(source: &str, var_name: &str, before_line: u32) -> Opt
         if rest.starts_with('=') {
             continue;
         }
-        let rhs = rest.trim().trim_end_matches(';').trim();
+        // Cut at the statement's own terminating `;`, not just any trailing
+        // one — `$x = foo(); doSomethingElse();` must yield RHS `foo()`, not
+        // the whole rest of the line.
+        let Some((rhs_part, trailing)) = split_statement(rest) else {
+            continue;
+        };
+        let rhs = rhs_part.trim();
         if rhs.is_empty() {
+            continue;
+        }
+        // A second statement on the same line can't be preserved by the
+        // whole-line deletion below — refuse rather than silently dropping it.
+        if !trailing.trim().is_empty() {
             continue;
         }
         if hit.is_some() {
@@ -106,6 +117,40 @@ fn find_unique_assignment(source: &str, var_name: &str, before_line: u32) -> Opt
     // The unique assignment must precede the cursor; otherwise usage collection
     // (which only scans *below* the assignment) would miss the cursor's usage.
     hit.filter(|(line_no, _)| *line_no < before_line)
+}
+
+/// Split `rest` (the source text after `$var =`) at its statement-terminating
+/// `;` — the first one appearing outside of any paren/bracket/brace nesting
+/// and outside of a string literal — returning `(rhs_expr, after_semicolon)`.
+/// `None` if no such `;` is found (malformed/incomplete line).
+fn split_statement(rest: &str) -> Option<(&str, &str)> {
+    let bytes = rest.as_bytes();
+    let mut depth: i32 = 0;
+    let mut i = 0usize;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => depth -= 1,
+            b'\'' | b'"' => {
+                let quote = bytes[i];
+                i += 1;
+                while i < bytes.len() {
+                    if bytes[i] == b'\\' {
+                        i += 2;
+                        continue;
+                    }
+                    if bytes[i] == quote {
+                        break;
+                    }
+                    i += 1;
+                }
+            }
+            b';' if depth == 0 => return Some((&rest[..i], &rest[i + 1..])),
+            _ => {}
+        }
+        i += 1;
+    }
+    None
 }
 
 /// Find all occurrences of `$var` in `source` at or after `from_line`.
