@@ -16,7 +16,7 @@ use super::members::{
     find_property_info, resolve_method_docblock, scan_class_const_of_class,
     scan_enum_case_of_class, scan_method_of_class,
 };
-use super::named_args::{extract_named_arg_callee, is_named_arg_at, named_arg_hover_value};
+use super::named_args::{find_named_arg_at, named_arg_hover_value};
 use super::parsing::{extract_static_class_before_cursor, resolve_use_alias};
 
 /// Hover handles every declaration kind except properties (covered by the
@@ -246,12 +246,11 @@ fn hover_at_core(
         }
     }
 
-    if let Some(line_text) = source.lines().nth(position.line as usize)
-        && !word.starts_with('$')
-        && is_named_arg_at(line_text, position.character as usize, &word)
-        && let Some(callee) = extract_named_arg_callee(source, position)
+    if !word.starts_with('$')
+        && let Some(offset) = word_range_at(source, position).map(|r| doc.view().byte_of_position(r.start))
+        && let Some((callee, label)) = find_named_arg_at(doc, offset)
         && let Some(value) =
-            named_arg_hover_value(source, doc, other_docs, position, &callee, &word, analysis)
+            named_arg_hover_value(source, doc, other_docs, position, &callee, &label, analysis)
     {
         return Some(Hover {
             contents: HoverContents::Markup(MarkupContent {
