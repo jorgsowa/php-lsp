@@ -757,6 +757,29 @@ echo $p->$0x;
     .await;
 }
 
+/// A `readonly class` (PHP 8.2+) makes every property readonly even when
+/// the property itself carries no per-property `readonly` keyword —
+/// hovering a plain property must still show the `readonly` modifier.
+#[tokio::test]
+async fn hover_plain_property_in_readonly_class_shows_modifier() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    s.check_hover_annotated(
+        r#"<?php
+readonly class Point {
+    public float $x;
+}
+$p = new Point();
+echo $p->$0x;
+"#,
+        expect![[r#"
+            ```php
+            (property) public readonly Point::$x: float
+            ```"#]],
+    )
+    .await;
+}
+
 #[tokio::test]
 async fn hover_real_docblock_not_overwritten_by_inheritdoc() {
     let mut s = TestServer::new().await;

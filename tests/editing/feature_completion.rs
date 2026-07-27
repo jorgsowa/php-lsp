@@ -1763,6 +1763,39 @@ $c = new Config(); $c->$0
     );
 }
 
+/// A `readonly class` (PHP 8.2+) makes every property readonly even
+/// without a per-property `readonly` keyword — completion must still show
+/// the "readonly" detail for a plain property declared inside one.
+#[tokio::test]
+async fn completion_plain_property_in_readonly_class_shows_detail() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let opened = s
+        .open_fixture(
+            r#"<?php
+readonly class Config { public string $name; }
+$c = new Config(); $c->$0
+"#,
+        )
+        .await;
+    let c = opened.cursor().clone();
+    let resp = s.completion(&c.path, c.line, c.character).await;
+    let items = match &resp["result"] {
+        v if v.is_array() => v.as_array().cloned().unwrap_or_default(),
+        v if v["items"].is_array() => v["items"].as_array().cloned().unwrap_or_default(),
+        _ => vec![],
+    };
+    let name_item = items
+        .iter()
+        .find(|i| i["label"].as_str() == Some("$name") || i["label"].as_str() == Some("name"))
+        .expect("$name property must be in completions");
+    assert_eq!(
+        name_item["detail"].as_str(),
+        Some("readonly"),
+        "plain property in a readonly class must have readonly detail"
+    );
+}
+
 // === Variable cursor-line scoping ===
 
 #[tokio::test]

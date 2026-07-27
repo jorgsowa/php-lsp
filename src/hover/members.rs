@@ -25,13 +25,16 @@ fn find_property_info_in_stmts<'a>(
     for stmt in stmts {
         match &stmt.kind {
             StmtKind::Class(c) if c.name.map(|n| n.or_error()) == Some(class_name) => {
+                // A `readonly class` makes every property readonly even when
+                // the property itself carries no `readonly` keyword of its own.
+                let class_is_readonly = c.modifiers.is_readonly;
                 for member in c.body.members.iter() {
                     match &member.kind {
                         ClassMemberKind::Property(p) if p.name == prop_name => {
                             let modifiers = format_prop_prefix(
                                 p.visibility.as_ref(),
                                 p.is_static,
-                                p.is_readonly,
+                                p.is_readonly || class_is_readonly,
                             );
                             let type_str = p
                                 .type_hint
@@ -49,7 +52,7 @@ fn find_property_info_in_stmts<'a>(
                                     let modifiers = format_prop_prefix(
                                         p.visibility.as_ref(),
                                         false,
-                                        p.is_readonly,
+                                        p.is_readonly || class_is_readonly,
                                     );
                                     let type_str = p
                                         .type_hint

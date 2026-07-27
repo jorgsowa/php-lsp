@@ -73,6 +73,9 @@ fn collect_members_stmts(
                 if c.name.as_ref().map(|n| n.to_string()) == Some(class_name.to_string()) =>
             {
                 out.found = true;
+                // A `readonly class` makes every property readonly even when
+                // the property itself carries no `readonly` keyword of its own.
+                let class_is_readonly = c.modifiers.is_readonly;
                 // Check docblock for @property and @method tags
                 if let Some(raw) = docblock_before(source, stmt.span.start) {
                     let db = parse_docblock(&raw);
@@ -99,7 +102,7 @@ fn collect_members_stmts(
                                 for p in m.params.iter() {
                                     if p.visibility.is_some() {
                                         out.properties.push((p.name.to_string(), false));
-                                        if p.is_readonly {
+                                        if p.is_readonly || class_is_readonly {
                                             out.readonly_properties.push(p.name.to_string());
                                         }
                                     }
@@ -108,7 +111,7 @@ fn collect_members_stmts(
                         }
                         ClassMemberKind::Property(p) => {
                             out.properties.push((p.name.to_string(), p.is_static));
-                            if p.is_readonly {
+                            if p.is_readonly || class_is_readonly {
                                 out.readonly_properties.push(p.name.to_string());
                             }
                         }
