@@ -72,6 +72,31 @@ class Point {
     .assert_eq(&out);
 }
 
+/// Enum constants (`const X = self::Case;`) are class-const-like members
+/// and must show up in the outline alongside cases and methods.
+#[tokio::test]
+async fn document_symbols_enum_constant() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_document_symbols(
+            r#"<?php
+enum Status {
+    case Active;
+    case Inactive;
+    const DEFAULT = self::Active;
+}
+"#,
+        )
+        .await;
+    expect![[r#"
+        Enum Status @L1
+          EnumMember Active @L2
+          EnumMember Inactive @L3
+          Constant DEFAULT @L4"#]]
+    .assert_eq(&out);
+}
+
 #[tokio::test]
 async fn document_symbols_interface() {
     let mut s = TestServer::new().await;

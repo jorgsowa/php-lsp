@@ -440,6 +440,28 @@ fn statement_to_symbol(sv: SourceView<'_>, stmt: &Stmt<'_, '_>) -> Option<Docume
                             children: None,
                         })
                     }
+                    EnumMemberKind::ClassConst(cc) => {
+                        let crange = Range {
+                            start: sv.position_of(member.span.start),
+                            end: sv.position_of(member.span.end),
+                        };
+                        let csel = sv.name_range_after_attrs(
+                            &cc.name.to_string(),
+                            &cc.attributes,
+                            member.span,
+                        );
+                        let const_deprecated = is_deprecated_doc(cc.doc_comment.as_ref());
+                        Some(DocumentSymbol {
+                            name: cc.name.to_string(),
+                            detail: None,
+                            kind: SymbolKind::CONSTANT,
+                            tags: None,
+                            deprecated: const_deprecated,
+                            range: crange,
+                            selection_range: csel,
+                            children: None,
+                        })
+                    }
                     _ => None,
                 })
                 .collect();
