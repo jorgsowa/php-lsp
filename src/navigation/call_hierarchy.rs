@@ -623,6 +623,10 @@ impl<'arena, 'src> Visitor<'arena, 'src> for CallCollector<'_> {
                     }
                 }
             },
+            // An anonymous class is its own callable unit (like a nested named
+            // class); its method bodies are not outgoing calls of whatever
+            // function/method textually contains the `new class {...}` expression.
+            ExprKind::AnonymousClass(_) => return ControlFlow::Continue(()),
             _ => {}
         }
         walk_expr(self, expr)

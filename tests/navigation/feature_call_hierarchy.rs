@@ -218,6 +218,27 @@ function noo$0p(): void { $x = 1; }
     expect!["<no calls>"].assert_eq(&out);
 }
 
+/// Calls made inside an anonymous class's own methods belong to that
+/// anonymous class, not to whatever function textually contains the
+/// `new class {...}` expression.
+#[tokio::test]
+async fn outgoing_calls_excludes_anonymous_class_body() {
+    let mut s = TestServer::new().await;
+    let out = s
+        .check_outgoing_calls(
+            r#"<?php
+function leaf(): void {}
+function caller$0(): void {
+    $obj = new class {
+        public function hello(): void { leaf(); }
+    };
+}
+"#,
+        )
+        .await;
+    expect!["<no calls>"].assert_eq(&out);
+}
+
 #[tokio::test]
 async fn outgoing_calls_cross_file_callee() {
     let mut s = TestServer::new().await;
