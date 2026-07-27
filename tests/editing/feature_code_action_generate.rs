@@ -264,7 +264,7 @@ class U$0ser$0 {
     public function getName(): string { return $this->name; }
 }
 "#,
-            "Generate getter/setter",
+            "Generate setter",
         )
         .await;
     expect![[r#"
@@ -275,6 +275,97 @@ class U$0ser$0 {
             public function setName(string $name): void
             {
                 $this->name = $name;
+            }
+
+        }
+    "#]]
+    .assert_eq(&out);
+}
+
+/// A `readonly` property can only be assigned once, from the constructor —
+/// a generated public setter would be a PHP fatal error at the second call.
+/// Only a getter must be generated.
+#[tokio::test]
+async fn generate_getter_only_for_readonly_property() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_code_action_apply(
+            r#"<?php
+class P$0oint$0 {
+    public readonly float $x;
+}
+"#,
+            "Generate getter",
+        )
+        .await;
+    expect![[r#"
+        <?php
+        class Point {
+            public readonly float $x;
+            public function getX(): float
+            {
+                return $this->x;
+            }
+
+        }
+    "#]]
+    .assert_eq(&out);
+}
+
+/// Same as above but for a promoted constructor property declared
+/// `public readonly` directly on the `__construct` parameter.
+#[tokio::test]
+async fn generate_getter_only_for_readonly_promoted_property() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_code_action_apply(
+            r#"<?php
+class P$0oint$0 {
+    public function __construct(public readonly float $x) {}
+}
+"#,
+            "Generate getter",
+        )
+        .await;
+    expect![[r#"
+        <?php
+        class Point {
+            public function __construct(public readonly float $x) {}
+            public function getX(): float
+            {
+                return $this->x;
+            }
+
+        }
+    "#]]
+    .assert_eq(&out);
+}
+
+/// A `readonly class` (PHP 8.2+) makes every property readonly even
+/// without a per-property `readonly` keyword.
+#[tokio::test]
+async fn generate_getter_only_for_property_in_readonly_class() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_code_action_apply(
+            r#"<?php
+readonly class P$0oint$0 {
+    public float $x;
+}
+"#,
+            "Generate getter",
+        )
+        .await;
+    expect![[r#"
+        <?php
+        readonly class Point {
+            public float $x;
+            public function getX(): float
+            {
+                return $this->x;
             }
 
         }

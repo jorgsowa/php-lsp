@@ -682,7 +682,7 @@ class Config {
         )
         .await;
     expect![[r#"
-        refactor         Generate getter/setter
+        refactor         Generate getter
         refactor         Make private [edit]
         refactor         Make protected [edit]
         refactor         Promote constructor parameter"#]]
@@ -893,7 +893,7 @@ class Config {
         )
         .await;
     expect![[r#"
-        refactor         Generate getter/setter
+        refactor         Generate getter
         refactor         Promote constructor parameter"#]]
     .assert_eq(&out);
 }

@@ -35,6 +35,7 @@ pub fn generate_getters_setters_actions(
 struct Prop {
     name: String,
     type_str: Option<String>,
+    is_readonly: bool,
 }
 
 fn collect_constructor<'a>(
@@ -115,13 +116,20 @@ fn collect_getters_setters<'a>(
 
                 let mut text = String::new();
                 let mut count = 0usize;
+                let mut generated_getter = false;
+                let mut generated_setter = false;
                 for p in &props {
                     let cap = capitalize(&p.name);
 
                     let getter = format!("get{cap}");
                     let has_getter = existing.contains(&getter);
+                    // A readonly property can only ever be assigned once, from
+                    // inside its declaring class's constructor — a public
+                    // setter would be a PHP fatal error ("Cannot modify
+                    // readonly property") on the second call, so never
+                    // generate one.
                     let setter = format!("set{cap}");
-                    let has_setter = existing.contains(&setter);
+                    let has_setter = p.is_readonly || existing.contains(&setter);
 
                     if has_getter && has_setter {
                         continue;
@@ -140,6 +148,7 @@ fn collect_getters_setters<'a>(
                             "    public function {getter}(){ret}\n    {{\n        return $this->{};\n    }}\n\n",
                             p.name
                         ));
+                        generated_getter = true;
                     }
 
                     if !has_setter {
@@ -151,6 +160,7 @@ fn collect_getters_setters<'a>(
                             "    public function {setter}({param}): void\n    {{\n        $this->{n} = ${n};\n    }}\n\n",
                             n = p.name
                         ));
+                        generated_setter = true;
                     }
                 }
 
@@ -159,7 +169,11 @@ fn collect_getters_setters<'a>(
                 }
 
                 let title = if count == 1 {
-                    "Generate getter/setter".to_string()
+                    match (generated_getter, generated_setter) {
+                        (true, false) => "Generate getter".to_string(),
+                        (false, true) => "Generate setter".to_string(),
+                        _ => "Generate getter/setter".to_string(),
+                    }
                 } else {
                     format!("Generate {count} getters/setters")
                 };
@@ -176,6 +190,10 @@ fn collect_getters_setters<'a>(
 }
 
 fn non_static_props(c: &php_ast::ClassDecl<'_, '_>) -> Vec<Prop> {
+    // A `readonly class` makes every property readonly even when the
+    // property itself carries no `readonly` keyword of its own.
+    let class_is_readonly = c.modifiers.is_readonly;
+
     let mut props: Vec<Prop> = c
         .body
         .members
@@ -187,6 +205,7 @@ fn non_static_props(c: &php_ast::ClassDecl<'_, '_>) -> Vec<Prop> {
                 return Some(Prop {
                     name: p.name.to_string(),
                     type_str: p.type_hint.as_ref().map(format_type_hint),
+                    is_readonly: p.is_readonly || class_is_readonly,
                 });
             }
             None
@@ -208,6 +227,7 @@ fn non_static_props(c: &php_ast::ClassDecl<'_, '_>) -> Vec<Prop> {
                 props.push(Prop {
                     name: p.name.to_string(),
                     type_str: p.type_hint.as_ref().map(format_type_hint),
+                    is_readonly: p.is_readonly || class_is_readonly,
                 });
             }
         }
