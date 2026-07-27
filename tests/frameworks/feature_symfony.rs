@@ -153,12 +153,16 @@ mod semantic_tokens {
             51:109 len=5 type=parameter mods=0b1
             51:117 len=8 type=type mods=0b0
             53:8 len=4 type=variable mods=0b0
+            55:12 len=8 type=variable mods=0b0
+            55:22 len=5 type=property mods=0b0
             55:29 len=3 type=method mods=0b0
             55:33 len=5 type=string mods=0b0
             56:12 len=4 type=variable mods=0b0
             56:19 len=5 type=variable mods=0b0
             56:26 len=9 type=method mods=0b0
             56:37 len=6 type=string mods=0b0
+            56:47 len=8 type=variable mods=0b0
+            56:57 len=5 type=property mods=0b0
             56:64 len=3 type=method mods=0b0
             56:68 len=5 type=string mods=0b0
             59:8 len=12 type=variable mods=0b0
@@ -243,6 +247,8 @@ mod semantic_tokens {
             118:8 len=5 type=variable mods=0b0
             118:16 len=5 type=variable mods=0b0
             118:23 len=10 type=method mods=0b0
+            118:34 len=11 type=class mods=0b0
+            118:47 len=5 type=property mods=0b10
             118:54 len=8 type=variable mods=0b0
             119:8 len=5 type=variable mods=0b0
             119:15 len=13 type=method mods=0b0
@@ -274,6 +280,8 @@ mod semantic_tokens {
             136:56 len=6 type=string mods=0b0
             136:66 len=5 type=variable mods=0b0
             136:73 len=7 type=method mods=0b0
+            136:85 len=8 type=class mods=0b0
+            136:95 len=14 type=property mods=0b10
             139:15 len=5 type=variable mods=0b0
             139:22 len=6 type=method mods=0b0
             139:29 len=35 type=string mods=0b0
@@ -292,6 +300,8 @@ mod semantic_tokens {
             152:8 len=5 type=variable mods=0b0
             152:16 len=5 type=variable mods=0b0
             152:23 len=10 type=method mods=0b0
+            152:34 len=11 type=class mods=0b0
+            152:47 len=5 type=property mods=0b10
             154:15 len=5 type=variable mods=0b0
             154:22 len=6 type=method mods=0b0
             154:29 len=30 type=string mods=0b0

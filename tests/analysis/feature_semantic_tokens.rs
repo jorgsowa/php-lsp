@@ -462,6 +462,45 @@ async fn semantic_tokens_class_constant() {
     .assert_eq(&out);
 }
 
+/// Property access, static method call, static property access, and class
+/// constant access expressions must all be tokenized (and must not swallow
+/// the tokens of the sub-expressions they contain) — these previously fell
+/// through to the catch-all `_ => {}` arm and produced zero tokens.
+#[tokio::test]
+async fn semantic_tokens_member_and_static_access_expressions() {
+    use common::render_semantic_tokens;
+    use serde_json::json;
+
+    let (mut server, init_resp) = TestServer::new_with_options(json!({
+        "diagnostics": { "enabled": true }
+    }))
+    .await;
+    let legend_types = get_legend_types(&init_resp).await;
+
+    server
+        .open(
+            "access.php",
+            "<?php\nclass Foo {\n    function bar() {\n        $x = $this->prop;\n        $y = Foo::method();\n        $z = Foo::CONST;\n    }\n}\n",
+        )
+        .await;
+
+    let resp = server.semantic_tokens_full("access.php").await;
+    let out = render_semantic_tokens(&resp, &legend_types);
+    expect![[r#"
+        1:6 len=3 type=class mods=0b1
+        2:13 len=3 type=method mods=0b1
+        3:8 len=2 type=variable mods=0b0
+        3:13 len=5 type=variable mods=0b0
+        3:20 len=4 type=property mods=0b0
+        4:8 len=2 type=variable mods=0b0
+        4:13 len=3 type=class mods=0b0
+        4:18 len=6 type=method mods=0b10
+        5:8 len=2 type=variable mods=0b0
+        5:13 len=3 type=class mods=0b0
+        5:18 len=5 type=property mods=0b10"#]]
+    .assert_eq(&out);
+}
+
 /// Verify that enum declarations and cases are tokenized properly.
 /// Enum cases are tokenized as `type=property` (similar to class properties).
 #[tokio::test]

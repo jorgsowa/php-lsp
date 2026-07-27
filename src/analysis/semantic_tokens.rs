@@ -847,7 +847,123 @@ fn collect_expr(sv: SourceView<'_>, expr: &php_ast::Expr<'_, '_>, out: &mut Vec<
             collect_expr(sv, target, out);
             collect_expr(sv, withs, out);
         }
+        ExprKind::PropertyAccess(a) | ExprKind::NullsafePropertyAccess(a) => {
+            collect_expr(sv, a.object, out);
+            if let ExprKind::Identifier(name) = &a.property.kind {
+                let name_str: &str = name;
+                push_at(
+                    out,
+                    sv,
+                    a.property.span.start,
+                    utf16_code_units(name_str),
+                    TT_PROPERTY,
+                    0,
+                );
+            } else {
+                collect_expr(sv, a.property, out);
+            }
+        }
+        ExprKind::StaticMethodCall(s) => {
+            collect_class_ref(sv, s.class, out);
+            if let ExprKind::Identifier(name) = &s.method.kind {
+                let name_str: &str = name;
+                push_at(
+                    out,
+                    sv,
+                    s.method.span.start,
+                    utf16_code_units(name_str),
+                    TT_METHOD,
+                    MOD_STATIC,
+                );
+            }
+            for arg in s.args.iter() {
+                collect_expr(sv, &arg.value, out);
+            }
+        }
+        ExprKind::StaticDynMethodCall(s) => {
+            collect_class_ref(sv, s.class, out);
+            collect_expr(sv, s.method, out);
+            for arg in s.args.iter() {
+                collect_expr(sv, &arg.value, out);
+            }
+        }
+        ExprKind::StaticPropertyAccess(a) => {
+            collect_class_ref(sv, a.class, out);
+            collect_expr(sv, a.member, out);
+        }
+        ExprKind::ClassConstAccess(a) => {
+            collect_class_ref(sv, a.class, out);
+            if let ExprKind::Identifier(name) = &a.member.kind {
+                let name_str: &str = name;
+                push_at(
+                    out,
+                    sv,
+                    a.member.span.start,
+                    utf16_code_units(name_str),
+                    TT_PROPERTY,
+                    MOD_STATIC,
+                );
+            } else {
+                collect_expr(sv, a.member, out);
+            }
+        }
+        ExprKind::ClassConstAccessDynamic { class, member }
+        | ExprKind::StaticPropertyAccessDynamic { class, member } => {
+            collect_class_ref(sv, class, out);
+            collect_expr(sv, member, out);
+        }
+        ExprKind::CallableCreate(cc) => match &cc.kind {
+            php_ast::CallableCreateKind::Function(f) => collect_expr(sv, f, out),
+            php_ast::CallableCreateKind::Method { object, method }
+            | php_ast::CallableCreateKind::NullsafeMethod { object, method } => {
+                collect_expr(sv, object, out);
+                if let ExprKind::Identifier(name) = &method.kind {
+                    let name_str: &str = name;
+                    push_at(
+                        out,
+                        sv,
+                        method.span.start,
+                        utf16_code_units(name_str),
+                        TT_METHOD,
+                        0,
+                    );
+                }
+            }
+            php_ast::CallableCreateKind::StaticMethod { class, method } => {
+                collect_class_ref(sv, class, out);
+                if let ExprKind::Identifier(name) = &method.kind {
+                    let name_str: &str = name;
+                    push_at(
+                        out,
+                        sv,
+                        method.span.start,
+                        utf16_code_units(name_str),
+                        TT_METHOD,
+                        MOD_STATIC,
+                    );
+                }
+            }
+        },
         _ => {}
+    }
+}
+
+/// Tokenize the `class` side of a static access expression (`Foo::`,
+/// `self::`, `$cls::`) — a bare class-like identifier gets `TT_CLASS`;
+/// anything else (a variable holding a class name/object) recurses normally.
+fn collect_class_ref(sv: SourceView<'_>, class: &php_ast::Expr<'_, '_>, out: &mut Vec<RawToken>) {
+    if let ExprKind::Identifier(name) = &class.kind {
+        let name_str: &str = name;
+        push_at(
+            out,
+            sv,
+            class.span.start,
+            utf16_code_units(name_str),
+            TT_CLASS,
+            0,
+        );
+    } else {
+        collect_expr(sv, class, out);
     }
 }
 
