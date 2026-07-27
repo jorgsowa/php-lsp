@@ -80,8 +80,11 @@ pub fn prepare_rename(source: &str, position: Position) -> Option<Range> {
     if word.contains('\\') {
         return None;
     }
-    // PHP keywords cannot be renamed; return None so editors disable the action.
-    if is_php_keyword(&word) {
+    // PHP keywords cannot be renamed when used as keywords — but almost all
+    // of them (`match`, `list`, `enum`, `static`, `readonly`, `default`, ...)
+    // are valid method names, and any keyword-named method call/declaration
+    // is therefore a real renameable symbol, not a keyword use.
+    if is_php_keyword(&word) && !is_member_name_position(source, position) {
         return None;
     }
     // PHP superglobals ($_GET, $_POST, etc.) are part of the language runtime;
@@ -130,6 +133,46 @@ pub fn prepare_rename(source: &str, position: Position) -> Option<Range> {
             character: end_utf16,
         },
     })
+}
+
+/// True when the word at `position` sits in a position where PHP allows a
+/// keyword as an ordinary identifier: right after a member-access operator
+/// (`->`, `?->`, `::` — covers method calls, static method/const access, and
+/// dynamic property access) or right after the `function` keyword (a method
+/// declaration — `function match(): void {}` only parses inside a
+/// class/trait/interface/enum body, since the same name at true top level is
+/// a syntax error, so this check needs no extra nesting context).
+fn is_member_name_position(source: &str, position: Position) -> bool {
+    use crate::text::word_range_at;
+    let Some(range) = word_range_at(source, position) else {
+        return false;
+    };
+    let Some(line) = source.lines().nth(range.start.line as usize) else {
+        return false;
+    };
+    let before = utf16_prefix(line, range.start.character).trim_end();
+    if before.ends_with("->") || before.ends_with("::") {
+        return true;
+    }
+    match before.strip_suffix("function") {
+        Some(rest) => rest
+            .chars()
+            .next_back()
+            .is_none_or(|c| !c.is_alphanumeric() && c != '_'),
+        None => false,
+    }
+}
+
+/// The substring of `line` up to UTF-16 column `col`.
+fn utf16_prefix(line: &str, col: u32) -> &str {
+    let mut u16s = 0u32;
+    for (i, ch) in line.char_indices() {
+        if u16s >= col {
+            return &line[..i];
+        }
+        u16s += ch.len_utf16() as u32;
+    }
+    line
 }
 
 fn is_php_keyword(word: &str) -> bool {

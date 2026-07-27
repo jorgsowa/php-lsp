@@ -186,6 +186,65 @@ async fn prepare_rename_on_parent_self_static_returns_nothing() {
     }
 }
 
+/// PHP allows almost every keyword as a method name (`public function
+/// match(): void {}` is valid PHP). Both the declaration and a `->` call
+/// site must remain renameable — only the bare keyword-as-keyword case
+/// (covered by `prepare_rename_on_keyword_returns_nothing`) should be
+/// blocked.
+#[tokio::test]
+async fn prepare_rename_on_keyword_named_method_is_allowed() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+
+    let decl_out = s
+        .check_prepare_rename(
+            r#"<?php
+class Handler {
+    public function mat$0ch(): void {}
+}
+"#,
+        )
+        .await;
+    assert_ne!(
+        decl_out, "<not renameable>",
+        "a method declaration named `match` must be renameable"
+    );
+
+    let call_out = s
+        .check_prepare_rename(
+            r#"<?php
+class Handler {
+    public function match(): void {}
+}
+function use_it(Handler $h): void {
+    $h->mat$0ch();
+}
+"#,
+        )
+        .await;
+    assert_ne!(
+        call_out, "<not renameable>",
+        "a `->match()` call site must be renameable"
+    );
+
+    let static_out = s
+        .check_prepare_rename(
+            r#"<?php
+class Handler {
+    public static function match(): void {}
+}
+function use_it(): void {
+    Handler::mat$0ch();
+}
+"#,
+        )
+        .await;
+    assert_ne!(
+        static_out, "<not renameable>",
+        "a `Handler::match()` static call site must be renameable"
+    );
+}
+
 /// `prepareRename` on a variable should return the range covering the
 /// variable name (without `$`) so editors highlight the right text.
 #[tokio::test]
