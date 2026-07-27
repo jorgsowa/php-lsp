@@ -517,18 +517,27 @@ impl Backend {
                 send_refresh_requests(&client).await;
 
                 let salsa_docs = Arc::clone(&docs);
+                // Build the workspace aggregate and replay disk-cached index
+                // postings/subtype edges BEFORE signaling readiness: a query
+                // fired at `indexReady` otherwise races both — it rebuilds
+                // the aggregate itself (the mirror writes invalidated the
+                // scan-time build) and, on a returning session, sees none of
+                // the replayed freshness marks, paying the whole-workspace
+                // defs walk the replay exists to avoid. Both steps are
+                // no-ops-per-file on a first-ever run.
+                {
+                    let pre = Arc::clone(&salsa_docs);
+                    let _ = tokio::task::spawn_blocking(move || {
+                        pre.get_workspace_index_salsa();
+                        pre.warm_start_indexes();
+                    })
+                    .await;
+                }
                 docs.mark_index_ready();
                 drop(docs);
                 client.send_notification::<IndexReadyNotification>(()).await;
                 let sweep_open = open_files.urls();
                 drop(tokio::task::spawn_blocking(move || {
-                    salsa_docs.get_workspace_index_salsa();
-                    // Replay disk-cached index postings first: files whose
-                    // content hash matches a previous run answer references /
-                    // implementations immediately, and the sweep below skips
-                    // their re-analysis via the freshness marks. No-op per
-                    // file on a first-ever run.
-                    salsa_docs.warm_start_indexes();
                     // Warm mir's `analyze_file` memos across the workspace so
                     // the first references/rename on any symbol answers from
                     // memo hits instead of a cold multi-second analysis. Files
