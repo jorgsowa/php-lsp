@@ -29,6 +29,16 @@ pub fn extract_constant_actions(source: &str, range: Range, uri: &Url) -> Vec<Co
     if trimmed.is_empty() || !is_literal(trimmed) {
         return vec![];
     }
+    // A class/interface constant initializer must be a compile-time constant
+    // expression — a double-quoted string with variable interpolation
+    // (`"Hello $name"`, `"{$this->x}"`) is not one, and hoisting it verbatim
+    // would be a PHP fatal error ("Constant expression contains invalid
+    // operations"). Single-quoted strings never interpolate, so they're safe
+    // regardless of content.
+    if trimmed.starts_with('"') && has_double_quoted_interpolation(&trimmed[1..trimmed.len() - 1])
+    {
+        return vec![];
+    }
 
     let const_name = derive_const_name(trimmed);
     let lines: Vec<&str> = source.lines().collect();
@@ -87,6 +97,32 @@ fn is_literal(s: &str) -> bool {
 fn is_string_literal(s: &str) -> bool {
     (s.starts_with('"') && s.ends_with('"') && s.len() >= 2)
         || (s.starts_with('\'') && s.ends_with('\'') && s.len() >= 2)
+}
+
+/// True if `inner` (a double-quoted string's content, without the quotes)
+/// contains a construct PHP treats as variable interpolation: `$name`,
+/// `${name}`, or `{$expr}`. A lone `$` not followed by an identifier start
+/// (e.g. `"price: $5"`) does not interpolate and is left alone.
+fn has_double_quoted_interpolation(inner: &str) -> bool {
+    let bytes = inner.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'\\' => i += 2, // escaped char — skip both bytes, `\$` doesn't interpolate
+            b'$' => {
+                let starts_var = bytes
+                    .get(i + 1)
+                    .is_some_and(|b| b.is_ascii_alphabetic() || *b == b'_' || *b == b'{');
+                if starts_var {
+                    return true;
+                }
+                i += 1;
+            }
+            b'{' if bytes.get(i + 1) == Some(&b'$') => return true,
+            _ => i += 1,
+        }
+    }
+    false
 }
 
 fn is_int_literal(s: &str) -> bool {

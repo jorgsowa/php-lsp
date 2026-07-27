@@ -193,6 +193,91 @@ $x = $0foo()$0;
     expect!["<action not found: Extract constant>"].assert_eq(&out);
 }
 
+/// A class/interface constant initializer must be a compile-time constant
+/// expression. A double-quoted string with simple `$var` interpolation is
+/// not one — hoisting it verbatim would be a PHP fatal error ("Constant
+/// expression contains invalid operations").
+#[tokio::test]
+async fn extract_constant_interpolated_string_returns_no_action() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_code_action_apply(
+            r#"<?php
+$name = "world";
+$x = $0"Hello $name"$0;
+"#,
+            "Extract constant",
+        )
+        .await;
+    expect!["<action not found: Extract constant>"].assert_eq(&out);
+}
+
+/// Same as above but for complex `{$expr}` interpolation syntax.
+#[tokio::test]
+async fn extract_constant_complex_interpolated_string_returns_no_action() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_code_action_apply(
+            r#"<?php
+class Foo {
+    public $x = 1;
+    public function bar() {
+        $y = $0"Value: {$this->x}"$0;
+    }
+}
+"#,
+            "Extract constant",
+        )
+        .await;
+    expect!["<action not found: Extract constant>"].assert_eq(&out);
+}
+
+/// A `$` that can't start a variable name (not followed by a letter/`_`/`{`)
+/// does not interpolate in PHP, so it must still be extractable.
+#[tokio::test]
+async fn extract_constant_dollar_sign_without_interpolation_is_allowed() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_code_action_apply(
+            r#"<?php
+$x = $0"price: $5"$0;
+"#,
+            "Extract constant",
+        )
+        .await;
+    expect![[r#"
+        <?php
+        const PRICE_5 = "price: $5";
+        $x = PRICE_5;
+    "#]]
+    .assert_eq(&out);
+}
+
+/// A single-quoted string never interpolates in PHP regardless of content,
+/// so a literal `$name` inside one must still be extractable.
+#[tokio::test]
+async fn extract_constant_single_quoted_dollar_is_allowed() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_code_action_apply(
+            r#"<?php
+$x = $0'Hello $name'$0;
+"#,
+            "Extract constant",
+        )
+        .await;
+    expect![[r#"
+        <?php
+        const HELLO_NAME = 'Hello $name';
+        $x = HELLO_NAME;
+    "#]]
+    .assert_eq(&out);
+}
+
 #[tokio::test]
 async fn extract_constant_file_scope_inserts_before_use_statement() {
     let mut s = TestServer::new().await;
