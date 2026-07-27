@@ -32,6 +32,30 @@ async fn env_call_goto_definition_resolves_to_dot_env() {
     expect![".env:0:0-0:8"].assert_eq(&out);
 }
 
+/// A call wrapped across lines (common after formatter line-wrapping) must
+/// still resolve — the string argument's own line has nothing but
+/// whitespace before the quote, so the scan must look at the previous line
+/// for the `env(` call.
+#[tokio::test]
+async fn env_call_goto_definition_resolves_when_call_wrapped_across_lines() {
+    let workspace = tempfile::tempdir().expect("workspace tempdir");
+    write_minimal_laravel_project(
+        workspace.path(),
+        "APP_NAME=TestApp\nDB_HOST=127.0.0.1\n",
+        "<?php\n$name = env(\n    'APP_NAME'\n);\n",
+    );
+
+    let mut s = TestServer::with_root(workspace.path()).await;
+    s.wait_for_index_ready().await;
+    s.open("app.php", "<?php\n$name = env(\n    'APP_NAME'\n);\n")
+        .await;
+
+    // Line 2 (0-based), character 8 = inside "APP_NAME" on its own line.
+    let resp = s.definition("app.php", 2, 8).await;
+    let out = render_locations(&resp, &s.uri(""));
+    expect![".env:0:0-0:8"].assert_eq(&out);
+}
+
 #[tokio::test]
 async fn env_call_falls_back_to_dot_env_example_when_key_only_there() {
     let workspace = tempfile::tempdir().expect("workspace tempdir");

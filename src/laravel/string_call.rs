@@ -19,7 +19,8 @@ pub(crate) fn call_string_arg(
     position: Position,
     names: &[&str],
 ) -> Option<(String, Range)> {
-    let line = source.lines().nth(position.line as usize)?;
+    let lines: Vec<&str> = source.lines().collect();
+    let line = *lines.get(position.line as usize)?;
     let byte_col = utf16_offset_to_byte(line, position.character as usize);
     let bytes = line.as_bytes();
     let mut i = 0;
@@ -39,7 +40,7 @@ pub(crate) fn call_string_arg(
             break;
         }
         if byte_col >= i && byte_col <= j {
-            if !preceded_by_call(&line[..i], names) {
+            if !preceded_by_call_wrapped(&lines, position.line as usize, &line[..i], names) {
                 return None;
             }
             let content = line[content_start..j].to_string();
@@ -71,11 +72,12 @@ pub(crate) fn call_string_prefix(
     position: Position,
     names: &[&str],
 ) -> Option<String> {
-    let line = source.lines().nth(position.line as usize)?;
+    let lines: Vec<&str> = source.lines().collect();
+    let line = *lines.get(position.line as usize)?;
     let byte_col = utf16_offset_to_byte(line, position.character as usize);
     let before = &line[..byte_col];
     let quote_pos = before.rfind(['\'', '"'])?;
-    if !preceded_by_call(&before[..quote_pos], names) {
+    if !preceded_by_call_wrapped(&lines, position.line as usize, &before[..quote_pos], names) {
         return None;
     }
     Some(before[quote_pos + 1..].to_string())
@@ -88,7 +90,8 @@ pub(crate) fn call_string_prefix(
 /// cursor-position lookup.
 pub(crate) fn find_call_sites(source: &str, names: &[&str], target: &str) -> Vec<Range> {
     let mut out = Vec::new();
-    for (line_no, line) in source.lines().enumerate() {
+    let lines: Vec<&str> = source.lines().collect();
+    for (line_no, line) in lines.iter().enumerate() {
         let bytes = line.as_bytes();
         let mut i = 0;
         while i < bytes.len() {
@@ -105,7 +108,9 @@ pub(crate) fn find_call_sites(source: &str, names: &[&str], target: &str) -> Vec
             if j >= bytes.len() {
                 break;
             }
-            if line[content_start..j] == *target && preceded_by_call(&line[..i], names) {
+            if line[content_start..j] == *target
+                && preceded_by_call_wrapped(&lines, line_no, &line[..i], names)
+            {
                 out.push(Range {
                     start: Position {
                         line: line_no as u32,
@@ -121,6 +126,41 @@ pub(crate) fn find_call_sites(source: &str, names: &[&str], target: &str) -> Vec
         }
     }
     out
+}
+
+/// Same as `preceded_by_call`, but also recognizes a wrapped call — one
+/// where the opening `name(` sits on an earlier line than the string
+/// argument, a common shape after formatter line-wrapping for long
+/// route/view/translation names:
+/// ```php
+/// route(
+///     'admin.dashboard'
+/// );
+/// ```
+/// Only kicks in when there is nothing but whitespace before the quote on
+/// its own line — otherwise `before_quote` already carries the real answer.
+fn preceded_by_call_wrapped(
+    lines: &[&str],
+    line_idx: usize,
+    before_quote: &str,
+    names: &[&str],
+) -> bool {
+    if preceded_by_call(before_quote, names) {
+        return true;
+    }
+    if !before_quote.trim().is_empty() {
+        return false;
+    }
+    let mut i = line_idx;
+    while i > 0 {
+        i -= 1;
+        let prev = lines[i];
+        if prev.trim().is_empty() {
+            continue;
+        }
+        return preceded_by_call(prev, names);
+    }
+    false
 }
 
 /// Whether `before_quote` (the line text up to, but excluding, the opening
@@ -254,5 +294,46 @@ mod tests {
     fn find_call_sites_empty_for_no_matches() {
         let src = "<?php\necho 'hello';\n";
         assert!(find_call_sites(src, ENV, "APP_NAME").is_empty());
+    }
+
+    #[test]
+    fn call_string_arg_matches_wrapped_call() {
+        let src = "<?php\nenv(\n    'APP_NAME'\n);\n";
+        // Cursor inside "APP_NAME" on its own line.
+        let pos = Position {
+            line: 2,
+            character: 8,
+        };
+        let (content, _) = call_string_arg(src, pos, ENV).unwrap();
+        assert_eq!(content, "APP_NAME");
+    }
+
+    #[test]
+    fn call_string_arg_wrapped_call_skips_blank_lines() {
+        let src = "<?php\nenv(\n\n    'APP_NAME'\n);\n";
+        let pos = Position {
+            line: 3,
+            character: 8,
+        };
+        let (content, _) = call_string_arg(src, pos, ENV).unwrap();
+        assert_eq!(content, "APP_NAME");
+    }
+
+    #[test]
+    fn call_string_arg_wrapped_call_rejects_unrelated_call() {
+        let src = "<?php\ngetenv(\n    'APP_NAME'\n);\n";
+        let pos = Position {
+            line: 2,
+            character: 8,
+        };
+        assert!(call_string_arg(src, pos, ENV).is_none());
+    }
+
+    #[test]
+    fn find_call_sites_matches_wrapped_call() {
+        let src = "<?php\nenv(\n    'APP_NAME'\n);\n";
+        let sites = find_call_sites(src, ENV, "APP_NAME");
+        assert_eq!(sites.len(), 1);
+        assert_eq!(sites[0].start.line, 2);
     }
 }
