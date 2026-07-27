@@ -446,44 +446,50 @@ impl Backend {
                     _ => None,
                 };
                 if let Some(owner_short) = owner_short {
-                    let priority_files: Vec<Arc<str>> = files
-                        .iter()
-                        .filter(|f| {
-                            Url::parse(f.as_ref())
-                                .ok()
-                                .and_then(|u| self.docs.source_text(&u))
-                                .is_some_and(|t| t.contains(owner_short.as_str()))
-                        })
-                        .cloned()
-                        .collect();
-                    if !priority_files.is_empty() {
-                        let sym = symbol.clone();
-                        let docs = Arc::clone(&self.docs);
-                        let priority_locations = tokio::task::spawn_blocking(move || {
-                            let (_interactive, cancel_rev) = docs.settled_write_rev_guard();
-                            let mut locs: Vec<Location> = docs
-                                .indexed_references(
-                                    &sym,
-                                    &priority_files,
-                                    include_declaration,
-                                    Some(cancel_rev),
-                                )
-                                .into_iter()
-                                .filter_map(session_tuple_to_location)
-                                .collect();
-                            dedup_ref_locations(&mut locs);
-                            locs
-                        })
-                        .await
-                        .unwrap_or_default();
-                        if !priority_locations.is_empty() {
-                            super::super::send_references_partial_result(
-                                &self.client,
-                                token,
-                                priority_locations,
-                            )
-                            .await;
+                    let sym = symbol.clone();
+                    let docs = Arc::clone(&self.docs);
+                    let all_files = files.clone();
+                    // The owner-mention partition scans candidate texts —
+                    // do it on the blocking pool in parallel, never
+                    // sequentially on the tokio worker.
+                    let priority_locations = tokio::task::spawn_blocking(move || {
+                        use rayon::prelude::*;
+                        let priority_files: Vec<Arc<str>> = all_files
+                            .par_iter()
+                            .filter(|f| {
+                                Url::parse(f.as_ref())
+                                    .ok()
+                                    .and_then(|u| docs.source_text(&u))
+                                    .is_some_and(|t| t.contains(owner_short.as_str()))
+                            })
+                            .cloned()
+                            .collect();
+                        if priority_files.is_empty() {
+                            return Vec::new();
                         }
+                        let (_interactive, cancel_rev) = docs.settled_write_rev_guard();
+                        let mut locs: Vec<Location> = docs
+                            .indexed_references(
+                                &sym,
+                                &priority_files,
+                                include_declaration,
+                                Some(cancel_rev),
+                            )
+                            .into_iter()
+                            .filter_map(session_tuple_to_location)
+                            .collect();
+                        dedup_ref_locations(&mut locs);
+                        locs
+                    })
+                    .await
+                    .unwrap_or_default();
+                    if !priority_locations.is_empty() {
+                        super::super::send_references_partial_result(
+                            &self.client,
+                            token,
+                            priority_locations,
+                        )
+                        .await;
                     }
                 }
             }

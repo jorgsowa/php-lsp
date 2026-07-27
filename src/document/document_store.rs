@@ -1006,10 +1006,33 @@ impl DocumentStore {
     /// matching semantics), so a host-side text prefilter would only re-scan
     /// the same bytes with weaker semantics.
     pub(crate) fn reference_candidate_files(&self, symbol: &mir_analyzer::Name) -> Vec<Arc<str>> {
-        if let mir_analyzer::Name::Method { class, name } = symbol
-            && let Some(urls) = self.method_reference_scope(class, name)
-        {
-            return urls.iter().map(|u| Arc::from(u.as_str())).collect();
+        match symbol {
+            mir_analyzer::Name::Method { class, name } => {
+                if let Some(urls) = self.method_reference_scope(class, name) {
+                    return urls.iter().map(|u| Arc::from(u.as_str())).collect();
+                }
+            }
+            // A class reference always textually resolves the name in the
+            // referencing file (import, namespace, or qualified path) —
+            // there's no instance-typed-receiver indirection here, so FQN
+            // narrowing is always sound.
+            mir_analyzer::Name::Class(fqcn) => {
+                if let Some(files) = self.fqn_reachable_files(std::slice::from_ref(fqcn)) {
+                    return files;
+                }
+            }
+            // Functions/constants resolve like class names ONLY when
+            // namespaced: an unqualified call to a *global* one (`env()`,
+            // `PHP_EOL`) works from any namespace via PHP's global
+            // fallback, so no file can be excluded for those.
+            mir_analyzer::Name::Function(fqcn) | mir_analyzer::Name::GlobalConstant(fqcn) => {
+                if fqcn.trim_start_matches('\\').contains('\\')
+                    && let Some(files) = self.fqn_reachable_files(std::slice::from_ref(fqcn))
+                {
+                    return files;
+                }
+            }
+            _ => {}
         }
         self.workspace_file_paths()
     }
@@ -1111,13 +1134,12 @@ impl DocumentStore {
             return None;
         }
 
-        let vis = decl_class
+        let method_def = decl_class
             .methods
             .iter()
-            .find(|m| m.name.eq_ignore_ascii_case(method))?
-            .visibility;
+            .find(|m| m.name.eq_ignore_ascii_case(method))?;
 
-        match vis {
+        match method_def.visibility {
             Visibility::Private => Some(vec![decl_uri.clone()]),
             Visibility::Protected => {
                 if !self.is_index_ready() {
@@ -1136,8 +1158,164 @@ impl DocumentStore {
                 files.insert(decl_uri.clone());
                 Some(files.into_iter().collect())
             }
+            // A public *static* method's call sites come in exactly two
+            // textual shapes: a resolved class name (`Owner::m()`, inherited
+            // `Sub::m()`, `self::`/`static::`/`parent::m()` from inside the
+            // hierarchy, aliased `use Owner as X; X::m()` — all covered by
+            // owner+subtype FQN reachability) or an *instance* receiver
+            // (`$obj::m()`, whose file may never name the class but always
+            // contains the member token — covered by the member-name
+            // needle). Dynamic member names (`Owner::$m()`) produce no
+            // posting at all (verified), so the union is exhaustive. This
+            // beats mir's own gate, which only sees bare short names and
+            // can't tell this owner apart from an unrelated class sharing
+            // its short name. Instance methods stay unnarrowed (`None`
+            // below): a typed receiver can hide both the class *and* any
+            // distinguishing token cheaper than the member name itself.
+            Visibility::Public
+                if method_def.is_static || method.eq_ignore_ascii_case("__construct") =>
+            {
+                if !self.is_index_ready() {
+                    return None;
+                }
+                let mut fqns: Vec<Arc<str>> = vec![Arc::from(owner_fqn)];
+                fqns.extend(
+                    self.indexed_subtype_classes(owner_fqn, false)
+                        .into_iter()
+                        .map(|s| s.fqcn),
+                );
+                // `__construct`'s extra needle is the call-shaped
+                // `->__construct` (explicit re-init on a typed receiver),
+                // not the bare identifier — that would drag in every file
+                // *declaring* a constructor. `new X` sites and
+                // `parent::`/`self::`/`static::__construct()` calls need no
+                // needle: the former textually resolve an owner/subtype
+                // name, the latter live inside hierarchy files, which the
+                // subtype closure's namespace rule already admits (unlike
+                // mir's own gate, which lacks the closure and keeps a
+                // `::__construct` token for the grandchild-`parent::` case).
+                let files = if method.eq_ignore_ascii_case("__construct") {
+                    self.fqn_reachable_files_with_needles(&fqns, &["->__construct"])?
+                } else {
+                    self.fqn_reachable_files_with_needles(&fqns, &[method])?
+                };
+                Some(files.iter().filter_map(|f| Url::parse(f).ok()).collect())
+            }
             Visibility::Public => None,
         }
+    }
+
+    /// Files that could possibly reference any FQN in `fqns`, narrowed via
+    /// PHP's own name-resolution rules rather than bare-word text mention:
+    ///
+    /// 1. **Namespace rule** — the file's namespace equals the target's, or
+    ///    is a `\`-segment prefix of it: `namespace Foo;` reaches
+    ///    `Foo\Bar\Baz` through the relative-qualified `Bar\Baz`.
+    /// 2. **Import rule** — a `use` of the target itself, an alias of it, or
+    ///    any namespace prefix of it (`use Foo\Bar; Bar\Baz::x()`), all
+    ///    matched on the import's FQN so aliases come for free.
+    /// 3. **Text rule** — the qualified path appears literally in the file
+    ///    (`\App\Widget::class` config arrays with no `use` line, or a
+    ///    leading-slash-free `App\Widget` from a no-namespace file, where
+    ///    qualified names resolve from the root). Matched
+    ///    ASCII-case-insensitively — PHP class names are case-insensitive.
+    ///
+    /// These are the *only* ways PHP resolves a class-like or namespaced
+    /// name, so this is exact narrowing grounded in the language's own
+    /// resolution order, not a heuristic — unlike mir's own gate, which
+    /// only sees bare short names and can't distinguish this owner class
+    /// from an unrelated class sharing its short name elsewhere in the
+    /// workspace.
+    ///
+    /// Callers must NOT use this for global-namespace functions/constants
+    /// (unqualified calls fall back to the global namespace from *any*
+    /// namespace, so no file can be excluded) or for instance members (a
+    /// typed receiver can hide the class entirely).
+    ///
+    /// Returns `None` (full workspace) when the boot scan hasn't finished —
+    /// same conservative discipline as the `Protected` branch above — so
+    /// references are never under-reported at cold start.
+    pub fn fqn_reachable_files(&self, fqns: &[Arc<str>]) -> Option<Vec<Arc<str>>> {
+        self.fqn_reachable_files_with_needles(fqns, &[])
+    }
+
+    /// [`Self::fqn_reachable_files`] plus files whose text contains any of
+    /// `extra_needles` (ASCII-case-insensitive substring, no word bounds).
+    /// The union is what makes member-symbol narrowing sound: a static call
+    /// through an *instance* receiver (`$obj::make()`) or an explicit
+    /// re-init (`$obj->__construct()`) references a member without the file
+    /// ever resolving the owner's name, but its text always contains the
+    /// call token itself.
+    fn fqn_reachable_files_with_needles(
+        &self,
+        fqns: &[Arc<str>],
+        extra_needles: &[&str],
+    ) -> Option<Vec<Arc<str>>> {
+        use rayon::prelude::*;
+
+        if !self.is_index_ready() {
+            return None;
+        }
+        let targets: Vec<&str> = fqns.iter().map(|f| f.trim_start_matches('\\')).collect();
+        let target_namespaces: Vec<Option<&str>> = targets
+            .iter()
+            .map(|t| t.rsplit_once('\\').map(|(ns, _)| ns))
+            .collect();
+        // Namespaced targets match with or without the leading `\`; a bare
+        // global name keeps it (the short name alone would match everything).
+        let needles: Vec<String> = targets
+            .iter()
+            .map(|t| {
+                if t.contains('\\') {
+                    (*t).to_string()
+                } else {
+                    format!("\\{t}")
+                }
+            })
+            .chain(extra_needles.iter().map(|n| (*n).to_string()))
+            .collect();
+        let finder = aho_corasick::AhoCorasick::builder()
+            .ascii_case_insensitive(true)
+            .build(&needles)
+            .ok()?;
+
+        let ws = self.get_workspace_index_salsa();
+        // The namespace/import checks are cheap in-memory field comparisons,
+        // but the qualified-mention fallback scans each candidate's full
+        // text — for a common short name, most of the corpus fails the
+        // cheap checks and falls through to it, so this must run in
+        // parallel (mir's own equivalent gate scan does the same) or a
+        // cold query on a 15K-file workspace pays a multi-second sequential
+        // scan instead of the few-ms parallel one.
+        Some(
+            ws.files
+                .par_iter()
+                .filter(|(url, idx)| {
+                    let file_ns = idx.namespace.as_deref().map(|s| s.trim_start_matches('\\'));
+                    let ns_match = target_namespaces.iter().any(|ns| match (file_ns, ns) {
+                        (Some(f), Some(t)) => fqn_segment_prefix(f, t),
+                        (None, None) => true,
+                        // Global-ns files reach namespaced targets only via
+                        // the full path (text rule); namespaced files reach
+                        // global classes only via `\Name` or an import.
+                        _ => false,
+                    });
+                    if ns_match {
+                        return true;
+                    }
+                    let import_match = idx.use_imports.iter().any(|(_, f)| {
+                        let f = f.trim_start_matches('\\');
+                        targets.iter().any(|t| fqn_segment_prefix(f, t))
+                    });
+                    if import_match {
+                        return true;
+                    }
+                    self.source_text(url)
+                        .is_some_and(|text| finder.is_match(text.as_ref()))
+                })
+                .map(|(u, _)| Arc::<str>::from(u.as_str()))
+                .collect(),
+        )
     }
 
     /// Phase J: salsa-memoized aggregate workspace index.
@@ -1501,6 +1679,16 @@ impl DocumentStore {
             .map(|(u, _)| u.clone())
             .collect()
     }
+}
+
+/// `prefix` equals `whole` or is a `\`-segment-aligned prefix of it,
+/// ASCII-case-insensitively (PHP name semantics). `"Foo\Bar"` is a segment
+/// prefix of `"Foo\Bar\Baz"` but `"Foo\Ba"` is not.
+fn fqn_segment_prefix(prefix: &str, whole: &str) -> bool {
+    let (p, w) = (prefix.as_bytes(), whole.as_bytes());
+    w.len() >= p.len()
+        && w[..p.len()].eq_ignore_ascii_case(p)
+        && (w.len() == p.len() || w[p.len()] == b'\\')
 }
 
 #[cfg(test)]

@@ -60,3 +60,6 @@ mod variables;
 
 #[path = "references/partial_result.rs"]
 mod partial_result;
+
+#[path = "references/fqn_narrowing.rs"]
+mod fqn_narrowing;
