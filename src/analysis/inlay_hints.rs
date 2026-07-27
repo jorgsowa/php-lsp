@@ -377,6 +377,19 @@ fn hints_in_stmt(
             }
         }
         StmtKind::Block(stmts) => hints_in_stmts(sv, &stmts.stmts, defs, analysis, range, out),
+        StmtKind::DoWhile(d) => {
+            hints_in_stmt(sv, d.body, defs, analysis, range, out);
+            hints_in_expr(sv, &d.condition, defs, analysis, range, out);
+        }
+        StmtKind::Switch(s) => {
+            hints_in_expr(sv, &s.expr, defs, analysis, range, out);
+            for case in s.body.cases.iter() {
+                if let Some(v) = &case.value {
+                    hints_in_expr(sv, v, defs, analysis, range, out);
+                }
+                hints_in_stmts(sv, &case.body, defs, analysis, range, out);
+            }
+        }
         _ => {}
     }
 }
@@ -476,6 +489,17 @@ fn hints_in_expr(
         ExprKind::CloneWith(target, withs) => {
             hints_in_expr(sv, target, defs, analysis, range, out);
             hints_in_expr(sv, withs, defs, analysis, range, out);
+        }
+        ExprKind::Match(m) => {
+            hints_in_expr(sv, m.subject, defs, analysis, range, out);
+            for arm in m.arms.iter() {
+                if let Some(conds) = &arm.conditions {
+                    for c in conds.iter() {
+                        hints_in_expr(sv, c, defs, analysis, range, out);
+                    }
+                }
+                hints_in_expr(sv, &arm.body, defs, analysis, range, out);
+            }
         }
         _ => {}
     }

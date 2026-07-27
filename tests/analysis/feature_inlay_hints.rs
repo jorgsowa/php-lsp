@@ -304,6 +304,69 @@ class Greeter {
     expect!["1:18 name: [param]"].assert_eq(&out);
 }
 
+/// A function call inside a `switch` case body must still get param hints —
+/// `hints_in_stmt` previously had no `StmtKind::Switch` arm at all.
+#[tokio::test]
+async fn inlay_hints_inside_switch_case() {
+    let mut s = TestServer::new().await;
+    let out = s
+        .check_inlay_hints(
+            r#"<?php
+function greet(string $name): void {}
+function run(int $x): void {
+    switch ($x) {
+        case 1:
+            greet('world');
+            break;
+    }
+}
+"#,
+        )
+        .await;
+    expect!["5:18 name: [param]"].assert_eq(&out);
+}
+
+/// A function call inside a `do...while` body must still get param hints —
+/// `hints_in_stmt` previously had no `StmtKind::DoWhile` arm at all.
+#[tokio::test]
+async fn inlay_hints_inside_do_while() {
+    let mut s = TestServer::new().await;
+    let out = s
+        .check_inlay_hints(
+            r#"<?php
+function greet(string $name): void {}
+function run(): void {
+    do {
+        greet('world');
+    } while (false);
+}
+"#,
+        )
+        .await;
+    expect!["4:14 name: [param]"].assert_eq(&out);
+}
+
+/// A function call inside a `match` arm must still get param hints —
+/// `hints_in_expr` previously had no `ExprKind::Match` arm at all.
+#[tokio::test]
+async fn inlay_hints_inside_match_arm() {
+    let mut s = TestServer::new().await;
+    let out = s
+        .check_inlay_hints(
+            r#"<?php
+function greet(string $name): void {}
+function run(int $x): void {
+    $result = match ($x) {
+        1 => greet('world'),
+        default => null,
+    };
+}
+"#,
+        )
+        .await;
+    expect!["4:19 name: [param]"].assert_eq(&out);
+}
+
 #[tokio::test]
 async fn inlay_hints_empty_for_file_with_no_calls() {
     let mut s = TestServer::new().await;
