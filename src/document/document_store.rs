@@ -379,10 +379,24 @@ impl DocumentStore {
     }
 
     /// Set the directory used to persist stub-parse and analysis results across
-    /// server restarts.  Must be called before the first `analysis_session` use;
-    /// subsequent calls are silently ignored (`OnceLock` semantics).
+    /// server restarts. Subsequent calls are silently ignored (`OnceLock`
+    /// semantics).
+    ///
+    /// If a session was already built — an early request (e.g. the editor's
+    /// restored-buffer `didOpen` racing `initialized`) builds one on demand —
+    /// it was pinned in-memory-only: nothing it computes is ever flushed, and
+    /// the next launch replays nothing, silently re-paying the whole cold
+    /// cost every session. Drop it so the next `analysis_session()` rebuilds
+    /// with the cache attached; the few analyses done that early re-ingest
+    /// on demand.
     pub fn set_session_cache_dir(&self, dir: std::path::PathBuf) {
-        let _ = self.session_cache_dir.set(dir);
+        if self.session_cache_dir.set(dir).is_err() {
+            return;
+        }
+        let dropped = self.analysis_session.lock().unwrap().take().is_some();
+        if dropped {
+            self.drop_session_scoped_state();
+        }
     }
 
     /// Register URIs discovered from composer.json `autoload.files` entries.
@@ -875,14 +889,24 @@ impl DocumentStore {
             }
             *guard = version;
         }
-        // Changing the version selects a different `AnalysisSession` (and thus a
-        // different db). Drop the inputs created on the old session's db; the
-        // workspace scan re-mirrors files onto the new session. In practice the
-        // version is set once at init, before any file is mirrored.
+        // Changing the version selects a different `AnalysisSession` (and thus
+        // a different db). In practice the version is set once at init, before
+        // any file is mirrored.
+        self.drop_session_scoped_state();
+    }
+
+    /// Discard every piece of state scoped to the current `AnalysisSession`'s
+    /// salsa db. MUST accompany anything that causes `analysis_session()` to
+    /// hand out a different db (version change, cache-dir attach): the
+    /// `LspWsFile` input handles in `lsp_ws_files` index into the *old* db's
+    /// tables, and using one against a new db panics with a salsa slot-type
+    /// mismatch. The workspace scan (or the next edit) re-mirrors files onto
+    /// the new session.
+    fn drop_session_scoped_state(&self) {
         self.lsp_ws_files.clear();
         *self.lsp_workspace.lock().unwrap() = None;
         self.workspace_files_dirty.store(true, Ordering::Release);
-        // Stale FileAnalysis from the old version would survive unchanged files.
+        // Cached FileAnalysis values reference the old session's state.
         self.caches.evict_analysis_all();
     }
 
@@ -2761,6 +2785,27 @@ mod tests {
         assert!(
             !second.is_cancelled(),
             "the newly-issued token must itself be un-cancelled"
+        );
+    }
+
+    /// A session built before the cache dir is known (an editor's
+    /// restored-buffer `didOpen` racing `initialized`) must be rebuilt with
+    /// the cache attached when the dir arrives — not stay pinned
+    /// in-memory-only for the server's lifetime.
+    #[test]
+    fn set_session_cache_dir_rebuilds_pinned_session() {
+        let store = DocumentStore::new();
+        let early = store.analysis_session(mir_analyzer::PhpVersion::LATEST);
+        let dir = tempfile::tempdir().unwrap();
+        store.set_session_cache_dir(dir.path().to_path_buf());
+        let rebuilt = store.analysis_session(mir_analyzer::PhpVersion::LATEST);
+        assert!(
+            !Arc::ptr_eq(&early, &rebuilt),
+            "the cache-less early session must be dropped and rebuilt"
+        );
+        assert!(
+            dir.path().join("stubs").exists(),
+            "the rebuilt session must have opened the on-disk stub cache"
         );
     }
 

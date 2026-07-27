@@ -356,3 +356,38 @@ async fn periodic_flush_persists_query_commits_without_shutdown() {
         "persisted entry must carry caller.php's reference postings"
     );
 }
+
+/// Editors restore buffers at launch, so `didOpen` races `initialized` — a
+/// session built before the cache dir is attached used to be pinned
+/// in-memory-only, silently disabling ALL on-disk persistence for the whole
+/// server lifetime (nothing flushed, nothing to replay next launch). Opening
+/// a file immediately, before waiting for the index, must still leave mir's
+/// session cache directory materialized on disk.
+#[tokio::test]
+async fn early_open_still_attaches_session_cache() {
+    let workspace = tempfile::tempdir().expect("workspace tempdir");
+    let cache_dir = tempfile::tempdir().expect("cache tempdir");
+    copy_dir_all(&fixture_path("psr4-mini"), workspace.path()).expect("copy fixture");
+
+    let opts = json!({
+        "cachePath": cache_dir.path().to_str().unwrap(),
+        "diagnostics": {"enabled": true},
+    });
+
+    {
+        let mut s = TestServer::with_root_and_options(workspace.path(), opts).await;
+        // Open BEFORE waiting for the index — the race real editors hit.
+        let user_php =
+            std::fs::read_to_string(workspace.path().join("src/Model/User.php")).unwrap();
+        s.open("src/Model/User.php", &user_php).await;
+        s.wait_for_index_ready().await;
+    }
+
+    // `StubSliceCache::open` creates `<session>/stubs` eagerly at session
+    // build, so its existence proves the session has the cache attached.
+    // (An explicit `cachePath` is used as the cache root directly.)
+    assert!(
+        cache_dir.path().join("session/stubs").is_dir(),
+        "session cache dir must exist on disk even when a didOpen preceded initialized"
+    );
+}
