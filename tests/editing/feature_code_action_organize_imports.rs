@@ -209,6 +209,37 @@ new stdClass();$0
     .assert_eq(&out);
 }
 
+/// Two `use` statements for the same FQN under different aliases bind two
+/// distinct names in scope — they must NOT be collapsed as duplicates, even
+/// though a bare FQN-only dedup would treat them as the same import.
+#[tokio::test]
+async fn organize_imports_keeps_same_fqn_different_aliases() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_code_action_apply(
+            r#"<?php
+use App\Models\User as UserModel;
+use App\Models\User;
+use App\Unused;
+
+new User();
+new UserModel();$0
+"#,
+            "Organize imports",
+        )
+        .await;
+    expect![[r#"
+        <?php
+        use App\Models\User as UserModel;
+        use App\Models\User;
+
+        new User();
+        new UserModel();
+    "#]]
+    .assert_eq(&out);
+}
+
 #[tokio::test]
 async fn organize_imports_case_insensitive_sort() {
     let mut s = TestServer::new().await;

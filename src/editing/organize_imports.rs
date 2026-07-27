@@ -102,10 +102,14 @@ fn render_group(stmts: &[UseStatement], indent: &str, keyword: Option<&str>) -> 
         .collect()
 }
 
-/// Sort a group alphabetically (case-insensitive) and deduplicate by FQN.
+/// Sort a group alphabetically (case-insensitive) and deduplicate exact
+/// repeats. Two `use` statements only count as duplicates when both the FQN
+/// *and* the alias match — `use App\Models\User;` and
+/// `use App\Models\User as UserModel;` bind two different names in scope and
+/// must both survive, even though they share an FQN.
 fn sort_and_dedup(group: &mut Vec<UseStatement>) {
     group.sort_by_cached_key(|u| u.fqn.to_lowercase());
-    group.dedup_by(|a, b| a.fqn.eq_ignore_ascii_case(&b.fqn));
+    group.dedup_by(|a, b| a.fqn.eq_ignore_ascii_case(&b.fqn) && a.alias == b.alias);
 }
 
 fn make_action(uri: &Url, edit: TextEdit) -> CodeActionOrCommand {
