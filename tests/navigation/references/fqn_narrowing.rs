@@ -489,3 +489,70 @@ async fn constructor_reinit_on_instance_receiver_typed_by_parent_property() {
     assert!(resp["error"].is_null(), "references error: {resp:?}");
     expect!["caller.php:4:18-4:29"].assert_eq(&render_locations(&resp, &server.uri("")));
 }
+
+/// KNOWN GAP (mir-side, not narrowing): the narrowing's text rule admits the
+/// file case-insensitively, but mir's static-call arm never records a posting
+/// for a case-mismatched FQCN call — see mir's ignored
+/// `static_call_with_case_mismatched_fqcn_is_found`. Un-ignore together.
+#[tokio::test]
+#[ignore = "known gap in mir: case-mismatched FQCN call sites are not recorded"]
+async fn narrowing_text_rule_is_case_insensitive() {
+    // PHP resolves class names case-insensitively — a lowercased qualified
+    // mention must still reach the file through the text rule.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("widget.php"),
+        "<?php\nnamespace App;\nclass Widget {\n    public static function make(): void {}\n}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("caller.php"),
+        "<?php\nnamespace Other;\nuse App\\Widget;\n\\app\\widget::make();\n",
+    )
+    .unwrap();
+
+    let mut server = TestServer::with_root(dir.path()).await;
+    server.wait_for_index_ready().await;
+    server
+        .open(
+            "widget.php",
+            "<?php\nnamespace App;\nclass Widget {\n    public static function make(): void {}\n}\n",
+        )
+        .await;
+
+    let (_, line, ch) = server.locate("widget.php", "make", 0);
+    let resp = server.references("widget.php", line, ch, false).await;
+    assert!(resp["error"].is_null(), "references error: {resp:?}");
+    expect!["caller.php:2:13-2:17"].assert_eq(&render_locations(&resp, &server.uri("")));
+}
+
+#[tokio::test]
+async fn narrowing_finds_namespaced_function_via_use_function_import() {
+    // A namespaced function reached through `use function` — the import rule
+    // must match function imports, not just class ones.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("helper.php"),
+        "<?php\nnamespace App\\Util;\nfunction helper(): void {}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("caller.php"),
+        "<?php\nnamespace Other;\nuse function App\\Util\\helper;\nhelper();\n",
+    )
+    .unwrap();
+
+    let mut server = TestServer::with_root(dir.path()).await;
+    server.wait_for_index_ready().await;
+    server
+        .open(
+            "helper.php",
+            "<?php\nnamespace App\\Util;\nfunction helper(): void {}\n",
+        )
+        .await;
+
+    let (_, line, ch) = server.locate("helper.php", "helper", 0);
+    let resp = server.references("helper.php", line, ch, false).await;
+    assert!(resp["error"].is_null(), "references error: {resp:?}");
+    expect!["caller.php:3:0-3:6"].assert_eq(&render_locations(&resp, &server.uri("")));
+}
