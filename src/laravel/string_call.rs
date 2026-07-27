@@ -1,66 +1,110 @@
-//! Text-based detection of a string-literal argument to a bare Laravel
-//! helper call (`env('KEY')`, and — as later domains land — `config('a.b')`,
-//! `view('a.b')`, `trans('a.b')`, `route('name')`).
+//! Detection of a string-literal argument to a bare Laravel helper call
+//! (`env('KEY')`, `config('a.b')`, `view('a.b')`, `trans('a.b')`,
+//! `route('name')`).
 //!
-//! Mirrors `completion::include_path`'s line-scan approach rather than an AST
-//! walk: these calls are conventionally single-line, and a line scan handles
-//! the mid-edit (unterminated string literal) case completion needs for free.
+//! [`call_string_arg`] and [`find_call_sites`] walk the AST — these calls
+//! only ever run on complete, saved code (hover, goto-definition,
+//! find-references), so there is no unterminated-literal case to design
+//! around. [`call_string_prefix`] stays a text scan: it backs completion,
+//! which must work while the string is still being typed and the closing
+//! quote may not exist yet — a shape the AST can't represent.
 
+use std::ops::ControlFlow;
+
+use php_ast::visitor::{Visitor, walk_expr};
+use php_ast::{Expr, ExprKind, Span};
 use tower_lsp::lsp_types::{Position, Range};
 
-use crate::text::{byte_to_utf16, utf16_offset_to_byte};
+use crate::document::ast::ParsedDoc;
+use crate::text::utf16_offset_to_byte;
+
+/// A bare call's string-literal first argument, found by walking the AST.
+struct StringArgCall {
+    /// Full token span, quotes included — used to test whether the cursor
+    /// sits inside the literal.
+    token_span: Span,
+    /// Decoded content (quotes excluded, escapes resolved).
+    content: String,
+    /// Byte span of the raw content, quotes excluded — for building the
+    /// returned `Range`.
+    content_span: Span,
+}
+
+/// Byte span of a string literal's content (quotes excluded), found by
+/// locating the matching quote characters within `span` (the full token,
+/// quotes included). Search rather than assume the first/last byte so the
+/// legacy `b'...'`/`b"..."` byte-string prefix doesn't throw off the count.
+fn content_span(source: &str, span: Span) -> Option<Span> {
+    let text = source.get(span.start as usize..span.end as usize)?;
+    let bytes = text.as_bytes();
+    let quote = *bytes.iter().find(|&&b| b == b'\'' || b == b'"')?;
+    let start_rel = bytes.iter().position(|&b| b == quote)?;
+    let end_rel = bytes.iter().rposition(|&b| b == quote)?;
+    if end_rel <= start_rel {
+        return None;
+    }
+    Some(Span::new(
+        span.start + start_rel as u32 + 1,
+        span.start + end_rel as u32,
+    ))
+}
+
+/// Every bare call to one of `names` whose first argument is a plain
+/// (non-interpolated) string literal.
+fn collect_string_arg_calls(doc: &ParsedDoc, names: &[&str]) -> Vec<StringArgCall> {
+    struct Collector<'a> {
+        source: &'a str,
+        names: &'a [&'a str],
+        out: Vec<StringArgCall>,
+    }
+
+    impl<'arena, 'src> Visitor<'arena, 'src> for Collector<'_> {
+        fn visit_expr(&mut self, expr: &Expr<'arena, 'src>) -> ControlFlow<()> {
+            if let ExprKind::FunctionCall(f) = &expr.kind
+                && let Some(name) = f.name.name_str()
+                && self.names.iter().any(|n| n.eq_ignore_ascii_case(name))
+                && let Some(arg) = f.args.first()
+                && arg.name.is_none()
+                && !arg.unpack
+                && let ExprKind::String(s) = &arg.value.kind
+                && let Some(cspan) = content_span(self.source, arg.value.span)
+            {
+                self.out.push(StringArgCall {
+                    token_span: arg.value.span,
+                    content: (*s).to_string(),
+                    content_span: cspan,
+                });
+            }
+            walk_expr(self, expr)
+        }
+    }
+
+    let mut collector = Collector {
+        source: doc.source(),
+        names,
+        out: Vec::new(),
+    };
+    for stmt in doc.program().stmts.iter() {
+        let _ = collector.visit_stmt(stmt);
+    }
+    collector.out
+}
 
 /// Full string-literal content (quotes excluded) and its `Range`, when the
 /// cursor sits anywhere inside a *closed* string literal that is the first
 /// argument of a bare call to one of `names` — e.g. cursor anywhere inside
 /// `'APP_NAME'` in `env('APP_NAME')`.
 pub(crate) fn call_string_arg(
-    source: &str,
+    doc: &ParsedDoc,
     position: Position,
     names: &[&str],
 ) -> Option<(String, Range)> {
-    let lines: Vec<&str> = source.lines().collect();
-    let line = *lines.get(position.line as usize)?;
-    let byte_col = utf16_offset_to_byte(line, position.character as usize);
-    let bytes = line.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        let quote = bytes[i];
-        if quote != b'\'' && quote != b'"' {
-            i += 1;
-            continue;
-        }
-        let content_start = i + 1;
-        let mut j = content_start;
-        while j < bytes.len() && bytes[j] != quote {
-            j += 1;
-        }
-        if j >= bytes.len() {
-            // Unterminated on this line — nothing more to scan.
-            break;
-        }
-        if byte_col >= i && byte_col <= j {
-            if !preceded_by_call_wrapped(&lines, position.line as usize, &line[..i], names) {
-                return None;
-            }
-            let content = line[content_start..j].to_string();
-            return Some((
-                content,
-                Range {
-                    start: Position {
-                        line: position.line,
-                        character: byte_to_utf16(line, content_start),
-                    },
-                    end: Position {
-                        line: position.line,
-                        character: byte_to_utf16(line, j),
-                    },
-                },
-            ));
-        }
-        i = j + 1;
-    }
-    None
+    let sv = doc.view();
+    let offset = sv.byte_of_position(position);
+    collect_string_arg_calls(doc, names)
+        .into_iter()
+        .find(|c| c.token_span.start <= offset && offset < c.token_span.end)
+        .map(|c| (c.content, sv.range_of(c.content_span)))
 }
 
 /// Typed prefix (from the opening quote up to the cursor), when the cursor
@@ -84,48 +128,17 @@ pub(crate) fn call_string_prefix(
 }
 
 /// Every string-literal argument to a bare call to one of `names` anywhere
-/// in `source` whose content equals `target`, with its `Range`. Used to
-/// sweep a file for Laravel string-key usages once the key is already known
+/// in `doc` whose content equals `target`, with its `Range`. Used to sweep a
+/// file for Laravel string-key usages once the key is already known
 /// (find-references), as opposed to `call_string_arg`'s single
 /// cursor-position lookup.
-pub(crate) fn find_call_sites(source: &str, names: &[&str], target: &str) -> Vec<Range> {
-    let mut out = Vec::new();
-    let lines: Vec<&str> = source.lines().collect();
-    for (line_no, line) in lines.iter().enumerate() {
-        let bytes = line.as_bytes();
-        let mut i = 0;
-        while i < bytes.len() {
-            let quote = bytes[i];
-            if quote != b'\'' && quote != b'"' {
-                i += 1;
-                continue;
-            }
-            let content_start = i + 1;
-            let mut j = content_start;
-            while j < bytes.len() && bytes[j] != quote {
-                j += 1;
-            }
-            if j >= bytes.len() {
-                break;
-            }
-            if line[content_start..j] == *target
-                && preceded_by_call_wrapped(&lines, line_no, &line[..i], names)
-            {
-                out.push(Range {
-                    start: Position {
-                        line: line_no as u32,
-                        character: byte_to_utf16(line, content_start),
-                    },
-                    end: Position {
-                        line: line_no as u32,
-                        character: byte_to_utf16(line, j),
-                    },
-                });
-            }
-            i = j + 1;
-        }
-    }
-    out
+pub(crate) fn find_call_sites(doc: &ParsedDoc, names: &[&str], target: &str) -> Vec<Range> {
+    let sv = doc.view();
+    collect_string_arg_calls(doc, names)
+        .into_iter()
+        .filter(|c| c.content == target)
+        .map(|c| sv.range_of(c.content_span))
+        .collect()
 }
 
 /// Same as `preceded_by_call`, but also recognizes a wrapped call — one
@@ -188,15 +201,19 @@ mod tests {
 
     const ENV: &[&str] = &["env"];
 
+    fn parse(src: &str) -> ParsedDoc {
+        ParsedDoc::parse(src.to_string())
+    }
+
     #[test]
     fn call_string_arg_matches_env_call() {
-        let src = "<?php\n$x = env('APP_NAME');\n";
+        let doc = parse("<?php\n$x = env('APP_NAME');\n");
         // Cursor inside "APP_NAME".
         let pos = Position {
             line: 1,
             character: 15,
         };
-        let (content, range) = call_string_arg(src, pos, ENV).unwrap();
+        let (content, range) = call_string_arg(&doc, pos, ENV).unwrap();
         assert_eq!(content, "APP_NAME");
         assert_eq!(
             range.start,
@@ -216,32 +233,32 @@ mod tests {
 
     #[test]
     fn call_string_arg_rejects_unrelated_call() {
-        let src = "<?php\n$x = getenv('APP_NAME');\n";
+        let doc = parse("<?php\n$x = getenv('APP_NAME');\n");
         let pos = Position {
             line: 1,
             character: 18,
         };
-        assert!(call_string_arg(src, pos, ENV).is_none());
+        assert!(call_string_arg(&doc, pos, ENV).is_none());
     }
 
     #[test]
     fn call_string_arg_rejects_plain_string_containing_pattern_textually() {
-        let src = "<?php\n$x = 'env(APP_NAME)';\n";
+        let doc = parse("<?php\n$x = 'env(APP_NAME)';\n");
         let pos = Position {
             line: 1,
             character: 12,
         };
-        assert!(call_string_arg(src, pos, ENV).is_none());
+        assert!(call_string_arg(&doc, pos, ENV).is_none());
     }
 
     #[test]
     fn call_string_arg_allows_whitespace_before_paren_and_quote() {
-        let src = "<?php\n$x = env( 'APP_NAME' );\n";
+        let doc = parse("<?php\n$x = env( 'APP_NAME' );\n");
         let pos = Position {
             line: 1,
             character: 16,
         };
-        let (content, _) = call_string_arg(src, pos, ENV).unwrap();
+        let (content, _) = call_string_arg(&doc, pos, ENV).unwrap();
         assert_eq!(content, "APP_NAME");
     }
 
@@ -277,8 +294,8 @@ mod tests {
 
     #[test]
     fn find_call_sites_collects_every_matching_call_across_lines() {
-        let src = "<?php\n$a = env('APP_NAME');\n$b = env('APP_NAME');\n$c = env('OTHER');\n";
-        let sites = find_call_sites(src, ENV, "APP_NAME");
+        let doc = parse("<?php\n$a = env('APP_NAME');\n$b = env('APP_NAME');\n$c = env('OTHER');\n");
+        let sites = find_call_sites(&doc, ENV, "APP_NAME");
         assert_eq!(sites.len(), 2);
         assert_eq!(sites[0].start.line, 1);
         assert_eq!(sites[1].start.line, 2);
@@ -286,53 +303,53 @@ mod tests {
 
     #[test]
     fn find_call_sites_ignores_unrelated_calls_and_keys() {
-        let src = "<?php\n$a = getenv('APP_NAME');\n$b = env('OTHER');\n";
-        assert!(find_call_sites(src, ENV, "APP_NAME").is_empty());
+        let doc = parse("<?php\n$a = getenv('APP_NAME');\n$b = env('OTHER');\n");
+        assert!(find_call_sites(&doc, ENV, "APP_NAME").is_empty());
     }
 
     #[test]
     fn find_call_sites_empty_for_no_matches() {
-        let src = "<?php\necho 'hello';\n";
-        assert!(find_call_sites(src, ENV, "APP_NAME").is_empty());
+        let doc = parse("<?php\necho 'hello';\n");
+        assert!(find_call_sites(&doc, ENV, "APP_NAME").is_empty());
     }
 
     #[test]
     fn call_string_arg_matches_wrapped_call() {
-        let src = "<?php\nenv(\n    'APP_NAME'\n);\n";
+        let doc = parse("<?php\nenv(\n    'APP_NAME'\n);\n");
         // Cursor inside "APP_NAME" on its own line.
         let pos = Position {
             line: 2,
             character: 8,
         };
-        let (content, _) = call_string_arg(src, pos, ENV).unwrap();
+        let (content, _) = call_string_arg(&doc, pos, ENV).unwrap();
         assert_eq!(content, "APP_NAME");
     }
 
     #[test]
     fn call_string_arg_wrapped_call_skips_blank_lines() {
-        let src = "<?php\nenv(\n\n    'APP_NAME'\n);\n";
+        let doc = parse("<?php\nenv(\n\n    'APP_NAME'\n);\n");
         let pos = Position {
             line: 3,
             character: 8,
         };
-        let (content, _) = call_string_arg(src, pos, ENV).unwrap();
+        let (content, _) = call_string_arg(&doc, pos, ENV).unwrap();
         assert_eq!(content, "APP_NAME");
     }
 
     #[test]
     fn call_string_arg_wrapped_call_rejects_unrelated_call() {
-        let src = "<?php\ngetenv(\n    'APP_NAME'\n);\n";
+        let doc = parse("<?php\ngetenv(\n    'APP_NAME'\n);\n");
         let pos = Position {
             line: 2,
             character: 8,
         };
-        assert!(call_string_arg(src, pos, ENV).is_none());
+        assert!(call_string_arg(&doc, pos, ENV).is_none());
     }
 
     #[test]
     fn find_call_sites_matches_wrapped_call() {
-        let src = "<?php\nenv(\n    'APP_NAME'\n);\n";
-        let sites = find_call_sites(src, ENV, "APP_NAME");
+        let doc = parse("<?php\nenv(\n    'APP_NAME'\n);\n");
+        let sites = find_call_sites(&doc, ENV, "APP_NAME");
         assert_eq!(sites.len(), 1);
         assert_eq!(sites[0].start.line, 2);
     }

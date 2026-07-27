@@ -89,26 +89,26 @@ impl LaravelIndex {
 /// immediately for non-Laravel workspaces, or when the cursor isn't inside a
 /// recognized call's string argument.
 pub(crate) fn resolve_string_key(
-    source: &str,
+    doc: &crate::document::ast::ParsedDoc,
     position: Position,
     laravel: &LaravelIndex,
 ) -> Option<Location> {
     if !laravel.is_laravel {
         return None;
     }
-    if let Some((key, _)) = call_string_arg(source, position, ENV_CALL_NAMES) {
+    if let Some((key, _)) = call_string_arg(doc, position, ENV_CALL_NAMES) {
         return laravel.env.get(&key).cloned();
     }
-    if let Some((key, _)) = call_string_arg(source, position, CONFIG_CALL_NAMES) {
+    if let Some((key, _)) = call_string_arg(doc, position, CONFIG_CALL_NAMES) {
         return laravel.config.get(&key).cloned();
     }
-    if let Some((key, _)) = call_string_arg(source, position, VIEW_CALL_NAMES) {
+    if let Some((key, _)) = call_string_arg(doc, position, VIEW_CALL_NAMES) {
         return laravel.views.get(&key).cloned();
     }
-    if let Some((key, _)) = call_string_arg(source, position, TRANS_CALL_NAMES) {
+    if let Some((key, _)) = call_string_arg(doc, position, TRANS_CALL_NAMES) {
         return laravel.translations.get(&key).cloned();
     }
-    if let Some((key, _)) = call_string_arg(source, position, ROUTE_CALL_NAMES) {
+    if let Some((key, _)) = call_string_arg(doc, position, ROUTE_CALL_NAMES) {
         return laravel.routes.get(&key).cloned();
     }
     None
@@ -249,8 +249,8 @@ mod tests {
             line: 0,
             character: 12,
         };
-        let src = "<?php\nenv('APP_NAME');\n";
-        assert!(resolve_string_key(src, pos, &laravel).is_none());
+        let doc = crate::document::ast::ParsedDoc::parse("<?php\nenv('APP_NAME');\n".to_string());
+        assert!(resolve_string_key(&doc, pos, &laravel).is_none());
     }
 
     #[test]

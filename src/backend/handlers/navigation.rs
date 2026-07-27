@@ -30,23 +30,23 @@ impl Backend {
             let position = params.text_document_position_params.position;
             let source = self.get_open_text(uri).unwrap_or_default();
 
-            // Laravel string-key calls (`env('KEY')`, `config('a.b')`, ...) —
-            // resolved before falling through to symbol resolution, since a
-            // string literal is never a `word_at_position` match.
-            // `resolve_string_key` checks `is_laravel` first (one atomic load
-            // + bool check) so non-Laravel workspaces never pay for the line
-            // scan inside it.
-            let laravel = self.laravel.load();
-            let laravel_loc = crate::laravel::resolve_string_key(&source, position, &laravel);
-            drop(laravel);
-            if let Some(loc) = laravel_loc {
-                return Ok(Some(GotoDefinitionResponse::Scalar(loc)));
-            }
-
             let doc = match self.get_doc(uri) {
                 Some(d) => d,
                 None => return Ok(None),
             };
+
+            // Laravel string-key calls (`env('KEY')`, `config('a.b')`, ...) —
+            // resolved before falling through to symbol resolution, since a
+            // string literal is never a `word_at_position` match.
+            // `resolve_string_key` checks `is_laravel` first (one atomic load
+            // + bool check) so non-Laravel workspaces never pay for the AST
+            // walk inside it.
+            let laravel = self.laravel.load();
+            let laravel_loc = crate::laravel::resolve_string_key(&doc, position, &laravel);
+            drop(laravel);
+            if let Some(loc) = laravel_loc {
+                return Ok(Some(GotoDefinitionResponse::Scalar(loc)));
+            }
             if let Some(word) = crate::text::word_at_position(&source, position)
                 && !word.starts_with('$')
             {
@@ -252,7 +252,7 @@ impl Backend {
                     let Some(doc) = self.docs.get_doc_salsa(&file_uri) else {
                         continue;
                     };
-                    for range in crate::laravel::find_call_sites(doc.source(), names, &key) {
+                    for range in crate::laravel::find_call_sites(&doc, names, &key) {
                         locations.push(Location {
                             uri: file_uri.clone(),
                             range,
