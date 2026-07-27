@@ -3229,7 +3229,52 @@ class Mailer {}
 "#,
         )
         .await;
-    expect!["Class       Mailer"].assert_eq(&out);
+    expect!["Class       App\\Services\\Mailer"].assert_eq(&out);
+}
+
+/// `use function` must suggest functions from other files — and must NOT
+/// fall into the class-name path (a bare name-only substring match against
+/// "function App\Helpers\format" would previously match nothing at all).
+#[tokio::test]
+async fn completion_use_function_statement_suggestions() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_completion_ordered(
+            r#"//- /main.php
+<?php
+use function $0
+
+//- /App/Helpers.php
+<?php
+namespace App;
+function formatName() {}
+"#,
+        )
+        .await;
+    expect!["Function    App\\formatName"].assert_eq(&out);
+}
+
+/// `use const` must suggest top-level constants from other files, scoped
+/// to the const namespace (never classes or functions).
+#[tokio::test]
+async fn completion_use_const_statement_suggestions() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_completion_ordered(
+            r#"//- /main.php
+<?php
+use const $0
+
+//- /App/Constants.php
+<?php
+namespace App;
+const MAX_RETRIES = 3;
+"#,
+        )
+        .await;
+    expect!["Constant    App\\MAX_RETRIES"].assert_eq(&out);
 }
 
 // === Include/require path completions ===

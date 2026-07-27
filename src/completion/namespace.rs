@@ -284,22 +284,39 @@ pub(super) fn current_file_namespace(stmts: &[Stmt<'_, '_>]) -> String {
     String::new()
 }
 
-/// Collect fully-qualified names from stmts that contain `prefix`.
+/// Which symbol table a `use` completion should search — determined by
+/// whether the statement is `use`, `use function`, or `use const`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum UseCompletionKind {
+    ClassLike,
+    Function,
+    Const,
+}
+
+/// Collect fully-qualified names from stmts that contain `prefix`, scoped to
+/// `kind` — `use function`/`use const` must only ever suggest functions/consts,
+/// never classes (and vice versa), since PHP resolves each `use` variant
+/// against a completely separate namespace.
 pub(super) fn collect_fqns_with_prefix(
     stmts: &[Stmt<'_, '_>],
     ns: &str,
     prefix: &str,
+    kind: UseCompletionKind,
     out: &mut Vec<CompletionItem>,
 ) {
+    // Tracks the namespace context for unbraced `namespace Foo;` declarations,
+    // which apply to all subsequent statements at the same level — mirrors
+    // `collect_classes_with_ns`'s `cur_ns`.
+    let mut cur_ns = ns.to_string();
     let prefix_lc = prefix.to_lowercase();
     for stmt in stmts {
         match &stmt.kind {
-            StmtKind::Class(c) => {
+            StmtKind::Class(c) if kind == UseCompletionKind::ClassLike => {
                 if let Some(name) = c.name {
-                    let fqn = if ns.is_empty() {
+                    let fqn = if cur_ns.is_empty() {
                         name.to_string()
                     } else {
-                        format!("{ns}\\{name}")
+                        format!("{cur_ns}\\{name}")
                     };
                     if prefix.is_empty() || fqn.to_lowercase().contains(&prefix_lc) {
                         out.push(CompletionItem {
@@ -311,11 +328,11 @@ pub(super) fn collect_fqns_with_prefix(
                     }
                 }
             }
-            StmtKind::Interface(i) => {
-                let fqn = if ns.is_empty() {
+            StmtKind::Interface(i) if kind == UseCompletionKind::ClassLike => {
+                let fqn = if cur_ns.is_empty() {
                     i.name.to_string()
                 } else {
-                    format!("{ns}\\{}", &i.name.to_string())
+                    format!("{cur_ns}\\{}", &i.name.to_string())
                 };
                 if prefix.is_empty() || fqn.to_lowercase().contains(&prefix_lc) {
                     out.push(CompletionItem {
@@ -326,20 +343,57 @@ pub(super) fn collect_fqns_with_prefix(
                     });
                 }
             }
+            StmtKind::Function(f) if kind == UseCompletionKind::Function => {
+                let fqn = if cur_ns.is_empty() {
+                    f.name.to_string()
+                } else {
+                    format!("{cur_ns}\\{}", f.name)
+                };
+                if prefix.is_empty() || fqn.to_lowercase().contains(&prefix_lc) {
+                    out.push(CompletionItem {
+                        label: fqn.clone(),
+                        kind: Some(CompletionItemKind::FUNCTION),
+                        insert_text: Some(fqn),
+                        ..Default::default()
+                    });
+                }
+            }
+            StmtKind::Const(items) if kind == UseCompletionKind::Const => {
+                for item in items.iter() {
+                    let fqn = if cur_ns.is_empty() {
+                        item.name.to_string()
+                    } else {
+                        format!("{cur_ns}\\{}", item.name)
+                    };
+                    if prefix.is_empty() || fqn.to_lowercase().contains(&prefix_lc) {
+                        out.push(CompletionItem {
+                            label: fqn.clone(),
+                            kind: Some(CompletionItemKind::CONSTANT),
+                            insert_text: Some(fqn),
+                            ..Default::default()
+                        });
+                    }
+                }
+            }
             StmtKind::Namespace(ns_stmt) => {
                 let ns_name = ns_stmt
                     .name
                     .as_ref()
                     .map(|n| {
-                        if ns.is_empty() {
+                        if cur_ns.is_empty() {
                             n.to_string_repr().to_string()
                         } else {
-                            format!("{ns}\\{}", n.to_string_repr())
+                            format!("{cur_ns}\\{}", n.to_string_repr())
                         }
                     })
-                    .unwrap_or_else(|| ns.to_string());
-                if let NamespaceBody::Braced(inner) = &ns_stmt.body {
-                    collect_fqns_with_prefix(&inner.stmts, &ns_name, prefix, out);
+                    .unwrap_or_else(|| cur_ns.clone());
+                match &ns_stmt.body {
+                    NamespaceBody::Braced(inner) => {
+                        collect_fqns_with_prefix(&inner.stmts, &ns_name, prefix, kind, out);
+                    }
+                    NamespaceBody::Simple => {
+                        cur_ns = ns_name;
+                    }
                 }
             }
             _ => {}
@@ -347,13 +401,24 @@ pub(super) fn collect_fqns_with_prefix(
     }
 }
 
-/// Returns the prefix typed after `use ` on the current line, or None if not in a use statement.
-pub(super) fn use_completion_prefix(source: &str, position: Position) -> Option<String> {
+/// Returns the `(kind, prefix)` typed after `use `/`use function `/`use const `
+/// on the current line, or `None` if not in a use statement.
+pub(super) fn use_completion_prefix(
+    source: &str,
+    position: Position,
+) -> Option<(UseCompletionKind, String)> {
     let line = source.lines().nth(position.line as usize)?;
     let col = crate::text::utf16_offset_to_byte(line, position.character as usize);
     let before = line[..col].trim_start();
-    let prefix = before.strip_prefix("use ")?;
-    Some(prefix.trim_start_matches('\\').to_string())
+    let rest = before.strip_prefix("use ")?;
+    let (kind, rest) = if let Some(r) = rest.strip_prefix("function ") {
+        (UseCompletionKind::Function, r)
+    } else if let Some(r) = rest.strip_prefix("const ") {
+        (UseCompletionKind::Const, r)
+    } else {
+        (UseCompletionKind::ClassLike, rest)
+    };
+    Some((kind, rest.trim_start_matches('\\').to_string()))
 }
 
 /// Extract the identifier characters typed immediately before the cursor.

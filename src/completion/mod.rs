@@ -661,9 +661,10 @@ pub fn filtered_completions_at(
                 }
             }
 
-            // Feature 4: detect `use ` context and suggest FQNs from other docs
+            // Feature 4: detect `use `/`use function `/`use const ` context and
+            // suggest FQNs from other docs, scoped to the right symbol kind.
             if let (Some(src), Some(pos)) = (source, position)
-                && let Some(use_prefix) = use_completion_prefix(src, pos)
+                && let Some((use_kind, use_prefix)) = use_completion_prefix(src, pos)
             {
                 let mut use_items: Vec<CompletionItem> = Vec::new();
                 for other in other_docs {
@@ -671,11 +672,18 @@ pub fn filtered_completions_at(
                         &other.program().stmts,
                         "",
                         &use_prefix,
+                        use_kind,
                         &mut use_items,
                     );
                 }
                 // Also check current doc
-                collect_fqns_with_prefix(&doc.program().stmts, "", &use_prefix, &mut use_items);
+                collect_fqns_with_prefix(
+                    &doc.program().stmts,
+                    "",
+                    &use_prefix,
+                    use_kind,
+                    &mut use_items,
+                );
                 if !use_items.is_empty() {
                     return use_items;
                 }
