@@ -1,21 +1,24 @@
 //! Sibling of `references_scaling.rs` for **static** members.
 //!
-//! `references_scaling.rs` measures an intentionally *unimplemented* upper
-//! bound: an AND-gate (member name AND owner class name) rejected as unsound
-//! for instance members (a receiver typed by an inherited property, or a
-//! factory return, never names the owner class in the calling file). Static
-//! members don't have that failure mode — every real static call site
-//! (`Owner::m()`, `self::`/`static::`/`parent::m()` from inside the
-//! hierarchy, an aliased `use Owner as X; X::m()`) textually names either the
-//! owner or one of its subtypes. mir's `reference_gate_strategy` (mir 0.63+)
-//! implements exactly this AND-gate for a resolved static-only member, using
-//! the transitive subtype closure as the owner-group.
+//! mir 0.63's `reference_gate` admits a cold candidate file for a resolved
+//! static method on the *member token alone*. The owner name is deliberately
+//! not required: PHP allows static calls through instance receivers
+//! (`$obj::m()`) whose file may never name the owner class, so an
+//! owner-group AND-gate would silently drop real references. Every recorded
+//! static-ref shape (`Owner::m()`, `self::`/`static::`/`parent::m()`,
+//! aliased `X::m()`, `$obj::m()`, `'Owner::m'` strings) spells the member,
+//! so the member-only gate is exact.
 //!
-//! Unlike `references_scaling.rs`, this bench calls the real, unmodified
-//! `docs.indexed_references(...)` end-to-end — no hand-filtered candidate
-//! list — since the speedup now lives inside mir's own gate. Its value is a
-//! regression gate going forward: cold latency at a realistic N must stay
-//! well below what an ungated OR-scan over the same fixture would cost.
+//! Two fixture shapes, both through the real, unmodified
+//! `docs.indexed_references(...)`:
+//!
+//! - DISTINCTIVE MEMBER — noise files mention the owner's short name (a
+//!   docblock is enough; the pre-0.63 OR-gate admitted them all) but never
+//!   the member token. The member-only gate rejects them without analysis,
+//!   so cold latency stays near-flat as N grows. Gated.
+//! - GENERIC MEMBER — every noise file text-matches the member name on an
+//!   unrelated class. No sound gate can filter these; cold cost is O(N)
+//!   full analysis by design. Gated only against catastrophic regression.
 //!
 //! Run: `cargo bench --bench references_scaling_static`
 
@@ -28,8 +31,8 @@ use tower_lsp::lsp_types::Url;
 
 const HOT_METHOD: &str = "process";
 const OWNER: &str = "Service";
-/// 1 in N files actually calls `App\Service::process()` (directly or via a
-/// subclass); the rest define/call their own unrelated static `process()`.
+/// 1 in N files actually calls `App\Service::process()`; the rest are noise
+/// whose shape depends on the scenario.
 const REACH_EVERY: usize = 10;
 
 fn service_file() -> (Url, String) {
@@ -54,8 +57,7 @@ fn filler() -> String {
     s
 }
 
-/// Calls `App\Service::process()` statically — never via a subclass, never
-/// via self/static/parent — the plainest reachable shape.
+/// Calls `App\Service::process()` statically — the plainest reachable shape.
 fn reachable_file(i: usize) -> (Url, String) {
     let url = Url::parse(&format!("file:///synth/R{i}.php")).unwrap();
     let text = format!(
@@ -70,10 +72,9 @@ fn reachable_file(i: usize) -> (Url, String) {
     (url, text)
 }
 
-/// Noise: defines and calls its *own* static `process()` — text-matches the
-/// method name but never names `Service`, so it cannot resolve to
-/// `Service::process`.
-fn noise_file(i: usize) -> (Url, String) {
+/// Generic-member noise: defines and calls its *own* static `process()` —
+/// text-matches the member token, so the gate must admit it.
+fn noise_file_member_match(i: usize) -> (Url, String) {
     let url = Url::parse(&format!("file:///synth/N{i}.php")).unwrap();
     let text = format!(
         "<?php\nnamespace App;\n\
@@ -88,7 +89,25 @@ fn noise_file(i: usize) -> (Url, String) {
     (url, text)
 }
 
-fn build(n: usize) -> DocumentStore {
+/// Distinctive-member noise: mentions the owner's short name (docblock —
+/// the word-bounded gate scan doesn't care where) but never the member
+/// token. The pre-0.63 OR-gate paid a full analysis here; the member-only
+/// gate rejects on the text scan alone.
+fn noise_file_owner_match(i: usize) -> (Url, String) {
+    let url = Url::parse(&format!("file:///synth/N{i}.php")).unwrap();
+    let text = format!(
+        "<?php\nnamespace App;\n\
+         /** Unrelated to the {OWNER} layer. */\n\
+         class N{i} {{\n\
+         \x20   public function run(int $a): int {{\n\
+         \x20       return $a + {i};\n\
+         \x20   }}\n{}}}\n",
+        filler()
+    );
+    (url, text)
+}
+
+fn build(n: usize, noise: fn(usize) -> (Url, String)) -> DocumentStore {
     let store = DocumentStore::new();
     let (su, st) = service_file();
     store.ingest(su, &st);
@@ -96,7 +115,7 @@ fn build(n: usize) -> DocumentStore {
         let (u, t) = if i % REACH_EVERY == 0 {
             reachable_file(i)
         } else {
-            noise_file(i)
+            noise(i)
         };
         store.ingest(u, &t);
     }
@@ -111,11 +130,11 @@ fn median_ms(mut s: Vec<Duration>) -> f64 {
 
 /// Median cold latency over the real, unfiltered candidate set: a fresh
 /// store per rep so `analyze_file` is never a memo hit.
-fn cold_ms(n: usize, reps: usize, sym: &Name) -> (usize, f64) {
+fn cold_ms(n: usize, reps: usize, sym: &Name, noise: fn(usize) -> (Url, String)) -> (usize, f64) {
     let mut samples = Vec::with_capacity(reps);
     let mut count = 0;
     for _ in 0..reps {
-        let store = build(n);
+        let store = build(n, noise);
         let files: Vec<Arc<str>> = store.workspace_file_paths();
         count = files.len();
         let t = Instant::now();
@@ -125,34 +144,57 @@ fn cold_ms(n: usize, reps: usize, sym: &Name) -> (usize, f64) {
     (count, median_ms(samples))
 }
 
-fn main() {
-    let sym = Name::method(format!("App\\{OWNER}"), HOT_METHOD);
+fn run_scenario(
+    title: &str,
+    sym: &Name,
+    noise: fn(usize) -> (Url, String),
+    ceiling_ms: f64,
+) -> bool {
     let reps = 3usize;
-
-    println!("=== STATIC-MEMBER AND-GATE: cold `{OWNER}::{HOT_METHOD}` references ===");
-    println!(
-        "(1 in {REACH_EVERY} files call the owner statically; the rest share the method name \
-         on unrelated classes)\n"
-    );
+    println!("=== {title} ===");
     println!("{:>7}  {:>10}  {:>10}", "files", "candidates", "cold_ms");
-    // Generous absolute ceiling, not a synthetic before/after ratio: the
-    // real gate now runs unconditionally inside `indexed_references`, so
-    // there's no in-process "before" branch to compare against. This is a
-    // regression gate — cold latency must stay roughly flat as N grows,
-    // not climb the way an ungated OR-scan (paying full `analyze_file` on
-    // every noise file) would.
-    const COLD_MS_CEILING: f64 = 500.0;
-    let mut gate_ok = true;
+    let mut ok = true;
     for &n in &[100usize, 500, 1000, 3000] {
-        let (count, ms) = cold_ms(n, reps, &sym);
+        let (count, ms) = cold_ms(n, reps, sym, noise);
         println!("{n:>7}  {count:>10}  {ms:>10.3}");
-        if ms >= COLD_MS_CEILING {
-            eprintln!("GATE: cold {ms:.3} ms at N={n} >= ceiling {COLD_MS_CEILING}");
-            gate_ok = false;
+        if ms >= ceiling_ms {
+            eprintln!("GATE: cold {ms:.3} ms at N={n} >= ceiling {ceiling_ms}");
+            ok = false;
         }
     }
+    println!();
+    ok
+}
 
-    if !gate_ok {
+fn main() {
+    let sym = Name::method(format!("App\\{OWNER}"), HOT_METHOD);
+
+    // The shape the member-only gate wins: noise text-matches the owner but
+    // not the member, so only the 1-in-10 reachable files pay analysis
+    // (~164 ms at N=3000 measured on mir 0.63.0; losing the gate lands at
+    // ~775 ms, the ungated number below).
+    let distinctive_ok = run_scenario(
+        &format!(
+            "DISTINCTIVE MEMBER: cold `{OWNER}::{HOT_METHOD}`, noise mentions `{OWNER}` only"
+        ),
+        &sym,
+        noise_file_owner_match,
+        400.0,
+    );
+
+    // Worst case by design: every file text-matches the member token, so the
+    // gate admits all of them and cold cost is O(N) analysis. The generous
+    // ceiling only catches order-of-magnitude regressions.
+    let generic_ok = run_scenario(
+        &format!(
+            "GENERIC MEMBER (ungatable worst case): cold `{OWNER}::{HOT_METHOD}`, every file matches `{HOT_METHOD}`"
+        ),
+        &sym,
+        noise_file_member_match,
+        2500.0,
+    );
+
+    if !distinctive_ok || !generic_ok {
         std::process::exit(1);
     }
 }
