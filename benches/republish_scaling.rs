@@ -103,6 +103,9 @@ fn measure_edits(ws: &Workspace, sweep: impl Fn()) -> (f64, f64) {
 }
 
 fn main() {
+    // Sessions here run mir's parallel analysis before any DocumentStore
+    // exists — size the rayon stacks like production first.
+    php_lsp::document_store::ensure_rayon_worker_stacks();
     println!(
         "republish scaling — per-edit phase means over {} edits",
         EDITS - WARMUP_EDITS

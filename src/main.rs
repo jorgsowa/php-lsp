@@ -20,6 +20,10 @@ fn main() {
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .max_blocking_threads(16)
+        // Blocking threads run salsa queries; match the analysis stack size
+        // (see document_store::ensure_rayon_worker_stacks — reserved pages,
+        // not committed).
+        .thread_stack_size(64 * 1024 * 1024)
         .build()
         .expect("tokio runtime")
         .block_on(main_async());

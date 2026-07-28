@@ -2,6 +2,12 @@
 
 All notable changes to php-lsp are documented here.
 
+## [Unreleased]
+
+### Fixed
+
+- **Intermittent stack-overflow abort under contended parallel analysis**: salsa 0.28's dependency-graph lock transfer recurses per transferred dependent and could overflow the 16 MB analysis-thread stacks on large workspaces. All analysis threads (rayon workers, tokio blocking pool, warm-sweep thread) now get 64 MB stacks — reserved, not committed, so resident memory is unchanged.
+
 ## [0.21.0] — 2026-07-26
 
 ### Added

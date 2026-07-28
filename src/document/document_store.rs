@@ -107,20 +107,28 @@ impl Default for DocumentStore {
     }
 }
 
+/// Analysis threads need big stacks: deep type-inference recursion on
+/// pathological files overflows rayon's 2 MB default, and salsa 0.28's
+/// `DependencyGraph::update_transferred_edges` recurses per transferred
+/// dependent under contended parallel queries — observed blowing 16 MB on
+/// the Laravel fixture (64 MB measured clean over repeated runs; the pages
+/// are reserved, not committed). Size the global pool before any parallel
+/// analysis runs; build_global fails harmlessly if a pool already exists.
+/// Benches/tests driving `AnalysisSession` without a `DocumentStore` must
+/// call this themselves — rayon otherwise lazily builds the pool with
+/// default stacks on mir's first `par_iter`.
+pub fn ensure_rayon_worker_stacks() {
+    static RAYON_STACK: OnceLock<()> = OnceLock::new();
+    RAYON_STACK.get_or_init(|| {
+        let _ = rayon::ThreadPoolBuilder::new()
+            .stack_size(64 * 1024 * 1024)
+            .build_global();
+    });
+}
+
 impl DocumentStore {
     pub fn new() -> Self {
-        // Deep type-inference recursion on pathological files can overflow
-        // rayon's default worker stack (observed as a crash on framework
-        // fixtures under load — and the warm sweep analyzes *every* workspace
-        // file, so one such file must not take the server down). Size the
-        // global pool's stacks once before any parallel analysis runs;
-        // build_global fails harmlessly if a pool already exists.
-        static RAYON_STACK: OnceLock<()> = OnceLock::new();
-        RAYON_STACK.get_or_init(|| {
-            let _ = rayon::ThreadPoolBuilder::new()
-                .stack_size(16 * 1024 * 1024)
-                .build_global();
-        });
+        ensure_rayon_worker_stacks();
         DocumentStore {
             caches: CacheRegistry::new(),
             lsp_ws_files: DashMap::new(),
@@ -239,7 +247,7 @@ impl DocumentStore {
         std::thread::scope(|s| {
             let _ = std::thread::Builder::new()
                 .name("php-lsp-warm-sweep".into())
-                .stack_size(32 * 1024 * 1024)
+                .stack_size(64 * 1024 * 1024)
                 .spawn_scoped(s, || self.warm_analysis_sweep_inner(priority, cancel))
                 .map(|h| h.join());
         });
