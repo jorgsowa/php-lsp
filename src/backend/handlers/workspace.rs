@@ -642,8 +642,7 @@ impl Backend {
         }
 
         for edits in merged_changes.values_mut() {
-            edits.sort_by_key(|e| (e.range.start.line, e.range.start.character));
-            edits.dedup_by(|a, b| a.range == b.range);
+            crate::editing::rename::sort_and_dedup_edits(edits);
         }
         Ok(if merged_changes.is_empty() {
             None

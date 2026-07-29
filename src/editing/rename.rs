@@ -75,6 +75,13 @@ pub fn narrow_range_to_word(source: &str, range: Range, word: &str) -> Option<Ra
     })
 }
 
+/// Sorts `edits` by start position and drops duplicate ranges — the shared
+/// finishing step for a `WorkspaceEdit`'s per-file edit list.
+pub fn sort_and_dedup_edits(edits: &mut Vec<TextEdit>) {
+    edits.sort_by_key(|e| (e.range.start.line, e.range.start.character));
+    edits.dedup_by(|a, b| a.range == b.range);
+}
+
 /// Returns the range of the word at `position` if it's a renameable symbol.
 /// Used for `textDocument/prepareRename`.
 pub fn prepare_rename(doc: &ParsedDoc, position: Position) -> Option<Range> {
