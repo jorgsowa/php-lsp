@@ -34,6 +34,13 @@ impl Backend {
                 Some(d) => d,
                 None => return Ok(None),
             };
+            // Reused across the fallback branches below when no lazy vendor
+            // ingestion happens in between (the common case) — collapses to
+            // one workspace-index fetch instead of up to three. Reset to
+            // `None` after any `psr4_method_goto`/`psr4_goto` call that can
+            // lazily ingest a new file, so a later branch never reads a
+            // pre-ingestion snapshot.
+            let mut wi_cache: Option<Arc<crate::db::workspace_index::WorkspaceIndexData>> = None;
 
             // Laravel string-key calls (`env('KEY')`, `config('a.b')`, ...) —
             // resolved before falling through to symbol resolution, since a
@@ -86,7 +93,7 @@ impl Backend {
                     }
                 });
                 if let Some((cls, class_fqn_arc)) = resolved_method_target {
-                    let wi = self.workspace_index_async().await;
+                    let wi = self.workspace_index_cached(&mut wi_cache).await;
                     if let Some(loc) = find_method_in_class_hierarchy(&cls, &word, &wi) {
                         let refined = self
                             .docs
@@ -108,6 +115,9 @@ impl Backend {
                     if let Some(loc) = self.psr4_method_goto(class_fqn, &word).await {
                         return Ok(Some(GotoDefinitionResponse::Scalar(loc)));
                     }
+                    // May have lazily ingested a vendor file — force the next
+                    // fetch to see it.
+                    wi_cache = None;
                 }
             }
 
@@ -135,7 +145,7 @@ impl Backend {
                 };
                 if let Some(cls) = class_name {
                     let first_cls = cls.split('|').next().unwrap_or(&cls).to_owned();
-                    let wi2 = self.workspace_index_async().await;
+                    let wi2 = self.workspace_index_cached(&mut wi_cache).await;
                     if let Some(loc) = find_method_in_class_hierarchy(&first_cls, &word, &wi2) {
                         let refined = self
                             .docs
@@ -166,10 +176,13 @@ impl Backend {
                     if let Some(loc) = self.psr4_method_goto(&class_fqn, &word).await {
                         return Ok(Some(GotoDefinitionResponse::Scalar(loc)));
                     }
+                    // May have lazily ingested a vendor file — force the next
+                    // fetch to see it.
+                    wi_cache = None;
                 }
             }
 
-            let wi = self.workspace_index_async().await;
+            let wi = self.workspace_index_cached(&mut wi_cache).await;
             if let Some(word) = crate::text::word_at_position(&source, position)
                 && let Some(loc) = wi.find_declaration(&word, Some(uri))
             {

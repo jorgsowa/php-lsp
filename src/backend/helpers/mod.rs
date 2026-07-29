@@ -122,6 +122,25 @@ impl Backend {
         }
     }
 
+    /// Reuse `slot` if already populated this request; otherwise fetch and
+    /// populate it. Callers MUST reset `slot` to `None` immediately after any
+    /// operation that can lazily ingest a new file (`psr4_goto`,
+    /// `psr4_method_goto`) so the next fetch sees the fresh file set — this
+    /// is a lock-count optimization for the common case where no such
+    /// ingestion happens between fallback branches, not an unconditional
+    /// cache.
+    pub(super) async fn workspace_index_cached(
+        &self,
+        slot: &mut Option<Arc<crate::db::workspace_index::WorkspaceIndexData>>,
+    ) -> Arc<crate::db::workspace_index::WorkspaceIndexData> {
+        if let Some(wi) = slot {
+            return Arc::clone(wi);
+        }
+        let wi = self.workspace_index_async().await;
+        *slot = Some(Arc::clone(&wi));
+        wi
+    }
+
     /// Tag → generator mapping for deferred code actions.
     pub(super) fn generate_deferred_actions(
         &self,
