@@ -202,7 +202,7 @@ impl LanguageServer for Backend {
                             };
                             scan_workspace(
                                 path_clone,
-                                docs,
+                                Arc::clone(&docs),
                                 open_files,
                                 cache,
                                 &ex,
@@ -210,6 +210,15 @@ impl LanguageServer for Backend {
                                 max_indexed_files,
                                 None,
                             )
+                            .await;
+                            // Replay disk-cached index postings/subtype edges for
+                            // this folder's files, same as the initial-roots path
+                            // — without this, a folder added at runtime never gets
+                            // its warm-start seed, only the startup roots do.
+                            let _ = tokio::task::spawn_blocking(move || {
+                                docs.get_workspace_index_salsa();
+                                docs.warm_start_indexes();
+                            })
                             .await;
                             send_refresh_requests(&client).await;
                         });

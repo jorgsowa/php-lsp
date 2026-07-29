@@ -110,6 +110,86 @@ async fn add_workspace_folder_honors_index_vendor_false() {
     expect!["<no symbols>"].assert_eq(&out);
 }
 
+/// A folder added at runtime must get the same warm-start disk-cache replay
+/// the initial roots get. Regression test: `did_change_workspace_folders`
+/// used to call only `scan_workspace` for a newly-added folder, never
+/// `warm_start_indexes` — so its first references query paid an on-demand
+/// analyze-and-commit instead of answering from replayed postings.
+///
+/// Proof strategy: warm a shared cache dir for `added_root` in a first
+/// server launch, then in a second launch (rooted elsewhere, background
+/// warm sweep disabled) add `added_root` at runtime and confirm a
+/// references query on it takes only 1 additional mir reference-index lock
+/// (a pure posting read) rather than 2 (a read plus the on-demand
+/// analyze-and-commit write) — measured directly against this same
+/// scenario with the fix reverted, which takes 2.
+#[tokio::test]
+async fn add_workspace_folder_replays_warm_start_postings() {
+    let widget = "<?php\nclass Widget {\n    public function spin(): void {}\n}\n";
+    let caller = "<?php\n$w = new Widget();\n$w->spin();\n";
+
+    let added_root = tempfile::tempdir().expect("added-root tempdir");
+    std::fs::write(added_root.path().join("widget.php"), widget).expect("write widget.php");
+    std::fs::write(added_root.path().join("caller.php"), caller).expect("write caller.php");
+    let cache_dir = tempfile::tempdir().expect("cache tempdir");
+
+    let opts = |warm_analysis: bool| {
+        serde_json::json!({
+            "cachePath": cache_dir.path().to_str().unwrap(),
+            "diagnostics": {"enabled": false},
+            "phpVersion": "8.3",
+            "warmAnalysis": warm_analysis,
+        })
+    };
+
+    // First launch: `added_root` is the initial (only) root, so its warm
+    // sweep commits reference postings to the shared cache dir on disk.
+    {
+        let mut s = TestServer::with_root_and_options(added_root.path(), opts(true)).await;
+        s.wait_for_index_ready().await;
+        assert!(
+            s.wait_for_warm_sweeps(1).await,
+            "warm sweep did not complete"
+        );
+    }
+
+    // Second launch: a *different*, initially-empty root, warm sweep
+    // disabled — `added_root` is added at runtime below.
+    let empty_root = tempfile::tempdir().expect("empty-root tempdir");
+    let mut s = TestServer::with_root_and_options(empty_root.path(), opts(false)).await;
+    s.wait_for_index_ready().await;
+
+    let folder_uri = Url::from_file_path(added_root.path())
+        .expect("valid file URI")
+        .to_string();
+    s.add_workspace_folder(&folder_uri).await;
+    s.wait_until_symbol_present("Widget", Duration::from_secs(5))
+        .await;
+    // wait_until_symbol_present only proves file mirroring finished; the
+    // warm-start replay step runs immediately after, in the same spawned
+    // task, before send_refresh_requests — give it a moment to finish too.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    let widget_abs = added_root.path().join("widget.php");
+    let widget_path = widget_abs.to_str().expect("valid utf8 path");
+    s.open(widget_path, widget).await;
+
+    let before_locks = s.debug_stats_ref_index_locks().await;
+    // Cursor on `spin` in its declaration (line 2, col 20).
+    let resp = s.references(widget_path, 2, 20, false).await;
+    let after_locks = s.debug_stats_ref_index_locks().await;
+
+    let out = render_locations(&resp, &folder_uri);
+    expect!["caller.php:2:4-2:8"].assert_eq(&out);
+    assert_eq!(
+        after_locks - before_locks,
+        1,
+        "references on a runtime-added folder must answer from a replayed \
+         posting read (1 lock) — 2 means it fell back to an on-demand \
+         analyze-and-commit, i.e. warm-start replay didn't happen"
+    );
+}
+
 #[tokio::test]
 async fn add_empty_workspace_folder_does_not_crash() {
     let mut server = TestServer::with_fixture("psr4-mini").await;
@@ -477,3 +557,4 @@ async fn batch_changes_all_applied() {
     let registry_out = server.snapshot_workspace_symbols("Registry").await;
     expect![[r#"<no symbols>"#]].assert_eq(&registry_out);
 }
+
