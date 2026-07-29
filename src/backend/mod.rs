@@ -178,7 +178,7 @@ impl Backend {
     fn file_imports(&self, uri: &Url) -> std::collections::HashMap<String, String> {
         self.docs
             .get_doc_salsa(uri)
-            .map(|doc| crate::references::collect_file_imports(&doc))
+            .map(|doc| crate::navigation::references::collect_file_imports(&doc))
             .unwrap_or_default()
     }
 

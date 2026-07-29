@@ -1534,7 +1534,7 @@ impl DocumentStore {
                 .collect()
         };
         // Bare same-namespace / use-imported class refs aren't resolved by mir's priority_index_for_ast; preload them.
-        let class_fqns = crate::references::collect_referenced_class_fqns(&doc);
+        let class_fqns = crate::navigation::references::collect_referenced_class_fqns(&doc);
 
         // ingest_file/load_class/analyze take internal salsa snapshots; a concurrent db write cancels them via resume_unwind. Retry the idempotent sequence.
         let _interactive = self.interactive_read_guard();
