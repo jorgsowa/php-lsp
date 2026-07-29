@@ -79,16 +79,112 @@ fn is_any_declaration(decl: &Declaration<'_>) -> bool {
     !matches!(decl, Declaration::PromotedParam { .. })
 }
 
-/// Find abstract or interface declaration using `FileIndex` entries.
-/// Returns line-only positions (character 0) for unopened files.
+fn precise_range(line: u32, name_char: u32, name: &str) -> tower_lsp::lsp_types::Range {
+    let end_char = name_char + utf16_code_units(name);
+    tower_lsp::lsp_types::Range {
+        start: tower_lsp::lsp_types::Position {
+            line,
+            character: name_char,
+        },
+        end: tower_lsp::lsp_types::Position {
+            line,
+            character: end_char,
+        },
+    }
+}
+
+/// Pass-2 body scoped to a single file: any declaration named `word`
+/// (`bare` for properties, which are indexed without their `$` sigil).
+/// Shared by the `decls_by_name` fast path and the exhaustive fallback scan
+/// below, so both paths apply identical matching rules.
+fn any_declaration_in_file(
+    uri: &tower_lsp::lsp_types::Url,
+    idx: &crate::index::file_index::FileIndex,
+    word: &str,
+    bare: &str,
+) -> Option<Location> {
+    use crate::index::file_index::ClassKind;
+
+    for f in &idx.functions {
+        if f.name.as_ref() == word {
+            return Some(Location {
+                uri: uri.clone(),
+                range: precise_range(f.start_line, f.name_char, &f.name),
+            });
+        }
+    }
+
+    for cls in &idx.classes {
+        // Class/Interface/Trait/Enum declarations.
+        if cls.name.as_ref() == word {
+            return Some(Location {
+                uri: uri.clone(),
+                range: precise_range(cls.start_line, cls.name_char, &cls.name),
+            });
+        }
+
+        // Methods.
+        for m in &cls.methods {
+            if m.name.as_ref() == word {
+                return Some(Location {
+                    uri: uri.clone(),
+                    range: precise_range(m.start_line, m.name_char, &m.name),
+                });
+            }
+        }
+
+        // `@method` docblock methods — zero-width location at the tag line.
+        for dm in &cls.doc_methods {
+            if dm.name.as_ref() == word {
+                return Some(Location {
+                    uri: uri.clone(),
+                    range: crate::text::zero_width_range(dm.start_line),
+                });
+            }
+        }
+
+        // Properties.
+        for p in &cls.properties {
+            if p.name.as_ref() == bare {
+                return Some(Location {
+                    uri: uri.clone(),
+                    range: precise_range(p.start_line, p.name_char, &p.name),
+                });
+            }
+        }
+
+        // Class/Interface/Trait/Enum constants.
+        for c in &cls.constants {
+            if c.as_ref() == word {
+                return Some(Location {
+                    uri: uri.clone(),
+                    range: precise_range(cls.start_line, cls.name_char, &cls.name),
+                });
+            }
+        }
+
+        // Enum cases (stored in separate `cases` field).
+        if cls.kind == ClassKind::Enum {
+            for case_name in &cls.cases {
+                if case_name.as_ref() == word {
+                    return Some(Location {
+                        uri: uri.clone(),
+                        range: precise_range(cls.start_line, cls.name_char, &cls.name),
+                    });
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Find abstract or interface declaration using the aggregated workspace
+/// index. Returns line-only positions (character 0) for unopened files.
 /// This is a limitation of the compact FileIndex — for opened files,
 /// goto_declaration() provides precise name ranges.
 pub fn goto_declaration_from_index(
     source: &str,
-    indexes: &[(
-        tower_lsp::lsp_types::Url,
-        std::sync::Arc<crate::index::file_index::FileIndex>,
-    )],
+    wi: &crate::db::workspace_index::WorkspaceIndexData,
     position: tower_lsp::lsp_types::Position,
 ) -> Option<Location> {
     use crate::index::file_index::ClassKind;
@@ -96,22 +192,10 @@ pub fn goto_declaration_from_index(
     let word = word_at_position(source, position)?;
     let bare = strip_variable_sigil(&word);
 
-    let precise_range = |line: u32, name_char: u32, name: &str| -> tower_lsp::lsp_types::Range {
-        let end_char = name_char + utf16_code_units(name);
-        tower_lsp::lsp_types::Range {
-            start: tower_lsp::lsp_types::Position {
-                line,
-                character: name_char,
-            },
-            end: tower_lsp::lsp_types::Position {
-                line,
-                character: end_char,
-            },
-        }
-    };
-
-    // First pass: abstract/interface declarations.
-    for (uri, idx) in indexes {
+    // First pass: abstract/interface declarations. Already bounded to a
+    // small subset of classes (interfaces, traits, abstract classes), so
+    // left as a scan rather than adding another index for it.
+    for (uri, idx) in &wi.files {
         for cls in &idx.classes {
             match cls.kind {
                 ClassKind::Interface => {
@@ -159,78 +243,26 @@ pub fn goto_declaration_from_index(
         }
     }
 
-    // Second pass: any declaration.
-    for (uri, idx) in indexes {
-        // Top-level functions.
-        for f in &idx.functions {
-            if f.name.as_ref() == word {
-                return Some(Location {
-                    uri: uri.clone(),
-                    range: precise_range(f.start_line, f.name_char, &f.name),
-                });
+    // Second pass: any declaration. `decls_by_name` gives an O(1) candidate
+    // file list for the common kinds (function/class/method/constant/
+    // enum-case, all keyed by `word` — see `build_maps`), so the usual case
+    // scans one file's classes instead of every class in every workspace
+    // file. Properties keyed under `bare`, `@method` doc-methods (not
+    // indexed at all), and any `decls_by_name` miss fall back to the
+    // exhaustive scan below, identical to the original behavior.
+    if let Some(refs) = wi.decls_by_name.get(&word) {
+        for r in refs {
+            if let Some((uri, idx)) = wi.files.get(r.file as usize)
+                && let Some(loc) = any_declaration_in_file(uri, idx, &word, bare)
+            {
+                return Some(loc);
             }
         }
+    }
 
-        for cls in &idx.classes {
-            // Class/Interface/Trait/Enum declarations.
-            if cls.name.as_ref() == word {
-                return Some(Location {
-                    uri: uri.clone(),
-                    range: precise_range(cls.start_line, cls.name_char, &cls.name),
-                });
-            }
-
-            // Methods.
-            for m in &cls.methods {
-                if m.name.as_ref() == word {
-                    return Some(Location {
-                        uri: uri.clone(),
-                        range: precise_range(m.start_line, m.name_char, &m.name),
-                    });
-                }
-            }
-
-            // `@method` docblock methods — zero-width location at the tag line.
-            for dm in &cls.doc_methods {
-                if dm.name.as_ref() == word {
-                    return Some(Location {
-                        uri: uri.clone(),
-                        range: crate::text::zero_width_range(dm.start_line),
-                    });
-                }
-            }
-
-            // Properties.
-            for p in &cls.properties {
-                if p.name.as_ref() == bare {
-                    return Some(Location {
-                        uri: uri.clone(),
-                        range: precise_range(p.start_line, p.name_char, &p.name),
-                    });
-                }
-            }
-
-            // Class/Interface/Trait/Enum constants.
-            for c in &cls.constants {
-                if c.as_ref() == word {
-                    return Some(Location {
-                        uri: uri.clone(),
-                        range: precise_range(cls.start_line, cls.name_char, &cls.name),
-                    });
-                }
-            }
-
-            // Enum cases (stored in separate `cases` field).
-            if cls.kind == ClassKind::Enum {
-                for case_name in &cls.cases {
-                    if case_name.as_ref() == word {
-                        return Some(Location {
-                            uri: uri.clone(),
-                            range: precise_range(cls.start_line, cls.name_char, &cls.name),
-                        });
-                    }
-                }
-            }
+    for (uri, idx) in &wi.files {
+        if let Some(loc) = any_declaration_in_file(uri, idx, &word, bare) {
+            return Some(loc);
         }
     }
     None

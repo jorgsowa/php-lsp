@@ -1317,13 +1317,13 @@ impl LanguageServer for Backend {
             if let Some(loc) = goto_declaration(&source, &open_docs, position) {
                 return Ok(Some(GotoDefinitionResponse::Scalar(loc)));
             }
-            // Second pass: background files via FileIndex (line-only positions).
-            Ok(self
-                .docs
-                .with_all_indexes(|all_indexes| {
-                    goto_declaration_from_index(&source, all_indexes, position)
-                })
-                .map(GotoDefinitionResponse::Scalar))
+            // Second pass: background files via the aggregated workspace index
+            // (line-only positions for anything not covered by decls_by_name).
+            let wi = self.workspace_index_async().await;
+            Ok(
+                goto_declaration_from_index(&source, &wi, position)
+                    .map(GotoDefinitionResponse::Scalar),
+            )
         })
         .await
     }
