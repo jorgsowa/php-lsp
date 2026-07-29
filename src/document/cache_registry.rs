@@ -77,10 +77,17 @@ impl CacheRegistry {
     }
 
     /// Record a use of `uri`'s per-file caches (hit or insert). Recency feeds
-    /// [`Self::shed_stale`].
+    /// [`Self::shed_stale`]. Called 2-3x per URI on every cache-hit request
+    /// path (hover, completion, code_lens, ...), so the common case must not
+    /// pay a `Url` clone: `get_mut` looks up by `&Url` and only allocates on
+    /// the (rare) first-ever touch of a URI.
     pub(crate) fn touch(&self, uri: &Url) {
         let tick = self.access_tick.fetch_add(1, Ordering::Relaxed);
-        self.last_access.insert(uri.clone(), tick);
+        if let Some(mut existing) = self.last_access.get_mut(uri) {
+            *existing = tick;
+        } else {
+            self.last_access.insert(uri.clone(), tick);
+        }
     }
 
     /// When `map` has reached `cap`, drop the least-recently-touched half.
