@@ -172,10 +172,12 @@ impl Backend {
     }
 
     /// `use Foo as Bar;` map for a single file, read directly from the AST.
-    fn file_imports(&self, uri: &Url) -> std::collections::HashMap<String, String> {
+    /// Memoized per `ParsedDoc` (see `ParsedDoc::file_imports`) — cheap to
+    /// call repeatedly within or across requests against the same revision.
+    fn file_imports(&self, uri: &Url) -> Arc<std::collections::HashMap<String, String>> {
         self.docs
             .get_doc_salsa(uri)
-            .map(|doc| crate::navigation::references::collect_file_imports(&doc))
+            .map(|doc| doc.file_imports())
             .unwrap_or_default()
     }
 

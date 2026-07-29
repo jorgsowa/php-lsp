@@ -3,8 +3,9 @@
 //! Convention: a borrowed [`SourceView`] is idiomatically bound to `sv` across
 //! the crate (offset↔position math). A `ParsedDoc` value is `doc`. See the
 //! crate-root glossary in `lib.rs`.
+use std::collections::HashMap;
 use std::mem::ManuallyDrop;
-use std::sync::{Arc, LazyLock, Mutex};
+use std::sync::{Arc, LazyLock, Mutex, OnceLock};
 
 use php_ast::{Program, Span, TypeHint, TypeHintKind};
 use tower_lsp::lsp_types::{Position, Range};
@@ -78,6 +79,11 @@ pub struct ParsedDoc {
     _source: Arc<str>,
     line_starts: Vec<u32>,
     _arena: ArenaGuard,
+    /// Memoized `use`-statement local-name → FQN map. Computed on first
+    /// access via `file_imports()`; a fresh `ParsedDoc` per edit makes this a
+    /// once-per-revision cost instead of once-per-caller (goto-definition,
+    /// references, rename, and hover's cross-file fallback all want it).
+    imports_cache: OnceLock<Arc<HashMap<String, String>>>,
 }
 
 impl Drop for ParsedDoc {
@@ -122,6 +128,7 @@ impl ParsedDoc {
             _source: source,
             line_starts,
             _arena: ArenaGuard(Some(arena_box)),
+            imports_cache: OnceLock::new(),
         }
     }
 
@@ -162,6 +169,15 @@ impl ParsedDoc {
             source: self.source(),
             line_starts: self.line_starts(),
         }
+    }
+
+    /// `use`-statement local-name → FQN map, memoized on first call for this
+    /// `ParsedDoc` (see `imports_cache`). Callers only ever read the map, so
+    /// the returned `Arc` is a refcount bump on every call after the first.
+    pub fn file_imports(&self) -> Arc<HashMap<String, String>> {
+        self.imports_cache
+            .get_or_init(|| Arc::new(crate::navigation::references::collect_file_imports(self)))
+            .clone()
     }
 }
 
@@ -580,5 +596,24 @@ mod tests {
     fn str_offset_unrelated_content_returns_none() {
         let owned = "bar".to_string();
         assert_eq!(str_offset("<?php foo", &owned), None);
+    }
+
+    /// `file_imports()` must walk the AST at most once per `ParsedDoc` —
+    /// repeat calls (goto-definition, references, rename, and hover's
+    /// cross-file fallback all want the map for the same open file) should
+    /// hit the memoized `Arc`, not re-run `collect_file_imports`.
+    #[test]
+    fn file_imports_is_memoized_across_calls() {
+        let doc = ParsedDoc::parse("<?php\nuse App\\Foo;\nuse App\\Bar as B;\n".to_string());
+
+        let first = doc.file_imports();
+        assert_eq!(first.get("Foo").map(String::as_str), Some("App\\Foo"));
+        assert_eq!(first.get("B").map(String::as_str), Some("App\\Bar"));
+
+        let second = doc.file_imports();
+        assert!(
+            Arc::ptr_eq(&first, &second),
+            "repeat calls must share the memoized map, not recompute it"
+        );
     }
 }
