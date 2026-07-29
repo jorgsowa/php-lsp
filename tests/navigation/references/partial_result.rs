@@ -138,3 +138,64 @@ async fn references_final_result_unchanged_by_partial_result_token() {
         render_locations(&resp_without_token, &without_token.uri(""))
     );
 }
+
+const CASE_DIVERGENT_FIXTURE: &str = r#"//- /src/Owner.php
+<?php
+class Owner {
+    public function pro$0cess(): void {}
+}
+
+//- /src/CaseDivergent.php
+<?php
+class CaseDivergent {
+    public function run(): void {
+        $x = new OWNER();
+        $x->process();
+    }
+}
+"#;
+
+/// The priority-streaming partition's owner-mention check must be
+/// ASCII-case-insensitive like PHP's own class resolution (and like mir's
+/// own candidate gate) — a file that only spells the owner class in a
+/// different case (`new OWNER()` for `class Owner`) is still a genuine
+/// reference and must stream in the priority batch, not wait for the
+/// authoritative pass.
+#[tokio::test]
+async fn references_priority_batch_matches_owner_mention_case_insensitively() {
+    let mut s = TestServer::new().await;
+    let opened = s.open_fixture(CASE_DIVERGENT_FIXTURE).await;
+    let c = opened.cursor().clone();
+    let uri = s.uri(&c.path);
+
+    let (resp, progress) = s
+        .client()
+        .request_capturing_notifications(
+            "textDocument/references",
+            references_params(&uri, c.line, c.character, Some("refs-token-case")),
+            "$/progress",
+        )
+        .await;
+
+    assert!(resp["error"].is_null(), "references errored: {resp:?}");
+
+    let final_locations = render_locations(&resp, &s.uri(""));
+    assert!(
+        final_locations.contains("CaseDivergent.php"),
+        "the case-divergent call site must appear in the final response:\n{final_locations}"
+    );
+
+    let streamed = progress
+        .iter()
+        .map(|notif| {
+            let batch = json!({ "result": notif["params"]["value"] });
+            render_locations(&batch, &s.uri(""))
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        streamed.contains("CaseDivergent.php"),
+        "case-divergent owner mention (`new OWNER()` for `class Owner`) must \
+         stream in the priority batch, not only the authoritative response:\n{streamed}"
+    );
+}

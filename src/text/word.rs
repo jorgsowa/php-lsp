@@ -156,6 +156,20 @@ pub(crate) fn fqn_short_name(fqn: &str) -> &str {
     fqn.rsplit('\\').next().unwrap_or(fqn)
 }
 
+/// Whether `haystack` contains `needle` as an ASCII-case-insensitive
+/// substring — PHP class/method names are case-insensitive (`new COLOR()`
+/// resolves to `class Color`), matching the semantics mir's own candidate
+/// gate and `fqn_reachable_files` already use elsewhere in this codebase.
+pub(crate) fn contains_ascii_case_insensitive(haystack: &str, needle: &str) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+    let (h, n) = (haystack.as_bytes(), needle.as_bytes());
+    n.len() <= h.len()
+        && h.windows(n.len())
+            .any(|w| w.eq_ignore_ascii_case(n))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -233,5 +247,23 @@ mod tests {
             },
         };
         assert_eq!(selected_text_range(src, range), "");
+    }
+
+    #[test]
+    fn contains_ascii_case_insensitive_matches_regardless_of_case() {
+        assert!(contains_ascii_case_insensitive("new COLOR()", "Color"));
+        assert!(contains_ascii_case_insensitive("new Color()", "COLOR"));
+        assert!(contains_ascii_case_insensitive("class Color {}", "color"));
+    }
+
+    #[test]
+    fn contains_ascii_case_insensitive_rejects_non_match() {
+        assert!(!contains_ascii_case_insensitive("class Node {}", "Color"));
+    }
+
+    #[test]
+    fn contains_ascii_case_insensitive_empty_needle_matches_anything() {
+        assert!(contains_ascii_case_insensitive("anything", ""));
+        assert!(contains_ascii_case_insensitive("", ""));
     }
 }
