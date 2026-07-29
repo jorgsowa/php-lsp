@@ -135,7 +135,7 @@ fn cold_ms(n: usize, reps: usize, sym: &Name, noise: fn(usize) -> (Url, String))
     let mut count = 0;
     for _ in 0..reps {
         let store = build(n, noise);
-        let files: Vec<Arc<str>> = store.workspace_file_paths();
+        let files: Vec<Arc<str>> = store.workspace_file_paths().to_vec();
         count = files.len();
         let t = Instant::now();
         std::hint::black_box(store.indexed_references(sym, &files, false, None));

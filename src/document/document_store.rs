@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
-use arc_swap::ArcSwap;
+use arc_swap::{ArcSwap, ArcSwapOption};
 
 use dashmap::{DashMap, DashSet};
 use salsa::Setter;
@@ -35,6 +35,12 @@ pub struct DocumentStore {
     /// `sync_workspace_files` skips the collect/sort/compare path when this
     /// is `false`, avoiding a lock acquisition on every LSP request.
     workspace_files_dirty: AtomicBool,
+    /// Cached result of `workspace_file_paths()`. `None` means stale/never
+    /// built — cleared by `mark_workspace_files_dirty` rather than shared
+    /// with `workspace_files_dirty` itself, since `sync_workspace_files`
+    /// destructively consumes that flag (`swap(false, ..)`) and a second
+    /// consumer reading it would race for the same signal.
+    workspace_file_paths_cache: ArcSwapOption<Vec<Arc<str>>>,
     /// `LspWorkspace` salsa input on the shared mir db: the project-file scoping
     /// set aggregated by `workspace_index`. Created lazily on first sync (the db
     /// is owned by the lazily-built `AnalysisSession`).
@@ -134,6 +140,7 @@ impl DocumentStore {
             lsp_ws_files: DashMap::new(),
             deleted_uris: DashSet::new(),
             workspace_files_dirty: AtomicBool::new(true),
+            workspace_file_paths_cache: ArcSwapOption::from(None),
             lsp_workspace: Mutex::new(None),
             php_version: Mutex::new(mir_analyzer::PhpVersion::LATEST),
             psr4: Arc::new(ArcSwap::from_pointee(Psr4Map::empty())),
@@ -577,7 +584,13 @@ impl DocumentStore {
         let path: Arc<str> = Arc::from(uri.as_str());
         let session = self.analysis_session(self.workspace_php_version());
         if let Some(wf) = self.lsp_ws_files.get(uri).map(|e| *e) {
-            self.deleted_uris.remove(uri);
+            // A resurrected (previously-deleted) file changes
+            // `workspace_file_paths()`'s result set — invalidate its cache.
+            // The common case (an edit to an already-live file) hits `None`
+            // here and pays nothing extra.
+            if self.deleted_uris.remove(uri).is_some() {
+                self.workspace_file_paths_cache.store(None);
+            }
             // Fast path: byte-identical text already mirrored — skip the write
             // lock and the revision bump entirely.
             if let Some(cached) = self.caches.text_cache.get(uri)
@@ -606,7 +619,7 @@ impl DocumentStore {
             });
             self.lsp_ws_files.insert(uri.clone(), wf);
             self.caches.text_cache.insert(uri.clone(), text_arc);
-            self.workspace_files_dirty.store(true, Ordering::Release);
+            self.mark_workspace_files_dirty();
             self.write_revision.fetch_add(1, Ordering::Release);
         }
     }
@@ -702,7 +715,7 @@ impl DocumentStore {
         // `remove_source_file`, so keeping the handle costs only its own
         // small footprint, not the file's content.
         self.deleted_uris.insert(uri.clone());
-        self.workspace_files_dirty.store(true, Ordering::Release);
+        self.mark_workspace_files_dirty();
         // Sync workspace files so the deleted file is removed from the salsa
         // `Workspace::files` list and won't appear in workspace symbols etc.
         self.sync_workspace_files();
@@ -879,10 +892,12 @@ impl DocumentStore {
     }
 
     /// Mark the workspace file set as dirty so the next `sync_workspace_files`
-    /// call re-runs the collect/sort/compare path.  Exposed for benchmarks that
-    /// need to measure the dirty-path cost in isolation.
+    /// call re-runs the collect/sort/compare path, and invalidate the
+    /// `workspace_file_paths()` cache. Exposed for benchmarks that need to
+    /// measure the dirty-path cost in isolation.
     pub fn mark_workspace_files_dirty(&self) {
         self.workspace_files_dirty.store(true, Ordering::Release);
+        self.workspace_file_paths_cache.store(None);
     }
 
     /// Update the PHP version tracked by the workspace. Salsa will invalidate
@@ -913,7 +928,7 @@ impl DocumentStore {
     fn drop_session_scoped_state(&self) {
         self.lsp_ws_files.clear();
         *self.lsp_workspace.lock().unwrap() = None;
-        self.workspace_files_dirty.store(true, Ordering::Release);
+        self.mark_workspace_files_dirty();
         // Cached FileAnalysis values reference the old session's state.
         self.caches.evict_analysis_all();
     }
@@ -1066,18 +1081,29 @@ impl DocumentStore {
             }
             _ => {}
         }
-        self.workspace_file_paths()
+        self.workspace_file_paths().to_vec()
     }
 
     /// Every active workspace file as a mir path (`Arc<str>` of the URI).
     /// The candidate scope handed to mir's queries — mir gates uncommitted
     /// candidates on symbol-name mention internally, so this is always safe.
-    pub fn workspace_file_paths(&self) -> Vec<Arc<str>> {
-        self.lsp_ws_files
-            .iter()
-            .filter(|e| !self.deleted_uris.contains(e.key()))
-            .map(|e| Arc::<str>::from(e.key().as_str()))
-            .collect()
+    ///
+    /// Cached behind an `Arc` (invalidated by `mark_workspace_files_dirty`) so
+    /// the ~15K-file walk + `Arc<str>` allocation per file only happens once
+    /// per workspace-file-set change, not once per caller per request.
+    pub fn workspace_file_paths(&self) -> Arc<Vec<Arc<str>>> {
+        if let Some(cached) = self.workspace_file_paths_cache.load_full() {
+            return cached;
+        }
+        let files: Arc<Vec<Arc<str>>> = Arc::new(
+            self.lsp_ws_files
+                .iter()
+                .filter(|e| !self.deleted_uris.contains(e.key()))
+                .map(|e| Arc::<str>::from(e.key().as_str()))
+                .collect(),
+        );
+        self.workspace_file_paths_cache.store(Some(Arc::clone(&files)));
+        files
     }
 
     /// Transitive subtypes of `class_fqn` from mir's maintained subtype edge

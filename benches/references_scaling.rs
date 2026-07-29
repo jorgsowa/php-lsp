@@ -158,10 +158,11 @@ fn main() {
         "files", "before_n", "after_n", "before_ms", "after_ms", "speedup"
     );
     for &n in &[100usize, 500, 1000, 3000] {
-        let (before_n, before_ms) = cold_ms(n, reps, &sym, |s, _| s.workspace_file_paths());
+        let (before_n, before_ms) = cold_ms(n, reps, &sym, |s, _| s.workspace_file_paths().to_vec());
         let (after_n, after_ms) = cold_ms(n, reps, &sym, |s, reach| {
             s.workspace_file_paths()
-                .into_iter()
+                .iter()
+                .cloned()
                 .filter(|u| reach.contains(u.as_ref()))
                 .collect()
         });
@@ -183,7 +184,8 @@ fn main() {
         let (store, reachable) = build(n);
         let files: Vec<Arc<str>> = store
             .workspace_file_paths()
-            .into_iter()
+            .iter()
+            .cloned()
             .filter(|u| reachable.contains(u.as_ref()))
             .collect();
         let t = Instant::now();
@@ -195,7 +197,8 @@ fn main() {
         let (store, reachable) = build(n);
         let files: Vec<Arc<str>> = store
             .workspace_file_paths()
-            .into_iter()
+            .iter()
+            .cloned()
             .filter(|u| reachable.contains(u.as_ref()))
             .collect();
         let t = Instant::now();
@@ -240,7 +243,8 @@ fn main() {
     let (store, reachable) = build(1000);
     let after: Vec<Arc<str>> = store
         .workspace_file_paths()
-        .into_iter()
+        .iter()
+        .cloned()
         .filter(|u| reachable.contains(u.as_ref()))
         .collect();
     for _ in 0..3 {
@@ -311,7 +315,8 @@ fn long_session_gate(sym: &Name) -> bool {
     let (store, reachable) = build(N);
     let files: Vec<Arc<str>> = store
         .workspace_file_paths()
-        .into_iter()
+        .iter()
+        .cloned()
         .filter(|u| reachable.contains(u.as_ref()))
         .collect();
     let cancel = store.begin_warm_sweep();
