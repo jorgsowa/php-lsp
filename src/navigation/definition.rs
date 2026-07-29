@@ -5,7 +5,7 @@ use tower_lsp::lsp_types::{Location, Position, Range, Url};
 
 use super::walk::collect_var_refs_in_scope;
 use crate::document::ast::{ParsedDoc, SourceView};
-use crate::text::{strip_variable_sigil, word_at_position, zero_width_location};
+use crate::text::{word_at_position, zero_width_location};
 use crate::types::resolve::{Container, Declaration, resolve_declaration};
 
 /// Find the definition of the symbol under `position`.
@@ -107,57 +107,6 @@ fn resolve_definition_range(
 
 fn definition_name_range(sv: SourceView<'_>, decl: &Declaration<'_>) -> Range {
     sv.name_range_in_span(decl.name(), decl.span())
-}
-
-/// Find a class/function declaration by name in a slice of `FileIndex` entries.
-/// Returns the URI and a line-level `Range`.
-pub fn find_declaration_in_indexes(
-    name: &str,
-    indexes: &[(
-        tower_lsp::lsp_types::Url,
-        std::sync::Arc<crate::index::file_index::FileIndex>,
-    )],
-) -> Option<Location> {
-    let bare = strip_variable_sigil(name);
-    for (uri, idx) in indexes {
-        // Check top-level functions.
-        for f in &idx.functions {
-            if f.name.as_ref() == bare || f.name.as_ref() == name {
-                return Some(zero_width_location(uri, f.start_line));
-            }
-        }
-        // Check classes / interfaces / traits / enums and their members.
-        for cls in &idx.classes {
-            if cls.name.as_ref() == bare || cls.name.as_ref() == name {
-                return Some(zero_width_location(uri, cls.start_line));
-            }
-            // Methods.
-            for m in &cls.methods {
-                if m.name.as_ref() == name {
-                    return Some(zero_width_location(uri, m.start_line));
-                }
-            }
-            // Properties (stored without `$`).
-            for p in &cls.properties {
-                if p.name.as_ref() == bare {
-                    return Some(zero_width_location(uri, p.start_line));
-                }
-            }
-            // Class constants.
-            for cc in &cls.constants {
-                if cc.as_ref() == name {
-                    return Some(zero_width_location(uri, cls.start_line));
-                }
-            }
-            // Enum cases.
-            for case in &cls.cases {
-                if case.as_ref() == name {
-                    return Some(zero_width_location(uri, cls.start_line));
-                }
-            }
-        }
-    }
-    None
 }
 
 /// Walk the class hierarchy (extends + traits) in the workspace index to find

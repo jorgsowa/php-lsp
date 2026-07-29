@@ -4,7 +4,7 @@ use std::hint::black_box;
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use rayon::prelude::*;
-use tower_lsp::lsp_types::{Position, Url};
+use tower_lsp::lsp_types::{Location, Position, Range, Url};
 
 use php_lsp::ast::ParsedDoc;
 use php_lsp::call_hierarchy::{outgoing_calls_indexed, prepare_call_hierarchy_indexed};
@@ -520,6 +520,58 @@ fn bench_inlay_hints(c: &mut Criterion) {
     group.finish();
 }
 
+/// Comparison baseline only: the linear per-file scan `find_declaration`
+/// (in `db::workspace_index`) replaced in production. Kept here, not in
+/// `src/`, purely so `index_fallback_linear_*` still has something to
+/// measure against `index_fallback_map_*`.
+fn find_declaration_linear_scan(name: &str, indexes: &[(Url, Arc<FileIndex>)]) -> Option<Location> {
+    fn zero_width_location(uri: &Url, line: u32) -> Location {
+        let pos = Position { line, character: 0 };
+        Location {
+            uri: uri.clone(),
+            range: Range {
+                start: pos,
+                end: pos,
+            },
+        }
+    }
+
+    let bare = name.strip_prefix('$').unwrap_or(name);
+    for (uri, idx) in indexes {
+        for f in &idx.functions {
+            if f.name.as_ref() == bare || f.name.as_ref() == name {
+                return Some(zero_width_location(uri, f.start_line));
+            }
+        }
+        for cls in &idx.classes {
+            if cls.name.as_ref() == bare || cls.name.as_ref() == name {
+                return Some(zero_width_location(uri, cls.start_line));
+            }
+            for m in &cls.methods {
+                if m.name.as_ref() == name {
+                    return Some(zero_width_location(uri, m.start_line));
+                }
+            }
+            for p in &cls.properties {
+                if p.name.as_ref() == bare {
+                    return Some(zero_width_location(uri, p.start_line));
+                }
+            }
+            for cc in &cls.constants {
+                if cc.as_ref() == name {
+                    return Some(zero_width_location(uri, cls.start_line));
+                }
+            }
+            for case in &cls.cases {
+                if case.as_ref() == name {
+                    return Some(zero_width_location(uri, cls.start_line));
+                }
+            }
+        }
+    }
+    None
+}
+
 fn bench_definition_index_fallback(c: &mut Criterion) {
     let Some(docs) = laravel_docs() else {
         eprintln!("Laravel fixture not found — skipping definition/index_fallback_*");
@@ -538,7 +590,7 @@ fn bench_definition_index_fallback(c: &mut Criterion) {
     // full walk over every declaration in every FileIndex.
     group.bench_function("index_fallback_linear_miss", |b| {
         b.iter(|| {
-            black_box(php_lsp::definition::find_declaration_in_indexes(
+            black_box(find_declaration_linear_scan(
                 "zzz_no_such_symbol",
                 &indexes,
             ))
@@ -550,7 +602,7 @@ fn bench_definition_index_fallback(c: &mut Criterion) {
     // Typical hit: a method name defined deep in the framework.
     group.bench_function("index_fallback_linear_hit", |b| {
         b.iter(|| {
-            black_box(php_lsp::definition::find_declaration_in_indexes(
+            black_box(find_declaration_linear_scan(
                 "firstOrCreate",
                 &indexes,
             ))

@@ -58,8 +58,8 @@ pub enum DeclKind {
 /// One named declaration, pre-resolved to its file and (zero-width) line.
 /// Stored in encounter order — file order, then within a file: functions
 /// first, then per class: the class itself, methods, properties, constants,
-/// enum cases — which is exactly the precedence the old linear scan in
-/// `find_declaration_in_indexes` had.
+/// enum cases — which is exactly the precedence the old linear scan (since
+/// removed in favor of this map) had.
 #[derive(Debug, Clone, Copy)]
 pub struct DeclRef {
     pub file: u32,
@@ -246,7 +246,7 @@ impl WorkspaceIndexData {
         candidates.first().copied()
     }
 
-    /// O(1) replacement for the linear `find_declaration_in_indexes` scan:
+    /// O(1) replacement for the old linear per-file scan (since removed):
     /// find a declaration by name, optionally excluding one file (the current
     /// document, which the caller has already searched with accurate AST
     /// ranges). Matching rules mirror the old scan: a sigil query (`$foo`)
