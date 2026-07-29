@@ -143,7 +143,7 @@ impl Backend {
         }
     }
 
-    fn get_open_text(&self, uri: &Url) -> Option<String> {
+    fn get_open_text(&self, uri: &Url) -> Option<Arc<str>> {
         self.open_files.text(uri)
     }
 

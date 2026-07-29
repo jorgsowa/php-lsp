@@ -16,8 +16,10 @@ use crate::lang::config::DiagnosticsConfig;
 /// Keeping them on `Backend` leaves `DocumentStore` as a pure salsa-input wrapper.
 #[derive(Default, Clone)]
 pub(crate) struct OpenFile {
-    /// Live editor text.
-    pub(crate) text: String,
+    /// Live editor text. `Arc`-backed so readers (`OpenFiles::text`, hit on
+    /// every request that needs the current buffer) clone a refcount instead
+    /// of the whole buffer.
+    pub(crate) text: Arc<str>,
     /// Monotonic counter bumped on every `set_open_text` / `close_open_file`;
     /// used to discard stale async parse results.
     pub(crate) version: u64,
@@ -41,7 +43,11 @@ impl OpenFiles {
     }
 
     pub(crate) fn set_open_text(&self, docs: &DocumentStore, uri: Url, text: String) -> u64 {
-        docs.mirror_text(&uri, &text);
+        // Build the Arc once and hand the same allocation to both the salsa
+        // mirror and the open-file entry — `mirror_text_arc` skips the extra
+        // `Arc::from` copy `mirror_text` would otherwise make from `&text`.
+        let text: Arc<str> = Arc::from(text);
+        docs.mirror_text_arc(&uri, Arc::clone(&text));
         let mut entry = self.0.entry(uri).or_default();
         entry.version += 1;
         entry.text = text;
@@ -57,8 +63,8 @@ impl OpenFiles {
         self.0.get(uri).map(|e| e.version)
     }
 
-    pub(crate) fn text(&self, uri: &Url) -> Option<String> {
-        self.0.get(uri).map(|e| e.text.clone())
+    pub(crate) fn text(&self, uri: &Url) -> Option<Arc<str>> {
+        self.0.get(uri).map(|e| Arc::clone(&e.text))
     }
 
     pub(crate) fn set_parse_diagnostics(&self, uri: &Url, diagnostics: Vec<Diagnostic>) {
@@ -146,4 +152,27 @@ pub(crate) fn compute_open_file_diagnostics(
         out.extend(issues_to_diagnostics(&issues, uri, diag_cfg));
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `OpenFiles::text` must hand out the same `Arc` allocation on repeat
+    /// reads (a refcount bump), not a fresh clone of the buffer — the whole
+    /// point of storing `Arc<str>` instead of `String` in `OpenFile`.
+    #[test]
+    fn text_reuses_the_same_arc_across_reads() {
+        let docs = DocumentStore::new();
+        let open_files = OpenFiles::new();
+        let uri = Url::parse("file:///test.php").unwrap();
+        open_files.set_open_text(&docs, uri.clone(), "<?php".to_owned());
+
+        let first = open_files.text(&uri).unwrap();
+        let second = open_files.text(&uri).unwrap();
+        assert!(
+            Arc::ptr_eq(&first, &second),
+            "repeated reads must share one allocation, not clone the buffer per call"
+        );
+    }
 }

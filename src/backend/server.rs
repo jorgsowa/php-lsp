@@ -292,7 +292,7 @@ impl LanguageServer for Backend {
                     Some(range) => {
                         let mut cur = match updated.take() {
                             Some(t) => t,
-                            None => self.get_open_text(&uri).unwrap_or_default(),
+                            None => self.get_open_text(&uri).unwrap_or_default().to_string(),
                         };
                         crate::text::apply_content_change(&mut cur, range, &change.text);
                         updated = Some(cur);
