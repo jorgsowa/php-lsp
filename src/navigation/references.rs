@@ -8,7 +8,6 @@ use tower_lsp::lsp_types::{Location, Position, Range, Url};
 
 use super::walk::all_class_ref_names_in_stmts;
 use crate::document::ast::ParsedDoc;
-use crate::text::fqn_short_name;
 
 /// What kind of symbol the cursor is on.  Used to dispatch to the
 /// appropriate semantic walker so that, e.g., searching for `get` as a
@@ -78,11 +77,7 @@ impl<'arena, 'src> Visitor<'arena, 'src> for ImportsVisitor {
         match &stmt.kind {
             StmtKind::Use(u) if self.only_kind.is_none_or(|k| u.kind == k) => {
                 for item in u.uses.iter() {
-                    let fqn = item.name.to_string_repr().into_owned();
-                    let short = item
-                        .alias
-                        .map(|a| a.to_string())
-                        .unwrap_or_else(|| fqn_short_name(&fqn).to_string());
+                    let (short, fqn) = crate::document::ast::use_item_alias_and_fqn(item);
                     self.out.insert(short, fqn);
                 }
                 ControlFlow::Continue(())

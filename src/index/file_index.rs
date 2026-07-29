@@ -660,14 +660,8 @@ fn collect_stmts(
 
             StmtKind::Use(u) if u.kind == UseKind::Normal => {
                 for item in u.uses.iter() {
-                    let fqn: Box<str> = item.name.to_string_repr().as_ref().into();
-                    let short = crate::text::fqn_short_name(&fqn).to_string();
-                    let alias: Box<str> = item
-                        .alias
-                        .map(|a| a.to_string())
-                        .unwrap_or_else(|| short.clone())
-                        .into();
-                    index.use_imports.push((alias, fqn));
+                    let (alias, fqn) = crate::document::ast::use_item_alias_and_fqn(item);
+                    index.use_imports.push((alias.into(), fqn.into()));
                 }
             }
 

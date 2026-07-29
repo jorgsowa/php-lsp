@@ -408,6 +408,21 @@ pub fn str_offset_in_range(source: &str, span: Span, name: &str) -> Option<u32> 
     Some(span_start as u32 + offset)
 }
 
+/// The `(alias-or-short-name, FQN)` pair for one `use` import item: the
+/// import's local name (an explicit alias when present, otherwise the last
+/// segment of the imported FQN) paired with its fully-qualified name.
+/// Shared by `navigation::references`'s import-map builder and
+/// `index::file_index`'s persistent-index extraction, which otherwise
+/// duplicated this exact per-item computation.
+pub fn use_item_alias_and_fqn(item: &php_ast::UseItem<'_, '_>) -> (String, String) {
+    let fqn = item.name.to_string_repr().into_owned();
+    let alias = item
+        .alias
+        .map(|a| a.to_string())
+        .unwrap_or_else(|| crate::text::fqn_short_name(&fqn).to_string());
+    (alias, fqn)
+}
+
 // ── TypeHint formatting ────────────────────────────────────────────────────────
 
 /// Format a `TypeHint` as a PHP type string, e.g. `?int`, `string|null`.
