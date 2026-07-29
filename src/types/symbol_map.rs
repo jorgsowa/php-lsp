@@ -43,9 +43,6 @@ pub struct SymbolEntry {
     /// Precise LSP range of the identifier (not the full declaration span).
     pub name_range: Range,
     pub kind: SymbolEntryKind,
-    /// Whether the declaration is abstract (interface members, abstract methods).
-    /// Used to reconstruct `goto_declaration`'s two-pass abstract-first logic.
-    pub is_abstract: bool,
     /// Pre-rendered hover signature (e.g. `function foo(int $x): void`).
     /// `None` for properties and promoted parameters, which use the mir path.
     pub signature: Option<String>,
@@ -126,7 +123,6 @@ fn collect_stmts<'a>(
                     SymbolEntry {
                         name_range: sv.name_range_in_span(name, stmt.span),
                         kind: SymbolEntryKind::Function,
-                        is_abstract: false,
                         signature: sig,
                         doc_markdown,
                     },
@@ -150,7 +146,6 @@ fn collect_stmts<'a>(
                         SymbolEntry {
                             name_range: sv.name_range_in_span(name, stmt.span),
                             kind: SymbolEntryKind::Class,
-                            is_abstract: c.modifiers.is_abstract,
                             signature: sig,
                             doc_markdown,
                         },
@@ -173,7 +168,6 @@ fn collect_stmts<'a>(
                     SymbolEntry {
                         name_range: sv.name_range_in_span(name, stmt.span),
                         kind: SymbolEntryKind::Interface,
-                        is_abstract: true,
                         signature: sig,
                         doc_markdown,
                     },
@@ -195,7 +189,6 @@ fn collect_stmts<'a>(
                     SymbolEntry {
                         name_range: sv.name_range_in_span(name, stmt.span),
                         kind: SymbolEntryKind::Trait,
-                        is_abstract: false,
                         signature: sig,
                         doc_markdown,
                     },
@@ -217,7 +210,6 @@ fn collect_stmts<'a>(
                     SymbolEntry {
                         name_range: sv.name_range_in_span(name, stmt.span),
                         kind: SymbolEntryKind::Enum,
-                        is_abstract: false,
                         signature: sig,
                         doc_markdown,
                     },
@@ -240,7 +232,6 @@ fn collect_stmts<'a>(
                                 SymbolEntry {
                                     name_range: sv.name_range_in_span(case_name, member.span),
                                     kind: SymbolEntryKind::EnumCase,
-                                    is_abstract: false,
                                     signature: sig,
                                     doc_markdown,
                                 },
@@ -263,7 +254,6 @@ fn collect_stmts<'a>(
                                     kind: SymbolEntryKind::Method {
                                         container: Container::Enum,
                                     },
-                                    is_abstract: false,
                                     signature: sig,
                                     doc_markdown,
                                 },
@@ -286,7 +276,6 @@ fn collect_stmts<'a>(
                                     kind: SymbolEntryKind::ClassConst {
                                         container: Container::Enum,
                                     },
-                                    is_abstract: false,
                                     signature: sig,
                                     doc_markdown,
                                 },
@@ -326,18 +315,12 @@ fn collect_members<'a>(
                 let sig = declaration_signature(&m_decl, mname);
                 let doc_markdown = m.doc_comment.as_ref().and_then(doc_to_markdown);
                 let name_range = sv.name_range_in_span(mname, member.span);
-                let is_abstract = match container {
-                    Container::Interface => true,
-                    Container::Class | Container::Trait => m.is_abstract,
-                    Container::Enum => false,
-                };
                 push(
                     out,
                     mname.to_owned(),
                     SymbolEntry {
                         name_range,
                         kind: SymbolEntryKind::Method { container },
-                        is_abstract,
                         signature: sig,
                         doc_markdown,
                     },
@@ -355,7 +338,6 @@ fn collect_members<'a>(
                                 SymbolEntry {
                                     name_range: sv.name_range_in_span(pname, p.span),
                                     kind: SymbolEntryKind::PromotedParam,
-                                    is_abstract: false,
                                     signature: None,
                                     doc_markdown: None,
                                 },
@@ -381,7 +363,6 @@ fn collect_members<'a>(
                     SymbolEntry {
                         name_range,
                         kind: SymbolEntryKind::ClassConst { container },
-                        is_abstract: false,
                         signature: sig,
                         doc_markdown,
                     },
@@ -399,7 +380,6 @@ fn collect_members<'a>(
                     SymbolEntry {
                         name_range,
                         kind: SymbolEntryKind::Property { container },
-                        is_abstract: false,
                         signature: None,
                         doc_markdown: None,
                     },
@@ -423,35 +403,6 @@ pub fn is_hoverable_kind(kind: SymbolEntryKind) -> bool {
     )
 }
 
-/// `goto_declaration` pass 1: abstract/interface declarations.
-pub fn is_abstract_entry(e: &SymbolEntry) -> bool {
-    match e.kind {
-        SymbolEntryKind::Interface => true,
-        SymbolEntryKind::Method {
-            container: Container::Interface,
-        } => true,
-        SymbolEntryKind::Method {
-            container: Container::Class | Container::Trait,
-        } => e.is_abstract,
-        _ => false,
-    }
-}
-
-/// `goto_declaration` pass 2: any declaration except promoted params.
-pub fn is_any_entry(e: &SymbolEntry) -> bool {
-    !matches!(e.kind, SymbolEntryKind::PromotedParam)
-}
-
-/// `goto_definition`: skip enum constants (matching original walker).
-pub fn is_definition_entry(e: &SymbolEntry) -> bool {
-    !matches!(
-        e.kind,
-        SymbolEntryKind::ClassConst {
-            container: Container::Enum
-        }
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -466,7 +417,6 @@ mod tests {
         let m = build("<?php\nfunction greet(string $name): string { return $name; }");
         let e = m.lookup("greet", |_| true).unwrap();
         assert_eq!(e.kind, SymbolEntryKind::Function);
-        assert!(!e.is_abstract);
         assert_eq!(
             e.signature.as_deref(),
             Some("function greet(string $name): string")
@@ -478,10 +428,9 @@ mod tests {
         let m = build("<?php\nabstract class Foo {\n    abstract public function bar(): void;\n}");
         let cls = m.lookup("Foo", |_| true).unwrap();
         assert_eq!(cls.kind, SymbolEntryKind::Class);
-        assert!(cls.is_abstract);
 
-        let method = m
-            .lookup("bar", |e| {
+        assert!(
+            m.lookup("bar", |e| {
                 matches!(
                     e.kind,
                     SymbolEntryKind::Method {
@@ -489,15 +438,14 @@ mod tests {
                     }
                 )
             })
-            .unwrap();
-        assert!(method.is_abstract);
+            .is_some()
+        );
     }
 
     #[test]
     fn interface_member_is_abstract() {
         let m = build("<?php\ninterface Shape {\n    public function area(): float;\n}");
         let method = m.lookup("area", |_| true).unwrap();
-        assert!(method.is_abstract);
         assert_eq!(
             method.kind,
             SymbolEntryKind::Method {
