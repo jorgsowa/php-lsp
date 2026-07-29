@@ -2,37 +2,43 @@ use tower_lsp::lsp_types::{Position, Range, TextEdit};
 
 use crate::text::byte_to_utf16;
 
+/// If `line` is a `use` statement whose FQN (after an optional leading `\`)
+/// is exactly `target` on a word boundary (`;`, space, `{`, `,`, or
+/// end-of-line), return the byte range of the matched FQN text.
+fn find_use_match_in_line(line: &str, target: &str) -> Option<(usize, usize)> {
+    if !line.trim_start().starts_with("use ") {
+        return None;
+    }
+    let use_pos = line.find("use ")?;
+    let after_use = use_pos + 4;
+
+    let fqn_start = if line.as_bytes().get(after_use) == Some(&b'\\') {
+        after_use + 1
+    } else {
+        after_use
+    };
+    let fqn_str = &line[fqn_start..];
+
+    if !fqn_str.starts_with(target) {
+        return None;
+    }
+    let after_fqn = &fqn_str[target.len()..];
+    let is_boundary = after_fqn.is_empty()
+        || matches!(after_fqn.as_bytes()[0], b';' | b' ' | b'\t' | b'{' | b',');
+    if !is_boundary {
+        return None;
+    }
+
+    Some((fqn_start, fqn_start + target.len()))
+}
+
 /// Return `TextEdit`s that delete the entire `use FQN;` line from `source`.
 pub fn delete_use_in_source(source: &str, fqn: &str) -> Vec<TextEdit> {
     let mut edits = Vec::new();
     let clean = fqn.trim_start_matches('\\');
 
-    let lines: Vec<&str> = source.lines().collect();
-    for (line_idx, &line) in lines.iter().enumerate() {
-        let trimmed = line.trim_start();
-        if !trimmed.starts_with("use ") {
-            continue;
-        }
-
-        let Some(use_pos) = line.find("use ") else {
-            continue;
-        };
-        let after_use = use_pos + 4;
-
-        let (_, fqn_str) = if line.as_bytes().get(after_use) == Some(&b'\\') {
-            (after_use + 1, &line[after_use + 1..])
-        } else {
-            (after_use, &line[after_use..])
-        };
-
-        if !fqn_str.starts_with(clean) {
-            continue;
-        }
-
-        let after_fqn = &fqn_str[clean.len()..];
-        let is_boundary = after_fqn.is_empty()
-            || matches!(after_fqn.as_bytes()[0], b';' | b' ' | b'\t' | b'{' | b',');
-        if !is_boundary {
+    for (line_idx, line) in source.lines().enumerate() {
+        if find_use_match_in_line(line, clean).is_none() {
             continue;
         }
 
@@ -70,35 +76,9 @@ pub fn use_edits_in_source(source: &str, old_fqn: &str, new_fqn: &str) -> Vec<Te
     let new_clean = new_fqn.trim_start_matches('\\');
 
     for (line_idx, line) in source.lines().enumerate() {
-        // Only process use-statement lines
-        let trimmed = line.trim_start();
-        if !trimmed.starts_with("use ") {
-            continue;
-        }
-
-        let Some(use_pos) = line.find("use ") else {
+        let Some((fqn_start, fqn_end)) = find_use_match_in_line(line, old) else {
             continue;
         };
-        let after_use = use_pos + 4; // byte offset right after "use "
-
-        // Skip an optional leading backslash in the source
-        let (fqn_start, fqn_str) = if line.as_bytes().get(after_use) == Some(&b'\\') {
-            (after_use + 1, &line[after_use + 1..])
-        } else {
-            (after_use, &line[after_use..])
-        };
-
-        if !fqn_str.starts_with(old) {
-            continue;
-        }
-
-        // Confirm the match ends on a word boundary (`;`, space, `{`, `,`, end-of-string)
-        let after_fqn = &fqn_str[old.len()..];
-        let is_boundary = after_fqn.is_empty()
-            || matches!(after_fqn.as_bytes()[0], b';' | b' ' | b'\t' | b'{' | b',');
-        if !is_boundary {
-            continue;
-        }
 
         let line_u32 = line_idx as u32;
         edits.push(TextEdit {
@@ -109,7 +89,7 @@ pub fn use_edits_in_source(source: &str, old_fqn: &str, new_fqn: &str) -> Vec<Te
                 },
                 end: Position {
                     line: line_u32,
-                    character: byte_to_utf16(line, fqn_start + old.len()),
+                    character: byte_to_utf16(line, fqn_end),
                 },
             },
             new_text: new_clean.to_string(),
