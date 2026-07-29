@@ -892,12 +892,16 @@ impl LanguageServer for Backend {
             let wi = self.workspace_index_async().await;
             let uri_str = uri.to_string();
             let hints = match tokio::task::spawn_blocking(move || {
+                // Built once per workspace-index revision and cached on `wi`
+                // (a salsa-memoized Arc); only actually walks the workspace on
+                // the first inlay_hint request after an edit.
+                let workspace_defs = wi.func_signatures();
                 inlay_hints(
                     doc.source(),
                     &doc,
                     analysis.as_deref(),
                     params.range,
-                    &wi.files,
+                    &workspace_defs,
                 )
             })
             .await

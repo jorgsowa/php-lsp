@@ -27,7 +27,7 @@
 //! the crate-root glossary in `lib.rs`.
 
 use std::collections::HashMap;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use tower_lsp::lsp_types::Url;
 
@@ -86,6 +86,78 @@ pub struct WorkspaceIndexData {
     /// prefix search can binary-search a range instead of scanning every
     /// class name (and re-lowercasing it) on every keystroke.
     pub classes_by_lowercase_name: Vec<(Box<str>, ClassRef)>,
+    /// Lazily-built `name/ClassName::method → FuncSignature` map covering
+    /// every workspace function and method, for `inlay_hint`'s cross-file
+    /// fallback. Built at most once per revision (first `inlay_hint` request
+    /// after an edit) and shared by every subsequent request against the
+    /// same `WorkspaceIndexData` Arc via [`WorkspaceIndexData::func_signatures`].
+    func_signatures: OnceLock<Arc<HashMap<String, FuncSignature>>>,
+}
+
+/// A function or method's parameter names, variadic-ness, and return type —
+/// enough to drive inlay-hint rendering at a call site without re-parsing
+/// the declaring file.
+#[derive(Clone)]
+pub struct FuncSignature {
+    pub params: Vec<String>,
+    pub variadic_last: bool,
+    pub return_type: Option<String>,
+}
+
+/// Populate `map` with function and method signatures from every workspace
+/// file. Entries already present (from the current file's own AST) are not
+/// overwritten so an in-file definition always wins over a possibly-stale
+/// index entry.
+pub fn build_func_signatures(
+    files: &[(Url, Arc<FileIndex>)],
+) -> HashMap<String, FuncSignature> {
+    let mut map = HashMap::new();
+    for (_, idx) in files {
+        for func in &idx.functions {
+            let func_name = func.name.to_string();
+            if map.contains_key(&func_name) {
+                continue;
+            }
+            let params: Vec<String> = func.params.iter().map(|p| p.name.to_string()).collect();
+            let variadic_last = func.params.last().map(|p| p.variadic).unwrap_or(false);
+            map.insert(
+                func_name,
+                FuncSignature {
+                    params,
+                    variadic_last,
+                    return_type: func.return_type.as_ref().map(|r| r.to_string()),
+                },
+            );
+        }
+        for class in &idx.classes {
+            for method in &class.methods {
+                let method_name = method.name.to_string();
+                let params: Vec<String> =
+                    method.params.iter().map(|p| p.name.to_string()).collect();
+                let variadic_last = method.params.last().map(|p| p.variadic).unwrap_or(false);
+                let sig = FuncSignature {
+                    params: params.clone(),
+                    variadic_last,
+                    return_type: method.return_type.as_ref().map(|r| r.to_string()),
+                };
+                // Register with qualified key "ClassName::methodName" for unambiguous lookup
+                let cn = class.name.as_ref();
+                let qualified = format!("{}::{}", cn, method_name);
+                map.insert(qualified, sig.clone());
+                // Also register __construct under the class name so `new ClassName(...)` gets hints.
+                if method_name == "__construct" {
+                    map.entry(cn.to_string()).or_insert_with(|| FuncSignature {
+                        params: params.clone(),
+                        variadic_last,
+                        return_type: None,
+                    });
+                }
+                // Register with short name as fallback for backwards compatibility
+                map.entry(method_name).or_insert(sig);
+            }
+        }
+    }
+    map
 }
 
 pub(crate) type BuildMapsResult = (
@@ -296,7 +368,18 @@ impl WorkspaceIndexData {
             subtypes_of,
             decls_by_name,
             classes_by_lowercase_name,
+            func_signatures: OnceLock::new(),
         }
+    }
+
+    /// The workspace-wide function/method signature map, built on first use
+    /// per revision and shared (via `Arc` clone) by every later `inlay_hint`
+    /// request against this same `WorkspaceIndexData`.
+    pub fn func_signatures(&self) -> Arc<HashMap<String, FuncSignature>> {
+        Arc::clone(
+            self.func_signatures
+                .get_or_init(|| Arc::new(build_func_signatures(&self.files))),
+        )
     }
 }
 

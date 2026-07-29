@@ -11,7 +11,7 @@ use tower_lsp::lsp_types::Url;
 use crate::db::index::IndexArc;
 use crate::db::parse::ParsedArc;
 use crate::db::symbol_map::SymbolMapArc;
-use crate::db::workspace_index::{WorkspaceIndexArc, WorkspaceIndexData, build_maps};
+use crate::db::workspace_index::{WorkspaceIndexArc, WorkspaceIndexData};
 use crate::document::ast::ParsedDoc;
 use crate::index::file_index::FileIndex;
 use crate::types::symbol_map::SymbolMap;
@@ -77,13 +77,5 @@ pub fn workspace_index(db: &dyn MirDatabase, ws: LspWorkspace) -> WorkspaceIndex
         let idx = file_index(db, *wf).0.clone();
         files.push((url, idx));
     }
-    let (classes_by_name, subtypes_of, decls_by_name, classes_by_lowercase_name) =
-        build_maps(&files);
-    WorkspaceIndexArc(Arc::new(WorkspaceIndexData {
-        files,
-        classes_by_name,
-        subtypes_of,
-        decls_by_name,
-        classes_by_lowercase_name,
-    }))
+    WorkspaceIndexArc(Arc::new(WorkspaceIndexData::from_files(files)))
 }

@@ -1419,13 +1419,9 @@ impl DocumentStore {
         self.sync_workspace_files();
         let ws = *self.lsp_workspace.lock().unwrap();
         let Some(ws) = ws else {
-            return Arc::new(crate::db::workspace_index::WorkspaceIndexData {
-                files: Vec::new(),
-                classes_by_name: std::collections::HashMap::new(),
-                subtypes_of: std::collections::HashMap::new(),
-                decls_by_name: std::collections::HashMap::new(),
-                classes_by_lowercase_name: Vec::new(),
-            });
+            return Arc::new(crate::db::workspace_index::WorkspaceIndexData::from_files(
+                Vec::new(),
+            ));
         };
         self.snapshot_mir_query(move |db| crate::db::mir_queries::workspace_index(db, ws).0.clone())
     }
