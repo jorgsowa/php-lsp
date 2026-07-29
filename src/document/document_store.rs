@@ -921,12 +921,16 @@ impl DocumentStore {
     /// Update the PHP version tracked by the workspace. Salsa will invalidate
     /// all `semantic_issues` queries so diagnostics are re-evaluated.
     /// Skips the setter when the version hasn't changed to avoid spurious
-    /// query invalidation.
-    pub fn set_php_version(&self, version: mir_analyzer::PhpVersion) {
+    /// query invalidation. Returns `true` when the version actually changed —
+    /// callers that scan the workspace at runtime (not just at init, before
+    /// any file is mirrored) must re-scan every root when this is `true`,
+    /// since `drop_session_scoped_state` below empties `lsp_ws_files` and
+    /// nothing else repopulates it.
+    pub fn set_php_version(&self, version: mir_analyzer::PhpVersion) -> bool {
         {
             let mut guard = self.analysis_session.lock().unwrap();
             if guard.0 == version {
-                return;
+                return false;
             }
             // Clear the cached session too: `current_analysis_session()` trusts
             // `guard.1` unconditionally when present, so leaving the old
@@ -938,8 +942,10 @@ impl DocumentStore {
         }
         // Changing the version selects a different `AnalysisSession` (and thus
         // a different db). In practice the version is set once at init, before
-        // any file is mirrored.
+        // any file is mirrored — but a runtime change is possible too (the
+        // caller must re-scan in that case, see the `bool` return above).
         self.drop_session_scoped_state();
+        true
     }
 
     /// Discard every piece of state scoped to the current `AnalysisSession`'s

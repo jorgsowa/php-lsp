@@ -137,10 +137,18 @@ impl LanguageServer for Backend {
                     ver
                 };
                 cfg.php_version = Some(ver.clone());
-                if let Ok(pv) = ver.parse::<mir_analyzer::PhpVersion>() {
-                    self.docs.set_php_version(pv);
-                }
+                let version_changed = ver
+                    .parse::<mir_analyzer::PhpVersion>()
+                    .is_ok_and(|pv| self.docs.set_php_version(pv));
                 self.config.store(Arc::new(cfg));
+                if version_changed {
+                    // set_php_version's drop_session_scoped_state cleared
+                    // lsp_ws_files and nothing else repopulates it — without
+                    // this, workspace_file_paths() (and everything scoped by
+                    // it: references, rename, ...) silently sees an empty
+                    // workspace until files are individually re-touched.
+                    self.rescan_roots_after_version_change(&roots).await;
+                }
                 send_refresh_requests(&self.client).await;
             }
         })

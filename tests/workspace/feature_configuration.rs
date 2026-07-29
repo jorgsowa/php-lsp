@@ -120,3 +120,40 @@ async fn change_configuration_empty_config_uses_detected_version() {
         "empty config must not claim 'set by editor': {msg:?}"
     );
 }
+
+/// A runtime PHP-version change must re-populate the workspace file scope,
+/// or `workspace_file_paths()` — and everything scoped by it: references,
+/// rename, workspace symbols — silently sees an empty workspace afterward.
+/// Regression test: `DocumentStore::set_php_version`'s
+/// `drop_session_scoped_state` clears `lsp_ws_files` on every real version
+/// change, and nothing repopulated it before this fix.
+#[tokio::test]
+async fn change_configuration_php_version_change_rescans_workspace() {
+    let mut server = TestServer::with_fixture_and_options(
+        "psr4-mini",
+        json!({ "diagnostics": {"enabled": false}, "phpVersion": "8.1" }),
+    )
+    .await;
+    server.wait_for_index_ready().await;
+
+    // Sanity: workspace symbols resolve before the version change.
+    server
+        .wait_until_symbol_present("User", std::time::Duration::from_secs(5))
+        .await;
+
+    server
+        .change_configuration(json!({ "phpVersion": "8.3" }))
+        .await;
+
+    // Without the fix this call is answered from an emptied workspace and
+    // times out; the re-scan the fix adds repopulates it.
+    server
+        .wait_until_symbol_present("User", std::time::Duration::from_secs(5))
+        .await;
+
+    let out = server.snapshot_workspace_symbols("User").await;
+    expect![[r#"
+        Class       User @ src/Model/User.php:4
+        Property    $users @ src/Service/Registry.php:9"#]]
+    .assert_eq(&out);
+}
