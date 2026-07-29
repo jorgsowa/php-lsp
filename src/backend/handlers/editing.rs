@@ -23,143 +23,136 @@ use crate::editing::use_import::{
 };
 
 use super::super::Backend;
-use super::super::helpers::{DEFERRED_ACTION_TAGS, defer_actions};
+use super::super::helpers::{DEFERRED_ACTION_TAGS, defer_actions, generate_deferred_actions};
 
 impl Backend {
     pub(crate) async fn handle_code_action(
         &self,
         params: CodeActionParams,
     ) -> Result<Option<CodeActionResponse>> {
-        let uri = &params.text_document.uri;
-        let source = self.get_open_text(uri).unwrap_or_default();
-        let doc = match self.get_doc(uri) {
+        let uri = params.text_document.uri.clone();
+        let source = self.get_open_text(&uri).unwrap_or_default();
+        let doc = match self.get_doc(&uri) {
             Some(d) => d,
             None => return Ok(None),
         };
         let diag_cfg = self.config.load().diagnostics.clone();
-        let docs_sem = Arc::clone(&self.docs);
-        let uri_sem = uri.clone();
-        let diag_cfg_sem = diag_cfg.clone();
-        let sem_diags = tokio::task::spawn_blocking(move || {
-            docs_sem
-                .get_semantic_issues_salsa(&uri_sem)
+        let docs = Arc::clone(&self.docs);
+        let range = params.range;
+
+        // Every step below is CPU-bound tree-walking with no `.await` of its
+        // own (semantic-issue lookup, whole-workspace index scans, ~12
+        // whole-file AST walkers) — run it all on the blocking pool in one
+        // hop instead of on the tokio worker thread, consistent with
+        // hover/completion/inlay_hint.
+        let actions = tokio::task::spawn_blocking(move || {
+            let sem_diags = docs
+                .get_semantic_issues_salsa(&uri)
                 .map(|issues| {
-                    crate::semantic_diagnostics::issues_to_diagnostics(
-                        &issues,
-                        &uri_sem,
-                        &diag_cfg_sem,
-                    )
+                    crate::semantic_diagnostics::issues_to_diagnostics(&issues, &uri, &diag_cfg)
                 })
-                .unwrap_or_default()
+                .unwrap_or_default();
+
+            let mut actions: Vec<CodeActionOrCommand> = Vec::new();
+            docs.with_all_indexes(|all_indexes| {
+                for diag in &sem_diags {
+                    if diag.code != Some(NumberOrString::String("UndefinedClass".to_string())) {
+                        continue;
+                    }
+                    if diag.range.start.line < range.start.line
+                        || diag.range.start.line > range.end.line
+                    {
+                        continue;
+                    }
+                    let resolved_name = diag
+                        .message
+                        .strip_prefix("Class ")
+                        .and_then(|s| s.strip_suffix(" does not exist"))
+                        .unwrap_or("")
+                        .trim();
+                    if resolved_name.is_empty() {
+                        continue;
+                    }
+                    // `resolved_name` is mir's namespace-resolved attempt (e.g. `App\Widget`
+                    // for a bare `Widget` reference inside `namespace App;`), not the token
+                    // the developer wrote — take the last segment to recover the short name
+                    // the workspace index stores classes under.
+                    let class_name = resolved_name.rsplit('\\').next().unwrap_or(resolved_name);
+                    if let Some(fqn) = find_fqn_for_class(class_name, all_indexes) {
+                        let edit = build_use_import_edit(&source, &uri, &fqn);
+                        let action = CodeAction {
+                            title: format!("Add use {fqn}"),
+                            kind: Some(CodeActionKind::QUICKFIX),
+                            edit: Some(edit),
+                            diagnostics: Some(vec![diag.clone()]),
+                            ..Default::default()
+                        };
+                        actions.push(CodeActionOrCommand::CodeAction(action));
+                    }
+                }
+
+                // UndefinedFunction → use function FQN;
+                for diag in &sem_diags {
+                    if diag.code != Some(NumberOrString::String("UndefinedFunction".to_string()))
+                    {
+                        continue;
+                    }
+                    if diag.range.start.line < range.start.line
+                        || diag.range.start.line > range.end.line
+                    {
+                        continue;
+                    }
+                    let fn_name = diag
+                        .message
+                        .strip_prefix("Function ")
+                        .and_then(|s| s.strip_suffix("() is not defined"))
+                        .unwrap_or("")
+                        .trim();
+                    if fn_name.is_empty() {
+                        continue;
+                    }
+                    if let Some(fqn) = find_fqn_for_function(fn_name, all_indexes) {
+                        let edit = build_use_function_import_edit(&source, &uri, &fqn);
+                        let action = CodeAction {
+                            title: format!("Add use function {fqn}"),
+                            kind: Some(CodeActionKind::QUICKFIX),
+                            edit: Some(edit),
+                            diagnostics: Some(vec![diag.clone()]),
+                            ..Default::default()
+                        };
+                        actions.push(CodeActionOrCommand::CodeAction(action));
+                    }
+                }
+            });
+
+            for tag in DEFERRED_ACTION_TAGS {
+                actions.extend(defer_actions(
+                    generate_deferred_actions(&docs, tag, &source, &doc, range, &uri),
+                    tag,
+                    &uri,
+                    range,
+                ));
+            }
+
+            actions.extend(extract_variable_actions(&source, &doc, range, &uri));
+            actions.extend(extract_method_actions(&source, &doc, range, &uri));
+            actions.extend(extract_constant_actions(&source, range, &uri));
+            actions.extend(inline_variable_actions(&source, range, &uri));
+            actions.extend(change_visibility_actions(&source, &doc, range, &uri));
+            actions.extend(closure_to_arrow_function_actions(&source, &doc, range, &uri));
+            actions.extend(arrow_function_to_closure_actions(&source, &doc, range, &uri));
+            actions.extend(switch_to_match_actions(&source, &doc, range, &uri));
+            actions.extend(extract_interface_actions(&source, &doc, range, &uri));
+            actions.extend(local_to_property_actions(&source, &doc, range, &uri));
+            actions.extend(update_phpdoc_actions(&uri, &doc, range));
+            actions.extend(add_throws_actions(&uri, &doc, range));
+            if let Some(action) = organize_imports_action(&source, &uri) {
+                actions.push(action);
+            }
+            actions
         })
         .await
         .unwrap_or_default();
-
-        let mut actions: Vec<CodeActionOrCommand> = Vec::new();
-        self.docs.with_all_indexes(|all_indexes| {
-            for diag in &sem_diags {
-                if diag.code != Some(NumberOrString::String("UndefinedClass".to_string())) {
-                    continue;
-                }
-                if diag.range.start.line < params.range.start.line
-                    || diag.range.start.line > params.range.end.line
-                {
-                    continue;
-                }
-                let resolved_name = diag
-                    .message
-                    .strip_prefix("Class ")
-                    .and_then(|s| s.strip_suffix(" does not exist"))
-                    .unwrap_or("")
-                    .trim();
-                if resolved_name.is_empty() {
-                    continue;
-                }
-                // `resolved_name` is mir's namespace-resolved attempt (e.g. `App\Widget`
-                // for a bare `Widget` reference inside `namespace App;`), not the token
-                // the developer wrote — take the last segment to recover the short name
-                // the workspace index stores classes under.
-                let class_name = resolved_name.rsplit('\\').next().unwrap_or(resolved_name);
-                if let Some(fqn) = find_fqn_for_class(class_name, all_indexes) {
-                    let edit = build_use_import_edit(&source, uri, &fqn);
-                    let action = CodeAction {
-                        title: format!("Add use {fqn}"),
-                        kind: Some(CodeActionKind::QUICKFIX),
-                        edit: Some(edit),
-                        diagnostics: Some(vec![diag.clone()]),
-                        ..Default::default()
-                    };
-                    actions.push(CodeActionOrCommand::CodeAction(action));
-                }
-            }
-
-            // UndefinedFunction → use function FQN;
-            for diag in &sem_diags {
-                if diag.code != Some(NumberOrString::String("UndefinedFunction".to_string())) {
-                    continue;
-                }
-                if diag.range.start.line < params.range.start.line
-                    || diag.range.start.line > params.range.end.line
-                {
-                    continue;
-                }
-                let fn_name = diag
-                    .message
-                    .strip_prefix("Function ")
-                    .and_then(|s| s.strip_suffix("() is not defined"))
-                    .unwrap_or("")
-                    .trim();
-                if fn_name.is_empty() {
-                    continue;
-                }
-                if let Some(fqn) = find_fqn_for_function(fn_name, all_indexes) {
-                    let edit = build_use_function_import_edit(&source, uri, &fqn);
-                    let action = CodeAction {
-                        title: format!("Add use function {fqn}"),
-                        kind: Some(CodeActionKind::QUICKFIX),
-                        edit: Some(edit),
-                        diagnostics: Some(vec![diag.clone()]),
-                        ..Default::default()
-                    };
-                    actions.push(CodeActionOrCommand::CodeAction(action));
-                }
-            }
-        });
-
-        for tag in DEFERRED_ACTION_TAGS {
-            actions.extend(defer_actions(
-                self.generate_deferred_actions(tag, &source, &doc, params.range, uri),
-                tag,
-                uri,
-                params.range,
-            ));
-        }
-
-        actions.extend(extract_variable_actions(&source, &doc, params.range, uri));
-        actions.extend(extract_method_actions(&source, &doc, params.range, uri));
-        actions.extend(extract_constant_actions(&source, params.range, uri));
-        actions.extend(inline_variable_actions(&source, params.range, uri));
-        actions.extend(change_visibility_actions(&source, &doc, params.range, uri));
-        actions.extend(closure_to_arrow_function_actions(
-            &source,
-            &doc,
-            params.range,
-            uri,
-        ));
-        actions.extend(arrow_function_to_closure_actions(
-            &source,
-            &doc,
-            params.range,
-            uri,
-        ));
-        actions.extend(switch_to_match_actions(&source, &doc, params.range, uri));
-        actions.extend(extract_interface_actions(&source, &doc, params.range, uri));
-        actions.extend(local_to_property_actions(&source, &doc, params.range, uri));
-        actions.extend(update_phpdoc_actions(uri, &doc, params.range));
-        actions.extend(add_throws_actions(uri, &doc, params.range));
-        if let Some(action) = organize_imports_action(&source, uri) {
-            actions.push(action);
-        }
 
         Ok(if actions.is_empty() {
             None
@@ -199,7 +192,7 @@ impl Backend {
             None => return Ok(item),
         };
 
-        let candidates = self.generate_deferred_actions(&kind_tag, &source, &doc, range, &uri);
+        let candidates = generate_deferred_actions(&self.docs, &kind_tag, &source, &doc, range, &uri);
 
         for candidate in candidates {
             if let CodeActionOrCommand::CodeAction(ca) = candidate

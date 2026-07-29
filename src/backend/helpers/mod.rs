@@ -12,6 +12,7 @@ use std::sync::Arc;
 use tower_lsp::lsp_types::*;
 
 use crate::document::ast::ParsedDoc;
+use crate::document::document_store::DocumentStore;
 use crate::navigation::definition::find_declaration_range;
 
 use crate::actions::generate_action::{
@@ -185,36 +186,6 @@ impl Backend {
             docs.warm_start_indexes();
         })
         .await;
-    }
-
-    /// Tag → generator mapping for deferred code actions.
-    pub(super) fn generate_deferred_actions(
-        &self,
-        tag: &str,
-        source: &str,
-        doc: &Arc<ParsedDoc>,
-        range: Range,
-        uri: &Url,
-    ) -> Vec<CodeActionOrCommand> {
-        match tag {
-            "phpdoc" => phpdoc_actions(uri, doc, source, range),
-            "implement" => {
-                let imports = self.file_imports(uri);
-                let needles =
-                    crate::actions::implement_action::target_type_names(&doc.program().stmts, doc.view(), range);
-                let all_docs = if needles.is_empty() {
-                    Vec::new()
-                } else {
-                    self.docs.docs_for_scan_mentioning(&needles)
-                };
-                implement_missing_actions(source, doc, &all_docs, range, uri, &imports)
-            }
-            "constructor" => generate_constructor_actions(source, doc, range, uri),
-            "getters_setters" => generate_getters_setters_actions(source, doc, range, uri),
-            "return_type" => add_return_type_actions(source, doc, range, uri),
-            "promote" => promote_constructor_actions(source, doc, range, uri),
-            _ => Vec::new(),
-        }
     }
 
     /// Try to resolve a fully-qualified name via the PSR-4 map, with PSR-0 fallback.
@@ -403,4 +374,37 @@ impl Backend {
         ingested
     }
 
+}
+
+/// Tag → generator mapping for deferred code actions. A free function (not a
+/// `Backend` method) so `handle_code_action` can call it from inside
+/// `spawn_blocking` with only an owned `Arc<DocumentStore>` in hand, instead
+/// of needing `&Backend` on a non-'static blocking thread.
+pub(super) fn generate_deferred_actions(
+    docs: &Arc<DocumentStore>,
+    tag: &str,
+    source: &str,
+    doc: &Arc<ParsedDoc>,
+    range: Range,
+    uri: &Url,
+) -> Vec<CodeActionOrCommand> {
+    match tag {
+        "phpdoc" => phpdoc_actions(uri, doc, source, range),
+        "implement" => {
+            let imports = doc.file_imports();
+            let needles =
+                crate::actions::implement_action::target_type_names(&doc.program().stmts, doc.view(), range);
+            let all_docs = if needles.is_empty() {
+                Vec::new()
+            } else {
+                docs.docs_for_scan_mentioning(&needles)
+            };
+            implement_missing_actions(source, doc, &all_docs, range, uri, &imports)
+        }
+        "constructor" => generate_constructor_actions(source, doc, range, uri),
+        "getters_setters" => generate_getters_setters_actions(source, doc, range, uri),
+        "return_type" => add_return_type_actions(source, doc, range, uri),
+        "promote" => promote_constructor_actions(source, doc, range, uri),
+        _ => Vec::new(),
+    }
 }
