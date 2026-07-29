@@ -338,16 +338,6 @@ impl Backend {
         ingested
     }
 
-    /// Request the client to apply a workspace edit.
-    /// Returns true if the edit was successfully applied, false otherwise.
-    pub async fn apply_workspace_edit(&self, edit: WorkspaceEdit) -> bool {
-        self.client
-            .apply_edit(edit)
-            .await
-            .ok()
-            .map(|result| result.applied)
-            .unwrap_or(false)
-    }
 }
 
 /// Resolve a potentially-short class `name` to a fully-qualified name by

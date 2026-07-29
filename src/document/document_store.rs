@@ -1627,19 +1627,6 @@ impl DocumentStore {
             .collect()
     }
 
-    /// `(primary, doc)` first, then every other open file's parsed doc.
-    /// The `open_urls` slice should include `uri` — this helper filters it out.
-    pub fn doc_with_others(
-        &self,
-        uri: &Url,
-        doc: Arc<ParsedDoc>,
-        open_urls: &[Url],
-    ) -> Vec<(Url, Arc<ParsedDoc>)> {
-        let mut result = vec![(uri.clone(), doc)];
-        result.extend(self.other_docs(uri, open_urls));
-        result
-    }
-
     /// Parsed docs for every entry in `open_urls` except `uri`.
     pub fn other_docs(&self, uri: &Url, open_urls: &[Url]) -> Vec<(Url, Arc<ParsedDoc>)> {
         open_urls
