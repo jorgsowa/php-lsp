@@ -164,14 +164,20 @@ pub fn find_declaration_in_indexes(
 /// `method_name` defined in `class_name` or any of its superclasses/traits.
 ///
 /// Returns the first match in PHP's resolution order: class itself → traits →
-/// parent → parent's traits, etc. Uses `indexes` so no disk I/O is needed.
+/// parent → parent's traits, etc. Uses `wi`'s `classes_by_name` short-name
+/// bucket lookup instead of a linear scan over every workspace class — the
+/// same candidate set the old scan visited (same key: `cls.name`'s short
+/// form), just found in O(1) instead of O(all files × all classes).
+///
+/// Deliberately does not use `resolve_class_ref`: that picks a single
+/// disambiguated candidate, but a hierarchy walk must visit *every* class
+/// sharing a short name (workspaces commonly have several, e.g. Laravel's
+/// many `Factory`/`Request` classes), since any of them may contribute a
+/// matching trait/parent to the search.
 pub fn find_method_in_class_hierarchy(
     class_name: &str,
     method_name: &str,
-    indexes: &[(
-        tower_lsp::lsp_types::Url,
-        std::sync::Arc<crate::index::file_index::FileIndex>,
-    )],
+    wi: &crate::db::workspace_index::WorkspaceIndexData,
 ) -> Option<Location> {
     let mut queue: std::collections::VecDeque<String> =
         std::collections::VecDeque::from([class_name.to_owned()]);
@@ -181,57 +187,60 @@ pub fn find_method_in_class_hierarchy(
         if !visited.insert(current.clone()) {
             continue;
         }
-        for (uri, idx) in indexes {
-            for cls in &idx.classes {
-                if cls.name.as_ref() != current.as_str()
-                    && cls.fqn.as_ref().trim_start_matches('\\') != current.as_str()
-                {
-                    continue;
+        let short = crate::text::fqn_short_name(&current);
+        let Some(candidates) = wi.classes_by_name.get(short) else {
+            continue;
+        };
+        for cr in candidates {
+            let Some((uri, cls)) = wi.at(*cr) else {
+                continue;
+            };
+            if cls.name.as_ref() != current.as_str()
+                && cls.fqn.as_ref().trim_start_matches('\\') != current.as_str()
+            {
+                continue;
+            }
+            for m in &cls.methods {
+                if m.name.as_ref() == method_name {
+                    return Some(precise_method_location(
+                        uri,
+                        m.start_line,
+                        m.name_char,
+                        m.name.len(),
+                    ));
                 }
-                for m in &cls.methods {
-                    if m.name.as_ref() == method_name {
-                        return Some(precise_method_location(
-                            uri,
-                            m.start_line,
-                            m.name_char,
-                            m.name.len(),
-                        ));
-                    }
+            }
+            // `@method` docblock declarations — navigates to the tag line.
+            for dm in &cls.doc_methods {
+                if dm.name.as_ref() == method_name {
+                    return Some(zero_width_location(uri, dm.start_line));
                 }
-                // `@method` docblock declarations — navigates to the tag line.
-                for dm in &cls.doc_methods {
-                    if dm.name.as_ref() == method_name {
-                        return Some(zero_width_location(uri, dm.start_line));
-                    }
-                }
-                // Trait alias: `use Trait { original as alias }` — redirect the
-                // search to the original method name in the aliased trait.
-                for alias in &cls.trait_method_aliases {
-                    if alias.alias.as_ref() == method_name {
-                        let orig = alias.original.as_ref();
-                        let search_in: Vec<&str> = match &alias.trait_name {
-                            Some(t) => vec![t.as_ref()],
-                            None => cls.traits.iter().map(|t| t.as_ref()).collect(),
-                        };
-                        for trt_name in search_in {
-                            if let Some(loc) =
-                                find_method_in_class_hierarchy(trt_name, orig, indexes)
-                            {
-                                return Some(loc);
-                            }
+            }
+            // Trait alias: `use Trait { original as alias }` — redirect the
+            // search to the original method name in the aliased trait.
+            for alias in &cls.trait_method_aliases {
+                if alias.alias.as_ref() == method_name {
+                    let orig = alias.original.as_ref();
+                    let search_in: Vec<&str> = match &alias.trait_name {
+                        Some(t) => vec![t.as_ref()],
+                        None => cls.traits.iter().map(|t| t.as_ref()).collect(),
+                    };
+                    for trt_name in search_in {
+                        if let Some(loc) = find_method_in_class_hierarchy(trt_name, orig, wi) {
+                            return Some(loc);
                         }
                     }
                 }
-                // Traits first (PHP MRO), then `@mixin` targets, then parent.
-                for trt in &cls.traits {
-                    queue.push_back(trt.as_ref().to_owned());
-                }
-                for mx in &cls.mixins {
-                    queue.push_back(mx.as_ref().to_owned());
-                }
-                if let Some(parent) = &cls.parent {
-                    queue.push_back(parent.as_ref().to_owned());
-                }
+            }
+            // Traits first (PHP MRO), then `@mixin` targets, then parent.
+            for trt in &cls.traits {
+                queue.push_back(trt.as_ref().to_owned());
+            }
+            for mx in &cls.mixins {
+                queue.push_back(mx.as_ref().to_owned());
+            }
+            if let Some(parent) = &cls.parent {
+                queue.push_back(parent.as_ref().to_owned());
             }
         }
     }

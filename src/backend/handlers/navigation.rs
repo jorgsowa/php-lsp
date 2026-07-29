@@ -87,7 +87,7 @@ impl Backend {
                 });
                 if let Some((cls, class_fqn_arc)) = resolved_method_target {
                     let wi = self.workspace_index_async().await;
-                    if let Some(loc) = find_method_in_class_hierarchy(&cls, &word, &wi.files) {
+                    if let Some(loc) = find_method_in_class_hierarchy(&cls, &word, &wi) {
                         let refined = self
                             .docs
                             .get_doc_salsa(&loc.uri)
@@ -136,8 +136,7 @@ impl Backend {
                 if let Some(cls) = class_name {
                     let first_cls = cls.split('|').next().unwrap_or(&cls).to_owned();
                     let wi2 = self.workspace_index_async().await;
-                    if let Some(loc) = find_method_in_class_hierarchy(&first_cls, &word, &wi2.files)
-                    {
+                    if let Some(loc) = find_method_in_class_hierarchy(&first_cls, &word, &wi2) {
                         let refined = self
                             .docs
                             .get_doc_salsa(&loc.uri)
