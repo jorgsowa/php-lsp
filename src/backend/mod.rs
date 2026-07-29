@@ -71,7 +71,6 @@ use crate::document::document_store::DocumentStore;
 use crate::document::open_files::OpenFiles;
 use crate::lang::autoload::Psr4Map;
 use crate::lang::config::LspConfig;
-use crate::lang::phpstorm_meta::PhpStormMeta;
 use crate::laravel::LaravelIndex;
 
 use crate::analysis::diagnostics::merge_file_diagnostics;
@@ -86,7 +85,6 @@ pub struct Backend {
     open_files: OpenFiles,
     root_paths: Arc<ArcSwap<Vec<PathBuf>>>,
     psr4: Arc<ArcSwap<Psr4Map>>,
-    meta: Arc<ArcSwap<PhpStormMeta>>,
     laravel: Arc<ArcSwap<LaravelIndex>>,
     config: Arc<ArcSwap<LspConfig>>,
 }
@@ -105,7 +103,6 @@ impl Backend {
             open_files: OpenFiles::new(),
             root_paths: Arc::new(ArcSwap::from_pointee(Vec::new())),
             psr4,
-            meta: Arc::new(ArcSwap::from_pointee(PhpStormMeta::default())),
             laravel: Arc::new(ArcSwap::from_pointee(LaravelIndex::default())),
             config: Arc::new(ArcSwap::from_pointee(LspConfig::default())),
         }

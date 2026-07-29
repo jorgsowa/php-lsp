@@ -11,7 +11,6 @@ use crate::editing::file_rename::{delete_use_in_source, use_edits_in_source};
 use crate::index::workspace_scan::{scan_workspace, send_refresh_requests};
 use crate::lang::autoload::Psr4Map;
 use crate::lang::config::LspConfig;
-use crate::lang::phpstorm_meta::PhpStormMeta;
 use crate::text::fqn_short_name;
 
 use super::super::helpers::php_file_op;
@@ -315,7 +314,6 @@ impl Backend {
                 }
                 self.psr4.store(Arc::new(merged));
             }
-            self.meta.store(Arc::new(PhpStormMeta::load(&roots[0])));
             self.laravel
                 .store(Arc::new(crate::laravel::LaravelIndex::load(&roots[0])));
 

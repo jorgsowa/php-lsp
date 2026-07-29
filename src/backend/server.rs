@@ -497,9 +497,6 @@ impl LanguageServer for Backend {
                 .context
                 .as_ref()
                 .and_then(|c| c.trigger_character.clone());
-            // load_full() returns Arc<PhpStormMeta> — avoids a non-'static borrow
-            // that would prevent moving into spawn_blocking.
-            let meta_arc = self.meta.load_full();
             let laravel_arc = self.laravel.load_full();
             let imports = self.file_imports(uri);
             let wi = self.workspace_index_async().await;
@@ -561,15 +558,9 @@ impl LanguageServer for Backend {
             // AST + workspace index which can take tens of milliseconds on large
             // files, blocking the async executor from unrelated requests.
             let items = match tokio::task::spawn_blocking(move || {
-                let meta_opt = if meta_arc.is_empty() {
-                    None
-                } else {
-                    Some(&*meta_arc)
-                };
                 let ctx = CompletionCtx {
                     source: Some(&source),
                     position: Some(position),
-                    meta: meta_opt,
                     doc_uri: Some(&uri_owned),
                     file_imports: Some(&imports),
                     find_class_doc: Some(&find_class_doc_fn),

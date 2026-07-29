@@ -257,7 +257,6 @@ fn bench_completion(c: &mut Criterion) {
     let ctx = CompletionCtx {
         source: Some(CONTROLLER),
         position: Some(POS_ARROW),
-        meta: None,
         doc_uri: None,
         file_imports: None,
         find_class_doc: None,
@@ -339,7 +338,6 @@ fn bench_completion_laravel(c: &mut Criterion) {
     let ctx_linear = CompletionCtx {
         source: Some(CONTROLLER),
         position: Some(POS_ARROW),
-        meta: None,
         doc_uri: None,
         file_imports: None,
         find_class_doc: None,
@@ -364,7 +362,6 @@ fn bench_completion_laravel(c: &mut Criterion) {
     let ctx_indexed = CompletionCtx {
         source: Some(CONTROLLER),
         position: Some(POS_ARROW),
-        meta: None,
         doc_uri: None,
         file_imports: None,
         find_class_doc: Some(&find_fn),
@@ -396,7 +393,6 @@ fn bench_completion_laravel(c: &mut Criterion) {
     let ctx_builder_linear = CompletionCtx {
         source: Some(BUILDER_SRC),
         position: Some(builder_pos),
-        meta: None,
         doc_uri: None,
         file_imports: None,
         find_class_doc: None,
@@ -419,7 +415,6 @@ fn bench_completion_laravel(c: &mut Criterion) {
     let ctx_builder_indexed = CompletionCtx {
         source: Some(BUILDER_SRC),
         position: Some(builder_pos),
-        meta: None,
         doc_uri: None,
         file_imports: None,
         find_class_doc: Some(&find_fn),

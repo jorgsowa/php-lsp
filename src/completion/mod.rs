@@ -42,7 +42,6 @@ use tower_lsp::lsp_types::{Documentation, MarkupContent, MarkupKind};
 use crate::document::ast::{ParsedDoc, format_type_hint};
 use crate::hover::format_params_str;
 use crate::lang::docblock::find_docblock;
-use crate::lang::phpstorm_meta::PhpStormMeta;
 use crate::text::{camel_sort_key, utf16_offset_to_byte};
 use crate::types::type_map::{enclosing_class_at, params_of_function, params_of_method};
 use std::collections::HashMap;
@@ -279,7 +278,6 @@ pub type WorkspaceClassSearch<'a> = &'a dyn Fn(&str) -> Vec<(String, CompletionI
 pub struct CompletionCtx<'a> {
     pub source: Option<&'a str>,
     pub position: Option<Position>,
-    pub meta: Option<&'a PhpStormMeta>,
     pub doc_uri: Option<&'a Url>,
     pub file_imports: Option<&'a HashMap<String, String>>,
     /// Optional O(1) class-document lookup backed by the workspace index.

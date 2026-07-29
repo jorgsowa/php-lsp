@@ -37,7 +37,7 @@
 // ── Core concern modules ────────────────────────────────────────────────────
 mod document; // document lifecycle: parsed AST, salsa store, open-file state
 mod index; //    workspace indexing: compact FileIndex, background scan, cache
-mod lang; //     PHP-language model: config, autoload, phpstorm_meta, docblock, php_names
+mod lang; //     PHP-language model: config, autoload, docblock, php_names
 mod laravel; //  Laravel framework support: project detection, string-key index (env/config/view/...)
 mod text; //     generic text mechanics: offset, word, fuzzy, range
 mod types; //    type resolution & symbol lookup: type_map, type_query, resolve, symbol_map, stub_members
