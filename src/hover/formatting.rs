@@ -420,6 +420,59 @@ pub fn docs_for_symbol_from_index_scoped(
     None
 }
 
+/// Build a hover for `method_name` on `cls`, if declared there. Shared by the
+/// O(1) `resolve_class_ref` path and the legacy linear scan below.
+fn method_hover_from_class(
+    class_name: &str,
+    method_name: &str,
+    cls: &crate::index::file_index::ClassDef,
+) -> Option<Hover> {
+    for m in &cls.methods {
+        if m.name.as_ref() != method_name {
+            continue;
+        }
+        let params_str = m
+            .params
+            .iter()
+            .map(|p| {
+                let mut s = String::new();
+                if let Some(t) = &p.type_hint {
+                    s.push_str(&format!("{} ", t));
+                }
+                if p.variadic {
+                    s.push_str("...");
+                }
+                s.push_str(&format!("${}", p.name));
+                s
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        let ret = m
+            .return_type
+            .as_deref()
+            .map(|r| format!(": {}", r))
+            .unwrap_or_default();
+        let sig = format!("{}::{}({}){}", class_name, method_name, params_str, ret);
+        let mut value = wrap_php(&sig);
+        if let Some(raw) = &m.docblock {
+            let db = crate::lang::docblock::parse_docblock(raw);
+            let md = db.to_markdown();
+            if !md.is_empty() {
+                value.push_str("\n\n---\n\n");
+                value.push_str(&md);
+            }
+        }
+        return Some(Hover {
+            contents: HoverContents::Markup(MarkupContent {
+                kind: MarkupKind::Markdown,
+                value,
+            }),
+            range: None,
+        });
+    }
+    None
+}
+
 /// Build a hover for a static method call found by class short name + method name
 /// in the workspace index. Used when the primary mir path cannot resolve a cross-file
 /// static call (e.g. `Str::camel(…)` where `Str` is only known through a `use`-import).
@@ -438,52 +491,46 @@ pub fn method_hover_from_index(
             {
                 continue;
             }
-            for m in &cls.methods {
-                if m.name.as_ref() != method_name {
-                    continue;
-                }
-                let params_str = m
-                    .params
-                    .iter()
-                    .map(|p| {
-                        let mut s = String::new();
-                        if let Some(t) = &p.type_hint {
-                            s.push_str(&format!("{} ", t));
-                        }
-                        if p.variadic {
-                            s.push_str("...");
-                        }
-                        s.push_str(&format!("${}", p.name));
-                        s
-                    })
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                let ret = m
-                    .return_type
-                    .as_deref()
-                    .map(|r| format!(": {}", r))
-                    .unwrap_or_default();
-                let sig = format!("{}::{}({}){}", class_name, method_name, params_str, ret);
-                let mut value = wrap_php(&sig);
-                if let Some(raw) = &m.docblock {
-                    let db = crate::lang::docblock::parse_docblock(raw);
-                    let md = db.to_markdown();
-                    if !md.is_empty() {
-                        value.push_str("\n\n---\n\n");
-                        value.push_str(&md);
-                    }
-                }
-                return Some(Hover {
-                    contents: HoverContents::Markup(MarkupContent {
-                        kind: MarkupKind::Markdown,
-                        value,
-                    }),
-                    range: None,
-                });
+            if let Some(h) = method_hover_from_class(class_name, method_name, cls) {
+                return Some(h);
             }
         }
     }
     None
+}
+
+/// O(1) variant of [`class_hover_from_index`]: resolves `word`/`fqn` via
+/// `WorkspaceIndexData::resolve_class_ref` first, falling back to the full
+/// linear scan only when the index doesn't resolve the class — preserves
+/// every edge case the scan covers (e.g. names the aggregate's short-name
+/// map doesn't disambiguate the same way), just skips the common-case cost.
+pub fn class_hover_from_workspace_index(
+    word: &str,
+    fqn: Option<&str>,
+    wi: &crate::db::workspace_index::WorkspaceIndexData,
+) -> Option<Hover> {
+    if let Some(cr) = wi.resolve_class_ref(fqn.unwrap_or(word))
+        && let Some((_, cls)) = wi.at(cr)
+    {
+        return Some(class_hover_for(cls));
+    }
+    class_hover_from_index(word, fqn, &wi.files)
+}
+
+/// O(1) variant of [`method_hover_from_index`], same fallback contract as
+/// [`class_hover_from_workspace_index`].
+pub fn method_hover_from_workspace_index(
+    class_name: &str,
+    method_name: &str,
+    wi: &crate::db::workspace_index::WorkspaceIndexData,
+) -> Option<Hover> {
+    if let Some(cr) = wi.resolve_class_ref(class_name)
+        && let Some((_, cls)) = wi.at(cr)
+        && let Some(h) = method_hover_from_class(class_name, method_name, cls)
+    {
+        return Some(h);
+    }
+    method_hover_from_index(class_name, method_name, &wi.files)
 }
 
 /// Build a hover for a class/interface/trait/enum found by short name in the workspace index.

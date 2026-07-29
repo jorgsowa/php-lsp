@@ -9,8 +9,8 @@ use crate::completion::{CompletionCtx, filtered_completions_at};
 use crate::document::ast::ParsedDoc;
 use crate::document::open_files::compute_open_file_diagnostics;
 use crate::hover::{
-    class_hover_from_index, docs_for_symbol_from_index, docs_for_symbol_from_index_scoped,
-    extract_static_class_before_cursor, hover_info_with_maps, method_hover_from_index,
+    class_hover_from_workspace_index, docs_for_symbol_from_index, docs_for_symbol_from_index_scoped,
+    extract_static_class_before_cursor, hover_info_with_maps, method_hover_from_workspace_index,
     signature_for_symbol_from_index_scoped,
 };
 use crate::index::file_index::ClassKind;
@@ -789,7 +789,7 @@ impl LanguageServer for Backend {
             if let Some(word) = crate::text::word_at_position(&source, position) {
                 let wi = self.workspace_index_async().await;
                 // Try the literal word first.
-                if let Some(h) = class_hover_from_index(&word, None, &wi.files) {
+                if let Some(h) = class_hover_from_workspace_index(&word, None, &wi) {
                     return Ok(Some(h));
                 }
                 // Try alias resolution. The resolved FQN disambiguates between
@@ -798,7 +798,7 @@ impl LanguageServer for Backend {
                 if let Some((resolved, resolved_fqn)) =
                     crate::hover::resolve_use_alias_fqn(&doc.program().stmts, &word)
                     && let Some(h) =
-                        class_hover_from_index(&resolved, Some(&resolved_fqn), &wi.files)
+                        class_hover_from_workspace_index(&resolved, Some(&resolved_fqn), &wi)
                 {
                     return Ok(Some(h));
                 }
@@ -807,12 +807,13 @@ impl LanguageServer for Backend {
                     && let Some(class_token) =
                         extract_static_class_before_cursor(line_text, position.character as usize)
                 {
-                    if let Some(h) = method_hover_from_index(&class_token, &word, &wi.files) {
+                    if let Some(h) = method_hover_from_workspace_index(&class_token, &word, &wi) {
                         return Ok(Some(h));
                     }
                     if let Some(resolved_class) =
                         crate::hover::resolve_use_alias(&doc.program().stmts, &class_token)
-                        && let Some(h) = method_hover_from_index(&resolved_class, &word, &wi.files)
+                        && let Some(h) =
+                            method_hover_from_workspace_index(&resolved_class, &word, &wi)
                     {
                         return Ok(Some(h));
                     }
