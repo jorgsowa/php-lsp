@@ -594,7 +594,7 @@ impl Backend {
                     let Some(doc) = self.docs.get_doc_salsa(&uri) else {
                         continue;
                     };
-                    let edits = use_edits_in_source(doc.source(), &old_fqn, &new_fqn);
+                    let edits = use_edits_in_source(&doc, &old_fqn, &new_fqn);
                     if !edits.is_empty() {
                         merged_changes.entry(uri).or_default().extend(edits);
                     }
@@ -768,7 +768,7 @@ impl Backend {
                 let Some(doc) = self.docs.get_doc_salsa(&uri) else {
                     continue;
                 };
-                let edits = delete_use_in_source(doc.source(), &fqn);
+                let edits = delete_use_in_source(&doc, &fqn);
                 if !edits.is_empty() {
                     merged_changes.entry(uri).or_default().extend(edits);
                 }

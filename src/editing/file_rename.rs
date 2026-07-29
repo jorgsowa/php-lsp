@@ -1,100 +1,116 @@
+use php_ast::{NamespaceBody, Span, Stmt, StmtKind, UseKind};
 use tower_lsp::lsp_types::{Position, Range, TextEdit};
 
-use crate::text::byte_to_utf16;
+use crate::document::ast::ParsedDoc;
 
-/// If `line` is a `use` statement whose FQN (after an optional leading `\`)
-/// is exactly `target` on a word boundary (`;`, space, `{`, `,`, or
-/// end-of-line), return the byte range of the matched FQN text.
-fn find_use_match_in_line(line: &str, target: &str) -> Option<(usize, usize)> {
-    if !line.trim_start().starts_with("use ") {
-        return None;
+/// Find every `use` item in `stmts` whose FQN (leading `\` ignored) equals
+/// `target`, restricted to `use ClassName` statements (`UseKind::Normal`) —
+/// `use function`/`use const` items are never touched by a class file-rename.
+/// Returns `(enclosing statement span, item name span)` per match.
+///
+/// Does not expand group-use (`use App\Model\{User};`) — out of scope,
+/// matching the text-scan this replaced. A group member's `Name` span
+/// incorrectly extends across the `{` delimiter into the prefix (a parser
+/// quirk, not a logical part of the name), so a naive text edit over that
+/// span would consume the brace and corrupt the statement; `source` is used
+/// to detect and skip this case rather than silently mis-editing it.
+fn find_use_items(source: &str, stmts: &[Stmt<'_, '_>], target: &str, out: &mut Vec<(Span, Span)>) {
+    for stmt in stmts {
+        match &stmt.kind {
+            StmtKind::Use(u) if u.kind == UseKind::Normal => {
+                for item in u.uses.iter() {
+                    if item.name.to_string_repr().trim_start_matches('\\') != target {
+                        continue;
+                    }
+                    let name_span = item.name.span();
+                    let name_text = &source[name_span.start as usize..name_span.end as usize];
+                    if name_text.contains(['{', '}']) {
+                        continue;
+                    }
+                    out.push((stmt.span, name_span));
+                }
+            }
+            StmtKind::Namespace(ns) => {
+                if let NamespaceBody::Braced(inner) = &ns.body {
+                    find_use_items(source, &inner.stmts, target, out);
+                }
+            }
+            _ => {}
+        }
     }
-    let use_pos = line.find("use ")?;
-    let after_use = use_pos + 4;
-
-    let fqn_start = if line.as_bytes().get(after_use) == Some(&b'\\') {
-        after_use + 1
-    } else {
-        after_use
-    };
-    let fqn_str = &line[fqn_start..];
-
-    if !fqn_str.starts_with(target) {
-        return None;
-    }
-    let after_fqn = &fqn_str[target.len()..];
-    let is_boundary = after_fqn.is_empty()
-        || matches!(after_fqn.as_bytes()[0], b';' | b' ' | b'\t' | b'{' | b',');
-    if !is_boundary {
-        return None;
-    }
-
-    Some((fqn_start, fqn_start + target.len()))
 }
 
-/// Return `TextEdit`s that delete the entire `use FQN;` line from `source`.
-pub fn delete_use_in_source(source: &str, fqn: &str) -> Vec<TextEdit> {
-    let mut edits = Vec::new();
-    let clean = fqn.trim_start_matches('\\');
+/// A name span's text always includes a leading `\` for a fully-qualified
+/// name (`\Foo\Bar`) — narrow to just the FQN text so an edit doesn't
+/// consume or duplicate the backslash.
+fn fqn_span_without_backslash(source: &str, span: Span) -> Span {
+    if source.as_bytes().get(span.start as usize) == Some(&b'\\') {
+        Span {
+            start: span.start + 1,
+            end: span.end,
+        }
+    } else {
+        span
+    }
+}
 
-    for (line_idx, line) in source.lines().enumerate() {
-        if find_use_match_in_line(line, clean).is_none() {
+/// Return `TextEdit`s that delete the entire `use FQN;` line from `doc`.
+pub fn delete_use_in_source(doc: &ParsedDoc, fqn: &str) -> Vec<TextEdit> {
+    let clean = fqn.trim_start_matches('\\');
+    let sv = doc.view();
+    let mut matches = Vec::new();
+    find_use_items(doc.source(), &doc.program().stmts, clean, &mut matches);
+
+    // A `use A, B;` statement matching on both items would otherwise queue
+    // the same line twice.
+    let mut seen_lines = std::collections::HashSet::new();
+    let mut edits = Vec::new();
+    for (stmt_span, _) in matches {
+        let line = sv.position_of(stmt_span.start).line;
+        if !seen_lines.insert(line) {
             continue;
         }
-
         // Delete the whole line including its newline.
-        let line_u32 = line_idx as u32;
-        let next_line = line_u32 + 1;
         edits.push(TextEdit {
             range: Range {
-                start: Position {
-                    line: line_u32,
-                    character: 0,
-                },
+                start: Position { line, character: 0 },
                 end: Position {
-                    line: next_line,
+                    line: line + 1,
                     character: 0,
                 },
             },
             new_text: String::new(),
         });
     }
-
     edits
 }
 
-/// Scan `source` for `use` statements that reference `old_fqn` and return
-/// `TextEdit`s that replace `old_fqn` with `new_fqn` in each such line.
+/// Find `use` statements in `doc` that reference `old_fqn` and return
+/// `TextEdit`s that replace `old_fqn` with `new_fqn` at each match.
 ///
 /// Handles:
 /// - `use OldFqn;`
 /// - `use \OldFqn;`
 /// - `use OldFqn as Alias;`
-pub fn use_edits_in_source(source: &str, old_fqn: &str, new_fqn: &str) -> Vec<TextEdit> {
-    let mut edits = Vec::new();
+pub fn use_edits_in_source(doc: &ParsedDoc, old_fqn: &str, new_fqn: &str) -> Vec<TextEdit> {
     let old = old_fqn.trim_start_matches('\\');
     let new_clean = new_fqn.trim_start_matches('\\');
+    let source = doc.source();
+    let sv = doc.view();
+    let mut matches = Vec::new();
+    find_use_items(source, &doc.program().stmts, old, &mut matches);
 
-    for (line_idx, line) in source.lines().enumerate() {
-        let Some((fqn_start, fqn_end)) = find_use_match_in_line(line, old) else {
-            continue;
-        };
-
-        let line_u32 = line_idx as u32;
-        edits.push(TextEdit {
-            range: Range {
-                start: Position {
-                    line: line_u32,
-                    character: byte_to_utf16(line, fqn_start),
+    matches
+        .into_iter()
+        .map(|(_, name_span)| {
+            let span = fqn_span_without_backslash(source, name_span);
+            TextEdit {
+                range: Range {
+                    start: sv.position_of(span.start),
+                    end: sv.position_of(span.end),
                 },
-                end: Position {
-                    line: line_u32,
-                    character: byte_to_utf16(line, fqn_end),
-                },
-            },
-            new_text: new_clean.to_string(),
-        });
-    }
-
-    edits
+                new_text: new_clean.to_string(),
+            }
+        })
+        .collect()
 }
