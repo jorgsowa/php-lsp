@@ -281,13 +281,13 @@ impl Backend {
 
                 // Queue parent chain in PHP MRO order: traits → mixins → parent.
                 for trt in &cls.traits {
-                    queue.push_back(resolve_name_to_fqn(trt.as_ref(), &index));
+                    queue.push_back(index.resolve_name_to_fqn(trt.as_ref()));
                 }
                 for mx in &cls.mixins {
-                    queue.push_back(resolve_name_to_fqn(mx.as_ref(), &index));
+                    queue.push_back(index.resolve_name_to_fqn(mx.as_ref()));
                 }
                 if let Some(parent) = &cls.parent {
-                    queue.push_back(resolve_name_to_fqn(parent.as_ref(), &index));
+                    queue.push_back(index.resolve_name_to_fqn(parent.as_ref()));
                 }
             }
         }
@@ -331,7 +331,7 @@ impl Backend {
                 }
                 // Resolve short name to FQN via the implementing file's use_imports.
                 let fqn = if let Some(idx) = file_idx {
-                    resolve_name_to_fqn(&name, idx)
+                    idx.resolve_name_to_fqn(&name)
                 } else {
                     name.clone()
                 };
@@ -357,26 +357,4 @@ impl Backend {
         ingested
     }
 
-}
-
-/// Resolve a potentially-short class `name` to a fully-qualified name by
-/// looking it up in `index.use_imports` and `index.namespace`. Used when
-/// walking a vendor class hierarchy where parent names are stored as written
-/// in the source (e.g. `"AbstractController"` rather than the full FQN).
-fn resolve_name_to_fqn(name: &str, index: &crate::index::file_index::FileIndex) -> String {
-    // Already qualified — strip leading backslash and return.
-    if name.contains('\\') {
-        return name.trim_start_matches('\\').to_owned();
-    }
-    // Resolve through `use` imports (e.g. `use Symfony\...\AbstractController`).
-    for (alias, fqn) in &index.use_imports {
-        if alias.as_ref() == name {
-            return fqn.as_ref().trim_start_matches('\\').to_owned();
-        }
-    }
-    // Apply the current namespace as the last resort.
-    if let Some(ns) = &index.namespace {
-        return format!("{}\\{}", ns.trim_start_matches('\\'), name);
-    }
-    name.to_owned()
 }

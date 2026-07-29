@@ -58,18 +58,5 @@ pub(crate) fn resolves_to_fqn(
     target_fqn: &str,
     idx: &crate::index::file_index::FileIndex,
 ) -> bool {
-    if written.contains('\\') {
-        return written.trim_start_matches('\\') == target_fqn;
-    }
-    if let Some((_, resolved)) = idx
-        .use_imports
-        .iter()
-        .find(|(alias, _)| alias.as_ref() == written)
-    {
-        return resolved.as_ref() == target_fqn || resolved.trim_start_matches('\\') == target_fqn;
-    }
-    match idx.namespace.as_deref() {
-        Some(ns) => format!("{ns}\\{written}") == target_fqn,
-        None => written == target_fqn,
-    }
+    idx.resolve_name_to_fqn(written) == target_fqn
 }
