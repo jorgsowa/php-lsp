@@ -549,9 +549,7 @@ impl LanguageServer for Backend {
                     out
                 };
             let analysis = self.cached_analysis_async(uri).await;
-            let session = self
-                .docs
-                .analysis_session(self.docs.workspace_php_version());
+            let session = self.docs.current_analysis_session();
             let uri_owned = uri.clone();
             let uri_str = uri.to_string();
             // Offload to spawn_blocking: filtered_completions_at walks the full
@@ -743,9 +741,7 @@ impl LanguageServer for Backend {
             let other_docs = self.docs.other_docs(uri, &self.open_urls());
             let other_maps = self.docs.other_symbol_maps(uri, &self.open_urls());
             let analysis = self.cached_analysis_async(uri).await;
-            let hover_session = self
-                .docs
-                .analysis_session(self.docs.workspace_php_version());
+            let hover_session = self.docs.current_analysis_session();
             let source_clone = source.clone();
             let doc_clone = Arc::clone(&doc);
             let uri_str = uri.to_string();

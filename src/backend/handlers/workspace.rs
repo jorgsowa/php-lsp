@@ -387,8 +387,7 @@ impl Backend {
 
             let warm_docs = Arc::clone(&self.docs);
             tokio::task::spawn_blocking(move || {
-                let php_version = warm_docs.workspace_php_version();
-                warm_docs.analysis_session(php_version);
+                warm_docs.current_analysis_session();
             });
 
             let docs = Arc::clone(&self.docs);

@@ -45,18 +45,23 @@ pub struct DocumentStore {
     /// set aggregated by `workspace_index`. Created lazily on first sync (the db
     /// is owned by the lazily-built `AnalysisSession`).
     lsp_workspace: Mutex<Option<LspWorkspace>>,
-    /// Target PHP version (selects the `AnalysisSession`). Stored here since the
-    /// converged db has no php-lsp `Workspace` input to carry it.
-    php_version: Mutex<mir_analyzer::PhpVersion>,
     /// Shared PSR-4 namespace-to-path map. Shared with `Backend` via `Arc`
     /// so updates from `initialized` (when composer.json is loaded) are
     /// visible here without any additional wiring. `ArcSwap` makes reads
     /// lock-free — a poisoned guard can no longer crash a request handler.
     psr4: Arc<ArcSwap<Psr4Map>>,
-    /// mir-analyzer's `AnalysisSession` — owns the workspace MirDb, runs
-    /// Pass-2 analysis, and lazy-loads dependencies via PSR-4. Built lazily
-    /// on first use; rebuilt when PHP version changes.
-    analysis_session: Mutex<Option<(mir_analyzer::PhpVersion, Arc<mir_analyzer::AnalysisSession>)>>,
+    /// `(target PHP version, cached AnalysisSession built for that version)`.
+    /// One lock for both — `workspace_php_version()` used to read a separate
+    /// `Mutex<PhpVersion>`, so fetching the version and then building/fetching
+    /// the session used to take two locks per call; `current_analysis_session()`
+    /// takes one. `None` only before the first build, or right after
+    /// `set_php_version` invalidates it.
+    /// mir-analyzer's `AnalysisSession` owns the workspace MirDb, runs Pass-2
+    /// analysis, and lazy-loads dependencies via PSR-4.
+    analysis_session: Mutex<(
+        mir_analyzer::PhpVersion,
+        Option<Arc<mir_analyzer::AnalysisSession>>,
+    )>,
     /// Cache directory shared with the workspace file-index cache. When set,
     /// new `AnalysisSession`s are built with `with_cache_dir` so that stub
     /// parsing results survive server restarts.
@@ -142,9 +147,8 @@ impl DocumentStore {
             workspace_files_dirty: AtomicBool::new(true),
             workspace_file_paths_cache: ArcSwapOption::from(None),
             lsp_workspace: Mutex::new(None),
-            php_version: Mutex::new(mir_analyzer::PhpVersion::LATEST),
             psr4: Arc::new(ArcSwap::from_pointee(Psr4Map::empty())),
-            analysis_session: Mutex::new(None),
+            analysis_session: Mutex::new((mir_analyzer::PhpVersion::LATEST, None)),
             session_cache_dir: OnceLock::new(),
             autoload_uris: std::sync::RwLock::new(Vec::new()),
             index_ready: AtomicBool::new(false),
@@ -276,7 +280,7 @@ impl DocumentStore {
             )
             .collect();
         drop(front_set);
-        let session = self.analysis_session(self.workspace_php_version());
+        let session = self.current_analysis_session();
         let mut all_chunks_settled = true;
         for chunk in files.chunks(CHUNK) {
             if cancel.is_cancelled() {
@@ -323,7 +327,7 @@ impl DocumentStore {
     /// Persist mir's staged analysis-cache entries (reference postings) to
     /// disk. No-op when nothing changed since the last flush.
     pub fn flush_analysis_cache(&self) {
-        self.analysis_session(self.workspace_php_version())
+        self.current_analysis_session()
             .flush_analysis_cache();
     }
 
@@ -408,7 +412,7 @@ impl DocumentStore {
         if self.session_cache_dir.set(dir).is_err() {
             return;
         }
-        let dropped = self.analysis_session.lock().unwrap().take().is_some();
+        let dropped = self.analysis_session.lock().unwrap().1.take().is_some();
         if dropped {
             self.drop_session_scoped_state();
         }
@@ -436,8 +440,8 @@ impl DocumentStore {
         php_version: mir_analyzer::PhpVersion,
     ) -> Arc<mir_analyzer::AnalysisSession> {
         let mut guard = self.analysis_session.lock().unwrap();
-        if let Some((cached_ver, session)) = guard.as_ref()
-            && *cached_ver == php_version
+        if guard.0 == php_version
+            && let Some(session) = guard.1.as_ref()
         {
             return Arc::clone(session);
         }
@@ -454,13 +458,27 @@ impl DocumentStore {
             builder = builder.with_cache_dir(dir);
         }
         let session = Arc::new(builder);
-        *guard = Some((php_version, Arc::clone(&session)));
+        *guard = (php_version, Some(Arc::clone(&session)));
         session
+    }
+
+    /// Get-or-build the `AnalysisSession` for the *current* workspace PHP
+    /// version — a single lock acquisition on the common (already-built)
+    /// path. Replaces `self.analysis_session(self.workspace_php_version())`,
+    /// which took two separate locks per call.
+    pub fn current_analysis_session(&self) -> Arc<mir_analyzer::AnalysisSession> {
+        let guard = self.analysis_session.lock().unwrap();
+        if let Some(session) = guard.1.as_ref() {
+            return Arc::clone(session);
+        }
+        let php_version = guard.0;
+        drop(guard);
+        self.analysis_session(php_version)
     }
 
     /// Current PHP version tracked by the workspace input.
     pub fn workspace_php_version(&self) -> mir_analyzer::PhpVersion {
-        *self.php_version.lock().unwrap()
+        self.analysis_session.lock().unwrap().0
     }
 
     /// File URIs of all direct and transitive subclasses of `class_fqn`,
@@ -471,7 +489,7 @@ impl DocumentStore {
     /// the correct files, fixing aliased `extends` and FQN-qualified forms that
     /// the raw-name `subtypes_of` map misses.
     pub fn class_subtype_urls(&self, class_fqn: &str) -> Vec<tower_lsp::lsp_types::Url> {
-        let session = self.analysis_session(self.workspace_php_version());
+        let session = self.current_analysis_session();
         session
             .subtype_files(class_fqn)
             .into_iter()
@@ -516,7 +534,7 @@ impl DocumentStore {
     fn snapshot_mir_query<R>(&self, f: impl Fn(&mir_analyzer::db::MirDbStorage) -> R) -> R {
         use std::panic::AssertUnwindSafe;
         let _interactive = self.interactive_read_guard();
-        let session = self.analysis_session(self.workspace_php_version());
+        let session = self.current_analysis_session();
         // Each iteration's snapshot clone MUST drop before the next snapshot:
         // a concurrent writer's salsa `set` holds the mir write lock and waits
         // for outstanding db handles to drop, while the next `snapshot_db` needs
@@ -542,7 +560,7 @@ impl DocumentStore {
     ) -> Option<R> {
         use std::panic::AssertUnwindSafe;
         let _interactive = self.interactive_read_guard();
-        let session = self.analysis_session(self.workspace_php_version());
+        let session = self.current_analysis_session();
         for _ in 0..attempts {
             let db = session.snapshot_db();
             match salsa::Cancelled::catch(AssertUnwindSafe(|| f(&db))) {
@@ -582,7 +600,7 @@ impl DocumentStore {
     pub fn mirror_text_arc(&self, uri: &Url, text_arc: Arc<str>) {
         let dur = Self::input_durability(uri);
         let path: Arc<str> = Arc::from(uri.as_str());
-        let session = self.analysis_session(self.workspace_php_version());
+        let session = self.current_analysis_session();
         if let Some(wf) = self.lsp_ws_files.get(uri).map(|e| *e) {
             // A resurrected (previously-deleted) file changes
             // `workspace_file_paths()`'s result set — invalidate its cache.
@@ -649,7 +667,7 @@ impl DocumentStore {
         let Some(wf) = self.lsp_ws_file(uri) else {
             return false;
         };
-        let session = self.analysis_session(self.workspace_php_version());
+        let session = self.current_analysis_session();
         session.with_db_mut(|db| wf.set_cached_index(db).to(Some(index)));
         true
     }
@@ -723,7 +741,7 @@ impl DocumentStore {
         // workspace symbol queries don't keep returning the deleted file's
         // declarations. Cheap when the session hasn't ingested this file.
         let guard = self.analysis_session.lock().unwrap();
-        if let Some((_, session)) = guard.as_ref() {
+        if let Some(session) = guard.1.as_ref() {
             session.invalidate_file(uri.as_str());
             // `file_index` has no LRU cap (unlike `parsed_doc`/`symbol_map`),
             // so without this it would keep holding this file's pre-deletion
@@ -881,7 +899,7 @@ impl DocumentStore {
         entries.sort_unstable_by(|(a, _), (b, _)| a.cmp(b));
         let files: Arc<[LspWsFile]> = entries.iter().map(|(_, wf)| *wf).collect();
 
-        let session = self.analysis_session(self.workspace_php_version());
+        let session = self.current_analysis_session();
         let mut guard = self.lsp_workspace.lock().unwrap();
         session.with_db_mut(|db| match *guard {
             Some(ws) => {
@@ -906,11 +924,17 @@ impl DocumentStore {
     /// query invalidation.
     pub fn set_php_version(&self, version: mir_analyzer::PhpVersion) {
         {
-            let mut guard = self.php_version.lock().unwrap();
-            if *guard == version {
+            let mut guard = self.analysis_session.lock().unwrap();
+            if guard.0 == version {
                 return;
             }
-            *guard = version;
+            // Clear the cached session too: `current_analysis_session()` trusts
+            // `guard.1` unconditionally when present, so leaving the old
+            // version's session behind here would silently hand it out under
+            // the new version until something calls `analysis_session(version)`
+            // explicitly to force the mismatch-triggered rebuild.
+            guard.0 = version;
+            guard.1 = None;
         }
         // Changing the version selects a different `AnalysisSession` (and thus
         // a different db). In practice the version is set once at init, before
@@ -1006,7 +1030,7 @@ impl DocumentStore {
         symbol: &mir_analyzer::Name,
         files: &[Arc<str>],
     ) -> Vec<(Arc<str>, u32, u32, u32)> {
-        let session = self.analysis_session(self.workspace_php_version());
+        let session = self.current_analysis_session();
         let _interactive = self.interactive_read_guard();
         let raw = loop {
             if let Ok(locs) = salsa::Cancelled::catch(std::panic::AssertUnwindSafe(|| {
@@ -1042,7 +1066,7 @@ impl DocumentStore {
         if files.is_empty() {
             return;
         }
-        let session = self.analysis_session(self.workspace_php_version());
+        let session = self.current_analysis_session();
         session.warm_start_files(&files);
     }
 
@@ -1116,7 +1140,7 @@ impl DocumentStore {
         include_trait_users: bool,
     ) -> Vec<mir_analyzer::SubtypeClassSite> {
         let files = self.workspace_file_paths();
-        let session = self.analysis_session(self.workspace_php_version());
+        let session = self.current_analysis_session();
         let _interactive = self.interactive_read_guard();
         loop {
             if let Ok(sites) = salsa::Cancelled::catch(std::panic::AssertUnwindSafe(|| {
@@ -1135,7 +1159,7 @@ impl DocumentStore {
         method: &str,
     ) -> Vec<(Arc<str>, Arc<str>, mir_analyzer::Range)> {
         let files = self.workspace_file_paths();
-        let session = self.analysis_session(self.workspace_php_version());
+        let session = self.current_analysis_session();
         let _interactive = self.interactive_read_guard();
         loop {
             if let Ok(sites) = salsa::Cancelled::catch(std::panic::AssertUnwindSafe(|| {
@@ -1207,7 +1231,7 @@ impl DocumentStore {
                 // matches subclasses by FQCN, so `extends \Ns\Base` and aliased
                 // `use ... as` forms are all found. Falls back to full scope if
                 // mir can't resolve the owner.
-                let session = self.analysis_session(self.workspace_php_version());
+                let session = self.current_analysis_session();
                 let mut files: std::collections::HashSet<Url> = session
                     .subtype_files(owner_fqn)
                     .into_iter()
@@ -1412,7 +1436,7 @@ impl DocumentStore {
     /// grows by a small bounded amount per operation — never per candidate.
     /// Surfaced via `$/php-lsp/debugStats` for the stress-test guard.
     pub fn ref_index_lock_count(&self) -> u64 {
-        self.analysis_session(self.workspace_php_version())
+        self.current_analysis_session()
             .ref_index_lock_count()
     }
 
@@ -1452,7 +1476,7 @@ impl DocumentStore {
             let _s = tracing::debug_span!("session.class_issues_for").entered();
             // Retry: concurrent db writes cancel snapshot queries via resume_unwind.
             loop {
-                let session = self.analysis_session(self.workspace_php_version());
+                let session = self.current_analysis_session();
                 if let Ok(issues) = salsa::Cancelled::catch(std::panic::AssertUnwindSafe(|| {
                     session.class_issues(std::slice::from_ref(&file))
                 })) {
@@ -1525,8 +1549,7 @@ impl DocumentStore {
             return Some(analysis);
         }
 
-        let php_version = self.workspace_php_version();
-        let session = self.analysis_session(php_version);
+        let session = self.current_analysis_session();
         let file: Arc<str> = Arc::from(uri.as_str());
 
         let source_map = php_rs_parser::source_map::SourceMap::new(doc.source());
@@ -1857,7 +1880,7 @@ mod tests {
         let big_text = format!("<?php\n{}", "// pad\n".repeat(1000));
         store.ingest(u.clone(), &big_text);
 
-        let session = store.analysis_session(store.workspace_php_version());
+        let session = store.current_analysis_session();
         let sf = session.lookup_source_file(u.as_str()).unwrap();
         let len_before = store.snapshot_mir_query(|db| sf.text(db).len());
         assert!(len_before > 1000, "sanity: source text should be mirrored");

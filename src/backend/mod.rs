@@ -395,8 +395,7 @@ async fn compute_dependent_publishes_owned(
             return Vec::new();
         }
 
-        let php_version = docs.workspace_php_version();
-        let session = docs.analysis_session(php_version);
+        let session = docs.current_analysis_session();
         // The user is typing: pause the background scan's write storm so this
         // sweep's snapshots aren't repeatedly cancelled while indexing runs.
         let _interactive = docs.interactive_read_guard();
