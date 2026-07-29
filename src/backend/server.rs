@@ -163,8 +163,12 @@ impl LanguageServer for Backend {
             // Add new folders and kick off background scans for each.
             let (exclude_paths, include_paths, max_indexed_files, cache_path) = {
                 let cfg = self.config.load();
+                let mut exclude = cfg.exclude_paths.clone();
+                if !cfg.index_vendor && !exclude.iter().any(|p| p == "vendor" || p == "vendor/") {
+                    exclude.push("vendor/".to_string());
+                }
                 (
-                    cfg.exclude_paths.clone(),
+                    exclude,
                     cfg.include_paths.clone(),
                     cfg.max_indexed_files,
                     cfg.cache_path.clone(),

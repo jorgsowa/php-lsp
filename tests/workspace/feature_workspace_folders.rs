@@ -72,6 +72,44 @@ async fn add_workspace_folder_indexes_php_classes() {
     expect![[r#"Class       ExtraWidget @ ExtraWidget.php:1"#]].assert_eq(&out);
 }
 
+/// A runtime-added folder must honor `indexVendor: false` the same way the
+/// initial-roots scan does. Regression test: `did_change_workspace_folders`
+/// used to build its exclude list from the raw config, missing the
+/// `vendor/` push that `handle_initialized` applies, so a folder added after
+/// startup scanned (and mirrored) its entire vendor tree.
+#[tokio::test]
+async fn add_workspace_folder_honors_index_vendor_false() {
+    let mut server = TestServer::with_fixture("psr4-mini").await;
+    server.wait_for_index_ready().await;
+
+    let tmp = tempfile::tempdir().expect("create TempDir");
+    std::fs::write(
+        tmp.path().join("MarkerClass.php"),
+        "<?php\nclass MarkerClass {}\n",
+    )
+    .expect("write MarkerClass.php");
+    std::fs::create_dir_all(tmp.path().join("vendor/acme/lib")).expect("create vendor dir");
+    std::fs::write(
+        tmp.path().join("vendor/acme/lib/VendoredThing.php"),
+        "<?php\nclass VendoredThing {}\n",
+    )
+    .expect("write vendored file");
+
+    let folder_uri = Url::from_file_path(tmp.path())
+        .expect("valid file URI")
+        .to_string();
+
+    server.add_workspace_folder(&folder_uri).await;
+    server
+        .wait_until_symbol_present("MarkerClass", Duration::from_secs(5))
+        .await;
+
+    // The scan has completed (MarkerClass is indexed); vendor/ must have
+    // been excluded from it by default.
+    let out = server.snapshot_workspace_symbols("VendoredThing").await;
+    expect!["<no symbols>"].assert_eq(&out);
+}
+
 #[tokio::test]
 async fn add_empty_workspace_folder_does_not_crash() {
     let mut server = TestServer::with_fixture("psr4-mini").await;
