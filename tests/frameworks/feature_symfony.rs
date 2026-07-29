@@ -135,18 +135,16 @@ mod semantic_tokens {
             45:0 len=74 type=comment mods=0b0
             46:0 len=7 type=comment mods=0b0
             47:6 len=5 type=class mods=0b0
-            47:49 len=4 type=parameter mods=0b1
-            47:64 len=7 type=parameter mods=0b1
             48:6 len=5 type=class mods=0b0
             49:6 len=5 type=class mods=0b0
             50:6 len=5 type=class mods=0b0
             51:20 len=5 type=method mods=0b1
             51:26 len=7 type=type mods=0b0
             51:34 len=8 type=parameter mods=0b1
-            51:34 len=8 type=parameter mods=0b1
-            51:34 len=8 type=parameter mods=0b1
             51:44 len=3 type=type mods=0b0
+            51:48 len=5 type=parameter mods=0b1
             51:55 len=6 type=type mods=0b0
+            51:62 len=8 type=parameter mods=0b1
             51:72 len=14 type=type mods=0b0
             51:87 len=6 type=parameter mods=0b1
             51:95 len=13 type=type mods=0b0
@@ -187,9 +185,6 @@ mod semantic_tokens {
             71:0 len=80 type=comment mods=0b0
             72:0 len=87 type=comment mods=0b0
             73:0 len=76 type=comment mods=0b0
-            73:18 len=4 type=parameter mods=0b1
-            73:18 len=4 type=parameter mods=0b1
-            73:18 len=4 type=parameter mods=0b1
             74:0 len=85 type=comment mods=0b0
             75:0 len=86 type=comment mods=0b0
             76:0 len=35 type=comment mods=0b0
@@ -198,6 +193,7 @@ mod semantic_tokens {
             79:6 len=5 type=class mods=0b0
             80:20 len=8 type=method mods=0b1
             80:29 len=4 type=type mods=0b0
+            80:34 len=5 type=parameter mods=0b1
             80:42 len=8 type=type mods=0b0
             82:8 len=79 type=comment mods=0b0
             83:8 len=89 type=comment mods=0b0
@@ -230,8 +226,10 @@ mod semantic_tokens {
             108:23 len=4 type=type mods=0b0
             108:28 len=5 type=parameter mods=0b1
             109:8 len=7 type=type mods=0b0
+            109:16 len=8 type=parameter mods=0b1
             110:10 len=9 type=class mods=0b0
             110:54 len=4 type=type mods=0b0
+            110:59 len=5 type=parameter mods=0b1
             111:8 len=24 type=type mods=0b0
             111:33 len=16 type=parameter mods=0b1
             112:8 len=22 type=type mods=0b0
@@ -296,6 +294,7 @@ mod semantic_tokens {
             149:0 len=7 type=comment mods=0b0
             150:20 len=11 type=method mods=0b1
             150:32 len=4 type=type mods=0b0
+            150:37 len=5 type=parameter mods=0b1
             150:45 len=8 type=type mods=0b0
             152:8 len=5 type=variable mods=0b0
             152:16 len=5 type=variable mods=0b0
@@ -310,8 +309,9 @@ mod semantic_tokens {
             156:12 len=6 type=string mods=0b0
             156:22 len=5 type=variable mods=0b0
             160:6 len=5 type=class mods=0b0
-            160:14 len=6 type=method mods=0b1
+            161:20 len=6 type=method mods=0b1
             161:27 len=7 type=type mods=0b0
+            161:35 len=8 type=parameter mods=0b1
             161:46 len=8 type=type mods=0b0
             163:15 len=5 type=variable mods=0b0
             163:22 len=6 type=method mods=0b0
