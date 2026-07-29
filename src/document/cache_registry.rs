@@ -85,19 +85,46 @@ impl CacheRegistry {
 
     /// When `map` has reached `cap`, drop the least-recently-touched half.
     /// Entries with no recorded access sort oldest and shed first.
+    ///
+    /// Two passes instead of a single clone-everything-then-sort: pass 1
+    /// collects only ticks (`u64`, `Copy` — no `Url` clones) and partitions
+    /// them in O(n) via `select_nth_unstable` instead of an O(n log n) full
+    /// sort; pass 2 clones only the `Url`s actually being evicted (~`cap/2`)
+    /// instead of every entry in the map. Both passes fully drain
+    /// `map.iter()` into an owned `Vec` before any `map.remove()` call —
+    /// removing while a `DashMap` iterator holds that shard's read guard
+    /// would deadlock.
     pub(crate) fn shed_stale<V>(&self, map: &DashMap<Url, V>, cap: usize) {
-        if map.len() < cap {
+        let len = map.len();
+        if len < cap {
             return;
         }
-        let mut entries: Vec<(Url, u64)> = map
+        let to_evict = cap / 2;
+        if to_evict == 0 {
+            return;
+        }
+
+        let mut ticks: Vec<u64> = map
             .iter()
-            .map(|e| {
-                let tick = self.last_access.get(e.key()).map(|t| *t).unwrap_or(0);
-                (e.key().clone(), tick)
-            })
+            .map(|e| self.last_access.get(e.key()).map(|t| *t).unwrap_or(0))
             .collect();
-        entries.sort_unstable_by_key(|(_, tick)| *tick);
-        for (uri, _) in entries.iter().take(cap / 2) {
+        let (_, &mut threshold, _) = ticks.select_nth_unstable(to_evict - 1);
+
+        // Tied entries at exactly `threshold` may exceed `to_evict` in count;
+        // `take(to_evict)` bounds the eviction to the target regardless —
+        // acceptable for this soft/approximate LRU policy (the old full sort
+        // over an unstable comparator wasn't a strict tie-break contract
+        // either).
+        let to_remove: Vec<Url> = map
+            .iter()
+            .filter(|e| {
+                let tick = self.last_access.get(e.key()).map(|t| *t).unwrap_or(0);
+                tick <= threshold
+            })
+            .take(to_evict)
+            .map(|e| e.key().clone())
+            .collect();
+        for uri in &to_remove {
             map.remove(uri);
         }
     }
@@ -175,5 +202,70 @@ impl CacheRegistry {
 
     pub(crate) fn parse_count(&self) -> u64 {
         self.parse_count.load(Ordering::Relaxed)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn uri(n: usize) -> Url {
+        Url::parse(&format!("file:///f{n}.php")).unwrap()
+    }
+
+    #[test]
+    fn shed_stale_noop_below_cap() {
+        let reg = CacheRegistry::new();
+        let map: DashMap<Url, ()> = DashMap::new();
+        for i in 0..5 {
+            map.insert(uri(i), ());
+            reg.touch(&uri(i));
+        }
+        reg.shed_stale(&map, 10);
+        assert_eq!(map.len(), 5, "below cap: nothing evicted");
+    }
+
+    #[test]
+    fn shed_stale_evicts_oldest_half_at_cap() {
+        let reg = CacheRegistry::new();
+        let map: DashMap<Url, ()> = DashMap::new();
+        // Insert in order so uri(0) is least-recently-touched, uri(9) most recent.
+        for i in 0..10 {
+            map.insert(uri(i), ());
+            reg.touch(&uri(i));
+        }
+        reg.shed_stale(&map, 10);
+        assert_eq!(map.len(), 5, "half of cap should be evicted");
+        for i in 0..5 {
+            assert!(!map.contains_key(&uri(i)), "uri({i}) is oldest, should be evicted");
+        }
+        for i in 5..10 {
+            assert!(map.contains_key(&uri(i)), "uri({i}) is newest, should survive");
+        }
+    }
+
+    #[test]
+    fn shed_stale_treats_untouched_entries_as_oldest() {
+        let reg = CacheRegistry::new();
+        let map: DashMap<Url, ()> = DashMap::new();
+        // A CacheRegistry's very first touch() returns tick 0 — the same
+        // value `unwrap_or(0)` uses for a never-touched entry. Burn that
+        // first tick on a throwaway key so uri(2)/uri(3) below get ticks
+        // that unambiguously outrank the untouched default.
+        reg.touch(&uri(999));
+        // uri(0)/uri(1) inserted but never touched (tick defaults to 0);
+        // uri(2)/uri(3) touched, so they're more recent.
+        map.insert(uri(0), ());
+        map.insert(uri(1), ());
+        map.insert(uri(2), ());
+        reg.touch(&uri(2));
+        map.insert(uri(3), ());
+        reg.touch(&uri(3));
+        reg.shed_stale(&map, 4);
+        assert_eq!(map.len(), 2);
+        assert!(!map.contains_key(&uri(0)));
+        assert!(!map.contains_key(&uri(1)));
+        assert!(map.contains_key(&uri(2)));
+        assert!(map.contains_key(&uri(3)));
     }
 }
