@@ -248,17 +248,19 @@ impl Backend {
                 } else {
                     vec![]
                 };
-                for (file_uri, _) in self.docs.all_indexes() {
-                    let Some(doc) = self.docs.get_doc_salsa(&file_uri) else {
-                        continue;
-                    };
-                    for range in crate::laravel::find_call_sites(&doc, names, &key) {
-                        locations.push(Location {
-                            uri: file_uri.clone(),
-                            range,
-                        });
+                self.docs.with_all_indexes(|all_indexes| {
+                    for (file_uri, _) in all_indexes {
+                        let Some(doc) = self.docs.get_doc_salsa(file_uri) else {
+                            continue;
+                        };
+                        for range in crate::laravel::find_call_sites(&doc, names, &key) {
+                            locations.push(Location {
+                                uri: file_uri.clone(),
+                                range,
+                            });
+                        }
                     }
-                }
+                });
                 return Ok(Some(locations));
             }
 

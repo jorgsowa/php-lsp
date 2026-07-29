@@ -1667,6 +1667,16 @@ impl DocumentStore {
         self.get_workspace_index_salsa().files.clone()
     }
 
+    /// Borrow-scoped alternative to `all_indexes()` for callers that only
+    /// need the slice for the duration of one synchronous call — avoids
+    /// cloning every `Url` in the aggregate (`get_workspace_index_salsa()`
+    /// itself is a cheap `Arc` clone; `all_indexes()`'s `.files.clone()` is
+    /// the expensive part). Use `all_indexes()` instead when the result must
+    /// be moved across an `.await`/`spawn_blocking` boundary.
+    pub fn with_all_indexes<R>(&self, f: impl FnOnce(&[(Url, Arc<FileIndex>)]) -> R) -> R {
+        f(&self.get_workspace_index_salsa().files)
+    }
+
     /// Store a lazily-loaded vendor `FileIndex` in the session cache.
     /// Only call this for files that are not part of the normal workspace scan
     /// (i.e. vendor files loaded on-demand by PSR-4 navigation).

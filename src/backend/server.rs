@@ -600,25 +600,23 @@ impl LanguageServer for Backend {
                 .and_then(|d| d.get("class"))
                 .and_then(|v| v.as_str())
                 .map(str::to_string);
-            let all_indexes = self.docs.all_indexes();
-            if item.detail.is_none()
-                && let Some(sig) = signature_for_symbol_from_index_scoped(
-                    name,
-                    &all_indexes,
-                    class_hint.as_deref(),
-                )
-            {
-                item.detail = Some(sig);
-            }
-            if item.documentation.is_none()
-                && let Some(md) =
-                    docs_for_symbol_from_index_scoped(name, &all_indexes, class_hint.as_deref())
-            {
-                item.documentation = Some(Documentation::MarkupContent(MarkupContent {
-                    kind: MarkupKind::Markdown,
-                    value: md,
-                }));
-            }
+            self.docs.with_all_indexes(|all_indexes| {
+                if item.detail.is_none()
+                    && let Some(sig) =
+                        signature_for_symbol_from_index_scoped(name, all_indexes, class_hint.as_deref())
+                {
+                    item.detail = Some(sig);
+                }
+                if item.documentation.is_none()
+                    && let Some(md) =
+                        docs_for_symbol_from_index_scoped(name, all_indexes, class_hint.as_deref())
+                {
+                    item.documentation = Some(Documentation::MarkupContent(MarkupContent {
+                        kind: MarkupKind::Markdown,
+                        value: md,
+                    }));
+                }
+            });
             Ok(item)
         })
         .await
@@ -706,7 +704,7 @@ impl LanguageServer for Backend {
                 Some(d) => d,
                 None => return Ok(None),
             };
-            let all_indexes = self.docs.all_indexes();
+            let index_data = self.docs.get_workspace_index_salsa();
             let analysis = self.cached_analysis_async(uri).await;
             let uri_str = uri.to_string();
             let doc_clone = Arc::clone(&doc);
@@ -715,7 +713,7 @@ impl LanguageServer for Backend {
                     &source,
                     &doc_clone,
                     position,
-                    &all_indexes,
+                    &index_data.files,
                     analysis.as_deref(),
                 )
             })
@@ -905,13 +903,14 @@ impl LanguageServer for Backend {
                 .and_then(|v| v.as_str())
                 .map(str::to_string);
             if let Some(name) = func_name {
-                let all_indexes = self.docs.all_indexes();
-                if let Some(md) = docs_for_symbol_from_index(&name, &all_indexes) {
-                    item.tooltip = Some(InlayHintTooltip::MarkupContent(MarkupContent {
-                        kind: MarkupKind::Markdown,
-                        value: md,
-                    }));
-                }
+                self.docs.with_all_indexes(|all_indexes| {
+                    if let Some(md) = docs_for_symbol_from_index(&name, all_indexes) {
+                        item.tooltip = Some(InlayHintTooltip::MarkupContent(MarkupContent {
+                            kind: MarkupKind::Markdown,
+                            value: md,
+                        }));
+                    }
+                });
             }
             Some(item)
         })
@@ -1292,8 +1291,11 @@ impl LanguageServer for Backend {
                 return Ok(Some(GotoDefinitionResponse::Scalar(loc)));
             }
             // Second pass: background files via FileIndex (line-only positions).
-            let all_indexes = self.docs.all_indexes();
-            Ok(goto_declaration_from_index(&source, &all_indexes, position)
+            Ok(self
+                .docs
+                .with_all_indexes(|all_indexes| {
+                    goto_declaration_from_index(&source, all_indexes, position)
+                })
                 .map(GotoDefinitionResponse::Scalar))
         })
         .await
@@ -1313,7 +1315,6 @@ impl LanguageServer for Backend {
             };
             let analysis = self.cached_analysis_async(uri).await;
             let open_docs = self.docs.docs_for(&self.open_urls());
-            let all_indexes = self.docs.all_indexes();
 
             // Exact FQN/namespace matches (open docs, then background index)
             // outrank *either* source's short-name fallback, so an unrelated
@@ -1327,13 +1328,15 @@ impl LanguageServer for Backend {
                 position,
             );
             if results.is_empty() {
-                results = goto_type_definition_from_index_exact(
-                    &source,
-                    &doc,
-                    analysis.as_deref(),
-                    &all_indexes,
-                    position,
-                );
+                results = self.docs.with_all_indexes(|all_indexes| {
+                    goto_type_definition_from_index_exact(
+                        &source,
+                        &doc,
+                        analysis.as_deref(),
+                        all_indexes,
+                        position,
+                    )
+                });
             }
             if results.is_empty() {
                 results = goto_type_definition_short_name_fallback(
@@ -1345,13 +1348,15 @@ impl LanguageServer for Backend {
                 );
             }
             if results.is_empty() {
-                results = goto_type_definition_from_index_short_name_fallback(
-                    &source,
-                    &doc,
-                    analysis.as_deref(),
-                    &all_indexes,
-                    position,
-                );
+                results = self.docs.with_all_indexes(|all_indexes| {
+                    goto_type_definition_from_index_short_name_fallback(
+                        &source,
+                        &doc,
+                        analysis.as_deref(),
+                        all_indexes,
+                        position,
+                    )
+                });
             }
 
             // Format response: scalar for single result, array for multiple, none for empty
