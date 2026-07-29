@@ -3,11 +3,11 @@ use tower_lsp::lsp_types::{CompletionItem, CompletionItemKind};
 
 use crate::document::ast::{ParsedDoc, SourceView};
 
-use super::{build_function_sig, callable_item, docblock_docs, named_arg_item};
+use super::{build_function_sig, callable_item, documentation_from_comment, named_arg_item};
 
 pub fn symbol_completions(doc: &ParsedDoc) -> Vec<CompletionItem> {
     let mut items = Vec::new();
-    collect_from_statements_with_doc(&doc.program().stmts, &mut items, Some(doc));
+    collect_from_statements_with_doc(&doc.program().stmts, &mut items);
     items
 }
 
@@ -16,7 +16,7 @@ pub fn symbol_completions(doc: &ParsedDoc) -> Vec<CompletionItem> {
 pub fn symbol_completions_before(doc: &ParsedDoc, line: u32) -> Vec<CompletionItem> {
     let sv = doc.view();
     let mut items = Vec::new();
-    collect_from_statements_before(&doc.program().stmts, &mut items, line, sv, Some(doc));
+    collect_from_statements_before(&doc.program().stmts, &mut items, line, sv);
     items
 }
 
@@ -25,7 +25,6 @@ fn collect_from_statements_before(
     items: &mut Vec<CompletionItem>,
     line: u32,
     sv: SourceView<'_>,
-    doc: Option<&ParsedDoc>,
 ) {
     for stmt in stmts {
         match &stmt.kind {
@@ -38,28 +37,24 @@ fn collect_from_statements_before(
             }
             StmtKind::Namespace(ns) => {
                 if let NamespaceBody::Braced(inner) = &ns.body {
-                    collect_from_statements_before(&inner.stmts, items, line, sv, doc);
+                    collect_from_statements_before(&inner.stmts, items, line, sv);
                 }
             }
             // Non-variable items: always include
             _ => {
-                collect_from_statements_with_doc(std::slice::from_ref(stmt), items, doc);
+                collect_from_statements_with_doc(std::slice::from_ref(stmt), items);
             }
         }
     }
 }
 
-fn collect_from_statements_with_doc(
-    stmts: &[Stmt<'_, '_>],
-    items: &mut Vec<CompletionItem>,
-    doc: Option<&ParsedDoc>,
-) {
+fn collect_from_statements_with_doc(stmts: &[Stmt<'_, '_>], items: &mut Vec<CompletionItem>) {
     for stmt in stmts {
         match &stmt.kind {
             StmtKind::Function(f) => {
                 let name_str = f.name.to_string();
                 let sig = build_function_sig(&name_str, &f.params, f.return_type.as_ref());
-                let documentation = doc.and_then(|d| docblock_docs(d, &name_str));
+                let documentation = documentation_from_comment(f.doc_comment.as_ref());
                 let mut item = callable_item(
                     &name_str,
                     CompletionItemKind::FUNCTION,
@@ -99,8 +94,7 @@ fn collect_from_statements_with_doc(
                                 &m.params,
                                 m.return_type.as_ref(),
                             );
-                            let documentation =
-                                doc.and_then(|d| docblock_docs(d, &method_name_str));
+                            let documentation = documentation_from_comment(m.doc_comment.as_ref());
                             let mut item = callable_item(
                                 &method_name_str,
                                 CompletionItemKind::METHOD,
@@ -167,7 +161,7 @@ fn collect_from_statements_with_doc(
             }
             StmtKind::Namespace(ns) => {
                 if let NamespaceBody::Braced(inner) = &ns.body {
-                    collect_from_statements_with_doc(&inner.stmts, items, doc);
+                    collect_from_statements_with_doc(&inner.stmts, items);
                 }
             }
             StmtKind::Expression(e) => {

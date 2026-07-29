@@ -41,7 +41,7 @@ use tower_lsp::lsp_types::{Documentation, MarkupContent, MarkupKind};
 
 use crate::document::ast::{ParsedDoc, format_type_hint};
 use crate::hover::format_params_str;
-use crate::lang::docblock::find_docblock;
+use crate::lang::docblock::parse_docblock;
 use crate::text::{camel_sort_key, utf16_offset_to_byte};
 use crate::types::type_map::{enclosing_class_at, params_of_function, params_of_method};
 use std::collections::HashMap;
@@ -125,10 +125,15 @@ fn build_function_sig(
     format!("function {}({}){}", name, params_str, ret)
 }
 
-/// Build a `Documentation` value from a docblock found before `sym_name` in `doc`.
-fn docblock_docs(doc: &ParsedDoc, sym_name: &str) -> Option<Documentation> {
-    let db = find_docblock(&doc.program().stmts, sym_name)?;
-    let md = db.to_markdown();
+/// Build a `Documentation` value for a caller that already has the declaration's
+/// own `doc_comment` node in hand (e.g. while walking every symbol in a file
+/// for completion) — skips `find_docblock`'s name-based tree re-search,
+/// which is O(symbols-in-file) per call and made whole-file completion
+/// O(n²) in the symbol count.
+pub(super) fn documentation_from_comment(
+    comment: Option<&php_ast::Comment<'_>>,
+) -> Option<Documentation> {
+    let md = parse_docblock(comment?.text).to_markdown();
     if md.is_empty() {
         None
     } else {
