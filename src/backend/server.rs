@@ -759,8 +759,9 @@ impl LanguageServer for Backend {
                 Some(d) => d,
                 None => return Ok(None),
             };
-            let other_docs = self.docs.other_docs(uri, &self.open_urls());
-            let other_maps = self.docs.other_symbol_maps(uri, &self.open_urls());
+            let open = self.open_urls();
+            let other_docs = self.docs.other_docs(uri, &open);
+            let other_maps = self.docs.other_symbol_maps(uri, &open);
             let analysis = self.cached_analysis_async(uri).await;
             let hover_session = self.docs.current_analysis_session();
             let source_clone = source.clone();
@@ -769,7 +770,11 @@ impl LanguageServer for Backend {
             // Lets mir-member/static-prop hover resolve a class's declaring doc
             // via the workspace index even when that file isn't open in the
             // editor, instead of only searching `other_docs` (open files).
-            let wi = self.workspace_index_async().await;
+            // Cached across this request: nothing between here and the
+            // fallback branch below lazily ingests a new vendor file, so the
+            // same Arc is safe to reuse instead of re-awaiting the index.
+            let mut wi_cache: Option<Arc<crate::db::workspace_index::WorkspaceIndexData>> = None;
+            let wi = self.workspace_index_cached(&mut wi_cache).await;
             let docs_for_lookup = Arc::clone(&self.docs);
             let find_class_doc_fn = move |name: &str| -> Option<Arc<ParsedDoc>> {
                 let cr = wi.resolve_class_ref(name)?;
@@ -804,7 +809,7 @@ impl LanguageServer for Backend {
             // file is never opened.  Also try the alias-resolved name so that
             // `use Foo as Bar` works even when Foo is only in the index.
             if let Some(word) = crate::text::word_at_position(&source, position) {
-                let wi = self.workspace_index_async().await;
+                let wi = self.workspace_index_cached(&mut wi_cache).await;
                 // Try the literal word first.
                 if let Some(h) = class_hover_from_workspace_index(&word, None, &wi) {
                     return Ok(Some(h));
