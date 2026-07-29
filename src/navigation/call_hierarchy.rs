@@ -14,23 +14,10 @@ use tower_lsp::lsp_types::{
 
 use crate::document::ast::{ParsedDoc, SourceView, span_to_range};
 
-/// Find the declaration matching `name` and return a `CallHierarchyItem`.
-pub fn prepare_call_hierarchy(
-    name: &str,
-    all_docs: &[(Url, Arc<ParsedDoc>)],
-) -> Option<CallHierarchyItem> {
-    for (uri, doc) in all_docs {
-        let sv = doc.view();
-        if let Some(item) = find_declaration_item(name, &doc.program().stmts, sv, uri) {
-            return Some(item);
-        }
-    }
-    None
-}
-
-/// Like [`prepare_call_hierarchy`] but resolves candidate declaring files via
-/// the workspace aggregate's `decls_by_name` map instead of walking every
-/// document's AST: O(matches) docs fetched and scanned instead of O(workspace).
+/// Finds the declaration matching `name` and returns a `CallHierarchyItem`,
+/// resolving candidate declaring files via the workspace aggregate's
+/// `decls_by_name` map instead of walking every document's AST: O(matches)
+/// docs fetched and scanned instead of O(workspace).
 /// `get_doc` resolves a candidate file to its parsed doc (typically
 /// `DocumentStore::get_doc_salsa` — a memo hit for indexed files).
 pub fn prepare_call_hierarchy_indexed(
@@ -85,10 +72,10 @@ fn resolve_trait_alias_indexed(
     None
 }
 
-/// Like [`outgoing_calls`] but resolves the item's own document and every
-/// callee declaration through the workspace aggregate instead of a
-/// pre-materialised all-docs list. Avoids the per-callee O(workspace) scan
-/// that made outgoing calls quadratic in practice.
+/// Finds all calls made by the body of `item.name`, resolving the item's own
+/// document and every callee declaration through the workspace aggregate
+/// instead of a pre-materialised all-docs list. Avoids the per-callee
+/// O(workspace) scan that made outgoing calls quadratic in practice.
 pub fn outgoing_calls_indexed(
     item: &CallHierarchyItem,
     wi: &crate::db::workspace_index::WorkspaceIndexData,
@@ -198,40 +185,6 @@ pub fn incoming_calls_indexed(
             result.push(CallHierarchyIncomingCall {
                 from,
                 from_ranges: vec![loc.range],
-            });
-        }
-    }
-
-    result
-}
-
-/// Find all calls made by the body of `item.name`.
-pub fn outgoing_calls(
-    item: &CallHierarchyItem,
-    all_docs: &[(Url, Arc<ParsedDoc>)],
-) -> Vec<CallHierarchyOutgoingCall> {
-    let Some((_, doc)) = all_docs.iter().find(|(uri, _)| *uri == item.uri) else {
-        return Vec::new();
-    };
-    // Borrow sv.source() directly from the Arc to avoid cloning the whole file.
-    let item_source = doc.source();
-    let mut calls: Vec<(String, Span)> = Vec::new();
-    collect_calls_for(&item.name, &doc.program().stmts, &mut calls);
-
-    let mut result: Vec<CallHierarchyOutgoingCall> = Vec::new();
-    // Track callee_name → index in `result` for O(1) dedup.
-    let mut index: HashMap<String, usize> = HashMap::new();
-    let item_line_starts = doc.line_starts();
-    for (callee_name, span) in calls {
-        let call_range = span_to_range(item_source, item_line_starts, span);
-        if let Some(&idx) = index.get(&callee_name) {
-            result[idx].from_ranges.push(call_range);
-        } else if let Some(callee_item) = prepare_call_hierarchy(&callee_name, all_docs) {
-            let idx = result.len();
-            index.insert(callee_name, idx);
-            result.push(CallHierarchyOutgoingCall {
-                to: callee_item,
-                from_ranges: vec![call_range],
             });
         }
     }
