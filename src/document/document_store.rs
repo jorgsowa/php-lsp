@@ -1740,6 +1740,35 @@ impl DocumentStore {
             .collect()
     }
 
+    /// Like [`Self::all_docs_for_scan`], but only parses files whose raw text
+    /// contains at least one of `needles` (ASCII-case-insensitive — PHP class
+    /// names are case-insensitive, unlike the Laravel string-key prefilter's
+    /// exact-value match). Used by callers scanning for a class/interface
+    /// *declaration* by name (e.g. "implement missing methods"), where the
+    /// needle set is small and a miss guarantees the file declares none of
+    /// them.
+    pub fn docs_for_scan_mentioning(&self, needles: &[String]) -> Vec<(Url, Arc<ParsedDoc>)> {
+        let Ok(finder) = aho_corasick::AhoCorasick::builder()
+            .ascii_case_insensitive(true)
+            .build(needles)
+        else {
+            return Vec::new();
+        };
+        let urls: Vec<Url> = self
+            .lsp_ws_files
+            .iter()
+            .filter(|e| !self.deleted_uris.contains(e.key()))
+            .filter(|e| {
+                self.source_text(e.key())
+                    .is_some_and(|text| finder.is_match(text.as_ref()))
+            })
+            .map(|e| e.key().clone())
+            .collect();
+        urls.into_iter()
+            .filter_map(|u| self.get_doc_salsa(&u).map(|d| (u, d)))
+            .collect()
+    }
+
     /// Files whose `use` imports include `fqn` (leading `\` and ASCII case
     /// ignored — PHP names are case-insensitive), from the workspace symbol
     /// index — no parsing, no text scan. The candidate scope for `use`-line

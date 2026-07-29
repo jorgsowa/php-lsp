@@ -154,14 +154,14 @@ impl Backend {
             "phpdoc" => phpdoc_actions(uri, doc, source, range),
             "implement" => {
                 let imports = self.file_imports(uri);
-                implement_missing_actions(
-                    source,
-                    doc,
-                    &self.docs.all_docs_for_scan(),
-                    range,
-                    uri,
-                    &imports,
-                )
+                let needles =
+                    crate::actions::implement_action::target_type_names(&doc.program().stmts, doc.view(), range);
+                let all_docs = if needles.is_empty() {
+                    Vec::new()
+                } else {
+                    self.docs.docs_for_scan_mentioning(&needles)
+                };
+                implement_missing_actions(source, doc, &all_docs, range, uri, &imports)
             }
             "constructor" => generate_constructor_actions(source, doc, range, uri),
             "getters_setters" => generate_getters_setters_actions(source, doc, range, uri),

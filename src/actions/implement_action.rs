@@ -45,6 +45,47 @@ pub fn implement_missing_actions(
     actions
 }
 
+/// Short names (`implements`/`extends` targets) of every class in `stmts`
+/// whose span overlaps `range` — the search needles for a text prefilter
+/// before parsing candidate files to find their declaring documents. Uses
+/// the same span-overlap check as `collect_actions`'s per-class walk.
+pub(crate) fn target_type_names(stmts: &[Stmt<'_, '_>], sv: SourceView<'_>, range: Range) -> Vec<String> {
+    let mut names = Vec::new();
+    collect_target_type_names(stmts, sv, range, &mut names);
+    names
+}
+
+fn collect_target_type_names(
+    stmts: &[Stmt<'_, '_>],
+    sv: SourceView<'_>,
+    range: Range,
+    out: &mut Vec<String>,
+) {
+    for stmt in stmts {
+        match &stmt.kind {
+            StmtKind::Class(c) => {
+                let class_start = sv.position_of(stmt.span.start).line;
+                let class_end = sv.position_of(stmt.span.end).line;
+                if class_start > range.end.line || class_end < range.start.line {
+                    continue;
+                }
+                for iface in c.implements.iter() {
+                    out.push(fqn_short_name(&iface.to_string_repr()).to_string());
+                }
+                if let Some(parent) = &c.extends {
+                    out.push(fqn_short_name(&parent.to_string_repr()).to_string());
+                }
+            }
+            StmtKind::Namespace(ns) => {
+                if let NamespaceBody::Braced(inner) = &ns.body {
+                    collect_target_type_names(&inner.stmts, sv, range, out);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 fn collect_actions(
     stmts: &[Stmt<'_, '_>],
     sv: SourceView<'_>,
