@@ -5,7 +5,7 @@ use std::ops::ControlFlow;
 use php_ast::{
     Attribute, CatchClause, ClassMember, ClassMemberKind, EnumMember, EnumMemberKind, Expr,
     ExprKind, MethodDecl, Name, NamespaceBody, Span, Stmt, StmtKind, TraitUseDecl, TypeHint,
-    TypeHintKind, UnaryPostfixOp, UnaryPrefixOp, UseDecl,
+    TypeHintKind, UnaryPostfixOp, UnaryPrefixOp,
     visitor::{
         Visitor, walk_attribute, walk_catch_clause, walk_class_member, walk_enum_member, walk_expr,
         walk_stmt, walk_trait_use, walk_type_hint,
@@ -14,25 +14,17 @@ use php_ast::{
 use tower_lsp::lsp_types::DocumentHighlightKind;
 
 use crate::document::ast::{str_offset, str_offset_in_range};
-use crate::text::fqn_short_name;
 
 // ── Public entry points ───────────────────────────────────────────────────────
 
 pub fn refs_in_stmts(source: &str, stmts: &[Stmt<'_, '_>], word: &str, out: &mut Vec<Span>) {
-    walk_all_refs(source, stmts, word, false, out);
+    walk_all_refs(source, stmts, word, out);
 }
 
-fn walk_all_refs(
-    source: &str,
-    stmts: &[Stmt<'_, '_>],
-    word: &str,
-    include_use: bool,
-    out: &mut Vec<Span>,
-) {
+fn walk_all_refs(source: &str, stmts: &[Stmt<'_, '_>], word: &str, out: &mut Vec<Span>) {
     let mut v = AllRefsVisitor {
         source,
         word,
-        include_use,
         out: Vec::new(),
     };
     for stmt in stmts {
@@ -46,7 +38,6 @@ fn walk_all_refs(
 struct AllRefsVisitor<'a> {
     source: &'a str,
     word: &'a str,
-    include_use: bool,
     out: Vec<Span>,
 }
 
@@ -75,9 +66,6 @@ impl<'arena, 'src> Visitor<'arena, 'src> for AllRefsVisitor<'_> {
             StmtKind::Interface(i) => self.push_name_str(i.name.or_error(), stmt.span),
             StmtKind::Trait(t) => self.push_name_str(t.name.or_error(), stmt.span),
             StmtKind::Enum(e) => self.push_name_str(e.name.or_error(), stmt.span),
-            StmtKind::Use(u) if self.include_use => {
-                push_use_item_spans(self.source, u, self.word, &mut self.out);
-            }
             _ => {}
         }
         walk_stmt(self, stmt)
@@ -133,39 +121,6 @@ impl<'arena, 'src> Visitor<'arena, 'src> for AllRefsVisitor<'_> {
             self.out.push(expr.span);
         }
         walk_expr(self, expr)
-    }
-}
-
-/// Push a span for each `use` import item in `u` whose local name — the
-/// alias when aliased, otherwise the last segment of the imported FQN —
-/// equals `word`. Shared by `AllRefsVisitor` (general word walker) and
-/// [`use_import_refs_in_stmts`] (used to merge `use`-import spans into the
-/// class-kind walker for rename).
-fn push_use_item_spans(source: &str, u: &UseDecl<'_, '_>, word: &str, out: &mut Vec<Span>) {
-    for use_item in u.uses.iter() {
-        let fqn = use_item.name.to_string_repr().into_owned();
-        if let Some(alias) = use_item.alias {
-            // If there's an alias and it matches, emit the alias span (not the FQN).
-            if alias == word
-                && let Some(offset) = str_offset(source, alias)
-            {
-                out.push(Span {
-                    start: offset,
-                    end: offset + alias.len() as u32,
-                });
-            }
-        } else {
-            // No alias: check if the last segment of FQN matches.
-            let last_seg = fqn_short_name(&fqn);
-            if last_seg == word {
-                let name_span = use_item.name.span();
-                let offset = (fqn.len() - last_seg.len()) as u32;
-                out.push(Span {
-                    start: name_span.start + offset,
-                    end: name_span.start + fqn.len() as u32,
-                });
-            }
-        }
     }
 }
 
