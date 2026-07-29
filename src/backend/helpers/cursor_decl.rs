@@ -392,12 +392,12 @@ pub(crate) fn promoted_property_at_cursor(
                                 if param.visibility.is_none() {
                                     continue;
                                 }
-                                let name_start =
-                                    str_offset(source, &param.name.to_string()).unwrap_or(0);
-                                let name_end = name_start + param.name.to_string().len() as u32;
+                                let param_name = param.name.or_error();
+                                let name_start = str_offset(source, param_name).unwrap_or(0);
+                                let name_end = name_start + param_name.len() as u32;
                                 if cursor >= name_start && cursor < name_end {
                                     return Some(
-                                        param.name.to_string().trim_start_matches('$').to_string(),
+                                        param_name.trim_start_matches('$').to_string(),
                                     );
                                 }
                             }
