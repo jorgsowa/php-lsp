@@ -1442,6 +1442,19 @@ impl DocumentStore {
             .ref_index_lock_count()
     }
 
+    /// Whether mir's workspace symbol index singleton is populated (warm-start
+    /// seed or first sweep). See `DebugStats::workspace_symbol_index_ready`.
+    pub fn workspace_symbol_index_ready(&self) -> bool {
+        self.analysis_session(self.workspace_php_version())
+            .workspace_symbol_index_ready()
+    }
+
+    /// Executions of mir's tracked O(all-files) symbol-index walk.
+    pub fn workspace_index_walks(&self) -> u64 {
+        self.analysis_session(self.workspace_php_version())
+            .workspace_index_walks()
+    }
+
     /// Return the raw source text for `uri` if it has been mirrored into the
     /// salsa workspace. Used by the references handler to pre-filter session
     /// results by checking whether a file mentions the owning class name.

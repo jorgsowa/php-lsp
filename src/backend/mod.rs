@@ -64,6 +64,13 @@ pub struct DebugStats {
     /// Analysis warm sweeps run to completion (not cancelled). Lets benches
     /// and tests wait for the post-index sweep before baselining.
     pub warm_sweeps_completed: u64,
+    /// Whether mir's workspace symbol index singleton is populated (seeded
+    /// from the disk cache at warm start, or built by the first sweep).
+    pub workspace_symbol_index_ready: bool,
+    /// Executions of mir's tracked O(all-files) symbol-index walk. A
+    /// cache-warm session must keep this at zero — the regression tests
+    /// assert it.
+    pub workspace_index_walks: u64,
 }
 
 use crate::document::ast::ParsedDoc;
@@ -116,6 +123,8 @@ impl Backend {
             parses: self.docs.parse_count(),
             ref_index_locks: self.docs.ref_index_lock_count(),
             warm_sweeps_completed: self.docs.warm_sweeps_completed(),
+            workspace_symbol_index_ready: self.docs.workspace_symbol_index_ready(),
+            workspace_index_walks: self.docs.workspace_index_walks(),
         })
     }
 

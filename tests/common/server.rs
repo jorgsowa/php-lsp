@@ -585,6 +585,19 @@ impl TestServer {
             .unwrap_or_else(|| panic!("debugStats lacked numeric `parses`: {resp}"))
     }
 
+    /// `(workspace_symbol_index_ready, workspace_index_walks)` from
+    /// `$/php-lsp/debugStats` — the warm-start seeding regression pair.
+    pub async fn debug_stats_symbol_index(&mut self) -> (bool, u64) {
+        let resp = self.client.request_no_params("$/php-lsp/debugStats").await;
+        let ready = resp["result"]["workspace_symbol_index_ready"]
+            .as_bool()
+            .unwrap_or_else(|| panic!("debugStats lacked `workspace_symbol_index_ready`: {resp}"));
+        let walks = resp["result"]["workspace_index_walks"]
+            .as_u64()
+            .unwrap_or_else(|| panic!("debugStats lacked `workspace_index_walks`: {resp}"));
+        (ready, walks)
+    }
+
     /// Cumulative mir `RefIndex` lock count from `$/php-lsp/debugStats`.
     pub async fn debug_stats_ref_index_locks(&mut self) -> u64 {
         let resp = self.client.request_no_params("$/php-lsp/debugStats").await;

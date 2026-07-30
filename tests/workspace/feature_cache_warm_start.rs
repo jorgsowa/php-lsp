@@ -391,3 +391,118 @@ async fn early_open_still_attaches_session_cache() {
         "session cache dir must exist on disk even when a didOpen preceded initialized"
     );
 }
+
+/// A returning session must seed mir's workspace symbol index from the disk
+/// cache and answer its first references query without ever running the
+/// tracked O(all-files) index walk — the per-process rebuild behind the
+/// multi-second first-query cliff on large workspaces.
+#[tokio::test]
+async fn warm_start_seeds_symbol_index_and_first_query_avoids_tracked_walk() {
+    let workspace = tempfile::tempdir().expect("workspace tempdir");
+    let cache_dir = tempfile::tempdir().expect("cache tempdir");
+    let widget = "<?php\nclass Widget {\n    public function spin(): void {}\n}\n";
+    let caller = "<?php\n$w = new Widget();\n$w->spin();\n";
+    std::fs::write(workspace.path().join("widget.php"), widget).expect("write widget.php");
+    std::fs::write(workspace.path().join("caller.php"), caller).expect("write caller.php");
+
+    let opts = |warm_analysis: bool| {
+        json!({
+            "cachePath": cache_dir.path().to_str().unwrap(),
+            "diagnostics": {"enabled": false},
+            "phpVersion": "8.3",
+            "warmAnalysis": warm_analysis,
+        })
+    };
+
+    // ── First launch: sweep populates postings + definition slices on disk ──
+    {
+        let mut s = TestServer::with_root_and_options(workspace.path(), opts(true)).await;
+        s.wait_for_index_ready().await;
+        assert!(
+            s.wait_for_warm_sweeps(1).await,
+            "warm sweep did not complete"
+        );
+        s.shutdown().await;
+    }
+
+    // ── Second launch: index seeded before ready; queries never walk ──
+    {
+        let mut s = TestServer::with_root_and_options(workspace.path(), opts(false)).await;
+        s.wait_for_index_ready().await;
+        let (ready, _) = s.debug_stats_symbol_index().await;
+        assert!(
+            ready,
+            "warm start over a populated cache must seed the symbol index singleton"
+        );
+
+        s.open("widget.php", widget).await;
+        let resp = s.references("widget.php", 2, 20, false).await;
+        let out = render_locations(&resp, &s.uri(""));
+        expect![[r#"caller.php:2:4-2:8"#]].assert_eq(&out);
+
+        let (_, walks) = s.debug_stats_symbol_index().await;
+        assert_eq!(
+            walks, 0,
+            "a cache-warm session must never run the tracked O(all-files) index walk"
+        );
+        s.shutdown().await;
+    }
+}
+
+/// External (watcher-shaped) file changes bypass `ingest_file`'s index
+/// maintenance; the settle path must reconcile the seeded singleton before
+/// queries read it. A class renamed on disk must be resolvable — and its
+/// call site findable — right after `didChangeWatchedFiles`.
+#[tokio::test]
+async fn watcher_rename_stays_visible_in_seeded_symbol_index() {
+    let workspace = tempfile::tempdir().expect("workspace tempdir");
+    let cache_dir = tempfile::tempdir().expect("cache tempdir");
+    let shape = "<?php\nclass OldShape {\n    public static function draw(): void {}\n}\n";
+    let user = "<?php\nOldShape::draw();\n";
+    std::fs::write(workspace.path().join("shape.php"), shape).expect("write shape.php");
+    std::fs::write(workspace.path().join("user.php"), user).expect("write user.php");
+
+    let opts = |warm_analysis: bool| {
+        json!({
+            "cachePath": cache_dir.path().to_str().unwrap(),
+            "diagnostics": {"enabled": false},
+            "phpVersion": "8.3",
+            "warmAnalysis": warm_analysis,
+        })
+    };
+
+    {
+        let mut s = TestServer::with_root_and_options(workspace.path(), opts(true)).await;
+        s.wait_for_index_ready().await;
+        assert!(
+            s.wait_for_warm_sweeps(1).await,
+            "warm sweep did not complete"
+        );
+        s.shutdown().await;
+    }
+
+    {
+        let mut s = TestServer::with_root_and_options(workspace.path(), opts(false)).await;
+        s.wait_for_index_ready().await;
+        let (ready, _) = s.debug_stats_symbol_index().await;
+        assert!(ready, "second launch must seed the singleton");
+
+        // Rename the class on disk (git-pull shape) and notify via watcher.
+        let new_shape = "<?php\nclass NewShape {\n    public static function draw(): void {}\n}\n";
+        let new_user = "<?php\nNewShape::draw();\n";
+        std::fs::write(workspace.path().join("shape.php"), new_shape).expect("rewrite shape.php");
+        std::fs::write(workspace.path().join("user.php"), new_user).expect("rewrite user.php");
+        s.did_change_watched_files(vec![
+            (s.uri("shape.php"), 2), // Changed
+            (s.uri("user.php"), 2),
+        ])
+        .await;
+
+        s.open("shape.php", new_shape).await;
+        // Cursor on `draw` in the renamed class's declaration.
+        let resp = s.references("shape.php", 2, 27, false).await;
+        let out = render_locations(&resp, &s.uri(""));
+        expect!["user.php:1:10-1:14"].assert_eq(&out);
+        s.shutdown().await;
+    }
+}
