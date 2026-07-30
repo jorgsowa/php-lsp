@@ -2939,6 +2939,62 @@ mod tests {
         );
     }
 
+    /// KNOWN GAP (found while investigating issue #242, root cause is
+    /// distinct from it — not fixed by the `is_index_ready` gate):
+    /// `cached_analysis_if_fresh`'s staleness check is keyed on
+    /// `decl_version`, which only bumps inside `cached_analysis_cancellable`
+    /// when a file undergoes its *own* full analysis and its declarations
+    /// are found to differ from their last-seen fingerprint (see the
+    /// "first analysis" branch a few hundred lines up). Mirroring a brand
+    /// new file into the store (`mirror_text`/`ingest_from_doc`, what a
+    /// workspace scan or `didChangeWatchedFiles` CREATED event does) does
+    /// *not* go through that path and so never bumps `decl_version` — a
+    /// consumer file analyzed before its dependency existed keeps returning
+    /// its stale, now-wrong `UndefinedClass` forever, since the dependency
+    /// is never independently analyzed on its own to trigger the bump.
+    ///
+    /// Likely fix: also bump `decl_version` when a newly-mirrored file's
+    /// `FileIndex` shows it declares something (mirroring the "first
+    /// analysis" check), not only when `cached_analysis_cancellable` runs —
+    /// but note this runs on every scanned file, so doing it unconditionally
+    /// would thrash the analysis cache during a large workspace scan; needs
+    /// a design that distinguishes "newly declared symbol nothing depended
+    /// on yet" from "everything else already cached must now recompute".
+    #[test]
+    #[ignore = "known gap: mirroring a new dependency file doesn't bump \
+                decl_version, so a consumer analyzed first keeps a stale \
+                UndefinedClass forever"]
+    fn stale_cached_analysis_not_invalidated_by_new_dependency_file() {
+        let store = DocumentStore::new();
+        let consumer_uri = uri("/app.php");
+        let dep_uri = uri("/Mage.php");
+
+        // Consumer references Mage before Mage exists anywhere in the store —
+        // correctly flagged, and this analysis gets cached.
+        store.mirror_text(&consumer_uri, "<?php\n\nnew Mage();\n");
+        let issues = store.get_semantic_issues_salsa(&consumer_uri).unwrap();
+        assert!(
+            issues
+                .iter()
+                .any(|i| matches!(i.kind, mir_issues::IssueKind::UndefinedClass { .. })),
+            "sanity check: Mage must be reported missing before it exists"
+        );
+
+        // Mage now becomes known to the store — exactly what a workspace
+        // scan or a `didChangeWatchedFiles` CREATED event does.
+        store.mirror_text(&dep_uri, "<?php\nclass Mage {}\n");
+
+        // Consumer's diagnostics should now resolve cleanly.
+        let issues = store.get_semantic_issues_salsa(&consumer_uri).unwrap();
+        assert!(
+            !issues
+                .iter()
+                .any(|i| matches!(i.kind, mir_issues::IssueKind::UndefinedClass { .. })),
+            "Mage now exists, but consumer.php's cached analysis was never \
+             invalidated: {issues:?}"
+        );
+    }
+
     /// Issue #191 regression: workspace-wide scans (find-references, rename,
     /// call-hierarchy) must not re-parse closed/indexed files on repeated
     /// invocations. Once a file's `ParsedDoc` has been produced, subsequent

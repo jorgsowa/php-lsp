@@ -1287,3 +1287,57 @@ async fn enum_implementing_use_imported_interface_not_flagged() {
           <clean>"#]]
     .assert_eq(&out);
 }
+
+/// KNOWN GAP (found while investigating issue #242, not fixed by it — root
+/// cause is different): a file's `cached_analysis` is only invalidated by
+/// `decl_version` bumping, and `decl_version` only bumps when a file goes
+/// through its *own* full semantic analysis (`cached_analysis_cancellable`'s
+/// "first analysis" branch in `document_store.rs`) — never when a file is
+/// merely scanned/mirrored/created as someone else's dependency. So once a
+/// consumer file has been analyzed while a class it references didn't exist
+/// yet, that wrong `UndefinedClass` is cached and never recomputed — not
+/// after the workspace is fully indexed, not even after the missing file is
+/// created via `didChangeWatchedFiles` — because the dependency file itself
+/// is never independently opened/analyzed to trigger the bump. Reproduced
+/// deterministically (no timing/race involved) at the `DocumentStore` level
+/// in `document_store.rs`'s
+/// `stale_cached_analysis_not_invalidated_by_new_dependency_file`; this is
+/// the same bug at the full LSP-server level, via the realistic trigger of
+/// a teammate's new file landing (e.g. after a `git pull`).
+#[tokio::test]
+#[ignore = "known gap: cached_analysis is not invalidated when a newly \
+            created file satisfies a previously-unresolved reference — see \
+            stale_cached_analysis_not_invalidated_by_new_dependency_file"]
+async fn undefined_class_diagnostic_not_refreshed_after_dependency_file_created() {
+    let tmp = tempfile::tempdir().unwrap();
+    let consumer_src = "<?php\n\nnew Mage();\n";
+    std::fs::write(tmp.path().join("app.php"), consumer_src).unwrap();
+
+    let mut s = TestServer::with_root(tmp.path()).await;
+    s.wait_for_index_ready().await;
+
+    // Mage doesn't exist yet — correctly flagged, and this analysis gets
+    // cached.
+    s.open("app.php", consumer_src).await;
+    let resp = s.workspace_diagnostic().await;
+    let out = render_workspace_diagnostic(&resp, &s.uri(""));
+    expect![[r#"
+        app.php
+          2:4 Class Mage does not exist [UndefinedClass] (error)"#]]
+    .assert_eq(&out);
+
+    // Mage now appears as a new file in the workspace.
+    s.write_file("Mage.php", "<?php\nclass Mage {}\n");
+    let mage_uri = s.uri("Mage.php");
+    s.did_change_watched_files(vec![(mage_uri, 1)]).await;
+    s.wait_until_symbol_present("Mage", std::time::Duration::from_secs(3))
+        .await;
+
+    // app.php's diagnostics should now resolve cleanly.
+    let resp = s.workspace_diagnostic().await;
+    let out = render_workspace_diagnostic(&resp, &s.uri(""));
+    expect![[r#"
+        app.php
+          <clean>"#]]
+    .assert_eq(&out);
+}
