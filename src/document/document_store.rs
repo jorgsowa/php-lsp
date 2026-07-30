@@ -47,6 +47,20 @@ pub struct DocumentStore {
     /// Lets tests assert that batching N symbols' reachability narrowing
     /// (e.g. all of one file's code lenses) pays one scan, not N.
     reachability_scan_passes: AtomicU64,
+    /// Per-URI lock so concurrent callers computing the same uncached file's
+    /// analysis (`cached_analysis_cancellable`) serialize onto one
+    /// computation instead of each redoing the full mir pass — e.g. `did_open`'s
+    /// diagnostics trigger racing a fast-following hover on a large,
+    /// just-opened file. Entries are never removed: bounded by the number of
+    /// distinct files ever analyzed, the same order of magnitude as
+    /// `lsp_ws_files`.
+    analysis_inflight: DashMap<Url, Arc<Mutex<()>>>,
+    /// Diagnostic counter: incremented once per real `FileAnalyzer::analyze`
+    /// run in `cached_analysis_cancellable` (never on a cache hit). Lets
+    /// tests assert that concurrent callers racing for the same uncached
+    /// file's analysis (see `analysis_inflight`) compute it once, not once
+    /// per caller.
+    analysis_compute_count: AtomicU64,
     /// `LspWorkspace` salsa input on the shared mir db: the project-file scoping
     /// set aggregated by `workspace_index`. Created lazily on first sync (the db
     /// is owned by the lazily-built `AnalysisSession`).
@@ -153,6 +167,8 @@ impl DocumentStore {
             workspace_files_dirty: AtomicBool::new(true),
             workspace_file_paths_cache: ArcSwapOption::from(None),
             reachability_scan_passes: AtomicU64::new(0),
+            analysis_inflight: DashMap::new(),
+            analysis_compute_count: AtomicU64::new(0),
             lsp_workspace: Mutex::new(None),
             psr4: Arc::new(ArcSwap::from_pointee(Psr4Map::empty())),
             analysis_session: Mutex::new((mir_analyzer::PhpVersion::LATEST, None)),
@@ -1419,6 +1435,11 @@ impl DocumentStore {
         self.reachability_scan_passes.load(Ordering::Relaxed)
     }
 
+    /// See the `analysis_compute_count` field's docs.
+    pub(crate) fn analysis_compute_count(&self) -> u64 {
+        self.analysis_compute_count.load(Ordering::Relaxed)
+    }
+
     /// Files that could possibly reference any FQN in `fqns`, narrowed via
     /// PHP's own name-resolution rules rather than bare-word text mention:
     ///
@@ -1766,16 +1787,33 @@ impl DocumentStore {
         let doc = self.get_doc_salsa(uri)?;
         let source = doc.source_arc();
 
-        let cur_ver = self.caches.decl_version();
-        if let Some(entry) = self.caches.analysis_cache.get(uri)
-            && Arc::ptr_eq(&entry.0, &source)
-            && entry.1 == cur_ver
-        {
-            let analysis = Arc::clone(&entry.2);
-            drop(entry);
-            self.caches.touch(uri);
-            return Some(analysis);
+        if let Some(hit) = self.cached_analysis_if_fresh(uri) {
+            return Some(hit);
         }
+
+        // Serialize concurrent callers analyzing the SAME uncached file onto
+        // one computation instead of each redoing the full mir pass — e.g.
+        // `did_open`'s diagnostics trigger racing a fast-following hover on a
+        // large just-opened file (tower-lsp's default concurrency runs up to
+        // 4 in-flight LSP messages at once, so this genuinely happens). Other
+        // files never contend: the lock is per-URI.
+        let inflight = Arc::clone(
+            self.analysis_inflight
+                .entry(uri.clone())
+                .or_insert_with(|| Arc::new(Mutex::new(())))
+                .value(),
+        );
+        let _inflight_guard = inflight.lock().unwrap();
+
+        // Re-check now that we hold the per-URI lock: whoever we waited on
+        // may have just populated the cache. `cur_ver` becomes the freshness
+        // tag on OUR insert below, so re-fetching it here (rather than reusing
+        // a value captured before we waited) reflects what was actually true
+        // right before we started computing, not before we started waiting.
+        if let Some(hit) = self.cached_analysis_if_fresh(uri) {
+            return Some(hit);
+        }
+        let cur_ver = self.caches.decl_version();
 
         let session = self.current_analysis_session();
         let file: Arc<str> = Arc::from(uri.as_str());
@@ -1828,7 +1866,10 @@ impl DocumentStore {
                 analyzer.analyze(file.clone(), doc.source(), &owned_program, &source_map)
             }));
             match attempt {
-                Ok(a) => break Arc::new(a),
+                Ok(a) => {
+                    self.analysis_compute_count.fetch_add(1, Ordering::Relaxed);
+                    break Arc::new(a);
+                }
                 Err(_) => {
                     // A write cancelled the attempt. If it replaced THIS
                     // file's text the result is already obsolete (the cache
@@ -3029,6 +3070,57 @@ mod tests {
         for h in handles {
             h.join()
                 .expect("no panic in snapshot_query under concurrent writes");
+        }
+    }
+
+    /// Concurrent callers racing to analyze the SAME uncached file (e.g.
+    /// `did_open`'s diagnostics trigger vs. a fast-following hover, which
+    /// tower-lsp's default concurrency genuinely allows) must serialize onto
+    /// one `FileAnalyzer::analyze` run and all observe its identical result
+    /// — not each redo the full analysis independently.
+    #[test]
+    fn concurrent_callers_share_one_analysis_computation() {
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+
+        let store = Arc::new(DocumentStore::new());
+        let u = uri("/inflight_test.php");
+        open(
+            &store,
+            u.clone(),
+            "<?php\nfunction f(): int { return 1; }".to_string(),
+        );
+
+        const N: usize = 8;
+        let barrier = Arc::new(Barrier::new(N));
+        let handles: Vec<_> = (0..N)
+            .map(|_| {
+                let store = Arc::clone(&store);
+                let u = u.clone();
+                let barrier = Arc::clone(&barrier);
+                thread::spawn(move || {
+                    barrier.wait();
+                    store.cached_analysis(&u)
+                })
+            })
+            .collect();
+        let results: Vec<_> = handles
+            .into_iter()
+            .map(|h| h.join().expect("no panic in cached_analysis"))
+            .collect();
+
+        assert_eq!(
+            store.analysis_compute_count(),
+            1,
+            "{N} concurrent callers analyzing the same uncached file must compute once, not {N} times"
+        );
+        let first = results[0].clone().expect("analysis must succeed");
+        for r in &results {
+            let r = r.as_ref().expect("analysis must succeed");
+            assert!(
+                Arc::ptr_eq(&first, r),
+                "every caller must observe the identical analysis Arc, not its own copy"
+            );
         }
     }
 

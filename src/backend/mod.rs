@@ -78,6 +78,11 @@ pub struct DebugStats {
     /// request, not one per declaration — the regression tests assert the
     /// delta across such a request.
     pub reachability_scan_passes: u64,
+    /// Real `FileAnalyzer::analyze` runs (never a cache hit). Concurrent
+    /// callers racing for the same uncached file's analysis (e.g. `did_open`
+    /// diagnostics vs. a fast-following hover) must serialize onto one run,
+    /// not one per caller — the regression test asserts the delta.
+    pub analysis_compute_count: u64,
 }
 
 use crate::document::ast::ParsedDoc;
@@ -133,6 +138,7 @@ impl Backend {
             workspace_symbol_index_ready: self.docs.workspace_symbol_index_ready(),
             workspace_index_walks: self.docs.workspace_index_walks(),
             reachability_scan_passes: self.docs.reachability_scan_passes(),
+            analysis_compute_count: self.docs.analysis_compute_count(),
         })
     }
 

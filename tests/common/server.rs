@@ -609,6 +609,15 @@ impl TestServer {
             })
     }
 
+    /// Cumulative real `FileAnalyzer::analyze` runs from `$/php-lsp/debugStats`
+    /// (`DocumentStore::analysis_compute_count`).
+    pub async fn debug_stats_analysis_compute_count(&mut self) -> u64 {
+        let resp = self.client.request_no_params("$/php-lsp/debugStats").await;
+        resp["result"]["analysis_compute_count"]
+            .as_u64()
+            .unwrap_or_else(|| panic!("debugStats lacked numeric `analysis_compute_count`: {resp}"))
+    }
+
     /// Cumulative mir `RefIndex` lock count from `$/php-lsp/debugStats`.
     pub async fn debug_stats_ref_index_locks(&mut self) -> u64 {
         let resp = self.client.request_no_params("$/php-lsp/debugStats").await;
