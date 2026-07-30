@@ -18,6 +18,7 @@ php-lsp is a full-featured LSP implementation for PHP: real-time cross-file diag
 - **Clean separation of concerns** — parsing ([php-rs-parser](https://crates.io/crates/php-rs-parser), [php-ast](https://crates.io/crates/php-ast)) and static analysis ([mir-php](https://github.com/jorgsowa/mir)) are dedicated crates, keeping the LSP layer lightweight and focused purely on protocol features
 - **Rust-native performance** — async-first with tokio, lock-free document store via dashmap, no GC pauses
 - **Completion depth** — type-aware `->` / `::` chains, `match` enum-case completions, auto `use` insertion, fuzzy camel/underscore matching
+- **Layered diagnostics, not a fork in the road** — the built-in `mir`-backed analyzer works out of the box with zero configuration; a project's own PHPStan/PHPCS setup can be layered on top as an opt-in overlay (`externalTools`) rather than a replacement, so adopting one doesn't mean giving up the other
 
 ---
 
