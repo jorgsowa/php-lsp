@@ -1,4 +1,7 @@
-# Editor & AI Client Setup
+---
+title: Editor & AI Client Setup
+description: Configuration snippets for VS Code, Neovim, Zed, Cursor, PHPStorm, and Claude Code.
+---
 
 This page covers setup for every supported editor and AI coding client.
 
@@ -188,10 +191,10 @@ Install the [php-lsp](https://plugins.jetbrains.com/plugin/31223-php-lsp) plugin
 
 The plugin handles everything automatically — no manual server configuration required. Source is available at [jorgsowa/php-lsp-phpstorm-plugin](https://github.com/jorgsowa/php-lsp-phpstorm-plugin).
 
-See [configuration.md](configuration.md) for all available options.
+See [configuration.md](/configuration/) for all available options.
 
 ---
 
 ## Configuration reference
 
-See [configuration.md](configuration.md) for all available `initializationOptions`.
+See [configuration.md](/configuration/) for all available `initializationOptions`.

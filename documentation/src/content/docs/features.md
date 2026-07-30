@@ -1,4 +1,7 @@
-# Features
+---
+title: Features
+description: The full list of diagnostics, completions, navigation, and refactoring support.
+---
 
 ## Diagnostics
 
@@ -16,7 +19,7 @@ the protocol's `Diagnostic` shape, it does no type-checking of its own.
 - `workspace/diagnostic/refresh` support
 - Optional PHPStan / PHPCS integration — run as external processes on save and merged
   alongside the built-in diagnostics, attributed with `source: "phpstan"` / `"phpcs"`. Off by
-  default; see [configuration.md](configuration.md#externaltools-object).
+  default; see [configuration.md](/configuration/#externaltools-object).
 
 ## Hover
 

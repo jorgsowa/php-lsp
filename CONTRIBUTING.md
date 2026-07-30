@@ -28,7 +28,7 @@ Requires Rust stable. No additional system dependencies.
 
 ## Architecture
 
-See [docs/architecture.md](docs/architecture.md) for a map of the codebase.
+See [architecture.md](documentation/src/content/docs/architecture.md) (or the [docs site](https://jorgsowa.github.io/php-lsp/architecture/)) for a map of the codebase.
 
 ## Benchmarking
 

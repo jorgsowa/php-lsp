@@ -1,4 +1,7 @@
-# Architecture
+---
+title: Architecture
+description: How the LSP layer and the mir static-analysis engine fit together.
+---
 
 php-lsp is a single-crate Rust project. It depends on the
 **[mir-php](https://github.com/jorgsowa/mir)** family of crates for static

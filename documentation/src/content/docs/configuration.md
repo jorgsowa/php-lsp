@@ -1,4 +1,7 @@
-# Configuration
+---
+title: Configuration
+description: Every initializationOptions key, its default, and what it does.
+---
 
 Options are passed via `initializationOptions` in your editor's LSP configuration and are also read live from the `php-lsp` settings section via `workspace/configuration` — changes take effect without restarting the server.
 
@@ -121,4 +124,4 @@ refresh after every `textDocument/didSave`.
 }
 ```
 
-For editor-specific snippets showing where to paste these options, see [editors.md](editors.md).
+For editor-specific snippets showing where to paste these options, see [editors.md](/editors/).

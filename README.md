@@ -6,7 +6,7 @@
 [![Crates.io](https://img.shields.io/crates/v/php-lsp.svg)](https://crates.io/crates/php-lsp)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-**[Getting Started](docs/getting-started.md)** · **[Features](docs/features.md)** · **[Editors & AI Clients](docs/editors.md)** · **[Configuration](docs/configuration.md)** · **[Architecture](docs/architecture.md)** · **[Contributing](CONTRIBUTING.md)**
+**[Docs site](https://jorgsowa.github.io/php-lsp)** · [Getting Started](https://jorgsowa.github.io/php-lsp/getting-started/) · [Features](https://jorgsowa.github.io/php-lsp/features/) · [Editors & AI Clients](https://jorgsowa.github.io/php-lsp/editors/) · [Configuration](https://jorgsowa.github.io/php-lsp/configuration/) · [Architecture](https://jorgsowa.github.io/php-lsp/architecture/) · [Contributing](CONTRIBUTING.md)
 
 ---
 
@@ -35,7 +35,7 @@ Verify:
 php-lsp --version
 ```
 
-For full installation options see **[docs/getting-started.md](docs/getting-started.md)**.
+For full installation options see **[Getting Started](https://jorgsowa.github.io/php-lsp/getting-started/)**.
 
 ---
 
@@ -51,7 +51,7 @@ For full installation options see **[docs/getting-started.md](docs/getting-start
 | PHPStorm | [php-lsp](https://plugins.jetbrains.com/plugin/31223-php-lsp) plugin ([source](https://github.com/jorgsowa/php-lsp-phpstorm-plugin)) |
 | Claude Code | `claude plugin marketplace add https://github.com/jorgsowa/claude-php-lsp-plugin` then `claude plugin install php-lsp` |
 
-Config snippets for every editor: **[docs/editors.md](docs/editors.md)**
+Config snippets for every editor: **[Editors & AI Clients](https://jorgsowa.github.io/php-lsp/editors/)**
 
 ---
 
@@ -71,7 +71,7 @@ Pass options via `initializationOptions`:
 
 `phpVersion` is optional — the server auto-detects it in priority order: `config.platform.php` in `composer.json` (explicit platform pin), then the `php` binary on `$PATH` (actual runtime), then `require.php` in `composer.json` (compatibility range, last resort), then defaults to `8.5`. The detected version and its source are logged on startup. Set `phpVersion` explicitly to override, e.g. when running PHP inside Docker.
 
-See **[docs/configuration.md](docs/configuration.md)** for all options including per-diagnostic toggles.
+See **[Configuration](https://jorgsowa.github.io/php-lsp/configuration/)** for all options including per-diagnostic toggles.
 
 ---
 

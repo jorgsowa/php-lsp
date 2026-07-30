@@ -1,0 +1,32 @@
+---
+title: php-lsp
+description: A high-performance PHP language server written in Rust.
+template: splash
+hero:
+  tagline: A high-performance PHP language server written in Rust — real-time cross-file diagnostics, type-aware completions, navigation, and refactoring.
+  actions:
+    - text: Getting Started
+      link: /getting-started/
+      icon: right-arrow
+    - text: View on GitHub
+      link: https://github.com/jorgsowa/php-lsp
+      icon: external
+      variant: minimal
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+<CardGrid stagger>
+	<Card title="Getting Started" icon="rocket">
+		Install php-lsp and wire it into your editor in a couple of minutes.
+	</Card>
+	<Card title="Features" icon="list-format">
+		The full list of diagnostics, completions, navigation, and refactoring support.
+	</Card>
+	<Card title="Configuration" icon="setting">
+		Every `initializationOptions` key, its default, and what it does.
+	</Card>
+	<Card title="Architecture" icon="puzzle">
+		How the LSP layer and the `mir` static-analysis engine fit together.
+	</Card>
+</CardGrid>

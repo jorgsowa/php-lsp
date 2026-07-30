@@ -573,14 +573,15 @@ mod tests {
     /// `FeaturesConfig::from_value` actually reads — scraped from this
     /// file's own JSON-object-key lookups, so a newly wired-up option is
     /// caught automatically, no hand-maintained list to fall out of sync —
-    /// must appear somewhere in `docs/configuration.md`. This is the
-    /// gap that let `indexVendor` ship real, tested, and completely
-    /// undocumented for months (issue #246): a user had no way to discover
-    /// the one setting that fixed their exact problem.
+    /// must appear somewhere in `documentation/src/content/docs/configuration.md`.
+    /// This is the gap that let `indexVendor` ship real, tested, and
+    /// completely undocumented for months (issue #246): a user had no way
+    /// to discover the one setting that fixed their exact problem.
     #[test]
     fn every_config_key_is_documented() {
         let source = include_str!("config.rs");
-        let docs = include_str!("../../docs/configuration.md");
+        let docs =
+            include_str!("../../documentation/src/content/docs/configuration.md");
 
         let mut keys: Vec<&str> = Vec::new();
         for marker in ["get(\"", "flag(\""] {
@@ -602,7 +603,7 @@ mod tests {
         assert!(
             undocumented.is_empty(),
             "config keys read by LspConfig::from_value but missing from \
-             docs/configuration.md: {undocumented:?}"
+             documentation/src/content/docs/configuration.md: {undocumented:?}"
         );
     }
 }
