@@ -2898,6 +2898,47 @@ mod tests {
         );
     }
 
+    /// Issue #243 repro: a PSR-0-autoloaded vendor class (PEAR-style, e.g.
+    /// `Legacy_Service`) must lazy-load the same way PSR-4 classes do.
+    #[test]
+    fn psr0_lazy_load_suppresses_undefined_class_243_repro() {
+        let tmp = tempfile::tempdir().unwrap();
+
+        std::fs::create_dir_all(tmp.path().join("vendor/legacy/src/Legacy")).unwrap();
+        std::fs::write(
+            tmp.path().join("vendor/legacy/src/Legacy/Service.php"),
+            "<?php\n\nclass Legacy_Service\n{\n    public function name(): string\n    {\n        return 'legacy';\n    }\n}\n",
+        )
+        .unwrap();
+
+        std::fs::write(
+            tmp.path().join("composer.json"),
+            r#"{"autoload":{"psr-0":{"Legacy_":"vendor/legacy/src/"}}}"#,
+        )
+        .unwrap();
+
+        let store = DocumentStore::new();
+        store
+            .psr4
+            .store(Arc::new(crate::lang::autoload::Psr4Map::load(tmp.path())));
+
+        let repro_url = Url::from_file_path(tmp.path().join("repro.php")).unwrap();
+        store.mirror_text(
+            &repro_url,
+            "<?php\n\n$service = new Legacy_Service();\necho $service->name();\n",
+        );
+
+        let issues = store.get_semantic_issues_salsa(&repro_url).unwrap();
+        let undef: Vec<_> = issues
+            .iter()
+            .filter(|i| matches!(i.kind, mir_issues::IssueKind::UndefinedClass { .. }))
+            .collect();
+        assert!(
+            undef.is_empty(),
+            "PSR-0 lazy-loading must prevent UndefinedClass for Legacy_Service; got: {undef:?}"
+        );
+    }
+
     /// Issue #191 regression: workspace-wide scans (find-references, rename,
     /// call-hierarchy) must not re-parse closed/indexed files on repeated
     /// invocations. Once a file's `ParsedDoc` has been produced, subsequent
@@ -3122,6 +3163,248 @@ mod tests {
                 "every caller must observe the identical analysis Arc, not its own copy"
             );
         }
+    }
+
+    /// Manual perf diagnostic (`cargo test --release -- --ignored --nocapture
+    /// diagnostic_coalescing_cpu_time_ms`): N threads race `cached_analysis`
+    /// for the same uncached, moderately expensive file. `computations`
+    /// (from `analysis_compute_count`) is the direct proof of the fix: it
+    /// must stay at 1 regardless of N. `wall_ms` is secondary color — without
+    /// the per-URI lock, N threads each independently running the full
+    /// analyze pass genuinely in parallel can contend for the same cores/
+    /// caches and degrade wall time as N grows past the core count; with the
+    /// lock, added threads just wait on the one real computation.
+    #[test]
+    #[ignore]
+    fn diagnostic_coalescing_cpu_time_ms() {
+        use std::sync::{Arc, Barrier};
+        use std::thread;
+        use std::time::Instant;
+
+        let mut src = "<?php\nclass Big {\n".to_string();
+        for m in 0..200 {
+            src.push_str(&format!(
+                "    public function m{m}(int $x): int {{ $y = $x * {m} + strlen((string)$x); return $y > 0 ? $y : -$y; }}\n"
+            ));
+        }
+        src.push_str("}\n");
+
+        for &nthreads in &[1usize, 4, 8, 16, 32] {
+            let store = Arc::new(DocumentStore::new());
+            let u = uri("/coalesce_bench.php");
+            open(&store, u.clone(), src.clone());
+
+            let barrier = Arc::new(Barrier::new(nthreads));
+            let wall_start = Instant::now();
+            let handles: Vec<_> = (0..nthreads)
+                .map(|_| {
+                    let store = Arc::clone(&store);
+                    let u = u.clone();
+                    let barrier = Arc::clone(&barrier);
+                    thread::spawn(move || {
+                        barrier.wait();
+                        let _ = store.cached_analysis(&u);
+                    })
+                })
+                .collect();
+            for h in handles {
+                h.join().unwrap();
+            }
+            let wall_ms = wall_start.elapsed().as_secs_f64() * 1000.0;
+            eprintln!(
+                "threads={nthreads:>3}  computations={:>3}  wall_ms={wall_ms:>8.3}",
+                store.analysis_compute_count()
+            );
+        }
+    }
+
+    /// Manual perf diagnostic (`cargo test --release -- --ignored --nocapture
+    /// diagnostic_batch_vs_per_symbol_scan_ms`), not a CI-run assertion:
+    /// isolates the pure scan-count effect of `batch_reference_candidate_files`
+    /// vs M independent `reference_candidate_files` calls, excluding the
+    /// surrounding `code_lenses()`/`indexed_references` cost entirely — this
+    /// measures scope narrowing alone. See `benches/code_lens_scaling.rs` for
+    /// the end-to-end request-level number.
+    #[test]
+    #[ignore]
+    fn diagnostic_batch_vs_per_symbol_scan_ms() {
+        use std::time::Instant;
+        let num_methods = 100usize;
+        for &n_noise in &[500usize, 1500, 3000, 8000] {
+            let store = DocumentStore::new();
+            let owner = "App\\Service";
+            let mut src = "<?php\nnamespace App;\nclass Service {\n".to_string();
+            for m in 0..num_methods {
+                src.push_str(&format!(
+                    "    public static function alpha{m}(): void {{}}\n"
+                ));
+            }
+            src.push_str("}\n");
+            store.ingest(Url::parse("file:///synth/Service.php").unwrap(), &src);
+            for i in 0..n_noise {
+                let u = Url::parse(&format!("file:///synth/N{i}.php")).unwrap();
+                let t = format!(
+                    "<?php\nnamespace Other{i};\nclass N{i} {{ public function run(){{}} }}\n"
+                );
+                store.ingest(u, &t);
+            }
+            store.mark_index_ready();
+
+            let mut symbols = vec![mir_analyzer::Name::class(owner)];
+            for m in 0..num_methods {
+                symbols.push(mir_analyzer::Name::method(owner, &format!("alpha{m}")));
+            }
+
+            let t = Instant::now();
+            for s in &symbols {
+                std::hint::black_box(store.reference_candidate_files(s));
+            }
+            let per_symbol_ms = t.elapsed().as_secs_f64() * 1000.0;
+
+            let t = Instant::now();
+            std::hint::black_box(store.batch_reference_candidate_files(&symbols));
+            let batch_ms = t.elapsed().as_secs_f64() * 1000.0;
+
+            eprintln!(
+                "n_noise={n_noise:>6}  symbols={:>4}  per_symbol_ms={per_symbol_ms:>10.3}  batch_ms={batch_ms:>10.3}  speedup={:>6.2}x",
+                symbols.len(),
+                per_symbol_ms / batch_ms
+            );
+        }
+    }
+
+    /// Manual perf diagnostic (`cargo test --release -- --ignored --nocapture
+    /// diagnostic_priority_scan_avoided_cost_ms`): measures the cost of
+    /// `handle_references`'s priority-partition owner-mention scan
+    /// (`navigation.rs`) run over an already-narrowed candidate scope — the
+    /// exact cost `method_scope_is_narrowed` now lets the handler skip
+    /// entirely for private/protected/static methods. The scope size here
+    /// models a protected method's subtype-closure narrowing (the case where
+    /// a widely-subclassed base class makes the "narrowed" scope non-trivial).
+    #[test]
+    #[ignore]
+    fn diagnostic_priority_scan_avoided_cost_ms() {
+        use std::time::Instant;
+
+        let store = DocumentStore::new();
+        let owner_short = "Owner";
+        for &n in &[10usize, 100, 1000, 3000] {
+            let mut files: Vec<Arc<str>> = Vec::with_capacity(n);
+            for i in 0..n {
+                let u = Url::parse(&format!("file:///synth/S{i}.php")).unwrap();
+                let t = format!(
+                    "<?php\nclass S{i} extends Owner {{\n\
+                     \x20   public function run(): void {{\n\
+                     \x20       parent::process();\n\
+                     \x20   }}\n\
+                     }}\n"
+                );
+                store.ingest(u.clone(), &t);
+                files.push(Arc::<str>::from(u.as_str()));
+            }
+
+            let t0 = Instant::now();
+            use rayon::prelude::*;
+            let matched: Vec<Arc<str>> = files
+                .par_iter()
+                .filter(|f| {
+                    Url::parse(f.as_ref())
+                        .ok()
+                        .and_then(|u| store.source_text(&u))
+                        .is_some_and(|txt| {
+                            crate::text::contains_ascii_case_insensitive(&txt, owner_short)
+                        })
+                })
+                .cloned()
+                .collect();
+            let avoided_ms = t0.elapsed().as_secs_f64() * 1000.0;
+            eprintln!(
+                "narrowed_scope_files={n:>5}  avoided_scan_ms={avoided_ms:>9.4}  matched={}  (new code: 0.000ms — skipped entirely)",
+                matched.len()
+            );
+        }
+    }
+
+    /// Manual perf diagnostic (`cargo test --release -- --ignored --nocapture
+    /// diagnostic_laravel_scan_blocking_vs_spawn_blocking`): demonstrates the
+    /// actual effect of moving `handle_references`'s Laravel string-key scan
+    /// (`navigation.rs`) into `spawn_blocking`. On a single-worker-thread
+    /// runtime, a CPU-bound scan with no `.await` points inside it hogs that
+    /// one worker until it completes — a concurrently-spawned trivial task
+    /// can't run until the scan yields. `spawn_blocking` moves the scan to a
+    /// separate thread, freeing the worker immediately.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    #[ignore]
+    async fn diagnostic_laravel_scan_blocking_vs_spawn_blocking() {
+        use std::time::Instant;
+
+        fn run_scan_inline(store: &DocumentStore, n: usize) -> usize {
+            let mut count = 0;
+            for i in 0..n {
+                let u = Url::parse(&format!("file:///synth/F{i}.php")).unwrap();
+                if store
+                    .source_text(&u)
+                    .is_some_and(|t| t.contains("APP_NAME_0"))
+                    && let Some(doc) = store.get_doc_salsa(&u)
+                {
+                    let _ = crate::laravel::find_call_sites(&doc, &["env"], "APP_NAME_0");
+                    count += 1;
+                }
+            }
+            count
+        }
+
+        let store = Arc::new(DocumentStore::new());
+        let n = 30_000usize;
+        for i in 0..n {
+            let u = Url::parse(&format!("file:///synth/F{i}.php")).unwrap();
+            let t = format!("<?php\n$x = env('APP_NAME_{i}');\n");
+            store.ingest(u, &t);
+        }
+
+        // Both scenarios spawn the scan AND a trivial task as separate
+        // `tokio::spawn`ed tasks — the same relationship real tower-lsp
+        // request handlers have (each dispatched request is its own spawned
+        // task on the shared worker pool), unlike driving the scan inline in
+        // this test function's own body (which `#[tokio::test]` runs via
+        // `block_on` on the harness thread, not a pool worker, and so
+        // wouldn't actually contend with `tokio::spawn`ed tasks at all).
+
+        // OLD shape: scan task runs the work inline, no yield points inside.
+        let spawn_time = Instant::now();
+        let store_c = Arc::clone(&store);
+        let scan_handle = tokio::spawn(async move { run_scan_inline(&store_c, n) });
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let _ = tx.send(Instant::now());
+        });
+        let matched = scan_handle.await.unwrap();
+        let scan_ms = spawn_time.elapsed().as_secs_f64() * 1000.0;
+        let trivial_ran_at = rx.await.unwrap();
+        let trivial_delay_ms = trivial_ran_at.duration_since(spawn_time).as_secs_f64() * 1000.0;
+        eprintln!(
+            "OLD (inline on the request's own task):  scan_ms={scan_ms:>8.3}  matched={matched:>4}  concurrent_trivial_task_delay_ms={trivial_delay_ms:>8.3}"
+        );
+
+        // NEW shape: scan task hands the work to spawn_blocking and awaits it.
+        let spawn_time = Instant::now();
+        let store_c = Arc::clone(&store);
+        let scan_handle = tokio::spawn(async move {
+            tokio::task::spawn_blocking(move || run_scan_inline(&store_c, n))
+                .await
+                .unwrap()
+        });
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let _ = tx.send(Instant::now());
+        });
+        let matched = scan_handle.await.unwrap();
+        let scan_ms = spawn_time.elapsed().as_secs_f64() * 1000.0;
+        let trivial_ran_at = rx.await.unwrap();
+        let trivial_delay_ms = trivial_ran_at.duration_since(spawn_time).as_secs_f64() * 1000.0;
+        eprintln!(
+            "NEW (via spawn_blocking):                scan_ms={scan_ms:>8.3}  matched={matched:>4}  concurrent_trivial_task_delay_ms={trivial_delay_ms:>8.3}"
+        );
     }
 
     /// When a sibling file's declaration changes (bumping decl_version), the
