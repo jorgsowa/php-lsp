@@ -41,6 +41,12 @@ pub struct DocumentStore {
     /// destructively consumes that flag (`swap(false, ..)`) and a second
     /// consumer reading it would race for the same signal.
     workspace_file_paths_cache: ArcSwapOption<Vec<Arc<str>>>,
+    /// Diagnostic counter: incremented once per call to
+    /// `resolve_reachability_queries`, i.e. once per actual workspace scan
+    /// pass — regardless of how many queries are batched into that pass.
+    /// Lets tests assert that batching N symbols' reachability narrowing
+    /// (e.g. all of one file's code lenses) pays one scan, not N.
+    reachability_scan_passes: AtomicU64,
     /// `LspWorkspace` salsa input on the shared mir db: the project-file scoping
     /// set aggregated by `workspace_index`. Created lazily on first sync (the db
     /// is owned by the lazily-built `AnalysisSession`).
@@ -146,6 +152,7 @@ impl DocumentStore {
             deleted_uris: DashSet::new(),
             workspace_files_dirty: AtomicBool::new(true),
             workspace_file_paths_cache: ArcSwapOption::from(None),
+            reachability_scan_passes: AtomicU64::new(0),
             lsp_workspace: Mutex::new(None),
             psr4: Arc::new(ArcSwap::from_pointee(Psr4Map::empty())),
             analysis_session: Mutex::new((mir_analyzer::PhpVersion::LATEST, None)),
@@ -327,8 +334,7 @@ impl DocumentStore {
     /// Persist mir's staged analysis-cache entries (reference postings) to
     /// disk. No-op when nothing changed since the last flush.
     pub fn flush_analysis_cache(&self) {
-        self.current_analysis_session()
-            .flush_analysis_cache();
+        self.current_analysis_session().flush_analysis_cache();
     }
 
     /// Warm sweeps that ran to completion. See `$/php-lsp/debugStats`.
@@ -1132,7 +1138,8 @@ impl DocumentStore {
                 .map(|e| Arc::<str>::from(e.key().as_str()))
                 .collect(),
         );
-        self.workspace_file_paths_cache.store(Some(Arc::clone(&files)));
+        self.workspace_file_paths_cache
+            .store(Some(Arc::clone(&files)));
         files
     }
 
@@ -1200,18 +1207,37 @@ impl DocumentStore {
     /// Classes that compose traits or mixins are excluded — those inline
     /// external resolution context, so a reference could surface in another file.
     pub fn method_reference_scope(&self, owner_fqn: &str, method: &str) -> Option<Vec<Url>> {
+        match self.method_reference_scope_plan(owner_fqn, method) {
+            MethodScopePlan::Files(files) => Some(files),
+            MethodScopePlan::NeedsScan { fqns, extra_needle } => {
+                let files =
+                    self.fqn_reachable_files_with_needles(&fqns, &[extra_needle.as_str()])?;
+                Some(files.iter().filter_map(|f| Url::parse(f).ok()).collect())
+            }
+            MethodScopePlan::FullWorkspace => None,
+        }
+    }
+
+    /// Same narrowing decision as [`Self::method_reference_scope`], but stops
+    /// short of running the FQN/text-needle scan itself — that scan is the
+    /// expensive part (a parallel pass over every workspace file), and a
+    /// caller resolving many methods at once (code lens, one call per
+    /// declaration in a file) needs to batch it across methods via
+    /// [`Self::resolve_reachability_queries`] instead of paying it per call.
+    fn method_reference_scope_plan(&self, owner_fqn: &str, method: &str) -> MethodScopePlan {
         use crate::index::file_index::{ClassKind, Visibility};
 
         let ws = self.get_workspace_index_salsa();
         let owner_fqn = owner_fqn.trim_start_matches('\\');
         let owner_short = crate::text::fqn_short_name(owner_fqn);
 
-        let (decl_uri, decl_class) = ws
-            .classes_by_name
-            .get(owner_short)?
-            .iter()
-            .filter_map(|&r| ws.at(r))
-            .find(|(_, cls)| cls.fqn.trim_start_matches('\\') == owner_fqn)?;
+        let Some((decl_uri, decl_class)) = ws.classes_by_name.get(owner_short).and_then(|refs| {
+            refs.iter()
+                .filter_map(|&r| ws.at(r))
+                .find(|(_, cls)| cls.fqn.trim_start_matches('\\') == owner_fqn)
+        }) else {
+            return MethodScopePlan::FullWorkspace;
+        };
 
         // Trait/interface methods, and methods on classes that compose traits or
         // mixins, can be referenced from other files — keep the full scope.
@@ -1219,19 +1245,22 @@ impl DocumentStore {
             || !decl_class.traits.is_empty()
             || !decl_class.mixins.is_empty()
         {
-            return None;
+            return MethodScopePlan::FullWorkspace;
         }
 
-        let method_def = decl_class
+        let Some(method_def) = decl_class
             .methods
             .iter()
-            .find(|m| m.name.eq_ignore_ascii_case(method))?;
+            .find(|m| m.name.eq_ignore_ascii_case(method))
+        else {
+            return MethodScopePlan::FullWorkspace;
+        };
 
         match method_def.visibility {
-            Visibility::Private => Some(vec![decl_uri.clone()]),
+            Visibility::Private => MethodScopePlan::Files(vec![decl_uri.clone()]),
             Visibility::Protected => {
                 if !self.is_index_ready() {
-                    return None;
+                    return MethodScopePlan::FullWorkspace;
                 }
                 // Subtype set comes from mir's resolved inheritance graph — it
                 // matches subclasses by FQCN, so `extends \Ns\Base` and aliased
@@ -1244,7 +1273,7 @@ impl DocumentStore {
                     .filter_map(|p| Url::parse(&p).ok())
                     .collect();
                 files.insert(decl_uri.clone());
-                Some(files.into_iter().collect())
+                MethodScopePlan::Files(files.into_iter().collect())
             }
             // A public *static* method's call sites come in exactly two
             // textual shapes: a resolved class name (`Owner::m()`, inherited
@@ -1257,14 +1286,15 @@ impl DocumentStore {
             // posting at all (verified), so the union is exhaustive. This
             // beats mir's own gate, which only sees bare short names and
             // can't tell this owner apart from an unrelated class sharing
-            // its short name. Instance methods stay unnarrowed (`None`
-            // below): a typed receiver can hide both the class *and* any
-            // distinguishing token cheaper than the member name itself.
+            // its short name. Instance methods stay unnarrowed
+            // (`FullWorkspace` below): a typed receiver can hide both the
+            // class *and* any distinguishing token cheaper than the member
+            // name itself.
             Visibility::Public
                 if method_def.is_static || method.eq_ignore_ascii_case("__construct") =>
             {
                 if !self.is_index_ready() {
-                    return None;
+                    return MethodScopePlan::FullWorkspace;
                 }
                 let mut fqns: Vec<Arc<str>> = vec![Arc::from(owner_fqn)];
                 fqns.extend(
@@ -1282,15 +1312,97 @@ impl DocumentStore {
                 // subtype closure's namespace rule already admits (unlike
                 // mir's own gate, which lacks the closure and keeps a
                 // `::__construct` token for the grandchild-`parent::` case).
-                let files = if method.eq_ignore_ascii_case("__construct") {
-                    self.fqn_reachable_files_with_needles(&fqns, &["->__construct"])?
+                let extra_needle = if method.eq_ignore_ascii_case("__construct") {
+                    "->__construct".to_string()
                 } else {
-                    self.fqn_reachable_files_with_needles(&fqns, &[method])?
+                    method.to_string()
                 };
-                Some(files.iter().filter_map(|f| Url::parse(f).ok()).collect())
+                MethodScopePlan::NeedsScan { fqns, extra_needle }
             }
-            Visibility::Public => None,
+            Visibility::Public => MethodScopePlan::FullWorkspace,
         }
+    }
+
+    /// Batched form of [`Self::reference_candidate_files`]: resolves the
+    /// candidate scope for every symbol in `symbols` while sharing ONE pass
+    /// over the workspace for every symbol whose scope needs FQN/text-needle
+    /// narrowing (class references, public static methods, constructors),
+    /// instead of one pass per symbol.
+    ///
+    /// Code lens is the motivating caller: a single file's declarations can
+    /// produce dozens of reference-count lenses in one request, and each
+    /// used to pay its own full `ws.files` scan via
+    /// [`Self::fqn_reachable_files_with_needles`] — O(declarations × files)
+    /// text scans instead of the one pass this performs.
+    ///
+    /// Order-preserving: `result[i]` is the scope for `symbols[i]`.
+    pub(crate) fn batch_reference_candidate_files(
+        &self,
+        symbols: &[mir_analyzer::Name],
+    ) -> Vec<Vec<Arc<str>>> {
+        let mut results: Vec<Option<Vec<Arc<str>>>> = vec![None; symbols.len()];
+        let mut queries: Vec<ReachabilityQuery> = Vec::new();
+        // queries[k] resolves the scope for symbols[query_targets[k]].
+        let mut query_targets: Vec<usize> = Vec::new();
+
+        for (i, symbol) in symbols.iter().enumerate() {
+            match symbol {
+                mir_analyzer::Name::Method { class, name } => {
+                    match self.method_reference_scope_plan(class, name) {
+                        MethodScopePlan::Files(urls) => {
+                            results[i] = Some(urls.iter().map(|u| Arc::from(u.as_str())).collect());
+                        }
+                        MethodScopePlan::NeedsScan { fqns, extra_needle } => {
+                            queries.push(ReachabilityQuery {
+                                fqns,
+                                extra_needles: vec![extra_needle],
+                            });
+                            query_targets.push(i);
+                        }
+                        MethodScopePlan::FullWorkspace => {}
+                    }
+                }
+                mir_analyzer::Name::Class(fqcn) => {
+                    queries.push(ReachabilityQuery {
+                        fqns: vec![fqcn.clone()],
+                        extra_needles: Vec::new(),
+                    });
+                    query_targets.push(i);
+                }
+                mir_analyzer::Name::Function(fqcn) | mir_analyzer::Name::GlobalConstant(fqcn)
+                    if fqcn.trim_start_matches('\\').contains('\\') =>
+                {
+                    queries.push(ReachabilityQuery {
+                        fqns: vec![fqcn.clone()],
+                        extra_needles: Vec::new(),
+                    });
+                    query_targets.push(i);
+                }
+                _ => {}
+            }
+        }
+
+        if !queries.is_empty()
+            && let Some(scanned) = self.resolve_reachability_queries(&queries)
+        {
+            for (files, target) in scanned.into_iter().zip(query_targets) {
+                results[target] = Some(files);
+            }
+        }
+
+        let fallback = self.workspace_file_paths();
+        results
+            .into_iter()
+            .map(|r| r.unwrap_or_else(|| fallback.as_ref().clone()))
+            .collect()
+    }
+
+    /// See the `reachability_scan_passes` field's docs. Exposed via
+    /// `debugStats` so a protocol-level test can assert a request with many
+    /// narrowing-requiring declarations (code lens) pays one scan pass, not
+    /// one per declaration.
+    pub(crate) fn reachability_scan_passes(&self) -> u64 {
+        self.reachability_scan_passes.load(Ordering::Relaxed)
     }
 
     /// Files that could possibly reference any FQN in `fqns`, narrowed via
@@ -1334,76 +1446,164 @@ impl DocumentStore {
     /// re-init (`$obj->__construct()`) references a member without the file
     /// ever resolving the owner's name, but its text always contains the
     /// call token itself.
+    ///
+    /// A single-query call through [`Self::resolve_reachability_queries`] —
+    /// see that method for the batched form multiple callers share.
     fn fqn_reachable_files_with_needles(
         &self,
         fqns: &[Arc<str>],
         extra_needles: &[&str],
     ) -> Option<Vec<Arc<str>>> {
+        let query = ReachabilityQuery {
+            fqns: fqns.to_vec(),
+            extra_needles: extra_needles.iter().map(|n| n.to_string()).collect(),
+        };
+        self.resolve_reachability_queries(std::slice::from_ref(&query))
+            .map(|mut per_query| per_query.pop().expect("one query in, one result out"))
+    }
+
+    /// Resolves many [`Self::fqn_reachable_files_with_needles`]-shaped
+    /// queries in a single pass over the workspace, so N callers share one
+    /// scan instead of paying N.
+    ///
+    /// The namespace/import checks are cheap in-memory field comparisons and
+    /// stay per-query, but the qualified-mention fallback scans each
+    /// candidate's full text — that scan is what gets shared: every query's
+    /// needles feed one combined Aho-Corasick automaton, so a file pays one
+    /// text pass regardless of how many queries are outstanding, instead of
+    /// one pass per query. Each match is attributed back to its owning
+    /// query by pattern id.
+    ///
+    /// Returns `None` for every query when the boot scan hasn't finished —
+    /// same conservative discipline as the single-query form — so
+    /// references are never under-reported at cold start.
+    fn resolve_reachability_queries(
+        &self,
+        queries: &[ReachabilityQuery],
+    ) -> Option<Vec<Vec<Arc<str>>>> {
         use rayon::prelude::*;
 
         if !self.is_index_ready() {
             return None;
         }
-        let targets: Vec<&str> = fqns.iter().map(|f| f.trim_start_matches('\\')).collect();
-        let target_namespaces: Vec<Option<&str>> = targets
-            .iter()
-            .map(|t| t.rsplit_once('\\').map(|(ns, _)| ns))
-            .collect();
-        // Namespaced targets match with or without the leading `\`; a bare
-        // global name keeps it (the short name alone would match everything).
-        let needles: Vec<String> = targets
-            .iter()
-            .map(|t| {
-                if t.contains('\\') {
+        if queries.is_empty() {
+            return Some(Vec::new());
+        }
+        self.reachability_scan_passes
+            .fetch_add(1, Ordering::Relaxed);
+
+        // Per-query targets/namespaces for the cheap checks, plus one needle
+        // list tagging each pattern with the query it belongs to (a query's
+        // FQN needles and extra needles can both contribute patterns).
+        let mut per_query_targets: Vec<Vec<&str>> = Vec::with_capacity(queries.len());
+        let mut per_query_namespaces: Vec<Vec<Option<&str>>> = Vec::with_capacity(queries.len());
+        let mut all_needles: Vec<String> = Vec::new();
+        let mut needle_query: Vec<usize> = Vec::new();
+
+        for (qi, q) in queries.iter().enumerate() {
+            let targets: Vec<&str> = q.fqns.iter().map(|f| f.trim_start_matches('\\')).collect();
+            let namespaces: Vec<Option<&str>> = targets
+                .iter()
+                .map(|t| t.rsplit_once('\\').map(|(ns, _)| ns))
+                .collect();
+            // Namespaced targets match with or without the leading `\`; a
+            // bare global name keeps it (the short name alone would match
+            // everything).
+            for t in &targets {
+                all_needles.push(if t.contains('\\') {
                     (*t).to_string()
                 } else {
                     format!("\\{t}")
-                }
-            })
-            .chain(extra_needles.iter().map(|n| (*n).to_string()))
-            .collect();
+                });
+                needle_query.push(qi);
+            }
+            for n in &q.extra_needles {
+                all_needles.push(n.clone());
+                needle_query.push(qi);
+            }
+            per_query_targets.push(targets);
+            per_query_namespaces.push(namespaces);
+        }
         let finder = aho_corasick::AhoCorasick::builder()
             .ascii_case_insensitive(true)
-            .build(&needles)
+            .build(&all_needles)
             .ok()?;
 
         let ws = self.get_workspace_index_salsa();
-        // The namespace/import checks are cheap in-memory field comparisons,
-        // but the qualified-mention fallback scans each candidate's full
-        // text — for a common short name, most of the corpus fails the
-        // cheap checks and falls through to it, so this must run in
-        // parallel (mir's own equivalent gate scan does the same) or a
-        // cold query on a 15K-file workspace pays a multi-second sequential
-        // scan instead of the few-ms parallel one.
-        Some(
-            ws.files
-                .par_iter()
-                .filter(|(url, idx)| {
-                    let file_ns = idx.namespace.as_deref().map(|s| s.trim_start_matches('\\'));
-                    let ns_match = target_namespaces.iter().any(|ns| match (file_ns, ns) {
-                        (Some(f), Some(t)) => fqn_segment_prefix(f, t),
-                        (None, None) => true,
-                        // Global-ns files reach namespaced targets only via
-                        // the full path (text rule); namespaced files reach
-                        // global classes only via `\Name` or an import.
-                        _ => false,
-                    });
+        let n = queries.len();
+        // For a common short name most of the corpus fails the cheap
+        // namespace/import checks and falls through to the text scan, so
+        // this must run in parallel (mir's own equivalent gate scan does
+        // the same) or a cold query on a 15K-file workspace pays a
+        // multi-second sequential scan instead of the few-ms parallel one.
+        let per_file_matches: Vec<(Arc<str>, Vec<bool>)> = ws
+            .files
+            .par_iter()
+            .filter_map(|(url, idx)| {
+                let file_ns = idx.namespace.as_deref().map(|s| s.trim_start_matches('\\'));
+                let mut matched = vec![false; n];
+                let mut unresolved = 0usize;
+                for qi in 0..n {
+                    let ns_match = per_query_namespaces[qi]
+                        .iter()
+                        .any(|ns| match (file_ns, ns) {
+                            (Some(f), Some(t)) => fqn_segment_prefix(f, t),
+                            (None, None) => true,
+                            // Global-ns files reach namespaced targets only via
+                            // the full path (text rule); namespaced files reach
+                            // global classes only via `\Name` or an import.
+                            _ => false,
+                        });
                     if ns_match {
-                        return true;
+                        matched[qi] = true;
+                        continue;
                     }
                     let import_match = idx.use_imports.iter().any(|(_, f)| {
                         let f = f.trim_start_matches('\\');
-                        targets.iter().any(|t| fqn_segment_prefix(f, t))
+                        per_query_targets[qi]
+                            .iter()
+                            .any(|t| fqn_segment_prefix(f, t))
                     });
                     if import_match {
-                        return true;
+                        matched[qi] = true;
+                        continue;
                     }
-                    self.source_text(url)
-                        .is_some_and(|text| finder.is_match(text.as_ref()))
-                })
-                .map(|(u, _)| Arc::<str>::from(u.as_str()))
-                .collect(),
-        )
+                    unresolved += 1;
+                }
+                if unresolved > 0
+                    && let Some(text) = self.source_text(url)
+                {
+                    // Enumerate matches but stop as soon as every query still
+                    // unresolved by the cheap checks has been hit once —
+                    // bounds the scan to the number of distinct needles that
+                    // actually occur, not every occurrence of a common one.
+                    for m in finder.find_iter(text.as_ref()) {
+                        let qi = needle_query[m.pattern().as_usize()];
+                        if !matched[qi] {
+                            matched[qi] = true;
+                            unresolved -= 1;
+                            if unresolved == 0 {
+                                break;
+                            }
+                        }
+                    }
+                }
+                matched
+                    .iter()
+                    .any(|&m| m)
+                    .then(|| (Arc::<str>::from(url.as_str()), matched))
+            })
+            .collect();
+
+        let mut out: Vec<Vec<Arc<str>>> = vec![Vec::new(); n];
+        for (file, matched) in per_file_matches {
+            for (qi, out_files) in out.iter_mut().enumerate() {
+                if matched[qi] {
+                    out_files.push(file.clone());
+                }
+            }
+        }
+        Some(out)
     }
 
     /// Phase J: salsa-memoized aggregate workspace index.
@@ -1438,8 +1638,7 @@ impl DocumentStore {
     /// grows by a small bounded amount per operation — never per candidate.
     /// Surfaced via `$/php-lsp/debugStats` for the stress-test guard.
     pub fn ref_index_lock_count(&self) -> u64 {
-        self.current_analysis_session()
-            .ref_index_lock_count()
+        self.current_analysis_session().ref_index_lock_count()
     }
 
     /// Whether mir's workspace symbol index singleton is populated (warm-start
@@ -1811,6 +2010,34 @@ fn fqn_segment_prefix(prefix: &str, whole: &str) -> bool {
     w.len() >= p.len()
         && w[..p.len()].eq_ignore_ascii_case(p)
         && (w.len() == p.len() || w[p.len()] == b'\\')
+}
+
+/// The narrowing decision for a method's reference scope, computed without
+/// running the expensive part (the FQN/text-needle workspace scan) so a
+/// batch caller can pool that scan across many methods.
+enum MethodScopePlan {
+    /// Fully resolved already — no workspace scan needed at all (private:
+    /// the declaring file alone; protected: the declaring file plus its
+    /// resolved subtype set).
+    Files(Vec<Url>),
+    /// A public static method or constructor: resolvable to the declaring
+    /// class's FQN-reachable files unioned with files matching one extra
+    /// text needle. This is the case a batch caller pools.
+    NeedsScan {
+        fqns: Vec<Arc<str>>,
+        extra_needle: String,
+    },
+    /// No narrowing possible (instance methods, an unresolvable owner, or
+    /// the boot scan hasn't finished) — full workspace scope.
+    FullWorkspace,
+}
+
+/// One [`DocumentStore::resolve_reachability_queries`] request: the target
+/// FQNs for the namespace/import rules, plus raw text needles matched the
+/// same way (ASCII-case-insensitive substring).
+struct ReachabilityQuery {
+    fqns: Vec<Arc<str>>,
+    extra_needles: Vec<String>,
 }
 
 #[cfg(test)]

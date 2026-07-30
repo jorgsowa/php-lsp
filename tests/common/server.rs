@@ -598,6 +598,17 @@ impl TestServer {
         (ready, walks)
     }
 
+    /// Cumulative workspace-wide reachability scan passes from
+    /// `$/php-lsp/debugStats` (`DocumentStore::resolve_reachability_queries`).
+    pub async fn debug_stats_reachability_scan_passes(&mut self) -> u64 {
+        let resp = self.client.request_no_params("$/php-lsp/debugStats").await;
+        resp["result"]["reachability_scan_passes"]
+            .as_u64()
+            .unwrap_or_else(|| {
+                panic!("debugStats lacked numeric `reachability_scan_passes`: {resp}")
+            })
+    }
+
     /// Cumulative mir `RefIndex` lock count from `$/php-lsp/debugStats`.
     pub async fn debug_stats_ref_index_locks(&mut self) -> u64 {
         let resp = self.client.request_no_params("$/php-lsp/debugStats").await;

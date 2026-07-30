@@ -48,15 +48,49 @@ pub fn code_lenses(
         cancel_rev,
     };
     let sv = doc.view();
-    let mut lenses = Vec::new();
+    let mut slots = Vec::new();
     collect_lenses(
         &doc.program().stmts,
         sv,
         "",
         &env,
-        &mut lenses,
+        &mut slots,
         &should_cancel,
     );
+    if should_cancel() {
+        return Vec::new();
+    }
+
+    // Every `RefCount` slot's candidate scope is resolved together in one
+    // workspace pass (see `DocumentStore::batch_reference_candidate_files`)
+    // instead of one pass per declaration — a class with many methods/
+    // properties would otherwise re-scan the whole workspace once per
+    // member just to compute this request's reference counts.
+    let symbols: Vec<mir_analyzer::Name> = slots
+        .iter()
+        .filter_map(|slot| match slot {
+            LensSlot::RefCount { symbol, .. } => Some(symbol.clone()),
+            LensSlot::Ready(_) => None,
+        })
+        .collect();
+    let mut scopes = env
+        .store
+        .batch_reference_candidate_files(&symbols)
+        .into_iter();
+
+    let mut lenses = Vec::with_capacity(slots.len());
+    for slot in slots {
+        if should_cancel() {
+            return Vec::new();
+        }
+        lenses.push(match slot {
+            LensSlot::Ready(lens) => lens,
+            LensSlot::RefCount { range, symbol } => {
+                let files = scopes.next().expect("one scope per RefCount slot");
+                env.ref_count_lens(range, symbol, &files)
+            }
+        });
+    }
     lenses
 }
 
@@ -69,25 +103,32 @@ struct LensEnv<'a> {
     cancel_rev: Option<u64>,
 }
 
-impl LensEnv<'_> {
-    fn reference_locations(&self, symbol: &mir_analyzer::Name) -> Vec<Location> {
-        let files = self.store.reference_candidate_files(symbol);
-        let mut locations: Vec<Location> = self
-            .store
-            .indexed_references(symbol, &files, false, self.cancel_rev)
-            .into_iter()
-            .filter_map(session_tuple_to_location)
-            .collect();
-        dedup_ref_locations(&mut locations);
-        locations
-    }
+/// A lens that still needs its reference count resolved, or one that's
+/// already fully built. Deferring `RefCount` lets [`code_lenses`] batch
+/// every declaration's scope narrowing into one workspace pass after the
+/// AST walk finishes, instead of narrowing per declaration during the walk.
+enum LensSlot {
+    Ready(CodeLens),
+    RefCount {
+        range: tower_lsp::lsp_types::Range,
+        symbol: mir_analyzer::Name,
+    },
+}
 
+impl LensEnv<'_> {
     fn ref_count_lens(
         &self,
         range: tower_lsp::lsp_types::Range,
         symbol: mir_analyzer::Name,
+        files: &[std::sync::Arc<str>],
     ) -> CodeLens {
-        let locations = self.reference_locations(&symbol);
+        let mut locations: Vec<Location> = self
+            .store
+            .indexed_references(&symbol, files, false, self.cancel_rev)
+            .into_iter()
+            .filter_map(session_tuple_to_location)
+            .collect();
+        dedup_ref_locations(&mut locations);
         let label = match locations.len() {
             0 => "0 references".to_string(),
             1 => "1 reference".to_string(),
@@ -181,7 +222,7 @@ fn collect_lenses(
     sv: SourceView<'_>,
     enclosing_ns: &str,
     env: &LensEnv<'_>,
-    out: &mut Vec<CodeLens>,
+    out: &mut Vec<LensSlot>,
     should_cancel: &impl Fn() -> bool,
 ) {
     // `namespace App;` (unbraced) applies to every following statement.
@@ -195,25 +236,28 @@ fn collect_lenses(
             StmtKind::Function(f) => {
                 let name = f.name.as_str().unwrap_or_default();
                 let range = sv.name_range(name);
-                out.push(
-                    env.ref_count_lens(range, mir_analyzer::Name::function(fqn_in(&ns, name))),
-                );
+                out.push(LensSlot::RefCount {
+                    range,
+                    symbol: mir_analyzer::Name::function(fqn_in(&ns, name)),
+                });
             }
             StmtKind::Class(c) => {
                 if let Some(class_name) = c.name {
                     let class_name_str = class_name.as_str().unwrap_or_default();
                     let class_fqn = fqn_in(&ns, class_name_str);
                     let class_range = sv.name_range(class_name_str);
-                    out.push(
-                        env.ref_count_lens(
-                            class_range,
-                            mir_analyzer::Name::class(class_fqn.clone()),
-                        ),
-                    );
+                    out.push(LensSlot::RefCount {
+                        range: class_range,
+                        symbol: mir_analyzer::Name::class(class_fqn.clone()),
+                    });
 
                     // Implementations count for abstract classes (classes extending this).
                     if c.modifiers.is_abstract {
-                        out.push(env.impl_count_lens(class_range, &class_fqn, false));
+                        out.push(LensSlot::Ready(env.impl_count_lens(
+                            class_range,
+                            &class_fqn,
+                            false,
+                        )));
                     }
 
                     // Direct supertypes — extends parent + used traits — checked once
@@ -225,18 +269,21 @@ fn collect_lenses(
                             ClassMemberKind::Method(m) => {
                                 let method_name = m.name.as_str().unwrap_or_default();
                                 let method_range = sv.name_range(method_name);
-                                out.push(env.ref_count_lens(
-                                    method_range,
-                                    mir_analyzer::Name::method(class_fqn.as_str(), method_name),
-                                ));
+                                out.push(LensSlot::RefCount {
+                                    range: method_range,
+                                    symbol: mir_analyzer::Name::method(
+                                        class_fqn.as_str(),
+                                        method_name,
+                                    ),
+                                });
 
                                 if is_test_method(sv.source(), m) {
-                                    out.push(run_test_lens(
+                                    out.push(LensSlot::Ready(run_test_lens(
                                         method_range,
                                         env.uri,
                                         class_name_str,
                                         method_name,
-                                    ));
+                                    )));
                                 }
 
                                 // Overrides lens: emit for each direct supertype (parent class
@@ -245,13 +292,13 @@ fn collect_lenses(
                                     if let Some((declaring_fqn, parent_loc)) =
                                         env.parent_method_location(parent_fqn, method_name)
                                     {
-                                        out.push(overrides_lens(
+                                        out.push(LensSlot::Ready(overrides_lens(
                                             method_range,
                                             env.uri,
                                             fqn_short_name(&declaring_fqn),
                                             method_name,
                                             parent_loc,
-                                        ));
+                                        )));
                                     }
                                 }
 
@@ -261,10 +308,10 @@ fn collect_lenses(
                                         if p.visibility.is_some() {
                                             let param_name = p.name.as_str().unwrap_or_default();
                                             let prop_range = sv.name_range(param_name);
-                                            out.push(env.ref_count_lens(
-                                                prop_range,
-                                                property_name(&class_fqn, param_name),
-                                            ));
+                                            out.push(LensSlot::RefCount {
+                                                range: prop_range,
+                                                symbol: property_name(&class_fqn, param_name),
+                                            });
                                         }
                                     }
                                 }
@@ -272,10 +319,10 @@ fn collect_lenses(
                             ClassMemberKind::Property(p) => {
                                 let prop_name = p.name.as_str().unwrap_or_default();
                                 let prop_range = sv.name_range(prop_name);
-                                out.push(env.ref_count_lens(
-                                    prop_range,
-                                    property_name(&class_fqn, prop_name),
-                                ));
+                                out.push(LensSlot::RefCount {
+                                    range: prop_range,
+                                    symbol: property_name(&class_fqn, prop_name),
+                                });
                             }
                             _ => {}
                         }
@@ -286,36 +333,42 @@ fn collect_lenses(
                 let name = i.name.as_str().unwrap_or_default();
                 let fqn = fqn_in(&ns, name);
                 let range = sv.name_range(name);
-                out.push(env.ref_count_lens(range, mir_analyzer::Name::class(fqn.clone())));
+                out.push(LensSlot::RefCount {
+                    range,
+                    symbol: mir_analyzer::Name::class(fqn.clone()),
+                });
                 // Implementations count lens.
-                out.push(env.impl_count_lens(range, &fqn, false));
+                out.push(LensSlot::Ready(env.impl_count_lens(range, &fqn, false)));
             }
             StmtKind::Trait(t) => {
                 let trait_name = t.name.as_str().unwrap_or_default();
                 let trait_fqn = fqn_in(&ns, trait_name);
                 let range = sv.name_range(trait_name);
-                out.push(env.ref_count_lens(range, mir_analyzer::Name::class(trait_fqn.clone())));
+                out.push(LensSlot::RefCount {
+                    range,
+                    symbol: mir_analyzer::Name::class(trait_fqn.clone()),
+                });
                 // Usages: classes that `use` this trait (trait edges included).
-                out.push(env.impl_count_lens(range, &trait_fqn, true));
+                out.push(LensSlot::Ready(
+                    env.impl_count_lens(range, &trait_fqn, true),
+                ));
                 for member in t.body.members.iter() {
                     match &member.kind {
                         ClassMemberKind::Method(m) => {
                             let method_name = m.name.as_str().unwrap_or_default();
                             let method_range = sv.name_range(method_name);
-                            out.push(env.ref_count_lens(
-                                method_range,
-                                mir_analyzer::Name::method(trait_fqn.as_str(), method_name),
-                            ));
+                            out.push(LensSlot::RefCount {
+                                range: method_range,
+                                symbol: mir_analyzer::Name::method(trait_fqn.as_str(), method_name),
+                            });
                         }
                         ClassMemberKind::Property(p) => {
                             let prop_name = p.name.as_str().unwrap_or_default();
                             let prop_range = sv.name_range(prop_name);
-                            out.push(
-                                env.ref_count_lens(
-                                    prop_range,
-                                    property_name(&trait_fqn, prop_name),
-                                ),
-                            );
+                            out.push(LensSlot::RefCount {
+                                range: prop_range,
+                                symbol: property_name(&trait_fqn, prop_name),
+                            });
                         }
                         _ => {}
                     }
@@ -325,24 +378,30 @@ fn collect_lenses(
                 let enum_name = e.name.as_str().unwrap_or_default();
                 let enum_fqn = fqn_in(&ns, enum_name);
                 let range = sv.name_range(enum_name);
-                out.push(env.ref_count_lens(range, mir_analyzer::Name::class(enum_fqn.clone())));
+                out.push(LensSlot::RefCount {
+                    range,
+                    symbol: mir_analyzer::Name::class(enum_fqn.clone()),
+                });
                 for member in e.body.members.iter() {
                     match &member.kind {
                         EnumMemberKind::Method(m) => {
                             let method_name = m.name.as_str().unwrap_or_default();
                             let method_range = sv.name_range(method_name);
-                            out.push(env.ref_count_lens(
-                                method_range,
-                                mir_analyzer::Name::method(enum_fqn.as_str(), method_name),
-                            ));
+                            out.push(LensSlot::RefCount {
+                                range: method_range,
+                                symbol: mir_analyzer::Name::method(enum_fqn.as_str(), method_name),
+                            });
                         }
                         EnumMemberKind::Case(c) => {
                             let case_name = c.name.as_str().unwrap_or_default();
                             let case_range = sv.name_range(case_name);
-                            out.push(env.ref_count_lens(
-                                case_range,
-                                mir_analyzer::Name::class_constant(enum_fqn.as_str(), case_name),
-                            ));
+                            out.push(LensSlot::RefCount {
+                                range: case_range,
+                                symbol: mir_analyzer::Name::class_constant(
+                                    enum_fqn.as_str(),
+                                    case_name,
+                                ),
+                            });
                         }
                         _ => {}
                     }

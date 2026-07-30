@@ -71,6 +71,13 @@ pub struct DebugStats {
     /// cache-warm session must keep this at zero — the regression tests
     /// assert it.
     pub workspace_index_walks: u64,
+    /// Workspace-wide FQN/text-needle scan passes for reference-scope
+    /// narrowing (`DocumentStore::resolve_reachability_queries`). A request
+    /// with many narrowing-requiring declarations (e.g. code lens on a file
+    /// with several classes/public-static-methods) must pay one pass per
+    /// request, not one per declaration — the regression tests assert the
+    /// delta across such a request.
+    pub reachability_scan_passes: u64,
 }
 
 use crate::document::ast::ParsedDoc;
@@ -125,6 +132,7 @@ impl Backend {
             warm_sweeps_completed: self.docs.warm_sweeps_completed(),
             workspace_symbol_index_ready: self.docs.workspace_symbol_index_ready(),
             workspace_index_walks: self.docs.workspace_index_walks(),
+            reachability_scan_passes: self.docs.reachability_scan_passes(),
         })
     }
 

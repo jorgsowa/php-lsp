@@ -365,6 +365,52 @@ shared();
     expect!["L1:9-L1:15: 3 references [editor.action.showReferences]"].assert_eq(&out);
 }
 
+/// A file with several public-static-method (and class) declarations must
+/// resolve all of their reference counts with ONE workspace-wide
+/// reachability scan pass, not one pass per declaration — each such
+/// declaration used to run its own full `ws.files` scan independently.
+#[tokio::test]
+async fn code_lens_shares_one_reachability_scan_across_declarations() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("service.php"),
+        "<?php\nnamespace App;\nclass Service {\n    public static function alpha(): void {}\n    public static function beta(): void {}\n    public static function gamma(): void {}\n}\n",
+    )
+    .unwrap();
+
+    let mut server = TestServer::with_root(dir.path()).await;
+    server.wait_for_index_ready().await;
+    server
+        .open(
+            "service.php",
+            "<?php\nnamespace App;\nclass Service {\n    public static function alpha(): void {}\n    public static function beta(): void {}\n    public static function gamma(): void {}\n}\n",
+        )
+        .await;
+
+    // The class itself plus its 3 public static methods are all narrowed via
+    // `resolve_reachability_queries` — 4 declarations that, pre-fix, each
+    // paid their own scan.
+    let before = server.debug_stats_reachability_scan_passes().await;
+    let resp = server.code_lens("service.php").await;
+    assert!(resp["error"].is_null(), "code_lens error: {resp:?}");
+    let lenses = resp["result"]
+        .as_array()
+        .expect("expected a code lens array");
+    assert_eq!(
+        lenses.len(),
+        4,
+        "expected one ref-count lens per declaration"
+    );
+    let after = server.debug_stats_reachability_scan_passes().await;
+
+    assert_eq!(
+        after - before,
+        1,
+        "one code-lens request must pay exactly one reachability scan pass, \
+         regardless of how many declarations need FQN/needle narrowing"
+    );
+}
+
 #[tokio::test]
 async fn code_lens_resolve_roundtrips_run_test_lens() {
     let mut server = TestServer::new().await;
