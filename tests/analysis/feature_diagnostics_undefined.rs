@@ -1288,26 +1288,20 @@ async fn enum_implementing_use_imported_interface_not_flagged() {
     .assert_eq(&out);
 }
 
-/// KNOWN GAP (found while investigating issue #242, not fixed by it — root
+/// Regression (found while investigating issue #242, not fixed by it — root
 /// cause is different): a file's `cached_analysis` is only invalidated by
-/// `decl_version` bumping, and `decl_version` only bumps when a file goes
+/// `decl_version` bumping, and `decl_version` only bumped when a file went
 /// through its *own* full semantic analysis (`cached_analysis_cancellable`'s
-/// "first analysis" branch in `document_store.rs`) — never when a file is
-/// merely scanned/mirrored/created as someone else's dependency. So once a
-/// consumer file has been analyzed while a class it references didn't exist
-/// yet, that wrong `UndefinedClass` is cached and never recomputed — not
-/// after the workspace is fully indexed, not even after the missing file is
-/// created via `didChangeWatchedFiles` — because the dependency file itself
-/// is never independently opened/analyzed to trigger the bump. Reproduced
-/// deterministically (no timing/race involved) at the `DocumentStore` level
-/// in `document_store.rs`'s
+/// "first analysis" branch in `document_store.rs`) — never when a file was
+/// merely scanned/mirrored/created as someone else's dependency. `did_change_watched_files`
+/// now calls `DocumentStore::note_new_file_declarations` for every
+/// CREATED/CHANGED file so a consumer analyzed before the dependency existed
+/// gets invalidated too. Same repro at the `DocumentStore` level in
+/// `document_store.rs`'s
 /// `stale_cached_analysis_not_invalidated_by_new_dependency_file`; this is
-/// the same bug at the full LSP-server level, via the realistic trigger of
-/// a teammate's new file landing (e.g. after a `git pull`).
+/// the full LSP-server level, via the realistic trigger of a teammate's new
+/// file landing (e.g. after a `git pull`).
 #[tokio::test]
-#[ignore = "known gap: cached_analysis is not invalidated when a newly \
-            created file satisfies a previously-unresolved reference — see \
-            stale_cached_analysis_not_invalidated_by_new_dependency_file"]
 async fn undefined_class_diagnostic_not_refreshed_after_dependency_file_created() {
     let tmp = tempfile::tempdir().unwrap();
     let consumer_src = "<?php\n\nnew Mage();\n";

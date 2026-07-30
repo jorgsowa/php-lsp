@@ -1772,6 +1772,62 @@ impl DocumentStore {
         self.cached_analysis_cancellable(uri, &|| false)
     }
 
+    /// Compare `uri`'s current `FileIndex` against its stored declaration
+    /// fingerprint, bumping `decl_version` (and `session`'s prepare
+    /// generation) when declarations changed or this is the file's
+    /// first-seen fingerprint. Body-only edits leave the counter unchanged so
+    /// sibling files keep serving from cache. Returns whether it bumped.
+    fn sync_decl_fingerprint(&self, uri: &Url, session: &mir_analyzer::AnalysisSession) -> bool {
+        let new_index = self.get_index_salsa(uri);
+        let old_fp = self
+            .caches
+            .decl_fingerprints
+            .get(uri)
+            .map(|e| Arc::clone(&*e));
+        let decl_changed = match (&old_fp, &new_index) {
+            (Some(old), Some(new)) => **old != **new,
+            // First analysis: only a file that actually declares something can
+            // affect other files. Opening a plain script must not invalidate
+            // every open file's analysis cache and mir's warm-up marks.
+            (None, Some(new)) => !new.declares_nothing(),
+            _ => false,
+        };
+        if decl_changed {
+            if let Some(idx) = new_index {
+                self.caches.decl_fingerprints.insert(uri.clone(), idx);
+            }
+            self.caches.bump_decl_version();
+            // Text reaches mir via direct salsa `set_text` writes, so mir can't
+            // see declaration deletions itself. A deleted declaration may
+            // unshadow a lazy-loadable symbol — invalidate mir's warm-up skip
+            // set so reference queries re-run their prepare pass once.
+            session.bump_prepare_generation();
+        }
+        decl_changed
+    }
+
+    /// Register a newly-discovered file's declarations so a consumer that was
+    /// analyzed *before* this file existed doesn't keep a stale cached
+    /// analysis forever.
+    ///
+    /// `mirror_text`/`ingest_from_doc` alone never bump `decl_version` —
+    /// that only happens inside `cached_analysis_cancellable`'s own
+    /// first-analysis check, which runs when a file undergoes its *own* full
+    /// analysis. A file that is merely scanned or created as someone else's
+    /// dependency (what a workspace scan or a `didChangeWatchedFiles`
+    /// CREATED/CHANGED event does) never goes through that path, so without
+    /// this call, a consumer analyzed earlier keeps returning a stale
+    /// `UndefinedClass` (or similar) even after the dependency shows up.
+    ///
+    /// Call this after mirroring a file from one of those discovery paths —
+    /// not from every `mirror_text` call, which would also fire on every
+    /// keystroke edit to an already-open file and defeat the whole point of
+    /// caching sibling files' analyses across those edits.
+    pub fn note_new_file_declarations(&self, uri: &Url) {
+        let session = self.current_analysis_session();
+        self.sync_decl_fingerprint(uri, &session);
+    }
+
     /// [`Self::cached_analysis`] with an early exit: `should_cancel` is
     /// polled whenever a concurrent salsa write cancels the analysis attempt.
     /// A handler passes its write-revision staleness probe so a request made
@@ -1892,31 +1948,7 @@ impl DocumentStore {
         // `decl_version` so other files' cache entries become stale. Body-only
         // edits leave the counter unchanged, allowing sibling files to be
         // served from cache on the next request.
-        let new_index = self.get_index_salsa(uri);
-        let old_fp = self
-            .caches
-            .decl_fingerprints
-            .get(uri)
-            .map(|e| Arc::clone(&*e));
-        let decl_changed = match (&old_fp, &new_index) {
-            (Some(old), Some(new)) => **old != **new,
-            // First analysis: only a file that actually declares something can
-            // affect other files. Opening a plain script must not invalidate
-            // every open file's analysis cache and mir's warm-up marks.
-            (None, Some(new)) => !new.declares_nothing(),
-            _ => false,
-        };
-        if decl_changed {
-            if let Some(idx) = new_index {
-                self.caches.decl_fingerprints.insert(uri.clone(), idx);
-            }
-            self.caches.bump_decl_version();
-            // Text reaches mir via direct salsa `set_text` writes, so mir can't
-            // see declaration deletions itself. A deleted declaration may
-            // unshadow a lazy-loadable symbol — invalidate mir's warm-up skip
-            // set so reference queries re-run their prepare pass once.
-            session.bump_prepare_generation();
-        }
+        let decl_changed = self.sync_decl_fingerprint(uri, &session);
         // Tag with the version observed before the analysis ran, plus this
         // file's own bump. Reading `decl_version()` here instead would absorb
         // a concurrent bump from another file's mid-compute declaration change
@@ -2939,31 +2971,18 @@ mod tests {
         );
     }
 
-    /// KNOWN GAP (found while investigating issue #242, root cause is
+    /// Regression (found while investigating issue #242, root cause is
     /// distinct from it — not fixed by the `is_index_ready` gate):
     /// `cached_analysis_if_fresh`'s staleness check is keyed on
     /// `decl_version`, which only bumps inside `cached_analysis_cancellable`
-    /// when a file undergoes its *own* full analysis and its declarations
-    /// are found to differ from their last-seen fingerprint (see the
-    /// "first analysis" branch a few hundred lines up). Mirroring a brand
-    /// new file into the store (`mirror_text`/`ingest_from_doc`, what a
-    /// workspace scan or `didChangeWatchedFiles` CREATED event does) does
-    /// *not* go through that path and so never bumps `decl_version` — a
-    /// consumer file analyzed before its dependency existed keeps returning
-    /// its stale, now-wrong `UndefinedClass` forever, since the dependency
-    /// is never independently analyzed on its own to trigger the bump.
-    ///
-    /// Likely fix: also bump `decl_version` when a newly-mirrored file's
-    /// `FileIndex` shows it declares something (mirroring the "first
-    /// analysis" check), not only when `cached_analysis_cancellable` runs —
-    /// but note this runs on every scanned file, so doing it unconditionally
-    /// would thrash the analysis cache during a large workspace scan; needs
-    /// a design that distinguishes "newly declared symbol nothing depended
-    /// on yet" from "everything else already cached must now recompute".
+    /// when a file undergoes its *own* full analysis. Mirroring a brand new
+    /// file into the store (`mirror_text`/`ingest_from_doc`, what a workspace
+    /// scan or `didChangeWatchedFiles` CREATED event does) doesn't go through
+    /// that path, so callers on that path must explicitly call
+    /// `note_new_file_declarations` — exactly what `did_change_watched_files`
+    /// now does — to invalidate consumers analyzed before the dependency
+    /// existed.
     #[test]
-    #[ignore = "known gap: mirroring a new dependency file doesn't bump \
-                decl_version, so a consumer analyzed first keeps a stale \
-                UndefinedClass forever"]
     fn stale_cached_analysis_not_invalidated_by_new_dependency_file() {
         let store = DocumentStore::new();
         let consumer_uri = uri("/app.php");
@@ -2983,6 +3002,7 @@ mod tests {
         // Mage now becomes known to the store — exactly what a workspace
         // scan or a `didChangeWatchedFiles` CREATED event does.
         store.mirror_text(&dep_uri, "<?php\nclass Mage {}\n");
+        store.note_new_file_declarations(&dep_uri);
 
         // Consumer's diagnostics should now resolve cleanly.
         let issues = store.get_semantic_issues_salsa(&consumer_uri).unwrap();

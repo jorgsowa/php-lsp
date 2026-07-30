@@ -471,6 +471,10 @@ impl LanguageServer for Backend {
                             // aggregator re-folds — no manual remove/collect/finalize.
                             let doc = parse_document_no_diags(&text);
                             self.ingest_from_doc_if_not_open(change.uri.clone(), &doc);
+                            // A consumer analyzed before this file existed
+                            // must not keep a stale cached analysis now that
+                            // it's known — see `note_new_file_declarations`.
+                            self.docs.note_new_file_declarations(&change.uri);
                         }
                     }
                     FileChangeType::DELETED => {
