@@ -97,7 +97,9 @@ fn close_brace(source: &str, position: Position) -> Vec<TextEdit> {
         }
     }
 
-    let new_indent = match_line.and_then(|l| lines.get(l)).map_or("", |l| leading_whitespace(l));
+    let new_indent = match_line
+        .and_then(|l| lines.get(l))
+        .map_or("", |l| leading_whitespace(l));
 
     if new_indent == cur_indent {
         return vec![];

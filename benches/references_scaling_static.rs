@@ -174,9 +174,7 @@ fn main() {
     // (~164 ms at N=3000 measured on mir 0.63.0; losing the gate lands at
     // ~775 ms, the ungated number below).
     let distinctive_ok = run_scenario(
-        &format!(
-            "DISTINCTIVE MEMBER: cold `{OWNER}::{HOT_METHOD}`, noise mentions `{OWNER}` only"
-        ),
+        &format!("DISTINCTIVE MEMBER: cold `{OWNER}::{HOT_METHOD}`, noise mentions `{OWNER}` only"),
         &sym,
         noise_file_owner_match,
         400.0,

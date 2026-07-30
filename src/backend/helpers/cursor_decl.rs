@@ -396,9 +396,7 @@ pub(crate) fn promoted_property_at_cursor(
                                 let name_start = str_offset(source, param_name).unwrap_or(0);
                                 let name_end = name_start + param_name.len() as u32;
                                 if cursor >= name_start && cursor < name_end {
-                                    return Some(
-                                        param_name.trim_start_matches('$').to_string(),
-                                    );
+                                    return Some(param_name.trim_start_matches('$').to_string());
                                 }
                             }
                         }

@@ -93,8 +93,7 @@ impl Backend {
 
                 // UndefinedFunction → use function FQN;
                 for diag in &sem_diags {
-                    if diag.code != Some(NumberOrString::String("UndefinedFunction".to_string()))
-                    {
+                    if diag.code != Some(NumberOrString::String("UndefinedFunction".to_string())) {
                         continue;
                     }
                     if diag.range.start.line < range.start.line
@@ -139,8 +138,12 @@ impl Backend {
             actions.extend(extract_constant_actions(&source, range, &uri));
             actions.extend(inline_variable_actions(&source, range, &uri));
             actions.extend(change_visibility_actions(&source, &doc, range, &uri));
-            actions.extend(closure_to_arrow_function_actions(&source, &doc, range, &uri));
-            actions.extend(arrow_function_to_closure_actions(&source, &doc, range, &uri));
+            actions.extend(closure_to_arrow_function_actions(
+                &source, &doc, range, &uri,
+            ));
+            actions.extend(arrow_function_to_closure_actions(
+                &source, &doc, range, &uri,
+            ));
             actions.extend(switch_to_match_actions(&source, &doc, range, &uri));
             actions.extend(extract_interface_actions(&source, &doc, range, &uri));
             actions.extend(local_to_property_actions(&source, &doc, range, &uri));
@@ -192,7 +195,8 @@ impl Backend {
             None => return Ok(item),
         };
 
-        let candidates = generate_deferred_actions(&self.docs, &kind_tag, &source, &doc, range, &uri);
+        let candidates =
+            generate_deferred_actions(&self.docs, &kind_tag, &source, &doc, range, &uri);
 
         for candidate in candidates {
             if let CodeActionOrCommand::CodeAction(ca) = candidate

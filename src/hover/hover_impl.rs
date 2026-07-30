@@ -247,7 +247,8 @@ fn hover_at_core(
     }
 
     if !word.starts_with('$')
-        && let Some(offset) = word_range_at(source, position).map(|r| doc.view().byte_of_position(r.start))
+        && let Some(offset) =
+            word_range_at(source, position).map(|r| doc.view().byte_of_position(r.start))
         && let Some((callee, label)) = find_named_arg_at(doc, offset)
         && let Some(value) =
             named_arg_hover_value(source, doc, other_docs, position, &callee, &label, analysis)

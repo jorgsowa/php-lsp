@@ -35,8 +35,7 @@ pub fn extract_constant_actions(source: &str, range: Range, uri: &Url) -> Vec<Co
     // would be a PHP fatal error ("Constant expression contains invalid
     // operations"). Single-quoted strings never interpolate, so they're safe
     // regardless of content.
-    if trimmed.starts_with('"') && has_double_quoted_interpolation(&trimmed[1..trimmed.len() - 1])
-    {
+    if trimmed.starts_with('"') && has_double_quoted_interpolation(&trimmed[1..trimmed.len() - 1]) {
         return vec![];
     }
 

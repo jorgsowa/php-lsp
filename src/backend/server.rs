@@ -9,9 +9,9 @@ use crate::completion::{CompletionCtx, filtered_completions_at};
 use crate::document::ast::ParsedDoc;
 use crate::document::open_files::compute_open_file_diagnostics;
 use crate::hover::{
-    class_hover_from_workspace_index, docs_for_symbol_from_index, docs_for_symbol_from_index_scoped,
-    extract_static_class_before_cursor, hover_info_with_maps, method_hover_from_workspace_index,
-    signature_for_symbol_from_index_scoped,
+    class_hover_from_workspace_index, docs_for_symbol_from_index,
+    docs_for_symbol_from_index_scoped, extract_static_class_before_cursor, hover_info_with_maps,
+    method_hover_from_workspace_index, signature_for_symbol_from_index_scoped,
 };
 use crate::index::file_index::ClassKind;
 use crate::index::workspace_scan::{scan_workspace, send_refresh_requests};
@@ -621,8 +621,11 @@ impl LanguageServer for Backend {
                 .map(str::to_string);
             self.docs.with_all_indexes(|all_indexes| {
                 if item.detail.is_none()
-                    && let Some(sig) =
-                        signature_for_symbol_from_index_scoped(name, all_indexes, class_hint.as_deref())
+                    && let Some(sig) = signature_for_symbol_from_index_scoped(
+                        name,
+                        all_indexes,
+                        class_hint.as_deref(),
+                    )
                 {
                     item.detail = Some(sig);
                 }
@@ -1320,10 +1323,8 @@ impl LanguageServer for Backend {
             // Second pass: background files via the aggregated workspace index
             // (line-only positions for anything not covered by decls_by_name).
             let wi = self.workspace_index_async().await;
-            Ok(
-                goto_declaration_from_index(&source, &wi, position)
-                    .map(GotoDefinitionResponse::Scalar),
-            )
+            Ok(goto_declaration_from_index(&source, &wi, position)
+                .map(GotoDefinitionResponse::Scalar))
         })
         .await
     }

@@ -294,7 +294,8 @@ mod tests {
 
     #[test]
     fn find_call_sites_collects_every_matching_call_across_lines() {
-        let doc = parse("<?php\n$a = env('APP_NAME');\n$b = env('APP_NAME');\n$c = env('OTHER');\n");
+        let doc =
+            parse("<?php\n$a = env('APP_NAME');\n$b = env('APP_NAME');\n$c = env('OTHER');\n");
         let sites = find_call_sites(&doc, ENV, "APP_NAME");
         assert_eq!(sites.len(), 2);
         assert_eq!(sites[0].start.line, 1);

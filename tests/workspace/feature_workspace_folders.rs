@@ -557,4 +557,3 @@ async fn batch_changes_all_applied() {
     let registry_out = server.snapshot_workspace_symbols("Registry").await;
     expect![[r#"<no symbols>"#]].assert_eq(&registry_out);
 }
-

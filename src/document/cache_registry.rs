@@ -244,10 +244,16 @@ mod tests {
         reg.shed_stale(&map, 10);
         assert_eq!(map.len(), 5, "half of cap should be evicted");
         for i in 0..5 {
-            assert!(!map.contains_key(&uri(i)), "uri({i}) is oldest, should be evicted");
+            assert!(
+                !map.contains_key(&uri(i)),
+                "uri({i}) is oldest, should be evicted"
+            );
         }
         for i in 5..10 {
-            assert!(map.contains_key(&uri(i)), "uri({i}) is newest, should survive");
+            assert!(
+                map.contains_key(&uri(i)),
+                "uri({i}) is newest, should survive"
+            );
         }
     }
 

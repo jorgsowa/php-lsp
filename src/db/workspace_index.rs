@@ -108,9 +108,7 @@ pub struct FuncSignature {
 /// file. Entries already present (from the current file's own AST) are not
 /// overwritten so an in-file definition always wins over a possibly-stale
 /// index entry.
-pub fn build_func_signatures(
-    files: &[(Url, Arc<FileIndex>)],
-) -> HashMap<String, FuncSignature> {
+pub fn build_func_signatures(files: &[(Url, Arc<FileIndex>)]) -> HashMap<String, FuncSignature> {
     let mut map = HashMap::new();
     for (_, idx) in files {
         for func in &idx.functions {

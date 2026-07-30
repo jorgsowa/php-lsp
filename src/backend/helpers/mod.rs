@@ -373,7 +373,6 @@ impl Backend {
         }
         ingested
     }
-
 }
 
 /// Tag → generator mapping for deferred code actions. A free function (not a
@@ -392,8 +391,11 @@ pub(super) fn generate_deferred_actions(
         "phpdoc" => phpdoc_actions(uri, doc, source, range),
         "implement" => {
             let imports = doc.file_imports();
-            let needles =
-                crate::actions::implement_action::target_type_names(&doc.program().stmts, doc.view(), range);
+            let needles = crate::actions::implement_action::target_type_names(
+                &doc.program().stmts,
+                doc.view(),
+                range,
+            );
             let all_docs = if needles.is_empty() {
                 Vec::new()
             } else {

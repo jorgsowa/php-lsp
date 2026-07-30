@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 
-use php_ast::{ClassMemberKind, EnumMemberKind, Expr, ExprKind, NamespaceBody, Param, Stmt, StmtKind};
+use php_ast::{
+    ClassMemberKind, EnumMemberKind, Expr, ExprKind, NamespaceBody, Param, Stmt, StmtKind,
+};
 use serde_json::json;
 use tower_lsp::lsp_types::{InlayHint, InlayHintKind, InlayHintLabel, Position, Range};
 
@@ -221,14 +223,24 @@ fn hints_in_stmt(
 ) {
     match &stmt.kind {
         StmtKind::Expression(e) => hints_in_expr(sv, e, defs, workspace_defs, analysis, range, out),
-        StmtKind::Return(Some(v)) => hints_in_expr(sv, v, defs, workspace_defs, analysis, range, out),
+        StmtKind::Return(Some(v)) => {
+            hints_in_expr(sv, v, defs, workspace_defs, analysis, range, out)
+        }
         StmtKind::Echo(exprs) => {
             for expr in exprs.iter() {
                 hints_in_expr(sv, expr, defs, workspace_defs, analysis, range, out);
             }
         }
         StmtKind::Function(f) => {
-            hints_in_stmts(sv, &f.body.stmts, defs, workspace_defs, analysis, range, out);
+            hints_in_stmts(
+                sv,
+                &f.body.stmts,
+                defs,
+                workspace_defs,
+                analysis,
+                range,
+                out,
+            );
         }
         StmtKind::Class(c) => {
             for member in c.body.members.iter() {
@@ -264,9 +276,25 @@ fn hints_in_stmt(
         }
         StmtKind::If(i) => {
             hints_in_expr(sv, &i.condition, defs, workspace_defs, analysis, range, out);
-            hints_in_stmt(sv, i.then_branch, defs, workspace_defs, analysis, range, out);
+            hints_in_stmt(
+                sv,
+                i.then_branch,
+                defs,
+                workspace_defs,
+                analysis,
+                range,
+                out,
+            );
             for ei in i.elseif_branches.iter() {
-                hints_in_expr(sv, &ei.condition, defs, workspace_defs, analysis, range, out);
+                hints_in_expr(
+                    sv,
+                    &ei.condition,
+                    defs,
+                    workspace_defs,
+                    analysis,
+                    range,
+                    out,
+                );
                 hints_in_stmt(sv, &ei.body, defs, workspace_defs, analysis, range, out);
             }
             if let Some(e) = &i.else_branch {
@@ -313,15 +341,41 @@ fn hints_in_stmt(
             hints_in_stmt(sv, f.body, defs, workspace_defs, analysis, range, out);
         }
         StmtKind::TryCatch(t) => {
-            hints_in_stmts(sv, &t.body.stmts, defs, workspace_defs, analysis, range, out);
+            hints_in_stmts(
+                sv,
+                &t.body.stmts,
+                defs,
+                workspace_defs,
+                analysis,
+                range,
+                out,
+            );
             for catch in t.catches.iter() {
-                hints_in_stmts(sv, &catch.body.stmts, defs, workspace_defs, analysis, range, out);
+                hints_in_stmts(
+                    sv,
+                    &catch.body.stmts,
+                    defs,
+                    workspace_defs,
+                    analysis,
+                    range,
+                    out,
+                );
             }
             if let Some(finally) = &t.finally {
-                hints_in_stmts(sv, &finally.stmts, defs, workspace_defs, analysis, range, out);
+                hints_in_stmts(
+                    sv,
+                    &finally.stmts,
+                    defs,
+                    workspace_defs,
+                    analysis,
+                    range,
+                    out,
+                );
             }
         }
-        StmtKind::Block(stmts) => hints_in_stmts(sv, &stmts.stmts, defs, workspace_defs, analysis, range, out),
+        StmtKind::Block(stmts) => {
+            hints_in_stmts(sv, &stmts.stmts, defs, workspace_defs, analysis, range, out)
+        }
         StmtKind::DoWhile(d) => {
             hints_in_stmt(sv, d.body, defs, workspace_defs, analysis, range, out);
             hints_in_expr(sv, &d.condition, defs, workspace_defs, analysis, range, out);
@@ -392,7 +446,9 @@ fn hints_in_expr(
         }
         ExprKind::New(n) => {
             if let Some(class_name) = ident_name(n.class)
-                && let Some(def) = defs.get(class_name).or_else(|| workspace_defs.get(class_name))
+                && let Some(def) = defs
+                    .get(class_name)
+                    .or_else(|| workspace_defs.get(class_name))
             {
                 emit_param_hints(sv, &n.args, def, class_name, range, out);
             }
@@ -408,7 +464,15 @@ fn hints_in_expr(
         }
         // Walk into closure bodies so nested function calls get hints.
         ExprKind::Closure(c) => {
-            hints_in_stmts(sv, &c.body.stmts, defs, workspace_defs, analysis, range, out);
+            hints_in_stmts(
+                sv,
+                &c.body.stmts,
+                defs,
+                workspace_defs,
+                analysis,
+                range,
+                out,
+            );
         }
         // Walk into arrow function bodies so nested calls get hints.
         // No return-type hint: the annotation is already visible in the source,
@@ -416,7 +480,9 @@ fn hints_in_expr(
         ExprKind::ArrowFunction(a) => {
             hints_in_expr(sv, a.body, defs, workspace_defs, analysis, range, out);
         }
-        ExprKind::Parenthesized(e) => hints_in_expr(sv, e, defs, workspace_defs, analysis, range, out),
+        ExprKind::Parenthesized(e) => {
+            hints_in_expr(sv, e, defs, workspace_defs, analysis, range, out)
+        }
         ExprKind::Ternary(t) => {
             hints_in_expr(sv, t.condition, defs, workspace_defs, analysis, range, out);
             if let Some(then_expr) = t.then_expr {

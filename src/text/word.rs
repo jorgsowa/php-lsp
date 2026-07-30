@@ -165,9 +165,7 @@ pub(crate) fn contains_ascii_case_insensitive(haystack: &str, needle: &str) -> b
         return true;
     }
     let (h, n) = (haystack.as_bytes(), needle.as_bytes());
-    n.len() <= h.len()
-        && h.windows(n.len())
-            .any(|w| w.eq_ignore_ascii_case(n))
+    n.len() <= h.len() && h.windows(n.len()).any(|w| w.eq_ignore_ascii_case(n))
 }
 
 #[cfg(test)]

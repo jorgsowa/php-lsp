@@ -622,7 +622,10 @@ fn collect_vars(text: &str) -> Vec<String> {
                 // clause ("Cannot use $_GET as lexical variable as it is a
                 // superglobal") — neither belongs in the generated closure's
                 // capture list.
-                if name != "this" && !crate::editing::rename::is_superglobal(&full) && !vars.contains(&full) {
+                if name != "this"
+                    && !crate::editing::rename::is_superglobal(&full)
+                    && !vars.contains(&full)
+                {
                     vars.push(full);
                 }
             }

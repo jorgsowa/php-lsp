@@ -612,24 +612,14 @@ fn bench_definition_index_fallback(c: &mut Criterion) {
     // Worst case for the linear scan: a name that matches nothing forces a
     // full walk over every declaration in every FileIndex.
     group.bench_function("index_fallback_linear_miss", |b| {
-        b.iter(|| {
-            black_box(find_declaration_linear_scan(
-                "zzz_no_such_symbol",
-                &indexes,
-            ))
-        });
+        b.iter(|| black_box(find_declaration_linear_scan("zzz_no_such_symbol", &indexes)));
     });
     group.bench_function("index_fallback_map_miss", |b| {
         b.iter(|| black_box(wi.find_declaration("zzz_no_such_symbol", None)));
     });
     // Typical hit: a method name defined deep in the framework.
     group.bench_function("index_fallback_linear_hit", |b| {
-        b.iter(|| {
-            black_box(find_declaration_linear_scan(
-                "firstOrCreate",
-                &indexes,
-            ))
-        });
+        b.iter(|| black_box(find_declaration_linear_scan("firstOrCreate", &indexes)));
     });
     group.bench_function("index_fallback_map_hit", |b| {
         b.iter(|| black_box(wi.find_declaration("firstOrCreate", None)));

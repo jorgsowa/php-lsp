@@ -153,7 +153,11 @@ fn param_children_for(
             }
         })
         .collect();
-    if children.is_empty() { None } else { Some(children) }
+    if children.is_empty() {
+        None
+    } else {
+        Some(children)
+    }
 }
 
 fn statement_to_symbol(sv: SourceView<'_>, stmt: &Stmt<'_, '_>) -> Option<DocumentSymbol> {

@@ -49,7 +49,11 @@ pub fn implement_missing_actions(
 /// whose span overlaps `range` — the search needles for a text prefilter
 /// before parsing candidate files to find their declaring documents. Uses
 /// the same span-overlap check as `collect_actions`'s per-class walk.
-pub(crate) fn target_type_names(stmts: &[Stmt<'_, '_>], sv: SourceView<'_>, range: Range) -> Vec<String> {
+pub(crate) fn target_type_names(
+    stmts: &[Stmt<'_, '_>],
+    sv: SourceView<'_>,
+    range: Range,
+) -> Vec<String> {
     let mut names = Vec::new();
     collect_target_type_names(stmts, sv, range, &mut names);
     names
