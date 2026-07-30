@@ -199,6 +199,40 @@ async fn psr4_imported_class_not_flagged_before_workspace_scan() {
     .assert_eq(&out);
 }
 
+/// Issue #243 full-stack repro: default `indexVendor: false`, a PSR-0-mapped
+/// vendor class (Composer PEAR-style autoload, e.g. Magento 1 / ZF1), waiting
+/// for `$/php-lsp/indexReady` before opening the consuming file.
+#[tokio::test]
+async fn psr0_vendor_class_not_flagged_before_workspace_scan() {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        tmp.path().join("composer.json"),
+        r#"{"autoload":{"psr-0":{"Legacy_":"vendor/legacy/src/"}}}"#,
+    )
+    .unwrap();
+
+    std::fs::create_dir_all(tmp.path().join("vendor/legacy/src/Legacy")).unwrap();
+    std::fs::write(
+        tmp.path().join("vendor/legacy/src/Legacy/Service.php"),
+        "<?php\n\nclass Legacy_Service\n{\n    public function name(): string\n    {\n        return 'legacy';\n    }\n}\n",
+    )
+    .unwrap();
+
+    let repro_src = "<?php\n\n$service = new Legacy_Service();\necho $service->name();\n";
+    std::fs::write(tmp.path().join("repro.php"), repro_src).unwrap();
+
+    let mut s = TestServer::with_root(tmp.path()).await;
+    s.wait_for_index_ready().await;
+    s.open("repro.php", repro_src).await;
+
+    let resp = s.workspace_diagnostic().await;
+    let out = render_workspace_diagnostic(&resp, &s.uri(""));
+    expect![[r#"
+        repro.php
+          <clean>"#]]
+    .assert_eq(&out);
+}
+
 /// Same-namespace bare class reference (no `use`) must not emit UndefinedClass.
 #[tokio::test]
 async fn same_namespace_bare_ref_not_flagged_as_undefined_class() {
