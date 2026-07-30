@@ -287,22 +287,33 @@ impl DocumentStore {
         });
     }
 
-    fn warm_analysis_sweep_inner(&self, priority: &[Url], cancel: &mir_analyzer::IndexCancel) {
-        const CHUNK: usize = 32;
+    /// Build the sweep's ordered file list: `priority` files and the files
+    /// declaring the classes they reference (see [`Self::sweep_priority_files`])
+    /// first, then every other tracked file — except vendor files, which the
+    /// ambient sweep skips regardless of `indexVendor`. A vendor file that
+    /// ends up in `priority` (opened directly, or referenced by an open
+    /// project file) is unaffected: the exclusion only applies to the
+    /// untargeted bulk-sweep tail, not the front of the queue.
+    fn sweep_candidate_files(&self, priority: &[Url]) -> Vec<Arc<str>> {
         let front: Vec<Arc<str>> = self.sweep_priority_files(priority);
         let front_set: HashSet<&str> = front.iter().map(|f| f.as_ref()).collect();
-        let files: Vec<Arc<str>> = front
+        front
             .iter()
             .cloned()
             .chain(
                 self.lsp_ws_files
                     .iter()
                     .filter(|e| !self.deleted_uris.contains(e.key()))
+                    .filter(|e| !is_vendor_uri(e.key()))
                     .map(|e| Arc::<str>::from(e.key().as_str()))
                     .filter(|f| !front_set.contains(f.as_ref())),
             )
-            .collect();
-        drop(front_set);
+            .collect()
+    }
+
+    fn warm_analysis_sweep_inner(&self, priority: &[Url], cancel: &mir_analyzer::IndexCancel) {
+        const CHUNK: usize = 32;
+        let files = self.sweep_candidate_files(priority);
         let session = self.current_analysis_session();
         let mut all_chunks_settled = true;
         for chunk in files.chunks(CHUNK) {
@@ -2099,6 +2110,14 @@ fn fqn_segment_prefix(prefix: &str, whole: &str) -> bool {
         && (w.len() == p.len() || w[p.len()] == b'\\')
 }
 
+/// `uri`'s path has a `vendor` component, e.g. `file:///proj/vendor/acme/Lib.php`
+/// or the nested-monorepo `file:///proj/packages/api/vendor/x/Y.php`. URI
+/// paths are always `/`-separated regardless of platform, so a plain
+/// component split is enough — no OS path handling needed.
+fn is_vendor_uri(uri: &Url) -> bool {
+    uri.path().split('/').any(|seg| seg == "vendor")
+}
+
 /// The narrowing decision for a method's reference scope, computed without
 /// running the expensive part (the FQN/text-needle workspace scan) so a
 /// batch caller can pool that scan across many methods.
@@ -2373,6 +2392,57 @@ mod tests {
             vec![uri("/a.php").as_str(), uri("/b.php").as_str()],
             "open file first, then the files declaring its referenced classes"
         );
+    }
+
+    #[test]
+    fn sweep_candidate_files_excludes_vendor_from_the_ambient_tail() {
+        let store = DocumentStore::new();
+        store.ingest(
+            uri("/vendor/acme/Lib.php"),
+            "<?php\nnamespace Acme;\nclass Lib {}",
+        );
+        store.ingest(uri("/src/Own.php"), "<?php\nnamespace App;\nclass Own {}");
+        store.mark_index_ready();
+
+        let files = store.sweep_candidate_files(&[]);
+        let files: Vec<&str> = files.iter().map(|f| f.as_ref()).collect();
+        assert!(
+            !files.contains(&uri("/vendor/acme/Lib.php").as_str()),
+            "vendor file must not be in the ambient (non-priority) sweep list: {files:?}"
+        );
+        assert!(
+            files.contains(&uri("/src/Own.php").as_str()),
+            "non-vendor file must still be in the ambient sweep list: {files:?}"
+        );
+    }
+
+    #[test]
+    fn sweep_candidate_files_still_includes_an_explicitly_prioritized_vendor_file() {
+        let store = DocumentStore::new();
+        store.ingest(
+            uri("/vendor/acme/Lib.php"),
+            "<?php\nnamespace Acme;\nclass Lib {}",
+        );
+        store.mark_index_ready();
+
+        // Opening the vendor file directly makes it a priority target, which
+        // bypasses the ambient-sweep vendor exclusion.
+        let files = store.sweep_candidate_files(&[uri("/vendor/acme/Lib.php")]);
+        let files: Vec<&str> = files.iter().map(|f| f.as_ref()).collect();
+        assert!(
+            files.contains(&uri("/vendor/acme/Lib.php").as_str()),
+            "an explicitly opened/prioritized vendor file must still be warmed: {files:?}"
+        );
+    }
+
+    #[test]
+    fn is_vendor_uri_matches_top_level_and_nested_vendor_dirs_only() {
+        assert!(is_vendor_uri(&uri("/proj/vendor/acme/Lib.php")));
+        assert!(is_vendor_uri(&uri(
+            "/proj/packages/api/vendor/acme/Lib.php"
+        )));
+        assert!(!is_vendor_uri(&uri("/proj/src/Vendored/Lib.php")));
+        assert!(!is_vendor_uri(&uri("/proj/src/VendorLib.php")));
     }
 
     #[test]

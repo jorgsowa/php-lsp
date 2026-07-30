@@ -213,14 +213,29 @@ pub struct LspConfig {
     pub max_indexed_files: usize,
     /// Whether to eagerly index `vendor/` during the workspace scan.
     ///
-    /// Default `false`: `vendor/` is skipped on scan; vendor files load on
-    /// demand via PSR-4 resolution (composer autoload + per-file parse). This
-    /// keeps `$/php-lsp/indexReady` fast on real-world projects where vendor
-    /// dwarfs the workspace.
+    /// Default `true`: `vendor/` is walked and declaration-extracted
+    /// (name/namespace/signature, no type inference) alongside the rest of
+    /// the workspace, so bare-name completion, workspace symbols, and
+    /// find-implementations/type-hierarchy see vendor classes without extra
+    /// configuration (issues #240, #246). This scan is I/O-bound, not
+    /// CPU-bound, and cheap relative to the fear it usually gets: on real
+    /// fixtures the walk+read+parse+extract for ~5k files runs in ~200ms, and
+    /// unchanged files replay from the on-disk content-hash cache
+    /// (`index/cache.rs`) on subsequent starts. What eager vendor indexing
+    /// does NOT do is pull vendor into the background `warm_analysis_sweep`
+    /// (full type analysis for find-references/rename) — that sweep skips
+    /// vendor files unconditionally (see `document_store::is_vendor_uri`)
+    /// since sweeping the whole vendor tree buys nothing lasting (the
+    /// analysis-result cache is capped, see `ANALYSIS_CACHE_CAP`) and would
+    /// multiply background CPU cost by vendor's file count. A vendor file
+    /// still gets fully analyzed on demand — when a request touches it
+    /// directly, or when it's referenced by a currently-open file (which the
+    /// sweep prioritizes regardless of this flag).
     ///
-    /// Set `true` for full workspace-symbol coverage of vendor and find-
-    /// implementations / type-hierarchy against vendor types — at the cost of
-    /// a slower initial scan.
+    /// Set `false` to skip `vendor/` entirely on scan (old default): vendor
+    /// files then load only on demand via PSR-4 resolution (composer
+    /// autoload + per-file parse). Useful for very large vendor trees where
+    /// even the cheap declaration scan isn't worth paying for.
     pub index_vendor: bool,
     /// Emit extra diagnostic log messages on startup: cache hit/miss ratio,
     /// workspace root paths, and PSR-4 namespace count.
@@ -260,7 +275,7 @@ impl Default for LspConfig {
             diagnostics: DiagnosticsConfig::default(),
             features: FeaturesConfig::default(),
             max_indexed_files: MAX_INDEXED_FILES,
-            index_vendor: false,
+            index_vendor: true,
             debug: false,
             debounce_ms: 100,
             warm_analysis: true,

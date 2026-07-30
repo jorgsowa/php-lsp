@@ -72,14 +72,19 @@ async fn add_workspace_folder_indexes_php_classes() {
     expect![[r#"Class       ExtraWidget @ ExtraWidget.php:1"#]].assert_eq(&out);
 }
 
-/// A runtime-added folder must honor `indexVendor: false` the same way the
-/// initial-roots scan does. Regression test: `did_change_workspace_folders`
+/// A runtime-added folder must honor an explicit `indexVendor: false` the
+/// same way the initial-roots scan does. Regression test: `did_change_workspace_folders`
 /// used to build its exclude list from the raw config, missing the
 /// `vendor/` push that `handle_initialized` applies, so a folder added after
-/// startup scanned (and mirrored) its entire vendor tree.
+/// startup scanned (and mirrored) its entire vendor tree regardless of the
+/// configured value.
 #[tokio::test]
 async fn add_workspace_folder_honors_index_vendor_false() {
-    let mut server = TestServer::with_fixture("psr4-mini").await;
+    let mut server = TestServer::with_fixture_and_options(
+        "psr4-mini",
+        serde_json::json!({ "indexVendor": false }),
+    )
+    .await;
     server.wait_for_index_ready().await;
 
     let tmp = tempfile::tempdir().expect("create TempDir");

@@ -289,12 +289,33 @@ async fn hidden_directories_are_excluded_from_scan() {
 
 #[serial_test::serial]
 #[tokio::test]
-async fn vendor_directory_skipped_by_default() {
-    // Lazy vendor: `vendor/` is excluded from the eager workspace scan by
-    // default so `$/php-lsp/indexReady` fires quickly. Vendor files load on
-    // demand via PSR-4 resolution when go-to-definition jumps into them.
+async fn vendor_directory_indexed_by_default() {
+    // Eager vendor: `vendor/` is walked and declaration-indexed by default
+    // (issues #240, #246), so workspace symbols cover vendor classes with no
+    // extra configuration.
     let tmp = tempfile::tempdir().expect("create TempDir");
     let mut server = TestServer::with_root(tmp.path()).await;
+    server.write_file(
+        "vendor/symfony/http-kernel/HttpKernel.php",
+        "<?php\nnamespace Symfony\\Component\\HttpKernel;\n\nclass HttpKernel {}\n",
+    );
+
+    server.wait_for_index_ready().await;
+
+    let out = server.snapshot_workspace_symbols("HttpKernel").await;
+    expect![[r#"Class       HttpKernel @ vendor/symfony/http-kernel/HttpKernel.php:3"#]]
+        .assert_eq(&out);
+}
+
+#[serial_test::serial]
+#[tokio::test]
+async fn vendor_directory_excluded_with_index_vendor_false() {
+    // Opt-out: `indexVendor: false` skips `vendor/` on the eager workspace
+    // scan (useful for very large vendor trees). Vendor files still load on
+    // demand via PSR-4 resolution when go-to-definition jumps into them.
+    let tmp = tempfile::tempdir().expect("create TempDir");
+    let mut server =
+        TestServer::with_root_and_options(tmp.path(), json!({ "indexVendor": false })).await;
     server.write_file(
         "vendor/symfony/http-kernel/HttpKernel.php",
         "<?php\nnamespace Symfony\\Component\\HttpKernel;\n\nclass HttpKernel {}\n",

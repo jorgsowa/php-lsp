@@ -199,9 +199,12 @@ async fn psr4_imported_class_not_flagged_before_workspace_scan() {
     .assert_eq(&out);
 }
 
-/// Issue #243 full-stack repro: default `indexVendor: false`, a PSR-0-mapped
-/// vendor class (Composer PEAR-style autoload, e.g. Magento 1 / ZF1), waiting
-/// for `$/php-lsp/indexReady` before opening the consuming file.
+/// Issue #243 full-stack repro: with `indexVendor: false` (opting out of the
+/// eager vendor scan), a PSR-0-mapped vendor class (Composer PEAR-style
+/// autoload, e.g. Magento 1 / ZF1) must still resolve via on-demand PSR-0
+/// resolution, waiting for `$/php-lsp/indexReady` before opening the
+/// consuming file. Pinned with the flag explicit so this keeps exercising the
+/// on-demand-only path regardless of `indexVendor`'s default.
 #[tokio::test]
 async fn psr0_vendor_class_not_flagged_before_workspace_scan() {
     let tmp = tempfile::tempdir().unwrap();
@@ -221,7 +224,8 @@ async fn psr0_vendor_class_not_flagged_before_workspace_scan() {
     let repro_src = "<?php\n\n$service = new Legacy_Service();\necho $service->name();\n";
     std::fs::write(tmp.path().join("repro.php"), repro_src).unwrap();
 
-    let mut s = TestServer::with_root(tmp.path()).await;
+    let mut s =
+        TestServer::with_root_and_options(tmp.path(), json!({ "indexVendor": false })).await;
     s.wait_for_index_ready().await;
     s.open("repro.php", repro_src).await;
 

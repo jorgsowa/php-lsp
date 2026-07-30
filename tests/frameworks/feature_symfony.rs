@@ -330,7 +330,11 @@ mod perf_measure {
     #[ignore = "manual benchmark; run with --nocapture to see timings"]
     async fn measure_indexready_symfony_demo_lazy() {
         let t0 = std::time::Instant::now();
-        let mut server = TestServer::with_fixture("symfony-demo").await;
+        let mut server = TestServer::with_fixture_and_options(
+            "symfony-demo",
+            serde_json::json!({ "indexVendor": false }),
+        )
+        .await;
         let t_init = t0.elapsed();
         server.wait_for_index_ready().await;
         let t_ready = t0.elapsed();
@@ -423,7 +427,7 @@ mod call_hierarchy {
     }
 }
 
-// ── Full-fixture tests (vendor present, indexed lazily by default) ───
+// ── Full-fixture tests (vendor present, indexed eagerly by default) ───
 
 mod navigation {
     use super::*;
@@ -533,10 +537,14 @@ mod implementation {
     use super::*;
 
     /// `User implements UserInterface` — cursor on the `implements` clause
-    /// (occurrence=1) should return at least `App\Entity\User`.
+    /// (occurrence=1) should return at least `App\Entity\User`. Subject is
+    /// workspace code only (`subtypes_of` matches on the app class's own
+    /// `implements` clause text, not on the vendor interface being indexed),
+    /// so this uses the no-vendor fixture to stay fast and avoid contending
+    /// with other tests over the full ~5200-file vendor scan.
     #[tokio::test]
     async fn implementations_of_user_interface_include_app_user() {
-        let mut server = TestServer::with_fixture("symfony-demo").await;
+        let mut server = TestServer::with_fixture_no_vendor("symfony-demo").await;
         server.wait_for_index_ready().await;
 
         let path = "src/Entity/User.php";
@@ -552,9 +560,10 @@ mod implementation {
 
     /// Cursor on the `use` import line (`use A\B\Foo`) must also work — the
     /// handler splits on `\` to recover the short name for the index lookup.
+    /// Same rationale as above for the no-vendor fixture.
     #[tokio::test]
     async fn implementations_via_use_statement_cursor() {
-        let mut server = TestServer::with_fixture("symfony-demo").await;
+        let mut server = TestServer::with_fixture_no_vendor("symfony-demo").await;
         server.wait_for_index_ready().await;
 
         let path = "src/Entity/User.php";

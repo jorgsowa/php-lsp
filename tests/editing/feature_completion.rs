@@ -4882,13 +4882,12 @@ async fn completion_bare_class_name_from_unopened_file_adds_use_import() {
     expect![[r#"1:0-1:0 → "use Acme\\Support\\Facades\\Http;\\n""#]].assert_eq(&out);
 }
 
-/// `vendor/` is excluded from the workspace scan by default (a deliberate
-/// perf tradeoff — see `index_vendor` in `lang/config.rs`), so a class
-/// defined there is invisible to the workspace index, and by extension to
-/// bare-name completion, unless `indexVendor: true` is set. Pins this known
-/// boundary so it doesn't silently change.
+/// `vendor/` is eagerly indexed by default (issues #240, #246 — see
+/// `index_vendor` in `lang/config.rs`), so a class defined there is visible
+/// to the workspace index, and by extension to bare-name completion
+/// (auto-import included), with no configuration required.
 #[tokio::test]
-async fn completion_bare_class_name_vendor_dir_not_indexed_by_default() {
+async fn completion_bare_class_name_vendor_dir_indexed_by_default() {
     let tmp = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(tmp.path().join("vendor/acme/http-client/src")).unwrap();
     std::fs::write(
@@ -4911,18 +4910,25 @@ async fn completion_bare_class_name_vendor_dir_not_indexed_by_default() {
         v if v["items"].is_array() => v["items"].as_array().cloned().unwrap_or_default(),
         _ => vec![],
     };
-    assert!(
-        !items.iter().any(|i| i["label"].as_str() == Some("Http")),
-        "vendor/-defined class must not appear without indexVendor: true"
+    let http_item = items
+        .iter()
+        .find(|i| i["label"].as_str() == Some("Http"))
+        .expect("vendor/-defined class must appear by default");
+    assert_eq!(
+        http_item["detail"].as_str(),
+        Some("Acme\\Support\\Facades\\Http")
     );
+    let out = render_text_edits(&json!({ "result": http_item["additionalTextEdits"] }));
+    expect![[r#"1:0-1:0 → "use Acme\\Support\\Facades\\Http;\\n""#]].assert_eq(&out);
 }
 
-/// Setting `indexVendor: true` brings vendor-defined classes into the
-/// workspace index, so bare-name completion (with auto-import) covers them
-/// too — this is the configuration a Laravel project needs for facade
-/// classes under `vendor/` to be completable.
+/// Setting `indexVendor: false` opts back out of eager vendor indexing (for
+/// very large vendor trees where even the cheap declaration scan isn't worth
+/// it), so a vendor-defined class goes back to being invisible to the
+/// workspace index, and by extension to bare-name completion. Pins this
+/// known boundary so it doesn't silently change.
 #[tokio::test]
-async fn completion_bare_class_name_vendor_dir_with_index_vendor_true() {
+async fn completion_bare_class_name_vendor_dir_excluded_with_index_vendor_false() {
     let tmp = tempfile::tempdir().unwrap();
     std::fs::create_dir_all(tmp.path().join("vendor/acme/http-client/src")).unwrap();
     std::fs::write(
@@ -4934,7 +4940,7 @@ async fn completion_bare_class_name_vendor_dir_with_index_vendor_true() {
     std::fs::write(tmp.path().join("caller.php"), caller).unwrap();
 
     let mut s =
-        TestServer::with_root_and_options(tmp.path(), serde_json::json!({ "indexVendor": true }))
+        TestServer::with_root_and_options(tmp.path(), serde_json::json!({ "indexVendor": false }))
             .await;
     s.validate_syntax(false);
     s.wait_for_index_ready().await;
@@ -4947,16 +4953,10 @@ async fn completion_bare_class_name_vendor_dir_with_index_vendor_true() {
         v if v["items"].is_array() => v["items"].as_array().cloned().unwrap_or_default(),
         _ => vec![],
     };
-    let http_item = items
-        .iter()
-        .find(|i| i["label"].as_str() == Some("Http"))
-        .expect("vendor/-defined class must appear when indexVendor is true");
-    assert_eq!(
-        http_item["detail"].as_str(),
-        Some("Acme\\Support\\Facades\\Http")
+    assert!(
+        !items.iter().any(|i| i["label"].as_str() == Some("Http")),
+        "vendor/-defined class must not appear with indexVendor: false"
     );
-    let out = render_text_edits(&json!({ "result": http_item["additionalTextEdits"] }));
-    expect![[r#"1:0-1:0 → "use Acme\\Support\\Facades\\Http;\\n""#]].assert_eq(&out);
 }
 
 /// The current document's own class must not be offered as a spurious
