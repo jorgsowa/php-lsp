@@ -105,6 +105,52 @@ async fn references_without_partial_result_token_sends_no_progress() {
     );
 }
 
+const PRIVATE_METHOD_FIXTURE: &str = r#"//- /src/Owner.php
+<?php
+class Owner {
+    private function pro$0cess(): void {}
+
+    public function run(): void {
+        $this->process();
+    }
+}
+"#;
+
+/// A `private` method's candidate scope is already narrowed to the single
+/// declaring file by `reference_candidate_files` — there is no "rest of the
+/// workspace" left to prioritize against, so the priority-partition's
+/// owner-mention text scan has nothing to contribute and must be skipped
+/// entirely (no `$/progress` sent), even though a token was supplied. The
+/// authoritative response must still be correct.
+#[tokio::test]
+async fn references_with_partial_result_token_skips_scan_for_narrowed_scope() {
+    let mut s = TestServer::new().await;
+    let opened = s.open_fixture(PRIVATE_METHOD_FIXTURE).await;
+    let c = opened.cursor().clone();
+    let uri = s.uri(&c.path);
+
+    let (resp, progress) = s
+        .client()
+        .request_capturing_notifications(
+            "textDocument/references",
+            references_params(&uri, c.line, c.character, Some("refs-token-narrowed")),
+            "$/progress",
+        )
+        .await;
+
+    assert!(resp["error"].is_null(), "references errored: {resp:?}");
+    assert!(
+        progress.is_empty(),
+        "a narrowed (private-method) scope has nothing to prioritize and must \
+         send no $/progress notifications, got {progress:?}"
+    );
+
+    expect_test::expect![[r#"
+        src/Owner.php:2:21-2:28
+        src/Owner.php:5:15-5:22"#]]
+    .assert_eq(&render_locations(&resp, &s.uri("")));
+}
+
 #[tokio::test]
 async fn references_final_result_unchanged_by_partial_result_token() {
     let mut with_token = TestServer::new().await;

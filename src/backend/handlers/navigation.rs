@@ -464,10 +464,17 @@ impl Backend {
             // (authoritative) query below — those files are the likely hits
             // when the owner name is a common word shared by many unrelated
             // classes, so this is where the user-visible latency lives.
-            // Skipped entirely (no extra mir call) when no token is present.
+            // Skipped entirely (no extra mir call) when no token is present,
+            // and also when the candidate scope is already narrowed (private/
+            // protected/static methods): `files` is then already the minimal
+            // necessary set, so partitioning it further would just re-scan
+            // those same bytes for no streaming benefit.
             if let Some(token) = params.partial_result_params.partial_result_token.clone() {
                 let owner_short = match &symbol {
-                    mir_analyzer::Name::Method { class, .. } if !class.is_empty() => {
+                    mir_analyzer::Name::Method { class, name }
+                        if !class.is_empty()
+                            && !self.docs.method_scope_is_narrowed(class, name) =>
+                    {
                         Some(fqn_short_name(class).to_string())
                     }
                     _ => None,

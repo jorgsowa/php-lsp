@@ -1218,6 +1218,20 @@ impl DocumentStore {
         }
     }
 
+    /// Whether [`Self::reference_candidate_files`] narrows `class::method`'s
+    /// scope below the full workspace, without paying for the narrowing scan
+    /// itself. A caller that further partitions the candidate set by a
+    /// heuristic text mention (references' priority-result streaming) only
+    /// has anything to gain when the scope is *not* already narrowed — a
+    /// narrowed scope is already the minimal necessary set, so partitioning
+    /// it further just re-scans those files' bytes for no benefit.
+    pub(crate) fn method_scope_is_narrowed(&self, owner_fqn: &str, method: &str) -> bool {
+        !matches!(
+            self.method_reference_scope_plan(owner_fqn, method),
+            MethodScopePlan::FullWorkspace
+        )
+    }
+
     /// Same narrowing decision as [`Self::method_reference_scope`], but stops
     /// short of running the FQN/text-needle scan itself — that scan is the
     /// expensive part (a parallel pass over every workspace file), and a
