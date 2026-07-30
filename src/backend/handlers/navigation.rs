@@ -262,30 +262,42 @@ impl Backend {
                 } else {
                     vec![]
                 };
-                self.docs.with_all_indexes(|all_indexes| {
-                    for (file_uri, _) in all_indexes {
-                        // Text prefilter: find_call_sites only matches string
-                        // literals whose parsed content equals `key` exactly,
-                        // so a raw substring miss guarantees no match — skips
-                        // parsing every file that doesn't mention it at all.
-                        if !self
-                            .docs
-                            .source_text(file_uri)
-                            .is_some_and(|t| t.contains(key.as_str()))
-                        {
-                            continue;
+                // Every workspace file's cached text gets the substring
+                // prefilter below (and a parse on a hit), so this runs on the
+                // blocking pool like every other workspace-scanning path in
+                // this handler — never sequentially on the tokio worker.
+                let docs = Arc::clone(&self.docs);
+                let found = tokio::task::spawn_blocking(move || {
+                    let mut found = Vec::new();
+                    docs.with_all_indexes(|all_indexes| {
+                        for (file_uri, _) in all_indexes {
+                            // Text prefilter: find_call_sites only matches
+                            // string literals whose parsed content equals
+                            // `key` exactly, so a raw substring miss
+                            // guarantees no match — skips parsing every file
+                            // that doesn't mention it at all.
+                            if !docs
+                                .source_text(file_uri)
+                                .is_some_and(|t| t.contains(key.as_str()))
+                            {
+                                continue;
+                            }
+                            let Some(doc) = docs.get_doc_salsa(file_uri) else {
+                                continue;
+                            };
+                            for range in crate::laravel::find_call_sites(&doc, names, &key) {
+                                found.push(Location {
+                                    uri: file_uri.clone(),
+                                    range,
+                                });
+                            }
                         }
-                        let Some(doc) = self.docs.get_doc_salsa(file_uri) else {
-                            continue;
-                        };
-                        for range in crate::laravel::find_call_sites(&doc, names, &key) {
-                            locations.push(Location {
-                                uri: file_uri.clone(),
-                                range,
-                            });
-                        }
-                    }
-                });
+                    });
+                    found
+                })
+                .await
+                .unwrap_or_default();
+                locations.extend(found);
                 return Ok(Some(locations));
             }
 

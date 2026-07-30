@@ -334,3 +334,43 @@ async fn references_and_hover_concurrent_complete_without_deadlock() {
         ```"#]]
     .assert_eq(&render_hover(&hover_resp));
 }
+
+#[tokio::test]
+async fn laravel_string_key_references_and_hover_concurrent_complete_without_deadlock() {
+    // Laravel string-key references (env/config/route/view/translation
+    // definitions) scan every workspace file's cached text on the blocking
+    // pool, like the general references path above — never sequentially on
+    // the tokio worker. Exercise it concurrently with an unrelated hover on
+    // a second server the same way.
+    let workspace = tempfile::tempdir().expect("workspace tempdir");
+    std::fs::write(workspace.path().join("artisan"), "#!/usr/bin/env php\n").unwrap();
+    std::fs::write(workspace.path().join(".env"), "APP_NAME=Test\n").unwrap();
+    std::fs::write(
+        workspace.path().join("a.php"),
+        "<?php\n$x = env('APP_NAME');\n",
+    )
+    .unwrap();
+
+    let (mut srv_a, mut srv_b) =
+        tokio::join!(TestServer::with_root(workspace.path()), TestServer::new());
+    srv_a.wait_for_index_ready().await;
+    srv_a.open(".env", "APP_NAME=Test\n").await;
+    srv_b
+        .open(
+            "conc_b.php",
+            "<?php\nfunction greet(string $name): string { return $name; }\ngreet('world');\n",
+        )
+        .await;
+
+    let (refs_resp, hover_resp) = tokio::join!(
+        srv_a.references(".env", 0, 2, false),
+        srv_b.hover("conc_b.php", 1, 10)
+    );
+
+    expect!["a.php:1:10-1:18"].assert_eq(&render_locations(&refs_resp, &srv_a.uri("")));
+    expect![[r#"
+        ```php
+        function greet(string $name): string
+        ```"#]]
+    .assert_eq(&render_hover(&hover_resp));
+}
