@@ -174,6 +174,11 @@ fn scan_method_of_class_impl<'a>(
                         ));
                     }
                 }
+                // 4. `@method` docblock tag — a virtual method with no concrete body.
+                if let Some(sig) = scan_doc_method_of_class(c.doc_comment, class_name, method_name)
+                {
+                    return Some(sig);
+                }
                 return None;
             }
             StmtKind::Trait(t) if t.name == class_name => {
@@ -227,6 +232,55 @@ fn scan_method_of_class_impl<'a>(
         }
     }
     None
+}
+
+/// Return `"ClassName::methodName(params): ReturnType"` for a method declared
+/// only via a class-level `@method` docblock tag (no concrete AST member).
+fn scan_doc_method_of_class(
+    doc_comment: Option<php_ast::Comment<'_>>,
+    class_name: &str,
+    method_name: &str,
+) -> Option<String> {
+    let dm = parse_docblock(doc_comment?.text)
+        .methods
+        .into_iter()
+        .find(|m| m.name == method_name)?;
+    let params = dm
+        .params
+        .iter()
+        .map(format_doc_method_param)
+        .collect::<Vec<_>>()
+        .join(", ");
+    let ret = if dm.return_type.is_empty() {
+        String::new()
+    } else {
+        format!(": {}", dm.return_type)
+    };
+    let prefix = if dm.is_static { "static " } else { "" };
+    Some(format!(
+        "{}{}::{}({}){}",
+        prefix, class_name, method_name, params, ret
+    ))
+}
+
+fn format_doc_method_param(p: &crate::lang::docblock::DocMethodParam) -> String {
+    let mut s = String::new();
+    if !p.type_hint.is_empty() {
+        s.push_str(&p.type_hint);
+        s.push(' ');
+    }
+    if p.is_byref {
+        s.push('&');
+    }
+    if p.is_variadic {
+        s.push_str("...");
+    }
+    s.push('$');
+    s.push_str(&p.name);
+    if p.is_optional {
+        s.push_str(" = ...");
+    }
+    s
 }
 
 /// Return `"case ClassName::CaseName = value"` for `case_name` inside enum `class_name`.

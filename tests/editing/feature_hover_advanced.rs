@@ -957,11 +957,11 @@ $n = $user->nam$0e;
     .assert_eq(&out);
 }
 
-/// Hovering over a call to a method declared only via a `@method` docblock tag
-/// returns nothing because the hover path walks real AST members only.
-/// Fixing this requires reading `doc_methods` from FileIndex in the hover handler.
+/// Hovering over a call to a method declared only via a `@method` docblock
+/// tag (a virtual method with no concrete AST body) shows the documented
+/// signature, same as a real method declaration would.
 #[tokio::test]
-async fn hover_doc_method_tag_returns_nothing() {
+async fn hover_doc_method_tag() {
     let mut s = TestServer::new().await;
     let out = s
         .check_hover(
@@ -978,8 +978,38 @@ function run(QueryBuilder $qb): void {
 "#,
         )
         .await;
-    // `find` is declared only via @method — hover currently shows nothing.
-    expect!["<no hover>"].assert_eq(&out);
+    expect![[r#"
+        ```php
+        QueryBuilder::find(int $id): User
+        ```"#]]
+    .assert_eq(&out);
+}
+
+/// Same as `hover_doc_method_tag` but for a `@method static` tag invoked as a
+/// static call.
+#[tokio::test]
+async fn hover_doc_method_tag_static() {
+    let mut s = TestServer::new().await;
+    let out = s
+        .check_hover(
+            r#"<?php
+/**
+ * @method User find(int $id)
+ * @method static Builder where(string $col, mixed $val)
+ */
+class QueryBuilder {}
+
+function run(): void {
+    QueryBuilder::whe$0re('id', 1);
+}
+"#,
+        )
+        .await;
+    expect![[r#"
+        ```php
+        static QueryBuilder::where(string $col, mixed $val): Builder
+        ```"#]]
+    .assert_eq(&out);
 }
 
 #[tokio::test]

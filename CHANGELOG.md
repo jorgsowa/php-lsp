@@ -4,8 +4,19 @@ All notable changes to php-lsp are documented here.
 
 ## [Unreleased]
 
+### Changed
+
+- **Returning sessions seed mir's workspace symbol index from the disk cache**
+  (mir 0.64): symbol lookups in a cache-warm session answer from an O(1) map
+  and can never fall back to the O(all-files) index walk — `debugStats` gains
+  `workspace_symbol_index_ready` and `workspace_index_walks` so tests pin the
+  walk count at zero. Watcher-driven external edits reconcile the seeded
+  index before any query reads it. Costs ~110 ms extra warm-boot indexing and
+  ~23 MB RSS at 1.6K files; first-ever boot is unchanged.
+
 ### Fixed
 
+- **Hover on a method declared only via a class-level `@method` docblock tag now shows its signature** instead of nothing: the AST-based member scan behind mir's method hover only walked concrete methods, missing virtual methods that completion and signature help already understood.
 - **Intermittent stack-overflow abort under contended parallel analysis**: salsa 0.28's dependency-graph lock transfer recurses per transferred dependent and could overflow the 16 MB analysis-thread stacks on large workspaces. All analysis threads (rayon workers, tokio blocking pool, warm-sweep thread) now get 64 MB stacks — reserved, not committed, so resident memory is unchanged.
 
 ## [0.21.0] — 2026-07-26
