@@ -17,6 +17,9 @@ All options are optional.
 | `maxIndexedFiles` | `number` | `50000` | Hard cap on the number of PHP files indexed during a workspace scan. Set lower to reduce memory on projects with very large vendor trees. |
 | `warmAnalysis` | `boolean` | `true` | Background-analyze the workspace after indexing (and re-warm after edits settle) so find-references and rename answer from warm analysis caches instead of paying a cold per-file analysis at request time. Set to `false` to trade slower references for a smaller resident footprint. |
 | `analysisCacheFlushIntervalMs` | `number` | `20000` | How often staged analysis-cache postings are persisted to disk in the background, bounding data loss on an unclean exit (crash, kill) to roughly one interval. |
+| `debounceMs` | `number` | `100` | Delay in milliseconds between the last `textDocument/didChange` and the parse + analysis run. Set lower for fast machines, higher for slow machines or large files to reduce thrashing. |
+| `debug` | `boolean` | `false` | Emit extra diagnostic log messages on startup: cache hit/miss ratio, workspace root paths, and PSR-4 namespace count. |
+| `cachePath` | `string` | platform default | Override the on-disk analysis-cache directory (used verbatim, no schema-version or workspace-hash subdirectories appended). Falls back to `$XDG_CACHE_HOME`/`$HOME/.cache` on Unix, `%LOCALAPPDATA%` on Windows. Mainly useful for non-standard cache locations (containers, CI). |
 
 ### `diagnostics` object
 
@@ -30,6 +33,9 @@ All options are optional.
 | `typeErrors` | `true` | Return-type mismatches. |
 | `deprecatedCalls` | `true` | Calls to `@deprecated` members. |
 | `duplicateDeclarations` | `true` | Duplicate class or function declarations. |
+| `unusedSymbols` | `false` | Unused-symbol warnings (unused variables, parameters, methods, properties, functions). Off by default so existing workspaces don't get a wave of new noisy warnings. |
+| `missingTypes` | `false` | Missing type annotations on interface methods and class properties. |
+| `mixedUsage` | `false` | Mixed-type usage lints: passing `mixed` to a typed parameter, assigning `mixed` to a typed property, array/property access on `mixed`, etc. |
 
 ### `features` object
 

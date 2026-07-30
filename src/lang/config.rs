@@ -381,3 +381,109 @@ impl LspConfig {
         cfg
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Snapshot of every default value `LspConfig` (and its nested
+    /// `DiagnosticsConfig`/`FeaturesConfig`) ships with. A default flip like
+    /// `index_vendor: false -> true` (issue #246 fix) shows up here as a diff
+    /// instead of silently changing behavior for every user who never sets
+    /// the option explicitly — the snapshot forces a conscious
+    /// `UPDATE_EXPECT=1` step, which is exactly the point where the author
+    /// should also be checking every test/doc that assumed the old default.
+    #[test]
+    fn default_config_matches_expected_snapshot() {
+        expect_test::expect![[r#"
+            LspConfig {
+                php_version: None,
+                exclude_paths: [],
+                include_paths: [],
+                diagnostics: DiagnosticsConfig {
+                    enabled: true,
+                    undefined_variables: true,
+                    undefined_functions: true,
+                    undefined_classes: true,
+                    arity_errors: true,
+                    type_errors: true,
+                    deprecated_calls: true,
+                    duplicate_declarations: true,
+                    unused_symbols: false,
+                    missing_types: false,
+                    mixed_usage: false,
+                },
+                features: FeaturesConfig {
+                    completion: true,
+                    hover: true,
+                    definition: true,
+                    declaration: true,
+                    references: true,
+                    document_symbols: true,
+                    workspace_symbols: true,
+                    rename: true,
+                    signature_help: true,
+                    inlay_hints: true,
+                    semantic_tokens: true,
+                    selection_range: true,
+                    call_hierarchy: true,
+                    document_highlight: true,
+                    implementation: true,
+                    code_action: true,
+                    type_definition: true,
+                    code_lens: true,
+                    formatting: true,
+                    range_formatting: true,
+                    on_type_formatting: true,
+                    document_link: true,
+                    linked_editing_range: true,
+                    inline_values: true,
+                },
+                max_indexed_files: 50000,
+                index_vendor: true,
+                debug: false,
+                debounce_ms: 100,
+                warm_analysis: true,
+                cache_path: None,
+                flush_interval_ms: 20000,
+            }"#]]
+        .assert_eq(&format!("{:#?}", LspConfig::default()));
+    }
+
+    /// Every key `LspConfig::from_value`/`DiagnosticsConfig::from_value`/
+    /// `FeaturesConfig::from_value` actually reads — scraped from this
+    /// file's own JSON-object-key lookups, so a newly wired-up option is
+    /// caught automatically, no hand-maintained list to fall out of sync —
+    /// must appear somewhere in `docs/configuration.md`. This is the
+    /// gap that let `indexVendor` ship real, tested, and completely
+    /// undocumented for months (issue #246): a user had no way to discover
+    /// the one setting that fixed their exact problem.
+    #[test]
+    fn every_config_key_is_documented() {
+        let source = include_str!("config.rs");
+        let docs = include_str!("../../docs/configuration.md");
+
+        let mut keys: Vec<&str> = Vec::new();
+        for marker in ["get(\"", "flag(\""] {
+            let mut rest = source;
+            while let Some(idx) = rest.find(marker) {
+                rest = &rest[idx + marker.len()..];
+                if let Some(end) = rest.find('"') {
+                    keys.push(&rest[..end]);
+                }
+            }
+        }
+        keys.sort_unstable();
+        keys.dedup();
+
+        let undocumented: Vec<&str> = keys
+            .into_iter()
+            .filter(|k| !docs.contains(&format!("`{k}`")))
+            .collect();
+        assert!(
+            undocumented.is_empty(),
+            "config keys read by LspConfig::from_value but missing from \
+             docs/configuration.md: {undocumented:?}"
+        );
+    }
+}
