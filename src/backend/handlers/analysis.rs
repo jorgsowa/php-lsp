@@ -61,10 +61,11 @@ impl Backend {
         let sem_diags = tokio::task::spawn_blocking(move || {
             docs.get_semantic_issues_salsa(&uri_owned)
                 .map(|issues| {
-                    crate::semantic_diagnostics::issues_to_diagnostics(
+                    crate::semantic_diagnostics::issues_to_diagnostics_gated(
                         &issues,
                         &uri_owned,
                         &diag_cfg_sem,
+                        docs.is_index_ready(),
                     )
                 })
                 .unwrap_or_default()
@@ -146,10 +147,11 @@ impl Backend {
                 let sem_diags = docs
                     .get_semantic_issues_salsa(&uri)
                     .map(|issues| {
-                        crate::semantic_diagnostics::issues_to_diagnostics(
+                        crate::semantic_diagnostics::issues_to_diagnostics_gated(
                             &issues,
                             &uri,
                             &diag_cfg_sweep,
+                            docs.is_index_ready(),
                         )
                     })
                     .unwrap_or_default();

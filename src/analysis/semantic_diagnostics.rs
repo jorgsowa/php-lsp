@@ -57,6 +57,50 @@ pub fn issues_to_diagnostics(
         .collect()
 }
 
+/// Like [`issues_to_diagnostics`], but additionally holds back
+/// workspace-symbol-dependent issues (see [`issue_needs_workspace_index`])
+/// while `index_ready` is `false`. Skips the extra filter/clone pass
+/// entirely once ready — the common case, well past server startup — so
+/// this costs nothing in steady state.
+pub fn issues_to_diagnostics_gated(
+    issues: &[mir_issues::Issue],
+    uri: &Url,
+    cfg: &DiagnosticsConfig,
+    index_ready: bool,
+) -> Vec<Diagnostic> {
+    if index_ready {
+        return issues_to_diagnostics(issues, uri, cfg);
+    }
+    let filtered: Vec<mir_issues::Issue> = issues
+        .iter()
+        .filter(|i| !issue_needs_workspace_index(&i.kind))
+        .cloned()
+        .collect();
+    issues_to_diagnostics(&filtered, uri, cfg)
+}
+
+/// Whether resolving this issue required looking up a symbol (class,
+/// function, method, or trait) by name against the workspace-wide symbol
+/// table, as opposed to something derivable from the file's own contents.
+///
+/// Before the initial workspace scan finishes, that table only reflects the
+/// subset of files indexed so far, so these specific kinds can misreport a
+/// symbol declared in a not-yet-scanned file as undefined — see issue #242.
+/// Everything else (return-type mismatches, unreachable code, duplicate
+/// declarations within a file, etc.) is safe to report immediately: it's
+/// checked against the file's own text and can't be invalidated by more of
+/// the workspace becoming known.
+pub fn issue_needs_workspace_index(kind: &mir_issues::IssueKind) -> bool {
+    use mir_issues::IssueKind;
+    matches!(
+        kind,
+        IssueKind::UndefinedFunction { .. }
+            | IssueKind::UndefinedMethod { .. }
+            | IssueKind::UndefinedClass { .. }
+            | IssueKind::UndefinedTrait { .. }
+    )
+}
+
 /// Returns `true` if the mir-analyzer issue is allowed through by the config.
 fn issue_passes_filter(issue: &mir_issues::Issue, cfg: &DiagnosticsConfig) -> bool {
     use mir_issues::IssueKind;

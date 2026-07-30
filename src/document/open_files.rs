@@ -3,7 +3,7 @@ use std::sync::Arc;
 use dashmap::DashMap;
 use tower_lsp::lsp_types::{Diagnostic, Url};
 
-use crate::analysis::semantic_diagnostics::issues_to_diagnostics;
+use crate::analysis::semantic_diagnostics::issues_to_diagnostics_gated;
 use crate::document::ast::ParsedDoc;
 use crate::document::document_store::DocumentStore;
 use crate::lang::config::DiagnosticsConfig;
@@ -137,10 +137,15 @@ impl OpenFiles {
 /// salsa-cached; for files unaffected by the triggering change it's a cache
 /// hit.
 ///
-/// Used both for the originating file (during `did_open`/`did_change`) and
-/// when proactively republishing diagnostics to other open files after a
-/// dependency edit. Salsa-blocking — call from a `spawn_blocking` if invoked
-/// off the originating file's debounce path.
+/// Before the initial workspace scan finishes (`!docs.is_index_ready()`),
+/// symbol lookups against the workspace-wide table only see the subset of
+/// files indexed so far, so issues that depend on such a lookup (e.g.
+/// `UndefinedClass` for a global class declared in a file not yet reached
+/// by the scan) can misreport a real declaration as missing — see issue
+/// #242. Those specific kinds are held back until the index is ready (the
+/// caller republishes once it is, see `republish_after_index_ready`); issues
+/// checked purely against the file's own contents are unaffected and always
+/// reported immediately.
 pub(crate) fn compute_open_file_diagnostics(
     docs: &DocumentStore,
     open_files: &OpenFiles,
@@ -149,7 +154,12 @@ pub(crate) fn compute_open_file_diagnostics(
 ) -> Vec<Diagnostic> {
     let mut out = open_files.parse_diagnostics(uri).unwrap_or_default();
     if let Some(issues) = docs.get_semantic_issues_salsa(uri) {
-        out.extend(issues_to_diagnostics(&issues, uri, diag_cfg));
+        out.extend(issues_to_diagnostics_gated(
+            &issues,
+            uri,
+            diag_cfg,
+            docs.is_index_ready(),
+        ));
     }
     out
 }
@@ -173,6 +183,62 @@ mod tests {
         assert!(
             Arc::ptr_eq(&first, &second),
             "repeated reads must share one allocation, not clone the buffer per call"
+        );
+    }
+
+    /// Issue #242: before the workspace index is ready, a reference to a
+    /// class the store hasn't seen yet is indistinguishable from a genuine
+    /// typo — `UndefinedClass` must be held back either way. Once
+    /// `mark_index_ready` flips, the same (still-unresolvable) reference must
+    /// be reported, so this isn't just permanently swallowed.
+    #[test]
+    fn undefined_class_suppressed_until_index_ready() {
+        let docs = DocumentStore::new();
+        let open_files = OpenFiles::new();
+        let uri = Url::parse("file:///app.php").unwrap();
+        open_files.set_open_text(
+            &docs,
+            uri.clone(),
+            "<?php\n\nnew TrulyMissingClass();\n".to_owned(),
+        );
+        let diag_cfg = DiagnosticsConfig::default();
+
+        let before = compute_open_file_diagnostics(&docs, &open_files, &uri, &diag_cfg);
+        assert!(
+            before.is_empty(),
+            "UndefinedClass must be suppressed before the index is ready, got: {before:?}"
+        );
+
+        docs.mark_index_ready();
+        let after = compute_open_file_diagnostics(&docs, &open_files, &uri, &diag_cfg);
+        assert!(
+            after
+                .iter()
+                .any(|d| d.message.contains("TrulyMissingClass")),
+            "UndefinedClass must be reported once the index is ready, got: {after:?}"
+        );
+    }
+
+    /// A diagnostic checked purely against the file's own contents (a
+    /// same-function return-type mismatch) must never wait on the workspace
+    /// index — only symbol lookups against the workspace-wide table are
+    /// index-ready-gated (see `issue_needs_workspace_index`).
+    #[test]
+    fn local_only_issue_not_suppressed_before_index_ready() {
+        let docs = DocumentStore::new();
+        let open_files = OpenFiles::new();
+        let uri = Url::parse("file:///app.php").unwrap();
+        open_files.set_open_text(
+            &docs,
+            uri.clone(),
+            "<?php\nfunction f(): string { return 42; }\n".to_owned(),
+        );
+        let diag_cfg = DiagnosticsConfig::default();
+
+        let before = compute_open_file_diagnostics(&docs, &open_files, &uri, &diag_cfg);
+        assert!(
+            !before.is_empty(),
+            "a same-file return-type mismatch must not wait on the workspace index"
         );
     }
 }

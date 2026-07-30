@@ -283,6 +283,17 @@ impl Backend {
     }
 
     pub(crate) async fn handle_initialized(&self, _params: InitializedParams) {
+        let roots: Vec<PathBuf> = (**self.root_paths.load()).clone();
+        if roots.is_empty() {
+            // No workspace root (single-file mode): there is nothing to scan,
+            // so the index is trivially complete. Set this before any `.await`
+            // below — otherwise a client slow to ack `client/registerCapability`
+            // would leave `is_index_ready` false (holding back UndefinedClass
+            // and friends, see `compute_open_file_diagnostics`) for however
+            // long that ack takes, with no scan in flight to ever flip it.
+            self.docs.mark_index_ready();
+        }
+
         let php_selector = serde_json::json!([{"language": "php"}]);
         let registrations = vec![
             Registration {
@@ -305,7 +316,6 @@ impl Backend {
         ];
         self.client.register_capability(registrations).await.ok();
 
-        let roots: Vec<PathBuf> = (**self.root_paths.load()).clone();
         if !roots.is_empty() {
             {
                 let mut merged = Psr4Map::empty();
@@ -394,6 +404,7 @@ impl Backend {
             let open_files = self.open_files.clone();
             let client = self.client.clone();
             let psr4 = self.psr4.clone();
+            let config = Arc::clone(&self.config);
             tokio::spawn(async move {
                 client
                     .send_notification::<ProgressNotification>(ProgressParams {
@@ -533,6 +544,16 @@ impl Backend {
                 docs.mark_index_ready();
                 drop(docs);
                 client.send_notification::<IndexReadyNotification>(()).await;
+                // Files opened while the scan was still running may have been
+                // published with UndefinedClass/UndefinedFunction/etc. held
+                // back (see `compute_open_file_diagnostics`); push clients
+                // have no other trigger to pick up the now-resolvable ones.
+                tokio::spawn(super::super::republish_after_index_ready(
+                    client.clone(),
+                    Arc::clone(&salsa_docs),
+                    open_files.clone(),
+                    config.load().diagnostics.clone(),
+                ));
                 let sweep_open = open_files.urls();
                 drop(tokio::task::spawn_blocking(move || {
                     // Warm mir's `analyze_file` memos across the workspace so

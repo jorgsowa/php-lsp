@@ -87,7 +87,11 @@ async fn same_namespace_trait_use_truly_missing_is_flagged() {
     let user_src = "<?php\nnamespace App;\nclass Person {\n    use MissingTrait;\n}\n";
     std::fs::write(tmp.path().join("src/Person.php"), user_src).unwrap();
 
+    // Whether `MissingTrait` is truly undefined or just not indexed yet is
+    // indistinguishable until the scan finishes, so wait for it — see
+    // `compute_open_file_diagnostics` and issue #242.
     let mut s = TestServer::with_root(tmp.path()).await;
+    s.wait_for_index_ready().await;
     s.open("src/Person.php", user_src).await;
 
     let resp = s.workspace_diagnostic().await;

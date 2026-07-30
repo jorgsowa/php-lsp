@@ -432,7 +432,11 @@ async fn same_namespace_truly_missing_class_is_flagged() {
     let consumer_src = "<?php\nnamespace App;\nclass Consumer {\n    public function __construct(private Missing $m) {}\n}\n";
     std::fs::write(tmp.path().join("src/Consumer.php"), consumer_src).unwrap();
 
+    // Whether `Missing` is truly undefined or just not indexed yet is
+    // indistinguishable until the scan finishes, so wait for it — see
+    // `compute_open_file_diagnostics` and issue #242.
     let mut s = TestServer::with_root(tmp.path()).await;
+    s.wait_for_index_ready().await;
     s.open("src/Consumer.php", consumer_src).await;
 
     let resp = s.workspace_diagnostic().await;

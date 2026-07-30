@@ -233,6 +233,79 @@ async fn psr0_vendor_class_not_flagged_before_workspace_scan() {
     .assert_eq(&out);
 }
 
+/// Fills `root` with `n` trivial decoy PHP files so the initial workspace
+/// scan takes long enough to reliably lose a race against a `did_open`/pull
+/// issued right after `initialized` — without this, a 1-2 file tmpdir scan
+/// can finish before the very first request in either ordering depending on
+/// scheduler luck, making "opened before ready" tests flaky.
+fn write_decoy_files(root: &std::path::Path, n: usize) {
+    for i in 0..n {
+        std::fs::write(
+            root.join(format!("Decoy{i}.php")),
+            format!("<?php\nclass Decoy{i} {{ public function noop(): void {{}} }}\n"),
+        )
+        .unwrap();
+    }
+}
+
+/// Issue #242: a truly undefined function in a rooted workspace must be
+/// suppressed on the pre-ready `did_open` publish (the server can't yet
+/// tell "not indexed" from "doesn't exist" — see
+/// `compute_open_file_diagnostics`), but a corrected `publishDiagnostics`
+/// must follow once the index is ready, so push-only clients aren't stuck
+/// with a stale "no errors" view for the rest of the session.
+#[tokio::test]
+async fn open_file_diagnostics_republish_once_index_ready() {
+    let tmp = tempfile::tempdir().unwrap();
+    write_decoy_files(tmp.path(), 1000);
+    let src = "<?php\n\ntruly_nonexistent_fn();\n";
+    std::fs::write(tmp.path().join("app.php"), src).unwrap();
+
+    let mut s = TestServer::with_root(tmp.path()).await;
+    let uri = s.uri("app.php");
+    let first = s.open("app.php", src).await;
+    expect!["<empty>"].assert_eq(&render_diagnostics_notification(&first));
+
+    s.wait_for_index_ready_secs(30).await;
+    let corrected = s.client().wait_for_diagnostics(&uri).await;
+    expect!["2:0-2:22 [1] UndefinedFunction: Function truly_nonexistent_fn() is not defined"]
+        .assert_eq(&render_diagnostics_notification(&corrected));
+}
+
+/// Pull-model counterpart: `textDocument/diagnostic` must also suppress
+/// workspace-resolution diagnostics before the index is ready, not just the
+/// push (`did_open`) path.
+#[tokio::test]
+async fn pull_diagnostic_suppressed_before_index_ready() {
+    let tmp = tempfile::tempdir().unwrap();
+    write_decoy_files(tmp.path(), 1000);
+    let src = "<?php\n\nnew TrulyMissingClass();\n";
+    std::fs::write(tmp.path().join("app.php"), src).unwrap();
+
+    let mut s = TestServer::with_root(tmp.path()).await;
+    s.open("app.php", src).await;
+
+    let resp = s.pull_diagnostics("app.php").await;
+    expect!["<empty>"].assert_eq(&render_pull_diagnostics(&resp));
+
+    s.wait_for_index_ready_secs(30).await;
+    let resp = s.pull_diagnostics("app.php").await;
+    expect!["2:4-2:21 [1] UndefinedClass: Class TrulyMissingClass does not exist"]
+        .assert_eq(&render_pull_diagnostics(&resp));
+}
+
+/// Rootless (single-file, no workspace) sessions have nothing to scan, so
+/// `is_index_ready()` must be true immediately — guards against the gate in
+/// `compute_open_file_diagnostics` reintroducing a suppression window here
+/// too (there is no `indexReady` event to end it in this mode).
+#[tokio::test]
+async fn rootless_session_has_no_suppression_window() {
+    let mut s = TestServer::new().await;
+    let notif = s.open("app.php", "<?php\n\nnonexistent_fn();\n").await;
+    expect!["2:0-2:16 [1] UndefinedFunction: Function nonexistent_fn() is not defined"]
+        .assert_eq(&render_diagnostics_notification(&notif));
+}
+
 /// Same-namespace bare class reference (no `use`) must not emit UndefinedClass.
 #[tokio::test]
 async fn same_namespace_bare_ref_not_flagged_as_undefined_class() {

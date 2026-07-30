@@ -486,6 +486,51 @@ async fn compute_dependent_publishes_owned(
     .unwrap_or_default()
 }
 
+/// Republish diagnostics for every currently open file once the initial
+/// workspace index finishes.
+///
+/// `compute_open_file_diagnostics` holds back workspace-symbol-dependent
+/// issues (`UndefinedClass` and friends, see `issue_needs_workspace_index`)
+/// until `docs.is_index_ready()`, so a file opened during the scan may be
+/// first published missing some of those. Push-diagnostics clients (the
+/// common case) have no other trigger to re-request them — pull clients get
+/// `send_refresh_requests`'s `WorkspaceDiagnosticRefresh`, but push clients
+/// would otherwise carry a stale view until the user's next edit. Skips
+/// files whose recomputed diagnostics are identical to what was already
+/// published.
+pub(super) async fn republish_after_index_ready(
+    client: Client,
+    docs: Arc<DocumentStore>,
+    open_files: OpenFiles,
+    diag_cfg: crate::lang::config::DiagnosticsConfig,
+) {
+    let uris = open_files.urls();
+    if uris.is_empty() {
+        return;
+    }
+    let docs_ref = Arc::clone(&docs);
+    let open_files_ref = open_files.clone();
+    let all: Vec<(Url, Vec<Diagnostic>)> = tokio::task::spawn_blocking(move || {
+        uris.into_iter()
+            .map(|uri| {
+                let diags =
+                    compute_open_file_diagnostics(&docs_ref, &open_files_ref, &uri, &diag_cfg);
+                (uri, diags)
+            })
+            .collect()
+    })
+    .await
+    .unwrap_or_default();
+    for (uri, diags) in all {
+        let hash = diagnostics_content_hash(&diags);
+        if open_files.published_hash(&uri) == Some(hash) {
+            continue;
+        }
+        open_files.note_published(&uri, hash);
+        client.publish_diagnostics(uri, diags, None).await;
+    }
+}
+
 /// Content hash of a diagnostics set, for skipping republishes the client
 /// already displays. In-process only — never persisted.
 pub(super) fn diagnostics_content_hash(diagnostics: &[Diagnostic]) -> u64 {
