@@ -478,7 +478,9 @@ async fn compute_dependent_publishes_owned(
             }
             let semantic =
                 crate::semantic_diagnostics::issues_to_diagnostics(&issues, &url, &diag_cfg);
-            out.push((url, merge_file_diagnostics(parse, semantic)));
+            let mut diags = merge_file_diagnostics(parse, semantic);
+            diags.extend(open_files.external_diagnostics(&url));
+            out.push((url, diags));
         }
         out
     })

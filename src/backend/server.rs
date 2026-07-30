@@ -433,25 +433,61 @@ impl LanguageServer for Backend {
             let cache_path = self.config.load().cache_path.clone();
             if let Ok(path) = uri.to_file_path() {
                 let root = self.root_paths.load().first().cloned();
-                tokio::task::spawn_blocking(move || {
-                    let cache = if let Some(p) = cache_path {
-                        crate::index::cache::WorkspaceCache::with_dir(p)
-                    } else if let Some(r) = root {
-                        let Some(c) = crate::index::cache::WorkspaceCache::new(&r) else {
+                tokio::task::spawn_blocking({
+                    let path = path.clone();
+                    let uri = uri.clone();
+                    let root = root.clone();
+                    move || {
+                        let cache = if let Some(p) = cache_path {
+                            crate::index::cache::WorkspaceCache::with_dir(p)
+                        } else if let Some(r) = &root {
+                            let Some(c) = crate::index::cache::WorkspaceCache::new(r) else {
+                                return;
+                            };
+                            c
+                        } else {
                             return;
                         };
-                        c
-                    } else {
-                        return;
-                    };
-                    let Ok(text) = std::fs::read_to_string(&path) else {
-                        return;
-                    };
-                    let key = crate::index::cache::WorkspaceCache::key_for(uri.as_str(), &text);
-                    let doc = parse_document_no_diags(&text);
-                    let index = crate::index::file_index::FileIndex::extract(&doc);
-                    let _ = cache.write(&key, &index);
+                        let Ok(text) = std::fs::read_to_string(&path) else {
+                            return;
+                        };
+                        let key = crate::index::cache::WorkspaceCache::key_for(uri.as_str(), &text);
+                        let doc = parse_document_no_diags(&text);
+                        let index = crate::index::file_index::FileIndex::extract(&doc);
+                        let _ = cache.write(&key, &index);
+                    }
                 });
+
+                // External tools (PHPStan/PHPCS) are opt-in and much slower
+                // than the in-process analyzer, so they run in the background
+                // and republish once done rather than delaying the publish
+                // above. Guarded by the version token so an edit that lands
+                // while the tool is still running discards its result instead
+                // of showing diagnostics against text the buffer no longer
+                // holds.
+                let ext_cfg = self.config.load().external_tools.clone();
+                if (ext_cfg.phpstan.enabled || ext_cfg.phpcs.enabled)
+                    && let Some(version) = self.open_files.current_version(&uri)
+                {
+                    let client = self.client.clone();
+                    let docs = Arc::clone(&self.docs);
+                    let open_files = self.open_files.clone();
+                    let diag_cfg = self.config.load().diagnostics.clone();
+                    let uri = uri.clone();
+                    tokio::spawn(async move {
+                        let diagnostics = crate::analysis::external::run_external_diagnostics(
+                            &ext_cfg,
+                            &path,
+                            root.as_deref(),
+                        )
+                        .await;
+                        if open_files.current_version(&uri) != Some(version) {
+                            return;
+                        }
+                        open_files.set_external_diagnostics(&uri, version, diagnostics);
+                        publish_with_dependents(client, docs, open_files, uri, diag_cfg).await;
+                    });
+                }
             }
         })
         .await

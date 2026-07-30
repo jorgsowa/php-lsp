@@ -2,6 +2,11 @@
 
 ## Diagnostics
 
+Core diagnostics (undefined symbols, type errors, arity checks, unused symbols, and the rest of
+this list) are powered by [mir](https://github.com/jorgsowa/mir), a standalone static-analysis
+engine developed alongside php-lsp — the LSP layer itself only translates mir's findings into
+the protocol's `Diagnostic` shape, it does no type-checking of its own.
+
 - Syntax errors reported in real time
 - Undefined variables, undefined functions, argument-count mismatches
 - Return-type literal mismatches and null-safety violations
@@ -9,6 +14,9 @@
 - Duplicate class/function/interface/trait/enum declarations
 - Workspace-wide diagnostics for all indexed files (not just open ones)
 - `workspace/diagnostic/refresh` support
+- Optional PHPStan / PHPCS integration — run as external processes on save and merged
+  alongside the built-in diagnostics, attributed with `source: "phpstan"` / `"phpcs"`. Off by
+  default; see [configuration.md](configuration.md#externaltools-object).
 
 ## Hover
 

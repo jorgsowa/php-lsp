@@ -15,7 +15,8 @@ impl Backend {
     ) -> Result<DocumentDiagnosticReportResult> {
         let uri = &params.text_document.uri;
         let previous_result_id = params.previous_result_id.clone();
-        let parse_diags = self.get_parse_diagnostics(uri).unwrap_or_default();
+        let mut parse_diags = self.get_parse_diagnostics(uri).unwrap_or_default();
+        parse_diags.extend(self.open_files.external_diagnostics(uri));
         let _doc = match self.get_doc(uri) {
             Some(d) => d,
             None => {
@@ -131,6 +132,7 @@ impl Backend {
             .collect();
 
         let docs = Arc::clone(&self.docs);
+        let open_files = self.open_files.clone();
         let diag_cfg_sweep = diag_cfg.clone();
         let items = tokio::task::spawn_blocking(move || {
             // A user-facing pull: pause the background scan for the sweep and
@@ -155,7 +157,8 @@ impl Backend {
                         )
                     })
                     .unwrap_or_default();
-                let all_diags = merge_file_diagnostics(parse_diags, sem_diags);
+                let mut all_diags = merge_file_diagnostics(parse_diags, sem_diags);
+                all_diags.extend(open_files.external_diagnostics(&uri));
                 let result_id = compute_diagnostic_result_id(&all_diags, uri.as_str());
                 results.push(if previous_map.get(&uri) == Some(&result_id) {
                     WorkspaceDocumentDiagnosticReport::Unchanged(

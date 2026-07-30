@@ -20,6 +20,7 @@ All options are optional.
 | `debounceMs` | `number` | `100` | Delay in milliseconds between the last `textDocument/didChange` and the parse + analysis run. Set lower for fast machines, higher for slow machines or large files to reduce thrashing. |
 | `debug` | `boolean` | `false` | Emit extra diagnostic log messages on startup: cache hit/miss ratio, workspace root paths, and PSR-4 namespace count. |
 | `cachePath` | `string` | platform default | Override the on-disk analysis-cache directory (used verbatim, no schema-version or workspace-hash subdirectories appended). Falls back to `$XDG_CACHE_HOME`/`$HOME/.cache` on Unix, `%LOCALAPPDATA%` on Windows. Mainly useful for non-standard cache locations (containers, CI). |
+| `externalTools` | `object` | see below | Optional PHPStan / PHPCS integration, run as external processes on save. |
 
 ### `diagnostics` object
 
@@ -67,6 +68,40 @@ All flags default to `true` (enabled). Set a flag to `false` to suppress the cor
 | `documentLink` | `true` | Document links (`documentLinkProvider`). |
 | `linkedEditingRange` | `true` | Linked editing ranges (`linkedEditingRangeProvider`). |
 | `inlineValues` | `true` | Inline values (`inlineValueProvider`). |
+
+### `externalTools` object
+
+Two nested objects, `phpstan` and `phpcs`, each running the corresponding tool as a child
+process and merging its findings into published diagnostics, alongside (not instead of) the
+built-in analyzer. Both default to disabled: they can take seconds rather than milliseconds
+and depend on project-specific configuration, so enabling one is an explicit per-workspace
+opt-in. Findings are attributed with `source: "phpstan"` / `"phpcs"` on each diagnostic and
+refresh after every `textDocument/didSave`.
+
+#### `externalTools.phpstan` object
+
+| Key | Default | Description |
+|---|---|---|
+| `enabled` | `false` | Run PHPStan on save and merge its findings into diagnostics. |
+| `binPath` | `"phpstan"` | Executable name or path, resolved via `$PATH` by default. Set to e.g. `"vendor/bin/phpstan"` for a project-local install. |
+| `configPath` | none | Passed as `-c <path>`. When omitted, PHPStan uses its own discovery (`phpstan.neon` / `phpstan.neon.dist` in the workspace root). |
+
+#### `externalTools.phpcs` object
+
+| Key | Default | Description |
+|---|---|---|
+| `enabled` | `false` | Run PHPCS on save and merge its findings into diagnostics. |
+| `binPath` | `"phpcs"` | Executable name or path, resolved via `$PATH` by default. Set to e.g. `"vendor/bin/phpcs"` for a project-local install. |
+| `standard` | none | Passed as `--standard=<value>` (e.g. `"PSR12"`). When omitted, PHPCS uses its own default/ruleset discovery. |
+
+```json
+{
+  "externalTools": {
+    "phpstan": { "enabled": true, "binPath": "vendor/bin/phpstan" },
+    "phpcs": { "enabled": true, "standard": "PSR12" }
+  }
+}
+```
 
 ## Example
 

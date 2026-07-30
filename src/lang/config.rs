@@ -187,6 +187,106 @@ impl FeaturesConfig {
     }
 }
 
+/// PHPStan integration. Off by default: running a project's own PHPStan
+/// installation takes far longer than the built-in analyzer (seconds, not
+/// milliseconds) and requires a project-specific config, so it's an explicit
+/// opt-in rather than something that fires for every workspace.
+#[derive(Debug, Clone)]
+pub struct PhpstanConfig {
+    pub enabled: bool,
+    /// Executable name or path. Defaults to `phpstan` resolved via `$PATH`;
+    /// set to e.g. `vendor/bin/phpstan` for a project-local install.
+    pub bin_path: String,
+    /// Passed as `-c <path>` when set. Otherwise PHPStan uses its own
+    /// discovery (`phpstan.neon` / `phpstan.neon.dist` in the workspace root).
+    pub config_path: Option<String>,
+}
+
+impl Default for PhpstanConfig {
+    fn default() -> Self {
+        PhpstanConfig {
+            enabled: false,
+            bin_path: "phpstan".to_string(),
+            config_path: None,
+        }
+    }
+}
+
+impl PhpstanConfig {
+    pub(crate) fn from_value(v: &serde_json::Value) -> Self {
+        let mut cfg = PhpstanConfig::default();
+        let Some(obj) = v.as_object() else { return cfg };
+        cfg.enabled = obj.get("enabled").and_then(|x| x.as_bool()).unwrap_or(false);
+        if let Some(s) = obj.get("binPath").and_then(|x| x.as_str()) {
+            cfg.bin_path = s.to_string();
+        }
+        if let Some(s) = obj.get("configPath").and_then(|x| x.as_str()) {
+            cfg.config_path = Some(s.to_string());
+        }
+        cfg
+    }
+}
+
+/// PHPCS integration. Off by default, same rationale as [`PhpstanConfig`].
+#[derive(Debug, Clone)]
+pub struct PhpcsConfig {
+    pub enabled: bool,
+    /// Executable name or path. Defaults to `phpcs` resolved via `$PATH`;
+    /// set to e.g. `vendor/bin/phpcs` for a project-local install.
+    pub bin_path: String,
+    /// Passed as `--standard=<value>` when set (e.g. `"PSR12"`). Otherwise
+    /// PHPCS uses its own default/ruleset discovery.
+    pub standard: Option<String>,
+}
+
+impl Default for PhpcsConfig {
+    fn default() -> Self {
+        PhpcsConfig {
+            enabled: false,
+            bin_path: "phpcs".to_string(),
+            standard: None,
+        }
+    }
+}
+
+impl PhpcsConfig {
+    pub(crate) fn from_value(v: &serde_json::Value) -> Self {
+        let mut cfg = PhpcsConfig::default();
+        let Some(obj) = v.as_object() else { return cfg };
+        cfg.enabled = obj.get("enabled").and_then(|x| x.as_bool()).unwrap_or(false);
+        if let Some(s) = obj.get("binPath").and_then(|x| x.as_str()) {
+            cfg.bin_path = s.to_string();
+        }
+        if let Some(s) = obj.get("standard").and_then(|x| x.as_str()) {
+            cfg.standard = Some(s.to_string());
+        }
+        cfg
+    }
+}
+
+/// External static-analysis tools run as child processes and merged into
+/// published diagnostics, in addition to (not instead of) the built-in
+/// analyzer. See [`PhpstanConfig`] / [`PhpcsConfig`] for why they default off.
+#[derive(Debug, Clone, Default)]
+pub struct ExternalToolsConfig {
+    pub phpstan: PhpstanConfig,
+    pub phpcs: PhpcsConfig,
+}
+
+impl ExternalToolsConfig {
+    pub(crate) fn from_value(v: &serde_json::Value) -> Self {
+        let mut cfg = ExternalToolsConfig::default();
+        let Some(obj) = v.as_object() else { return cfg };
+        if let Some(v) = obj.get("phpstan") {
+            cfg.phpstan = PhpstanConfig::from_value(v);
+        }
+        if let Some(v) = obj.get("phpcs") {
+            cfg.phpcs = PhpcsConfig::from_value(v);
+        }
+        cfg
+    }
+}
+
 /// Maximum number of PHP files indexed during a workspace scan.
 /// Prevents excessive memory use on projects with very large vendor trees.
 pub const MAX_INDEXED_FILES: usize = 50_000;
@@ -264,6 +364,9 @@ pub struct LspConfig {
     /// (crash, kill — anything that skips `shutdown`) to roughly one
     /// interval. Defaults to 20 s; lower mainly useful in tests.
     pub flush_interval_ms: u64,
+    /// External static-analysis tool integration (PHPStan / PHPCS). Both
+    /// default off; see [`ExternalToolsConfig`].
+    pub external_tools: ExternalToolsConfig,
 }
 
 impl Default for LspConfig {
@@ -281,6 +384,7 @@ impl Default for LspConfig {
             warm_analysis: true,
             cache_path: None,
             flush_interval_ms: 20_000,
+            external_tools: ExternalToolsConfig::default(),
         }
     }
 }
@@ -378,6 +482,9 @@ impl LspConfig {
         {
             cfg.flush_interval_ms = n.max(1);
         }
+        if let Some(v) = v.get("externalTools") {
+            cfg.external_tools = ExternalToolsConfig::from_value(v);
+        }
         cfg
     }
 }
@@ -446,6 +553,18 @@ mod tests {
                 warm_analysis: true,
                 cache_path: None,
                 flush_interval_ms: 20000,
+                external_tools: ExternalToolsConfig {
+                    phpstan: PhpstanConfig {
+                        enabled: false,
+                        bin_path: "phpstan",
+                        config_path: None,
+                    },
+                    phpcs: PhpcsConfig {
+                        enabled: false,
+                        bin_path: "phpcs",
+                        standard: None,
+                    },
+                },
             }"#]]
         .assert_eq(&format!("{:#?}", LspConfig::default()));
     }

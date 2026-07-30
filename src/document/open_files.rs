@@ -30,6 +30,16 @@ pub(crate) struct OpenFile {
     /// client already displays. `None` until the first publish; the entry
     /// (and hash) drops on close, so a reopen always publishes.
     pub(crate) published_hash: Option<u64>,
+    /// Most recent external-tool (PHPStan/PHPCS) findings, cached so every
+    /// publish path can append them without re-running the tools.
+    pub(crate) external_diagnostics: Vec<Diagnostic>,
+    /// `version` this file was at when `external_diagnostics` was computed.
+    /// An edit bumps `version` without touching this field, so a mismatch
+    /// means the cached findings were computed against text the buffer no
+    /// longer holds — [`OpenFiles::external_diagnostics`] treats that as
+    /// stale and returns nothing rather than showing diagnostics against the
+    /// wrong line numbers.
+    pub(crate) external_diagnostics_version: Option<u64>,
 }
 
 /// Shared handle to open-file state. Cheaply cloneable — wraps an `Arc<DashMap>`
@@ -88,6 +98,30 @@ impl OpenFiles {
     /// Hash of the last publish sent for `uri`, if it is still open.
     pub(crate) fn published_hash(&self, uri: &Url) -> Option<u64> {
         self.0.get(uri).and_then(|e| e.published_hash)
+    }
+
+    /// Cache `diagnostics` from an external tool run against `uri` at
+    /// `version`. No-op when the file closed mid-run (entry gone).
+    pub(crate) fn set_external_diagnostics(
+        &self,
+        uri: &Url,
+        version: u64,
+        diagnostics: Vec<Diagnostic>,
+    ) {
+        if let Some(mut entry) = self.0.get_mut(uri) {
+            entry.external_diagnostics = diagnostics;
+            entry.external_diagnostics_version = Some(version);
+        }
+    }
+
+    /// Cached external-tool diagnostics for `uri`, or empty if none have
+    /// been computed yet or the buffer has changed since they were.
+    pub(crate) fn external_diagnostics(&self, uri: &Url) -> Vec<Diagnostic> {
+        self.0
+            .get(uri)
+            .filter(|e| e.external_diagnostics_version == Some(e.version))
+            .map(|e| e.external_diagnostics.clone())
+            .unwrap_or_default()
     }
 
     pub(crate) fn all_with_diagnostics(&self) -> Vec<(Url, Vec<Diagnostic>, Option<i64>)> {
@@ -161,6 +195,7 @@ pub(crate) fn compute_open_file_diagnostics(
             docs.is_index_ready(),
         ));
     }
+    out.extend(open_files.external_diagnostics(uri));
     out
 }
 
