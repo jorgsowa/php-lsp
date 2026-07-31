@@ -172,13 +172,6 @@ impl Backend {
         }
     }
 
-    /// Variant of [`ingest_if_not_open`] that reuses an already-parsed doc.
-    fn ingest_from_doc_if_not_open(&self, uri: Uri, doc: &ParsedDoc) {
-        if !self.open_files.contains(&uri) {
-            self.docs.ingest_from_doc(uri, doc);
-        }
-    }
-
     fn get_open_text(&self, uri: &Uri) -> Option<Arc<str>> {
         self.open_files.text(uri)
     }
