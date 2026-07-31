@@ -163,8 +163,8 @@ fn main() {
         let (after_n, after_ms) = cold_ms(n, reps, &sym, |s, reach| {
             s.workspace_file_paths()
                 .iter()
+                .filter(|&u| reach.contains(u.as_ref()))
                 .cloned()
-                .filter(|u| reach.contains(u.as_ref()))
                 .collect()
         });
         println!(
@@ -186,8 +186,8 @@ fn main() {
         let files: Vec<Arc<str>> = store
             .workspace_file_paths()
             .iter()
+            .filter(|&u| reachable.contains(u.as_ref()))
             .cloned()
-            .filter(|u| reachable.contains(u.as_ref()))
             .collect();
         let t = Instant::now();
         std::hint::black_box(store.indexed_references(&sym, &files, false, None));
@@ -199,8 +199,8 @@ fn main() {
         let files: Vec<Arc<str>> = store
             .workspace_file_paths()
             .iter()
+            .filter(|&u| reachable.contains(u.as_ref()))
             .cloned()
-            .filter(|u| reachable.contains(u.as_ref()))
             .collect();
         let t = Instant::now();
         let cancel = store.begin_warm_sweep();
@@ -245,8 +245,8 @@ fn main() {
     let after: Vec<Arc<str>> = store
         .workspace_file_paths()
         .iter()
+        .filter(|&u| reachable.contains(u.as_ref()))
         .cloned()
-        .filter(|u| reachable.contains(u.as_ref()))
         .collect();
     for _ in 0..3 {
         std::hint::black_box(store.indexed_references(&sym, &after, false, None));
@@ -317,8 +317,8 @@ fn long_session_gate(sym: &Name) -> bool {
     let files: Vec<Arc<str>> = store
         .workspace_file_paths()
         .iter()
+        .filter(|&u| reachable.contains(u.as_ref()))
         .cloned()
-        .filter(|u| reachable.contains(u.as_ref()))
         .collect();
     let cancel = store.begin_warm_sweep();
     store.warm_analysis_sweep(&[], &cancel);
