@@ -1,7 +1,7 @@
 /// Code action: generate a PHPDoc stub for a function or method that lacks one.
 use php_ast::{ClassMemberKind, EnumMemberKind, NamespaceBody, Param, Stmt, StmtKind};
-use tower_lsp::lsp_types::{
-    CodeAction, CodeActionKind, CodeActionOrCommand, Position, Range, TextEdit, Url, WorkspaceEdit,
+use tower_lsp_server::ls_types::{
+    CodeAction, CodeActionKind, CodeActionOrCommand, Position, Range, TextEdit, Uri, WorkspaceEdit,
 };
 
 use crate::document::ast::{ParsedDoc, SourceView, format_type_hint};
@@ -9,7 +9,7 @@ use crate::document::ast::{ParsedDoc, SourceView, format_type_hint};
 /// Return "Generate PHPDoc" code actions for any function/method whose declaration line
 /// falls within `range` and does not already have a docblock.
 pub fn phpdoc_actions(
-    uri: &Url,
+    uri: &Uri,
     doc: &ParsedDoc,
     _source: &str,
     range: Range,
@@ -22,7 +22,7 @@ pub fn phpdoc_actions(
 
 fn collect(
     stmts: &[Stmt<'_, '_>],
-    uri: &Url,
+    uri: &Uri,
     sv: SourceView<'_>,
     range: Range,
     out: &mut Vec<CodeActionOrCommand>,
@@ -98,7 +98,7 @@ fn line_in_range(line: u32, range: Range) -> bool {
 }
 
 fn make_action(
-    uri: &Url,
+    uri: &Uri,
     source: &str,
     fn_line: u32,
     params: &[Param<'_, '_>],

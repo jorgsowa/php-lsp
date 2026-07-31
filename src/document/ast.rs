@@ -8,7 +8,7 @@ use std::mem::ManuallyDrop;
 use std::sync::{Arc, LazyLock, Mutex, OnceLock};
 
 use php_ast::{Program, Span, TypeHint, TypeHintKind};
-use tower_lsp::lsp_types::{Position, Range};
+use tower_lsp_server::ls_types::{Position, Range};
 
 // ── BumpPool ──────────────────────────────────────────────────────────────────
 

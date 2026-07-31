@@ -1,8 +1,8 @@
 /// Code action: "Extract constant" — extracts a selected literal into a named PHP constant.
 use std::collections::HashMap;
 
-use tower_lsp::lsp_types::{
-    CodeAction, CodeActionKind, CodeActionOrCommand, Position, Range, TextEdit, Url, WorkspaceEdit,
+use tower_lsp_server::ls_types::{
+    CodeAction, CodeActionKind, CodeActionOrCommand, Position, Range, TextEdit, Uri, WorkspaceEdit,
 };
 
 use crate::text::selected_text_range;
@@ -19,7 +19,7 @@ use crate::text::selected_text_range;
 /// The constant name is derived from the literal value (SCREAMING_SNAKE_CASE
 /// for strings, `CONSTANT_<value>` for numbers). Use the LSP rename action to
 /// pick a more meaningful name.
-pub fn extract_constant_actions(source: &str, range: Range, uri: &Url) -> Vec<CodeActionOrCommand> {
+pub fn extract_constant_actions(source: &str, range: Range, uri: &Uri) -> Vec<CodeActionOrCommand> {
     if range.start == range.end {
         return vec![];
     }
@@ -325,7 +325,7 @@ fn build_action(
     insert_pos: Position,
     reference: String,
     replace_range: Range,
-    uri: &Url,
+    uri: &Uri,
 ) -> Vec<CodeActionOrCommand> {
     let mut changes = HashMap::new();
     changes.insert(

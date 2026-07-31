@@ -4,7 +4,7 @@ use php_ast::{
     Attribute, ClassMemberKind, EnumMemberKind, ExprKind, NamespaceBody, Stmt, StmtKind, TypeHint,
     TypeHintKind,
 };
-use tower_lsp::lsp_types::{
+use tower_lsp_server::ls_types::{
     Range, SemanticToken, SemanticTokenModifier, SemanticTokenType, SemanticTokensEdit,
     SemanticTokensLegend,
 };
@@ -81,7 +81,7 @@ pub fn semantic_tokens_range(_source: &str, doc: &ParsedDoc, range: Range) -> Ve
     // byte_of_position maps lines beyond EOF to byte 0 (`line_starts.get(..)
     // .unwrap_or(0)`); clamp those to the end of the source so an open-ended
     // viewport (end line u32::MAX style) prunes nothing instead of everything.
-    let byte_of = |pos: tower_lsp::lsp_types::Position| -> u32 {
+    let byte_of = |pos: tower_lsp_server::ls_types::Position| -> u32 {
         if (pos.line as usize) < doc.line_starts().len() {
             sv.byte_of_position(pos)
         } else {
@@ -1013,7 +1013,7 @@ mod tests {
     /// a braced namespace.
     #[test]
     fn range_pruned_walk_matches_filtered_full_walk() {
-        use tower_lsp::lsp_types::Position;
+        use tower_lsp_server::ls_types::Position;
         let src = "<?php\nnamespace App {\nclass A {\n    public function one(): int { return 1; }\n    public function two(): string { return 'x'; }\n    public function three(): bool { return true; }\n}\nclass B {\n    public function four(): void {}\n}\n}\n";
         let d = doc(src);
         // Several windows, including degenerate and out-of-bounds ones.

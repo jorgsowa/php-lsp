@@ -7,8 +7,8 @@
 use std::collections::HashMap;
 
 use php_ast::{ClassMemberKind, NamespaceBody, Stmt, StmtKind, Visibility};
-use tower_lsp::lsp_types::{
-    CodeAction, CodeActionKind, CodeActionOrCommand, Range, TextEdit, Url, WorkspaceEdit,
+use tower_lsp_server::ls_types::{
+    CodeAction, CodeActionKind, CodeActionOrCommand, Range, TextEdit, Uri, WorkspaceEdit,
 };
 
 use crate::document::ast::{ParsedDoc, SourceView, format_type_hint};
@@ -27,7 +27,7 @@ pub fn extract_interface_actions(
     source: &str,
     doc: &ParsedDoc,
     range: Range,
-    uri: &Url,
+    uri: &Uri,
 ) -> Vec<CodeActionOrCommand> {
     let sv = doc.view();
     let mut out = Vec::new();
@@ -42,7 +42,7 @@ fn collect<'a>(
     source: &str,
     sv: SourceView<'_>,
     range: Range,
-    uri: &Url,
+    uri: &Uri,
     out: &mut Vec<CodeActionOrCommand>,
 ) {
     for stmt in stmts {

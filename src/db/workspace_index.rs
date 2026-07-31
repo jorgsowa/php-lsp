@@ -10,7 +10,7 @@
 //!
 //! This query runs once per workspace revision and returns:
 //!
-//! - `files`: the flat `(Url, Arc<FileIndex>)` list every handler used to
+//! - `files`: the flat `(Uri, Arc<FileIndex>)` list every handler used to
 //!   rebuild by hand,
 //! - `classes_by_name`: `name → [ClassRef]` for constant-time prepare /
 //!   supertype resolution,
@@ -29,7 +29,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
 
-use tower_lsp::lsp_types::Url;
+use tower_lsp_server::ls_types::Uri;
 
 use crate::index::file_index::FileIndex;
 
@@ -70,7 +70,7 @@ pub struct DeclRef {
 /// Aggregated workspace-level index. Constructed once per salsa revision by
 /// `workspace_index` and held behind an `Arc` for cheap cross-request sharing.
 pub struct WorkspaceIndexData {
-    pub files: Vec<(Url, Arc<FileIndex>)>,
+    pub files: Vec<(Uri, Arc<FileIndex>)>,
     pub classes_by_name: HashMap<String, Vec<ClassRef>>,
     /// `parent_or_interface_or_trait_name → [subtype ClassRef]`.
     /// A class that extends `X` AND implements `Y` contributes separate entries
@@ -108,7 +108,7 @@ pub struct FuncSignature {
 /// file. Entries already present (from the current file's own AST) are not
 /// overwritten so an in-file definition always wins over a possibly-stale
 /// index entry.
-pub fn build_func_signatures(files: &[(Url, Arc<FileIndex>)]) -> HashMap<String, FuncSignature> {
+pub fn build_func_signatures(files: &[(Uri, Arc<FileIndex>)]) -> HashMap<String, FuncSignature> {
     let mut map = HashMap::new();
     for (_, idx) in files {
         for func in &idx.functions {
@@ -165,7 +165,7 @@ pub(crate) type BuildMapsResult = (
     Vec<(Box<str>, ClassRef)>,
 );
 
-pub(crate) fn build_maps(files: &[(Url, Arc<FileIndex>)]) -> BuildMapsResult {
+pub(crate) fn build_maps(files: &[(Uri, Arc<FileIndex>)]) -> BuildMapsResult {
     let mut classes_by_name: HashMap<String, Vec<ClassRef>> = HashMap::new();
     let mut subtypes_of: HashMap<Arc<str>, Vec<ClassRef>> = HashMap::new();
     let mut decls_by_name: HashMap<String, Vec<DeclRef>> = HashMap::new();
@@ -280,7 +280,7 @@ pub(crate) fn build_maps(files: &[(Url, Arc<FileIndex>)]) -> BuildMapsResult {
 
 impl WorkspaceIndexData {
     /// Resolve a `ClassRef` back to its `(uri, class_def)` pair.
-    pub fn at(&self, r: ClassRef) -> Option<(&Url, &crate::index::file_index::ClassDef)> {
+    pub fn at(&self, r: ClassRef) -> Option<(&Uri, &crate::index::file_index::ClassDef)> {
         let (uri, idx) = self.files.get(r.file as usize)?;
         let cls = idx.classes.get(r.class as usize)?;
         Some((uri, cls))
@@ -325,8 +325,8 @@ impl WorkspaceIndexData {
     pub fn find_declaration(
         &self,
         name: &str,
-        exclude: Option<&Url>,
-    ) -> Option<tower_lsp::lsp_types::Location> {
+        exclude: Option<&Uri>,
+    ) -> Option<tower_lsp_server::ls_types::Location> {
         let bare = crate::text::strip_variable_sigil(name);
         let sigil = bare != name;
         let refs = self.decls_by_name.get(bare)?;
@@ -343,7 +343,7 @@ impl WorkspaceIndexData {
             if exclude.is_some_and(|e| e == uri) {
                 continue;
             }
-            return Some(tower_lsp::lsp_types::Location {
+            return Some(tower_lsp_server::ls_types::Location {
                 uri: uri.clone(),
                 range: crate::text::zero_width_range(r.line),
             });
@@ -352,12 +352,12 @@ impl WorkspaceIndexData {
     }
 
     /// Constructor that builds the reverse maps from an already-materialised
-    /// `(Url, Arc<FileIndex>)` slice. Exposed so callers that don't want to
+    /// `(Uri, Arc<FileIndex>)` slice. Exposed so callers that don't want to
     /// spin up a full `AnalysisHost` (unit tests of
     /// `find_implementations_from_workspace`, benchmark crates) can exercise
     /// the aggregate-shaped helpers directly. Production code goes through
     /// the `workspace_index` salsa query instead.
-    pub fn from_files(files: Vec<(Url, Arc<FileIndex>)>) -> Self {
+    pub fn from_files(files: Vec<(Uri, Arc<FileIndex>)>) -> Self {
         let (classes_by_name, subtypes_of, decls_by_name, classes_by_lowercase_name) =
             build_maps(&files);
         Self {

@@ -2,7 +2,7 @@ use std::ops::ControlFlow;
 
 use php_ast::visitor::{Visitor, walk_expr};
 use php_ast::{Arg, ClassMemberKind, Expr, ExprKind, NamespaceBody, Param, Stmt, StmtKind};
-use tower_lsp::lsp_types::Position;
+use tower_lsp_server::ls_types::Position;
 
 use crate::document::ast::{ParsedDoc, format_type_hint};
 use crate::text::fqn_short_name;
@@ -143,7 +143,7 @@ pub(crate) fn named_arg_hover_value(
     source: &str,
     doc: &ParsedDoc,
     other_docs: &[(
-        tower_lsp::lsp_types::Url,
+        tower_lsp_server::ls_types::Uri,
         std::sync::Arc<crate::document::ast::ParsedDoc>,
     )],
     position: Position,

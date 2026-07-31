@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
 use php_ast::{ClassMemberKind, EnumMemberKind, NamespaceBody, Stmt, StmtKind};
-use tower_lsp::lsp_types::{
+use tower_lsp_server::ls_types::{
     Documentation, MarkupContent, MarkupKind, ParameterInformation, ParameterLabel, Position,
-    SignatureHelp, SignatureInformation, Url,
+    SignatureHelp, SignatureInformation, Uri,
 };
 
 use crate::document::ast::ParsedDoc;
@@ -25,7 +25,7 @@ pub fn signature_help(
     source: &str,
     doc: &ParsedDoc,
     position: Position,
-    ws_indexes: &[(Url, Arc<FileIndex>)],
+    ws_indexes: &[(Uri, Arc<FileIndex>)],
     analysis: Option<&mir_analyzer::FileAnalysis>,
 ) -> Option<SignatureHelp> {
     let (func_name, active_param, receiver) = call_context(source, position)?;
@@ -397,7 +397,7 @@ fn extract_name_before(text: &[char], paren_pos: usize) -> String {
 ///
 /// Strips a leading `\` and matches either the bare name or the FQN, so both
 /// `process($0)` and `\App\process($0)` resolve.
-fn find_params_in_index(name: &str, ws_indexes: &[(Url, Arc<FileIndex>)]) -> Option<String> {
+fn find_params_in_index(name: &str, ws_indexes: &[(Uri, Arc<FileIndex>)]) -> Option<String> {
     let bare = name.trim_start_matches('\\');
     let local = fqn_short_name(bare);
     for (_, idx) in ws_indexes {
@@ -461,7 +461,7 @@ fn format_doc_param(p: &DocMethodParam) -> String {
 fn find_method_params_in_hierarchy(
     class_name: &str,
     method_name: &str,
-    ws_indexes: &[(Url, Arc<FileIndex>)],
+    ws_indexes: &[(Uri, Arc<FileIndex>)],
 ) -> Option<String> {
     let short = fqn_short_name(class_name);
     let mut current = short.to_string();

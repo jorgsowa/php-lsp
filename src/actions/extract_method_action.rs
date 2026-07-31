@@ -9,8 +9,8 @@
 use std::collections::HashMap;
 
 use php_ast::{ClassMemberKind, NamespaceBody, StmtKind};
-use tower_lsp::lsp_types::{
-    CodeAction, CodeActionKind, CodeActionOrCommand, Position, Range, TextEdit, Url, WorkspaceEdit,
+use tower_lsp_server::ls_types::{
+    CodeAction, CodeActionKind, CodeActionOrCommand, Position, Range, TextEdit, Uri, WorkspaceEdit,
 };
 
 use crate::document::ast::{ParsedDoc, SourceView};
@@ -22,7 +22,7 @@ pub fn extract_method_actions(
     source: &str,
     doc: &ParsedDoc,
     range: Range,
-    uri: &Url,
+    uri: &Uri,
 ) -> Vec<CodeActionOrCommand> {
     if range.start.line >= range.end.line {
         return vec![];

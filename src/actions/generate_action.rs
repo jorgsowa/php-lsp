@@ -2,8 +2,8 @@
 use std::collections::{HashMap, HashSet};
 
 use php_ast::{ClassMemberKind, NamespaceBody, Stmt, StmtKind};
-use tower_lsp::lsp_types::{
-    CodeAction, CodeActionKind, CodeActionOrCommand, Position, Range, TextEdit, Url, WorkspaceEdit,
+use tower_lsp_server::ls_types::{
+    CodeAction, CodeActionKind, CodeActionOrCommand, Position, Range, TextEdit, Uri, WorkspaceEdit,
 };
 
 use crate::document::ast::{ParsedDoc, SourceView, format_type_hint};
@@ -12,7 +12,7 @@ pub fn generate_constructor_actions(
     _source: &str,
     doc: &ParsedDoc,
     range: Range,
-    uri: &Url,
+    uri: &Uri,
 ) -> Vec<CodeActionOrCommand> {
     let sv = doc.view();
     let mut out = Vec::new();
@@ -24,7 +24,7 @@ pub fn generate_getters_setters_actions(
     _source: &str,
     doc: &ParsedDoc,
     range: Range,
-    uri: &Url,
+    uri: &Uri,
 ) -> Vec<CodeActionOrCommand> {
     let sv = doc.view();
     let mut out = Vec::new();
@@ -42,7 +42,7 @@ fn collect_constructor<'a>(
     stmts: &[Stmt<'a, 'a>],
     sv: SourceView<'_>,
     range: Range,
-    uri: &Url,
+    uri: &Uri,
     out: &mut Vec<CodeActionOrCommand>,
 ) {
     for stmt in stmts {
@@ -84,7 +84,7 @@ fn collect_getters_setters<'a>(
     stmts: &[Stmt<'a, 'a>],
     sv: SourceView<'_>,
     range: Range,
-    uri: &Url,
+    uri: &Uri,
     out: &mut Vec<CodeActionOrCommand>,
 ) {
     for stmt in stmts {
@@ -257,7 +257,7 @@ fn push_action(
     class_end_offset: u32,
     new_text: String,
     title: &str,
-    uri: &Url,
+    uri: &Uri,
     out: &mut Vec<CodeActionOrCommand>,
 ) {
     let closing_line = sv.position_of(class_end_offset.saturating_sub(1)).line;

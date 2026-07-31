@@ -1,4 +1,4 @@
-use tower_lsp::lsp_types::{FormattingOptions, Position, Range, TextEdit};
+use tower_lsp_server::ls_types::{FormattingOptions, Position, Range, TextEdit};
 
 use super::signature_help::string_literal_mask;
 

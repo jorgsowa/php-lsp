@@ -1,4 +1,4 @@
-use tower_lsp::lsp_types::{CompletionItem, CompletionItemKind};
+use tower_lsp_server::ls_types::{CompletionItem, CompletionItemKind};
 
 const PHP_KEYWORDS: &[&str] = &[
     "abstract",

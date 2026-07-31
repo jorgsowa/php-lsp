@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use tower_lsp::lsp_types::{Hover, HoverContents, MarkupContent, MarkupKind, Position, Url};
+use tower_lsp_server::ls_types::{Hover, HoverContents, MarkupContent, MarkupKind, Position, Uri};
 
 use crate::completion::ClassDocLookup;
 use crate::document::ast::ParsedDoc;
@@ -41,8 +41,8 @@ pub fn hover_info_with_maps(
     doc: &ParsedDoc,
     analysis: Option<&mir_analyzer::FileAnalysis>,
     position: Position,
-    other_docs: &[(Url, Arc<ParsedDoc>)],
-    other_maps: &[(Url, Arc<SymbolMap>)],
+    other_docs: &[(Uri, Arc<ParsedDoc>)],
+    other_maps: &[(Uri, Arc<SymbolMap>)],
     session: Option<&mir_analyzer::AnalysisSession>,
     find_class_doc: Option<ClassDocLookup<'_>>,
 ) -> Option<Hover> {
@@ -70,7 +70,7 @@ pub fn hover_info_with_maps(
 fn builtin_class_hover(
     stub: crate::types::type_map::ClassMembers,
     name: &str,
-    range: Option<tower_lsp::lsp_types::Range>,
+    range: Option<tower_lsp_server::ls_types::Range>,
 ) -> Hover {
     let method_names: Vec<&str> = stub
         .methods
@@ -128,7 +128,7 @@ fn hover_at_core(
     source: &str,
     doc: &ParsedDoc,
     analysis: Option<&mir_analyzer::FileAnalysis>,
-    other_docs: &[(Url, Arc<ParsedDoc>)],
+    other_docs: &[(Uri, Arc<ParsedDoc>)],
     position: Position,
     session: Option<&mir_analyzer::AnalysisSession>,
     find_class_doc: Option<ClassDocLookup<'_>>,
@@ -494,7 +494,7 @@ fn hover_at_core(
 fn candidates_for<'a>(
     fast: &'a Option<Arc<ParsedDoc>>,
     doc: &'a ParsedDoc,
-    other_docs: &'a [(Url, Arc<ParsedDoc>)],
+    other_docs: &'a [(Uri, Arc<ParsedDoc>)],
 ) -> Vec<&'a ParsedDoc> {
     if let Some(fd) = fast {
         vec![fd.as_ref()]
@@ -512,7 +512,7 @@ fn mir_member_hover(
     sym: &mir_analyzer::ResolvedSymbol,
     word: &str,
     doc: &ParsedDoc,
-    other_docs: &[(tower_lsp::lsp_types::Url, std::sync::Arc<ParsedDoc>)],
+    other_docs: &[(tower_lsp_server::ls_types::Uri, std::sync::Arc<ParsedDoc>)],
     find_class_doc: Option<ClassDocLookup<'_>>,
 ) -> Option<String> {
     match &sym.kind {

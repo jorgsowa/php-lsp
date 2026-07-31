@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use tower_lsp::lsp_types::{CompletionItem, CompletionItemKind, Position, Range, TextEdit};
+use tower_lsp_server::ls_types::{CompletionItem, CompletionItemKind, Position, Range, TextEdit};
 
 use super::namespace::{
     collect_attribute_classes, current_file_namespace, infer_attribute_target, use_insert_position,

@@ -7,9 +7,9 @@ use php_ast::{
     ClassMemberKind, EnumMemberKind, ExprKind, NamespaceBody, Span, Stmt, StmtKind,
     TraitAdaptationKind,
 };
-use tower_lsp::lsp_types::{
+use tower_lsp_server::ls_types::{
     CallHierarchyIncomingCall, CallHierarchyItem, CallHierarchyOutgoingCall, Position, Range,
-    SymbolKind, Url,
+    SymbolKind, Uri,
 };
 
 use crate::document::ast::{ParsedDoc, SourceView, span_to_range};
@@ -23,7 +23,7 @@ use crate::document::ast::{ParsedDoc, SourceView, span_to_range};
 pub fn prepare_call_hierarchy_indexed(
     name: &str,
     wi: &crate::db::workspace_index::WorkspaceIndexData,
-    get_doc: &dyn Fn(&Url) -> Option<Arc<ParsedDoc>>,
+    get_doc: &dyn Fn(&Uri) -> Option<Arc<ParsedDoc>>,
 ) -> Option<CallHierarchyItem> {
     if let Some(refs) = wi.decls_by_name.get(name) {
         // Visit each candidate file once, in declaration encounter order.
@@ -79,7 +79,7 @@ fn resolve_trait_alias_indexed(
 pub fn outgoing_calls_indexed(
     item: &CallHierarchyItem,
     wi: &crate::db::workspace_index::WorkspaceIndexData,
-    get_doc: &dyn Fn(&Url) -> Option<Arc<ParsedDoc>>,
+    get_doc: &dyn Fn(&Uri) -> Option<Arc<ParsedDoc>>,
 ) -> Vec<CallHierarchyOutgoingCall> {
     let Some(doc) = get_doc(&item.uri) else {
         return Vec::new();
@@ -140,7 +140,7 @@ pub fn incoming_calls_indexed(
     };
 
     let files = store.reference_candidate_files(&symbol);
-    let mut call_sites: Vec<tower_lsp::lsp_types::Location> = store
+    let mut call_sites: Vec<tower_lsp_server::ls_types::Location> = store
         .indexed_references(&symbol, &files, false, cancel_rev)
         .into_iter()
         .filter_map(crate::navigation::references::session_tuple_to_location)
@@ -149,9 +149,9 @@ pub fn incoming_calls_indexed(
 
     let mut result: Vec<CallHierarchyIncomingCall> = Vec::new();
     // Track (caller_name, caller_uri) → index in `result` for O(1) dedup.
-    let mut index: HashMap<(String, Url), usize> = HashMap::new();
+    let mut index: HashMap<(String, Uri), usize> = HashMap::new();
     // Parse only the documents call sites landed in, each at most once.
-    let mut doc_cache: HashMap<Url, Option<Arc<ParsedDoc>>> = HashMap::new();
+    let mut doc_cache: HashMap<Uri, Option<Arc<ParsedDoc>>> = HashMap::new();
 
     for loc in call_sites {
         let doc = doc_cache
@@ -198,7 +198,7 @@ fn find_declaration_item(
     name: &str,
     stmts: &[Stmt<'_, '_>],
     sv: SourceView<'_>,
-    uri: &Url,
+    uri: &Uri,
 ) -> Option<CallHierarchyItem> {
     for stmt in stmts {
         match &stmt.kind {
@@ -349,7 +349,7 @@ fn enclosing_function(
     sv: SourceView<'_>,
     stmts: &[Stmt<'_, '_>],
     pos: Position,
-    uri: &Url,
+    uri: &Uri,
 ) -> Option<CallHierarchyItem> {
     for stmt in stmts {
         if let Some(item) = enclosing_in_stmt(sv, stmt, pos, uri) {
@@ -363,7 +363,7 @@ fn enclosing_in_stmt(
     sv: SourceView<'_>,
     stmt: &Stmt<'_, '_>,
     pos: Position,
-    uri: &Url,
+    uri: &Uri,
 ) -> Option<CallHierarchyItem> {
     let range = sv.range_of(stmt.span);
     if !range_contains(range, pos) {

@@ -13,7 +13,7 @@ use std::ops::ControlFlow;
 
 use php_ast::visitor::{Visitor, walk_expr};
 use php_ast::{Expr, ExprKind, Span};
-use tower_lsp::lsp_types::{Position, Range};
+use tower_lsp_server::ls_types::{Position, Range};
 
 use crate::document::ast::ParsedDoc;
 use crate::text::utf16_offset_to_byte;

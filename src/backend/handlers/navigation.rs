@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
-use tower_lsp::jsonrpc::Result;
-use tower_lsp::lsp_types::*;
+use tower_lsp_server::jsonrpc::Result;
+use tower_lsp_server::ls_types::*;
 
 use crate::analysis::document_highlight::document_highlights;
 use crate::navigation::definition::{
@@ -503,7 +503,8 @@ impl Backend {
                         let priority_files: Vec<Arc<str>> = all_files
                             .par_iter()
                             .filter(|f| {
-                                Url::parse(f.as_ref())
+                                (f.as_ref())
+                                    .parse::<Uri>()
                                     .ok()
                                     .and_then(|u| docs.source_text(&u))
                                     .is_some_and(|t| {
@@ -581,7 +582,7 @@ impl Backend {
     /// document and stays on the AST scope walker.
     pub(crate) async fn indexed_rename(
         &self,
-        uri: &Url,
+        uri: &Uri,
         position: Position,
         new_name: &str,
     ) -> Option<WorkspaceEdit> {
@@ -671,10 +672,10 @@ impl Backend {
             dedup_ref_locations(&mut locations);
         }
 
-        let mut changes: std::collections::HashMap<Url, Vec<TextEdit>> =
+        let mut changes: std::collections::HashMap<Uri, Vec<TextEdit>> =
             std::collections::HashMap::new();
         let mut doc_cache: std::collections::HashMap<
-            Url,
+            Uri,
             Option<Arc<crate::document::ast::ParsedDoc>>,
         > = std::collections::HashMap::new();
         for loc in locations {
@@ -707,7 +708,7 @@ impl Backend {
     /// falls back to same-named declarations when none does.
     fn workspace_decl_locations(&self, symbol: &mir_analyzer::Name, word: &str) -> Vec<Location> {
         let ws = self.docs.get_workspace_index_salsa();
-        let name_range = |line: u32, ch: u32| tower_lsp::lsp_types::Range {
+        let name_range = |line: u32, ch: u32| tower_lsp_server::ls_types::Range {
             start: Position {
                 line,
                 character: ch,
@@ -851,7 +852,7 @@ fn expand_alias_prefix(word: &str, imports: &std::collections::HashMap<String, S
 fn resolve_parent_construct_class(
     doc: &crate::document::ast::ParsedDoc,
     position: Position,
-    files: &[(Url, Arc<crate::index::file_index::FileIndex>)],
+    files: &[(Uri, Arc<crate::index::file_index::FileIndex>)],
 ) -> Option<String> {
     let child_short = enclosing_class_at(doc.source(), doc, position)?;
     let raw_parent = crate::types::type_map::parent_class_name(doc, &child_short)?;

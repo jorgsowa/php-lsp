@@ -8,13 +8,13 @@
 /// - The RHS is a single-line expression (multi-line RHS is not supported).
 use std::collections::HashMap;
 
-use tower_lsp::lsp_types::{
-    CodeAction, CodeActionKind, CodeActionOrCommand, Position, Range, TextEdit, Url, WorkspaceEdit,
+use tower_lsp_server::ls_types::{
+    CodeAction, CodeActionKind, CodeActionOrCommand, Position, Range, TextEdit, Uri, WorkspaceEdit,
 };
 
 use crate::text::word_at_position;
 
-pub fn inline_variable_actions(source: &str, range: Range, uri: &Url) -> Vec<CodeActionOrCommand> {
+pub fn inline_variable_actions(source: &str, range: Range, uri: &Uri) -> Vec<CodeActionOrCommand> {
     // Determine the variable name under cursor (or at start of selection).
     let cursor = range.start;
     let var_name = match word_at_position(source, cursor) {

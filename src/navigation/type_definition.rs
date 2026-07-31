@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use php_ast::{ClassMemberKind, EnumMemberKind, Expr, ExprKind, NamespaceBody, Stmt, StmtKind};
-use tower_lsp::lsp_types::{Location, Position, Range, Url};
+use tower_lsp_server::ls_types::{Location, Position, Range, Uri};
 
 use crate::document::ast::{ParsedDoc, SourceView, format_type_hint, str_offset_in_range};
 use crate::navigation::moniker::resolve_fqn;
@@ -106,7 +106,7 @@ pub fn goto_type_definition_exact(
     source: &str,
     doc: &ParsedDoc,
     analysis: Option<&FileAnalysis>,
-    all_docs: &[(Url, Arc<ParsedDoc>)],
+    all_docs: &[(Uri, Arc<ParsedDoc>)],
     position: Position,
 ) -> Vec<Location> {
     let Some((_, class_name)) = resolve_type_at_cursor(source, doc, analysis, position) else {
@@ -149,7 +149,7 @@ pub fn goto_type_definition_short_name_fallback(
     source: &str,
     doc: &ParsedDoc,
     analysis: Option<&FileAnalysis>,
-    all_docs: &[(Url, Arc<ParsedDoc>)],
+    all_docs: &[(Uri, Arc<ParsedDoc>)],
     position: Position,
 ) -> Vec<Location> {
     let Some((imports, class_name)) = resolve_type_at_cursor(source, doc, analysis, position)
@@ -463,7 +463,7 @@ pub fn goto_type_definition_from_index_exact(
     source: &str,
     doc: &ParsedDoc,
     analysis: Option<&FileAnalysis>,
-    indexes: &[(Url, std::sync::Arc<crate::index::file_index::FileIndex>)],
+    indexes: &[(Uri, std::sync::Arc<crate::index::file_index::FileIndex>)],
     position: Position,
 ) -> Vec<Location> {
     let Some((_, class_name)) = resolve_type_at_cursor(source, doc, analysis, position) else {
@@ -499,7 +499,7 @@ pub fn goto_type_definition_from_index_short_name_fallback(
     source: &str,
     doc: &ParsedDoc,
     analysis: Option<&FileAnalysis>,
-    indexes: &[(Url, std::sync::Arc<crate::index::file_index::FileIndex>)],
+    indexes: &[(Uri, std::sync::Arc<crate::index::file_index::FileIndex>)],
     position: Position,
 ) -> Vec<Location> {
     let Some((imports, class_name)) = resolve_type_at_cursor(source, doc, analysis, position)

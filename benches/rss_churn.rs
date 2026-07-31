@@ -30,7 +30,7 @@ static ALLOC: dhat::Alloc = dhat::Alloc;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream, ReadHalf, WriteHalf};
-use tower_lsp::{LspService, Server};
+use tower_lsp_server::{LspService, Server};
 
 const DEFAULT_ROUNDS: usize = 300;
 const SAMPLE_EVERY: usize = 20;

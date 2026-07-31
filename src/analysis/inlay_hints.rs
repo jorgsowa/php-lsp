@@ -4,7 +4,7 @@ use php_ast::{
     ClassMemberKind, EnumMemberKind, Expr, ExprKind, NamespaceBody, Param, Stmt, StmtKind,
 };
 use serde_json::json;
-use tower_lsp::lsp_types::{InlayHint, InlayHintKind, InlayHintLabel, Position, Range};
+use tower_lsp_server::ls_types::{InlayHint, InlayHintKind, InlayHintLabel, Position, Range};
 
 use crate::db::workspace_index::FuncSignature;
 use crate::document::ast::{ParsedDoc, SourceView, format_type_hint};

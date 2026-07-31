@@ -12,7 +12,7 @@
 /// the entire document (simplest correct approach for whole-file formatting).
 /// Range formatting narrows the edit to the requested line span.
 use std::process::{Command, Stdio};
-use tower_lsp::lsp_types::{Position, Range, TextEdit};
+use tower_lsp_server::ls_types::{Position, Range, TextEdit};
 
 /// Format `source` with the best available PHP formatter.
 /// Returns `None` if no formatter is installed or if the source was unchanged.

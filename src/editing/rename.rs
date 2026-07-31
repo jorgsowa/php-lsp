@@ -3,7 +3,7 @@ use std::ops::ControlFlow;
 
 use php_ast::visitor::{Visitor, walk_expr};
 use php_ast::{Expr, ExprKind};
-use tower_lsp::lsp_types::{Position, Range, TextEdit, Url, WorkspaceEdit};
+use tower_lsp_server::ls_types::{Position, Range, TextEdit, Uri, WorkspaceEdit};
 
 use crate::document::ast::ParsedDoc;
 use crate::navigation::walk::collect_var_refs_in_scope;
@@ -362,7 +362,7 @@ pub(crate) fn is_superglobal(word: &str) -> bool {
 pub fn rename_variable(
     var_name: &str,
     new_name: &str,
-    uri: &Url,
+    uri: &Uri,
     doc: &ParsedDoc,
     position: Position,
 ) -> WorkspaceEdit {

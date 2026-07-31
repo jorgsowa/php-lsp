@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 
 use mir_analyzer::{AnalysisSession, Name, PhpVersion};
 use php_lsp::document_store::DocumentStore;
-use tower_lsp::lsp_types::Url;
+use tower_lsp_server::ls_types::Uri;
 
 const METHOD: &str = "save";
 const CANDIDATE_CAP: usize = 30;
@@ -40,7 +40,7 @@ fn laravel_sources() -> Option<Vec<SourceFile>> {
         .filter_map(|e| e.ok())
         .filter(|e| e.path().extension().is_some_and(|x| x == "php"))
         .filter_map(|e| {
-            let url = Url::from_file_path(e.path()).ok()?;
+            let url = Uri::from_file_path(e.path())?;
             let text = std::fs::read_to_string(e.path()).ok()?;
             Some(SourceFile {
                 file: Arc::from(url.as_str()),
@@ -196,7 +196,7 @@ fn main() {
 
     let store = DocumentStore::new();
     for f in &all {
-        if let Ok(url) = Url::parse(&f.file) {
+        if let Ok(url) = f.file.parse::<Uri>() {
             store.ingest(url, &f.text);
         }
     }

@@ -16,7 +16,7 @@ use std::collections::HashMap;
 
 use php_ast::{ClassMemberKind, EnumMemberKind, NamespaceBody, Stmt, StmtKind};
 use serde_json::json;
-use tower_lsp::lsp_types::{CodeLens, Command, Location, Url};
+use tower_lsp_server::ls_types::{CodeLens, Command, Location, Uri};
 
 use crate::document::ast::{ParsedDoc, SourceView};
 use crate::document::document_store::DocumentStore;
@@ -33,7 +33,7 @@ use crate::text::fqn_short_name;
 /// empty `Vec` immediately. Pass `|| false` for requests that do not need
 /// cooperative cancellation.
 pub fn code_lenses(
-    uri: &Url,
+    uri: &Uri,
     doc: &ParsedDoc,
     store: &DocumentStore,
     imports: &HashMap<String, String>,
@@ -96,7 +96,7 @@ pub fn code_lenses(
 
 /// Shared lookup context for one code-lens request.
 struct LensEnv<'a> {
-    uri: &'a Url,
+    uri: &'a Uri,
     doc: &'a ParsedDoc,
     store: &'a DocumentStore,
     imports: &'a HashMap<String, String>,
@@ -110,7 +110,7 @@ struct LensEnv<'a> {
 enum LensSlot {
     Ready(CodeLens),
     RefCount {
-        range: tower_lsp::lsp_types::Range,
+        range: tower_lsp_server::ls_types::Range,
         symbol: mir_analyzer::Name,
     },
 }
@@ -118,7 +118,7 @@ enum LensSlot {
 impl LensEnv<'_> {
     fn ref_count_lens(
         &self,
-        range: tower_lsp::lsp_types::Range,
+        range: tower_lsp_server::ls_types::Range,
         symbol: mir_analyzer::Name,
         files: &[std::sync::Arc<str>],
     ) -> CodeLens {
@@ -139,7 +139,7 @@ impl LensEnv<'_> {
 
     fn impl_count_lens(
         &self,
-        range: tower_lsp::lsp_types::Range,
+        range: tower_lsp_server::ls_types::Range,
         fqn: &str,
         include_trait_users: bool,
     ) -> CodeLens {
@@ -193,11 +193,11 @@ impl LensEnv<'_> {
             let (uri, cls) = chosen.or(fallback)?;
             let declaring_fqn = cls.fqn.trim_start_matches('\\').to_string();
             if let Some(m) = cls.methods.iter().find(|m| m.name.as_ref() == method) {
-                let start = tower_lsp::lsp_types::Position {
+                let start = tower_lsp_server::ls_types::Position {
                     line: m.start_line,
                     character: m.name_char,
                 };
-                let end = tower_lsp::lsp_types::Position {
+                let end = tower_lsp_server::ls_types::Position {
                     line: m.start_line,
                     character: m.name_char + m.name.encode_utf16().count() as u32,
                 };
@@ -205,7 +205,7 @@ impl LensEnv<'_> {
                     declaring_fqn,
                     Location {
                         uri: uri.clone(),
-                        range: tower_lsp::lsp_types::Range { start, end },
+                        range: tower_lsp_server::ls_types::Range { start, end },
                     },
                 ));
             }
@@ -438,17 +438,17 @@ fn property_name(class_fqn: &str, prop: &str) -> mir_analyzer::Name {
 }
 
 fn subtype_site_to_location(file: &str, range: &mir_analyzer::Range) -> Option<Location> {
-    let uri = Url::parse(file).ok()?;
+    let uri = (file).parse::<Uri>().ok()?;
     // mir uses 1-based lines; 0-based columns.
     let line = range.start.line.saturating_sub(1);
     Some(Location {
         uri,
-        range: tower_lsp::lsp_types::Range {
-            start: tower_lsp::lsp_types::Position {
+        range: tower_lsp_server::ls_types::Range {
+            start: tower_lsp_server::ls_types::Position {
                 line,
                 character: range.start.column,
             },
-            end: tower_lsp::lsp_types::Position {
+            end: tower_lsp_server::ls_types::Position {
                 line,
                 character: range.end.column,
             },
@@ -457,8 +457,8 @@ fn subtype_site_to_location(file: &str, range: &mir_analyzer::Range) -> Option<L
 }
 
 fn lens(
-    range: tower_lsp::lsp_types::Range,
-    uri: &Url,
+    range: tower_lsp_server::ls_types::Range,
+    uri: &Uri,
     title: String,
     locations: Vec<Location>,
 ) -> CodeLens {
@@ -474,8 +474,8 @@ fn lens(
 }
 
 fn overrides_lens(
-    range: tower_lsp::lsp_types::Range,
-    uri: &Url,
+    range: tower_lsp_server::ls_types::Range,
+    uri: &Uri,
     parent_class: &str,
     method_name: &str,
     parent_location: Location,
@@ -496,8 +496,8 @@ fn overrides_lens(
 }
 
 fn run_test_lens(
-    range: tower_lsp::lsp_types::Range,
-    uri: &Url,
+    range: tower_lsp_server::ls_types::Range,
+    uri: &Uri,
     class: &str,
     method: &str,
 ) -> CodeLens {
@@ -584,7 +584,7 @@ mod tests {
 
         let source = "<?php\nclass Foo { public function bar(): void {} }\n";
         let doc = std::sync::Arc::new(ParsedDoc::parse(source));
-        let uri = tower_lsp::lsp_types::Url::parse("file:///test.php").unwrap();
+        let uri = "file:///test.php".parse::<Uri>().unwrap();
         let store = DocumentStore::new();
 
         let lenses = code_lenses(&uri, &doc, &store, &HashMap::new(), None, || true);

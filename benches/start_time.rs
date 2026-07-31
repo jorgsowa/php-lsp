@@ -23,7 +23,7 @@ use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream, ReadHalf, WriteHalf};
-use tower_lsp::{LspService, Server};
+use tower_lsp_server::{LspService, Server};
 
 const INDEX_READY_TIMEOUT_SECS: u64 = 180;
 const PROBE_INTERVAL_MS: u64 = 25;

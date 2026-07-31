@@ -4,8 +4,8 @@
 use std::collections::HashMap;
 
 use php_ast::{ClassMemberKind, EnumMemberKind, NamespaceBody, Param, Stmt, StmtKind, TypeHint};
-use tower_lsp::lsp_types::{
-    CodeAction, CodeActionKind, CodeActionOrCommand, Position, Range, TextEdit, Url, WorkspaceEdit,
+use tower_lsp_server::ls_types::{
+    CodeAction, CodeActionKind, CodeActionOrCommand, Position, Range, TextEdit, Uri, WorkspaceEdit,
 };
 
 use crate::document::ast::{ParsedDoc, SourceView, format_type_hint};
@@ -14,7 +14,7 @@ use crate::lang::docblock::{Docblock, parse_docblock};
 /// Return "Update PHPDoc to match signature" for every function/method whose
 /// declaration line falls within `range`, already has a docblock, and whose
 /// @param/@return section is out of sync with the actual signature.
-pub fn update_phpdoc_actions(uri: &Url, doc: &ParsedDoc, range: Range) -> Vec<CodeActionOrCommand> {
+pub fn update_phpdoc_actions(uri: &Uri, doc: &ParsedDoc, range: Range) -> Vec<CodeActionOrCommand> {
     let sv = doc.view();
     let mut out = Vec::new();
     collect_stmts(&doc.program().stmts, uri, sv, range, &mut out);
@@ -23,7 +23,7 @@ pub fn update_phpdoc_actions(uri: &Url, doc: &ParsedDoc, range: Range) -> Vec<Co
 
 fn collect_stmts<'a>(
     stmts: &[Stmt<'a, 'a>],
-    uri: &Url,
+    uri: &Uri,
     sv: SourceView<'_>,
     range: Range,
     out: &mut Vec<CodeActionOrCommand>,
@@ -78,7 +78,7 @@ fn collect_stmts<'a>(
 }
 
 fn maybe_push<'a>(
-    uri: &Url,
+    uri: &Uri,
     sv: SourceView<'_>,
     doc_comment: &php_ast::Comment<'a>,
     params: &[Param<'a, 'a>],

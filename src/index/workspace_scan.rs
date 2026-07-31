@@ -2,9 +2,9 @@ use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 use std::sync::{Arc, Mutex};
 
 use rayon::prelude::*;
-use tower_lsp::Client;
-use tower_lsp::lsp_types::Url;
-use tower_lsp::lsp_types::request::{
+use tower_lsp_server::Client;
+use tower_lsp_server::ls_types::Uri;
+use tower_lsp_server::ls_types::request::{
     CodeLensRefresh, InlayHintRefreshRequest, InlineValueRefreshRequest, SemanticTokensRefresh,
     WorkspaceDiagnosticRefresh,
 };
@@ -120,9 +120,9 @@ pub(crate) async fn scan_workspace(
         }
     };
 
-    let autoload_uris: Vec<Url> = autoload_paths
+    let autoload_uris: Vec<Uri> = autoload_paths
         .iter()
-        .filter_map(|p| Url::from_file_path(p).ok())
+        .filter_map(Uri::from_file_path)
         .collect();
     if !autoload_uris.is_empty() {
         docs.set_autoload_uris(autoload_uris);
@@ -153,14 +153,14 @@ pub(crate) async fn scan_workspace(
     // blocking pool with no async scheduling overhead instead of adding an
     // extra async await per file here.
     let io_sem = Arc::new(tokio::sync::Semaphore::new(64));
-    let mut read_set: tokio::task::JoinSet<Option<(Url, String)>> = tokio::task::JoinSet::new();
+    let mut read_set: tokio::task::JoinSet<Option<(Uri, String)>> = tokio::task::JoinSet::new();
 
     for path in php_paths {
         let permit = Arc::clone(&io_sem).acquire_owned().await.unwrap();
         read_set.spawn(async move {
             let _permit = permit;
             let text = tokio::fs::read_to_string(&path).await.ok()?;
-            let uri = Url::from_file_path(&path).ok()?;
+            let uri = Uri::from_file_path(&path)?;
             Some((uri, text))
         });
     }
@@ -171,7 +171,7 @@ pub(crate) async fn scan_workspace(
     // not-yet-collected file — so a single unreadable file (common under
     // `vendor/`) could truncate the whole index. Match each result instead and
     // skip only the failures.
-    let mut file_contents: Vec<(Url, String)> = Vec::new();
+    let mut file_contents: Vec<(Uri, String)> = Vec::new();
     while let Some(res) = read_set.join_next().await {
         if let Ok(Some(pair)) = res {
             file_contents.push(pair);
@@ -187,7 +187,7 @@ pub(crate) async fn scan_workspace(
     tokio::task::spawn_blocking(move || {
         let cache_hits = std::sync::atomic::AtomicUsize::new(0);
 
-        let index_file = |(uri, text): &(Url, String)| -> usize {
+        let index_file = |(uri, text): &(Uri, String)| -> usize {
             // Requests the user is waiting on take priority over indexing:
             // pause before this file's salsa writes while any interactive
             // read is in flight, so its snapshot isn't repeatedly cancelled.
@@ -358,7 +358,7 @@ mod tests {
     use std::time::Instant;
 
     use rayon::prelude::*;
-    use tower_lsp::lsp_types::Url;
+    use tower_lsp_server::ls_types::Uri;
 
     use super::scan_workspace;
     use crate::analysis::diagnostics::parse_document_no_diags;
@@ -434,7 +434,7 @@ mod tests {
         // Overwrite the cache entry with a sentinel. The scan uses a
         // content-based key, so derive the same key from the file content.
         let foo_path = src_dir.path().join("Foo.php");
-        let uri = Url::from_file_path(&foo_path).unwrap();
+        let uri = Uri::from_file_path(&foo_path).unwrap();
         let foo_content = std::fs::read_to_string(&foo_path).unwrap();
         let sentinel = crate::index::file_index::FileIndex {
             namespace: Some("CACHE_HIT_MARKER".into()),
@@ -501,7 +501,7 @@ mod tests {
         )
         .await;
 
-        let uri = Url::from_file_path(&php_path).unwrap();
+        let uri = Uri::from_file_path(&php_path).unwrap();
         let idx_before = docs
             .snapshot_query_file_index(&uri)
             .expect("Bar.php must be indexed");
@@ -623,7 +623,7 @@ mod tests {
         // ── Phase 2a: concurrent reads ──────────────────────────────────────
         let t2 = Instant::now();
         let sem = Arc::new(tokio::sync::Semaphore::new(64));
-        let mut set: tokio::task::JoinSet<Option<(Url, String, usize)>> =
+        let mut set: tokio::task::JoinSet<Option<(Uri, String, usize)>> =
             tokio::task::JoinSet::new();
         for path in &php_paths {
             let path = path.clone();
@@ -632,11 +632,11 @@ mod tests {
                 let _permit = permit;
                 let text = tokio::fs::read_to_string(&path).await.ok()?;
                 let bytes = text.len();
-                let uri = Url::from_file_path(&path).ok()?;
+                let uri = Uri::from_file_path(&path)?;
                 Some((uri, text, bytes))
             });
         }
-        let mut file_contents: Vec<(Url, String)> = Vec::new();
+        let mut file_contents: Vec<(Uri, String)> = Vec::new();
         let mut total_bytes = 0usize;
         while let Some(Ok(Some((uri, text, bytes)))) = set.join_next().await {
             total_bytes += bytes;

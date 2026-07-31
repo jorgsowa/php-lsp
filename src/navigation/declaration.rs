@@ -8,7 +8,7 @@
 /// result as go-to-definition so the request is never empty-handed.
 use std::sync::Arc;
 
-use tower_lsp::lsp_types::{Location, Position, Url};
+use tower_lsp_server::ls_types::{Location, Position, Uri};
 
 use crate::document::ast::ParsedDoc;
 use crate::text::{strip_variable_sigil, utf16_code_units, word_at_position};
@@ -18,7 +18,7 @@ use crate::types::resolve::{Container, Declaration, resolve_declaration};
 /// Prefers abstract/interface declarations; falls back to any declaration.
 pub fn goto_declaration(
     source: &str,
-    all_docs: &[(Url, Arc<ParsedDoc>)],
+    all_docs: &[(Uri, Arc<ParsedDoc>)],
     position: Position,
 ) -> Option<Location> {
     let word = word_at_position(source, position)?;
@@ -79,14 +79,14 @@ fn is_any_declaration(decl: &Declaration<'_>) -> bool {
     !matches!(decl, Declaration::PromotedParam { .. })
 }
 
-fn precise_range(line: u32, name_char: u32, name: &str) -> tower_lsp::lsp_types::Range {
+fn precise_range(line: u32, name_char: u32, name: &str) -> tower_lsp_server::ls_types::Range {
     let end_char = name_char + utf16_code_units(name);
-    tower_lsp::lsp_types::Range {
-        start: tower_lsp::lsp_types::Position {
+    tower_lsp_server::ls_types::Range {
+        start: tower_lsp_server::ls_types::Position {
             line,
             character: name_char,
         },
-        end: tower_lsp::lsp_types::Position {
+        end: tower_lsp_server::ls_types::Position {
             line,
             character: end_char,
         },
@@ -98,7 +98,7 @@ fn precise_range(line: u32, name_char: u32, name: &str) -> tower_lsp::lsp_types:
 /// Shared by the `decls_by_name` fast path and the exhaustive fallback scan
 /// below, so both paths apply identical matching rules.
 fn any_declaration_in_file(
-    uri: &tower_lsp::lsp_types::Url,
+    uri: &tower_lsp_server::ls_types::Uri,
     idx: &crate::index::file_index::FileIndex,
     word: &str,
     bare: &str,
@@ -185,7 +185,7 @@ fn any_declaration_in_file(
 pub fn goto_declaration_from_index(
     source: &str,
     wi: &crate::db::workspace_index::WorkspaceIndexData,
-    position: tower_lsp::lsp_types::Position,
+    position: tower_lsp_server::ls_types::Position,
 ) -> Option<Location> {
     use crate::index::file_index::ClassKind;
     use crate::text::word_at_position;

@@ -10,8 +10,8 @@ use php_ast::{
     ClassMemberKind, EnumMemberKind, ExprKind, NamespaceBody, Stmt, StmtKind,
     visitor::{Visitor, walk_expr, walk_stmt},
 };
-use tower_lsp::lsp_types::{
-    CodeAction, CodeActionKind, CodeActionOrCommand, Range, TextEdit, Url, WorkspaceEdit,
+use tower_lsp_server::ls_types::{
+    CodeAction, CodeActionKind, CodeActionOrCommand, Range, TextEdit, Uri, WorkspaceEdit,
 };
 
 use crate::document::ast::{ParsedDoc, SourceView};
@@ -20,7 +20,7 @@ use crate::lang::docblock::parse_docblock;
 /// Return "Add @throws …" actions for every function/method whose declaration
 /// line falls within `range`, already has a docblock, and whose body contains
 /// `throw new ClassName()` expressions not yet listed in `@throws`.
-pub fn add_throws_actions(uri: &Url, doc: &ParsedDoc, range: Range) -> Vec<CodeActionOrCommand> {
+pub fn add_throws_actions(uri: &Uri, doc: &ParsedDoc, range: Range) -> Vec<CodeActionOrCommand> {
     let sv = doc.view();
     let mut out = Vec::new();
     collect_stmts(&doc.program().stmts, uri, sv, range, &mut out);
@@ -29,7 +29,7 @@ pub fn add_throws_actions(uri: &Url, doc: &ParsedDoc, range: Range) -> Vec<CodeA
 
 fn collect_stmts<'a>(
     stmts: &[Stmt<'a, 'a>],
-    uri: &Url,
+    uri: &Uri,
     sv: SourceView<'_>,
     range: Range,
     out: &mut Vec<CodeActionOrCommand>,
@@ -99,7 +99,7 @@ fn collect_stmts<'a>(
 }
 
 fn maybe_push(
-    uri: &Url,
+    uri: &Uri,
     sv: SourceView<'_>,
     doc_comment: &php_ast::Comment<'_>,
     body: &php_ast::Block<'_, '_>,

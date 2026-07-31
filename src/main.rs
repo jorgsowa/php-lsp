@@ -7,7 +7,7 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 static ALLOC: dhat::Alloc = dhat::Alloc;
 
 use php_lsp::backend::Backend;
-use tower_lsp::{LspService, Server};
+use tower_lsp_server::{LspService, Server};
 
 fn main() {
     // Cap the blocking pool well below tokio's 512 default. mimalloc keeps a

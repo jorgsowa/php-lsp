@@ -27,7 +27,7 @@ use std::time::{Duration, Instant};
 
 use mir_analyzer::Name;
 use php_lsp::document_store::DocumentStore;
-use tower_lsp::lsp_types::Url;
+use tower_lsp_server::ls_types::Uri;
 
 const HOT_METHOD: &str = "process";
 const OWNER: &str = "Service";
@@ -35,8 +35,8 @@ const OWNER: &str = "Service";
 /// whose shape depends on the scenario.
 const REACH_EVERY: usize = 10;
 
-fn service_file() -> (Url, String) {
-    let url = Url::parse("file:///synth/Service.php").unwrap();
+fn service_file() -> (Uri, String) {
+    let url = ("file:///synth/Service.php").parse::<Uri>().unwrap();
     let text = format!(
         "<?php\nnamespace App;\nclass {OWNER} {{\n    public static function {HOT_METHOD}(): void {{}}\n}}\n"
     );
@@ -58,8 +58,8 @@ fn filler() -> String {
 }
 
 /// Calls `App\Service::process()` statically — the plainest reachable shape.
-fn reachable_file(i: usize) -> (Url, String) {
-    let url = Url::parse(&format!("file:///synth/R{i}.php")).unwrap();
+fn reachable_file(i: usize) -> (Uri, String) {
+    let url = format!("file:///synth/R{i}.php").parse::<Uri>().unwrap();
     let text = format!(
         "<?php\nnamespace App;\n\
          class R{i} {{\n\
@@ -74,8 +74,8 @@ fn reachable_file(i: usize) -> (Url, String) {
 
 /// Generic-member noise: defines and calls its *own* static `process()` —
 /// text-matches the member token, so the gate must admit it.
-fn noise_file_member_match(i: usize) -> (Url, String) {
-    let url = Url::parse(&format!("file:///synth/N{i}.php")).unwrap();
+fn noise_file_member_match(i: usize) -> (Uri, String) {
+    let url = format!("file:///synth/N{i}.php").parse::<Uri>().unwrap();
     let text = format!(
         "<?php\nnamespace App;\n\
          class N{i} {{\n\
@@ -93,8 +93,8 @@ fn noise_file_member_match(i: usize) -> (Url, String) {
 /// the word-bounded gate scan doesn't care where) but never the member
 /// token. The pre-0.63 OR-gate paid a full analysis here; the member-only
 /// gate rejects on the text scan alone.
-fn noise_file_owner_match(i: usize) -> (Url, String) {
-    let url = Url::parse(&format!("file:///synth/N{i}.php")).unwrap();
+fn noise_file_owner_match(i: usize) -> (Uri, String) {
+    let url = format!("file:///synth/N{i}.php").parse::<Uri>().unwrap();
     let text = format!(
         "<?php\nnamespace App;\n\
          /** Unrelated to the {OWNER} layer. */\n\
@@ -107,7 +107,7 @@ fn noise_file_owner_match(i: usize) -> (Url, String) {
     (url, text)
 }
 
-fn build(n: usize, noise: fn(usize) -> (Url, String)) -> DocumentStore {
+fn build(n: usize, noise: fn(usize) -> (Uri, String)) -> DocumentStore {
     let store = DocumentStore::new();
     let (su, st) = service_file();
     store.ingest(su, &st);
@@ -130,7 +130,7 @@ fn median_ms(mut s: Vec<Duration>) -> f64 {
 
 /// Median cold latency over the real, unfiltered candidate set: a fresh
 /// store per rep so `analyze_file` is never a memo hit.
-fn cold_ms(n: usize, reps: usize, sym: &Name, noise: fn(usize) -> (Url, String)) -> (usize, f64) {
+fn cold_ms(n: usize, reps: usize, sym: &Name, noise: fn(usize) -> (Uri, String)) -> (usize, f64) {
     let mut samples = Vec::with_capacity(reps);
     let mut count = 0;
     for _ in 0..reps {
@@ -147,7 +147,7 @@ fn cold_ms(n: usize, reps: usize, sym: &Name, noise: fn(usize) -> (Url, String))
 fn run_scenario(
     title: &str,
     sym: &Name,
-    noise: fn(usize) -> (Url, String),
+    noise: fn(usize) -> (Uri, String),
     ceiling_ms: f64,
 ) -> bool {
     let reps = 3usize;

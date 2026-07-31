@@ -2,15 +2,15 @@
 /// and removes ones whose short name doesn't appear in the file body.
 use std::collections::HashMap;
 
-use tower_lsp::lsp_types::{
-    CodeAction, CodeActionKind, CodeActionOrCommand, Position, Range, TextEdit, Url, WorkspaceEdit,
+use tower_lsp_server::ls_types::{
+    CodeAction, CodeActionKind, CodeActionOrCommand, Position, Range, TextEdit, Uri, WorkspaceEdit,
 };
 
 use crate::text::fqn_short_name;
 
 /// Analyse `source` and return an "Organize imports" code action if there is
 /// something to do (sort order is wrong or unused imports exist).
-pub fn organize_imports_action(source: &str, uri: &Url) -> Option<CodeActionOrCommand> {
+pub fn organize_imports_action(source: &str, uri: &Uri) -> Option<CodeActionOrCommand> {
     let block = find_use_block(source)?;
     if block.statements.is_empty() {
         return None;
@@ -112,7 +112,7 @@ fn sort_and_dedup(group: &mut Vec<UseStatement>) {
     group.dedup_by(|a, b| a.fqn.eq_ignore_ascii_case(&b.fqn) && a.alias == b.alias);
 }
 
-fn make_action(uri: &Url, edit: TextEdit) -> CodeActionOrCommand {
+fn make_action(uri: &Uri, edit: TextEdit) -> CodeActionOrCommand {
     let mut changes = HashMap::new();
     changes.insert(uri.clone(), vec![edit]);
     CodeActionOrCommand::CodeAction(CodeAction {

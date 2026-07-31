@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
-use tower_lsp::jsonrpc::Result;
-use tower_lsp::lsp_types::*;
+use tower_lsp_server::jsonrpc::Result;
+use tower_lsp_server::ls_types::*;
 
 use crate::actions::add_throws_action::add_throws_actions;
 use crate::actions::arrow_function_action::{
@@ -200,10 +200,10 @@ impl Backend {
             Some(k) => k.to_string(),
             None => return Ok(item),
         };
-        let uri: Url = match data
+        let uri: Uri = match data
             .get("uri")
             .and_then(|v| v.as_str())
-            .and_then(|s| Url::parse(s).ok())
+            .and_then(|s| (s).parse::<Uri>().ok())
         {
             Some(u) => u,
             None => return Ok(item),

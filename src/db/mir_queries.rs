@@ -6,7 +6,7 @@
 use std::sync::Arc;
 
 use mir_analyzer::db::{MirDatabase, SourceFile};
-use tower_lsp::lsp_types::Url;
+use tower_lsp_server::ls_types::Uri;
 
 use crate::db::index::IndexArc;
 use crate::db::parse::ParsedArc;
@@ -69,9 +69,9 @@ pub fn file_index(db: &dyn MirDatabase, wf: LspWsFile) -> IndexArc {
 #[salsa::tracked(no_eq)]
 pub fn workspace_index(db: &dyn MirDatabase, ws: LspWorkspace) -> WorkspaceIndexArc {
     let ws_files = ws.files(db);
-    let mut files: Vec<(Url, Arc<FileIndex>)> = Vec::with_capacity(ws_files.len());
+    let mut files: Vec<(Uri, Arc<FileIndex>)> = Vec::with_capacity(ws_files.len());
     for wf in ws_files.iter() {
-        let Ok(url) = Url::parse(wf.source(db).path(db)) else {
+        let Ok(url) = (wf.source(db).path(db)).parse::<Uri>() else {
             continue;
         };
         let idx = file_index(db, *wf).0.clone();

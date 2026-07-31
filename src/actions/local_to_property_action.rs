@@ -3,8 +3,8 @@ use std::ops::ControlFlow;
 
 use php_ast::visitor::{Visitor, walk_expr};
 use php_ast::{ClassBody, ClassMemberKind, ExprKind, NamespaceBody, Stmt, StmtKind};
-use tower_lsp::lsp_types::{
-    CodeAction, CodeActionKind, CodeActionOrCommand, Range, TextEdit, Url, WorkspaceEdit,
+use tower_lsp_server::ls_types::{
+    CodeAction, CodeActionKind, CodeActionOrCommand, Range, TextEdit, Uri, WorkspaceEdit,
 };
 
 use crate::document::ast::{ParsedDoc, SourceView};
@@ -21,7 +21,7 @@ pub fn local_to_property_actions(
     source: &str,
     doc: &ParsedDoc,
     range: Range,
-    uri: &Url,
+    uri: &Uri,
 ) -> Vec<CodeActionOrCommand> {
     let sv = doc.view();
     let cursor = sv.byte_of_position(range.start);
@@ -45,7 +45,7 @@ pub fn local_to_property_actions(
 struct Ctx<'a> {
     var: &'a str,
     prop_name: &'a str,
-    uri: &'a Url,
+    uri: &'a Uri,
 }
 
 fn collect_in_stmts<'a>(

@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use tower_lsp::lsp_types::{Position, Range, TextEdit, Url, WorkspaceEdit};
+use tower_lsp_server::ls_types::{Position, Range, TextEdit, Uri, WorkspaceEdit};
 
 use crate::index::file_index::FileIndex;
 
@@ -12,7 +12,7 @@ use crate::index::file_index::FileIndex;
 /// back to the global namespace.
 pub(crate) fn find_fqn_for_class(
     name: &str,
-    indexes: &[(Url, std::sync::Arc<FileIndex>)],
+    indexes: &[(Uri, std::sync::Arc<FileIndex>)],
 ) -> Option<String> {
     for (_uri, idx) in indexes {
         for class in &idx.classes {
@@ -25,7 +25,7 @@ pub(crate) fn find_fqn_for_class(
 }
 
 /// Build a `WorkspaceEdit` that inserts `use FQN;` near the top of the file.
-pub(crate) fn build_use_import_edit(source: &str, uri: &Url, fqn: &str) -> WorkspaceEdit {
+pub(crate) fn build_use_import_edit(source: &str, uri: &Uri, fqn: &str) -> WorkspaceEdit {
     // Insert after the `<?php` line and any existing `use` / `namespace` lines
     let insert_line = find_use_insert_line(source);
     let insert_text = format!("use {fqn};\n");
@@ -52,7 +52,7 @@ pub(crate) fn build_use_import_edit(source: &str, uri: &Url, fqn: &str) -> Works
 /// Returns `Some(fqn)` only when the FQN is namespaced (contains `\`).
 pub(crate) fn find_fqn_for_function(
     name: &str,
-    indexes: &[(Url, std::sync::Arc<FileIndex>)],
+    indexes: &[(Uri, std::sync::Arc<FileIndex>)],
 ) -> Option<String> {
     for (_uri, idx) in indexes {
         for func in &idx.functions {
@@ -65,7 +65,7 @@ pub(crate) fn find_fqn_for_function(
 }
 
 /// Build a `WorkspaceEdit` that inserts `use function FQN;` near the top of the file.
-pub(crate) fn build_use_function_import_edit(source: &str, uri: &Url, fqn: &str) -> WorkspaceEdit {
+pub(crate) fn build_use_function_import_edit(source: &str, uri: &Uri, fqn: &str) -> WorkspaceEdit {
     let insert_line = find_use_insert_line(source);
     let insert_text = format!("use function {fqn};\n");
     let pos = Position {

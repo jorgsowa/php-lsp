@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
 use serde_json::{Value, json};
-use tower_lsp::lsp_types::Url;
+use tower_lsp_server::ls_types::Uri;
 
 use super::client::{TestClient, spawn_server};
 use super::fixture::{self, Cursor, Fixture, Range as FixtureRange};
@@ -284,7 +284,7 @@ impl TestServer {
         initialization_options: Value,
         client_capabilities: Value,
     ) -> Value {
-        let root_uri = root.map(|p| Url::from_file_path(p).unwrap());
+        let root_uri = root.map(|p| Uri::from_file_path(p).unwrap());
         let root_val = root_uri
             .as_ref()
             .map(|u| json!(u.as_str()))
@@ -402,9 +402,9 @@ impl TestServer {
     pub fn uri(&self, path: &str) -> String {
         if let Some(root) = &self.root {
             let full = root.join(path);
-            Url::from_file_path(full).unwrap().to_string()
+            Uri::from_file_path(full).unwrap().to_string()
         } else {
-            // Do NOT use Url::from_file_path here — it rejects paths like
+            // Do NOT use Uri::from_file_path here — it rejects paths like
             // "/a.php" on Windows (no drive letter) and panics on unwrap().
             format!("file:///{path}")
         }

@@ -23,7 +23,7 @@ use std::time::{Duration, Instant};
 use php_lsp::analysis::code_lens::code_lenses;
 use php_lsp::ast::ParsedDoc;
 use php_lsp::document_store::DocumentStore;
-use tower_lsp::lsp_types::Url;
+use tower_lsp_server::ls_types::Uri;
 
 const OWNER: &str = "Service";
 
@@ -39,8 +39,8 @@ fn service_source(num_methods: usize) -> String {
 
 /// Noise: a different namespace, so the cheap namespace/import checks never
 /// resolve it — the narrowing scan's text-mention fallback must run.
-fn noise_file(i: usize) -> (Url, String) {
-    let url = Url::parse(&format!("file:///synth/N{i}.php")).unwrap();
+fn noise_file(i: usize) -> (Uri, String) {
+    let url = format!("file:///synth/N{i}.php").parse::<Uri>().unwrap();
     let text = format!(
         "<?php\nnamespace Other{i};\n\
          class N{i} {{\n\
@@ -52,9 +52,9 @@ fn noise_file(i: usize) -> (Url, String) {
     (url, text)
 }
 
-fn build(n_noise: usize, num_methods: usize) -> (DocumentStore, Arc<ParsedDoc>, Url) {
+fn build(n_noise: usize, num_methods: usize) -> (DocumentStore, Arc<ParsedDoc>, Uri) {
     let store = DocumentStore::new();
-    let url = Url::parse("file:///synth/Service.php").unwrap();
+    let url = ("file:///synth/Service.php").parse::<Uri>().unwrap();
     let src = service_source(num_methods);
     store.ingest(url.clone(), &src);
     for i in 0..n_noise {

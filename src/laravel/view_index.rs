@@ -11,7 +11,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use tower_lsp::lsp_types::{CompletionItem, CompletionItemKind, Location, Position, Url};
+use tower_lsp_server::ls_types::{CompletionItem, CompletionItemKind, Location, Position, Uri};
 
 use crate::text::zero_width_location;
 
@@ -33,7 +33,7 @@ impl ViewIndex {
     /// `uri`/`position`, if any — the reverse of `get`. Since the location
     /// is always `(0, 0)`, this only recognizes the cursor sitting at the
     /// very start of the template file.
-    pub fn key_at(&self, uri: &Url, position: Position) -> Option<&str> {
+    pub fn key_at(&self, uri: &Uri, position: Position) -> Option<&str> {
         crate::laravel::location_lookup::key_at(&self.views, uri, position)
     }
 
@@ -61,7 +61,7 @@ fn walk(base: &Path, dir: &Path, out: &mut HashMap<String, Location>) {
         let Some(name) = view_name_for(base, &path) else {
             continue;
         };
-        let Ok(uri) = Url::from_file_path(&path) else {
+        let Some(uri) = Uri::from_file_path(&path) else {
             continue;
         };
         out.entry(name)

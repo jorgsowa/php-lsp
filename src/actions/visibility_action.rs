@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
 use php_ast::{ClassMemberKind, NamespaceBody, Stmt, StmtKind, Visibility};
-use tower_lsp::lsp_types::{
-    CodeAction, CodeActionKind, CodeActionOrCommand, Range, TextEdit, Url, WorkspaceEdit,
+use tower_lsp_server::ls_types::{
+    CodeAction, CodeActionKind, CodeActionOrCommand, Range, TextEdit, Uri, WorkspaceEdit,
 };
 
 use crate::document::ast::{ParsedDoc, SourceView};
@@ -17,7 +17,7 @@ pub fn change_visibility_actions(
     source: &str,
     doc: &ParsedDoc,
     range: Range,
-    uri: &Url,
+    uri: &Uri,
 ) -> Vec<CodeActionOrCommand> {
     let sv = doc.view();
     let cursor_byte = sv.byte_of_position(range.start) as usize;
@@ -30,7 +30,7 @@ fn collect<'a>(
     stmts: &[Stmt<'a, 'a>],
     source: &str,
     cursor_byte: usize,
-    uri: &Url,
+    uri: &Uri,
     sv: SourceView<'_>,
     out: &mut Vec<CodeActionOrCommand>,
 ) {
@@ -56,7 +56,7 @@ fn visit_members<'a>(
     members: &[php_ast::ClassMember<'a, 'a>],
     source: &str,
     cursor_byte: usize,
-    uri: &Url,
+    uri: &Uri,
     sv: SourceView<'_>,
     out: &mut Vec<CodeActionOrCommand>,
 ) {
@@ -89,7 +89,7 @@ fn visit_members<'a>(
 
 fn push_actions(
     source: &str,
-    uri: &Url,
+    uri: &Uri,
     sv: SourceView<'_>,
     span_start: usize,
     cursor_byte: usize,

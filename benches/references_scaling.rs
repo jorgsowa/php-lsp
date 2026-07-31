@@ -32,7 +32,7 @@ use std::time::{Duration, Instant};
 
 use mir_analyzer::Name;
 use php_lsp::document_store::DocumentStore;
-use tower_lsp::lsp_types::Url;
+use tower_lsp_server::ls_types::Uri;
 
 const HOT_METHOD: &str = "process";
 const OWNER: &str = "Service";
@@ -40,8 +40,8 @@ const OWNER: &str = "Service";
 /// own `process()` (text-match the method, never name the owner).
 const REACH_EVERY: usize = 10;
 
-fn service_file() -> (Url, String) {
-    let url = Url::parse("file:///synth/Service.php").unwrap();
+fn service_file() -> (Uri, String) {
+    let url = ("file:///synth/Service.php").parse::<Uri>().unwrap();
     let text = format!(
         "<?php\nnamespace App;\nclass {OWNER} {{\n    public function {HOT_METHOD}(): void {{}}\n}}\n"
     );
@@ -65,8 +65,8 @@ fn filler() -> String {
 }
 
 /// References `App\Service::process` — names the owner (type hint) and calls it.
-fn reachable_file(i: usize) -> (Url, String) {
-    let url = Url::parse(&format!("file:///synth/R{i}.php")).unwrap();
+fn reachable_file(i: usize) -> (Uri, String) {
+    let url = format!("file:///synth/R{i}.php").parse::<Uri>().unwrap();
     let text = format!(
         "<?php\nnamespace App;\n\
          class R{i} {{\n\
@@ -82,8 +82,8 @@ fn reachable_file(i: usize) -> (Url, String) {
 
 /// Noise: defines and calls its *own* `process()` — text-matches the method
 /// name but never names `Service`, so it cannot resolve to `Service::process`.
-fn noise_file(i: usize) -> (Url, String) {
-    let url = Url::parse(&format!("file:///synth/N{i}.php")).unwrap();
+fn noise_file(i: usize) -> (Uri, String) {
+    let url = format!("file:///synth/N{i}.php").parse::<Uri>().unwrap();
     let text = format!(
         "<?php\nnamespace App;\n\
          class N{i} {{\n\

@@ -3,7 +3,7 @@
 //! backing type, and function/method parameter lists. These answer
 //! structural facts directly from the parsed source and don't depend on mir.
 use php_ast::{ClassMemberKind, EnumMemberKind, NamespaceBody, Stmt, StmtKind};
-use tower_lsp::lsp_types::Position;
+use tower_lsp_server::ls_types::Position;
 
 use crate::document::ast::{ParsedDoc, SourceView};
 use crate::lang::docblock::{docblock_before, parse_docblock};
@@ -326,7 +326,7 @@ fn enclosing_class_fqn_in_stmts(
 pub fn enclosing_class_range_at(
     doc: &ParsedDoc,
     position: Position,
-) -> Option<tower_lsp::lsp_types::Range> {
+) -> Option<tower_lsp_server::ls_types::Range> {
     let sv = doc.view();
     enclosing_class_range_in_stmts(sv, &doc.program().stmts, position)
 }
@@ -334,7 +334,7 @@ pub fn enclosing_class_range_at(
 /// Return the LSP range of every class/interface/trait/enum declaration in
 /// the file (recursing into braced-namespace bodies). Used by linked-editing
 /// to drop highlights that fall inside an *other* class than the cursor's.
-pub fn collect_all_class_ranges(doc: &ParsedDoc) -> Vec<tower_lsp::lsp_types::Range> {
+pub fn collect_all_class_ranges(doc: &ParsedDoc) -> Vec<tower_lsp_server::ls_types::Range> {
     let sv = doc.view();
     let mut out = Vec::new();
     collect_class_ranges_in_stmts(sv, &doc.program().stmts, &mut out);
@@ -344,7 +344,7 @@ pub fn collect_all_class_ranges(doc: &ParsedDoc) -> Vec<tower_lsp::lsp_types::Ra
 fn collect_class_ranges_in_stmts(
     sv: SourceView<'_>,
     stmts: &[Stmt<'_, '_>],
-    out: &mut Vec<tower_lsp::lsp_types::Range>,
+    out: &mut Vec<tower_lsp_server::ls_types::Range>,
 ) {
     for stmt in stmts {
         match &stmt.kind {
@@ -368,7 +368,7 @@ fn enclosing_class_range_in_stmts(
     sv: SourceView<'_>,
     stmts: &[Stmt<'_, '_>],
     pos: Position,
-) -> Option<tower_lsp::lsp_types::Range> {
+) -> Option<tower_lsp_server::ls_types::Range> {
     for stmt in stmts {
         match &stmt.kind {
             StmtKind::Class(_)

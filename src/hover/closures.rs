@@ -1,5 +1,5 @@
 use php_ast::{ClassMemberKind, ExprKind, NamespaceBody, Stmt, StmtKind};
-use tower_lsp::lsp_types::Position;
+use tower_lsp_server::ls_types::Position;
 
 use crate::document::ast::{ParsedDoc, format_type_hint};
 

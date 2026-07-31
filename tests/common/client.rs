@@ -5,7 +5,7 @@ use serde_json::{Value, json};
 use std::collections::VecDeque;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream, ReadHalf, WriteHalf};
 use tokio::time::Duration;
-use tower_lsp::{LspService, Server};
+use tower_lsp_server::{LspService, Server};
 
 // ---------- low-level framing ----------
 

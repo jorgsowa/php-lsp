@@ -13,7 +13,9 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use php_ast::{ArrayElement, ExprKind, StmtKind};
-use tower_lsp::lsp_types::{CompletionItem, CompletionItemKind, Location, Position, Range, Url};
+use tower_lsp_server::ls_types::{
+    CompletionItem, CompletionItemKind, Location, Position, Range, Uri,
+};
 
 use crate::analysis::diagnostics::parse_document_no_diags;
 use crate::document::ast::{SourceView, offset_to_position};
@@ -35,7 +37,7 @@ impl TranslationIndex {
     /// The translation key whose declaration contains `position`, if any —
     /// the reverse of `get`, used to recognize a find-references request
     /// starting from the definition site.
-    pub fn key_at(&self, uri: &Url, position: Position) -> Option<&str> {
+    pub fn key_at(&self, uri: &Uri, position: Position) -> Option<&str> {
         crate::laravel::location_lookup::key_at(&self.keys, uri, position)
     }
 
@@ -98,7 +100,7 @@ fn load_locale_php_files(locale_dir: &Path, out: &mut HashMap<String, Location>)
         let Ok(text) = std::fs::read_to_string(&path) else {
             continue;
         };
-        let Ok(uri) = Url::from_file_path(&path) else {
+        let Some(uri) = Uri::from_file_path(&path) else {
             continue;
         };
         let doc = parse_document_no_diags(&text);
@@ -116,7 +118,7 @@ fn load_locale_php_files(locale_dir: &Path, out: &mut HashMap<String, Location>)
 fn collect_array_keys(
     elements: &[ArrayElement<'_, '_>],
     sv: SourceView<'_>,
-    uri: &Url,
+    uri: &Uri,
     prefix: &str,
     out: &mut HashMap<String, Location>,
 ) {
@@ -156,7 +158,7 @@ fn load_locale_json_file(path: &Path, out: &mut HashMap<String, Location>) {
     let Some(map) = json.as_object() else {
         return;
     };
-    let Ok(uri) = Url::from_file_path(path) else {
+    let Some(uri) = Uri::from_file_path(path) else {
         return;
     };
     for key in map.keys() {

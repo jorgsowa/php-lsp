@@ -1,4 +1,4 @@
-use tower_lsp::lsp_types::Position;
+use tower_lsp_server::ls_types::Position;
 
 /// Strip the `$0` cursor marker from a PHP source string and return
 /// the cleaned source together with the `Position` of that marker.

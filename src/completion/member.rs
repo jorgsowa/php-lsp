@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use mir_analyzer::AnalysisSession;
-use tower_lsp::lsp_types::{CompletionItem, CompletionItemKind, InsertTextFormat, Position};
+use tower_lsp_server::ls_types::{CompletionItem, CompletionItemKind, InsertTextFormat, Position};
 
 use crate::document::ast::ParsedDoc;
 use crate::text::{fqn_short_name, utf16_offset_to_byte};

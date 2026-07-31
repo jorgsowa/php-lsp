@@ -11,7 +11,7 @@ use php_ast::{
         walk_stmt, walk_trait_use, walk_type_hint,
     },
 };
-use tower_lsp::lsp_types::DocumentHighlightKind;
+use tower_lsp_server::ls_types::DocumentHighlightKind;
 
 use crate::document::ast::{str_offset, str_offset_in_range};
 

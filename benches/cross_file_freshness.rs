@@ -19,7 +19,7 @@ use serde_json::{Value, json};
 use std::path::Path;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream, ReadHalf, WriteHalf};
-use tower_lsp::{LspService, Server};
+use tower_lsp_server::{LspService, Server};
 
 const SIZES: &[usize] = &[100, 1000, 5000];
 const CYCLES: usize = 8;

@@ -2,7 +2,9 @@
 ///
 /// Delegates all analysis to the `mir-analyzer` crate and converts its `Issue`
 /// type into the `tower-lsp` `Diagnostic` type expected by the LSP backend.
-use tower_lsp::lsp_types::{Diagnostic, DiagnosticSeverity, NumberOrString, Position, Range, Url};
+use tower_lsp_server::ls_types::{
+    Diagnostic, DiagnosticSeverity, NumberOrString, Position, Range, Uri,
+};
 
 use crate::analysis::diagnostics::PHP_LSP_SOURCE;
 use crate::document::ast::ParsedDoc;
@@ -12,7 +14,7 @@ use crate::lang::config::DiagnosticsConfig;
 /// Ingests the current file, runs Pass 2 via `FileAnalyzer`, and returns LSP
 /// diagnostics filtered by `DiagnosticsConfig`.
 pub fn semantic_diagnostics(
-    uri: &Url,
+    uri: &Uri,
     doc: &ParsedDoc,
     session: &mir_analyzer::AnalysisSession,
     cfg: &DiagnosticsConfig,
@@ -43,7 +45,7 @@ pub fn semantic_diagnostics(
 /// config toggles (the user flipping a category must not rerun the analyzer).
 pub fn issues_to_diagnostics(
     issues: &[mir_issues::Issue],
-    _uri: &Url,
+    _uri: &Uri,
     cfg: &DiagnosticsConfig,
 ) -> Vec<Diagnostic> {
     if !cfg.enabled {
@@ -64,7 +66,7 @@ pub fn issues_to_diagnostics(
 /// this costs nothing in steady state.
 pub fn issues_to_diagnostics_gated(
     issues: &[mir_issues::Issue],
-    uri: &Url,
+    uri: &Uri,
     cfg: &DiagnosticsConfig,
     index_ready: bool,
 ) -> Vec<Diagnostic> {
@@ -210,7 +212,7 @@ mod tests {
     fn to_lsp_diagnostic_sets_code_to_issue_kind_name() {
         use mir_issues::{Issue, IssueKind, Location};
         use std::sync::Arc;
-        use tower_lsp::lsp_types::NumberOrString;
+        use tower_lsp_server::ls_types::NumberOrString;
 
         let location = Location {
             file: Arc::from("file:///test.php"),

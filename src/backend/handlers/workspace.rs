@@ -1,10 +1,10 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use tower_lsp::jsonrpc::Result;
-use tower_lsp::lsp_types::notification::Progress as ProgressNotification;
-use tower_lsp::lsp_types::request::WorkDoneProgressCreate;
-use tower_lsp::lsp_types::*;
+use tower_lsp_server::jsonrpc::Result;
+use tower_lsp_server::ls_types::notification::Progress as ProgressNotification;
+use tower_lsp_server::ls_types::request::WorkDoneProgressCreate;
+use tower_lsp_server::ls_types::*;
 
 use crate::analysis::semantic_tokens::legend;
 use crate::editing::file_rename::{delete_use_in_source, use_edits_in_source};
@@ -27,10 +27,13 @@ impl Backend {
                 .as_deref()
                 .unwrap_or(&[])
                 .iter()
-                .filter_map(|f| f.uri.to_file_path().ok())
+                .filter_map(|f| f.uri.to_file_path().map(|c| c.into_owned()))
                 .collect();
             if roots.is_empty()
-                && let Some(path) = params.root_uri.as_ref().and_then(|u| u.to_file_path().ok())
+                && let Some(path) = params
+                    .root_uri
+                    .as_ref()
+                    .and_then(|u| u.to_file_path().map(|c| c.into_owned()))
             {
                 roots.push(path);
             }
@@ -48,7 +51,7 @@ impl Backend {
             if matches!(file_cfg, Some(serde_json::Value::Null)) {
                 self.client
                     .log_message(
-                        tower_lsp::lsp_types::MessageType::WARNING,
+                        tower_lsp_server::ls_types::MessageType::WARNING,
                         "php-lsp: .php-lsp.json contains invalid JSON — ignoring",
                     )
                     .await;
@@ -60,7 +63,7 @@ impl Backend {
             {
                 self.client
                     .log_message(
-                        tower_lsp::lsp_types::MessageType::WARNING,
+                        tower_lsp_server::ls_types::MessageType::WARNING,
                         format!(
                             "php-lsp: .php-lsp.json unsupported phpVersion {ver:?} — valid values: {}",
                             crate::lang::autoload::SUPPORTED_PHP_VERSIONS.join(", ")
@@ -76,7 +79,7 @@ impl Backend {
             {
                 self.client
                     .log_message(
-                        tower_lsp::lsp_types::MessageType::WARNING,
+                        tower_lsp_server::ls_types::MessageType::WARNING,
                         format!(
                             "php-lsp: unsupported phpVersion {ver:?} — valid values: {}",
                             crate::lang::autoload::SUPPORTED_PHP_VERSIONS.join(", ")
@@ -114,7 +117,7 @@ impl Backend {
                 .unwrap_or_else(|_| (crate::lang::autoload::PHP_8_5.to_string(), "default"));
             self.client
                 .log_message(
-                    tower_lsp::lsp_types::MessageType::INFO,
+                    tower_lsp_server::ls_types::MessageType::INFO,
                     format!("php-lsp: using PHP {ver} ({source})"),
                 )
                 .await;
@@ -124,7 +127,7 @@ impl Backend {
                 let clamped = crate::lang::autoload::clamp_php_version(&ver);
                 self.client
                     .show_message(
-                        tower_lsp::lsp_types::MessageType::WARNING,
+                        tower_lsp_server::ls_types::MessageType::WARNING,
                         format!(
                             "php-lsp: detected PHP {ver} is outside the supported range \
                                  ({}); using PHP {clamped} for analysis",
@@ -607,16 +610,20 @@ impl Backend {
         params: RenameFilesParams,
     ) -> Result<Option<WorkspaceEdit>> {
         let psr4 = self.psr4.load();
-        let mut merged_changes: std::collections::HashMap<Url, Vec<TextEdit>> =
+        let mut merged_changes: std::collections::HashMap<Uri, Vec<TextEdit>> =
             std::collections::HashMap::new();
 
         for file_rename in &params.files {
-            let old_path = Url::parse(&file_rename.old_uri)
+            let old_path = file_rename
+                .old_uri
+                .parse::<Uri>()
                 .ok()
-                .and_then(|u| u.to_file_path().ok());
-            let new_path = Url::parse(&file_rename.new_uri)
+                .and_then(|u| u.to_file_path().map(|c| c.into_owned()));
+            let new_path = file_rename
+                .new_uri
+                .parse::<Uri>()
                 .ok()
-                .and_then(|u| u.to_file_path().ok());
+                .and_then(|u| u.to_file_path().map(|c| c.into_owned()));
 
             let (Some(old_path), Some(new_path)) = (old_path, new_path) else {
                 continue;
@@ -699,7 +706,7 @@ impl Backend {
 
     pub(crate) async fn handle_did_rename_files(&self, params: RenameFilesParams) {
         for file_rename in &params.files {
-            if let Ok(old_uri) = Url::parse(&file_rename.old_uri) {
+            if let Ok(old_uri) = file_rename.old_uri.parse::<Uri>() {
                 self.docs.remove(&old_uri);
                 // Clear diagnostics under the old path — same as did_delete_files —
                 // or a client keeps showing them for a URI that no longer exists.
@@ -707,8 +714,8 @@ impl Backend {
                     .note_published(&old_uri, crate::backend::diagnostics_content_hash(&[]));
                 self.client.publish_diagnostics(old_uri, vec![], None).await;
             }
-            if let Ok(new_uri) = Url::parse(&file_rename.new_uri)
-                && let Ok(path) = new_uri.to_file_path()
+            if let Ok(new_uri) = file_rename.new_uri.parse::<Uri>()
+                && let Some(path) = new_uri.to_file_path()
                 && let Ok(text) = tokio::fs::read_to_string(&path).await
             {
                 self.ingest_if_not_open(new_uri, &text);
@@ -722,18 +729,18 @@ impl Backend {
         params: CreateFilesParams,
     ) -> Result<Option<WorkspaceEdit>> {
         let psr4 = self.psr4.load();
-        let mut changes: std::collections::HashMap<Url, Vec<TextEdit>> =
+        let mut changes: std::collections::HashMap<Uri, Vec<TextEdit>> =
             std::collections::HashMap::new();
 
         for file in &params.files {
-            let Ok(uri) = Url::parse(&file.uri) else {
+            let Ok(uri) = file.uri.parse::<Uri>() else {
                 continue;
             };
-            if !uri.path().ends_with(".php") {
+            if !uri.path().as_str().ends_with(".php") {
                 continue;
             }
 
-            let stub = if let Ok(path) = uri.to_file_path()
+            let stub = if let Some(path) = uri.to_file_path()
                 && let Some(fqn) = psr4.file_to_fqn(&path)
             {
                 let (ns, class_name) = match fqn.rfind('\\') {
@@ -781,8 +788,8 @@ impl Backend {
 
     pub(crate) async fn handle_did_create_files(&self, params: CreateFilesParams) {
         for file in &params.files {
-            if let Ok(uri) = Url::parse(&file.uri)
-                && let Ok(path) = uri.to_file_path()
+            if let Ok(uri) = file.uri.parse::<Uri>()
+                && let Some(path) = uri.to_file_path()
                 && let Ok(text) = tokio::fs::read_to_string(&path).await
             {
                 self.ingest_if_not_open(uri, &text);
@@ -796,13 +803,15 @@ impl Backend {
         params: DeleteFilesParams,
     ) -> Result<Option<WorkspaceEdit>> {
         let psr4 = self.psr4.load();
-        let mut merged_changes: std::collections::HashMap<Url, Vec<TextEdit>> =
+        let mut merged_changes: std::collections::HashMap<Uri, Vec<TextEdit>> =
             std::collections::HashMap::new();
 
         for file in &params.files {
-            let path = Url::parse(&file.uri)
+            let path = file
+                .uri
+                .parse::<Uri>()
                 .ok()
-                .and_then(|u| u.to_file_path().ok());
+                .and_then(|u| u.to_file_path().map(|c| c.into_owned()));
             let Some(path) = path else { continue };
             let Some(fqn) = psr4.file_to_fqn(&path) else {
                 continue;
@@ -833,7 +842,7 @@ impl Backend {
 
     pub(crate) async fn handle_did_delete_files(&self, params: DeleteFilesParams) {
         for file in &params.files {
-            if let Ok(uri) = Url::parse(&file.uri) {
+            if let Ok(uri) = file.uri.parse::<Uri>() {
                 self.docs.remove(&uri);
                 self.open_files
                     .note_published(&uri, crate::backend::diagnostics_content_hash(&[]));
