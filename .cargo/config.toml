@@ -1,0 +1,17 @@
+# Tests spawn per-test OS threads (and, for multi_thread-flavored
+# #[tokio::test]s, extra tokio worker threads) with the Rust default stack
+# size (~2 MiB), unlike the production binary's own tokio runtime and
+# rayon's global pool, both of which are explicitly sized to 64 MiB in
+# src/main.rs and src/document/document_store.rs — salsa 0.28's
+# `DependencyGraph::update_transferred_edges` recurses per transferred
+# dependent under contended parallel queries and has been measured needing
+# up to ~16 MiB on the Laravel fixture. Whichever thread happens to be the
+# one *blocking* on another thread's in-flight query runs that recursion,
+# and it isn't always a rayon worker — so a plain test thread can overflow
+# even though rayon's pool is safely sized. This was rare enough under full
+# test serialization to look like a flake, but reproduces reliably once
+# independent test groups (e.g. Symfony's and Laravel's) run truly
+# concurrently. Match the same 64 MiB used elsewhere instead of leaving
+# test threads on the 2 MiB default.
+[env]
+RUST_MIN_STACK = "67108864"

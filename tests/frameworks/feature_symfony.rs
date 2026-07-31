@@ -398,7 +398,7 @@ mod perf_measure {
 mod call_hierarchy {
     use super::*;
 
-    #[serial_test::serial]
+    #[serial_test::serial(symfony_demo)]
     #[tokio::test]
     async fn incoming_calls_to_post_repository_find_latest() {
         let mut server = TestServer::with_fixture_no_vendor("symfony-demo").await;
@@ -432,7 +432,7 @@ mod call_hierarchy {
 mod navigation {
     use super::*;
 
-    #[serial_test::serial]
+    #[serial_test::serial(symfony_demo)]
     #[tokio::test]
     async fn goto_definition_parameter_type_in_vendor() {
         // Read-only against the checked-out fixture (no per-test copy): a
@@ -455,7 +455,7 @@ mod navigation {
         expect!["src/Entity/User.php:32:6-32:10"].assert_eq(&out);
     }
 
-    #[serial_test::serial]
+    #[serial_test::serial(symfony_demo)]
     #[tokio::test]
     async fn goto_definition_app_class_from_use_import() {
         let fixture = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -472,7 +472,7 @@ mod navigation {
         expect!["src/Entity/Post.php:36:6-36:10"].assert_eq(&out);
     }
 
-    #[serial_test::serial]
+    #[serial_test::serial(symfony_demo)]
     #[tokio::test]
     async fn goto_definition_inherited_method_this_render() {
         let fixture = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -490,7 +490,7 @@ mod navigation {
             .assert_eq(&out);
     }
 
-    #[serial_test::serial]
+    #[serial_test::serial(symfony_demo)]
     #[tokio::test]
     async fn goto_definition_attribute_class_route() {
         let fixture = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -511,7 +511,7 @@ mod navigation {
 mod hover {
     use super::*;
 
-    #[serial_test::serial]
+    #[serial_test::serial(symfony_demo)]
     #[tokio::test]
     async fn hover_on_class_in_extends_clause() {
         let fixture = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -529,7 +529,7 @@ mod hover {
             .assert_eq(&out);
     }
 
-    #[serial_test::serial]
+    #[serial_test::serial(symfony_demo)]
     #[tokio::test]
     async fn hover_on_app_entity_type_in_signature() {
         let fixture = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -601,7 +601,7 @@ mod references {
 
     // KNOWN GAP: mir now finds class refs inside `@var`/generic-type-arg
     // docblocks, but mislocates them (statement/docblock span, not the token) — needs a mir-side fix.
-    #[serial_test::serial]
+    #[serial_test::serial(symfony_demo)]
     #[tokio::test]
     async fn references_to_post_entity_span_multiple_files() {
         let fixture = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -716,7 +716,7 @@ mod type_hierarchy {
     /// `classes_by_name` is keyed by short name only, so a lookup on the bare
     /// name walks both classes' parent chains and must dedup the resulting
     /// `AbstractController` entry rather than emit it twice.
-    #[serial_test::serial]
+    #[serial_test::serial(symfony_demo)]
     #[tokio::test]
     async fn supertypes_of_blog_controller_include_abstract_controller() {
         let fixture = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -749,7 +749,7 @@ mod type_hierarchy {
     /// `BlogController extends AbstractController` — subtypes of AbstractController
     /// (a vendor class) must include BlogController once AbstractController has
     /// been pre-loaded into the workspace index.
-    #[serial_test::serial]
+    #[serial_test::serial(symfony_demo)]
     #[tokio::test]
     async fn subtypes_of_abstract_controller_include_blog_controller() {
         let fixture = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -786,7 +786,7 @@ mod type_hierarchy {
 mod smoke {
     use super::*;
 
-    #[serial_test::serial]
+    #[serial_test::serial(symfony_demo)]
     #[tokio::test]
     async fn smoke_goto_definition_abstract_controller() {
         let fixture = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))

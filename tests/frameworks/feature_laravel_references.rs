@@ -40,7 +40,7 @@ fn laravel_available() -> bool {
 ///    the candidate prefilter or scoped ingestion broke cross-file resolution.
 /// 3. `QueriesRelationships.php` (a known caller) appears in the result set.
 #[ignore]
-#[serial_test::serial]
+#[serial_test::serial(laravel)]
 #[tokio::test]
 async fn laravel_references_str_lower() {
     if !laravel_available() {
@@ -99,7 +99,7 @@ async fn laravel_references_str_lower() {
 /// files that only reference the class by a `use` import (no text occurrence
 /// of the bare name "Str").
 #[ignore]
-#[serial_test::serial]
+#[serial_test::serial(laravel)]
 #[tokio::test]
 async fn laravel_references_str_class() {
     if !laravel_available() {
