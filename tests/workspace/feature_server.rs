@@ -476,6 +476,60 @@ async fn formatting_stays_responsive_with_slow_external_formatter() {
 }
 
 #[tokio::test]
+async fn document_symbol_stays_responsive_on_large_file() {
+    let mut server = TestServer::new().await;
+    server
+        .open(
+            "big_doc_symbol.php",
+            &crate::common::fixture::large_php_source(500),
+        )
+        .await;
+    let uri = server.uri("big_doc_symbol.php");
+    server
+        .assert_stays_responsive(
+            "textDocument/documentSymbol",
+            serde_json::json!({ "textDocument": { "uri": uri } }),
+        )
+        .await;
+}
+
+#[tokio::test]
+async fn folding_range_stays_responsive_on_large_file() {
+    let mut server = TestServer::new().await;
+    server
+        .open(
+            "big_folding.php",
+            &crate::common::fixture::large_php_source(500),
+        )
+        .await;
+    let uri = server.uri("big_folding.php");
+    server
+        .assert_stays_responsive(
+            "textDocument/foldingRange",
+            serde_json::json!({ "textDocument": { "uri": uri } }),
+        )
+        .await;
+}
+
+#[tokio::test]
+async fn document_link_stays_responsive_on_large_file() {
+    let mut server = TestServer::new().await;
+    server
+        .open(
+            "big_doc_link.php",
+            &crate::common::fixture::large_php_source(500),
+        )
+        .await;
+    let uri = server.uri("big_doc_link.php");
+    server
+        .assert_stays_responsive(
+            "textDocument/documentLink",
+            serde_json::json!({ "textDocument": { "uri": uri } }),
+        )
+        .await;
+}
+
+#[tokio::test]
 async fn semantic_tokens_full_stays_responsive_on_large_file() {
     let mut server = TestServer::new().await;
     server

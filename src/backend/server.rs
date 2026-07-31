@@ -923,10 +923,11 @@ impl LanguageServer for Backend {
                 Some(d) => d,
                 None => return Ok(None),
             };
-            Ok(Some(DocumentSymbolResponse::Nested(document_symbols(
-                doc.source(),
-                &doc,
-            ))))
+            // The AST walk is CPU-bound; keep it off the async runtime worker.
+            let symbols = tokio::task::spawn_blocking(move || document_symbols(doc.source(), &doc))
+                .await
+                .unwrap_or_default();
+            Ok(Some(DocumentSymbolResponse::Nested(symbols)))
         })
         .await
     }
@@ -938,7 +939,11 @@ impl LanguageServer for Backend {
                 Some(d) => d,
                 None => return Ok(None),
             };
-            let ranges = folding_ranges(doc.source(), &doc);
+            // The AST walk plus full-text comment/region scans are CPU-bound;
+            // keep them off the async runtime worker.
+            let ranges = tokio::task::spawn_blocking(move || folding_ranges(doc.source(), &doc))
+                .await
+                .unwrap_or_default();
             Ok(if ranges.is_empty() {
                 None
             } else {
@@ -1642,12 +1647,18 @@ impl LanguageServer for Backend {
 
     async fn document_link(&self, params: DocumentLinkParams) -> Result<Option<Vec<DocumentLink>>> {
         guard_async_result("document_link", async move {
-            let uri = &params.text_document.uri;
-            let doc = match self.get_doc(uri) {
+            let uri = params.text_document.uri;
+            let doc = match self.get_doc(&uri) {
                 Some(d) => d,
                 None => return Ok(None),
             };
-            let links = document_links(uri, &doc, doc.source());
+            // The AST walk plus full-text `@link`/`@see` scan are CPU-bound;
+            // keep them off the async runtime worker.
+            let links = tokio::task::spawn_blocking(move || {
+                document_links(&uri, &doc, doc.source())
+            })
+            .await
+            .unwrap_or_default();
             Ok(if links.is_empty() { None } else { Some(links) })
         })
         .await
