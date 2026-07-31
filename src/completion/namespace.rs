@@ -332,7 +332,7 @@ pub(super) fn collect_fqns_with_prefix(
                 let fqn = if cur_ns.is_empty() {
                     i.name.to_string()
                 } else {
-                    format!("{cur_ns}\\{}", &i.name.to_string())
+                    format!("{cur_ns}\\{}", i.name)
                 };
                 if prefix.is_empty() || fqn.to_lowercase().contains(&prefix_lc) {
                     out.push(CompletionItem {

@@ -587,7 +587,7 @@ fn class_hover_for(cls: &crate::index::file_index::ClassDef) -> Hover {
             }
         }
     };
-    let mut sig = format!("{} {}", kw, &cls.name.to_string());
+    let mut sig = format!("{} {}", kw, cls.name);
     if let Some(parent) = &cls.parent {
         sig.push_str(&format!(" extends {}", parent));
     }

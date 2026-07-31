@@ -109,10 +109,8 @@ pub(crate) fn symbol_kind_at(source: &str, position: Position, word: &str) -> Op
 pub(crate) fn position_to_byte_offset_strict(source: &str, position: Position) -> Option<u32> {
     let mut line_start = 0usize;
     for _ in 0..position.line {
-        match source[line_start..].find('\n') {
-            Some(i) => line_start += i + 1,
-            None => return None,
-        }
+        let i = source[line_start..].find('\n')?;
+        line_start += i + 1;
     }
     let line_end = source[line_start..]
         .find('\n')

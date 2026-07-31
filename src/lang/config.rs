@@ -216,7 +216,10 @@ impl PhpstanConfig {
     pub(crate) fn from_value(v: &serde_json::Value) -> Self {
         let mut cfg = PhpstanConfig::default();
         let Some(obj) = v.as_object() else { return cfg };
-        cfg.enabled = obj.get("enabled").and_then(|x| x.as_bool()).unwrap_or(false);
+        cfg.enabled = obj
+            .get("enabled")
+            .and_then(|x| x.as_bool())
+            .unwrap_or(false);
         if let Some(s) = obj.get("binPath").and_then(|x| x.as_str()) {
             cfg.bin_path = s.to_string();
         }
@@ -253,7 +256,10 @@ impl PhpcsConfig {
     pub(crate) fn from_value(v: &serde_json::Value) -> Self {
         let mut cfg = PhpcsConfig::default();
         let Some(obj) = v.as_object() else { return cfg };
-        cfg.enabled = obj.get("enabled").and_then(|x| x.as_bool()).unwrap_or(false);
+        cfg.enabled = obj
+            .get("enabled")
+            .and_then(|x| x.as_bool())
+            .unwrap_or(false);
         if let Some(s) = obj.get("binPath").and_then(|x| x.as_str()) {
             cfg.bin_path = s.to_string();
         }
@@ -580,8 +586,7 @@ mod tests {
     #[test]
     fn every_config_key_is_documented() {
         let source = include_str!("config.rs");
-        let docs =
-            include_str!("../../documentation/src/content/docs/configuration.md");
+        let docs = include_str!("../../documentation/src/content/docs/configuration.md");
 
         let mut keys: Vec<&str> = Vec::new();
         for marker in ["get(\"", "flag(\""] {

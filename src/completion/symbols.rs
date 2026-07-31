@@ -152,7 +152,7 @@ fn collect_from_statements_with_doc(stmts: &[Stmt<'_, '_>], items: &mut Vec<Comp
                 for member in e.body.members.iter() {
                     if let EnumMemberKind::Case(c) = &member.kind {
                         items.push(CompletionItem {
-                            label: format!("{}::{}", e.name, &c.name.to_string()),
+                            label: format!("{}::{}", e.name, c.name),
                             kind: Some(CompletionItemKind::ENUM_MEMBER),
                             ..Default::default()
                         });

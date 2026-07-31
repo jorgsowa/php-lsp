@@ -46,7 +46,11 @@ struct Message {
 /// effort overlay on top of the built-in diagnostics, not a required source
 /// of truth, so a broken PHPStan setup degrades silently rather than
 /// erroring the whole diagnostics publish.
-pub async fn run(cfg: &PhpstanConfig, path: &Path, workspace_root: Option<&Path>) -> Vec<Diagnostic> {
+pub async fn run(
+    cfg: &PhpstanConfig,
+    path: &Path,
+    workspace_root: Option<&Path>,
+) -> Vec<Diagnostic> {
     let mut command = tokio::process::Command::new(&cfg.bin_path);
     command
         .arg("analyse")
@@ -138,7 +142,13 @@ mod tests {
 
         assert_eq!(diagnostics.len(), 1);
         let d = &diagnostics[0];
-        assert_eq!(d.range.start, Position { line: 9, character: 0 });
+        assert_eq!(
+            d.range.start,
+            Position {
+                line: 9,
+                character: 0
+            }
+        );
         assert_eq!(d.severity, Some(DiagnosticSeverity::ERROR));
         assert_eq!(d.source.as_deref(), Some("phpstan"));
         assert_eq!(
@@ -156,7 +166,13 @@ mod tests {
             identifier: None,
         };
         let d = to_diagnostic(&message);
-        assert_eq!(d.range.start, Position { line: 0, character: 0 });
+        assert_eq!(
+            d.range.start,
+            Position {
+                line: 0,
+                character: 0
+            }
+        );
         assert_eq!(d.code, None);
     }
 

@@ -87,7 +87,7 @@ fn named_arg_item(
         label,
         params
             .iter()
-            .map(|p| format!("{}:", &p.name.to_string()))
+            .map(|p| format!("{}:", p.name))
             .collect::<Vec<_>>()
             .join(", ")
     );

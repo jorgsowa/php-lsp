@@ -510,12 +510,6 @@ fn is_enum_in_stmts(stmts: &[Stmt<'_, '_>], name: &str) -> bool {
     false
 }
 
-/// Returns `true` if `class_name` is a *backed* enum (`enum Foo: string` /
-/// `enum Foo: int`) in `doc`.  Backed enums have a `->value` property.
-pub fn is_backed_enum(doc: &ParsedDoc, class_name: &str) -> bool {
-    enum_backing_type(doc, class_name).is_some()
-}
-
 /// Returns the declared backing type (`"string"` / `"int"`) of `class_name`
 /// if it is a backed enum in `doc`, or `None` if it is not an enum, or is an
 /// unbacked (pure) enum.
@@ -759,7 +753,7 @@ mod tests {
         let src = "<?php\nenum Suit { case Hearts; case Clubs; }";
         let doc = ParsedDoc::parse(src.to_string());
         assert!(is_enum(&doc, "Suit"));
-        assert!(!is_backed_enum(&doc, "Suit"));
+        assert!(enum_backing_type(&doc, "Suit").is_none());
     }
 
     #[test]
@@ -767,7 +761,7 @@ mod tests {
         let src = "<?php\nenum Status: string { case Active = 'active'; }";
         let doc = ParsedDoc::parse(src.to_string());
         assert!(is_enum(&doc, "Status"));
-        assert!(is_backed_enum(&doc, "Status"));
+        assert!(enum_backing_type(&doc, "Status").is_some());
     }
 
     #[test]
@@ -775,7 +769,7 @@ mod tests {
         let src = "<?php\nclass Foo {}";
         let doc = ParsedDoc::parse(src.to_string());
         assert!(!is_enum(&doc, "Foo"));
-        assert!(!is_backed_enum(&doc, "Foo"));
+        assert!(enum_backing_type(&doc, "Foo").is_none());
     }
 
     #[test]

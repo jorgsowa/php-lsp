@@ -261,7 +261,7 @@ fn collect_abstract_methods_fqn(
                 let declared_fqn = if active_ns.is_empty() {
                     i.name.to_string()
                 } else {
-                    format!("{}\\{}", active_ns, &i.name.to_string())
+                    format!("{}\\{}", active_ns, i.name)
                 };
                 if fqn_eq(fqn, &declared_fqn) {
                     let stubs = i

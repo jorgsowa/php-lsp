@@ -34,7 +34,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
         with:
-          toolchain: "1.96"
+          toolchain: "1.97.1"
 
       - uses: Swatinem/rust-cache@v2
 
@@ -85,7 +85,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
         with:
-          toolchain: "1.96"
+          toolchain: "1.97.1"
           targets: ${{ matrix.target }}
 
       - uses: Swatinem/rust-cache@v2
@@ -167,7 +167,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1
         with:
-          toolchain: "1.96"
+          toolchain: "1.97.1"
 
       - uses: Swatinem/rust-cache@v2
 

@@ -185,14 +185,14 @@ fn walk_for_member(
                             &m.name.to_string(),
                             member.span,
                         )
-                        .then(|| format!("{current_ns}{}::{}", e.name, &m.name.to_string())),
+                        .then(|| format!("{current_ns}{}::{}", e.name, m.name)),
                         EnumMemberKind::Case(c) if c.name == word => cursor_on_name_in_span(
                             source,
                             cursor_byte,
                             &c.name.to_string(),
                             member.span,
                         )
-                        .then(|| format!("{current_ns}{}::{}", e.name, &c.name.to_string())),
+                        .then(|| format!("{current_ns}{}::{}", e.name, c.name)),
                         EnumMemberKind::ClassConst(cc) if cc.name == word => {
                             cursor_on_name_in_span(
                                 source,
@@ -200,7 +200,7 @@ fn walk_for_member(
                                 &cc.name.to_string(),
                                 member.span,
                             )
-                            .then(|| format!("{current_ns}{}::{}", e.name, &cc.name.to_string()))
+                            .then(|| format!("{current_ns}{}::{}", e.name, cc.name))
                         }
                         _ => None,
                     };
@@ -227,7 +227,7 @@ fn match_class_member(
     match kind {
         ClassMemberKind::Method(m) if m.name == word => {
             cursor_on_name_in_span(source, cursor_byte, &m.name.to_string(), member_span)
-                .then(|| format!("{ns_prefix}{class_name}::{}", &m.name.to_string()))
+                .then(|| format!("{ns_prefix}{class_name}::{}", m.name))
         }
         ClassMemberKind::Property(p) if p.name == word => {
             cursor_on_name_in_span(source, cursor_byte, &p.name.to_string(), member_span)
@@ -235,7 +235,7 @@ fn match_class_member(
         }
         ClassMemberKind::ClassConst(c) if c.name == word => {
             cursor_on_name_in_span(source, cursor_byte, &c.name.to_string(), member_span)
-                .then(|| format!("{ns_prefix}{class_name}::{}", &c.name.to_string()))
+                .then(|| format!("{ns_prefix}{class_name}::{}", c.name))
         }
         _ => None,
     }

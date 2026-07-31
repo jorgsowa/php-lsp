@@ -466,13 +466,9 @@ pub(crate) fn resolve_method_docblock<'a>(
         match db {
             Some(d) if d.is_inherit_doc => {
                 // Find the parent class name across all documents.
-                let parent = docs
+                current_class = docs
                     .iter()
-                    .find_map(|d| find_parent_class_name(&d.program().stmts, &current_class));
-                match parent {
-                    Some(p) => current_class = p,
-                    None => return None,
-                }
+                    .find_map(|d| find_parent_class_name(&d.program().stmts, &current_class))?;
             }
             other => return other,
         }

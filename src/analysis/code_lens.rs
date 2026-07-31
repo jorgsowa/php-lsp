@@ -209,10 +209,8 @@ impl LensEnv<'_> {
                     },
                 ));
             }
-            match &cls.parent {
-                Some(p) => current = p.trim_start_matches('\\').to_string(),
-                None => return None,
-            }
+            let parent = cls.parent.as_deref()?;
+            current = parent.trim_start_matches('\\').to_string();
         }
     }
 }

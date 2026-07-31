@@ -212,11 +212,7 @@ impl Docblock {
             out.push('\n');
         }
         for p in &self.params {
-            out.push_str(&format!(
-                "**@param** `{}` `{}`",
-                p.type_hint,
-                &p.name.to_string()
-            ));
+            out.push_str(&format!("**@param** `{}` `{}`", p.type_hint, p.name));
             if !p.description.is_empty() {
                 out.push_str(&format!(" — {}", p.description));
             }
@@ -249,7 +245,7 @@ impl Docblock {
         }
         for ta in &self.type_aliases {
             if ta.type_expr.is_empty() {
-                out.push_str(&format!("**@type** `{}`\n", &ta.name.to_string()));
+                out.push_str(&format!("**@type** `{}`\n", ta.name));
             } else {
                 out.push_str(&format!("**@type** `{}` = `{}`\n", ta.name, ta.type_expr));
             }

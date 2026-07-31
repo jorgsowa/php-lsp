@@ -68,10 +68,8 @@ fn resolve_type_at_cursor(
                 }
             }
         } else {
-            match param_type_for(&doc.program().stmts, &word) {
-                Some(raw) => resolve_fqn(doc, &raw, &imports),
-                None => return None,
-            }
+            let raw = param_type_for(&doc.program().stmts, &word)?;
+            resolve_fqn(doc, &raw, &imports)
         }
     } else {
         // Cursor is not on a word — it sits in a method-call chain gap such as
