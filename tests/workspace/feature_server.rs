@@ -425,6 +425,56 @@ async fn did_open_stays_responsive_on_large_file() {
         .await;
 }
 
+#[serial_test::serial(fake_external_formatter)]
+#[tokio::test]
+async fn formatting_stays_responsive_with_slow_external_formatter() {
+    // format_document/format_range shell out to php-cs-fixer/phpcbf and
+    // block on `wait_with_output()`. Neither tool is assumed installed in
+    // dev/CI, so this test puts its own fake "php-cs-fixer" on PATH — a
+    // script that sleeps briefly then reformats — to exercise the real
+    // blocking-subprocess code path deterministically rather than the
+    // near-instant "tool not found" fallback. #[serial] plus restoring PATH
+    // on drop keeps this from racing or leaking into other tests that also
+    // shell out.
+    struct PathGuard(String);
+    impl Drop for PathGuard {
+        fn drop(&mut self) {
+            unsafe { std::env::set_var("PATH", &self.0) };
+        }
+    }
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let script = dir.path().join("php-cs-fixer");
+    std::fs::write(&script, "#!/bin/sh\nsleep 0.2\ncat\necho '// formatted'\n")
+        .expect("write fake formatter");
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod fake formatter");
+    }
+
+    let original_path = std::env::var("PATH").unwrap_or_default();
+    let _restore_path = PathGuard(original_path.clone());
+    unsafe {
+        std::env::set_var("PATH", format!("{}:{original_path}", dir.path().display()));
+    }
+
+    let mut server = TestServer::new().await;
+    server
+        .open("fmt.php", "<?php\nfunction f(): void {}\n")
+        .await;
+    let uri = server.uri("fmt.php");
+    server
+        .assert_stays_responsive(
+            "textDocument/formatting",
+            serde_json::json!({
+                "textDocument": { "uri": uri },
+                "options": { "tabSize": 4, "insertSpaces": true },
+            }),
+        )
+        .await;
+}
+
 #[tokio::test]
 async fn semantic_tokens_full_stays_responsive_on_large_file() {
     let mut server = TestServer::new().await;

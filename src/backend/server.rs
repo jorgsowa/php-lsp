@@ -415,7 +415,11 @@ impl LanguageServer for Backend {
             let source = self
                 .get_open_text(&params.text_document.uri)
                 .unwrap_or_default();
-            Ok(format_document(&source))
+            // Spawns and blocks on an external formatter process; keep that
+            // wait off the async runtime worker.
+            Ok(tokio::task::spawn_blocking(move || format_document(&source))
+                .await
+                .unwrap_or_default())
         })
         .await
     }
@@ -1663,7 +1667,11 @@ impl LanguageServer for Backend {
         guard_async_result("formatting", async move {
             let uri = &params.text_document.uri;
             let source = self.get_open_text(uri).unwrap_or_default();
-            Ok(format_document(&source))
+            // Spawns and blocks on an external formatter process; keep that
+            // wait off the async runtime worker.
+            Ok(tokio::task::spawn_blocking(move || format_document(&source))
+                .await
+                .unwrap_or_default())
         })
         .await
     }
@@ -1675,7 +1683,12 @@ impl LanguageServer for Backend {
         guard_async_result("range_formatting", async move {
             let uri = &params.text_document.uri;
             let source = self.get_open_text(uri).unwrap_or_default();
-            Ok(format_range(&source, params.range))
+            let range = params.range;
+            Ok(
+                tokio::task::spawn_blocking(move || format_range(&source, range))
+                    .await
+                    .unwrap_or_default(),
+            )
         })
         .await
     }
