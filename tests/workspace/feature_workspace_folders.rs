@@ -168,12 +168,16 @@ async fn add_workspace_folder_replays_warm_start_postings() {
         .expect("valid file URI")
         .to_string();
     s.add_workspace_folder(&folder_uri).await;
-    s.wait_until_symbol_present("Widget", Duration::from_secs(5))
-        .await;
-    // wait_until_symbol_present only proves file mirroring finished; the
-    // warm-start replay step runs immediately after, in the same spawned
-    // task, before send_refresh_requests — give it a moment to finish too.
-    tokio::time::sleep(Duration::from_millis(300)).await;
+    // `empty_root`'s own initial scan had no files, so its startup
+    // `warm_start_indexes` call was a no-op that never bumped the counter —
+    // one completed replay here can only be `added_root`'s. The replay runs
+    // after the folder's scan (which mirrors its files) and before the
+    // refresh-request notifications, in the same spawned task, so this one
+    // wait proves both the mirroring and the replay are done.
+    assert!(
+        s.wait_for_warm_start_replays(1).await,
+        "added folder's warm-start replay did not complete"
+    );
 
     let widget_abs = added_root.path().join("widget.php");
     let widget_path = widget_abs.to_str().expect("valid utf8 path");

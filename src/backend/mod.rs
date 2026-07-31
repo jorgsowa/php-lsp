@@ -83,6 +83,11 @@ pub struct DebugStats {
     /// diagnostics vs. a fast-following hover) must serialize onto one run,
     /// not one per caller — the regression test asserts the delta.
     pub analysis_compute_count: u64,
+    /// `DocumentStore::warm_start_indexes` calls that replayed at least one
+    /// file. A runtime-added workspace folder runs this in the same spawned
+    /// task as its scan, before the refresh-request notifications go out —
+    /// tests await a count bump here instead of guessing a fixed delay.
+    pub warm_start_replays_completed: u64,
 }
 
 use crate::document::ast::ParsedDoc;
@@ -146,6 +151,7 @@ impl Backend {
             workspace_index_walks: self.docs.workspace_index_walks(),
             reachability_scan_passes: self.docs.reachability_scan_passes(),
             analysis_compute_count: self.docs.analysis_compute_count(),
+            warm_start_replays_completed: self.docs.warm_start_replays_completed(),
         })
     }
 

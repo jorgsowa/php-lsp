@@ -36,6 +36,31 @@ fn fixture_path(name: &str) -> std::path::PathBuf {
         .join(name)
 }
 
+fn count_bin_files(dir: &std::path::Path) -> usize {
+    std::fs::read_dir(dir)
+        .map(|rd| {
+            rd.flatten()
+                .filter(|e| e.path().extension().is_some_and(|ext| ext == "bin"))
+                .count()
+        })
+        .unwrap_or(0)
+}
+
+/// Poll `dir` for its `.bin` entry count to exceed `before` — a real signal
+/// that a new (content-keyed) cache entry landed, instead of guessing how
+/// long the write's `spawn_blocking` task takes.
+async fn wait_for_new_cache_entry(dir: &std::path::Path, before: usize) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while count_bin_files(dir) <= before {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting for a new cache entry in {}",
+            dir.display()
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+}
+
 /// Warm restart (same workspace root, same cache dir) must expose the same
 /// symbols as the cold start — the index is fully served from disk cache.
 #[tokio::test]
@@ -204,6 +229,7 @@ async fn did_save_cache_is_found_by_subsequent_scan() {
     {
         let mut s = TestServer::with_root_and_options(workspace.path(), opts.clone()).await;
         s.wait_for_index_ready().await;
+        let before = count_bin_files(cache_dir.path());
 
         let user_content = "<?php\nnamespace App\\Model;\n\nclass User { public int $id; }\n";
         // Write new content and trigger did_save so the cache entry is refreshed.
@@ -217,8 +243,11 @@ async fn did_save_cache_is_found_by_subsequent_scan() {
             )
             .await;
 
-        // Give did_save's spawn_blocking task a moment to write the cache entry.
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+        // did_save's cache write runs on spawn_blocking; the changed content
+        // means a new content-keyed entry, distinct from the one the initial
+        // scan wrote for User.php's original content — wait for it to land
+        // instead of guessing how long the write takes.
+        wait_for_new_cache_entry(cache_dir.path(), before).await;
     }
 
     // ── Second server: warm start — scan must hit the did_save cache entry ────
@@ -325,6 +354,13 @@ async fn periodic_flush_persists_query_commits_without_shutdown() {
         "analysisCacheFlushIntervalMs": 50,
     });
 
+    let session_dir = cache_dir.path().join("session");
+    let php_v = "8.3"
+        .parse::<mir_analyzer::PhpVersion>()
+        .expect("valid version")
+        .cache_byte();
+    let content_hash = mir_analyzer::cache::hash_content(caller);
+
     let caller_uri = {
         let mut s = TestServer::with_root_and_options(workspace.path(), opts).await;
         s.wait_for_index_ready().await;
@@ -334,22 +370,31 @@ async fn periodic_flush_persists_query_commits_without_shutdown() {
         s.references("widget.php", 2, 20, false).await;
         let uri = s.uri("caller.php");
 
-        // Give the background flush loop (50 ms interval) at least one tick
-        // before dropping — no `shutdown()` call, unlike every other test in
-        // this file.
-        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        // Poll for the background flush loop (50 ms interval) to persist the
+        // staged entry, rather than guessing how long a tick takes — no
+        // `shutdown()` call, unlike every other test in this file, so this
+        // is the only route the entry has to disk.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            if mir_analyzer::cache::AnalysisCache::open(&session_dir, php_v, 0)
+                .get(&uri, &content_hash)
+                .is_some()
+            {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "timed out waiting for the periodic flush to persist caller.php"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
         uri
         // `s` drops here uncleanly.
     };
 
-    let session_dir = cache_dir.path().join("session");
-    let php_v = "8.3"
-        .parse::<mir_analyzer::PhpVersion>()
-        .expect("valid version")
-        .cache_byte();
     let mir_cache = mir_analyzer::cache::AnalysisCache::open(&session_dir, php_v, 0);
     let (_, ref_locs) = mir_cache
-        .get(&caller_uri, &mir_analyzer::cache::hash_content(caller))
+        .get(&caller_uri, &content_hash)
         .expect("periodic flush must persist the query-staged entry for caller.php");
     assert!(
         !ref_locs.is_empty(),

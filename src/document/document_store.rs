@@ -115,6 +115,11 @@ pub struct DocumentStore {
     /// Warm sweeps that ran to completion (not cancelled). Observability only,
     /// surfaced via `$/php-lsp/debugStats` so benches/tests can await warmth.
     warm_sweeps_completed: AtomicU64,
+    /// Calls to [`Self::warm_start_indexes`] that actually replayed at least
+    /// one file (not the empty-workspace no-op). Observability only, surfaced
+    /// via `$/php-lsp/debugStats` so tests can await a runtime-added folder's
+    /// warm-start replay instead of guessing a fixed delay.
+    warm_start_replays_completed: AtomicU64,
     /// Count of in-flight interactive reads (requests the user is waiting on).
     /// The workspace scan yields at file boundaries while this is non-zero, so
     /// its per-file salsa writes can't starve a request's snapshot into an
@@ -179,6 +184,7 @@ impl DocumentStore {
             reanalyze_cancel: Mutex::new(mir_analyzer::IndexCancel::new()),
             warm_sweep_cancel: Mutex::new(mir_analyzer::IndexCancel::new()),
             warm_sweeps_completed: AtomicU64::new(0),
+            warm_start_replays_completed: AtomicU64::new(0),
             interactive_reads: AtomicU64::new(0),
         }
     }
@@ -367,6 +373,10 @@ impl DocumentStore {
     /// Warm sweeps that ran to completion. See `$/php-lsp/debugStats`.
     pub fn warm_sweeps_completed(&self) -> u64 {
         self.warm_sweeps_completed.load(Ordering::Relaxed)
+    }
+
+    pub fn warm_start_replays_completed(&self) -> u64 {
+        self.warm_start_replays_completed.load(Ordering::Relaxed)
     }
 
     /// The sweep's front of the queue: `priority` files themselves plus the
@@ -1107,6 +1117,8 @@ impl DocumentStore {
         }
         let session = self.current_analysis_session();
         session.warm_start_files(&files);
+        self.warm_start_replays_completed
+            .fetch_add(1, Ordering::Relaxed);
     }
 
     /// Candidate file scope for a posting lookup on `symbol`.

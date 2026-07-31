@@ -682,6 +682,23 @@ impl TestServer {
         false
     }
 
+    /// Poll `$/php-lsp/debugStats` until at least `n` `warm_start_indexes`
+    /// replays have completed. Returns `false` on timeout (~15 s).
+    pub async fn wait_for_warm_start_replays(&mut self, n: u64) -> bool {
+        for _ in 0..300 {
+            let resp = self.client.request_no_params("$/php-lsp/debugStats").await;
+            if resp["result"]["warm_start_replays_completed"]
+                .as_u64()
+                .unwrap_or(0)
+                >= n
+            {
+                return true;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        false
+    }
+
     pub async fn references(
         &mut self,
         path: &str,

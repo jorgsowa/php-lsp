@@ -263,22 +263,32 @@ async fn hidden_directories_are_excluded_from_scan() {
     }
     copy_dir(&source, tmp.path()).unwrap();
 
+    // Hidden directories with PHP files must be excluded by the scan itself
+    // — write them before the server starts, so `wait_for_index_ready` is
+    // the only signal needed (a write after the scan has no way to reach
+    // the index at all: nothing here ever sends a watched-files
+    // notification, so waiting around for one is just guessing).
+    let hidden_dir = tmp.path().join(".git/objects");
+    std::fs::create_dir_all(&hidden_dir).unwrap();
+    std::fs::write(
+        hidden_dir.join("ClassInGit.php"),
+        "<?php\nclass ClassInGit {}\n",
+    )
+    .unwrap();
+    let vscode_dir = tmp.path().join(".vscode");
+    std::fs::create_dir_all(&vscode_dir).unwrap();
+    std::fs::write(
+        vscode_dir.join("settings.php"),
+        "<?php\nclass VscodeSetting {}\n",
+    )
+    .unwrap();
+
     let mut server = TestServer::with_root(tmp.path()).await;
     server.wait_for_index_ready().await;
 
     // Verify a known class from the fixture works
     expect!["Class       Greeter @ src/Service/Greeter.php:6"]
         .assert_eq(&server.snapshot_workspace_symbols("Greeter").await);
-
-    // Create hidden directories with PHP files that should be ignored
-    server.write_file(
-        ".git/objects/ClassInGit.php",
-        "<?php\nclass ClassInGit {}\n",
-    );
-    server.write_file(".vscode/settings.php", "<?php\nclass VscodeSetting {}\n");
-
-    // Give the system a moment
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
 
     // Hidden directories should NOT appear in workspace symbols
     expect!["<no symbols>"].assert_eq(&server.snapshot_workspace_symbols("ClassInGit").await);
