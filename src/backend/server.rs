@@ -532,30 +532,53 @@ impl LanguageServer for Backend {
 
     async fn did_change_watched_files(&self, params: DidChangeWatchedFilesParams) {
         guard_async("did_change_watched_files", async move {
+            enum Change {
+                Upsert(Uri, String),
+                Delete(Uri),
+            }
+            let mut changes = Vec::with_capacity(params.changes.len());
             for change in params.changes {
                 match change.typ {
                     FileChangeType::CREATED | FileChangeType::CHANGED => {
                         if let Some(path) = change.uri.to_file_path()
                             && let Ok(text) = tokio::fs::read_to_string(&path).await
                         {
+                            changes.push(Change::Upsert(change.uri.clone(), text));
+                        }
+                    }
+                    FileChangeType::DELETED => changes.push(Change::Delete(change.uri.clone())),
+                    _ => {}
+                }
+            }
+
+            // Parsing is CPU-bound and a bulk change (git checkout, a
+            // generator run) can cover hundreds of files at once; process
+            // the whole batch in one spawn_blocking call instead of
+            // re-entering the blocking pool per file.
+            let docs = Arc::clone(&self.docs);
+            let open_files = self.open_files.clone();
+            let _ = tokio::task::spawn_blocking(move || {
+                for change in changes {
+                    match change {
+                        Change::Upsert(uri, text) => {
                             // Salsa path: ingest_from_doc mirrors the new text into
                             // the SourceFile input. On the next codebase() call,
                             // salsa re-runs file_definitions for this file and the
                             // aggregator re-folds — no manual remove/collect/finalize.
                             let doc = parse_document_no_diags(&text);
-                            self.ingest_from_doc_if_not_open(change.uri.clone(), &doc);
+                            if !open_files.contains(&uri) {
+                                docs.ingest_from_doc(uri.clone(), &doc);
+                            }
                             // A consumer analyzed before this file existed
                             // must not keep a stale cached analysis now that
                             // it's known — see `note_new_file_declarations`.
-                            self.docs.note_new_file_declarations(&change.uri);
+                            docs.note_new_file_declarations(&uri);
                         }
+                        Change::Delete(uri) => docs.remove(&uri),
                     }
-                    FileChangeType::DELETED => {
-                        self.docs.remove(&change.uri);
-                    }
-                    _ => {}
                 }
-            }
+            })
+            .await;
             // File changes may affect cross-file features — refresh all live editors.
             send_refresh_requests(&self.client).await;
 

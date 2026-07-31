@@ -702,6 +702,58 @@ async fn did_save_stays_responsive_on_first_semantic_analysis() {
         .await;
 }
 
+// Note: `did_change_watched_files` parses each CREATED/CHANGED file inline
+// (batched into one `spawn_blocking` call rather than N, same motivation as
+// the did_change debounce comment above) but the loop already awaits
+// `tokio::fs::read_to_string` per file before parsing it, so every iteration
+// has a natural yield point — unlike did_open/did_save's single unyielding
+// computation, no practical file count/size produced an observable
+// ordering effect in a responsiveness test here. The batching fix is kept
+// for the same reason `find_class_doc_fn`-style N-call collapsing is kept
+// elsewhere: fewer, larger blocking-pool handoffs instead of one per file.
+// This test instead confirms the batched rewrite still indexes every file
+// in a single bulk notification, mixing a CREATE and a DELETE in one batch
+// to exercise the enum's ordering.
+#[tokio::test]
+async fn did_change_watched_files_bulk_batch_indexes_every_file() {
+    let workspace = tempfile::tempdir().expect("workspace tempdir");
+    let mut server = TestServer::with_root(workspace.path()).await;
+    server.wait_for_index_ready().await;
+
+    server.write_file("ToDelete.php", "<?php\nclass ToDelete {}\n");
+    server
+        .did_change_watched_files(vec![(server.uri("ToDelete.php"), 1)])
+        .await;
+    server
+        .wait_until_symbol_present("ToDelete", std::time::Duration::from_secs(3))
+        .await;
+    std::fs::remove_file(workspace.path().join("ToDelete.php")).unwrap();
+
+    let mut changes = vec![(server.uri("ToDelete.php"), 3)]; // DELETED
+    for i in 0..50 {
+        let path = format!("Bulk{i}.php");
+        server.write_file(&path, &format!("<?php\nclass Bulk{i} {{}}\n"));
+        changes.push((server.uri(&path), 1)); // CREATED
+    }
+    server.did_change_watched_files(changes).await;
+
+    server
+        .wait_until_symbol_present("Bulk49", std::time::Duration::from_secs(3))
+        .await;
+    for i in 0..50 {
+        let found = server.snapshot_workspace_symbols(&format!("Bulk{i}")).await;
+        assert!(
+            found.contains(&format!("Bulk{i}")),
+            "Bulk{i} missing from workspace symbols after bulk batch: {found}"
+        );
+    }
+    let deleted = server.snapshot_workspace_symbols("ToDelete").await;
+    assert!(
+        deleted.contains("no symbols"),
+        "ToDelete must be gone after DELETED in the same batch, got: {deleted}"
+    );
+}
+
 #[tokio::test]
 async fn semantic_tokens_full_delta_stays_responsive_on_large_file() {
     let mut server = TestServer::new().await;
