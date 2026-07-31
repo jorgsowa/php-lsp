@@ -1,7 +1,7 @@
 /// Comprehensive verification of LSP feature gaps and edge cases.
 use super::*;
 use expect_test::expect;
-use serde_json::json;
+use serde_json::{Value, json};
 
 // ============================================================================
 // PULL DIAGNOSTICS EDGE CASES
@@ -349,6 +349,82 @@ class {
             source
         );
     }
+}
+
+// ============================================================================
+// TYPE HIERARCHY DYNAMIC REGISTRATION GATING
+// ============================================================================
+//
+// `lsp-types` 0.94 has no static `typeHierarchyProvider` capability field, so
+// support is advertised only via a `client/registerCapability` call in
+// `initialized`. That call is only meaningful to a client that declared
+// `textDocument.typeHierarchy.dynamicRegistration` — these tests pin that the
+// server checks the capability instead of registering unconditionally.
+
+fn registered_ids(params: &Value) -> Vec<&str> {
+    params["registrations"]
+        .as_array()
+        .expect("registerCapability params should carry a registrations array")
+        .iter()
+        .map(|r| r["id"].as_str().expect("registration id"))
+        .collect()
+}
+
+#[tokio::test]
+async fn type_hierarchy_registered_when_client_declares_dynamic_registration() {
+    let (mut s, _) = TestServer::new_with_client_capabilities(json!({
+        "textDocument": {
+            "typeHierarchy": { "dynamicRegistration": true }
+        }
+    }))
+    .await;
+
+    let (_, params) = s
+        .client()
+        .expect_server_request("client/registerCapability")
+        .await;
+    let ids = registered_ids(&params);
+    assert!(
+        ids.contains(&"php-lsp-type-hierarchy"),
+        "expected php-lsp-type-hierarchy registration, got {ids:?}"
+    );
+}
+
+#[tokio::test]
+async fn type_hierarchy_not_registered_without_client_capability() {
+    // No `textDocument.typeHierarchy` capability at all — the common case for
+    // a client that never mentions it.
+    let (mut s, _) = TestServer::new_with_client_capabilities(json!({})).await;
+
+    let (_, params) = s
+        .client()
+        .expect_server_request("client/registerCapability")
+        .await;
+    let ids = registered_ids(&params);
+    assert!(
+        !ids.contains(&"php-lsp-type-hierarchy"),
+        "did not expect php-lsp-type-hierarchy registration, got {ids:?}"
+    );
+}
+
+#[tokio::test]
+async fn type_hierarchy_not_registered_when_dynamic_registration_false() {
+    let (mut s, _) = TestServer::new_with_client_capabilities(json!({
+        "textDocument": {
+            "typeHierarchy": { "dynamicRegistration": false }
+        }
+    }))
+    .await;
+
+    let (_, params) = s
+        .client()
+        .expect_server_request("client/registerCapability")
+        .await;
+    let ids = registered_ids(&params);
+    assert!(
+        !ids.contains(&"php-lsp-type-hierarchy"),
+        "did not expect php-lsp-type-hierarchy registration, got {ids:?}"
+    );
 }
 
 #[tokio::test]

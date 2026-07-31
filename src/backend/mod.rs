@@ -106,6 +106,12 @@ pub struct Backend {
     psr4: Arc<ArcSwap<Psr4Map>>,
     laravel: Arc<ArcSwap<LaravelIndex>>,
     config: Arc<ArcSwap<LspConfig>>,
+    /// Capabilities the client declared in `initialize`. Consulted in
+    /// `initialized` to decide which capabilities are safe to register
+    /// dynamically (e.g. a client that didn't declare
+    /// `typeHierarchy.dynamicRegistration` won't understand a
+    /// `client/registerCapability` call for it).
+    client_capabilities: Arc<ArcSwap<ClientCapabilities>>,
 }
 
 impl Backend {
@@ -124,6 +130,7 @@ impl Backend {
             psr4,
             laravel: Arc::new(ArcSwap::from_pointee(LaravelIndex::default())),
             config: Arc::new(ArcSwap::from_pointee(LspConfig::default())),
+            client_capabilities: Arc::new(ArcSwap::from_pointee(ClientCapabilities::default())),
         }
     }
 

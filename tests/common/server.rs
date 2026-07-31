@@ -262,6 +262,30 @@ impl TestServer {
         root: Option<&std::path::Path>,
         initialization_options: Value,
     ) -> Value {
+        Self::do_initialize_full(
+            client,
+            root,
+            initialization_options,
+            json!({
+                "textDocument": {
+                    "hover": { "contentFormat": ["markdown", "plaintext"] },
+                    "completion": { "completionItem": { "snippetSupport": true } }
+                }
+            }),
+        )
+        .await
+    }
+
+    /// Like `do_initialize_with`, but also lets the caller override the
+    /// `capabilities` block sent in the `initialize` request — needed for
+    /// tests asserting behavior gated on a declared client capability (e.g.
+    /// dynamic registration support).
+    async fn do_initialize_full(
+        client: &mut TestClient,
+        root: Option<&std::path::Path>,
+        initialization_options: Value,
+        client_capabilities: Value,
+    ) -> Value {
         let root_uri = root.map(|p| Url::from_file_path(p).unwrap());
         let root_val = root_uri
             .as_ref()
@@ -273,12 +297,7 @@ impl TestServer {
                 json!({
                     "processId": null,
                     "rootUri": root_val,
-                    "capabilities": {
-                        "textDocument": {
-                            "hover": { "contentFormat": ["markdown", "plaintext"] },
-                            "completion": { "completionItem": { "snippetSupport": true } }
-                        }
-                    },
+                    "capabilities": client_capabilities,
                     "initializationOptions": initialization_options,
                 }),
             )
@@ -293,6 +312,28 @@ impl TestServer {
     pub async fn new_with_options(initialization_options: Value) -> (Self, Value) {
         let mut client = spawn_server();
         let resp = Self::do_initialize_with(&mut client, None, initialization_options).await;
+        let server = TestServer {
+            client,
+            root: None,
+            _fixture_dir: None,
+            validate_syntax: true,
+        };
+        (server, resp)
+    }
+
+    /// Start a rootless server with a custom client `capabilities` block
+    /// (default `initializationOptions`) and return the raw `initialize`
+    /// response alongside the server. Use for tests asserting behavior gated
+    /// on a declared client capability, e.g. dynamic registration support.
+    pub async fn new_with_client_capabilities(client_capabilities: Value) -> (Self, Value) {
+        let mut client = spawn_server();
+        let resp = Self::do_initialize_full(
+            &mut client,
+            None,
+            json!({ "diagnostics": { "enabled": true } }),
+            client_capabilities,
+        )
+        .await;
         let server = TestServer {
             client,
             root: None,
