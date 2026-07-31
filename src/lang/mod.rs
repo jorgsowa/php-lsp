@@ -8,3 +8,6 @@ pub mod docblock;
 pub mod php_names;
 
 pub(crate) mod autoload;
+pub(crate) mod keywords;
+
+pub(crate) use keywords::{is_bare_keyword_at, is_php_keyword};

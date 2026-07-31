@@ -172,3 +172,24 @@ class C {
     )
     .await;
 }
+
+/// Magic constants (`__CLASS__`, `__FUNCTION__`, ...) are reserved words too
+/// — they satisfy `word_at_position`'s identifier character class just like
+/// any keyword, and a lowercase-first check alone doesn't exclude them
+/// (they start with `_`, not an uppercase letter), so they hit the exact
+/// same free-function fallback `final`/`abstract`/`class` used to.
+#[tokio::test]
+async fn magic_constant_has_no_references() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_references(
+            r#"<?php
+class Widget {
+    public function name(): string { return __CLAS$0S__; }
+}
+"#,
+        )
+        .await;
+    expect!["<none>"].assert_eq(&out);
+}

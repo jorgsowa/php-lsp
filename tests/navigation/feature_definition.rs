@@ -832,6 +832,44 @@ final class DocumentBlockImage extends DocumentBlock implements Indexable {}
     .await;
 }
 
+// ── Keyword tokens (regression) ───────────────────────────────────────────
+//
+// A bare PHP keyword is never a resolvable symbol. `implementation` resolves
+// a garbage FQN like `App\abstract` for one, which mir's `commit_defs_for_
+// matching` then hunts for via a full-workspace text-mention scan; `goto_
+// definition` can jump to the *wrong* place instead — mir's `ClassReference`
+// span for a class starts at its first modifier token, so `abstract` in
+// `abstract class Foo` used to resolve to `Foo` itself.
+
+#[tokio::test]
+async fn goto_definition_on_class_modifier_keyword_returns_none() {
+    let mut s = TestServer::new().await;
+    let out = s
+        .check_definition(
+            r#"<?php
+abstra$0ct class Foo {
+    abstract public function build(): void;
+}
+"#,
+        )
+        .await;
+    expect!["<none>"].assert_eq(&out);
+}
+
+#[tokio::test]
+async fn implementation_on_class_modifier_keyword_returns_none() {
+    let mut s = TestServer::new().await;
+    let out = s
+        .check_implementation(
+            r#"<?php
+interface Shape {}
+fina$0l class Circle implements Shape {}
+"#,
+        )
+        .await;
+    expect!["<none>"].assert_eq(&out);
+}
+
 #[tokio::test]
 async fn definition_trait_use_resolves_to_trait_decl() {
     let mut s = TestServer::new().await;

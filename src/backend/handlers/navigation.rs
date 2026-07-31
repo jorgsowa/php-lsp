@@ -4,6 +4,7 @@ use tower_lsp_server::jsonrpc::Result;
 use tower_lsp_server::ls_types::*;
 
 use crate::analysis::document_highlight::document_highlights;
+use crate::lang::is_bare_keyword_at;
 use crate::navigation::definition::{
     find_declaration_range, find_method_in_class_hierarchy, find_method_range_in_class,
 };
@@ -17,7 +18,7 @@ use crate::text::{
 use crate::types::type_map::{enclosing_class_at, enclosing_class_fqn_at};
 
 use super::super::helpers::{
-    class_name_at_construct_decl, is_bare_keyword_at, promoted_property_at_cursor, range_within,
+    class_name_at_construct_decl, promoted_property_at_cursor, range_within,
 };
 use super::super::panic_guard::guard_async_result;
 use super::super::{Backend, class_before_double_colon, resolve_reference_symbol};
@@ -58,6 +59,7 @@ impl Backend {
             }
             if let Some(word) = crate::text::word_at_position(&source, position)
                 && !word.starts_with('$')
+                && !is_bare_keyword_at(&source, position, &word)
             {
                 let analysis = self.cached_analysis_async(uri).await;
 

@@ -2,53 +2,8 @@
 
 use tower_lsp_server::ls_types::{Position, Range};
 
+use crate::lang::is_php_keyword;
 use crate::navigation::references::SymbolKind;
-
-/// Whether the word at `position` is a bare PHP reserved keyword — i.e. not
-/// reached via `->`/`?->`/`::`, where PHP allows reserved words as property
-/// or method names (`$obj->class`, `$obj->list()`).
-///
-/// Callers use this to skip mir's usage-symbol lookup entirely for keyword
-/// tokens: `symbol_kind_at` below already rejects a bare keyword, but mir's
-/// own per-file analysis resolves the offset first and its declaration span
-/// for the entity a keyword modifies can swallow the token — e.g. `abstract`
-/// in `abstract class Foo` sits inside `Foo`'s class-declaration span, so
-/// `symbol_at(offset)` hands back `Foo` before `symbol_kind_at` ever runs.
-/// Gating on the raw token here avoids that: it never resolves to *any*
-/// symbol, real or wrong, and never pays for the reference search that
-/// would otherwise follow.
-pub(crate) fn is_bare_keyword_at(source: &str, position: Position, word: &str) -> bool {
-    if !is_php_keyword(word) {
-        return false;
-    }
-    let Some(line) = source.lines().nth(position.line as usize) else {
-        return false;
-    };
-    let chars: Vec<char> = line.chars().collect();
-    let col = position.character as usize;
-    let mut utf16_col = 0usize;
-    let mut char_idx = 0usize;
-    for ch in &chars {
-        if utf16_col >= col {
-            break;
-        }
-        utf16_col += ch.len_utf16();
-        char_idx += 1;
-    }
-    let is_word_char = |c: char| c.is_alphanumeric() || c == '_';
-    while char_idx > 0 && is_word_char(chars[char_idx - 1]) {
-        char_idx -= 1;
-    }
-    let preceded_by_arrow =
-        char_idx >= 2 && chars[char_idx - 1] == '>' && chars[char_idx - 2] == '-';
-    let preceded_by_nullsafe_arrow = char_idx >= 3
-        && chars[char_idx - 1] == '>'
-        && chars[char_idx - 2] == '-'
-        && chars[char_idx - 3] == '?';
-    let preceded_by_double_colon =
-        char_idx >= 2 && chars[char_idx - 1] == ':' && chars[char_idx - 2] == ':';
-    !(preceded_by_arrow || preceded_by_nullsafe_arrow || preceded_by_double_colon)
-}
 
 /// Classify the symbol at `position` so `find_references` can use the right walker.
 ///
@@ -153,97 +108,6 @@ pub(crate) fn symbol_kind_at(source: &str, position: Position, word: &str) -> Op
 
     // Otherwise treat as a free function.
     Some(SymbolKind::Function)
-}
-
-/// Whether `word` is a PHP reserved keyword (case-insensitive), per
-/// <https://www.php.net/manual/en/reserved.keywords.php> and the "other
-/// reserved words" list on the same page. These can never be the name of a
-/// user-defined function/class/property, so they carry no references.
-fn is_php_keyword(word: &str) -> bool {
-    matches!(
-        word.to_ascii_lowercase().as_str(),
-        "abstract"
-            | "and"
-            | "array"
-            | "as"
-            | "break"
-            | "callable"
-            | "case"
-            | "catch"
-            | "class"
-            | "clone"
-            | "const"
-            | "continue"
-            | "declare"
-            | "default"
-            | "do"
-            | "echo"
-            | "else"
-            | "elseif"
-            | "empty"
-            | "enddeclare"
-            | "endfor"
-            | "endforeach"
-            | "endif"
-            | "endswitch"
-            | "endwhile"
-            | "enum"
-            | "extends"
-            | "final"
-            | "finally"
-            | "fn"
-            | "for"
-            | "foreach"
-            | "function"
-            | "global"
-            | "goto"
-            | "if"
-            | "implements"
-            | "include"
-            | "include_once"
-            | "instanceof"
-            | "insteadof"
-            | "interface"
-            | "isset"
-            | "list"
-            | "match"
-            | "namespace"
-            | "new"
-            | "or"
-            | "print"
-            | "private"
-            | "protected"
-            | "public"
-            | "readonly"
-            | "require"
-            | "require_once"
-            | "return"
-            | "static"
-            | "switch"
-            | "throw"
-            | "trait"
-            | "try"
-            | "unset"
-            | "use"
-            | "var"
-            | "while"
-            | "xor"
-            | "yield"
-            | "int"
-            | "float"
-            | "bool"
-            | "string"
-            | "true"
-            | "false"
-            | "null"
-            | "void"
-            | "iterable"
-            | "object"
-            | "mixed"
-            | "never"
-            | "self"
-            | "parent"
-    )
 }
 
 /// Convert an LSP `Position` to a byte offset within `source`, returning `None`

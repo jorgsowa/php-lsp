@@ -415,6 +415,57 @@ $0"#,
     expect![[r#"<none>"#]].assert_eq(&out);
 }
 
+// ── Keyword tokens (regression) ───────────────────────────────────────────
+//
+// A bare PHP keyword can never be a declaration name. Before the
+// `is_bare_keyword_at` gate, `decls_by_name.get(&word)` always missed for
+// these, so every keyword click fell through to the exhaustive
+// `any_declaration_in_file` scan over every workspace file.
+
+#[tokio::test]
+async fn keyword_token_returns_none() {
+    let mut s = TestServer::new().await;
+    let out = s
+        .check_declaration(
+            r#"<?php
+abstra$0ct class Foo {
+    abstract public function build(): void;
+}
+"#,
+        )
+        .await;
+    expect![[r#"<none>"#]].assert_eq(&out);
+}
+
+/// Same as `keyword_token_returns_none` but against unopened background
+/// files, so the request must go through `goto_declaration_from_index`'s
+/// exhaustive fallback scan rather than the open-doc AST pass.
+#[tokio::test]
+async fn keyword_in_unopened_workspace_returns_none() {
+    let tmp = tempfile::tempdir().unwrap();
+    for i in 0..10 {
+        std::fs::write(
+            tmp.path().join(format!("Noise{i}.php")),
+            format!(
+                "<?php\nabstract class Noise{i} {{\n    abstract public function run(): void;\n}}\n"
+            ),
+        )
+        .unwrap();
+    }
+    let caller_src =
+        "<?php\nabstract class Caller {\n    abstract public function run(): void;\n}\n";
+    std::fs::write(tmp.path().join("caller.php"), caller_src).unwrap();
+
+    let mut s = TestServer::with_root(tmp.path()).await;
+    s.wait_for_index_ready().await;
+    s.open("caller.php", caller_src).await;
+
+    let (_, line, ch) = s.locate("caller.php", "abstract class Caller", 0);
+    let resp = s.declaration("caller.php", line, ch).await;
+    let out = common::render_locations(&resp, &s.uri(""));
+    expect!["<none>"].assert_eq(&out);
+}
+
 // ── Stub-index fallback (unopened file) ──────────────────────────────────────
 //
 // Tests for declaration resolution through FileIndex entries (unopened files).

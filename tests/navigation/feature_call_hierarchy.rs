@@ -524,6 +524,25 @@ class Service {
     expect!["log (Method) [Logger] @ main.php:2:20"].assert_eq(&out);
 }
 
+/// Regression: a bare keyword can never be a callable name. `decls_by_name`
+/// always misses for one, which before the `is_bare_keyword_at` gate fell
+/// through to the trait-alias exhaustive scan (`resolve_trait_alias_indexed`)
+/// over every class in every workspace file on every such click.
+#[tokio::test]
+async fn prepare_call_hierarchy_on_keyword_returns_empty() {
+    let mut s = TestServer::new().await;
+    let out = s
+        .check_prepare_call_hierarchy(
+            r#"<?php
+abstra$0ct class Service {
+    abstract public function run(): void;
+}
+"#,
+        )
+        .await;
+    expect!["<empty>"].assert_eq(&out);
+}
+
 /// Method with no calls to other functions must report empty outgoing calls.
 #[tokio::test]
 async fn outgoing_calls_from_leaf_method() {
