@@ -113,6 +113,20 @@ fn validate_lsp_spans(resp: &Value, _file_path: &str, fixture: &Fixture) {
 }
 
 fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
+    copy_dir_recursive_excluding(src, dst, src, &[])
+}
+
+/// Like `copy_dir_recursive`, but skips top-level-relative directory names
+/// listed in `exclude` (e.g. `"vendor"`) instead of copying them just to have
+/// the workspace scan ignore them — real-world fixtures can have a `vendor/`
+/// far larger than the workspace itself, and copying it per test is wasted
+/// I/O when `excludePaths` means indexing never reads it anyway.
+fn copy_dir_recursive_excluding(
+    src: &std::path::Path,
+    dst: &std::path::Path,
+    root: &std::path::Path,
+    exclude: &[String],
+) -> std::io::Result<()> {
     std::fs::create_dir_all(dst)?;
     for entry in std::fs::read_dir(src)? {
         let entry = entry?;
@@ -120,7 +134,15 @@ fn copy_dir_recursive(src: &std::path::Path, dst: &std::path::Path) -> std::io::
         let from = entry.path();
         let to = dst.join(entry.file_name());
         if ft.is_dir() {
-            copy_dir_recursive(&from, &to)?;
+            let rel = from
+                .strip_prefix(root)
+                .unwrap_or(&from)
+                .to_string_lossy()
+                .replace('\\', "/");
+            if exclude.iter().any(|e| rel == e.trim_end_matches('/')) {
+                continue;
+            }
+            copy_dir_recursive_excluding(&from, &to, root, exclude)?;
         } else if ft.is_file() {
             std::fs::copy(&from, &to)?;
         }
@@ -360,8 +382,18 @@ impl TestServer {
             "fixture {name} not found at {}",
             source.display()
         );
+        let exclude: Vec<String> = initialization_options["excludePaths"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|v| v.as_str())
+                    .map(|s| s.trim_end_matches('/').to_string())
+                    .collect()
+            })
+            .unwrap_or_default();
         let tmp = tempfile::tempdir().expect("create TempDir");
-        copy_dir_recursive(&source, tmp.path()).expect("copy fixture");
+        copy_dir_recursive_excluding(&source, tmp.path(), &source, &exclude)
+            .expect("copy fixture");
         let root = tmp.path().to_path_buf();
         let mut client = spawn_server();
         Self::do_initialize_with(&mut client, Some(&root), initialization_options).await;
