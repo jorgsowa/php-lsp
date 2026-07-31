@@ -4,6 +4,8 @@ All notable changes to php-lsp are documented here.
 
 ## [Unreleased]
 
+## [0.22.0] — 2026-07-31
+
 ### Changed
 
 - **Returning sessions seed mir's workspace symbol index from the disk cache**
@@ -18,6 +20,11 @@ All notable changes to php-lsp are documented here.
 
 - **Hover on a method declared only via a class-level `@method` docblock tag now shows its signature** instead of nothing: the AST-based member scan behind mir's method hover only walked concrete methods, missing virtual methods that completion and signature help already understood.
 - **Intermittent stack-overflow abort under contended parallel analysis**: salsa 0.28's dependency-graph lock transfer recurses per transferred dependent and could overflow the 16 MB analysis-thread stacks on large workspaces. All analysis threads (rayon workers, tokio blocking pool, warm-sweep thread) now get 64 MB stacks — reserved, not committed, so resident memory is unchanged.
+- **Reading a `private`/`protected` property from outside its declaring class is now flagged** (`InaccessibleProperty`, mir 0.65), matching the existing visibility checks for class constants and methods.
+
+### Dependencies
+
+- **mir updated to 0.65.0** (from 0.64.0): a batch of analyzer correctness fixes, including the new `InaccessibleProperty` check above, promoted-property docblock refinement handling, nullable-hint preservation through `@param`, and exhaustive-match recognition of backed-enum `->value`.
 
 ## [0.21.0] — 2026-07-26
 
