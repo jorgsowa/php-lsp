@@ -29,11 +29,10 @@ impl Backend {
                 .iter()
                 .filter_map(|f| f.uri.to_file_path().map(|c| c.into_owned()))
                 .collect();
+            #[allow(deprecated)]
+            let root_uri = params.root_uri.as_ref();
             if roots.is_empty()
-                && let Some(path) = params
-                    .root_uri
-                    .as_ref()
-                    .and_then(|u| u.to_file_path().map(|c| c.into_owned()))
+                && let Some(path) = root_uri.and_then(|u| u.to_file_path().map(|c| c.into_owned()))
             {
                 roots.push(path);
             }

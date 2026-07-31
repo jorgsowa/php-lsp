@@ -271,12 +271,13 @@ fn uri_from_file_path_wire_string_roundtrips_for_space_and_unicode_paths() {
     // same file. Note: this parses the *percent-encoded* wire form, not a
     // raw path with an unencoded space — a real LSP client never sends the
     // latter (RFC 3986 requires encoding).
+    let base = std::env::temp_dir();
     for path in [
-        "/tmp/php-lsp test dir/Foo.php",
-        "/tmp/php-lsp-é-测试/Bar.php",
-        "/tmp/has spaces/and-é-unicode/Baz.php",
+        base.join("php-lsp test dir").join("Foo.php"),
+        base.join("php-lsp-é-测试").join("Bar.php"),
+        base.join("has spaces").join("and-é-unicode").join("Baz.php"),
     ] {
-        let from_path = Uri::from_file_path(path)
+        let from_path = Uri::from_file_path(&path)
             .unwrap_or_else(|| panic!("from_file_path failed for {path:?}"));
         let wire_string = from_path.as_str().to_string();
         let parsed: Uri = wire_string
@@ -307,17 +308,19 @@ fn uri_to_file_path_roundtrips_space_and_unicode_paths() {
     // The two most common ways a percent-encoding bug would show up: a
     // project directory with a space (e.g. under "My Documents"), or with
     // accented/non-ASCII characters.
+    let base = std::env::temp_dir();
     for path in [
-        "/tmp/php-lsp test dir/Foo.php",
-        "/tmp/php-lsp-é-测试/Bar.php",
+        base.join("php-lsp test dir").join("Foo.php"),
+        base.join("php-lsp-é-测试").join("Bar.php"),
     ] {
-        let uri = Uri::from_file_path(path).unwrap();
+        let uri = Uri::from_file_path(&path)
+            .unwrap_or_else(|| panic!("from_file_path failed for {path:?}"));
         let back = uri
             .to_file_path()
             .unwrap_or_else(|| panic!("to_file_path failed for {path:?}"));
         assert_eq!(
             back.as_ref(),
-            std::path::Path::new(path),
+            path.as_path(),
             "round-trip mismatch for {path:?}"
         );
     }
