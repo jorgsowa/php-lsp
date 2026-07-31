@@ -432,6 +432,7 @@ mod call_hierarchy {
 mod navigation {
     use super::*;
 
+    #[serial_test::serial]
     #[tokio::test]
     async fn goto_definition_parameter_type_in_vendor() {
         let mut server = TestServer::with_fixture("symfony-demo").await;
@@ -446,6 +447,7 @@ mod navigation {
         expect!["src/Entity/User.php:32:6-32:10"].assert_eq(&out);
     }
 
+    #[serial_test::serial]
     #[tokio::test]
     async fn goto_definition_app_class_from_use_import() {
         let mut server = TestServer::with_fixture("symfony-demo").await;
@@ -460,6 +462,7 @@ mod navigation {
         expect!["src/Entity/Post.php:36:6-36:10"].assert_eq(&out);
     }
 
+    #[serial_test::serial]
     #[tokio::test]
     async fn goto_definition_inherited_method_this_render() {
         let mut server = TestServer::with_fixture("symfony-demo").await;
@@ -514,6 +517,7 @@ mod hover {
             .assert_eq(&out);
     }
 
+    #[serial_test::serial]
     #[tokio::test]
     async fn hover_on_app_entity_type_in_signature() {
         let mut server = TestServer::with_fixture("symfony-demo").await;
