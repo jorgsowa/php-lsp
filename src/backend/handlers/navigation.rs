@@ -17,7 +17,7 @@ use crate::text::{
 use crate::types::type_map::{enclosing_class_at, enclosing_class_fqn_at};
 
 use super::super::helpers::{
-    class_name_at_construct_decl, promoted_property_at_cursor, range_within,
+    class_name_at_construct_decl, is_bare_keyword_at, promoted_property_at_cursor, range_within,
 };
 use super::super::panic_guard::guard_async_result;
 use super::super::{Backend, class_before_double_colon, resolve_reference_symbol};
@@ -306,6 +306,16 @@ impl Backend {
                 None => return Ok(None),
             };
 
+            // Bare keyword tokens (`final`, `readonly`, `abstract`, ...) are
+            // never a resolvable symbol. Bail out before mir's per-file
+            // analysis runs: its declaration span for the entity the
+            // keyword modifies (e.g. a class) can otherwise map the offset
+            // to that entity's real symbol, triggering a full reference
+            // search from a token that was never meant to be searchable.
+            if is_bare_keyword_at(&source, position, &word) {
+                return Ok(None);
+            }
+
             if word == "__construct"
                 && let Some(doc) = self.get_doc(uri)
             {
@@ -588,6 +598,9 @@ impl Backend {
     ) -> Option<WorkspaceEdit> {
         let source = self.get_open_text(uri).unwrap_or_default();
         let word = word_at_position(&source, position)?;
+        if is_bare_keyword_at(&source, position, &word) {
+            return None;
+        }
         let doc_opt = self.get_doc(uri);
 
         // Usage-site cursor: mir's per-file analysis already resolved the
