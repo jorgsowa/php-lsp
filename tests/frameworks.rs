@@ -25,6 +25,8 @@ mod feature_laravel_env;
 mod feature_laravel_facade_to_di;
 #[path = "frameworks/feature_laravel_references.rs"]
 mod feature_laravel_references;
+#[path = "frameworks/feature_laravel_request_fields.rs"]
+mod feature_laravel_request_fields;
 #[path = "frameworks/feature_laravel_route.rs"]
 mod feature_laravel_route;
 #[path = "frameworks/feature_laravel_route_scaffold.rs"]

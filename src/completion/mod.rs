@@ -422,15 +422,41 @@ pub fn filtered_completions_at(
         .zip(position)
         .and_then(|(src, pos)| crate::laravel::completions_for_string_key(src, pos, ctx.laravel));
 
+    // Request-field completion inside `$request->input('...')`/`get`/`post`/
+    // `query` — a naming-convention heuristic (see `laravel::request_fields`
+    // module docs), gated the same way every other Laravel feature is.
+    let request_field_completions = source.zip(position).and_then(|(src, pos)| {
+        if !ctx.laravel.is_some_and(|l| l.is_laravel) {
+            return None;
+        }
+        let (receiver, prefix) =
+            crate::laravel::request_fields::method_call_string_prefix(src, pos)?;
+        let fields =
+            crate::laravel::request_fields::harvest_fields(&doc.program().stmts, &receiver);
+        Some(
+            fields
+                .into_iter()
+                .filter(|f| f.starts_with(&prefix))
+                .map(|f| CompletionItem {
+                    label: f.clone(),
+                    kind: Some(CompletionItemKind::FIELD),
+                    insert_text: Some(f),
+                    ..Default::default()
+                })
+                .collect::<Vec<_>>(),
+        )
+    });
+
     // Suppress all completions when the cursor is inside a string literal or
     // comment — except for include/require path strings and Laravel
-    // string-key calls, where completions are legitimate inside the string
-    // argument.
+    // string-key/request-field calls, where completions are legitimate
+    // inside the string argument.
     if let (Some(src), Some(pos)) = (source, position) {
         let cursor_byte = doc.view().byte_of_position(pos) as usize;
         if cursor_in_string_or_comment(src, cursor_byte)
             && include_path_prefix(src, pos).is_none()
             && laravel_completions.is_none()
+            && request_field_completions.is_none()
         {
             return vec![];
         }
@@ -704,6 +730,9 @@ pub fn filtered_completions_at(
 
             // Feature 10: Laravel string-key completions (env/config/...)
             if let Some(items) = laravel_completions {
+                return items;
+            }
+            if let Some(items) = request_field_completions {
                 return items;
             }
 

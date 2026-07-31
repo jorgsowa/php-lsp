@@ -20,6 +20,7 @@ mod eloquent_guard;
 mod env_index;
 pub(crate) mod facades;
 mod location_lookup;
+pub(crate) mod request_fields;
 mod route_index;
 pub(crate) mod route_scaffold;
 mod string_call;
