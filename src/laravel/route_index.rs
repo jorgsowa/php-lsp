@@ -90,15 +90,16 @@ impl<'arena, 'src> Visitor<'arena, 'src> for RouteVisitor<'_> {
         if let ExprKind::MethodCall(mc) = &expr.kind
             && is_ident(mc.method, "name")
             && let Some(arg) = mc.args.first()
-            && let ExprKind::String(name) = &arg.value.kind
+            && let Some(arg_value) = &arg.value
+            && let ExprKind::String(name) = &arg_value.kind
         {
             let full_name = format!("{}{name}", self.prefix_stack.concat());
             // `span.start`/`span.end` point at the surrounding quotes (see
             // `editing::document_link::link_from_path_expr`); trim one byte
             // off each side to land on the name text itself.
             let range = Range {
-                start: self.sv.position_of(arg.value.span.start + 1),
-                end: self.sv.position_of(arg.value.span.end - 1),
+                start: self.sv.position_of(arg_value.span.start + 1),
+                end: self.sv.position_of(arg_value.span.end - 1),
             };
             self.out.entry(full_name).or_insert_with(|| Location {
                 uri: self.uri.clone(),
@@ -135,13 +136,13 @@ fn group_closure<'arena, 'src>(
 ) -> Option<(Option<String>, &'arena Block<'arena, 'src>)> {
     match &expr.kind {
         ExprKind::StaticMethodCall(s) if is_ident(s.method, "group") && s.args.len() == 2 => {
-            let as_prefix = array_as_prefix(&s.args[0].value);
-            let block = closure_block(&s.args[1].value)?;
+            let as_prefix = s.args[0].value.as_ref().and_then(array_as_prefix);
+            let block = closure_block(s.args[1].value.as_ref()?)?;
             Some((as_prefix, block))
         }
         ExprKind::MethodCall(mc) if is_ident(mc.method, "group") && mc.args.len() == 1 => {
             let as_prefix = find_as_prefix_in_chain(mc.object);
-            let block = closure_block(&mc.args[0].value)?;
+            let block = closure_block(mc.args[0].value.as_ref()?)?;
             Some((as_prefix, block))
         }
         _ => None,
@@ -186,7 +187,8 @@ fn find_as_prefix_in_chain(expr: &Expr<'_, '_>) -> Option<String> {
         ExprKind::MethodCall(mc) => {
             if is_ident(mc.method, "name")
                 && let Some(arg) = mc.args.first()
-                && let ExprKind::String(s) = &arg.value.kind
+                && let Some(arg_value) = &arg.value
+                && let ExprKind::String(s) = &arg_value.kind
             {
                 return Some(s.to_string());
             }
@@ -194,7 +196,8 @@ fn find_as_prefix_in_chain(expr: &Expr<'_, '_>) -> Option<String> {
         }
         ExprKind::StaticMethodCall(s) if is_ident(s.method, "name") => {
             let arg = s.args.first()?;
-            let ExprKind::String(name) = &arg.value.kind else {
+            let arg_value = arg.value.as_ref()?;
+            let ExprKind::String(name) = &arg_value.kind else {
                 return None;
             };
             Some(name.to_string())

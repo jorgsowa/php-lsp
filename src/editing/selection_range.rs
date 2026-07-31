@@ -450,7 +450,9 @@ fn collect_spans_expr(expr: &Expr<'_, '_>, off: u32, out: &mut Vec<(u32, u32)>) 
                 if !push_if_contains(arg.span.start, arg.span.end, off, out) {
                     continue;
                 }
-                collect_spans_expr(&arg.value, off, out);
+                if let Some(value) = &arg.value {
+                    collect_spans_expr(value, off, out);
+                }
             }
         }
         ExprKind::Array(elems) => {
@@ -494,7 +496,9 @@ fn collect_spans_expr(expr: &Expr<'_, '_>, off: u32, out: &mut Vec<(u32, u32)>) 
                 if !push_if_contains(arg.span.start, arg.span.end, off, out) {
                     continue;
                 }
-                collect_spans_expr(&arg.value, off, out);
+                if let Some(value) = &arg.value {
+                    collect_spans_expr(value, off, out);
+                }
             }
         }
         ExprKind::PropertyAccess(p) | ExprKind::NullsafePropertyAccess(p) => {
@@ -508,7 +512,9 @@ fn collect_spans_expr(expr: &Expr<'_, '_>, off: u32, out: &mut Vec<(u32, u32)>) 
                 if !push_if_contains(arg.span.start, arg.span.end, off, out) {
                     continue;
                 }
-                collect_spans_expr(&arg.value, off, out);
+                if let Some(value) = &arg.value {
+                    collect_spans_expr(value, off, out);
+                }
             }
         }
         ExprKind::StaticPropertyAccess(s) | ExprKind::ClassConstAccess(s) => {
@@ -520,7 +526,9 @@ fn collect_spans_expr(expr: &Expr<'_, '_>, off: u32, out: &mut Vec<(u32, u32)>) 
                 if !push_if_contains(arg.span.start, arg.span.end, off, out) {
                     continue;
                 }
-                collect_spans_expr(&arg.value, off, out);
+                if let Some(value) = &arg.value {
+                    collect_spans_expr(value, off, out);
+                }
             }
         }
         ExprKind::ClassConstAccessDynamic { class, member }
@@ -583,7 +591,9 @@ fn collect_spans_expr(expr: &Expr<'_, '_>, off: u32, out: &mut Vec<(u32, u32)>) 
                 if !push_if_contains(arg.span.start, arg.span.end, off, out) {
                     continue;
                 }
-                collect_spans_expr(&arg.value, off, out);
+                if let Some(value) = &arg.value {
+                    collect_spans_expr(value, off, out);
+                }
             }
         }
         ExprKind::Omit => {}

@@ -131,9 +131,10 @@ fn find_validate_array(
                 && let ExprKind::Identifier(method) = &mc.method.kind
                 && method.eq_ignore_ascii_case("validate")
                 && let Some(arg) = mc.args.first()
-                && let ExprKind::Array(elements) = &arg.value.kind
-                && arg.value.span.start <= self.cursor
-                && self.cursor <= arg.value.span.end
+                && let Some(value) = &arg.value
+                && let ExprKind::Array(elements) = &value.kind
+                && value.span.start <= self.cursor
+                && self.cursor <= value.span.end
             {
                 let receiver = match &mc.object.kind {
                     ExprKind::Variable(v) if v.as_str() == "this" => Some(Receiver::ThisKeyword),
@@ -141,7 +142,7 @@ fn find_validate_array(
                     _ => None,
                 };
                 if let Some(receiver) = receiver {
-                    self.found = Some((to_found_array(elements, arg.value.span), receiver));
+                    self.found = Some((to_found_array(elements, value.span), receiver));
                     return ControlFlow::Break(());
                 }
             }

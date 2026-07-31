@@ -272,10 +272,11 @@ pub(crate) fn cursor_is_on_constant_decl(
                         && let ExprKind::Identifier(id) = &f.name.kind
                         && id.as_str() == "define"
                         && let Some(first_arg) = f.args.first()
-                        && let ExprKind::String(s) = &first_arg.value.kind
+                        && let Some(first_arg_value) = &first_arg.value
+                        && let ExprKind::String(s) = &first_arg_value.kind
                     {
                         // String content starts one byte after the opening quote.
-                        let start = first_arg.value.span.start + 1;
+                        let start = first_arg_value.span.start + 1;
                         let end = start + s.len() as u32;
                         if cursor >= start && cursor < end {
                             return Some((s.to_string(), None));

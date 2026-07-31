@@ -66,11 +66,12 @@ fn collect_string_arg_calls(doc: &ParsedDoc, names: &[&str]) -> Vec<StringArgCal
                 && let Some(arg) = f.args.first()
                 && arg.name.is_none()
                 && !arg.unpack
-                && let ExprKind::String(s) = &arg.value.kind
-                && let Some(cspan) = content_span(self.source, arg.value.span)
+                && let Some(arg_value) = &arg.value
+                && let ExprKind::String(s) = &arg_value.kind
+                && let Some(cspan) = content_span(self.source, arg_value.span)
             {
                 self.out.push(StringArgCall {
-                    token_span: arg.value.span,
+                    token_span: arg_value.span,
                     content: (*s).to_string(),
                     content_span: cspan,
                 });

@@ -725,7 +725,9 @@ fn collect_expr(sv: SourceView<'_>, expr: &php_ast::Expr<'_, '_>, out: &mut Vec<
         }
         ExprKind::New(n) => {
             for arg in n.args.iter() {
-                collect_expr(sv, &arg.value, out);
+                if let Some(value) = &arg.value {
+                    collect_expr(sv, value, out);
+                }
             }
         }
         ExprKind::FunctionCall(f) => {
@@ -743,7 +745,9 @@ fn collect_expr(sv: SourceView<'_>, expr: &php_ast::Expr<'_, '_>, out: &mut Vec<
                 collect_expr(sv, f.name, out);
             }
             for arg in f.args.iter() {
-                collect_expr(sv, &arg.value, out);
+                if let Some(value) = &arg.value {
+                    collect_expr(sv, value, out);
+                }
             }
         }
         ExprKind::MethodCall(m) => {
@@ -760,7 +764,9 @@ fn collect_expr(sv: SourceView<'_>, expr: &php_ast::Expr<'_, '_>, out: &mut Vec<
                 );
             }
             for arg in m.args.iter() {
-                collect_expr(sv, &arg.value, out);
+                if let Some(value) = &arg.value {
+                    collect_expr(sv, value, out);
+                }
             }
         }
         ExprKind::NullsafeMethodCall(m) => {
@@ -777,7 +783,9 @@ fn collect_expr(sv: SourceView<'_>, expr: &php_ast::Expr<'_, '_>, out: &mut Vec<
                 );
             }
             for arg in m.args.iter() {
-                collect_expr(sv, &arg.value, out);
+                if let Some(value) = &arg.value {
+                    collect_expr(sv, value, out);
+                }
             }
         }
         ExprKind::Assign(a) => {
@@ -884,14 +892,18 @@ fn collect_expr(sv: SourceView<'_>, expr: &php_ast::Expr<'_, '_>, out: &mut Vec<
                 );
             }
             for arg in s.args.iter() {
-                collect_expr(sv, &arg.value, out);
+                if let Some(value) = &arg.value {
+                    collect_expr(sv, value, out);
+                }
             }
         }
         ExprKind::StaticDynMethodCall(s) => {
             collect_class_ref(sv, s.class, out);
             collect_expr(sv, s.method, out);
             for arg in s.args.iter() {
-                collect_expr(sv, &arg.value, out);
+                if let Some(value) = &arg.value {
+                    collect_expr(sv, value, out);
+                }
             }
         }
         ExprKind::StaticPropertyAccess(a) => {

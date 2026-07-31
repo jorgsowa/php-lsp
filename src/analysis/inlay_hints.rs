@@ -419,7 +419,9 @@ fn hints_in_expr(
             }
             hints_in_expr(sv, f.name, defs, workspace_defs, analysis, range, out);
             for arg in f.args.iter() {
-                hints_in_expr(sv, &arg.value, defs, workspace_defs, analysis, range, out);
+                if let Some(value) = &arg.value {
+                    hints_in_expr(sv, value, defs, workspace_defs, analysis, range, out);
+                }
             }
         }
         ExprKind::MethodCall(m) | ExprKind::NullsafeMethodCall(m) => {
@@ -430,7 +432,9 @@ fn hints_in_expr(
             }
             hints_in_expr(sv, m.object, defs, workspace_defs, analysis, range, out);
             for arg in m.args.iter() {
-                hints_in_expr(sv, &arg.value, defs, workspace_defs, analysis, range, out);
+                if let Some(value) = &arg.value {
+                    hints_in_expr(sv, value, defs, workspace_defs, analysis, range, out);
+                }
             }
         }
         ExprKind::StaticMethodCall(m) => {
@@ -441,7 +445,9 @@ fn hints_in_expr(
             }
             hints_in_expr(sv, m.class, defs, workspace_defs, analysis, range, out);
             for arg in m.args.iter() {
-                hints_in_expr(sv, &arg.value, defs, workspace_defs, analysis, range, out);
+                if let Some(value) = &arg.value {
+                    hints_in_expr(sv, value, defs, workspace_defs, analysis, range, out);
+                }
             }
         }
         ExprKind::New(n) => {
@@ -453,7 +459,9 @@ fn hints_in_expr(
                 emit_param_hints(sv, &n.args, def, class_name, range, out);
             }
             for arg in n.args.iter() {
-                hints_in_expr(sv, &arg.value, defs, workspace_defs, analysis, range, out);
+                if let Some(value) = &arg.value {
+                    hints_in_expr(sv, value, defs, workspace_defs, analysis, range, out);
+                }
             }
         }
         ExprKind::Assign(a) => {

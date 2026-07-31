@@ -67,7 +67,7 @@ impl<'arena, 'src> Visitor<'arena, 'src> for CreateCallVisitor<'_> {
             && is_ident(s.method, "create")
             && let ExprKind::Identifier(class_ident) = &s.class.kind
             && matches!(
-                s.args.first().map(|a| &a.value.kind),
+                s.args.first().and_then(|a| a.value.as_ref()).map(|v| &v.kind),
                 Some(ExprKind::Array(_))
             )
         {

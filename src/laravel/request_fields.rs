@@ -112,7 +112,8 @@ pub(crate) fn harvest_fields(stmts: &[Stmt<'_, '_>], receiver: &Receiver) -> Vec
                 && receiver_matches(mc.object, self.receiver)
                 && let Some(arg) = mc.args.first()
                 && arg.name.is_none()
-                && let ExprKind::String(s) = &arg.value.kind
+                && let Some(arg_value) = &arg.value
+                && let ExprKind::String(s) = &arg_value.kind
                 && !self.out.iter().any(|f| f == *s)
             {
                 self.out.push((*s).to_string());
