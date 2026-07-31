@@ -13,6 +13,7 @@ use tower_lsp_server::ls_types::{
 };
 
 use crate::document::ast::{ParsedDoc, SourceView, span_to_range};
+use crate::lang::is_php_keyword;
 
 /// Finds the declaration matching `name` and returns a `CallHierarchyItem`,
 /// resolving candidate declaring files via the workspace aggregate's
@@ -20,34 +21,42 @@ use crate::document::ast::{ParsedDoc, SourceView, span_to_range};
 /// docs fetched and scanned instead of O(workspace).
 /// `get_doc` resolves a candidate file to its parsed doc (typically
 /// `DocumentStore::get_doc_salsa` — a memo hit for indexed files).
+///
+/// The workspace-wide trait-alias scan below only runs when `name` has no
+/// `decls_by_name` entry at all — i.e. it's not a class/function/method/
+/// property/constant under that literal spelling anywhere. When `name` *is*
+/// declared as something but that something has no `CallHierarchyItem`
+/// (nothing currently classifies as one other than functions/methods/
+/// class-likes), there is nothing left to try: a name that is already a
+/// literal declaration is never also a trait-alias spelling.
 pub fn prepare_call_hierarchy_indexed(
     name: &str,
     wi: &crate::db::workspace_index::WorkspaceIndexData,
     get_doc: &dyn Fn(&Uri) -> Option<Arc<ParsedDoc>>,
 ) -> Option<CallHierarchyItem> {
-    if let Some(refs) = wi.decls_by_name.get(name) {
-        // Visit each candidate file once, in declaration encounter order.
-        let mut last_file = u32::MAX;
-        for r in refs {
-            if r.file == last_file {
-                continue;
-            }
-            last_file = r.file;
-            let Some((uri, _)) = wi.files.get(r.file as usize) else {
-                continue;
-            };
-            let Some(doc) = get_doc(uri) else { continue };
-            if let Some(item) = find_declaration_item(name, &doc.program().stmts, doc.view(), uri) {
-                return Some(item);
-            }
+    let Some(refs) = wi.decls_by_name.get(name) else {
+        // `name` might be a `use Trait { method as name; }` alias, which
+        // never appears as a literal declaration in `decls_by_name`.
+        let original = resolve_trait_alias_indexed(name, wi)?;
+        if original == name {
+            return None;
         }
-    }
-    // `name` might be a `use Trait { method as name; }` alias, which never
-    // appears as a literal declaration in `decls_by_name`.
-    if let Some(original) = resolve_trait_alias_indexed(name, wi)
-        && original != name
-    {
         return prepare_call_hierarchy_indexed(&original, wi, get_doc);
+    };
+    // Visit each candidate file once, in declaration encounter order.
+    let mut last_file = u32::MAX;
+    for r in refs {
+        if r.file == last_file {
+            continue;
+        }
+        last_file = r.file;
+        let Some((uri, _)) = wi.files.get(r.file as usize) else {
+            continue;
+        };
+        let Some(doc) = get_doc(uri) else { continue };
+        if let Some(item) = find_declaration_item(name, &doc.program().stmts, doc.view(), uri) {
+            return Some(item);
+        }
     }
     None
 }
@@ -216,6 +225,25 @@ fn find_declaration_item(
                     data: None,
                 });
             }
+            // Class-name-itself match: `new X()` extracts the bare class name as
+            // its "callee", and `decls_by_name` indexes class declarations under
+            // that same name — without this arm, that lookup always missed here
+            // and fell through to the workspace-wide trait-alias scan for every
+            // `new` expression in the codebase.
+            StmtKind::Class(c) if c.name.is_some_and(|n| n == name) => {
+                let range = sv.range_of(stmt.span);
+                let sel = sv.name_range_after_attrs(name, &c.attributes, stmt.span);
+                return Some(CallHierarchyItem {
+                    name: name.to_string(),
+                    kind: SymbolKind::CLASS,
+                    tags: None,
+                    detail: None,
+                    uri: uri.clone(),
+                    range,
+                    selection_range: sel,
+                    data: None,
+                });
+            }
             StmtKind::Class(c) => {
                 for member in c.body.members.iter() {
                     if let ClassMemberKind::Method(m) = &member.kind
@@ -240,6 +268,58 @@ fn find_declaration_item(
                     }
                 }
             }
+            StmtKind::Interface(i) if i.name == name => {
+                let range = sv.range_of(stmt.span);
+                let sel = sv.name_range_after_attrs(name, &i.attributes, stmt.span);
+                return Some(CallHierarchyItem {
+                    name: name.to_string(),
+                    kind: SymbolKind::INTERFACE,
+                    tags: None,
+                    detail: None,
+                    uri: uri.clone(),
+                    range,
+                    selection_range: sel,
+                    data: None,
+                });
+            }
+            StmtKind::Interface(i) => {
+                for member in i.body.members.iter() {
+                    if let ClassMemberKind::Method(m) = &member.kind
+                        && m.name == name
+                    {
+                        let range = sv.range_of(member.span);
+                        let sel = sv.name_range_after_attrs(
+                            &m.name.to_string(),
+                            &m.attributes,
+                            member.span,
+                        );
+                        return Some(CallHierarchyItem {
+                            name: name.to_string(),
+                            kind: SymbolKind::METHOD,
+                            tags: None,
+                            detail: Some(i.name.to_string()),
+                            uri: uri.clone(),
+                            range,
+                            selection_range: sel,
+                            data: None,
+                        });
+                    }
+                }
+            }
+            StmtKind::Trait(t) if t.name == name => {
+                let range = sv.range_of(stmt.span);
+                let sel = sv.name_range_after_attrs(name, &t.attributes, stmt.span);
+                return Some(CallHierarchyItem {
+                    name: name.to_string(),
+                    kind: SymbolKind::CLASS,
+                    tags: None,
+                    detail: None,
+                    uri: uri.clone(),
+                    range,
+                    selection_range: sel,
+                    data: None,
+                });
+            }
             StmtKind::Trait(t) => {
                 for member in t.body.members.iter() {
                     if let ClassMemberKind::Method(m) = &member.kind
@@ -263,6 +343,20 @@ fn find_declaration_item(
                         });
                     }
                 }
+            }
+            StmtKind::Enum(e) if e.name == name => {
+                let range = sv.range_of(stmt.span);
+                let sel = sv.name_range_after_attrs(name, &e.attributes, stmt.span);
+                return Some(CallHierarchyItem {
+                    name: name.to_string(),
+                    kind: SymbolKind::ENUM,
+                    tags: None,
+                    detail: None,
+                    uri: uri.clone(),
+                    range,
+                    selection_range: sel,
+                    data: None,
+                });
             }
             StmtKind::Enum(e) => {
                 for member in e.body.members.iter() {
@@ -556,7 +650,15 @@ impl<'arena, 'src> Visitor<'arena, 'src> for CallCollector<'_> {
             }
             ExprKind::New(n) => {
                 if let ExprKind::Identifier(class_name) = &n.class.kind {
-                    self.out.push((class_name.to_string(), n.class.span));
+                    let class_name = class_name.to_string();
+                    // `self`/`static`/`parent` are late-binding class refs, not
+                    // literal declarations — `decls_by_name` always misses them,
+                    // which would otherwise trigger the workspace-wide
+                    // trait-alias scan in `prepare_call_hierarchy_indexed` on
+                    // every `new self/static/parent()` call site.
+                    if !is_php_keyword(&class_name) {
+                        self.out.push((class_name, n.class.span));
+                    }
                 }
             }
             // First-class callable syntax (PHP 8.1): `foo(...)`, `$obj->method(...)`,

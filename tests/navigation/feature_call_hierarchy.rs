@@ -378,7 +378,44 @@ function boo$0t(): void { $c = new Config(defaults()); }
 "#,
         )
         .await;
-    expect!["defaults @ main.php:1:9 fromRanges=[3:40-3:48]"].assert_eq(&out);
+    // `Config` itself now resolves to the class declaration: `new X()` targets
+    // are indexed under the class's own name in `decls_by_name`, and
+    // `find_declaration_item` matches the class-name-itself case (previously
+    // it only matched functions/methods, so every `new` expression fell
+    // through to the workspace-wide trait-alias scan for nothing).
+    expect![[r#"
+        Config @ main.php:2:6 fromRanges=[3:33-3:39]
+        defaults @ main.php:1:9 fromRanges=[3:40-3:48]"#]]
+    .assert_eq(&out);
+}
+
+/// `self`/`static`/`parent` are late-binding class references, never literal
+/// declarations — `decls_by_name` can never contain them (PHP forbids
+/// declaring a class with a reserved-word name). Before the `is_php_keyword`
+/// filter in `CallCollector`, each `new self/static/parent()` triggered the
+/// workspace-wide trait-alias scan in `prepare_call_hierarchy_indexed` for no
+/// possible match. They must produce no outgoing-call entry of their own.
+#[tokio::test]
+async fn outgoing_calls_excludes_self_static_parent_new_targets() {
+    let mut s = TestServer::new().await;
+    let out = s
+        .check_outgoing_calls(
+            r#"<?php
+class Base {}
+class Model extends Base {
+    public function leaf(): void {}
+    public function mak$0e(): static {
+        $this->leaf();
+        $a = new self();
+        $b = new static();
+        $c = new parent();
+        return $this;
+    }
+}
+"#,
+        )
+        .await;
+    expect!["leaf @ main.php:3:20 fromRanges=[5:15-5:19]"].assert_eq(&out);
 }
 
 #[tokio::test]
@@ -609,7 +646,10 @@ class Worker {
 "#,
         )
         .await;
-    expect!["process @ main.php:1:31 fromRanges=[3:58-3:65, 3:73-3:80]"].assert_eq(&out);
+    expect![[r#"
+        Helper @ main.php:1:6 fromRanges=[3:44-3:50]
+        process @ main.php:1:31 fromRanges=[3:58-3:65, 3:73-3:80]"#]]
+    .assert_eq(&out);
 }
 
 /// Nullsafe method calls must be included in outgoing calls.
