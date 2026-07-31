@@ -374,3 +374,324 @@ async fn laravel_string_key_references_and_hover_concurrent_complete_without_dea
         ```"#]]
     .assert_eq(&render_hover(&hover_resp));
 }
+
+// ── inline-blocking regression tests ────────────────────────────────────────
+// Each handler below must offload its document-size synchronous work to
+// `spawn_blocking` rather than running it directly on the async task that
+// also reads stdin and writes stdout for the whole connection — see
+// `TestClient::assert_stays_responsive` for why running it inline hangs
+// every other in-flight request, not just the slow one.
+
+// `assert_notification_stays_responsive`'s budget is a wall-clock timeout
+// racing the server's own blocking work, unlike the ordering check
+// `assert_stays_responsive` uses for request/response pairs. On the default
+// current-thread runtime that race is meaningless: a `tokio::time::timeout`
+// can only fire between polls, never partway through one, so a single
+// non-yielding poll that runs longer than the budget simply delays the
+// timer's own chance to fire until right when the blocking call itself
+// returns — at that point both become ready at essentially the same
+// instant and which one wins is coin-flip scheduling order, not the
+// duration each actually took. `multi_thread` puts the timer on a real
+// second OS thread so it fires independently of whatever the (possibly
+// stuck) server task is doing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn did_open_stays_responsive_on_large_file() {
+    // did_open parses the just-opened document synchronously to seed parse
+    // diagnostics; a cache miss (this is the file's first open) must not run
+    // that parse inline. Diagnostics are disabled so the test isolates the
+    // parse itself from mir's separate (and much heavier) semantic analysis
+    // pass, which would otherwise dominate wall time regardless of this bug.
+    // 20000 generated classes measured ~43-53ms for the whole open+probe
+    // exchange when parsed inline, vs. ~11-16ms when deferred via
+    // spawn_blocking — comfortable margin either side of the 25ms budget.
+    let (mut server, _init) = TestServer::new_with_options(serde_json::json!({
+        "diagnostics": { "enabled": false }
+    }))
+    .await;
+    let uri = server.uri("big_did_open.php");
+    server
+        .assert_notification_stays_responsive(
+            "textDocument/didOpen",
+            serde_json::json!({
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "php",
+                    "version": 1,
+                    "text": crate::common::fixture::large_php_source(20000),
+                }
+            }),
+            std::time::Duration::from_millis(25),
+        )
+        .await;
+}
+
+/// Opens `count` sizeable, self-contained documents plus one "target"
+/// document referencing a name (`undefinedGoal`) that isn't declared
+/// anywhere, so `goto_type_definition`'s open-doc AST scan must walk every
+/// one of them before concluding there's no match.
+async fn open_many_docs_with_unresolved_target(server: &mut TestServer, count: usize) -> String {
+    for i in 0..count {
+        server
+            .open(
+                &format!("noise{i}.php"),
+                &crate::common::fixture::large_php_source(30),
+            )
+            .await;
+    }
+    server
+        .open(
+            "goto_target.php",
+            "<?php\nfunction useIt(): void {\n    undefinedGoal();\n}\n",
+        )
+        .await;
+    server.uri("goto_target.php")
+}
+
+// Note: `goto_declaration` has the identical inline-scan pattern (walks
+// every open doc's AST via `resolve_declaration` with no spawn_blocking),
+// but its per-doc cost is dominated by cheap top-level name comparisons —
+// empirically, even 1500 open documents didn't produce an observable
+// ordering effect here, unlike goto_type_definition below. The source fix
+// is kept for architectural consistency (and headroom against future
+// per-doc cost growth), but isn't paired with its own responsiveness test
+// since one can't be constructed reliably at a practical scale.
+
+#[tokio::test]
+async fn goto_type_definition_stays_responsive_with_many_open_documents() {
+    let mut server = TestServer::new().await;
+    let uri = open_many_docs_with_unresolved_target(&mut server, 150).await;
+    server
+        .assert_stays_responsive(
+            "textDocument/typeDefinition",
+            serde_json::json!({
+                "textDocument": { "uri": uri },
+                "position": { "line": 2, "character": 6 },
+            }),
+        )
+        .await;
+}
+
+#[tokio::test]
+async fn prepare_rename_stays_responsive_for_keyword_shaped_identifier_on_large_file() {
+    // `prepare_rename` only walks the whole AST when the word under the
+    // cursor is shaped like a PHP keyword (`list`, `match`, ...) used
+    // somewhere as an ordinary identifier — it must check every member-access
+    // site in the document to tell whether this occurrence is one of them.
+    // `list(...)` here is the builtin destructuring form (not a method call),
+    // so the walk finds no match anywhere and must scan the entire tree.
+    let mut source = crate::common::fixture::large_php_source(500);
+    source.push_str("function useList() {\n    list($a, $b) = someFunc();\n    return $a;\n}\n");
+    let list_line = source
+        .lines()
+        .position(|l| l.contains("list($a, $b)"))
+        .expect("generated source must contain the list(...) line") as u32;
+    let list_char = source
+        .lines()
+        .nth(list_line as usize)
+        .unwrap()
+        .find("list")
+        .unwrap() as u32;
+
+    let mut server = TestServer::new().await;
+    server.open("big_prepare_rename.php", &source).await;
+    let uri = server.uri("big_prepare_rename.php");
+    server
+        .assert_stays_responsive(
+            "textDocument/prepareRename",
+            serde_json::json!({
+                "textDocument": { "uri": uri },
+                "position": { "line": list_line, "character": list_char },
+            }),
+        )
+        .await;
+}
+
+#[tokio::test]
+async fn linked_editing_range_stays_responsive_on_large_file() {
+    let mut server = TestServer::new().await;
+    server
+        .open(
+            "big_linked_editing.php",
+            &crate::common::fixture::large_php_source(500),
+        )
+        .await;
+    let uri = server.uri("big_linked_editing.php");
+    server
+        .assert_stays_responsive(
+            "textDocument/linkedEditingRange",
+            serde_json::json!({
+                "textDocument": { "uri": uri },
+                // Character 8 lands inside "GenClass0" on `class GenClass0`
+                // (line 7 of `large_php_source`'s output).
+                "position": { "line": 7, "character": 8 },
+            }),
+        )
+        .await;
+}
+
+#[serial_test::serial(fake_external_formatter)]
+#[tokio::test]
+async fn formatting_stays_responsive_with_slow_external_formatter() {
+    // format_document/format_range shell out to php-cs-fixer/phpcbf and
+    // block on `wait_with_output()`. Neither tool is assumed installed in
+    // dev/CI, so this test puts its own fake "php-cs-fixer" on PATH — a
+    // script that sleeps briefly then reformats — to exercise the real
+    // blocking-subprocess code path deterministically rather than the
+    // near-instant "tool not found" fallback. #[serial] plus restoring PATH
+    // on drop keeps this from racing or leaking into other tests that also
+    // shell out.
+    struct PathGuard(String);
+    impl Drop for PathGuard {
+        fn drop(&mut self) {
+            unsafe { std::env::set_var("PATH", &self.0) };
+        }
+    }
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let script = dir.path().join("php-cs-fixer");
+    std::fs::write(&script, "#!/bin/sh\nsleep 0.2\ncat\necho '// formatted'\n")
+        .expect("write fake formatter");
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755))
+            .expect("chmod fake formatter");
+    }
+
+    let original_path = std::env::var("PATH").unwrap_or_default();
+    let _restore_path = PathGuard(original_path.clone());
+    unsafe {
+        std::env::set_var("PATH", format!("{}:{original_path}", dir.path().display()));
+    }
+
+    let mut server = TestServer::new().await;
+    server
+        .open("fmt.php", "<?php\nfunction f(): void {}\n")
+        .await;
+    let uri = server.uri("fmt.php");
+    server
+        .assert_stays_responsive(
+            "textDocument/formatting",
+            serde_json::json!({
+                "textDocument": { "uri": uri },
+                "options": { "tabSize": 4, "insertSpaces": true },
+            }),
+        )
+        .await;
+}
+
+#[tokio::test]
+async fn document_symbol_stays_responsive_on_large_file() {
+    let mut server = TestServer::new().await;
+    server
+        .open(
+            "big_doc_symbol.php",
+            &crate::common::fixture::large_php_source(500),
+        )
+        .await;
+    let uri = server.uri("big_doc_symbol.php");
+    server
+        .assert_stays_responsive(
+            "textDocument/documentSymbol",
+            serde_json::json!({ "textDocument": { "uri": uri } }),
+        )
+        .await;
+}
+
+#[tokio::test]
+async fn folding_range_stays_responsive_on_large_file() {
+    let mut server = TestServer::new().await;
+    server
+        .open(
+            "big_folding.php",
+            &crate::common::fixture::large_php_source(500),
+        )
+        .await;
+    let uri = server.uri("big_folding.php");
+    server
+        .assert_stays_responsive(
+            "textDocument/foldingRange",
+            serde_json::json!({ "textDocument": { "uri": uri } }),
+        )
+        .await;
+}
+
+#[tokio::test]
+async fn document_link_stays_responsive_on_large_file() {
+    let mut server = TestServer::new().await;
+    server
+        .open(
+            "big_doc_link.php",
+            &crate::common::fixture::large_php_source(500),
+        )
+        .await;
+    let uri = server.uri("big_doc_link.php");
+    server
+        .assert_stays_responsive(
+            "textDocument/documentLink",
+            serde_json::json!({ "textDocument": { "uri": uri } }),
+        )
+        .await;
+}
+
+#[tokio::test]
+async fn semantic_tokens_full_stays_responsive_on_large_file() {
+    let mut server = TestServer::new().await;
+    server
+        .open(
+            "big_semtok_full.php",
+            &crate::common::fixture::large_php_source(500),
+        )
+        .await;
+    let uri = server.uri("big_semtok_full.php");
+    server
+        .assert_stays_responsive(
+            "textDocument/semanticTokens/full",
+            serde_json::json!({ "textDocument": { "uri": uri } }),
+        )
+        .await;
+}
+
+#[tokio::test]
+async fn semantic_tokens_range_stays_responsive_on_large_file() {
+    let mut server = TestServer::new().await;
+    server
+        .open(
+            "big_semtok_range.php",
+            &crate::common::fixture::large_php_source(500),
+        )
+        .await;
+    let uri = server.uri("big_semtok_range.php");
+    server
+        .assert_stays_responsive(
+            "textDocument/semanticTokens/range",
+            serde_json::json!({
+                "textDocument": { "uri": uri },
+                "range": {
+                    "start": { "line": 0, "character": 0 },
+                    "end": { "line": 50, "character": 0 },
+                },
+            }),
+        )
+        .await;
+}
+
+#[tokio::test]
+async fn semantic_tokens_full_delta_stays_responsive_on_large_file() {
+    let mut server = TestServer::new().await;
+    server
+        .open(
+            "big_semtok_delta.php",
+            &crate::common::fixture::large_php_source(500),
+        )
+        .await;
+    let uri = server.uri("big_semtok_delta.php");
+    server
+        .assert_stays_responsive(
+            "textDocument/semanticTokens/full/delta",
+            serde_json::json!({
+                "textDocument": { "uri": uri },
+                "previousResultId": "nonexistent",
+            }),
+        )
+        .await;
+}

@@ -257,12 +257,20 @@ impl LanguageServer for Backend {
             self.set_open_text(uri.clone(), text);
 
             // Seed parse diagnostics from the salsa-cached doc. On the fast
-            // path this is a lock-free DashMap lookup — no re-parse.
-            let parse_diags = self
-                .docs
-                .get_doc_salsa(&uri)
-                .map(|doc| diagnostics_from_doc(&doc))
-                .unwrap_or_default();
+            // path this is a lock-free DashMap lookup — no re-parse — but a
+            // cache miss triggers a full parse, so keep it off the async task.
+            let docs = Arc::clone(&self.docs);
+            let uri_for_task = uri.clone();
+            let parse_diags = tokio::task::spawn_blocking(move || {
+                docs.get_doc_salsa(&uri_for_task)
+                    .map(|doc| diagnostics_from_doc(&doc))
+                    .unwrap_or_default()
+            })
+            .await
+            .unwrap_or_else(|e| {
+                tracing::warn!("did_open panicked while parsing {uri:?}: {e}");
+                Vec::new()
+            });
             self.set_parse_diagnostics(&uri, parse_diags);
 
             publish_with_dependents(
@@ -408,7 +416,13 @@ impl LanguageServer for Backend {
             let source = self
                 .get_open_text(&params.text_document.uri)
                 .unwrap_or_default();
-            Ok(format_document(&source))
+            // Spawns and blocks on an external formatter process; keep that
+            // wait off the async runtime worker.
+            Ok(
+                tokio::task::spawn_blocking(move || format_document(&source))
+                    .await
+                    .unwrap_or_default(),
+            )
         })
         .await
     }
@@ -725,7 +739,14 @@ impl LanguageServer for Backend {
                 Some(d) => d,
                 None => return Ok(None),
             };
-            Ok(prepare_rename(&doc, params.position).map(PrepareRenameResponse::Range))
+            let position = params.position;
+            // For a keyword-shaped identifier (`match`, `list`, ...),
+            // `prepare_rename` walks the whole AST to check whether it's used
+            // as a real member name; keep that off the async runtime worker.
+            let range = tokio::task::spawn_blocking(move || prepare_rename(&doc, position))
+                .await
+                .unwrap_or_default();
+            Ok(range.map(PrepareRenameResponse::Range))
         })
         .await
     }
@@ -912,10 +933,11 @@ impl LanguageServer for Backend {
                 Some(d) => d,
                 None => return Ok(None),
             };
-            Ok(Some(DocumentSymbolResponse::Nested(document_symbols(
-                doc.source(),
-                &doc,
-            ))))
+            // The AST walk is CPU-bound; keep it off the async runtime worker.
+            let symbols = tokio::task::spawn_blocking(move || document_symbols(doc.source(), &doc))
+                .await
+                .unwrap_or_default();
+            Ok(Some(DocumentSymbolResponse::Nested(symbols)))
         })
         .await
     }
@@ -927,7 +949,11 @@ impl LanguageServer for Backend {
                 Some(d) => d,
                 None => return Ok(None),
             };
-            let ranges = folding_ranges(doc.source(), &doc);
+            // The AST walk plus full-text comment/region scans are CPU-bound;
+            // keep them off the async runtime worker.
+            let ranges = tokio::task::spawn_blocking(move || folding_ranges(doc.source(), &doc))
+                .await
+                .unwrap_or_default();
             Ok(if ranges.is_empty() {
                 None
             } else {
@@ -1044,8 +1070,8 @@ impl LanguageServer for Backend {
         params: SemanticTokensParams,
     ) -> Result<Option<SemanticTokensResult>> {
         guard_async_result("semantic_tokens_full", async move {
-            let uri = &params.text_document.uri;
-            let doc = match self.get_doc(uri) {
+            let uri = params.text_document.uri;
+            let doc = match self.get_doc(&uri) {
                 Some(d) => d,
                 None => {
                     return Ok(Some(SemanticTokensResult::Tokens(SemanticTokens {
@@ -1054,12 +1080,26 @@ impl LanguageServer for Backend {
                     })));
                 }
             };
-            let tokens = semantic_tokens(doc.source(), &doc);
-            let result_id = token_hash(&tokens);
-            let tokens_arc = Arc::new(tokens);
-            self.docs
-                .store_token_cache(uri, result_id.clone(), Arc::clone(&tokens_arc));
-            let data = Arc::try_unwrap(tokens_arc).unwrap_or_else(|arc| (*arc).clone());
+            let docs = Arc::clone(&self.docs);
+            let uri_for_task = uri.clone();
+            // The AST walk is CPU-bound; keep it off the async runtime worker
+            // (see `document_highlight` for the same pattern).
+            let (result_id, data) = match tokio::task::spawn_blocking(move || {
+                let tokens = semantic_tokens(doc.source(), &doc);
+                let result_id = token_hash(&tokens);
+                let tokens_arc = Arc::new(tokens);
+                docs.store_token_cache(&uri_for_task, result_id.clone(), Arc::clone(&tokens_arc));
+                let data = Arc::try_unwrap(tokens_arc).unwrap_or_else(|arc| (*arc).clone());
+                (result_id, data)
+            })
+            .await
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::warn!("semantic_tokens_full panicked for {uri:?}: {e}");
+                    (String::new(), Vec::new())
+                }
+            };
             Ok(Some(SemanticTokensResult::Tokens(SemanticTokens {
                 result_id: Some(result_id),
                 data,
@@ -1073,8 +1113,8 @@ impl LanguageServer for Backend {
         params: SemanticTokensRangeParams,
     ) -> Result<Option<SemanticTokensRangeResult>> {
         guard_async_result("semantic_tokens_range", async move {
-            let uri = &params.text_document.uri;
-            let doc = match self.get_doc(uri) {
+            let uri = params.text_document.uri;
+            let doc = match self.get_doc(&uri) {
                 Some(d) => d,
                 None => {
                     return Ok(Some(SemanticTokensRangeResult::Tokens(SemanticTokens {
@@ -1083,7 +1123,18 @@ impl LanguageServer for Backend {
                     })));
                 }
             };
-            let tokens = semantic_tokens_range(doc.source(), &doc, params.range);
+            let range = params.range;
+            let tokens = match tokio::task::spawn_blocking(move || {
+                semantic_tokens_range(doc.source(), &doc, range)
+            })
+            .await
+            {
+                Ok(t) => t,
+                Err(e) => {
+                    tracing::warn!("semantic_tokens_range panicked for {uri:?}: {e}");
+                    Vec::new()
+                }
+            };
             Ok(Some(SemanticTokensRangeResult::Tokens(SemanticTokens {
                 result_id: None,
                 data: tokens,
@@ -1097,32 +1148,45 @@ impl LanguageServer for Backend {
         params: SemanticTokensDeltaParams,
     ) -> Result<Option<SemanticTokensFullDeltaResult>> {
         guard_async_result("semantic_tokens_full_delta", async move {
-            let uri = &params.text_document.uri;
-            let doc = match self.get_doc(uri) {
+            let uri = params.text_document.uri;
+            let doc = match self.get_doc(&uri) {
                 Some(d) => d,
                 None => return Ok(None),
             };
 
-            let new_tokens = Arc::new(semantic_tokens(doc.source(), &doc));
-            let new_result_id = token_hash(&new_tokens);
-            let prev_id = &params.previous_result_id;
+            let docs = Arc::clone(&self.docs);
+            let uri_for_task = uri.clone();
+            let prev_id = params.previous_result_id;
+            let result = match tokio::task::spawn_blocking(move || {
+                let new_tokens = Arc::new(semantic_tokens(doc.source(), &doc));
+                let new_result_id = token_hash(&new_tokens);
 
-            let result = match self.docs.get_token_cache(uri, prev_id) {
-                Some(old_tokens) => {
-                    let edits = compute_token_delta(&old_tokens, &new_tokens);
-                    SemanticTokensFullDeltaResult::TokensDelta(SemanticTokensDelta {
+                let result = match docs.get_token_cache(&uri_for_task, &prev_id) {
+                    Some(old_tokens) => {
+                        let edits = compute_token_delta(&old_tokens, &new_tokens);
+                        SemanticTokensFullDeltaResult::TokensDelta(SemanticTokensDelta {
+                            result_id: Some(new_result_id.clone()),
+                            edits,
+                        })
+                    }
+                    // Unknown previous result — fall back to full tokens
+                    None => SemanticTokensFullDeltaResult::Tokens(SemanticTokens {
                         result_id: Some(new_result_id.clone()),
-                        edits,
-                    })
-                }
-                // Unknown previous result — fall back to full tokens
-                None => SemanticTokensFullDeltaResult::Tokens(SemanticTokens {
-                    result_id: Some(new_result_id.clone()),
-                    data: (*new_tokens).clone(),
-                }),
-            };
+                        data: (*new_tokens).clone(),
+                    }),
+                };
 
-            self.docs.store_token_cache(uri, new_result_id, new_tokens);
+                docs.store_token_cache(&uri_for_task, new_result_id, new_tokens);
+                result
+            })
+            .await
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::warn!("semantic_tokens_full_delta panicked for {uri:?}: {e}");
+                    return Ok(None);
+                }
+            };
             Ok(Some(result))
         })
         .await
@@ -1374,16 +1438,30 @@ impl LanguageServer for Backend {
             let uri = &params.text_document_position_params.text_document.uri;
             let position = params.text_document_position_params.position;
             let source = self.get_open_text(uri).unwrap_or_default();
-            // First pass: open-file ParsedDocs give accurate character positions.
+            // First pass: open-file ParsedDocs give accurate character
+            // positions. Walking every open doc's AST is CPU-bound; keep it
+            // off the async runtime worker. A separate hop (rather than one
+            // spawn_blocking around both passes) so a first-pass hit skips
+            // the second pass's workspace-index fetch entirely, as before.
             let open_docs = self.docs.docs_for(&self.open_urls());
-            if let Some(loc) = goto_declaration(&source, &open_docs, position) {
+            let source_for_pass1 = source.clone();
+            let first_pass = tokio::task::spawn_blocking(move || {
+                goto_declaration(&source_for_pass1, &open_docs, position)
+            })
+            .await
+            .unwrap_or_default();
+            if let Some(loc) = first_pass {
                 return Ok(Some(GotoDefinitionResponse::Scalar(loc)));
             }
             // Second pass: background files via the aggregated workspace index
             // (line-only positions for anything not covered by decls_by_name).
             let wi = self.workspace_index_async().await;
-            Ok(goto_declaration_from_index(&source, &wi, position)
-                .map(GotoDefinitionResponse::Scalar))
+            let second_pass = tokio::task::spawn_blocking(move || {
+                goto_declaration_from_index(&source, &wi, position)
+            })
+            .await
+            .unwrap_or_default();
+            Ok(second_pass.map(GotoDefinitionResponse::Scalar))
         })
         .await
     }
@@ -1402,58 +1480,67 @@ impl LanguageServer for Backend {
             };
             let analysis = self.cached_analysis_async(uri).await;
             let open_docs = self.docs.docs_for(&self.open_urls());
+            let docs = Arc::clone(&self.docs);
 
-            // Exact FQN/namespace matches (open docs, then background index)
-            // outrank *either* source's short-name fallback, so an unrelated
-            // same-short-named class in another open file can never preempt
-            // a correctly-namespaced match that only lives in the index.
-            let mut results = goto_type_definition_exact(
-                &source,
-                &doc,
-                analysis.as_deref(),
-                &open_docs,
-                position,
-            );
-            if results.is_empty() {
-                results = self.docs.with_all_indexes(|all_indexes| {
-                    goto_type_definition_from_index_exact(
-                        &source,
-                        &doc,
-                        analysis.as_deref(),
-                        all_indexes,
-                        position,
-                    )
-                });
-            }
-            if results.is_empty() {
-                results = goto_type_definition_short_name_fallback(
+            // Every fallback pass below is CPU-bound — the exact/short-name
+            // passes walk every open doc's AST, the index passes do lookup
+            // work over the aggregated index — so run the whole chain off
+            // the async runtime worker in one hop, matching hover.
+            let response = tokio::task::spawn_blocking(move || {
+                // Exact FQN/namespace matches (open docs, then background index)
+                // outrank *either* source's short-name fallback, so an unrelated
+                // same-short-named class in another open file can never preempt
+                // a correctly-namespaced match that only lives in the index.
+                let mut results = goto_type_definition_exact(
                     &source,
                     &doc,
                     analysis.as_deref(),
                     &open_docs,
                     position,
                 );
-            }
-            if results.is_empty() {
-                results = self.docs.with_all_indexes(|all_indexes| {
-                    goto_type_definition_from_index_short_name_fallback(
+                if results.is_empty() {
+                    results = docs.with_all_indexes(|all_indexes| {
+                        goto_type_definition_from_index_exact(
+                            &source,
+                            &doc,
+                            analysis.as_deref(),
+                            all_indexes,
+                            position,
+                        )
+                    });
+                }
+                if results.is_empty() {
+                    results = goto_type_definition_short_name_fallback(
                         &source,
                         &doc,
                         analysis.as_deref(),
-                        all_indexes,
+                        &open_docs,
                         position,
-                    )
-                });
-            }
+                    );
+                }
+                if results.is_empty() {
+                    results = docs.with_all_indexes(|all_indexes| {
+                        goto_type_definition_from_index_short_name_fallback(
+                            &source,
+                            &doc,
+                            analysis.as_deref(),
+                            all_indexes,
+                            position,
+                        )
+                    });
+                }
 
-            // Format response: scalar for single result, array for multiple, none for empty
-            let response = match results.len() {
-                0 => None,
-                1 => Some(GotoDefinitionResponse::Scalar(
-                    results.into_iter().next().unwrap(),
-                )),
-                _ => Some(GotoDefinitionResponse::Array(results)),
-            };
+                // Format response: scalar for single result, array for multiple, none for empty
+                match results.len() {
+                    0 => None,
+                    1 => Some(GotoDefinitionResponse::Scalar(
+                        results.into_iter().next().unwrap(),
+                    )),
+                    _ => Some(GotoDefinitionResponse::Array(results)),
+                }
+            })
+            .await
+            .unwrap_or_default();
             Ok(response)
         })
         .await
@@ -1599,12 +1686,17 @@ impl LanguageServer for Backend {
 
     async fn document_link(&self, params: DocumentLinkParams) -> Result<Option<Vec<DocumentLink>>> {
         guard_async_result("document_link", async move {
-            let uri = &params.text_document.uri;
-            let doc = match self.get_doc(uri) {
+            let uri = params.text_document.uri;
+            let doc = match self.get_doc(&uri) {
                 Some(d) => d,
                 None => return Ok(None),
             };
-            let links = document_links(uri, &doc, doc.source());
+            // The AST walk plus full-text `@link`/`@see` scan are CPU-bound;
+            // keep them off the async runtime worker.
+            let links =
+                tokio::task::spawn_blocking(move || document_links(&uri, &doc, doc.source()))
+                    .await
+                    .unwrap_or_default();
             Ok(if links.is_empty() { None } else { Some(links) })
         })
         .await
@@ -1624,7 +1716,13 @@ impl LanguageServer for Backend {
         guard_async_result("formatting", async move {
             let uri = &params.text_document.uri;
             let source = self.get_open_text(uri).unwrap_or_default();
-            Ok(format_document(&source))
+            // Spawns and blocks on an external formatter process; keep that
+            // wait off the async runtime worker.
+            Ok(
+                tokio::task::spawn_blocking(move || format_document(&source))
+                    .await
+                    .unwrap_or_default(),
+            )
         })
         .await
     }
@@ -1636,7 +1734,12 @@ impl LanguageServer for Backend {
         guard_async_result("range_formatting", async move {
             let uri = &params.text_document.uri;
             let source = self.get_open_text(uri).unwrap_or_default();
-            Ok(format_range(&source, params.range))
+            let range = params.range;
+            Ok(
+                tokio::task::spawn_blocking(move || format_range(&source, range))
+                    .await
+                    .unwrap_or_default(),
+            )
         })
         .await
     }
