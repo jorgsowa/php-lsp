@@ -11,6 +11,8 @@ cargo test
 
 Requires Rust stable. No additional system dependencies.
 
+With Nix, `nix develop` drops you into a shell with the pinned Rust toolchain, `rust-analyzer`, and `clippy` already available.
+
 ## Submitting changes
 
 1. Open an issue first for anything non-trivial — this avoids duplicate work.

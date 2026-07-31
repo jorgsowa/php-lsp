@@ -1,6 +1,6 @@
 ---
 title: Editor & AI Client Setup
-description: Configuration snippets for VS Code, Neovim, Zed, Cursor, PHPStorm, and Claude Code.
+description: Configuration snippets for VS Code, Neovim, Zed, Cursor, PHPStorm, Claude Code, and OpenCode.
 ---
 
 This page covers setup for every supported editor and AI coding client.
@@ -76,6 +76,28 @@ Or add to `.cursor/mcp.json` in your project root:
       "filetypes": ["php"],
       "initializationOptions": {
         "phpVersion": "8.5"
+      }
+    }
+  }
+}
+```
+
+---
+
+### OpenCode
+
+Add to `opencode.json` (or `opencode.jsonc`) in your project root:
+
+```json
+{
+  "$schema": "https://opencode.ai/config.json",
+  "lsp": {
+    "php-lsp": {
+      "command": ["/usr/local/bin/php-lsp"],
+      "extensions": [".php"],
+      "initialization": {
+        "phpVersion": "8.5",
+        "excludePaths": []
       }
     }
   }

@@ -2,3 +2,4 @@
 .php-cs-fixer.cache
 .claude/
 benches/fixtures/laravel/
+/result

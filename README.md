@@ -30,6 +30,11 @@ cargo install php-lsp
 
 Or download a pre-built binary (macOS, Linux) from [Releases](https://github.com/jorgsowa/php-lsp/releases) and place it on your `PATH`.
 
+On NixOS or with Nix installed:
+```bash
+nix run github:jorgsowa/php-lsp
+```
+
 Verify:
 ```bash
 php-lsp --version
@@ -50,6 +55,7 @@ For full installation options see **[Getting Started](https://jorgsowa.github.io
 | Cursor | Settings → Features → Language Servers |
 | PHPStorm | [php-lsp](https://plugins.jetbrains.com/plugin/31223-php-lsp) plugin ([source](https://github.com/jorgsowa/php-lsp-phpstorm-plugin)) |
 | Claude Code | `claude plugin marketplace add https://github.com/jorgsowa/claude-php-lsp-plugin` then `claude plugin install php-lsp` |
+| OpenCode | `lsp` block in `opencode.json` |
 
 Config snippets for every editor: **[Editors & AI Clients](https://jorgsowa.github.io/php-lsp/editors/)**
 
