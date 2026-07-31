@@ -19,6 +19,7 @@ php-lsp is a full-featured LSP implementation for PHP: real-time cross-file diag
 - **Rust-native performance** — async-first with tokio, lock-free document store via dashmap, no GC pauses
 - **Completion depth** — type-aware `->` / `::` chains, `match` enum-case completions, auto `use` insertion, fuzzy camel/underscore matching
 - **Layered diagnostics, not a fork in the road** — the built-in `mir`-backed analyzer works out of the box with zero configuration; a project's own PHPStan/PHPCS setup can be layered on top as an opt-in overlay (`externalTools`) rather than a replacement, so adopting one doesn't mean giving up the other
+- **Laravel-aware** — route/view/translation/env string-key completion and navigation, plus quickfixes for missing routes, facade-to-dependency-injection conversion, and unguarded mass assignment; `$request` field completion and validation-rule generation round out request handling
 
 ---
 
