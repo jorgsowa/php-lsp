@@ -3,9 +3,7 @@
 use serde_json::{Value, json};
 use tower_lsp::lsp_types::Url;
 
-use tokio::io::AsyncWriteExt;
-
-use super::client::{TestClient, frame, read_msg, spawn_server};
+use super::client::{TestClient, spawn_server};
 use super::fixture::{self, Cursor, Fixture, Range as FixtureRange};
 use super::render::{
     assert_highlights_match, assert_locations_match, canonicalize_workspace_edit,
@@ -1438,38 +1436,9 @@ impl TestServer {
             .reply_to_server_request(req_id, json!([value]))
             .await;
 
-        tokio::time::timeout(std::time::Duration::from_secs(5), async {
-            loop {
-                let msg = read_msg(&mut self.client.read).await;
-                // Auto-reply to any server→client requests (refresh burst post-bug-fix)
-                if msg.get("method").is_some() {
-                    if let Some(srv_id) = msg.get("id") {
-                        self.client
-                            .write
-                            .write_all(&frame(&json!({
-                                "jsonrpc": "2.0",
-                                "id": srv_id,
-                                "result": null,
-                            })))
-                            .await
-                            .unwrap();
-                    }
-                    // Check if this is the completion log message
-                    if msg["method"] == json!("window/logMessage")
-                        && msg["params"]["message"]
-                            .as_str()
-                            .unwrap_or("")
-                            .starts_with("php-lsp: using PHP ")
-                    {
-                        return msg;
-                    }
-                }
-            }
-        })
-        .await
-        .unwrap_or_else(|_| {
-            panic!("timed out waiting for 'php-lsp: using PHP' log after change_configuration")
-        })
+        self.client
+            .wait_for_log_message_starting_with("php-lsp: using PHP ")
+            .await
     }
 
     pub async fn shutdown(&mut self) -> Value {

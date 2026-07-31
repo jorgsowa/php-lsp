@@ -2,7 +2,9 @@
 
 use php_lsp::backend::Backend;
 use serde_json::{Value, json};
+use std::collections::VecDeque;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream, ReadHalf, WriteHalf};
+use tokio::time::Duration;
 use tower_lsp::{LspService, Server};
 
 // ---------- low-level framing ----------
@@ -33,6 +35,52 @@ pub(super) async fn read_msg(reader: &mut (impl AsyncReadExt + Unpin)) -> Value 
     serde_json::from_slice(&body).expect("parse JSON")
 }
 
+/// Pull the next protocol message, preferring anything an earlier, unrelated
+/// wait already read off the wire and rebuffered (via `pending`) because it
+/// wasn't what *that* call was looking for — e.g. a `$/php-lsp/indexReady`
+/// notification seen while something else was only waiting on a specific
+/// `publishDiagnostics`. Without this, that notification would be read once
+/// and gone, and a later `wait_for_index_ready()` would hang forever.
+///
+/// Server→client requests (method + id) are ACKed with `null` inline and
+/// never returned — the server may be blocked on that reply regardless of
+/// which wait loop happens to observe it, and no caller here needs anything
+/// but `null` back.
+///
+/// `budget` bounds how many already-buffered entries this call will draw
+/// down before falling back to a real (yielding) socket read. Without a
+/// bound, a call whose target never shows up among the buffered messages
+/// would requeue-and-repop the same items forever without ever performing a
+/// real `.await` on I/O — starving the `tokio::time::timeout` driving it on
+/// a current-thread runtime instead of eventually erroring out.
+async fn recv_or_buffered(
+    pending: &mut VecDeque<Value>,
+    read: &mut ReadHalf<DuplexStream>,
+    write: &mut WriteHalf<DuplexStream>,
+    budget: &mut usize,
+) -> Value {
+    loop {
+        let msg = if *budget > 0 {
+            *budget -= 1;
+            pending.pop_front().expect("budget bounded by pending.len()")
+        } else {
+            read_msg(read).await
+        };
+        if msg.get("method").is_some()
+            && let Some(id) = msg.get("id")
+        {
+            let response = json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": null,
+            });
+            write.write_all(&frame(&response)).await.unwrap();
+            continue;
+        }
+        return msg;
+    }
+}
+
 // ---------- raw client ----------
 
 /// Minimal LSP client over in-memory duplex streams. Prefer `TestServer` for
@@ -42,6 +90,10 @@ pub struct TestClient {
     pub(crate) write: WriteHalf<DuplexStream>,
     pub(crate) read: ReadHalf<DuplexStream>,
     pub(crate) next_id: u64,
+    /// Notifications/responses read off the wire by one `wait_for_*` call
+    /// that didn't match what it was looking for, held here for whichever
+    /// later call does want them. See `recv_or_buffered`.
+    pending: VecDeque<Value>,
 }
 
 impl TestClient {
@@ -56,25 +108,22 @@ impl TestClient {
         });
         self.write.write_all(&frame(&msg)).await.unwrap();
         let method_owned = method.to_owned();
-        tokio::time::timeout(tokio::time::Duration::from_secs(10), async {
+        // Safe to search history: `id` is unique per request, so a buffered
+        // match can only ever be the one response for this exact call.
+        let mut budget = self.pending.len();
+        let TestClient {
+            pending,
+            read,
+            write,
+            ..
+        } = self;
+        tokio::time::timeout(Duration::from_secs(10), async {
             loop {
-                let resp = read_msg(&mut self.read).await;
-                // If this message is a server→client request (has method + id), reply null
-                if resp.get("method").is_some() {
-                    if let Some(srv_id) = resp.get("id") {
-                        let ack = json!({
-                            "jsonrpc": "2.0",
-                            "id": srv_id,
-                            "result": null,
-                        });
-                        self.write.write_all(&frame(&ack)).await.unwrap();
-                    }
-                    continue;
+                let msg = recv_or_buffered(pending, read, write, &mut budget).await;
+                if msg.get("id") == Some(&json!(id)) {
+                    return msg;
                 }
-                if resp.get("id") == Some(&json!(id)) {
-                    return resp;
-                }
-                // notifications (publishDiagnostics, logMessage, …) — skip
+                pending.push_back(msg);
             }
         })
         .await
@@ -91,24 +140,20 @@ impl TestClient {
         });
         self.write.write_all(&frame(&msg)).await.unwrap();
         let method_owned = method.to_owned();
-        tokio::time::timeout(tokio::time::Duration::from_secs(10), async {
+        let mut budget = self.pending.len();
+        let TestClient {
+            pending,
+            read,
+            write,
+            ..
+        } = self;
+        tokio::time::timeout(Duration::from_secs(10), async {
             loop {
-                let resp = read_msg(&mut self.read).await;
-                // If this message is a server→client request (has method + id), reply null
-                if resp.get("method").is_some() {
-                    if let Some(srv_id) = resp.get("id") {
-                        let ack = json!({
-                            "jsonrpc": "2.0",
-                            "id": srv_id,
-                            "result": null,
-                        });
-                        self.write.write_all(&frame(&ack)).await.unwrap();
-                    }
-                    continue;
+                let msg = recv_or_buffered(pending, read, write, &mut budget).await;
+                if msg.get("id") == Some(&json!(id)) {
+                    return msg;
                 }
-                if resp.get("id") == Some(&json!(id)) {
-                    return resp;
-                }
+                pending.push_back(msg);
             }
         })
         .await
@@ -137,23 +182,20 @@ impl TestClient {
         });
         self.write.write_all(&frame(&cancel)).await.unwrap();
         let method_owned = method.to_owned();
-        tokio::time::timeout(tokio::time::Duration::from_secs(5), async {
+        let mut budget = self.pending.len();
+        let TestClient {
+            pending,
+            read,
+            write,
+            ..
+        } = self;
+        tokio::time::timeout(Duration::from_secs(5), async {
             loop {
-                let resp = read_msg(&mut self.read).await;
-                if resp.get("method").is_some() {
-                    if let Some(srv_id) = resp.get("id") {
-                        let ack = json!({
-                            "jsonrpc": "2.0",
-                            "id": srv_id,
-                            "result": null,
-                        });
-                        self.write.write_all(&frame(&ack)).await.unwrap();
-                    }
-                    continue;
+                let msg = recv_or_buffered(pending, read, write, &mut budget).await;
+                if msg.get("id") == Some(&json!(id)) {
+                    return msg;
                 }
-                if resp.get("id") == Some(&json!(id)) {
-                    return resp;
-                }
+                pending.push_back(msg);
             }
         })
         .await
@@ -192,27 +234,24 @@ impl TestClient {
         self.write.write_all(&frame(&msg)).await.unwrap();
         let method_owned = method.to_owned();
         let mut captured = Vec::new();
-        let resp = tokio::time::timeout(tokio::time::Duration::from_secs(10), async {
+        let mut budget = self.pending.len();
+        let TestClient {
+            pending,
+            read,
+            write,
+            ..
+        } = self;
+        let resp = tokio::time::timeout(Duration::from_secs(10), async {
             loop {
-                let msg = read_msg(&mut self.read).await;
+                let msg = recv_or_buffered(pending, read, write, &mut budget).await;
                 if msg.get("method") == Some(&json!(capture_method)) {
                     captured.push(msg);
-                    continue;
-                }
-                if msg.get("method").is_some() {
-                    if let Some(srv_id) = msg.get("id") {
-                        let ack = json!({
-                            "jsonrpc": "2.0",
-                            "id": srv_id,
-                            "result": null,
-                        });
-                        self.write.write_all(&frame(&ack)).await.unwrap();
-                    }
                     continue;
                 }
                 if msg.get("id") == Some(&json!(id)) {
                     return msg;
                 }
+                pending.push_back(msg);
             }
         })
         .await
@@ -221,13 +260,28 @@ impl TestClient {
     }
 
     /// Block until a notification with `method` arrives. 5 s timeout.
+    ///
+    /// Forward-only (ignores anything already buffered): a bare method name
+    /// can recur (e.g. multiple `window/logMessage`s in one session), so a
+    /// historical match here could silently return a stale message instead
+    /// of the fresh one this call actually wants — unlike the one-shot
+    /// `$/php-lsp/indexReady`, there's no way to tell "the right one" apart
+    /// from "an earlier one" by method name alone.
     pub async fn read_notification(&mut self, method: &str) -> Value {
-        tokio::time::timeout(tokio::time::Duration::from_secs(5), async {
+        let mut budget = 0;
+        let TestClient {
+            pending,
+            read,
+            write,
+            ..
+        } = self;
+        tokio::time::timeout(Duration::from_secs(5), async {
             loop {
-                let msg = read_msg(&mut self.read).await;
+                let msg = recv_or_buffered(pending, read, write, &mut budget).await;
                 if msg.get("method") == Some(&json!(method)) {
                     return msg;
                 }
+                pending.push_back(msg);
             }
         })
         .await
@@ -241,26 +295,25 @@ impl TestClient {
     ///
     pub async fn wait_for_diagnostics(&mut self, uri: &str) -> Value {
         let uri_val = json!(uri);
-        tokio::time::timeout(tokio::time::Duration::from_secs(10), async {
+        // Forward-only: a uri's diagnostics can republish (e.g. after
+        // `indexReady` or a later edit), so honoring a buffered match could
+        // return a stale publish instead of the one this call is for.
+        let mut budget = 0;
+        let TestClient {
+            pending,
+            read,
+            write,
+            ..
+        } = self;
+        tokio::time::timeout(Duration::from_secs(10), async {
             loop {
-                let msg = read_msg(&mut self.read).await;
+                let msg = recv_or_buffered(pending, read, write, &mut budget).await;
                 if msg.get("method") == Some(&json!("textDocument/publishDiagnostics"))
                     && msg["params"]["uri"] == uri_val
                 {
                     return msg;
                 }
-                // Server-to-client request (e.g. WorkDoneProgressCreate during
-                // workspace scan): reply null so the server isn't blocked.
-                if msg.get("method").is_some()
-                    && let Some(id) = msg.get("id")
-                {
-                    let response = json!({
-                        "jsonrpc": "2.0",
-                        "id": id,
-                        "result": null,
-                    });
-                    self.write.write_all(&frame(&response)).await.unwrap();
-                }
+                pending.push_back(msg);
             }
         })
         .await
@@ -284,24 +337,29 @@ impl TestClient {
         let mut collected: std::collections::HashMap<String, Value> =
             std::collections::HashMap::new();
         let expected = remaining.clone();
-        tokio::time::timeout(tokio::time::Duration::from_secs(10), async {
+        // Forward-only — see `wait_for_diagnostics` on why a repeatable
+        // per-uri signal can't safely be satisfied from history.
+        let mut budget = 0;
+        let TestClient {
+            pending,
+            read,
+            write,
+            ..
+        } = self;
+        tokio::time::timeout(Duration::from_secs(10), async {
             while !remaining.is_empty() {
-                let msg = read_msg(&mut self.read).await;
-                if msg.get("method") == Some(&json!("textDocument/publishDiagnostics")) {
-                    if let Some(uri) = msg["params"]["uri"].as_str()
-                        && remaining.remove(uri)
-                    {
-                        collected.insert(uri.to_string(), msg);
+                let msg = recv_or_buffered(pending, read, write, &mut budget).await;
+                let wanted_uri = (msg.get("method") == Some(&json!("textDocument/publishDiagnostics")))
+                    .then(|| msg["params"]["uri"].as_str())
+                    .flatten()
+                    .filter(|uri| remaining.contains(*uri))
+                    .map(|uri| uri.to_string());
+                match wanted_uri {
+                    Some(uri) => {
+                        remaining.remove(&uri);
+                        collected.insert(uri, msg);
                     }
-                } else if msg.get("method").is_some()
-                    && let Some(id) = msg.get("id")
-                {
-                    let response = json!({
-                        "jsonrpc": "2.0",
-                        "id": id,
-                        "result": null,
-                    });
-                    self.write.write_all(&frame(&response)).await.unwrap();
+                    None => pending.push_back(msg),
                 }
             }
         })
@@ -315,27 +373,27 @@ impl TestClient {
     /// Drain incoming messages for `duration`, returning every
     /// `publishDiagnostics` URI seen. Used to assert the *absence* of a
     /// publish (e.g., closed file must not receive cross-file republishes).
-    pub async fn drain_publish_diagnostics_uris(
-        &mut self,
-        duration: tokio::time::Duration,
-    ) -> Vec<String> {
+    pub async fn drain_publish_diagnostics_uris(&mut self, duration: Duration) -> Vec<String> {
         let mut uris = Vec::new();
+        // Forward-only — this asserts on what arrives *during this call's
+        // window*; a stale buffered publish from before it started isn't
+        // part of that window and would just be noise.
+        let mut budget = 0;
+        let TestClient {
+            pending,
+            read,
+            write,
+            ..
+        } = self;
         let _ = tokio::time::timeout(duration, async {
             loop {
-                let msg = read_msg(&mut self.read).await;
+                let msg = recv_or_buffered(pending, read, write, &mut budget).await;
                 if msg.get("method") == Some(&json!("textDocument/publishDiagnostics")) {
                     if let Some(uri) = msg["params"]["uri"].as_str() {
                         uris.push(uri.to_string());
                     }
-                } else if msg.get("method").is_some()
-                    && let Some(id) = msg.get("id")
-                {
-                    let response = json!({
-                        "jsonrpc": "2.0",
-                        "id": id,
-                        "result": null,
-                    });
-                    self.write.write_all(&frame(&response)).await.unwrap();
+                } else {
+                    pending.push_back(msg);
                 }
             }
         })
@@ -343,11 +401,19 @@ impl TestClient {
         uris
     }
 
-    /// Read messages until a server→client request with the given `method` arrives.
-    /// Returns `(id, params)`. Skips notifications and client responses.
-    /// Panics after 10 seconds.
+    /// Read messages until a server→client request with the given `method`
+    /// arrives. Returns `(id, params)`. Panics after 10 seconds.
+    ///
+    /// Deliberately does *not* touch `pending` and does *not* ACK any
+    /// other message it passes over (matching this call's original,
+    /// pre-buffering behavior exactly): some callers rely on an unrelated
+    /// request (e.g. `client/registerCapability`, sent but never replied to
+    /// until something acks it) staying un-acked for the rest of the
+    /// session — acking it here would let whatever's awaiting that reply
+    /// proceed and emit messages the test never anticipated, upsetting the
+    /// ordering the strict `read_notification` callers depend on.
     pub async fn expect_server_request(&mut self, method: &str) -> (Value, Value) {
-        tokio::time::timeout(tokio::time::Duration::from_secs(10), async {
+        tokio::time::timeout(Duration::from_secs(10), async {
             loop {
                 let msg = read_msg(&mut self.read).await;
                 if msg.get("method") == Some(&json!(method)) && msg.get("id").is_some() {
@@ -377,24 +443,21 @@ impl TestClient {
     /// workspace scan without racing against the ready signal.
     pub async fn collect_until_index_ready(&mut self) -> Vec<Value> {
         let mut notifications: Vec<Value> = Vec::new();
-        tokio::time::timeout(tokio::time::Duration::from_secs(10), async {
+        let mut budget = self.pending.len();
+        let TestClient {
+            pending,
+            read,
+            write,
+            ..
+        } = self;
+        tokio::time::timeout(Duration::from_secs(10), async {
             loop {
-                let msg = read_msg(&mut self.read).await;
+                let msg = recv_or_buffered(pending, read, write, &mut budget).await;
                 if msg.get("method") == Some(&json!("$/php-lsp/indexReady")) {
                     return;
                 }
-                if msg.get("method").is_some() {
-                    if let Some(id) = msg.get("id") {
-                        let response = json!({
-                            "jsonrpc": "2.0",
-                            "id": id,
-                            "result": null,
-                        });
-                        self.write.write_all(&frame(&response)).await.unwrap();
-                    } else {
-                        notifications.push(msg);
-                    }
-                }
+                notifications.push(msg.clone());
+                pending.push_back(msg);
             }
         })
         .await
@@ -405,22 +468,20 @@ impl TestClient {
     /// Wait for `$/php-lsp/indexReady` with a custom timeout.
     /// Useful for large real-world codebases where 10 s is not enough.
     pub async fn wait_for_index_ready_secs(&mut self, secs: u64) {
-        tokio::time::timeout(tokio::time::Duration::from_secs(secs), async {
+        let mut budget = self.pending.len();
+        let TestClient {
+            pending,
+            read,
+            write,
+            ..
+        } = self;
+        tokio::time::timeout(Duration::from_secs(secs), async {
             loop {
-                let msg = read_msg(&mut self.read).await;
+                let msg = recv_or_buffered(pending, read, write, &mut budget).await;
                 if msg.get("method") == Some(&json!("$/php-lsp/indexReady")) {
                     return;
                 }
-                if msg.get("method").is_some()
-                    && let Some(id) = msg.get("id")
-                {
-                    let response = json!({
-                        "jsonrpc": "2.0",
-                        "id": id,
-                        "result": null,
-                    });
-                    self.write.write_all(&frame(&response)).await.unwrap();
-                }
+                pending.push_back(msg);
             }
         })
         .await
@@ -430,26 +491,62 @@ impl TestClient {
     /// Wait for `$/php-lsp/indexReady` (10 s timeout). Auto-replies to any
     /// server-to-client requests sent during the workspace scan.
     pub async fn wait_for_index_ready(&mut self) {
-        tokio::time::timeout(tokio::time::Duration::from_secs(10), async {
+        let mut budget = self.pending.len();
+        let TestClient {
+            pending,
+            read,
+            write,
+            ..
+        } = self;
+        tokio::time::timeout(Duration::from_secs(10), async {
             loop {
-                let msg = read_msg(&mut self.read).await;
+                let msg = recv_or_buffered(pending, read, write, &mut budget).await;
                 if msg.get("method") == Some(&json!("$/php-lsp/indexReady")) {
                     return;
                 }
-                if msg.get("method").is_some()
-                    && let Some(id) = msg.get("id")
-                {
-                    let response = json!({
-                        "jsonrpc": "2.0",
-                        "id": id,
-                        "result": null,
-                    });
-                    self.write.write_all(&frame(&response)).await.unwrap();
-                }
+                pending.push_back(msg);
             }
         })
         .await
         .unwrap_or_else(|_| panic!("timed out waiting for $/php-lsp/indexReady"))
+    }
+
+    /// Wait for a `window/logMessage` whose text starts with `prefix`.
+    /// Used by flows (e.g. `workspace/didChangeConfiguration`) whose
+    /// completion is only observable as a specific log line.
+    ///
+    /// Unlike `wait_for_index_ready` (a fires-once signal, safe to satisfy
+    /// from history), this log line recurs — once at startup for
+    /// auto-detection and again after every `didChangeConfiguration` — so
+    /// matching against a buffered *past* occurrence would silently return
+    /// a stale message instead of the one this specific call caused. Budget
+    /// starts at 0 to force every message to come from a fresh (post-call)
+    /// read; anything already buffered is left untouched for its rightful
+    /// waiter.
+    pub async fn wait_for_log_message_starting_with(&mut self, prefix: &str) -> Value {
+        let mut budget = 0;
+        let TestClient {
+            pending,
+            read,
+            write,
+            ..
+        } = self;
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let msg = recv_or_buffered(pending, read, write, &mut budget).await;
+                if msg.get("method") == Some(&json!("window/logMessage"))
+                    && msg["params"]["message"]
+                        .as_str()
+                        .unwrap_or("")
+                        .starts_with(prefix)
+                {
+                    return msg;
+                }
+                pending.push_back(msg);
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("timed out waiting for log message starting with {prefix:?}"))
     }
 }
 
@@ -465,5 +562,6 @@ pub(crate) fn spawn_server() -> TestClient {
         write: client_write,
         read: client_read,
         next_id: 1,
+        pending: VecDeque::new(),
     }
 }
