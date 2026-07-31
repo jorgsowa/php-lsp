@@ -319,3 +319,100 @@ $ok = Config::MAX;
     )
     .await;
 }
+
+/// Cursor on `parent::CONST` usage (not the declaration) must find the
+/// declaration and all usages (`self::`, `parent::`, `ClassName::` forms) —
+/// the `parent::` counterpart to `constant_self_from_access_site`, exercising
+/// `resolve_reference_symbol`'s `class_before_double_colon` owner resolution
+/// for the `"parent"` case the same way it already does for `self`/`static`.
+#[tokio::test]
+async fn constant_parent_from_access_site() {
+    let mut s = TestServer::new().await;
+    s.check_references_annotated(
+        r#"<?php
+class Base {
+    const MAX = 100;
+    //    ^^^ def
+
+    public function limit(): int {
+        return self::MAX;
+        //           ^^^ ref
+    }
+}
+class Derived extends Base {
+    public function check(int $v): bool {
+        return $v <= parent::MA$0X;
+        //                   ^^^ ref
+    }
+}
+$ok = Base::MAX;
+//          ^^^ ref
+"#,
+    )
+    .await;
+}
+
+/// `parent::CONST` is compile-time resolved to the *immediate* `extends`
+/// class — in a three-level hierarchy, `Child`'s `parent::LABEL` must
+/// resolve to `Middle`'s declaration (`Middle` is the class actually named
+/// in `Child`'s `extends` clause), not walk further up to `Base`.
+#[tokio::test]
+async fn constant_parent_multilevel_inheritance_resolves_to_immediate_parent() {
+    let mut s = TestServer::new().await;
+    s.check_references_annotated(
+        r#"<?php
+class Base {
+    public function noop(): void {}
+}
+class Middle extends Base {
+    const LABEL = 'middle';
+    //    ^^^^^ def
+
+    public function readViaSelf(): string {
+        return self::LABEL;
+        //           ^^^^^ ref
+    }
+}
+class Child extends Middle {
+    public function readViaParent(): string {
+        return parent::LA$0BEL;
+        //             ^^^^^ ref
+    }
+}
+$m = Middle::LABEL;
+//           ^^^^^ ref
+"#,
+    )
+    .await;
+}
+
+/// Rename shares `resolve_reference_symbol` with the references handler —
+/// renaming from a `parent::CONST` cursor must edit the declaration and
+/// every usage form, proving the owner-resolution fix also benefits rename.
+#[tokio::test]
+async fn rename_constant_from_parent_access_site() {
+    let mut s = TestServer::new().await;
+    s.check_rename_annotated(
+        r#"<?php
+class Base {
+    const MAX = 100;
+    //    ^^^ rename
+
+    public function limit(): int {
+        return self::MAX;
+        //           ^^^ rename
+    }
+}
+class Derived extends Base {
+    public function check(int $v): bool {
+        return $v <= parent::MA$0X;
+        //                   ^^^ rename
+    }
+}
+$ok = Base::MAX;
+//          ^^^ rename
+"#,
+        "LIMIT",
+    )
+    .await;
+}

@@ -337,7 +337,7 @@ impl Backend {
                     Some(decl_class)
                 } else if is_parent_call_site {
                     let wi = self.workspace_index_async().await;
-                    resolve_parent_construct_class(&doc, position, &wi.files)
+                    resolve_parent_construct_class(&doc, position, &wi)
                         .or_else(|| enclosing_class_fqn_at(doc.source(), &doc, position))
                 } else {
                     enclosing_class_fqn_at(doc.source(), &doc, position)
@@ -865,23 +865,32 @@ fn expand_alias_prefix(word: &str, imports: &std::collections::HashMap<String, S
 /// tell us whether it's an external/vendor class we can't scope to. Returns
 /// `None` when no such class is indexed, so the caller can fall back to the
 /// enclosing-class heuristic.
+///
+/// Resolves via `WorkspaceIndexData::classes_by_name` — O(candidates sharing
+/// the parent's short name) instead of a linear scan over every class in
+/// every workspace file. When multiple classes share that short name (e.g.
+/// same-named classes in different namespaces), the one whose FQN matches
+/// the `extends` clause exactly wins; otherwise the first indexed candidate
+/// is used, matching the previous scan's first-match behavior.
 fn resolve_parent_construct_class(
     doc: &crate::document::ast::ParsedDoc,
     position: Position,
-    files: &[(Uri, Arc<crate::index::file_index::FileIndex>)],
+    wi: &crate::db::workspace_index::WorkspaceIndexData,
 ) -> Option<String> {
     let child_short = enclosing_class_at(doc.source(), doc, position)?;
     let raw_parent = crate::types::type_map::parent_class_name(doc, &child_short)?;
     let parent_short = fqn_short_name(&raw_parent);
     let parent_bare = raw_parent.trim_start_matches('\\');
-    files.iter().find_map(|(_, idx)| {
-        idx.classes
-            .iter()
-            .find(|cls| {
-                cls.name.as_ref() == parent_short || cls.fqn.trim_start_matches('\\') == parent_bare
-            })
-            .map(|cls| cls.fqn.trim_start_matches('\\').to_owned())
-    })
+    let refs = wi.classes_by_name.get(parent_short)?;
+    let mut first: Option<&str> = None;
+    for (_, cls) in refs.iter().filter_map(|r| wi.at(*r)) {
+        let fqn = cls.fqn.trim_start_matches('\\');
+        if fqn == parent_bare {
+            return Some(fqn.to_owned());
+        }
+        first.get_or_insert(fqn);
+    }
+    first.map(str::to_owned)
 }
 
 /// Byte offset of the last char of `receiver_var` in the nearest

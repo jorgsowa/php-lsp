@@ -354,6 +354,19 @@ fn resolve_reference_symbol(
                         crate::types::type_map::enclosing_class_at(doc.source(), doc, position)
                             .unwrap_or(raw)
                     }
+                    // `parent::CONST` is compile-time resolved to the literal
+                    // `extends` class, never subject to late static binding —
+                    // same semantics `resolve_parent_construct_class` and
+                    // `type_definition.rs::param_decl_type` already apply.
+                    // Without this, the owner stayed the literal string
+                    // `"parent"`, which can never match a real class.
+                    "parent" => {
+                        crate::types::type_map::enclosing_class_at(doc.source(), doc, position)
+                            .and_then(|child| {
+                                crate::types::type_map::parent_class_name(doc, &child)
+                            })
+                            .unwrap_or(raw)
+                    }
                     _ => raw,
                 });
             }

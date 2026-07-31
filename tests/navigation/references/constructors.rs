@@ -307,6 +307,66 @@ $b = new \Beta\Box('x');
     .await;
 }
 
+/// `parent::__construct()` resolution (`resolve_parent_construct_class`) is
+/// keyed off `WorkspaceIndexData::classes_by_name`, which buckets every
+/// class by *short name only*. With several unrelated classes named `Base`
+/// scattered across the workspace, the lookup must still land on the one
+/// FQN actually named in the `extends` clause — not an arbitrary same-named
+/// decoy from a different namespace.
+#[tokio::test]
+async fn references_constructor_call_site_disambiguates_among_many_same_short_name_classes() {
+    let mut s = TestServer::new().await;
+    s.check_references_annotated(
+        r#"//- /alpha/base.php
+<?php
+namespace Alpha;
+class Base {
+    public function __construct(int $id) {}
+}
+
+//- /alpha/child.php
+<?php
+namespace Alpha;
+class Child extends Base {
+    public function __construct(int $id) {
+        parent::__con$0struct($id);
+        //      ^^^^^^^^^^^ ref
+    }
+}
+
+//- /beta/base.php
+<?php
+namespace Beta;
+class Base {
+    public function __construct(string $s) {}
+}
+
+//- /gamma/base.php
+<?php
+namespace Gamma;
+class Base {
+    public function __construct(array $a) {}
+}
+
+//- /delta/base.php
+<?php
+namespace Delta;
+class Base {
+    public function __construct(float $f) {}
+}
+
+//- /usage.php
+<?php
+new \Alpha\Base(1);
+//  ^^^^^^^^^^^ ref
+new \Beta\Base('x');
+new \Gamma\Base([]);
+new \Delta\Base(1.5);
+"#,
+    )
+    .await;
+}
+
 /// Cursor on `__construct` in the constructor body of a class with a different
 /// name must not bleed into sibling-class constructor references.
 #[tokio::test]
