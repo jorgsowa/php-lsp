@@ -529,6 +529,7 @@ async fn linked_editing_range_stays_responsive_on_large_file() {
         .await;
 }
 
+#[cfg(unix)]
 #[serial_test::serial(fake_external_formatter)]
 #[tokio::test]
 async fn formatting_stays_responsive_with_slow_external_formatter() {
