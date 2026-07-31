@@ -802,8 +802,7 @@ impl Backend {
                 && crate::types::type_map::enclosing_class_at(&source, &doc, position).as_deref()
                     != Some(word.as_str());
             let other_class_ranges: Vec<Range> = if scope_to_class {
-                let cursor_class =
-                    crate::types::type_map::enclosing_class_range_at(&doc, position);
+                let cursor_class = crate::types::type_map::enclosing_class_range_at(&doc, position);
                 crate::types::type_map::collect_all_class_ranges(&doc)
                     .into_iter()
                     .filter(|r| Some(*r) != cursor_class)

@@ -637,7 +637,10 @@ async fn document_link_stays_responsive_on_large_file() {
 async fn semantic_tokens_full_stays_responsive_on_large_file() {
     let mut server = TestServer::new().await;
     server
-        .open("big_semtok_full.php", &crate::common::fixture::large_php_source(500))
+        .open(
+            "big_semtok_full.php",
+            &crate::common::fixture::large_php_source(500),
+        )
         .await;
     let uri = server.uri("big_semtok_full.php");
     server
@@ -652,7 +655,10 @@ async fn semantic_tokens_full_stays_responsive_on_large_file() {
 async fn semantic_tokens_range_stays_responsive_on_large_file() {
     let mut server = TestServer::new().await;
     server
-        .open("big_semtok_range.php", &crate::common::fixture::large_php_source(500))
+        .open(
+            "big_semtok_range.php",
+            &crate::common::fixture::large_php_source(500),
+        )
         .await;
     let uri = server.uri("big_semtok_range.php");
     server
@@ -673,7 +679,10 @@ async fn semantic_tokens_range_stays_responsive_on_large_file() {
 async fn semantic_tokens_full_delta_stays_responsive_on_large_file() {
     let mut server = TestServer::new().await;
     server
-        .open("big_semtok_delta.php", &crate::common::fixture::large_php_source(500))
+        .open(
+            "big_semtok_delta.php",
+            &crate::common::fixture::large_php_source(500),
+        )
         .await;
     let uri = server.uri("big_semtok_delta.php");
     server

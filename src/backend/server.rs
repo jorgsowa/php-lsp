@@ -417,9 +417,11 @@ impl LanguageServer for Backend {
                 .unwrap_or_default();
             // Spawns and blocks on an external formatter process; keep that
             // wait off the async runtime worker.
-            Ok(tokio::task::spawn_blocking(move || format_document(&source))
-                .await
-                .unwrap_or_default())
+            Ok(
+                tokio::task::spawn_blocking(move || format_document(&source))
+                    .await
+                    .unwrap_or_default(),
+            )
         })
         .await
     }
@@ -1684,11 +1686,10 @@ impl LanguageServer for Backend {
             };
             // The AST walk plus full-text `@link`/`@see` scan are CPU-bound;
             // keep them off the async runtime worker.
-            let links = tokio::task::spawn_blocking(move || {
-                document_links(&uri, &doc, doc.source())
-            })
-            .await
-            .unwrap_or_default();
+            let links =
+                tokio::task::spawn_blocking(move || document_links(&uri, &doc, doc.source()))
+                    .await
+                    .unwrap_or_default();
             Ok(if links.is_empty() { None } else { Some(links) })
         })
         .await
@@ -1710,9 +1711,11 @@ impl LanguageServer for Backend {
             let source = self.get_open_text(uri).unwrap_or_default();
             // Spawns and blocks on an external formatter process; keep that
             // wait off the async runtime worker.
-            Ok(tokio::task::spawn_blocking(move || format_document(&source))
-                .await
-                .unwrap_or_default())
+            Ok(
+                tokio::task::spawn_blocking(move || format_document(&source))
+                    .await
+                    .unwrap_or_default(),
+            )
         })
         .await
     }

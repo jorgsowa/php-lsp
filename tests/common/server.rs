@@ -526,7 +526,11 @@ impl TestServer {
 
     /// Assert that `slow_method` doesn't block the server's request loop
     /// (see [`TestClient::assert_stays_responsive`]).
-    pub async fn assert_stays_responsive(&mut self, slow_method: &str, slow_params: serde_json::Value) {
+    pub async fn assert_stays_responsive(
+        &mut self,
+        slow_method: &str,
+        slow_params: serde_json::Value,
+    ) {
         self.client
             .assert_stays_responsive(slow_method, slow_params)
             .await
