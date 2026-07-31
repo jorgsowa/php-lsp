@@ -18,6 +18,7 @@ mod config_index;
 mod detect;
 mod eloquent_guard;
 mod env_index;
+pub(crate) mod facades;
 mod location_lookup;
 mod route_index;
 pub(crate) mod route_scaffold;

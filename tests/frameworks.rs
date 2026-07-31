@@ -21,6 +21,8 @@ mod feature_laravel_code_action;
 mod feature_laravel_config;
 #[path = "frameworks/feature_laravel_env.rs"]
 mod feature_laravel_env;
+#[path = "frameworks/feature_laravel_facade_to_di.rs"]
+mod feature_laravel_facade_to_di;
 #[path = "frameworks/feature_laravel_references.rs"]
 mod feature_laravel_references;
 #[path = "frameworks/feature_laravel_route.rs"]

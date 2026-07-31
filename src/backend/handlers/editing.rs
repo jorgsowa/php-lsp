@@ -11,6 +11,7 @@ use crate::actions::extract_action::extract_variable_actions;
 use crate::actions::extract_constant_action::extract_constant_actions;
 use crate::actions::extract_interface_action::extract_interface_actions;
 use crate::actions::extract_method_action::extract_method_actions;
+use crate::actions::facade_to_di_action::facade_to_di_actions;
 use crate::actions::inline_action::inline_variable_actions;
 use crate::actions::local_to_property_action::local_to_property_actions;
 use crate::actions::route_scaffold_action::unknown_route_actions;
@@ -174,6 +175,13 @@ impl Backend {
                 &laravel,
                 laravel_root.as_deref(),
                 &docs,
+            ));
+            actions.extend(facade_to_di_actions(
+                &source,
+                &doc,
+                range,
+                &uri,
+                laravel.is_laravel,
             ));
             if let Some(action) = organize_imports_action(&source, &uri) {
                 actions.push(action);

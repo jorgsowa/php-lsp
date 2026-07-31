@@ -4,6 +4,7 @@ pub mod extract_action;
 pub mod extract_constant_action;
 pub mod extract_interface_action;
 pub mod extract_method_action;
+pub mod facade_to_di_action;
 pub mod generate_action;
 pub mod implement_action;
 pub mod inline_action;
