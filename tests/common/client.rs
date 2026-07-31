@@ -295,6 +295,60 @@ impl TestClient {
         .unwrap_or_else(|_| panic!("timed out waiting for {slow_method} response"));
     }
 
+    /// Notification-flavored counterpart to `assert_stays_responsive`, for
+    /// handlers with no response of their own (e.g. `textDocument/didOpen`).
+    /// A notification can't be ordered against a probe response the way a
+    /// request can, so this falls back to an absolute `budget` around the
+    /// whole exchange: send `notif_method` as a notification, then
+    /// immediately the cheap debugStats probe, and assert the probe answers
+    /// within `budget`. `notif_params` needs to make the handler's own work
+    /// large enough that `budget` comfortably separates "handled inline"
+    /// (which delays both the notification's own drain and the probe by
+    /// roughly the handler's duration) from "deferred via spawn_blocking"
+    /// (the exchange completes in low tens of milliseconds, dominated by
+    /// transferring `notif_params` through the duplex stream rather than by
+    /// any CPU-bound work).
+    pub async fn assert_notification_stays_responsive(
+        &mut self,
+        notif_method: &str,
+        notif_params: Value,
+        budget: Duration,
+    ) {
+        let notif_method_owned = notif_method.to_owned();
+        // The whole exchange — writing the notification, writing the probe,
+        // and waiting for the probe's response — is under one clock. Writing
+        // a large notification through the (size-bounded) duplex stream only
+        // completes as fast as the server drains it; if the server is stuck
+        // running the handler's work inline, that drain stalls too, so the
+        // write time itself is part of what this budget is guarding.
+        tokio::time::timeout(budget, async {
+            self.notify(&notif_method_owned, notif_params).await;
+            let probe_id = self.send_request("$/php-lsp/debugStats", json!({})).await;
+
+            let mut already_buffered = self.pending.len();
+            let TestClient {
+                pending,
+                read,
+                write,
+                ..
+            } = self;
+            loop {
+                let msg = recv_or_buffered(pending, read, write, &mut already_buffered).await;
+                if msg.get("id") == Some(&json!(probe_id)) {
+                    return;
+                }
+                pending.push_back(msg);
+            }
+        })
+        .await
+        .unwrap_or_else(|_| {
+            panic!(
+                "{notif_method_owned} appears to block the request loop: opening this \
+                 document plus a follow-up debugStats probe did not complete within {budget:?}"
+            )
+        });
+    }
+
     pub async fn notify(&mut self, method: &str, params: Value) {
         let msg = json!({
             "jsonrpc": "2.0",

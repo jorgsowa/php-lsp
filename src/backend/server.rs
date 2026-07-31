@@ -256,12 +256,20 @@ impl LanguageServer for Backend {
             self.set_open_text(uri.clone(), text);
 
             // Seed parse diagnostics from the salsa-cached doc. On the fast
-            // path this is a lock-free DashMap lookup — no re-parse.
-            let parse_diags = self
-                .docs
-                .get_doc_salsa(&uri)
-                .map(|doc| diagnostics_from_doc(&doc))
-                .unwrap_or_default();
+            // path this is a lock-free DashMap lookup — no re-parse — but a
+            // cache miss triggers a full parse, so keep it off the async task.
+            let docs = Arc::clone(&self.docs);
+            let uri_for_task = uri.clone();
+            let parse_diags = tokio::task::spawn_blocking(move || {
+                docs.get_doc_salsa(&uri_for_task)
+                    .map(|doc| diagnostics_from_doc(&doc))
+                    .unwrap_or_default()
+            })
+            .await
+            .unwrap_or_else(|e| {
+                tracing::warn!("did_open panicked while parsing {uri:?}: {e}");
+                Vec::new()
+            });
             self.set_parse_diagnostics(&uri, parse_diags);
 
             publish_with_dependents(

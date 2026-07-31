@@ -532,6 +532,19 @@ impl TestServer {
             .await
     }
 
+    /// Notification-flavored counterpart to `assert_stays_responsive` (see
+    /// [`TestClient::assert_notification_stays_responsive`]).
+    pub async fn assert_notification_stays_responsive(
+        &mut self,
+        notif_method: &str,
+        notif_params: serde_json::Value,
+        budget: std::time::Duration,
+    ) {
+        self.client
+            .assert_notification_stays_responsive(notif_method, notif_params, budget)
+            .await
+    }
+
     pub async fn wait_for_index_ready(&mut self) -> &mut Self {
         self.client.wait_for_index_ready().await;
         self

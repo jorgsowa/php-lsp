@@ -382,6 +382,49 @@ async fn laravel_string_key_references_and_hover_concurrent_complete_without_dea
 // `TestClient::assert_stays_responsive` for why running it inline hangs
 // every other in-flight request, not just the slow one.
 
+// `assert_notification_stays_responsive`'s budget is a wall-clock timeout
+// racing the server's own blocking work, unlike the ordering check
+// `assert_stays_responsive` uses for request/response pairs. On the default
+// current-thread runtime that race is meaningless: a `tokio::time::timeout`
+// can only fire between polls, never partway through one, so a single
+// non-yielding poll that runs longer than the budget simply delays the
+// timer's own chance to fire until right when the blocking call itself
+// returns — at that point both become ready at essentially the same
+// instant and which one wins is coin-flip scheduling order, not the
+// duration each actually took. `multi_thread` puts the timer on a real
+// second OS thread so it fires independently of whatever the (possibly
+// stuck) server task is doing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn did_open_stays_responsive_on_large_file() {
+    // did_open parses the just-opened document synchronously to seed parse
+    // diagnostics; a cache miss (this is the file's first open) must not run
+    // that parse inline. Diagnostics are disabled so the test isolates the
+    // parse itself from mir's separate (and much heavier) semantic analysis
+    // pass, which would otherwise dominate wall time regardless of this bug.
+    // 20000 generated classes measured ~43-53ms for the whole open+probe
+    // exchange when parsed inline, vs. ~11-16ms when deferred via
+    // spawn_blocking — comfortable margin either side of the 25ms budget.
+    let (mut server, _init) = TestServer::new_with_options(serde_json::json!({
+        "diagnostics": { "enabled": false }
+    }))
+    .await;
+    let uri = server.uri("big_did_open.php");
+    server
+        .assert_notification_stays_responsive(
+            "textDocument/didOpen",
+            serde_json::json!({
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "php",
+                    "version": 1,
+                    "text": crate::common::fixture::large_php_source(20000),
+                }
+            }),
+            std::time::Duration::from_millis(25),
+        )
+        .await;
+}
+
 #[tokio::test]
 async fn semantic_tokens_full_stays_responsive_on_large_file() {
     let mut server = TestServer::new().await;
