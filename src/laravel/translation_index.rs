@@ -14,7 +14,8 @@ use std::path::{Path, PathBuf};
 
 use php_ast::{ArrayElement, ExprKind, StmtKind};
 use tower_lsp_server::ls_types::{
-    CompletionItem, CompletionItemKind, Location, Position, Range, Uri,
+    CodeAction, CodeActionKind, CodeActionOrCommand, CompletionItem, CompletionItemKind, Location,
+    Position, Range, TextEdit, Uri, WorkspaceEdit,
 };
 
 use crate::analysis::diagnostics::parse_document_no_diags;
@@ -199,6 +200,113 @@ fn line_starts_of(text: &str) -> Vec<u32> {
         .collect()
 }
 
+/// `lang/en.json`, falling back to the legacy `resources/lang/en.json`,
+/// then the first `*.json` file found under either root (`lang/` before
+/// `resources/lang/`) — matches `load_lang_root`'s own root preference.
+fn target_translation_json(root: &Path) -> Option<PathBuf> {
+    let lang_roots = [root.join("lang"), root.join("resources").join("lang")];
+    for lang_root in &lang_roots {
+        let en = lang_root.join("en.json");
+        if en.is_file() {
+            return Some(en);
+        }
+    }
+    for lang_root in &lang_roots {
+        let Ok(entries) = std::fs::read_dir(lang_root) else {
+            continue;
+        };
+        let mut json_files: Vec<PathBuf> = entries
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|e| e == "json"))
+            .collect();
+        json_files.sort();
+        if let Some(first) = json_files.into_iter().next() {
+            return Some(first);
+        }
+    }
+    None
+}
+
+/// Whether `key` names a translation group (`<group>.<rest>`) with a real
+/// `<group>.php` file somewhere under `lang/`/`resources/lang/`. When true,
+/// Laravel resolves the key via that array file (returning the key itself if
+/// the specific entry is missing) and never falls back to the JSON literal
+/// convention — so adding `key` verbatim to a JSON file would not fix the
+/// actual lookup and must not be offered.
+fn group_php_file_exists(root: &Path, key: &str) -> bool {
+    let Some((group, _)) = key.split_once('.') else {
+        return false;
+    };
+    for lang_root in [root.join("lang"), root.join("resources").join("lang")] {
+        let Ok(entries) = std::fs::read_dir(&lang_root) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            if entry.file_type().is_ok_and(|t| t.is_dir())
+                && entry.path().join(format!("{group}.php")).is_file()
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Quickfix offered when `__('...')`/`trans('...')` resolves to no
+/// declaration anywhere in `lang/`/`resources/lang/` — only for the JSON
+/// literal-translation convention, and only when `key` doesn't belong to an
+/// existing `<group>.php` array file (see [`group_php_file_exists`]). A
+/// dotted `group.key` miss *with* a matching array file would need inserting
+/// into a PHP array, which risks producing invalid PHP in edge cases (the
+/// reason the `SuggestedFix` infra was planned but never shipped — see
+/// `ROADMAP.md`), so that case is left as a known gap.
+pub(crate) fn missing_translation_json_key_action(
+    root: &Path,
+    key: &str,
+) -> Option<CodeActionOrCommand> {
+    if group_php_file_exists(root, key) {
+        return None;
+    }
+    let path = target_translation_json(root)?;
+    let text = std::fs::read_to_string(&path).ok()?;
+    let json: serde_json::Value = serde_json::from_str(&text).ok()?;
+    let map = json.as_object()?;
+    let uri = Uri::from_file_path(&path)?;
+    let brace = text.find('{')?;
+    let insert_offset = (brace + 1) as u32;
+    let line_starts = line_starts_of(&text);
+    let pos = offset_to_position(&text, &line_starts, insert_offset);
+    let key_literal = serde_json::to_string(key).ok()?;
+    let new_text = if map.is_empty() {
+        format!("{key_literal}: \"\"")
+    } else {
+        format!("{key_literal}: \"\", ")
+    };
+    let edit = TextEdit {
+        range: Range {
+            start: pos,
+            end: pos,
+        },
+        new_text,
+    };
+    let mut changes = HashMap::new();
+    changes.insert(uri, vec![edit]);
+    let file_name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("lang.json");
+    Some(CodeActionOrCommand::CodeAction(CodeAction {
+        title: format!("Add {key_literal} to {file_name}"),
+        kind: Some(CodeActionKind::QUICKFIX),
+        edit: Some(WorkspaceEdit {
+            changes: Some(changes),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }))
+}
+
 /// Completion items for translation keys starting with `prefix`.
 pub(crate) fn translation_completions(
     index: &TranslationIndex,
@@ -322,5 +430,108 @@ mod tests {
         let items = translation_completions(&idx, "auth.");
         let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
         assert_eq!(labels, vec!["auth.failed", "auth.throttle"]);
+    }
+
+    #[test]
+    fn missing_translation_json_key_action_inserts_into_existing_object() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("lang")).unwrap();
+        std::fs::write(
+            tmp.path().join("lang").join("en.json"),
+            r#"{"Hello": "Hello"}"#,
+        )
+        .unwrap();
+        let CodeActionOrCommand::CodeAction(action) =
+            missing_translation_json_key_action(tmp.path(), "Goodbye").unwrap()
+        else {
+            panic!("expected a CodeAction");
+        };
+        assert_eq!(action.title, r#"Add "Goodbye" to en.json"#);
+        let edit = action.edit.unwrap();
+        let changes = edit.changes.unwrap();
+        let edits = changes.values().next().unwrap();
+        assert_eq!(edits.len(), 1);
+        assert_eq!(edits[0].new_text, r#""Goodbye": "", "#);
+        assert_eq!(edits[0].range.start.character, 1);
+    }
+
+    #[test]
+    fn missing_translation_json_key_action_handles_empty_object() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("lang")).unwrap();
+        std::fs::write(tmp.path().join("lang").join("en.json"), "{}").unwrap();
+        let CodeActionOrCommand::CodeAction(action) =
+            missing_translation_json_key_action(tmp.path(), "Hi").unwrap()
+        else {
+            panic!("expected a CodeAction");
+        };
+        let edit = action.edit.unwrap();
+        let changes = edit.changes.unwrap();
+        let edits = changes.values().next().unwrap();
+        assert_eq!(edits[0].new_text, r#""Hi": """#);
+    }
+
+    #[test]
+    fn missing_translation_json_key_action_escapes_quotes_in_key() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("lang")).unwrap();
+        std::fs::write(tmp.path().join("lang").join("en.json"), "{}").unwrap();
+        let CodeActionOrCommand::CodeAction(action) =
+            missing_translation_json_key_action(tmp.path(), r#"Say "hi""#).unwrap()
+        else {
+            panic!("expected a CodeAction");
+        };
+        let edit = action.edit.unwrap();
+        let changes = edit.changes.unwrap();
+        let edits = changes.values().next().unwrap();
+        assert_eq!(edits[0].new_text, r#""Say \"hi\"": """#);
+    }
+
+    #[test]
+    fn missing_translation_json_key_action_none_without_any_json_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(missing_translation_json_key_action(tmp.path(), "Hi").is_none());
+    }
+
+    #[test]
+    fn missing_translation_json_key_action_falls_back_to_first_json_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("lang")).unwrap();
+        std::fs::write(tmp.path().join("lang").join("es.json"), "{}").unwrap();
+        let CodeActionOrCommand::CodeAction(action) =
+            missing_translation_json_key_action(tmp.path(), "Hi").unwrap()
+        else {
+            panic!("expected a CodeAction");
+        };
+        assert_eq!(action.title, r#"Add "Hi" to es.json"#);
+    }
+
+    #[test]
+    fn missing_translation_json_key_action_none_when_group_file_exists() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_php_lang(
+            tmp.path(),
+            "lang",
+            "en",
+            "auth.php",
+            "<?php\nreturn ['failed' => 'x'];\n",
+        );
+        std::fs::write(tmp.path().join("lang").join("en.json"), "{}").unwrap();
+        // `auth.php` exists but lacks `custom` — Laravel resolves via the
+        // array file (returning the key itself), never falling back to the
+        // JSON literal convention, so no quickfix should be offered.
+        assert!(missing_translation_json_key_action(tmp.path(), "auth.custom").is_none());
+    }
+
+    #[test]
+    fn missing_translation_json_key_action_offered_for_dotted_key_without_group_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("lang")).unwrap();
+        std::fs::write(tmp.path().join("lang").join("en.json"), "{}").unwrap();
+        // No `messages.php` array file exists anywhere, so Laravel's `__()`
+        // falls back to treating the whole dotted string as a JSON literal
+        // key — the quickfix must fire in this case.
+        let action = missing_translation_json_key_action(tmp.path(), "messages.welcome");
+        assert!(action.is_some());
     }
 }

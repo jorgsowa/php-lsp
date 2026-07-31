@@ -47,6 +47,8 @@ impl Backend {
         };
         let diag_cfg = self.config.load().diagnostics.clone();
         let docs = Arc::clone(&self.docs);
+        let laravel = self.laravel.load_full();
+        let laravel_root = self.root_paths.load().first().cloned();
         let range = params.range;
         let only = params.context.only;
 
@@ -159,6 +161,12 @@ impl Backend {
             actions.extend(local_to_property_actions(&source, &doc, range, &uri));
             actions.extend(update_phpdoc_actions(&uri, &doc, range));
             actions.extend(add_throws_actions(&uri, &doc, range));
+            actions.extend(crate::laravel::missing_key_actions(
+                &doc,
+                range.start,
+                &laravel,
+                laravel_root.as_deref(),
+            ));
             if let Some(action) = organize_imports_action(&source, &uri) {
                 actions.push(action);
             }

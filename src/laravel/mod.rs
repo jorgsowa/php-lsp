@@ -30,15 +30,15 @@ pub use translation_index::TranslationIndex;
 pub use view_index::ViewIndex;
 
 use config_index::config_completions;
-use env_index::env_completions;
+use env_index::{env_completions, missing_env_key_action};
 use route_index::route_completions;
 use string_call::{call_string_arg, call_string_prefix};
-use translation_index::translation_completions;
+use translation_index::{missing_translation_json_key_action, translation_completions};
 use view_index::view_completions;
 
 use std::path::Path;
 
-use tower_lsp_server::ls_types::{CompletionItem, Location, Position, Uri};
+use tower_lsp_server::ls_types::{CodeActionOrCommand, CompletionItem, Location, Position, Uri};
 
 pub(crate) use string_call::find_call_sites;
 
@@ -185,6 +185,40 @@ pub(crate) fn resolve_definition_key(
     None
 }
 
+/// Quickfixes for a Laravel string-key call whose argument doesn't resolve
+/// to anything in the workspace — checked at the same call sites as
+/// [`resolve_string_key`], but only for domains where a safe, mechanical fix
+/// exists (`env`, JSON-literal `trans`/`__`). `root` is the workspace root
+/// used to locate the file to edit; `None` (no workspace root) or a
+/// non-Laravel workspace yields no actions.
+pub(crate) fn missing_key_actions(
+    doc: &crate::document::ast::ParsedDoc,
+    position: Position,
+    laravel: &LaravelIndex,
+    root: Option<&Path>,
+) -> Vec<CodeActionOrCommand> {
+    if !laravel.is_laravel {
+        return Vec::new();
+    }
+    let Some(root) = root else {
+        return Vec::new();
+    };
+    let mut actions = Vec::new();
+    if let Some((key, _)) = call_string_arg(doc, position, ENV_CALL_NAMES)
+        && laravel.env.get(&key).is_none()
+        && let Some(action) = missing_env_key_action(root, &key)
+    {
+        actions.push(action);
+    }
+    if let Some((key, _)) = call_string_arg(doc, position, TRANS_CALL_NAMES)
+        && laravel.translations.get(&key).is_none()
+        && let Some(action) = missing_translation_json_key_action(root, &key)
+    {
+        actions.push(action);
+    }
+    actions
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -300,5 +334,64 @@ mod tests {
             )
             .is_none()
         );
+    }
+
+    #[test]
+    fn missing_key_actions_offers_env_quickfix_for_unresolved_key() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("artisan"), "#!/usr/bin/env php").unwrap();
+        std::fs::write(tmp.path().join(".env"), "APP_NAME=Test\n").unwrap();
+        let laravel = LaravelIndex::load(tmp.path());
+        let doc = crate::document::ast::ParsedDoc::parse("<?php\nenv('DB_HOST');\n".to_string());
+        let pos = Position {
+            line: 1,
+            character: 6,
+        };
+        let actions = missing_key_actions(&doc, pos, &laravel, Some(tmp.path()));
+        assert_eq!(actions.len(), 1);
+        let CodeActionOrCommand::CodeAction(action) = &actions[0] else {
+            panic!("expected a CodeAction");
+        };
+        assert_eq!(action.title, "Add 'DB_HOST' to .env");
+    }
+
+    #[test]
+    fn missing_key_actions_empty_when_key_already_resolves() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("artisan"), "#!/usr/bin/env php").unwrap();
+        std::fs::write(tmp.path().join(".env"), "APP_NAME=Test\n").unwrap();
+        let laravel = LaravelIndex::load(tmp.path());
+        let doc = crate::document::ast::ParsedDoc::parse("<?php\nenv('APP_NAME');\n".to_string());
+        let pos = Position {
+            line: 1,
+            character: 6,
+        };
+        assert!(missing_key_actions(&doc, pos, &laravel, Some(tmp.path())).is_empty());
+    }
+
+    #[test]
+    fn missing_key_actions_empty_for_non_laravel_workspace() {
+        let tmp = tempfile::tempdir().unwrap();
+        let laravel = LaravelIndex::load(tmp.path());
+        let doc = crate::document::ast::ParsedDoc::parse("<?php\nenv('DB_HOST');\n".to_string());
+        let pos = Position {
+            line: 1,
+            character: 6,
+        };
+        assert!(missing_key_actions(&doc, pos, &laravel, Some(tmp.path())).is_empty());
+    }
+
+    #[test]
+    fn missing_key_actions_empty_without_root() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("artisan"), "#!/usr/bin/env php").unwrap();
+        std::fs::write(tmp.path().join(".env"), "APP_NAME=Test\n").unwrap();
+        let laravel = LaravelIndex::load(tmp.path());
+        let doc = crate::document::ast::ParsedDoc::parse("<?php\nenv('DB_HOST');\n".to_string());
+        let pos = Position {
+            line: 1,
+            character: 6,
+        };
+        assert!(missing_key_actions(&doc, pos, &laravel, None).is_empty());
     }
 }

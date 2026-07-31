@@ -5,7 +5,8 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use tower_lsp_server::ls_types::{
-    CompletionItem, CompletionItemKind, Location, Position, Range, Uri,
+    CodeAction, CodeActionKind, CodeActionOrCommand, CompletionItem, CompletionItemKind, Location,
+    Position, Range, TextEdit, Uri, WorkspaceEdit,
 };
 
 #[derive(Debug, Default, Clone)]
@@ -89,6 +90,42 @@ fn parse_env_key(line: &str) -> Option<(&str, usize, usize)> {
     }
     let key_start = leading_ws + export_prefix_len;
     Some((key, key_start, key_start + key.len()))
+}
+
+/// Quickfix offered when `env('KEY')` resolves to no declaration in either
+/// `.env` or `.env.example`. Only offered when `.env` itself exists —
+/// creating the file from scratch is out of scope, and `.env.example` is a
+/// template, not the developer's real configuration to edit. The new
+/// declaration is prepended rather than appended so the edit never depends
+/// on knowing the file's current end-of-file position.
+pub(crate) fn missing_env_key_action(root: &Path, key: &str) -> Option<CodeActionOrCommand> {
+    let env_path = root.join(".env");
+    if !env_path.is_file() {
+        return None;
+    }
+    let uri = Uri::from_file_path(&env_path)?;
+    let pos = Position {
+        line: 0,
+        character: 0,
+    };
+    let edit = TextEdit {
+        range: Range {
+            start: pos,
+            end: pos,
+        },
+        new_text: format!("{key}=\n"),
+    };
+    let mut changes = HashMap::new();
+    changes.insert(uri, vec![edit]);
+    Some(CodeActionOrCommand::CodeAction(CodeAction {
+        title: format!("Add '{key}' to .env"),
+        kind: Some(CodeActionKind::QUICKFIX),
+        edit: Some(WorkspaceEdit {
+            changes: Some(changes),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }))
 }
 
 /// Completion items for env var names starting with `prefix`.
@@ -199,5 +236,31 @@ mod tests {
         let items = env_completions(&idx, "APP_");
         let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
         assert_eq!(labels, vec!["APP_ENV", "APP_NAME"]);
+    }
+
+    #[test]
+    fn missing_env_key_action_prepends_declaration() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join(".env"), "APP_NAME=Test\n").unwrap();
+        let CodeActionOrCommand::CodeAction(action) =
+            missing_env_key_action(tmp.path(), "DB_HOST").unwrap()
+        else {
+            panic!("expected a CodeAction");
+        };
+        assert_eq!(action.title, "Add 'DB_HOST' to .env");
+        assert_eq!(action.kind, Some(CodeActionKind::QUICKFIX));
+        let edit = action.edit.unwrap();
+        let changes = edit.changes.unwrap();
+        let edits = changes.values().next().unwrap();
+        assert_eq!(edits.len(), 1);
+        assert_eq!(edits[0].new_text, "DB_HOST=\n");
+        assert_eq!(edits[0].range.start, Position::default());
+        assert_eq!(edits[0].range.end, Position::default());
+    }
+
+    #[test]
+    fn missing_env_key_action_none_without_env_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(missing_env_key_action(tmp.path(), "DB_HOST").is_none());
     }
 }
