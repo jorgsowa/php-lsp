@@ -755,6 +755,48 @@ async fn did_change_watched_files_bulk_batch_indexes_every_file() {
 }
 
 #[tokio::test]
+async fn will_rename_files_stays_responsive_with_many_importing_files() {
+    // Renaming a class parses every file that imports it (to rewrite `use`
+    // lines) plus every reference site (to rewrite the declaration and its
+    // usages) — both loops must run off the async runtime worker, not
+    // inline for the whole importer set.
+    let workspace = tempfile::tempdir().expect("workspace tempdir");
+    std::fs::write(
+        workspace.path().join("composer.json"),
+        r#"{"autoload": {"psr-4": {"": "src/"}}}"#,
+    )
+    .unwrap();
+    std::fs::create_dir_all(workspace.path().join("src")).unwrap();
+    std::fs::write(
+        workspace.path().join("src/Target.php"),
+        "<?php\nclass Target {}\n",
+    )
+    .unwrap();
+    for i in 0..200 {
+        std::fs::write(
+            workspace.path().join(format!("src/Importer{i}.php")),
+            format!(
+                "<?php\nuse Target;\n\nclass Importer{i}\n{{\n    public function f(): Target\n    {{\n        return new Target();\n    }}\n}}\n"
+            ),
+        )
+        .unwrap();
+    }
+
+    let mut server = TestServer::with_root(workspace.path()).await;
+    server.wait_for_index_ready().await;
+    let old_uri = server.uri("src/Target.php");
+    let new_uri = server.uri("src/Renamed.php");
+    server
+        .assert_stays_responsive(
+            "workspace/willRenameFiles",
+            serde_json::json!({
+                "files": [{ "oldUri": old_uri, "newUri": new_uri }],
+            }),
+        )
+        .await;
+}
+
+#[tokio::test]
 async fn semantic_tokens_full_delta_stays_responsive_on_large_file() {
     let mut server = TestServer::new().await;
     server

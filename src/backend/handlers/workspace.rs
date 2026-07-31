@@ -644,14 +644,29 @@ impl Backend {
             let old_short = fqn_short_name(&old_fqn).to_string();
             let new_short = fqn_short_name(&new_fqn).to_string();
             if old_fqn != new_fqn {
-                for uri in self.docs.files_importing(&old_fqn) {
-                    let Some(doc) = self.docs.get_doc_salsa(&uri) else {
-                        continue;
-                    };
-                    let edits = use_edits_in_source(&doc, &old_fqn, &new_fqn);
-                    if !edits.is_empty() {
-                        merged_changes.entry(uri).or_default().extend(edits);
+                let docs = std::sync::Arc::clone(&self.docs);
+                let old_fqn_task = old_fqn.clone();
+                let new_fqn_task = new_fqn.clone();
+                // Every importing file gets parsed and diffed; keep that off
+                // the async runtime worker, same as the reference-lookup path
+                // below.
+                let edits_by_uri = tokio::task::spawn_blocking(move || {
+                    let mut out = Vec::new();
+                    for uri in docs.files_importing(&old_fqn_task) {
+                        let Some(doc) = docs.get_doc_salsa(&uri) else {
+                            continue;
+                        };
+                        let edits = use_edits_in_source(&doc, &old_fqn_task, &new_fqn_task);
+                        if !edits.is_empty() {
+                            out.push((uri, edits));
+                        }
                     }
+                    out
+                })
+                .await
+                .unwrap_or_default();
+                for (uri, edits) in edits_by_uri {
+                    merged_changes.entry(uri).or_default().extend(edits);
                 }
             }
 
@@ -670,24 +685,42 @@ impl Backend {
                 })
                 .await
                 .unwrap_or_default();
-                for loc in locations
-                    .into_iter()
-                    .filter_map(crate::navigation::references::session_tuple_to_location)
-                {
-                    let Some(doc) = self.docs.get_doc_salsa(&loc.uri) else {
-                        continue;
-                    };
-                    let Some(range) = crate::editing::rename::narrow_range_to_word(
-                        doc.source(),
-                        loc.range,
-                        &old_short,
-                    ) else {
-                        continue;
-                    };
-                    merged_changes.entry(loc.uri).or_default().push(TextEdit {
-                        range,
-                        new_text: new_short.clone(),
-                    });
+                let docs = std::sync::Arc::clone(&self.docs);
+                let old_short_task = old_short.clone();
+                let new_short_task = new_short.clone();
+                // Each reference site gets its declaring file parsed and its
+                // rename range narrowed; same rationale as the `use`-edit
+                // loop above.
+                let edits = tokio::task::spawn_blocking(move || {
+                    let mut out = Vec::new();
+                    for loc in locations
+                        .into_iter()
+                        .filter_map(crate::navigation::references::session_tuple_to_location)
+                    {
+                        let Some(doc) = docs.get_doc_salsa(&loc.uri) else {
+                            continue;
+                        };
+                        let Some(range) = crate::editing::rename::narrow_range_to_word(
+                            doc.source(),
+                            loc.range,
+                            &old_short_task,
+                        ) else {
+                            continue;
+                        };
+                        out.push((
+                            loc.uri,
+                            TextEdit {
+                                range,
+                                new_text: new_short_task.clone(),
+                            },
+                        ));
+                    }
+                    out
+                })
+                .await
+                .unwrap_or_default();
+                for (uri, edit) in edits {
+                    merged_changes.entry(uri).or_default().push(edit);
                 }
             }
         }
