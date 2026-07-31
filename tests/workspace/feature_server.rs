@@ -401,28 +401,83 @@ async fn did_open_stays_responsive_on_large_file() {
     // that parse inline. Diagnostics are disabled so the test isolates the
     // parse itself from mir's separate (and much heavier) semantic analysis
     // pass, which would otherwise dominate wall time regardless of this bug.
-    // 20000 generated classes measured ~43-53ms for the whole open+probe
-    // exchange when parsed inline, vs. ~11-16ms when deferred via
-    // spawn_blocking — comfortable margin either side of the 25ms budget.
+    //
+    // An earlier version of this test asserted an absolute wall-clock budget
+    // (25ms) on the open+probe exchange. That flaked on shared CI runners
+    // (macos-latest and ubuntu-latest both blew past it under ordinary
+    // scheduling noise, no code change on either side of the regression this
+    // guards against) — and measuring it directly showed why: with 20000
+    // classes the JSON payload is ~6-7MB, and just transferring + decoding
+    // that through the duplex stream already costs ~140ms on a fast dev
+    // machine, regardless of whether did_open's own parse is deferred
+    // (~142-149ms measured) or run inline (~200-205ms measured) — a ~60ms
+    // signal sitting on top of a ~140ms fixed cost that any absolute budget
+    // has to split, and that fixed cost alone swamps a 25ms budget outright.
+    // Sending the same-size payload as a notification the server doesn't
+    // handle (`debugtmp/noOpBaseline` below) measured ~142-147ms — confirming
+    // that cost is pure JSON transfer/decode overhead, present identically
+    // whether or not did_open ever runs.
+    //
+    // So: measure that fixed cost directly as a same-size baseline, then
+    // compare the *delta* — did_open's own added cost — instead of the
+    // absolute total. That cancels out payload-size overhead, leaving just
+    // the ~0-10ms (deferred) vs. ~55-65ms (inline) signal on an idle machine.
+    // But a single sample of each is still not solid: under realistic
+    // concurrent load (this test binary's own other ~225 tests running in
+    // parallel — what CI actually does, not a synthetic stress harness), a
+    // single measurement's scheduling noise alone pushed the delta past 40ms
+    // on a genuinely-fixed build. Noise only ever adds latency, never removes
+    // it, so taking the minimum over several cold-cache trials converges each
+    // side toward its true best-case cost and filters that noise out. Each
+    // did_open trial needs its own URI: re-opening the same one would hit the
+    // parsed-doc cache from the second trial on, masking the very regression
+    // this test exists to catch.
+    //
+    // Measured directly under that same realistic concurrent load, with the
+    // best-of-5 approach: a correct (deferred) build's delta topped out
+    // around 53ms across many runs, while reintroducing the inline-parse bug
+    // reliably produced 113-155ms — a wide, empirically-confirmed gap. 80ms
+    // sits in the middle of it.
+    const TRIALS: usize = 5;
     let (mut server, _init) = TestServer::new_with_options(serde_json::json!({
         "diagnostics": { "enabled": false }
     }))
     .await;
-    let uri = server.uri("big_did_open.php");
-    server
-        .assert_notification_stays_responsive(
-            "textDocument/didOpen",
-            serde_json::json!({
-                "textDocument": {
-                    "uri": uri,
-                    "languageId": "php",
-                    "version": 1,
-                    "text": crate::common::fixture::large_php_source(20000),
-                }
-            }),
-            std::time::Duration::from_millis(25),
-        )
-        .await;
+    let text = crate::common::fixture::large_php_source(20000);
+    let payload_for = |uri: String| {
+        serde_json::json!({
+            "textDocument": {
+                "uri": uri,
+                "languageId": "php",
+                "version": 1,
+                "text": text,
+            }
+        })
+    };
+    let mut baseline = std::time::Duration::MAX;
+    let mut did_open = std::time::Duration::MAX;
+    for i in 0..TRIALS {
+        let base_payload = payload_for(server.uri(&format!("baseline_{i}.php")));
+        baseline = baseline.min(
+            server
+                .time_notification_and_probe("debugtmp/noOpBaseline", base_payload)
+                .await,
+        );
+        let open_payload = payload_for(server.uri(&format!("big_did_open_{i}.php")));
+        did_open = did_open.min(
+            server
+                .time_notification_and_probe("textDocument/didOpen", open_payload)
+                .await,
+        );
+    }
+    let delta = did_open.saturating_sub(baseline);
+    assert!(
+        delta <= std::time::Duration::from_millis(80),
+        "textDocument/didOpen appears to block the request loop: its best-of-{TRIALS} time \
+         was {delta:?} longer than a same-size no-op notification's best-of-{TRIALS} \
+         ({did_open:?} vs baseline {baseline:?}), suggesting the parse ran inline instead of \
+         via spawn_blocking"
+    );
 }
 
 /// Opens `count` sizeable, self-contained documents plus one "target"

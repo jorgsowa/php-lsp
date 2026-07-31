@@ -549,6 +549,17 @@ impl TestServer {
             .await
     }
 
+    /// See [`TestClient::time_notification_and_probe`].
+    pub async fn time_notification_and_probe(
+        &mut self,
+        notif_method: &str,
+        notif_params: serde_json::Value,
+    ) -> std::time::Duration {
+        self.client
+            .time_notification_and_probe(notif_method, notif_params)
+            .await
+    }
+
     pub async fn wait_for_index_ready(&mut self) -> &mut Self {
         self.client.wait_for_index_ready().await;
         self

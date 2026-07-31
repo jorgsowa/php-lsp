@@ -321,7 +321,35 @@ impl TestClient {
         // completes as fast as the server drains it; if the server is stuck
         // running the handler's work inline, that drain stalls too, so the
         // write time itself is part of what this budget is guarding.
-        tokio::time::timeout(budget, async {
+        let elapsed = self.time_notification_and_probe(&notif_method_owned, notif_params).await;
+        assert!(
+            elapsed <= budget,
+            "{notif_method_owned} appears to block the request loop: opening this \
+             document plus a follow-up debugStats probe did not complete within \
+             {budget:?} (took {elapsed:?})"
+        );
+    }
+
+    /// Send `notif_method` as a notification, then immediately a cheap
+    /// `$/php-lsp/debugStats` probe, and return how long the whole exchange
+    /// took to answer the probe. A generous 10s outer timeout guards against
+    /// a genuine hang (vs. a slow-but-finite handler); it's not part of the
+    /// signal callers reason about.
+    ///
+    /// Prefer this over `assert_notification_stays_responsive` when the
+    /// operation's own JSON payload is large enough that transferring and
+    /// decoding it dominates wall time — an absolute budget then mostly
+    /// measures payload size, not whether the handler blocked the request
+    /// loop. Measure a same-size no-op baseline with this method and compare
+    /// the *delta* instead (see `did_open_stays_responsive_on_large_file`).
+    pub async fn time_notification_and_probe(
+        &mut self,
+        notif_method: &str,
+        notif_params: Value,
+    ) -> Duration {
+        let notif_method_owned = notif_method.to_owned();
+        let start = std::time::Instant::now();
+        tokio::time::timeout(Duration::from_secs(10), async {
             self.notify(&notif_method_owned, notif_params).await;
             let probe_id = self.send_request("$/php-lsp/debugStats", json!({})).await;
 
@@ -344,9 +372,10 @@ impl TestClient {
         .unwrap_or_else(|_| {
             panic!(
                 "{notif_method_owned} appears to block the request loop: opening this \
-                 document plus a follow-up debugStats probe did not complete within {budget:?}"
+                 document plus a follow-up debugStats probe did not complete within 10s"
             )
         });
+        start.elapsed()
     }
 
     pub async fn notify(&mut self, method: &str, params: Value) {
