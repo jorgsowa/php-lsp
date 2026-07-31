@@ -374,3 +374,64 @@ async fn laravel_string_key_references_and_hover_concurrent_complete_without_dea
         ```"#]]
     .assert_eq(&render_hover(&hover_resp));
 }
+
+// ── inline-blocking regression tests ────────────────────────────────────────
+// Each handler below must offload its document-size synchronous work to
+// `spawn_blocking` rather than running it directly on the async task that
+// also reads stdin and writes stdout for the whole connection — see
+// `TestClient::assert_stays_responsive` for why running it inline hangs
+// every other in-flight request, not just the slow one.
+
+#[tokio::test]
+async fn semantic_tokens_full_stays_responsive_on_large_file() {
+    let mut server = TestServer::new().await;
+    server
+        .open("big_semtok_full.php", &crate::common::fixture::large_php_source(500))
+        .await;
+    let uri = server.uri("big_semtok_full.php");
+    server
+        .assert_stays_responsive(
+            "textDocument/semanticTokens/full",
+            serde_json::json!({ "textDocument": { "uri": uri } }),
+        )
+        .await;
+}
+
+#[tokio::test]
+async fn semantic_tokens_range_stays_responsive_on_large_file() {
+    let mut server = TestServer::new().await;
+    server
+        .open("big_semtok_range.php", &crate::common::fixture::large_php_source(500))
+        .await;
+    let uri = server.uri("big_semtok_range.php");
+    server
+        .assert_stays_responsive(
+            "textDocument/semanticTokens/range",
+            serde_json::json!({
+                "textDocument": { "uri": uri },
+                "range": {
+                    "start": { "line": 0, "character": 0 },
+                    "end": { "line": 50, "character": 0 },
+                },
+            }),
+        )
+        .await;
+}
+
+#[tokio::test]
+async fn semantic_tokens_full_delta_stays_responsive_on_large_file() {
+    let mut server = TestServer::new().await;
+    server
+        .open("big_semtok_delta.php", &crate::common::fixture::large_php_source(500))
+        .await;
+    let uri = server.uri("big_semtok_delta.php");
+    server
+        .assert_stays_responsive(
+            "textDocument/semanticTokens/full/delta",
+            serde_json::json!({
+                "textDocument": { "uri": uri },
+                "previousResultId": "nonexistent",
+            }),
+        )
+        .await;
+}

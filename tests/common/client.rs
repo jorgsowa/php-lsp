@@ -204,6 +204,97 @@ impl TestClient {
         .unwrap_or_else(|_| panic!("timed out waiting for response to {method_owned}"))
     }
 
+    /// Write `method`/`params` as a new request and return its id without
+    /// waiting for the response. Pairs with `assert_stays_responsive` below,
+    /// which needs two requests in flight at once.
+    async fn send_request(&mut self, method: &str, params: Value) -> u64 {
+        let id = self.next_id;
+        self.next_id += 1;
+        let msg = json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": method,
+            "params": params,
+        });
+        self.write.write_all(&frame(&msg)).await.unwrap();
+        id
+    }
+
+    /// Regression guard for the class of bug where a handler runs
+    /// synchronous, non-yielding work (a full-document walk, a blocking
+    /// subprocess, a workspace scan) directly on the async task instead of
+    /// via `spawn_blocking`. `tower-lsp-server`'s transport drives
+    /// stdin-reading, response-writing, and every in-flight handler as ONE
+    /// joined future (`Server::serve`); a handler that never yields
+    /// monopolizes that single poll for its whole duration, so nothing
+    /// else — not even an unrelated, trivially cheap request — can complete
+    /// until it's done.
+    ///
+    /// Sends `slow_method` then immediately a cheap `$/php-lsp/debugStats`
+    /// probe (a handful of atomic loads, no `.await` of its own), without
+    /// waiting in between, and asserts the probe's response is the one to
+    /// arrive first. This is an ordering check, not a timing threshold: if
+    /// `slow_method` blocks the shared task, its own response necessarily
+    /// becomes ready before the probe is ever polled; if it correctly
+    /// defers to `spawn_blocking`, its poll returns `Pending` almost
+    /// instantly and the probe resolves first on that same turn —
+    /// deterministic regardless of machine speed, so `slow_params` only
+    /// needs to make the handler's work non-trivial, not slow in absolute
+    /// terms.
+    pub async fn assert_stays_responsive(&mut self, slow_method: &str, slow_params: Value) {
+        let slow_id = self.send_request(slow_method, slow_params).await;
+        let probe_id = self.send_request("$/php-lsp/debugStats", json!({})).await;
+
+        let mut budget = self.pending.len();
+        let TestClient {
+            pending,
+            read,
+            write,
+            ..
+        } = self;
+        let probe_won = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let msg = recv_or_buffered(pending, read, write, &mut budget).await;
+                if msg.get("id") == Some(&json!(probe_id)) {
+                    return true;
+                }
+                if msg.get("id") == Some(&json!(slow_id)) {
+                    return false;
+                }
+                pending.push_back(msg);
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("timed out waiting for {slow_method}/debugStats responses"));
+
+        assert!(
+            probe_won,
+            "{slow_method} appears to block the request loop: its own response arrived \
+             before the concurrently-sent debugStats probe, meaning it ran synchronous \
+             work inline instead of via spawn_blocking"
+        );
+
+        // Drain the slow response too so it isn't left unread on the wire.
+        let mut budget = self.pending.len();
+        let TestClient {
+            pending,
+            read,
+            write,
+            ..
+        } = self;
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let msg = recv_or_buffered(pending, read, write, &mut budget).await;
+                if msg.get("id") == Some(&json!(slow_id)) {
+                    return;
+                }
+                pending.push_back(msg);
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("timed out waiting for {slow_method} response"));
+    }
+
     pub async fn notify(&mut self, method: &str, params: Value) {
         let msg = json!({
             "jsonrpc": "2.0",

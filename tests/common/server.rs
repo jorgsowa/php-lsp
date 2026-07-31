@@ -524,6 +524,14 @@ impl TestServer {
         self.client.request_then_cancel(method, params).await
     }
 
+    /// Assert that `slow_method` doesn't block the server's request loop
+    /// (see [`TestClient::assert_stays_responsive`]).
+    pub async fn assert_stays_responsive(&mut self, slow_method: &str, slow_params: serde_json::Value) {
+        self.client
+            .assert_stays_responsive(slow_method, slow_params)
+            .await
+    }
+
     pub async fn wait_for_index_ready(&mut self) -> &mut Self {
         self.client.wait_for_index_ready().await;
         self

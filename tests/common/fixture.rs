@@ -383,6 +383,32 @@ pub fn assert_diagnostics(notif: &Value, expected: &[DiagnosticAnnotation]) {
     }
 }
 
+/// A syntactically valid PHP source of `class_count` classes (a few hundred
+/// KB), for `TestClient::assert_stays_responsive`. Big enough that a
+/// document-wide AST walk or parse over it is measurably non-instant, so a
+/// handler that still runs one inline (instead of via `spawn_blocking`)
+/// reliably finishes before a concurrently-sent cheap probe is even polled
+/// once — see the doc comment on `assert_stays_responsive` for why the
+/// ordering check doesn't depend on the exact size chosen here.
+pub fn large_php_source(class_count: usize) -> String {
+    let mut src = String::from("<?php\n\nnamespace App\\Generated;\n\n");
+    for i in 0..class_count {
+        src.push_str(&format!(
+            "/**\n * Generated class {i}.\n * @deprecated use GenClass{} instead\n */\n\
+             class GenClass{i} extends BaseClass{} implements SomeInterface{}\n\
+             {{\n    private string $name{i} = \"value{i}\";\n\n    \
+             public function helper{i}(string $x, int $y): string\n    {{\n        \
+             $z = $x . (string) $y . self::class;\n        \
+             foreach ([1, 2, 3] as $item) {{\n            $z .= (string) $item;\n        }}\n        \
+             return $z;\n    }}\n}}\n\n",
+            i + 1,
+            i % 7,
+            i % 3,
+        ));
+    }
+    src
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1043,8 +1043,8 @@ impl LanguageServer for Backend {
         params: SemanticTokensParams,
     ) -> Result<Option<SemanticTokensResult>> {
         guard_async_result("semantic_tokens_full", async move {
-            let uri = &params.text_document.uri;
-            let doc = match self.get_doc(uri) {
+            let uri = params.text_document.uri;
+            let doc = match self.get_doc(&uri) {
                 Some(d) => d,
                 None => {
                     return Ok(Some(SemanticTokensResult::Tokens(SemanticTokens {
@@ -1053,12 +1053,26 @@ impl LanguageServer for Backend {
                     })));
                 }
             };
-            let tokens = semantic_tokens(doc.source(), &doc);
-            let result_id = token_hash(&tokens);
-            let tokens_arc = Arc::new(tokens);
-            self.docs
-                .store_token_cache(uri, result_id.clone(), Arc::clone(&tokens_arc));
-            let data = Arc::try_unwrap(tokens_arc).unwrap_or_else(|arc| (*arc).clone());
+            let docs = Arc::clone(&self.docs);
+            let uri_for_task = uri.clone();
+            // The AST walk is CPU-bound; keep it off the async runtime worker
+            // (see `document_highlight` for the same pattern).
+            let (result_id, data) = match tokio::task::spawn_blocking(move || {
+                let tokens = semantic_tokens(doc.source(), &doc);
+                let result_id = token_hash(&tokens);
+                let tokens_arc = Arc::new(tokens);
+                docs.store_token_cache(&uri_for_task, result_id.clone(), Arc::clone(&tokens_arc));
+                let data = Arc::try_unwrap(tokens_arc).unwrap_or_else(|arc| (*arc).clone());
+                (result_id, data)
+            })
+            .await
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::warn!("semantic_tokens_full panicked for {uri:?}: {e}");
+                    (String::new(), Vec::new())
+                }
+            };
             Ok(Some(SemanticTokensResult::Tokens(SemanticTokens {
                 result_id: Some(result_id),
                 data,
@@ -1072,8 +1086,8 @@ impl LanguageServer for Backend {
         params: SemanticTokensRangeParams,
     ) -> Result<Option<SemanticTokensRangeResult>> {
         guard_async_result("semantic_tokens_range", async move {
-            let uri = &params.text_document.uri;
-            let doc = match self.get_doc(uri) {
+            let uri = params.text_document.uri;
+            let doc = match self.get_doc(&uri) {
                 Some(d) => d,
                 None => {
                     return Ok(Some(SemanticTokensRangeResult::Tokens(SemanticTokens {
@@ -1082,7 +1096,18 @@ impl LanguageServer for Backend {
                     })));
                 }
             };
-            let tokens = semantic_tokens_range(doc.source(), &doc, params.range);
+            let range = params.range;
+            let tokens = match tokio::task::spawn_blocking(move || {
+                semantic_tokens_range(doc.source(), &doc, range)
+            })
+            .await
+            {
+                Ok(t) => t,
+                Err(e) => {
+                    tracing::warn!("semantic_tokens_range panicked for {uri:?}: {e}");
+                    Vec::new()
+                }
+            };
             Ok(Some(SemanticTokensRangeResult::Tokens(SemanticTokens {
                 result_id: None,
                 data: tokens,
@@ -1096,32 +1121,45 @@ impl LanguageServer for Backend {
         params: SemanticTokensDeltaParams,
     ) -> Result<Option<SemanticTokensFullDeltaResult>> {
         guard_async_result("semantic_tokens_full_delta", async move {
-            let uri = &params.text_document.uri;
-            let doc = match self.get_doc(uri) {
+            let uri = params.text_document.uri;
+            let doc = match self.get_doc(&uri) {
                 Some(d) => d,
                 None => return Ok(None),
             };
 
-            let new_tokens = Arc::new(semantic_tokens(doc.source(), &doc));
-            let new_result_id = token_hash(&new_tokens);
-            let prev_id = &params.previous_result_id;
+            let docs = Arc::clone(&self.docs);
+            let uri_for_task = uri.clone();
+            let prev_id = params.previous_result_id;
+            let result = match tokio::task::spawn_blocking(move || {
+                let new_tokens = Arc::new(semantic_tokens(doc.source(), &doc));
+                let new_result_id = token_hash(&new_tokens);
 
-            let result = match self.docs.get_token_cache(uri, prev_id) {
-                Some(old_tokens) => {
-                    let edits = compute_token_delta(&old_tokens, &new_tokens);
-                    SemanticTokensFullDeltaResult::TokensDelta(SemanticTokensDelta {
+                let result = match docs.get_token_cache(&uri_for_task, &prev_id) {
+                    Some(old_tokens) => {
+                        let edits = compute_token_delta(&old_tokens, &new_tokens);
+                        SemanticTokensFullDeltaResult::TokensDelta(SemanticTokensDelta {
+                            result_id: Some(new_result_id.clone()),
+                            edits,
+                        })
+                    }
+                    // Unknown previous result — fall back to full tokens
+                    None => SemanticTokensFullDeltaResult::Tokens(SemanticTokens {
                         result_id: Some(new_result_id.clone()),
-                        edits,
-                    })
-                }
-                // Unknown previous result — fall back to full tokens
-                None => SemanticTokensFullDeltaResult::Tokens(SemanticTokens {
-                    result_id: Some(new_result_id.clone()),
-                    data: (*new_tokens).clone(),
-                }),
-            };
+                        data: (*new_tokens).clone(),
+                    }),
+                };
 
-            self.docs.store_token_cache(uri, new_result_id, new_tokens);
+                docs.store_token_cache(&uri_for_task, new_result_id, new_tokens);
+                result
+            })
+            .await
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    tracing::warn!("semantic_tokens_full_delta panicked for {uri:?}: {e}");
+                    return Ok(None);
+                }
+            };
             Ok(Some(result))
         })
         .await
