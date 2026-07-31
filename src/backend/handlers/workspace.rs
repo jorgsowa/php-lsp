@@ -217,6 +217,13 @@ impl Backend {
                     .then_some(ImplementationProviderCapability::Simple(true)),
                 code_action_provider: feat.code_action.then(|| {
                     CodeActionProviderCapability::Options(CodeActionOptions {
+                        code_action_kinds: Some(vec![
+                            CodeActionKind::QUICKFIX,
+                            CodeActionKind::REFACTOR,
+                            CodeActionKind::REFACTOR_EXTRACT,
+                            CodeActionKind::REFACTOR_INLINE,
+                            CodeActionKind::SOURCE_ORGANIZE_IMPORTS,
+                        ]),
                         resolve_provider: Some(true),
                         ..Default::default()
                     })

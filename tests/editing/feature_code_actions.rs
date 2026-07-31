@@ -1138,3 +1138,141 @@ async fn code_action_quickfix_undefined_class_in_namespaced_file() {
         2:0-2:0 → "use App\\Service\\Widget;\n""#]]
     .assert_eq(&out);
 }
+
+// ============================================================================
+// `context.only` FILTERING
+// ============================================================================
+//
+// `organize_imports_action` doesn't depend on the request range, so a file
+// with an unsorted `use` block plus an undefined-class reference always
+// offers both a `quickfix` and a `source.organizeImports` action for the
+// same request — a solid fixture for asserting `context.only` filtering.
+
+/// Sanity check that both actions actually show up unfiltered, so the
+/// filtering tests below are pinning real behavior, not an empty response.
+#[tokio::test]
+async fn code_action_only_absent_returns_both_kinds() {
+    let mut server = TestServer::new().await;
+    server
+        .open(
+            "Service/Widget.php",
+            "<?php\nnamespace App\\Service;\n\nclass Widget {}\n",
+        )
+        .await;
+    server
+        .open(
+            "main.php",
+            "<?php\nnamespace App;\n\nuse App\\Zeta;\nuse App\\Alpha;\n\nnew Widget();\n",
+        )
+        .await;
+
+    let resp = server.code_action("main.php", 6, 4, 6, 10).await;
+    let actions = resp["result"].as_array().cloned().unwrap_or_default();
+    let kinds: Vec<&str> = actions
+        .iter()
+        .map(|a| a["kind"].as_str().unwrap_or(""))
+        .collect();
+    assert!(
+        kinds.contains(&"quickfix"),
+        "expected an 'Add use' quickfix, got {kinds:?}"
+    );
+    assert!(
+        kinds.contains(&"source.organizeImports"),
+        "expected an organize-imports action, got {kinds:?}"
+    );
+}
+
+#[tokio::test]
+async fn code_action_only_quickfix_excludes_organize_imports() {
+    let mut server = TestServer::new().await;
+    server
+        .open(
+            "Service/Widget.php",
+            "<?php\nnamespace App\\Service;\n\nclass Widget {}\n",
+        )
+        .await;
+    server
+        .open(
+            "main.php",
+            "<?php\nnamespace App;\n\nuse App\\Zeta;\nuse App\\Alpha;\n\nnew Widget();\n",
+        )
+        .await;
+
+    let resp = server
+        .code_action_only("main.php", 6, 4, 6, 10, &["quickfix"])
+        .await;
+    let actions = resp["result"].as_array().cloned().unwrap_or_default();
+    let kinds: Vec<&str> = actions
+        .iter()
+        .map(|a| a["kind"].as_str().unwrap_or(""))
+        .collect();
+    assert!(
+        !kinds.is_empty(),
+        "expected the Add-use quickfix to survive filtering"
+    );
+    assert!(
+        kinds.iter().all(|k| *k == "quickfix"),
+        "only=[quickfix] should filter out non-quickfix actions, got {kinds:?}"
+    );
+}
+
+#[tokio::test]
+async fn code_action_only_organize_imports_excludes_quickfix() {
+    let mut server = TestServer::new().await;
+    server
+        .open(
+            "Service/Widget.php",
+            "<?php\nnamespace App\\Service;\n\nclass Widget {}\n",
+        )
+        .await;
+    server
+        .open(
+            "main.php",
+            "<?php\nnamespace App;\n\nuse App\\Zeta;\nuse App\\Alpha;\n\nnew Widget();\n",
+        )
+        .await;
+
+    let resp = server
+        .code_action_only("main.php", 6, 4, 6, 10, &["source.organizeImports"])
+        .await;
+    let actions = resp["result"].as_array().cloned().unwrap_or_default();
+    let kinds: Vec<&str> = actions
+        .iter()
+        .map(|a| a["kind"].as_str().unwrap_or(""))
+        .collect();
+    assert!(
+        !kinds.is_empty(),
+        "expected the organize-imports action to survive filtering"
+    );
+    assert!(
+        kinds.iter().all(|k| *k == "source.organizeImports"),
+        "only=[source.organizeImports] should filter out the quickfix, got {kinds:?}"
+    );
+}
+
+/// `only: ["refactor"]` must also match the more specific descendant kind
+/// `refactor.extract` — the LSP code-action-kind hierarchy is prefix-based.
+#[tokio::test]
+async fn code_action_only_refactor_includes_extract_descendant() {
+    let mut server = TestServer::new().await;
+    server.validate_syntax(false);
+    server
+        .open(
+            "main.php",
+            "<?php\nfunction f(): int {\n    return 1 + 2;\n}\n",
+        )
+        .await;
+
+    let resp = server
+        .code_action_only("main.php", 2, 11, 2, 16, &["refactor"])
+        .await;
+    let actions = resp["result"].as_array().cloned().unwrap_or_default();
+    let kinds: Vec<&str> = actions
+        .iter()
+        .map(|a| a["kind"].as_str().unwrap_or(""))
+        .collect();
+    assert!(
+        kinds.contains(&"refactor.extract"),
+        "only=[refactor] should include the refactor.extract descendant, got {kinds:?}"
+    );
+}

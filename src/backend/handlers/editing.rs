@@ -25,6 +25,15 @@ use crate::editing::use_import::{
 use super::super::Backend;
 use super::super::helpers::{DEFERRED_ACTION_TAGS, defer_actions, generate_deferred_actions};
 
+/// Whether `actual` satisfies a `context.only` entry of `requested` — either
+/// an exact match or a more specific descendant (`refactor` covers
+/// `refactor.extract`, per the LSP code-action-kind hierarchy).
+fn kind_matches(requested: &CodeActionKind, actual: &CodeActionKind) -> bool {
+    let requested = requested.as_str();
+    let actual = actual.as_str();
+    actual == requested || actual.starts_with(&format!("{requested}."))
+}
+
 impl Backend {
     pub(crate) async fn handle_code_action(
         &self,
@@ -39,6 +48,7 @@ impl Backend {
         let diag_cfg = self.config.load().diagnostics.clone();
         let docs = Arc::clone(&self.docs);
         let range = params.range;
+        let only = params.context.only;
 
         // Every step below is CPU-bound tree-walking with no `.await` of its
         // own (semantic-issue lookup, whole-workspace index scans, ~12
@@ -156,6 +166,23 @@ impl Backend {
         })
         .await
         .unwrap_or_default();
+
+        // `context.only` restricts results to the requested kinds (and their
+        // descendants, e.g. `refactor` also matches `refactor.extract`) — a
+        // client asking for just quickfixes shouldn't have to filter out
+        // every refactor/organize-imports action itself.
+        let actions = match only {
+            Some(kinds) => actions
+                .into_iter()
+                .filter(|action| match action {
+                    CodeActionOrCommand::CodeAction(ca) => ca.kind.as_ref().is_some_and(|kind| {
+                        kinds.iter().any(|only_kind| kind_matches(only_kind, kind))
+                    }),
+                    CodeActionOrCommand::Command(_) => true,
+                })
+                .collect(),
+            None => actions,
+        };
 
         Ok(if actions.is_empty() {
             None

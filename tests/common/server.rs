@@ -1183,6 +1183,34 @@ impl TestServer {
             .await
     }
 
+    /// Like `code_action`, but restricts the request to `only` kinds
+    /// (`context.only`) — for tests asserting the server filters its results
+    /// to the requested `CodeActionKind`s instead of returning everything.
+    pub async fn code_action_only(
+        &mut self,
+        path: &str,
+        start_line: u32,
+        start_char: u32,
+        end_line: u32,
+        end_char: u32,
+        only: &[&str],
+    ) -> Value {
+        let uri = self.uri(path);
+        self.client
+            .request(
+                "textDocument/codeAction",
+                json!({
+                    "textDocument": { "uri": uri },
+                    "range": {
+                        "start": { "line": start_line, "character": start_char },
+                        "end": { "line": end_line, "character": end_char },
+                    },
+                    "context": { "diagnostics": [], "only": only },
+                }),
+            )
+            .await
+    }
+
     /// Convenience: run `textDocument/codeAction` over a `FixtureRange`.
     /// Typical usage with the two-`$0` selection DSL.
     pub async fn code_action_at(&mut self, r: &FixtureRange) -> Value {

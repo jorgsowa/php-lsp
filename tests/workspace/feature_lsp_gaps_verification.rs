@@ -206,6 +206,20 @@ async fn apply_edit_advertised_in_capabilities() {
 }
 
 // ============================================================================
+// CODE ACTION KINDS VERIFICATION
+// ============================================================================
+
+#[tokio::test]
+async fn code_action_kinds_advertised_in_capabilities() {
+    let (_, init_resp) = TestServer::new_with_options(json!({})).await;
+    let kinds = &init_resp["result"]["capabilities"]["codeActionProvider"]["codeActionKinds"];
+    expect![[
+        r#"["quickfix","refactor","refactor.extract","refactor.inline","source.organizeImports"]"#
+    ]]
+    .assert_eq(&kinds.to_string());
+}
+
+// ============================================================================
 // DIAGNOSTIC PROVIDER VERIFICATION
 // ============================================================================
 
