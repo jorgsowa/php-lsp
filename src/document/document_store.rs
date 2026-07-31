@@ -449,16 +449,21 @@ impl DocumentStore {
     /// it was pinned in-memory-only: nothing it computes is ever flushed, and
     /// the next launch replays nothing, silently re-paying the whole cold
     /// cost every session. Drop it so the next `analysis_session()` rebuilds
-    /// with the cache attached; the few analyses done that early re-ingest
-    /// on demand.
-    pub fn set_session_cache_dir(&self, dir: std::path::PathBuf) {
+    /// with the cache attached.
+    ///
+    /// Returns `true` when a session was dropped — the caller must then
+    /// re-mirror every currently open buffer (see `drop_session_scoped_state`):
+    /// the workspace scan won't do it, since it explicitly skips files that
+    /// are already open.
+    pub fn set_session_cache_dir(&self, dir: std::path::PathBuf) -> bool {
         if self.session_cache_dir.set(dir).is_err() {
-            return;
+            return false;
         }
         let dropped = self.analysis_session.lock().unwrap().1.take().is_some();
         if dropped {
             self.drop_session_scoped_state();
         }
+        dropped
     }
 
     /// Register URIs discovered from composer.json `autoload.files` entries.
@@ -996,8 +1001,10 @@ impl DocumentStore {
     /// hand out a different db (version change, cache-dir attach): the
     /// `LspWsFile` input handles in `lsp_ws_files` index into the *old* db's
     /// tables, and using one against a new db panics with a salsa slot-type
-    /// mismatch. The workspace scan (or the next edit) re-mirrors files onto
-    /// the new session.
+    /// mismatch. The workspace scan re-mirrors on-disk files onto the new
+    /// session, but it explicitly skips anything already open in the editor
+    /// (so it doesn't clobber live buffer edits with disk content) — callers
+    /// whose drop can race an open buffer must re-mirror open files themselves.
     fn drop_session_scoped_state(&self) {
         self.lsp_ws_files.clear();
         *self.lsp_workspace.lock().unwrap() = None;

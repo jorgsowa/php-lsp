@@ -399,9 +399,12 @@ impl Backend {
             } else {
                 crate::index::cache::WorkspaceCache::new(&roots[0])
             };
-            if let Some(ref c) = first_root_cache {
-                self.docs
-                    .set_session_cache_dir(c.cache_dir().join("session"));
+            if let Some(ref c) = first_root_cache
+                && self
+                    .docs
+                    .set_session_cache_dir(c.cache_dir().join("session"))
+            {
+                self.remirror_open_files();
             }
 
             // Postings staged by an in-progress warm sweep or an on-demand

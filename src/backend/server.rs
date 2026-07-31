@@ -146,7 +146,10 @@ impl LanguageServer for Backend {
                     // lsp_ws_files and nothing else repopulates it — without
                     // this, workspace_file_paths() (and everything scoped by
                     // it: references, rename, ...) silently sees an empty
-                    // workspace until files are individually re-touched.
+                    // workspace until files are individually re-touched. The
+                    // rescan below walks disk files but explicitly skips ones
+                    // already open, so open buffers need re-mirroring too.
+                    self.remirror_open_files();
                     self.rescan_roots_after_version_change(&roots).await;
                 }
                 send_refresh_requests(&self.client).await;

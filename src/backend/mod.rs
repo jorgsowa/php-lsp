@@ -200,6 +200,22 @@ impl Backend {
         self.open_files.get_doc_stale(&self.docs, uri)
     }
 
+    /// Re-mirror every open buffer's live text into `self.docs`.
+    ///
+    /// Needed after anything that rebuilds the analysis session's salsa db
+    /// (`DocumentStore::set_session_cache_dir` / `set_php_version`, when
+    /// they report a drop): the workspace scan that normally repopulates
+    /// `lsp_ws_files` explicitly skips files already open, so an open file
+    /// whose entry was cleared by the drop would otherwise stay unresolvable
+    /// (`get_doc` returning `None`) until the next edit.
+    pub(crate) fn remirror_open_files(&self) {
+        for uri in self.open_files.urls() {
+            if let Some(text) = self.open_files.text(&uri) {
+                self.docs.mirror_text_arc(&uri, text);
+            }
+        }
+    }
+
     /// `use Foo as Bar;` map for a single file, read directly from the AST.
     /// Memoized per `ParsedDoc` (see `ParsedDoc::file_imports`) — cheap to
     /// call repeatedly within or across requests against the same revision.
