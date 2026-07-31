@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use php_ast::{ClassMemberKind, NamespaceBody, Span, Stmt, StmtKind, SwitchStmt};
+use php_ast::{ClassMemberKind, Expr, ExprKind, NamespaceBody, Span, Stmt, StmtKind, SwitchStmt};
 use tower_lsp::lsp_types::{
     CodeAction, CodeActionKind, CodeActionOrCommand, Range, TextEdit, Url, WorkspaceEdit,
 };
@@ -162,6 +162,30 @@ struct MatchArm {
     value: String,
 }
 
+/// Primitive kinds distinguished by PHP's loose (`==`) vs strict (`===`)
+/// comparison — `0 == null`, `0 == false`, and `1 == "1"` all hold loosely
+/// but not strictly, while two literals of the same kind compare the same
+/// way under both operators for the purposes of this conservative guard.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CaseValueKind {
+    Int,
+    Float,
+    String,
+    Bool,
+    Null,
+}
+
+fn case_value_kind(expr: &Expr<'_, '_>) -> Option<CaseValueKind> {
+    match &expr.kind {
+        ExprKind::Int(_) => Some(CaseValueKind::Int),
+        ExprKind::Float(_) => Some(CaseValueKind::Float),
+        ExprKind::String(_) => Some(CaseValueKind::String),
+        ExprKind::Bool(_) => Some(CaseValueKind::Bool),
+        ExprKind::Null => Some(CaseValueKind::Null),
+        _ => None,
+    }
+}
+
 fn build_match_text(sw: &SwitchStmt<'_, '_>, span: Span, source: &str) -> Option<String> {
     // Reject alternative syntax: switch(): ... endswitch;
     if sw.uses_alternative {
@@ -172,6 +196,27 @@ fn build_match_text(sw: &SwitchStmt<'_, '_>, span: Span, source: &str) -> Option
     // match would throw UnhandledMatchError, changing observable behavior.
     if !sw.body.cases.iter().any(|c| c.value.is_none()) {
         return None;
+    }
+
+    // `switch` compares case values to the subject with loose `==`; `match`
+    // uses strict `===`. Case literals of different primitive kinds sharing
+    // a subject (e.g. `case 0:`, `case null:`, `case false:`) can match under
+    // `==` but not `===`, so converting would silently change behavior.
+    // Conservative guard: bail if the classifiable literal case values don't
+    // all share one kind. Non-literal case values (constants, calls, ...)
+    // aren't classified and don't participate in this check.
+    let mut case_kind: Option<CaseValueKind> = None;
+    for case in sw.body.cases.iter() {
+        let Some(val_expr) = &case.value else {
+            continue;
+        };
+        if let Some(kind) = case_value_kind(val_expr) {
+            match case_kind {
+                None => case_kind = Some(kind),
+                Some(prev) if prev != kind => return None,
+                _ => {}
+            }
+        }
     }
 
     let mut arms: Vec<MatchArm> = Vec::new();

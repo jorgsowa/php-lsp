@@ -162,6 +162,61 @@ function getLabel(string $status): string {
     );
 }
 
+/// `switch` compares with loose `==`, `match` with strict `===`. `0 == null`
+/// and `0 == false` both hold loosely but not strictly, so converting a
+/// switch with mixed-kind case literals would silently change behavior.
+#[tokio::test]
+async fn switch_to_match_not_offered_for_mixed_type_case_literals() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_code_actions(
+            r#"<?php
+function describe(mixed $x): string {
+    $0switch ($x) {
+        case 0:
+            return 'zero-ish';
+        case null:
+            return 'nullish';
+        default:
+            return 'other';
+    }$0
+}
+"#,
+        )
+        .await;
+    assert!(
+        !out.contains("Convert switch to match"),
+        "should not offer when case literals mix int/null (loose-vs-strict quirk), got: {out}"
+    );
+}
+
+#[tokio::test]
+async fn switch_to_match_offered_when_case_literals_share_one_kind() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_code_actions(
+            r#"<?php
+function grade(int $score): string {
+    $0switch ($score) {
+        case 5:
+            return 'A';
+        case 4:
+            return 'B';
+        default:
+            return 'C';
+    }$0
+}
+"#,
+        )
+        .await;
+    assert!(
+        out.contains("Convert switch to match"),
+        "should still offer when every case literal is the same kind, got: {out}"
+    );
+}
+
 // ── Applied edits ─────────────────────────────────────────────────────────────
 
 #[tokio::test]
