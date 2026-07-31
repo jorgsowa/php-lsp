@@ -6,6 +6,10 @@ All notable changes to php-lsp are documented here.
 
 ## [0.22.0] — 2026-07-31
 
+### Added
+
+- **`codeActionKinds` are now advertised and honored**: the server declares the concrete kinds it returns (`quickfix`, `refactor`, `refactor.extract`, `refactor.inline`, `source.organizeImports`) and filters results against a client's `context.only`, matching descendant kinds (`refactor` also covers `refactor.extract`) — previously every request returned every possible action regardless of what was asked for.
+
 ### Changed
 
 - **Returning sessions seed mir's workspace symbol index from the disk cache**
@@ -19,6 +23,7 @@ All notable changes to php-lsp are documented here.
 ### Fixed
 
 - **Hover on a method declared only via a class-level `@method` docblock tag now shows its signature** instead of nothing: the AST-based member scan behind mir's method hover only walked concrete methods, missing virtual methods that completion and signature help already understood.
+- **Type hierarchy's dynamic registration is no longer sent to clients that never declared `textDocument.typeHierarchy.dynamicRegistration`**: lsp-types 0.94 has no static `typeHierarchyProvider` field, so support can only be advertised via `client/registerCapability`, but that call was previously sent unconditionally.
 - **Intermittent stack-overflow abort under contended parallel analysis**: salsa 0.28's dependency-graph lock transfer recurses per transferred dependent and could overflow the 16 MB analysis-thread stacks on large workspaces. All analysis threads (rayon workers, tokio blocking pool, warm-sweep thread) now get 64 MB stacks — reserved, not committed, so resident memory is unchanged.
 - **Reading a `private`/`protected` property from outside its declaring class is now flagged** (`InaccessibleProperty`, mir 0.65), matching the existing visibility checks for class constants and methods.
 
