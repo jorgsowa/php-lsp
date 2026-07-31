@@ -951,3 +951,41 @@ function test(Vault $v): string {
     )
     .await;
 }
+
+// ── `@var` docblocks split across `?>`/`<?php` blocks (issue #235) ──────────
+
+/// KNOWN GAP in `mir`, not fixable from php-lsp alone: a Yii2-style view
+/// template with `/** @var Post $model */` immediately followed by `?>`
+/// (closing the PHP block), then inline HTML, then a new `<?php` block that
+/// uses `$model`. mir's `find_preceding_docblock`
+/// (`crates/mir-analyzer/src/parser/mod.rs:109-131`) locates a preceding
+/// docblock by checking whether `source[..offset].trim_end()` ends with
+/// `*/` — it only skips trailing whitespace and modifier keywords
+/// (`final`/`abstract`/`readonly`), never a closing `?>` tag or intervening
+/// `InlineHtml`/re-opening `<?php`. So the annotation is never attached to
+/// any statement and `$model`'s type (and even the fact that it's declared
+/// at all — there's no assignment, only the annotation) is lost by the time
+/// the second `<?php` block runs, producing a false-positive
+/// `UndefinedVariable`. `analyze_global_exec`
+/// (`crates/mir-analyzer/src/body_analysis/orchestration.rs:53-99`) itself
+/// threads one `FlowState` across the whole file fine — the loss happens at
+/// docblock-lookup time, before scope tracking even sees it. Needs an
+/// upstream mir fix + release; see `jorgsowa/php-lsp#235`.
+#[tokio::test]
+#[ignore = "mir's find_preceding_docblock (parser/mod.rs:109-131) doesn't skip a closing `?>` tag, so a `@var` annotation right before `?>` is never attached — needs an upstream mir fix + release, see php-lsp#235"]
+async fn var_annotation_survives_split_php_html_block() {
+    let mut s = TestServer::new().await;
+    s.check_no_diagnostics(
+        r#"<?php
+class Post { public string $title = ''; }
+/** @var Post $model */
+?>
+<div>
+<?php if ($model->title !== ''): ?>
+    <h1><?= $model->title ?></h1>
+<?php endif; ?>
+</div>
+"#,
+    )
+    .await;
+}
