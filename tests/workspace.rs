@@ -36,8 +36,6 @@ mod feature_pull_diagnostics;
 mod feature_push_diagnostics;
 #[path = "workspace/feature_server.rs"]
 mod feature_server;
-#[path = "workspace/feature_uri_edge_cases.rs"]
-mod feature_uri_edge_cases;
 #[path = "workspace/feature_use_statement_navigation.rs"]
 mod feature_use_statement_navigation;
 #[path = "workspace/feature_workspace_folders.rs"]

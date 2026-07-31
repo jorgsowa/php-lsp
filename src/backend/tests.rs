@@ -260,6 +260,69 @@ fn php_file_op_matches_php_files() {
     assert_eq!(filter.pattern.glob, "**/*.php");
 }
 
+// Uri regression tests (url::Url -> ls_types::Uri migration; the new Uri
+// wraps fluent_uri, strict RFC 3986, instead of WHATWG-style url::Url)
+#[test]
+fn uri_from_file_path_wire_string_roundtrips_for_space_and_unicode_paths() {
+    // A Uri's own wire-format string (what the server actually sends the
+    // client, e.g. in a `definition` response) must parse back to an equal,
+    // equally-hashable Uri — this is exactly the round trip a real editor
+    // performs, and DocumentStore's Uri-keyed maps must recognize it as the
+    // same file. Note: this parses the *percent-encoded* wire form, not a
+    // raw path with an unencoded space — a real LSP client never sends the
+    // latter (RFC 3986 requires encoding).
+    for path in [
+        "/tmp/php-lsp test dir/Foo.php",
+        "/tmp/php-lsp-é-测试/Bar.php",
+        "/tmp/has spaces/and-é-unicode/Baz.php",
+    ] {
+        let from_path = Uri::from_file_path(path)
+            .unwrap_or_else(|| panic!("from_file_path failed for {path:?}"));
+        let wire_string = from_path.as_str().to_string();
+        let parsed: Uri = wire_string
+            .parse()
+            .unwrap_or_else(|e| panic!("re-parsing {wire_string:?} (from {path:?}) failed: {e:?}"));
+        assert_eq!(
+            from_path, parsed,
+            "Uri::from_file_path and re-parsing its own wire string disagree for {path:?}"
+        );
+
+        // Hash equality matters as much as `==`: DocumentStore's DashMap
+        // relies on it to look up the same file regardless of which
+        // construction path produced the key.
+        let mut hasher_a = std::collections::hash_map::DefaultHasher::new();
+        let mut hasher_b = std::collections::hash_map::DefaultHasher::new();
+        std::hash::Hash::hash(&from_path, &mut hasher_a);
+        std::hash::Hash::hash(&parsed, &mut hasher_b);
+        assert_eq!(
+            std::hash::Hasher::finish(&hasher_a),
+            std::hash::Hasher::finish(&hasher_b),
+            "hash mismatch between equal Uris for {path:?}"
+        );
+    }
+}
+
+#[test]
+fn uri_to_file_path_roundtrips_space_and_unicode_paths() {
+    // The two most common ways a percent-encoding bug would show up: a
+    // project directory with a space (e.g. under "My Documents"), or with
+    // accented/non-ASCII characters.
+    for path in [
+        "/tmp/php-lsp test dir/Foo.php",
+        "/tmp/php-lsp-é-测试/Bar.php",
+    ] {
+        let uri = Uri::from_file_path(path).unwrap();
+        let back = uri
+            .to_file_path()
+            .unwrap_or_else(|| panic!("to_file_path failed for {path:?}"));
+        assert_eq!(
+            back.as_ref(),
+            std::path::Path::new(path),
+            "round-trip mismatch for {path:?}"
+        );
+    }
+}
+
 // defer_actions tests
 #[test]
 fn defer_actions_strips_edit_and_adds_data() {

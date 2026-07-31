@@ -562,3 +562,60 @@ async fn batch_changes_all_applied() {
     let registry_out = server.snapshot_workspace_symbols("Registry").await;
     expect![[r#"<no symbols>"#]].assert_eq(&registry_out);
 }
+
+/// Regression coverage for the `url::Url` -> `ls_types::Uri` migration: a
+/// workspace root whose directory name contains a space and non-ASCII
+/// characters must still support basic navigation. This exercises the full
+/// wire path — client-sent `didOpen`/`hover` URIs, workspace scanning's
+/// `Uri::from_file_path` construction, and `DocumentStore`'s `Uri`-keyed
+/// lookups — all of which must agree on the same file identity.
+#[tokio::test]
+async fn workspace_root_with_space_and_unicode_supports_hover_and_definition() {
+    let tmp = tempfile::Builder::new()
+        .prefix("php-lsp test é 测试 ")
+        .tempdir()
+        .expect("create tempdir with unicode/space prefix");
+    let root = tmp.path();
+
+    std::fs::write(
+        root.join("Greeter.php"),
+        "<?php\nclass Greeter {\n    public function hello(): string {\n        return 'hi';\n    }\n}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("main.php"),
+        "<?php\n$g = new Greeter();\n$g->hello();\n",
+    )
+    .unwrap();
+
+    let mut server = TestServer::with_root(root).await;
+    server.wait_for_index_ready().await;
+    server
+        .open("main.php", "<?php\n$g = new Greeter();\n$g->hello();\n")
+        .await;
+
+    // Go-to-definition on `Greeter` must resolve across files — this only
+    // works if the background-scanned Greeter.php (indexed via
+    // `Uri::from_file_path`) and the open main.php (whose reference lookup
+    // goes through the same `Uri`-keyed index) agree on file identity.
+    // `definition` may reply with a scalar Location or an array, hence
+    // `render_locations` (shared with every other navigation test) rather
+    // than assuming array shape.
+    let resp = server.definition("main.php", 1, 10).await;
+    let rendered = render_locations(&resp, &server.uri(""));
+    assert!(
+        rendered.contains("Greeter.php"),
+        "expected definition to point at Greeter.php, got {rendered:?} (raw: {resp:?})"
+    );
+
+    // Hover on the method call must also resolve through the same index.
+    let hover = server.hover("main.php", 2, 4).await;
+    assert!(
+        hover["error"].is_null(),
+        "hover errored in a space+unicode workspace root: {hover:?}"
+    );
+    assert!(
+        !hover["result"].is_null(),
+        "expected hover info for hello() in a space+unicode workspace root"
+    );
+}
