@@ -392,8 +392,7 @@ impl TestServer {
             })
             .unwrap_or_default();
         let tmp = tempfile::tempdir().expect("create TempDir");
-        copy_dir_recursive_excluding(&source, tmp.path(), &source, &exclude)
-            .expect("copy fixture");
+        copy_dir_recursive_excluding(&source, tmp.path(), &source, &exclude).expect("copy fixture");
         let root = tmp.path().to_path_buf();
         let mut client = spawn_server();
         Self::do_initialize_with(&mut client, Some(&root), initialization_options).await;

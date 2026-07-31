@@ -275,7 +275,9 @@ fn uri_from_file_path_wire_string_roundtrips_for_space_and_unicode_paths() {
     for path in [
         base.join("php-lsp test dir").join("Foo.php"),
         base.join("php-lsp-é-测试").join("Bar.php"),
-        base.join("has spaces").join("and-é-unicode").join("Baz.php"),
+        base.join("has spaces")
+            .join("and-é-unicode")
+            .join("Baz.php"),
     ] {
         let from_path = Uri::from_file_path(&path)
             .unwrap_or_else(|| panic!("from_file_path failed for {path:?}"));
