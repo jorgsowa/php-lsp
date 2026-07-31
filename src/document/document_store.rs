@@ -6,7 +6,7 @@ use arc_swap::{ArcSwap, ArcSwapOption};
 
 use dashmap::{DashMap, DashSet};
 use salsa::Setter;
-use tower_lsp::lsp_types::{SemanticToken, Url};
+use tower_lsp_server::ls_types::{SemanticToken, Uri};
 
 use crate::db::mir_queries::{LspWorkspace, LspWsFile};
 use crate::document::ast::ParsedDoc;
@@ -23,14 +23,14 @@ pub struct DocumentStore {
     // state (live text, version token, parse-diagnostics cache) lives on
     // `Backend` in its `open_files` map; the set of files tracked by salsa
     // is exactly `source_files.keys()`.
-    /// `Url -> LspWsFile` lookup on the shared mir db. Each `LspWsFile` pairs
+    /// `Uri -> LspWsFile` lookup on the shared mir db. Each `LspWsFile` pairs
     /// mir's `SourceFile` (the shared text input) with the optional warm-start
     /// `cached_index`. Created/updated through the `AnalysisSession`'s
     /// `with_db_mut` under the db write lock; reads run on cheap snapshot clones.
-    lsp_ws_files: DashMap<Url, LspWsFile>,
+    lsp_ws_files: DashMap<Uri, LspWsFile>,
     /// URIs that have been removed. Re-opening a deleted URI un-deletes it here
     /// and reuses the existing `LspWsFile` handle.
-    deleted_uris: DashSet<Url>,
+    deleted_uris: DashSet<Uri>,
     /// Set to `true` when the set of tracked files changes (add or remove).
     /// `sync_workspace_files` skips the collect/sort/compare path when this
     /// is `false`, avoiding a lock acquisition on every LSP request.
@@ -54,7 +54,7 @@ pub struct DocumentStore {
     /// just-opened file. Entries are never removed: bounded by the number of
     /// distinct files ever analyzed, the same order of magnitude as
     /// `lsp_ws_files`.
-    analysis_inflight: DashMap<Url, Arc<Mutex<()>>>,
+    analysis_inflight: DashMap<Uri, Arc<Mutex<()>>>,
     /// Diagnostic counter: incremented once per real `FileAnalyzer::analyze`
     /// run in `cached_analysis_cancellable` (never on a cache hit). Lets
     /// tests assert that concurrent callers racing for the same uncached
@@ -90,7 +90,7 @@ pub struct DocumentStore {
     /// helper functions (e.g. tap, class_uses_recursive in Laravel) that are
     /// not discoverable by namespace walk. Pre-ingested into the AnalysisSession
     /// before each file analysis so mir doesn't emit false UndefinedFunction.
-    autoload_uris: std::sync::RwLock<Vec<Url>>,
+    autoload_uris: std::sync::RwLock<Vec<Uri>>,
     /// Set once the workspace scan's reference-index phase finishes, i.e. the
     /// `subtypes_of` map in `workspace_index` is complete. Visibility-derived
     /// scope narrowing that relies on the full subtype set (protected methods)
@@ -273,7 +273,7 @@ impl DocumentStore {
     /// `cancel` flips. Re-running after edits is cheap — unaffected files
     /// revalidate via salsa without re-analysis. Blocking; call from
     /// `spawn_blocking`.
-    pub fn warm_analysis_sweep(&self, priority: &[Url], cancel: &mir_analyzer::IndexCancel) {
+    pub fn warm_analysis_sweep(&self, priority: &[Uri], cancel: &mir_analyzer::IndexCancel) {
         // Dedicated thread with a generous stack: the serial prepare phase and
         // priority resolution recurse over real-world ASTs whose depth can
         // exceed the default 2 MiB thread stack (debug builds especially).
@@ -294,7 +294,7 @@ impl DocumentStore {
     /// ends up in `priority` (opened directly, or referenced by an open
     /// project file) is unaffected: the exclusion only applies to the
     /// untargeted bulk-sweep tail, not the front of the queue.
-    fn sweep_candidate_files(&self, priority: &[Url]) -> Vec<Arc<str>> {
+    fn sweep_candidate_files(&self, priority: &[Uri]) -> Vec<Arc<str>> {
         let front: Vec<Arc<str>> = self.sweep_priority_files(priority);
         let front_set: HashSet<&str> = front.iter().map(|f| f.as_ref()).collect();
         front
@@ -311,7 +311,7 @@ impl DocumentStore {
             .collect()
     }
 
-    fn warm_analysis_sweep_inner(&self, priority: &[Url], cancel: &mir_analyzer::IndexCancel) {
+    fn warm_analysis_sweep_inner(&self, priority: &[Uri], cancel: &mir_analyzer::IndexCancel) {
         const CHUNK: usize = 32;
         let files = self.sweep_candidate_files(priority);
         let session = self.current_analysis_session();
@@ -374,14 +374,14 @@ impl DocumentStore {
     /// `new`, `extends`, …) — the set a request against an open file most
     /// likely touches. Resolution goes through the memoized workspace index,
     /// matching by FQN with a short-name fallback.
-    fn sweep_priority_files(&self, priority: &[Url]) -> Vec<Arc<str>> {
+    fn sweep_priority_files(&self, priority: &[Uri]) -> Vec<Arc<str>> {
         if priority.is_empty() {
             return Vec::new();
         }
         let ws = self.get_workspace_index_salsa();
         let mut out: Vec<Arc<str>> = Vec::new();
         let mut seen: HashSet<Arc<str>> = HashSet::new();
-        let push = |uri: &Url, out: &mut Vec<Arc<str>>, seen: &mut HashSet<Arc<str>>| {
+        let push = |uri: &Uri, out: &mut Vec<Arc<str>>, seen: &mut HashSet<Arc<str>>| {
             let f: Arc<str> = Arc::from(uri.as_str());
             if seen.insert(Arc::clone(&f)) {
                 out.push(f);
@@ -456,7 +456,7 @@ impl DocumentStore {
     /// that are not class-resolvable via PSR-4. Clears `analysis_cache` so the
     /// next per-file analysis pre-ingests them into the AnalysisSession before
     /// running mir's FileAnalyzer.
-    pub fn set_autoload_uris(&self, uris: Vec<Url>) {
+    pub fn set_autoload_uris(&self, uris: Vec<Uri>) {
         *self.autoload_uris.write().unwrap() = uris;
         self.caches.evict_analysis_all();
     }
@@ -521,12 +521,12 @@ impl DocumentStore {
     /// Used by `goto_implementation` and `subtypes` to scope their lookups to
     /// the correct files, fixing aliased `extends` and FQN-qualified forms that
     /// the raw-name `subtypes_of` map misses.
-    pub fn class_subtype_urls(&self, class_fqn: &str) -> Vec<tower_lsp::lsp_types::Url> {
+    pub fn class_subtype_urls(&self, class_fqn: &str) -> Vec<tower_lsp_server::ls_types::Uri> {
         let session = self.current_analysis_session();
         session
             .subtype_files(class_fqn)
             .into_iter()
-            .filter_map(|p| tower_lsp::lsp_types::Url::parse(&p).ok())
+            .filter_map(|p| p.parse::<Uri>().ok())
             .collect()
     }
 
@@ -540,7 +540,7 @@ impl DocumentStore {
 
     /// Durability for a file's salsa input: vendor files never change within a
     /// session, so salsa can skip re-validating their queries on user edits.
-    fn input_durability(uri: &Url) -> salsa::Durability {
+    fn input_durability(uri: &Uri) -> salsa::Durability {
         if uri.as_str().contains("/vendor/") {
             salsa::Durability::HIGH
         } else {
@@ -549,7 +549,7 @@ impl DocumentStore {
     }
 
     /// The `LspWsFile` handle for `uri`, if it is mirrored and not deleted.
-    fn lsp_ws_file(&self, uri: &Url) -> Option<LspWsFile> {
+    fn lsp_ws_file(&self, uri: &Uri) -> Option<LspWsFile> {
         if self.deleted_uris.contains(uri) {
             return None;
         }
@@ -608,7 +608,7 @@ impl DocumentStore {
     /// `FileText` input on first sight, otherwise updates `text` on the
     /// existing input (bumping the salsa revision so downstream queries
     /// invalidate).
-    pub fn mirror_text(&self, uri: &Url, text: &str) {
+    pub fn mirror_text(&self, uri: &Uri, text: &str) {
         // G2 fast path: compare against the lock-free text cache. When the
         // new text byte-matches what we already mirrored, skip the host
         // mutex entirely. Common during workspace scan + `did_open` for
@@ -630,7 +630,7 @@ impl DocumentStore {
     /// `ParsedDoc::source_arc()`) use this to avoid a second allocation and to
     /// ensure `text_cache` and `parsed_cache` hold the same Arc pointer —
     /// enabling `Arc::ptr_eq` validation in `get_parsed_cached`.
-    pub fn mirror_text_arc(&self, uri: &Url, text_arc: Arc<str>) {
+    pub fn mirror_text_arc(&self, uri: &Uri, text_arc: Arc<str>) {
         let dur = Self::input_durability(uri);
         let path: Arc<str> = Arc::from(uri.as_str());
         let session = self.current_analysis_session();
@@ -677,7 +677,7 @@ impl DocumentStore {
 
     /// Return the `LspWsFile` handle for a URL, if active (not deleted).
     #[cfg(test)]
-    pub fn source_file(&self, uri: &Url) -> Option<LspWsFile> {
+    pub fn source_file(&self, uri: &Uri) -> Option<LspWsFile> {
         if self.deleted_uris.contains(uri) {
             return None;
         }
@@ -696,7 +696,7 @@ impl DocumentStore {
     ///
     /// Returns `false` when `uri` was not mirrored (caller should mirror
     /// first); returns `true` on success.
-    pub fn seed_cached_index(&self, uri: &Url, index: Arc<FileIndex>) -> bool {
+    pub fn seed_cached_index(&self, uri: &Uri, index: Arc<FileIndex>) -> bool {
         let Some(wf) = self.lsp_ws_file(uri) else {
             return false;
         };
@@ -708,7 +708,7 @@ impl DocumentStore {
     /// Evict the semantic-tokens cache for `uri`. Called by Backend when a
     /// file is closed; diff-based tokens computed against the old revision
     /// are no longer meaningful.
-    pub fn evict_token_cache(&self, uri: &Url) {
+    pub fn evict_token_cache(&self, uri: &Uri) {
         self.caches.evict_tokens(uri);
     }
 
@@ -725,7 +725,7 @@ impl DocumentStore {
     #[cfg(test)]
     pub fn snapshot_query_file_index(
         &self,
-        uri: &Url,
+        uri: &Uri,
     ) -> Option<crate::index::file_index::FileIndex> {
         let wf = self.lsp_ws_file(uri)?;
         Some(
@@ -739,7 +739,7 @@ impl DocumentStore {
     ///
     /// Salsa's `parsed_doc` query parses lazily on first read; diagnostics
     /// are populated by `did_open` when the editor actually opens the file.
-    pub fn ingest(&self, uri: Url, text: &str) {
+    pub fn ingest(&self, uri: Uri, text: &str) {
         self.mirror_text(&uri, text);
     }
 
@@ -751,11 +751,11 @@ impl DocumentStore {
     /// share the same pointer — enabling the `Arc::ptr_eq` fast path in
     /// `get_parsed_cached` on the first subsequent salsa query, without an extra
     /// `Arc::from(source)` allocation.
-    pub fn ingest_from_doc(&self, uri: Url, doc: &ParsedDoc) {
+    pub fn ingest_from_doc(&self, uri: Uri, doc: &ParsedDoc) {
         self.mirror_text_arc(&uri, doc.source_arc());
     }
 
-    pub fn remove(&self, uri: &Url) {
+    pub fn remove(&self, uri: &Uri) {
         self.caches.evict(uri);
         // Mark the URI as deleted but keep the `lsp_ws_files` entry so the
         // salsa `LspWsFile`/`SourceFile` handles remain alive. Re-opening the
@@ -808,12 +808,12 @@ impl DocumentStore {
     /// background-indexed). Returns `None` only when the file is not known
     /// to the store. Callers that want "only if open" should gate on
     /// `Backend::open_files` at the call site (see `Backend::get_doc`).
-    pub fn get_doc_salsa(&self, uri: &Url) -> Option<Arc<ParsedDoc>> {
+    pub fn get_doc_salsa(&self, uri: &Uri) -> Option<Arc<ParsedDoc>> {
         self.get_parsed_cached(uri)
     }
 
     /// Salsa-backed compact symbol index.
-    pub fn get_index_salsa(&self, uri: &Url) -> Option<Arc<FileIndex>> {
+    pub fn get_index_salsa(&self, uri: &Uri) -> Option<Arc<FileIndex>> {
         let wf = self.lsp_ws_file(uri)?;
         Some(
             self.snapshot_mir_query(move |db| crate::db::mir_queries::file_index(db, wf).0.clone()),
@@ -824,7 +824,7 @@ impl DocumentStore {
     /// Memoized per revision: stable files serve from cache in O(1).
     pub fn get_symbol_map_salsa(
         &self,
-        uri: &Url,
+        uri: &Uri,
     ) -> Option<Arc<crate::types::symbol_map::SymbolMap>> {
         // Symbol map runs on the shared mir db, sharing its memoized `parsed_doc`.
         let wf = self.lsp_ws_file(uri)?;
@@ -837,9 +837,9 @@ impl DocumentStore {
     /// Pre-computed symbol maps for every entry in `open_urls` except `uri`.
     pub fn other_symbol_maps(
         &self,
-        uri: &Url,
-        open_urls: &[Url],
-    ) -> Vec<(Url, Arc<crate::types::symbol_map::SymbolMap>)> {
+        uri: &Uri,
+        open_urls: &[Uri],
+    ) -> Vec<(Uri, Arc<crate::types::symbol_map::SymbolMap>)> {
         open_urls
             .iter()
             .filter(|u| *u != uri)
@@ -853,7 +853,7 @@ impl DocumentStore {
     /// that has already committed a new text input cannot be masked by a
     /// stale cache entry. On miss, captures the text Arc and ParsedDoc
     /// together inside a single `snapshot_query`, then publishes both.
-    fn get_parsed_cached(&self, uri: &Url) -> Option<Arc<ParsedDoc>> {
+    fn get_parsed_cached(&self, uri: &Uri) -> Option<Arc<ParsedDoc>> {
         if let Some(current_text) = self.caches.text_cache.get(uri)
             && let Some(entry) = self.caches.parsed_cache.get(uri)
             && Arc::ptr_eq(&*current_text, &entry.0)
@@ -884,7 +884,7 @@ impl DocumentStore {
     /// stream keeps cancelling it, returns the last-good cached `ParsedDoc`
     /// (possibly one edit stale — invisible for a highlight, unlike a hang).
     /// `None` only when the file has never been parsed.
-    pub fn get_doc_snapshot_or_stale(&self, uri: &Url) -> Option<Arc<ParsedDoc>> {
+    pub fn get_doc_snapshot_or_stale(&self, uri: &Uri) -> Option<Arc<ParsedDoc>> {
         if let Some(current_text) = self.caches.text_cache.get(uri)
             && let Some(entry) = self.caches.parsed_cache.get(uri)
             && Arc::ptr_eq(&*current_text, &entry.0)
@@ -1233,13 +1233,18 @@ impl DocumentStore {
     ///
     /// Classes that compose traits or mixins are excluded — those inline
     /// external resolution context, so a reference could surface in another file.
-    pub fn method_reference_scope(&self, owner_fqn: &str, method: &str) -> Option<Vec<Url>> {
+    pub fn method_reference_scope(&self, owner_fqn: &str, method: &str) -> Option<Vec<Uri>> {
         match self.method_reference_scope_plan(owner_fqn, method) {
             MethodScopePlan::Files(files) => Some(files),
             MethodScopePlan::NeedsScan { fqns, extra_needle } => {
                 let files =
                     self.fqn_reachable_files_with_needles(&fqns, &[extra_needle.as_str()])?;
-                Some(files.iter().filter_map(|f| Url::parse(f).ok()).collect())
+                Some(
+                    files
+                        .iter()
+                        .filter_map(|f| (f).parse::<Uri>().ok())
+                        .collect(),
+                )
             }
             MethodScopePlan::FullWorkspace => None,
         }
@@ -1308,10 +1313,10 @@ impl DocumentStore {
                 // `use ... as` forms are all found. Falls back to full scope if
                 // mir can't resolve the owner.
                 let session = self.current_analysis_session();
-                let mut files: std::collections::HashSet<Url> = session
+                let mut files: std::collections::HashSet<Uri> = session
                     .subtype_files(owner_fqn)
                     .into_iter()
-                    .filter_map(|p| Url::parse(&p).ok())
+                    .filter_map(|p| p.parse::<Uri>().ok())
                     .collect();
                 files.insert(decl_uri.clone());
                 MethodScopePlan::Files(files.into_iter().collect())
@@ -1655,7 +1660,7 @@ impl DocumentStore {
     /// Phase J: salsa-memoized aggregate workspace index.
     ///
     /// Returns the shared `Arc<WorkspaceIndexData>` with flat
-    /// `(Url, Arc<FileIndex>)` list plus pre-built `classes_by_name` and
+    /// `(Uri, Arc<FileIndex>)` list plus pre-built `classes_by_name` and
     /// `subtypes_of` reverse maps. Used by workspace_symbols,
     /// prepare_type_hierarchy, supertypes_of, subtypes_of, and
     /// find_implementations so they don't each rebuild the aggregate per
@@ -1703,18 +1708,18 @@ impl DocumentStore {
     /// Return the raw source text for `uri` if it has been mirrored into the
     /// salsa workspace. Used by the references handler to pre-filter session
     /// results by checking whether a file mentions the owning class name.
-    pub fn source_text(&self, uri: &Url) -> Option<Arc<str>> {
+    pub fn source_text(&self, uri: &Uri) -> Option<Arc<str>> {
         self.caches.text_cache.get(uri).map(|e| Arc::clone(&e))
     }
 
     /// Cache the semantic tokens computed for a delta response.
     /// `result_id` is an opaque string (a hash of the token data) returned to the client.
-    pub fn store_token_cache(&self, uri: &Url, result_id: String, tokens: Arc<Vec<SemanticToken>>) {
+    pub fn store_token_cache(&self, uri: &Uri, result_id: String, tokens: Arc<Vec<SemanticToken>>) {
         self.caches.store_token(uri, result_id, tokens);
     }
 
     /// Return the cached tokens if `result_id` matches the stored one.
-    pub fn get_token_cache(&self, uri: &Url, result_id: &str) -> Option<Arc<Vec<SemanticToken>>> {
+    pub fn get_token_cache(&self, uri: &Uri, result_id: &str) -> Option<Arc<Vec<SemanticToken>>> {
         self.caches.get_token(uri, result_id)
     }
 
@@ -1724,7 +1729,7 @@ impl DocumentStore {
     /// own `DiagnosticsConfig` filter via
     /// [`crate::semantic_diagnostics::issues_to_diagnostics`].
     #[tracing::instrument(skip_all)]
-    pub fn get_semantic_issues_salsa(&self, uri: &Url) -> Option<Arc<[mir_issues::Issue]>> {
+    pub fn get_semantic_issues_salsa(&self, uri: &Uri) -> Option<Arc<[mir_issues::Issue]>> {
         let analysis = self.cached_analysis(uri)?;
         let file: Arc<str> = Arc::from(uri.as_str());
         // Workspace-level class issues for this file (circular inheritance,
@@ -1767,7 +1772,7 @@ impl DocumentStore {
     /// Lets async handlers take the warm path synchronously and reserve
     /// `spawn_blocking` for the cold path (mir Pass 1 + Pass 2 can take
     /// hundreds of ms on large files).
-    pub fn cached_analysis_if_fresh(&self, uri: &Url) -> Option<Arc<mir_analyzer::FileAnalysis>> {
+    pub fn cached_analysis_if_fresh(&self, uri: &Uri) -> Option<Arc<mir_analyzer::FileAnalysis>> {
         let doc = self.get_doc_salsa(uri)?;
         let source = doc.source_arc();
         let cur_ver = self.caches.decl_version();
@@ -1779,7 +1784,7 @@ impl DocumentStore {
         Some(analysis)
     }
 
-    pub fn cached_analysis(&self, uri: &Url) -> Option<Arc<mir_analyzer::FileAnalysis>> {
+    pub fn cached_analysis(&self, uri: &Uri) -> Option<Arc<mir_analyzer::FileAnalysis>> {
         self.cached_analysis_cancellable(uri, &|| false)
     }
 
@@ -1788,7 +1793,7 @@ impl DocumentStore {
     /// generation) when declarations changed or this is the file's
     /// first-seen fingerprint. Body-only edits leave the counter unchanged so
     /// sibling files keep serving from cache. Returns whether it bumped.
-    fn sync_decl_fingerprint(&self, uri: &Url, session: &mir_analyzer::AnalysisSession) -> bool {
+    fn sync_decl_fingerprint(&self, uri: &Uri, session: &mir_analyzer::AnalysisSession) -> bool {
         let new_index = self.get_index_salsa(uri);
         let old_fp = self
             .caches
@@ -1834,7 +1839,7 @@ impl DocumentStore {
     /// not from every `mirror_text` call, which would also fire on every
     /// keystroke edit to an already-open file and defeat the whole point of
     /// caching sibling files' analyses across those edits.
-    pub fn note_new_file_declarations(&self, uri: &Url) {
+    pub fn note_new_file_declarations(&self, uri: &Uri) {
         let session = self.current_analysis_session();
         self.sync_decl_fingerprint(uri, &session);
     }
@@ -1847,7 +1852,7 @@ impl DocumentStore {
     #[tracing::instrument(skip_all)]
     pub fn cached_analysis_cancellable(
         &self,
-        uri: &Url,
+        uri: &Uri,
         should_cancel: &(dyn Fn() -> bool + Sync),
     ) -> Option<Arc<mir_analyzer::FileAnalysis>> {
         // Need the parsed doc both for the analyzer and as the cache key.
@@ -1981,7 +1986,7 @@ impl DocumentStore {
     ///
     /// Resolve `open_urls` (from `Backend::open_urls()`) to parsed docs.
     /// Files not mirrored in the salsa layer are filtered out silently.
-    pub fn docs_for(&self, open_urls: &[Url]) -> Vec<(Url, Arc<ParsedDoc>)> {
+    pub fn docs_for(&self, open_urls: &[Uri]) -> Vec<(Uri, Arc<ParsedDoc>)> {
         open_urls
             .iter()
             .filter_map(|u| self.get_doc_salsa(u).map(|d| (u.clone(), d)))
@@ -1989,7 +1994,7 @@ impl DocumentStore {
     }
 
     /// Parsed docs for every entry in `open_urls` except `uri`.
-    pub fn other_docs(&self, uri: &Url, open_urls: &[Url]) -> Vec<(Url, Arc<ParsedDoc>)> {
+    pub fn other_docs(&self, uri: &Uri, open_urls: &[Uri]) -> Vec<(Uri, Arc<ParsedDoc>)> {
         open_urls
             .iter()
             .filter(|u| *u != uri)
@@ -1998,29 +2003,29 @@ impl DocumentStore {
     }
 
     /// Compact symbol index for every mirrored file.
-    pub fn all_indexes(&self) -> Vec<(Url, Arc<FileIndex>)> {
+    pub fn all_indexes(&self) -> Vec<(Uri, Arc<FileIndex>)> {
         self.get_workspace_index_salsa().files.clone()
     }
 
     /// Borrow-scoped alternative to `all_indexes()` for callers that only
     /// need the slice for the duration of one synchronous call — avoids
-    /// cloning every `Url` in the aggregate (`get_workspace_index_salsa()`
+    /// cloning every `Uri` in the aggregate (`get_workspace_index_salsa()`
     /// itself is a cheap `Arc` clone; `all_indexes()`'s `.files.clone()` is
     /// the expensive part). Use `all_indexes()` instead when the result must
     /// be moved across an `.await`/`spawn_blocking` boundary.
-    pub fn with_all_indexes<R>(&self, f: impl FnOnce(&[(Url, Arc<FileIndex>)]) -> R) -> R {
+    pub fn with_all_indexes<R>(&self, f: impl FnOnce(&[(Uri, Arc<FileIndex>)]) -> R) -> R {
         f(&self.get_workspace_index_salsa().files)
     }
 
     /// Store a lazily-loaded vendor `FileIndex` in the session cache.
     /// Only call this for files that are not part of the normal workspace scan
     /// (i.e. vendor files loaded on-demand by PSR-4 navigation).
-    pub fn cache_vendor_index(&self, uri: Url, index: Arc<FileIndex>) {
+    pub fn cache_vendor_index(&self, uri: Uri, index: Arc<FileIndex>) {
         self.caches.vendor_index_cache.insert(uri, index);
     }
 
     /// Retrieve a previously cached vendor `FileIndex`.
-    pub fn get_vendor_index(&self, uri: &Url) -> Option<Arc<FileIndex>> {
+    pub fn get_vendor_index(&self, uri: &Uri) -> Option<Arc<FileIndex>> {
         self.caches
             .vendor_index_cache
             .get(uri)
@@ -2028,7 +2033,7 @@ impl DocumentStore {
     }
 
     /// Same as `all_indexes` but excludes `uri`.
-    pub fn other_indexes(&self, uri: &Url) -> Vec<(Url, Arc<FileIndex>)> {
+    pub fn other_indexes(&self, uri: &Uri) -> Vec<(Uri, Arc<FileIndex>)> {
         self.get_workspace_index_salsa()
             .files
             .iter()
@@ -2040,8 +2045,8 @@ impl DocumentStore {
     /// Parsed documents for every mirrored file (open or background-indexed).
     /// Suitable for full-scan operations: find-references, rename,
     /// call_hierarchy, code_lens.
-    pub fn all_docs_for_scan(&self) -> Vec<(Url, Arc<ParsedDoc>)> {
-        let urls: Vec<Url> = self
+    pub fn all_docs_for_scan(&self) -> Vec<(Uri, Arc<ParsedDoc>)> {
+        let urls: Vec<Uri> = self
             .lsp_ws_files
             .iter()
             .filter(|e| !self.deleted_uris.contains(e.key()))
@@ -2059,14 +2064,14 @@ impl DocumentStore {
     /// *declaration* by name (e.g. "implement missing methods"), where the
     /// needle set is small and a miss guarantees the file declares none of
     /// them.
-    pub fn docs_for_scan_mentioning(&self, needles: &[String]) -> Vec<(Url, Arc<ParsedDoc>)> {
+    pub fn docs_for_scan_mentioning(&self, needles: &[String]) -> Vec<(Uri, Arc<ParsedDoc>)> {
         let Ok(finder) = aho_corasick::AhoCorasick::builder()
             .ascii_case_insensitive(true)
             .build(needles)
         else {
             return Vec::new();
         };
-        let urls: Vec<Url> = self
+        let urls: Vec<Uri> = self
             .lsp_ws_files
             .iter()
             .filter(|e| !self.deleted_uris.contains(e.key()))
@@ -2085,7 +2090,7 @@ impl DocumentStore {
     /// ignored — PHP names are case-insensitive), from the workspace symbol
     /// index — no parsing, no text scan. The candidate scope for `use`-line
     /// rewrites on file rename/delete: only importers can carry such a line.
-    pub fn files_importing(&self, fqn: &str) -> Vec<Url> {
+    pub fn files_importing(&self, fqn: &str) -> Vec<Uri> {
         let target = fqn.trim_start_matches('\\');
         self.get_workspace_index_salsa()
             .files
@@ -2114,7 +2119,7 @@ fn fqn_segment_prefix(prefix: &str, whole: &str) -> bool {
 /// or the nested-monorepo `file:///proj/packages/api/vendor/x/Y.php`. URI
 /// paths are always `/`-separated regardless of platform, so a plain
 /// component split is enough — no OS path handling needed.
-fn is_vendor_uri(uri: &Url) -> bool {
+fn is_vendor_uri(uri: &Uri) -> bool {
     uri.path().split('/').any(|seg| seg == "vendor")
 }
 
@@ -2125,7 +2130,7 @@ enum MethodScopePlan {
     /// Fully resolved already — no workspace scan needed at all (private:
     /// the declaring file alone; protected: the declaring file plus its
     /// resolved subtype set).
-    Files(Vec<Url>),
+    Files(Vec<Uri>),
     /// A public static method or constructor: resolvable to the declaring
     /// class's FQN-reachable files unioned with files matching one extra
     /// text needle. This is the case a batch caller pools.
@@ -2150,15 +2155,15 @@ struct ReachabilityQuery {
 mod tests {
     use super::*;
 
-    fn uri(path: &str) -> Url {
-        Url::parse(&format!("file://{path}")).unwrap()
+    fn uri(path: &str) -> Uri {
+        format!("file://{path}").parse::<Uri>().unwrap()
     }
 
     /// Phase E4: open-file state lives on `Backend`, not `DocumentStore`.
     /// Tests that need to simulate "file is open" just mirror the text into
     /// the salsa input — the open/closed distinction is enforced by the
     /// caller (Backend) in production.
-    fn open(store: &DocumentStore, u: Url, text: String) {
+    fn open(store: &DocumentStore, u: Uri, text: String) {
         store.mirror_text(&u, &text);
     }
 
@@ -2319,7 +2324,7 @@ mod tests {
     #[test]
     fn delete_reopen_churn_does_not_amplify_salsa_inputs() {
         let store = DocumentStore::new();
-        let uris: Vec<Url> = (0..20).map(|i| uri(&format!("/churn/f{i}.php"))).collect();
+        let uris: Vec<Uri> = (0..20).map(|i| uri(&format!("/churn/f{i}.php"))).collect();
         for u in &uris {
             store.ingest(u.clone(), "<?php class A {}");
         }
@@ -2545,7 +2550,7 @@ mod tests {
         out
     }
 
-    fn salsa_index_names(store: &DocumentStore, url: &Url) -> Vec<String> {
+    fn salsa_index_names(store: &DocumentStore, url: &Uri) -> Vec<String> {
         store
             .snapshot_query_file_index(url)
             .map(|idx| names_of(&idx))
@@ -2744,7 +2749,7 @@ mod tests {
         use std::time::{Duration, Instant};
 
         let store = Arc::new(DocumentStore::new());
-        let urls: Vec<Url> = (0..8).map(|i| uri(&format!("/hl{i}.php"))).collect();
+        let urls: Vec<Uri> = (0..8).map(|i| uri(&format!("/hl{i}.php"))).collect();
         for (i, u) in urls.iter().enumerate() {
             open(&store, u.clone(), format!("<?php\nclass H{i} {{}}"));
             // Warm the parse cache so the stale fallback always has a last-good doc.
@@ -2817,10 +2822,10 @@ mod tests {
 
         fn measure(
             store: &Arc<DocumentStore>,
-            url: &Url,
+            url: &Uri,
             writers: usize,
             label: &str,
-            call: impl Fn(&DocumentStore, &Url) -> bool,
+            call: impl Fn(&DocumentStore, &Uri) -> bool,
         ) {
             let stop = Arc::new(AtomicBool::new(false));
             let mut writer_handles = Vec::new();
@@ -2905,7 +2910,7 @@ mod tests {
         use std::time::{Duration, Instant};
 
         let store = Arc::new(DocumentStore::new());
-        let urls: Vec<Url> = (0..8).map(|i| uri(&format!("/f{i}.php"))).collect();
+        let urls: Vec<Uri> = (0..8).map(|i| uri(&format!("/f{i}.php"))).collect();
         for (i, u) in urls.iter().enumerate() {
             open(&store, u.clone(), format!("<?php\nclass C{i} {{}}"));
         }
@@ -2983,7 +2988,7 @@ mod tests {
         // Mirror the consuming file (Entity not yet in source_files).
         // Uses Entity as a parameter type hint — the analyzer resolves these
         // through use statements, so this exercises the full PSR-4 lazy-load path.
-        let handler_url = Url::from_file_path(tmp.path().join("src/Service/Handler.php")).unwrap();
+        let handler_url = Uri::from_file_path(tmp.path().join("src/Service/Handler.php")).unwrap();
         store.mirror_text(
             &handler_url,
             "<?php\nnamespace App\\Service;\nuse App\\Model\\Entity;\nfunction handle(Entity $e): Entity { return $e; }\n",
@@ -3024,7 +3029,7 @@ mod tests {
             .psr4
             .store(Arc::new(crate::lang::autoload::Psr4Map::load(tmp.path())));
 
-        let repro_url = Url::from_file_path(tmp.path().join("repro.php")).unwrap();
+        let repro_url = Uri::from_file_path(tmp.path().join("repro.php")).unwrap();
         store.mirror_text(
             &repro_url,
             "<?php\n\n$service = new Legacy_Service();\necho $service->name();\n",
@@ -3113,7 +3118,7 @@ mod tests {
         assert_eq!(first.len(), N);
         assert_eq!(second.len(), N);
 
-        let by_url_first: std::collections::HashMap<Url, Arc<ParsedDoc>> =
+        let by_url_first: std::collections::HashMap<Uri, Arc<ParsedDoc>> =
             first.into_iter().collect();
         for (u, doc2) in second {
             let doc1 = by_url_first
@@ -3121,7 +3126,7 @@ mod tests {
                 .expect("second scan returned a URL the first didn't");
             assert!(
                 Arc::ptr_eq(doc1, &doc2),
-                "{u} re-parsed across all_docs_for_scan calls — \
+                "{u:?} re-parsed across all_docs_for_scan calls — \
                  cache (parsed_cache + salsa parsed_doc memo) failed to hit"
             );
         }
@@ -3142,7 +3147,7 @@ mod tests {
             let after = store.get_doc_salsa(&u).unwrap();
             assert!(
                 Arc::ptr_eq(original, &after),
-                "{u} should not have re-parsed because of an unrelated edit"
+                "{u:?} should not have re-parsed because of an unrelated edit"
             );
         }
     }
@@ -3386,9 +3391,9 @@ mod tests {
                 ));
             }
             src.push_str("}\n");
-            store.ingest(Url::parse("file:///synth/Service.php").unwrap(), &src);
+            store.ingest(("file:///synth/Service.php").parse::<Uri>().unwrap(), &src);
             for i in 0..n_noise {
-                let u = Url::parse(&format!("file:///synth/N{i}.php")).unwrap();
+                let u = format!("file:///synth/N{i}.php").parse::<Uri>().unwrap();
                 let t = format!(
                     "<?php\nnamespace Other{i};\nclass N{i} {{ public function run(){{}} }}\n"
                 );
@@ -3437,7 +3442,7 @@ mod tests {
         for &n in &[10usize, 100, 1000, 3000] {
             let mut files: Vec<Arc<str>> = Vec::with_capacity(n);
             for i in 0..n {
-                let u = Url::parse(&format!("file:///synth/S{i}.php")).unwrap();
+                let u = format!("file:///synth/S{i}.php").parse::<Uri>().unwrap();
                 let t = format!(
                     "<?php\nclass S{i} extends Owner {{\n\
                      \x20   public function run(): void {{\n\
@@ -3454,7 +3459,8 @@ mod tests {
             let matched: Vec<Arc<str>> = files
                 .par_iter()
                 .filter(|f| {
-                    Url::parse(f.as_ref())
+                    (f.as_ref())
+                        .parse::<Uri>()
                         .ok()
                         .and_then(|u| store.source_text(&u))
                         .is_some_and(|txt| {
@@ -3487,7 +3493,7 @@ mod tests {
         fn run_scan_inline(store: &DocumentStore, n: usize) -> usize {
             let mut count = 0;
             for i in 0..n {
-                let u = Url::parse(&format!("file:///synth/F{i}.php")).unwrap();
+                let u = format!("file:///synth/F{i}.php").parse::<Uri>().unwrap();
                 if store
                     .source_text(&u)
                     .is_some_and(|t| t.contains("APP_NAME_0"))
@@ -3503,7 +3509,7 @@ mod tests {
         let store = Arc::new(DocumentStore::new());
         let n = 30_000usize;
         for i in 0..n {
-            let u = Url::parse(&format!("file:///synth/F{i}.php")).unwrap();
+            let u = format!("file:///synth/F{i}.php").parse::<Uri>().unwrap();
             let t = format!("<?php\n$x = env('APP_NAME_{i}');\n");
             store.ingest(u, &t);
         }

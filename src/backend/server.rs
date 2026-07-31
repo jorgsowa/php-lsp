@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
-use tower_lsp::jsonrpc::Result;
-use tower_lsp::lsp_types::*;
-use tower_lsp::{LanguageServer, async_trait};
+use tower_lsp_server::LanguageServer;
+use tower_lsp_server::jsonrpc::Result;
+use tower_lsp_server::ls_types::*;
 
 use super::panic_guard::{guard_async, guard_async_result};
 use crate::completion::{CompletionCtx, filtered_completions_at};
@@ -61,7 +61,6 @@ use super::{Backend, publish_with_dependents};
 /// short enough that references asked "shortly after editing" are warm again.
 const WARM_RESWEEP_IDLE_MS: u64 = 1_000;
 
-#[async_trait]
 impl LanguageServer for Backend {
     async fn initialize(&self, params: InitializeParams) -> Result<InitializeResult> {
         self.handle_initialize(params).await
@@ -96,7 +95,7 @@ impl LanguageServer for Backend {
                 {
                     self.client
                         .log_message(
-                            tower_lsp::lsp_types::MessageType::WARNING,
+                            tower_lsp_server::ls_types::MessageType::WARNING,
                             format!(
                                 "php-lsp: unsupported phpVersion {ver:?} — valid values: {}",
                                 crate::lang::autoload::SUPPORTED_PHP_VERSIONS.join(", ")
@@ -113,7 +112,7 @@ impl LanguageServer for Backend {
                 let (ver, source) = self.resolve_php_version(cfg.php_version.as_deref());
                 self.client
                     .log_message(
-                        tower_lsp::lsp_types::MessageType::INFO,
+                        tower_lsp_server::ls_types::MessageType::INFO,
                         format!("php-lsp: using PHP {ver} ({source})"),
                     )
                     .await;
@@ -124,7 +123,7 @@ impl LanguageServer for Backend {
                     let clamped = crate::lang::autoload::clamp_php_version(&ver);
                     self.client
                         .show_message(
-                            tower_lsp::lsp_types::MessageType::WARNING,
+                            tower_lsp_server::ls_types::MessageType::WARNING,
                             format!(
                                 "php-lsp: detected PHP {ver} is outside the supported range ({}); \
                              using PHP {clamped} for analysis",
@@ -161,8 +160,8 @@ impl LanguageServer for Backend {
             {
                 let mut roots = (**self.root_paths.load()).clone();
                 for removed in &params.event.removed {
-                    if let Ok(path) = removed.uri.to_file_path() {
-                        roots.retain(|r| r != &path);
+                    if let Some(path) = removed.uri.to_file_path() {
+                        roots.retain(|r| r.as_path() != path.as_ref());
                     }
                 }
                 self.root_paths.store(Arc::new(roots));
@@ -183,7 +182,7 @@ impl LanguageServer for Backend {
                 )
             };
             for added in &params.event.added {
-                if let Ok(path) = added.uri.to_file_path() {
+                if let Some(path) = added.uri.to_file_path().map(|c| c.into_owned()) {
                     let is_new = {
                         let mut roots = (**self.root_paths.load()).clone();
                         if !roots.contains(&path) {
@@ -329,7 +328,7 @@ impl LanguageServer for Backend {
                     tokio::task::spawn_blocking(move || parse_document(&text))
                         .await
                         .unwrap_or_else(|e| {
-                            tracing::warn!("parse_document panicked for {uri}: {e}");
+                            tracing::warn!("parse_document panicked for {uri:?}: {e}");
                             (ParsedDoc::default(), vec![])
                         });
 
@@ -377,8 +376,8 @@ impl LanguageServer for Backend {
             // disk so cross-file features resolve against the on-disk content; if the
             // file is gone (never saved / deleted), drop it from the index.
             let disk_text = match uri.to_file_path() {
-                Ok(path) => tokio::fs::read_to_string(&path).await.ok(),
-                Err(_) => None,
+                Some(path) => tokio::fs::read_to_string(&path).await.ok(),
+                None => None,
             };
             // The disk read awaited above; a reopen may have raced in. Only mutate
             // the index if the file is still closed, so we never clobber a fresh
@@ -431,7 +430,7 @@ impl LanguageServer for Backend {
             // workspace scans. Content-keyed so the entry matches the scan's key
             // on restart regardless of mtime granularity.
             let cache_path = self.config.load().cache_path.clone();
-            if let Ok(path) = uri.to_file_path() {
+            if let Some(path) = uri.to_file_path().map(|c| c.into_owned()) {
                 let root = self.root_paths.load().first().cloned();
                 tokio::task::spawn_blocking({
                     let path = path.clone();
@@ -498,7 +497,7 @@ impl LanguageServer for Backend {
             for change in params.changes {
                 match change.typ {
                     FileChangeType::CREATED | FileChangeType::CHANGED => {
-                        if let Ok(path) = change.uri.to_file_path()
+                        if let Some(path) = change.uri.to_file_path()
                             && let Ok(text) = tokio::fs::read_to_string(&path).await
                         {
                             // Salsa path: ingest_from_doc mirrors the new text into
@@ -991,7 +990,7 @@ impl LanguageServer for Backend {
     async fn symbol(
         &self,
         params: WorkspaceSymbolParams,
-    ) -> Result<Option<Vec<SymbolInformation>>> {
+    ) -> Result<Option<WorkspaceSymbolResponse>> {
         guard_async_result("symbol", async move {
             // Phase J: read through the salsa-memoized aggregate so repeated
             // workspace-symbol queries (every keystroke in the picker) share the
@@ -1009,7 +1008,7 @@ impl LanguageServer for Backend {
                     Vec::new()
                 }
             };
-            Ok(Some(results))
+            Ok(Some(WorkspaceSymbolResponse::Flat(results)))
         })
         .await
     }
@@ -1151,7 +1150,7 @@ impl LanguageServer for Backend {
             // of scanning every workspace doc.
             let wi = self.workspace_index_async().await;
             let docs = Arc::clone(&self.docs);
-            let get_doc = move |u: &Url| docs.get_doc_salsa(u);
+            let get_doc = move |u: &Uri| docs.get_doc_salsa(u);
             Ok(prepare_call_hierarchy_indexed(&word, &wi, &get_doc).map(|item| vec![item]))
         })
         .await
@@ -1198,7 +1197,7 @@ impl LanguageServer for Backend {
             let item_uri = params.item.uri.to_string();
             let item = params.item;
             let calls = match tokio::task::spawn_blocking(move || {
-                let get_doc = |u: &Url| docs.get_doc_salsa(u);
+                let get_doc = |u: &Uri| docs.get_doc_salsa(u);
                 outgoing_calls_indexed(&item, &wi, &get_doc)
             })
             .await
@@ -1262,8 +1261,8 @@ impl LanguageServer for Backend {
 
     async fn goto_implementation(
         &self,
-        params: tower_lsp::lsp_types::request::GotoImplementationParams,
-    ) -> Result<Option<tower_lsp::lsp_types::request::GotoImplementationResponse>> {
+        params: tower_lsp_server::ls_types::request::GotoImplementationParams,
+    ) -> Result<Option<tower_lsp_server::ls_types::request::GotoImplementationResponse>> {
         guard_async_result("goto_implementation", async move {
             let uri = &params.text_document_position_params.text_document.uri;
             let position = params.text_document_position_params.position;
@@ -1349,8 +1348,8 @@ impl LanguageServer for Backend {
 
     async fn goto_declaration(
         &self,
-        params: tower_lsp::lsp_types::request::GotoDeclarationParams,
-    ) -> Result<Option<tower_lsp::lsp_types::request::GotoDeclarationResponse>> {
+        params: tower_lsp_server::ls_types::request::GotoDeclarationParams,
+    ) -> Result<Option<tower_lsp_server::ls_types::request::GotoDeclarationResponse>> {
         guard_async_result("goto_declaration", async move {
             let uri = &params.text_document_position_params.text_document.uri;
             let position = params.text_document_position_params.position;
@@ -1371,8 +1370,8 @@ impl LanguageServer for Backend {
 
     async fn goto_type_definition(
         &self,
-        params: tower_lsp::lsp_types::request::GotoTypeDefinitionParams,
-    ) -> Result<Option<tower_lsp::lsp_types::request::GotoTypeDefinitionResponse>> {
+        params: tower_lsp_server::ls_types::request::GotoTypeDefinitionParams,
+    ) -> Result<Option<tower_lsp_server::ls_types::request::GotoTypeDefinitionResponse>> {
         guard_async_result("goto_type_definition", async move {
             let uri = &params.text_document_position_params.text_document.uri;
             let position = params.text_document_position_params.position;
@@ -1652,7 +1651,7 @@ impl LanguageServer for Backend {
                         .arguments
                         .first()
                         .and_then(|v| v.as_str())
-                        .and_then(|s| Url::parse(s).ok());
+                        .and_then(|s| (s).parse::<Uri>().ok());
                     let filter = params
                         .arguments
                         .get(1)
@@ -1798,16 +1797,16 @@ impl LanguageServer for Backend {
 /// Convert a mir subtype/implementation hit — file path plus a name range in
 /// mir coordinates (1-based line, 0-based char columns) — to an LSP Location.
 fn subtype_site_to_location(file: &str, range: &mir_analyzer::Range) -> Option<Location> {
-    let uri = Url::parse(file).ok()?;
+    let uri = (file).parse::<Uri>().ok()?;
     let line = range.start.line.saturating_sub(1);
     Some(Location {
         uri,
-        range: tower_lsp::lsp_types::Range {
-            start: tower_lsp::lsp_types::Position {
+        range: tower_lsp_server::ls_types::Range {
+            start: tower_lsp_server::ls_types::Position {
                 line,
                 character: range.start.column,
             },
-            end: tower_lsp::lsp_types::Position {
+            end: tower_lsp_server::ls_types::Position {
                 line,
                 character: range.end.column,
             },

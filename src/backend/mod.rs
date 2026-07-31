@@ -9,7 +9,7 @@ use arc_swap::ArcSwap;
 /// Sent to the client once Phase 3 (reference index build) finishes.
 /// Allows tests and tooling to wait for the codebase fast path to be active.
 enum IndexReadyNotification {}
-impl tower_lsp::lsp_types::notification::Notification for IndexReadyNotification {
+impl tower_lsp_server::ls_types::notification::Notification for IndexReadyNotification {
     type Params = ();
     const METHOD: &'static str = "$/php-lsp/indexReady";
 }
@@ -25,10 +25,10 @@ enum ReferencesPartialResult {}
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct ReferencesPartialResultParams {
-    token: tower_lsp::lsp_types::NumberOrString,
-    value: Vec<tower_lsp::lsp_types::Location>,
+    token: tower_lsp_server::ls_types::NumberOrString,
+    value: Vec<tower_lsp_server::ls_types::Location>,
 }
-impl tower_lsp::lsp_types::notification::Notification for ReferencesPartialResult {
+impl tower_lsp_server::ls_types::notification::Notification for ReferencesPartialResult {
     type Params = ReferencesPartialResultParams;
     const METHOD: &'static str = "$/progress";
 }
@@ -38,8 +38,8 @@ impl tower_lsp::lsp_types::notification::Notification for ReferencesPartialResul
 /// separately and is unaffected if the client ignores this.
 pub(crate) async fn send_references_partial_result(
     client: &Client,
-    token: tower_lsp::lsp_types::NumberOrString,
-    locations: Vec<tower_lsp::lsp_types::Location>,
+    token: tower_lsp_server::ls_types::NumberOrString,
+    locations: Vec<tower_lsp_server::ls_types::Location>,
 ) {
     client
         .send_notification::<ReferencesPartialResult>(ReferencesPartialResultParams {
@@ -49,8 +49,8 @@ pub(crate) async fn send_references_partial_result(
         .await;
 }
 
-use tower_lsp::Client;
-use tower_lsp::lsp_types::*;
+use tower_lsp_server::Client;
+use tower_lsp_server::ls_types::*;
 
 /// Response for the `$/php-lsp/debugStats` custom request.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -137,7 +137,7 @@ impl Backend {
     /// `$/php-lsp/debugStats` — internal observability counters, used by the
     /// stress tests to assert the read path doesn't parse the whole workspace
     /// and that reference-index lock traffic stays bounded per operation.
-    pub async fn debug_stats(&self) -> tower_lsp::jsonrpc::Result<DebugStats> {
+    pub async fn debug_stats(&self) -> tower_lsp_server::jsonrpc::Result<DebugStats> {
         Ok(DebugStats {
             parses: self.docs.parse_count(),
             ref_index_locks: self.docs.ref_index_lock_count(),
@@ -149,62 +149,62 @@ impl Backend {
         })
     }
 
-    fn set_open_text(&self, uri: Url, text: String) -> u64 {
+    fn set_open_text(&self, uri: Uri, text: String) -> u64 {
         self.open_files.set_open_text(&self.docs, uri, text)
     }
 
-    fn close_open_file(&self, uri: &Url) {
+    fn close_open_file(&self, uri: &Uri) {
         self.open_files.close(&self.docs, uri);
     }
 
     /// Background-index a file from disk, but only if it isn't currently
     /// open in the editor — the editor's buffer is authoritative while a
     /// file is open, and we must not overwrite it with disk contents.
-    fn ingest_if_not_open(&self, uri: Url, text: &str) {
+    fn ingest_if_not_open(&self, uri: Uri, text: &str) {
         if !self.open_files.contains(&uri) {
             self.docs.ingest(uri, text);
         }
     }
 
     /// Variant of [`ingest_if_not_open`] that reuses an already-parsed doc.
-    fn ingest_from_doc_if_not_open(&self, uri: Url, doc: &ParsedDoc) {
+    fn ingest_from_doc_if_not_open(&self, uri: Uri, doc: &ParsedDoc) {
         if !self.open_files.contains(&uri) {
             self.docs.ingest_from_doc(uri, doc);
         }
     }
 
-    fn get_open_text(&self, uri: &Url) -> Option<Arc<str>> {
+    fn get_open_text(&self, uri: &Uri) -> Option<Arc<str>> {
         self.open_files.text(uri)
     }
 
-    fn set_parse_diagnostics(&self, uri: &Url, diagnostics: Vec<Diagnostic>) {
+    fn set_parse_diagnostics(&self, uri: &Uri, diagnostics: Vec<Diagnostic>) {
         self.open_files.set_parse_diagnostics(uri, diagnostics);
     }
 
-    fn get_parse_diagnostics(&self, uri: &Url) -> Option<Vec<Diagnostic>> {
+    fn get_parse_diagnostics(&self, uri: &Uri) -> Option<Vec<Diagnostic>> {
         self.open_files.parse_diagnostics(uri)
     }
 
-    fn all_open_files_with_diagnostics(&self) -> Vec<(Url, Vec<Diagnostic>, Option<i64>)> {
+    fn all_open_files_with_diagnostics(&self) -> Vec<(Uri, Vec<Diagnostic>, Option<i64>)> {
         self.open_files.all_with_diagnostics()
     }
 
-    fn open_urls(&self) -> Vec<Url> {
+    fn open_urls(&self) -> Vec<Uri> {
         self.open_files.urls()
     }
 
-    fn get_doc(&self, uri: &Url) -> Option<Arc<ParsedDoc>> {
+    fn get_doc(&self, uri: &Uri) -> Option<Arc<ParsedDoc>> {
         self.open_files.get_doc(&self.docs, uri)
     }
 
-    fn get_doc_stale(&self, uri: &Url) -> Option<Arc<ParsedDoc>> {
+    fn get_doc_stale(&self, uri: &Uri) -> Option<Arc<ParsedDoc>> {
         self.open_files.get_doc_stale(&self.docs, uri)
     }
 
     /// `use Foo as Bar;` map for a single file, read directly from the AST.
     /// Memoized per `ParsedDoc` (see `ParsedDoc::file_imports`) — cheap to
     /// call repeatedly within or across requests against the same revision.
-    fn file_imports(&self, uri: &Url) -> Arc<std::collections::HashMap<String, String>> {
+    fn file_imports(&self, uri: &Uri) -> Arc<std::collections::HashMap<String, String>> {
         self.docs
             .get_doc_salsa(uri)
             .map(|doc| doc.file_imports())
@@ -218,7 +218,7 @@ impl Backend {
     /// resolved. For class constants, returns the owning class short name.
     fn resolve_reference_target_fqn(
         &self,
-        uri: &Url,
+        uri: &Uri,
         doc_opt: Option<&Arc<ParsedDoc>>,
         word: &str,
         kind: Option<crate::navigation::references::SymbolKind>,
@@ -408,9 +408,9 @@ fn class_before_double_colon(source: &str, position: Position) -> Option<String>
 async fn compute_dependent_publishes_owned(
     docs: Arc<DocumentStore>,
     open_files: OpenFiles,
-    changed_uri: Url,
+    changed_uri: Uri,
     diag_cfg: crate::lang::config::DiagnosticsConfig,
-) -> Vec<(Url, Vec<Diagnostic>)> {
+) -> Vec<(Uri, Vec<Diagnostic>)> {
     tokio::task::spawn_blocking(move || {
         // rust-analyzer model: we only ever publish for files the editor has
         // open, so re-analyze exactly that set and let salsa memoization make
@@ -443,10 +443,10 @@ async fn compute_dependent_publishes_owned(
             return Vec::new();
         }
 
-        let dependents: Vec<(Url, mir_analyzer::FileAnalysis)> = analyses
+        let dependents: Vec<(Uri, mir_analyzer::FileAnalysis)> = analyses
             .into_iter()
             .filter_map(|(file, analysis)| {
-                let url = Url::parse(file.as_ref()).ok()?;
+                let url = (file.as_ref()).parse::<Uri>().ok()?;
                 Some((url, analysis))
             })
             .collect();
@@ -472,7 +472,7 @@ async fn compute_dependent_publishes_owned(
             class_issues_by_file.entry(file).or_default().push(issue);
         }
 
-        let mut out: Vec<(Url, Vec<Diagnostic>)> = Vec::with_capacity(dependents.len());
+        let mut out: Vec<(Uri, Vec<Diagnostic>)> = Vec::with_capacity(dependents.len());
         for (url, analysis) in dependents {
             let parse = open_files.parse_diagnostics(&url).unwrap_or_default();
             let mut issues: Vec<mir_issues::Issue> = analysis
@@ -519,7 +519,7 @@ pub(super) async fn republish_after_index_ready(
     }
     let docs_ref = Arc::clone(&docs);
     let open_files_ref = open_files.clone();
-    let all: Vec<(Url, Vec<Diagnostic>)> = tokio::task::spawn_blocking(move || {
+    let all: Vec<(Uri, Vec<Diagnostic>)> = tokio::task::spawn_blocking(move || {
         uris.into_iter()
             .map(|uri| {
                 let diags =
@@ -564,7 +564,7 @@ pub(super) async fn publish_with_dependents(
     client: Client,
     docs: Arc<DocumentStore>,
     open_files: OpenFiles,
-    uri: Url,
+    uri: Uri,
     diag_cfg: crate::lang::config::DiagnosticsConfig,
 ) {
     let docs_ref = Arc::clone(&docs);
@@ -609,10 +609,10 @@ fn compute_diagnostic_result_id(diagnostics: &[Diagnostic], uri: &str) -> String
         diag.range.end.character.hash(&mut hasher);
         diag.message.hash(&mut hasher);
         let severity_val = match diag.severity {
-            Some(tower_lsp::lsp_types::DiagnosticSeverity::ERROR) => 1,
-            Some(tower_lsp::lsp_types::DiagnosticSeverity::WARNING) => 2,
-            Some(tower_lsp::lsp_types::DiagnosticSeverity::INFORMATION) => 3,
-            Some(tower_lsp::lsp_types::DiagnosticSeverity::HINT) => 4,
+            Some(tower_lsp_server::ls_types::DiagnosticSeverity::ERROR) => 1,
+            Some(tower_lsp_server::ls_types::DiagnosticSeverity::WARNING) => 2,
+            Some(tower_lsp_server::ls_types::DiagnosticSeverity::INFORMATION) => 3,
+            Some(tower_lsp_server::ls_types::DiagnosticSeverity::HINT) => 4,
             None => 0,
             _ => 5, // Unknown variants
         };
@@ -626,8 +626,8 @@ fn compute_diagnostic_result_id(diagnostics: &[Diagnostic], uri: &str) -> String
         if let Some(tags) = &diag.tags {
             for tag in tags {
                 let tag_val = match *tag {
-                    tower_lsp::lsp_types::DiagnosticTag::UNNECESSARY => 1,
-                    tower_lsp::lsp_types::DiagnosticTag::DEPRECATED => 2,
+                    tower_lsp_server::ls_types::DiagnosticTag::UNNECESSARY => 1,
+                    tower_lsp_server::ls_types::DiagnosticTag::DEPRECATED => 2,
                     _ => 3,
                 };
                 tag_val.hash(&mut hasher);

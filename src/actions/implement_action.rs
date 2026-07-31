@@ -7,8 +7,8 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use php_ast::{ClassMemberKind, NamespaceBody, Stmt, StmtKind, Visibility};
-use tower_lsp::lsp_types::{
-    CodeAction, CodeActionKind, CodeActionOrCommand, Range, TextEdit, Url, WorkspaceEdit,
+use tower_lsp_server::ls_types::{
+    CodeAction, CodeActionKind, CodeActionOrCommand, Range, TextEdit, Uri, WorkspaceEdit,
 };
 
 use crate::document::ast::{ParsedDoc, SourceView, format_type_hint};
@@ -26,9 +26,9 @@ struct MethodStub {
 pub fn implement_missing_actions(
     _source: &str,
     doc: &ParsedDoc,
-    all_docs: &[(Url, Arc<ParsedDoc>)],
+    all_docs: &[(Uri, Arc<ParsedDoc>)],
     range: Range,
-    uri: &Url,
+    uri: &Uri,
     file_imports: &HashMap<String, String>,
 ) -> Vec<CodeActionOrCommand> {
     let sv = doc.view();
@@ -93,10 +93,10 @@ fn collect_target_type_names(
 fn collect_actions(
     stmts: &[Stmt<'_, '_>],
     sv: SourceView<'_>,
-    all_docs: &[(Url, Arc<ParsedDoc>)],
+    all_docs: &[(Uri, Arc<ParsedDoc>)],
     file_imports: &HashMap<String, String>,
     range: Range,
-    uri: &Url,
+    uri: &Uri,
     out: &mut Vec<CodeActionOrCommand>,
 ) {
     for stmt in stmts {
@@ -218,7 +218,7 @@ fn collect_actions(
 fn abstract_methods_of(
     name: &str,
     fqn: Option<&str>,
-    all_docs: &[(Url, Arc<ParsedDoc>)],
+    all_docs: &[(Uri, Arc<ParsedDoc>)],
 ) -> Vec<MethodStub> {
     if let Some(fqn) = fqn {
         // FQN-aware pass: only return stubs when the exact namespace matches.

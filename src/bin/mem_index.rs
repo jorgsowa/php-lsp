@@ -19,7 +19,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use rayon::prelude::*;
-use tower_lsp::lsp_types::Url;
+use tower_lsp_server::ls_types::Uri;
 
 use php_lsp::ast::ParsedDoc;
 use php_lsp::document_store::DocumentStore;
@@ -96,10 +96,10 @@ fn main() {
         .map(|e| e.path().to_path_buf())
         .collect();
 
-    let php_files: Vec<(Url, String)> = php_paths
+    let php_files: Vec<(Uri, String)> = php_paths
         .par_iter()
         .filter_map(|p| {
-            let url = Url::from_file_path(p).ok()?;
+            let url = Uri::from_file_path(p)?;
             let src = std::fs::read_to_string(p).ok()?;
             Some((url, src))
         })

@@ -2,7 +2,7 @@ use php_ast::{
     CallableCreateKind, ClassDecl, ClassMemberKind, EnumMemberKind, Expr, ExprKind, NamespaceBody,
     Param, PropertyHookBody, Stmt, StmtKind, StringPart,
 };
-use tower_lsp::lsp_types::{Position, Range, SelectionRange};
+use tower_lsp_server::ls_types::{Position, Range, SelectionRange};
 
 use crate::document::ast::{ParsedDoc, SourceView};
 

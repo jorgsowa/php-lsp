@@ -4,8 +4,8 @@ use php_ast::{
     ArrowFunctionExpr, ClassMemberKind, ClosureExpr, Expr, ExprKind, NamespaceBody, Span, Stmt,
     StmtKind,
 };
-use tower_lsp::lsp_types::{
-    CodeAction, CodeActionKind, CodeActionOrCommand, Range, TextEdit, Url, WorkspaceEdit,
+use tower_lsp_server::ls_types::{
+    CodeAction, CodeActionKind, CodeActionOrCommand, Range, TextEdit, Uri, WorkspaceEdit,
 };
 
 use crate::document::ast::{ParsedDoc, SourceView};
@@ -17,7 +17,7 @@ pub fn closure_to_arrow_function_actions(
     source: &str,
     doc: &ParsedDoc,
     range: Range,
-    uri: &Url,
+    uri: &Uri,
 ) -> Vec<CodeActionOrCommand> {
     let sv = doc.view();
     let cursor = sv.byte_of_position(range.start);
@@ -30,7 +30,7 @@ fn collect_in_stmts(
     stmts: &[Stmt<'_, '_>],
     source: &str,
     cursor: u32,
-    uri: &Url,
+    uri: &Uri,
     sv: SourceView<'_>,
     out: &mut Vec<CodeActionOrCommand>,
 ) -> bool {
@@ -49,7 +49,7 @@ fn collect_in_stmt(
     stmt: &Stmt<'_, '_>,
     source: &str,
     cursor: u32,
-    uri: &Url,
+    uri: &Uri,
     sv: SourceView<'_>,
     out: &mut Vec<CodeActionOrCommand>,
 ) -> bool {
@@ -146,7 +146,7 @@ fn collect_in_expr(
     expr: &Expr<'_, '_>,
     source: &str,
     cursor: u32,
-    uri: &Url,
+    uri: &Uri,
     sv: SourceView<'_>,
     out: &mut Vec<CodeActionOrCommand>,
 ) -> bool {
@@ -206,7 +206,7 @@ fn build_action(
     closure: &ClosureExpr<'_, '_>,
     span: Span,
     source: &str,
-    uri: &Url,
+    uri: &Uri,
     sv: SourceView<'_>,
 ) -> Option<CodeActionOrCommand> {
     // Reject closures with by-ref `use` captures: arrow functions auto-capture
@@ -326,7 +326,7 @@ pub fn arrow_function_to_closure_actions(
     source: &str,
     doc: &ParsedDoc,
     range: Range,
-    uri: &Url,
+    uri: &Uri,
 ) -> Vec<CodeActionOrCommand> {
     let sv = doc.view();
     let cursor = sv.byte_of_position(range.start);
@@ -339,7 +339,7 @@ fn collect_arrow_in_stmts(
     stmts: &[Stmt<'_, '_>],
     source: &str,
     cursor: u32,
-    uri: &Url,
+    uri: &Uri,
     sv: SourceView<'_>,
     out: &mut Vec<CodeActionOrCommand>,
 ) -> bool {
@@ -358,7 +358,7 @@ fn collect_arrow_in_stmt(
     stmt: &Stmt<'_, '_>,
     source: &str,
     cursor: u32,
-    uri: &Url,
+    uri: &Uri,
     sv: SourceView<'_>,
     out: &mut Vec<CodeActionOrCommand>,
 ) -> bool {
@@ -457,7 +457,7 @@ fn collect_arrow_in_expr(
     expr: &Expr<'_, '_>,
     source: &str,
     cursor: u32,
-    uri: &Url,
+    uri: &Uri,
     sv: SourceView<'_>,
     out: &mut Vec<CodeActionOrCommand>,
 ) -> bool {
@@ -519,7 +519,7 @@ fn build_arrow_to_closure_action(
     af: &ArrowFunctionExpr<'_, '_>,
     span: Span,
     source: &str,
-    uri: &Url,
+    uri: &Uri,
     sv: SourceView<'_>,
 ) -> Option<CodeActionOrCommand> {
     let new_text = build_closure_text(af, span, source)?;

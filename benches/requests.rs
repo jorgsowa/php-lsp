@@ -4,7 +4,7 @@ use std::hint::black_box;
 
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use rayon::prelude::*;
-use tower_lsp::lsp_types::{Location, Position, Range, Url};
+use tower_lsp_server::ls_types::{Location, Position, Range, Uri};
 
 use php_lsp::ast::ParsedDoc;
 use php_lsp::call_hierarchy::{outgoing_calls_indexed, prepare_call_hierarchy_indexed};
@@ -55,8 +55,8 @@ const POS_ARROW: Position = Position {
     character: 31,
 };
 
-type OtherDocs = Vec<(Url, Arc<ParsedDoc>)>;
-type SymbolMaps = Vec<(Url, Arc<SymbolMap>)>;
+type OtherDocs = Vec<(Uri, Arc<ParsedDoc>)>;
+type SymbolMaps = Vec<(Uri, Arc<SymbolMap>)>;
 
 fn to_symbol_maps(docs: &OtherDocs) -> SymbolMaps {
     docs.iter()
@@ -75,7 +75,7 @@ fn cross_file_docs() -> OtherDocs {
     .into_iter()
     .map(|(url, src)| {
         (
-            Url::parse(url).unwrap(),
+            (url).parse::<Uri>().unwrap(),
             Arc::new(ParsedDoc::parse(src.to_owned())),
         )
     })
@@ -94,7 +94,9 @@ fn bench_hover(c: &mut Criterion) {
     let ten_docs: OtherDocs = (0..10)
         .map(|i| {
             let (_, parsed) = &other_docs[i % other_docs.len()];
-            let url = Url::parse(&format!("file:///bench/extra_{i}.php")).unwrap();
+            let url = format!("file:///bench/extra_{i}.php")
+                .parse::<Uri>()
+                .unwrap();
             (url, Arc::clone(parsed))
         })
         .collect();
@@ -185,16 +187,18 @@ fn bench_hover(c: &mut Criterion) {
 
 fn bench_definition(c: &mut Criterion) {
     let medium_doc = Arc::new(ParsedDoc::parse(MEDIUM.to_owned()));
-    let medium_uri = Url::parse("file:///bench/medium.php").unwrap();
+    let medium_uri = ("file:///bench/medium.php").parse::<Uri>().unwrap();
     let ctrl_doc = Arc::new(ParsedDoc::parse(CONTROLLER.to_owned()));
-    let ctrl_uri = Url::parse("file:///bench/controller.php").unwrap();
+    let ctrl_uri = ("file:///bench/controller.php").parse::<Uri>().unwrap();
     let other_docs = cross_file_docs();
 
     // Build a 10-entry context for the scale benchmark by cycling the 5 cross-file docs.
     let ten_docs: OtherDocs = (0..10)
         .map(|i| {
             let (_, parsed) = &other_docs[i % other_docs.len()];
-            let url = Url::parse(&format!("file:///bench/extra_{i}.php")).unwrap();
+            let url = format!("file:///bench/extra_{i}.php")
+                .parse::<Uri>()
+                .unwrap();
             (url, Arc::clone(parsed))
         })
         .collect();
@@ -295,7 +299,7 @@ fn laravel_docs() -> Option<OtherDocs> {
         .filter_map(|e| e.ok())
         .filter(|e| e.path().extension().is_some_and(|x| x == "php"))
         .filter_map(|e| {
-            let url = Url::from_file_path(e.path()).ok()?;
+            let url = Uri::from_file_path(e.path())?;
             let src = std::fs::read_to_string(e.path()).ok()?;
             Some((url, Arc::new(ParsedDoc::parse(src))))
         })
@@ -385,7 +389,7 @@ fn bench_completion_laravel(c: &mut Criterion) {
     const BUILDER_SRC: &str =
         "<?php\nuse Illuminate\\Database\\Eloquent\\Builder;\n$b = new Builder();\n$b->";
     let builder_doc = Arc::new(ParsedDoc::parse(BUILDER_SRC.to_owned()));
-    let builder_pos = tower_lsp::lsp_types::Position {
+    let builder_pos = tower_lsp_server::ls_types::Position {
         line: 3,
         character: 4,
     };
@@ -437,7 +441,7 @@ fn bench_completion_laravel(c: &mut Criterion) {
     group.finish();
 }
 
-fn to_indexes(docs: &OtherDocs) -> Vec<(Url, Arc<FileIndex>)> {
+fn to_indexes(docs: &OtherDocs) -> Vec<(Uri, Arc<FileIndex>)> {
     docs.iter()
         .map(|(uri, parsed)| (uri.clone(), Arc::new(FileIndex::extract(parsed))))
         .collect()
@@ -468,7 +472,7 @@ fn bench_semantic_tokens(c: &mut Criterion) {
             b.iter(|| black_box(semantic_tokens(big.source(), big)));
         });
         // Viewport-sized range request: editors ask for ~50-100 lines.
-        let viewport = tower_lsp::lsp_types::Range {
+        let viewport = tower_lsp_server::ls_types::Range {
             start: Position {
                 line: 0,
                 character: 0,
@@ -491,7 +495,7 @@ fn bench_inlay_hints(c: &mut Criterion) {
     use php_lsp::analysis::inlay_hints::inlay_hints;
     use php_lsp::db::workspace_index::build_func_signatures;
 
-    let full_range = tower_lsp::lsp_types::Range {
+    let full_range = tower_lsp_server::ls_types::Range {
         start: Position {
             line: 0,
             character: 0,
@@ -547,8 +551,8 @@ fn bench_inlay_hints(c: &mut Criterion) {
 /// (in `db::workspace_index`) replaced in production. Kept here, not in
 /// `src/`, purely so `index_fallback_linear_*` still has something to
 /// measure against `index_fallback_map_*`.
-fn find_declaration_linear_scan(name: &str, indexes: &[(Url, Arc<FileIndex>)]) -> Option<Location> {
-    fn zero_width_location(uri: &Url, line: u32) -> Location {
+fn find_declaration_linear_scan(name: &str, indexes: &[(Uri, Arc<FileIndex>)]) -> Option<Location> {
+    fn zero_width_location(uri: &Uri, line: u32) -> Location {
         let pos = Position { line, character: 0 };
         Location {
             uri: uri.clone(),
@@ -678,9 +682,9 @@ fn bench_call_hierarchy(c: &mut Criterion) {
         // Indexed variants: decls_by_name lookups instead of per-callee
         // workspace scans — the path the server handlers use.
         let wi = php_lsp::db::workspace_index::WorkspaceIndexData::from_files(to_indexes(&docs));
-        let doc_map: std::collections::HashMap<Url, Arc<ParsedDoc>> =
+        let doc_map: std::collections::HashMap<Uri, Arc<ParsedDoc>> =
             docs.iter().cloned().collect();
-        let get_doc = |u: &Url| doc_map.get(u).cloned();
+        let get_doc = |u: &Uri| doc_map.get(u).cloned();
         group.bench_function("prepare_indexed/laravel_framework", |b| {
             b.iter(|| black_box(prepare_call_hierarchy_indexed("camel", &wi, &get_doc)));
         });
@@ -704,18 +708,18 @@ fn bench_call_hierarchy(c: &mut Criterion) {
 
 /// Load raw PHP source strings from the Laravel fixture without pre-parsing them.
 /// Used by `bench_workspace_parse` to measure parse + index cost in isolation.
-fn laravel_sources() -> Option<Vec<(Url, String)>> {
+fn laravel_sources() -> Option<Vec<(Uri, String)>> {
     let fixture_dir =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("benches/fixtures/laravel/src");
     if !fixture_dir.exists() {
         return None;
     }
-    let sources: Vec<(Url, String)> = walkdir::WalkDir::new(&fixture_dir)
+    let sources: Vec<(Uri, String)> = walkdir::WalkDir::new(&fixture_dir)
         .into_iter()
         .filter_map(|e| e.ok())
         .filter(|e| e.path().extension().is_some_and(|x| x == "php"))
         .filter_map(|e| {
-            let url = Url::from_file_path(e.path()).ok()?;
+            let url = Uri::from_file_path(e.path())?;
             let src = std::fs::read_to_string(e.path()).ok()?;
             Some((url, src))
         })

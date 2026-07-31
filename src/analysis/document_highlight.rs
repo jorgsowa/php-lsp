@@ -1,4 +1,4 @@
-use tower_lsp::lsp_types::{DocumentHighlight, DocumentHighlightKind, Position, Range};
+use tower_lsp_server::ls_types::{DocumentHighlight, DocumentHighlightKind, Position, Range};
 
 use crate::document::ast::ParsedDoc;
 use crate::navigation::walk::{collect_var_refs_in_scope, refs_in_stmts};

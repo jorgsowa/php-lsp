@@ -1,5 +1,5 @@
 use php_ast::{ClassMemberKind, EnumMemberKind, NamespaceBody, Stmt, StmtKind};
-use tower_lsp::lsp_types::{FoldingRange, FoldingRangeKind};
+use tower_lsp_server::ls_types::{FoldingRange, FoldingRangeKind};
 
 use crate::document::ast::{ParsedDoc, SourceView};
 

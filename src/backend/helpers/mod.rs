@@ -9,7 +9,7 @@
 
 use std::sync::Arc;
 
-use tower_lsp::lsp_types::*;
+use tower_lsp_server::ls_types::*;
 
 use crate::document::ast::ParsedDoc;
 use crate::document::document_store::DocumentStore;
@@ -51,7 +51,7 @@ pub(super) fn php_file_op() -> FileOperationRegistrationOptions {
 pub(super) fn defer_actions(
     actions: Vec<CodeActionOrCommand>,
     kind_tag: &str,
-    uri: &Url,
+    uri: &Uri,
     range: Range,
 ) -> Vec<CodeActionOrCommand> {
     actions
@@ -91,7 +91,7 @@ impl Backend {
     /// pool so it doesn't stall other in-flight requests.
     pub(super) async fn cached_analysis_async(
         &self,
-        uri: &Url,
+        uri: &Uri,
     ) -> Option<Arc<mir_analyzer::FileAnalysis>> {
         if let Some(hit) = self.docs.cached_analysis_if_fresh(uri) {
             return Some(hit);
@@ -101,7 +101,7 @@ impl Backend {
         match tokio::task::spawn_blocking(move || docs.cached_analysis(&uri_owned)).await {
             Ok(r) => r,
             Err(e) => {
-                tracing::warn!("cached_analysis panicked for {uri}: {e}");
+                tracing::warn!("cached_analysis panicked for {uri:?}: {e}");
                 None
             }
         }
@@ -194,7 +194,7 @@ impl Backend {
         let psr4 = self.psr4.load();
         let path = psr4.resolve(fqn).or_else(|| psr4.psr0_resolve(fqn))?;
 
-        let file_uri = Url::from_file_path(&path).ok()?;
+        let file_uri = Uri::from_file_path(&path)?;
 
         // Index on-demand if the file was not picked up by the workspace scan.
         // Use `get_doc_salsa_any` (ignores open-file gating): after `ingest()`
@@ -246,9 +246,9 @@ impl Backend {
                 Some(p) => p,
                 None => continue,
             };
-            let uri = match Url::from_file_path(&path) {
-                Ok(u) => u,
-                Err(_) => continue,
+            let uri = match Uri::from_file_path(&path) {
+                Some(u) => u,
+                None => continue,
             };
 
             // Lazy-load into the workspace so get_doc_salsa works below.
@@ -356,9 +356,9 @@ impl Backend {
                     Some(p) => p,
                     None => continue,
                 };
-                let uri = match Url::from_file_path(&path) {
-                    Ok(u) => u,
-                    Err(_) => continue,
+                let uri = match Uri::from_file_path(&path) {
+                    Some(u) => u,
+                    None => continue,
                 };
                 if self.docs.get_doc_salsa(&uri).is_some() {
                     continue;
@@ -385,7 +385,7 @@ pub(super) fn generate_deferred_actions(
     source: &str,
     doc: &Arc<ParsedDoc>,
     range: Range,
-    uri: &Url,
+    uri: &Uri,
 ) -> Vec<CodeActionOrCommand> {
     match tag {
         "phpdoc" => phpdoc_actions(uri, doc, source, range),

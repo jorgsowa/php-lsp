@@ -38,7 +38,7 @@ use view_index::view_completions;
 
 use std::path::Path;
 
-use tower_lsp::lsp_types::{CompletionItem, Location, Position, Url};
+use tower_lsp_server::ls_types::{CompletionItem, Location, Position, Uri};
 
 pub(crate) use string_call::find_call_sites;
 
@@ -155,7 +155,7 @@ pub(crate) fn completions_for_string_key(
 /// definition and needing to know *which* key it is before a workspace
 /// sweep is possible.
 pub(crate) fn resolve_definition_key(
-    uri: &Url,
+    uri: &Uri,
     position: Position,
     laravel: &LaravelIndex,
 ) -> Option<(&'static [&'static str], String, Location)> {
@@ -268,7 +268,7 @@ mod tests {
         std::fs::write(tmp.path().join("artisan"), "#!/usr/bin/env php").unwrap();
         std::fs::write(tmp.path().join(".env"), "APP_NAME=Test\n").unwrap();
         let laravel = LaravelIndex::load(tmp.path());
-        let uri = Url::from_file_path(tmp.path().join(".env")).unwrap();
+        let uri = Uri::from_file_path(tmp.path().join(".env")).unwrap();
         let (names, key, _loc) = resolve_definition_key(
             &uri,
             Position {
@@ -288,7 +288,7 @@ mod tests {
         std::fs::write(tmp.path().join("artisan"), "#!/usr/bin/env php").unwrap();
         std::fs::write(tmp.path().join(".env"), "APP_NAME=Test\n").unwrap();
         let laravel = LaravelIndex::load(tmp.path());
-        let uri = Url::from_file_path(tmp.path().join("app.php")).unwrap();
+        let uri = Uri::from_file_path(tmp.path().join("app.php")).unwrap();
         assert!(
             resolve_definition_key(
                 &uri,

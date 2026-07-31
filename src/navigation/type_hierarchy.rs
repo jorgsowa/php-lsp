@@ -2,14 +2,14 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use tower_lsp::lsp_types::{Position, SymbolKind, TypeHierarchyItem, Url};
+use tower_lsp_server::ls_types::{Position, SymbolKind, TypeHierarchyItem, Uri};
 
 use crate::text::zero_width_range;
 
 fn make_item_from_index(
     name: &str,
     kind: SymbolKind,
-    uri: &Url,
+    uri: &Uri,
     start_line: u32,
 ) -> TypeHierarchyItem {
     let range = zero_width_range(start_line);
@@ -36,7 +36,7 @@ fn make_item_from_index(
 /// own declaration — it is preferred over an arbitrary first match.
 pub fn prepare_type_hierarchy_from_workspace(
     source: &str,
-    uri: &Url,
+    uri: &Uri,
     wi: &crate::db::workspace_index::WorkspaceIndexData,
     position: Position,
 ) -> Option<TypeHierarchyItem> {
@@ -133,14 +133,14 @@ pub fn subtypes_of_mir_backed(
     item: &TypeHierarchyItem,
     item_fqn: Option<&str>,
     wi: &crate::db::workspace_index::WorkspaceIndexData,
-    subtype_urls: &[Url],
+    subtype_urls: &[Uri],
 ) -> Vec<TypeHierarchyItem> {
     if subtype_urls.is_empty() {
         return subtypes_of_from_workspace(item, item_fqn, wi);
     }
     use crate::index::file_index::ClassKind;
     use crate::navigation::implementation::{alias_resolves_to, name_matches};
-    let url_set: HashSet<&Url> = subtype_urls.iter().collect();
+    let url_set: HashSet<&Uri> = subtype_urls.iter().collect();
     let mut result = Vec::new();
     for (uri, idx) in &wi.files {
         if !url_set.contains(uri) {

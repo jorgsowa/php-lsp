@@ -3,7 +3,7 @@ use super::*;
 use crate::document::ast::ParsedDoc;
 use crate::editing::use_import::{build_use_import_edit, find_use_insert_line};
 use crate::lang::config::{DiagnosticsConfig, FeaturesConfig, MAX_INDEXED_FILES};
-use tower_lsp::lsp_types::{Position, Range, Url};
+use tower_lsp_server::ls_types::{Position, Range, Uri};
 
 // DiagnosticsConfig::from_value tests
 #[test]
@@ -263,7 +263,7 @@ fn php_file_op_matches_php_files() {
 // defer_actions tests
 #[test]
 fn defer_actions_strips_edit_and_adds_data() {
-    let uri = Url::parse("file:///test.php").unwrap();
+    let uri = ("file:///test.php").parse::<Uri>().unwrap();
     let range = Range {
         start: Position {
             line: 0,
@@ -298,7 +298,7 @@ fn defer_actions_strips_edit_and_adds_data() {
 #[test]
 fn build_use_import_edit_inserts_after_php_tag() {
     let src = "<?php\nclass Foo {}";
-    let uri = Url::parse("file:///test.php").unwrap();
+    let uri = ("file:///test.php").parse::<Uri>().unwrap();
     let edit = build_use_import_edit(src, &uri, "App\\Services\\Bar");
     let changes = edit.changes.unwrap();
     let edits = changes.get(&uri).unwrap();
@@ -310,7 +310,7 @@ fn build_use_import_edit_inserts_after_php_tag() {
 #[test]
 fn build_use_import_edit_inserts_after_existing_use() {
     let src = "<?php\nuse Foo\\Bar;\nclass Impl {}";
-    let uri = Url::parse("file:///test.php").unwrap();
+    let uri = ("file:///test.php").parse::<Uri>().unwrap();
     let edit = build_use_import_edit(src, &uri, "Baz\\Qux");
     let changes = edit.changes.unwrap();
     let edits = changes.get(&uri).unwrap();

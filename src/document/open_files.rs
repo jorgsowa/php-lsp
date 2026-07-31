@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use dashmap::DashMap;
-use tower_lsp::lsp_types::{Diagnostic, Url};
+use tower_lsp_server::ls_types::{Diagnostic, Uri};
 
 use crate::analysis::semantic_diagnostics::issues_to_diagnostics_gated;
 use crate::document::ast::ParsedDoc;
@@ -10,7 +10,7 @@ use crate::lang::config::DiagnosticsConfig;
 
 /// Per-open-file state owned by `Backend` (Phase E4).
 ///
-/// Previously this lived inside `DocumentStore`'s `map: DashMap<Url, Document>`,
+/// Previously this lived inside `DocumentStore`'s `map: DashMap<Uri, Document>`,
 /// but none of these fields are salsa-shaped: `text` is the live editor buffer,
 /// `version` is an async-parse gate, and `parse_diagnostics` is a publish cache.
 /// Keeping them on `Backend` leaves `DocumentStore` as a pure salsa-input wrapper.
@@ -45,14 +45,14 @@ pub(crate) struct OpenFile {
 /// Shared handle to open-file state. Cheaply cloneable — wraps an `Arc<DashMap>`
 /// so it can be captured by async closures alongside `Arc<DocumentStore>`.
 #[derive(Clone, Default)]
-pub struct OpenFiles(Arc<DashMap<Url, OpenFile>>);
+pub struct OpenFiles(Arc<DashMap<Uri, OpenFile>>);
 
 impl OpenFiles {
     pub(crate) fn new() -> Self {
         Self::default()
     }
 
-    pub(crate) fn set_open_text(&self, docs: &DocumentStore, uri: Url, text: String) -> u64 {
+    pub(crate) fn set_open_text(&self, docs: &DocumentStore, uri: Uri, text: String) -> u64 {
         // Build the Arc once and hand the same allocation to both the salsa
         // mirror and the open-file entry — `mirror_text_arc` skips the extra
         // `Arc::from` copy `mirror_text` would otherwise make from `&text`.
@@ -64,39 +64,39 @@ impl OpenFiles {
         entry.version
     }
 
-    pub(crate) fn close(&self, docs: &DocumentStore, uri: &Url) {
+    pub(crate) fn close(&self, docs: &DocumentStore, uri: &Uri) {
         self.0.remove(uri);
         docs.evict_token_cache(uri);
     }
 
-    pub(crate) fn current_version(&self, uri: &Url) -> Option<u64> {
+    pub(crate) fn current_version(&self, uri: &Uri) -> Option<u64> {
         self.0.get(uri).map(|e| e.version)
     }
 
-    pub(crate) fn text(&self, uri: &Url) -> Option<Arc<str>> {
+    pub(crate) fn text(&self, uri: &Uri) -> Option<Arc<str>> {
         self.0.get(uri).map(|e| Arc::clone(&e.text))
     }
 
-    pub(crate) fn set_parse_diagnostics(&self, uri: &Url, diagnostics: Vec<Diagnostic>) {
+    pub(crate) fn set_parse_diagnostics(&self, uri: &Uri, diagnostics: Vec<Diagnostic>) {
         if let Some(mut entry) = self.0.get_mut(uri) {
             entry.parse_diagnostics = diagnostics;
         }
     }
 
-    pub(crate) fn parse_diagnostics(&self, uri: &Url) -> Option<Vec<Diagnostic>> {
+    pub(crate) fn parse_diagnostics(&self, uri: &Uri) -> Option<Vec<Diagnostic>> {
         self.0.get(uri).map(|e| e.parse_diagnostics.clone())
     }
 
     /// Record the content hash of a `publishDiagnostics` just sent for `uri`.
     /// No-op when the file closed mid-flight (entry gone).
-    pub(crate) fn note_published(&self, uri: &Url, hash: u64) {
+    pub(crate) fn note_published(&self, uri: &Uri, hash: u64) {
         if let Some(mut entry) = self.0.get_mut(uri) {
             entry.published_hash = Some(hash);
         }
     }
 
     /// Hash of the last publish sent for `uri`, if it is still open.
-    pub(crate) fn published_hash(&self, uri: &Url) -> Option<u64> {
+    pub(crate) fn published_hash(&self, uri: &Uri) -> Option<u64> {
         self.0.get(uri).and_then(|e| e.published_hash)
     }
 
@@ -104,7 +104,7 @@ impl OpenFiles {
     /// `version`. No-op when the file closed mid-run (entry gone).
     pub(crate) fn set_external_diagnostics(
         &self,
-        uri: &Url,
+        uri: &Uri,
         version: u64,
         diagnostics: Vec<Diagnostic>,
     ) {
@@ -116,7 +116,7 @@ impl OpenFiles {
 
     /// Cached external-tool diagnostics for `uri`, or empty if none have
     /// been computed yet or the buffer has changed since they were.
-    pub(crate) fn external_diagnostics(&self, uri: &Url) -> Vec<Diagnostic> {
+    pub(crate) fn external_diagnostics(&self, uri: &Uri) -> Vec<Diagnostic> {
         self.0
             .get(uri)
             .filter(|e| e.external_diagnostics_version == Some(e.version))
@@ -124,7 +124,7 @@ impl OpenFiles {
             .unwrap_or_default()
     }
 
-    pub(crate) fn all_with_diagnostics(&self) -> Vec<(Url, Vec<Diagnostic>, Option<i64>)> {
+    pub(crate) fn all_with_diagnostics(&self) -> Vec<(Uri, Vec<Diagnostic>, Option<i64>)> {
         self.0
             .iter()
             .map(|e| {
@@ -137,16 +137,16 @@ impl OpenFiles {
             .collect()
     }
 
-    pub(crate) fn urls(&self) -> Vec<Url> {
+    pub(crate) fn urls(&self) -> Vec<Uri> {
         self.0.iter().map(|e| e.key().clone()).collect()
     }
 
-    pub(crate) fn contains(&self, uri: &Url) -> bool {
+    pub(crate) fn contains(&self, uri: &Uri) -> bool {
         self.0.contains_key(uri)
     }
 
     /// Open-gated parsed doc: returns `Some` only when `uri` is currently open.
-    pub(crate) fn get_doc(&self, docs: &DocumentStore, uri: &Url) -> Option<Arc<ParsedDoc>> {
+    pub(crate) fn get_doc(&self, docs: &DocumentStore, uri: &Uri) -> Option<Arc<ParsedDoc>> {
         if !self.contains(uri) {
             return None;
         }
@@ -156,7 +156,7 @@ impl OpenFiles {
     /// Open-gated, stale-tolerant parsed doc for cursor-triggered cosmetic reads
     /// (`documentHighlight`). Never spins under write pressure — see
     /// [`DocumentStore::get_doc_snapshot_or_stale`].
-    pub(crate) fn get_doc_stale(&self, docs: &DocumentStore, uri: &Url) -> Option<Arc<ParsedDoc>> {
+    pub(crate) fn get_doc_stale(&self, docs: &DocumentStore, uri: &Uri) -> Option<Arc<ParsedDoc>> {
         if !self.contains(uri) {
             return None;
         }
@@ -183,7 +183,7 @@ impl OpenFiles {
 pub(crate) fn compute_open_file_diagnostics(
     docs: &DocumentStore,
     open_files: &OpenFiles,
-    uri: &Url,
+    uri: &Uri,
     diag_cfg: &DiagnosticsConfig,
 ) -> Vec<Diagnostic> {
     let mut out = open_files.parse_diagnostics(uri).unwrap_or_default();
@@ -210,7 +210,7 @@ mod tests {
     fn text_reuses_the_same_arc_across_reads() {
         let docs = DocumentStore::new();
         let open_files = OpenFiles::new();
-        let uri = Url::parse("file:///test.php").unwrap();
+        let uri = ("file:///test.php").parse::<Uri>().unwrap();
         open_files.set_open_text(&docs, uri.clone(), "<?php".to_owned());
 
         let first = open_files.text(&uri).unwrap();
@@ -230,7 +230,7 @@ mod tests {
     fn undefined_class_suppressed_until_index_ready() {
         let docs = DocumentStore::new();
         let open_files = OpenFiles::new();
-        let uri = Url::parse("file:///app.php").unwrap();
+        let uri = ("file:///app.php").parse::<Uri>().unwrap();
         open_files.set_open_text(
             &docs,
             uri.clone(),
@@ -262,7 +262,7 @@ mod tests {
     fn local_only_issue_not_suppressed_before_index_ready() {
         let docs = DocumentStore::new();
         let open_files = OpenFiles::new();
-        let uri = Url::parse("file:///app.php").unwrap();
+        let uri = ("file:///app.php").parse::<Uri>().unwrap();
         open_files.set_open_text(
             &docs,
             uri.clone(),

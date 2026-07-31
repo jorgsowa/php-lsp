@@ -1,5 +1,5 @@
 use php_ast::{NamespaceBody, Span, Stmt, StmtKind, UseKind};
-use tower_lsp::lsp_types::{Position, Range, TextEdit};
+use tower_lsp_server::ls_types::{Position, Range, TextEdit};
 
 use crate::document::ast::ParsedDoc;
 

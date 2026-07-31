@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use tower_lsp::lsp_types::{CompletionItem, CompletionItemKind, Position};
+use tower_lsp_server::ls_types::{CompletionItem, CompletionItemKind, Position};
 
 use super::member::{line_byte_offset, receiver_class_at};
 use crate::document::ast::ParsedDoc;

@@ -33,11 +33,11 @@ pub use symbols::{
 
 use std::sync::Arc;
 
-use tower_lsp::lsp_types::{
-    CompletionItem, CompletionItemKind, InsertTextFormat, Position, Range, TextEdit, Url,
+use tower_lsp_server::ls_types::{
+    CompletionItem, CompletionItemKind, InsertTextFormat, Position, Range, TextEdit, Uri,
 };
 
-use tower_lsp::lsp_types::{Documentation, MarkupContent, MarkupKind};
+use tower_lsp_server::ls_types::{Documentation, MarkupContent, MarkupKind};
 
 use crate::document::ast::{ParsedDoc, format_type_hint};
 use crate::hover::format_params_str;
@@ -283,7 +283,7 @@ pub type WorkspaceClassSearch<'a> = &'a dyn Fn(&str) -> Vec<(String, CompletionI
 pub struct CompletionCtx<'a> {
     pub source: Option<&'a str>,
     pub position: Option<Position>,
-    pub doc_uri: Option<&'a Url>,
+    pub doc_uri: Option<&'a Uri>,
     pub file_imports: Option<&'a HashMap<String, String>>,
     /// Optional O(1) class-document lookup backed by the workspace index.
     /// When `Some`, `all_instance_members` and `all_static_members` use it
@@ -561,7 +561,7 @@ pub fn filtered_completions_at(
                 let pre_colon = before.trim_end_matches(|c: char| c.is_alphanumeric() || c == '_');
                 if pre_colon.ends_with("::") {
                     let colon_end_char = pre_colon.encode_utf16().count() as u32;
-                    let colon_pos = tower_lsp::lsp_types::Position {
+                    let colon_pos = tower_lsp_server::ls_types::Position {
                         line: pos.line,
                         character: colon_end_char,
                     };
@@ -599,7 +599,7 @@ pub fn filtered_completions_at(
                     // simple variables ($obj->), `(new Foo())->`, method chains
                     // ($obj->getUser()->), and nullable operators ($obj?->).
                     let arrow_end_char = pre_arrow.encode_utf16().count() as u32;
-                    let arrow_pos = tower_lsp::lsp_types::Position {
+                    let arrow_pos = tower_lsp_server::ls_types::Position {
                         line: pos.line,
                         character: arrow_end_char,
                     };

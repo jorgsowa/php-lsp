@@ -1,4 +1,4 @@
-use tower_lsp::lsp_types::{CompletionItem, CompletionItemKind, Position, Url};
+use tower_lsp_server::ls_types::{CompletionItem, CompletionItemKind, Position, Uri};
 
 use crate::text::utf16_offset_to_byte;
 
@@ -30,12 +30,12 @@ pub(super) fn include_path_prefix(source: &str, position: Position) -> Option<St
 /// The returned `insert_text` for each item is the full replacement text
 /// from the opening quote to the end of the completed entry, so that the
 /// LSP client can replace the whole typed path (not just the last segment).
-pub(super) fn include_path_completions(doc_uri: &Url, prefix: &str) -> Vec<CompletionItem> {
+pub(super) fn include_path_completions(doc_uri: &Uri, prefix: &str) -> Vec<CompletionItem> {
     use std::path::Path;
 
     let doc_path = match doc_uri.to_file_path() {
-        Ok(p) => p,
-        Err(_) => return vec![],
+        Some(p) => p,
+        None => return vec![],
     };
     let doc_dir = match doc_path.parent() {
         Some(d) => d.to_path_buf(),
@@ -213,7 +213,7 @@ mod tests {
         fs::write(subdir.join("README.md"), "# readme").expect("write README.md");
 
         let doc_path = tmp.path().join("index.php");
-        let doc_uri = Url::from_file_path(&doc_path).expect("doc uri");
+        let doc_uri = Uri::from_file_path(&doc_path).expect("doc uri");
 
         // Prefix "./lib/" — should list the lib directory contents
         let items = include_path_completions(&doc_uri, "./lib/");
@@ -236,7 +236,7 @@ mod tests {
         fs::write(subdir.join("Boot.php"), "<?php").expect("write Boot.php");
 
         let doc_path = tmp.path().join("main.php");
-        let doc_uri = Url::from_file_path(&doc_path).expect("doc uri");
+        let doc_uri = Uri::from_file_path(&doc_path).expect("doc uri");
 
         let items = include_path_completions(&doc_uri, "./src/");
         let boot = items.iter().find(|i| i.label == "Boot.php");
@@ -252,7 +252,7 @@ mod tests {
     fn include_path_completions_is_empty_for_non_existent_directory() {
         let tmp = tempfile::tempdir().expect("tmpdir");
         let doc_path = tmp.path().join("index.php");
-        let doc_uri = Url::from_file_path(&doc_path).expect("doc uri");
+        let doc_uri = Uri::from_file_path(&doc_path).expect("doc uri");
 
         let items = include_path_completions(&doc_uri, "./nonexistent/");
         assert!(
@@ -270,7 +270,7 @@ mod tests {
         fs::create_dir_all(&subdir).expect("create modules dir");
 
         let doc_path = tmp.path().join("index.php");
-        let doc_uri = Url::from_file_path(&doc_path).expect("doc uri");
+        let doc_uri = Uri::from_file_path(&doc_path).expect("doc uri");
 
         let items = include_path_completions(&doc_uri, "");
         let modules = items.iter().find(|i| i.label == "modules");

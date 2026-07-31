@@ -2,7 +2,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use dashmap::DashMap;
-use tower_lsp::lsp_types::{SemanticToken, Url};
+use tower_lsp_server::ls_types::{SemanticToken, Uri};
 
 use crate::document::ast::ParsedDoc;
 use crate::index::file_index::FileIndex;
@@ -24,13 +24,13 @@ pub(crate) const OWNED_PROGRAM_CACHE_CAP: usize = 256;
 /// then add `self.field.remove(uri)` to `evict()`.
 pub(crate) struct CacheRegistry {
     /// Cached semantic tokens per document: (result_id, tokens).
-    pub(crate) token_cache: DashMap<Url, (String, Arc<Vec<SemanticToken>>)>,
+    pub(crate) token_cache: DashMap<Uri, (String, Arc<Vec<SemanticToken>>)>,
     /// G2: lock-free mirror of each file's last-set text for dedup in mirror_text.
-    pub(crate) text_cache: DashMap<Url, Arc<str>>,
+    pub(crate) text_cache: DashMap<Uri, Arc<str>>,
     /// G3: cross-revision read-through cache for parsed_doc.
-    pub(crate) parsed_cache: DashMap<Url, (Arc<str>, Arc<ParsedDoc>)>,
+    pub(crate) parsed_cache: DashMap<Uri, (Arc<str>, Arc<ParsedDoc>)>,
     /// Per-file mir body analysis cache: (source_arc, decl_ver, analysis).
-    pub(crate) analysis_cache: DashMap<Url, (Arc<str>, u64, Arc<mir_analyzer::FileAnalysis>)>,
+    pub(crate) analysis_cache: DashMap<Uri, (Arc<str>, u64, Arc<mir_analyzer::FileAnalysis>)>,
     /// Monotonically increasing counter bumped on any declaration-level change.
     pub(crate) decl_version: AtomicU64,
     /// Count of real `ParsedDoc` parses served by `get_parsed_cached` (cache
@@ -38,17 +38,17 @@ pub(crate) struct CacheRegistry {
     /// read path against re-introducing whole-workspace parsing.
     pub(crate) parse_count: AtomicU64,
     /// Last-seen FileIndex per URI, used to detect declaration changes.
-    pub(crate) decl_fingerprints: DashMap<Url, Arc<FileIndex>>,
+    pub(crate) decl_fingerprints: DashMap<Uri, Arc<FileIndex>>,
     /// Owned-program cache: (source_arc, owned_program). Avoids repeating the
     /// deep arena clone in `cached_analysis` when `decl_version` bumps due to
     /// a sibling file's declaration change — the file's own source is unchanged,
     /// so the owned AST copy can be reused.
-    pub(crate) owned_program_cache: DashMap<Url, (Arc<str>, Arc<php_ast::owned::Program>)>,
+    pub(crate) owned_program_cache: DashMap<Uri, (Arc<str>, Arc<php_ast::owned::Program>)>,
     /// On-demand `FileIndex` store for vendor files loaded lazily via PSR-4
     /// navigation. Vendor is excluded from the eager workspace scan; files
     /// ingested by `psr4_method_goto` are not in the salsa workspace_index.
     /// Evicted alongside all other per-file caches via `evict()`.
-    pub(crate) vendor_index_cache: DashMap<Url, Arc<FileIndex>>,
+    pub(crate) vendor_index_cache: DashMap<Uri, Arc<FileIndex>>,
     /// Monotonic counter driving `last_access`.
     access_tick: AtomicU64,
     /// Last-use tick per file, shared by every bounded per-file cache. Updated
@@ -56,7 +56,7 @@ pub(crate) struct CacheRegistry {
     /// half of a cache that has reached its cap. Shared recency is deliberate:
     /// all per-file caches correlate with "this file was recently involved in
     /// a request", and one map keeps the bookkeeping off the hot paths.
-    last_access: DashMap<Url, u64>,
+    last_access: DashMap<Uri, u64>,
 }
 
 impl CacheRegistry {
@@ -79,9 +79,9 @@ impl CacheRegistry {
     /// Record a use of `uri`'s per-file caches (hit or insert). Recency feeds
     /// [`Self::shed_stale`]. Called 2-3x per URI on every cache-hit request
     /// path (hover, completion, code_lens, ...), so the common case must not
-    /// pay a `Url` clone: `get_mut` looks up by `&Url` and only allocates on
+    /// pay a `Uri` clone: `get_mut` looks up by `&Uri` and only allocates on
     /// the (rare) first-ever touch of a URI.
-    pub(crate) fn touch(&self, uri: &Url) {
+    pub(crate) fn touch(&self, uri: &Uri) {
         let tick = self.access_tick.fetch_add(1, Ordering::Relaxed);
         if let Some(mut existing) = self.last_access.get_mut(uri) {
             *existing = tick;
@@ -94,14 +94,14 @@ impl CacheRegistry {
     /// Entries with no recorded access sort oldest and shed first.
     ///
     /// Two passes instead of a single clone-everything-then-sort: pass 1
-    /// collects only ticks (`u64`, `Copy` — no `Url` clones) and partitions
+    /// collects only ticks (`u64`, `Copy` — no `Uri` clones) and partitions
     /// them in O(n) via `select_nth_unstable` instead of an O(n log n) full
-    /// sort; pass 2 clones only the `Url`s actually being evicted (~`cap/2`)
+    /// sort; pass 2 clones only the `Uri`s actually being evicted (~`cap/2`)
     /// instead of every entry in the map. Both passes fully drain
     /// `map.iter()` into an owned `Vec` before any `map.remove()` call —
     /// removing while a `DashMap` iterator holds that shard's read guard
     /// would deadlock.
-    pub(crate) fn shed_stale<V>(&self, map: &DashMap<Url, V>, cap: usize) {
+    pub(crate) fn shed_stale<V>(&self, map: &DashMap<Uri, V>, cap: usize) {
         let len = map.len();
         if len < cap {
             return;
@@ -122,7 +122,7 @@ impl CacheRegistry {
         // acceptable for this soft/approximate LRU policy (the old full sort
         // over an unstable comparator wasn't a strict tie-break contract
         // either).
-        let to_remove: Vec<Url> = map
+        let to_remove: Vec<Uri> = map
             .iter()
             .filter(|e| {
                 let tick = self.last_access.get(e.key()).map(|t| *t).unwrap_or(0);
@@ -137,7 +137,7 @@ impl CacheRegistry {
     }
 
     /// Evict every per-file cache entry for `uri`. Call this from `DocumentStore::remove`.
-    pub(crate) fn evict(&self, uri: &Url) {
+    pub(crate) fn evict(&self, uri: &Uri) {
         self.token_cache.remove(uri);
         self.text_cache.remove(uri);
         self.parsed_cache.remove(uri);
@@ -150,7 +150,7 @@ impl CacheRegistry {
 
     /// Evict only the mir analysis cache for `uri`. Used on text change so the
     /// next request re-runs Pass 1 + Pass 2 with the new content.
-    pub(crate) fn evict_analysis(&self, uri: &Url) {
+    pub(crate) fn evict_analysis(&self, uri: &Uri) {
         self.analysis_cache.remove(uri);
     }
 
@@ -162,14 +162,14 @@ impl CacheRegistry {
 
     /// Evict only the semantic-tokens cache for `uri`. Used when a file is
     /// closed; delta tokens computed against the old revision are invalid.
-    pub(crate) fn evict_tokens(&self, uri: &Url) {
+    pub(crate) fn evict_tokens(&self, uri: &Uri) {
         self.token_cache.remove(uri);
     }
 
     /// Store a fresh token set for delta requests.
     pub(crate) fn store_token(
         &self,
-        uri: &Url,
+        uri: &Uri,
         result_id: String,
         tokens: Arc<Vec<SemanticToken>>,
     ) {
@@ -177,7 +177,7 @@ impl CacheRegistry {
     }
 
     /// Return the cached token set if `result_id` matches.
-    pub(crate) fn get_token(&self, uri: &Url, result_id: &str) -> Option<Arc<Vec<SemanticToken>>> {
+    pub(crate) fn get_token(&self, uri: &Uri, result_id: &str) -> Option<Arc<Vec<SemanticToken>>> {
         self.token_cache
             .get(uri)
             .filter(|e| e.0.as_str() == result_id)
@@ -189,7 +189,7 @@ impl CacheRegistry {
     /// [`PARSED_CACHE_CAP`]. Recency-based (not arbitrary): a references
     /// sweep over a large candidate set must not evict the open files the
     /// user is actively editing.
-    pub(crate) fn insert_parsed(&self, uri: Url, text: Arc<str>, doc: Arc<ParsedDoc>) {
+    pub(crate) fn insert_parsed(&self, uri: Uri, text: Arc<str>, doc: Arc<ParsedDoc>) {
         self.shed_stale(&self.parsed_cache, PARSED_CACHE_CAP);
         self.touch(&uri);
         self.parsed_cache.insert(uri, (text, doc));
@@ -216,14 +216,14 @@ impl CacheRegistry {
 mod tests {
     use super::*;
 
-    fn uri(n: usize) -> Url {
-        Url::parse(&format!("file:///f{n}.php")).unwrap()
+    fn uri(n: usize) -> Uri {
+        format!("file:///f{n}.php").parse::<Uri>().unwrap()
     }
 
     #[test]
     fn shed_stale_noop_below_cap() {
         let reg = CacheRegistry::new();
-        let map: DashMap<Url, ()> = DashMap::new();
+        let map: DashMap<Uri, ()> = DashMap::new();
         for i in 0..5 {
             map.insert(uri(i), ());
             reg.touch(&uri(i));
@@ -235,7 +235,7 @@ mod tests {
     #[test]
     fn shed_stale_evicts_oldest_half_at_cap() {
         let reg = CacheRegistry::new();
-        let map: DashMap<Url, ()> = DashMap::new();
+        let map: DashMap<Uri, ()> = DashMap::new();
         // Insert in order so uri(0) is least-recently-touched, uri(9) most recent.
         for i in 0..10 {
             map.insert(uri(i), ());
@@ -260,7 +260,7 @@ mod tests {
     #[test]
     fn shed_stale_treats_untouched_entries_as_oldest() {
         let reg = CacheRegistry::new();
-        let map: DashMap<Url, ()> = DashMap::new();
+        let map: DashMap<Uri, ()> = DashMap::new();
         // A CacheRegistry's very first touch() returns tick 0 — the same
         // value `unwrap_or(0)` uses for a never-touched entry. Burn that
         // first tick on a throwaway key so uri(2)/uri(3) below get ticks

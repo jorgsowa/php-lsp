@@ -3,8 +3,8 @@
 use std::sync::Arc;
 
 use php_ast::{ClassMemberKind, EnumMemberKind, NamespaceBody, Stmt, StmtKind};
-use tower_lsp::lsp_types::{
-    DocumentSymbol, Location, OneOf, Range, SymbolInformation, SymbolKind, Url, WorkspaceSymbol,
+use tower_lsp_server::ls_types::{
+    DocumentSymbol, Location, OneOf, Range, SymbolInformation, SymbolKind, Uri, WorkspaceSymbol,
 };
 
 use crate::document::ast::{ParsedDoc, SourceView, name_range};
@@ -39,7 +39,7 @@ fn is_placeholder_range(range: &Range) -> bool {
 /// the existing location is preserved.
 pub fn resolve_workspace_symbol(
     mut symbol: WorkspaceSymbol,
-    docs: &[(Url, Arc<ParsedDoc>)],
+    docs: &[(Uri, Arc<ParsedDoc>)],
 ) -> WorkspaceSymbol {
     let uri = match &symbol.location {
         // Genuinely precise range — already resolved, nothing to do.
@@ -525,7 +525,7 @@ fn format_fn_signature(
 #[allow(deprecated)]
 pub fn workspace_symbols_from_index(
     query: &str,
-    indexes: &[(Url, Arc<crate::index::file_index::FileIndex>)],
+    indexes: &[(Uri, Arc<crate::index::file_index::FileIndex>)],
 ) -> Vec<SymbolInformation> {
     use crate::index::file_index::ClassKind;
 
@@ -647,7 +647,7 @@ pub fn workspace_symbols_from_index(
 }
 
 /// Phase J — Thin wrapper over `workspace_symbols_from_index` that reads the
-/// `(Url, Arc<FileIndex>)` list out of the salsa-memoized aggregate. The
+/// `(Uri, Arc<FileIndex>)` list out of the salsa-memoized aggregate. The
 /// inner walk is unchanged (fuzzy match is inherently O(total symbols)); the
 /// win is that every handler shares the same aggregate `Arc`, rebuilt only on
 /// edits, instead of each request rebuilding the list via `all_indexes()`

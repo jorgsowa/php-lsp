@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
-use tower_lsp::jsonrpc::Result;
-use tower_lsp::lsp_types::*;
+use tower_lsp_server::jsonrpc::Result;
+use tower_lsp_server::ls_types::*;
 
 use crate::analysis::diagnostics::merge_file_diagnostics;
 
@@ -74,8 +74,8 @@ impl Backend {
         .await
         .map_err(|e| {
             use std::borrow::Cow;
-            tower_lsp::jsonrpc::Error {
-                code: tower_lsp::jsonrpc::ErrorCode::InternalError,
+            tower_lsp_server::jsonrpc::Error {
+                code: tower_lsp_server::jsonrpc::ErrorCode::InternalError,
                 message: Cow::Owned(format!("diagnostic analysis failed: {}", e)),
                 data: None,
             }
@@ -125,7 +125,7 @@ impl Backend {
         };
         let _ = php_version;
 
-        let previous_map: std::collections::HashMap<Url, String> = params
+        let previous_map: std::collections::HashMap<Uri, String> = params
             .previous_result_ids
             .into_iter()
             .map(|p| (p.uri, p.value))
@@ -185,8 +185,8 @@ impl Backend {
         .await
         .map_err(|e| {
             use std::borrow::Cow;
-            tower_lsp::jsonrpc::Error {
-                code: tower_lsp::jsonrpc::ErrorCode::InternalError,
+            tower_lsp_server::jsonrpc::Error {
+                code: tower_lsp_server::jsonrpc::ErrorCode::InternalError,
                 message: Cow::Owned(format!("workspace_diagnostic analysis failed: {}", e)),
                 data: None,
             }

@@ -5,7 +5,7 @@ use super::*;
 
 use expect_test::expect;
 use std::time::Duration;
-use tower_lsp::lsp_types::Url;
+use tower_lsp_server::ls_types::Uri;
 
 const CREATED: u32 = 1;
 const CHANGED: u32 = 2;
@@ -58,7 +58,7 @@ async fn add_workspace_folder_indexes_php_classes() {
     )
     .expect("write ExtraWidget.php");
 
-    let folder_uri = Url::from_file_path(tmp.path())
+    let folder_uri = Uri::from_file_path(tmp.path())
         .expect("valid file URI")
         .to_string();
 
@@ -100,7 +100,7 @@ async fn add_workspace_folder_honors_index_vendor_false() {
     )
     .expect("write vendored file");
 
-    let folder_uri = Url::from_file_path(tmp.path())
+    let folder_uri = Uri::from_file_path(tmp.path())
         .expect("valid file URI")
         .to_string();
 
@@ -164,7 +164,7 @@ async fn add_workspace_folder_replays_warm_start_postings() {
     let mut s = TestServer::with_root_and_options(empty_root.path(), opts(false)).await;
     s.wait_for_index_ready().await;
 
-    let folder_uri = Url::from_file_path(added_root.path())
+    let folder_uri = Uri::from_file_path(added_root.path())
         .expect("valid file URI")
         .to_string();
     s.add_workspace_folder(&folder_uri).await;
@@ -201,7 +201,7 @@ async fn add_empty_workspace_folder_does_not_crash() {
     server.wait_for_index_ready().await;
 
     let tmp = tempfile::tempdir().expect("create TempDir");
-    let folder_uri = Url::from_file_path(tmp.path())
+    let folder_uri = Uri::from_file_path(tmp.path())
         .expect("valid file URI")
         .to_string();
 
@@ -232,7 +232,7 @@ async fn add_workspace_folder_idempotent_on_duplicate() {
     )
     .expect("write UniqueGadget.php");
 
-    let folder_uri = Url::from_file_path(tmp.path())
+    let folder_uri = Uri::from_file_path(tmp.path())
         .expect("valid file URI")
         .to_string();
 

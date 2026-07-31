@@ -1,5 +1,5 @@
 use php_ast::{MethodDecl, Param, Visibility};
-use tower_lsp::lsp_types::{Hover, HoverContents, MarkupContent, MarkupKind};
+use tower_lsp_server::ls_types::{Hover, HoverContents, MarkupContent, MarkupKind};
 
 use crate::document::ast::format_type_hint;
 use crate::lang::php_names::{is_php_builtin, php_doc_url};
@@ -257,7 +257,7 @@ fn class_matches_hint(cls: &crate::index::file_index::ClassDef, class_hint: Opti
 pub fn signature_for_symbol_from_index(
     name: &str,
     indexes: &[(
-        tower_lsp::lsp_types::Url,
+        tower_lsp_server::ls_types::Uri,
         std::sync::Arc<crate::index::file_index::FileIndex>,
     )],
 ) -> Option<String> {
@@ -273,7 +273,7 @@ pub fn signature_for_symbol_from_index(
 pub fn signature_for_symbol_from_index_scoped(
     name: &str,
     indexes: &[(
-        tower_lsp::lsp_types::Url,
+        tower_lsp_server::ls_types::Uri,
         std::sync::Arc<crate::index::file_index::FileIndex>,
     )],
     class_hint: Option<&str>,
@@ -346,7 +346,7 @@ pub fn signature_for_symbol_from_index_scoped(
 pub fn docs_for_symbol_from_index(
     name: &str,
     indexes: &[(
-        tower_lsp::lsp_types::Url,
+        tower_lsp_server::ls_types::Uri,
         std::sync::Arc<crate::index::file_index::FileIndex>,
     )],
 ) -> Option<String> {
@@ -360,7 +360,7 @@ pub fn docs_for_symbol_from_index(
 pub fn docs_for_symbol_from_index_scoped(
     name: &str,
     indexes: &[(
-        tower_lsp::lsp_types::Url,
+        tower_lsp_server::ls_types::Uri,
         std::sync::Arc<crate::index::file_index::FileIndex>,
     )],
     class_hint: Option<&str>,
@@ -480,7 +480,7 @@ pub fn method_hover_from_index(
     class_name: &str,
     method_name: &str,
     indexes: &[(
-        tower_lsp::lsp_types::Url,
+        tower_lsp_server::ls_types::Uri,
         std::sync::Arc<crate::index::file_index::FileIndex>,
     )],
 ) -> Option<Hover> {
@@ -546,7 +546,7 @@ pub fn class_hover_from_index(
     word: &str,
     fqn: Option<&str>,
     indexes: &[(
-        tower_lsp::lsp_types::Url,
+        tower_lsp_server::ls_types::Uri,
         std::sync::Arc<crate::index::file_index::FileIndex>,
     )],
 ) -> Option<Hover> {

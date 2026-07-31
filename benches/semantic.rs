@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use criterion::{Criterion, criterion_group, criterion_main};
 use std::hint::black_box;
-use tower_lsp::lsp_types::Url;
+use tower_lsp_server::ls_types::Uri;
 
 use php_lsp::ast::ParsedDoc;
 use php_lsp::config::DiagnosticsConfig;
@@ -53,7 +53,7 @@ fn new_session() -> mir_analyzer::AnalysisSession {
 
 /// Single-file cold analyze: fresh `AnalysisSession` per iteration.
 fn bench_single_file(c: &mut Criterion) {
-    let uri = Url::parse("file:///bench/medium.php").unwrap();
+    let uri = ("file:///bench/medium.php").parse::<Uri>().unwrap();
     let doc = ParsedDoc::parse(MEDIUM.to_owned());
     let cfg = all_enabled();
 
@@ -67,7 +67,7 @@ fn bench_single_file(c: &mut Criterion) {
 
 /// Edit-loop: session persists; `ingest_file` updates it in place per iter.
 fn bench_edit_loop(c: &mut Criterion) {
-    let uri = Url::parse("file:///bench/medium.php").unwrap();
+    let uri = ("file:///bench/medium.php").parse::<Uri>().unwrap();
     let doc = ParsedDoc::parse(MEDIUM.to_owned());
     let cfg = all_enabled();
     let session = new_session();
@@ -96,12 +96,12 @@ fn bench_laravel_scale(c: &mut Criterion) {
         return;
     }
 
-    let parsed: Vec<(Url, Arc<ParsedDoc>, Arc<str>)> = walkdir::WalkDir::new(&fixture_dir)
+    let parsed: Vec<(Uri, Arc<ParsedDoc>, Arc<str>)> = walkdir::WalkDir::new(&fixture_dir)
         .into_iter()
         .filter_map(|e| e.ok())
         .filter(|e| e.path().extension().is_some_and(|x| x == "php"))
         .filter_map(|e| {
-            let url = Url::from_file_path(e.path()).ok()?;
+            let url = Uri::from_file_path(e.path())?;
             let src = std::fs::read_to_string(e.path()).ok()?;
             let src_arc: Arc<str> = Arc::from(src);
             let doc = Arc::new(ParsedDoc::parse(src_arc.clone()));

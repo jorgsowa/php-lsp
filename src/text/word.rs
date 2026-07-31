@@ -1,7 +1,7 @@
 //! Word/identifier extraction under the cursor, parameter-list splitting, and
 //! PHP-name string helpers (short-name / variable-sigil stripping).
 
-use tower_lsp::lsp_types::{Position, Range};
+use tower_lsp_server::ls_types::{Position, Range};
 
 use super::offset::utf16_offset_to_byte;
 

@@ -2,8 +2,8 @@
 use std::collections::HashMap;
 
 use php_ast::{ClassMemberKind, EnumMemberKind, NamespaceBody, Stmt, StmtKind};
-use tower_lsp::lsp_types::{
-    CodeAction, CodeActionKind, CodeActionOrCommand, Position, Range, TextEdit, Url, WorkspaceEdit,
+use tower_lsp_server::ls_types::{
+    CodeAction, CodeActionKind, CodeActionOrCommand, Position, Range, TextEdit, Uri, WorkspaceEdit,
 };
 
 use crate::document::ast::{ParsedDoc, SourceView};
@@ -14,7 +14,7 @@ pub fn add_return_type_actions(
     _source: &str,
     doc: &ParsedDoc,
     range: Range,
-    uri: &Url,
+    uri: &Uri,
 ) -> Vec<CodeActionOrCommand> {
     let sv = doc.view();
     let mut out = Vec::new();
@@ -26,7 +26,7 @@ fn collect(
     stmts: &[Stmt<'_, '_>],
     sv: SourceView<'_>,
     range: Range,
-    uri: &Url,
+    uri: &Uri,
     out: &mut Vec<CodeActionOrCommand>,
 ) {
     for stmt in stmts {
@@ -120,7 +120,7 @@ fn collect_in_stmts(
     stmts: &[Stmt<'_, '_>],
     sv: SourceView<'_>,
     range: Range,
-    uri: &Url,
+    uri: &Uri,
     out: &mut Vec<CodeActionOrCommand>,
 ) {
     collect(stmts, sv, range, uri, out);
@@ -230,7 +230,7 @@ fn push_action(
     sv: SourceView<'_>,
     after_close_paren: usize,
     type_str: &str,
-    uri: &Url,
+    uri: &Uri,
     out: &mut Vec<CodeActionOrCommand>,
 ) {
     let pos = sv.position_of(after_close_paren as u32);

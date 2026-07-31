@@ -1,7 +1,7 @@
 //! `vendor/bin/phpunit` runner for the `php-lsp.runTest` code-lens command.
 
-use tower_lsp::Client;
-use tower_lsp::lsp_types::{MessageActionItem, MessageType, ShowDocumentParams, Url};
+use tower_lsp_server::Client;
+use tower_lsp_server::ls_types::{MessageActionItem, MessageType, ShowDocumentParams, Uri};
 
 /// Run `vendor/bin/phpunit --filter <filter>` and show the result via
 /// `window/showMessageRequest`.  Offers "Run Again" on both success and
@@ -12,7 +12,7 @@ pub(crate) async fn run_phpunit(
     client: &Client,
     filter: &str,
     root: Option<&std::path::Path>,
-    file_uri: Option<&Url>,
+    file_uri: Option<&Uri>,
 ) {
     let output = tokio::process::Command::new("vendor/bin/phpunit")
         .arg("--filter")

@@ -14,7 +14,7 @@
 use std::collections::HashMap;
 
 use php_ast::{ClassMemberKind, EnumMemberKind, NamespaceBody, Stmt, StmtKind};
-use tower_lsp::lsp_types::Range;
+use tower_lsp_server::ls_types::Range;
 
 use crate::document::ast::ParsedDoc;
 use crate::hover::formatting::declaration_signature;

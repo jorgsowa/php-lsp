@@ -21,8 +21,8 @@
 use std::collections::HashMap;
 
 use php_ast::{ClassMemberKind, ExprKind, NamespaceBody, Stmt, StmtKind, Visibility};
-use tower_lsp::lsp_types::{
-    CodeAction, CodeActionKind, CodeActionOrCommand, Range, TextEdit, Url, WorkspaceEdit,
+use tower_lsp_server::ls_types::{
+    CodeAction, CodeActionKind, CodeActionOrCommand, Range, TextEdit, Uri, WorkspaceEdit,
 };
 
 use crate::document::ast::{ParsedDoc, SourceView};
@@ -31,7 +31,7 @@ pub fn promote_constructor_actions(
     _source: &str,
     doc: &ParsedDoc,
     range: Range,
-    uri: &Url,
+    uri: &Uri,
 ) -> Vec<CodeActionOrCommand> {
     let sv = doc.view();
     let mut out = Vec::new();
@@ -71,7 +71,7 @@ fn collect_promote<'a>(
     stmts: &[Stmt<'a, 'a>],
     sv: SourceView<'_>,
     range: Range,
-    uri: &Url,
+    uri: &Uri,
     out: &mut Vec<CodeActionOrCommand>,
 ) {
     for stmt in stmts {
@@ -259,7 +259,7 @@ fn find_this_assign(source: &str, stmts: &[Stmt<'_, '_>], param_name: &str) -> O
 /// Build the code action with text edits.
 fn build_action(
     sv: SourceView<'_>,
-    uri: &Url,
+    uri: &Uri,
     promotions: &[Promotion],
     title: &str,
 ) -> Option<CodeActionOrCommand> {

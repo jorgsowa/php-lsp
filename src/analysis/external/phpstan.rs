@@ -5,7 +5,7 @@ use std::path::Path;
 use std::process::Stdio;
 
 use serde::Deserialize;
-use tower_lsp::lsp_types::{Diagnostic, DiagnosticSeverity, NumberOrString, Position, Range};
+use tower_lsp_server::ls_types::{Diagnostic, DiagnosticSeverity, NumberOrString, Position, Range};
 
 use crate::lang::config::PhpstanConfig;
 

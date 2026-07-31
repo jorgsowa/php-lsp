@@ -1,6 +1,6 @@
 //! Character/offset position math and the cursor symbol-kind heuristic.
 
-use tower_lsp::lsp_types::{Position, Range};
+use tower_lsp_server::ls_types::{Position, Range};
 
 use crate::navigation::references::SymbolKind;
 

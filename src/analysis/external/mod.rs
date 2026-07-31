@@ -9,7 +9,7 @@ pub mod phpstan;
 
 use std::path::Path;
 
-use tower_lsp::lsp_types::Diagnostic;
+use tower_lsp_server::ls_types::Diagnostic;
 
 use crate::lang::config::ExternalToolsConfig;
 

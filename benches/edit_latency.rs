@@ -19,7 +19,7 @@ use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream, ReadHalf, WriteHalf};
-use tower_lsp::{LspService, Server};
+use tower_lsp_server::{LspService, Server};
 
 const EDITS_PER_SCENARIO: usize = 20;
 const EDITS_PER_LARGE_SCENARIO: usize = 10;

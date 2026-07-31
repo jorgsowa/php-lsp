@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use php_ast::{ClassMemberKind, EnumMemberKind, NamespaceBody, Stmt, StmtKind};
-use tower_lsp::lsp_types::{Location, Position, Range, Url};
+use tower_lsp_server::ls_types::{Location, Position, Range, Uri};
 
 use super::walk::collect_var_refs_in_scope;
 use crate::document::ast::{ParsedDoc, SourceView};
@@ -11,10 +11,10 @@ use crate::types::resolve::{Container, Declaration, resolve_declaration};
 /// Find the definition of the symbol under `position`.
 /// Searches the current document first, then `other_docs` for cross-file resolution.
 pub fn goto_definition(
-    uri: &Url,
+    uri: &Uri,
     source: &str,
     doc: &ParsedDoc,
-    other_docs: &[(Url, Arc<ParsedDoc>)],
+    other_docs: &[(Uri, Arc<ParsedDoc>)],
     position: Position,
 ) -> Option<Location> {
     let word = word_at_position(source, position)?;
@@ -196,7 +196,7 @@ pub fn find_method_in_class_hierarchy(
     None
 }
 
-fn precise_method_location(uri: &Url, line: u32, name_char: u32, name_len: usize) -> Location {
+fn precise_method_location(uri: &Uri, line: u32, name_char: u32, name_len: usize) -> Location {
     let start = Position {
         line,
         character: name_char,

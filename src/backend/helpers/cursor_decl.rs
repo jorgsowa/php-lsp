@@ -5,7 +5,7 @@
 //! constructor params) are classified precisely rather than by surrounding
 //! punctuation.
 
-use tower_lsp::lsp_types::Position;
+use tower_lsp_server::ls_types::Position;
 
 use php_ast::{
     ClassMember, ClassMemberKind, EnumMember, EnumMemberKind, ExprKind, NamespaceBody, Stmt,

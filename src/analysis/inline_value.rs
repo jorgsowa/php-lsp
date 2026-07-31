@@ -1,4 +1,4 @@
-use tower_lsp::lsp_types::*;
+use tower_lsp_server::ls_types::*;
 
 /// Return `InlineValueVariableLookup` entries for every `$variable` occurrence
 /// within `range` in `source`.

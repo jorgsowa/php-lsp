@@ -3,12 +3,12 @@ use std::ops::ControlFlow;
 
 use php_ast::ExprKind;
 use php_ast::visitor::{Visitor, walk_expr};
-use tower_lsp::lsp_types::{DocumentLink, Position, Range, Url};
+use tower_lsp_server::ls_types::{DocumentLink, Position, Range, Uri};
 
 use crate::document::ast::{ParsedDoc, SourceView};
 use crate::text::byte_to_utf16;
 
-pub fn document_links(uri: &Url, doc: &ParsedDoc, _source: &str) -> Vec<DocumentLink> {
+pub fn document_links(uri: &Uri, doc: &ParsedDoc, _source: &str) -> Vec<DocumentLink> {
     let sv = doc.view();
     let mut collector = LinkCollector {
         sv,
@@ -31,7 +31,7 @@ pub fn document_links(uri: &Url, doc: &ParsedDoc, _source: &str) -> Vec<Document
 /// missed `require` inside any conditional.
 struct LinkCollector<'a> {
     sv: SourceView<'a>,
-    uri: &'a Url,
+    uri: &'a Uri,
     out: Vec<DocumentLink>,
 }
 
@@ -49,7 +49,7 @@ impl<'arena, 'src> Visitor<'arena, 'src> for LinkCollector<'_> {
 fn link_from_path_expr(
     path_expr: &php_ast::Expr<'_, '_>,
     sv: SourceView<'_>,
-    uri: &Url,
+    uri: &Uri,
 ) -> Option<DocumentLink> {
     let ExprKind::String(s) = &path_expr.kind else {
         return None;
@@ -69,12 +69,16 @@ fn link_from_path_expr(
     let range = Range { start, end };
 
     let target = if std::path::Path::new(raw).is_absolute() {
-        Url::from_file_path(raw).ok()
+        Uri::from_file_path(raw)
     } else {
-        // Resolve relative to the document URI. Url::join strips the last
-        // path segment (the filename) and appends `raw`, which is correct
-        // for both real and synthetic (no drive letter) file:// URIs.
-        uri.join(raw).ok()
+        // Resolve relative to the document URI's directory. `ls_types::Uri`
+        // has no `.join()` (unlike `url::Url`), so go through the file path
+        // — correct for both real and synthetic (no drive letter) file://
+        // URIs, since joining an absolute base with a relative `raw` always
+        // stays absolute.
+        uri.to_file_path()
+            .and_then(|base| base.parent().map(|dir| dir.join(raw)))
+            .and_then(Uri::from_file_path)
     };
 
     Some(DocumentLink {
@@ -102,7 +106,7 @@ fn collect_docblock_links(source: &str, out: &mut Vec<DocumentLink>) {
                 if url_str.is_empty() {
                     continue;
                 }
-                if let Ok(target) = Url::parse(url_str)
+                if let Ok(target) = (url_str).parse::<Uri>()
                     && let Some(col) = line.find(url_str)
                 {
                     let start = Position {

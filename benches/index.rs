@@ -1,6 +1,6 @@
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use std::hint::black_box;
-use tower_lsp::lsp_types::Url;
+use tower_lsp_server::ls_types::Uri;
 
 use php_lsp::document_store::DocumentStore;
 
@@ -17,7 +17,7 @@ fn bench_index_single(c: &mut Criterion) {
         ("medium_class", MEDIUM),
         ("interface_large", LARGE_IFACE),
     ] {
-        let uri = Url::parse("file:///bench/file.php").unwrap();
+        let uri = ("file:///bench/file.php").parse::<Uri>().unwrap();
         group.bench_with_input(BenchmarkId::from_parameter(name), source, |b, src| {
             b.iter(|| {
                 let store = DocumentStore::new();
@@ -31,7 +31,7 @@ fn bench_index_single(c: &mut Criterion) {
 /// Benchmark retrieving a parsed doc after indexing.
 fn bench_get_doc(c: &mut Criterion) {
     let store = DocumentStore::new();
-    let uri = Url::parse("file:///bench/medium.php").unwrap();
+    let uri = ("file:///bench/medium.php").parse::<Uri>().unwrap();
     store.ingest(uri.clone(), MEDIUM);
 
     c.bench_function("index/get_doc", |b| {
@@ -42,8 +42,8 @@ fn bench_get_doc(c: &mut Criterion) {
 /// Benchmark resolving 10 open-file URLs to parsed docs via `docs_for`.
 fn bench_all_docs(c: &mut Criterion) {
     let store = DocumentStore::new();
-    let urls: Vec<Url> = (0..10)
-        .map(|i| Url::parse(&format!("file:///bench/file{i}.php")).unwrap())
+    let urls: Vec<Uri> = (0..10)
+        .map(|i| format!("file:///bench/file{i}.php").parse::<Uri>().unwrap())
         .collect();
     for u in &urls {
         store.ingest(u.clone(), SMALL);
@@ -69,8 +69,12 @@ fn bench_workspace_scan(c: &mut Criterion) {
 
     for &n in &[1usize, 10, 50] {
         // Pre-generate URIs so URL parsing doesn't inflate the measurement.
-        let uris: Vec<Url> = (0..n)
-            .map(|i| Url::parse(&format!("file:///bench/scan_{i}.php")).unwrap())
+        let uris: Vec<Uri> = (0..n)
+            .map(|i| {
+                format!("file:///bench/scan_{i}.php")
+                    .parse::<Uri>()
+                    .unwrap()
+            })
             .collect();
 
         group.bench_with_input(
@@ -106,16 +110,17 @@ fn bench_workspace_scan_laravel(c: &mut Criterion) {
         return;
     }
 
-    let php_files: Vec<(tower_lsp::lsp_types::Url, String)> = walkdir::WalkDir::new(&fixture_dir)
-        .into_iter()
-        .filter_map(|e| e.ok())
-        .filter(|e| e.path().extension().is_some_and(|x| x == "php"))
-        .filter_map(|e| {
-            let url = tower_lsp::lsp_types::Url::from_file_path(e.path()).ok()?;
-            let src = std::fs::read_to_string(e.path()).ok()?;
-            Some((url, src))
-        })
-        .collect();
+    let php_files: Vec<(tower_lsp_server::ls_types::Uri, String)> =
+        walkdir::WalkDir::new(&fixture_dir)
+            .into_iter()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().is_some_and(|x| x == "php"))
+            .filter_map(|e| {
+                let url = tower_lsp_server::ls_types::Uri::from_file_path(e.path())?;
+                let src = std::fs::read_to_string(e.path()).ok()?;
+                Some((url, src))
+            })
+            .collect();
 
     eprintln!("Laravel fixture: {} PHP files", php_files.len());
 
@@ -148,7 +153,7 @@ fn bench_mirror_same_text_contended(c: &mut Criterion) {
     use std::sync::Arc;
 
     let store = Arc::new(DocumentStore::new());
-    let uri = Url::parse("file:///bench/mirror.php").unwrap();
+    let uri = ("file:///bench/mirror.php").parse::<Uri>().unwrap();
     store.ingest(uri.clone(), MEDIUM);
 
     let threads = 8usize;
@@ -179,7 +184,7 @@ fn bench_mirror_same_text_contended(c: &mut Criterion) {
 /// `snapshot_query`. Contrast the two to decide whether G3 is worth keeping.
 fn bench_get_doc_repeated(c: &mut Criterion) {
     let store = DocumentStore::new();
-    let uri = Url::parse("file:///bench/hotdoc.php").unwrap();
+    let uri = ("file:///bench/hotdoc.php").parse::<Uri>().unwrap();
     store.ingest(uri.clone(), MEDIUM);
     let _warm = store.get_doc_salsa(&uri);
 
@@ -204,8 +209,12 @@ fn bench_sync_workspace_clean(c: &mut Criterion) {
 
     for &n in &[10usize, 100, 500] {
         let store = DocumentStore::new();
-        let uris: Vec<Url> = (0..n)
-            .map(|i| Url::parse(&format!("file:///bench/clean_{i}.php")).unwrap())
+        let uris: Vec<Uri> = (0..n)
+            .map(|i| {
+                format!("file:///bench/clean_{i}.php")
+                    .parse::<Uri>()
+                    .unwrap()
+            })
             .collect();
         for (i, uri) in uris.iter().enumerate() {
             let (_, src) = fixtures[i % fixtures.len()];
@@ -242,8 +251,12 @@ fn bench_sync_workspace_dirty(c: &mut Criterion) {
 
     for &n in &[10usize, 100, 500] {
         let store = DocumentStore::new();
-        let uris: Vec<Url> = (0..n)
-            .map(|i| Url::parse(&format!("file:///bench/dirty_{i}.php")).unwrap())
+        let uris: Vec<Uri> = (0..n)
+            .map(|i| {
+                format!("file:///bench/dirty_{i}.php")
+                    .parse::<Uri>()
+                    .unwrap()
+            })
             .collect();
         for (i, uri) in uris.iter().enumerate() {
             let (_, src) = fixtures[i % fixtures.len()];

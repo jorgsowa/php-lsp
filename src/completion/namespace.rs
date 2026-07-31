@@ -1,5 +1,5 @@
 use php_ast::{ExprKind, NamespaceBody, Stmt, StmtKind};
-use tower_lsp::lsp_types::{CompletionItem, CompletionItemKind, Position};
+use tower_lsp_server::ls_types::{CompletionItem, CompletionItemKind, Position};
 
 /// An `#[\Attribute]`-annotated class with its resolved target bitmask.
 ///

@@ -4,7 +4,9 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use tower_lsp::lsp_types::{CompletionItem, CompletionItemKind, Location, Position, Range, Url};
+use tower_lsp_server::ls_types::{
+    CompletionItem, CompletionItemKind, Location, Position, Range, Uri,
+};
 
 #[derive(Debug, Default, Clone)]
 pub struct EnvIndex {
@@ -23,7 +25,7 @@ impl EnvIndex {
     /// The env var name whose `.env`/`.env.example` declaration contains
     /// `position`, if any — the reverse of `get`, used to recognize a
     /// find-references request starting from the definition site.
-    pub fn key_at(&self, uri: &Url, position: Position) -> Option<&str> {
+    pub fn key_at(&self, uri: &Uri, position: Position) -> Option<&str> {
         crate::laravel::location_lookup::key_at(&self.vars, uri, position)
     }
 
@@ -38,7 +40,7 @@ impl EnvIndex {
             let Ok(text) = std::fs::read_to_string(&path) else {
                 continue;
             };
-            let Ok(uri) = Url::from_file_path(&path) else {
+            let Some(uri) = Uri::from_file_path(&path) else {
                 continue;
             };
             for (line_no, line) in text.lines().enumerate() {

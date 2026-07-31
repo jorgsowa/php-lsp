@@ -32,7 +32,7 @@ static ALLOC: dhat::Alloc = dhat::Alloc;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream, ReadHalf, WriteHalf};
-use tower_lsp::{LspService, Server};
+use tower_lsp_server::{LspService, Server};
 
 const EDIT_ROUNDS: usize = 75; // 4 edits per round (one per open file) → 300 edits
 const RSS_SAMPLE_EVERY: usize = 5; // rounds

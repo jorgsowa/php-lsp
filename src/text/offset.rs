@@ -3,7 +3,7 @@
 //! LSP positions count UTF-16 code units; Rust strings are UTF-8. These helpers
 //! bridge the two.
 
-use tower_lsp::lsp_types::{Position, Range};
+use tower_lsp_server::ls_types::{Position, Range};
 
 /// Convert a UTF-16 code unit offset into a UTF-8 byte offset for `s`.
 ///

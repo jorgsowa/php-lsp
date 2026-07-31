@@ -371,6 +371,9 @@ async fn document_link_position_correct_after_multibyte_char() {
         )
         .await;
     let resp = server.document_link("mb.php").await;
-    expect!["1:12-31 target=https://example.com/"]
+    // No trailing slash: the new URI type (RFC 3986 `fluent_uri`, replacing
+    // `url::Url`'s WHATWG-style normalization) doesn't append one for a bare
+    // authority with an empty path — same resource, different string form.
+    expect!["1:12-31 target=https://example.com"]
         .assert_eq(&render_document_links(&resp["result"]));
 }

@@ -1,8 +1,8 @@
 use std::collections::HashMap;
 
 use php_ast::{ClassMemberKind, Expr, ExprKind, NamespaceBody, Span, Stmt, StmtKind, SwitchStmt};
-use tower_lsp::lsp_types::{
-    CodeAction, CodeActionKind, CodeActionOrCommand, Range, TextEdit, Url, WorkspaceEdit,
+use tower_lsp_server::ls_types::{
+    CodeAction, CodeActionKind, CodeActionOrCommand, Range, TextEdit, Uri, WorkspaceEdit,
 };
 
 use crate::document::ast::{ParsedDoc, SourceView};
@@ -16,7 +16,7 @@ pub fn switch_to_match_actions(
     source: &str,
     doc: &ParsedDoc,
     range: Range,
-    uri: &Url,
+    uri: &Uri,
 ) -> Vec<CodeActionOrCommand> {
     let sv = doc.view();
     let cursor = sv.byte_of_position(range.start);
@@ -29,7 +29,7 @@ fn collect_in_stmts(
     stmts: &[Stmt<'_, '_>],
     source: &str,
     cursor: u32,
-    uri: &Url,
+    uri: &Uri,
     sv: SourceView<'_>,
     out: &mut Vec<CodeActionOrCommand>,
 ) -> bool {
@@ -48,7 +48,7 @@ fn collect_in_stmt(
     stmt: &Stmt<'_, '_>,
     source: &str,
     cursor: u32,
-    uri: &Url,
+    uri: &Uri,
     sv: SourceView<'_>,
     out: &mut Vec<CodeActionOrCommand>,
 ) -> bool {
@@ -127,7 +127,7 @@ fn build_action(
     sw: &SwitchStmt<'_, '_>,
     span: Span,
     source: &str,
-    uri: &Url,
+    uri: &Uri,
     sv: SourceView<'_>,
 ) -> Option<CodeActionOrCommand> {
     let new_text = build_match_text(sw, span, source)?;

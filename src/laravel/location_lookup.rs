@@ -1,15 +1,15 @@
-//! Shared reverse lookup: given a `(Url, Position)`, find the map entry
+//! Shared reverse lookup: given a `(Uri, Position)`, find the map entry
 //! whose `Location` contains it. Each domain index (`EnvIndex`, `ConfigIndex`,
 //! ...) exposes a one-line `key_at` wrapping this — used to recognize
 //! "cursor is on a Laravel string-key *definition* site" for find-references.
 
 use std::collections::HashMap;
 
-use tower_lsp::lsp_types::{Location, Position, Url};
+use tower_lsp_server::ls_types::{Location, Position, Uri};
 
 pub(super) fn key_at<'a>(
     map: &'a HashMap<String, Location>,
-    uri: &Url,
+    uri: &Uri,
     position: Position,
 ) -> Option<&'a str> {
     map.iter()
@@ -30,10 +30,10 @@ fn position_within(start: Position, end: Position, p: Position) -> bool {
 mod tests {
     use super::*;
 
-    fn loc(uri: &Url, sl: u32, sc: u32, el: u32, ec: u32) -> Location {
+    fn loc(uri: &Uri, sl: u32, sc: u32, el: u32, ec: u32) -> Location {
         Location {
             uri: uri.clone(),
-            range: tower_lsp::lsp_types::Range {
+            range: tower_lsp_server::ls_types::Range {
                 start: Position {
                     line: sl,
                     character: sc,
@@ -48,7 +48,7 @@ mod tests {
 
     #[test]
     fn finds_key_when_position_inside_range() {
-        let uri = Url::parse("file:///a.php").unwrap();
+        let uri = ("file:///a.php").parse::<Uri>().unwrap();
         let mut map = HashMap::new();
         map.insert("app.name".to_string(), loc(&uri, 2, 5, 2, 9));
         let pos = Position {
@@ -60,8 +60,8 @@ mod tests {
 
     #[test]
     fn none_when_uri_differs() {
-        let uri = Url::parse("file:///a.php").unwrap();
-        let other = Url::parse("file:///b.php").unwrap();
+        let uri = ("file:///a.php").parse::<Uri>().unwrap();
+        let other = ("file:///b.php").parse::<Uri>().unwrap();
         let mut map = HashMap::new();
         map.insert("app.name".to_string(), loc(&uri, 2, 5, 2, 9));
         let pos = Position {
@@ -73,7 +73,7 @@ mod tests {
 
     #[test]
     fn none_when_position_outside_range() {
-        let uri = Url::parse("file:///a.php").unwrap();
+        let uri = ("file:///a.php").parse::<Uri>().unwrap();
         let mut map = HashMap::new();
         map.insert("app.name".to_string(), loc(&uri, 2, 5, 2, 9));
         let pos = Position {
@@ -85,7 +85,7 @@ mod tests {
 
     #[test]
     fn boundary_positions_are_inclusive() {
-        let uri = Url::parse("file:///a.php").unwrap();
+        let uri = ("file:///a.php").parse::<Uri>().unwrap();
         let mut map = HashMap::new();
         map.insert("app.name".to_string(), loc(&uri, 2, 5, 2, 9));
         assert_eq!(

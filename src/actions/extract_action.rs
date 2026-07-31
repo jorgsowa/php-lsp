@@ -6,8 +6,8 @@ use php_ast::{
     Expr, Span,
     visitor::{Visitor, walk_expr},
 };
-use tower_lsp::lsp_types::{
-    CodeAction, CodeActionKind, CodeActionOrCommand, Position, Range, TextEdit, Url, WorkspaceEdit,
+use tower_lsp_server::ls_types::{
+    CodeAction, CodeActionKind, CodeActionOrCommand, Position, Range, TextEdit, Uri, WorkspaceEdit,
 };
 
 use crate::document::ast::ParsedDoc;
@@ -18,7 +18,7 @@ pub fn extract_variable_actions(
     source: &str,
     doc: &ParsedDoc,
     range: Range,
-    uri: &Url,
+    uri: &Uri,
 ) -> Vec<CodeActionOrCommand> {
     if range.start == range.end {
         return vec![];

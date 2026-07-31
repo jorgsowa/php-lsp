@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use php_ast::visitor::{Visitor, walk_stmt};
 use php_ast::{Stmt, StmtKind, UseKind};
-use tower_lsp::lsp_types::{Location, Position, Range, Url};
+use tower_lsp_server::ls_types::{Location, Position, Range, Uri};
 
 use super::walk::all_class_ref_names_in_stmts;
 use crate::document::ast::ParsedDoc;
@@ -32,7 +32,7 @@ pub enum SymbolKind {
 pub(crate) fn session_tuple_to_location(
     (file, line, col_start, col_end): (Arc<str>, u32, u32, u32),
 ) -> Option<Location> {
-    let uri = Url::parse(&file).ok()?;
+    let uri = file.parse::<Uri>().ok()?;
     Some(Location {
         uri,
         range: Range {
