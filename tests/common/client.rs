@@ -321,7 +321,9 @@ impl TestClient {
         // completes as fast as the server drains it; if the server is stuck
         // running the handler's work inline, that drain stalls too, so the
         // write time itself is part of what this budget is guarding.
-        let elapsed = self.time_notification_and_probe(&notif_method_owned, notif_params).await;
+        let elapsed = self
+            .time_notification_and_probe(&notif_method_owned, notif_params)
+            .await;
         assert!(
             elapsed <= budget,
             "{notif_method_owned} appears to block the request loop: opening this \
