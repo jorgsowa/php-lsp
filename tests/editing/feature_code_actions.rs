@@ -964,6 +964,60 @@ async fn code_action_resolve_implement_cross_file_interface() {
     .assert_eq(&out);
 }
 
+/// `codeAction/resolve`'s "implement" tag re-scans every tracked workspace
+/// file's cached text (an Aho-Corasick search over `docs_for_scan_mentioning`)
+/// on the async task unless it's deferred to `spawn_blocking`, unlike its
+/// sibling `textDocument/codeAction`, which already defers the same work.
+/// A large workspace makes that scan non-trivial, so this pins the handler
+/// staying off the request loop the same way the single-document handlers'
+/// responsiveness tests do (see `feature_server.rs`).
+#[tokio::test]
+async fn code_action_resolve_implement_stays_responsive_on_large_workspace() {
+    let workspace = tempfile::tempdir().expect("workspace tempdir");
+    std::fs::write(
+        workspace.path().join("Printable.php"),
+        "<?php\ninterface Printable { public function print(): void; }\n",
+    )
+    .unwrap();
+    // The Aho-Corasick pass scans every tracked file's cached text
+    // regardless of whether it matches, so plenty of sizeable unrelated
+    // files make the scan itself measurably slow.
+    for i in 0..300 {
+        std::fs::write(
+            workspace.path().join(format!("Noise{i}.php")),
+            crate::common::fixture::large_php_source(5),
+        )
+        .unwrap();
+    }
+
+    let mut server = TestServer::with_root(workspace.path()).await;
+    server.wait_for_index_ready().await;
+    server
+        .open(
+            "Report.php",
+            "<?php\nclass Report implements Printable {}\n",
+        )
+        .await;
+
+    let resp = server.code_action("Report.php", 1, 0, 1, 37).await;
+    let action = resp["result"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| {
+            a["title"]
+                .as_str()
+                .map(|t| t.starts_with("Implement"))
+                .unwrap_or(false)
+        })
+        .cloned()
+        .expect("implement missing methods action should be offered");
+
+    server
+        .assert_stays_responsive("codeAction/resolve", action)
+        .await;
+}
+
 /// Implement missing methods when the interface is in a namespaced file and
 /// the class uses a `use` import. Namespace resolution must be FQN-aware.
 #[tokio::test]
