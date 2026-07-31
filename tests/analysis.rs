@@ -30,6 +30,8 @@ mod feature_diagnostics_workspace;
 mod feature_inlay_hints;
 #[path = "analysis/feature_inline_value.rs"]
 mod feature_inline_value;
+#[path = "analysis/feature_laravel_eloquent_guard.rs"]
+mod feature_laravel_eloquent_guard;
 #[path = "analysis/feature_php_versions.rs"]
 mod feature_php_versions;
 #[path = "analysis/feature_semantic_tokens.rs"]

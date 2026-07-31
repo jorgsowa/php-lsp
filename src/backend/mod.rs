@@ -518,6 +518,7 @@ pub(super) async fn republish_after_index_ready(
     docs: Arc<DocumentStore>,
     open_files: OpenFiles,
     diag_cfg: crate::lang::config::DiagnosticsConfig,
+    is_laravel: bool,
 ) {
     let uris = open_files.urls();
     if uris.is_empty() {
@@ -528,8 +529,13 @@ pub(super) async fn republish_after_index_ready(
     let all: Vec<(Uri, Vec<Diagnostic>)> = tokio::task::spawn_blocking(move || {
         uris.into_iter()
             .map(|uri| {
-                let diags =
-                    compute_open_file_diagnostics(&docs_ref, &open_files_ref, &uri, &diag_cfg);
+                let diags = compute_open_file_diagnostics(
+                    &docs_ref,
+                    &open_files_ref,
+                    &uri,
+                    &diag_cfg,
+                    is_laravel,
+                );
                 (uri, diags)
             })
             .collect()
@@ -572,13 +578,20 @@ pub(super) async fn publish_with_dependents(
     open_files: OpenFiles,
     uri: Uri,
     diag_cfg: crate::lang::config::DiagnosticsConfig,
+    is_laravel: bool,
 ) {
     let docs_ref = Arc::clone(&docs);
     let open_files_ref = open_files.clone();
     let uri_ref = uri.clone();
     let diag_cfg_ref = diag_cfg.clone();
     let all_diags = tokio::task::spawn_blocking(move || {
-        compute_open_file_diagnostics(&docs_ref, &open_files_ref, &uri_ref, &diag_cfg_ref)
+        compute_open_file_diagnostics(
+            &docs_ref,
+            &open_files_ref,
+            &uri_ref,
+            &diag_cfg_ref,
+            is_laravel,
+        )
     })
     .await
     .unwrap_or_default();

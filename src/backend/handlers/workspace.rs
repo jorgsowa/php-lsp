@@ -351,8 +351,9 @@ impl Backend {
                 }
                 self.psr4.store(Arc::new(merged));
             }
-            self.laravel
-                .store(Arc::new(crate::laravel::LaravelIndex::load(&roots[0])));
+            let laravel_index = crate::laravel::LaravelIndex::load(&roots[0]);
+            let is_laravel = laravel_index.is_laravel;
+            self.laravel.store(Arc::new(laravel_index));
 
             let token = NumberOrString::String("php-lsp/indexing".to_string());
             self.client
@@ -580,6 +581,7 @@ impl Backend {
                     Arc::clone(&salsa_docs),
                     open_files.clone(),
                     config.load().diagnostics.clone(),
+                    is_laravel,
                 ));
                 let sweep_open = open_files.urls();
                 drop(tokio::task::spawn_blocking(move || {

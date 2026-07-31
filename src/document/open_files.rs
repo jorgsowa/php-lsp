@@ -185,6 +185,7 @@ pub(crate) fn compute_open_file_diagnostics(
     open_files: &OpenFiles,
     uri: &Uri,
     diag_cfg: &DiagnosticsConfig,
+    is_laravel: bool,
 ) -> Vec<Diagnostic> {
     let mut out = open_files.parse_diagnostics(uri).unwrap_or_default();
     if let Some(issues) = docs.get_semantic_issues_salsa(uri) {
@@ -195,6 +196,9 @@ pub(crate) fn compute_open_file_diagnostics(
             docs.is_index_ready(),
         ));
     }
+    out.extend(crate::laravel::unguarded_model_diagnostics(
+        docs, uri, is_laravel,
+    ));
     out.extend(open_files.external_diagnostics(uri));
     out
 }
@@ -238,14 +242,14 @@ mod tests {
         );
         let diag_cfg = DiagnosticsConfig::default();
 
-        let before = compute_open_file_diagnostics(&docs, &open_files, &uri, &diag_cfg);
+        let before = compute_open_file_diagnostics(&docs, &open_files, &uri, &diag_cfg, false);
         assert!(
             before.is_empty(),
             "UndefinedClass must be suppressed before the index is ready, got: {before:?}"
         );
 
         docs.mark_index_ready();
-        let after = compute_open_file_diagnostics(&docs, &open_files, &uri, &diag_cfg);
+        let after = compute_open_file_diagnostics(&docs, &open_files, &uri, &diag_cfg, false);
         assert!(
             after
                 .iter()
@@ -270,7 +274,7 @@ mod tests {
         );
         let diag_cfg = DiagnosticsConfig::default();
 
-        let before = compute_open_file_diagnostics(&docs, &open_files, &uri, &diag_cfg);
+        let before = compute_open_file_diagnostics(&docs, &open_files, &uri, &diag_cfg, false);
         assert!(
             !before.is_empty(),
             "a same-file return-type mismatch must not wait on the workspace index"

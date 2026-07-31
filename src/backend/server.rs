@@ -270,6 +270,7 @@ impl LanguageServer for Backend {
                 self.open_files.clone(),
                 uri,
                 self.config.load().diagnostics.clone(),
+                self.laravel.load_full().is_laravel,
             )
             .await;
         })
@@ -312,6 +313,7 @@ impl LanguageServer for Backend {
             let diag_cfg = cfg.diagnostics.clone();
             let debounce_ms = cfg.debounce_ms;
             let warm_analysis = cfg.warm_analysis;
+            let is_laravel = self.laravel.load_full().is_laravel;
             tokio::spawn(async move {
                 // Debounce: if another edit arrives before we parse, the version
                 // gate below will discard this result.
@@ -343,6 +345,7 @@ impl LanguageServer for Backend {
                     open_files.clone(),
                     uri.clone(),
                     diag_cfg,
+                    is_laravel,
                 )
                 .await;
 
@@ -418,7 +421,14 @@ impl LanguageServer for Backend {
             // prior set entirely, so omitting them would clear errors the editor
             // showed after the last did_change.
             let diag_cfg = self.config.load().diagnostics.clone();
-            let all = compute_open_file_diagnostics(&self.docs, &self.open_files, &uri, &diag_cfg);
+            let is_laravel = self.laravel.load_full().is_laravel;
+            let all = compute_open_file_diagnostics(
+                &self.docs,
+                &self.open_files,
+                &uri,
+                &diag_cfg,
+                is_laravel,
+            );
             self.open_files
                 .note_published(&uri, super::diagnostics_content_hash(&all));
             self.client
@@ -484,7 +494,10 @@ impl LanguageServer for Backend {
                             return;
                         }
                         open_files.set_external_diagnostics(&uri, version, diagnostics);
-                        publish_with_dependents(client, docs, open_files, uri, diag_cfg).await;
+                        publish_with_dependents(
+                            client, docs, open_files, uri, diag_cfg, is_laravel,
+                        )
+                        .await;
                     });
                 }
             }

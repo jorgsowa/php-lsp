@@ -16,6 +16,7 @@
 
 mod config_index;
 mod detect;
+mod eloquent_guard;
 mod env_index;
 mod location_lookup;
 mod route_index;
@@ -24,6 +25,7 @@ mod translation_index;
 mod view_index;
 
 pub use config_index::ConfigIndex;
+pub use eloquent_guard::unguarded_model_diagnostics;
 pub use env_index::EnvIndex;
 pub use route_index::RouteIndex;
 pub use translation_index::TranslationIndex;

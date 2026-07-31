@@ -59,8 +59,10 @@ impl Backend {
         let docs = Arc::clone(&self.docs);
         let uri_owned = uri.clone();
         let diag_cfg_sem = diag_cfg.clone();
+        let is_laravel = self.laravel.load_full().is_laravel;
         let sem_diags = tokio::task::spawn_blocking(move || {
-            docs.get_semantic_issues_salsa(&uri_owned)
+            let mut diags = docs
+                .get_semantic_issues_salsa(&uri_owned)
                 .map(|issues| {
                     crate::semantic_diagnostics::issues_to_diagnostics_gated(
                         &issues,
@@ -69,7 +71,11 @@ impl Backend {
                         docs.is_index_ready(),
                     )
                 })
-                .unwrap_or_default()
+                .unwrap_or_default();
+            diags.extend(crate::laravel::unguarded_model_diagnostics(
+                &docs, &uri_owned, is_laravel,
+            ));
+            diags
         })
         .await
         .map_err(|e| {
@@ -134,6 +140,7 @@ impl Backend {
         let docs = Arc::clone(&self.docs);
         let open_files = self.open_files.clone();
         let diag_cfg_sweep = diag_cfg.clone();
+        let is_laravel = self.laravel.load_full().is_laravel;
         let items = tokio::task::spawn_blocking(move || {
             // A user-facing pull: pause the background scan for the sweep and
             // snapshot a settled revision, so only a genuine user edit aborts
@@ -158,6 +165,9 @@ impl Backend {
                     })
                     .unwrap_or_default();
                 let mut all_diags = merge_file_diagnostics(parse_diags, sem_diags);
+                all_diags.extend(crate::laravel::unguarded_model_diagnostics(
+                    &docs, &uri, is_laravel,
+                ));
                 all_diags.extend(open_files.external_diagnostics(&uri));
                 let result_id = compute_diagnostic_result_id(&all_diags, uri.as_str());
                 results.push(if previous_map.get(&uri) == Some(&result_id) {
