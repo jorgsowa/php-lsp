@@ -435,8 +435,16 @@ mod navigation {
     #[serial_test::serial]
     #[tokio::test]
     async fn goto_definition_parameter_type_in_vendor() {
-        let mut server = TestServer::with_fixture("symfony-demo").await;
-        server.wait_for_index_ready_secs(30).await;
+        // Read-only against the checked-out fixture (no per-test copy): a
+        // fresh `with_fixture` TempDir would give every vendor file a new
+        // absolute path each run, defeating the on-disk FileIndex cache
+        // that's supposed to make repeat vendor scans near-free (see
+        // `WorkspaceCache`) and forcing a full cold parse of all ~5200
+        // vendor files on every single test instead of once per test binary.
+        let fixture = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/symfony-demo");
+        let mut server = TestServer::with_root(&fixture).await;
+        server.wait_for_index_ready().await;
 
         let path = "src/Entity/Post.php";
         let (text, line, ch) = server.locate(path, "User $author", 1);
@@ -450,8 +458,10 @@ mod navigation {
     #[serial_test::serial]
     #[tokio::test]
     async fn goto_definition_app_class_from_use_import() {
-        let mut server = TestServer::with_fixture("symfony-demo").await;
-        server.wait_for_index_ready_secs(30).await;
+        let fixture = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/symfony-demo");
+        let mut server = TestServer::with_root(&fixture).await;
+        server.wait_for_index_ready().await;
 
         let path = "src/Repository/PostRepository.php";
         let (text, line, ch) = server.locate(path, "Post;", 0);
@@ -465,8 +475,10 @@ mod navigation {
     #[serial_test::serial]
     #[tokio::test]
     async fn goto_definition_inherited_method_this_render() {
-        let mut server = TestServer::with_fixture("symfony-demo").await;
-        server.wait_for_index_ready_secs(30).await;
+        let fixture = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/symfony-demo");
+        let mut server = TestServer::with_root(&fixture).await;
+        server.wait_for_index_ready().await;
 
         let path = "src/Controller/BlogController.php";
         let (text, line, ch) = server.locate(path, "render('", 0);
@@ -484,7 +496,7 @@ mod navigation {
         let fixture = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("tests/fixtures/symfony-demo");
         let mut server = TestServer::with_root(&fixture).await;
-        server.wait_for_index_ready_secs(30).await;
+        server.wait_for_index_ready().await;
 
         let path = "src/Controller/BlogController.php";
         let (text, line, ch) = server.locate(path, "Route", 0);
@@ -505,7 +517,7 @@ mod hover {
         let fixture = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("tests/fixtures/symfony-demo");
         let mut server = TestServer::with_root(&fixture).await;
-        server.wait_for_index_ready_secs(30).await;
+        server.wait_for_index_ready().await;
 
         let path = "src/Controller/BlogController.php";
         let (text, line, ch) = server.locate(path, "AbstractController", 0);
@@ -520,8 +532,10 @@ mod hover {
     #[serial_test::serial]
     #[tokio::test]
     async fn hover_on_app_entity_type_in_signature() {
-        let mut server = TestServer::with_fixture("symfony-demo").await;
-        server.wait_for_index_ready_secs(30).await;
+        let fixture = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/symfony-demo");
+        let mut server = TestServer::with_root(&fixture).await;
+        server.wait_for_index_ready().await;
 
         let path = "src/Repository/PostRepository.php";
         let (text, line, ch) = server.locate(path, "Tag $tag", 0);
@@ -593,7 +607,7 @@ mod references {
         let fixture = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("tests/fixtures/symfony-demo");
         let mut server = TestServer::with_root(&fixture).await;
-        server.wait_for_index_ready_secs(30).await;
+        server.wait_for_index_ready().await;
         // `indexReady` fires once the raw scan finishes; the reference-index
         // warm sweep runs after it in a detached background task. Without
         // waiting for it too, this request can race that sweep's own
@@ -705,8 +719,10 @@ mod type_hierarchy {
     #[serial_test::serial]
     #[tokio::test]
     async fn supertypes_of_blog_controller_include_abstract_controller() {
-        let mut server = TestServer::with_fixture("symfony-demo").await;
-        server.wait_for_index_ready_secs(30).await;
+        let fixture = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/symfony-demo");
+        let mut server = TestServer::with_root(&fixture).await;
+        server.wait_for_index_ready().await;
 
         let path = "src/Controller/BlogController.php";
         let (text, line, ch) = server.locate(path, "BlogController", 0);
@@ -736,8 +752,10 @@ mod type_hierarchy {
     #[serial_test::serial]
     #[tokio::test]
     async fn subtypes_of_abstract_controller_include_blog_controller() {
-        let mut server = TestServer::with_fixture("symfony-demo").await;
-        server.wait_for_index_ready_secs(30).await;
+        let fixture = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/symfony-demo");
+        let mut server = TestServer::with_root(&fixture).await;
+        server.wait_for_index_ready().await;
 
         // First open BlogController so the workspace knows about the relationship.
         let path = "src/Controller/BlogController.php";
@@ -774,7 +792,7 @@ mod smoke {
         let fixture = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("tests/fixtures/symfony-demo");
         let mut server = TestServer::with_root(&fixture).await;
-        server.wait_for_index_ready_secs(30).await;
+        server.wait_for_index_ready().await;
 
         let path = "src/Controller/BlogController.php";
         let (text, line, ch) = server.locate(path, "AbstractController", 0);
