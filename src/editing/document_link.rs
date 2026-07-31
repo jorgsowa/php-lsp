@@ -8,6 +8,24 @@ use tower_lsp_server::ls_types::{DocumentLink, Position, Range, Uri};
 use crate::document::ast::{ParsedDoc, SourceView};
 use crate::text::byte_to_utf16;
 
+/// RFC3986 allows only unreserved chars in a path; matches what
+/// `Uri::from_file_path` itself percent-encodes with.
+const PATH_ASCII_SET: &percent_encoding::AsciiSet = &percent_encoding::NON_ALPHANUMERIC
+    .remove(b'-')
+    .remove(b'.')
+    .remove(b'_')
+    .remove(b'~')
+    .remove(b'/');
+
+/// Builds a `file://` URI directly from a path without requiring it to
+/// exist on disk or be OS-absolute — see the caller for why that matters.
+fn path_to_file_uri(path: &std::path::Path) -> Option<Uri> {
+    let s = path.to_str()?.replace('\\', "/");
+    let s = s.strip_prefix('/').unwrap_or(&s);
+    let encoded = percent_encoding::utf8_percent_encode(s, PATH_ASCII_SET);
+    format!("file:///{encoded}").parse().ok()
+}
+
 pub fn document_links(uri: &Uri, doc: &ParsedDoc, _source: &str) -> Vec<DocumentLink> {
     let sv = doc.view();
     let mut collector = LinkCollector {
@@ -72,13 +90,22 @@ fn link_from_path_expr(
         Uri::from_file_path(raw)
     } else {
         // Resolve relative to the document URI's directory. `ls_types::Uri`
-        // has no `.join()` (unlike `url::Url`), so go through the file path
-        // — correct for both real and synthetic (no drive letter) file://
-        // URIs, since joining an absolute base with a relative `raw` always
-        // stays absolute.
-        uri.to_file_path()
-            .and_then(|base| base.parent().map(|dir| dir.join(raw)))
-            .and_then(Uri::from_file_path)
+        // has no `.join()` (unlike `url::Url`), so go through the file path.
+        let joined = uri
+            .to_file_path()
+            .and_then(|base| base.parent().map(|dir| dir.join(raw)));
+        joined.as_deref().and_then(|p| {
+            // `Uri::from_file_path` canonicalizes (requires the path to
+            // exist) whenever the joined path isn't OS-absolute. On Windows,
+            // `to_file_path` strips the leading `/` of a driveless
+            // `file:///foo.php` (no real drive letter, as with a rootless
+            // workspace) into a *relative* path, so the join above produces
+            // a non-existent relative path and canonicalization fails —
+            // even though the URI itself was perfectly well-formed. Fall
+            // back to building the `file://` URI directly from the joined
+            // path in that case.
+            Uri::from_file_path(p).or_else(|| path_to_file_uri(p))
+        })
     };
 
     Some(DocumentLink {

@@ -65,6 +65,7 @@ rayon = "1"
 aho-corasick = "1"
 salsa = "=0.28.1"
 arc-swap = "1"
+percent-encoding = "2"
 
 [dependencies.walkdir]
 version = "2"

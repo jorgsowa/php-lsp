@@ -1067,6 +1067,7 @@ dependencies = [
  "mir-codebase",
  "mir-issues",
  "mir-types",
+ "percent-encoding",
  "php-ast",
  "php-rs-parser",
  "rayon",
