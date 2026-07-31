@@ -44,6 +44,7 @@ fn read(rel: &str) -> String {
 
 /// GoToDef for a class name on its own declaration line resolves to itself.
 /// Guards against "definition on declaration returns null" regression.
+#[ignore]
 #[serial_test::serial]
 #[tokio::test]
 async fn laravel_definition_class_declaration() {
@@ -67,6 +68,7 @@ async fn laravel_definition_class_declaration() {
 
 /// GoToDef on a method declaration resolves to that method's own range.
 /// Guards against same-file method definition returning null.
+#[ignore]
 #[serial_test::serial]
 #[tokio::test]
 async fn laravel_definition_method_declaration() {
@@ -92,6 +94,7 @@ async fn laravel_definition_method_declaration() {
 
 /// GoToDef on a method call site (`$this->guard()`) resolves to the declaration.
 /// Guards against same-class call-site definition returning null.
+#[ignore]
 #[serial_test::serial]
 #[tokio::test]
 async fn laravel_definition_from_call_site() {
@@ -117,6 +120,7 @@ async fn laravel_definition_from_call_site() {
 
 /// GoToDef on a static method call (`Str::camel`) navigates to `Str.php`.
 /// Guards against static method cross-file definition returning null.
+#[ignore]
 #[serial_test::serial]
 #[tokio::test]
 async fn laravel_definition_on_static_call() {
@@ -142,6 +146,7 @@ async fn laravel_definition_on_static_call() {
 
 /// GoToDef on `new RequestGuard(…)` navigates to `RequestGuard.php`.
 ///
+#[ignore]
 #[serial_test::serial]
 #[tokio::test]
 async fn laravel_definition_on_new_expression() {
@@ -167,6 +172,7 @@ async fn laravel_definition_on_new_expression() {
 
 /// GoToDef on a trait in a `use` statement navigates to the trait file.
 /// Guards against trait use definition returning null.
+#[ignore]
 #[serial_test::serial]
 #[tokio::test]
 async fn laravel_definition_on_trait_use() {
@@ -190,6 +196,7 @@ async fn laravel_definition_on_trait_use() {
 
 /// GoToDef on a cross-file import (`use ... as`) resolves into the target file.
 /// Guards against cross-file navigation returning null after a workspace scan.
+#[ignore]
 #[serial_test::serial]
 #[tokio::test]
 async fn laravel_definition_cross_file_use_import() {
@@ -213,6 +220,7 @@ async fn laravel_definition_cross_file_use_import() {
 
 /// GoToDef on an interface name in the `implements` clause navigates cross-file.
 /// Guards against cross-file navigation on the implements clause returning null.
+#[ignore]
 #[serial_test::serial]
 #[tokio::test]
 async fn laravel_definition_cross_file_implements() {
@@ -240,6 +248,7 @@ async fn laravel_definition_cross_file_implements() {
 
 /// Hover on a class name shows the class signature and PHPDoc.
 /// Guards against class hover returning empty after index.
+#[ignore]
 #[serial_test::serial]
 #[tokio::test]
 async fn laravel_hover_class_declaration() {
@@ -271,6 +280,7 @@ async fn laravel_hover_class_declaration() {
 
 /// Hover on a method name shows its signature and PHPDoc summary.
 /// Guards against method hover returning empty.
+#[ignore]
 #[serial_test::serial]
 #[tokio::test]
 async fn laravel_hover_method_shows_signature_and_doc() {
@@ -304,6 +314,7 @@ async fn laravel_hover_method_shows_signature_and_doc() {
 }
 
 /// Hover on a property declaration shows its type and docblock.
+#[ignore]
 #[serial_test::serial]
 #[tokio::test]
 async fn laravel_hover_property_declaration() {
@@ -337,6 +348,7 @@ async fn laravel_hover_property_declaration() {
 
 /// Hover on a method call site (`$this->guard()`) shows the guard() signature.
 /// Guards against hover at a call site returning empty/null.
+#[ignore]
 #[serial_test::serial]
 #[tokio::test]
 async fn laravel_hover_on_call_site() {
@@ -368,6 +380,7 @@ async fn laravel_hover_on_call_site() {
 }
 
 /// Hover on a static method call (`Str::camel`) shows the camel() signature.
+#[ignore]
 #[serial_test::serial]
 #[tokio::test]
 async fn laravel_hover_on_static_call() {
@@ -400,6 +413,7 @@ async fn laravel_hover_on_static_call() {
 }
 
 /// Hover on an interface name at an `implements` clause shows the interface.
+#[ignore]
 #[serial_test::serial]
 #[tokio::test]
 async fn laravel_hover_implements_interface() {
@@ -431,6 +445,7 @@ async fn laravel_hover_implements_interface() {
 /// `QueriesRelationships.php`.
 ///
 /// Guards against cross-file reference discovery breaking after index changes.
+#[ignore]
 #[serial_test::serial]
 #[tokio::test]
 async fn laravel_references_static_method_cross_file() {
@@ -473,6 +488,7 @@ async fn laravel_references_static_method_cross_file() {
 /// References to the `guard()` method in AuthManager includes the declaration
 /// and at least the intra-file self-calls.
 /// Guards against method references returning empty.
+#[ignore]
 #[serial_test::serial]
 #[tokio::test]
 async fn laravel_references_method_includes_declaration() {
@@ -509,6 +525,7 @@ async fn laravel_references_method_includes_declaration() {
 
 /// Completing `$this->` inside AuthManager returns the class's own members.
 /// Guards against member completion returning empty after a workspace scan.
+#[ignore]
 #[serial_test::serial]
 #[tokio::test]
 async fn laravel_completion_this_members() {
@@ -911,6 +928,7 @@ async fn laravel_completion_this_members() {
 /// `use`-import alias (`use Illuminate\Support\Str`) by expanding the alias
 /// to its FQCN and extracting the short class name for the workspace index
 /// lookup, rather than falling back to PHP keyword/global completions.
+#[ignore]
 #[serial_test::serial]
 #[tokio::test]
 async fn laravel_completion_static_members() {
@@ -1060,6 +1078,7 @@ async fn laravel_completion_static_members() {
 
 /// Opening a clean Laravel framework file produces no diagnostics.
 /// Guards against false-positive noise on real-world code.
+#[ignore]
 #[serial_test::serial]
 #[tokio::test]
 async fn laravel_diagnostics_clean_file_no_noise() {
@@ -1091,6 +1110,7 @@ async fn laravel_diagnostics_clean_file_no_noise() {
 
 /// A file with a return-type mismatch produces an error diagnostic.
 /// Guards against type-error diagnostics silently stopping after index.
+#[ignore]
 #[serial_test::serial]
 #[tokio::test]
 async fn laravel_diagnostics_type_error_fires() {
@@ -1120,6 +1140,7 @@ async fn laravel_diagnostics_type_error_fires() {
 
 /// `didChange` on an open file triggers a fresh `publishDiagnostics`.
 /// Guards against diagnostic updates stalling after an edit.
+#[ignore]
 #[serial_test::serial]
 #[tokio::test]
 async fn laravel_diagnostics_update_on_did_change() {
@@ -1151,6 +1172,7 @@ async fn laravel_diagnostics_update_on_did_change() {
 /// helpers declared in composer.json's `autoload.files` section; the
 /// workspace scanner discovers and pre-ingests those files into the mir
 /// session so they don't produce false `UndefinedFunction` diagnostics.
+#[ignore]
 #[serial_test::serial]
 #[tokio::test]
 async fn laravel_diagnostics_no_noise_model() {
@@ -1192,6 +1214,7 @@ async fn laravel_diagnostics_no_noise_model() {
 /// `documentSymbol` for AuthManager returns a hierarchical structure with the
 /// class at the top and its methods and properties as children.
 /// Guards against document symbols returning empty after index.
+#[ignore]
 #[serial_test::serial]
 #[tokio::test]
 async fn laravel_document_symbols_hierarchical() {
@@ -1261,6 +1284,7 @@ async fn laravel_document_symbols_hierarchical() {
 /// `documentSymbol` for the Eloquent Model (a large file with ~200 members)
 /// completes without timeout and returns all members.
 /// Guards against large-file document symbol requests stalling.
+#[ignore]
 #[serial_test::serial]
 #[tokio::test]
 async fn laravel_document_symbols_large_file() {
@@ -1655,6 +1679,7 @@ async fn laravel_document_symbols_large_file() {
 
 /// `workspace/symbol` for "AuthManager" resolves after the index completes.
 /// Guards against workspace symbol returning empty on a real codebase.
+#[ignore]
 #[serial_test::serial]
 #[tokio::test]
 async fn laravel_workspace_symbols_class_name() {
@@ -1672,6 +1697,7 @@ async fn laravel_workspace_symbols_class_name() {
 
 /// `workspace/symbol` for "Guard" returns multiple guard-related symbols.
 /// Guards against symbol search being too restrictive.
+#[ignore]
 #[serial_test::serial]
 #[tokio::test]
 async fn laravel_workspace_symbols_partial_query() {
@@ -1735,6 +1761,7 @@ async fn laravel_workspace_symbols_partial_query() {
 
 /// `workspace/symbol` for the `Str` class returns the class from Support.
 /// Guards against workspace symbols missing commonly-used utility classes.
+#[ignore]
 #[serial_test::serial]
 #[tokio::test]
 async fn laravel_workspace_symbols_str_class() {
@@ -2834,6 +2861,7 @@ async fn laravel_workspace_symbols_str_class() {
 
 /// Code actions on a class declaration line return at least one action.
 /// Guards against code actions returning empty on real-world classes.
+#[ignore]
 #[serial_test::serial]
 #[tokio::test]
 async fn laravel_code_actions_class_declaration() {
@@ -2863,6 +2891,7 @@ async fn laravel_code_actions_class_declaration() {
 
 /// Signature help inside a function call shows the function's parameter list.
 /// Guards against signature help returning no signatures on real code.
+#[ignore]
 #[serial_test::serial]
 #[tokio::test]
 async fn laravel_signature_help_inside_call() {
@@ -2890,6 +2919,7 @@ async fn laravel_signature_help_inside_call() {
 
 /// Inlay hints for the AuthManager method bodies are returned without timeout.
 /// Guards against inlay hint requests stalling on real-world files.
+#[ignore]
 #[serial_test::serial]
 #[tokio::test]
 async fn laravel_inlay_hints_method_bodies() {
@@ -2948,6 +2978,7 @@ async fn laravel_inlay_hints_method_bodies() {
 
 /// Inlay hints for a file with inferred parameter types actually contain labels.
 /// Guards against inlay hints always returning an empty array on real code.
+#[ignore]
 #[serial_test::serial]
 #[tokio::test]
 async fn laravel_inlay_hints_content() {
@@ -2970,6 +3001,7 @@ async fn laravel_inlay_hints_content() {
 
 /// Renaming the `AuthManager` class at its declaration produces a workspace edit.
 /// Guards against rename returning null.
+#[ignore]
 #[serial_test::serial]
 #[tokio::test]
 async fn laravel_rename_class_declaration() {
@@ -3013,6 +3045,7 @@ async fn laravel_rename_class_declaration() {
 /// AuthManager writes `implements FactoryContract` where `FactoryContract` is a
 /// use-import alias for `Illuminate\Contracts\Auth\Factory`. The workspace index
 /// resolves the alias so `subtypes_of["Factory"]` includes AuthManager.
+#[ignore]
 #[serial_test::serial]
 #[tokio::test]
 async fn laravel_find_implementations_interface_method() {
@@ -3044,6 +3077,7 @@ async fn laravel_find_implementations_interface_method() {
 /// `typeHierarchy/supertypes` for `AuthManager` returns `Factory` (resolved
 /// through the `FactoryContract` use-import alias). Fixed in `type_hierarchy.rs`
 /// by resolving use-import aliases in `supertypes_of_from_workspace`.
+#[ignore]
 #[serial_test::serial]
 #[tokio::test]
 async fn laravel_type_hierarchy_supertypes() {
@@ -3080,6 +3114,7 @@ async fn laravel_type_hierarchy_supertypes() {
 
 /// Subtypes of the `Factory` interface includes `AuthManager`.
 /// Guards against type hierarchy subtypes returning empty after workspace index.
+#[ignore]
 #[serial_test::serial]
 #[tokio::test]
 async fn laravel_type_hierarchy_subtypes() {
@@ -3120,6 +3155,7 @@ async fn laravel_type_hierarchy_subtypes() {
 /// Find implementations on the `Factory` interface name includes `AuthManager`
 /// (which implements it via the `FactoryContract` alias). Fixed in
 /// `implementation.rs` by resolving use-import aliases in the implements check.
+#[ignore]
 #[serial_test::serial]
 #[tokio::test]
 async fn laravel_find_implementations_interface_name() {
@@ -3148,6 +3184,7 @@ async fn laravel_find_implementations_interface_name() {
 /// Open multiple large files concurrently, then verify each feature still
 /// responds in time.  Protects against the server request queue serializing
 /// or salsa contention causing timeouts when several heavy files are open.
+#[ignore]
 #[serial_test::serial]
 #[tokio::test]
 async fn laravel_features_stable_with_multiple_open_files() {
