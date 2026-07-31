@@ -62,7 +62,9 @@ async fn recv_or_buffered(
     loop {
         let msg = if *budget > 0 {
             *budget -= 1;
-            pending.pop_front().expect("budget bounded by pending.len()")
+            pending
+                .pop_front()
+                .expect("budget bounded by pending.len()")
         } else {
             read_msg(read).await
         };
@@ -349,11 +351,12 @@ impl TestClient {
         tokio::time::timeout(Duration::from_secs(10), async {
             while !remaining.is_empty() {
                 let msg = recv_or_buffered(pending, read, write, &mut budget).await;
-                let wanted_uri = (msg.get("method") == Some(&json!("textDocument/publishDiagnostics")))
-                    .then(|| msg["params"]["uri"].as_str())
-                    .flatten()
-                    .filter(|uri| remaining.contains(*uri))
-                    .map(|uri| uri.to_string());
+                let wanted_uri = (msg.get("method")
+                    == Some(&json!("textDocument/publishDiagnostics")))
+                .then(|| msg["params"]["uri"].as_str())
+                .flatten()
+                .filter(|uri| remaining.contains(*uri))
+                .map(|uri| uri.to_string());
                 match wanted_uri {
                     Some(uri) => {
                         remaining.remove(&uri);
