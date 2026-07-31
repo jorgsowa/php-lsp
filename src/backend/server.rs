@@ -736,7 +736,14 @@ impl LanguageServer for Backend {
                 Some(d) => d,
                 None => return Ok(None),
             };
-            Ok(prepare_rename(&doc, params.position).map(PrepareRenameResponse::Range))
+            let position = params.position;
+            // For a keyword-shaped identifier (`match`, `list`, ...),
+            // `prepare_rename` walks the whole AST to check whether it's used
+            // as a real member name; keep that off the async runtime worker.
+            let range = tokio::task::spawn_blocking(move || prepare_rename(&doc, position))
+                .await
+                .unwrap_or_default();
+            Ok(range.map(PrepareRenameResponse::Range))
         })
         .await
     }

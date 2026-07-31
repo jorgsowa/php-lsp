@@ -426,6 +426,41 @@ async fn did_open_stays_responsive_on_large_file() {
 }
 
 #[tokio::test]
+async fn prepare_rename_stays_responsive_for_keyword_shaped_identifier_on_large_file() {
+    // `prepare_rename` only walks the whole AST when the word under the
+    // cursor is shaped like a PHP keyword (`list`, `match`, ...) used
+    // somewhere as an ordinary identifier — it must check every member-access
+    // site in the document to tell whether this occurrence is one of them.
+    // `list(...)` here is the builtin destructuring form (not a method call),
+    // so the walk finds no match anywhere and must scan the entire tree.
+    let mut source = crate::common::fixture::large_php_source(500);
+    source.push_str("function useList() {\n    list($a, $b) = someFunc();\n    return $a;\n}\n");
+    let list_line = source
+        .lines()
+        .position(|l| l.contains("list($a, $b)"))
+        .expect("generated source must contain the list(...) line") as u32;
+    let list_char = source
+        .lines()
+        .nth(list_line as usize)
+        .unwrap()
+        .find("list")
+        .unwrap() as u32;
+
+    let mut server = TestServer::new().await;
+    server.open("big_prepare_rename.php", &source).await;
+    let uri = server.uri("big_prepare_rename.php");
+    server
+        .assert_stays_responsive(
+            "textDocument/prepareRename",
+            serde_json::json!({
+                "textDocument": { "uri": uri },
+                "position": { "line": list_line, "character": list_char },
+            }),
+        )
+        .await;
+}
+
+#[tokio::test]
 async fn linked_editing_range_stays_responsive_on_large_file() {
     let mut server = TestServer::new().await;
     server
