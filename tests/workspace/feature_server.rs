@@ -675,6 +675,33 @@ async fn semantic_tokens_range_stays_responsive_on_large_file() {
         .await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn did_save_stays_responsive_on_first_semantic_analysis() {
+    // `did_save` must recompute diagnostics (including the mir semantic pass)
+    // off the async runtime worker, same as `did_open`/`did_change`'s shared
+    // `publish_with_dependents` path. Save a file that was never opened —
+    // ingested only via the workspace scan below, so its semantic-issues
+    // memo is still cold — to force `did_save` itself to run the full
+    // analysis rather than hitting a cache already warmed by `didOpen`.
+    let workspace = tempfile::tempdir().expect("workspace tempdir");
+    std::fs::write(
+        workspace.path().join("big_save.php"),
+        crate::common::fixture::large_php_source(2000),
+    )
+    .unwrap();
+
+    let mut server = TestServer::with_root(workspace.path()).await;
+    server.wait_for_index_ready().await;
+    let uri = server.uri("big_save.php");
+    server
+        .assert_notification_stays_responsive(
+            "textDocument/didSave",
+            serde_json::json!({ "textDocument": { "uri": uri } }),
+            std::time::Duration::from_millis(200),
+        )
+        .await;
+}
+
 #[tokio::test]
 async fn semantic_tokens_full_delta_stays_responsive_on_large_file() {
     let mut server = TestServer::new().await;

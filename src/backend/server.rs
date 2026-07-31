@@ -437,13 +437,23 @@ impl LanguageServer for Backend {
             // showed after the last did_change.
             let diag_cfg = self.config.load().diagnostics.clone();
             let is_laravel = self.laravel.load_full().is_laravel;
-            let all = compute_open_file_diagnostics(
-                &self.docs,
-                &self.open_files,
-                &uri,
-                &diag_cfg,
-                is_laravel,
-            );
+            // Includes the semantic (mir) analysis pass, same as
+            // `publish_with_dependents` — keep it off the async runtime worker
+            // here too, not just on the did_open/did_change path.
+            let docs = Arc::clone(&self.docs);
+            let open_files = self.open_files.clone();
+            let uri_for_diags = uri.clone();
+            let all = tokio::task::spawn_blocking(move || {
+                compute_open_file_diagnostics(
+                    &docs,
+                    &open_files,
+                    &uri_for_diags,
+                    &diag_cfg,
+                    is_laravel,
+                )
+            })
+            .await
+            .unwrap_or_default();
             self.open_files
                 .note_published(&uri, super::diagnostics_content_hash(&all));
             self.client
