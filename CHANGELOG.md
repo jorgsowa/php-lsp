@@ -4,6 +4,22 @@ All notable changes to php-lsp are documented here.
 
 ## [Unreleased]
 
+## [0.22.1] — 2026-07-31
+
+### Fixed
+
+- **`new X()` no longer fails call-hierarchy self-declaration lookup for classes, interfaces, traits, and enums**: `new` targets are indexed under the type's own name, but the declaration lookup only matched functions/methods/class-members, so every `new` expression fell through to a workspace-wide trait-alias scan and resolved to nothing. `self`/`static`/`parent` are also now excluded from the call collector, since they're late-binding and never literal declaration entries.
+- **`parent::CONST` now resolves to the parent class's constant** instead of failing outright: the owner-match logic already handled `self`/`static` but still compared `parent::` against the literal string `"parent"`, which can never match a real class name.
+
+### Performance
+
+- **`workspace/didChangeWatchedFiles`, `textDocument/didSave`, and `workspace/willRenameFiles` no longer block the request loop on file parsing/analysis**: each now batches its CPU-bound work — re-indexing changed files, recomputing diagnostics, parsing importers and reference sites for a rename — into a single `spawn_blocking` call, matching the pattern already used elsewhere.
+- **`resolve_parent_construct_class` looks up the class by index** instead of linearly scanning every class in every workspace file.
+
+### Dependencies
+
+- **mir updated to 0.66.1** (from 0.65.0); **php-rs-parser and php-ast updated to 0.19** (from 0.18): php-ast 0.19 changes `Arg::value` to `Option<Expr>` to represent PHP 8.6 partial-application placeholders (`?`, `...`).
+
 ## [0.22.0] — 2026-07-31
 
 ### Added
