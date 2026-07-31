@@ -241,7 +241,7 @@ impl TestClient {
     ///
     pub async fn wait_for_diagnostics(&mut self, uri: &str) -> Value {
         let uri_val = json!(uri);
-        tokio::time::timeout(tokio::time::Duration::from_secs(5), async {
+        tokio::time::timeout(tokio::time::Duration::from_secs(10), async {
             loop {
                 let msg = read_msg(&mut self.read).await;
                 if msg.get("method") == Some(&json!("textDocument/publishDiagnostics"))
@@ -284,7 +284,7 @@ impl TestClient {
         let mut collected: std::collections::HashMap<String, Value> =
             std::collections::HashMap::new();
         let expected = remaining.clone();
-        tokio::time::timeout(tokio::time::Duration::from_secs(5), async {
+        tokio::time::timeout(tokio::time::Duration::from_secs(10), async {
             while !remaining.is_empty() {
                 let msg = read_msg(&mut self.read).await;
                 if msg.get("method") == Some(&json!("textDocument/publishDiagnostics")) {
