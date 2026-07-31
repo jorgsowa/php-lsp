@@ -441,6 +441,13 @@ impl TestClient {
     /// `sleep(150ms)` debounce waits.
     ///
     pub async fn wait_for_diagnostics(&mut self, uri: &str) -> Value {
+        self.wait_for_diagnostics_secs(uri, 10).await
+    }
+
+    /// Same as [`Self::wait_for_diagnostics`], with a caller-chosen timeout.
+    /// Use for setups where the publish can be delayed by a heavy background
+    /// task (e.g. a large decoy workspace competing for the blocking pool).
+    pub async fn wait_for_diagnostics_secs(&mut self, uri: &str, secs: u64) -> Value {
         let uri_val = json!(uri);
         // Forward-only: a uri's diagnostics can republish (e.g. after
         // `indexReady` or a later edit), so honoring a buffered match could
@@ -452,7 +459,7 @@ impl TestClient {
             write,
             ..
         } = self;
-        tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::time::timeout(Duration::from_secs(secs), async {
             loop {
                 let msg = recv_or_buffered(pending, read, write, &mut budget).await;
                 if msg.get("method") == Some(&json!("textDocument/publishDiagnostics"))

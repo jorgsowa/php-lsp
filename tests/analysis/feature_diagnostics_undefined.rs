@@ -271,7 +271,11 @@ async fn open_file_diagnostics_republish_once_index_ready() {
     expect!["<empty>"].assert_eq(&render_diagnostics_notification(&first));
 
     s.wait_for_index_ready_secs(30).await;
-    let corrected = s.client().wait_for_diagnostics(&uri).await;
+    // The republish runs in a spawned task that competes with the
+    // post-index warm-analysis sweep over the 1000 decoy files for the
+    // blocking pool, so it can lag well behind the `indexReady` notification
+    // under load.
+    let corrected = s.client().wait_for_diagnostics_secs(&uri, 30).await;
     expect!["2:0-2:22 [1] UndefinedFunction: Function truly_nonexistent_fn() is not defined"]
         .assert_eq(&render_diagnostics_notification(&corrected));
 }
