@@ -1429,16 +1429,30 @@ impl LanguageServer for Backend {
             let uri = &params.text_document_position_params.text_document.uri;
             let position = params.text_document_position_params.position;
             let source = self.get_open_text(uri).unwrap_or_default();
-            // First pass: open-file ParsedDocs give accurate character positions.
+            // First pass: open-file ParsedDocs give accurate character
+            // positions. Walking every open doc's AST is CPU-bound; keep it
+            // off the async runtime worker. A separate hop (rather than one
+            // spawn_blocking around both passes) so a first-pass hit skips
+            // the second pass's workspace-index fetch entirely, as before.
             let open_docs = self.docs.docs_for(&self.open_urls());
-            if let Some(loc) = goto_declaration(&source, &open_docs, position) {
+            let source_for_pass1 = source.clone();
+            let first_pass = tokio::task::spawn_blocking(move || {
+                goto_declaration(&source_for_pass1, &open_docs, position)
+            })
+            .await
+            .unwrap_or_default();
+            if let Some(loc) = first_pass {
                 return Ok(Some(GotoDefinitionResponse::Scalar(loc)));
             }
             // Second pass: background files via the aggregated workspace index
             // (line-only positions for anything not covered by decls_by_name).
             let wi = self.workspace_index_async().await;
-            Ok(goto_declaration_from_index(&source, &wi, position)
-                .map(GotoDefinitionResponse::Scalar))
+            let second_pass = tokio::task::spawn_blocking(move || {
+                goto_declaration_from_index(&source, &wi, position)
+            })
+            .await
+            .unwrap_or_default();
+            Ok(second_pass.map(GotoDefinitionResponse::Scalar))
         })
         .await
     }
@@ -1457,58 +1471,67 @@ impl LanguageServer for Backend {
             };
             let analysis = self.cached_analysis_async(uri).await;
             let open_docs = self.docs.docs_for(&self.open_urls());
+            let docs = Arc::clone(&self.docs);
 
-            // Exact FQN/namespace matches (open docs, then background index)
-            // outrank *either* source's short-name fallback, so an unrelated
-            // same-short-named class in another open file can never preempt
-            // a correctly-namespaced match that only lives in the index.
-            let mut results = goto_type_definition_exact(
-                &source,
-                &doc,
-                analysis.as_deref(),
-                &open_docs,
-                position,
-            );
-            if results.is_empty() {
-                results = self.docs.with_all_indexes(|all_indexes| {
-                    goto_type_definition_from_index_exact(
-                        &source,
-                        &doc,
-                        analysis.as_deref(),
-                        all_indexes,
-                        position,
-                    )
-                });
-            }
-            if results.is_empty() {
-                results = goto_type_definition_short_name_fallback(
+            // Every fallback pass below is CPU-bound — the exact/short-name
+            // passes walk every open doc's AST, the index passes do lookup
+            // work over the aggregated index — so run the whole chain off
+            // the async runtime worker in one hop, matching hover.
+            let response = tokio::task::spawn_blocking(move || {
+                // Exact FQN/namespace matches (open docs, then background index)
+                // outrank *either* source's short-name fallback, so an unrelated
+                // same-short-named class in another open file can never preempt
+                // a correctly-namespaced match that only lives in the index.
+                let mut results = goto_type_definition_exact(
                     &source,
                     &doc,
                     analysis.as_deref(),
                     &open_docs,
                     position,
                 );
-            }
-            if results.is_empty() {
-                results = self.docs.with_all_indexes(|all_indexes| {
-                    goto_type_definition_from_index_short_name_fallback(
+                if results.is_empty() {
+                    results = docs.with_all_indexes(|all_indexes| {
+                        goto_type_definition_from_index_exact(
+                            &source,
+                            &doc,
+                            analysis.as_deref(),
+                            all_indexes,
+                            position,
+                        )
+                    });
+                }
+                if results.is_empty() {
+                    results = goto_type_definition_short_name_fallback(
                         &source,
                         &doc,
                         analysis.as_deref(),
-                        all_indexes,
+                        &open_docs,
                         position,
-                    )
-                });
-            }
+                    );
+                }
+                if results.is_empty() {
+                    results = docs.with_all_indexes(|all_indexes| {
+                        goto_type_definition_from_index_short_name_fallback(
+                            &source,
+                            &doc,
+                            analysis.as_deref(),
+                            all_indexes,
+                            position,
+                        )
+                    });
+                }
 
-            // Format response: scalar for single result, array for multiple, none for empty
-            let response = match results.len() {
-                0 => None,
-                1 => Some(GotoDefinitionResponse::Scalar(
-                    results.into_iter().next().unwrap(),
-                )),
-                _ => Some(GotoDefinitionResponse::Array(results)),
-            };
+                // Format response: scalar for single result, array for multiple, none for empty
+                match results.len() {
+                    0 => None,
+                    1 => Some(GotoDefinitionResponse::Scalar(
+                        results.into_iter().next().unwrap(),
+                    )),
+                    _ => Some(GotoDefinitionResponse::Array(results)),
+                }
+            })
+            .await
+            .unwrap_or_default();
             Ok(response)
         })
         .await

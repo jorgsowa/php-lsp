@@ -425,6 +425,52 @@ async fn did_open_stays_responsive_on_large_file() {
         .await;
 }
 
+/// Opens `count` sizeable, self-contained documents plus one "target"
+/// document referencing a name (`undefinedGoal`) that isn't declared
+/// anywhere, so `goto_type_definition`'s open-doc AST scan must walk every
+/// one of them before concluding there's no match.
+async fn open_many_docs_with_unresolved_target(server: &mut TestServer, count: usize) -> String {
+    for i in 0..count {
+        server
+            .open(
+                &format!("noise{i}.php"),
+                &crate::common::fixture::large_php_source(30),
+            )
+            .await;
+    }
+    server
+        .open(
+            "goto_target.php",
+            "<?php\nfunction useIt(): void {\n    undefinedGoal();\n}\n",
+        )
+        .await;
+    server.uri("goto_target.php")
+}
+
+// Note: `goto_declaration` has the identical inline-scan pattern (walks
+// every open doc's AST via `resolve_declaration` with no spawn_blocking),
+// but its per-doc cost is dominated by cheap top-level name comparisons —
+// empirically, even 1500 open documents didn't produce an observable
+// ordering effect here, unlike goto_type_definition below. The source fix
+// is kept for architectural consistency (and headroom against future
+// per-doc cost growth), but isn't paired with its own responsiveness test
+// since one can't be constructed reliably at a practical scale.
+
+#[tokio::test]
+async fn goto_type_definition_stays_responsive_with_many_open_documents() {
+    let mut server = TestServer::new().await;
+    let uri = open_many_docs_with_unresolved_target(&mut server, 150).await;
+    server
+        .assert_stays_responsive(
+            "textDocument/typeDefinition",
+            serde_json::json!({
+                "textDocument": { "uri": uri },
+                "position": { "line": 2, "character": 6 },
+            }),
+        )
+        .await;
+}
+
 #[tokio::test]
 async fn prepare_rename_stays_responsive_for_keyword_shaped_identifier_on_large_file() {
     // `prepare_rename` only walks the whole AST when the word under the
