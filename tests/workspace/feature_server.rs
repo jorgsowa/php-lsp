@@ -425,6 +425,29 @@ async fn did_open_stays_responsive_on_large_file() {
         .await;
 }
 
+#[tokio::test]
+async fn linked_editing_range_stays_responsive_on_large_file() {
+    let mut server = TestServer::new().await;
+    server
+        .open(
+            "big_linked_editing.php",
+            &crate::common::fixture::large_php_source(500),
+        )
+        .await;
+    let uri = server.uri("big_linked_editing.php");
+    server
+        .assert_stays_responsive(
+            "textDocument/linkedEditingRange",
+            serde_json::json!({
+                "textDocument": { "uri": uri },
+                // Character 8 lands inside "GenClass0" on `class GenClass0`
+                // (line 7 of `large_php_source`'s output).
+                "position": { "line": 7, "character": 8 },
+            }),
+        )
+        .await;
+}
+
 #[serial_test::serial(fake_external_formatter)]
 #[tokio::test]
 async fn formatting_stays_responsive_with_slow_external_formatter() {

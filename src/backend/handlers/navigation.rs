@@ -781,55 +781,57 @@ impl Backend {
             Some(d) => d,
             None => return Ok(None),
         };
-        let word = match crate::text::word_at_position(&source, position) {
-            Some(w) => w,
-            None => return Ok(None),
-        };
-        let is_variable = word.starts_with('$');
-        let cursor_word_range = match crate::text::word_range_at(&source, position) {
-            Some(r) => r,
-            None => return Ok(None),
-        };
+        // The highlight/class-scoping walks below are CPU-bound over the
+        // whole document; keep them off the async runtime worker (the
+        // same work `document_highlight` already runs via spawn_blocking).
+        Ok(tokio::task::spawn_blocking(move || {
+            let word = crate::text::word_at_position(&source, position)?;
+            let is_variable = word.starts_with('$');
+            let cursor_word_range = crate::text::word_range_at(&source, position)?;
 
-        let highlights = document_highlights(&source, &doc, position);
-        if highlights.is_empty() {
-            return Ok(None);
-        }
+            let highlights = document_highlights(&source, &doc, position);
+            if highlights.is_empty() {
+                return None;
+            }
 
-        if !highlights.iter().any(|h| h.range == cursor_word_range) {
-            return Ok(None);
-        }
+            if !highlights.iter().any(|h| h.range == cursor_word_range) {
+                return None;
+            }
 
-        let scope_to_class = !is_variable
-            && crate::types::type_map::enclosing_class_at(&source, &doc, position).as_deref()
-                != Some(word.as_str());
-        let other_class_ranges: Vec<Range> = if scope_to_class {
-            let cursor_class = crate::types::type_map::enclosing_class_range_at(&doc, position);
-            crate::types::type_map::collect_all_class_ranges(&doc)
+            let scope_to_class = !is_variable
+                && crate::types::type_map::enclosing_class_at(&source, &doc, position).as_deref()
+                    != Some(word.as_str());
+            let other_class_ranges: Vec<Range> = if scope_to_class {
+                let cursor_class =
+                    crate::types::type_map::enclosing_class_range_at(&doc, position);
+                crate::types::type_map::collect_all_class_ranges(&doc)
+                    .into_iter()
+                    .filter(|r| Some(*r) != cursor_class)
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            let ranges: Vec<Range> = highlights
                 .into_iter()
-                .filter(|r| Some(*r) != cursor_class)
-                .collect()
-        } else {
-            Vec::new()
-        };
-        let ranges: Vec<Range> = highlights
-            .into_iter()
-            .map(|h| h.range)
-            .filter(|r| !other_class_ranges.iter().any(|ocr| range_within(*r, *ocr)))
-            .collect();
-        if ranges.is_empty() {
-            return Ok(None);
-        }
+                .map(|h| h.range)
+                .filter(|r| !other_class_ranges.iter().any(|ocr| range_within(*r, *ocr)))
+                .collect();
+            if ranges.is_empty() {
+                return None;
+            }
 
-        let word_pattern = if is_variable {
-            "\\$[a-zA-Z_\\u00A0-\\uFFFF][a-zA-Z0-9_\\u00A0-\\uFFFF]*".to_string()
-        } else {
-            "[a-zA-Z_\\u00A0-\\uFFFF][a-zA-Z0-9_\\u00A0-\\uFFFF]*".to_string()
-        };
-        Ok(Some(LinkedEditingRanges {
-            ranges,
-            word_pattern: Some(word_pattern),
-        }))
+            let word_pattern = if is_variable {
+                "\\$[a-zA-Z_\\u00A0-\\uFFFF][a-zA-Z0-9_\\u00A0-\\uFFFF]*".to_string()
+            } else {
+                "[a-zA-Z_\\u00A0-\\uFFFF][a-zA-Z0-9_\\u00A0-\\uFFFF]*".to_string()
+            };
+            Some(LinkedEditingRanges {
+                ranges,
+                word_pattern: Some(word_pattern),
+            })
+        })
+        .await
+        .unwrap_or_default())
     }
 }
 
