@@ -13,6 +13,7 @@ use crate::actions::extract_interface_action::extract_interface_actions;
 use crate::actions::extract_method_action::extract_method_actions;
 use crate::actions::inline_action::inline_variable_actions;
 use crate::actions::local_to_property_action::local_to_property_actions;
+use crate::actions::route_scaffold_action::unknown_route_actions;
 use crate::actions::switch_to_match_action::switch_to_match_actions;
 use crate::actions::update_phpdoc_action::update_phpdoc_actions;
 use crate::actions::visibility_action::change_visibility_actions;
@@ -166,6 +167,13 @@ impl Backend {
                 range.start,
                 &laravel,
                 laravel_root.as_deref(),
+            ));
+            actions.extend(unknown_route_actions(
+                &doc,
+                range.start,
+                &laravel,
+                laravel_root.as_deref(),
+                &docs,
             ));
             if let Some(action) = organize_imports_action(&source, &uri) {
                 actions.push(action);

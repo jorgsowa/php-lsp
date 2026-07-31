@@ -291,10 +291,13 @@ async fn view_missing_name_offers_no_quickfix() {
     );
 }
 
-/// **LIMITATION**: `route('name')` misses have no quickfix — see
-/// `ROADMAP.md`'s "Unknown route" quickfix backlog item.
+/// `route('name')` misses offer a "Create route" quickfix
+/// (`src/actions/route_scaffold_action.rs`) — see the dedicated test suite in
+/// `feature_laravel_route_scaffold.rs` for the controller-scaffolding and
+/// closure-fallback cases in depth; this test only confirms the quickfix
+/// shows up at all in the general code-action listing.
 #[tokio::test]
-async fn route_missing_name_offers_no_quickfix() {
+async fn route_missing_name_offers_create_route_quickfix() {
     let workspace = tempfile::tempdir().expect("workspace tempdir");
     write_minimal_laravel_project(workspace.path());
     std::fs::create_dir_all(workspace.path().join("routes")).unwrap();
@@ -314,8 +317,10 @@ async fn route_missing_name_offers_no_quickfix() {
     let resp = s.code_action("app.php", 1, 8, 1, 8).await;
     let actions = resp["result"].as_array().cloned().unwrap_or_default();
     assert!(
-        actions.is_empty(),
-        "route quickfixes are a known gap, got: {actions:#?}"
+        actions
+            .iter()
+            .any(|a| a["title"].as_str() == Some("Create route 'missing.route'")),
+        "expected a 'Create route' quickfix, got: {actions:#?}"
     );
 }
 

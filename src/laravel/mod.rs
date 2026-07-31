@@ -20,6 +20,7 @@ mod eloquent_guard;
 mod env_index;
 mod location_lookup;
 mod route_index;
+pub(crate) mod route_scaffold;
 mod string_call;
 mod translation_index;
 mod view_index;
@@ -40,7 +41,9 @@ use view_index::view_completions;
 
 use std::path::Path;
 
-use tower_lsp_server::ls_types::{CodeActionOrCommand, CompletionItem, Location, Position, Uri};
+use tower_lsp_server::ls_types::{
+    CodeActionOrCommand, CompletionItem, Location, Position, Range, Uri,
+};
 
 pub(crate) use string_call::find_call_sites;
 
@@ -83,6 +86,18 @@ impl LaravelIndex {
             routes: RouteIndex::load(root),
         }
     }
+}
+
+/// The route name and its `Range`, when the cursor sits inside a
+/// `route('...')` call's string argument. Thin wrapper exposing
+/// `string_call::call_string_arg` scoped to [`ROUTE_CALL_NAMES`] for the
+/// "Create route" quickfix (`src/actions/route_scaffold_action.rs`), which
+/// lives outside this module.
+pub(crate) fn route_call_at(
+    doc: &crate::document::ast::ParsedDoc,
+    position: Position,
+) -> Option<(String, Range)> {
+    call_string_arg(doc, position, ROUTE_CALL_NAMES)
 }
 
 /// Resolve the cursor position to a Laravel string-key definition — checked

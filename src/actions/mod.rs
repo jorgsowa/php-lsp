@@ -10,6 +10,7 @@ pub mod inline_action;
 pub mod local_to_property_action;
 pub mod phpdoc_action;
 pub mod promote_action;
+pub mod route_scaffold_action;
 pub mod switch_to_match_action;
 pub mod type_action;
 pub mod update_phpdoc_action;
