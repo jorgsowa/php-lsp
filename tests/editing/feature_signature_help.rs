@@ -50,6 +50,28 @@ $g->hello($0);
     expect!["▶ hello(string $name)  @param0"].assert_eq(&out);
 }
 
+/// PHP method dispatch is case-insensitive; a call spelled in a different
+/// case than the declaration must still show signature help (the label
+/// mirrors the call-site spelling, matching every other resolution path in
+/// this file — only the parameter list comes from the declaration).
+#[tokio::test]
+async fn signature_help_method_call_is_case_insensitive() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_signature_help(
+            r#"<?php
+class Greeter {
+    public function hello(string $name): string { return $name; }
+}
+$g = new Greeter();
+$g->HELLO($0);
+"#,
+        )
+        .await;
+    expect!["▶ HELLO(string $name)  @param0"].assert_eq(&out);
+}
+
 /// Cursor inside the inner call of `outer(inner($0), 2)` must show `inner`'s
 /// signature, not `outer`'s. A parser that tracks only one call frame will
 /// show `outer` here — this test catches that regression.

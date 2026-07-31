@@ -130,7 +130,7 @@ fn scan_method_of_class_impl<'a>(
                 // 1. Direct method lookup.
                 for member in c.body.members.iter() {
                     if let ClassMemberKind::Method(m) = &member.kind
-                        && m.name == method_name
+                        && m.name.or_error().eq_ignore_ascii_case(method_name)
                     {
                         let params = format_params(&m.params);
                         let ret = m
@@ -140,7 +140,10 @@ fn scan_method_of_class_impl<'a>(
                             .unwrap_or_default();
                         return Some(format!(
                             "{}::{}({}){}",
-                            class_name, method_name, params, ret
+                            class_name,
+                            m.name.or_error(),
+                            params,
+                            ret
                         ));
                     }
                 }
@@ -184,7 +187,7 @@ fn scan_method_of_class_impl<'a>(
             StmtKind::Trait(t) if t.name == class_name => {
                 for member in t.body.members.iter() {
                     if let ClassMemberKind::Method(m) = &member.kind
-                        && m.name == method_name
+                        && m.name.or_error().eq_ignore_ascii_case(method_name)
                     {
                         let params = format_params(&m.params);
                         let ret = m
@@ -194,7 +197,10 @@ fn scan_method_of_class_impl<'a>(
                             .unwrap_or_default();
                         return Some(format!(
                             "{}::{}({}){}",
-                            class_name, method_name, params, ret
+                            class_name,
+                            m.name.or_error(),
+                            params,
+                            ret
                         ));
                     }
                 }
@@ -203,7 +209,7 @@ fn scan_method_of_class_impl<'a>(
             StmtKind::Enum(e) if e.name == class_name => {
                 for member in e.body.members.iter() {
                     if let EnumMemberKind::Method(m) = &member.kind
-                        && m.name == method_name
+                        && m.name.or_error().eq_ignore_ascii_case(method_name)
                     {
                         let params = format_params(&m.params);
                         let ret = m
@@ -213,7 +219,10 @@ fn scan_method_of_class_impl<'a>(
                             .unwrap_or_default();
                         return Some(format!(
                             "{}::{}({}){}",
-                            class_name, method_name, params, ret
+                            class_name,
+                            m.name.or_error(),
+                            params,
+                            ret
                         ));
                     }
                 }
@@ -244,7 +253,7 @@ fn scan_doc_method_of_class(
     let dm = parse_docblock(doc_comment?.text)
         .methods
         .into_iter()
-        .find(|m| m.name == method_name)?;
+        .find(|m| m.name.eq_ignore_ascii_case(method_name))?;
     let params = dm
         .params
         .iter()
@@ -259,7 +268,7 @@ fn scan_doc_method_of_class(
     let prefix = if dm.is_static { "static " } else { "" };
     Some(format!(
         "{}{}::{}({}){}",
-        prefix, class_name, method_name, params, ret
+        prefix, class_name, dm.name, params, ret
     ))
 }
 
@@ -392,7 +401,7 @@ fn find_method_sig_in_trait(
             StmtKind::Trait(t) if t.name == trait_name => {
                 for member in t.body.members.iter() {
                     if let ClassMemberKind::Method(m) = &member.kind
-                        && m.name == method_name
+                        && m.name.or_error().eq_ignore_ascii_case(method_name)
                     {
                         let params = format_params(&m.params);
                         let ret = m
@@ -400,7 +409,7 @@ fn find_method_sig_in_trait(
                             .as_ref()
                             .map(|r| format!(": {}", format_type_hint(r)))
                             .unwrap_or_default();
-                        return Some(format!("{}({}){}", method_name, params, ret));
+                        return Some(format!("{}({}){}", m.name.or_error(), params, ret));
                     }
                 }
                 return None;
@@ -498,7 +507,7 @@ fn find_method_docblock_impl<'a>(
                 // Direct lookup.
                 for member in c.body.members.iter() {
                     if let ClassMemberKind::Method(m) = &member.kind
-                        && m.name == method_name
+                        && m.name.or_error().eq_ignore_ascii_case(method_name)
                     {
                         return docblock_before(source, member.span.start)
                             .map(|raw| parse_docblock(&raw));
@@ -533,7 +542,7 @@ fn find_method_docblock_impl<'a>(
             StmtKind::Trait(t) if t.name == class_name => {
                 for member in t.body.members.iter() {
                     if let ClassMemberKind::Method(m) = &member.kind
-                        && m.name == method_name
+                        && m.name.or_error().eq_ignore_ascii_case(method_name)
                     {
                         return docblock_before(source, member.span.start)
                             .map(|raw| parse_docblock(&raw));
@@ -544,7 +553,7 @@ fn find_method_docblock_impl<'a>(
             StmtKind::Enum(e) if e.name == class_name => {
                 for member in e.body.members.iter() {
                     if let EnumMemberKind::Method(m) = &member.kind
-                        && m.name == method_name
+                        && m.name.or_error().eq_ignore_ascii_case(method_name)
                     {
                         return docblock_before(source, member.span.start)
                             .map(|raw| parse_docblock(&raw));

@@ -201,6 +201,27 @@ $mailer->pro$0cess('');
     .await;
 }
 
+/// PHP method dispatch is case-insensitive, so a call site spelled in a
+/// different case than the declaration must still resolve — matches the
+/// dispatch semantics `references.rs` already applies to method lookups.
+#[tokio::test]
+async fn hover_method_call_is_case_insensitive() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    s.check_hover_annotated(
+        r#"<?php
+class Mailer { public function process(string $to): bool {} }
+$mailer = new Mailer();
+$mailer->PROC$0ESS('');
+"#,
+        expect![[r#"
+            ```php
+            Mailer::process(string $to): bool
+            ```"#]],
+    )
+    .await;
+}
+
 #[tokio::test]
 async fn hover_method_without_instanceof_does_not_narrow() {
     let mut s = TestServer::new().await;

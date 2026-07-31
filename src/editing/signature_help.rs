@@ -528,7 +528,7 @@ fn find_signature(stmts: &[Stmt<'_, '_>], word: &str, has_receiver: bool) -> Opt
                 if has_receiver {
                     for member in c.body.members.iter() {
                         if let ClassMemberKind::Method(m) = &member.kind
-                            && m.name == word
+                            && m.name.or_error().eq_ignore_ascii_case(word)
                         {
                             return Some(format_params_str(&m.params));
                         }
@@ -547,7 +547,7 @@ fn find_signature(stmts: &[Stmt<'_, '_>], word: &str, has_receiver: bool) -> Opt
             StmtKind::Interface(i) if has_receiver => {
                 for member in i.body.members.iter() {
                     if let ClassMemberKind::Method(m) = &member.kind
-                        && m.name == word
+                        && m.name.or_error().eq_ignore_ascii_case(word)
                     {
                         return Some(format_params_str(&m.params));
                     }
@@ -556,7 +556,7 @@ fn find_signature(stmts: &[Stmt<'_, '_>], word: &str, has_receiver: bool) -> Opt
             StmtKind::Trait(t) if has_receiver => {
                 for member in t.body.members.iter() {
                     if let ClassMemberKind::Method(m) = &member.kind
-                        && m.name == word
+                        && m.name.or_error().eq_ignore_ascii_case(word)
                     {
                         return Some(format_params_str(&m.params));
                     }
@@ -565,7 +565,7 @@ fn find_signature(stmts: &[Stmt<'_, '_>], word: &str, has_receiver: bool) -> Opt
             StmtKind::Enum(e) if has_receiver => {
                 for member in e.body.members.iter() {
                     if let EnumMemberKind::Method(m) = &member.kind
-                        && m.name == word
+                        && m.name.or_error().eq_ignore_ascii_case(word)
                     {
                         return Some(format_params_str(&m.params));
                     }

@@ -985,6 +985,32 @@ function run(QueryBuilder $qb): void {
     .assert_eq(&out);
 }
 
+/// Same as `hover_doc_method_tag` but the call site's case doesn't match the
+/// `@method` tag's — dispatch is case-insensitive, so this must still resolve.
+#[tokio::test]
+async fn hover_doc_method_tag_is_case_insensitive() {
+    let mut s = TestServer::new().await;
+    let out = s
+        .check_hover(
+            r#"<?php
+/**
+ * @method User find(int $id)
+ */
+class QueryBuilder {}
+
+function run(QueryBuilder $qb): void {
+    $qb->FI$0ND(1);
+}
+"#,
+        )
+        .await;
+    expect![[r#"
+        ```php
+        QueryBuilder::find(int $id): User
+        ```"#]]
+    .assert_eq(&out);
+}
+
 /// Same as `hover_doc_method_tag` but for a `@method static` tag invoked as a
 /// static call.
 #[tokio::test]
