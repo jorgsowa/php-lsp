@@ -261,7 +261,7 @@ fn write_decoy_files(root: &std::path::Path, n: usize) {
 #[tokio::test]
 async fn open_file_diagnostics_republish_once_index_ready() {
     let tmp = tempfile::tempdir().unwrap();
-    write_decoy_files(tmp.path(), 1000);
+    write_decoy_files(tmp.path(), 5000);
     let src = "<?php\n\ntruly_nonexistent_fn();\n";
     std::fs::write(tmp.path().join("app.php"), src).unwrap();
 
@@ -286,7 +286,12 @@ async fn open_file_diagnostics_republish_once_index_ready() {
 #[tokio::test]
 async fn pull_diagnostic_suppressed_before_index_ready() {
     let tmp = tempfile::tempdir().unwrap();
-    write_decoy_files(tmp.path(), 1000);
+    // Needs a bigger margin than the push-model sibling test above: this
+    // test pays for *two* full round trips (the `open()` wait plus the
+    // separate `pull_diagnostics` request) before the scan may finish,
+    // vs. one for the push path — 1000 decoys occasionally lost that race
+    // in isolation (no other tests competing for the blocking pool).
+    write_decoy_files(tmp.path(), 5000);
     let src = "<?php\n\nnew TrulyMissingClass();\n";
     std::fs::write(tmp.path().join("app.php"), src).unwrap();
 
