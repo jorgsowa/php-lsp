@@ -4,9 +4,23 @@ All notable changes to php-lsp are documented here.
 
 ## [Unreleased]
 
+## [0.23.0] — 2026-08-03
+
 ### Added
 
+- **Laravel Blade template support**: a Blade lexer covers `{{ }}`/`{!! !!}` expressions, `{{-- --}}` comments, `@{{ }}` literal escapes, view/Livewire-referencing directives (`@include`, `@includeIf`, `@extends`, `@each`, `@component`, `@livewire`), and `<x-component>`/`<livewire:name>` tags. Helper calls (`route()`/`view()`/`config()`/`asset()`/`env()`/`trans()`/`->middleware(...)`) inside expressions get definition/hover/completion by reparsing each expression as a standalone PHP snippet. New `ComponentIndex`/`LivewireIndex` cover class-based component/Livewire fallback when no matching Blade view exists.
+- **Laravel hover, document links, asset and middleware support**: hover and document-link coverage for the existing `env`/`config`/`view`/translation/`route` string-key domains, plus two new domains — `asset()` completion/hover/definition/links (`public/` file index) and `->middleware('alias')`/`Route::middleware([...])` completion/hover/definition/links (aliases sourced from `bootstrap/app.php` or the legacy `Kernel.php`).
 - **`stubDirs` config option**: load user-supplied PHP stub directories (e.g. for extensions or frameworks the bundled stubs don't cover) as an additional, highest-precedence symbol source, alongside `.php-lsp.json` support.
+- **Collector-phase diagnostics now reach the editor** (e.g. `BackedEnumCaseTypeMismatch`): `get_semantic_issues_salsa` previously merged only the body-analysis and class-issues sources, silently dropping any diagnostic raised during mir's collector phase.
+
+### Fixed
+
+- **A `@var` docblock immediately followed by `?>` is no longer lost across a split PHP/HTML block** (#235): a Yii2-style view template with `/** @var Post $model */` right before the closing `?>` tag, followed by inline HTML and a new `<?php` block, previously produced a false-positive `UndefinedVariable` and lost completion for `$model` in the second block.
+- **Spreading a string-keyed array as a call's sole argument no longer produces a false type-mismatch** (`f(...$args)` binding by parameter name, valid PHP 8.1+ named-argument syntax): the spread expansion only recognized sequential integer keys and otherwise fell back to a nonsensical merged-union check against the first parameter.
+
+### Dependencies
+
+- **mir updated to 0.67.0** (from 0.66.1): wires up `AnalysisSession::collector_issues`, the `@var` docblock split-block fix, and the named-arg string-keyed spread fix above.
 
 ## [0.22.2] — 2026-08-02
 
