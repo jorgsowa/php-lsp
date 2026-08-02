@@ -13,76 +13,100 @@
 //! no later message is processed, and the probe times out — a hard failure,
 //! never a flake.
 //!
-//! Unarmed cost is one mutex lock per guarded section per call — noise next
-//! to the parse/analysis work each section wraps.
-
-use std::sync::{Condvar, Mutex};
+//! Production builds compile the whole mechanism out: without the
+//! `test-hooks` feature (enabled only for test targets, via the self
+//! dev-dependency in Cargo.toml) `DebugGate` is a zero-sized no-op and the
+//! hold/release custom methods are never registered, so a real client cannot
+//! arm anything.
 
 /// Gate section around `did_open`'s parse-diagnostics closure.
 pub const GATE_DID_OPEN_PARSE: &str = "didOpen.parse";
 /// Gate section around `did_save`'s diagnostics-recompute closure.
 pub const GATE_DID_SAVE_DIAGNOSTICS: &str = "didSave.diagnostics";
 
+#[cfg(not(feature = "test-hooks"))]
 #[derive(Default)]
-struct GateState {
-    /// Section name the next matching `pass` call should hold at.
-    armed: Option<String>,
-    /// Section currently parked at the gate (surfaced via `debugStats`).
-    held: Option<String>,
-    released: bool,
-}
+pub struct DebugGate;
 
-#[derive(Default)]
-pub struct DebugGate {
-    state: Mutex<GateState>,
-    cv: Condvar,
-}
-
+#[cfg(not(feature = "test-hooks"))]
 impl DebugGate {
-    /// Arm the gate: the next `pass(section)` parks until [`release`](Self::release).
-    /// One passage per arm; re-arming replaces any previous armed section.
-    pub fn arm(&self, section: &str) {
-        let mut s = self.state.lock().unwrap();
-        s.armed = Some(section.to_owned());
-        s.released = false;
-    }
+    #[inline(always)]
+    pub fn pass(&self, _section: &str) {}
 
-    pub fn release(&self) {
-        let mut s = self.state.lock().unwrap();
-        s.armed = None;
-        s.released = true;
-        self.cv.notify_all();
-    }
-
-    /// Section currently parked at the gate, if any.
+    #[inline(always)]
     pub fn held_section(&self) -> Option<String> {
-        self.state.lock().unwrap().held.clone()
-    }
-
-    /// Hold point. No-op unless the gate is armed for exactly `section`;
-    /// when it is, claims the arm (so concurrent passages can't stack) and
-    /// parks until released. The park is capped at 60s: a test that fails
-    /// without releasing must not leave this task parked forever — tokio's
-    /// runtime shutdown joins in-flight blocking tasks, so an uncapped park
-    /// would turn that test's failure report into an eternal hang.
-    pub fn pass(&self, section: &str) {
-        let s = self.state.lock().unwrap();
-        if s.armed.as_deref() != Some(section) {
-            return;
-        }
-        let mut s = s;
-        s.armed = None;
-        s.held = Some(section.to_owned());
-        let (mut s, _timed_out) = self
-            .cv
-            .wait_timeout_while(s, std::time::Duration::from_secs(60), |s| !s.released)
-            .unwrap();
-        s.held = None;
-        s.released = false;
+        None
     }
 }
 
-#[cfg(test)]
+#[cfg(feature = "test-hooks")]
+pub use real::DebugGate;
+
+#[cfg(feature = "test-hooks")]
+mod real {
+    use std::sync::{Condvar, Mutex};
+
+    #[derive(Default)]
+    struct GateState {
+        /// Section name the next matching `pass` call should hold at.
+        armed: Option<String>,
+        /// Section currently parked at the gate (surfaced via `debugStats`).
+        held: Option<String>,
+        released: bool,
+    }
+
+    #[derive(Default)]
+    pub struct DebugGate {
+        state: Mutex<GateState>,
+        cv: Condvar,
+    }
+
+    impl DebugGate {
+        /// Arm the gate: the next `pass(section)` parks until [`release`](Self::release).
+        /// One passage per arm; re-arming replaces any previous armed section.
+        pub fn arm(&self, section: &str) {
+            let mut s = self.state.lock().unwrap();
+            s.armed = Some(section.to_owned());
+            s.released = false;
+        }
+
+        pub fn release(&self) {
+            let mut s = self.state.lock().unwrap();
+            s.armed = None;
+            s.released = true;
+            self.cv.notify_all();
+        }
+
+        /// Section currently parked at the gate, if any.
+        pub fn held_section(&self) -> Option<String> {
+            self.state.lock().unwrap().held.clone()
+        }
+
+        /// Hold point. No-op unless the gate is armed for exactly `section`;
+        /// when it is, claims the arm (so concurrent passages can't stack) and
+        /// parks until released. The park is capped at 60s: a test that fails
+        /// without releasing must not leave this task parked forever — tokio's
+        /// runtime shutdown joins in-flight blocking tasks, so an uncapped park
+        /// would turn that test's failure report into an eternal hang.
+        pub fn pass(&self, section: &str) {
+            let s = self.state.lock().unwrap();
+            if s.armed.as_deref() != Some(section) {
+                return;
+            }
+            let mut s = s;
+            s.armed = None;
+            s.held = Some(section.to_owned());
+            let (mut s, _timed_out) = self
+                .cv
+                .wait_timeout_while(s, std::time::Duration::from_secs(60), |s| !s.released)
+                .unwrap();
+            s.held = None;
+            s.released = false;
+        }
+    }
+}
+
+#[cfg(all(test, feature = "test-hooks"))]
 mod tests {
     use super::*;
     use std::sync::Arc;

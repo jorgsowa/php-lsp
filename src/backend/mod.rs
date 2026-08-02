@@ -95,6 +95,7 @@ pub struct DebugStats {
 }
 
 /// Params for the `$/php-lsp/debugHoldGate` custom request.
+#[cfg(feature = "test-hooks")]
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
 pub struct DebugHoldGateParams {
     /// One of the `GATE_*` constants in `debug_gate`.
@@ -102,16 +103,20 @@ pub struct DebugHoldGateParams {
 }
 
 /// The one place custom methods are registered — `main` and the test harness
-/// both build the service here so their method tables can never drift.
+/// both build the service here so their method tables can never drift. The
+/// gate methods exist only under `test-hooks` (test targets); a production
+/// build answers them with MethodNotFound like any unknown method.
 pub fn build_lsp_service() -> (
     tower_lsp_server::LspService<Backend>,
     tower_lsp_server::ClientSocket,
 ) {
-    tower_lsp_server::LspService::build(Backend::new)
-        .custom_method("$/php-lsp/debugStats", Backend::debug_stats)
+    let builder = tower_lsp_server::LspService::build(Backend::new)
+        .custom_method("$/php-lsp/debugStats", Backend::debug_stats);
+    #[cfg(feature = "test-hooks")]
+    let builder = builder
         .custom_method("$/php-lsp/debugHoldGate", Backend::debug_hold_gate)
-        .custom_method("$/php-lsp/debugReleaseGate", Backend::debug_release_gate)
-        .finish()
+        .custom_method("$/php-lsp/debugReleaseGate", Backend::debug_release_gate);
+    builder.finish()
 }
 
 use crate::document::ast::ParsedDoc;
@@ -185,6 +190,7 @@ impl Backend {
 
     /// `$/php-lsp/debugHoldGate` — test-only: park the next blocking-pool
     /// passage through the named section until `debugReleaseGate`.
+    #[cfg(feature = "test-hooks")]
     pub async fn debug_hold_gate(
         &self,
         params: DebugHoldGateParams,
@@ -195,6 +201,7 @@ impl Backend {
 
     /// `$/php-lsp/debugReleaseGate` — release a passage parked by
     /// `debugHoldGate` (and disarm the gate).
+    #[cfg(feature = "test-hooks")]
     pub async fn debug_release_gate(&self) -> tower_lsp_server::jsonrpc::Result<()> {
         self.debug_gate.release();
         Ok(())

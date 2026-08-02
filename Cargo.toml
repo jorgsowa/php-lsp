@@ -40,6 +40,10 @@ harness = false
 
 [features]
 dhat-heap = ["dep:dhat"]
+# Debug-gate hold points for the responsiveness regression tests. Never in
+# production builds: the self dev-dependency below enables it for test
+# targets only, so plain `cargo build` compiles the hooks out entirely.
+test-hooks = []
 
 [dependencies]
 dhat = { version = "0.3", optional = true }
@@ -71,6 +75,9 @@ percent-encoding = "2"
 version = "2"
 
 [dev-dependencies]
+# Self-dependency: turns on test-hooks whenever test/bench targets build,
+# without affecting `cargo build` of the binary.
+php-lsp = { path = ".", features = ["test-hooks"] }
 tempfile = "3"
 expect-test = "1"
 indexmap = "2"
