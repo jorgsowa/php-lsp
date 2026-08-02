@@ -1273,11 +1273,20 @@ impl LanguageServer for Backend {
                 return Ok(None);
             }
             // O(matches) lookup via the aggregate's `decls_by_name` map instead
-            // of scanning every workspace doc.
+            // of scanning every workspace doc, but a miss falls through to a
+            // workspace-wide trait-alias scan — keep that off the async
+            // runtime worker, same as incoming_calls/outgoing_calls below.
             let wi = self.workspace_index_async().await;
             let docs = Arc::clone(&self.docs);
-            let get_doc = move |u: &Uri| docs.get_doc_salsa(u);
-            Ok(prepare_call_hierarchy_indexed(&word, &wi, &get_doc).map(|item| vec![item]))
+            let gate = Arc::clone(&self.debug_gate);
+            let item = tokio::task::spawn_blocking(move || {
+                gate.pass(super::debug_gate::GATE_PREPARE_CALL_HIERARCHY);
+                let get_doc = move |u: &Uri| docs.get_doc_salsa(u);
+                prepare_call_hierarchy_indexed(&word, &wi, &get_doc)
+            })
+            .await
+            .unwrap_or_default();
+            Ok(item.map(|item| vec![item]))
         })
         .await
     }

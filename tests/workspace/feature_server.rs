@@ -841,6 +841,30 @@ async fn will_delete_files_stays_responsive_while_use_edit_batch_is_in_flight() 
         .await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn prepare_call_hierarchy_stays_responsive_while_indexed_lookup_is_in_flight() {
+    // A `decls_by_name` miss falls through to a workspace-wide trait-alias
+    // scan; that whole indexed lookup must run off the async runtime worker.
+    let mut server = TestServer::new().await;
+    server
+        .open(
+            "gated_call_hierarchy.php",
+            "<?php\nfunction gatedCallable(): void {}\ngatedCallable();\n",
+        )
+        .await;
+    let uri = server.uri("gated_call_hierarchy.php");
+    server
+        .assert_request_stays_responsive_via_gate(
+            "textDocument/prepareCallHierarchy",
+            serde_json::json!({
+                "textDocument": { "uri": uri },
+                "position": { "line": 1, "character": 10 },
+            }),
+            php_lsp::backend::debug_gate::GATE_PREPARE_CALL_HIERARCHY,
+        )
+        .await;
+}
+
 #[tokio::test]
 async fn semantic_tokens_full_delta_stays_responsive_on_large_file() {
     let mut server = TestServer::new().await;

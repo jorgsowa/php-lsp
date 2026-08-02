@@ -29,6 +29,8 @@ pub const GATE_DID_CHANGE_WATCHED_FILES: &str = "didChangeWatchedFiles.parse";
 pub const GATE_WILL_RENAME_FILES: &str = "willRenameFiles.useEdits";
 /// Gate section around `will_delete_files`' `use`-edit batch closure.
 pub const GATE_WILL_DELETE_FILES: &str = "willDeleteFiles.useEdits";
+/// Gate section around `prepare_call_hierarchy`'s indexed-lookup closure.
+pub const GATE_PREPARE_CALL_HIERARCHY: &str = "prepareCallHierarchy.lookup";
 
 #[cfg(not(feature = "test-hooks"))]
 #[derive(Default)]
