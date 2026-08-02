@@ -43,6 +43,24 @@ pub const GATE_COMPLETION_RESOLVE: &str = "completionResolve.lookup";
 pub const GATE_INLAY_HINT_RESOLVE: &str = "inlayHintResolve.lookup";
 /// Gate section around `on_type_formatting`'s whole-document scan.
 pub const GATE_ON_TYPE_FORMATTING: &str = "onTypeFormatting.scan";
+/// Gate section around `prepare_rename`'s keyword member-access check.
+pub const GATE_PREPARE_RENAME: &str = "prepareRename.walk";
+/// Gate section around `document_symbol`'s AST walk.
+pub const GATE_DOCUMENT_SYMBOL: &str = "documentSymbol.walk";
+/// Gate section around `folding_range`'s AST walk plus comment/region scan.
+pub const GATE_FOLDING_RANGE: &str = "foldingRange.walk";
+/// Gate section around `document_link`'s AST walk plus `@link`/`@see` scan.
+pub const GATE_DOCUMENT_LINK: &str = "documentLink.walk";
+/// Gate section around `semantic_tokens_full`'s AST walk.
+pub const GATE_SEMANTIC_TOKENS_FULL: &str = "semanticTokensFull.walk";
+/// Gate section around `semantic_tokens_range`'s AST walk.
+pub const GATE_SEMANTIC_TOKENS_RANGE: &str = "semanticTokensRange.walk";
+/// Gate section around `semantic_tokens_full_delta`'s AST walk.
+pub const GATE_SEMANTIC_TOKENS_FULL_DELTA: &str = "semanticTokensFullDelta.walk";
+/// Gate section around `linked_editing_range`'s highlight/class-scoping walk.
+pub const GATE_LINKED_EDITING_RANGE: &str = "linkedEditingRange.walk";
+/// Gate section around `goto_type_definition`'s exact/short-name fallback chain.
+pub const GATE_GOTO_TYPE_DEFINITION: &str = "gotoTypeDefinition.walk";
 
 #[cfg(not(feature = "test-hooks"))]
 #[derive(Default)]

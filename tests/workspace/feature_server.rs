@@ -378,16 +378,18 @@ async fn laravel_string_key_references_and_hover_concurrent_complete_without_dea
 // ── inline-blocking regression tests ────────────────────────────────────────
 // Each handler below must offload its document-size synchronous work to
 // `spawn_blocking` rather than running it directly on the async task that
-// also reads stdin and writes stdout for the whole connection — see
-// `TestClient::assert_stays_responsive` for why running it inline hangs
-// every other in-flight request, not just the slow one.
-
-// Unlike the request/response pairs above, a notification has no response to
-// order a probe against, so these use the server's debug gate instead of any
-// wall-clock measurement — see `TestClient::assert_notification_stays_responsive`
-// (and the flaky-budget history in its doc comment) for the mechanism. The
-// payload can therefore be tiny: the gate, not document size, is what keeps
-// the handler's work observably in flight.
+// also reads stdin and writes stdout for the whole connection.
+//
+// Most use the server's debug gate (`assert_request_stays_responsive_via_gate`
+// / `assert_notification_stays_responsive`) rather than racing a response
+// against a probe (`assert_stays_responsive`): the gate pins the blocking
+// closure in flight deterministically, so the payload can be tiny instead of
+// hand-tuned to a document size that reliably outruns the probe on every CI
+// runner — the size-race version flaked on Windows CI for `prepareRename`
+// (its walk was cheap enough that spawn_blocking's own round trip sometimes
+// beat the probe's). `formatting` below is the one holdout still using the
+// race: its "slow work" is a real subprocess sleep, not a size-tuned scan, so
+// it isn't subject to the same margin problem.
 //
 // `multi_thread` isn't needed for the pass path (deterministic on any
 // runtime); it keeps the client task alive when a regressed inline handler
@@ -420,53 +422,29 @@ async fn did_open_stays_responsive_while_parse_is_in_flight() {
         .await;
 }
 
-/// Opens `count` sizeable, self-contained documents plus one "target"
-/// document referencing a name (`undefinedGoal`) that isn't declared
-/// anywhere, so `goto_type_definition`'s open-doc AST scan must walk every
-/// one of them before concluding there's no match.
-async fn open_many_docs_with_unresolved_target(server: &mut TestServer, count: usize) -> String {
-    for i in 0..count {
-        server
-            .open(
-                &format!("noise{i}.php"),
-                &crate::common::fixture::large_php_source(30),
-            )
-            .await;
-    }
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn goto_type_definition_stays_responsive_with_many_open_documents() {
+    let mut server = TestServer::new().await;
     server
         .open(
-            "goto_target.php",
+            "gated_goto_target.php",
             "<?php\nfunction useIt(): void {\n    undefinedGoal();\n}\n",
         )
         .await;
-    server.uri("goto_target.php")
-}
-
-// Note: `goto_declaration` has the identical inline-scan pattern (walks
-// every open doc's AST via `resolve_declaration` with no spawn_blocking),
-// but its per-doc cost is dominated by cheap top-level name comparisons —
-// empirically, even 1500 open documents didn't produce an observable
-// ordering effect here, unlike goto_type_definition below. The source fix
-// is kept for architectural consistency (and headroom against future
-// per-doc cost growth), but isn't paired with its own responsiveness test
-// since one can't be constructed reliably at a practical scale.
-
-#[tokio::test]
-async fn goto_type_definition_stays_responsive_with_many_open_documents() {
-    let mut server = TestServer::new().await;
-    let uri = open_many_docs_with_unresolved_target(&mut server, 150).await;
+    let uri = server.uri("gated_goto_target.php");
     server
-        .assert_stays_responsive(
+        .assert_request_stays_responsive_via_gate(
             "textDocument/typeDefinition",
             serde_json::json!({
                 "textDocument": { "uri": uri },
                 "position": { "line": 2, "character": 6 },
             }),
+            php_lsp::backend::debug_gate::GATE_GOTO_TYPE_DEFINITION,
         )
         .await;
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn prepare_rename_stays_responsive_for_keyword_shaped_identifier_on_large_file() {
     // `prepare_rename` only walks the whole AST when the word under the
     // cursor is shaped like a PHP keyword (`list`, `match`, ...) used
@@ -474,52 +452,44 @@ async fn prepare_rename_stays_responsive_for_keyword_shaped_identifier_on_large_
     // site in the document to tell whether this occurrence is one of them.
     // `list(...)` here is the builtin destructuring form (not a method call),
     // so the walk finds no match anywhere and must scan the entire tree.
-    let mut source = crate::common::fixture::large_php_source(500);
-    source.push_str("function useList() {\n    list($a, $b) = someFunc();\n    return $a;\n}\n");
-    let list_line = source
-        .lines()
-        .position(|l| l.contains("list($a, $b)"))
-        .expect("generated source must contain the list(...) line") as u32;
-    let list_char = source
-        .lines()
-        .nth(list_line as usize)
-        .unwrap()
-        .find("list")
-        .unwrap() as u32;
+    let source = "<?php\nfunction useList() {\n    list($a, $b) = someFunc();\n    return $a;\n}\n";
+    let list_line = 2;
+    let list_char = source.lines().nth(list_line).unwrap().find("list").unwrap() as u32;
 
     let mut server = TestServer::new().await;
-    server.open("big_prepare_rename.php", &source).await;
-    let uri = server.uri("big_prepare_rename.php");
+    server.open("gated_prepare_rename.php", source).await;
+    let uri = server.uri("gated_prepare_rename.php");
     server
-        .assert_stays_responsive(
+        .assert_request_stays_responsive_via_gate(
             "textDocument/prepareRename",
             serde_json::json!({
                 "textDocument": { "uri": uri },
-                "position": { "line": list_line, "character": list_char },
+                "position": { "line": list_line as u32, "character": list_char },
             }),
+            php_lsp::backend::debug_gate::GATE_PREPARE_RENAME,
         )
         .await;
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn linked_editing_range_stays_responsive_on_large_file() {
     let mut server = TestServer::new().await;
     server
         .open(
-            "big_linked_editing.php",
-            &crate::common::fixture::large_php_source(500),
+            "gated_linked_editing.php",
+            "<?php\nclass GatedClass {\n    public function work(): void {}\n}\n",
         )
         .await;
-    let uri = server.uri("big_linked_editing.php");
+    let uri = server.uri("gated_linked_editing.php");
     server
-        .assert_stays_responsive(
+        .assert_request_stays_responsive_via_gate(
             "textDocument/linkedEditingRange",
             serde_json::json!({
                 "textDocument": { "uri": uri },
-                // Character 8 lands inside "GenClass0" on `class GenClass0`
-                // (line 7 of `large_php_source`'s output).
-                "position": { "line": 7, "character": 8 },
+                // Character 8 lands inside "GatedClass" on `class GatedClass`.
+                "position": { "line": 1, "character": 8 },
             }),
+            php_lsp::backend::debug_gate::GATE_LINKED_EDITING_RANGE,
         )
         .await;
 }
@@ -575,98 +545,94 @@ async fn formatting_stays_responsive_with_slow_external_formatter() {
         .await;
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn document_symbol_stays_responsive_on_large_file() {
     let mut server = TestServer::new().await;
     server
-        .open(
-            "big_doc_symbol.php",
-            &crate::common::fixture::large_php_source(500),
-        )
+        .open("gated_doc_symbol.php", "<?php\nfunction gated(): void {}\n")
         .await;
-    let uri = server.uri("big_doc_symbol.php");
+    let uri = server.uri("gated_doc_symbol.php");
     server
-        .assert_stays_responsive(
+        .assert_request_stays_responsive_via_gate(
             "textDocument/documentSymbol",
             serde_json::json!({ "textDocument": { "uri": uri } }),
+            php_lsp::backend::debug_gate::GATE_DOCUMENT_SYMBOL,
         )
         .await;
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn folding_range_stays_responsive_on_large_file() {
     let mut server = TestServer::new().await;
     server
-        .open(
-            "big_folding.php",
-            &crate::common::fixture::large_php_source(500),
-        )
+        .open("gated_folding.php", "<?php\nfunction gated(): void {}\n")
         .await;
-    let uri = server.uri("big_folding.php");
+    let uri = server.uri("gated_folding.php");
     server
-        .assert_stays_responsive(
+        .assert_request_stays_responsive_via_gate(
             "textDocument/foldingRange",
             serde_json::json!({ "textDocument": { "uri": uri } }),
+            php_lsp::backend::debug_gate::GATE_FOLDING_RANGE,
         )
         .await;
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn document_link_stays_responsive_on_large_file() {
     let mut server = TestServer::new().await;
     server
-        .open(
-            "big_doc_link.php",
-            &crate::common::fixture::large_php_source(500),
-        )
+        .open("gated_doc_link.php", "<?php\nfunction gated(): void {}\n")
         .await;
-    let uri = server.uri("big_doc_link.php");
+    let uri = server.uri("gated_doc_link.php");
     server
-        .assert_stays_responsive(
+        .assert_request_stays_responsive_via_gate(
             "textDocument/documentLink",
             serde_json::json!({ "textDocument": { "uri": uri } }),
+            php_lsp::backend::debug_gate::GATE_DOCUMENT_LINK,
         )
         .await;
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn semantic_tokens_full_stays_responsive_on_large_file() {
     let mut server = TestServer::new().await;
     server
         .open(
-            "big_semtok_full.php",
-            &crate::common::fixture::large_php_source(500),
+            "gated_semtok_full.php",
+            "<?php\nfunction gated(): void {}\n",
         )
         .await;
-    let uri = server.uri("big_semtok_full.php");
+    let uri = server.uri("gated_semtok_full.php");
     server
-        .assert_stays_responsive(
+        .assert_request_stays_responsive_via_gate(
             "textDocument/semanticTokens/full",
             serde_json::json!({ "textDocument": { "uri": uri } }),
+            php_lsp::backend::debug_gate::GATE_SEMANTIC_TOKENS_FULL,
         )
         .await;
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn semantic_tokens_range_stays_responsive_on_large_file() {
     let mut server = TestServer::new().await;
     server
         .open(
-            "big_semtok_range.php",
-            &crate::common::fixture::large_php_source(500),
+            "gated_semtok_range.php",
+            "<?php\nfunction gated(): void {}\n",
         )
         .await;
-    let uri = server.uri("big_semtok_range.php");
+    let uri = server.uri("gated_semtok_range.php");
     server
-        .assert_stays_responsive(
+        .assert_request_stays_responsive_via_gate(
             "textDocument/semanticTokens/range",
             serde_json::json!({
                 "textDocument": { "uri": uri },
                 "range": {
                     "start": { "line": 0, "character": 0 },
-                    "end": { "line": 50, "character": 0 },
+                    "end": { "line": 1, "character": 0 },
                 },
             }),
+            php_lsp::backend::debug_gate::GATE_SEMANTIC_TOKENS_RANGE,
         )
         .await;
 }
@@ -1038,23 +1004,24 @@ async fn on_type_formatting_stays_responsive_while_scan_is_in_flight() {
         .await;
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn semantic_tokens_full_delta_stays_responsive_on_large_file() {
     let mut server = TestServer::new().await;
     server
         .open(
-            "big_semtok_delta.php",
-            &crate::common::fixture::large_php_source(500),
+            "gated_semtok_delta.php",
+            "<?php\nfunction gated(): void {}\n",
         )
         .await;
-    let uri = server.uri("big_semtok_delta.php");
+    let uri = server.uri("gated_semtok_delta.php");
     server
-        .assert_stays_responsive(
+        .assert_request_stays_responsive_via_gate(
             "textDocument/semanticTokens/full/delta",
             serde_json::json!({
                 "textDocument": { "uri": uri },
                 "previousResultId": "nonexistent",
             }),
+            php_lsp::backend::debug_gate::GATE_SEMANTIC_TOKENS_FULL_DELTA,
         )
         .await;
 }

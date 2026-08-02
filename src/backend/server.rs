@@ -804,7 +804,9 @@ impl LanguageServer for Backend {
             // `prepare_rename` walks the whole AST to check whether it's used
             // as a real member name; keep that off the async runtime worker.
             let range = self
-                .blocking("prepareRename.walk", move || prepare_rename(&doc, position))
+                .blocking_gated(super::debug_gate::GATE_PREPARE_RENAME, move || {
+                    prepare_rename(&doc, position)
+                })
                 .await
                 .unwrap_or_default();
             Ok(range.map(PrepareRenameResponse::Range))
@@ -1005,7 +1007,7 @@ impl LanguageServer for Backend {
             };
             // The AST walk is CPU-bound; keep it off the async runtime worker.
             let symbols = self
-                .blocking("document_symbol", move || {
+                .blocking_gated(super::debug_gate::GATE_DOCUMENT_SYMBOL, move || {
                     document_symbols(doc.source(), &doc)
                 })
                 .await
@@ -1025,7 +1027,9 @@ impl LanguageServer for Backend {
             // The AST walk plus full-text comment/region scans are CPU-bound;
             // keep them off the async runtime worker.
             let ranges = self
-                .blocking("folding_range", move || folding_ranges(doc.source(), &doc))
+                .blocking_gated(super::debug_gate::GATE_FOLDING_RANGE, move || {
+                    folding_ranges(doc.source(), &doc)
+                })
                 .await
                 .unwrap_or_default();
             Ok(if ranges.is_empty() {
@@ -1157,7 +1161,7 @@ impl LanguageServer for Backend {
             // The AST walk is CPU-bound; keep it off the async runtime worker
             // (see `document_highlight` for the same pattern).
             let (result_id, data) = self
-                .blocking("semantic_tokens_full", move || {
+                .blocking_gated(super::debug_gate::GATE_SEMANTIC_TOKENS_FULL, move || {
                     let tokens = semantic_tokens(doc.source(), &doc);
                     let result_id = token_hash(&tokens);
                     let tokens_arc = Arc::new(tokens);
@@ -1196,7 +1200,7 @@ impl LanguageServer for Backend {
             };
             let range = params.range;
             let tokens = self
-                .blocking("semantic_tokens_range", move || {
+                .blocking_gated(super::debug_gate::GATE_SEMANTIC_TOKENS_RANGE, move || {
                     semantic_tokens_range(doc.source(), &doc, range)
                 })
                 .await
@@ -1224,28 +1228,31 @@ impl LanguageServer for Backend {
             let uri_for_task = uri.clone();
             let prev_id = params.previous_result_id;
             let result = self
-                .blocking("semantic_tokens_full_delta", move || {
-                    let new_tokens = Arc::new(semantic_tokens(doc.source(), &doc));
-                    let new_result_id = token_hash(&new_tokens);
+                .blocking_gated(
+                    super::debug_gate::GATE_SEMANTIC_TOKENS_FULL_DELTA,
+                    move || {
+                        let new_tokens = Arc::new(semantic_tokens(doc.source(), &doc));
+                        let new_result_id = token_hash(&new_tokens);
 
-                    let result = match docs.get_token_cache(&uri_for_task, &prev_id) {
-                        Some(old_tokens) => {
-                            let edits = compute_token_delta(&old_tokens, &new_tokens);
-                            SemanticTokensFullDeltaResult::TokensDelta(SemanticTokensDelta {
+                        let result = match docs.get_token_cache(&uri_for_task, &prev_id) {
+                            Some(old_tokens) => {
+                                let edits = compute_token_delta(&old_tokens, &new_tokens);
+                                SemanticTokensFullDeltaResult::TokensDelta(SemanticTokensDelta {
+                                    result_id: Some(new_result_id.clone()),
+                                    edits,
+                                })
+                            }
+                            // Unknown previous result — fall back to full tokens
+                            None => SemanticTokensFullDeltaResult::Tokens(SemanticTokens {
                                 result_id: Some(new_result_id.clone()),
-                                edits,
-                            })
-                        }
-                        // Unknown previous result — fall back to full tokens
-                        None => SemanticTokensFullDeltaResult::Tokens(SemanticTokens {
-                            result_id: Some(new_result_id.clone()),
-                            data: (*new_tokens).clone(),
-                        }),
-                    };
+                                data: (*new_tokens).clone(),
+                            }),
+                        };
 
-                    docs.store_token_cache(&uri_for_task, new_result_id, new_tokens);
-                    result
-                })
+                        docs.store_token_cache(&uri_for_task, new_result_id, new_tokens);
+                        result
+                    },
+                )
                 .await;
             let Some(result) = result else {
                 return Ok(None);
@@ -1561,7 +1568,7 @@ impl LanguageServer for Backend {
             // work over the aggregated index — so run the whole chain off
             // the async runtime worker in one hop, matching hover.
             let response = self
-                .blocking("goto_type_definition", move || {
+                .blocking_gated(super::debug_gate::GATE_GOTO_TYPE_DEFINITION, move || {
                     // Exact FQN/namespace matches (open docs, then background index)
                     // outrank *either* source's short-name fallback, so an unrelated
                     // same-short-named class in another open file can never preempt
@@ -1763,7 +1770,7 @@ impl LanguageServer for Backend {
             // The AST walk plus full-text `@link`/`@see` scan are CPU-bound;
             // keep them off the async runtime worker.
             let links = self
-                .blocking("document_link", move || {
+                .blocking_gated(super::debug_gate::GATE_DOCUMENT_LINK, move || {
                     document_links(&uri, &doc, doc.source())
                 })
                 .await
