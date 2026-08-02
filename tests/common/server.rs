@@ -549,6 +549,20 @@ impl TestServer {
             .await
     }
 
+    /// Gate-backed request variant for handlers where the plain ordering
+    /// race doesn't reliably discriminate (see
+    /// [`TestClient::assert_request_stays_responsive_via_gate`]).
+    pub async fn assert_request_stays_responsive_via_gate(
+        &mut self,
+        slow_method: &str,
+        slow_params: serde_json::Value,
+        gate_section: &str,
+    ) {
+        self.client
+            .assert_request_stays_responsive_via_gate(slow_method, slow_params, gate_section)
+            .await
+    }
+
     pub async fn wait_for_index_ready(&mut self) -> &mut Self {
         self.client.wait_for_index_ready().await;
         self

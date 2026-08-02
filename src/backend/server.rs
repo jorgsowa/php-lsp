@@ -564,7 +564,9 @@ impl LanguageServer for Backend {
             // re-entering the blocking pool per file.
             let docs = Arc::clone(&self.docs);
             let open_files = self.open_files.clone();
+            let gate = Arc::clone(&self.debug_gate);
             let _ = tokio::task::spawn_blocking(move || {
+                gate.pass(super::debug_gate::GATE_DID_CHANGE_WATCHED_FILES);
                 for change in changes {
                     match change {
                         Change::Upsert(uri, text) => {

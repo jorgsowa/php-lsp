@@ -420,6 +420,113 @@ impl TestClient {
         );
     }
 
+    /// Request-flavored counterpart to `assert_notification_stays_responsive`,
+    /// for handlers where the plain `assert_stays_responsive` ordering race
+    /// doesn't reliably discriminate — e.g. a handler with several sequential
+    /// `spawn_blocking` hops, where an inline regression in one hop still
+    /// leaves the request's later `.await` points available for the runtime
+    /// to interleave the probe through, so the probe can still win the race
+    /// even with the regression present. Same gate mechanism as the
+    /// notification variant, but fires `slow_method` as a real request (not
+    /// a fire-and-forget notification) and drains its response before
+    /// returning.
+    pub async fn assert_request_stays_responsive_via_gate(
+        &mut self,
+        slow_method: &str,
+        slow_params: Value,
+        gate_section: &str,
+    ) {
+        let armed = self
+            .request(
+                "$/php-lsp/debugHoldGate",
+                json!({ "section": gate_section }),
+            )
+            .await;
+        assert!(
+            armed.get("error").is_none(),
+            "debugHoldGate failed, gate never armed: {armed}"
+        );
+        let slow_id = self.send_request(slow_method, slow_params).await;
+
+        let mut probes_sent = 0u32;
+        let mut probes_answered = 0u32;
+        let probe_phase = std::time::Instant::now();
+        let parked = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                probes_sent += 1;
+                let probe_id = self.send_request_no_params("$/php-lsp/debugStats").await;
+                let resp = {
+                    let mut budget = self.pending.len();
+                    let TestClient {
+                        pending,
+                        read,
+                        write,
+                        ..
+                    } = &mut *self;
+                    loop {
+                        let msg = recv_or_buffered(pending, read, write, &mut budget).await;
+                        if msg.get("id") == Some(&json!(probe_id)) {
+                            break msg;
+                        }
+                        pending.push_back(msg);
+                    }
+                };
+                probes_answered += 1;
+                if resp["result"]["debug_gate_held"] == json!(gate_section) {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await;
+        if parked.is_err() {
+            let froze =
+                probes_answered < probes_sent || probe_phase.elapsed() > Duration::from_secs(15);
+            assert!(
+                !froze,
+                "{slow_method} appears to block the request loop: with debug gate \
+                 {gate_section:?} armed (so the handler's gated work cannot \
+                 finish), message processing stalled \
+                 ({probes_answered}/{probes_sent} probes answered, probe phase took \
+                 {:?}) — the handler runs its work inline instead of via \
+                 spawn_blocking",
+                probe_phase.elapsed()
+            );
+            self.request_no_params("$/php-lsp/debugReleaseGate").await;
+            panic!(
+                "{slow_method} was sent with debug gate {gate_section:?} armed and \
+                 the server stayed responsive ({probes_answered} probes answered), \
+                 but the section never parked — either the handler never ran or \
+                 its gate pass() call no longer covers this path"
+            );
+        }
+        let released = self.request_no_params("$/php-lsp/debugReleaseGate").await;
+        assert!(
+            released.get("error").is_none(),
+            "debugReleaseGate failed, parked handler left stranded: {released}"
+        );
+
+        // Drain the slow request's own response so it isn't left unread on the wire.
+        let mut budget = self.pending.len();
+        let TestClient {
+            pending,
+            read,
+            write,
+            ..
+        } = self;
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let msg = recv_or_buffered(pending, read, write, &mut budget).await;
+                if msg.get("id") == Some(&json!(slow_id)) {
+                    return;
+                }
+                pending.push_back(msg);
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("timed out waiting for {slow_method} response"));
+    }
+
     pub async fn notify(&mut self, method: &str, params: Value) {
         let msg = json!({
             "jsonrpc": "2.0",

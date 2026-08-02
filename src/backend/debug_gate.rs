@@ -23,6 +23,10 @@
 pub const GATE_DID_OPEN_PARSE: &str = "didOpen.parse";
 /// Gate section around `did_save`'s diagnostics-recompute closure.
 pub const GATE_DID_SAVE_DIAGNOSTICS: &str = "didSave.diagnostics";
+/// Gate section around `did_change_watched_files`' batched parse closure.
+pub const GATE_DID_CHANGE_WATCHED_FILES: &str = "didChangeWatchedFiles.parse";
+/// Gate section around `will_rename_files`' `use`-edit batch closure.
+pub const GATE_WILL_RENAME_FILES: &str = "willRenameFiles.useEdits";
 
 #[cfg(not(feature = "test-hooks"))]
 #[derive(Default)]

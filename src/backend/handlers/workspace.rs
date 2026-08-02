@@ -650,10 +650,12 @@ impl Backend {
                 let docs = std::sync::Arc::clone(&self.docs);
                 let old_fqn_task = old_fqn.clone();
                 let new_fqn_task = new_fqn.clone();
+                let gate = std::sync::Arc::clone(&self.debug_gate);
                 // Every importing file gets parsed and diffed; keep that off
                 // the async runtime worker, same as the reference-lookup path
                 // below.
                 let edits_by_uri = tokio::task::spawn_blocking(move || {
+                    gate.pass(super::super::debug_gate::GATE_WILL_RENAME_FILES);
                     let mut out = Vec::new();
                     for uri in docs.files_importing(&old_fqn_task) {
                         let Some(doc) = docs.get_doc_salsa(&uri) else {

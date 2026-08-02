@@ -694,18 +694,32 @@ async fn did_save_stays_responsive_while_diagnostics_recompute_is_in_flight() {
         .await;
 }
 
-// Note: `did_change_watched_files` parses each CREATED/CHANGED file inline
-// (batched into one `spawn_blocking` call rather than N, same motivation as
-// the did_change debounce comment above) but the loop already awaits
-// `tokio::fs::read_to_string` per file before parsing it, so every iteration
-// has a natural yield point — unlike did_open/did_save's single unyielding
-// computation, no practical file count/size produced an observable
-// ordering effect in a responsiveness test here. The batching fix is kept
-// for the same reason `find_class_doc_fn`-style N-call collapsing is kept
-// elsewhere: fewer, larger blocking-pool handoffs instead of one per file.
-// This test instead confirms the batched rewrite still indexes every file
-// in a single bulk notification, mixing a CREATE and a DELETE in one batch
-// to exercise the enum's ordering.
+// `did_change_watched_files` parses each CREATED/CHANGED file and batches
+// that into one `spawn_blocking` call rather than N (same motivation as the
+// did_change debounce comment above). The loop itself awaits
+// `tokio::fs::read_to_string` per file before parsing it, so a wall-clock or
+// pure-ordering probe couldn't previously pin the batch's own inline-vs-
+// spawn_blocking behavior at any practical file count/size — the gate below
+// sidesteps that entirely, same as did_open/did_save.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn did_change_watched_files_stays_responsive_while_batch_parse_is_in_flight() {
+    let workspace = tempfile::tempdir().expect("workspace tempdir");
+    let mut server = TestServer::with_root(workspace.path()).await;
+    server.wait_for_index_ready().await;
+    server.write_file("gated_watched.php", "<?php\nclass GatedWatched {}\n");
+    let uri = server.uri("gated_watched.php");
+    server
+        .assert_notification_stays_responsive(
+            "workspace/didChangeWatchedFiles",
+            serde_json::json!({ "changes": [{ "uri": uri, "type": 1 }] }),
+            php_lsp::backend::debug_gate::GATE_DID_CHANGE_WATCHED_FILES,
+        )
+        .await;
+}
+
+/// This test confirms the batched rewrite still indexes every file in a
+/// single bulk notification, mixing a CREATE and a DELETE in one batch to
+/// exercise the enum's ordering.
 #[tokio::test]
 async fn did_change_watched_files_bulk_batch_indexes_every_file() {
     let workspace = tempfile::tempdir().expect("workspace tempdir");
@@ -746,12 +760,19 @@ async fn did_change_watched_files_bulk_batch_indexes_every_file() {
     );
 }
 
-#[tokio::test]
-async fn will_rename_files_stays_responsive_with_many_importing_files() {
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn will_rename_files_stays_responsive_while_use_edit_batch_is_in_flight() {
     // Renaming a class parses every file that imports it (to rewrite `use`
-    // lines) plus every reference site (to rewrite the declaration and its
-    // usages) — both loops must run off the async runtime worker, not
-    // inline for the whole importer set.
+    // lines) in one batched `spawn_blocking` call. That closure sits
+    // between two other `.await` points in the same handler (the psr4-map
+    // load and the reference-lookup spawn_blocking below it), so a plain
+    // ordering probe against the handler's own response doesn't reliably
+    // pin an inline regression in just this one hop — the runtime can still
+    // interleave the probe through the handler's other await points even
+    // when this specific hop runs inline. The gate sidesteps that, same
+    // rationale as the notification-flavored tests above; a single
+    // importing file is all that's needed since the gate — not file count —
+    // is what proves the work is in flight.
     let workspace = tempfile::tempdir().expect("workspace tempdir");
     std::fs::write(
         workspace.path().join("composer.json"),
@@ -764,26 +785,23 @@ async fn will_rename_files_stays_responsive_with_many_importing_files() {
         "<?php\nclass Target {}\n",
     )
     .unwrap();
-    for i in 0..200 {
-        std::fs::write(
-            workspace.path().join(format!("src/Importer{i}.php")),
-            format!(
-                "<?php\nuse Target;\n\nclass Importer{i}\n{{\n    public function f(): Target\n    {{\n        return new Target();\n    }}\n}}\n"
-            ),
-        )
-        .unwrap();
-    }
+    std::fs::write(
+        workspace.path().join("src/Importer.php"),
+        "<?php\nuse Target;\n\nclass Importer\n{\n    public function f(): Target\n    {\n        return new Target();\n    }\n}\n",
+    )
+    .unwrap();
 
     let mut server = TestServer::with_root(workspace.path()).await;
     server.wait_for_index_ready().await;
     let old_uri = server.uri("src/Target.php");
     let new_uri = server.uri("src/Renamed.php");
     server
-        .assert_stays_responsive(
+        .assert_request_stays_responsive_via_gate(
             "workspace/willRenameFiles",
             serde_json::json!({
                 "files": [{ "oldUri": old_uri, "newUri": new_uri }],
             }),
+            php_lsp::backend::debug_gate::GATE_WILL_RENAME_FILES,
         )
         .await;
 }
