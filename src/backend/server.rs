@@ -226,7 +226,7 @@ impl LanguageServer for Backend {
                             // this folder's files, same as the initial-roots path
                             // — without this, a folder added at runtime never gets
                             // its warm-start seed, only the startup roots do.
-                            let _ = tokio::task::spawn_blocking(move || {
+                            super::offload::run("workspaceFolders.warmStart", move || {
                                 docs.get_workspace_index_salsa();
                                 docs.warm_start_indexes();
                             })
@@ -244,7 +244,8 @@ impl LanguageServer for Backend {
         // Postings committed since the last warm sweep (on-demand query
         // freshness passes, edit re-sweeps) reach disk only via a flush.
         let docs = Arc::clone(&self.docs);
-        let _ = tokio::task::spawn_blocking(move || docs.flush_analysis_cache()).await;
+        self.blocking("shutdown.flush", move || docs.flush_analysis_cache())
+            .await;
         Ok(())
     }
 
@@ -264,18 +265,14 @@ impl LanguageServer for Backend {
             // cache miss triggers a full parse, so keep it off the async task.
             let docs = Arc::clone(&self.docs);
             let uri_for_task = uri.clone();
-            let gate = Arc::clone(&self.debug_gate);
-            let parse_diags = tokio::task::spawn_blocking(move || {
-                gate.pass(super::debug_gate::GATE_DID_OPEN_PARSE);
-                docs.get_doc_salsa(&uri_for_task)
-                    .map(|doc| diagnostics_from_doc(&doc))
-                    .unwrap_or_default()
-            })
-            .await
-            .unwrap_or_else(|e| {
-                tracing::warn!("did_open panicked while parsing {uri:?}: {e}");
-                Vec::new()
-            });
+            let parse_diags = self
+                .blocking_gated(super::debug_gate::GATE_DID_OPEN_PARSE, move || {
+                    docs.get_doc_salsa(&uri_for_task)
+                        .map(|doc| diagnostics_from_doc(&doc))
+                        .unwrap_or_default()
+                })
+                .await
+                .unwrap_or_default();
             self.set_parse_diagnostics(&uri, parse_diags);
 
             publish_with_dependents(
@@ -341,12 +338,9 @@ impl LanguageServer for Backend {
                 }
 
                 let (_doc, parse_diags) =
-                    tokio::task::spawn_blocking(move || parse_document(&text))
+                    super::offload::run("did_change.parse", move || parse_document(&text))
                         .await
-                        .unwrap_or_else(|e| {
-                            tracing::warn!("parse_document panicked for {uri:?}: {e}");
-                            (ParsedDoc::default(), vec![])
-                        });
+                        .unwrap_or_default();
 
                 // Only apply if no newer edit arrived while we were parsing.
                 if open_files.current_version(&uri) != Some(version) {
@@ -374,6 +368,10 @@ impl LanguageServer for Backend {
                         return;
                     }
                     let open_urls = open_files.urls();
+                    // Deliberately not `offload::run`: spawn_blocking schedules
+                    // synchronously at the call, but `run`'s async body is lazy
+                    // and would never even start the sweep without an `.await`
+                    // this fire-and-forget site intentionally omits.
                     drop(tokio::task::spawn_blocking(move || {
                         let cancel = docs.begin_warm_sweep();
                         docs.warm_analysis_sweep(&open_urls, &cancel);
@@ -423,11 +421,10 @@ impl LanguageServer for Backend {
                 .unwrap_or_default();
             // Spawns and blocks on an external formatter process; keep that
             // wait off the async runtime worker.
-            Ok(
-                tokio::task::spawn_blocking(move || format_document(&source))
-                    .await
-                    .unwrap_or_default(),
-            )
+            Ok(self
+                .blocking("willSaveWaitUntil.format", move || format_document(&source))
+                .await
+                .unwrap_or_default())
         })
         .await
     }
@@ -448,19 +445,18 @@ impl LanguageServer for Backend {
             let docs = Arc::clone(&self.docs);
             let open_files = self.open_files.clone();
             let uri_for_diags = uri.clone();
-            let gate = Arc::clone(&self.debug_gate);
-            let all = tokio::task::spawn_blocking(move || {
-                gate.pass(super::debug_gate::GATE_DID_SAVE_DIAGNOSTICS);
-                compute_open_file_diagnostics(
-                    &docs,
-                    &open_files,
-                    &uri_for_diags,
-                    &diag_cfg,
-                    is_laravel,
-                )
-            })
-            .await
-            .unwrap_or_default();
+            let all = self
+                .blocking_gated(super::debug_gate::GATE_DID_SAVE_DIAGNOSTICS, move || {
+                    compute_open_file_diagnostics(
+                        &docs,
+                        &open_files,
+                        &uri_for_diags,
+                        &diag_cfg,
+                        is_laravel,
+                    )
+                })
+                .await
+                .unwrap_or_default();
             self.open_files
                 .note_published(&uri, super::diagnostics_content_hash(&all));
             self.client
@@ -474,6 +470,9 @@ impl LanguageServer for Backend {
             let cache_path = self.config.load().cache_path.clone();
             if let Some(path) = uri.to_file_path().map(|c| c.into_owned()) {
                 let root = self.root_paths.load().first().cloned();
+                // Deliberately not `offload::run` — see the fire-and-forget
+                // comment on `did_change`'s warm-resweep; this cache write is
+                // never awaited either.
                 tokio::task::spawn_blocking({
                     let path = path.clone();
                     let uri = uri.clone();
@@ -564,29 +563,30 @@ impl LanguageServer for Backend {
             // re-entering the blocking pool per file.
             let docs = Arc::clone(&self.docs);
             let open_files = self.open_files.clone();
-            let gate = Arc::clone(&self.debug_gate);
-            let _ = tokio::task::spawn_blocking(move || {
-                gate.pass(super::debug_gate::GATE_DID_CHANGE_WATCHED_FILES);
-                for change in changes {
-                    match change {
-                        Change::Upsert(uri, text) => {
-                            // Salsa path: ingest_from_doc mirrors the new text into
-                            // the SourceFile input. On the next codebase() call,
-                            // salsa re-runs file_definitions for this file and the
-                            // aggregator re-folds — no manual remove/collect/finalize.
-                            let doc = parse_document_no_diags(&text);
-                            if !open_files.contains(&uri) {
-                                docs.ingest_from_doc(uri.clone(), &doc);
+            self.blocking_gated(
+                super::debug_gate::GATE_DID_CHANGE_WATCHED_FILES,
+                move || {
+                    for change in changes {
+                        match change {
+                            Change::Upsert(uri, text) => {
+                                // Salsa path: ingest_from_doc mirrors the new text into
+                                // the SourceFile input. On the next codebase() call,
+                                // salsa re-runs file_definitions for this file and the
+                                // aggregator re-folds — no manual remove/collect/finalize.
+                                let doc = parse_document_no_diags(&text);
+                                if !open_files.contains(&uri) {
+                                    docs.ingest_from_doc(uri.clone(), &doc);
+                                }
+                                // A consumer analyzed before this file existed
+                                // must not keep a stale cached analysis now that
+                                // it's known — see `note_new_file_declarations`.
+                                docs.note_new_file_declarations(&uri);
                             }
-                            // A consumer analyzed before this file existed
-                            // must not keep a stale cached analysis now that
-                            // it's known — see `note_new_file_declarations`.
-                            docs.note_new_file_declarations(&uri);
+                            Change::Delete(uri) => docs.remove(&uri),
                         }
-                        Change::Delete(uri) => docs.remove(&uri),
                     }
-                }
-            })
+                },
+            )
             .await;
             // File changes may affect cross-file features — refresh all live editors.
             send_refresh_requests(&self.client).await;
@@ -597,6 +597,8 @@ impl LanguageServer for Backend {
             if self.config.load().warm_analysis && self.docs.is_index_ready() {
                 let docs = Arc::clone(&self.docs);
                 let open_urls = self.open_files.urls();
+                // Deliberately not `offload::run` — see the matching comment
+                // in `did_change`'s warm-resweep.
                 drop(tokio::task::spawn_blocking(move || {
                     let cancel = docs.begin_warm_sweep();
                     docs.warm_analysis_sweep(&open_urls, &cancel);
@@ -681,32 +683,26 @@ impl LanguageServer for Backend {
             let analysis = self.cached_analysis_async(uri).await;
             let session = self.docs.current_analysis_session();
             let uri_owned = uri.clone();
-            let uri_str = uri.to_string();
             // Offload to spawn_blocking: filtered_completions_at walks the full
             // AST + workspace index which can take tens of milliseconds on large
             // files, blocking the async executor from unrelated requests.
-            let items = match tokio::task::spawn_blocking(move || {
-                let ctx = CompletionCtx {
-                    source: Some(&source),
-                    position: Some(position),
-                    doc_uri: Some(&uri_owned),
-                    file_imports: Some(&imports),
-                    find_class_doc: Some(&find_class_doc_fn),
-                    workspace_class_search: Some(&workspace_class_search_fn),
-                    analysis: analysis.as_deref(),
-                    session: Some(session),
-                    laravel: Some(&laravel_arc),
-                };
-                filtered_completions_at(&doc, &other_docs, trigger.as_deref(), &ctx)
-            })
-            .await
-            {
-                Ok(items) => items,
-                Err(e) => {
-                    tracing::warn!("completion panicked for {uri_str}: {e}");
-                    vec![]
-                }
-            };
+            let items = self
+                .blocking("completion", move || {
+                    let ctx = CompletionCtx {
+                        source: Some(&source),
+                        position: Some(position),
+                        doc_uri: Some(&uri_owned),
+                        file_imports: Some(&imports),
+                        find_class_doc: Some(&find_class_doc_fn),
+                        workspace_class_search: Some(&workspace_class_search_fn),
+                        analysis: analysis.as_deref(),
+                        session: Some(session),
+                        laravel: Some(&laravel_arc),
+                    };
+                    filtered_completions_at(&doc, &other_docs, trigger.as_deref(), &ctx)
+                })
+                .await
+                .unwrap_or_default();
             Ok(Some(CompletionResponse::Array(items)))
         })
         .await
@@ -731,37 +727,36 @@ impl LanguageServer for Backend {
             let need_detail = item.detail.is_none();
             let need_docs = item.documentation.is_none();
             let docs = Arc::clone(&self.docs);
-            let gate = Arc::clone(&self.debug_gate);
             // `with_all_indexes` scans every indexed workspace file for a name
             // match, and a cold workspace-index rebuild walks every
             // `FileIndex` (see `workspace_index_async`); keep both off the
             // async runtime worker.
-            let (detail, documentation) = tokio::task::spawn_blocking(move || {
-                gate.pass(super::debug_gate::GATE_COMPLETION_RESOLVE);
-                docs.with_all_indexes(|all_indexes| {
-                    let detail = need_detail
-                        .then(|| {
-                            signature_for_symbol_from_index_scoped(
-                                &name,
-                                all_indexes,
-                                class_hint.as_deref(),
-                            )
-                        })
-                        .flatten();
-                    let documentation = need_docs
-                        .then(|| {
-                            docs_for_symbol_from_index_scoped(
-                                &name,
-                                all_indexes,
-                                class_hint.as_deref(),
-                            )
-                        })
-                        .flatten();
-                    (detail, documentation)
+            let (detail, documentation) = self
+                .blocking_gated(super::debug_gate::GATE_COMPLETION_RESOLVE, move || {
+                    docs.with_all_indexes(|all_indexes| {
+                        let detail = need_detail
+                            .then(|| {
+                                signature_for_symbol_from_index_scoped(
+                                    &name,
+                                    all_indexes,
+                                    class_hint.as_deref(),
+                                )
+                            })
+                            .flatten();
+                        let documentation = need_docs
+                            .then(|| {
+                                docs_for_symbol_from_index_scoped(
+                                    &name,
+                                    all_indexes,
+                                    class_hint.as_deref(),
+                                )
+                            })
+                            .flatten();
+                        (detail, documentation)
+                    })
                 })
-            })
-            .await
-            .unwrap_or_default();
+                .await
+                .unwrap_or_default();
             if let Some(sig) = detail {
                 item.detail = Some(sig);
             }
@@ -808,7 +803,8 @@ impl LanguageServer for Backend {
             // For a keyword-shaped identifier (`match`, `list`, ...),
             // `prepare_rename` walks the whole AST to check whether it's used
             // as a real member name; keep that off the async runtime worker.
-            let range = tokio::task::spawn_blocking(move || prepare_rename(&doc, position))
+            let range = self
+                .blocking("prepareRename.walk", move || prepare_rename(&doc, position))
                 .await
                 .unwrap_or_default();
             Ok(range.map(PrepareRenameResponse::Range))
@@ -836,36 +832,35 @@ impl LanguageServer for Backend {
                 // variables stay on the single-document scope walker. Both checks
                 // and the walker itself scan every class member/statement in the
                 // document, so keep them off the async runtime worker.
-                let gate = Arc::clone(&self.debug_gate);
                 let word_task = word.clone();
                 let new_name = params.new_name.clone();
                 let uri_task = uri.clone();
                 let doc_task = Arc::clone(&doc);
                 let source_task = Arc::clone(&source);
-                let variable_edit = tokio::task::spawn_blocking(move || {
-                    gate.pass(super::debug_gate::GATE_RENAME_VARIABLE);
-                    let on_property_decl = cursor_is_on_property_decl(
-                        &source_task,
-                        &doc_task.program().stmts,
-                        position,
-                    )
-                    .is_some()
-                        || promoted_property_at_cursor(
+                let variable_edit = self
+                    .blocking_gated(super::debug_gate::GATE_RENAME_VARIABLE, move || {
+                        let on_property_decl = cursor_is_on_property_decl(
                             &source_task,
                             &doc_task.program().stmts,
                             position,
                         )
-                        .is_some();
-                    if on_property_decl {
-                        None
-                    } else {
-                        Some(rename_variable(
-                            &word_task, &new_name, &uri_task, &doc_task, position,
-                        ))
-                    }
-                })
-                .await
-                .unwrap_or(None);
+                        .is_some()
+                            || promoted_property_at_cursor(
+                                &source_task,
+                                &doc_task.program().stmts,
+                                position,
+                            )
+                            .is_some();
+                        if on_property_decl {
+                            None
+                        } else {
+                            Some(rename_variable(
+                                &word_task, &new_name, &uri_task, &doc_task, position,
+                            ))
+                        }
+                    })
+                    .await
+                    .flatten();
                 if let Some(edit) = variable_edit {
                     return Ok(Some(edit));
                 }
@@ -889,25 +884,19 @@ impl LanguageServer for Backend {
             };
             let index_data = self.docs.get_workspace_index_salsa();
             let analysis = self.cached_analysis_async(uri).await;
-            let uri_str = uri.to_string();
             let doc_clone = Arc::clone(&doc);
-            let result = match tokio::task::spawn_blocking(move || {
-                signature_help(
-                    &source,
-                    &doc_clone,
-                    position,
-                    &index_data.files,
-                    analysis.as_deref(),
-                )
-            })
-            .await
-            {
-                Ok(r) => r,
-                Err(e) => {
-                    tracing::warn!("signature_help panicked for {uri_str}: {e}");
-                    None
-                }
-            };
+            let result = self
+                .blocking("signature_help", move || {
+                    signature_help(
+                        &source,
+                        &doc_clone,
+                        position,
+                        &index_data.files,
+                        analysis.as_deref(),
+                    )
+                })
+                .await
+                .flatten();
             Ok(result)
         })
         .await
@@ -930,7 +919,6 @@ impl LanguageServer for Backend {
             let hover_session = self.docs.current_analysis_session();
             let source_clone = source.clone();
             let doc_clone = Arc::clone(&doc);
-            let uri_str = uri.to_string();
             // Lets mir-member/static-prop hover resolve a class's declaring doc
             // via the workspace index even when that file isn't open in the
             // editor, instead of only searching `other_docs` (open files).
@@ -945,26 +933,21 @@ impl LanguageServer for Backend {
                 let (uri, _) = wi.at(cr)?;
                 docs_for_lookup.get_doc_salsa(uri)
             };
-            let result = match tokio::task::spawn_blocking(move || {
-                hover_info_with_maps(
-                    &source_clone,
-                    &doc_clone,
-                    analysis.as_deref(),
-                    position,
-                    &other_docs,
-                    &other_maps,
-                    Some(&hover_session),
-                    Some(&find_class_doc_fn),
-                )
-            })
-            .await
-            {
-                Ok(r) => r,
-                Err(e) => {
-                    tracing::warn!("hover panicked for {uri_str}: {e}");
-                    None
-                }
-            };
+            let result = self
+                .blocking("hover", move || {
+                    hover_info_with_maps(
+                        &source_clone,
+                        &doc_clone,
+                        analysis.as_deref(),
+                        position,
+                        &other_docs,
+                        &other_maps,
+                        Some(&hover_session),
+                        Some(&find_class_doc_fn),
+                    )
+                })
+                .await
+                .flatten();
             if result.is_some() {
                 return Ok(result);
             }
@@ -1021,7 +1004,10 @@ impl LanguageServer for Backend {
                 None => return Ok(None),
             };
             // The AST walk is CPU-bound; keep it off the async runtime worker.
-            let symbols = tokio::task::spawn_blocking(move || document_symbols(doc.source(), &doc))
+            let symbols = self
+                .blocking("document_symbol", move || {
+                    document_symbols(doc.source(), &doc)
+                })
                 .await
                 .unwrap_or_default();
             Ok(Some(DocumentSymbolResponse::Nested(symbols)))
@@ -1038,7 +1024,8 @@ impl LanguageServer for Backend {
             };
             // The AST walk plus full-text comment/region scans are CPU-bound;
             // keep them off the async runtime worker.
-            let ranges = tokio::task::spawn_blocking(move || folding_ranges(doc.source(), &doc))
+            let ranges = self
+                .blocking("folding_range", move || folding_ranges(doc.source(), &doc))
                 .await
                 .unwrap_or_default();
             Ok(if ranges.is_empty() {
@@ -1059,28 +1046,22 @@ impl LanguageServer for Backend {
             };
             let analysis = self.cached_analysis_async(uri).await;
             let wi = self.workspace_index_async().await;
-            let uri_str = uri.to_string();
-            let hints = match tokio::task::spawn_blocking(move || {
-                // Built once per workspace-index revision and cached on `wi`
-                // (a salsa-memoized Arc); only actually walks the workspace on
-                // the first inlay_hint request after an edit.
-                let workspace_defs = wi.func_signatures();
-                inlay_hints(
-                    doc.source(),
-                    &doc,
-                    analysis.as_deref(),
-                    params.range,
-                    &workspace_defs,
-                )
-            })
-            .await
-            {
-                Ok(h) => h,
-                Err(e) => {
-                    tracing::warn!("inlay_hint panicked for {uri_str}: {e}");
-                    Vec::new()
-                }
-            };
+            let hints = self
+                .blocking("inlay_hint", move || {
+                    // Built once per workspace-index revision and cached on `wi`
+                    // (a salsa-memoized Arc); only actually walks the workspace on
+                    // the first inlay_hint request after an edit.
+                    let workspace_defs = wi.func_signatures();
+                    inlay_hints(
+                        doc.source(),
+                        &doc,
+                        analysis.as_deref(),
+                        params.range,
+                        &workspace_defs,
+                    )
+                })
+                .await
+                .unwrap_or_default();
             Ok(Some(hints))
         })
         .await
@@ -1100,17 +1081,16 @@ impl LanguageServer for Backend {
                 .map(str::to_string);
             if let Some(name) = func_name {
                 let docs = Arc::clone(&self.docs);
-                let gate = Arc::clone(&self.debug_gate);
                 // Same whole-workspace-index scan as `completion_resolve`;
                 // keep it off the async runtime worker.
-                let tooltip = tokio::task::spawn_blocking(move || {
-                    gate.pass(super::debug_gate::GATE_INLAY_HINT_RESOLVE);
-                    docs.with_all_indexes(|all_indexes| {
-                        docs_for_symbol_from_index(&name, all_indexes)
+                let tooltip = self
+                    .blocking_gated(super::debug_gate::GATE_INLAY_HINT_RESOLVE, move || {
+                        docs.with_all_indexes(|all_indexes| {
+                            docs_for_symbol_from_index(&name, all_indexes)
+                        })
                     })
-                })
-                .await
-                .unwrap_or_default();
+                    .await
+                    .flatten();
                 if let Some(md) = tooltip {
                     item.tooltip = Some(InlayHintTooltip::MarkupContent(MarkupContent {
                         kind: MarkupKind::Markdown,
@@ -1134,17 +1114,12 @@ impl LanguageServer for Backend {
             // same `Arc` until a file changes.
             let wi = self.workspace_index_async().await;
             let query = params.query;
-            let results = match tokio::task::spawn_blocking(move || {
-                workspace_symbols_from_workspace(&query, &wi)
-            })
-            .await
-            {
-                Ok(r) => r,
-                Err(e) => {
-                    tracing::warn!("workspace/symbol panicked: {e}");
-                    Vec::new()
-                }
-            };
+            let results = self
+                .blocking("workspace/symbol", move || {
+                    workspace_symbols_from_workspace(&query, &wi)
+                })
+                .await
+                .unwrap_or_default();
             Ok(Some(WorkspaceSymbolResponse::Flat(results)))
         })
         .await
@@ -1181,22 +1156,21 @@ impl LanguageServer for Backend {
             let uri_for_task = uri.clone();
             // The AST walk is CPU-bound; keep it off the async runtime worker
             // (see `document_highlight` for the same pattern).
-            let (result_id, data) = match tokio::task::spawn_blocking(move || {
-                let tokens = semantic_tokens(doc.source(), &doc);
-                let result_id = token_hash(&tokens);
-                let tokens_arc = Arc::new(tokens);
-                docs.store_token_cache(&uri_for_task, result_id.clone(), Arc::clone(&tokens_arc));
-                let data = Arc::try_unwrap(tokens_arc).unwrap_or_else(|arc| (*arc).clone());
-                (result_id, data)
-            })
-            .await
-            {
-                Ok(r) => r,
-                Err(e) => {
-                    tracing::warn!("semantic_tokens_full panicked for {uri:?}: {e}");
-                    (String::new(), Vec::new())
-                }
-            };
+            let (result_id, data) = self
+                .blocking("semantic_tokens_full", move || {
+                    let tokens = semantic_tokens(doc.source(), &doc);
+                    let result_id = token_hash(&tokens);
+                    let tokens_arc = Arc::new(tokens);
+                    docs.store_token_cache(
+                        &uri_for_task,
+                        result_id.clone(),
+                        Arc::clone(&tokens_arc),
+                    );
+                    let data = Arc::try_unwrap(tokens_arc).unwrap_or_else(|arc| (*arc).clone());
+                    (result_id, data)
+                })
+                .await
+                .unwrap_or_default();
             Ok(Some(SemanticTokensResult::Tokens(SemanticTokens {
                 result_id: Some(result_id),
                 data,
@@ -1221,17 +1195,12 @@ impl LanguageServer for Backend {
                 }
             };
             let range = params.range;
-            let tokens = match tokio::task::spawn_blocking(move || {
-                semantic_tokens_range(doc.source(), &doc, range)
-            })
-            .await
-            {
-                Ok(t) => t,
-                Err(e) => {
-                    tracing::warn!("semantic_tokens_range panicked for {uri:?}: {e}");
-                    Vec::new()
-                }
-            };
+            let tokens = self
+                .blocking("semantic_tokens_range", move || {
+                    semantic_tokens_range(doc.source(), &doc, range)
+                })
+                .await
+                .unwrap_or_default();
             Ok(Some(SemanticTokensRangeResult::Tokens(SemanticTokens {
                 result_id: None,
                 data: tokens,
@@ -1254,35 +1223,32 @@ impl LanguageServer for Backend {
             let docs = Arc::clone(&self.docs);
             let uri_for_task = uri.clone();
             let prev_id = params.previous_result_id;
-            let result = match tokio::task::spawn_blocking(move || {
-                let new_tokens = Arc::new(semantic_tokens(doc.source(), &doc));
-                let new_result_id = token_hash(&new_tokens);
+            let result = self
+                .blocking("semantic_tokens_full_delta", move || {
+                    let new_tokens = Arc::new(semantic_tokens(doc.source(), &doc));
+                    let new_result_id = token_hash(&new_tokens);
 
-                let result = match docs.get_token_cache(&uri_for_task, &prev_id) {
-                    Some(old_tokens) => {
-                        let edits = compute_token_delta(&old_tokens, &new_tokens);
-                        SemanticTokensFullDeltaResult::TokensDelta(SemanticTokensDelta {
+                    let result = match docs.get_token_cache(&uri_for_task, &prev_id) {
+                        Some(old_tokens) => {
+                            let edits = compute_token_delta(&old_tokens, &new_tokens);
+                            SemanticTokensFullDeltaResult::TokensDelta(SemanticTokensDelta {
+                                result_id: Some(new_result_id.clone()),
+                                edits,
+                            })
+                        }
+                        // Unknown previous result — fall back to full tokens
+                        None => SemanticTokensFullDeltaResult::Tokens(SemanticTokens {
                             result_id: Some(new_result_id.clone()),
-                            edits,
-                        })
-                    }
-                    // Unknown previous result — fall back to full tokens
-                    None => SemanticTokensFullDeltaResult::Tokens(SemanticTokens {
-                        result_id: Some(new_result_id.clone()),
-                        data: (*new_tokens).clone(),
-                    }),
-                };
+                            data: (*new_tokens).clone(),
+                        }),
+                    };
 
-                docs.store_token_cache(&uri_for_task, new_result_id, new_tokens);
-                result
-            })
-            .await
-            {
-                Ok(r) => r,
-                Err(e) => {
-                    tracing::warn!("semantic_tokens_full_delta panicked for {uri:?}: {e}");
-                    return Ok(None);
-                }
+                    docs.store_token_cache(&uri_for_task, new_result_id, new_tokens);
+                    result
+                })
+                .await;
+            let Some(result) = result else {
+                return Ok(None);
             };
             Ok(Some(result))
         })
@@ -1302,13 +1268,12 @@ impl LanguageServer for Backend {
             // Walks every top-level statement per requested position; keep
             // that off the async runtime worker, same as document_symbol
             // and folding_range's whole-document walks.
-            let gate = Arc::clone(&self.debug_gate);
-            let ranges = tokio::task::spawn_blocking(move || {
-                gate.pass(super::debug_gate::GATE_SELECTION_RANGE);
-                selection_ranges(&doc, &params.positions)
-            })
-            .await
-            .unwrap_or_default();
+            let ranges = self
+                .blocking_gated(super::debug_gate::GATE_SELECTION_RANGE, move || {
+                    selection_ranges(&doc, &params.positions)
+                })
+                .await
+                .unwrap_or_default();
             Ok(if ranges.is_empty() {
                 None
             } else {
@@ -1342,14 +1307,13 @@ impl LanguageServer for Backend {
             // runtime worker, same as incoming_calls/outgoing_calls below.
             let wi = self.workspace_index_async().await;
             let docs = Arc::clone(&self.docs);
-            let gate = Arc::clone(&self.debug_gate);
-            let item = tokio::task::spawn_blocking(move || {
-                gate.pass(super::debug_gate::GATE_PREPARE_CALL_HIERARCHY);
-                let get_doc = move |u: &Uri| docs.get_doc_salsa(u);
-                prepare_call_hierarchy_indexed(&word, &wi, &get_doc)
-            })
-            .await
-            .unwrap_or_default();
+            let item = self
+                .blocking_gated(super::debug_gate::GATE_PREPARE_CALL_HIERARCHY, move || {
+                    let get_doc = move |u: &Uri| docs.get_doc_salsa(u);
+                    prepare_call_hierarchy_indexed(&word, &wi, &get_doc)
+                })
+                .await
+                .flatten();
             Ok(item.map(|item| vec![item]))
         })
         .await
@@ -1363,22 +1327,16 @@ impl LanguageServer for Backend {
             // Call sites come from mir's posting lists; only the documents
             // containing them are parsed to resolve the enclosing caller.
             let docs = Arc::clone(&self.docs);
-            let item_uri = params.item.uri.to_string();
             let item = params.item;
-            let calls = match tokio::task::spawn_blocking(move || {
-                // Pause the background scan and snapshot a settled revision so
-                // only a genuine user edit cancels the lookup.
-                let (_interactive, cancel_rev) = docs.settled_write_rev_guard();
-                incoming_calls_indexed(&item, &docs, Some(cancel_rev))
-            })
-            .await
-            {
-                Ok(c) => c,
-                Err(e) => {
-                    tracing::warn!("incoming_calls panicked for {item_uri}: {e}");
-                    vec![]
-                }
-            };
+            let calls = self
+                .blocking("incoming_calls", move || {
+                    // Pause the background scan and snapshot a settled revision so
+                    // only a genuine user edit cancels the lookup.
+                    let (_interactive, cancel_rev) = docs.settled_write_rev_guard();
+                    incoming_calls_indexed(&item, &docs, Some(cancel_rev))
+                })
+                .await
+                .unwrap_or_default();
             Ok(if calls.is_empty() { None } else { Some(calls) })
         })
         .await
@@ -1393,20 +1351,14 @@ impl LanguageServer for Backend {
             // path re-scanned the whole workspace once per distinct callee.
             let wi = self.workspace_index_async().await;
             let docs = Arc::clone(&self.docs);
-            let item_uri = params.item.uri.to_string();
             let item = params.item;
-            let calls = match tokio::task::spawn_blocking(move || {
-                let get_doc = |u: &Uri| docs.get_doc_salsa(u);
-                outgoing_calls_indexed(&item, &wi, &get_doc)
-            })
-            .await
-            {
-                Ok(c) => c,
-                Err(e) => {
-                    tracing::warn!("outgoing_calls panicked for {item_uri}: {e}");
-                    vec![]
-                }
-            };
+            let calls = self
+                .blocking("outgoing_calls", move || {
+                    let get_doc = |u: &Uri| docs.get_doc_salsa(u);
+                    outgoing_calls_indexed(&item, &wi, &get_doc)
+                })
+                .await
+                .unwrap_or_default();
             Ok(if calls.is_empty() { None } else { Some(calls) })
         })
         .await
@@ -1426,19 +1378,13 @@ impl LanguageServer for Backend {
                 Some(d) => d,
                 None => return Ok(None),
             };
-            let uri_str = uri.to_string();
             // The AST walk is CPU-bound; keep it off the async runtime worker.
-            let highlights = match tokio::task::spawn_blocking(move || {
-                document_highlights(&source, &doc, position)
-            })
-            .await
-            {
-                Ok(h) => h,
-                Err(e) => {
-                    tracing::warn!("document_highlight panicked for {uri_str}: {e}");
-                    Vec::new()
-                }
-            };
+            let highlights = self
+                .blocking("document_highlight", move || {
+                    document_highlights(&source, &doc, position)
+                })
+                .await
+                .unwrap_or_default();
             Ok(if highlights.is_empty() {
                 None
             } else {
@@ -1497,15 +1443,14 @@ impl LanguageServer for Backend {
             // check walks every member of every class in the document, so
             // keep it off the async runtime worker.
             let doc_for_method_check = self.get_doc(uri);
-            let gate = Arc::clone(&self.debug_gate);
-            let on_method_decl = tokio::task::spawn_blocking(move || {
-                gate.pass(super::debug_gate::GATE_GOTO_IMPLEMENTATION);
-                doc_for_method_check.is_some_and(|doc| {
-                    cursor_is_on_method_decl(doc.source(), &doc.program().stmts, position)
+            let on_method_decl = self
+                .blocking_gated(super::debug_gate::GATE_GOTO_IMPLEMENTATION, move || {
+                    doc_for_method_check.is_some_and(|doc| {
+                        cursor_is_on_method_decl(doc.source(), &doc.program().stmts, position)
+                    })
                 })
-            })
-            .await
-            .unwrap_or(false);
+                .await
+                .unwrap_or(false);
 
             // Subtypes of the type under the cursor, from mir's maintained
             // subtype edge index (aliased/FQN extends forms all resolve).
@@ -1514,12 +1459,14 @@ impl LanguageServer for Backend {
             } else {
                 let docs = Arc::clone(&self.docs);
                 let fqn_task = fqn.clone();
-                tokio::task::spawn_blocking(move || docs.indexed_subtype_classes(&fqn_task, false))
-                    .await
-                    .unwrap_or_default()
-                    .into_iter()
-                    .filter_map(|site| subtype_site_to_location(&site.file, &site.range))
-                    .collect()
+                self.blocking("goto_implementation.subtypes", move || {
+                    docs.indexed_subtype_classes(&fqn_task, false)
+                })
+                .await
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|site| subtype_site_to_location(&site.file, &site.range))
+                .collect()
             };
 
             // Cursor on a method name inside its declaring class/interface:
@@ -1535,11 +1482,12 @@ impl LanguageServer for Backend {
                         .to_string();
                 let docs = Arc::clone(&self.docs);
                 let method = word.clone();
-                let impls = tokio::task::spawn_blocking(move || {
-                    docs.indexed_method_implementations(&enclosing_fqn, &method)
-                })
-                .await
-                .unwrap_or_default();
+                let impls = self
+                    .blocking("goto_implementation.method_impls", move || {
+                        docs.indexed_method_implementations(&enclosing_fqn, &method)
+                    })
+                    .await
+                    .unwrap_or_default();
                 locs = impls
                     .into_iter()
                     .filter_map(|(_, file, range)| subtype_site_to_location(&file, &range))
@@ -1569,22 +1517,24 @@ impl LanguageServer for Backend {
             // the second pass's workspace-index fetch entirely, as before.
             let open_docs = self.docs.docs_for(&self.open_urls());
             let source_for_pass1 = source.clone();
-            let first_pass = tokio::task::spawn_blocking(move || {
-                goto_declaration(&source_for_pass1, &open_docs, position)
-            })
-            .await
-            .unwrap_or_default();
+            let first_pass = self
+                .blocking("goto_declaration.open_docs", move || {
+                    goto_declaration(&source_for_pass1, &open_docs, position)
+                })
+                .await
+                .unwrap_or_default();
             if let Some(loc) = first_pass {
                 return Ok(Some(GotoDefinitionResponse::Scalar(loc)));
             }
             // Second pass: background files via the aggregated workspace index
             // (line-only positions for anything not covered by decls_by_name).
             let wi = self.workspace_index_async().await;
-            let second_pass = tokio::task::spawn_blocking(move || {
-                goto_declaration_from_index(&source, &wi, position)
-            })
-            .await
-            .unwrap_or_default();
+            let second_pass = self
+                .blocking("goto_declaration.index", move || {
+                    goto_declaration_from_index(&source, &wi, position)
+                })
+                .await
+                .unwrap_or_default();
             Ok(second_pass.map(GotoDefinitionResponse::Scalar))
         })
         .await
@@ -1610,61 +1560,62 @@ impl LanguageServer for Backend {
             // passes walk every open doc's AST, the index passes do lookup
             // work over the aggregated index — so run the whole chain off
             // the async runtime worker in one hop, matching hover.
-            let response = tokio::task::spawn_blocking(move || {
-                // Exact FQN/namespace matches (open docs, then background index)
-                // outrank *either* source's short-name fallback, so an unrelated
-                // same-short-named class in another open file can never preempt
-                // a correctly-namespaced match that only lives in the index.
-                let mut results = goto_type_definition_exact(
-                    &source,
-                    &doc,
-                    analysis.as_deref(),
-                    &open_docs,
-                    position,
-                );
-                if results.is_empty() {
-                    results = docs.with_all_indexes(|all_indexes| {
-                        goto_type_definition_from_index_exact(
-                            &source,
-                            &doc,
-                            analysis.as_deref(),
-                            all_indexes,
-                            position,
-                        )
-                    });
-                }
-                if results.is_empty() {
-                    results = goto_type_definition_short_name_fallback(
+            let response = self
+                .blocking("goto_type_definition", move || {
+                    // Exact FQN/namespace matches (open docs, then background index)
+                    // outrank *either* source's short-name fallback, so an unrelated
+                    // same-short-named class in another open file can never preempt
+                    // a correctly-namespaced match that only lives in the index.
+                    let mut results = goto_type_definition_exact(
                         &source,
                         &doc,
                         analysis.as_deref(),
                         &open_docs,
                         position,
                     );
-                }
-                if results.is_empty() {
-                    results = docs.with_all_indexes(|all_indexes| {
-                        goto_type_definition_from_index_short_name_fallback(
+                    if results.is_empty() {
+                        results = docs.with_all_indexes(|all_indexes| {
+                            goto_type_definition_from_index_exact(
+                                &source,
+                                &doc,
+                                analysis.as_deref(),
+                                all_indexes,
+                                position,
+                            )
+                        });
+                    }
+                    if results.is_empty() {
+                        results = goto_type_definition_short_name_fallback(
                             &source,
                             &doc,
                             analysis.as_deref(),
-                            all_indexes,
+                            &open_docs,
                             position,
-                        )
-                    });
-                }
+                        );
+                    }
+                    if results.is_empty() {
+                        results = docs.with_all_indexes(|all_indexes| {
+                            goto_type_definition_from_index_short_name_fallback(
+                                &source,
+                                &doc,
+                                analysis.as_deref(),
+                                all_indexes,
+                                position,
+                            )
+                        });
+                    }
 
-                // Format response: scalar for single result, array for multiple, none for empty
-                match results.len() {
-                    0 => None,
-                    1 => Some(GotoDefinitionResponse::Scalar(
-                        results.into_iter().next().unwrap(),
-                    )),
-                    _ => Some(GotoDefinitionResponse::Array(results)),
-                }
-            })
-            .await
-            .unwrap_or_default();
+                    // Format response: scalar for single result, array for multiple, none for empty
+                    match results.len() {
+                        0 => None,
+                        1 => Some(GotoDefinitionResponse::Scalar(
+                            results.into_iter().next().unwrap(),
+                        )),
+                        _ => Some(GotoDefinitionResponse::Array(results)),
+                    }
+                })
+                .await
+                .unwrap_or_default();
             Ok(response)
         })
         .await
@@ -1766,29 +1717,23 @@ impl LanguageServer for Backend {
             let docs = Arc::clone(&self.docs);
             let docs_cancel = Arc::clone(&self.docs);
             let uri_owned = uri.clone();
-            let uri_str = uri.to_string();
             let imports = self.file_imports(uri);
-            let lenses = match tokio::task::spawn_blocking(move || {
-                // Pause the background scan and snapshot a settled revision so
-                // only a genuine user edit cancels the sweep.
-                let (_interactive, cancel_rev) = docs.settled_write_rev_guard();
-                code_lenses(
-                    &uri_owned,
-                    &doc,
-                    &docs,
-                    &imports,
-                    Some(cancel_rev),
-                    move || docs_cancel.write_rev() != cancel_rev,
-                )
-            })
-            .await
-            {
-                Ok(l) => l,
-                Err(e) => {
-                    tracing::warn!("code_lens panicked for {uri_str}: {e}");
-                    vec![]
-                }
-            };
+            let lenses = self
+                .blocking("code_lens", move || {
+                    // Pause the background scan and snapshot a settled revision so
+                    // only a genuine user edit cancels the sweep.
+                    let (_interactive, cancel_rev) = docs.settled_write_rev_guard();
+                    code_lenses(
+                        &uri_owned,
+                        &doc,
+                        &docs,
+                        &imports,
+                        Some(cancel_rev),
+                        move || docs_cancel.write_rev() != cancel_rev,
+                    )
+                })
+                .await
+                .unwrap_or_default();
             Ok(if lenses.is_empty() {
                 None
             } else {
@@ -1817,10 +1762,12 @@ impl LanguageServer for Backend {
             };
             // The AST walk plus full-text `@link`/`@see` scan are CPU-bound;
             // keep them off the async runtime worker.
-            let links =
-                tokio::task::spawn_blocking(move || document_links(&uri, &doc, doc.source()))
-                    .await
-                    .unwrap_or_default();
+            let links = self
+                .blocking("document_link", move || {
+                    document_links(&uri, &doc, doc.source())
+                })
+                .await
+                .unwrap_or_default();
             Ok(if links.is_empty() { None } else { Some(links) })
         })
         .await
@@ -1842,11 +1789,10 @@ impl LanguageServer for Backend {
             let source = self.get_open_text(uri).unwrap_or_default();
             // Spawns and blocks on an external formatter process; keep that
             // wait off the async runtime worker.
-            Ok(
-                tokio::task::spawn_blocking(move || format_document(&source))
-                    .await
-                    .unwrap_or_default(),
-            )
+            Ok(self
+                .blocking("formatting", move || format_document(&source))
+                .await
+                .unwrap_or_default())
         })
         .await
     }
@@ -1859,11 +1805,10 @@ impl LanguageServer for Backend {
             let uri = &params.text_document.uri;
             let source = self.get_open_text(uri).unwrap_or_default();
             let range = params.range;
-            Ok(
-                tokio::task::spawn_blocking(move || format_range(&source, range))
-                    .await
-                    .unwrap_or_default(),
-            )
+            Ok(self
+                .blocking("range_formatting", move || format_range(&source, range))
+                .await
+                .unwrap_or_default())
         })
         .await
     }
@@ -1880,13 +1825,12 @@ impl LanguageServer for Backend {
             // to find the matching brace; every keystroke fires this handler,
             // so keep it off the async runtime worker like the other
             // whole-document walks.
-            let gate = Arc::clone(&self.debug_gate);
-            let edits = tokio::task::spawn_blocking(move || {
-                gate.pass(super::debug_gate::GATE_ON_TYPE_FORMATTING);
-                on_type_format(&source, position, &params.ch, &params.options)
-            })
-            .await
-            .unwrap_or_default();
+            let edits = self
+                .blocking_gated(super::debug_gate::GATE_ON_TYPE_FORMATTING, move || {
+                    on_type_format(&source, position, &params.ch, &params.options)
+                })
+                .await
+                .unwrap_or_default();
             Ok(if edits.is_empty() { None } else { Some(edits) })
         })
         .await

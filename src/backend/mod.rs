@@ -228,6 +228,26 @@ impl Backend {
         self.open_files.text(uri)
     }
 
+    /// See [`offload::run`]. The sanctioned way for a handler to leave the
+    /// async runtime worker for CPU-bound work with no debug-gated test.
+    async fn blocking<F, R>(&self, label: &'static str, f: F) -> Option<R>
+    where
+        F: FnOnce() -> R + Send + 'static,
+        R: Send + 'static,
+    {
+        offload::run(label, f).await
+    }
+
+    /// See [`offload::run_gated`]. Use when a responsiveness regression
+    /// test needs to pin this closure in flight via a `GATE_*` section.
+    async fn blocking_gated<F, R>(&self, section: &'static str, f: F) -> Option<R>
+    where
+        F: FnOnce() -> R + Send + 'static,
+        R: Send + 'static,
+    {
+        offload::run_gated(&self.debug_gate, section, f).await
+    }
+
     fn set_parse_diagnostics(&self, uri: &Uri, diagnostics: Vec<Diagnostic>) {
         self.open_files.set_parse_diagnostics(uri, diagnostics);
     }
@@ -734,6 +754,7 @@ fn compute_diagnostic_result_id(diagnostics: &[Diagnostic], uri: &str) -> String
 pub mod debug_gate;
 mod handlers;
 mod helpers;
+pub mod offload;
 pub mod panic_guard;
 mod server;
 #[cfg(test)]
