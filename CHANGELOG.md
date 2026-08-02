@@ -4,6 +4,10 @@ All notable changes to php-lsp are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- **`stubDirs` config option**: load user-supplied PHP stub directories (e.g. for extensions or frameworks the bundled stubs don't cover) as an additional, highest-precedence symbol source, alongside `.php-lsp.json` support.
+
 ## [0.22.2] — 2026-08-02
 
 ### Fixed

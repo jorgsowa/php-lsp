@@ -309,6 +309,12 @@ pub struct LspConfig {
     /// `excludePaths` entry.  Patterns are matched against path components
     /// (same semantics as `excludePaths`).  Example: `["vendor/yiisoft"]`.
     pub include_paths: Vec<String>,
+    /// Directories of user-supplied PHP stub files to load in addition to the
+    /// bundled built-ins. Each entry is resolved relative to the workspace
+    /// root if not already absolute. Every `.php` file found (recursively) is
+    /// registered as a read-only, highest-precedence symbol source — useful
+    /// for extensions or frameworks the bundled stubs don't cover.
+    pub stub_dirs: Vec<String>,
     /// Per-category diagnostic toggles.
     pub diagnostics: DiagnosticsConfig,
     /// Per-feature capability toggles.
@@ -381,6 +387,7 @@ impl Default for LspConfig {
             php_version: None,
             exclude_paths: Vec::new(),
             include_paths: Vec::new(),
+            stub_dirs: Vec::new(),
             diagnostics: DiagnosticsConfig::default(),
             features: FeaturesConfig::default(),
             max_indexed_files: MAX_INDEXED_FILES,
@@ -397,9 +404,10 @@ impl Default for LspConfig {
 
 impl LspConfig {
     /// Merge a `.php-lsp.json` value with editor `initializationOptions` /
-    /// `workspace/configuration`. Editor settings win per-key; `excludePaths`
-    /// arrays are **concatenated** (file entries first, editor entries appended)
-    /// rather than replaced, since exclusion patterns are additive.
+    /// `workspace/configuration`. Editor settings win per-key; `excludePaths`,
+    /// `includePaths`, and `stubDirs` arrays are **concatenated** (file entries
+    /// first, editor entries appended) rather than replaced, since exclusion
+    /// patterns and stub directories are both additive.
     ///
     /// Hot-reload of `.php-lsp.json` on file change is not supported; the file
     /// is only read during `initialize` and `did_change_configuration`.
@@ -417,8 +425,8 @@ impl LspConfig {
             .as_object_mut()
             .expect("merged base is always an object");
         for (key, val) in editor_obj {
-            // Both excludePaths and includePaths are concatenated rather than replaced.
-            if key == "excludePaths" || key == "includePaths" {
+            // excludePaths/includePaths/stubDirs are concatenated rather than replaced.
+            if key == "excludePaths" || key == "includePaths" || key == "stubDirs" {
                 let file_arr = merged_obj
                     .get(key)
                     .and_then(|v| v.as_array())
@@ -454,6 +462,12 @@ impl LspConfig {
         }
         if let Some(arr) = v.get("includePaths").and_then(|x| x.as_array()) {
             cfg.include_paths = arr
+                .iter()
+                .filter_map(|x| x.as_str().map(str::to_string))
+                .collect();
+        }
+        if let Some(arr) = v.get("stubDirs").and_then(|x| x.as_array()) {
+            cfg.stub_dirs = arr
                 .iter()
                 .filter_map(|x| x.as_str().map(str::to_string))
                 .collect();
@@ -513,6 +527,7 @@ mod tests {
                 php_version: None,
                 exclude_paths: [],
                 include_paths: [],
+                stub_dirs: [],
                 diagnostics: DiagnosticsConfig {
                     enabled: true,
                     undefined_variables: true,
@@ -610,5 +625,30 @@ mod tests {
             "config keys read by LspConfig::from_value but missing from \
              documentation/src/content/docs/configuration.md: {undocumented:?}"
         );
+    }
+
+    #[test]
+    fn stub_dirs_parses_from_initialization_options() {
+        let v = serde_json::json!({"stubDirs": ["stubs", "/abs/other-stubs"]});
+        let cfg = LspConfig::from_value(&v);
+        assert_eq!(cfg.stub_dirs, vec!["stubs", "/abs/other-stubs"]);
+    }
+
+    #[test]
+    fn stub_dirs_absent_defaults_to_empty() {
+        let cfg = LspConfig::from_value(&serde_json::json!({}));
+        assert!(cfg.stub_dirs.is_empty());
+    }
+
+    /// `stubDirs` is additive like `excludePaths`/`includePaths`: a project's
+    /// `.php-lsp.json` and an editor's `initializationOptions` both listing
+    /// directories must combine, not have one replace the other.
+    #[test]
+    fn stub_dirs_concatenates_file_and_editor_config() {
+        let file = serde_json::json!({"stubDirs": ["project-stubs"]});
+        let editor = serde_json::json!({"stubDirs": ["personal-stubs"]});
+        let merged = LspConfig::merge_project_configs(Some(&file), Some(&editor));
+        let cfg = LspConfig::from_value(&merged);
+        assert_eq!(cfg.stub_dirs, vec!["project-stubs", "personal-stubs"]);
     }
 }

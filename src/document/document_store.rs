@@ -86,6 +86,11 @@ pub struct DocumentStore {
     /// new `AnalysisSession`s are built with `with_cache_dir` so that stub
     /// parsing results survive server restarts.
     session_cache_dir: OnceLock<std::path::PathBuf>,
+    /// User-supplied stub directories (`initializationOptions.stubDirs` /
+    /// `.php-lsp.json`). When set, new `AnalysisSession`s are built with
+    /// `with_user_stubs` so their `.php` files are registered as the
+    /// highest-precedence symbol source alongside the bundled built-ins.
+    user_stub_dirs: OnceLock<Vec<std::path::PathBuf>>,
     /// URIs of autoload.files entries from composer.json. These define global
     /// helper functions (e.g. tap, class_uses_recursive in Laravel) that are
     /// not discoverable by namespace walk. Pre-ingested into the AnalysisSession
@@ -178,6 +183,7 @@ impl DocumentStore {
             psr4: Arc::new(ArcSwap::from_pointee(Psr4Map::empty())),
             analysis_session: Mutex::new((mir_analyzer::PhpVersion::LATEST, None)),
             session_cache_dir: OnceLock::new(),
+            user_stub_dirs: OnceLock::new(),
             autoload_uris: std::sync::RwLock::new(Vec::new()),
             index_ready: AtomicBool::new(false),
             write_revision: AtomicU64::new(0),
@@ -466,6 +472,26 @@ impl DocumentStore {
         dropped
     }
 
+    /// Set the user-supplied stub directories (`initializationOptions.stubDirs`).
+    /// Subsequent calls are silently ignored (`OnceLock` semantics).
+    ///
+    /// Same early-session race as [`Self::set_session_cache_dir`]: if a
+    /// session was already built without these directories, drop it so the
+    /// next `analysis_session()` rebuilds with `with_user_stubs` attached.
+    ///
+    /// Returns `true` when a session was dropped — same re-mirroring
+    /// obligation as `set_session_cache_dir`.
+    pub fn set_user_stub_dirs(&self, dirs: Vec<std::path::PathBuf>) -> bool {
+        if self.user_stub_dirs.set(dirs).is_err() {
+            return false;
+        }
+        let dropped = self.analysis_session.lock().unwrap().1.take().is_some();
+        if dropped {
+            self.drop_session_scoped_state();
+        }
+        dropped
+    }
+
     /// Register URIs discovered from composer.json `autoload.files` entries.
     /// These PHP files define global helper functions (e.g. `tap()` in Laravel)
     /// that are not class-resolvable via PSR-4. Clears `analysis_cache` so the
@@ -482,7 +508,10 @@ impl DocumentStore {
     /// shared PSR-4 map. Built-in stubs are *not* pre-loaded: mir's
     /// `prepare_ast_for_analysis` ingests the stubs each analyzed file
     /// references, and [`crate::types::stub_members`] faults in single stub
-    /// files for builtin member/hover lookups.
+    /// files for builtin member/hover lookups. User stub directories (see
+    /// [`Self::set_user_stub_dirs`]) are configured on the builder here; mir's
+    /// `ingest_file` — called for every mirrored document — is what actually
+    /// registers them (and the built-in stubs) as `SourceFile` inputs.
     pub fn analysis_session(
         &self,
         php_version: mir_analyzer::PhpVersion,
@@ -502,6 +531,14 @@ impl DocumentStore {
         // keeps in step with every edit path.
         let mut builder =
             mir_analyzer::AnalysisSession::new(php_version).with_class_resolver(resolver);
+        // Must run before `with_cache_dir`: the cache epoch folds in a
+        // fingerprint of the user stub set, which `with_cache_dir` only picks
+        // up if it's already been configured.
+        if let Some(dirs) = self.user_stub_dirs.get()
+            && !dirs.is_empty()
+        {
+            builder = builder.with_user_stubs(Vec::new(), dirs.clone());
+        }
         if let Some(dir) = self.session_cache_dir.get() {
             builder = builder.with_cache_dir(dir);
         }
@@ -3691,6 +3728,61 @@ mod tests {
         assert!(
             dir.path().join("stubs").exists(),
             "the rebuilt session must have opened the on-disk stub cache"
+        );
+    }
+
+    /// Same rebuild-on-race guarantee as `set_session_cache_dir`, for
+    /// `set_user_stub_dirs`.
+    #[test]
+    fn set_user_stub_dirs_rebuilds_pinned_session() {
+        let store = DocumentStore::new();
+        let early = store.analysis_session(mir_analyzer::PhpVersion::LATEST);
+        let dir = tempfile::tempdir().unwrap();
+        store.set_user_stub_dirs(vec![dir.path().to_path_buf()]);
+        let rebuilt = store.analysis_session(mir_analyzer::PhpVersion::LATEST);
+        assert!(
+            !Arc::ptr_eq(&early, &rebuilt),
+            "the stub-dir-less early session must be dropped and rebuilt"
+        );
+    }
+
+    /// A class defined only in a `stubDirs` directory must resolve — without
+    /// `UndefinedClass` — from a *different* file than whichever one happened
+    /// to trigger the session's lazy stub load, proving the stub is
+    /// registered as a real, session-wide symbol rather than something
+    /// scoped to the triggering file.
+    #[test]
+    fn user_stub_directory_class_resolves_across_files() {
+        let stubs_dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            stubs_dir.path().join("Container.php"),
+            "<?php\nclass Container {\n    public function get(string $id): mixed { return null; }\n}\n",
+        )
+        .unwrap();
+
+        let store = DocumentStore::new();
+        store.set_user_stub_dirs(vec![stubs_dir.path().to_path_buf()]);
+
+        // First file has nothing to do with the stub; only primes the session.
+        let a = uri("/stub_cross_file_a.php");
+        store.mirror_text(&a, "<?php\necho 1;\n");
+        let _ = store.get_semantic_issues_salsa(&a);
+
+        // Second, unrelated file references the stub-defined class.
+        let b = uri("/stub_cross_file_b.php");
+        store.mirror_text(
+            &b,
+            "<?php\n$c = new Container();\n$c->get('x');\n",
+        );
+        let issues = store.get_semantic_issues_salsa(&b).unwrap();
+        let undef: Vec<_> = issues
+            .iter()
+            .filter(|i| matches!(i.kind, mir_issues::IssueKind::UndefinedClass { .. }))
+            .collect();
+        assert!(
+            undef.is_empty(),
+            "Container must resolve from the stubDirs directory in a file that \
+             didn't trigger the load itself; got: {undef:?}"
         );
     }
 

@@ -371,6 +371,7 @@ impl Backend {
                 cache_path,
                 warm_analysis,
                 flush_interval_ms,
+                stub_dirs,
             ) = {
                 let cfg = self.config.load();
                 let mut exclude = cfg.exclude_paths.clone();
@@ -385,6 +386,7 @@ impl Backend {
                     cfg.cache_path.clone(),
                     cfg.warm_analysis,
                     cfg.flush_interval_ms,
+                    cfg.stub_dirs.clone(),
                 )
             };
 
@@ -399,6 +401,23 @@ impl Backend {
             } else {
                 crate::index::cache::WorkspaceCache::new(&roots[0])
             };
+
+            // Same "before any session build" constraint as the cache dir
+            // above — resolve relative entries against the first workspace
+            // root before handing them to the session builder.
+            if !stub_dirs.is_empty() {
+                let resolved: Vec<PathBuf> = stub_dirs
+                    .iter()
+                    .map(|d| {
+                        let p = PathBuf::from(d);
+                        if p.is_absolute() { p } else { roots[0].join(p) }
+                    })
+                    .collect();
+                if self.docs.set_user_stub_dirs(resolved) {
+                    self.remirror_open_files();
+                }
+            }
+
             if let Some(ref c) = first_root_cache
                 && self
                     .docs
