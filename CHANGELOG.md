@@ -4,6 +4,20 @@ All notable changes to php-lsp are documented here.
 
 ## [Unreleased]
 
+## [0.22.2] — 2026-08-02
+
+### Fixed
+
+- **A panicking off-request-loop closure no longer fails silently**: blocking work is now routed through one shared boundary (`Backend::blocking`/`blocking_gated`) that logs a panic instead of discarding it via `unwrap_or_default()`.
+
+### Performance
+
+- **`will_rename_files` and `will_delete_files` no longer block the request loop while parsing every file that imports the renamed/deleted class**: each batches its per-file parse-and-diff work into a single `spawn_blocking` call, matching the reference-edit loop beside it.
+- **`prepare_call_hierarchy`'s workspace-wide trait-alias fallback scan no longer blocks the request loop**, matching the offloading already done for `incoming_calls`/`outgoing_calls`.
+- **`selection_range`, `goto_implementation`, and `rename` no longer block the request loop for their inline whole-document walks**: the per-position chain walk, the method-decl disambiguation check, and the property/promoted-param and variable-scope walkers now run off the async runtime worker.
+- **`completion_resolve` and `inlay_hint_resolve` no longer block the request loop on a cold workspace-index rebuild**: both called the raw index directly instead of the offloading `workspace_index_async` wrapper used elsewhere.
+- **`on_type_formatting` no longer blocks the request loop on its whole-document brace/line scans**: the highest-frequency handler in the file, firing on nearly every keystroke, is now offloaded — completing the off-request-loop sweep started in 0.22.1.
+
 ## [0.22.1] — 2026-07-31
 
 ### Fixed
