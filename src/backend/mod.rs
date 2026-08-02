@@ -501,10 +501,10 @@ fn class_before_double_colon(source: &str, position: Position) -> Option<String>
     if name.is_empty() { None } else { Some(name) }
 }
 
-/// Off-`self` variant of `Backend::compute_dependent_publishes`. Needed
-/// because did_change's blocking republish runs inside a detached
-/// `tokio::spawn` that captures `Arc<Backend>` indirectly via clones of
-/// `docs` / `open_files` rather than `&self`.
+/// Takes `docs`/`open_files` by owned clone rather than `&Backend` because
+/// did_change's blocking republish runs inside a detached `tokio::spawn`,
+/// which requires a `'static` future — a borrow of `self` wouldn't live
+/// long enough.
 async fn compute_dependent_publishes_owned(
     docs: Arc<DocumentStore>,
     open_files: OpenFiles,
