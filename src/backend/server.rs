@@ -718,7 +718,7 @@ impl LanguageServer for Backend {
                 return Ok(item);
             }
             // Strip trailing ':' from named-argument labels (e.g. "param:") before lookup.
-            let name = item.label.trim_end_matches(':');
+            let name = item.label.trim_end_matches(':').to_string();
             // Method completion items carry their owning class in `data` (see
             // member.rs's all_members) so two unrelated classes declaring a
             // same-named method don't resolve to whichever is indexed first.
@@ -728,26 +728,49 @@ impl LanguageServer for Backend {
                 .and_then(|d| d.get("class"))
                 .and_then(|v| v.as_str())
                 .map(str::to_string);
-            self.docs.with_all_indexes(|all_indexes| {
-                if item.detail.is_none()
-                    && let Some(sig) = signature_for_symbol_from_index_scoped(
-                        name,
-                        all_indexes,
-                        class_hint.as_deref(),
-                    )
-                {
-                    item.detail = Some(sig);
-                }
-                if item.documentation.is_none()
-                    && let Some(md) =
-                        docs_for_symbol_from_index_scoped(name, all_indexes, class_hint.as_deref())
-                {
-                    item.documentation = Some(Documentation::MarkupContent(MarkupContent {
-                        kind: MarkupKind::Markdown,
-                        value: md,
-                    }));
-                }
-            });
+            let need_detail = item.detail.is_none();
+            let need_docs = item.documentation.is_none();
+            let docs = Arc::clone(&self.docs);
+            let gate = Arc::clone(&self.debug_gate);
+            // `with_all_indexes` scans every indexed workspace file for a name
+            // match, and a cold workspace-index rebuild walks every
+            // `FileIndex` (see `workspace_index_async`); keep both off the
+            // async runtime worker.
+            let (detail, documentation) = tokio::task::spawn_blocking(move || {
+                gate.pass(super::debug_gate::GATE_COMPLETION_RESOLVE);
+                docs.with_all_indexes(|all_indexes| {
+                    let detail = need_detail
+                        .then(|| {
+                            signature_for_symbol_from_index_scoped(
+                                &name,
+                                all_indexes,
+                                class_hint.as_deref(),
+                            )
+                        })
+                        .flatten();
+                    let documentation = need_docs
+                        .then(|| {
+                            docs_for_symbol_from_index_scoped(
+                                &name,
+                                all_indexes,
+                                class_hint.as_deref(),
+                            )
+                        })
+                        .flatten();
+                    (detail, documentation)
+                })
+            })
+            .await
+            .unwrap_or_default();
+            if let Some(sig) = detail {
+                item.detail = Some(sig);
+            }
+            if let Some(md) = documentation {
+                item.documentation = Some(Documentation::MarkupContent(MarkupContent {
+                    kind: MarkupKind::Markdown,
+                    value: md,
+                }));
+            }
             Ok(item)
         })
         .await
@@ -1076,14 +1099,24 @@ impl LanguageServer for Backend {
                 .and_then(|v| v.as_str())
                 .map(str::to_string);
             if let Some(name) = func_name {
-                self.docs.with_all_indexes(|all_indexes| {
-                    if let Some(md) = docs_for_symbol_from_index(&name, all_indexes) {
-                        item.tooltip = Some(InlayHintTooltip::MarkupContent(MarkupContent {
-                            kind: MarkupKind::Markdown,
-                            value: md,
-                        }));
-                    }
-                });
+                let docs = Arc::clone(&self.docs);
+                let gate = Arc::clone(&self.debug_gate);
+                // Same whole-workspace-index scan as `completion_resolve`;
+                // keep it off the async runtime worker.
+                let tooltip = tokio::task::spawn_blocking(move || {
+                    gate.pass(super::debug_gate::GATE_INLAY_HINT_RESOLVE);
+                    docs.with_all_indexes(|all_indexes| {
+                        docs_for_symbol_from_index(&name, all_indexes)
+                    })
+                })
+                .await
+                .unwrap_or_default();
+                if let Some(md) = tooltip {
+                    item.tooltip = Some(InlayHintTooltip::MarkupContent(MarkupContent {
+                        kind: MarkupKind::Markdown,
+                        value: md,
+                    }));
+                }
             }
             Some(item)
         })

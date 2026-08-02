@@ -943,6 +943,74 @@ async fn rename_stays_responsive_while_property_decl_check_is_in_flight() {
         .await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn completion_resolve_stays_responsive_while_all_indexes_lookup_is_in_flight() {
+    // A cold workspace-index rebuild walks every `FileIndex` in the
+    // workspace, and the signature/doc lookup itself scans every indexed
+    // file for a name match; both must run off the async runtime worker.
+    let mut server = TestServer::new().await;
+    server
+        .open(
+            "gated_completion_resolve.php",
+            "<?php\nfunction gatedResolveFn(): void {}\ngatedResolveFn(",
+        )
+        .await;
+    let resp = server
+        .completion("gated_completion_resolve.php", 2, 15)
+        .await;
+    let items: Vec<_> = resp["result"]
+        .as_array()
+        .or_else(|| resp["result"]["items"].as_array())
+        .map(|a| a.to_vec())
+        .unwrap_or_default();
+    let item = items
+        .into_iter()
+        .find(|i| i["label"].as_str() == Some("gatedResolveFn"))
+        .expect("gatedResolveFn completion item not found");
+
+    server
+        .assert_request_stays_responsive_via_gate(
+            "completionItem/resolve",
+            item,
+            php_lsp::backend::debug_gate::GATE_COMPLETION_RESOLVE,
+        )
+        .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn inlay_hint_resolve_stays_responsive_while_all_indexes_lookup_is_in_flight() {
+    // Same whole-workspace-index scan as `completionItem/resolve`; must run
+    // off the async runtime worker.
+    let mut server = TestServer::new().await;
+    server
+        .open(
+            "gated_inlay_hint_resolve.php",
+            "<?php\nfunction gatedInlayFn(string $name): void {}\ngatedInlayFn(\"x\");\n",
+        )
+        .await;
+    let resp = server
+        .inlay_hints("gated_inlay_hint_resolve.php", 0, 0, 3, 0)
+        .await;
+    let hints: Vec<_> = resp["result"]
+        .as_array()
+        .map(|a| a.to_vec())
+        .unwrap_or_default();
+    let hint = hints
+        .into_iter()
+        .find(|h| {
+            h["data"]["php_lsp_fn"].as_str() == Some("gatedInlayFn") && h["tooltip"].is_null()
+        })
+        .expect("gatedInlayFn inlay hint not found");
+
+    server
+        .assert_request_stays_responsive_via_gate(
+            "inlayHint/resolve",
+            hint,
+            php_lsp::backend::debug_gate::GATE_INLAY_HINT_RESOLVE,
+        )
+        .await;
+}
+
 #[tokio::test]
 async fn semantic_tokens_full_delta_stays_responsive_on_large_file() {
     let mut server = TestServer::new().await;
