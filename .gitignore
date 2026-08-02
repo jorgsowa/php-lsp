@@ -3,3 +3,4 @@
 .claude/
 benches/fixtures/laravel/
 /result
+.DS_Store
