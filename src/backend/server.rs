@@ -1302,9 +1302,6 @@ impl LanguageServer for Backend {
             // Walks every top-level statement per requested position; keep
             // that off the async runtime worker, same as document_symbol
             // and folding_range's whole-document walks.
-            // Walks every top-level statement per requested position; keep
-            // that off the async runtime worker, same as document_symbol
-            // and folding_range's whole-document walks.
             let gate = Arc::clone(&self.debug_gate);
             let ranges = tokio::task::spawn_blocking(move || {
                 gate.pass(super::debug_gate::GATE_SELECTION_RANGE);
