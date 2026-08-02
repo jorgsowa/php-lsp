@@ -148,22 +148,13 @@ greet(name: 'Alice', times: 3);
     .await;
 }
 
-/// KNOWN FALSE POSITIVE, not fixable from php-lsp alone: spreading a
-/// string-keyed array as a call's sole argument (`f(...$args)`) binds each
-/// entry to the parameter of the same name — valid PHP 8.1+ named-argument
-/// syntax (confirmed: `php -l` passes and it runs, printing "BobBob").
-/// mir-analyzer's `call/args.rs::expand_sole_spread_arg` only expands a
-/// spread into per-parameter bindings when the array's keys are the
-/// sequential integers `0..n-1`; a `TKeyedArray` with string keys fails its
-/// `ArrayKey::Int(i)` lookup and falls through to `spread_element_type`,
-/// which merges every value in the array into one union type and checks
-/// that merged union against the first parameter alone — hence the
-/// nonsensical `"Bob"|2` type in the message below. Fixing this needs
-/// `expand_sole_spread_arg` (or a sibling helper) to recognize string-keyed
-/// spreads and bind by parameter name instead of by position — a mir-side
-/// fix and release, not a php-lsp wiring change.
+/// Spreading a string-keyed array as a call's sole argument (`f(...$args)`)
+/// binds each entry to the parameter of the same name — valid PHP 8.1+
+/// named-argument syntax (confirmed: `php -l` passes and it runs, printing
+/// "BobBob"). mir-analyzer's `expand_sole_spread_arg` now recognizes
+/// string-keyed spreads and binds by parameter name instead of falling back
+/// to a merged-union check against the first parameter.
 #[tokio::test]
-#[ignore = "mir's expand_sole_spread_arg only handles positional (int-keyed) spread arrays; a string-keyed spread (PHP 8.1 named-args-via-array) falls back to a merged-union check against the first parameter — needs a mir-side fix"]
 async fn spread_array_with_string_keys_as_named_args_not_flagged() {
     let mut s = TestServer::new().await;
     s.check_no_diagnostics(

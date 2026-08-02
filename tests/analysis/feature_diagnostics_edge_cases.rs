@@ -847,28 +847,31 @@ function label(Suit $s): string {
 /// detects a backed enum case whose literal value doesn't match the backing
 /// type — confirmed directly against `mir-cli analyze`, which reports
 /// `BackedEnumCaseTypeMismatch` for this exact snippet. But php-lsp's
-/// `DocumentStore::get_semantic_issues_salsa` only merges two issue sources
-/// (`FileAnalyzer::analyze`'s body-analysis pass and `AnalysisSession::
-/// class_issues` for inheritance/override checks) — it never reads
-/// `collect_file_definitions(..).issues`, the collector-phase issues query,
-/// so this diagnostic (and any other collector-time check) never reaches the
-/// editor. Fixing this needs a new public accessor on mir's `AnalysisSession`
-/// (`class_issues` only covers `ClassAnalyzer`, not the collector) — a mir
-/// API change requiring a release, not a php-lsp-only fix.
+/// `DocumentStore::get_semantic_issues_salsa` merges three issue sources:
+/// `FileAnalyzer::analyze`'s body-analysis pass, `AnalysisSession::
+/// class_issues` for inheritance/override checks, and `AnalysisSession::
+/// collector_issues` for collector-phase checks like this one.
+// mir's collector reports this diagnostic with a placeholder `col_start`/
+// `col_end` of 0, which the caret-annotation DSL above can't express (its
+// minimum representable column is 2), so this asserts via the raw
+// workspace-diagnostic payload instead.
 #[tokio::test]
-#[ignore = "collector-phase issues (e.g. BackedEnumCaseTypeMismatch) aren't wired into get_semantic_issues_salsa yet — needs a new mir AnalysisSession API + release"]
 async fn backed_enum_case_value_type_mismatch_is_flagged() {
-    let mut s = TestServer::new().await;
-    s.check_diagnostics(
-        r#"<?php
-enum Suit: string {
-    case Hearts = 1;
-//  ^^^^^^^^^^^^^^^ error: Backed enum case Suit::Hearts has value of type int, but backing type is string
-    case Spades = 'spades';
-}
-"#,
-    )
-    .await;
+    let mut server = TestServer::new().await;
+    server
+        .open(
+            "ws_enum.php",
+            "<?php\nenum Suit: string {\n    case Hearts = 1;\n    case Spades = 'spades';\n}\n",
+        )
+        .await;
+
+    let resp = server.workspace_diagnostic().await;
+    let out = render_workspace_diagnostic(&resp, &server.uri(""));
+
+    expect![[r#"
+        ws_enum.php
+          2:0 Backed enum case Suit::Hearts has value of type 1, but backing type is string [BackedEnumCaseTypeMismatch] (error)"#]]
+    .assert_eq(&out);
 }
 
 /// A closure declared outside any class, using `$this`, later rebound to an
@@ -954,25 +957,12 @@ function test(Vault $v): string {
 
 // ── `@var` docblocks split across `?>`/`<?php` blocks (issue #235) ──────────
 
-/// KNOWN GAP in `mir`, not fixable from php-lsp alone: a Yii2-style view
-/// template with `/** @var Post $model */` immediately followed by `?>`
-/// (closing the PHP block), then inline HTML, then a new `<?php` block that
-/// uses `$model`. mir's `find_preceding_docblock`
-/// (`crates/mir-analyzer/src/parser/mod.rs:109-131`) locates a preceding
-/// docblock by checking whether `source[..offset].trim_end()` ends with
-/// `*/` — it only skips trailing whitespace and modifier keywords
-/// (`final`/`abstract`/`readonly`), never a closing `?>` tag or intervening
-/// `InlineHtml`/re-opening `<?php`. So the annotation is never attached to
-/// any statement and `$model`'s type (and even the fact that it's declared
-/// at all — there's no assignment, only the annotation) is lost by the time
-/// the second `<?php` block runs, producing a false-positive
-/// `UndefinedVariable`. `analyze_global_exec`
-/// (`crates/mir-analyzer/src/body_analysis/orchestration.rs:53-99`) itself
-/// threads one `FlowState` across the whole file fine — the loss happens at
-/// docblock-lookup time, before scope tracking even sees it. Needs an
-/// upstream mir fix + release; see `jorgsowa/php-lsp#235`.
+/// A Yii2-style view template with `/** @var Post $model */` immediately
+/// followed by `?>` (closing the PHP block), then inline HTML, then a new
+/// `<?php` block that uses `$model`. mir's `find_preceding_docblock` now
+/// skips a closing `?>`/`InlineHtml`/re-opening `<?php` gap when locating
+/// the preceding docblock, so the annotation still attaches.
 #[tokio::test]
-#[ignore = "mir's find_preceding_docblock (parser/mod.rs:109-131) doesn't skip a closing `?>` tag, so a `@var` annotation right before `?>` is never attached — needs an upstream mir fix + release, see php-lsp#235"]
 async fn var_annotation_survives_split_php_html_block() {
     let mut s = TestServer::new().await;
     s.check_no_diagnostics(

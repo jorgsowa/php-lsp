@@ -5085,19 +5085,15 @@ foreach ($widgets as $w) {
     .assert_eq(&out);
 }
 
-/// KNOWN GAP in `mir`, not fixable from php-lsp alone (issue #235): a
-/// `@var` docblock immediately followed by `?>` (closing the PHP block) is
-/// never attached to `$model`, so its type — and its very existence as a
-/// declared variable — is lost by the time a later `<?php` block (after
-/// intervening HTML) references it. See the companion diagnostics test
-/// `var_annotation_survives_split_php_html_block` in
-/// `tests/analysis/feature_diagnostics_edge_cases.rs` for the root cause
-/// (`find_preceding_docblock`, `crates/mir-analyzer/src/parser/mod.rs:109-131`,
-/// doesn't skip a closing `?>` tag). Needs an upstream mir fix + release.
+/// Companion to `var_annotation_survives_split_php_html_block` in
+/// `tests/analysis/feature_diagnostics_edge_cases.rs` (issue #235): a
+/// `@var` docblock immediately followed by `?>` (closing the PHP block)
+/// still attaches to `$model`, so completion sees its type across the
+/// intervening HTML and re-opened `<?php` block.
 #[tokio::test]
-#[ignore = "mir's find_preceding_docblock (parser/mod.rs:109-131) doesn't skip a closing `?>` tag, so a `@var` annotation right before `?>` is never attached — needs an upstream mir fix + release, see php-lsp#235"]
 async fn completion_var_annotation_survives_split_php_html_block() {
     let mut s = TestServer::new().await;
+    s.validate_syntax(false);
     let out = s
         .check_completion_ordered(
             r#"<?php

@@ -1805,11 +1805,23 @@ impl DocumentStore {
                 }
             }
         };
+        // `ParseError` is excluded: php-lsp already surfaces raw parse errors
+        // as `SyntaxError` diagnostics from its own parser pass (see
+        // `crate::analysis::diagnostics::diagnostics_from_doc`), so including
+        // mir's copy here would duplicate every syntax-error diagnostic.
+        let collector_issues = {
+            let session = self.current_analysis_session();
+            session
+                .collector_issues(std::slice::from_ref(&file))
+                .into_iter()
+                .filter(|i| !matches!(i.kind, mir_issues::IssueKind::ParseError { .. }))
+        };
         let combined: Vec<mir_issues::Issue> = analysis
             .issues
             .iter()
             .cloned()
             .chain(class_issues)
+            .chain(collector_issues)
             .filter(|i| !i.suppressed)
             .collect();
         Some(Arc::from(combined))
