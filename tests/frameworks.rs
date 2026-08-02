@@ -15,14 +15,22 @@ pub use common::{
 
 #[path = "frameworks/feature_laravel.rs"]
 mod feature_laravel;
+#[path = "frameworks/feature_laravel_asset.rs"]
+mod feature_laravel_asset;
 #[path = "frameworks/feature_laravel_code_action.rs"]
 mod feature_laravel_code_action;
 #[path = "frameworks/feature_laravel_config.rs"]
 mod feature_laravel_config;
+#[path = "frameworks/feature_laravel_document_link.rs"]
+mod feature_laravel_document_link;
 #[path = "frameworks/feature_laravel_env.rs"]
 mod feature_laravel_env;
 #[path = "frameworks/feature_laravel_facade_to_di.rs"]
 mod feature_laravel_facade_to_di;
+#[path = "frameworks/feature_laravel_hover.rs"]
+mod feature_laravel_hover;
+#[path = "frameworks/feature_laravel_middleware.rs"]
+mod feature_laravel_middleware;
 #[path = "frameworks/feature_laravel_references.rs"]
 mod feature_laravel_references;
 #[path = "frameworks/feature_laravel_request_fields.rs"]

@@ -2,24 +2,27 @@
 //!
 //! Beyond generic PHP analysis, Laravel projects lean heavily on stringly-typed
 //! lookups — `env('KEY')`, `config('a.b.c')`, `view('a.b')`, `route('name')`,
-//! `trans('a.b')` — that resolve against files elsewhere in the project rather
-//! than through normal symbol resolution. `LaravelIndex` builds a workspace-
-//! scan-time index for each of these domains (`env` and `config` so far;
-//! further domains are added incrementally) and wires them into
-//! go-to-definition ([`resolve_string_key`]) and completion
-//! ([`completions_for_string_key`]).
+//! `trans('a.b')`, `asset('a/b')`, `->middleware('alias')` — that resolve
+//! against files elsewhere in the project rather than through normal symbol
+//! resolution. `LaravelIndex` builds a workspace-scan-time index for each of
+//! these domains and wires them into go-to-definition
+//! ([`resolve_string_key`]), completion ([`completions_for_string_key`]),
+//! hover ([`hover_for_string_key`]) and document links ([`document_links`]).
 //!
 //! Gated behind [`LaravelIndex::load`]'s project-detection check, so
 //! non-Laravel workspaces pay no cost beyond the one-time
-//! `artisan`/`composer.json` probe: both dispatch functions bail out on the
+//! `artisan`/`composer.json` probe: every dispatch function bails out on the
 //! `is_laravel` flag before doing any string scanning.
 
+mod asset_index;
 mod config_index;
 mod detect;
 mod eloquent_guard;
 mod env_index;
 pub(crate) mod facades;
+mod hover;
 mod location_lookup;
+mod middleware_index;
 pub(crate) mod request_fields;
 mod route_index;
 pub(crate) mod route_scaffold;
@@ -27,15 +30,21 @@ mod string_call;
 mod translation_index;
 mod view_index;
 
+pub use asset_index::AssetIndex;
 pub use config_index::ConfigIndex;
 pub use eloquent_guard::unguarded_model_diagnostics;
 pub use env_index::EnvIndex;
+pub use middleware_index::MiddlewareIndex;
 pub use route_index::RouteIndex;
 pub use translation_index::TranslationIndex;
 pub use view_index::ViewIndex;
 
+use asset_index::asset_completions;
 use config_index::config_completions;
 use env_index::{env_completions, missing_env_key_action};
+use middleware_index::{
+    collect_middleware_calls, middleware_alias_at, middleware_completions, middleware_string_prefix,
+};
 use route_index::route_completions;
 use string_call::{call_string_arg, call_string_prefix};
 use translation_index::{missing_translation_json_key_action, translation_completions};
@@ -44,7 +53,7 @@ use view_index::view_completions;
 use std::path::Path;
 
 use tower_lsp_server::ls_types::{
-    CodeActionOrCommand, CompletionItem, Location, Position, Range, Uri,
+    CodeActionOrCommand, CompletionItem, DocumentLink, Hover, Location, Position, Range, Uri,
 };
 
 pub(crate) use string_call::find_call_sites;
@@ -60,6 +69,8 @@ const VIEW_CALL_NAMES: &[&str] = &["view"];
 const TRANS_CALL_NAMES: &[&str] = &["__", "trans"];
 /// Bare function names recognized as the `route()` string-key helper call.
 const ROUTE_CALL_NAMES: &[&str] = &["route"];
+/// Bare function names recognized as the `asset()` string-key helper call.
+const ASSET_CALL_NAMES: &[&str] = &["asset"];
 
 #[derive(Debug, Default)]
 pub struct LaravelIndex {
@@ -69,6 +80,8 @@ pub struct LaravelIndex {
     pub views: ViewIndex,
     pub translations: TranslationIndex,
     pub routes: RouteIndex,
+    pub assets: AssetIndex,
+    pub middleware: MiddlewareIndex,
 }
 
 impl LaravelIndex {
@@ -86,6 +99,8 @@ impl LaravelIndex {
             views: ViewIndex::load(root),
             translations: TranslationIndex::load(root),
             routes: RouteIndex::load(root),
+            assets: AssetIndex::load(root),
+            middleware: MiddlewareIndex::load(root),
         }
     }
 }
@@ -130,6 +145,12 @@ pub(crate) fn resolve_string_key(
     if let Some((key, _)) = call_string_arg(doc, position, ROUTE_CALL_NAMES) {
         return laravel.routes.get(&key).cloned();
     }
+    if let Some((path, _)) = call_string_arg(doc, position, ASSET_CALL_NAMES) {
+        return laravel.assets.get(&path).cloned();
+    }
+    if let Some((alias, _)) = middleware_alias_at(doc, position) {
+        return laravel.middleware.get(&alias).cloned();
+    }
     None
 }
 
@@ -159,7 +180,161 @@ pub(crate) fn completions_for_string_key(
     if let Some(prefix) = call_string_prefix(source, position, ROUTE_CALL_NAMES) {
         return Some(route_completions(&laravel.routes, &prefix));
     }
+    if let Some(prefix) = call_string_prefix(source, position, ASSET_CALL_NAMES) {
+        return Some(asset_completions(&laravel.assets, &prefix));
+    }
+    if let Some(prefix) = middleware_string_prefix(source, position) {
+        return Some(middleware_completions(&laravel.middleware, &prefix));
+    }
     None
+}
+
+/// Hover for the cursor position inside a recognized Laravel string-key
+/// call — checked at the same call sites as [`resolve_string_key`], covering
+/// every domain that resolves to a real location. `root` (the workspace
+/// root) is used only to shorten the file path shown in the hover; a
+/// missing root just falls back to the full path.
+pub(crate) fn hover_for_string_key(
+    doc: &crate::document::ast::ParsedDoc,
+    position: Position,
+    laravel: &LaravelIndex,
+    root: Option<&Path>,
+) -> Option<Hover> {
+    if !laravel.is_laravel {
+        return None;
+    }
+    if let Some((key, _)) = call_string_arg(doc, position, ENV_CALL_NAMES) {
+        let loc = laravel.env.get(&key)?;
+        return Some(hover::key_hover(
+            root,
+            loc,
+            &format!("env('{key}')"),
+            "properties",
+            true,
+        ));
+    }
+    if let Some((key, _)) = call_string_arg(doc, position, CONFIG_CALL_NAMES) {
+        let loc = laravel.config.get(&key)?;
+        return Some(hover::key_hover(
+            root,
+            loc,
+            &format!("config('{key}')"),
+            "php",
+            true,
+        ));
+    }
+    if let Some((key, _)) = call_string_arg(doc, position, VIEW_CALL_NAMES) {
+        let loc = laravel.views.get(&key)?;
+        return Some(hover::key_hover(
+            root,
+            loc,
+            &format!("view('{key}')"),
+            "php",
+            false,
+        ));
+    }
+    if let Some((key, _)) = call_string_arg(doc, position, TRANS_CALL_NAMES) {
+        let loc = laravel.translations.get(&key)?;
+        let lang = if loc.uri.as_str().ends_with(".json") {
+            "json"
+        } else {
+            "php"
+        };
+        return Some(hover::key_hover(
+            root,
+            loc,
+            &format!("trans('{key}')"),
+            lang,
+            true,
+        ));
+    }
+    if let Some((key, _)) = call_string_arg(doc, position, ROUTE_CALL_NAMES) {
+        let loc = laravel.routes.get(&key)?;
+        return Some(hover::key_hover(
+            root,
+            loc,
+            &format!("route('{key}')"),
+            "php",
+            true,
+        ));
+    }
+    if let Some((path, _)) = call_string_arg(doc, position, ASSET_CALL_NAMES) {
+        let loc = laravel.assets.get(&path)?;
+        return Some(hover::key_hover(
+            root,
+            loc,
+            &format!("asset('{path}')"),
+            "php",
+            false,
+        ));
+    }
+    if let Some((alias, _)) = middleware_alias_at(doc, position) {
+        let loc = laravel.middleware.get(&alias)?;
+        return Some(hover::key_hover(
+            root,
+            loc,
+            &format!("middleware('{alias}')"),
+            "php",
+            true,
+        ));
+    }
+    None
+}
+
+/// Document links for every recognized Laravel string-key call site in
+/// `doc` — one AST walk per domain, each entry resolved against the
+/// workspace-wide index built at `LaravelIndex::load` time. Complements
+/// go-to-definition (`resolve_string_key`) with the same targets surfaced as
+/// clickable underlines, matching how editors normally source
+/// `textDocument/documentLink`.
+pub(crate) fn document_links(
+    doc: &crate::document::ast::ParsedDoc,
+    laravel: &LaravelIndex,
+) -> Vec<DocumentLink> {
+    if !laravel.is_laravel {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    push_links(&mut out, doc, ENV_CALL_NAMES, |k| laravel.env.get(k));
+    push_links(&mut out, doc, CONFIG_CALL_NAMES, |k| laravel.config.get(k));
+    push_links(&mut out, doc, VIEW_CALL_NAMES, |k| laravel.views.get(k));
+    push_links(&mut out, doc, TRANS_CALL_NAMES, |k| {
+        laravel.translations.get(k)
+    });
+    push_links(&mut out, doc, ROUTE_CALL_NAMES, |k| laravel.routes.get(k));
+    push_links(&mut out, doc, ASSET_CALL_NAMES, |k| laravel.assets.get(k));
+    for (alias, range) in collect_middleware_calls(doc) {
+        if let Some(loc) = laravel.middleware.get(&alias) {
+            out.push(DocumentLink {
+                range,
+                target: Some(loc.uri.clone()),
+                tooltip: Some(format!("middleware: {alias}")),
+                data: None,
+            });
+        }
+    }
+    out
+}
+
+/// Sweeps `doc` for every bare call in `names`, resolving each string-literal
+/// argument through `lookup` and pushing a matching [`DocumentLink`] —
+/// shared body for every bare-call domain in [`document_links`].
+fn push_links<'a>(
+    out: &mut Vec<DocumentLink>,
+    doc: &crate::document::ast::ParsedDoc,
+    names: &[&str],
+    lookup: impl Fn(&str) -> Option<&'a Location>,
+) {
+    for (content, range) in string_call::find_all_calls(doc, names) {
+        if let Some(loc) = lookup(&content) {
+            out.push(DocumentLink {
+                range,
+                target: Some(loc.uri.clone()),
+                tooltip: Some(content),
+                data: None,
+            });
+        }
+    }
 }
 
 /// If the cursor sits on a Laravel string-key *definition* site — a `.env`
@@ -201,6 +376,15 @@ pub(crate) fn resolve_definition_key(
         let loc = laravel.routes.get(key)?.clone();
         return Some((ROUTE_CALL_NAMES, key.to_string(), loc));
     }
+    if let Some(key) = laravel.assets.key_at(uri, position) {
+        let loc = laravel.assets.get(key)?.clone();
+        return Some((ASSET_CALL_NAMES, key.to_string(), loc));
+    }
+    // Middleware aliases are deliberately not wired into find-references
+    // here: usages are method/static calls (`->middleware(...)`), not bare
+    // calls, so they don't fit `find_call_sites`'s `names`-based sweep.
+    // `document_links` below covers the same alias usages via
+    // `middleware_index::collect_middleware_calls` instead.
     None
 }
 
@@ -252,6 +436,8 @@ mod tests {
         assert_eq!(idx.views.names().count(), 0);
         assert_eq!(idx.translations.keys().count(), 0);
         assert_eq!(idx.routes.names().count(), 0);
+        assert_eq!(idx.assets.names().count(), 0);
+        assert_eq!(idx.middleware.names().count(), 0);
     }
 
     #[test]
@@ -286,6 +472,18 @@ mod tests {
             "<?php\nRoute::get('/', Foo::class)->name('home');\n",
         )
         .unwrap();
+        std::fs::create_dir_all(tmp.path().join("public").join("css")).unwrap();
+        std::fs::write(
+            tmp.path().join("public").join("css").join("app.css"),
+            "body{}",
+        )
+        .unwrap();
+        std::fs::create_dir_all(tmp.path().join("bootstrap")).unwrap();
+        std::fs::write(
+            tmp.path().join("bootstrap").join("app.php"),
+            "<?php\n$middleware->alias(['auth' => Authenticate::class]);\n",
+        )
+        .unwrap();
         let idx = LaravelIndex::load(tmp.path());
         assert!(idx.is_laravel);
         assert!(idx.env.get("APP_NAME").is_some());
@@ -293,6 +491,8 @@ mod tests {
         assert!(idx.views.get("welcome").is_some());
         assert!(idx.translations.get("auth.failed").is_some());
         assert!(idx.routes.get("home").is_some());
+        assert!(idx.assets.get("css/app.css").is_some());
+        assert!(idx.middleware.get("auth").is_some());
     }
 
     #[test]
@@ -412,5 +612,134 @@ mod tests {
             character: 6,
         };
         assert!(missing_key_actions(&doc, pos, &laravel, None).is_empty());
+    }
+
+    fn laravel_root(tmp: &std::path::Path) {
+        std::fs::write(tmp.join("artisan"), "#!/usr/bin/env php").unwrap();
+    }
+
+    #[test]
+    fn resolve_string_key_resolves_asset_and_middleware() {
+        let tmp = tempfile::tempdir().unwrap();
+        laravel_root(tmp.path());
+        std::fs::create_dir_all(tmp.path().join("public").join("css")).unwrap();
+        std::fs::write(tmp.path().join("public").join("css").join("app.css"), "x").unwrap();
+        std::fs::create_dir_all(tmp.path().join("bootstrap")).unwrap();
+        std::fs::write(
+            tmp.path().join("bootstrap").join("app.php"),
+            "<?php\n$middleware->alias(['auth' => Authenticate::class]);\n",
+        )
+        .unwrap();
+        let laravel = LaravelIndex::load(tmp.path());
+
+        let doc =
+            crate::document::ast::ParsedDoc::parse("<?php\nasset('css/app.css');\n".to_string());
+        let pos = Position {
+            line: 1,
+            character: 10,
+        };
+        assert!(resolve_string_key(&doc, pos, &laravel).is_some());
+
+        let doc = crate::document::ast::ParsedDoc::parse(
+            "<?php\nRoute::get('/x', Foo::class)->middleware('auth');\n".to_string(),
+        );
+        let pos = Position {
+            line: 1,
+            character: 44,
+        };
+        assert!(resolve_string_key(&doc, pos, &laravel).is_some());
+    }
+
+    #[test]
+    fn hover_for_string_key_resolves_env_and_none_for_unknown() {
+        let tmp = tempfile::tempdir().unwrap();
+        laravel_root(tmp.path());
+        std::fs::write(tmp.path().join(".env"), "APP_NAME=Test\n").unwrap();
+        let laravel = LaravelIndex::load(tmp.path());
+
+        let doc = crate::document::ast::ParsedDoc::parse("<?php\nenv('APP_NAME');\n".to_string());
+        let pos = Position {
+            line: 1,
+            character: 8,
+        };
+        let hover = hover_for_string_key(&doc, pos, &laravel, Some(tmp.path())).unwrap();
+        let tower_lsp_server::ls_types::HoverContents::Markup(content) = hover.contents else {
+            panic!("expected markup contents");
+        };
+        assert!(content.value.contains("APP_NAME=Test"));
+
+        let doc = crate::document::ast::ParsedDoc::parse("<?php\nenv('MISSING');\n".to_string());
+        assert!(hover_for_string_key(&doc, pos, &laravel, Some(tmp.path())).is_none());
+    }
+
+    #[test]
+    fn hover_for_string_key_none_for_non_laravel() {
+        let laravel = LaravelIndex::default();
+        let doc = crate::document::ast::ParsedDoc::parse("<?php\nenv('APP_NAME');\n".to_string());
+        let pos = Position {
+            line: 1,
+            character: 8,
+        };
+        assert!(hover_for_string_key(&doc, pos, &laravel, None).is_none());
+    }
+
+    #[test]
+    fn document_links_covers_every_domain() {
+        let tmp = tempfile::tempdir().unwrap();
+        laravel_root(tmp.path());
+        std::fs::write(tmp.path().join(".env"), "APP_NAME=Test\n").unwrap();
+        std::fs::create_dir_all(tmp.path().join("public")).unwrap();
+        std::fs::write(tmp.path().join("public").join("app.js"), "x").unwrap();
+        std::fs::create_dir_all(tmp.path().join("bootstrap")).unwrap();
+        std::fs::write(
+            tmp.path().join("bootstrap").join("app.php"),
+            "<?php\n$middleware->alias(['auth' => Authenticate::class]);\n",
+        )
+        .unwrap();
+        let laravel = LaravelIndex::load(tmp.path());
+
+        let doc = crate::document::ast::ParsedDoc::parse(
+            "<?php\nenv('APP_NAME');\nasset('app.js');\nRoute::get('/x', Foo::class)->middleware('auth');\nenv('MISSING');\n"
+                .to_string(),
+        );
+        let links = document_links(&doc, &laravel);
+        assert_eq!(links.len(), 3);
+    }
+
+    #[test]
+    fn document_links_empty_for_non_laravel() {
+        let laravel = LaravelIndex::default();
+        let doc = crate::document::ast::ParsedDoc::parse("<?php\nenv('APP_NAME');\n".to_string());
+        assert!(document_links(&doc, &laravel).is_empty());
+    }
+
+    #[test]
+    fn completions_for_string_key_covers_asset_and_middleware() {
+        let tmp = tempfile::tempdir().unwrap();
+        laravel_root(tmp.path());
+        std::fs::create_dir_all(tmp.path().join("public").join("css")).unwrap();
+        std::fs::write(tmp.path().join("public").join("css").join("app.css"), "x").unwrap();
+        std::fs::create_dir_all(tmp.path().join("bootstrap")).unwrap();
+        std::fs::write(
+            tmp.path().join("bootstrap").join("app.php"),
+            "<?php\n$middleware->alias(['auth' => Authenticate::class]);\n",
+        )
+        .unwrap();
+        let laravel = LaravelIndex::load(tmp.path());
+
+        let pos = Position {
+            line: 1,
+            character: 10,
+        };
+        let items = completions_for_string_key("<?php\nasset('css/", pos, Some(&laravel)).unwrap();
+        assert!(items.iter().any(|i| i.label == "css/app.css"));
+
+        let src = "<?php\nRoute::get('/x', Foo::class)->middleware('au";
+        let pos = Position {
+            line: 1,
+            character: 44,
+        };
+        let items = completions_for_string_key(src, pos, Some(&laravel)).unwrap();
+        assert!(items.iter().any(|i| i.label == "auth"));
     }
 }

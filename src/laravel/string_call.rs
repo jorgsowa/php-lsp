@@ -34,7 +34,7 @@ struct StringArgCall {
 /// locating the matching quote characters within `span` (the full token,
 /// quotes included). Search rather than assume the first/last byte so the
 /// legacy `b'...'`/`b"..."` byte-string prefix doesn't throw off the count.
-fn content_span(source: &str, span: Span) -> Option<Span> {
+pub(crate) fn content_span(source: &str, span: Span) -> Option<Span> {
     let text = source.get(span.start as usize..span.end as usize)?;
     let bytes = text.as_bytes();
     let quote = *bytes.iter().find(|&&b| b == b'\'' || b == b'"')?;
@@ -139,6 +139,18 @@ pub(crate) fn find_call_sites(doc: &ParsedDoc, names: &[&str], target: &str) -> 
         .into_iter()
         .filter(|c| c.content == target)
         .map(|c| sv.range_of(c.content_span))
+        .collect()
+}
+
+/// Every string-literal argument to a bare call to one of `names` anywhere in
+/// `doc`, with its decoded content and `Range` — unlike `find_call_sites`,
+/// not filtered to a single already-known target. Used to build document
+/// links for a whole file in one AST walk.
+pub(crate) fn find_all_calls(doc: &ParsedDoc, names: &[&str]) -> Vec<(String, Range)> {
+    let sv = doc.view();
+    collect_string_arg_calls(doc, names)
+        .into_iter()
+        .map(|c| (c.content, sv.range_of(c.content_span)))
         .collect()
 }
 
@@ -354,5 +366,14 @@ mod tests {
         let sites = find_call_sites(&doc, ENV, "APP_NAME");
         assert_eq!(sites.len(), 1);
         assert_eq!(sites[0].start.line, 2);
+    }
+
+    #[test]
+    fn find_all_calls_returns_every_call_regardless_of_content() {
+        let doc =
+            parse("<?php\n$a = env('APP_NAME');\n$b = env('DB_HOST');\n$c = getenv('OTHER');\n");
+        let calls = find_all_calls(&doc, ENV);
+        let contents: Vec<&str> = calls.iter().map(|(c, _)| c.as_str()).collect();
+        assert_eq!(contents, vec!["APP_NAME", "DB_HOST"]);
     }
 }

@@ -914,6 +914,22 @@ impl LanguageServer for Backend {
                 Some(d) => d,
                 None => return Ok(None),
             };
+            // Laravel string-key calls (`env('KEY')`, `config('a.b')`, ...) —
+            // resolved before the general hover pipeline below, since a
+            // string literal is never a `word_at_position` match. Mirrors
+            // `handle_goto_definition`'s same early check.
+            let laravel = self.laravel.load();
+            let laravel_root = self.root_paths.load().first().cloned();
+            let laravel_hover = crate::laravel::hover_for_string_key(
+                &doc,
+                position,
+                &laravel,
+                laravel_root.as_deref(),
+            );
+            drop(laravel);
+            if let Some(hover) = laravel_hover {
+                return Ok(Some(hover));
+            }
             let open = self.open_urls();
             let other_docs = self.docs.other_docs(uri, &open);
             let other_maps = self.docs.other_symbol_maps(uri, &open);
@@ -1767,11 +1783,14 @@ impl LanguageServer for Backend {
                 Some(d) => d,
                 None => return Ok(None),
             };
+            let laravel = self.laravel.load_full();
             // The AST walk plus full-text `@link`/`@see` scan are CPU-bound;
             // keep them off the async runtime worker.
             let links = self
                 .blocking_gated(super::debug_gate::GATE_DOCUMENT_LINK, move || {
-                    document_links(&uri, &doc, doc.source())
+                    let mut links = document_links(&uri, &doc, doc.source());
+                    links.extend(crate::laravel::document_links(&doc, &laravel));
+                    links
                 })
                 .await
                 .unwrap_or_default();
