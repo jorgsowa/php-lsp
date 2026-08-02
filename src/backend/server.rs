@@ -1875,12 +1875,18 @@ impl LanguageServer for Backend {
         guard_async_result("on_type_formatting", async move {
             let uri = &params.text_document_position.text_document.uri;
             let source = self.get_open_text(uri).unwrap_or_default();
-            let edits = on_type_format(
-                &source,
-                params.text_document_position.position,
-                &params.ch,
-                &params.options,
-            );
+            let position = params.text_document_position.position;
+            // `}` fires a whole-document char-vec + string-literal-mask scan
+            // to find the matching brace; every keystroke fires this handler,
+            // so keep it off the async runtime worker like the other
+            // whole-document walks.
+            let gate = Arc::clone(&self.debug_gate);
+            let edits = tokio::task::spawn_blocking(move || {
+                gate.pass(super::debug_gate::GATE_ON_TYPE_FORMATTING);
+                on_type_format(&source, position, &params.ch, &params.options)
+            })
+            .await
+            .unwrap_or_default();
             Ok(if edits.is_empty() { None } else { Some(edits) })
         })
         .await

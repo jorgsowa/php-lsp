@@ -1011,6 +1011,33 @@ async fn inlay_hint_resolve_stays_responsive_while_all_indexes_lookup_is_in_flig
         .await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn on_type_formatting_stays_responsive_while_scan_is_in_flight() {
+    // Typing `}` builds a whole-document char vec plus string-literal mask
+    // to find the matching brace; that fires on every keystroke, so it must
+    // run off the async runtime worker.
+    let mut server = TestServer::new().await;
+    server
+        .open(
+            "gated_on_type_format.php",
+            "<?php\nfunction gated(): void {\n    echo 1;\n}\n",
+        )
+        .await;
+    let uri = server.uri("gated_on_type_format.php");
+    server
+        .assert_request_stays_responsive_via_gate(
+            "textDocument/onTypeFormatting",
+            serde_json::json!({
+                "textDocument": { "uri": uri },
+                "position": { "line": 3, "character": 1 },
+                "ch": "}",
+                "options": { "tabSize": 4, "insertSpaces": true },
+            }),
+            php_lsp::backend::debug_gate::GATE_ON_TYPE_FORMATTING,
+        )
+        .await;
+}
+
 #[tokio::test]
 async fn semantic_tokens_full_delta_stays_responsive_on_large_file() {
     let mut server = TestServer::new().await;

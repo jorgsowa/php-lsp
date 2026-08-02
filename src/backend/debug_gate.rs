@@ -41,6 +41,8 @@ pub const GATE_RENAME_VARIABLE: &str = "rename.variable";
 pub const GATE_COMPLETION_RESOLVE: &str = "completionResolve.lookup";
 /// Gate section around `inlay_hint_resolve`'s all-indexes doc lookup.
 pub const GATE_INLAY_HINT_RESOLVE: &str = "inlayHintResolve.lookup";
+/// Gate section around `on_type_formatting`'s whole-document scan.
+pub const GATE_ON_TYPE_FORMATTING: &str = "onTypeFormatting.scan";
 
 #[cfg(not(feature = "test-hooks"))]
 #[derive(Default)]
