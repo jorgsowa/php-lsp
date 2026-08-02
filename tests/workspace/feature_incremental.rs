@@ -454,11 +454,7 @@ async fn cross_file_republish_preserves_dependent_parse_errors() {
     let broken_uri = server.uri("broken.php");
     let notif = server.client().wait_for_diagnostics(&broken_uri).await;
     // UndefinedClass clears once Triggered is defined; parse errors survive.
-    // Note: cross-file republish currently produces two diagnostic entries per
-    // parse error (one from the AST layer, one from the semantic layer).
     expect![[r#"
-        2:7-2:8 [1] ParseError: Parse error: expected ')', found ';'
-        2:7-2:8 [1] ParseError: Parse error: expected expression
         2:7-2:8 [1] SyntaxError: expected ')', found ';'
         2:7-2:8 [1] SyntaxError: expected expression"#]]
     .assert_eq(&render_diagnostics_notification(&notif));

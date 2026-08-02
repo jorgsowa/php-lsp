@@ -43,6 +43,12 @@ pub fn semantic_diagnostics(
 /// LSP diagnostics, applying the user's `DiagnosticsConfig` filter. Keeping
 /// filter + conversion outside the salsa query preserves memoization across
 /// config toggles (the user flipping a category must not rerun the analyzer).
+///
+/// `ParseError` issues are always excluded here, regardless of which mir API
+/// produced `issues`: php-lsp already surfaces raw parse errors as
+/// `SyntaxError` diagnostics from its own parser pass (see
+/// `crate::analysis::diagnostics::diagnostics_from_doc`), so this is the one
+/// place every issue source funnels through before becoming a `Diagnostic`.
 pub fn issues_to_diagnostics(
     issues: &[mir_issues::Issue],
     _uri: &Uri,
@@ -53,6 +59,7 @@ pub fn issues_to_diagnostics(
     }
     issues
         .iter()
+        .filter(|i| !matches!(i.kind, mir_issues::IssueKind::ParseError { .. }))
         .filter(|i| issue_passes_filter(i, cfg))
         .cloned()
         .map(to_lsp_diagnostic)
