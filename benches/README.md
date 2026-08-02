@@ -33,6 +33,33 @@ Laravel codebase. Note: the store's default 1,000-file LRU cap means ~1,500
 files are evicted during this bench — realistic for what users experience, but
 not a clean "time to index N files" measurement.
 
+### What layer each Criterion bench targets
+
+These benches deliberately target different layers of the stack, so a
+regression can be attributed to where it actually lives instead of always
+blaming the outermost one:
+
+- **Raw mir session** (`semantic.rs`, `republish_scaling.rs`, `requests.rs`) —
+  call `AnalysisSession`/`FileAnalyzer` directly, bypassing `DocumentStore`'s
+  locking, salsa caching, and PSR-4 lazy-loading. Isolates the analyzer's own
+  cost from that surrounding machinery.
+- **`DocumentStore`** (`index.rs`, `code_lens_scaling.rs`,
+  `references_scaling.rs`, `references_scaling_static.rs`) — the real
+  production entry point, including caching and lazy-loading.
+  `references_degradation.rs` runs both: a raw-session sweep plus a
+  `scope_narrowing_comparison` against `DocumentStore`, specifically to
+  compare the two layers.
+- **Full server** (`start_time.rs`, `edit_latency.rs`, `rss_churn.rs`,
+  `rss_session.rs`, `cross_file_freshness.rs`) — drives `Backend` over
+  in-memory LSP pipes end-to-end.
+
+A raw-session bench next to a `DocumentStore`-level one isn't duplication —
+each answers a different question ("how fast is the analyzer itself" vs.
+"how fast is the real request path"). This is also why
+`semantic_diagnostics()` (used only by `semantic.rs`) has no production
+caller: it exists to isolate `FileAnalyzer`'s cost, not to be a second
+production code path.
+
 ---
 
 ## 1b. start_time — cold/warm start wall time (Laravel fixture)
