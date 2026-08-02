@@ -390,7 +390,7 @@ pub fn render_completion_ordered(resp: &Value) -> String {
             } else {
                 format!(" | {detail}")
             };
-            (sort.clone(), format!("{kind:<11} {label}{detail_suffix}"))
+            (sort, format!("{kind:<11} {label}{detail_suffix}"))
         })
         .collect();
     rows.sort();

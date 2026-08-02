@@ -487,7 +487,7 @@ pub fn parse_docblock(raw: &str) -> Docblock {
         throws,
         see: mir.see.clone(),
         templates,
-        mixins: mir.mixins.clone(),
+        mixins: mir.mixins,
         type_aliases,
         properties,
         methods,

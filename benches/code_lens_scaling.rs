@@ -62,7 +62,7 @@ fn build(n_noise: usize, num_methods: usize) -> (DocumentStore, Arc<ParsedDoc>, 
         store.ingest(u, &t);
     }
     store.mark_index_ready();
-    let doc = Arc::new(ParsedDoc::parse(src.clone()));
+    let doc = Arc::new(ParsedDoc::parse(src));
     (store, doc, url)
 }
 

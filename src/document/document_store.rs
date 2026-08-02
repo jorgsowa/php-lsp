@@ -2532,7 +2532,7 @@ mod tests {
         let u = uri("/vendor/acme/lib.php");
         store.ingest(u.clone(), "<?php\nclass Lib {}");
         let idx = store.get_index_salsa(&u).unwrap();
-        store.cache_vendor_index(u.clone(), idx.clone());
+        store.cache_vendor_index(u.clone(), idx);
         assert!(store.get_vendor_index(&u).is_some());
         store.remove(&u);
         assert!(store.get_vendor_index(&u).is_none());

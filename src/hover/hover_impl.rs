@@ -272,10 +272,9 @@ fn hover_at_core(
     {
         let prop_name = word.trim_start_matches('$');
         let effective_class = if class_name == "self" || class_name == "static" {
-            crate::types::type_map::enclosing_class_at(source, doc, position)
-                .unwrap_or(class_name.clone())
+            crate::types::type_map::enclosing_class_at(source, doc, position).unwrap_or(class_name)
         } else {
-            class_name.clone()
+            class_name
         };
         // Fast path: workspace-index lookup finds the one doc that defines
         // `effective_class`, even if it's never been opened in the editor.
