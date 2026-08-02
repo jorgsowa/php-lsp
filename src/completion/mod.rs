@@ -426,9 +426,12 @@ pub fn filtered_completions_at(
     // directive arguments) — bare helper calls inside `{{ }}` are already
     // covered by `laravel_completions` above, a pure text scan that doesn't
     // care whether it's running inside a Blade expression or plain PHP.
-    let blade_completions = doc_uri.zip(source).zip(position).and_then(|((uri, src), pos)| {
-        crate::laravel::blade::completions(uri, src, pos, ctx.laravel)
-    });
+    let blade_completions = doc_uri
+        .zip(source)
+        .zip(position)
+        .and_then(|((uri, src), pos)| {
+            crate::laravel::blade::completions(uri, src, pos, ctx.laravel)
+        });
 
     // Request-field completion inside `$request->input('...')`/`get`/`post`/
     // `query` — a naming-convention heuristic (see `laravel::request_fields`

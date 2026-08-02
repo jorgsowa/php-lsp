@@ -927,7 +927,13 @@ impl LanguageServer for Backend {
                 laravel_root.as_deref(),
             )
             .or_else(|| {
-                crate::laravel::blade::hover(uri, &source, position, &laravel, laravel_root.as_deref())
+                crate::laravel::blade::hover(
+                    uri,
+                    &source,
+                    position,
+                    &laravel,
+                    laravel_root.as_deref(),
+                )
             });
             drop(laravel);
             if let Some(hover) = laravel_hover {

@@ -260,7 +260,8 @@ async fn blade_helper_call_completion_already_works_inside_double_brace() {
 async fn blade_document_link_sweeps_expr_directive_and_tag() {
     let workspace = tempfile::tempdir().expect("workspace tempdir");
     write_full_laravel_project(workspace.path());
-    let blade = "{{ view('welcome') }}\n@include('layouts.app')\n<x-alert />\n<livewire:counter />\n";
+    let blade =
+        "{{ view('welcome') }}\n@include('layouts.app')\n<x-alert />\n<livewire:counter />\n";
     std::fs::write(
         workspace.path().join("resources/views/page.blade.php"),
         blade,

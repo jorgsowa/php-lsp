@@ -3827,10 +3827,7 @@ mod tests {
 
         // Second, unrelated file references the stub-defined class.
         let b = uri("/stub_cross_file_b.php");
-        store.mirror_text(
-            &b,
-            "<?php\n$c = new Container();\n$c->get('x');\n",
-        );
+        store.mirror_text(&b, "<?php\n$c = new Container();\n$c->get('x');\n");
         let issues = store.get_semantic_issues_salsa(&b).unwrap();
         let undef: Vec<_> = issues
             .iter()

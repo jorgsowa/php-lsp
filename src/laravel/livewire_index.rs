@@ -42,7 +42,10 @@ impl LivewireIndex {
     pub(super) fn load(root: &Path) -> Self {
         let mut components = HashMap::new();
         walk_base(&root.join("app").join("Livewire"), &mut components);
-        walk_base(&root.join("app").join("Http").join("Livewire"), &mut components);
+        walk_base(
+            &root.join("app").join("Http").join("Livewire"),
+            &mut components,
+        );
         Self { components }
     }
 }

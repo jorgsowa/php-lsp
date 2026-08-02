@@ -393,7 +393,8 @@ fn resolve_in_expr(
 ) -> Option<Location> {
     let raw = &source[expr.start..expr.end];
     let wrapped = format!("{EXPR_WRAP_PREFIX}{raw});");
-    let frag_pos = doc_byte_to_frag_position(&wrapped, EXPR_WRAP_PREFIX.len(), expr.start, doc_byte);
+    let frag_pos =
+        doc_byte_to_frag_position(&wrapped, EXPR_WRAP_PREFIX.len(), expr.start, doc_byte);
     let frag_doc = ParsedDoc::parse(wrapped);
     super::resolve_string_key(&frag_doc, frag_pos, laravel)
 }
@@ -425,8 +426,7 @@ fn resolve_in_directive(
     let (wrapped, prefix_len, args_doc_start) = wrap_directive(source, call);
     let frag_pos = doc_byte_to_frag_position(&wrapped, prefix_len, args_doc_start, doc_byte);
     let frag_doc = ParsedDoc::parse(wrapped);
-    let (key, _) =
-        string_call::call_string_arg(&frag_doc, frag_pos, &[DIRECTIVE_SYNTHETIC_NAME])?;
+    let (key, _) = string_call::call_string_arg(&frag_doc, frag_pos, &[DIRECTIVE_SYNTHETIC_NAME])?;
     directive_lookup(laravel, &call.name, &key)
 }
 
@@ -639,7 +639,10 @@ fn tag_prefix(source: &str, position: Position, marker: &str) -> Option<String> 
 }
 
 fn component_completions(laravel: &LaravelIndex, prefix: &str) -> Vec<CompletionItem> {
-    let anon = laravel.views.names().filter_map(|n| n.strip_prefix("components."));
+    let anon = laravel
+        .views
+        .names()
+        .filter_map(|n| n.strip_prefix("components."));
     let mut items: Vec<CompletionItem> = anon
         .chain(laravel.components.names())
         .filter(|n| n.starts_with(prefix))
@@ -656,7 +659,10 @@ fn component_completions(laravel: &LaravelIndex, prefix: &str) -> Vec<Completion
 }
 
 fn livewire_completions(laravel: &LaravelIndex, prefix: &str) -> Vec<CompletionItem> {
-    let view_based = laravel.views.names().filter_map(|n| n.strip_prefix("livewire."));
+    let view_based = laravel
+        .views
+        .names()
+        .filter_map(|n| n.strip_prefix("livewire."));
     let mut items: Vec<CompletionItem> = laravel
         .livewire
         .names()
@@ -694,7 +700,9 @@ pub(crate) fn completions(
     if let Some(prefix) = string_call::call_string_prefix(source, position, VIEW_DIRECTIVE_NAMES) {
         return Some(super::view_index::view_completions(&laravel.views, &prefix));
     }
-    if let Some(prefix) = string_call::call_string_prefix(source, position, LIVEWIRE_DIRECTIVE_NAMES) {
+    if let Some(prefix) =
+        string_call::call_string_prefix(source, position, LIVEWIRE_DIRECTIVE_NAMES)
+    {
         return Some(livewire_completions(laravel, &prefix));
     }
     if let Some(prefix) = tag_prefix(source, position, "<x-") {
@@ -751,11 +759,7 @@ mod tests {
             .collect();
         assert_eq!(
             names,
-            vec![
-                ("alert", false),
-                ("forms.input", false),
-                ("counter", true),
-            ]
+            vec![("alert", false), ("forms.input", false), ("counter", true),]
         );
     }
 

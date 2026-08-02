@@ -52,8 +52,10 @@ impl Backend {
             // + bool check) so non-Laravel workspaces never pay for the AST
             // walk inside it.
             let laravel = self.laravel.load();
-            let laravel_loc = crate::laravel::resolve_string_key(&doc, position, &laravel)
-                .or_else(|| crate::laravel::blade::resolve_definition(uri, &source, position, &laravel));
+            let laravel_loc =
+                crate::laravel::resolve_string_key(&doc, position, &laravel).or_else(|| {
+                    crate::laravel::blade::resolve_definition(uri, &source, position, &laravel)
+                });
             drop(laravel);
             if let Some(loc) = laravel_loc {
                 return Ok(Some(GotoDefinitionResponse::Scalar(loc)));
