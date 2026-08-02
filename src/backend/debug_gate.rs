@@ -27,6 +27,8 @@ pub const GATE_DID_SAVE_DIAGNOSTICS: &str = "didSave.diagnostics";
 pub const GATE_DID_CHANGE_WATCHED_FILES: &str = "didChangeWatchedFiles.parse";
 /// Gate section around `will_rename_files`' `use`-edit batch closure.
 pub const GATE_WILL_RENAME_FILES: &str = "willRenameFiles.useEdits";
+/// Gate section around `will_delete_files`' `use`-edit batch closure.
+pub const GATE_WILL_DELETE_FILES: &str = "willDeleteFiles.useEdits";
 
 #[cfg(not(feature = "test-hooks"))]
 #[derive(Default)]

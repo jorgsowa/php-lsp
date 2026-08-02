@@ -806,6 +806,41 @@ async fn will_rename_files_stays_responsive_while_use_edit_batch_is_in_flight() 
         .await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn will_delete_files_stays_responsive_while_use_edit_batch_is_in_flight() {
+    // Same rationale as will_rename_files above: deleting a class parses
+    // every file that imports it, in one batched spawn_blocking call, but
+    // that closure sits between other await points in the same handler.
+    let workspace = tempfile::tempdir().expect("workspace tempdir");
+    std::fs::write(
+        workspace.path().join("composer.json"),
+        r#"{"autoload": {"psr-4": {"": "src/"}}}"#,
+    )
+    .unwrap();
+    std::fs::create_dir_all(workspace.path().join("src")).unwrap();
+    std::fs::write(
+        workspace.path().join("src/Target.php"),
+        "<?php\nclass Target {}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        workspace.path().join("src/Importer.php"),
+        "<?php\nuse Target;\n\nclass Importer\n{\n    public function f(): Target\n    {\n        return new Target();\n    }\n}\n",
+    )
+    .unwrap();
+
+    let mut server = TestServer::with_root(workspace.path()).await;
+    server.wait_for_index_ready().await;
+    let uri = server.uri("src/Target.php");
+    server
+        .assert_request_stays_responsive_via_gate(
+            "workspace/willDeleteFiles",
+            serde_json::json!({ "files": [{ "uri": uri }] }),
+            php_lsp::backend::debug_gate::GATE_WILL_DELETE_FILES,
+        )
+        .await;
+}
+
 #[tokio::test]
 async fn semantic_tokens_full_delta_stays_responsive_on_large_file() {
     let mut server = TestServer::new().await;

@@ -858,14 +858,26 @@ impl Backend {
 
             // Only importers of the FQN can carry a deletable `use` line;
             // the workspace index records per-file imports — no text scan.
-            for uri in self.docs.files_importing(&fqn) {
-                let Some(doc) = self.docs.get_doc_salsa(&uri) else {
-                    continue;
-                };
-                let edits = delete_use_in_source(&doc, &fqn);
-                if !edits.is_empty() {
-                    merged_changes.entry(uri).or_default().extend(edits);
+            let docs = std::sync::Arc::clone(&self.docs);
+            let gate = std::sync::Arc::clone(&self.debug_gate);
+            let edits_by_uri = tokio::task::spawn_blocking(move || {
+                gate.pass(super::super::debug_gate::GATE_WILL_DELETE_FILES);
+                let mut out = Vec::new();
+                for uri in docs.files_importing(&fqn) {
+                    let Some(doc) = docs.get_doc_salsa(&uri) else {
+                        continue;
+                    };
+                    let edits = delete_use_in_source(&doc, &fqn);
+                    if !edits.is_empty() {
+                        out.push((uri, edits));
+                    }
                 }
+                out
+            })
+            .await
+            .unwrap_or_default();
+            for (uri, edits) in edits_by_uri {
+                merged_changes.entry(uri).or_default().extend(edits);
             }
         }
 
