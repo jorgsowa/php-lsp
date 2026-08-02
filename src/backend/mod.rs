@@ -167,7 +167,7 @@ impl Backend {
             laravel: Arc::new(ArcSwap::from_pointee(LaravelIndex::default())),
             config: Arc::new(ArcSwap::from_pointee(LspConfig::default())),
             client_capabilities: Arc::new(ArcSwap::from_pointee(ClientCapabilities::default())),
-            debug_gate: Arc::new(debug_gate::DebugGate::default()),
+            debug_gate: Arc::new(debug_gate::DebugGate::new()),
         }
     }
 

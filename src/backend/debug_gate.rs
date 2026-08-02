@@ -69,6 +69,11 @@ pub struct DebugGate;
 #[cfg(not(feature = "test-hooks"))]
 impl DebugGate {
     #[inline(always)]
+    pub fn new() -> Self {
+        DebugGate
+    }
+
+    #[inline(always)]
     pub fn pass(&self, _section: &str) {}
 
     #[inline(always)]
@@ -100,6 +105,10 @@ mod real {
     }
 
     impl DebugGate {
+        pub fn new() -> Self {
+            Self::default()
+        }
+
         /// Arm the gate: the next `pass(section)` parks until [`release`](Self::release).
         /// One passage per arm; re-arming replaces any previous armed section.
         pub fn arm(&self, section: &str) {
