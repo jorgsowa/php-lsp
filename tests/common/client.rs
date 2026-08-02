@@ -1,11 +1,10 @@
 #![allow(dead_code)]
 
-use php_lsp::backend::Backend;
 use serde_json::{Value, json};
 use std::collections::VecDeque;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream, ReadHalf, WriteHalf};
 use tokio::time::Duration;
-use tower_lsp_server::{LspService, Server};
+use tower_lsp_server::Server;
 
 // ---------- low-level framing ----------
 
@@ -220,6 +219,22 @@ impl TestClient {
         id
     }
 
+    /// `send_request` without a `params` field. Params-less server methods
+    /// (`$/php-lsp/debugStats`) reject an explicit `{}` with an
+    /// "Unexpected params" error response, so probes that need the *result*
+    /// (not merely any response) must omit the field entirely.
+    async fn send_request_no_params(&mut self, method: &str) -> u64 {
+        let id = self.next_id;
+        self.next_id += 1;
+        let msg = json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "method": method,
+        });
+        self.write.write_all(&frame(&msg)).await.unwrap();
+        id
+    }
+
     /// Regression guard for the class of bug where a handler runs
     /// synchronous, non-yielding work (a full-document walk, a blocking
     /// subprocess, a workspace scan) directly on the async task instead of
@@ -243,7 +258,7 @@ impl TestClient {
     /// terms.
     pub async fn assert_stays_responsive(&mut self, slow_method: &str, slow_params: Value) {
         let slow_id = self.send_request(slow_method, slow_params).await;
-        let probe_id = self.send_request("$/php-lsp/debugStats", json!({})).await;
+        let probe_id = self.send_request_no_params("$/php-lsp/debugStats").await;
 
         let mut budget = self.pending.len();
         let TestClient {
@@ -298,86 +313,111 @@ impl TestClient {
     /// Notification-flavored counterpart to `assert_stays_responsive`, for
     /// handlers with no response of their own (e.g. `textDocument/didOpen`).
     /// A notification can't be ordered against a probe response the way a
-    /// request can, so this falls back to an absolute `budget` around the
-    /// whole exchange: send `notif_method` as a notification, then
-    /// immediately the cheap debugStats probe, and assert the probe answers
-    /// within `budget`. `notif_params` needs to make the handler's own work
-    /// large enough that `budget` comfortably separates "handled inline"
-    /// (which delays both the notification's own drain and the probe by
-    /// roughly the handler's duration) from "deferred via spawn_blocking"
-    /// (the exchange completes in low tens of milliseconds, dominated by
-    /// transferring `notif_params` through the duplex stream rather than by
-    /// any CPU-bound work).
+    /// request can, and earlier wall-clock-budget versions of this check
+    /// flaked on loaded CI runners. This uses a server-side debug gate
+    /// instead (see `src/backend/debug_gate.rs`): arm `gate_section`, send
+    /// `notif_method` — its handler's blocking closure parks at the gate, so
+    /// its work provably cannot have finished — then prove the serve future
+    /// still processes messages by getting a debugStats probe answered and
+    /// seeing it report the section parked. That's an ordering fact with no
+    /// timing in it: a correct (spawn_blocking) handler passes under any
+    /// scheduling, while one that runs the work inline parks the serve
+    /// future itself, so the probe is never answered and the timeout here
+    /// fails the test deterministically, however loaded the machine.
+    ///
+    /// The gate is released before returning; completion of the handler's
+    /// own downstream effects (diagnostics publish, etc.) is the caller's to
+    /// await if it needs them.
     pub async fn assert_notification_stays_responsive(
         &mut self,
         notif_method: &str,
         notif_params: Value,
-        budget: Duration,
+        gate_section: &str,
     ) {
-        let notif_method_owned = notif_method.to_owned();
-        // The whole exchange — writing the notification, writing the probe,
-        // and waiting for the probe's response — is under one clock. Writing
-        // a large notification through the (size-bounded) duplex stream only
-        // completes as fast as the server drains it; if the server is stuck
-        // running the handler's work inline, that drain stalls too, so the
-        // write time itself is part of what this budget is guarding.
-        let elapsed = self
-            .time_notification_and_probe(&notif_method_owned, notif_params)
+        let armed = self
+            .request(
+                "$/php-lsp/debugHoldGate",
+                json!({ "section": gate_section }),
+            )
             .await;
         assert!(
-            elapsed <= budget,
-            "{notif_method_owned} appears to block the request loop: opening this \
-             document plus a follow-up debugStats probe did not complete within \
-             {budget:?} (took {elapsed:?})"
+            armed.get("error").is_none(),
+            "debugHoldGate failed, gate never armed: {armed}"
         );
-    }
+        self.notify(notif_method, notif_params).await;
 
-    /// Send `notif_method` as a notification, then immediately a cheap
-    /// `$/php-lsp/debugStats` probe, and return how long the whole exchange
-    /// took to answer the probe. A generous 10s outer timeout guards against
-    /// a genuine hang (vs. a slow-but-finite handler); it's not part of the
-    /// signal callers reason about.
-    ///
-    /// Prefer this over `assert_notification_stays_responsive` when the
-    /// operation's own JSON payload is large enough that transferring and
-    /// decoding it dominates wall time — an absolute budget then mostly
-    /// measures payload size, not whether the handler blocked the request
-    /// loop. Measure a same-size no-op baseline with this method and compare
-    /// the *delta* instead (see `did_open_stays_responsive_on_large_file`).
-    pub async fn time_notification_and_probe(
-        &mut self,
-        notif_method: &str,
-        notif_params: Value,
-    ) -> Duration {
-        let notif_method_owned = notif_method.to_owned();
-        let start = std::time::Instant::now();
-        tokio::time::timeout(Duration::from_secs(10), async {
-            self.notify(&notif_method_owned, notif_params).await;
-            let probe_id = self.send_request("$/php-lsp/debugStats", json!({})).await;
-
-            let mut already_buffered = self.pending.len();
-            let TestClient {
-                pending,
-                read,
-                write,
-                ..
-            } = self;
+        // Poll until the handler's closure is parked at the gate. Every
+        // answered poll arrives while the gated work is still unfinished —
+        // the responsiveness proof — and the parked report itself confirms
+        // the gate is actually wired into the path this test thinks it
+        // guards (i.e. the server-side `pass()` call wasn't lost).
+        let mut probes_sent = 0u32;
+        let mut probes_answered = 0u32;
+        let probe_phase = std::time::Instant::now();
+        let parked = tokio::time::timeout(Duration::from_secs(10), async {
             loop {
-                let msg = recv_or_buffered(pending, read, write, &mut already_buffered).await;
-                if msg.get("id") == Some(&json!(probe_id)) {
+                probes_sent += 1;
+                let probe_id = self.send_request_no_params("$/php-lsp/debugStats").await;
+                let resp = {
+                    let mut budget = self.pending.len();
+                    let TestClient {
+                        pending,
+                        read,
+                        write,
+                        ..
+                    } = &mut *self;
+                    loop {
+                        let msg = recv_or_buffered(pending, read, write, &mut budget).await;
+                        if msg.get("id") == Some(&json!(probe_id)) {
+                            break msg;
+                        }
+                        pending.push_back(msg);
+                    }
+                };
+                probes_answered += 1;
+                if resp["result"]["debug_gate_held"] == json!(gate_section) {
                     return;
                 }
-                pending.push_back(msg);
+                tokio::time::sleep(Duration::from_millis(5)).await;
             }
         })
-        .await
-        .unwrap_or_else(|_| {
+        .await;
+        if parked.is_err() {
+            // An unanswered probe means the connection stopped serving
+            // messages — the handler parked at the gate inline on the serve
+            // future instead of on the blocking pool. A timeout that fired
+            // far past its deadline means the same thing on a current-thread
+            // runtime, where the inline park freezes this client (and its
+            // timers) along with the server. No release attempt either way:
+            // the frozen loop can't process one; the gate's own 60s cap
+            // unblocks teardown.
+            let froze =
+                probes_answered < probes_sent || probe_phase.elapsed() > Duration::from_secs(15);
+            assert!(
+                !froze,
+                "{notif_method} appears to block the request loop: with debug gate \
+                 {gate_section:?} armed (so the handler's gated work cannot \
+                 finish), message processing stalled \
+                 ({probes_answered}/{probes_sent} probes answered, probe phase took \
+                 {:?}) — the handler runs its work inline instead of via \
+                 spawn_blocking",
+                probe_phase.elapsed()
+            );
+            // Every probe was answered, the handler just never reached the
+            // gate. Disarm it so a stray later passage can't park.
+            self.request_no_params("$/php-lsp/debugReleaseGate").await;
             panic!(
-                "{notif_method_owned} appears to block the request loop: opening this \
-                 document plus a follow-up debugStats probe did not complete within 10s"
-            )
-        });
-        start.elapsed()
+                "{notif_method} was sent with debug gate {gate_section:?} armed and \
+                 the server stayed responsive ({probes_answered} probes answered), \
+                 but the section never parked — either the handler never ran or \
+                 its gate pass() call no longer covers this path"
+            );
+        }
+        let released = self.request_no_params("$/php-lsp/debugReleaseGate").await;
+        assert!(
+            released.get("error").is_none(),
+            "debugReleaseGate failed, parked handler left stranded: {released}"
+        );
     }
 
     pub async fn notify(&mut self, method: &str, params: Value) {
@@ -740,9 +780,7 @@ pub(crate) fn spawn_server() -> TestClient {
     let (client_stream, server_stream) = tokio::io::duplex(1 << 20);
     let (server_read, server_write) = tokio::io::split(server_stream);
     let (client_read, client_write) = tokio::io::split(client_stream);
-    let (service, socket) = LspService::build(Backend::new)
-        .custom_method("$/php-lsp/debugStats", Backend::debug_stats)
-        .finish();
+    let (service, socket) = php_lsp::backend::build_lsp_service();
     tokio::spawn(Server::new(server_read, server_write, socket).serve(service));
     TestClient {
         write: client_write,

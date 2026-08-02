@@ -1,0 +1,126 @@
+//! Test-only hold points for blocking-pool work.
+//!
+//! The responsiveness regression tests need to prove a notification handler's
+//! synchronous work runs off the connection's serve future. Requests can pin
+//! that with a pure ordering check (see `assert_stays_responsive` in the test
+//! harness), but a notification has no response to order against — earlier
+//! versions fell back to wall-clock budgets, which flaked on loaded CI
+//! runners. A gate makes the check deterministic instead: the test arms a
+//! named section, the handler's blocking closure parks in `pass` until
+//! released, and the test asserts the server still answers a probe while the
+//! work is provably in flight. On a correct build that holds under any
+//! scheduling; on a regressed (inline) build the serve future itself parks,
+//! no later message is processed, and the probe times out — a hard failure,
+//! never a flake.
+//!
+//! Unarmed cost is one mutex lock per guarded section per call — noise next
+//! to the parse/analysis work each section wraps.
+
+use std::sync::{Condvar, Mutex};
+
+/// Gate section around `did_open`'s parse-diagnostics closure.
+pub const GATE_DID_OPEN_PARSE: &str = "didOpen.parse";
+/// Gate section around `did_save`'s diagnostics-recompute closure.
+pub const GATE_DID_SAVE_DIAGNOSTICS: &str = "didSave.diagnostics";
+
+#[derive(Default)]
+struct GateState {
+    /// Section name the next matching `pass` call should hold at.
+    armed: Option<String>,
+    /// Section currently parked at the gate (surfaced via `debugStats`).
+    held: Option<String>,
+    released: bool,
+}
+
+#[derive(Default)]
+pub struct DebugGate {
+    state: Mutex<GateState>,
+    cv: Condvar,
+}
+
+impl DebugGate {
+    /// Arm the gate: the next `pass(section)` parks until [`release`](Self::release).
+    /// One passage per arm; re-arming replaces any previous armed section.
+    pub fn arm(&self, section: &str) {
+        let mut s = self.state.lock().unwrap();
+        s.armed = Some(section.to_owned());
+        s.released = false;
+    }
+
+    pub fn release(&self) {
+        let mut s = self.state.lock().unwrap();
+        s.armed = None;
+        s.released = true;
+        self.cv.notify_all();
+    }
+
+    /// Section currently parked at the gate, if any.
+    pub fn held_section(&self) -> Option<String> {
+        self.state.lock().unwrap().held.clone()
+    }
+
+    /// Hold point. No-op unless the gate is armed for exactly `section`;
+    /// when it is, claims the arm (so concurrent passages can't stack) and
+    /// parks until released. The park is capped at 60s: a test that fails
+    /// without releasing must not leave this task parked forever — tokio's
+    /// runtime shutdown joins in-flight blocking tasks, so an uncapped park
+    /// would turn that test's failure report into an eternal hang.
+    pub fn pass(&self, section: &str) {
+        let s = self.state.lock().unwrap();
+        if s.armed.as_deref() != Some(section) {
+            return;
+        }
+        let mut s = s;
+        s.armed = None;
+        s.held = Some(section.to_owned());
+        let (mut s, _timed_out) = self
+            .cv
+            .wait_timeout_while(s, std::time::Duration::from_secs(60), |s| !s.released)
+            .unwrap();
+        s.held = None;
+        s.released = false;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    #[test]
+    fn unarmed_pass_is_a_no_op() {
+        let gate = DebugGate::default();
+        gate.pass("anything");
+        assert_eq!(gate.held_section(), None);
+    }
+
+    #[test]
+    fn armed_pass_parks_until_release() {
+        let gate = Arc::new(DebugGate::default());
+        gate.arm("sec");
+        let g = Arc::clone(&gate);
+        let t = std::thread::spawn(move || g.pass("sec"));
+        while gate.held_section().as_deref() != Some("sec") {
+            std::thread::yield_now();
+        }
+        assert!(!t.is_finished());
+        gate.release();
+        t.join().unwrap();
+        assert_eq!(gate.held_section(), None);
+    }
+
+    #[test]
+    fn arm_holds_only_the_named_section_and_only_once() {
+        let gate = Arc::new(DebugGate::default());
+        gate.arm("sec");
+        gate.pass("other"); // wrong section: must not park
+        let g = Arc::clone(&gate);
+        let t = std::thread::spawn(move || g.pass("sec"));
+        while gate.held_section().is_none() {
+            std::thread::yield_now();
+        }
+        gate.release();
+        t.join().unwrap();
+        gate.pass("sec"); // arm consumed: must not park again
+    }
+}

@@ -88,6 +88,30 @@ pub struct DebugStats {
     /// task as its scan, before the refresh-request notifications go out —
     /// tests await a count bump here instead of guessing a fixed delay.
     pub warm_start_replays_completed: u64,
+    /// Section currently parked at the debug gate (see `debug_gate.rs`), if
+    /// any. The responsiveness tests poll this to prove a handler's blocking
+    /// work is both off the serve future and genuinely in flight.
+    pub debug_gate_held: Option<String>,
+}
+
+/// Params for the `$/php-lsp/debugHoldGate` custom request.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub struct DebugHoldGateParams {
+    /// One of the `GATE_*` constants in `debug_gate`.
+    pub section: String,
+}
+
+/// The one place custom methods are registered — `main` and the test harness
+/// both build the service here so their method tables can never drift.
+pub fn build_lsp_service() -> (
+    tower_lsp_server::LspService<Backend>,
+    tower_lsp_server::ClientSocket,
+) {
+    tower_lsp_server::LspService::build(Backend::new)
+        .custom_method("$/php-lsp/debugStats", Backend::debug_stats)
+        .custom_method("$/php-lsp/debugHoldGate", Backend::debug_hold_gate)
+        .custom_method("$/php-lsp/debugReleaseGate", Backend::debug_release_gate)
+        .finish()
 }
 
 use crate::document::ast::ParsedDoc;
@@ -117,6 +141,8 @@ pub struct Backend {
     /// `typeHierarchy.dynamicRegistration` won't understand a
     /// `client/registerCapability` call for it).
     client_capabilities: Arc<ArcSwap<ClientCapabilities>>,
+    /// Test-only hold points for the responsiveness regression tests.
+    debug_gate: Arc<debug_gate::DebugGate>,
 }
 
 impl Backend {
@@ -136,6 +162,7 @@ impl Backend {
             laravel: Arc::new(ArcSwap::from_pointee(LaravelIndex::default())),
             config: Arc::new(ArcSwap::from_pointee(LspConfig::default())),
             client_capabilities: Arc::new(ArcSwap::from_pointee(ClientCapabilities::default())),
+            debug_gate: Arc::new(debug_gate::DebugGate::default()),
         }
     }
 
@@ -152,7 +179,25 @@ impl Backend {
             reachability_scan_passes: self.docs.reachability_scan_passes(),
             analysis_compute_count: self.docs.analysis_compute_count(),
             warm_start_replays_completed: self.docs.warm_start_replays_completed(),
+            debug_gate_held: self.debug_gate.held_section(),
         })
+    }
+
+    /// `$/php-lsp/debugHoldGate` — test-only: park the next blocking-pool
+    /// passage through the named section until `debugReleaseGate`.
+    pub async fn debug_hold_gate(
+        &self,
+        params: DebugHoldGateParams,
+    ) -> tower_lsp_server::jsonrpc::Result<()> {
+        self.debug_gate.arm(&params.section);
+        Ok(())
+    }
+
+    /// `$/php-lsp/debugReleaseGate` — release a passage parked by
+    /// `debugHoldGate` (and disarm the gate).
+    pub async fn debug_release_gate(&self) -> tower_lsp_server::jsonrpc::Result<()> {
+        self.debug_gate.release();
+        Ok(())
     }
 
     fn set_open_text(&self, uri: Uri, text: String) -> u64 {
@@ -679,6 +724,7 @@ fn compute_diagnostic_result_id(diagnostics: &[Diagnostic], uri: &str) -> String
     format!("v1:{:x}", hasher.finish())
 }
 
+pub mod debug_gate;
 mod handlers;
 mod helpers;
 pub mod panic_guard;

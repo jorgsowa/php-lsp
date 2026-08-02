@@ -6,8 +6,7 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 #[global_allocator]
 static ALLOC: dhat::Alloc = dhat::Alloc;
 
-use php_lsp::backend::Backend;
-use tower_lsp_server::{LspService, Server};
+use tower_lsp_server::Server;
 
 fn main() {
     // Cap the blocking pool well below tokio's 512 default. mimalloc keeps a
@@ -65,8 +64,6 @@ async fn main_async() {
     );
     let stdin = tokio::io::stdin();
     let stdout = tokio::io::stdout();
-    let (service, socket) = LspService::build(Backend::new)
-        .custom_method("$/php-lsp/debugStats", Backend::debug_stats)
-        .finish();
+    let (service, socket) = php_lsp::backend::build_lsp_service();
     Server::new(stdin, stdout, socket).serve(service).await;
 }

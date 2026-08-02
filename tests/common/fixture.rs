@@ -384,8 +384,8 @@ pub fn assert_diagnostics(notif: &Value, expected: &[DiagnosticAnnotation]) {
 }
 
 /// A syntactically valid PHP source of `class_count` self-contained classes
-/// (a few hundred KB to several MB), for `TestClient::assert_stays_responsive`
-/// and `assert_notification_stays_responsive`. Big enough that a
+/// (a few hundred KB to several MB), for `TestClient::assert_stays_responsive`.
+/// Big enough that a
 /// document-wide AST walk or parse over it is measurably non-instant, so a
 /// handler that still runs one inline (instead of via `spawn_blocking`)
 /// reliably finishes before a concurrently-sent cheap probe is even polled

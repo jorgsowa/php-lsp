@@ -382,102 +382,42 @@ async fn laravel_string_key_references_and_hover_concurrent_complete_without_dea
 // `TestClient::assert_stays_responsive` for why running it inline hangs
 // every other in-flight request, not just the slow one.
 
-// `assert_notification_stays_responsive`'s budget is a wall-clock timeout
-// racing the server's own blocking work, unlike the ordering check
-// `assert_stays_responsive` uses for request/response pairs. On the default
-// current-thread runtime that race is meaningless: a `tokio::time::timeout`
-// can only fire between polls, never partway through one, so a single
-// non-yielding poll that runs longer than the budget simply delays the
-// timer's own chance to fire until right when the blocking call itself
-// returns — at that point both become ready at essentially the same
-// instant and which one wins is coin-flip scheduling order, not the
-// duration each actually took. `multi_thread` puts the timer on a real
-// second OS thread so it fires independently of whatever the (possibly
-// stuck) server task is doing.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn did_open_stays_responsive_on_large_file() {
-    // did_open parses the just-opened document synchronously to seed parse
-    // diagnostics; a cache miss (this is the file's first open) must not run
-    // that parse inline. Diagnostics are disabled so the test isolates the
-    // parse itself from mir's separate (and much heavier) semantic analysis
-    // pass, which would otherwise dominate wall time regardless of this bug.
-    //
-    // An earlier version of this test asserted an absolute wall-clock budget
-    // (25ms) on the open+probe exchange. That flaked on shared CI runners
-    // (macos-latest and ubuntu-latest both blew past it under ordinary
-    // scheduling noise, no code change on either side of the regression this
-    // guards against) — and measuring it directly showed why: with 20000
-    // classes the JSON payload is ~6-7MB, and just transferring + decoding
-    // that through the duplex stream already costs ~140ms on a fast dev
-    // machine, regardless of whether did_open's own parse is deferred
-    // (~142-149ms measured) or run inline (~200-205ms measured) — a ~60ms
-    // signal sitting on top of a ~140ms fixed cost that any absolute budget
-    // has to split, and that fixed cost alone swamps a 25ms budget outright.
-    // Sending the same-size payload as a notification the server doesn't
-    // handle (`debugtmp/noOpBaseline` below) measured ~142-147ms — confirming
-    // that cost is pure JSON transfer/decode overhead, present identically
-    // whether or not did_open ever runs.
-    //
-    // So: measure that fixed cost directly as a same-size baseline, then
-    // compare the *delta* — did_open's own added cost — instead of the
-    // absolute total. That cancels out payload-size overhead, leaving just
-    // the ~0-10ms (deferred) vs. ~55-65ms (inline) signal on an idle machine.
-    // But a single sample of each is still not solid: under realistic
-    // concurrent load (this test binary's own other ~225 tests running in
-    // parallel — what CI actually does, not a synthetic stress harness), a
-    // single measurement's scheduling noise alone pushed the delta past 40ms
-    // on a genuinely-fixed build. Noise only ever adds latency, never removes
-    // it, so taking the minimum over several cold-cache trials converges each
-    // side toward its true best-case cost and filters that noise out. Each
-    // did_open trial needs its own URI: re-opening the same one would hit the
-    // parsed-doc cache from the second trial on, masking the very regression
-    // this test exists to catch.
-    //
-    // Measured directly under that same realistic concurrent load, with the
-    // best-of-5 approach: a correct (deferred) build's delta topped out
-    // around 53ms across many runs, while reintroducing the inline-parse bug
-    // reliably produced 113-155ms — a wide, empirically-confirmed gap. 80ms
-    // sits in the middle of it.
-    const TRIALS: usize = 5;
+// Unlike the request/response pairs above, a notification has no response to
+// order a probe against, so these use the server's debug gate instead of any
+// wall-clock measurement — see `TestClient::assert_notification_stays_responsive`
+// (and the flaky-budget history in its doc comment) for the mechanism. The
+// payload can therefore be tiny: the gate, not document size, is what keeps
+// the handler's work observably in flight.
+//
+// `multi_thread` isn't needed for the pass path (deterministic on any
+// runtime); it keeps the client task alive when a regressed inline handler
+// freezes the server's serve future, so the failure is attributed to
+// blocking rather than to a gate-wiring problem.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn did_open_stays_responsive_while_parse_is_in_flight() {
+    // did_open parses the just-opened document to seed parse diagnostics; a
+    // cache miss (the file's first open) runs a full parse, which must stay
+    // off the serve future. Diagnostics are disabled to pin this test to the
+    // parse path rather than mir's separate semantic analysis pass.
     let (mut server, _init) = TestServer::new_with_options(serde_json::json!({
         "diagnostics": { "enabled": false }
     }))
     .await;
-    let text = crate::common::fixture::large_php_source(20000);
-    let payload_for = |uri: String| {
-        serde_json::json!({
-            "textDocument": {
-                "uri": uri,
-                "languageId": "php",
-                "version": 1,
-                "text": text,
-            }
-        })
-    };
-    let mut baseline = std::time::Duration::MAX;
-    let mut did_open = std::time::Duration::MAX;
-    for i in 0..TRIALS {
-        let base_payload = payload_for(server.uri(&format!("baseline_{i}.php")));
-        baseline = baseline.min(
-            server
-                .time_notification_and_probe("debugtmp/noOpBaseline", base_payload)
-                .await,
-        );
-        let open_payload = payload_for(server.uri(&format!("big_did_open_{i}.php")));
-        did_open = did_open.min(
-            server
-                .time_notification_and_probe("textDocument/didOpen", open_payload)
-                .await,
-        );
-    }
-    let delta = did_open.saturating_sub(baseline);
-    assert!(
-        delta <= std::time::Duration::from_millis(80),
-        "textDocument/didOpen appears to block the request loop: its best-of-{TRIALS} time \
-         was {delta:?} longer than a same-size no-op notification's best-of-{TRIALS} \
-         ({did_open:?} vs baseline {baseline:?}), suggesting the parse ran inline instead of \
-         via spawn_blocking"
-    );
+    let uri = server.uri("gated_did_open.php");
+    server
+        .assert_notification_stays_responsive(
+            "textDocument/didOpen",
+            serde_json::json!({
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "php",
+                    "version": 1,
+                    "text": "<?php\nfunction gated(): int { return 1; }\n",
+                }
+            }),
+            php_lsp::backend::debug_gate::GATE_DID_OPEN_PARSE,
+        )
+        .await;
 }
 
 /// Opens `count` sizeable, self-contained documents plus one "target"
@@ -731,29 +671,25 @@ async fn semantic_tokens_range_stays_responsive_on_large_file() {
         .await;
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn did_save_stays_responsive_on_first_semantic_analysis() {
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn did_save_stays_responsive_while_diagnostics_recompute_is_in_flight() {
     // `did_save` must recompute diagnostics (including the mir semantic pass)
     // off the async runtime worker, same as `did_open`/`did_change`'s shared
-    // `publish_with_dependents` path. Save a file that was never opened —
-    // ingested only via the workspace scan below, so its semantic-issues
-    // memo is still cold — to force `did_save` itself to run the full
-    // analysis rather than hitting a cache already warmed by `didOpen`.
-    let workspace = tempfile::tempdir().expect("workspace tempdir");
-    std::fs::write(
-        workspace.path().join("big_save.php"),
-        crate::common::fixture::large_php_source(2000),
-    )
-    .unwrap();
-
-    let mut server = TestServer::with_root(workspace.path()).await;
-    server.wait_for_index_ready().await;
-    let uri = server.uri("big_save.php");
+    // `publish_with_dependents` path. Gate-based like the did_open test
+    // above, so the file's size and cache warmth are irrelevant.
+    let mut server = TestServer::new().await;
+    server
+        .open(
+            "gated_save.php",
+            "<?php\nfunction saved(): int { return 1; }\n",
+        )
+        .await;
+    let uri = server.uri("gated_save.php");
     server
         .assert_notification_stays_responsive(
             "textDocument/didSave",
             serde_json::json!({ "textDocument": { "uri": uri } }),
-            std::time::Duration::from_millis(200),
+            php_lsp::backend::debug_gate::GATE_DID_SAVE_DIAGNOSTICS,
         )
         .await;
 }

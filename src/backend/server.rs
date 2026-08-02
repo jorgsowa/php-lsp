@@ -264,7 +264,9 @@ impl LanguageServer for Backend {
             // cache miss triggers a full parse, so keep it off the async task.
             let docs = Arc::clone(&self.docs);
             let uri_for_task = uri.clone();
+            let gate = Arc::clone(&self.debug_gate);
             let parse_diags = tokio::task::spawn_blocking(move || {
+                gate.pass(super::debug_gate::GATE_DID_OPEN_PARSE);
                 docs.get_doc_salsa(&uri_for_task)
                     .map(|doc| diagnostics_from_doc(&doc))
                     .unwrap_or_default()
@@ -446,7 +448,9 @@ impl LanguageServer for Backend {
             let docs = Arc::clone(&self.docs);
             let open_files = self.open_files.clone();
             let uri_for_diags = uri.clone();
+            let gate = Arc::clone(&self.debug_gate);
             let all = tokio::task::spawn_blocking(move || {
+                gate.pass(super::debug_gate::GATE_DID_SAVE_DIAGNOSTICS);
                 compute_open_file_diagnostics(
                     &docs,
                     &open_files,

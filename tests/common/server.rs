@@ -542,21 +542,10 @@ impl TestServer {
         &mut self,
         notif_method: &str,
         notif_params: serde_json::Value,
-        budget: std::time::Duration,
+        gate_section: &str,
     ) {
         self.client
-            .assert_notification_stays_responsive(notif_method, notif_params, budget)
-            .await
-    }
-
-    /// See [`TestClient::time_notification_and_probe`].
-    pub async fn time_notification_and_probe(
-        &mut self,
-        notif_method: &str,
-        notif_params: serde_json::Value,
-    ) -> std::time::Duration {
-        self.client
-            .time_notification_and_probe(notif_method, notif_params)
+            .assert_notification_stays_responsive(notif_method, notif_params, gate_section)
             .await
     }
 
