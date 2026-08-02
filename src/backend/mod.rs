@@ -510,6 +510,7 @@ async fn compute_dependent_publishes_owned(
     open_files: OpenFiles,
     changed_uri: Uri,
     diag_cfg: crate::lang::config::DiagnosticsConfig,
+    is_laravel: bool,
 ) -> Vec<(Uri, Vec<Diagnostic>)> {
     tokio::task::spawn_blocking(move || {
         // rust-analyzer model: we only ever publish for files the editor has
@@ -586,6 +587,9 @@ async fn compute_dependent_publishes_owned(
             let semantic =
                 crate::semantic_diagnostics::issues_to_diagnostics(&issues, &url, &diag_cfg);
             let mut diags = merge_file_diagnostics(parse, semantic);
+            diags.extend(crate::laravel::unguarded_model_diagnostics(
+                &docs, &url, is_laravel,
+            ));
             diags.extend(open_files.external_diagnostics(&url));
             out.push((url, diags));
         }
@@ -694,7 +698,8 @@ pub(super) async fn publish_with_dependents(
         .publish_diagnostics(uri.clone(), all_diags, None)
         .await;
     let dependents =
-        compute_dependent_publishes_owned(docs, open_files.clone(), uri, diag_cfg).await;
+        compute_dependent_publishes_owned(docs, open_files.clone(), uri, diag_cfg, is_laravel)
+            .await;
     for (dep_uri, dep_diags) in dependents {
         let hash = diagnostics_content_hash(&dep_diags);
         if open_files.published_hash(&dep_uri) == Some(hash) {

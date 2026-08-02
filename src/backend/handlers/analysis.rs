@@ -15,11 +15,12 @@ impl Backend {
     ) -> Result<DocumentDiagnosticReportResult> {
         let uri = &params.text_document.uri;
         let previous_result_id = params.previous_result_id.clone();
-        let mut parse_diags = self.get_parse_diagnostics(uri).unwrap_or_default();
-        parse_diags.extend(self.open_files.external_diagnostics(uri));
+        let parse_diags = self.get_parse_diagnostics(uri).unwrap_or_default();
         let _doc = match self.get_doc(uri) {
             Some(d) => d,
             None => {
+                let mut early_diags = parse_diags;
+                early_diags.extend(self.open_files.external_diagnostics(uri));
                 let _version = self
                     .open_files
                     .all_with_diagnostics()
@@ -27,7 +28,7 @@ impl Backend {
                     .find(|(u, _, _)| u == uri)
                     .and_then(|(_, _, v)| *v)
                     .unwrap_or(1);
-                let result_id = compute_diagnostic_result_id(&parse_diags, uri.as_str());
+                let result_id = compute_diagnostic_result_id(&early_diags, uri.as_str());
                 if previous_result_id.as_deref() == Some(result_id.as_str()) {
                     return Ok(DocumentDiagnosticReportResult::Report(
                         DocumentDiagnosticReport::Unchanged(
@@ -44,7 +45,7 @@ impl Backend {
                         related_documents: None,
                         full_document_diagnostic_report: FullDocumentDiagnosticReport {
                             result_id: Some(result_id),
-                            items: parse_diags,
+                            items: early_diags,
                         },
                     }),
                 ));
@@ -87,7 +88,8 @@ impl Backend {
             }
         })?;
 
-        let items = merge_file_diagnostics(parse_diags, sem_diags);
+        let mut items = merge_file_diagnostics(parse_diags, sem_diags);
+        items.extend(self.open_files.external_diagnostics(uri));
 
         let _version = self
             .open_files

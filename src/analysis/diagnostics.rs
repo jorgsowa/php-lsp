@@ -78,9 +78,10 @@ pub fn diagnostics_from_doc(doc: &ParsedDoc) -> Vec<Diagnostic> {
 
 /// Merge per-file diagnostic categories into one ordered Vec.
 ///
-/// Consistent order: parse errors → semantic issues.
-/// All call sites that publish diagnostics for a single file use this function
-/// so the ordering is uniform across `did_open`, `did_change`, `document_diagnostic`,
+/// Consistent order: parse errors → semantic issues. Callers extend the
+/// result with Laravel and external diagnostics afterward, in that order, so
+/// the full per-file order (parse → semantic → laravel → external) is
+/// uniform across `did_open`, `did_change`, `document_diagnostic`,
 /// `workspace_diagnostic`, and the dependent-republish path.
 pub fn merge_file_diagnostics(
     parse: Vec<Diagnostic>,
