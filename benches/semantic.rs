@@ -1,5 +1,9 @@
-//! mir-analyzer benchmarks: measures the session-based analyze pipeline
-//! that powers semantic diagnostics.
+//! mir-analyzer benchmarks: measures raw `AnalysisSession`/`FileAnalyzer`
+//! cost in isolation, bypassing `DocumentStore`'s salsa caching, PSR-4
+//! lazy-loading, and `collector_issues` diagnostics. This is not the
+//! production request-handling pipeline (that's `DocumentStore::
+//! get_semantic_issues_salsa` + `compute_open_file_diagnostics`) — it
+//! isolates the analyzer's own cost from that surrounding machinery.
 //!
 //! Covers three regimes:
 //! - `single_file` — fresh AnalysisSession per iter (cold analyze cost)

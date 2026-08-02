@@ -13,6 +13,12 @@ use crate::lang::config::DiagnosticsConfig;
 /// Run semantic checks on `doc` against the supplied `AnalysisSession`.
 /// Ingests the current file, runs Pass 2 via `FileAnalyzer`, and returns LSP
 /// diagnostics filtered by `DiagnosticsConfig`.
+///
+/// Used only by `benches/semantic.rs` to measure raw analyzer cost. It is
+/// not on the production request path and skips `DocumentStore`'s salsa
+/// caching, PSR-4 lazy-loading, and `collector_issues` diagnostics — for
+/// that, see `DocumentStore::get_semantic_issues_salsa` and
+/// `compute_open_file_diagnostics`.
 pub fn semantic_diagnostics(
     uri: &Uri,
     doc: &ParsedDoc,
