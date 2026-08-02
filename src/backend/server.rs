@@ -925,7 +925,10 @@ impl LanguageServer for Backend {
                 position,
                 &laravel,
                 laravel_root.as_deref(),
-            );
+            )
+            .or_else(|| {
+                crate::laravel::blade::hover(uri, &source, position, &laravel, laravel_root.as_deref())
+            });
             drop(laravel);
             if let Some(hover) = laravel_hover {
                 return Ok(Some(hover));
@@ -1790,6 +1793,11 @@ impl LanguageServer for Backend {
                 .blocking_gated(super::debug_gate::GATE_DOCUMENT_LINK, move || {
                     let mut links = document_links(&uri, &doc, doc.source());
                     links.extend(crate::laravel::document_links(&doc, &laravel));
+                    links.extend(crate::laravel::blade::document_links(
+                        &uri,
+                        doc.source(),
+                        &laravel,
+                    ));
                     links
                 })
                 .await

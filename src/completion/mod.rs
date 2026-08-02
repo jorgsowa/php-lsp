@@ -422,6 +422,14 @@ pub fn filtered_completions_at(
         .zip(position)
         .and_then(|(src, pos)| crate::laravel::completions_for_string_key(src, pos, ctx.laravel));
 
+    // Blade-specific completions (component/Livewire tags, view/Livewire
+    // directive arguments) — bare helper calls inside `{{ }}` are already
+    // covered by `laravel_completions` above, a pure text scan that doesn't
+    // care whether it's running inside a Blade expression or plain PHP.
+    let blade_completions = doc_uri.zip(source).zip(position).and_then(|((uri, src), pos)| {
+        crate::laravel::blade::completions(uri, src, pos, ctx.laravel)
+    });
+
     // Request-field completion inside `$request->input('...')`/`get`/`post`/
     // `query` — a naming-convention heuristic (see `laravel::request_fields`
     // module docs), gated the same way every other Laravel feature is.
@@ -456,6 +464,7 @@ pub fn filtered_completions_at(
         if cursor_in_string_or_comment(src, cursor_byte)
             && include_path_prefix(src, pos).is_none()
             && laravel_completions.is_none()
+            && blade_completions.is_none()
             && request_field_completions.is_none()
         {
             return vec![];
@@ -716,6 +725,15 @@ pub fn filtered_completions_at(
                 if !use_items.is_empty() {
                     return use_items;
                 }
+            }
+
+            // Blade directive/tag completions take priority over Feature 9
+            // below: `@include('` textually ends in `include(` just like a
+            // real PHP `include(...)` statement, and `blade_completions` is
+            // always `None` outside `.blade.php` files, so this can't affect
+            // plain-PHP `include`/`require` path completions.
+            if let Some(items) = blade_completions {
+                return items;
             }
 
             // Feature 9: include/require path completions

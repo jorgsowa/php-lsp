@@ -19,7 +19,8 @@ php-lsp is a full-featured LSP implementation for PHP: real-time cross-file diag
 - **Rust-native performance** — async-first with tokio, lock-free document store via dashmap, no GC pauses
 - **Completion depth** — type-aware `->` / `::` chains, `match` enum-case completions, auto `use` insertion, fuzzy camel/underscore matching
 - **Layered diagnostics, not a fork in the road** — the built-in `mir`-backed analyzer works out of the box with zero configuration; a project's own PHPStan/PHPCS setup can be layered on top as an opt-in overlay (`externalTools`) rather than a replacement, so adopting one doesn't mean giving up the other
-- **Laravel-aware** — route/view/translation/env string-key completion and navigation, plus quickfixes for missing routes, facade-to-dependency-injection conversion, and unguarded mass assignment; `$request` field completion and validation-rule generation round out request handling
+- **Laravel-aware** — route/view/translation/env/asset string-key completion and navigation, `->middleware(...)` alias resolution, plus quickfixes for missing routes, facade-to-dependency-injection conversion, and unguarded mass assignment; `$request` field completion and validation-rule generation round out request handling
+- **Blade template support** — completion, hover, go-to-definition and document links for `route()`/`view()`/`config()`/`asset()`/`env()`/`trans()` inside `{{ }}`/`{!! !!}` expressions, `@include`/`@extends`/`@each`/`@component`/`@livewire` directives, and `<x-alert>`/`<x-forms.input>`/`<livewire:counter>` component tags — resolving anonymous Blade components and Livewire view-only components through `resources/views`, and falling back to class-based `App\View\Components\*`/`App\Livewire\*` components when no matching view exists
 
 ---
 

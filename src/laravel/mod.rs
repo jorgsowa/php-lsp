@@ -15,12 +15,15 @@
 //! `is_laravel` flag before doing any string scanning.
 
 mod asset_index;
+pub(crate) mod blade;
+mod component_index;
 mod config_index;
 mod detect;
 mod eloquent_guard;
 mod env_index;
 pub(crate) mod facades;
 mod hover;
+mod livewire_index;
 mod location_lookup;
 mod middleware_index;
 pub(crate) mod request_fields;
@@ -31,9 +34,11 @@ mod translation_index;
 mod view_index;
 
 pub use asset_index::AssetIndex;
+pub use component_index::ComponentIndex;
 pub use config_index::ConfigIndex;
 pub use eloquent_guard::unguarded_model_diagnostics;
 pub use env_index::EnvIndex;
+pub use livewire_index::LivewireIndex;
 pub use middleware_index::MiddlewareIndex;
 pub use route_index::RouteIndex;
 pub use translation_index::TranslationIndex;
@@ -82,6 +87,8 @@ pub struct LaravelIndex {
     pub routes: RouteIndex,
     pub assets: AssetIndex,
     pub middleware: MiddlewareIndex,
+    pub components: ComponentIndex,
+    pub livewire: LivewireIndex,
 }
 
 impl LaravelIndex {
@@ -101,8 +108,26 @@ impl LaravelIndex {
             routes: RouteIndex::load(root),
             assets: AssetIndex::load(root),
             middleware: MiddlewareIndex::load(root),
+            components: ComponentIndex::load(root),
+            livewire: LivewireIndex::load(root),
         }
     }
+}
+
+/// PascalCase segment (e.g. a PHP class name like `InputGroup`) to
+/// kebab-case (`input-group`) — used by [`ComponentIndex`] and
+/// [`LivewireIndex`] to convert discovered class filenames into the tag
+/// syntax a Blade template author actually types (`<x-input-group>`), so
+/// `blade`'s lookups need no case conversion at the call site.
+fn pascal_to_kebab(segment: &str) -> String {
+    let mut out = String::new();
+    for (i, c) in segment.chars().enumerate() {
+        if c.is_uppercase() && i > 0 {
+            out.push('-');
+        }
+        out.extend(c.to_lowercase());
+    }
+    out
 }
 
 /// The route name and its `Range`, when the cursor sits inside a
@@ -438,6 +463,8 @@ mod tests {
         assert_eq!(idx.routes.names().count(), 0);
         assert_eq!(idx.assets.names().count(), 0);
         assert_eq!(idx.middleware.names().count(), 0);
+        assert_eq!(idx.components.names().count(), 0);
+        assert_eq!(idx.livewire.names().count(), 0);
     }
 
     #[test]
@@ -484,6 +511,22 @@ mod tests {
             "<?php\n$middleware->alias(['auth' => Authenticate::class]);\n",
         )
         .unwrap();
+        std::fs::create_dir_all(tmp.path().join("app").join("View").join("Components")).unwrap();
+        std::fs::write(
+            tmp.path()
+                .join("app")
+                .join("View")
+                .join("Components")
+                .join("Alert.php"),
+            "<?php\nclass Alert {}\n",
+        )
+        .unwrap();
+        std::fs::create_dir_all(tmp.path().join("app").join("Livewire")).unwrap();
+        std::fs::write(
+            tmp.path().join("app").join("Livewire").join("Counter.php"),
+            "<?php\nclass Counter {}\n",
+        )
+        .unwrap();
         let idx = LaravelIndex::load(tmp.path());
         assert!(idx.is_laravel);
         assert!(idx.env.get("APP_NAME").is_some());
@@ -493,6 +536,8 @@ mod tests {
         assert!(idx.routes.get("home").is_some());
         assert!(idx.assets.get("css/app.css").is_some());
         assert!(idx.middleware.get("auth").is_some());
+        assert!(idx.components.get("alert").is_some());
+        assert!(idx.livewire.get("counter").is_some());
     }
 
     #[test]

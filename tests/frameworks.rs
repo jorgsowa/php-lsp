@@ -17,6 +17,8 @@ pub use common::{
 mod feature_laravel;
 #[path = "frameworks/feature_laravel_asset.rs"]
 mod feature_laravel_asset;
+#[path = "frameworks/feature_laravel_blade.rs"]
+mod feature_laravel_blade;
 #[path = "frameworks/feature_laravel_code_action.rs"]
 mod feature_laravel_code_action;
 #[path = "frameworks/feature_laravel_config.rs"]
