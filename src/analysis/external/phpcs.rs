@@ -157,7 +157,21 @@ mod tests {
         );
 
         let warning = &diagnostics[1];
+        assert_eq!(
+            warning.range.start,
+            Position {
+                line: 19,
+                character: 0
+            }
+        );
         assert_eq!(warning.severity, Some(DiagnosticSeverity::WARNING));
+        assert_eq!(
+            warning.code,
+            Some(NumberOrString::String(
+                "Generic.Files.LineLength.TooLong".to_string()
+            ))
+        );
+        assert_eq!(warning.message, "Line exceeds 120 characters.");
     }
 
     #[test]

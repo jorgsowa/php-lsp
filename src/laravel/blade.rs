@@ -722,8 +722,10 @@ mod tests {
 
     #[test]
     fn scan_finds_double_and_raw_echo_expressions() {
-        let scan = scan("<h1>{{ route('home') }}</h1>\n<p>{!! $bio !!}</p>\n");
-        assert_eq!(scan.exprs.len(), 2);
+        let source = "<h1>{{ route('home') }}</h1>\n<p>{!! $bio !!}</p>\n";
+        let scan = scan(source);
+        let texts: Vec<&str> = scan.exprs.iter().map(|e| &source[e.start..e.end]).collect();
+        assert_eq!(texts, vec![" route('home') ", " $bio "]);
     }
 
     #[test]
@@ -932,7 +934,28 @@ mod tests {
         let source = "{{ view('welcome') }}\n@include('layouts.app')\n<x-alert />\n";
         let uri = Uri::from_file_path(tmp.path().join("resources/views/x.blade.php")).unwrap();
         let links = document_links(&uri, source, &laravel);
-        assert_eq!(links.len(), 3);
+        let mut summary: Vec<(String, bool)> = links
+            .iter()
+            .map(|l| {
+                (
+                    l.tooltip.clone().unwrap_or_default(),
+                    l.target.as_ref().is_some_and(|t| {
+                        t.as_str().ends_with("welcome.blade.php")
+                            || t.as_str().ends_with("layouts/app.blade.php")
+                            || t.as_str().ends_with("components/alert.blade.php")
+                    }),
+                )
+            })
+            .collect();
+        summary.sort();
+        assert_eq!(
+            summary,
+            vec![
+                ("alert".to_string(), true),
+                ("layouts.app".to_string(), true),
+                ("welcome".to_string(), true),
+            ]
+        );
     }
 
     #[test]

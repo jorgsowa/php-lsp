@@ -1097,8 +1097,37 @@ mod tests {
     #[test]
     fn legend_has_correct_token_count() {
         let l = legend();
-        assert_eq!(l.token_types.len(), 13);
-        assert_eq!(l.token_modifiers.len(), 5);
+        // Order matters, not just count: the TT_* constants above are raw
+        // indices into this vec, so a reorder would silently mis-encode
+        // every token without changing the length.
+        assert_eq!(
+            l.token_types,
+            vec![
+                SemanticTokenType::NAMESPACE,
+                SemanticTokenType::CLASS,
+                SemanticTokenType::INTERFACE,
+                SemanticTokenType::FUNCTION,
+                SemanticTokenType::METHOD,
+                SemanticTokenType::PROPERTY,
+                SemanticTokenType::VARIABLE,
+                SemanticTokenType::PARAMETER,
+                SemanticTokenType::TYPE,
+                SemanticTokenType::STRING,
+                SemanticTokenType::NUMBER,
+                SemanticTokenType::COMMENT,
+                SemanticTokenType::ENUM_MEMBER,
+            ]
+        );
+        assert_eq!(
+            l.token_modifiers,
+            vec![
+                SemanticTokenModifier::DECLARATION,
+                SemanticTokenModifier::STATIC,
+                SemanticTokenModifier::ABSTRACT,
+                SemanticTokenModifier::READONLY,
+                SemanticTokenModifier::DEPRECATED,
+            ]
+        );
     }
 
     #[test]

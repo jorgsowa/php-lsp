@@ -627,6 +627,11 @@ mod tests {
         let mut out = vec![];
         var_refs_in_stmts(&doc.program().stmts, "x", &mut out);
         assert_eq!(out.len(), 2, "expected $x in assignment and echo");
+        let kinds: Vec<_> = out.iter().map(|(_, k)| *k).collect();
+        assert_eq!(
+            kinds,
+            vec![DocumentHighlightKind::WRITE, DocumentHighlightKind::READ]
+        );
     }
 
     #[test]
@@ -638,6 +643,7 @@ mod tests {
         var_refs_in_stmts(&doc.program().stmts, "x", &mut out);
         // Only the top-level $x = 1; should be found (function is a scope boundary).
         assert_eq!(out.len(), 1, "inner $x must not cross scope boundary");
+        assert_eq!(out[0].1, DocumentHighlightKind::WRITE);
     }
 
     #[test]
@@ -712,6 +718,11 @@ mod tests {
             .filter(|(_, k)| *k == DocumentHighlightKind::WRITE)
             .collect();
         assert_eq!(writes.len(), 1, "global $cfg must be WRITE: {out:?}");
+        let reads: Vec<_> = out
+            .iter()
+            .filter(|(_, k)| *k == DocumentHighlightKind::READ)
+            .collect();
+        assert_eq!(reads.len(), 1, "echo $cfg must be READ: {out:?}");
     }
 
     #[test]
@@ -767,6 +778,11 @@ mod tests {
         let mut out = vec![];
         collect_var_refs_in_scope(&doc.program().stmts, "x", byte_off, &mut out);
         assert_eq!(out.len(), 2);
+        let kinds: Vec<_> = out.iter().map(|(_, k)| *k).collect();
+        assert_eq!(
+            kinds,
+            vec![DocumentHighlightKind::WRITE, DocumentHighlightKind::READ]
+        );
     }
 
     #[test]

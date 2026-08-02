@@ -506,6 +506,7 @@ mod tests {
             .snapshot_query_file_index(&uri)
             .expect("Bar.php must be indexed");
         assert_eq!(idx_before.classes[0].methods.len(), 1);
+        assert_eq!(idx_before.classes[0].methods[0].name.as_ref(), "a");
 
         // Simulate an edit: mirror new text (clears cached_index).
         let new_src =
@@ -521,6 +522,12 @@ mod tests {
             2,
             "edit must invalidate cached_index so fresh parse + extract runs"
         );
+        let method_names: Vec<&str> = idx_after.classes[0]
+            .methods
+            .iter()
+            .map(|m| m.name.as_ref())
+            .collect();
+        assert_eq!(method_names, vec!["a", "b"]);
     }
 
     /// Phase-by-phase profiling. Run in release for meaningful numbers:

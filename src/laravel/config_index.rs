@@ -137,10 +137,35 @@ mod tests {
             "<?php\nreturn [\n    'default' => 'mysql',\n    'connections' => [\n        'mysql' => [\n            'host' => '127.0.0.1',\n        ],\n    ],\n];\n",
         );
         let idx = ConfigIndex::load(tmp.path());
-        assert!(idx.get("database.default").is_some());
-        assert!(idx.get("database.connections").is_some());
-        assert!(idx.get("database.connections.mysql").is_some());
-        assert!(idx.get("database.connections.mysql.host").is_some());
+
+        let default = idx.get("database.default").unwrap();
+        assert_eq!(
+            (default.range.start.line, default.range.start.character),
+            (2, 5)
+        );
+        assert_eq!(default.range.end.character, 12);
+
+        let connections = idx.get("database.connections").unwrap();
+        assert_eq!(
+            (
+                connections.range.start.line,
+                connections.range.start.character
+            ),
+            (3, 5)
+        );
+        assert_eq!(connections.range.end.character, 16);
+
+        let mysql = idx.get("database.connections.mysql").unwrap();
+        assert_eq!(
+            (mysql.range.start.line, mysql.range.start.character),
+            (4, 9)
+        );
+        assert_eq!(mysql.range.end.character, 14);
+
+        let host = idx.get("database.connections.mysql.host").unwrap();
+        assert_eq!((host.range.start.line, host.range.start.character), (5, 13));
+        assert_eq!(host.range.end.character, 17);
+
         assert!(idx.get("database.nonexistent").is_none());
     }
 
@@ -180,7 +205,12 @@ mod tests {
             "<?php\nreturn [\n    'providers' => [\n        Foo::class,\n        Bar::class,\n    ],\n];\n",
         );
         let idx = ConfigIndex::load(tmp.path());
-        assert!(idx.get("app.providers").is_some());
+        let providers = idx.get("app.providers").unwrap();
+        assert_eq!(
+            (providers.range.start.line, providers.range.start.character),
+            (2, 5)
+        );
+        assert_eq!(providers.range.end.character, 14);
         // Positional list entries (no string key) contribute nothing further.
         assert_eq!(idx.keys().count(), 1);
     }

@@ -104,8 +104,20 @@ mod tests {
             "<?php class InputGroup {}\n",
         );
         let idx = ComponentIndex::load(tmp.path());
-        assert!(idx.get("alert").is_some());
-        assert!(idx.get("forms.input-group").is_some());
+        assert!(
+            idx.get("alert")
+                .unwrap()
+                .uri
+                .as_str()
+                .ends_with("app/View/Components/Alert.php")
+        );
+        assert!(
+            idx.get("forms.input-group")
+                .unwrap()
+                .uri
+                .as_str()
+                .ends_with("app/View/Components/Forms/InputGroup.php")
+        );
         assert!(idx.get("nonexistent").is_none());
     }
 

@@ -761,7 +761,10 @@ mod tests {
         let src = "<?php\nenum Status: string { case Active = 'active'; }";
         let doc = ParsedDoc::parse(src.to_string());
         assert!(is_enum(&doc, "Status"));
-        assert!(enum_backing_type(&doc, "Status").is_some());
+        assert_eq!(
+            enum_backing_type(&doc, "Status"),
+            Some("string".to_string())
+        );
     }
 
     #[test]

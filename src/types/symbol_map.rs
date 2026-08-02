@@ -457,9 +457,18 @@ mod tests {
     #[test]
     fn enum_entries() {
         let m = build("<?php\nenum Color {\n    case Red;\n    case Blue;\n}");
-        assert!(m.lookup("Color", |_| true).is_some());
-        assert!(m.lookup("Red", |_| true).is_some());
-        assert!(m.lookup("Blue", |_| true).is_some());
+        assert_eq!(
+            m.lookup("Color", |_| true).unwrap().kind,
+            SymbolEntryKind::Enum
+        );
+        assert_eq!(
+            m.lookup("Red", |_| true).unwrap().kind,
+            SymbolEntryKind::EnumCase
+        );
+        assert_eq!(
+            m.lookup("Blue", |_| true).unwrap().kind,
+            SymbolEntryKind::EnumCase
+        );
     }
 
     #[test]
@@ -503,10 +512,7 @@ mod tests {
     fn docblock_extracted() {
         let m = build("<?php\n/** Greets the user. */\nfunction greet(): void {}");
         let e = m.lookup("greet", |_| true).unwrap();
-        assert!(
-            e.doc_markdown.is_some(),
-            "expected docblock to be extracted"
-        );
+        assert_eq!(e.doc_markdown.as_deref(), Some("Greets the user."));
     }
 
     #[test]

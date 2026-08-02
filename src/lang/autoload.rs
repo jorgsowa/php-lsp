@@ -580,8 +580,8 @@ mod tests {
         );
         let m = Psr4Map::load(root);
         // \App\Foo and App\Foo should both work
-        assert!(m.resolve("\\App\\Foo").is_some());
-        assert!(m.resolve("App\\Foo").is_some());
+        assert!(m.resolve("\\App\\Foo").unwrap().ends_with("src/Foo.php"));
+        assert!(m.resolve("App\\Foo").unwrap().ends_with("src/Foo.php"));
     }
 
     #[test]
@@ -650,7 +650,11 @@ mod tests {
             r#"{"autoload-dev": {"psr-4": {"Tests\\": "tests/"}}}"#,
         );
         let m = Psr4Map::load(root);
-        assert!(m.resolve("Tests\\FooTest").is_some());
+        assert!(
+            m.resolve("Tests\\FooTest")
+                .unwrap()
+                .ends_with("tests/FooTest.php")
+        );
     }
 
     // --- PHP version detection ---

@@ -116,8 +116,20 @@ mod tests {
             "<?php class PostForm {}\n",
         );
         let idx = LivewireIndex::load(tmp.path());
-        assert!(idx.get("counter").is_some());
-        assert!(idx.get("forms.post-form").is_some());
+        assert!(
+            idx.get("counter")
+                .unwrap()
+                .uri
+                .as_str()
+                .ends_with("app/Livewire/Counter.php")
+        );
+        assert!(
+            idx.get("forms.post-form")
+                .unwrap()
+                .uri
+                .as_str()
+                .ends_with("app/Livewire/Forms/PostForm.php")
+        );
     }
 
     #[test]
@@ -130,7 +142,13 @@ mod tests {
             "<?php class Counter {}\n",
         );
         let idx = LivewireIndex::load(tmp.path());
-        assert!(idx.get("counter").is_some());
+        assert!(
+            idx.get("counter")
+                .unwrap()
+                .uri
+                .as_str()
+                .ends_with("app/Http/Livewire/Counter.php")
+        );
     }
 
     #[test]

@@ -100,8 +100,20 @@ mod tests {
         write_asset(tmp.path(), "favicon.ico", "x");
         write_asset(tmp.path(), "css/app.css", "body{}");
         let idx = AssetIndex::load(tmp.path());
-        assert!(idx.get("favicon.ico").is_some());
-        assert!(idx.get("css/app.css").is_some());
+        assert!(
+            idx.get("favicon.ico")
+                .unwrap()
+                .uri
+                .as_str()
+                .ends_with("public/favicon.ico")
+        );
+        assert!(
+            idx.get("css/app.css")
+                .unwrap()
+                .uri
+                .as_str()
+                .ends_with("public/css/app.css")
+        );
         assert!(idx.get("nonexistent.js").is_none());
     }
 

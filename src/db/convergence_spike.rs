@@ -82,5 +82,15 @@ fn php_lsp_query_coexists_with_mir_query_on_same_db() {
     let defs = mir_analyzer::db::collect_file_definitions(&db, file);
 
     assert_eq!(len, src.len());
-    let _ = defs; // existence + no panic is the signal: both ingredients share one Storage
+    // Confirms the mir query actually ran against this db's content, not just
+    // that it returned without panicking: both ingredients share one Storage.
+    assert!(
+        defs.slice.functions.iter().any(|f| &*f.fqn == "foo"),
+        "expected collect_file_definitions to find `foo`, got {:?}",
+        defs.slice
+            .functions
+            .iter()
+            .map(|f| &f.fqn)
+            .collect::<Vec<_>>()
+    );
 }

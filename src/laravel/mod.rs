@@ -529,15 +529,60 @@ mod tests {
         .unwrap();
         let idx = LaravelIndex::load(tmp.path());
         assert!(idx.is_laravel);
-        assert!(idx.env.get("APP_NAME").is_some());
-        assert!(idx.config.get("app.name").is_some());
-        assert!(idx.views.get("welcome").is_some());
-        assert!(idx.translations.get("auth.failed").is_some());
-        assert!(idx.routes.get("home").is_some());
-        assert!(idx.assets.get("css/app.css").is_some());
-        assert!(idx.middleware.get("auth").is_some());
-        assert!(idx.components.get("alert").is_some());
-        assert!(idx.livewire.get("counter").is_some());
+
+        let env = idx.env.get("APP_NAME").unwrap();
+        assert_eq!((env.range.start.line, env.range.start.character), (0, 0));
+        assert_eq!(env.range.end.character, 8);
+
+        let config = idx.config.get("app.name").unwrap();
+        assert_eq!(
+            (config.range.start.line, config.range.start.character),
+            (1, 9)
+        );
+        assert_eq!(config.range.end.character, 13);
+
+        let view = idx.views.get("welcome").unwrap();
+        assert_eq!(view.range.start, view.range.end);
+        assert!(view.uri.as_str().ends_with("welcome.blade.php"));
+
+        let translation = idx.translations.get("auth.failed").unwrap();
+        assert_eq!(
+            (
+                translation.range.start.line,
+                translation.range.start.character
+            ),
+            (1, 9)
+        );
+        assert_eq!(translation.range.end.character, 15);
+
+        let route = idx.routes.get("home").unwrap();
+        assert_eq!(
+            (route.range.start.line, route.range.start.character),
+            (1, 35)
+        );
+        assert_eq!(route.range.end.character, 39);
+
+        let asset = idx.assets.get("css/app.css").unwrap();
+        assert_eq!(asset.range.start, asset.range.end);
+        assert!(asset.uri.as_str().ends_with("public/css/app.css"));
+
+        let middleware = idx.middleware.get("auth").unwrap();
+        assert_eq!(
+            (
+                middleware.range.start.line,
+                middleware.range.start.character
+            ),
+            (1, 21)
+        );
+        assert_eq!(middleware.range.end.character, 25);
+
+        let component = idx.components.get("alert").unwrap();
+        assert_eq!(component.range.start, component.range.end);
+        assert!(component.uri.as_str().ends_with("Alert.php"));
+
+        let livewire = idx.livewire.get("counter").unwrap();
+        assert_eq!(livewire.range.start, livewire.range.end);
+        assert!(livewire.uri.as_str().ends_with("Counter.php"));
     }
 
     #[test]
@@ -683,7 +728,9 @@ mod tests {
             line: 1,
             character: 10,
         };
-        assert!(resolve_string_key(&doc, pos, &laravel).is_some());
+        let loc = resolve_string_key(&doc, pos, &laravel).unwrap();
+        assert_eq!(loc.range.start, loc.range.end);
+        assert!(loc.uri.as_str().ends_with("public/css/app.css"));
 
         let doc = crate::document::ast::ParsedDoc::parse(
             "<?php\nRoute::get('/x', Foo::class)->middleware('auth');\n".to_string(),
@@ -692,7 +739,9 @@ mod tests {
             line: 1,
             character: 44,
         };
-        assert!(resolve_string_key(&doc, pos, &laravel).is_some());
+        let loc = resolve_string_key(&doc, pos, &laravel).unwrap();
+        assert_eq!((loc.range.start.line, loc.range.start.character), (1, 21));
+        assert_eq!(loc.range.end.character, 25);
     }
 
     #[test]
@@ -749,6 +798,32 @@ mod tests {
         );
         let links = document_links(&doc, &laravel);
         assert_eq!(links.len(), 3);
+
+        assert_eq!(links[0].tooltip.as_deref(), Some("APP_NAME"));
+        assert_eq!(links[0].range.start.line, 1);
+        assert!(links[0].target.as_ref().unwrap().as_str().ends_with(".env"));
+
+        assert_eq!(links[1].tooltip.as_deref(), Some("app.js"));
+        assert_eq!(links[1].range.start.line, 2);
+        assert!(
+            links[1]
+                .target
+                .as_ref()
+                .unwrap()
+                .as_str()
+                .ends_with("public/app.js")
+        );
+
+        assert_eq!(links[2].tooltip.as_deref(), Some("middleware: auth"));
+        assert_eq!(links[2].range.start.line, 3);
+        assert!(
+            links[2]
+                .target
+                .as_ref()
+                .unwrap()
+                .as_str()
+                .ends_with("bootstrap/app.php")
+        );
     }
 
     #[test]

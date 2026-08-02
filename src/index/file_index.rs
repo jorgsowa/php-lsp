@@ -749,6 +749,10 @@ mod tests {
         assert_eq!(&*f.name, "add");
         assert_eq!(f.return_type.as_deref(), Some("int"));
         assert_eq!(f.params.len(), 2);
+        assert_eq!(&*f.params[0].name, "a");
+        assert_eq!(f.params[0].type_hint.as_deref(), Some("int"));
+        assert_eq!(&*f.params[1].name, "b");
+        assert_eq!(f.params[1].type_hint.as_deref(), Some("int"));
     }
 
     #[test]

@@ -240,7 +240,9 @@ mod tests {
             "<?php\nRoute::get('/home', HomeController::class)->name('home');\n",
         );
         let idx = RouteIndex::load(tmp.path());
-        assert!(idx.get("home").is_some());
+        let loc = idx.get("home").unwrap();
+        assert_eq!((loc.range.start.line, loc.range.start.character), (1, 50));
+        assert_eq!(loc.range.end.character, 54);
     }
 
     #[test]
@@ -264,7 +266,9 @@ mod tests {
             "<?php\nRoute::group(['as' => 'admin.'], function () {\n    Route::get('/dashboard', Foo::class)->name('dashboard');\n});\n",
         );
         let idx = RouteIndex::load(tmp.path());
-        assert!(idx.get("admin.dashboard").is_some());
+        let loc = idx.get("admin.dashboard").unwrap();
+        assert_eq!((loc.range.start.line, loc.range.start.character), (2, 48));
+        assert_eq!(loc.range.end.character, 57);
         assert!(idx.get("dashboard").is_none());
     }
 
@@ -277,7 +281,9 @@ mod tests {
             "<?php\nRoute::name('api.')->group(function () {\n    Route::get('/users', Foo::class)->name('users');\n});\n",
         );
         let idx = RouteIndex::load(tmp.path());
-        assert!(idx.get("api.users").is_some());
+        let loc = idx.get("api.users").unwrap();
+        assert_eq!((loc.range.start.line, loc.range.start.character), (2, 44));
+        assert_eq!(loc.range.end.character, 49);
         // The group-prefix declaration itself must not be indexed as a route.
         assert!(idx.get("api.").is_none());
     }
@@ -291,7 +297,9 @@ mod tests {
             "<?php\nRoute::group(['as' => 'admin.'], function () {\n    Route::group(['as' => 'users.'], function () {\n        Route::get('/', Foo::class)->name('index');\n    });\n});\n",
         );
         let idx = RouteIndex::load(tmp.path());
-        assert!(idx.get("admin.users.index").is_some());
+        let loc = idx.get("admin.users.index").unwrap();
+        assert_eq!((loc.range.start.line, loc.range.start.character), (3, 43));
+        assert_eq!(loc.range.end.character, 48);
     }
 
     #[test]
@@ -303,7 +311,9 @@ mod tests {
             "<?php\nRoute::group(['middleware' => 'auth'], function () {\n    Route::get('/x', Foo::class)->name('x');\n});\n",
         );
         let idx = RouteIndex::load(tmp.path());
-        assert!(idx.get("x").is_some());
+        let loc = idx.get("x").unwrap();
+        assert_eq!((loc.range.start.line, loc.range.start.character), (2, 40));
+        assert_eq!(loc.range.end.character, 41);
     }
 
     #[test]

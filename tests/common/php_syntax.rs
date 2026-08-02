@@ -72,7 +72,11 @@ class Foo {
         return
     }
 "#;
-        assert!(validate(code).is_err());
+        let err = validate(code).expect_err("missing closing braces must fail php -l");
+        assert!(
+            err.contains("syntax error"),
+            "expected a syntax error message, got: {err}"
+        );
     }
 
     #[test]
@@ -90,7 +94,11 @@ class Foo {
         // $0 is invalid PHP syntax (fixture DSL marker)
         let code = r#"<?php
 class Foo$0 {}"#;
-        assert!(validate(code).is_err());
+        let err = validate(code).expect_err("$0 cursor marker must fail php -l");
+        assert!(
+            err.contains("syntax error"),
+            "expected a syntax error message, got: {err}"
+        );
     }
 
     #[test]

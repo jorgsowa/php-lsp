@@ -358,8 +358,15 @@ mod tests {
             "<?php\nreturn Application::configure()\n    ->withMiddleware(function (Middleware $middleware) {\n        $middleware->alias([\n            'auth' => \\App\\Http\\Middleware\\Authenticate::class,\n            'admin' => \\App\\Http\\Middleware\\EnsureIsAdmin::class,\n        ]);\n    })->create();\n",
         );
         let idx = MiddlewareIndex::load(tmp.path());
-        assert!(idx.get("auth").is_some());
-        assert!(idx.get("admin").is_some());
+        let auth = idx.get("auth").unwrap();
+        assert_eq!((auth.range.start.line, auth.range.start.character), (4, 13));
+        assert_eq!(auth.range.end.character, 17);
+        let admin = idx.get("admin").unwrap();
+        assert_eq!(
+            (admin.range.start.line, admin.range.start.character),
+            (5, 13)
+        );
+        assert_eq!(admin.range.end.character, 18);
     }
 
     #[test]
@@ -371,7 +378,9 @@ mod tests {
             "<?php\nclass Kernel extends HttpKernel {\n    protected $routeMiddleware = [\n        'auth' => \\App\\Http\\Middleware\\Authenticate::class,\n    ];\n}\n",
         );
         let idx = MiddlewareIndex::load(tmp.path());
-        assert!(idx.get("auth").is_some());
+        let loc = idx.get("auth").unwrap();
+        assert_eq!((loc.range.start.line, loc.range.start.character), (3, 9));
+        assert_eq!(loc.range.end.character, 13);
     }
 
     #[test]
@@ -383,7 +392,9 @@ mod tests {
             "<?php\nclass Kernel extends HttpKernel {\n    protected $middlewareAliases = [\n        'verified' => EnsureEmailIsVerified::class,\n    ];\n}\n",
         );
         let idx = MiddlewareIndex::load(tmp.path());
-        assert!(idx.get("verified").is_some());
+        let loc = idx.get("verified").unwrap();
+        assert_eq!((loc.range.start.line, loc.range.start.character), (3, 9));
+        assert_eq!(loc.range.end.character, 17);
     }
 
     #[test]
@@ -451,6 +462,22 @@ mod tests {
         );
         let calls = collect_middleware_calls(&doc);
         assert_eq!(calls.len(), 2);
+        assert_eq!(calls[0].0, "auth");
+        assert_eq!(
+            calls[0].1.start,
+            Position {
+                line: 1,
+                character: 55
+            }
+        );
+        assert_eq!(calls[1].0, "auth");
+        assert_eq!(
+            calls[1].1.start,
+            Position {
+                line: 2,
+                character: 55
+            }
+        );
     }
 
     #[test]

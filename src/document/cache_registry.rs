@@ -230,6 +230,12 @@ mod tests {
         }
         reg.shed_stale(&map, 10);
         assert_eq!(map.len(), 5, "below cap: nothing evicted");
+        for i in 0..5 {
+            assert!(
+                map.contains_key(&uri(i)),
+                "uri({i}) should still be present"
+            );
+        }
     }
 
     #[test]

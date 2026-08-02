@@ -266,9 +266,13 @@ async fn document_link_resolve_link_without_target_field() {
     let resp = server.client().request("documentLink/resolve", link).await;
     assert!(resp["error"].is_null(), "no error for link without target");
     let result = &resp["result"];
-    assert!(
-        result["range"].is_object(),
-        "range should be preserved: {result:?}"
+    assert_eq!(
+        result["range"],
+        json!({
+            "start": { "line": 0, "character": 5 },
+            "end": { "line": 0, "character": 15 }
+        }),
+        "range should be preserved unchanged: {result:?}"
     );
     // target may be null or absent — document_link_resolve is a passthrough
     assert!(result["target"].is_null() || result.get("target").is_none());

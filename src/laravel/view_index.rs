@@ -113,8 +113,20 @@ mod tests {
         write_view(tmp.path(), "welcome.blade.php", "<h1>Hi</h1>");
         write_view(tmp.path(), "admin/dashboard.blade.php", "<h1>Admin</h1>");
         let idx = ViewIndex::load(tmp.path());
-        assert!(idx.get("welcome").is_some());
-        assert!(idx.get("admin.dashboard").is_some());
+        assert!(
+            idx.get("welcome")
+                .unwrap()
+                .uri
+                .as_str()
+                .ends_with("welcome.blade.php")
+        );
+        assert!(
+            idx.get("admin.dashboard")
+                .unwrap()
+                .uri
+                .as_str()
+                .ends_with("admin/dashboard.blade.php")
+        );
         assert!(idx.get("nonexistent").is_none());
     }
 
@@ -123,7 +135,13 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         write_view(tmp.path(), "legacy.php", "<h1>Legacy</h1>");
         let idx = ViewIndex::load(tmp.path());
-        assert!(idx.get("legacy").is_some());
+        assert!(
+            idx.get("legacy")
+                .unwrap()
+                .uri
+                .as_str()
+                .ends_with("legacy.php")
+        );
     }
 
     #[test]

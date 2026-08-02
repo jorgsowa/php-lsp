@@ -479,6 +479,10 @@ mod tests {
     fn parses_function() {
         let doc = ParsedDoc::parse("<?php\nfunction foo() {}".to_string());
         assert_eq!(doc.program().stmts.len(), 1);
+        match &doc.program().stmts[0].kind {
+            php_ast::StmtKind::Function(f) => assert_eq!(f.name.as_str(), Some("foo")),
+            other => panic!("expected a function declaration, got {other:?}"),
+        }
     }
 
     #[test]

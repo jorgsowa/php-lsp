@@ -2418,6 +2418,17 @@ mod tests {
             .collect();
         let cold = store.indexed_references(&sym, &files, false, None);
         assert_eq!(cold.len(), 1, "caller.php references Svc::run once");
+        expect_test::expect![[r#"
+            [
+                (
+                    "file:///caller.php",
+                    4,
+                    43,
+                    46,
+                ),
+            ]
+        "#]]
+        .assert_debug_eq(&cold);
 
         let cancel = store.begin_warm_sweep();
         store.warm_analysis_sweep(&[], &cancel);
@@ -2433,6 +2444,23 @@ mod tests {
         store.warm_analysis_sweep(&[], &cancel);
         let after_edit = store.indexed_references(&sym, &files, false, None);
         assert_eq!(after_edit.len(), 2, "re-sweep must see the new reference");
+        expect_test::expect![[r#"
+            [
+                (
+                    "file:///caller.php",
+                    4,
+                    43,
+                    46,
+                ),
+                (
+                    "file:///caller.php",
+                    4,
+                    60,
+                    63,
+                ),
+            ]
+        "#]]
+        .assert_debug_eq(&after_edit);
     }
 
     #[test]
@@ -2530,7 +2558,10 @@ mod tests {
         let store = DocumentStore::new();
         open(&store, uri("/a.php"), "<?php\nfunction a() {}".to_string());
         store.ingest(uri("/b.php"), "<?php\nfunction b() {}");
-        assert_eq!(store.all_indexes().len(), 2);
+        let indexes = store.all_indexes();
+        let mut uris: Vec<&str> = indexes.iter().map(|(u, _)| u.as_str()).collect();
+        uris.sort();
+        assert_eq!(uris, vec![uri("/a.php").as_str(), uri("/b.php").as_str()]);
     }
 
     #[test]
@@ -2538,7 +2569,9 @@ mod tests {
         let store = DocumentStore::new();
         open(&store, uri("/a.php"), "<?php\nfunction a() {}".to_string());
         open(&store, uri("/b.php"), "<?php\nfunction b() {}".to_string());
-        assert_eq!(store.other_indexes(&uri("/a.php")).len(), 1);
+        let others = store.other_indexes(&uri("/a.php"));
+        assert_eq!(others.len(), 1);
+        assert_eq!(others[0].0.as_str(), uri("/b.php").as_str());
     }
 
     #[test]
@@ -2548,8 +2581,10 @@ mod tests {
         let ub = uri("/b.php");
         open(&store, ua.clone(), "<?php\nfunction a() {}".to_string());
         open(&store, ub.clone(), "<?php\nfunction b() {}".to_string());
-        let open_urls = vec![ua.clone(), ub];
-        assert_eq!(store.other_docs(&ua, &open_urls).len(), 1);
+        let open_urls = vec![ua.clone(), ub.clone()];
+        let others = store.other_docs(&ua, &open_urls);
+        assert_eq!(others.len(), 1);
+        assert_eq!(others[0].0.as_str(), ub.as_str());
     }
 
     #[test]
@@ -2569,8 +2604,12 @@ mod tests {
         let u = uri("/vendor/acme/lib.php");
         store.ingest(u.clone(), "<?php\nclass Lib {}");
         let idx = store.get_index_salsa(&u).unwrap();
-        store.cache_vendor_index(u.clone(), idx);
-        assert!(store.get_vendor_index(&u).is_some());
+        store.cache_vendor_index(u.clone(), idx.clone());
+        let cached = store.get_vendor_index(&u).unwrap();
+        assert!(
+            Arc::ptr_eq(&idx, &cached),
+            "get_vendor_index must return the exact FileIndex that was cached"
+        );
         store.remove(&u);
         assert!(store.get_vendor_index(&u).is_none());
     }
@@ -2779,7 +2818,13 @@ mod tests {
         let store = DocumentStore::new();
         let u = uri("/e4_doc.php");
         store.ingest(u.clone(), "<?php\nclass P {}");
-        assert!(store.get_doc_salsa(&u).is_some());
+        let doc = store.get_doc_salsa(&u).unwrap();
+        match &doc.program().stmts[0].kind {
+            php_ast::StmtKind::Class(c) => {
+                assert_eq!(c.name.and_then(|n| n.as_str()), Some("P"))
+            }
+            other => panic!("expected a class declaration, got {other:?}"),
+        }
     }
 
     #[test]

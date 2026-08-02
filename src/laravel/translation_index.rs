@@ -347,7 +347,21 @@ mod tests {
             "<?php\nreturn [\n    'failed' => 'These credentials do not match.',\n];\n",
         );
         let idx = TranslationIndex::load(tmp.path());
-        assert!(idx.get("auth.failed").is_some());
+        let loc = idx.get("auth.failed").unwrap();
+        assert!(loc.uri.as_str().ends_with("lang/en/auth.php"));
+        assert_eq!(
+            loc.range,
+            Range {
+                start: Position {
+                    line: 2,
+                    character: 5,
+                },
+                end: Position {
+                    line: 2,
+                    character: 11,
+                },
+            }
+        );
     }
 
     #[test]
@@ -531,7 +545,11 @@ mod tests {
         // No `messages.php` array file exists anywhere, so Laravel's `__()`
         // falls back to treating the whole dotted string as a JSON literal
         // key — the quickfix must fire in this case.
-        let action = missing_translation_json_key_action(tmp.path(), "messages.welcome");
-        assert!(action.is_some());
+        let CodeActionOrCommand::CodeAction(action) =
+            missing_translation_json_key_action(tmp.path(), "messages.welcome").unwrap()
+        else {
+            panic!("expected a CodeAction");
+        };
+        assert_eq!(action.title, r#"Add "messages.welcome" to en.json"#);
     }
 }
