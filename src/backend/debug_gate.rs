@@ -31,6 +31,12 @@ pub const GATE_WILL_RENAME_FILES: &str = "willRenameFiles.useEdits";
 pub const GATE_WILL_DELETE_FILES: &str = "willDeleteFiles.useEdits";
 /// Gate section around `prepare_call_hierarchy`'s indexed-lookup closure.
 pub const GATE_PREPARE_CALL_HIERARCHY: &str = "prepareCallHierarchy.lookup";
+/// Gate section around `selection_range`'s AST-walk closure.
+pub const GATE_SELECTION_RANGE: &str = "selectionRange.walk";
+/// Gate section around `goto_implementation`'s method-decl cursor check.
+pub const GATE_GOTO_IMPLEMENTATION: &str = "gotoImplementation.methodDeclCheck";
+/// Gate section around `rename`'s property-decl cursor check + variable rename.
+pub const GATE_RENAME_VARIABLE: &str = "rename.variable";
 
 #[cfg(not(feature = "test-hooks"))]
 #[derive(Default)]

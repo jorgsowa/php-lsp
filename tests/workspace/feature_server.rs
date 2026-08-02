@@ -865,6 +865,84 @@ async fn prepare_call_hierarchy_stays_responsive_while_indexed_lookup_is_in_flig
         .await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn selection_range_stays_responsive_while_walk_is_in_flight() {
+    // selection_range walks every top-level statement per requested
+    // position to find the chain containing it; that walk must run off
+    // the async runtime worker.
+    let mut server = TestServer::new().await;
+    server
+        .open(
+            "gated_selection_range.php",
+            "<?php\nfunction gated(): int { return 1; }\n",
+        )
+        .await;
+    let uri = server.uri("gated_selection_range.php");
+    server
+        .assert_request_stays_responsive_via_gate(
+            "textDocument/selectionRange",
+            serde_json::json!({
+                "textDocument": { "uri": uri },
+                "positions": [{ "line": 1, "character": 25 }],
+            }),
+            php_lsp::backend::debug_gate::GATE_SELECTION_RANGE,
+        )
+        .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn goto_implementation_stays_responsive_while_method_decl_check_is_in_flight() {
+    // Disambiguating a class name from a same-named method walks every
+    // member of every class in the document; that check must run off the
+    // async runtime worker.
+    let mut server = TestServer::new().await;
+    server
+        .open(
+            "gated_goto_impl.php",
+            "<?php\ninterface Gated {\n    public function work(): void;\n}\n",
+        )
+        .await;
+    let uri = server.uri("gated_goto_impl.php");
+    server
+        .assert_request_stays_responsive_via_gate(
+            "textDocument/implementation",
+            serde_json::json!({
+                "textDocument": { "uri": uri },
+                "position": { "line": 1, "character": 11 },
+            }),
+            php_lsp::backend::debug_gate::GATE_GOTO_IMPLEMENTATION,
+        )
+        .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn rename_stays_responsive_while_property_decl_check_is_in_flight() {
+    // Renaming a `$variable` first checks whether the cursor is on a
+    // property declaration or promoted constructor param (both walk every
+    // class member in the document) before falling back to the
+    // single-document scope walker; both must run off the async runtime
+    // worker.
+    let mut server = TestServer::new().await;
+    server
+        .open(
+            "gated_rename.php",
+            "<?php\nfunction gated(): void {\n    $gatedVar = 1;\n}\n",
+        )
+        .await;
+    let uri = server.uri("gated_rename.php");
+    server
+        .assert_request_stays_responsive_via_gate(
+            "textDocument/rename",
+            serde_json::json!({
+                "textDocument": { "uri": uri },
+                "position": { "line": 2, "character": 8 },
+                "newName": "$renamedVar",
+            }),
+            php_lsp::backend::debug_gate::GATE_RENAME_VARIABLE,
+        )
+        .await;
+}
+
 #[tokio::test]
 async fn semantic_tokens_full_delta_stays_responsive_on_large_file() {
     let mut server = TestServer::new().await;

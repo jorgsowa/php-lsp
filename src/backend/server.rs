@@ -810,19 +810,41 @@ impl LanguageServer for Backend {
                 // Cursor on a property declaration (`public int $x`) or a promoted
                 // constructor parameter (`private string $x`) — both act as property
                 // declarations and take the cross-file indexed path below. Plain
-                // variables stay on the single-document scope walker.
-                let on_property_decl =
-                    cursor_is_on_property_decl(&source, &doc.program().stmts, position).is_some()
-                        || promoted_property_at_cursor(&source, &doc.program().stmts, position)
-                            .is_some();
-                if !on_property_decl {
-                    return Ok(Some(rename_variable(
-                        &word,
-                        &params.new_name,
-                        uri,
-                        &doc,
+                // variables stay on the single-document scope walker. Both checks
+                // and the walker itself scan every class member/statement in the
+                // document, so keep them off the async runtime worker.
+                let gate = Arc::clone(&self.debug_gate);
+                let word_task = word.clone();
+                let new_name = params.new_name.clone();
+                let uri_task = uri.clone();
+                let doc_task = Arc::clone(&doc);
+                let source_task = Arc::clone(&source);
+                let variable_edit = tokio::task::spawn_blocking(move || {
+                    gate.pass(super::debug_gate::GATE_RENAME_VARIABLE);
+                    let on_property_decl = cursor_is_on_property_decl(
+                        &source_task,
+                        &doc_task.program().stmts,
                         position,
-                    )));
+                    )
+                    .is_some()
+                        || promoted_property_at_cursor(
+                            &source_task,
+                            &doc_task.program().stmts,
+                            position,
+                        )
+                        .is_some();
+                    if on_property_decl {
+                        None
+                    } else {
+                        Some(rename_variable(
+                            &word_task, &new_name, &uri_task, &doc_task, position,
+                        ))
+                    }
+                })
+                .await
+                .unwrap_or(None);
+                if let Some(edit) = variable_edit {
+                    return Ok(Some(edit));
                 }
             }
             // Everything else — classes, functions, methods, properties,
@@ -1244,7 +1266,19 @@ impl LanguageServer for Backend {
                 Some(d) => d,
                 None => return Ok(None),
             };
-            let ranges = selection_ranges(&doc, &params.positions);
+            // Walks every top-level statement per requested position; keep
+            // that off the async runtime worker, same as document_symbol
+            // and folding_range's whole-document walks.
+            // Walks every top-level statement per requested position; keep
+            // that off the async runtime worker, same as document_symbol
+            // and folding_range's whole-document walks.
+            let gate = Arc::clone(&self.debug_gate);
+            let ranges = tokio::task::spawn_blocking(move || {
+                gate.pass(super::debug_gate::GATE_SELECTION_RANGE);
+                selection_ranges(&doc, &params.positions)
+            })
+            .await
+            .unwrap_or_default();
             Ok(if ranges.is_empty() {
                 None
             } else {
@@ -1429,10 +1463,19 @@ impl LanguageServer for Backend {
 
             // A method declaration name can collide case-insensitively with a
             // class name (`Guard` interface vs `guard()` method in one
-            // namespace); the cursor context decides which sense wins.
-            let on_method_decl = self.get_doc(uri).is_some_and(|doc| {
-                cursor_is_on_method_decl(doc.source(), &doc.program().stmts, position)
-            });
+            // namespace); the cursor context decides which sense wins. The
+            // check walks every member of every class in the document, so
+            // keep it off the async runtime worker.
+            let doc_for_method_check = self.get_doc(uri);
+            let gate = Arc::clone(&self.debug_gate);
+            let on_method_decl = tokio::task::spawn_blocking(move || {
+                gate.pass(super::debug_gate::GATE_GOTO_IMPLEMENTATION);
+                doc_for_method_check.is_some_and(|doc| {
+                    cursor_is_on_method_decl(doc.source(), &doc.program().stmts, position)
+                })
+            })
+            .await
+            .unwrap_or(false);
 
             // Subtypes of the type under the cursor, from mir's maintained
             // subtype edge index (aliased/FQN extends forms all resolve).
