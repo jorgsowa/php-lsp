@@ -12,6 +12,13 @@
 //! Both are scanned unconditionally — a project only ever has one or the
 //! other, so there's no ordering/precedence concern like `EnvIndex`'s
 //! `.env`/`.env.example` pair.
+//!
+//! Laravel 11+'s built-in `web`/`api` middleware *groups* (as opposed to
+//! aliases) are also indexed, from `$middleware->group('name', [...])` calls
+//! in `bootstrap/app.php` — the group name resolves the same way an alias
+//! does (`Route::middleware('web')`), pointing at the `group(...)`
+//! registration site rather than a specific middleware class, since a group
+//! has no single one.
 
 use std::collections::HashMap;
 use std::ops::ControlFlow;
@@ -73,10 +80,11 @@ fn load_bootstrap_app(root: &Path, out: &mut HashMap<String, Location>) {
     }
 }
 
-/// Walks every expression looking for `<anything>->alias([...])` — the
-/// receiver isn't checked against a specific variable name (unlike
-/// `request_fields`'s `$request` heuristic) since `alias()` is distinctive
-/// enough on its own within `bootstrap/app.php`.
+/// Walks every expression looking for `<anything>->alias([...])` and
+/// `<anything>->group('name', [...])` — the receiver isn't checked against a
+/// specific variable name (unlike `request_fields`'s `$request` heuristic)
+/// since both method names are distinctive enough on their own within
+/// `bootstrap/app.php`.
 struct AliasCallVisitor<'a> {
     sv: SourceView<'a>,
     uri: &'a Uri,
@@ -85,13 +93,33 @@ struct AliasCallVisitor<'a> {
 
 impl<'arena, 'src> Visitor<'arena, 'src> for AliasCallVisitor<'_> {
     fn visit_expr(&mut self, expr: &Expr<'arena, 'src>) -> ControlFlow<()> {
-        if let ExprKind::MethodCall(mc) = &expr.kind
-            && is_ident(mc.method, "alias")
-            && let Some(arg) = mc.args.first()
-            && let Some(arg_value) = &arg.value
-            && let ExprKind::Array(elements) = &arg_value.kind
-        {
-            collect_flat_string_keys(elements, self.sv, self.uri, self.out);
+        if let ExprKind::MethodCall(mc) = &expr.kind {
+            if is_ident(mc.method, "alias")
+                && let Some(arg) = mc.args.first()
+                && let Some(arg_value) = &arg.value
+                && let ExprKind::Array(elements) = &arg_value.kind
+            {
+                collect_flat_string_keys(elements, self.sv, self.uri, self.out);
+            }
+            if is_ident(mc.method, "group")
+                && mc.args.len() == 2
+                && let Some(name_arg) = mc.args[0].value.as_ref()
+                && let ExprKind::String(name) = &name_arg.kind
+            {
+                // `span.start`/`span.end` point at the surrounding quotes;
+                // trim one byte off each side to land on the name text
+                // itself (see `editing::document_link::link_from_path_expr`).
+                let range = Range {
+                    start: self.sv.position_of(name_arg.span.start + 1),
+                    end: self.sv.position_of(name_arg.span.end - 1),
+                };
+                self.out
+                    .entry(name.to_string())
+                    .or_insert_with(|| Location {
+                        uri: self.uri.clone(),
+                        range,
+                    });
+            }
         }
         walk_expr(self, expr)
     }
@@ -395,6 +423,21 @@ mod tests {
         let loc = idx.get("verified").unwrap();
         assert_eq!((loc.range.start.line, loc.range.start.character), (3, 9));
         assert_eq!(loc.range.end.character, 17);
+    }
+
+    #[test]
+    fn indexes_group_from_bootstrap_app() {
+        let tmp = tempfile::tempdir().unwrap();
+        write(
+            tmp.path(),
+            "bootstrap/app.php",
+            "<?php\nreturn Application::configure()\n    ->withMiddleware(function (Middleware $middleware) {\n        $middleware->group('web', [\n            \\App\\Http\\Middleware\\EncryptCookies::class,\n        ]);\n        $middleware->alias([\n            'auth' => \\App\\Http\\Middleware\\Authenticate::class,\n        ]);\n    })->create();\n",
+        );
+        let idx = MiddlewareIndex::load(tmp.path());
+        let web = idx.get("web").unwrap();
+        assert_eq!((web.range.start.line, web.range.start.character), (3, 28));
+        assert_eq!(web.range.end.character, 31);
+        assert!(idx.get("auth").is_some());
     }
 
     #[test]
