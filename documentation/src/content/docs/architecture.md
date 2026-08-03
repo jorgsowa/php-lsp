@@ -8,7 +8,7 @@ php-lsp is a single-crate Rust project. It depends on the
 analysis — `mir-analyzer`, `mir-codebase`, `mir-issues`, `mir-types` — which
 live in a separate repository and are published to crates.io independently.
 
-- **`php-lsp`** — the LSP server ([tower-lsp](https://crates.io/crates/tower-lsp), [tokio](https://crates.io/crates/tokio)), communicates over stdin/stdout
+- **`php-lsp`** — the LSP server ([tower-lsp-server](https://crates.io/crates/tower-lsp-server), [tokio](https://crates.io/crates/tokio)), communicates over stdin/stdout
 - **[mir-php](https://github.com/jorgsowa/mir)** — external static analysis engine; no LSP dependency, usable standalone
 
 ## Local development with a patched mir
@@ -63,7 +63,7 @@ Editor / AI agent
 - **Async parsing** — edits are debounced (default 100 ms, configurable via `initializationOptions.debounceMs`) and parsed in `spawn_blocking`; version tokens discard stale results.
 - **Text sync** — `FULL` sync mode; raw text is stored immediately on change for instant feature response before parsing completes.
 - **Two-tier document model** — open files carry a full `ParsedDoc` (~100 KB with arena + AST); background files store a lightweight `FileIndex` (~2 KB, declarations only) via salsa-memoized queries.
-- **Workspace scan** — background task on `initialized`; 50k file cap; skips hidden dirs; excludes `vendor/` by default (set `indexVendor: true` to scan it eagerly; vendor files otherwise load on demand via PSR-4); respects `excludePaths` and `includePaths`.
+- **Workspace scan** — background task on `initialized`; 50k file cap; skips hidden dirs; eagerly indexes `vendor/` by default (set `indexVendor: false` to skip it for very large vendor trees; vendor files then load on demand via PSR-4); respects `excludePaths` and `includePaths`.
 - **On-disk cache** — `FileIndex` entries persisted under `~/.cache/php-lsp/`; warm starts skip re-parsing entirely.
 - **Eager vs deferred code actions** — cheap actions (extract variable/method/constant, inline, organize imports) return full edits immediately; expensive actions (PHPDoc, constructor, getters/setters, return type) carry a `data` payload resolved by `codeAction/resolve` when the user selects them.
 - **mir-php** — `mir_php::analyze(source, stmts, all)` accepts the current document as the first `all` entry for declaration-location tracking; the remaining entries are all other indexed documents.
