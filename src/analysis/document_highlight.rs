@@ -1,6 +1,7 @@
 use tower_lsp_server::ls_types::{DocumentHighlight, DocumentHighlightKind, Position, Range};
 
 use crate::document::ast::ParsedDoc;
+use crate::lang::is_bare_keyword_at;
 use crate::navigation::walk::{collect_var_refs_in_scope, refs_in_stmts};
 use crate::text::word_at_position;
 
@@ -17,6 +18,16 @@ pub fn document_highlights(
         Some(w) => w,
         None => return vec![],
     };
+
+    // A bare keyword (`final`, `public`, ...) is never a real reference —
+    // `refs_in_stmts` below matches by bare name with no keyword awareness,
+    // so a modifier token would otherwise highlight unrelated call/reference
+    // sites of a same-named method elsewhere in the file (semi-reserved
+    // words are valid method names). Also feeds `linked_editing_range`,
+    // which calls this function directly.
+    if is_bare_keyword_at(source, position, &word) {
+        return vec![];
+    }
 
     let word_utf16_len: u32 = word.chars().map(|c| c.len_utf16() as u32).sum();
     let sv = doc.view();

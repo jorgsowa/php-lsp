@@ -60,9 +60,22 @@ impl Backend {
             if let Some(loc) = laravel_loc {
                 return Ok(Some(GotoDefinitionResponse::Scalar(loc)));
             }
+            // Bare keyword tokens (`final`, `readonly`, `public`, `string`, ...)
+            // are never a resolvable symbol. Bail out before any of the
+            // fallbacks below run — in particular the workspace-index lookup
+            // near the end of this function matches declarations by bare
+            // name across the whole workspace/vendor tree with no kind
+            // filter for non-`$`-prefixed queries, so a keyword like `final`
+            // or `void` would otherwise "resolve" to any unrelated
+            // class/function/property/constant that happens to share its
+            // name. See `is_bare_keyword_at` and its use in `handle_references`.
+            if let Some(word) = crate::text::word_at_position(&source, position)
+                && is_bare_keyword_at(&source, position, &word)
+            {
+                return Ok(None);
+            }
             if let Some(word) = crate::text::word_at_position(&source, position)
                 && !word.starts_with('$')
-                && !is_bare_keyword_at(&source, position, &word)
             {
                 let analysis = self.cached_analysis_async(uri).await;
 

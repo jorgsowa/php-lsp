@@ -348,6 +348,28 @@ class Locked {
     .await;
 }
 
+/// `final` isn't in the `keyword_doc` table, so the class-modifier token
+/// falls through to the AST-walk fallback. A method literally named `final`
+/// (a semi-reserved word, valid as a method name) sitting elsewhere in the
+/// same file used to match there by bare name before the early bare-keyword
+/// bail-out, surfacing that unrelated method's signature instead of nothing.
+#[tokio::test]
+async fn hover_class_modifier_keyword_ignores_same_file_name_collision() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_hover(
+            r#"<?php
+class Registry {
+    public function final(): void {}
+}
+fina$0l class Locked {}
+"#,
+        )
+        .await;
+    expect!["<no hover>"].assert_eq(&out);
+}
+
 #[tokio::test]
 async fn hover_first_class_callable_builtin() {
     let mut s = TestServer::new().await;

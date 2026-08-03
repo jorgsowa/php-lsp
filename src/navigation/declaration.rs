@@ -24,6 +24,17 @@ pub fn goto_declaration(
 ) -> Option<Location> {
     let word = word_at_position(source, position)?;
 
+    // A bare keyword (`abstract`, `final`, `class`, ...) can never be a
+    // declaration name. Without this, a same-named method elsewhere in an
+    // open doc (semi-reserved words are valid method names) would match via
+    // `resolve_declaration`'s bare-name search below. `goto_declaration_from_
+    // index` already gates on this; this in-memory pass ran first and
+    // unguarded, so it could return the wrong location before that check
+    // ever ran.
+    if is_bare_keyword_at(source, position, &word) {
+        return None;
+    }
+
     // First pass: look for an abstract or interface declaration
     for (uri, doc) in all_docs {
         let sv = doc.view();

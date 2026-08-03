@@ -870,6 +870,33 @@ fina$0l class Circle implements Shape {}
     expect!["<none>"].assert_eq(&out);
 }
 
+/// A semi-reserved word (`final`) is a valid method name, so a cross-file
+/// method literally named `final` can sit in the workspace index under that
+/// bare name. Before the early bare-keyword bail-out in
+/// `handle_goto_definition`, the class-modifier `final` here would fall
+/// through the `ClassReference`/method-target checks (which do have their
+/// own gate) all the way to the ungated `wi.find_declaration` lookup near
+/// the end of the function, and "resolve" to that unrelated method.
+#[tokio::test]
+async fn goto_definition_on_class_modifier_keyword_ignores_cross_file_name_collision() {
+    let mut s = TestServer::new().await;
+    let out = s
+        .check_definition(
+            r#"//- /src/Other.php
+<?php
+class Other {
+    public function final(): void {}
+}
+
+//- /src/main.php
+<?php
+fina$0l class Locked {}
+"#,
+        )
+        .await;
+    expect!["<none>"].assert_eq(&out);
+}
+
 #[tokio::test]
 async fn definition_trait_use_resolves_to_trait_decl() {
     let mut s = TestServer::new().await;

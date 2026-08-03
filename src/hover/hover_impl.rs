@@ -5,6 +5,7 @@ use tower_lsp_server::ls_types::{Hover, HoverContents, MarkupContent, MarkupKind
 use crate::completion::ClassDocLookup;
 use crate::document::ast::ParsedDoc;
 use crate::lang::docblock::find_docblock;
+use crate::lang::is_bare_keyword_at;
 use crate::lang::php_names::{is_php_builtin, php_doc_url};
 use crate::text::{fqn_short_name, word_at_position, word_range_at};
 use crate::types::resolve::{Declaration, resolve_declaration};
@@ -420,6 +421,16 @@ fn hover_at_core(
             }),
             range: hover_range,
         });
+    }
+
+    // Bare keyword tokens not covered by `keyword_doc`/`magic_doc`/the closure
+    // checks above (`final`, `class`, `public`, ...) are never a resolvable
+    // symbol. Without this, they fall through to the AST-walk/cross-file
+    // fallbacks below, which match by bare name with no keyword awareness —
+    // e.g. hovering `public` could surface an unrelated property literally
+    // named `public` elsewhere in the workspace.
+    if is_bare_keyword_at(source, position, &word) {
+        return None;
     }
 
     let all_stmts = &*doc.program().stmts as &[_];

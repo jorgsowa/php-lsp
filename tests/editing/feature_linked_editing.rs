@@ -280,6 +280,22 @@ async fn comment_word_matching_class_name_does_not_link() {
 }
 
 #[tokio::test]
+async fn class_modifier_keyword_matching_method_name_does_not_link() {
+    // Same underlying gap as `document_highlights`, which this feature calls
+    // directly: `final` (a semi-reserved word) is a valid method name, so a
+    // same-file method literally named `final` used to match the
+    // class-modifier keyword by bare name and enter linked-editing mode.
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_linked_editing_range(
+            "<?php\nclass Registry {\n    public function final(): void {}\n}\nfina$0l class Locked {}\n",
+        )
+        .await;
+    expect!["<no linked editing>"].assert_eq(&out);
+}
+
+#[tokio::test]
 async fn string_literal_word_matching_function_name_does_not_link() {
     // Same bug class as the comment case: cursor sits inside the literal
     // `'greet'` (not an identifier reference); linked editing would

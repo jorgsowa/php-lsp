@@ -437,6 +437,32 @@ abstra$0ct class Foo {
     expect![[r#"<none>"#]].assert_eq(&out);
 }
 
+/// A semi-reserved word (`final`) is a valid method name, so a cross-file
+/// method literally named `final` can sit in another open doc. The
+/// open-docs pass (`goto_declaration`) ran before `goto_declaration_from_
+/// index` and had no bare-keyword gate of its own, so it could resolve the
+/// class-modifier `final` here to that unrelated method via
+/// `resolve_declaration`'s bare-name search.
+#[tokio::test]
+async fn keyword_token_ignores_cross_file_name_collision() {
+    let mut s = TestServer::new().await;
+    let out = s
+        .check_declaration(
+            r#"//- /src/Other.php
+<?php
+class Other {
+    public function final(): void {}
+}
+
+//- /src/main.php
+<?php
+fina$0l class Locked {}
+"#,
+        )
+        .await;
+    expect![[r#"<none>"#]].assert_eq(&out);
+}
+
 /// Same as `keyword_token_returns_none` but against unopened background
 /// files, so the request must go through `goto_declaration_from_index`'s
 /// exhaustive fallback scan rather than the open-doc AST pass.
