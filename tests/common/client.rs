@@ -99,6 +99,20 @@ pub struct TestClient {
 
 impl TestClient {
     pub async fn request(&mut self, method: &str, params: Value) -> Value {
+        self.request_with_timeout(method, params, Duration::from_secs(10))
+            .await
+    }
+
+    /// Same as [`Self::request`], but with a caller-chosen timeout instead of
+    /// the default 10s — for manual diagnostics against real-world
+    /// workspaces large enough that a single request can legitimately run
+    /// far longer than any fixture-backed test ever would.
+    pub async fn request_with_timeout(
+        &mut self,
+        method: &str,
+        params: Value,
+        timeout: Duration,
+    ) -> Value {
         let id = self.next_id;
         self.next_id += 1;
         let msg = json!({
@@ -118,7 +132,7 @@ impl TestClient {
             write,
             ..
         } = self;
-        tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::time::timeout(timeout, async {
             loop {
                 let msg = recv_or_buffered(pending, read, write, &mut budget).await;
                 if msg.get("id") == Some(&json!(id)) {

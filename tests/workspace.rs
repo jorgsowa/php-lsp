@@ -26,6 +26,8 @@ mod feature_file_ops;
 mod feature_incremental;
 #[path = "workspace/feature_indexing_perf.rs"]
 mod feature_indexing_perf;
+#[path = "workspace/manual_workspace_verify.rs"]
+mod manual_workspace_verify;
 #[path = "workspace/feature_lsp_gaps_verification.rs"]
 mod feature_lsp_gaps_verification;
 #[path = "workspace/feature_project_structures.rs"]
