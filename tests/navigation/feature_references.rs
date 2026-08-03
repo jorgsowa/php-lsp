@@ -67,6 +67,9 @@ mod fqn_narrowing;
 #[path = "references/keyword_tokens.rs"]
 mod keyword_tokens;
 
+#[path = "references/phpdoc_tokens.rs"]
+mod phpdoc_tokens;
+
 #[path = "references/builtin_vendor_scope.rs"]
 mod builtin_vendor_scope;
 

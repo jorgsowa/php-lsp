@@ -4,7 +4,7 @@ use tower_lsp_server::jsonrpc::Result;
 use tower_lsp_server::ls_types::*;
 
 use crate::analysis::document_highlight::document_highlights;
-use crate::lang::is_bare_keyword_at;
+use crate::lang::is_unresolvable_bareword_at;
 use crate::navigation::definition::{
     find_declaration_range, find_method_in_class_hierarchy, find_method_range_in_class,
 };
@@ -68,9 +68,10 @@ impl Backend {
             // filter for non-`$`-prefixed queries, so a keyword like `final`
             // or `void` would otherwise "resolve" to any unrelated
             // class/function/property/constant that happens to share its
-            // name. See `is_bare_keyword_at` and its use in `handle_references`.
+            // name. See `is_unresolvable_bareword_at` and its use in
+            // `handle_references`.
             if let Some(word) = crate::text::word_at_position(&source, position)
-                && is_bare_keyword_at(&source, position, &word)
+                && is_unresolvable_bareword_at(&source, position, &word)
             {
                 return Ok(None);
             }
@@ -324,13 +325,15 @@ impl Backend {
                 None => return Ok(None),
             };
 
-            // Bare keyword tokens (`final`, `readonly`, `abstract`, ...) are
-            // never a resolvable symbol. Bail out before mir's per-file
-            // analysis runs: its declaration span for the entity the
-            // keyword modifies (e.g. a class) can otherwise map the offset
-            // to that entity's real symbol, triggering a full reference
-            // search from a token that was never meant to be searchable.
-            if is_bare_keyword_at(&source, position, &word) {
+            // Bare keyword tokens (`final`, `readonly`, `abstract`, ...) and
+            // documentation-only PHPDoc tokens (`@param`'s tag name, a
+            // `@template` parameter name, a doc `$var` name, ...) are never
+            // a resolvable symbol. Bail out before mir's per-file analysis
+            // runs: its declaration span for the entity the keyword modifies
+            // (e.g. a class) can otherwise map the offset to that entity's
+            // real symbol, triggering a full reference search from a token
+            // that was never meant to be searchable.
+            if is_unresolvable_bareword_at(&source, position, &word) {
                 return Ok(None);
             }
 
@@ -616,7 +619,7 @@ impl Backend {
     ) -> Option<WorkspaceEdit> {
         let source = self.get_open_text(uri).unwrap_or_default();
         let word = word_at_position(&source, position)?;
-        if is_bare_keyword_at(&source, position, &word) {
+        if is_unresolvable_bareword_at(&source, position, &word) {
             return None;
         }
         let doc_opt = self.get_doc(uri);

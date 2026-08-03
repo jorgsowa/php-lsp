@@ -2254,3 +2254,56 @@ __halt_$0compiler();
         .await;
     expect!["<none>"].assert_eq(&out);
 }
+
+/// PHPDoc documentation-only tokens must never resolve via goto-definition
+/// either — the same gate `references`/`hover` use (`is_unresolvable_docblock_token_at`),
+/// exercised here against a cross-file name collision: an unrelated
+/// top-level function literally named `T` sits elsewhere in the workspace.
+#[tokio::test]
+async fn goto_definition_on_template_parameter_name_ignores_cross_file_name_collision() {
+    let mut s = TestServer::new().await;
+    let out = s
+        .check_definition(
+            r#"//- /src/Unrelated.php
+<?php
+function T(): void {}
+
+//- /src/Box.php
+<?php
+/**
+ * @template T$0 of object
+ */
+class Box {}
+"#,
+        )
+        .await;
+    expect!["<none>"].assert_eq(&out);
+}
+
+/// Same gate, for the `$varName` half of a `@param` doc-tag body: an
+/// unrelated property literally named `count` sits elsewhere in the
+/// workspace.
+#[tokio::test]
+async fn goto_definition_on_param_doc_variable_name_ignores_cross_file_name_collision() {
+    let mut s = TestServer::new().await;
+    let out = s
+        .check_definition(
+            r#"//- /src/Unrelated.php
+<?php
+class Unrelated {
+    public int $count = 0;
+}
+
+//- /src/Counter.php
+<?php
+class Counter {
+    /**
+     * @param int $count$0 starting value
+     */
+    public function __construct(int $count) {}
+}
+"#,
+        )
+        .await;
+    expect!["<none>"].assert_eq(&out);
+}

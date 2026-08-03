@@ -5,7 +5,7 @@ use tower_lsp_server::ls_types::{Hover, HoverContents, MarkupContent, MarkupKind
 use crate::completion::ClassDocLookup;
 use crate::document::ast::ParsedDoc;
 use crate::lang::docblock::find_docblock;
-use crate::lang::is_bare_keyword_at;
+use crate::lang::is_unresolvable_bareword_at;
 use crate::lang::php_names::{is_php_builtin, php_doc_url};
 use crate::text::{fqn_short_name, word_at_position, word_range_at};
 use crate::types::resolve::{Declaration, resolve_declaration};
@@ -429,7 +429,7 @@ fn hover_at_core(
     // fallbacks below, which match by bare name with no keyword awareness —
     // e.g. hovering `public` could surface an unrelated property literally
     // named `public` elsewhere in the workspace.
-    if is_bare_keyword_at(source, position, &word) {
+    if is_unresolvable_bareword_at(source, position, &word) {
         return None;
     }
 

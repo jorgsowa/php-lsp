@@ -11,7 +11,7 @@ use std::sync::Arc;
 use tower_lsp_server::ls_types::{Location, Position, Uri};
 
 use crate::document::ast::ParsedDoc;
-use crate::lang::is_bare_keyword_at;
+use crate::lang::is_unresolvable_bareword_at;
 use crate::text::{strip_variable_sigil, utf16_code_units, word_at_position};
 use crate::types::resolve::{Container, Declaration, resolve_declaration};
 
@@ -31,7 +31,7 @@ pub fn goto_declaration(
     // index` already gates on this; this in-memory pass ran first and
     // unguarded, so it could return the wrong location before that check
     // ever ran.
-    if is_bare_keyword_at(source, position, &word) {
+    if is_unresolvable_bareword_at(source, position, &word) {
         return None;
     }
 
@@ -206,7 +206,7 @@ pub fn goto_declaration_from_index(
     // declaration name — bail out before either full-workspace scan below.
     // `decls_by_name` would always miss for these anyway, so without this
     // check every keyword click pays for the exhaustive fallback loop.
-    if is_bare_keyword_at(source, position, &word) {
+    if is_unresolvable_bareword_at(source, position, &word) {
         return None;
     }
     let bare = strip_variable_sigil(&word);

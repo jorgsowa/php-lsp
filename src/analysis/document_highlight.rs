@@ -1,7 +1,7 @@
 use tower_lsp_server::ls_types::{DocumentHighlight, DocumentHighlightKind, Position, Range};
 
 use crate::document::ast::ParsedDoc;
-use crate::lang::is_bare_keyword_at;
+use crate::lang::is_unresolvable_bareword_at;
 use crate::navigation::walk::{collect_var_refs_in_scope, refs_in_stmts};
 use crate::text::word_at_position;
 
@@ -25,7 +25,7 @@ pub fn document_highlights(
     // sites of a same-named method elsewhere in the file (semi-reserved
     // words are valid method names). Also feeds `linked_editing_range`,
     // which calls this function directly.
-    if is_bare_keyword_at(source, position, &word) {
+    if is_unresolvable_bareword_at(source, position, &word) {
         return vec![];
     }
 

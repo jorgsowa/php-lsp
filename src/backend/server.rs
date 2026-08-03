@@ -16,7 +16,7 @@ use crate::hover::{
 use crate::index::file_index::ClassKind;
 use crate::index::workspace_scan::{scan_workspace, send_refresh_requests};
 use crate::lang::config::LspConfig;
-use crate::lang::is_bare_keyword_at;
+use crate::lang::is_unresolvable_bareword_at;
 use crate::navigation::symbols::{
     document_symbols, resolve_workspace_symbol, workspace_symbols_from_workspace,
 };
@@ -1330,7 +1330,7 @@ impl LanguageServer for Backend {
             // A bare keyword can never be a callable name; skip it here so a
             // `decls_by_name` miss doesn't fall through to the trait-alias
             // exhaustive scan in `prepare_call_hierarchy_indexed`.
-            if is_bare_keyword_at(&source, position, &word) {
+            if is_unresolvable_bareword_at(&source, position, &word) {
                 return Ok(None);
             }
             // O(matches) lookup via the aggregate's `decls_by_name` map instead
@@ -1446,7 +1446,7 @@ impl LanguageServer for Backend {
             let source = self.get_open_text(uri).unwrap_or_default();
             let imports = self.file_imports(uri);
             let raw_word = crate::text::word_at_position(&source, position).unwrap_or_default();
-            if raw_word.is_empty() || is_bare_keyword_at(&source, position, &raw_word) {
+            if raw_word.is_empty() || is_unresolvable_bareword_at(&source, position, &raw_word) {
                 return Ok(None);
             }
             // `word_at_position` includes `\` as a word character, so the cursor on
