@@ -193,3 +193,45 @@ class Widget {
         .await;
     expect!["<none>"].assert_eq(&out);
 }
+
+/// `__halt_compiler` is a hard reserved keyword present on php.net's
+/// reserved.keywords.php but was missing from this project's keyword list
+/// entirely until it was backfilled by sourcing from `php_lexer::resolve_keyword`
+/// — pin it the same way every other reserved word above is pinned.
+#[tokio::test]
+async fn halt_compiler_has_no_references() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_references(
+            r#"<?php
+__halt_$0compiler();
+"#,
+        )
+        .await;
+    expect!["<none>"].assert_eq(&out);
+}
+
+/// `from` is classified as a keyword token by `php_lexer::resolve_keyword`
+/// (it's part of `yield from`), but PHP only reserves it directly after
+/// `yield` — everywhere else, most commonly a backed enum's static factory
+/// (`Suit::from('H')`), it's an ordinary method name. This is the inverse of
+/// every other test in this file: the bare-keyword gate must *not* fire here,
+/// or a naive reuse of `resolve_keyword` would silently break references on
+/// any symbol literally named `from`.
+#[tokio::test]
+async fn method_named_from_still_resolves_references() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    s.check_references_annotated(
+        r#"<?php
+class Suit {
+    public static function from(string $value): self { return new self(); }
+    //                     ^^^^ def
+}
+Suit::fr$0om('H');
+//    ^^^^ ref
+"#,
+    )
+    .await;
+}

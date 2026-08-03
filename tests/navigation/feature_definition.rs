@@ -2216,3 +2216,41 @@ function test() {
         .await;
     expect!["main.php:5:20-5:27"].assert_eq(&out);
 }
+
+/// `from` is classified as a keyword token by the underlying lexer crate
+/// (it's part of `yield from`), but PHP only reserves it directly after
+/// `yield` — everywhere else, most commonly a backed enum's static factory
+/// (`Suit::from('H')`), it's an ordinary method name. `is_php_keyword` must
+/// not treat it as always-reserved, or this call site would incorrectly
+/// resolve to nothing.
+#[tokio::test]
+async fn goto_definition_on_static_method_named_from_resolves() {
+    let mut s = TestServer::new().await;
+    s.check_definition_annotated(
+        r#"<?php
+class Suit {
+    public static function from(string $value): self { return new self(); }
+    //                     ^^^^ def
+}
+Suit::fr$0om('H');
+"#,
+    )
+    .await;
+}
+
+/// `__halt_compiler` is a hard reserved keyword (present on php.net's
+/// reserved.keywords.php, previously missing from this project's list
+/// entirely) — a bare cursor on it must never resolve to anything, same as
+/// any other reserved word.
+#[tokio::test]
+async fn goto_definition_on_halt_compiler_returns_none() {
+    let mut s = TestServer::new().await;
+    let out = s
+        .check_definition(
+            r#"<?php
+__halt_$0compiler();
+"#,
+        )
+        .await;
+    expect!["<none>"].assert_eq(&out);
+}

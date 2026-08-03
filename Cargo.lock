@@ -1069,6 +1069,7 @@ dependencies = [
  "mir-types",
  "percent-encoding",
  "php-ast",
+ "php-lexer",
  "php-lsp",
  "php-rs-parser",
  "rayon",
