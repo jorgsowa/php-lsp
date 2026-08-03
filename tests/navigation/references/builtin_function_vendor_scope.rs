@@ -1,19 +1,17 @@
 //! Regression pin for ROADMAP item 0c / plan step 0 (`~/.claude/plans/crispy-noodling-key.md`).
 //!
-//! Same vendor-scoping problem as `builtin_vendor_scope.rs`, but for
-//! `Name::Function` instead of `Name::Class`: `reference_candidate_files`
-//! (`src/document/document_store.rs:1218-1223`) only narrows a function/
-//! constant reference when its FQCN is namespaced — an unqualified call to a
+//! Same vendor-scoping rule as `builtin_vendor_scope.rs`, but for
+//! `Name::Function` instead of `Name::Class`: an unqualified call to a
 //! *global* builtin (`array_map`, `strlen`, ...) is unqualified by
-//! definition, so it falls straight through to the full workspace today,
-//! same as `Closure`. `mir::stubs::is_builtin_function` already exists and
-//! is already re-exported (used by hover's php.net links) — this needs a
-//! new branch in `reference_candidate_files`, not a new mir API.
+//! definition, so FQN-reachability narrowing (which only applies to
+//! namespaced names) can't exclude vendor for it — `reference_candidate_files`
+//! (`src/document/document_store.rs`) instead checks
+//! `mir_analyzer::is_builtin_function` directly and drops vendor outright.
 //!
 //! `Name::GlobalConstant` shares the exact same match arm and has the exact
 //! same problem for builtin constants (`PHP_EOL`, `PHP_VERSION`, ...), but
 //! there's no test for it here: mir's equivalent helper
-//! (`stub_path_for_constant`) is `pub(crate)`, not re-exported — fixing the
+//! (`stub_path_for_constant`) is `pub(crate)`, not re-exported — narrowing the
 //! constant case needs a small mir change (make it `pub`, or add an
 //! `is_builtin_constant` wrapper) before it's even reachable from php-lsp.
 
@@ -33,9 +31,8 @@ fn write_composer(dir: &std::path::Path) {
 /// Global builtin function call, no import needed (PHP falls back to the
 /// global function when the current namespace doesn't declare one of the
 /// same name) — matches how this is written in real code. Vendor calls it
-/// too; only the project call must remain in the post-fix result.
+/// too; only the project call must remain in the result.
 #[tokio::test]
-#[ignore = "vendor scoping for builtin-resolved symbols not implemented yet (ROADMAP 0c step 0)"]
 async fn references_on_global_builtin_function_excludes_vendor_usages() {
     let dir = tempfile::tempdir().unwrap();
     write_composer(dir.path());
@@ -56,13 +53,12 @@ async fn references_on_global_builtin_function_excludes_vendor_usages() {
 }
 
 /// Explicit global-escape syntax (`\array_map(...)`) — a real PHP idiom
-/// used from inside a namespace to be unambiguous. This exercises whether
-/// the eventual builtin check strips a leading backslash before doing its
-/// lookup (mir's class-side equivalent, `stub_path_for_class`, already does
-/// this — `is_builtin_function`'s call site in the fix needs the same
-/// treatment, since the function-name index itself is not backslash-aware).
+/// used from inside a namespace to be unambiguous. This exercises that the
+/// builtin check strips a leading backslash before doing its lookup, the
+/// same treatment mir's class-side equivalent (`stub_path_for_class`)
+/// already gives itself — `is_builtin_function`'s call site needs it too,
+/// since the function-name index itself isn't backslash-aware.
 #[tokio::test]
-#[ignore = "vendor scoping for builtin-resolved symbols not implemented yet (ROADMAP 0c step 0)"]
 async fn references_on_backslash_prefixed_builtin_function_excludes_vendor_usages() {
     let dir = tempfile::tempdir().unwrap();
     write_composer(dir.path());
@@ -84,10 +80,10 @@ async fn references_on_backslash_prefixed_builtin_function_excludes_vendor_usage
 
 /// Control case: a *namespaced* function that merely shares a builtin's
 /// short name must keep vendor usages in scope. Structurally this can't
-/// regress from the fix above — a namespaced FQCN already returns early via
-/// `fqn_reachable_files` before any builtin check would run — but it's
-/// cheap insurance against a future refactor that reorders those checks.
-/// NOT ignored — must hold today and after the fix lands.
+/// regress from the builtin-narrowing case above — a namespaced FQCN
+/// already returns early via `fqn_reachable_files` before any builtin check
+/// runs — but it's cheap insurance against a future refactor that reorders
+/// those checks.
 #[tokio::test]
 async fn references_on_namespaced_function_shadowing_builtin_name_still_includes_vendor_usages() {
     let dir = tempfile::tempdir().unwrap();

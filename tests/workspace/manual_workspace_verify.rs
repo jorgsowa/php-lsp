@@ -65,6 +65,7 @@ async fn manual_workspace_verify() {
             continue;
         };
         let uri = s.uri(&target);
+        let locks_before = s.debug_stats_ref_index_locks().await;
         let t0 = std::time::Instant::now();
         let resp = s
             .client()
@@ -79,8 +80,12 @@ async fn manual_workspace_verify() {
             )
             .await;
         let elapsed = t0.elapsed();
+        let locks_after = s.debug_stats_ref_index_locks().await;
         let n = resp["result"].as_array().map(|a| a.len()).unwrap_or(0);
-        println!("RESULT {needle} {n} locations in {elapsed:.2?}");
+        println!(
+            "RESULT {needle} {n} locations in {elapsed:.2?} (ref_index_locks +{})",
+            locks_after - locks_before
+        );
     }
 
     println!("MILESTONE requests_done {:.2?}", start.elapsed());

@@ -8,10 +8,9 @@
 //! with a *vendor-defined* class/interface, where a vendor-internal usage is
 //! genuinely informative (cross-package integration) and must stay in scope.
 //!
-//! `reference_candidate_files` (`src/document/document_store.rs`) does not
-//! yet special-case builtin-stub-resolved symbols, so today's candidate scope
-//! for `Closure` includes vendor. These tests are `#[ignore]`d until that
-//! scoping lands; un-ignore them as part of implementing plan step 0.
+//! `reference_candidate_files` (`src/document/document_store.rs`) special-
+//! cases builtin-stub-resolved symbols so vendor is excluded from their
+//! candidate scope.
 
 use super::*;
 use expect_test::expect;
@@ -40,7 +39,6 @@ fn write_vendor_fixture(dir: &std::path::Path) {
 /// project-file usage of `Closure` must be found; the vendor file's own
 /// `Closure` type-hint (`Runner::run`) must not.
 #[tokio::test]
-#[ignore = "vendor scoping for builtin-resolved symbols not implemented yet (ROADMAP 0c step 0)"]
 async fn references_on_closure_import_excludes_vendor_usages() {
     let dir = tempfile::tempdir().unwrap();
     write_vendor_fixture(dir.path());
@@ -57,9 +55,6 @@ async fn references_on_closure_import_excludes_vendor_usages() {
     let resp = server.references("src/Handler.php", line, col + 4, false).await;
     assert!(resp["error"].is_null(), "references error: {resp:?}");
 
-    // Today (before plan step 0), this also includes
-    // `vendor/acme/lib/src/Runner.php:4:24-4:32` — the vendor file's own
-    // `\Closure` type-hint. This snapshot is the target post-fix state.
     expect!["src/Handler.php:6:27-6:34"].assert_eq(&render_locations(&resp, &server.uri("")));
 }
 
@@ -68,7 +63,6 @@ async fn references_on_closure_import_excludes_vendor_usages() {
 /// under the cursor and returns every reference to it, so the invocation
 /// site must not change the result. Vendor stays excluded either way.
 #[tokio::test]
-#[ignore = "vendor scoping for builtin-resolved symbols not implemented yet (ROADMAP 0c step 0)"]
 async fn references_on_closure_typehint_excludes_vendor_usages() {
     let dir = tempfile::tempdir().unwrap();
     write_vendor_fixture(dir.path());
@@ -85,7 +79,7 @@ async fn references_on_closure_typehint_excludes_vendor_usages() {
     assert!(resp["error"].is_null(), "references error: {resp:?}");
 
     // Same target result as the import-cursor test above — invocation site
-    // must not change the (post-fix) result.
+    // must not change the result.
     expect!["src/Handler.php:6:27-6:34"].assert_eq(&render_locations(&resp, &server.uri("")));
 }
 
@@ -95,7 +89,6 @@ async fn references_on_closure_typehint_excludes_vendor_usages() {
 /// cases without any extra code. This test exists to verify that claim
 /// rather than assume it.
 #[tokio::test]
-#[ignore = "vendor scoping for builtin-resolved symbols not implemented yet (ROADMAP 0c step 0)"]
 async fn references_on_closure_return_type_excludes_vendor_usages() {
     let dir = tempfile::tempdir().unwrap();
     write_vendor_fixture(dir.path());
@@ -117,7 +110,6 @@ async fn references_on_closure_return_type_excludes_vendor_usages() {
 /// Typed *property* declaration — a third position beyond param/return that
 /// the fix must cover for free via the same resolution-based mechanism.
 #[tokio::test]
-#[ignore = "vendor scoping for builtin-resolved symbols not implemented yet (ROADMAP 0c step 0)"]
 async fn references_on_closure_typed_property_excludes_vendor_usages() {
     let dir = tempfile::tempdir().unwrap();
     write_vendor_fixture(dir.path());
@@ -142,7 +134,6 @@ async fn references_on_closure_typed_property_excludes_vendor_usages() {
 /// this would (wrongly) fall through to a different code path than the
 /// plain-typehint test and could silently keep including vendor.
 #[tokio::test]
-#[ignore = "vendor scoping for builtin-resolved symbols not implemented yet (ROADMAP 0c step 0)"]
 async fn references_on_nullable_closure_param_excludes_vendor_usages() {
     let dir = tempfile::tempdir().unwrap();
     write_vendor_fixture(dir.path());
@@ -165,10 +156,9 @@ async fn references_on_nullable_closure_param_excludes_vendor_usages() {
 /// its short name with a builtin (no `use Closure;`, so this file's bare
 /// `Closure` typehint resolves to `Acme\Lib\Closure`, a real user-defined
 /// class, per PHP's no-fallback rule for class names) must NOT be treated as
-/// builtin-resolved. If the fix ever matched on short name instead of the
-/// fully-qualified name, this would wrongly exclude vendor usages of a real,
-/// unrelated, vendor-defined class. NOT ignored — must hold today and after
-/// the fix lands.
+/// builtin-resolved. Matching on short name instead of the fully-qualified
+/// name would wrongly exclude vendor usages of a real, unrelated,
+/// vendor-defined class.
 #[tokio::test]
 async fn references_on_namespaced_class_shadowing_builtin_name_still_includes_vendor_usages() {
     let dir = tempfile::tempdir().unwrap();
@@ -212,9 +202,7 @@ async fn references_on_namespaced_class_shadowing_builtin_name_still_includes_ve
 
 /// Control case: a *vendor-defined* class must keep vendor usages in scope —
 /// this scoping rule is specific to builtin-stub-resolved symbols, not a
-/// blanket "exclude vendor" change. If this test ever needs updating because
-/// vendor got excluded generally, that's a sign the implementation over-
-/// broadened the rule past what plan step 0 asks for.
+/// blanket "exclude vendor" change.
 #[tokio::test]
 async fn references_on_vendor_defined_class_still_includes_vendor_usages() {
     let dir = tempfile::tempdir().unwrap();

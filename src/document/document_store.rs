@@ -1209,17 +1209,43 @@ impl DocumentStore {
             // A class reference always textually resolves the name in the
             // referencing file (import, namespace, or qualified path) —
             // there's no instance-typed-receiver indirection here, so FQN
-            // narrowing is always sound.
+            // narrowing is always sound. A builtin (stub-resolved) class is
+            // additionally never declared in vendor — PHP core/extension
+            // types have no user-authored declaration for any file to
+            // legitimately "be" — so vendor mentions of it are dependency-
+            // internal noise, same call TypeScript makes for `node_modules`
+            // usages of `Promise`.
             mir_analyzer::Name::Class(fqcn) => {
                 if let Some(files) = self.fqn_reachable_files(std::slice::from_ref(fqcn)) {
-                    return files;
+                    return if mir_analyzer::stub_path_for_class(fqcn).is_some() {
+                        files.into_iter().filter(|f| !is_vendor_path_str(f)).collect()
+                    } else {
+                        files
+                    };
                 }
             }
-            // Functions/constants resolve like class names ONLY when
-            // namespaced: an unqualified call to a *global* one (`env()`,
-            // `PHP_EOL`) works from any namespace via PHP's global
-            // fallback, so no file can be excluded for those.
-            mir_analyzer::Name::Function(fqcn) | mir_analyzer::Name::GlobalConstant(fqcn) => {
+            // Namespaced functions/constants resolve like class names; an
+            // unqualified call to a *global* one (`env()`, `PHP_EOL`) works
+            // from any namespace via PHP's global fallback, so FQN
+            // reachability can't exclude any file for those. An unqualified
+            // *builtin* function is the one case that can still narrow: it's
+            // never declared in vendor, so — same reasoning as the builtin
+            // class case above — vendor can be dropped outright without an
+            // FQN scan.
+            mir_analyzer::Name::Function(fqcn) => {
+                let trimmed = fqcn.trim_start_matches('\\');
+                if trimmed.contains('\\') {
+                    if let Some(files) = self.fqn_reachable_files(std::slice::from_ref(fqcn)) {
+                        return files;
+                    }
+                } else if mir_analyzer::is_builtin_function(trimmed) {
+                    return self.workspace_file_paths_excluding_vendor();
+                }
+            }
+            // `stub_path_for_constant` isn't re-exported by mir, so a
+            // builtin global constant (`PHP_EOL`, ...) can't be
+            // distinguished from a project-defined one here yet.
+            mir_analyzer::Name::GlobalConstant(fqcn) => {
                 if fqcn.trim_start_matches('\\').contains('\\')
                     && let Some(files) = self.fqn_reachable_files(std::slice::from_ref(fqcn))
                 {
@@ -1252,6 +1278,18 @@ impl DocumentStore {
         self.workspace_file_paths_cache
             .store(Some(Arc::clone(&files)));
         files
+    }
+
+    /// [`Self::workspace_file_paths`] with vendor files dropped — the
+    /// narrowed scope for a symbol that's resolved to something builtin
+    /// (never declared in vendor), as opposed to the FQN-reachable narrowing
+    /// used for project/vendor-defined symbols.
+    fn workspace_file_paths_excluding_vendor(&self) -> Vec<Arc<str>> {
+        self.workspace_file_paths()
+            .iter()
+            .filter(|f| !is_vendor_path_str(f))
+            .cloned()
+            .collect()
     }
 
     /// Transitive subtypes of `class_fqn` from mir's maintained subtype edge
@@ -1366,6 +1404,22 @@ impl DocumentStore {
                 .filter_map(|&r| ws.at(r))
                 .find(|(_, cls)| cls.fqn.trim_start_matches('\\') == owner_fqn)
         }) else {
+            // No project/vendor declaration matches this FQN — a builtin
+            // owner (`Closure`, `ReflectionParameter`, ...) always lands
+            // here, since PHP core/extension classes have no `FileIndex`
+            // entry of their own. Same vendor-exclusion reasoning as the
+            // `Name::Class`/builtin-function branches in
+            // `reference_candidate_files`: a builtin is never declared in
+            // vendor, so vendor's own usages of a builtin-owned method are
+            // dependency-internal noise.
+            if mir_analyzer::stub_path_for_class(owner_fqn).is_some() {
+                return MethodScopePlan::Files(
+                    self.workspace_file_paths_excluding_vendor()
+                        .iter()
+                        .filter_map(|f| f.parse::<Uri>().ok())
+                        .collect(),
+                );
+            }
             return MethodScopePlan::FullWorkspace;
         };
 
@@ -2213,7 +2267,14 @@ fn fqn_segment_prefix(prefix: &str, whole: &str) -> bool {
 /// paths are always `/`-separated regardless of platform, so a plain
 /// component split is enough — no OS path handling needed.
 fn is_vendor_uri(uri: &Uri) -> bool {
-    uri.path().split('/').any(|seg| seg == "vendor")
+    is_vendor_path_str(uri.path().as_str())
+}
+
+/// [`is_vendor_uri`] on a raw URI/path string, for callers already holding
+/// one (e.g. the `Arc<str>` candidate lists `reference_candidate_files`
+/// deals in) instead of a parsed [`Uri`].
+fn is_vendor_path_str(s: &str) -> bool {
+    s.split('/').any(|seg| seg == "vendor")
 }
 
 /// The narrowing decision for a method's reference scope, computed without

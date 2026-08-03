@@ -1,13 +1,12 @@
 //! Regression pin for ROADMAP item 0c / plan step 0 (`~/.claude/plans/crispy-noodling-key.md`).
 //!
-//! A third variant of the same vendor-scoping gap, this time for methods
+//! A third variant of the same vendor-scoping rule, this time for methods
 //! *declared on* a builtin-stub-resolved class — `Closure::fromCallable()`
 //! (static) and `$closure->call()` (instance). `method_reference_scope_plan`
-//! (`src/document/document_store.rs`) returns `MethodScopePlan::FullWorkspace`
-//! unconditionally for any public method, builtin-owned or not — narrowing
-//! this needs to check the *owner*'s FQCN against `stub_path_for_class`
-//! before falling through to the existing (correct, and separately tracked)
-//! full-workspace behavior for vendor-defined public methods.
+//! (`src/document/document_store.rs`) checks the *owner*'s FQCN against
+//! `stub_path_for_class` before falling through to
+//! `MethodScopePlan::FullWorkspace`, which stays the (correct) behavior for
+//! vendor-defined public methods.
 
 use super::*;
 use expect_test::expect;
@@ -26,7 +25,6 @@ fn write_composer(dir: &std::path::Path) {
 /// on `fromCallable`, not `Closure`, so this resolves as `Name::Method`, not
 /// `Name::Class` (already covered by `builtin_vendor_scope.rs`).
 #[tokio::test]
-#[ignore = "vendor scoping for builtin-owned methods not implemented yet (ROADMAP 0c step 0)"]
 async fn references_on_closure_static_method_excludes_vendor_usages() {
     let dir = tempfile::tempdir().unwrap();
     write_composer(dir.path());
@@ -49,7 +47,6 @@ async fn references_on_closure_static_method_excludes_vendor_usages() {
 /// `$cb->call($this)` — an instance method owned by a builtin, dispatched on
 /// a typed variable rather than a class-name expression.
 #[tokio::test]
-#[ignore = "vendor scoping for builtin-owned methods not implemented yet (ROADMAP 0c step 0)"]
 async fn references_on_closure_instance_method_excludes_vendor_usages() {
     let dir = tempfile::tempdir().unwrap();
     write_composer(dir.path());
