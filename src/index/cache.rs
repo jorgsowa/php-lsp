@@ -13,6 +13,8 @@
 //!
 //! - `<schema-version>` — `php-lsp` crate version; bumping it rotates the
 //!   entire cache so old entries are never decoded against a newer schema.
+//!   The previous version's directory is pruned by the next `WorkspaceCache::new`
+//!   call rather than left to accumulate release over release.
 //! - `<workspace-hash>` — blake3 of the canonicalized absolute path of the
 //!   first workspace root, truncated to 16 hex chars. Two separate projects
 //!   get isolated caches; two checkouts of the same project at the same
@@ -22,6 +24,11 @@
 //!   the entry and checked on read, so re-indexing an edited file overwrites
 //!   its existing slot in place instead of leaving the previous revision's
 //!   entry to rot on disk.
+//!
+//! `<workspace-hash>` also holds a `session/` subdirectory: mir's own
+//! `AnalysisCache`, nested here (not under mir's default `.mir-cache/`) so
+//! both caches share schema/workspace rotation and cleanup. `size_bytes`
+//! recurses into it for the size cap.
 //!
 //! ## Format
 //!
@@ -93,8 +100,10 @@ impl WorkspaceCache {
     pub fn new(root: &Path) -> Option<Self> {
         let base = cache_base_dir()?;
         let schema = schema_version();
+        let php_lsp_dir = base.join("php-lsp");
+        drop(prune_stale_schema_dirs(&php_lsp_dir, schema));
         let workspace = workspace_hash(root);
-        let dir = base.join("php-lsp").join(schema).join(workspace);
+        let dir = php_lsp_dir.join(schema).join(workspace);
         std::fs::create_dir_all(&dir).ok()?;
         let cache = Self { dir };
         if cache.size_bytes().unwrap_or(0) > CACHE_SIZE_CAP {
@@ -108,26 +117,12 @@ impl WorkspaceCache {
         &self.dir
     }
 
-    /// Total bytes consumed by `.bin` entries in this workspace's cache
-    /// directory. Cheap (one `read_dir` pass, no recursion into
-    /// subdirectories because the layout is flat).
+    /// Total bytes consumed by this workspace's cache directory, including
+    /// nested subdirectories — mir's `AnalysisCache` lives under a `session/`
+    /// subdirectory of this one (see `set_session_cache_dir`), so the layout
+    /// isn't flat even though this directory's own entries are.
     pub fn size_bytes(&self) -> io::Result<u64> {
-        let mut total = 0u64;
-        let entries = match std::fs::read_dir(&self.dir) {
-            Ok(e) => e,
-            Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(0),
-            Err(e) => return Err(e),
-        };
-        for entry in entries.flatten() {
-            let meta = match entry.metadata() {
-                Ok(m) => m,
-                Err(_) => continue,
-            };
-            if meta.is_file() {
-                total = total.saturating_add(meta.len());
-            }
-        }
-        Ok(total)
+        dir_size(&self.dir)
     }
 
     /// Override the root directory directly. The directory is used verbatim
@@ -209,6 +204,69 @@ impl WorkspaceCache {
     }
 }
 
+/// Recursively sums file sizes under `dir`. Used for the size cap: the
+/// workspace cache directory isn't flat — mir's `AnalysisCache` lives in a
+/// `session/` subdirectory underneath it — so a top-level-only scan would
+/// never see it grow.
+fn dir_size(dir: &Path) -> io::Result<u64> {
+    let mut total = 0u64;
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(0),
+        Err(e) => return Err(e),
+    };
+    for entry in entries.flatten() {
+        let meta = match entry.metadata() {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        if meta.is_dir() {
+            total = total.saturating_add(dir_size(&entry.path())?);
+        } else if meta.is_file() {
+            total = total.saturating_add(meta.len());
+        }
+    }
+    Ok(total)
+}
+
+/// Removes sibling schema-version directories under `php_lsp_dir` other than
+/// `current_schema`. `schema_version()` embeds `CARGO_PKG_VERSION`, so every
+/// php-lsp release moves to a new schema directory; without this, every past
+/// release's entire cache directory (including its nested mir `session/`
+/// cache) sits there forever since nothing else ever reads or removes it.
+/// Only directories are touched — `php_lsp_dir` also holds flat sibling files
+/// (e.g. `php-binary-version.json`, see `autoload::detect_php_binary_version`)
+/// that must survive. Best-effort: errors are ignored, same advisory-cache
+/// posture as the rest of this module.
+///
+/// The actual deletion runs on a detached background thread rather than
+/// blocking the caller: on a long-lived dev machine a stale schema directory
+/// can hold many thousands of entries across many past workspaces (one
+/// `remove_dir_all` per schema version, each recursing into every workspace
+/// ever cached under it), and deleting that synchronously inside
+/// `WorkspaceCache::new()` — on the same path as the workspace scan — stalled
+/// startup for 20+ minutes on a real cache before `indexReady` ever fired.
+/// The listing/filtering above stays synchronous (cheap, one shallow
+/// `read_dir`); only the recursive removal is deferred. Returns the join
+/// handle so tests can wait for completion; normal callers drop it and let
+/// the cleanup finish in its own time.
+fn prune_stale_schema_dirs(php_lsp_dir: &Path, current_schema: &str) -> Option<std::thread::JoinHandle<()>> {
+    let entries = std::fs::read_dir(php_lsp_dir).ok()?;
+    let stale: Vec<PathBuf> = entries
+        .flatten()
+        .filter(|entry| entry.file_name() != current_schema && entry.file_type().is_ok_and(|t| t.is_dir()))
+        .map(|entry| entry.path())
+        .collect();
+    if stale.is_empty() {
+        return None;
+    }
+    Some(std::thread::spawn(move || {
+        for dir in stale {
+            let _ = std::fs::remove_dir_all(dir);
+        }
+    }))
+}
+
 /// Platform cache directory: `$XDG_CACHE_HOME` or `$HOME/.cache` on Unix,
 /// `%LOCALAPPDATA%` on Windows. Deliberately doesn't depend on the `dirs`
 /// crate — keeps the footprint small and the behaviour predictable.
@@ -232,14 +290,15 @@ pub(crate) fn cache_base_dir() -> Option<PathBuf> {
     None
 }
 
-/// Schema marker: bumping `php-lsp` crate version, `mir-codebase` version, or
-/// the trailing `fi-vN` file-index marker invalidates every cached entry. The
-/// hardcoded mir version is a trade-off: keeping it in source means we don't
-/// depend on `build.rs` introspection, at the cost of needing to remember to
-/// update it alongside `Cargo.toml`. Bump `fi-vN` whenever `FileIndex` or any
-/// type it contains gains, loses, or renames a field.
+/// Schema marker: bumping `php-lsp`'s crate version invalidates every cached
+/// entry (a new release moves to a new directory; see
+/// `prune_stale_schema_dirs` for cleanup of the old one). `fi-vN` is the one
+/// manual knob — bump it whenever `FileIndex` or any type it contains gains,
+/// loses, or renames a field, including a `php_ast`/parser upgrade that
+/// changes what gets extracted. `FileIndex` has no dependency on any mir
+/// type, so a mir version has no bearing on this cache's validity.
 fn schema_version() -> &'static str {
-    concat!(env!("CARGO_PKG_VERSION"), "-mir-0.7-fi-v4")
+    concat!(env!("CARGO_PKG_VERSION"), "-fi-v4")
 }
 
 fn workspace_hash(root: &Path) -> String {
@@ -442,6 +501,32 @@ mod tests {
     }
 
     #[test]
+    fn size_bytes_recurses_into_nested_session_dir() {
+        // Simulates mir's AnalysisCache living under `<workspace-hash>/session/`:
+        // size_bytes must see it, not just this directory's own flat entries.
+        let dir = TempDir::new().unwrap();
+        let cache = WorkspaceCache::with_dir(dir.path().to_path_buf());
+
+        let key = WorkspaceCache::key_for("file:///s.php", "<?php");
+        cache
+            .write(
+                &key,
+                &SamplePayload {
+                    name: "s".into(),
+                    values: vec![0u32; 16],
+                },
+            )
+            .unwrap();
+
+        let session_dir = dir.path().join("session");
+        std::fs::create_dir_all(&session_dir).unwrap();
+        std::fs::write(session_dir.join("cache.bin"), vec![0u8; 128]).unwrap();
+
+        let flat_len = cache.path_for(&key).metadata().unwrap().len();
+        assert_eq!(cache.size_bytes().unwrap(), flat_len + 128);
+    }
+
+    #[test]
     fn file_index_round_trips() {
         use crate::document::ast::ParsedDoc;
         use crate::index::file_index::FileIndex;
@@ -461,5 +546,33 @@ mod tests {
         assert_eq!(decoded.classes[0].name.as_ref(), "Foo");
         assert_eq!(decoded.classes[0].methods.len(), 1);
         assert_eq!(decoded.classes[0].methods[0].name.as_ref(), "bar");
+    }
+
+    #[test]
+    fn prune_stale_schema_dirs_removes_old_schemas_keeps_current_and_flat_files() {
+        let dir = TempDir::new().unwrap();
+        let php_lsp_dir = dir.path();
+
+        let stale = php_lsp_dir.join("0.21.0-fi-v3");
+        std::fs::create_dir_all(stale.join("workspacehash")).unwrap();
+        std::fs::write(stale.join("workspacehash").join("a.bin"), b"old").unwrap();
+
+        let current = php_lsp_dir.join("0.22.0-fi-v4");
+        std::fs::create_dir_all(&current).unwrap();
+
+        // Sibling flat file, like `php-binary-version.json` — must survive.
+        std::fs::write(php_lsp_dir.join("php-binary-version.json"), b"{}").unwrap();
+
+        prune_stale_schema_dirs(php_lsp_dir, "0.22.0-fi-v4")
+            .expect("a stale dir is present, so a cleanup thread must be spawned")
+            .join()
+            .unwrap();
+
+        assert!(!stale.exists(), "stale schema directory must be removed");
+        assert!(current.exists(), "current schema directory must survive");
+        assert!(
+            php_lsp_dir.join("php-binary-version.json").exists(),
+            "flat sibling files must not be touched"
+        );
     }
 }
