@@ -83,19 +83,14 @@ fn load_lang_root(lang_root: &Path, out: &mut HashMap<String, Location>) {
     }
 }
 
-/// Direct `.php` children of one locale directory (e.g. `lang/en/`) —
-/// nested subdirectories are a known gap, matching `ConfigIndex`'s same
-/// simplification for `config/`.
+/// Every `.php` file under one locale directory (e.g. `lang/en/`), including
+/// nested subdirectories — a file's group name is its path relative to the
+/// locale directory with the `.php` extension stripped and directory
+/// separators kept as `/` (matching Laravel's own file-path-as-group-name
+/// convention), so `lang/en/vendor/auth.php` becomes group `vendor/auth`.
 fn load_locale_php_files(locale_dir: &Path, out: &mut HashMap<String, Location>) {
-    let Ok(entries) = std::fs::read_dir(locale_dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.extension().is_none_or(|e| e != "php") {
-            continue;
-        }
-        let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+    for path in super::fs_walk::php_files_recursive(locale_dir) {
+        let Some(group) = slash_prefix(locale_dir, &path) else {
             continue;
         };
         let Ok(text) = std::fs::read_to_string(&path) else {
@@ -110,10 +105,24 @@ fn load_locale_php_files(locale_dir: &Path, out: &mut HashMap<String, Location>)
             if let StmtKind::Return(Some(expr)) = &stmt.kind
                 && let ExprKind::Array(elements) = &expr.kind
             {
-                collect_array_keys(elements, sv, &uri, stem, out);
+                collect_array_keys(elements, sv, &uri, &group, out);
             }
         }
     }
+}
+
+/// `path`'s location relative to `locale_dir` as a slash-joined group name —
+/// directory components joined with the file stem, e.g. `en/vendor/auth.php`
+/// under locale dir `en/` becomes `vendor/auth`.
+fn slash_prefix(locale_dir: &Path, path: &Path) -> Option<String> {
+    let rel = path.strip_prefix(locale_dir).ok()?;
+    let mut components: Vec<&str> = rel
+        .components()
+        .filter_map(|c| c.as_os_str().to_str())
+        .collect();
+    let stem = Path::new(components.pop()?).file_stem()?.to_str()?;
+    components.push(stem);
+    Some(components.join("/"))
 }
 
 fn collect_array_keys(
@@ -228,45 +237,100 @@ fn target_translation_json(root: &Path) -> Option<PathBuf> {
     None
 }
 
-/// Whether `key` names a translation group (`<group>.<rest>`) with a real
-/// `<group>.php` file somewhere under `lang/`/`resources/lang/`. When true,
+/// The `<group>.php` file backing a dotted `group.rest` key, if `group` has
+/// one somewhere under `lang/`/`resources/lang/` (any locale). When present,
 /// Laravel resolves the key via that array file (returning the key itself if
 /// the specific entry is missing) and never falls back to the JSON literal
 /// convention — so adding `key` verbatim to a JSON file would not fix the
-/// actual lookup and must not be offered.
-fn group_php_file_exists(root: &Path, key: &str) -> bool {
-    let Some((group, _)) = key.split_once('.') else {
-        return false;
-    };
+/// actual lookup.
+fn group_php_file_path(root: &Path, group: &str) -> Option<PathBuf> {
     for lang_root in [root.join("lang"), root.join("resources").join("lang")] {
         let Ok(entries) = std::fs::read_dir(&lang_root) else {
             continue;
         };
         for entry in entries.flatten() {
-            if entry.file_type().is_ok_and(|t| t.is_dir())
-                && entry.path().join(format!("{group}.php")).is_file()
-            {
-                return true;
+            if !entry.file_type().is_ok_and(|t| t.is_dir()) {
+                continue;
+            }
+            let candidate = entry.path().join(format!("{group}.php"));
+            if candidate.is_file() {
+                return Some(candidate);
             }
         }
     }
-    false
+    None
+}
+
+/// Quickfix for a dotted `group.item` miss whose `<group>.php` array file
+/// exists but lacks `item` — inserts `'item' => '', ` right after the
+/// `return [...]` array's opening `[`, which is always syntactically valid
+/// regardless of the array's existing contents (same insertion technique as
+/// `generate_validation_rules_action`, which sidesteps the risk of producing
+/// invalid PHP that previously left this gap unfixed). Only offered for a
+/// single-level `group.item` miss — a deeper `group.a.b` miss would need
+/// locating (or building) a nested array and is left as a gap.
+fn missing_translation_group_key_action(root: &Path, key: &str) -> Option<CodeActionOrCommand> {
+    let (group, item) = key.split_once('.')?;
+    if item.contains('.') {
+        return None;
+    }
+    let path = group_php_file_path(root, group)?;
+    let text = std::fs::read_to_string(&path).ok()?;
+    let uri = Uri::from_file_path(&path)?;
+    let doc = parse_document_no_diags(&text);
+    let sv = doc.view();
+    let array_span = doc
+        .program()
+        .stmts
+        .iter()
+        .find_map(|stmt| match &stmt.kind {
+            StmtKind::Return(Some(expr)) if matches!(expr.kind, ExprKind::Array(_)) => {
+                Some(expr.span)
+            }
+            _ => None,
+        })?;
+    let open_bracket = text[array_span.start as usize..array_span.end as usize]
+        .find('[')
+        .map(|i| array_span.start + i as u32 + 1)?;
+    let pos = sv.position_of(open_bracket);
+    let escaped_item = item.replace('\\', "\\\\").replace('\'', "\\'");
+    let edit = TextEdit {
+        range: Range {
+            start: pos,
+            end: pos,
+        },
+        new_text: format!("'{escaped_item}' => '', "),
+    };
+    let mut changes = HashMap::new();
+    changes.insert(uri, vec![edit]);
+    let file_name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("group.php");
+    Some(CodeActionOrCommand::CodeAction(CodeAction {
+        title: format!("Add '{item}' to {file_name}"),
+        kind: Some(CodeActionKind::QUICKFIX),
+        edit: Some(WorkspaceEdit {
+            changes: Some(changes),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }))
 }
 
 /// Quickfix offered when `__('...')`/`trans('...')` resolves to no
-/// declaration anywhere in `lang/`/`resources/lang/` — only for the JSON
-/// literal-translation convention, and only when `key` doesn't belong to an
-/// existing `<group>.php` array file (see [`group_php_file_exists`]). A
-/// dotted `group.key` miss *with* a matching array file would need inserting
-/// into a PHP array, which risks producing invalid PHP in edge cases (the
-/// reason the `SuggestedFix` infra was planned but never shipped — see
-/// `ROADMAP.md`), so that case is left as a known gap.
+/// declaration anywhere in `lang/`/`resources/lang/`. Dotted `group.item`
+/// misses with a matching `<group>.php` array file are fixed by inserting
+/// into that array (see [`missing_translation_group_key_action`]); everything
+/// else falls back to the JSON literal-translation convention.
 pub(crate) fn missing_translation_json_key_action(
     root: &Path,
     key: &str,
 ) -> Option<CodeActionOrCommand> {
-    if group_php_file_exists(root, key) {
-        return None;
+    if let Some((group, _)) = key.split_once('.')
+        && group_php_file_path(root, group).is_some()
+    {
+        return missing_translation_group_key_action(root, key);
     }
     let path = target_translation_json(root)?;
     let text = std::fs::read_to_string(&path).ok()?;
@@ -424,6 +488,29 @@ mod tests {
     }
 
     #[test]
+    fn indexes_nested_locale_subdirectory() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_php_lang(
+            tmp.path(),
+            "lang",
+            "en",
+            "auth.php",
+            "<?php\nreturn ['failed' => 'top'];\n",
+        );
+        let nested_dir = tmp.path().join("lang").join("en").join("vendor");
+        std::fs::create_dir_all(&nested_dir).unwrap();
+        std::fs::write(
+            nested_dir.join("auth.php"),
+            "<?php\nreturn ['failed' => 'nested'];\n",
+        )
+        .unwrap();
+        let idx = TranslationIndex::load(tmp.path());
+        assert!(idx.get("auth.failed").is_some());
+        let nested = idx.get("vendor/auth.failed").unwrap();
+        assert!(nested.uri.as_str().ends_with("lang/en/vendor/auth.php"));
+    }
+
+    #[test]
     fn missing_lang_dirs_yield_empty_index() {
         let tmp = tempfile::tempdir().unwrap();
         let idx = TranslationIndex::load(tmp.path());
@@ -521,7 +608,7 @@ mod tests {
     }
 
     #[test]
-    fn missing_translation_json_key_action_none_when_group_file_exists() {
+    fn missing_translation_json_key_action_inserts_into_group_file() {
         let tmp = tempfile::tempdir().unwrap();
         write_php_lang(
             tmp.path(),
@@ -533,8 +620,37 @@ mod tests {
         std::fs::write(tmp.path().join("lang").join("en.json"), "{}").unwrap();
         // `auth.php` exists but lacks `custom` — Laravel resolves via the
         // array file (returning the key itself), never falling back to the
-        // JSON literal convention, so no quickfix should be offered.
-        assert!(missing_translation_json_key_action(tmp.path(), "auth.custom").is_none());
+        // JSON literal convention, so the fix must insert into `auth.php`,
+        // not `en.json`.
+        let CodeActionOrCommand::CodeAction(action) =
+            missing_translation_json_key_action(tmp.path(), "auth.custom").unwrap()
+        else {
+            panic!("expected a CodeAction");
+        };
+        assert_eq!(action.title, "Add 'custom' to auth.php");
+        let edit = action.edit.unwrap();
+        let changes = edit.changes.unwrap();
+        let (uri, edits) = changes.iter().next().unwrap();
+        assert!(uri.as_str().ends_with("lang/en/auth.php"));
+        assert_eq!(edits.len(), 1);
+        assert_eq!(edits[0].new_text, "'custom' => '', ");
+    }
+
+    #[test]
+    fn missing_translation_json_key_action_none_for_nested_group_miss() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_php_lang(
+            tmp.path(),
+            "lang",
+            "en",
+            "auth.php",
+            "<?php\nreturn ['failed' => 'x'];\n",
+        );
+        std::fs::write(tmp.path().join("lang").join("en.json"), "{}").unwrap();
+        // `auth.a.b` is two levels below the group — inserting into a nested
+        // array isn't supported, and falling back to the JSON convention
+        // would be wrong since `auth.php` exists, so no quickfix at all.
+        assert!(missing_translation_json_key_action(tmp.path(), "auth.a.b").is_none());
     }
 
     #[test]
