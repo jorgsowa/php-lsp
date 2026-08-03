@@ -88,6 +88,15 @@ pub struct DebugStats {
     /// task as its scan, before the refresh-request notifications go out —
     /// tests await a count bump here instead of guessing a fixed delay.
     pub warm_start_replays_completed: u64,
+    /// Files handed to a background reanalysis because their replayed
+    /// reference postings were flagged untrusted by mir's `warm_start_files`.
+    /// Always 0 today — `warm_start_indexes` doesn't wire this up yet
+    /// (ROADMAP 0c step 1). See `DocumentStore::warm_start_untrusted_reanalyzed`.
+    pub warm_start_untrusted_reanalyzed: u64,
+    /// Throttled vendor warm-analysis sweeps run to completion. Always 0
+    /// today — the sweep doesn't exist yet (ROADMAP 0c step 2). See
+    /// `DocumentStore::vendor_warm_sweeps_completed`.
+    pub vendor_warm_sweeps_completed: u64,
     /// Section currently parked at the debug gate (see `debug_gate.rs`), if
     /// any. The responsiveness tests poll this to prove a handler's blocking
     /// work is both off the serve future and genuinely in flight.
@@ -184,6 +193,8 @@ impl Backend {
             reachability_scan_passes: self.docs.reachability_scan_passes(),
             analysis_compute_count: self.docs.analysis_compute_count(),
             warm_start_replays_completed: self.docs.warm_start_replays_completed(),
+            warm_start_untrusted_reanalyzed: self.docs.warm_start_untrusted_reanalyzed(),
+            vendor_warm_sweeps_completed: self.docs.vendor_warm_sweeps_completed(),
             debug_gate_held: self.debug_gate.held_section(),
         })
     }

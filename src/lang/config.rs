@@ -364,6 +364,14 @@ pub struct LspConfig {
     /// `true`; set `warmAnalysis: false` to trade slower references for a
     /// smaller resident footprint.
     pub warm_analysis: bool,
+    /// Extend the background warm-analysis sweep to `vendor/` files (see the
+    /// `index_vendor` docs above for why the ambient sweep skips vendor by
+    /// default). Opt-in and throttled/idle-priority once implemented — ships
+    /// off by default since it's new background CPU cost with no prior
+    /// production data on real vendor-tree sizes (ROADMAP 0c step 2,
+    /// `~/.claude/plans/crispy-noodling-key.md`). **Not implemented yet**:
+    /// setting this to `true` is currently a no-op.
+    pub warm_vendor_analysis: bool,
     /// Override the on-disk cache directory. When set, used verbatim (no
     /// schema-version or workspace-hash subdirectories appended). Primarily
     /// useful in tests and CI environments with non-standard cache locations.
@@ -395,6 +403,7 @@ impl Default for LspConfig {
             debug: false,
             debounce_ms: 100,
             warm_analysis: true,
+            warm_vendor_analysis: false,
             cache_path: None,
             flush_interval_ms: 20_000,
             external_tools: ExternalToolsConfig::default(),
@@ -493,6 +502,9 @@ impl LspConfig {
         if let Some(b) = v.get("warmAnalysis").and_then(|x| x.as_bool()) {
             cfg.warm_analysis = b;
         }
+        if let Some(b) = v.get("warmVendorAnalysis").and_then(|x| x.as_bool()) {
+            cfg.warm_vendor_analysis = b;
+        }
         if let Some(s) = v.get("cachePath").and_then(|x| x.as_str()) {
             cfg.cache_path = Some(std::path::PathBuf::from(s));
         }
@@ -572,6 +584,7 @@ mod tests {
                 debug: false,
                 debounce_ms: 100,
                 warm_analysis: true,
+                warm_vendor_analysis: false,
                 cache_path: None,
                 flush_interval_ms: 20000,
                 external_tools: ExternalToolsConfig {

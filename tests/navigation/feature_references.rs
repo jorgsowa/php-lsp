@@ -66,3 +66,12 @@ mod fqn_narrowing;
 
 #[path = "references/keyword_tokens.rs"]
 mod keyword_tokens;
+
+#[path = "references/builtin_vendor_scope.rs"]
+mod builtin_vendor_scope;
+
+#[path = "references/warm_start_untrusted_replay.rs"]
+mod warm_start_untrusted_replay;
+
+#[path = "references/vendor_warm_sweep.rs"]
+mod vendor_warm_sweep;

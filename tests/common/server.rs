@@ -769,6 +769,46 @@ impl TestServer {
         false
     }
 
+    /// Poll `$/php-lsp/debugStats` until at least `n` files have been handed
+    /// to a background reanalysis from `warm_start_indexes`'s untrusted-file
+    /// list (see `DocumentStore::warm_start_untrusted_reanalyzed`). Returns
+    /// `false` on timeout (~15 s) — always `false` today, since that wiring
+    /// doesn't exist yet (ROADMAP 0c step 1).
+    pub async fn wait_for_warm_start_untrusted_reanalysis(&mut self, n: u64) -> bool {
+        for _ in 0..300 {
+            let resp = self.client.request_no_params("$/php-lsp/debugStats").await;
+            if resp["result"]["warm_start_untrusted_reanalyzed"]
+                .as_u64()
+                .unwrap_or(0)
+                >= n
+            {
+                return true;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        false
+    }
+
+    /// Poll `$/php-lsp/debugStats` until at least `n` throttled vendor
+    /// warm-analysis sweeps have completed (see
+    /// `DocumentStore::vendor_warm_sweeps_completed`). Returns `false` on
+    /// timeout (~15 s) — always `false` today, since that sweep doesn't
+    /// exist yet (ROADMAP 0c step 2).
+    pub async fn wait_for_vendor_warm_sweeps(&mut self, n: u64) -> bool {
+        for _ in 0..300 {
+            let resp = self.client.request_no_params("$/php-lsp/debugStats").await;
+            if resp["result"]["vendor_warm_sweeps_completed"]
+                .as_u64()
+                .unwrap_or(0)
+                >= n
+            {
+                return true;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        false
+    }
+
     pub async fn references(
         &mut self,
         path: &str,

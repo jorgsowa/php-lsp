@@ -125,6 +125,22 @@ pub struct DocumentStore {
     /// via `$/php-lsp/debugStats` so tests can await a runtime-added folder's
     /// warm-start replay instead of guessing a fixed delay.
     warm_start_replays_completed: AtomicU64,
+    /// Files `warm_start_indexes` handed to a background reanalysis because
+    /// mir's `warm_start_files` flagged their replayed reference postings as
+    /// untrusted (a disk-cache replay of an unresolved-name commit — see
+    /// mir's 0.67.0 changelog entry). Always 0 until that wiring lands
+    /// (ROADMAP 0c step 1, `~/.claude/plans/crispy-noodling-key.md`) — today
+    /// `warm_start_indexes` discards the returned list. Observability only,
+    /// surfaced via `$/php-lsp/debugStats` so a protocol test can assert the
+    /// reanalysis happened in the background, without ever issuing a query.
+    warm_start_untrusted_reanalyzed: AtomicU64,
+    /// Throttled/idle-priority vendor warm-analysis sweeps run to completion
+    /// (only meaningful when `warmVendorAnalysis: true` — see `LspConfig`).
+    /// Always 0 until that sweep is implemented (ROADMAP 0c step 2,
+    /// `~/.claude/plans/crispy-noodling-key.md`). Observability only,
+    /// surfaced via `$/php-lsp/debugStats` so tests can await vendor warmth
+    /// the same way `warm_sweeps_completed` lets them await the main sweep.
+    vendor_warm_sweeps_completed: AtomicU64,
     /// Count of in-flight interactive reads (requests the user is waiting on).
     /// The workspace scan yields at file boundaries while this is non-zero, so
     /// its per-file salsa writes can't starve a request's snapshot into an
@@ -191,6 +207,8 @@ impl DocumentStore {
             warm_sweep_cancel: Mutex::new(mir_analyzer::IndexCancel::new()),
             warm_sweeps_completed: AtomicU64::new(0),
             warm_start_replays_completed: AtomicU64::new(0),
+            warm_start_untrusted_reanalyzed: AtomicU64::new(0),
+            vendor_warm_sweeps_completed: AtomicU64::new(0),
             interactive_reads: AtomicU64::new(0),
         }
     }
@@ -383,6 +401,16 @@ impl DocumentStore {
 
     pub fn warm_start_replays_completed(&self) -> u64 {
         self.warm_start_replays_completed.load(Ordering::Relaxed)
+    }
+
+    /// See the `warm_start_untrusted_reanalyzed` field's docs.
+    pub fn warm_start_untrusted_reanalyzed(&self) -> u64 {
+        self.warm_start_untrusted_reanalyzed.load(Ordering::Relaxed)
+    }
+
+    /// See the `vendor_warm_sweeps_completed` field's docs.
+    pub fn vendor_warm_sweeps_completed(&self) -> u64 {
+        self.vendor_warm_sweeps_completed.load(Ordering::Relaxed)
     }
 
     /// The sweep's front of the queue: `priority` files themselves plus the

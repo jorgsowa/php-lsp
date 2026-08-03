@@ -20,6 +20,7 @@ All options are optional.
 | `features` | `object` | see below | Per-feature capability toggles. |
 | `maxIndexedFiles` | `number` | `50000` | Hard cap on the number of PHP files indexed during a workspace scan. Set lower to reduce memory on projects with very large vendor trees. |
 | `warmAnalysis` | `boolean` | `true` | Background-analyze the workspace after indexing (and re-warm after edits settle) so find-references and rename answer from warm analysis caches instead of paying a cold per-file analysis at request time. Set to `false` to trade slower references for a smaller resident footprint. |
+| `warmVendorAnalysis` | `boolean` | `false` | Extend the background warm-analysis sweep to `vendor/` files, throttled/idle-priority, so find-references on vendor-defined symbols also answers from warm memos. Off by default (new background CPU cost). **Not implemented yet** — currently a no-op. |
 | `analysisCacheFlushIntervalMs` | `number` | `20000` | How often staged analysis-cache postings are persisted to disk in the background, bounding data loss on an unclean exit (crash, kill) to roughly one interval. |
 | `debounceMs` | `number` | `100` | Delay in milliseconds between the last `textDocument/didChange` and the parse + analysis run. Set lower for fast machines, higher for slow machines or large files to reduce thrashing. |
 | `debug` | `boolean` | `false` | Emit extra diagnostic log messages on startup: cache hit/miss ratio, workspace root paths, and PSR-4 namespace count. |
