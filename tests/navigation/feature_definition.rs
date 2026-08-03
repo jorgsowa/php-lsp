@@ -934,6 +934,210 @@ class Greeter {
     .await;
 }
 
+/// A method call through an `object`-typed property holding an anonymous
+/// class that composes a trait resolves to a same-named method on the
+/// *enclosing* class instead of the trait's — even though the anonymous
+/// class has no relation whatsoever to the enclosing class. Order-dependent
+/// (reproduces with the trait defined before or after the class) but not
+/// file-count-dependent, and unaffected by waiting for indexReady, so this
+/// isn't a warm-up race — it looks like a fallback that name-matches
+/// against the enclosing class when the anonymous class's actual member
+/// (through the untyped `object`) can't be resolved directly. Found via a
+/// real PHPUnit `getMockedXTrait()`-returns-`object` pattern in app-server
+/// (`EntityGetterTrait/GetCreatedAtTest.php` and
+/// `OffsetPaginationFieldsTest.php`).
+#[tokio::test]
+#[ignore = "known bug: a method call through an object-typed property \
+            holding an anonymous class + trait resolves to a same-named \
+            method on the enclosing class instead of the trait's own \
+            method — the two are otherwise unrelated"]
+async fn definition_through_object_property_resolves_to_enclosing_class_not_trait() {
+    let mut s = TestServer::new().await;
+    let out = s
+        .check_definition(
+            r#"//- /src/Trait.php
+<?php declare(strict_types=1);
+
+trait GetsValue
+{
+    public function getTotal(): int
+    {
+        return 42;
+    }
+}
+
+//- /src/Outer.php
+<?php declare(strict_types=1);
+
+final class Outer
+{
+    private object $sut;
+
+    protected function setUp(): void
+    {
+        $this->sut = new class () {
+            use GetsValue;
+        };
+    }
+
+    public function getTotal(): void
+    {
+        self::assertEquals(42, $this->sut->getTo$0tal());
+    }
+
+    public static function assertEquals(int $expected, int $actual): void
+    {
+    }
+}
+"#,
+        )
+        .await;
+    expect!["src/Outer.php:13:20-13:28"].assert_eq(&out);
+}
+
+/// PHP arrow-function parameters strictly shadow any outer variable of the
+/// same name for the entire arrow-fn body — but goto-definition on a
+/// shadowing use resolves to the *outer*, shadowed variable instead of the
+/// arrow-fn's own parameter. Internally inconsistent, not just wrong: hover
+/// on the exact same token correctly infers the parameter's declared type
+/// (`Item`), proving the type-inference and goto-definition paths disagree
+/// about which declaration this token even is. Found via a real
+/// `fn(Catalog $catalog) => ...` case in app-server
+/// (`GetCatalogService.php`) shadowing an outer `$catalog` of a different
+/// type.
+#[tokio::test]
+#[ignore = "known bug: goto-definition on an arrow-fn parameter that shadows \
+            an outer same-named variable resolves to the outer variable \
+            instead of the parameter — hover on the same token correctly \
+            uses the parameter's type, so the two paths disagree"]
+async fn definition_on_arrow_fn_param_ignores_outer_shadow() {
+    let mut s = TestServer::new().await;
+    let out = s
+        .check_definition(
+            r#"<?php declare(strict_types=1);
+
+final class Item
+{
+    public function __construct(public int $accountId)
+    {
+    }
+}
+
+final class Service
+{
+    public function run(): callable
+    {
+        $catalog = 'not an Item at all';
+
+        return fn(Item $catalog) => $cata$0log->accountId;
+    }
+}
+"#,
+        )
+        .await;
+    expect!["main.php:13:8-13:16"].assert_eq(&out);
+}
+
+/// A method returning `self` is lexically bound to the *declaring* class at
+/// compile time — unlike `static`, it must NOT resolve using the calling
+/// instance's actual (subclass) type. `Base::returnsSelf(): self` returns
+/// `Base`, which has no `subOnly()` — a real static analyzer (PHPStan/Psalm)
+/// flags `$sub->returnsSelf()->subOnly()` as calling an undefined method.
+/// php-lsp instead confidently resolves it to `Sub::subOnly()`, silently
+/// treating `self` as if it were late-static-bound `static`. Found via
+/// app-server's `Document`/`Holders` hierarchy, which declares both a
+/// `self`-returning factory and separate `static`-returning fluent methods.
+#[tokio::test]
+#[ignore = "known bug: a method declared to return `self` is resolved as if \
+            it returned `static` (late static binding) — the next call in \
+            the chain uses the calling subclass's members instead of the \
+            declaring class's, which can point at a method that doesn't \
+            exist on the declared return type at all"]
+async fn definition_on_self_return_type_uses_subclass_members() {
+    let mut s = TestServer::new().await;
+    let out = s
+        .check_definition(
+            r#"<?php
+
+class Base
+{
+    public function returnsSelf(): self
+    {
+        return $this;
+    }
+}
+
+class Sub extends Base
+{
+    public function subOnly(): string
+    {
+        return "sub";
+    }
+}
+
+$sub = new Sub();
+$a = $sub->returnsSelf()->subO$0nly();
+"#,
+        )
+        .await;
+    expect!["main.php:12:20-12:27"].assert_eq(&out);
+}
+
+/// A bare call to a name pulled in via `use function` must invoke the
+/// imported function — but when a method of the same name also exists on
+/// the enclosing class, the bare call resolves to the local method instead,
+/// even though a bare call (no `$this->`/`self::`) can never mean "call my
+/// own method" in PHP. The control case (`$this->shout(...)`, not included
+/// here) correctly resolves to the local method, and `references` on the
+/// local method correctly excludes the bare call site — the bug is isolated
+/// to hover/goto-definition's callee resolution. Found via app-server's
+/// `SentryLogWriter.php`, which imports `use function
+/// Sentry\captureException` and also declares a same-named private method
+/// that itself calls the bare (intended-to-be-imported) function.
+#[tokio::test]
+#[ignore = "known bug: a bare call to a use-function-imported name resolves \
+            to a same-named local method instead of the imported function, \
+            even though a bare call can never mean \"call my own method\" \
+            in PHP"]
+async fn definition_on_bare_call_prefers_local_method_over_use_function_import() {
+    let mut s = TestServer::new().await;
+    let out = s
+        .check_definition(
+            r#"//- /src/vendorlib.php
+<?php
+
+namespace Vendor;
+
+function shout(string $msg): void
+{
+    echo "vendor: $msg";
+}
+
+//- /src/app.php
+<?php
+
+namespace App;
+
+use function Vendor\shout;
+
+class Logger
+{
+    public function log(string $msg): void
+    {
+        shou$0t($msg);
+    }
+
+    private function shout(string $msg): void
+    {
+        echo "local: $msg";
+    }
+}
+"#,
+        )
+        .await;
+    expect!["src/app.php:13:21-13:26"].assert_eq(&out);
+}
+
 #[tokio::test]
 async fn definition_on_unknown_symbol_returns_null() {
     let mut s = TestServer::new().await;
