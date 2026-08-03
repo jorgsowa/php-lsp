@@ -8,7 +8,7 @@
 //! ## Layout
 //!
 //! ```text
-//! ~/.cache/php-lsp/<schema-version>/<workspace-hash>/<entry-hash>.bin
+//! ~/.cache/php-lsp/<schema-version>/<workspace-hash>/<uri-hash>.bin
 //! ```
 //!
 //! - `<schema-version>` — `php-lsp` crate version; bumping it rotates the
@@ -17,21 +17,26 @@
 //!   first workspace root, truncated to 16 hex chars. Two separate projects
 //!   get isolated caches; two checkouts of the same project at the same
 //!   absolute path share one.
-//! - `<entry-hash>` — blake3 of the bytes `uri || 0x00 || content`, truncated
-//!   to 32 hex chars. Editing a file changes the content → new key → cache
-//!   miss; a different file at the same URI also gets a different key.
+//! - `<uri-hash>` — blake3 of the URI, truncated to 32 hex chars. One file
+//!   per URI, not per `(uri, content)` pair: a content hash is stored inside
+//!   the entry and checked on read, so re-indexing an edited file overwrites
+//!   its existing slot in place instead of leaving the previous revision's
+//!   entry to rot on disk.
 //!
 //! ## Format
 //!
 //! `bincode` v2 (binary, fast, schema-stable via serde derives on
-//! `FileIndex` et al). Files are written atomically via a temp-file rename
-//! to avoid half-written entries on an interrupted shutdown.
+//! `FileIndex` et al), prefixed with the entry's content hash so a stale
+//! revision reads back as a miss. Files are written atomically via a
+//! temp-file rename to avoid half-written entries on an interrupted
+//! shutdown.
 //!
 //! ## Invalidation
 //!
 //! Rotating the schema version invalidates everything; rotating the content
-//! invalidates one file. There's no LRU or cleanup yet — Step 2 will add a
-//! size cap + orphan sweep.
+//! invalidates just that entry's slot (overwritten on next write). The size
+//! cap in [`WorkspaceCache::new`] is a backstop for workspaces that outgrow
+//! it, not the primary cleanup mechanism.
 
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -40,12 +45,20 @@ use serde::{Serialize, de::DeserializeOwned};
 
 /// Identifies a single cache entry. Opaque — callers produce it via
 /// [`WorkspaceCache::key_for`] and pass it straight back to read/write.
+///
+/// `uri_hash` is the on-disk filename, so every revision of a given URI
+/// lands in the same slot. `content_hash` is stored inside the entry and
+/// checked on read, so an edit invalidates the slot without orphaning a
+/// separate file for the old content.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct CacheKey(String);
+pub struct CacheKey {
+    uri_hash: String,
+    content_hash: String,
+}
 
 impl CacheKey {
     fn as_filename(&self) -> &str {
-        &self.0
+        &self.uri_hash
     }
 }
 
@@ -74,8 +87,8 @@ impl WorkspaceCache {
     /// If the existing cache directory exceeds [`CACHE_SIZE_CAP`], it is
     /// cleared before the handle is returned. That's a coarse knob —
     /// K3 could refine to LRU-by-mtime — but crossing 512 MiB at
-    /// startup indicates the workspace has churned through many
-    /// content hashes and the rebuild cost is bounded to one full
+    /// startup indicates the workspace itself has more files than the
+    /// cap fits, and the rebuild cost is bounded to one full
     /// re-scan.
     pub fn new(root: &Path) -> Option<Self> {
         let base = cache_base_dir()?;
@@ -124,33 +137,41 @@ impl WorkspaceCache {
         Self { dir }
     }
 
-    /// Build a cache key from file content. Combines `uri` and `content`
-    /// so that two files with identical content but different URIs get
-    /// different keys.
+    /// Build a cache key for `(uri, content)`. The filename half (`uri_hash`)
+    /// stays fixed across edits to the same URI so a re-index overwrites its
+    /// existing slot; the validation half (`content_hash`) changes on every
+    /// edit so a read against stale content misses.
     pub fn key_for(uri: &str, content: &str) -> CacheKey {
-        let mut hasher = blake3::Hasher::new();
-        hasher.update(uri.as_bytes());
-        hasher.update(&[0u8]);
-        hasher.update(content.as_bytes());
-        let full = hasher.finalize().to_hex();
-        CacheKey(full.as_str()[..32].to_string())
+        let uri_hash = blake3::hash(uri.as_bytes()).to_hex().as_str()[..32].to_string();
+        let content_hash = blake3::hash(content.as_bytes()).to_hex().as_str()[..32].to_string();
+        CacheKey {
+            uri_hash,
+            content_hash,
+        }
     }
 
     /// Deserialize a previously-cached value. Returns `None` on any I/O
-    /// or decode failure — a corrupted entry should look identical to a
-    /// missing one so callers fall through to the recompute path.
+    /// or decode failure, or when the entry's stored content hash no
+    /// longer matches `key` (the slot holds a stale revision) — all of
+    /// which should look identical to a missing entry so callers fall
+    /// through to the recompute path.
     pub fn read<T: DeserializeOwned>(&self, key: &CacheKey) -> Option<T> {
         let path = self.path_for(key);
         let bytes = std::fs::read(&path).ok()?;
         let config = bincode::config::standard();
-        bincode::serde::decode_from_slice(&bytes, config)
-            .ok()
-            .map(|(v, _len)| v)
+        let (stored_hash, value): (String, T) =
+            bincode::serde::decode_from_slice(&bytes, config).ok()?.0;
+        if stored_hash != key.content_hash {
+            return None;
+        }
+        Some(value)
     }
 
     /// Atomically publish an entry to the cache. Writes to a sibling
     /// temp file then renames, so readers never see a half-written
-    /// payload even if the process dies mid-write.
+    /// payload even if the process dies mid-write. Because the filename
+    /// is keyed on URI alone, this overwrites whatever revision (if any)
+    /// previously occupied the slot rather than leaving it behind.
     ///
     /// No fsync: the cache is advisory-only — a crash that loses a write
     /// just produces a cache miss on the next startup, which safely falls
@@ -161,7 +182,7 @@ impl WorkspaceCache {
         let path = self.path_for(key);
         let tmp = path.with_extension("tmp");
         let config = bincode::config::standard();
-        let bytes = bincode::serde::encode_to_vec(value, config)
+        let bytes = bincode::serde::encode_to_vec((&key.content_hash, value), config)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
         {
             let mut f = std::fs::File::create(&tmp)?;
@@ -254,11 +275,58 @@ mod tests {
 
     #[test]
     fn key_for_differs_when_uri_differs() {
-        // Same content, different URI — the separator byte prevents
-        // (uri_a || content_b) from colliding with (uri_a+b || content).
         let k1 = WorkspaceCache::key_for("file:///a.php", "<?php");
         let k2 = WorkspaceCache::key_for("file:///b.php", "<?php");
         assert_ne!(k1, k2);
+    }
+
+    #[test]
+    fn write_overwrites_slot_instead_of_orphaning_old_revision() {
+        let dir = TempDir::new().unwrap();
+        let cache = WorkspaceCache::with_dir(dir.path().to_path_buf());
+        let uri = "file:///churn.php";
+
+        let key_v1 = WorkspaceCache::key_for(uri, "<?php echo 1;");
+        cache
+            .write(
+                &key_v1,
+                &SamplePayload {
+                    name: "v1".into(),
+                    values: vec![1],
+                },
+            )
+            .unwrap();
+
+        let key_v2 = WorkspaceCache::key_for(uri, "<?php echo 2;");
+        cache
+            .write(
+                &key_v2,
+                &SamplePayload {
+                    name: "v2".into(),
+                    values: vec![2],
+                },
+            )
+            .unwrap();
+
+        // Same URI → same on-disk slot, so the second write replaces the
+        // first rather than leaving a second, now-unreachable .bin file.
+        let bin_files: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| e.path().extension().is_some_and(|ext| ext == "bin"))
+            .collect();
+        assert_eq!(
+            bin_files.len(),
+            1,
+            "editing a file must not orphan its previous cache entry"
+        );
+
+        // The stale key (old content) now misses instead of returning v1.
+        let stale: Option<SamplePayload> = cache.read(&key_v1);
+        assert!(stale.is_none());
+
+        let current: SamplePayload = cache.read(&key_v2).unwrap();
+        assert_eq!(current.name, "v2");
     }
 
     #[test]
