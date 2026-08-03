@@ -33,6 +33,11 @@ fn write_full_laravel_project(root: &std::path::Path) {
     .unwrap();
     std::fs::create_dir_all(root.join("public").join("css")).unwrap();
     std::fs::write(root.join("public").join("css").join("app.css"), "body {}\n").unwrap();
+    std::fs::write(
+        root.join("public").join("mix-manifest.json"),
+        "{\n    \"/css/app.css\": \"/css/app.css?id=abc123\"\n}\n",
+    )
+    .unwrap();
     std::fs::create_dir_all(root.join("bootstrap")).unwrap();
     std::fs::write(
         root.join("bootstrap").join("app.php"),
@@ -180,6 +185,31 @@ async fn asset_call_hover_shows_resolved_path_without_snippet() {
         **asset('css/app.css')**
 
         `public/css/app.css`"#]]
+    .assert_eq(&out);
+}
+
+#[tokio::test]
+async fn mix_call_hover_shows_manifest_entry() {
+    let workspace = tempfile::tempdir().expect("workspace tempdir");
+    write_full_laravel_project(workspace.path());
+    let php = "<?php\n$href = mix('css/app.css');\n";
+    std::fs::write(workspace.path().join("app.php"), php).unwrap();
+
+    let mut s = TestServer::with_root(workspace.path()).await;
+    s.wait_for_index_ready().await;
+    s.open("app.php", php).await;
+
+    // Line 1 (0-based), character 18 = inside "css/app.css".
+    let resp = s.hover("app.php", 1, 18).await;
+    let out = render_hover(&resp);
+    expect![[r#"
+        **mix('css/app.css')**
+
+        ```json
+        "/css/app.css": "/css/app.css?id=abc123"
+        ```
+
+        `public/mix-manifest.json`"#]]
     .assert_eq(&out);
 }
 

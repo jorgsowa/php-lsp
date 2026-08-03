@@ -27,6 +27,7 @@ mod hover;
 mod livewire_index;
 mod location_lookup;
 mod middleware_index;
+mod mix_index;
 pub(crate) mod request_fields;
 mod route_index;
 pub(crate) mod route_scaffold;
@@ -42,6 +43,7 @@ pub use eloquent_guard::unguarded_model_diagnostics;
 pub use env_index::EnvIndex;
 pub use livewire_index::LivewireIndex;
 pub use middleware_index::MiddlewareIndex;
+pub use mix_index::MixIndex;
 pub use route_index::RouteIndex;
 pub use translation_index::TranslationIndex;
 pub use view_index::ViewIndex;
@@ -52,6 +54,7 @@ use env_index::{env_completions, missing_env_key_action};
 use middleware_index::{
     collect_middleware_calls, middleware_alias_at, middleware_completions, middleware_string_prefix,
 };
+use mix_index::mix_completions;
 use route_index::route_completions;
 use string_call::{call_string_arg, call_string_prefix};
 use translation_index::{missing_translation_json_key_action, translation_completions};
@@ -78,6 +81,8 @@ const TRANS_CALL_NAMES: &[&str] = &["__", "trans"];
 const ROUTE_CALL_NAMES: &[&str] = &["route"];
 /// Bare function names recognized as the `asset()` string-key helper call.
 const ASSET_CALL_NAMES: &[&str] = &["asset"];
+/// Bare function names recognized as the `mix()` string-key helper call.
+const MIX_CALL_NAMES: &[&str] = &["mix"];
 
 #[derive(Debug, Default)]
 pub struct LaravelIndex {
@@ -88,6 +93,7 @@ pub struct LaravelIndex {
     pub translations: TranslationIndex,
     pub routes: RouteIndex,
     pub assets: AssetIndex,
+    pub mix: MixIndex,
     pub middleware: MiddlewareIndex,
     pub components: ComponentIndex,
     pub livewire: LivewireIndex,
@@ -109,6 +115,7 @@ impl LaravelIndex {
             translations: TranslationIndex::load(root),
             routes: RouteIndex::load(root),
             assets: AssetIndex::load(root),
+            mix: MixIndex::load(root),
             middleware: MiddlewareIndex::load(root),
             components: ComponentIndex::load(root),
             livewire: LivewireIndex::load(root),
@@ -175,6 +182,9 @@ pub(crate) fn resolve_string_key(
     if let Some((path, _)) = call_string_arg(doc, position, ASSET_CALL_NAMES) {
         return laravel.assets.get(&path).cloned();
     }
+    if let Some((path, _)) = call_string_arg(doc, position, MIX_CALL_NAMES) {
+        return laravel.mix.get(&path).cloned();
+    }
     if let Some((alias, _)) = middleware_alias_at(doc, position) {
         return laravel.middleware.get(&alias).cloned();
     }
@@ -209,6 +219,9 @@ pub(crate) fn completions_for_string_key(
     }
     if let Some(prefix) = call_string_prefix(source, position, ASSET_CALL_NAMES) {
         return Some(asset_completions(&laravel.assets, &prefix));
+    }
+    if let Some(prefix) = call_string_prefix(source, position, MIX_CALL_NAMES) {
+        return Some(mix_completions(&laravel.mix, &prefix));
     }
     if let Some(prefix) = middleware_string_prefix(source, position) {
         return Some(middleware_completions(&laravel.middleware, &prefix));
@@ -295,6 +308,16 @@ pub(crate) fn hover_for_string_key(
             false,
         ));
     }
+    if let Some((path, _)) = call_string_arg(doc, position, MIX_CALL_NAMES) {
+        let loc = laravel.mix.get(&path)?;
+        return Some(hover::key_hover(
+            root,
+            loc,
+            &format!("mix('{path}')"),
+            "json",
+            true,
+        ));
+    }
     if let Some((alias, _)) = middleware_alias_at(doc, position) {
         let loc = laravel.middleware.get(&alias)?;
         return Some(hover::key_hover(
@@ -330,6 +353,7 @@ pub(crate) fn document_links(
     });
     push_links(&mut out, doc, ROUTE_CALL_NAMES, |k| laravel.routes.get(k));
     push_links(&mut out, doc, ASSET_CALL_NAMES, |k| laravel.assets.get(k));
+    push_links(&mut out, doc, MIX_CALL_NAMES, |k| laravel.mix.get(k));
     for (alias, range) in collect_middleware_calls(doc) {
         if let Some(loc) = laravel.middleware.get(&alias) {
             out.push(DocumentLink {
@@ -407,6 +431,10 @@ pub(crate) fn resolve_definition_key(
         let loc = laravel.assets.get(key)?.clone();
         return Some((ASSET_CALL_NAMES, key.to_string(), loc));
     }
+    if let Some(key) = laravel.mix.key_at(uri, position) {
+        let loc = laravel.mix.get(key)?.clone();
+        return Some((MIX_CALL_NAMES, key.to_string(), loc));
+    }
     // Middleware aliases are deliberately not wired into find-references
     // here: usages are method/static calls (`->middleware(...)`), not bare
     // calls, so they don't fit `find_call_sites`'s `names`-based sweep.
@@ -464,6 +492,7 @@ mod tests {
         assert_eq!(idx.translations.keys().count(), 0);
         assert_eq!(idx.routes.names().count(), 0);
         assert_eq!(idx.assets.names().count(), 0);
+        assert_eq!(idx.mix.names().count(), 0);
         assert_eq!(idx.middleware.names().count(), 0);
         assert_eq!(idx.components.names().count(), 0);
         assert_eq!(idx.livewire.names().count(), 0);
@@ -505,6 +534,11 @@ mod tests {
         std::fs::write(
             tmp.path().join("public").join("css").join("app.css"),
             "body{}",
+        )
+        .unwrap();
+        std::fs::write(
+            tmp.path().join("public").join("mix-manifest.json"),
+            r#"{"/css/app.css": "/css/app.css?id=abc123"}"#,
         )
         .unwrap();
         std::fs::create_dir_all(tmp.path().join("bootstrap")).unwrap();
@@ -567,6 +601,9 @@ mod tests {
         let asset = idx.assets.get("css/app.css").unwrap();
         assert_eq!(asset.range.start, asset.range.end);
         assert!(asset.uri.as_str().ends_with("public/css/app.css"));
+
+        let mix = idx.mix.get("css/app.css").unwrap();
+        assert!(mix.uri.as_str().ends_with("mix-manifest.json"));
 
         let middleware = idx.middleware.get("auth").unwrap();
         assert_eq!(

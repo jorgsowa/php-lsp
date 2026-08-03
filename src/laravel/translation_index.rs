@@ -189,8 +189,10 @@ fn load_locale_json_file(path: &Path, out: &mut HashMap<String, Location>) {
 
 /// Locate `key`'s first `"key"` occurrence in raw JSON text and return the
 /// range of the key text itself (quotes excluded). Manual text search
-/// because `serde_json::Value` doesn't retain source spans.
-fn find_json_key_range(text: &str, key: &str) -> Option<Range> {
+/// because `serde_json::Value` doesn't retain source spans. Shared with
+/// `mix_index`/`vite_index`, which index a differently-shaped JSON manifest
+/// the same way.
+pub(super) fn find_json_key_range(text: &str, key: &str) -> Option<Range> {
     let escaped = key.replace('\\', "\\\\").replace('"', "\\\"");
     let needle = format!("\"{escaped}\"");
     let quote_byte = text.find(&needle)?;

@@ -33,6 +33,8 @@ mod feature_laravel_facade_to_di;
 mod feature_laravel_hover;
 #[path = "frameworks/feature_laravel_middleware.rs"]
 mod feature_laravel_middleware;
+#[path = "frameworks/feature_laravel_mix.rs"]
+mod feature_laravel_mix;
 #[path = "frameworks/feature_laravel_references.rs"]
 mod feature_laravel_references;
 #[path = "frameworks/feature_laravel_request_fields.rs"]
