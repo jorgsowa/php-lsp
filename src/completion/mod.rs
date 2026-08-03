@@ -458,6 +458,18 @@ pub fn filtered_completions_at(
         )
     });
 
+    // Validation rule-name completion inside `->validate([...])`/
+    // `Validator::make([...])`/a `rules()` method's `return [...]` — gated
+    // on the AST (see `laravel::validation_rules` module docs for why this
+    // one isn't a pure text scan like the others above).
+    let validation_rule_completions = source.zip(position).and_then(|(src, pos)| {
+        if !ctx.laravel.is_some_and(|l| l.is_laravel) {
+            return None;
+        }
+        let prefix = crate::laravel::validation_rules::validation_rule_prefix(doc, src, pos)?;
+        Some(crate::laravel::validation_rules::validation_rule_completions(&prefix))
+    });
+
     // Suppress all completions when the cursor is inside a string literal or
     // comment — except for include/require path strings and Laravel
     // string-key/request-field calls, where completions are legitimate
@@ -469,6 +481,7 @@ pub fn filtered_completions_at(
             && laravel_completions.is_none()
             && blade_completions.is_none()
             && request_field_completions.is_none()
+            && validation_rule_completions.is_none()
         {
             return vec![];
         }
@@ -754,6 +767,9 @@ pub fn filtered_completions_at(
                 return items;
             }
             if let Some(items) = request_field_completions {
+                return items;
+            }
+            if let Some(items) = validation_rule_completions {
                 return items;
             }
 

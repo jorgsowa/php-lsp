@@ -7,8 +7,7 @@ use crate::text::utf16_offset_to_byte;
 /// so that absolute-path strings are left alone.
 pub(super) fn include_path_prefix(source: &str, position: Position) -> Option<String> {
     let line = source.lines().nth(position.line as usize)?;
-    // Check if line contains include/require keyword (may be after <?php)
-    if !line.contains("include") && !line.contains("require") {
+    if !line_has_include_keyword(line) {
         return None;
     }
     // Find the string being typed
@@ -22,6 +21,32 @@ pub(super) fn include_path_prefix(source: &str, position: Position) -> Option<St
         return None;
     }
     Some(typed.to_string())
+}
+
+/// Whether `line` contains `include`/`include_once`/`require`/`require_once`
+/// as a whole word — a plain substring check would also fire inside
+/// unrelated identifiers/strings that merely contain one of these as a
+/// substring (`'required'`, `'prerequisites'`), which happens constantly
+/// once validation-rule strings are in play (see
+/// `laravel::validation_rules`).
+fn line_has_include_keyword(line: &str) -> bool {
+    const KEYWORDS: &[&str] = &["include_once", "require_once", "include", "require"];
+    let bytes = line.as_bytes();
+    let is_word_byte = |b: u8| matches!(b, b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_');
+    KEYWORDS.iter().any(|kw| {
+        let mut start = 0;
+        while let Some(rel) = line[start..].find(kw) {
+            let idx = start + rel;
+            let before_ok = idx == 0 || !is_word_byte(bytes[idx - 1]);
+            let after = idx + kw.len();
+            let after_ok = after >= bytes.len() || !is_word_byte(bytes[after]);
+            if before_ok && after_ok {
+                return true;
+            }
+            start = idx + 1;
+        }
+        false
+    })
 }
 
 /// Build completion items for include/require path strings.
@@ -115,6 +140,19 @@ pub(super) fn include_path_completions(doc_uri: &Uri, prefix: &str) -> Vec<Compl
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn include_path_prefix_returns_none_for_word_containing_require_as_substring() {
+        let src = "<?php\n$request->validate(['email' => 'required|em";
+        let pos = Position {
+            line: 1,
+            character: 51,
+        };
+        assert!(
+            include_path_prefix(src, pos).is_none(),
+            "'required' contains 'require' as a substring but isn't the keyword"
+        );
+    }
 
     #[test]
     fn include_path_prefix_returns_none_for_non_include_line() {

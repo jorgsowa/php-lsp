@@ -32,6 +32,7 @@ mod route_index;
 pub(crate) mod route_scaffold;
 mod string_call;
 mod translation_index;
+pub(crate) mod validation_rules;
 mod view_index;
 
 pub use asset_index::AssetIndex;

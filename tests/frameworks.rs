@@ -45,6 +45,8 @@ mod feature_laravel_route_scaffold;
 mod feature_laravel_string_key_references;
 #[path = "frameworks/feature_laravel_translation.rs"]
 mod feature_laravel_translation;
+#[path = "frameworks/feature_laravel_validation_rules.rs"]
+mod feature_laravel_validation_rules;
 #[path = "frameworks/feature_laravel_view.rs"]
 mod feature_laravel_view;
 #[path = "frameworks/feature_symfony.rs"]
