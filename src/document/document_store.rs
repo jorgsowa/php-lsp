@@ -1843,6 +1843,63 @@ impl DocumentStore {
             .workspace_index_walks()
     }
 
+    /// Number of files mirrored into the salsa workspace (open + background
+    /// indexed). Surfaced via `$/php-lsp/debugStats` as a denominator for the
+    /// per-file cache sizes below — e.g. `text_cache_len` tracking this 1:1
+    /// means it's carrying the workspace's working set, not leaking.
+    pub fn workspace_file_count(&self) -> u64 {
+        self.lsp_ws_files.len() as u64
+    }
+
+    /// Entries in the semantic-tokens delta cache. Evicted per-file on
+    /// `did_close`; a value that keeps climbing past the number of files
+    /// ever opened in the editor means that eviction isn't firing.
+    pub fn token_cache_len(&self) -> u64 {
+        self.caches.token_cache.len() as u64
+    }
+
+    /// Entries in the mirrored-source-text cache. Expected to track
+    /// [`Self::workspace_file_count`] — it shares its `Arc<str>` with
+    /// salsa's own `SourceFile::text`, so this is a pointer per file, not a
+    /// second copy of the workspace's source.
+    pub fn text_cache_len(&self) -> u64 {
+        self.caches.text_cache.len() as u64
+    }
+
+    /// Entries in the read-through `ParsedDoc` cache. Bounded by
+    /// `PARSED_CACHE_CAP` via LRU shedding.
+    pub fn parsed_cache_len(&self) -> u64 {
+        self.caches.parsed_cache.len() as u64
+    }
+
+    /// Entries in the per-file `FileAnalysis` cache. Bounded by
+    /// `ANALYSIS_CACHE_CAP` via LRU shedding.
+    pub fn analysis_cache_len(&self) -> u64 {
+        self.caches.analysis_cache.len() as u64
+    }
+
+    /// Entries in the owned-`Program` cache. Bounded by
+    /// `OWNED_PROGRAM_CACHE_CAP` via LRU shedding.
+    pub fn owned_program_cache_len(&self) -> u64 {
+        self.caches.owned_program_cache.len() as u64
+    }
+
+    /// Entries in the declaration-fingerprint cache — one per file that
+    /// declares something, used to detect cross-file declaration changes.
+    /// Expected to track [`Self::workspace_file_count`], not grow past it.
+    pub fn decl_fingerprints_len(&self) -> u64 {
+        self.caches.decl_fingerprints.len() as u64
+    }
+
+    /// Entries in the lazily-loaded vendor `FileIndex` cache, populated by
+    /// PSR-4 "go to definition" navigation into `vendor/`. Unlike the other
+    /// per-file caches above, this one has no LRU cap today — a session with
+    /// heavy navigation through a large dependency tree will keep growing
+    /// this for the life of the process.
+    pub fn vendor_index_cache_len(&self) -> u64 {
+        self.caches.vendor_index_cache.len() as u64
+    }
+
     /// Return the raw source text for `uri` if it has been mirrored into the
     /// salsa workspace. Used by the references handler to pre-filter session
     /// results by checking whether a file mentions the owning class name.

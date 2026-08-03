@@ -101,6 +101,27 @@ pub struct DebugStats {
     /// any. The responsiveness tests poll this to prove a handler's blocking
     /// work is both off the serve future and genuinely in flight.
     pub debug_gate_held: Option<String>,
+    /// Files mirrored into the salsa workspace. Denominator for the per-file
+    /// cache sizes below.
+    pub workspace_file_count: u64,
+    /// Entries in the semantic-tokens delta cache.
+    pub token_cache_len: u64,
+    /// Entries in the mirrored-source-text cache. Expected to track
+    /// `workspace_file_count`.
+    pub text_cache_len: u64,
+    /// Entries in the read-through `ParsedDoc` cache (LRU-capped).
+    pub parsed_cache_len: u64,
+    /// Entries in the per-file `FileAnalysis` cache (LRU-capped).
+    pub analysis_cache_len: u64,
+    /// Entries in the owned-`Program` cache (LRU-capped).
+    pub owned_program_cache_len: u64,
+    /// Entries in the declaration-fingerprint cache. Expected to track
+    /// `workspace_file_count`.
+    pub decl_fingerprints_len: u64,
+    /// Entries in the lazily-loaded vendor `FileIndex` cache. Not
+    /// LRU-capped today — the one cache size here worth watching on a
+    /// long-running session with heavy vendor navigation.
+    pub vendor_index_cache_len: u64,
 }
 
 /// Params for the `$/php-lsp/debugHoldGate` custom request.
@@ -196,6 +217,14 @@ impl Backend {
             warm_start_untrusted_reanalyzed: self.docs.warm_start_untrusted_reanalyzed(),
             vendor_warm_sweeps_completed: self.docs.vendor_warm_sweeps_completed(),
             debug_gate_held: self.debug_gate.held_section(),
+            workspace_file_count: self.docs.workspace_file_count(),
+            token_cache_len: self.docs.token_cache_len(),
+            text_cache_len: self.docs.text_cache_len(),
+            parsed_cache_len: self.docs.parsed_cache_len(),
+            analysis_cache_len: self.docs.analysis_cache_len(),
+            owned_program_cache_len: self.docs.owned_program_cache_len(),
+            decl_fingerprints_len: self.docs.decl_fingerprints_len(),
+            vendor_index_cache_len: self.docs.vendor_index_cache_len(),
         })
     }
 
