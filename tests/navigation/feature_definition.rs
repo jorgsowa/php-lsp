@@ -2511,3 +2511,41 @@ class Counter {
         .await;
     expect!["<none>"].assert_eq(&out);
 }
+
+/// A hyphenated psalm/phpstan pseudo-type inside a docblock (`non-empty-string`,
+/// `class-string<T>`, etc.) isn't a valid PHP identifier — the hyphen forces
+/// `word_at_position`'s purely textual scanner to split it into separate
+/// bareword segments (`non`, `empty`, `string`). The existing PHPDoc-token
+/// gate (`is_unresolvable_docblock_token_at`, ROADMAP item 0a) doesn't cover
+/// this: it wasn't written with hyphenated compound pseudo-types in mind, so
+/// a segment that happens to collide with a real, unrelated declaration
+/// resolves to it. `class`/`interface`/`string`/`empty` can't be used to
+/// prove this via collision — PHP reserves all four as identifiers, so no
+/// real declaration can ever be named exactly that — but `non` is not
+/// reserved, so an unrelated real `function non()` elsewhere in the
+/// workspace makes an unambiguous collision.
+#[tokio::test]
+#[ignore = "known bug: the PHPDoc documentation-only-token gate doesn't \
+            cover hyphenated psalm/phpstan pseudo-types (non-empty-string, \
+            class-string<T>, ...) — word_at_position splits on the hyphen, \
+            and a resulting bareword segment that collides with a real \
+            declaration elsewhere in the workspace resolves to it"]
+async fn references_on_hyphenated_pseudo_type_segment_finds_cross_file_name_collision() {
+    let mut s = TestServer::new().await;
+    let out = s
+        .check_references(
+            r#"//- /src/Unrelated.php
+<?php
+function non(): void {}
+
+//- /src/Target.php
+<?php
+/**
+ * @param non$0-empty-string $s
+ */
+function describe(string $s): void {}
+"#,
+        )
+        .await;
+    expect!["src/Unrelated.php:1:9-1:12"].assert_eq(&out);
+}
