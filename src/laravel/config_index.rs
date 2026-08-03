@@ -1,11 +1,13 @@
-//! `config/*.php` index powering go-to-definition and completion for
+//! `config/**/*.php` index powering go-to-definition and completion for
 //! `config('a.b.c')` calls.
 //!
-//! Each file under `config/` (direct children only — matches Laravel's
-//! standard layout; nested config directories are a known gap) is expected
-//! to `return [...]` a — possibly nested — associative array. Every
-//! string-keyed entry becomes `file_stem.path.to.key -> Location`, indexed
-//! at every nesting level so both `config('database')` (the whole file) and
+//! Every file under `config/`, including nested subdirectories, is expected
+//! to `return [...]` a — possibly nested — associative array. A file's
+//! prefix is its path relative to `config/` with the `.php` extension
+//! stripped and directory separators replaced by `.` (so
+//! `config/services/stripe.php` becomes prefix `services.stripe`). Every
+//! string-keyed entry becomes `prefix.path.to.key -> Location`, indexed at
+//! every nesting level so both `config('database')` (the whole file) and
 //! `config('database.connections.mysql.host')` (a leaf) resolve.
 
 use std::collections::HashMap;
@@ -42,15 +44,9 @@ impl ConfigIndex {
 
     pub(super) fn load(root: &Path) -> Self {
         let mut keys = HashMap::new();
-        let Ok(entries) = std::fs::read_dir(root.join("config")) else {
-            return Self { keys };
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().is_none_or(|e| e != "php") {
-                continue;
-            }
-            let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+        let config_dir = root.join("config");
+        for path in super::fs_walk::php_files_recursive(&config_dir) {
+            let Some(prefix) = dotted_prefix(&config_dir, &path) else {
                 continue;
             };
             let Ok(text) = std::fs::read_to_string(&path) else {
@@ -65,12 +61,26 @@ impl ConfigIndex {
                 if let StmtKind::Return(Some(expr)) = &stmt.kind
                     && let ExprKind::Array(elements) = &expr.kind
                 {
-                    collect_array_keys(elements, sv, &uri, stem, &mut keys);
+                    collect_array_keys(elements, sv, &uri, &prefix, &mut keys);
                 }
             }
         }
         Self { keys }
     }
+}
+
+/// `path`'s location relative to `config_dir` as a dotted prefix — directory
+/// components joined with the file stem, e.g. `config/services/stripe.php`
+/// under `config_dir` `config/` becomes `services.stripe`.
+fn dotted_prefix(config_dir: &Path, path: &Path) -> Option<String> {
+    let rel = path.strip_prefix(config_dir).ok()?;
+    let mut components: Vec<&str> = rel
+        .components()
+        .filter_map(|c| c.as_os_str().to_str())
+        .collect();
+    let stem = Path::new(components.pop()?).file_stem()?.to_str()?;
+    components.push(stem);
+    Some(components.join("."))
 }
 
 fn collect_array_keys(
@@ -183,6 +193,23 @@ mod tests {
         assert_eq!(loc.range.start.line, 2);
         assert_eq!(loc.range.start.character, 5);
         assert_eq!(loc.range.end.character, 9);
+    }
+
+    #[test]
+    fn indexes_nested_config_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("config").join("services")).unwrap();
+        std::fs::write(
+            tmp.path()
+                .join("config")
+                .join("services")
+                .join("stripe.php"),
+            "<?php\nreturn [\n    'key' => 'abc',\n];\n",
+        )
+        .unwrap();
+        let idx = ConfigIndex::load(tmp.path());
+        let loc = idx.get("services.stripe.key").unwrap();
+        assert!(loc.uri.as_str().ends_with("config/services/stripe.php"));
     }
 
     #[test]

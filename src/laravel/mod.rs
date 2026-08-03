@@ -22,6 +22,7 @@ mod detect;
 mod eloquent_guard;
 mod env_index;
 pub(crate) mod facades;
+mod fs_walk;
 mod hover;
 mod livewire_index;
 mod location_lookup;
