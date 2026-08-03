@@ -35,6 +35,7 @@ mod string_call;
 mod translation_index;
 pub(crate) mod validation_rules;
 mod view_index;
+mod vite_index;
 
 pub use asset_index::AssetIndex;
 pub use component_index::ComponentIndex;
@@ -47,6 +48,7 @@ pub use mix_index::MixIndex;
 pub use route_index::RouteIndex;
 pub use translation_index::TranslationIndex;
 pub use view_index::ViewIndex;
+pub use vite_index::ViteIndex;
 
 use asset_index::asset_completions;
 use config_index::config_completions;
@@ -59,6 +61,9 @@ use route_index::route_completions;
 use string_call::{call_string_arg, call_string_prefix};
 use translation_index::{missing_translation_json_key_action, translation_completions};
 use view_index::view_completions;
+use vite_index::{
+    collect_vite_asset_links, vite_asset_at, vite_asset_string_prefix, vite_completions,
+};
 
 use std::path::Path;
 
@@ -83,6 +88,8 @@ const ROUTE_CALL_NAMES: &[&str] = &["route"];
 const ASSET_CALL_NAMES: &[&str] = &["asset"];
 /// Bare function names recognized as the `mix()` string-key helper call.
 const MIX_CALL_NAMES: &[&str] = &["mix"];
+/// Bare function names recognized as the `vite()` string-key helper call.
+const VITE_CALL_NAMES: &[&str] = &["vite"];
 
 #[derive(Debug, Default)]
 pub struct LaravelIndex {
@@ -94,6 +101,7 @@ pub struct LaravelIndex {
     pub routes: RouteIndex,
     pub assets: AssetIndex,
     pub mix: MixIndex,
+    pub vite: ViteIndex,
     pub middleware: MiddlewareIndex,
     pub components: ComponentIndex,
     pub livewire: LivewireIndex,
@@ -116,6 +124,7 @@ impl LaravelIndex {
             routes: RouteIndex::load(root),
             assets: AssetIndex::load(root),
             mix: MixIndex::load(root),
+            vite: ViteIndex::load(root),
             middleware: MiddlewareIndex::load(root),
             components: ComponentIndex::load(root),
             livewire: LivewireIndex::load(root),
@@ -185,6 +194,12 @@ pub(crate) fn resolve_string_key(
     if let Some((path, _)) = call_string_arg(doc, position, MIX_CALL_NAMES) {
         return laravel.mix.get(&path).cloned();
     }
+    if let Some((path, _)) = call_string_arg(doc, position, VITE_CALL_NAMES) {
+        return laravel.vite.get(&path).cloned();
+    }
+    if let Some((path, _)) = vite_asset_at(doc, position) {
+        return laravel.vite.get(&path).cloned();
+    }
     if let Some((alias, _)) = middleware_alias_at(doc, position) {
         return laravel.middleware.get(&alias).cloned();
     }
@@ -217,11 +232,21 @@ pub(crate) fn completions_for_string_key(
     if let Some(prefix) = call_string_prefix(source, position, ROUTE_CALL_NAMES) {
         return Some(route_completions(&laravel.routes, &prefix));
     }
+    // Checked before `ASSET_CALL_NAMES` below: `call_string_prefix`'s
+    // word-boundary check treats `Vite::asset(` as a match for the bare
+    // `asset()` domain too (`:` counts as a boundary character), so the
+    // more specific static-call detector has to win the race.
+    if let Some(prefix) = vite_asset_string_prefix(source, position) {
+        return Some(vite_completions(&laravel.vite, &prefix));
+    }
     if let Some(prefix) = call_string_prefix(source, position, ASSET_CALL_NAMES) {
         return Some(asset_completions(&laravel.assets, &prefix));
     }
     if let Some(prefix) = call_string_prefix(source, position, MIX_CALL_NAMES) {
         return Some(mix_completions(&laravel.mix, &prefix));
+    }
+    if let Some(prefix) = call_string_prefix(source, position, VITE_CALL_NAMES) {
+        return Some(vite_completions(&laravel.vite, &prefix));
     }
     if let Some(prefix) = middleware_string_prefix(source, position) {
         return Some(middleware_completions(&laravel.middleware, &prefix));
@@ -318,6 +343,26 @@ pub(crate) fn hover_for_string_key(
             true,
         ));
     }
+    if let Some((path, _)) = call_string_arg(doc, position, VITE_CALL_NAMES) {
+        let loc = laravel.vite.get(&path)?;
+        return Some(hover::key_hover(
+            root,
+            loc,
+            &format!("vite('{path}')"),
+            "json",
+            true,
+        ));
+    }
+    if let Some((path, _)) = vite_asset_at(doc, position) {
+        let loc = laravel.vite.get(&path)?;
+        return Some(hover::key_hover(
+            root,
+            loc,
+            &format!("Vite::asset('{path}')"),
+            "json",
+            true,
+        ));
+    }
     if let Some((alias, _)) = middleware_alias_at(doc, position) {
         let loc = laravel.middleware.get(&alias)?;
         return Some(hover::key_hover(
@@ -354,6 +399,17 @@ pub(crate) fn document_links(
     push_links(&mut out, doc, ROUTE_CALL_NAMES, |k| laravel.routes.get(k));
     push_links(&mut out, doc, ASSET_CALL_NAMES, |k| laravel.assets.get(k));
     push_links(&mut out, doc, MIX_CALL_NAMES, |k| laravel.mix.get(k));
+    push_links(&mut out, doc, VITE_CALL_NAMES, |k| laravel.vite.get(k));
+    for (path, range) in collect_vite_asset_links(doc) {
+        if let Some(loc) = laravel.vite.get(&path) {
+            out.push(DocumentLink {
+                range,
+                target: Some(loc.uri.clone()),
+                tooltip: Some(path),
+                data: None,
+            });
+        }
+    }
     for (alias, range) in collect_middleware_calls(doc) {
         if let Some(loc) = laravel.middleware.get(&alias) {
             out.push(DocumentLink {
@@ -435,11 +491,15 @@ pub(crate) fn resolve_definition_key(
         let loc = laravel.mix.get(key)?.clone();
         return Some((MIX_CALL_NAMES, key.to_string(), loc));
     }
-    // Middleware aliases are deliberately not wired into find-references
-    // here: usages are method/static calls (`->middleware(...)`), not bare
-    // calls, so they don't fit `find_call_sites`'s `names`-based sweep.
-    // `document_links` below covers the same alias usages via
-    // `middleware_index::collect_middleware_calls` instead.
+    if let Some(key) = laravel.vite.key_at(uri, position) {
+        let loc = laravel.vite.get(key)?.clone();
+        return Some((VITE_CALL_NAMES, key.to_string(), loc));
+    }
+    // Middleware aliases, and the `Vite::asset(...)` static-call form of the
+    // vite domain above, are deliberately not wired into find-references
+    // here: usages are method/static calls, not bare calls, so they don't
+    // fit `find_call_sites`'s `names`-based sweep. `document_links` below
+    // covers both via their own AST-walk collectors instead.
     None
 }
 
@@ -493,6 +553,7 @@ mod tests {
         assert_eq!(idx.routes.names().count(), 0);
         assert_eq!(idx.assets.names().count(), 0);
         assert_eq!(idx.mix.names().count(), 0);
+        assert_eq!(idx.vite.names().count(), 0);
         assert_eq!(idx.middleware.names().count(), 0);
         assert_eq!(idx.components.names().count(), 0);
         assert_eq!(idx.livewire.names().count(), 0);
@@ -539,6 +600,15 @@ mod tests {
         std::fs::write(
             tmp.path().join("public").join("mix-manifest.json"),
             r#"{"/css/app.css": "/css/app.css?id=abc123"}"#,
+        )
+        .unwrap();
+        std::fs::create_dir_all(tmp.path().join("public").join("build")).unwrap();
+        std::fs::write(
+            tmp.path()
+                .join("public")
+                .join("build")
+                .join("manifest.json"),
+            r#"{"resources/js/app.js": {"file": "assets/app-4ed993c7.js"}}"#,
         )
         .unwrap();
         std::fs::create_dir_all(tmp.path().join("bootstrap")).unwrap();
@@ -604,6 +674,9 @@ mod tests {
 
         let mix = idx.mix.get("css/app.css").unwrap();
         assert!(mix.uri.as_str().ends_with("mix-manifest.json"));
+
+        let vite = idx.vite.get("resources/js/app.js").unwrap();
+        assert!(vite.uri.as_str().ends_with("build/manifest.json"));
 
         let middleware = idx.middleware.get("auth").unwrap();
         assert_eq!(

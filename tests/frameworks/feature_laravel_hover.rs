@@ -38,6 +38,12 @@ fn write_full_laravel_project(root: &std::path::Path) {
         "{\n    \"/css/app.css\": \"/css/app.css?id=abc123\"\n}\n",
     )
     .unwrap();
+    std::fs::create_dir_all(root.join("public").join("build")).unwrap();
+    std::fs::write(
+        root.join("public").join("build").join("manifest.json"),
+        "{\n    \"resources/js/app.js\": {\"file\": \"assets/app-3f5d7f7a.js\"}\n}\n",
+    )
+    .unwrap();
     std::fs::create_dir_all(root.join("bootstrap")).unwrap();
     std::fs::write(
         root.join("bootstrap").join("app.php"),
@@ -210,6 +216,56 @@ async fn mix_call_hover_shows_manifest_entry() {
         ```
 
         `public/mix-manifest.json`"#]]
+    .assert_eq(&out);
+}
+
+#[tokio::test]
+async fn vite_call_hover_shows_manifest_entry() {
+    let workspace = tempfile::tempdir().expect("workspace tempdir");
+    write_full_laravel_project(workspace.path());
+    let php = "<?php\n$tags = vite('resources/js/app.js');\n";
+    std::fs::write(workspace.path().join("app.php"), php).unwrap();
+
+    let mut s = TestServer::with_root(workspace.path()).await;
+    s.wait_for_index_ready().await;
+    s.open("app.php", php).await;
+
+    // Line 1 (0-based), character 20 = inside "resources/js/app.js".
+    let resp = s.hover("app.php", 1, 20).await;
+    let out = render_hover(&resp);
+    expect![[r#"
+        **vite('resources/js/app.js')**
+
+        ```json
+        "resources/js/app.js": {"file": "assets/app-3f5d7f7a.js"}
+        ```
+
+        `public/build/manifest.json`"#]]
+    .assert_eq(&out);
+}
+
+#[tokio::test]
+async fn vite_asset_static_call_hover_shows_manifest_entry() {
+    let workspace = tempfile::tempdir().expect("workspace tempdir");
+    write_full_laravel_project(workspace.path());
+    let php = "<?php\n$src = Vite::asset('resources/js/app.js');\n";
+    std::fs::write(workspace.path().join("app.php"), php).unwrap();
+
+    let mut s = TestServer::with_root(workspace.path()).await;
+    s.wait_for_index_ready().await;
+    s.open("app.php", php).await;
+
+    // Line 1 (0-based), character 30 = inside "resources/js/app.js".
+    let resp = s.hover("app.php", 1, 30).await;
+    let out = render_hover(&resp);
+    expect![[r#"
+        **Vite::asset('resources/js/app.js')**
+
+        ```json
+        "resources/js/app.js": {"file": "assets/app-3f5d7f7a.js"}
+        ```
+
+        `public/build/manifest.json`"#]]
     .assert_eq(&out);
 }
 

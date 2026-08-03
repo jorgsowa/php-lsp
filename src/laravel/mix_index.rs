@@ -104,10 +104,7 @@ mod tests {
     #[test]
     fn resolves_bare_path_against_leading_slash_key() {
         let tmp = tempfile::tempdir().unwrap();
-        write_manifest(
-            tmp.path(),
-            r#"{"/js/app.js": "/js/app.js?id=abc123"}"#,
-        );
+        write_manifest(tmp.path(), r#"{"/js/app.js": "/js/app.js?id=abc123"}"#);
         let idx = MixIndex::load(tmp.path());
         let loc = idx.get("js/app.js").unwrap();
         assert!(loc.uri.as_str().ends_with("mix-manifest.json"));
@@ -117,10 +114,7 @@ mod tests {
     #[test]
     fn location_points_at_the_manifest_key_text() {
         let tmp = tempfile::tempdir().unwrap();
-        write_manifest(
-            tmp.path(),
-            r#"{"/js/app.js": "/js/app.js?id=abc123"}"#,
-        );
+        write_manifest(tmp.path(), r#"{"/js/app.js": "/js/app.js?id=abc123"}"#);
         let idx = MixIndex::load(tmp.path());
         let loc = idx.get("js/app.js").unwrap();
         assert_eq!((loc.range.start.line, loc.range.start.character), (0, 2));

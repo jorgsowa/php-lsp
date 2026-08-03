@@ -51,5 +51,7 @@ mod feature_laravel_translation;
 mod feature_laravel_validation_rules;
 #[path = "frameworks/feature_laravel_view.rs"]
 mod feature_laravel_view;
+#[path = "frameworks/feature_laravel_vite.rs"]
+mod feature_laravel_vite;
 #[path = "frameworks/feature_symfony.rs"]
 mod feature_symfony;
