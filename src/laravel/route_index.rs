@@ -1,13 +1,17 @@
 //! `routes/*.php` index powering go-to-definition and completion for
 //! `route('name')` calls.
 //!
-//! Only explicit `->name('...')` registrations are indexed — `Route::
-//! resource()`/`apiResource()` implicit CRUD route names (replicating
-//! Laravel's verb/action naming convention) are a known gap. `Route::
+//! Explicit `->name('...')` registrations are indexed, as are `Route::
+//! resource('posts', PostController::class)`/`apiResource(...)`'s seven (or
+//! five) implicit CRUD route names — `posts.index`, `posts.create`,
+//! `posts.store`, ... — synthesized from the resource's base name.
+//! `->only()`/`->except()`/`->name()`/`->names()` fluent modifiers on a
+//! resource registration aren't honored, so all seven/five names are always
+//! synthesized regardless of such filtering — a known remaining gap. `Route::
 //! group(['as' => 'prefix.'], function () { ... })` and the fluent
 //! `Route::name('prefix.')->group(function () { ... })` equivalent both
-//! prepend their `as` prefix to every `->name(...)` registered inside the
-//! closure, including nested groups.
+//! prepend their `as` prefix to every `->name(...)`/resource registration
+//! inside the closure, including nested groups.
 
 use std::collections::HashMap;
 use std::ops::ControlFlow;
@@ -43,19 +47,11 @@ impl RouteIndex {
         crate::laravel::location_lookup::key_at(&self.routes, uri, position)
     }
 
-    /// Direct `.php` children of `routes/` (matches `ConfigIndex`'s and
-    /// `TranslationIndex`'s same simplification — nested route files
-    /// `require`d from these aren't followed).
+    /// Every `.php` file under `routes/`, including nested subdirectories —
+    /// `require`d files that live outside that tree still aren't followed.
     pub(super) fn load(root: &Path) -> Self {
         let mut routes = HashMap::new();
-        let Ok(entries) = std::fs::read_dir(root.join("routes")) else {
-            return Self { routes };
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().is_none_or(|e| e != "php") {
-                continue;
-            }
+        for path in super::fs_walk::php_files_recursive(&root.join("routes")) {
             let Ok(text) = std::fs::read_to_string(&path) else {
                 continue;
             };
@@ -107,6 +103,29 @@ impl<'arena, 'src> Visitor<'arena, 'src> for RouteVisitor<'_> {
             });
         }
 
+        if let ExprKind::StaticMethodCall(s) = &expr.kind
+            && let Some(actions) = resource_actions(s.method)
+            && let Some(arg) = s.args.first()
+            && let Some(arg_value) = &arg.value
+            && let ExprKind::String(base) = &arg_value.kind
+        {
+            let prefix = self.prefix_stack.concat();
+            // Points at the resource's base-name literal — there's no
+            // separate name string to point at like `->name(...)` has, since
+            // these names are synthesized rather than written out.
+            let range = Range {
+                start: self.sv.position_of(arg_value.span.start + 1),
+                end: self.sv.position_of(arg_value.span.end - 1),
+            };
+            for action in actions {
+                let full_name = format!("{prefix}{base}.{action}");
+                self.out.entry(full_name).or_insert_with(|| Location {
+                    uri: self.uri.clone(),
+                    range,
+                });
+            }
+        }
+
         if let Some((as_prefix, block)) = group_closure(expr) {
             self.prefix_stack.push(as_prefix.unwrap_or_default());
             for stmt in block.stmts.iter() {
@@ -126,6 +145,23 @@ impl<'arena, 'src> Visitor<'arena, 'src> for RouteVisitor<'_> {
 
 fn is_ident(expr: &Expr<'_, '_>, name: &str) -> bool {
     matches!(&expr.kind, ExprKind::Identifier(n) if n.eq_ignore_ascii_case(name))
+}
+
+const RESOURCE_ACTIONS: &[&str] = &[
+    "index", "create", "store", "show", "edit", "update", "destroy",
+];
+const API_RESOURCE_ACTIONS: &[&str] = &["index", "store", "show", "update", "destroy"];
+
+/// The implicit action names `Route::resource()`/`apiResource()` synthesizes,
+/// keyed by the static method identifier — `None` for anything else.
+fn resource_actions(method: &Expr<'_, '_>) -> Option<&'static [&'static str]> {
+    if is_ident(method, "resource") {
+        Some(RESOURCE_ACTIONS)
+    } else if is_ident(method, "apiResource") {
+        Some(API_RESOURCE_ACTIONS)
+    } else {
+        None
+    }
 }
 
 /// Recognizes `Route::group(['as' => 'x.'], function () {...})` and
@@ -314,6 +350,69 @@ mod tests {
         let loc = idx.get("x").unwrap();
         assert_eq!((loc.range.start.line, loc.range.start.character), (2, 40));
         assert_eq!(loc.range.end.character, 41);
+    }
+
+    #[test]
+    fn resource_synthesizes_seven_implicit_names() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_routes(
+            tmp.path(),
+            "web.php",
+            "<?php\nRoute::resource('posts', PostController::class);\n",
+        );
+        let idx = RouteIndex::load(tmp.path());
+        for action in [
+            "index", "create", "store", "show", "edit", "update", "destroy",
+        ] {
+            assert!(
+                idx.get(&format!("posts.{action}")).is_some(),
+                "missing posts.{action}"
+            );
+        }
+        assert_eq!(idx.names().count(), 7);
+    }
+
+    #[test]
+    fn api_resource_synthesizes_five_implicit_names() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_routes(
+            tmp.path(),
+            "web.php",
+            "<?php\nRoute::apiResource('posts', PostController::class);\n",
+        );
+        let idx = RouteIndex::load(tmp.path());
+        for action in ["index", "store", "show", "update", "destroy"] {
+            assert!(idx.get(&format!("posts.{action}")).is_some());
+        }
+        assert!(idx.get("posts.create").is_none());
+        assert!(idx.get("posts.edit").is_none());
+        assert_eq!(idx.names().count(), 5);
+    }
+
+    #[test]
+    fn resource_respects_as_prefix() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_routes(
+            tmp.path(),
+            "web.php",
+            "<?php\nRoute::group(['as' => 'admin.'], function () {\n    Route::resource('posts', PostController::class);\n});\n",
+        );
+        let idx = RouteIndex::load(tmp.path());
+        assert!(idx.get("admin.posts.index").is_some());
+        assert!(idx.get("posts.index").is_none());
+    }
+
+    #[test]
+    fn indexes_nested_route_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("routes").join("api")).unwrap();
+        std::fs::write(
+            tmp.path().join("routes").join("api").join("v1.php"),
+            "<?php\nRoute::get('/users', Foo::class)->name('api.users');\n",
+        )
+        .unwrap();
+        let idx = RouteIndex::load(tmp.path());
+        assert!(idx.get("api.users").is_some());
     }
 
     #[test]
