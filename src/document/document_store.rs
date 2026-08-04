@@ -47,6 +47,21 @@ pub struct DocumentStore {
     /// Lets tests assert that batching N symbols' reachability narrowing
     /// (e.g. all of one file's code lenses) pays one scan, not N.
     reachability_scan_passes: AtomicU64,
+    /// Memoized [`Self::resolve_reachability_queries`] results, keyed on the
+    /// query plus [`Self::write_revision`]. Without this, a warm repeat
+    /// still pays the O(workspace files) outer loop every call even when
+    /// mir's `ClassMentionIndex` avoids the expensive text scan inside it —
+    /// cheap per-file work times tens of thousands of files is still
+    /// measurable (confirmed via `references_all_kinds` bench: ~1.5-2ms on
+    /// a 36k-file workspace, for exactly the query shapes that reach this
+    /// function — `class`/`function`/`global constant`/a narrowable
+    /// `method` — while shapes answered by a direct index lookup, never
+    /// reaching this function at all, stayed sub-0.5ms). Bounded by total
+    /// cached FILE entries (`reachability_result_cache_files`), not entry
+    /// count, same discipline as mir's own per-file mention cache.
+    reachability_result_cache: ReachabilityResultCache,
+    /// Sum of `.len()` across every `reachability_result_cache` value.
+    reachability_result_cache_files: AtomicU64,
     /// Per-URI lock so concurrent callers computing the same uncached file's
     /// analysis (`cached_analysis_cancellable`) serialize onto one
     /// computation instead of each redoing the full mir pass — e.g. `did_open`'s
@@ -193,6 +208,8 @@ impl DocumentStore {
             workspace_files_dirty: AtomicBool::new(true),
             workspace_file_paths_cache: ArcSwapOption::from(None),
             reachability_scan_passes: AtomicU64::new(0),
+            reachability_result_cache: DashMap::new(),
+            reachability_result_cache_files: AtomicU64::new(0),
             analysis_inflight: DashMap::new(),
             analysis_compute_count: AtomicU64::new(0),
             lsp_workspace: Mutex::new(None),
@@ -1676,21 +1693,91 @@ impl DocumentStore {
     }
 
     /// Resolves many [`Self::fqn_reachable_files_with_needles`]-shaped
-    /// queries in a single pass over the workspace, so N callers share one
-    /// scan instead of paying N.
+    /// queries, memoized per `(query, write_revision)` so a warm repeat
+    /// (even for a different needle subset already known to `mention_cache`)
+    /// costs a `DashMap` lookup and nothing else.
+    ///
+    /// This wrapper exists because [`Self::resolve_reachability_queries_uncached`]'s
+    /// own `mention_cache` only memoizes the expensive *text scan* — its
+    /// outer loop still visits every workspace file to run the cheap
+    /// namespace/import checks and a cache lookup, and that "cheap per
+    /// file" cost is still measurable multiplied across tens of thousands
+    /// of files (confirmed via the `references_all_kinds` bench: ~1.5-2ms
+    /// on a 36k-file workspace for query shapes reaching this function,
+    /// even on a full `mention_cache` hit). Caching the final result here
+    /// skips that loop entirely on a repeat. Queries missing from the cache
+    /// are batched into one call to the uncached function (still sharing
+    /// one scan pass across every miss, as before).
+    fn resolve_reachability_queries(
+        &self,
+        queries: &[ReachabilityQuery],
+    ) -> Option<Vec<Vec<Arc<str>>>> {
+        if !self.is_index_ready() {
+            return None;
+        }
+        if queries.is_empty() {
+            return Some(Vec::new());
+        }
+        let revision = self.write_revision.load(Ordering::Acquire);
+        let mut out: Vec<Option<Vec<Arc<str>>>> = vec![None; queries.len()];
+        let mut miss_queries: Vec<ReachabilityQuery> = Vec::new();
+        let mut miss_targets: Vec<usize> = Vec::new();
+        for (i, q) in queries.iter().enumerate() {
+            match self.reachability_result_cache.get(q) {
+                Some(entry) if entry.0 == revision => {
+                    out[i] = Some((*entry.1).clone());
+                }
+                _ => {
+                    miss_queries.push(q.clone());
+                    miss_targets.push(i);
+                }
+            }
+        }
+        if !miss_queries.is_empty() {
+            let computed = self.resolve_reachability_queries_uncached(&miss_queries)?;
+            let mut cache_files_added = 0u64;
+            for (query, result) in miss_queries.into_iter().zip(computed) {
+                cache_files_added += result.len() as u64;
+                let result = Arc::new(result);
+                self.reachability_result_cache
+                    .insert(query, (revision, Arc::clone(&result)));
+                out[miss_targets.remove(0)] = Some((*result).clone());
+            }
+            let prior = self
+                .reachability_result_cache_files
+                .fetch_add(cache_files_added, Ordering::Relaxed);
+            const REACHABILITY_RESULT_CACHE_FILE_CAP: u64 = 2_000_000;
+            if prior + cache_files_added > REACHABILITY_RESULT_CACHE_FILE_CAP {
+                self.reachability_result_cache.clear();
+                self.reachability_result_cache_files
+                    .store(0, Ordering::Relaxed);
+            }
+        }
+        Some(out.into_iter().map(|o| o.unwrap_or_default()).collect())
+    }
+
+    /// Uncached implementation of [`Self::resolve_reachability_queries`],
+    /// resolving every query in a single pass over the workspace so N
+    /// callers share one scan instead of paying N. Callers should use the
+    /// memoizing wrapper.
     ///
     /// The namespace/import checks are cheap in-memory field comparisons and
-    /// stay per-query, but the qualified-mention fallback scans each
-    /// candidate's full text — that scan is what gets shared: every query's
-    /// needles feed one combined Aho-Corasick automaton, so a file pays one
-    /// text pass regardless of how many queries are outstanding, instead of
-    /// one pass per query. Each match is attributed back to its owning
-    /// query by pattern id.
+    /// stay per-query. The qualified-mention fallback is answered by mir's
+    /// own `ClassMentionIndex` (`class_mention_scanner`/
+    /// `class_mention_answer`/`set_file_class_mentions`) for every needle,
+    /// bounded or raw alike — the same persistent per-file mention cache
+    /// mir's `indexed_references_to` gate already populates, so a file
+    /// scanned by either consumer answers the other for free. A file whose
+    /// text and universe-epoch are unchanged since its last scan answers
+    /// every needle via a set lookup, no text pass at all. Only a file
+    /// that's genuinely edited since its last scan pays the Aho-Corasick
+    /// pass, and that pass runs against every currently-known needle in the
+    /// universe at once (not just this call's), so the next, differently-
+    /// shaped query against that same file is *also* a lookup.
     ///
     /// Returns `None` for every query when the boot scan hasn't finished —
-    /// same conservative discipline as the single-query form — so
-    /// references are never under-reported at cold start.
-    fn resolve_reachability_queries(
+    /// so references are never under-reported at cold start.
+    fn resolve_reachability_queries_uncached(
         &self,
         queries: &[ReachabilityQuery],
     ) -> Option<Vec<Vec<Arc<str>>>> {
@@ -1705,15 +1792,14 @@ impl DocumentStore {
         self.reachability_scan_passes
             .fetch_add(1, Ordering::Relaxed);
 
-        // Per-query targets/namespaces for the cheap checks, plus one needle
-        // list tagging each pattern with the query it belongs to (a query's
-        // FQN needles and extra needles can both contribute patterns).
+        // Per-query targets/namespaces for the cheap checks, plus this
+        // query's final needle strings — the exact literal form fed to the
+        // universe/scanner (a bare short name carries its `\` prefix).
         let mut per_query_targets: Vec<Vec<&str>> = Vec::with_capacity(queries.len());
         let mut per_query_namespaces: Vec<Vec<Option<&str>>> = Vec::with_capacity(queries.len());
-        let mut all_needles: Vec<String> = Vec::new();
-        let mut needle_query: Vec<usize> = Vec::new();
+        let mut per_query_needles: Vec<Vec<String>> = Vec::with_capacity(queries.len());
 
-        for (qi, q) in queries.iter().enumerate() {
+        for q in queries {
             let targets: Vec<&str> = q.fqns.iter().map(|f| f.trim_start_matches('\\')).collect();
             let namespaces: Vec<Option<&str>> = targets
                 .iter()
@@ -1722,40 +1808,94 @@ impl DocumentStore {
             // Namespaced targets match with or without the leading `\`; a
             // bare global name keeps it (the short name alone would match
             // everything).
-            for t in &targets {
-                all_needles.push(if t.contains('\\') {
-                    (*t).to_string()
-                } else {
-                    format!("\\{t}")
-                });
-                needle_query.push(qi);
-            }
-            for n in &q.extra_needles {
-                all_needles.push(n.clone());
-                needle_query.push(qi);
-            }
+            let mut needles: Vec<String> = targets
+                .iter()
+                .map(|t| {
+                    if t.contains('\\') {
+                        (*t).to_string()
+                    } else {
+                        format!("\\{t}")
+                    }
+                })
+                .collect();
+            needles.extend(q.extra_needles.iter().cloned());
             per_query_targets.push(targets);
             per_query_namespaces.push(namespaces);
+            per_query_needles.push(needles);
         }
-        let finder = aho_corasick::AhoCorasick::builder()
-            .ascii_case_insensitive(true)
-            .build(&all_needles)
-            .ok()?;
+
+        // Every needle is answered by mir's `ClassMentionIndex` — the same
+        // persistent per-file mention cache mir's own `indexed_references_to`
+        // gate already populates, so a file scanned by either consumer
+        // answers the other for free. A needle that's a whole identifier or
+        // FQN literal (alphanumeric/underscore/backslash only) gets the
+        // stricter, more precise word-boundary match (and is sound: PHP's
+        // lexer never places a qualified name flush against another
+        // identifier with no separator — `new App\Foo\Bar()` requires that
+        // space, `newApp\Foo\Bar` would lex as one invalid token — so the
+        // boundary check never under-reports a literal FQN mention in valid
+        // source). A needle that isn't a whole identifier (a call token
+        // like `->__construct`, whose preceding byte in real usage —
+        // `$obj->__construct()` — is itself an identifier character and
+        // would otherwise fail that check) is admitted as a raw needle
+        // instead, matched with no boundary at all — see
+        // `mir_analyzer::db::ClassMentionIndex::add_raw_names`'s doc
+        // comment.
+        fn needle_needs_raw_match(s: &str) -> bool {
+            !s.chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '\\')
+        }
+
+        // `snapshot_db` below is dropped before `get_workspace_index_salsa`
+        // runs — that function takes its own snapshot internally, and a
+        // concurrent writer's `set()` holds mir's write lock waiting for
+        // *every* outstanding snapshot to drop while a fresh `snapshot_db`
+        // waits for the read lock behind that same writer; keeping this
+        // snapshot alive across the call is exactly the deadlock
+        // `Self::snapshot_mir_query`'s doc comment warns about. The
+        // parallel loop below takes its own fresh snapshot instead of
+        // reusing this one.
+        {
+            let mir_db = self.current_analysis_session().snapshot_db();
+            let all_needles = per_query_needles.iter().flatten().map(|s| s.as_str());
+            let (raw_needles, bounded_needles): (Vec<&str>, Vec<&str>) =
+                all_needles.partition(|n| needle_needs_raw_match(n));
+            if !bounded_needles.is_empty() {
+                mir_db.add_literal_mention_names(bounded_needles);
+            }
+            if !raw_needles.is_empty() {
+                mir_db.add_raw_mention_needles(raw_needles);
+            }
+        }
 
         let ws = self.get_workspace_index_salsa();
         let n = queries.len();
+
+        let mir_db = self.current_analysis_session().snapshot_db();
+        let mir_scanner = mir_db.class_mention_scanner();
+        let per_query_mir_queries: Vec<Vec<mir_analyzer::db::MentionQuery>> = per_query_needles
+            .iter()
+            .map(|needles| {
+                needles
+                    .iter()
+                    .filter_map(|n| mir_db.prepare_class_mention_query(n))
+                    .collect()
+            })
+            .collect();
         // For a common short name most of the corpus fails the cheap
-        // namespace/import checks and falls through to the text scan, so
-        // this must run in parallel (mir's own equivalent gate scan does
-        // the same) or a cold query on a 15K-file workspace pays a
-        // multi-second sequential scan instead of the few-ms parallel one.
+        // namespace/import checks and falls through to the mention lookup
+        // (or, for a file that's cold or edited since its last scan, the
+        // text scan that fills it in) — parallel for the same reason as
+        // before: mir's own equivalent gate scan does the same, and a cold
+        // query on a 15K-file workspace needs the few-ms parallel pass, not
+        // a multi-second sequential one.
         let per_file_matches: Vec<(Arc<str>, Vec<bool>)> = ws
             .files
             .par_iter()
-            .filter_map(|(url, idx)| {
+            .map_with(mir_db.clone(), |mir_db, (url, idx)| {
                 let file_ns = idx.namespace.as_deref().map(|s| s.trim_start_matches('\\'));
                 let mut matched = vec![false; n];
-                let mut unresolved = 0usize;
+                let mut unresolved: Vec<usize> = Vec::new();
                 for qi in 0..n {
                     let ns_match = per_query_namespaces[qi]
                         .iter()
@@ -1781,24 +1921,50 @@ impl DocumentStore {
                         matched[qi] = true;
                         continue;
                     }
-                    unresolved += 1;
+                    unresolved.push(qi);
                 }
-                if unresolved > 0
+                if !unresolved.is_empty()
                     && let Some(text) = self.source_text(url)
                 {
-                    // Enumerate matches but stop as soon as every query still
-                    // unresolved by the cheap checks has been hit once —
-                    // bounds the scan to the number of distinct needles that
-                    // actually occur, not every occurrence of a common one.
-                    for m in finder.find_iter(text.as_ref()) {
-                        let qi = needle_query[m.pattern().as_usize()];
-                        if !matched[qi] {
-                            matched[qi] = true;
-                            unresolved -= 1;
-                            if unresolved == 0 {
-                                break;
+                    let url_str = url.as_str();
+                    let mut needs_scan = false;
+                    for &qi in &unresolved {
+                        for q in &per_query_mir_queries[qi] {
+                            match mir_db.class_mention_answer(url_str, q, &text) {
+                                Some(true) => {
+                                    matched[qi] = true;
+                                    break;
+                                }
+                                Some(false) => {}
+                                None => {
+                                    needs_scan = true;
+                                }
                             }
                         }
+                    }
+                    if needs_scan
+                        && let Some(mir_scanner) = &mir_scanner
+                    {
+                        // Scanned against the *whole* current universe, not
+                        // just this call's needles, so a future, differently-
+                        // shaped query against this same file is also a
+                        // lookup instead of its own fresh scan.
+                        let names = mir_scanner.scan(text.as_ref());
+                        for &qi in &unresolved {
+                            if !matched[qi]
+                                && per_query_mir_queries[qi]
+                                    .iter()
+                                    .any(|q| names.binary_search(&q.name).is_ok())
+                            {
+                                matched[qi] = true;
+                            }
+                        }
+                        mir_db.set_file_class_mentions(
+                            &Arc::<str>::from(url_str),
+                            &text,
+                            mir_scanner.epoch(),
+                            names,
+                        );
                     }
                 }
                 matched
@@ -1806,6 +1972,7 @@ impl DocumentStore {
                     .any(|&m| m)
                     .then(|| (Arc::<str>::from(url.as_str()), matched))
             })
+            .flatten()
             .collect();
 
         let mut out: Vec<Vec<Arc<str>>> = vec![Vec::new(); n];
@@ -1852,6 +2019,18 @@ impl DocumentStore {
     /// Surfaced via `$/php-lsp/debugStats` for the stress-test guard.
     pub fn ref_index_lock_count(&self) -> u64 {
         self.current_analysis_session().ref_index_lock_count()
+    }
+
+    /// Diagnostic: mir's `indexed_references_to` memoization hits, surfaced
+    /// via `$/php-lsp/debugStats` so a host-side query can be attributed to
+    /// the right layer when diagnosing latency.
+    pub fn mir_ref_query_cache_hits(&self) -> u64 {
+        self.current_analysis_session().ref_query_cache_hits()
+    }
+
+    /// Diagnostic: mir's `indexed_subtype_classes` memoization hits.
+    pub fn mir_subtype_query_cache_hits(&self) -> u64 {
+        self.current_analysis_session().subtype_query_cache_hits()
     }
 
     /// Whether mir's workspace symbol index singleton is populated (warm-start
@@ -1922,6 +2101,19 @@ impl DocumentStore {
     /// this for the life of the process.
     pub fn vendor_index_cache_len(&self) -> u64 {
         self.caches.vendor_index_cache.len() as u64
+    }
+
+    /// Per-file text scans recorded in mir's own `ClassMentionIndex` — the
+    /// single shared backend every [`Self::resolve_reachability_queries`]
+    /// needle is answered by, whether it's a fully-qualified literal or a
+    /// raw call-token needle. The ratio against `reachability_scan_passes`
+    /// is the per-file mention cache's hit rate; a warm, unedited repeat
+    /// query should bump `reachability_scan_passes` without bumping this at
+    /// all.
+    pub(crate) fn mir_mention_scans_recorded(&self) -> u64 {
+        self.current_analysis_session()
+            .class_mention_stats()
+            .scans_recorded
     }
 
     /// Return the raw source text for `uri` if it has been mirrored into the
@@ -2381,10 +2573,16 @@ enum MethodScopePlan {
 /// One [`DocumentStore::resolve_reachability_queries`] request: the target
 /// FQNs for the namespace/import rules, plus raw text needles matched the
 /// same way (ASCII-case-insensitive substring).
+#[derive(Clone, PartialEq, Eq, Hash)]
 struct ReachabilityQuery {
     fqns: Vec<Arc<str>>,
     extra_needles: Vec<String>,
 }
+
+/// Memoized [`DocumentStore::resolve_reachability_queries`] results: query
+/// -> `(write_revision computed at, resolved file list)`. See the field doc
+/// on `DocumentStore::reachability_result_cache`.
+type ReachabilityResultCache = DashMap<ReachabilityQuery, (u64, Arc<Vec<Arc<str>>>)>;
 
 #[cfg(test)]
 mod tests {
@@ -2791,6 +2989,212 @@ mod tests {
         );
         store.remove(&u);
         assert!(store.get_vendor_index(&u).is_none());
+    }
+
+    /// A repeat reachability query against unchanged files must not re-scan
+    /// any of them. `fqn_reachable_files` has no raw `extra_needles`, so
+    /// it's answered by mir's `ClassMentionIndex` (see
+    /// `resolve_reachability_queries_uncached`'s doc comment) —
+    /// `mir_mention_scans_recorded` (bumped only on an actual text scan
+    /// inside that index) proves this directly rather than inferring it
+    /// from timing.
+    #[test]
+    fn reachability_repeat_query_hits_mention_cache() {
+        let store = DocumentStore::new();
+        for i in 0..5 {
+            open(
+                &store,
+                uri(&format!("/Other/Noise{i}.php")),
+                format!(
+                    "<?php\nnamespace Other{i};\nclass N{i} {{ public function run() {{ return new \\App\\Owner(); }} }}\n"
+                ),
+            );
+        }
+        store.mark_index_ready();
+
+        let target: Arc<str> = Arc::from("App\\Owner");
+        let first = store
+            .fqn_reachable_files(&[target.clone()])
+            .expect("index is ready");
+        assert_eq!(first.len(), 5, "every noise file textually mentions the target");
+        let scans_after_first = store.mir_mention_scans_recorded();
+        assert!(
+            scans_after_first > 0,
+            "cold query must scan the noise files' text at least once"
+        );
+
+        let second = store
+            .fqn_reachable_files(&[target])
+            .expect("index is ready");
+        assert_eq!(second.len(), 5);
+        assert_eq!(
+            store.mir_mention_scans_recorded(),
+            scans_after_first,
+            "identical repeat query must not re-scan any file's text"
+        );
+    }
+
+    /// A needle admitted into the universe *after* a file was last scanned
+    /// must still be found on that file — the per-file `epoch` check must
+    /// force a rescan rather than answering from a mention-set that
+    /// predates the needle. Without this, mir's `ClassMentionIndex`'s
+    /// "append-only, lazily grown" design would silently under-report
+    /// references to any symbol first queried after another symbol already
+    /// warmed the cache for the same file.
+    #[test]
+    fn reachability_new_needle_still_finds_previously_scanned_file() {
+        let store = DocumentStore::new();
+        open(
+            &store,
+            uri("/Other/Multi.php"),
+            "<?php\nnamespace Other;\nclass Multi { public function run() {\n    new \\App\\First();\n    new \\App\\Second();\n} }\n"
+                .to_string(),
+        );
+        store.mark_index_ready();
+
+        // First query only asks about `First` — this forces a scan of
+        // Multi.php's text, caching its mention-set at an epoch that
+        // includes `First` but not yet `Second`.
+        let first_hits = store
+            .fqn_reachable_files(&[Arc::from("App\\First")])
+            .expect("index is ready");
+        assert_eq!(first_hits.len(), 1);
+
+        // Second query: a brand-new needle never admitted before.
+        // Multi.php's cached entry predates it.
+        let second_hits = store
+            .fqn_reachable_files(&[Arc::from("App\\Second")])
+            .expect("index is ready");
+        assert_eq!(
+            second_hits.len(),
+            1,
+            "a needle admitted after a file's last scan must still be found on that file"
+        );
+    }
+
+    /// An edit that adds a new mention must not be served from a stale
+    /// cache entry — `Arc::ptr_eq` against the cached `text` must detect
+    /// the change and force a fresh scan.
+    #[test]
+    fn reachability_cache_invalidates_on_edit() {
+        let store = DocumentStore::new();
+        let target: Arc<str> = Arc::from("App\\Owner");
+        let noise = uri("/Other/Noise.php");
+        open(
+            &store,
+            noise.clone(),
+            "<?php\nnamespace Other;\nclass Noise {}\n".to_string(),
+        );
+        store.mark_index_ready();
+
+        let before = store
+            .fqn_reachable_files(&[target.clone()])
+            .expect("index is ready");
+        assert!(before.is_empty(), "file does not mention the target yet");
+
+        open(
+            &store,
+            noise,
+            "<?php\nnamespace Other;\nclass Noise { public function run() { return new \\App\\Owner(); } }\n"
+                .to_string(),
+        );
+
+        let after = store
+            .fqn_reachable_files(&[target])
+            .expect("index is ready");
+        assert_eq!(
+            after.len(),
+            1,
+            "an edit that adds a mention must not be served from a stale cache entry"
+        );
+    }
+
+    /// A repeat query must not even enter `resolve_reachability_queries_uncached`
+    /// — `mention_cache` (proven above) only skips the text scan *inside*
+    /// that function, but its outer per-file loop still runs on every call
+    /// unless the result itself is cached. `reachability_scan_passes` (bumped
+    /// only inside the uncached function) staying flat on the second call
+    /// proves the whole function was skipped, not just its scan.
+    #[test]
+    fn reachability_repeat_query_skips_uncached_function_entirely() {
+        let store = DocumentStore::new();
+        for i in 0..5 {
+            open(
+                &store,
+                uri(&format!("/Other/Noise{i}.php")),
+                format!(
+                    "<?php\nnamespace Other{i};\nclass N{i} {{ public function run() {{ return new \\App\\Owner(); }} }}\n"
+                ),
+            );
+        }
+        store.mark_index_ready();
+
+        let target: Arc<str> = Arc::from("App\\Owner");
+        store
+            .fqn_reachable_files(&[target.clone()])
+            .expect("index is ready");
+        let passes_after_first = store.reachability_scan_passes();
+        assert!(
+            passes_after_first > 0,
+            "cold query must run the uncached function at least once"
+        );
+
+        store
+            .fqn_reachable_files(&[target])
+            .expect("index is ready");
+        assert_eq!(
+            store.reachability_scan_passes(),
+            passes_after_first,
+            "identical repeat query must be answered entirely from the result cache"
+        );
+    }
+
+    /// `batch_reference_candidate_files` can mix a bounded needle-less query
+    /// (`Name::Class`, an FQN literal) and a raw-needle query (`__construct`,
+    /// whose extra needle is the no-word-bound call token `->__construct`)
+    /// in the SAME call — both answered by mir's `ClassMentionIndex`, which
+    /// admits and scans both needle shapes in one pass (see
+    /// `resolve_reachability_queries_uncached`'s doc comment). `UsesBoth.php`
+    /// calls `$obj->__construct()` on an untyped parameter — it never
+    /// textually mentions `Owner` at all, so it must surface only via the
+    /// raw needle, never via the class query, proving the two needle shapes
+    /// don't cross-pollute each other's results when batched together.
+    #[test]
+    fn batch_reference_candidate_files_mixes_raw_and_bounded_needles() {
+        let store = DocumentStore::new();
+        open(
+            &store,
+            uri("/App/Owner.php"),
+            "<?php\nnamespace App;\nclass Owner { public function __construct() {} }\n"
+                .to_string(),
+        );
+        open(
+            &store,
+            uri("/Other/UsesBoth.php"),
+            "<?php\nnamespace Other;\nclass UsesBoth { public function run($obj) { $obj->__construct(); } }\n"
+                .to_string(),
+        );
+        store.mark_index_ready();
+
+        let symbols = vec![
+            mir_analyzer::Name::Class(Arc::from("App\\Owner")),
+            mir_analyzer::Name::Method {
+                class: Arc::from("App\\Owner"),
+                name: Arc::from("__construct"),
+            },
+        ];
+        let scopes = store.batch_reference_candidate_files(&symbols);
+        assert_eq!(scopes.len(), 2);
+        let class_scope: Vec<&str> = scopes[0].iter().map(|f| f.as_ref()).collect();
+        let method_scope: Vec<&str> = scopes[1].iter().map(|f| f.as_ref()).collect();
+        assert!(
+            !class_scope.iter().any(|f| f.contains("UsesBoth")),
+            "the class query must not pick up a file that never mentions the FQN: {class_scope:?}"
+        );
+        assert!(
+            method_scope.iter().any(|f| f.contains("UsesBoth")),
+            "the raw `->__construct` needle must find the call site: {method_scope:?}"
+        );
     }
 
     #[test]

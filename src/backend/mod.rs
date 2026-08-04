@@ -121,6 +121,18 @@ pub struct DebugStats {
     /// LRU-capped today — the one cache size here worth watching on a
     /// long-running session with heavy vendor navigation.
     pub vendor_index_cache_len: u64,
+    /// Hits served from mir's `indexed_references_to` memoization cache
+    /// (see `mir_analyzer::AnalysisSession::ref_query_cache_hits`).
+    pub mir_ref_query_cache_hits: u64,
+    /// Hits served from mir's `indexed_subtype_classes` memoization cache
+    /// (see `mir_analyzer::AnalysisSession::subtype_query_cache_hits`).
+    pub mir_subtype_query_cache_hits: u64,
+    /// Per-file text scans recorded in mir's own `ClassMentionIndex` — the
+    /// single shared backend every `resolve_reachability_queries` needle is
+    /// answered by. The ratio against `reachability_scan_passes` is the
+    /// per-file mention cache's hit rate — a warm, unedited repeat query
+    /// should not move this at all.
+    pub mir_mention_scans_recorded: u64,
 }
 
 /// Params for the `$/php-lsp/debugHoldGate` custom request.
@@ -224,6 +236,9 @@ impl Backend {
             owned_program_cache_len: self.docs.owned_program_cache_len(),
             decl_fingerprints_len: self.docs.decl_fingerprints_len(),
             vendor_index_cache_len: self.docs.vendor_index_cache_len(),
+            mir_ref_query_cache_hits: self.docs.mir_ref_query_cache_hits(),
+            mir_subtype_query_cache_hits: self.docs.mir_subtype_query_cache_hits(),
+            mir_mention_scans_recorded: self.docs.mir_mention_scans_recorded(),
         })
     }
 
