@@ -2481,32 +2481,95 @@ impl DocumentStore {
     }
 
     /// Like [`Self::all_docs_for_scan`], but only parses files whose raw text
-    /// contains at least one of `needles` (ASCII-case-insensitive — PHP class
-    /// names are case-insensitive, unlike the Laravel string-key prefilter's
-    /// exact-value match). Used by callers scanning for a class/interface
-    /// *declaration* by name (e.g. "implement missing methods"), where the
-    /// needle set is small and a miss guarantees the file declares none of
-    /// them.
+    /// mentions at least one of `needles` as a whole identifier
+    /// (ASCII-case-insensitive — PHP class names are case-insensitive). Used
+    /// by callers scanning for a class/interface *declaration* by name (e.g.
+    /// "implement missing methods"), where the needle set is small and a miss
+    /// guarantees the file declares none of them.
+    ///
+    /// Answered from mir's persistent per-file `ClassMentionIndex` — the
+    /// same cache the reference/subtype gates and
+    /// [`Self::resolve_reachability_queries`] populate — so a file scanned
+    /// here answers later reference queries for free, and vice versa. Text
+    /// comes from this store's own mirror (`source_text`), same as before;
+    /// `class_mention_answer` validates cache freshness against it, so a
+    /// file whose mirror diverges from mir's copy is simply rescanned.
     pub fn docs_for_scan_mentioning(&self, needles: &[String]) -> Vec<(Uri, Arc<ParsedDoc>)> {
-        let Ok(finder) = aho_corasick::AhoCorasick::builder()
-            .ascii_case_insensitive(true)
-            .build(needles)
-        else {
+        if needles.is_empty() {
             return Vec::new();
+        }
+        // Scoped so the mir snapshot drops before `get_doc_salsa` below —
+        // same writer-starvation discipline as
+        // `resolve_reachability_queries_uncached`.
+        let urls: Vec<Uri> = {
+            let mir_db = self.current_analysis_session().snapshot_db();
+            mir_db.add_literal_mention_names(needles.iter().map(|s| s.as_str()));
+            let queries: Vec<mir_analyzer::db::MentionQuery> = needles
+                .iter()
+                .filter_map(|n| mir_db.prepare_class_mention_query(n))
+                .collect();
+            if queries.is_empty() {
+                return Vec::new();
+            }
+            let scanner = mir_db.class_mention_scanner();
+            self.lsp_ws_files
+                .iter()
+                .filter(|e| !self.deleted_uris.contains(e.key()))
+                .filter(|e| {
+                    let Some(text) = self.source_text(e.key()) else {
+                        return false;
+                    };
+                    let url_str = e.key().as_str();
+                    let mut unanswered = false;
+                    for q in &queries {
+                        match mir_db.class_mention_answer(url_str, q, &text) {
+                            Some(true) => return true,
+                            Some(false) => {}
+                            None => unanswered = true,
+                        }
+                    }
+                    if !unanswered {
+                        return false;
+                    }
+                    let Some(scanner) = &scanner else {
+                        // Defensive only: the needles were admitted above,
+                        // so the universe (and scanner) can't be empty.
+                        return needles.iter().any(|n| {
+                            crate::text::contains_ascii_case_insensitive(&text, n)
+                        });
+                    };
+                    let names = scanner.scan(text.as_ref());
+                    let hit = queries
+                        .iter()
+                        .any(|q| names.binary_search(&q.name).is_ok());
+                    mir_db.set_file_class_mentions(
+                        &Arc::<str>::from(url_str),
+                        &text,
+                        scanner.epoch(),
+                        names,
+                    );
+                    hit
+                })
+                .map(|e| e.key().clone())
+                .collect()
         };
-        let urls: Vec<Uri> = self
-            .lsp_ws_files
-            .iter()
-            .filter(|e| !self.deleted_uris.contains(e.key()))
-            .filter(|e| {
-                self.source_text(e.key())
-                    .is_some_and(|text| finder.is_match(text.as_ref()))
-            })
-            .map(|e| e.key().clone())
-            .collect();
         urls.into_iter()
             .filter_map(|u| self.get_doc_salsa(&u).map(|d| (u, d)))
             .collect()
+    }
+
+    /// Subset of `files` (mir paths) mentioning `short_name` as a whole
+    /// identifier, ASCII-case-insensitive, via mir's shared per-file mention
+    /// cache (`AnalysisSession::files_mentioning_any`). A file mir doesn't
+    /// know is omitted — callers use this as a prioritization heuristic, not
+    /// an authoritative filter.
+    pub fn files_mentioning_short_name(
+        &self,
+        files: &[Arc<str>],
+        short_name: &str,
+    ) -> Vec<Arc<str>> {
+        self.current_analysis_session()
+            .files_mentioning_any(files, &[short_name])
     }
 
     /// Files whose `use` imports include `fqn` (leading `\` and ASCII case

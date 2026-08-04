@@ -13,7 +13,7 @@ use crate::navigation::references::{
 };
 use crate::navigation::walk::collect_var_refs_in_scope;
 use crate::text::{
-    contains_ascii_case_insensitive, fqn_short_name, utf16_code_units, word_at_position,
+    fqn_short_name, utf16_code_units, word_at_position,
 };
 use crate::types::type_map::{enclosing_class_at, enclosing_class_fqn_at};
 
@@ -526,24 +526,13 @@ impl Backend {
                     let sym = symbol.clone();
                     let docs = Arc::clone(&self.docs);
                     let all_files = files.clone();
-                    // The owner-mention partition scans candidate texts —
-                    // do it on the blocking pool in parallel, never
-                    // sequentially on the tokio worker.
+                    // The owner-mention partition may scan candidate texts
+                    // (cold files only — warm ones answer from mir's mention
+                    // cache) — do it on the blocking pool, never on the
+                    // tokio worker. mir parallelizes internally.
                     let priority_locations = tokio::task::spawn_blocking(move || {
-                        use rayon::prelude::*;
-                        let priority_files: Vec<Arc<str>> = all_files
-                            .par_iter()
-                            .filter(|f| {
-                                (f.as_ref())
-                                    .parse::<Uri>()
-                                    .ok()
-                                    .and_then(|u| docs.source_text(&u))
-                                    .is_some_and(|t| {
-                                        contains_ascii_case_insensitive(&t, &owner_short)
-                                    })
-                            })
-                            .cloned()
-                            .collect();
+                        let priority_files: Vec<Arc<str>> =
+                            docs.files_mentioning_short_name(&all_files, &owner_short);
                         if priority_files.is_empty() {
                             return Vec::new();
                         }

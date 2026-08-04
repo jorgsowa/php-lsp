@@ -1050,7 +1050,6 @@ dependencies = [
 name = "php-lsp"
 version = "0.23.0"
 dependencies = [
- "aho-corasick",
  "arc-swap",
  "bincode 2.0.1",
  "blake3",

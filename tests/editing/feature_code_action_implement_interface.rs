@@ -391,3 +391,87 @@ class $0MyHandler$0 extends Handler {}
     "#]]
     .assert_eq(&out);
 }
+
+#[tokio::test]
+#[ignore = "pre-existing: implement action resolves the interface name case-sensitively downstream of the (case-insensitive) declaration-file prefilter; reproduces identically on the pre-mention-index baseline"]
+async fn implement_interface_mentioned_with_different_case_in_declaring_file() {
+    // PHP class names are case-insensitive: the class writes `RENDERABLE`
+    // while the declaring file spells it `Renderable`. The declaration-file
+    // prefilter (mir's mention index, word-boundary + ASCII-case-insensitive)
+    // must still surface the declaring file.
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_code_action_apply(
+            r#"//- /Contracts/Renderable.php
+<?php
+namespace App\Contracts;
+interface Renderable {
+    public function render(): string;
+}
+
+//- /View.php
+<?php
+use App\Contracts\Renderable;
+class $0View$0 implements RENDERABLE {}
+"#,
+            "Implement missing method",
+        )
+        .await;
+    expect![[r#"
+        <?php
+        use App\Contracts\Renderable;
+        class View implements RENDERABLE {
+            public function render(): string
+            {
+                throw new \RuntimeException('Not implemented');
+            }
+
+        }
+    "#]]
+    .assert_eq(&out);
+}
+
+/// The declaring-file prefilter records per-file mention sets in a
+/// persistent cache (mir's `ClassMentionIndex`). A file scanned once as a
+/// MISS must not stay a miss after an edit adds the declaration — the
+/// cache's freshness check has to force a rescan of the changed text.
+#[tokio::test]
+async fn implement_action_sees_interface_added_to_already_scanned_file() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    s.open("other.php", "<?php\nclass Unrelated {}\n").await;
+    s.open("view.php", "<?php\nclass View implements Contract {}\n")
+        .await;
+
+    // First request: `Contract` is declared nowhere, so no implement action —
+    // and other.php's "no mention of Contract" is now recorded in the cache.
+    let resp = s.code_action("view.php", 1, 7, 1, 7).await;
+    let has_implement = |resp: &serde_json::Value| {
+        resp["result"].as_array().is_some_and(|arr| {
+            arr.iter().any(|a| {
+                a["title"]
+                    .as_str()
+                    .is_some_and(|t| t.starts_with("Implement missing"))
+            })
+        })
+    };
+    assert!(
+        !has_implement(&resp),
+        "no implement action expected while the interface is undeclared: {resp:?}"
+    );
+
+    // The already-scanned file now declares the interface.
+    s.change(
+        "other.php",
+        2,
+        "<?php\ninterface Contract {\n    public function go(): void;\n}\n",
+    )
+    .await;
+
+    let resp = s.code_action("view.php", 1, 7, 1, 7).await;
+    assert!(
+        has_implement(&resp),
+        "implement action must appear once the edited file declares the interface: {resp:?}"
+    );
+}
