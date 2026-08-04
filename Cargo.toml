@@ -130,6 +130,10 @@ harness = false
 name = "code_lens_scaling"
 harness = false
 
+[[bench]]
+name = "references_all_kinds"
+harness = false
+
 # Faster local iteration: line-tables-only debuginfo keeps backtraces (file +
 # line) while cutting the debuginfo codegen + link time that dominates the
 # php-lsp test build.
