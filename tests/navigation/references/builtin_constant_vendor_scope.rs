@@ -5,16 +5,9 @@
 //! (`PHP_EOL`, `PHP_VERSION`, ...) is never declared in vendor, so vendor's
 //! own usages of it are dependency-internal noise, same as a builtin class
 //! or function.
-//!
-//! Unlike the class/function cases, this one is `#[ignore]`d and stays that
-//! way for now: narrowing it needs `mir_analyzer::is_builtin_constant`,
-//! which only exists on mir's `main` as of the `is-builtin-constant` branch
-//! merge (commit `51c5d53b`) — not yet released, and php-lsp's `Cargo.lock`
-//! still pins the prior mir commit (`1cd6682b`, tag `0.67.0`). Un-ignore
-//! these once php-lsp bumps its mir pin past that merge AND
-//! `reference_candidate_files`'s `Name::GlobalConstant` arm
-//! (`src/document/document_store.rs`) gets the same builtin check the
-//! `Name::Function` arm already has.
+//! Narrowing uses `mir_analyzer::is_builtin_constant` (mir 0.69.0) in
+//! `reference_candidate_files`'s `Name::GlobalConstant` arm, mirroring the
+//! `Name::Function` arm's `is_builtin_function` check.
 
 use super::*;
 use expect_test::expect;
@@ -34,7 +27,6 @@ fn write_composer(dir: &std::path::Path) {
 /// name) — matches how this is written in real code. Vendor references it
 /// too; only the project usage must remain in the result.
 #[tokio::test]
-#[ignore = "vendor scoping for builtin constants not implemented yet (ROADMAP 0c step 0, blocked on an unreleased mir pin bump)"]
 async fn references_on_global_builtin_constant_excludes_vendor_usages() {
     let dir = tempfile::tempdir().unwrap();
     write_composer(dir.path());
@@ -59,7 +51,6 @@ async fn references_on_global_builtin_constant_excludes_vendor_usages() {
 /// check strips a leading backslash before doing its lookup, the same
 /// treatment `stub_path_for_class`/`is_builtin_function` already get.
 #[tokio::test]
-#[ignore = "vendor scoping for builtin constants not implemented yet (ROADMAP 0c step 0, blocked on an unreleased mir pin bump)"]
 async fn references_on_backslash_prefixed_builtin_constant_excludes_vendor_usages() {
     let dir = tempfile::tempdir().unwrap();
     write_composer(dir.path());
@@ -77,6 +68,62 @@ async fn references_on_backslash_prefixed_builtin_constant_excludes_vendor_usage
     assert!(resp["error"].is_null(), "references error: {resp:?}");
 
     expect!["src/Handler.php:5:22-5:29"].assert_eq(&render_locations(&resp, &server.uri("")));
+}
+
+/// Control case: a *user-defined* global (unqualified) constant is not
+/// builtin, so vendor usages of it must stay in scope — pins the
+/// `is_builtin_constant` false branch against over-dropping vendor.
+#[tokio::test]
+async fn references_on_user_defined_global_constant_keeps_vendor_usages() {
+    let dir = tempfile::tempdir().unwrap();
+    write_composer(dir.path());
+    let decl = "<?php\n\nconst APP_BUILD_ID = 1;\n".to_string();
+    std::fs::write(dir.path().join("src/constants.php"), &decl).unwrap();
+    let vendor_caller = "<?php\nnamespace Acme\\Lib;\n\nclass Runner {\n    public function run(): int {\n        return APP_BUILD_ID;\n    }\n}\n";
+    std::fs::write(dir.path().join("vendor/acme/lib/src/Runner.php"), vendor_caller).unwrap();
+    let project_caller = "<?php\nnamespace App;\n\nclass Handler {\n    public function handle(): int {\n        return APP_BUILD_ID;\n    }\n}\n";
+    std::fs::write(dir.path().join("src/Handler.php"), project_caller).unwrap();
+
+    let mut server = TestServer::with_root(dir.path()).await;
+    server.wait_for_index_ready().await;
+    server.open("src/constants.php", &decl).await;
+
+    let (_, line, col) = server.locate("src/constants.php", "const APP_BUILD_ID", 0);
+    let resp = server.references("src/constants.php", line, col + 6, false).await;
+    assert!(resp["error"].is_null(), "references error: {resp:?}");
+
+    expect![[r#"
+        src/Handler.php:5:15-5:27
+        vendor/acme/lib/src/Runner.php:5:15-5:27"#]]
+    .assert_eq(&render_locations(&resp, &server.uri("")));
+}
+
+/// PHP constants are case-sensitive: a user-defined global `php_eol` is a
+/// different constant from the builtin `PHP_EOL`, so the builtin check must
+/// not match it case-insensitively and drop its vendor usages.
+#[tokio::test]
+async fn references_on_case_variant_of_builtin_constant_keeps_vendor_usages() {
+    let dir = tempfile::tempdir().unwrap();
+    write_composer(dir.path());
+    let decl = "<?php\n\nconst php_eol = \"\\n\";\n".to_string();
+    std::fs::write(dir.path().join("src/constants.php"), &decl).unwrap();
+    let vendor_caller = "<?php\nnamespace Acme\\Lib;\n\nclass Runner {\n    public function run(): string {\n        return 'x' . \\php_eol;\n    }\n}\n";
+    std::fs::write(dir.path().join("vendor/acme/lib/src/Runner.php"), vendor_caller).unwrap();
+    let project_caller = "<?php\nnamespace App;\n\nclass Handler {\n    public function handle(): string {\n        return 'x' . \\php_eol;\n    }\n}\n";
+    std::fs::write(dir.path().join("src/Handler.php"), project_caller).unwrap();
+
+    let mut server = TestServer::with_root(dir.path()).await;
+    server.wait_for_index_ready().await;
+    server.open("src/constants.php", &decl).await;
+
+    let (_, line, col) = server.locate("src/constants.php", "const php_eol", 0);
+    let resp = server.references("src/constants.php", line, col + 6, false).await;
+    assert!(resp["error"].is_null(), "references error: {resp:?}");
+
+    expect![[r#"
+        src/Handler.php:5:22-5:29
+        vendor/acme/lib/src/Runner.php:5:22-5:29"#]]
+    .assert_eq(&render_locations(&resp, &server.uri("")));
 }
 
 /// Control case: a *namespaced* constant that merely shares a builtin's

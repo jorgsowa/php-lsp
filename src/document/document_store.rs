@@ -1283,14 +1283,17 @@ impl DocumentStore {
                     return self.workspace_file_paths_excluding_vendor();
                 }
             }
-            // `stub_path_for_constant` isn't re-exported by mir, so a
-            // builtin global constant (`PHP_EOL`, ...) can't be
-            // distinguished from a project-defined one here yet.
+            // Same split as the function arm: namespaced constants narrow
+            // via FQN reachability; an unqualified *builtin* one (`PHP_EOL`)
+            // is never declared in vendor, so vendor drops outright.
             mir_analyzer::Name::GlobalConstant(fqcn) => {
-                if fqcn.trim_start_matches('\\').contains('\\')
-                    && let Some(files) = self.fqn_reachable_files(std::slice::from_ref(fqcn))
-                {
-                    return files;
+                let trimmed = fqcn.trim_start_matches('\\');
+                if trimmed.contains('\\') {
+                    if let Some(files) = self.fqn_reachable_files(std::slice::from_ref(fqcn)) {
+                        return files;
+                    }
+                } else if mir_analyzer::is_builtin_constant(trimmed) {
+                    return self.workspace_file_paths_excluding_vendor();
                 }
             }
             _ => {}
