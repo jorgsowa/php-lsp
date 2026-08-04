@@ -23,7 +23,11 @@ Download the binary for your platform from [Releases](https://github.com/jorgsow
 |---|---|
 | `php-lsp-aarch64-apple-darwin` | macOS — Apple Silicon |
 | `php-lsp-x86_64-apple-darwin` | macOS — Intel |
-| `php-lsp-x86_64-unknown-linux-gnu` | Linux — 64-bit |
+| `php-lsp-x86_64-unknown-linux-gnu` | Linux — 64-bit (glibc) |
+| `php-lsp-aarch64-unknown-linux-gnu` | Linux — ARM64 (glibc) |
+| `php-lsp-x86_64-unknown-linux-musl` | Linux — 64-bit (musl, e.g. Alpine) |
+| `php-lsp-aarch64-unknown-linux-musl` | Linux — ARM64 (musl, e.g. Alpine) |
+| `php-lsp-x86_64-pc-windows-msvc` | Windows — 64-bit |
 
 Then place it on your `PATH`:
 ```bash
