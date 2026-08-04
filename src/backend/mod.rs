@@ -90,8 +90,7 @@ pub struct DebugStats {
     pub warm_start_replays_completed: u64,
     /// Files handed to a background reanalysis because their replayed
     /// reference postings were flagged untrusted by mir's `warm_start_files`.
-    /// Always 0 today — `warm_start_indexes` doesn't wire this up yet
-    /// (ROADMAP 0c step 1). See `DocumentStore::warm_start_untrusted_reanalyzed`.
+    /// See `DocumentStore::warm_start_untrusted_reanalyzed`.
     pub warm_start_untrusted_reanalyzed: u64,
     /// Throttled vendor warm-analysis sweeps run to completion. Always 0
     /// today — the sweep doesn't exist yet (ROADMAP 0c step 2). See

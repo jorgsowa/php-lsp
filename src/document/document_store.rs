@@ -128,12 +128,12 @@ pub struct DocumentStore {
     /// Files `warm_start_indexes` handed to a background reanalysis because
     /// mir's `warm_start_files` flagged their replayed reference postings as
     /// untrusted (a disk-cache replay of an unresolved-name commit — see
-    /// mir's 0.67.0 changelog entry). Always 0 until that wiring lands
-    /// (ROADMAP 0c step 1, `~/.claude/plans/crispy-noodling-key.md`) — today
-    /// `warm_start_indexes` discards the returned list. Observability only,
-    /// surfaced via `$/php-lsp/debugStats` so a protocol test can assert the
-    /// reanalysis happened in the background, without ever issuing a query.
-    warm_start_untrusted_reanalyzed: AtomicU64,
+    /// mir's 0.67.0 changelog entry). `Arc`-wrapped so the detached
+    /// reanalysis thread spawned by `warm_start_indexes` can bump it without
+    /// borrowing `self`. Observability only, surfaced via
+    /// `$/php-lsp/debugStats` so a protocol test can assert the reanalysis
+    /// happened in the background, without ever issuing a query.
+    warm_start_untrusted_reanalyzed: Arc<AtomicU64>,
     /// Throttled/idle-priority vendor warm-analysis sweeps run to completion
     /// (only meaningful when `warmVendorAnalysis: true` — see `LspConfig`).
     /// Always 0 until that sweep is implemented (ROADMAP 0c step 2,
@@ -207,7 +207,7 @@ impl DocumentStore {
             warm_sweep_cancel: Mutex::new(mir_analyzer::IndexCancel::new()),
             warm_sweeps_completed: AtomicU64::new(0),
             warm_start_replays_completed: AtomicU64::new(0),
-            warm_start_untrusted_reanalyzed: AtomicU64::new(0),
+            warm_start_untrusted_reanalyzed: Arc::new(AtomicU64::new(0)),
             vendor_warm_sweeps_completed: AtomicU64::new(0),
             interactive_reads: AtomicU64::new(0),
         }
@@ -1174,6 +1174,17 @@ impl DocumentStore {
     /// without a content-hash-matching cache entry from a previous run. Call
     /// once after the scan mirrors texts, before the analysis warm sweep, so
     /// a returning session starts index-warm.
+    ///
+    /// mir flags a subset of replayed files as untrusted — their postings
+    /// carry an unresolved name, so the first live query to touch one pays a
+    /// full synchronous `analyze_file` (mir's changelog measured ~1.3-1.5s on
+    /// a real 15K-file workspace). That subset is handed to a detached
+    /// background thread that reanalyzes them via `reanalyze_files_cancellable`
+    /// — the same call the ambient warm sweep uses — so the cost lands during
+    /// post-boot idle time instead of a user's first request. Not joined:
+    /// this method returns as soon as the replay itself is done, so callers
+    /// waiting on it (e.g. the `indexReady` gate) aren't blocked on the
+    /// reanalysis too.
     pub fn warm_start_indexes(&self) {
         let files: Vec<(Arc<str>, Arc<str>)> = self
             .lsp_ws_files
@@ -1188,9 +1199,22 @@ impl DocumentStore {
             return;
         }
         let session = self.current_analysis_session();
-        session.warm_start_files(&files);
+        let untrusted = session.warm_start_files(&files);
         self.warm_start_replays_completed
             .fetch_add(1, Ordering::Relaxed);
+        if untrusted.is_empty() {
+            return;
+        }
+        let counter = Arc::clone(&self.warm_start_untrusted_reanalyzed);
+        let spawned = std::thread::Builder::new()
+            .name("php-lsp-warm-start-untrusted".into())
+            .stack_size(64 * 1024 * 1024)
+            .spawn(move || {
+                let cancel = mir_analyzer::IndexCancel::new();
+                let analyzed = session.reanalyze_files_cancellable(&untrusted, &cancel);
+                counter.fetch_add(analyzed.len() as u64, Ordering::Relaxed);
+            });
+        drop(spawned);
     }
 
     /// Candidate file scope for a posting lookup on `symbol`.

@@ -772,8 +772,7 @@ impl TestServer {
     /// Poll `$/php-lsp/debugStats` until at least `n` files have been handed
     /// to a background reanalysis from `warm_start_indexes`'s untrusted-file
     /// list (see `DocumentStore::warm_start_untrusted_reanalyzed`). Returns
-    /// `false` on timeout (~15 s) — always `false` today, since that wiring
-    /// doesn't exist yet (ROADMAP 0c step 1).
+    /// `false` on timeout (~15 s).
     pub async fn wait_for_warm_start_untrusted_reanalysis(&mut self, n: u64) -> bool {
         for _ in 0..300 {
             let resp = self.client.request_no_params("$/php-lsp/debugStats").await;

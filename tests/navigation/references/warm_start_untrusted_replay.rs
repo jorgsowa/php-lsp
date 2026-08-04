@@ -9,13 +9,11 @@
 //! background `reanalyze_files_cancellable` call so the cost lands during
 //! idle time after boot, not on the user's first request.
 //!
-//! `warm_start_indexes` (`src/document/document_store.rs`) currently
-//! discards the returned list entirely. This test proves the gap via an
-//! *absence* of background activity: with the ambient warm sweep disabled
-//! (`warmAnalysis: false`), nothing else could reanalyze the untrusted file,
-//! so `warm_start_untrusted_reanalyzed` must stay at 0 forever — until step 1
-//! wires the list through, at which point it should tick up shortly after
-//! `indexReady`, with no query ever issued.
+//! `warm_start_indexes` (`src/document/document_store.rs`) hands that list to
+//! a detached background thread that reanalyzes it. This test disables the
+//! ambient warm sweep (`warmAnalysis: false`) so nothing else could
+//! reanalyze the untrusted file, then asserts `warm_start_untrusted_reanalyzed`
+//! ticks up shortly after `indexReady`, with no query ever issued.
 
 use super::*;
 
@@ -28,7 +26,6 @@ use serde_json::json;
 const CALLER: &str = "<?php\nclass Caller {\n    public function make(): UndefinedThing {\n        return new UndefinedThing();\n    }\n}\n";
 
 #[tokio::test]
-#[ignore = "warm_start_indexes doesn't wire up mir's untrusted-file list yet (ROADMAP 0c step 1)"]
 async fn warm_start_reanalyzes_untrusted_file_in_background_without_a_query() {
     let workspace = tempfile::tempdir().expect("workspace tempdir");
     let cache_dir = tempfile::tempdir().expect("cache tempdir");
