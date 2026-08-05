@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use tower_lsp_server::ls_types::{Position, SymbolKind, TypeHierarchyItem, Uri};
 
+use crate::document::ast::ParsedDoc;
 use crate::text::zero_width_range;
 
 fn make_item_from_index(
@@ -65,59 +66,46 @@ pub fn supertypes_of_from_workspace(
     item: &TypeHierarchyItem,
     wi: &crate::db::workspace_index::WorkspaceIndexData,
     class_candidates_by_short_name: &dyn Fn(&str) -> Vec<crate::db::workspace_index::ClassRef>,
+    get_doc: &dyn Fn(&Uri) -> Option<Arc<ParsedDoc>>,
+    resolve_class_ref: &dyn Fn(&str) -> Option<crate::db::workspace_index::ClassRef>,
 ) -> Vec<TypeHierarchyItem> {
     use crate::index::file_index::ClassKind;
-    // Collect (super_name_as_written, file_index_for_that_class) pairs.
-    let mut super_pairs: Vec<(Arc<str>, Option<&crate::index::file_index::FileIndex>)> = Vec::new();
-    for r in class_candidates_by_short_name(&item.name) {
-        if let Some((_, cls)) = wi.at(r) {
-            let file_idx = wi.files.get(r.file as usize).map(|(_, idx)| idx.as_ref());
-            if let Some(p) = &cls.parent {
-                super_pairs.push((Arc::clone(p), file_idx));
-            }
-            for iface in &cls.implements {
-                super_pairs.push((Arc::clone(iface), file_idx));
-            }
-            for used_trait in &cls.traits {
-                super_pairs.push((Arc::clone(used_trait), file_idx));
-            }
-        }
-    }
-
     let mut result = Vec::new();
-    // Distinct classes sharing a name (e.g. two `BlogController`s in
-    // different namespaces) each contribute their own `super_pairs` entries
-    // above; when both extend the same parent, that parent would otherwise
-    // be pushed twice. Dedup on FQN to collapse those repeats without
-    // narrowing which parents count.
     let mut seen_fqns: HashSet<Box<str>> = HashSet::new();
-    for (name, file_idx) in super_pairs {
-        // Direct lookup: class is named exactly as written.
-        let direct = class_candidates_by_short_name(name.as_ref());
-        let canonical = if !direct.is_empty() {
-            Some(name.as_ref().to_string())
-        } else {
-            // Resolve through the implementing file's use_imports.
-            file_idx.and_then(|idx| {
-                idx.use_imports
-                    .iter()
-                    .find(|(alias, _)| alias.as_ref() == name.as_ref())
-                    .map(|(_, fqn)| crate::text::fqn_short_name(fqn).to_string())
-            })
-        };
-        let Some(canonical_name) = canonical else {
+    for r in class_candidates_by_short_name(&item.name) {
+        let Some((uri, cls)) = wi.at(r) else {
             continue;
         };
-        let refs = class_candidates_by_short_name(&canonical_name);
-        if let Some((uri, cls)) = refs.first().and_then(|r| wi.at(*r))
-            && seen_fqns.insert(cls.fqn.clone())
-        {
-            let kind = match cls.kind {
-                ClassKind::Class | ClassKind::Trait => SymbolKind::CLASS,
-                ClassKind::Interface => SymbolKind::INTERFACE,
-                ClassKind::Enum => SymbolKind::ENUM,
+        let Some(doc) = get_doc(uri) else {
+            continue;
+        };
+        let imports = doc.file_imports();
+        let super_names = cls
+            .parent
+            .iter()
+            .cloned()
+            .chain(cls.implements.iter().cloned())
+            .chain(cls.traits.iter().cloned());
+        for name in super_names {
+            let resolved = crate::navigation::moniker::resolve_fqn(&doc, name.as_ref(), &imports);
+            let Some((super_uri, super_cls)) =
+                resolve_class_ref(&resolved).and_then(|class_ref| wi.at(class_ref))
+            else {
+                continue;
             };
-            result.push(make_item_from_index(&cls.name, kind, uri, cls.start_line));
+            if seen_fqns.insert(super_cls.fqn.clone()) {
+                let kind = match super_cls.kind {
+                    ClassKind::Class | ClassKind::Trait => SymbolKind::CLASS,
+                    ClassKind::Interface => SymbolKind::INTERFACE,
+                    ClassKind::Enum => SymbolKind::ENUM,
+                };
+                result.push(make_item_from_index(
+                    &super_cls.name,
+                    kind,
+                    super_uri,
+                    super_cls.start_line,
+                ));
+            }
         }
     }
     result
@@ -136,36 +124,38 @@ pub fn subtypes_of_mir_backed(
     wi: &crate::db::workspace_index::WorkspaceIndexData,
     subtype_urls: &[Uri],
     mention_candidates: &dyn Fn(&str) -> Vec<Uri>,
+    get_doc: &dyn Fn(&Uri) -> Option<Arc<ParsedDoc>>,
 ) -> Vec<TypeHierarchyItem> {
     if subtype_urls.is_empty() {
-        return subtypes_of_from_workspace(item, item_fqn, wi, mention_candidates);
+        return subtypes_of_from_workspace(item, item_fqn, wi, mention_candidates, get_doc);
     }
     use crate::index::file_index::ClassKind;
-    use crate::navigation::implementation::{alias_resolves_to, name_matches};
     let url_set: HashSet<&Uri> = subtype_urls.iter().collect();
     let mut result = Vec::new();
     for (uri, idx) in &wi.files {
         if !url_set.contains(uri) {
             continue;
         }
+        let doc = get_doc(uri);
+        let imports = doc.as_ref().map(|doc| doc.file_imports());
         for cls in &idx.classes {
-            let extends_match = cls
-                .parent
-                .as_deref()
-                .map(|p| {
-                    name_matches(p, &item.name, item_fqn)
-                        || item_fqn.is_some_and(|f| alias_resolves_to(p, f, &idx.use_imports))
-                })
-                .unwrap_or(false);
-            let implements_match = cls.implements.iter().any(|iface| {
-                name_matches(iface.as_ref(), &item.name, item_fqn)
-                    || item_fqn
-                        .is_some_and(|f| alias_resolves_to(iface.as_ref(), f, &idx.use_imports))
-            });
-            let uses_match = cls.traits.iter().any(|t| {
-                name_matches(t.as_ref(), &item.name, item_fqn)
-                    || item_fqn.is_some_and(|f| alias_resolves_to(t.as_ref(), f, &idx.use_imports))
-            });
+            let matches_name = |name: &str| {
+                if let (Some(target_fqn), Some(doc), Some(imports)) =
+                    (item_fqn, doc.as_ref(), imports.as_ref())
+                {
+                    crate::navigation::moniker::resolve_fqn(doc, name, imports)
+                        .trim_start_matches('\\')
+                        .eq_ignore_ascii_case(target_fqn)
+                } else {
+                    name == item.name
+                        || (item_fqn.is_none()
+                            && !item.name.contains('\\')
+                            && name.trim_start_matches('\\') == item.name)
+                }
+            };
+            let extends_match = cls.parent.as_deref().is_some_and(matches_name);
+            let implements_match = cls.implements.iter().any(|iface| matches_name(iface.as_ref()));
+            let uses_match = cls.traits.iter().any(|t| matches_name(t.as_ref()));
             if extends_match || implements_match || uses_match {
                 let kind = match cls.kind {
                     ClassKind::Class | ClassKind::Trait => SymbolKind::CLASS,
@@ -197,9 +187,9 @@ pub fn subtypes_of_from_workspace(
     item_fqn: Option<&str>,
     wi: &crate::db::workspace_index::WorkspaceIndexData,
     mention_candidates: &dyn Fn(&str) -> Vec<Uri>,
+    get_doc: &dyn Fn(&Uri) -> Option<Arc<ParsedDoc>>,
 ) -> Vec<TypeHierarchyItem> {
     use crate::index::file_index::ClassKind;
-    use crate::navigation::implementation::resolves_to_fqn;
     let candidates: Vec<&(Uri, std::sync::Arc<crate::index::file_index::FileIndex>)> =
         mention_candidates(&item.name)
             .iter()
@@ -212,9 +202,21 @@ pub fn subtypes_of_from_workspace(
         .iter()
         .flat_map(|(uri, idx)| idx.classes.iter().map(move |cls| (uri, idx.as_ref(), cls)))
         .filter_map(|(uri, file_idx, cls)| {
+            let doc = get_doc(uri);
+            let imports = doc.as_ref().map(|doc| doc.file_imports());
             let matches = match item_fqn {
                 Some(f) => {
-                    let named = |name: &str| resolves_to_fqn(name, f, file_idx);
+                    let named = |name: &str| {
+                        if let (Some(doc), Some(imports)) = (doc.as_ref(), imports.as_ref()) {
+                            crate::navigation::moniker::resolve_fqn(doc, name, imports)
+                                .trim_start_matches('\\')
+                                .eq_ignore_ascii_case(f)
+                        } else {
+                            file_idx
+                                .resolve_name_to_fqn(name)
+                                .eq_ignore_ascii_case(f)
+                        }
+                    };
                     cls.parent.as_deref().is_some_and(named)
                         || cls.implements.iter().any(|iface| named(iface.as_ref()))
                         || cls.traits.iter().any(|t| named(t.as_ref()))

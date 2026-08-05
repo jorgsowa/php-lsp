@@ -1939,7 +1939,18 @@ impl LanguageServer for Backend {
             };
             let class_candidates =
                 |short: &str| self.docs.class_candidates_by_short_name(&wi, short);
-            let result = supertypes_of_from_workspace(&params.item, &wi, &class_candidates);
+            let get_doc = |uri: &Uri| self.docs.get_doc_salsa(uri);
+            let resolve_class_ref = |fqn: &str| {
+                self.docs
+                    .resolve_class_ref_by_fqn_or_short_name_fallback(&wi, fqn)
+            };
+            let result = supertypes_of_from_workspace(
+                &params.item,
+                &wi,
+                &class_candidates,
+                &get_doc,
+                &resolve_class_ref,
+            );
             Ok(if result.is_empty() {
                 None
             } else {
@@ -1973,12 +1984,14 @@ impl LanguageServer for Backend {
                 .map(|f| self.docs.class_subtype_urls(f))
                 .unwrap_or_default();
             let mention_candidates = |name: &str| self.docs.declaration_candidate_files(&wi, name);
+            let get_doc = |uri: &Uri| self.docs.get_doc_salsa(uri);
             let result = subtypes_of_mir_backed(
                 &params.item,
                 item_fqn.as_deref(),
                 &wi,
                 &subtype_urls,
                 &mention_candidates,
+                &get_doc,
             );
             Ok(if result.is_empty() {
                 None

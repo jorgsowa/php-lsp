@@ -328,10 +328,13 @@ impl Backend {
 
         let mut ingested = false;
         for r in &refs {
-            let Some((_, cls)) = wi.at(*r) else {
+            let Some((uri, cls)) = wi.at(*r) else {
                 continue;
             };
-            let file_idx = wi.files.get(r.file as usize).map(|(_, idx)| idx.as_ref());
+            let Some(doc) = self.docs.get_doc_salsa(uri) else {
+                continue;
+            };
+            let imports = doc.file_imports();
 
             let mut super_names: Vec<String> = Vec::new();
             if let Some(p) = &cls.parent {
@@ -346,12 +349,7 @@ impl Backend {
                 if !self.docs.class_candidates_by_short_name(wi, short).is_empty() {
                     continue;
                 }
-                // Resolve short name to FQN via the implementing file's use_imports.
-                let fqn = if let Some(idx) = file_idx {
-                    idx.resolve_name_to_fqn(&name)
-                } else {
-                    name.clone()
-                };
+                let fqn = crate::navigation::moniker::resolve_fqn(&doc, &name, &imports);
                 let path = match self.psr4.load().resolve(&fqn) {
                     Some(p) => p,
                     None => continue,
