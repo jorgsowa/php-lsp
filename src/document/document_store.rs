@@ -1578,6 +1578,7 @@ impl DocumentStore {
                         }
                         MethodScopePlan::NeedsScan { fqns, extra_needle } => {
                             queries.push(ReachabilityQuery {
+                                kind: ReachabilitySymbolKind::Class,
                                 fqns,
                                 extra_needles: vec![extra_needle],
                             });
@@ -1588,6 +1589,7 @@ impl DocumentStore {
                 }
                 mir_analyzer::Name::Class(fqcn) => {
                     queries.push(ReachabilityQuery {
+                        kind: ReachabilitySymbolKind::Class,
                         fqns: vec![fqcn.clone()],
                         extra_needles: Vec::new(),
                     });
@@ -1596,7 +1598,15 @@ impl DocumentStore {
                 mir_analyzer::Name::Function(fqcn) | mir_analyzer::Name::GlobalConstant(fqcn)
                     if fqcn.trim_start_matches('\\').contains('\\') =>
                 {
+                    let kind = match symbol {
+                        mir_analyzer::Name::Function(_) => ReachabilitySymbolKind::Function,
+                        mir_analyzer::Name::GlobalConstant(_) => {
+                            ReachabilitySymbolKind::GlobalConstant
+                        }
+                        _ => unreachable!(),
+                    };
                     queries.push(ReachabilityQuery {
+                        kind,
                         fqns: vec![fqcn.clone()],
                         extra_needles: Vec::new(),
                     });
@@ -1684,6 +1694,7 @@ impl DocumentStore {
         extra_needles: &[&str],
     ) -> Option<Vec<Arc<str>>> {
         let query = ReachabilityQuery {
+            kind: ReachabilitySymbolKind::Class,
             fqns: fqns.to_vec(),
             extra_needles: extra_needles.iter().map(|n| n.to_string()).collect(),
         };
@@ -1869,6 +1880,39 @@ impl DocumentStore {
 
         let ws = self.get_workspace_index_salsa();
         let n = queries.len();
+        let workspace_files = self.workspace_file_paths();
+        let per_query_import_matches: Vec<std::collections::HashSet<Arc<str>>> = queries
+            .iter()
+            .map(|q| {
+                let symbols: Vec<mir_analyzer::Name> = q
+                    .fqns
+                    .iter()
+                    .map(|fqn| match q.kind {
+                        ReachabilitySymbolKind::Class => {
+                            mir_analyzer::Name::class(fqn.trim_start_matches('\\').to_string())
+                        }
+                        ReachabilitySymbolKind::Function => {
+                            mir_analyzer::Name::function(fqn.trim_start_matches('\\').to_string())
+                        }
+                        ReachabilitySymbolKind::GlobalConstant => {
+                            mir_analyzer::Name::global_constant(
+                                fqn.trim_start_matches('\\').to_string(),
+                            )
+                        }
+                    })
+                    .collect();
+                let mut matches = std::collections::HashSet::new();
+                for symbol in &symbols {
+                    let _ = self.indexed_references(symbol, &workspace_files, false, None);
+                    matches.extend(
+                        self.indexed_use_imports(symbol, &workspace_files)
+                            .into_iter()
+                            .map(|(file, _, _, _)| file),
+                    );
+                }
+                matches
+            })
+            .collect();
 
         let mir_db = self.current_analysis_session().snapshot_db();
         let mir_scanner = mir_db.class_mention_scanner();
@@ -1910,13 +1954,7 @@ impl DocumentStore {
                         matched[qi] = true;
                         continue;
                     }
-                    let import_match = idx.use_imports.iter().any(|(_, f)| {
-                        let f = f.trim_start_matches('\\');
-                        per_query_targets[qi]
-                            .iter()
-                            .any(|t| fqn_segment_prefix(f, t))
-                    });
-                    if import_match {
+                    if per_query_import_matches[qi].contains(&Arc::<str>::from(url.as_str())) {
                         matched[qi] = true;
                         continue;
                     }
@@ -2786,8 +2824,16 @@ enum MethodScopePlan {
 /// same way (ASCII-case-insensitive substring).
 #[derive(Clone, PartialEq, Eq, Hash)]
 struct ReachabilityQuery {
+    kind: ReachabilitySymbolKind,
     fqns: Vec<Arc<str>>,
     extra_needles: Vec<String>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum ReachabilitySymbolKind {
+    Class,
+    Function,
+    GlobalConstant,
 }
 
 /// Memoized [`DocumentStore::resolve_reachability_queries`] results: query
