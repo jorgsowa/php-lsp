@@ -101,6 +101,39 @@ impl WorkspaceIndexData {
         Some((uri, cls))
     }
 
+    /// Visit every class-like declaration stored in the aggregate.
+    pub fn for_each_class(
+        &self,
+        mut f: impl FnMut(&Uri, &crate::index::file_index::ClassDef),
+    ) {
+        for (uri, idx) in &self.files {
+            for cls in &idx.classes {
+                f(uri, cls);
+            }
+        }
+    }
+
+    /// Visit every class-like declaration in the files named by `uris`.
+    /// Missing paths are skipped; callers typically source `uris` from mir's
+    /// mention or subtype indexes, which are candidate sets rather than proof.
+    pub fn for_each_class_in_uris(
+        &self,
+        uris: &[Uri],
+        mut f: impl FnMut(&Uri, &crate::index::file_index::ClassDef),
+    ) {
+        for uri in uris {
+            let Some(&file_idx) = self.path_to_file_idx.get(uri.as_str()) else {
+                continue;
+            };
+            let Some((stored_uri, idx)) = self.files.get(file_idx as usize) else {
+                continue;
+            };
+            for cls in &idx.classes {
+                f(stored_uri, cls);
+            }
+        }
+    }
+
     /// Constructor that builds the reverse maps from an already-materialised
     /// `(Uri, Arc<FileIndex>)` slice. Exposed so callers that don't want to
     /// spin up a full `AnalysisHost` (unit tests of

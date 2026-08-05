@@ -60,16 +60,19 @@ fn resolve_trait_alias_indexed(
     name: &str,
     wi: &crate::db::workspace_index::WorkspaceIndexData,
 ) -> Option<String> {
-    for (_, idx) in &wi.files {
-        for cls in &idx.classes {
-            for alias in &cls.trait_method_aliases {
-                if alias.alias.as_ref() == name {
-                    return Some(alias.original.to_string());
-                }
+    let mut resolved = None;
+    wi.for_each_class(|_, cls| {
+        if resolved.is_some() {
+            return;
+        }
+        for alias in &cls.trait_method_aliases {
+            if alias.alias.as_ref() == name {
+                resolved = Some(alias.original.to_string());
+                break;
             }
         }
-    }
-    None
+    });
+    resolved
 }
 
 /// Finds all calls made by the body of `item.name`, resolving the item's own

@@ -141,48 +141,42 @@ pub fn subtypes_of_mir_backed(
         return subtypes_of_from_workspace(item, item_fqn, wi, mention_candidates, get_doc);
     }
     use crate::index::file_index::ClassKind;
-    let url_set: HashSet<&Uri> = subtype_urls.iter().collect();
     let mut result = Vec::new();
-    for (uri, idx) in &wi.files {
-        if !url_set.contains(uri) {
-            continue;
-        }
+    wi.for_each_class_in_uris(subtype_urls, |uri, cls| {
         let doc = get_doc(uri);
         let imports = doc.as_ref().map(|doc| doc.file_imports());
-        for cls in &idx.classes {
-            let matches_name = |name: &str| {
-                if let (Some(target_fqn), Some(doc), Some(imports)) =
-                    (item_fqn, doc.as_ref(), imports.as_ref())
-                {
-                    crate::navigation::moniker::resolve_fqn(doc, name, imports)
-                        .trim_start_matches('\\')
-                        .eq_ignore_ascii_case(target_fqn)
-                } else {
-                    name == item.name
-                        || (item_fqn.is_none()
-                            && !item.name.contains('\\')
-                            && name.trim_start_matches('\\') == item.name)
-                }
-            };
-            let extends_match = cls.parent.as_deref().is_some_and(matches_name);
-            let implements_match = cls.implements.iter().any(|iface| matches_name(iface.as_ref()));
-            let uses_match = cls.traits.iter().any(|t| matches_name(t.as_ref()));
-            if extends_match || implements_match || uses_match {
-                let kind = match cls.kind {
-                    ClassKind::Class | ClassKind::Trait => SymbolKind::CLASS,
-                    ClassKind::Interface => SymbolKind::INTERFACE,
-                    ClassKind::Enum => SymbolKind::ENUM,
-                };
-                result.push(make_item_from_index(
-                    &cls.name,
-                    kind,
-                    uri,
-                    cls.start_line,
-                    &cls.fqn,
-                ));
+        let matches_name = |name: &str| {
+            if let (Some(target_fqn), Some(doc), Some(imports)) =
+                (item_fqn, doc.as_ref(), imports.as_ref())
+            {
+                crate::navigation::moniker::resolve_fqn(doc, name, imports)
+                    .trim_start_matches('\\')
+                    .eq_ignore_ascii_case(target_fqn)
+            } else {
+                name == item.name
+                    || (item_fqn.is_none()
+                        && !item.name.contains('\\')
+                        && name.trim_start_matches('\\') == item.name)
             }
+        };
+        let extends_match = cls.parent.as_deref().is_some_and(matches_name);
+        let implements_match = cls.implements.iter().any(|iface| matches_name(iface.as_ref()));
+        let uses_match = cls.traits.iter().any(|t| matches_name(t.as_ref()));
+        if extends_match || implements_match || uses_match {
+            let kind = match cls.kind {
+                ClassKind::Class | ClassKind::Trait => SymbolKind::CLASS,
+                ClassKind::Interface => SymbolKind::INTERFACE,
+                ClassKind::Enum => SymbolKind::ENUM,
+            };
+            result.push(make_item_from_index(
+                &cls.name,
+                kind,
+                uri,
+                cls.start_line,
+                &cls.fqn,
+            ));
         }
-    }
+    });
     result
 }
 
@@ -207,18 +201,9 @@ pub fn subtypes_of_from_workspace(
     get_doc: &dyn Fn(&Uri) -> Option<Arc<ParsedDoc>>,
 ) -> Vec<TypeHierarchyItem> {
     use crate::index::file_index::ClassKind;
-    let candidates: Vec<&(Uri, std::sync::Arc<crate::index::file_index::FileIndex>)> =
-        mention_candidates(&item.name)
-            .iter()
-            .filter_map(|u| {
-                let &file_idx = wi.path_to_file_idx.get(u.as_str())?;
-                wi.files.get(file_idx as usize)
-            })
-            .collect();
-    candidates
-        .iter()
-        .flat_map(|(uri, idx)| idx.classes.iter().map(move |cls| (uri, idx.as_ref(), cls)))
-        .filter_map(|(uri, _file_idx, cls)| {
+    let mut results = Vec::new();
+    let candidate_uris = mention_candidates(&item.name);
+    wi.for_each_class_in_uris(&candidate_uris, |uri, cls| {
             let doc = get_doc(uri);
             let imports = doc.as_ref().map(|doc| doc.file_imports());
             let matches = match item_fqn {
@@ -242,15 +227,20 @@ pub fn subtypes_of_from_workspace(
                         || cls.traits.iter().any(|t| named(t.as_ref()))
                 }
             };
-            matches.then_some((uri, cls))
-        })
-        .map(|(uri, cls)| {
-            let kind = match cls.kind {
-                ClassKind::Class | ClassKind::Trait => SymbolKind::CLASS,
-                ClassKind::Interface => SymbolKind::INTERFACE,
-                ClassKind::Enum => SymbolKind::ENUM,
-            };
-            make_item_from_index(&cls.name, kind, uri, cls.start_line, &cls.fqn)
-        })
-        .collect()
+            if matches {
+                let kind = match cls.kind {
+                    ClassKind::Class | ClassKind::Trait => SymbolKind::CLASS,
+                    ClassKind::Interface => SymbolKind::INTERFACE,
+                    ClassKind::Enum => SymbolKind::ENUM,
+                };
+                results.push(make_item_from_index(
+                    &cls.name,
+                    kind,
+                    uri,
+                    cls.start_line,
+                    &cls.fqn,
+                ));
+            }
+        });
+    results
 }
