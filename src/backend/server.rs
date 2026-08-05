@@ -8,10 +8,7 @@ use super::panic_guard::{guard_async, guard_async_result};
 use crate::completion::{CompletionCtx, filtered_completions_at};
 use crate::document::ast::ParsedDoc;
 use crate::document::open_files::compute_open_file_diagnostics;
-use crate::hover::{
-    class_hover_from_workspace_index, extract_static_class_before_cursor, hover_info_with_maps,
-    method_hover_from_workspace_index,
-};
+use crate::hover::{extract_static_class_before_cursor, hover_info_with_maps};
 use crate::index::file_index::ClassKind;
 use crate::index::workspace_scan::{scan_workspace, send_refresh_requests};
 use crate::lang::config::LspConfig;
@@ -90,6 +87,97 @@ fn completion_symbol_from_item(
         | Some(CompletionItemKind::ENUM) => Some(mir_analyzer::Name::class(name)),
         _ => None,
     }
+}
+
+fn hover_markup(value: String) -> Hover {
+    Hover {
+        contents: HoverContents::Markup(MarkupContent {
+            kind: MarkupKind::Markdown,
+            value,
+        }),
+        range: None,
+    }
+}
+
+fn class_hover_for_fqcn(session: &mir_analyzer::AnalysisSession, fqcn: &str) -> Option<Hover> {
+    let db = session.snapshot_db();
+    let here = mir_analyzer::db::Fqcn::from_str(&db, fqcn);
+    let class = mir_analyzer::db::find_class_like(&db, here)?;
+    let sig = match &class {
+        mir_analyzer::db::ClassLike::Class(c) => {
+            let mut sig = if c.is_abstract {
+                format!("abstract class {}", c.short_name)
+            } else if c.is_readonly {
+                format!("readonly class {}", c.short_name)
+            } else if c.is_final {
+                format!("final class {}", c.short_name)
+            } else {
+                format!("class {}", c.short_name)
+            };
+            if let Some(parent) = &c.parent {
+                sig.push_str(&format!(" extends {}", parent));
+            }
+            if !c.interfaces.is_empty() {
+                let list: Vec<&str> = c.interfaces.iter().map(|s| s.as_ref()).collect();
+                sig.push_str(&format!(" implements {}", list.join(", ")));
+            }
+            sig
+        }
+        mir_analyzer::db::ClassLike::Interface(i) => {
+            let mut sig = format!("interface {}", i.short_name);
+            if !i.extends.is_empty() {
+                let list: Vec<&str> = i.extends.iter().map(|s| s.as_ref()).collect();
+                sig.push_str(&format!(" extends {}", list.join(", ")));
+            }
+            sig
+        }
+        mir_analyzer::db::ClassLike::Trait(t) => format!("trait {}", t.short_name),
+        mir_analyzer::db::ClassLike::Enum(e) => {
+            let mut sig = if let Some(scalar) = &e.scalar_type {
+                format!("enum {}: {}", e.short_name, scalar)
+            } else {
+                format!("enum {}", e.short_name)
+            };
+            if !e.interfaces.is_empty() {
+                let list: Vec<&str> = e.interfaces.iter().map(|s| s.as_ref()).collect();
+                sig.push_str(&format!(" implements {}", list.join(", ")));
+            }
+            sig
+        }
+    };
+    Some(hover_markup(crate::hover::formatting::wrap_php(&sig)))
+}
+
+fn method_hover_for_fqcn(
+    session: &mir_analyzer::AnalysisSession,
+    fqcn: &str,
+    method_name: &str,
+) -> Option<Hover> {
+    let db = session.snapshot_db();
+    let (_, m) = mir_analyzer::db::find_method_in_chain(
+        &db,
+        mir_analyzer::db::Fqcn::from_str(&db, fqcn),
+        method_name,
+    )?;
+    let ret = m
+        .return_type
+        .as_deref()
+        .or(m.inferred_return_type.as_deref())
+        .map(|r| format!(": {}", r))
+        .unwrap_or_default();
+    let sig = format!(
+        "{}::{}({}){}",
+        crate::text::fqn_short_name(fqcn),
+        m.name,
+        inlay_hint_format_params(&m.params),
+        ret
+    );
+    let mut value = crate::hover::formatting::wrap_php(&sig);
+    if let Some(docstring) = m.docstring.as_deref().filter(|s| !s.is_empty()) {
+        value.push_str("\n\n---\n\n");
+        value.push_str(docstring);
+    }
+    Some(hover_markup(value))
 }
 
 fn inlay_hint_format_params(params: &[mir_analyzer::DeclaredParam]) -> String {
@@ -1098,6 +1186,7 @@ impl LanguageServer for Backend {
             let other_maps = self.docs.other_symbol_maps(uri, &open);
             let analysis = self.cached_analysis_async(uri).await;
             let hover_session = self.docs.current_analysis_session();
+            let hover_session_for_primary = Arc::clone(&hover_session);
             let source_clone = source.clone();
             let doc_clone = Arc::clone(&doc);
             // Lets mir-member/static-prop hover resolve a class's declaring doc
@@ -1123,7 +1212,7 @@ impl LanguageServer for Backend {
                         position,
                         &other_docs,
                         &other_maps,
-                        Some(&hover_session),
+                        Some(&hover_session_for_primary),
                         Some(&find_class_doc_fn),
                     )
                 })
@@ -1139,9 +1228,15 @@ impl LanguageServer for Backend {
             if let Some(word) = crate::text::word_at_position(&source, position) {
                 let wi = self.workspace_index_cached(&mut wi_cache).await;
                 let resolve_class_ref = |name: &str| self.docs.resolve_class_ref(&wi, name);
+                let fallback_class_fqcn = |name: &str| {
+                    resolve_class_ref(name).and_then(|cr| {
+                        wi.at(cr)
+                            .map(|(_, cls)| cls.fqn.trim_start_matches('\\').to_string())
+                    })
+                };
                 // Try the literal word first.
-                if let Some(h) =
-                    class_hover_from_workspace_index(&word, None, &wi, &resolve_class_ref)
+                if let Some(fqcn) = fallback_class_fqcn(&word)
+                    && let Some(h) = class_hover_for_fqcn(&hover_session, &fqcn)
                 {
                     return Ok(Some(h));
                 }
@@ -1150,12 +1245,10 @@ impl LanguageServer for Backend {
                 // vendored `Factory` classes all aliased to `FactoryContract`).
                 if let Some((resolved, resolved_fqn)) =
                     crate::hover::resolve_use_alias_fqn(&doc.program().stmts, &word)
-                    && let Some(h) = class_hover_from_workspace_index(
-                        &resolved,
-                        Some(&resolved_fqn),
-                        &wi,
-                        &resolve_class_ref,
-                    )
+                    && let Some(fqcn) = fallback_class_fqcn(&resolved)
+                        .filter(|fqcn| fqcn.eq_ignore_ascii_case(&resolved_fqn))
+                        .or(Some(resolved_fqn))
+                    && let Some(h) = class_hover_for_fqcn(&hover_session, &fqcn)
                 {
                     return Ok(Some(h));
                 }
@@ -1164,22 +1257,15 @@ impl LanguageServer for Backend {
                     && let Some(class_token) =
                         extract_static_class_before_cursor(line_text, position.character as usize)
                 {
-                    if let Some(h) = method_hover_from_workspace_index(
-                        &class_token,
-                        &word,
-                        &wi,
-                        &resolve_class_ref,
-                    ) {
+                    if let Some(fqcn) = fallback_class_fqcn(&class_token)
+                        && let Some(h) = method_hover_for_fqcn(&hover_session, &fqcn, &word)
+                    {
                         return Ok(Some(h));
                     }
                     if let Some(resolved_class) =
                         crate::hover::resolve_use_alias(&doc.program().stmts, &class_token)
-                        && let Some(h) = method_hover_from_workspace_index(
-                            &resolved_class,
-                            &word,
-                            &wi,
-                            &resolve_class_ref,
-                        )
+                        && let Some(fqcn) = fallback_class_fqcn(&resolved_class)
+                        && let Some(h) = method_hover_for_fqcn(&hover_session, &fqcn, &word)
                     {
                         return Ok(Some(h));
                     }
