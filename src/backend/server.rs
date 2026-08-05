@@ -5,6 +5,7 @@ use tower_lsp_server::jsonrpc::Result;
 use tower_lsp_server::ls_types::*;
 
 use super::panic_guard::{guard_async, guard_async_result};
+use crate::analysis::callable_info::{callable_info_for_name, format_declared_params};
 use crate::completion::{CompletionCtx, filtered_completions_at};
 use crate::document::ast::ParsedDoc;
 use crate::document::open_files::compute_open_file_diagnostics;
@@ -169,7 +170,7 @@ fn method_hover_for_fqcn(
         "{}::{}({}){}",
         crate::text::fqn_short_name(fqcn),
         m.name,
-        inlay_hint_format_params(&m.params),
+        format_declared_params(&m.params),
         ret
     );
     let mut value = crate::hover::formatting::wrap_php(&sig);
@@ -180,87 +181,42 @@ fn method_hover_for_fqcn(
     Some(hover_markup(value))
 }
 
-fn inlay_hint_format_params(params: &[mir_analyzer::DeclaredParam]) -> String {
-    params
-        .iter()
-        .map(|p| {
-            let mut s = String::new();
-            if let Some(ty) = &p.ty {
-                s.push_str(&format!("{ty} "));
-            }
-            if p.is_variadic {
-                s.push_str("...");
-            }
-            s.push_str(&format!("${}", p.name.as_str().trim_start_matches('$')));
-            s
-        })
-        .collect::<Vec<_>>()
-        .join(", ")
-}
-
 fn callable_signature_for_symbol(
     session: &mir_analyzer::AnalysisSession,
     symbol: &mir_analyzer::Name,
 ) -> Option<(String, Option<String>)> {
-    let db = session.snapshot_db();
+    let info = callable_info_for_name(session, symbol)?;
     match symbol {
         mir_analyzer::Name::Function(fqn) => {
             let short = fqn.rsplit('\\').next().unwrap_or(fqn.as_ref());
             if mir_analyzer::is_builtin_function(short) {
                 return None;
             }
-            let f = mir_analyzer::db::find_function(
-                &db,
-                mir_analyzer::db::Fqcn::from_str(&db, fqn.as_ref()),
-            )?;
-            let ret = f
-                .effective_return_type()
-                .map(|ty| format!(": {ty}"))
-                .unwrap_or_default();
-            Some((
-                format!(
-                    "function {}({}){}",
-                    f.short_name,
-                    inlay_hint_format_params(&f.params),
-                    ret
-                ),
-                f.docstring.as_deref().map(str::to_string),
-            ))
-        }
-        mir_analyzer::Name::Method { class, name } => {
-            let (_, m) = mir_analyzer::db::find_method_in_chain(
-                &db,
-                mir_analyzer::db::Fqcn::from_str(&db, class.as_ref()),
-                name.as_ref(),
-            )?;
-            let ret = m
+            let ret = info
                 .return_type
                 .as_deref()
-                .or(m.inferred_return_type.as_deref())
                 .map(|ty| format!(": {ty}"))
                 .unwrap_or_default();
             Some((
-                format!(
-                    "function {}({}){}",
-                    m.name,
-                    inlay_hint_format_params(&m.params),
-                    ret
-                ),
-                m.docstring.as_deref().map(str::to_string),
+                format!("function {}({}){}", short, info.params, ret),
+                info.documentation,
             ))
         }
-        mir_analyzer::Name::Class(fqcn) => {
-            let (_, m) = mir_analyzer::db::find_method_in_chain(
-                &db,
-                mir_analyzer::db::Fqcn::from_str(&db, fqcn.as_ref()),
-                "__construct",
-            )?;
+        mir_analyzer::Name::Method { class: _, name } => {
+            let ret = info
+                .return_type
+                .as_deref()
+                .map(|ty| format!(": {ty}"))
+                .unwrap_or_default();
             Some((
-                format!(
-                    "function __construct({})",
-                    inlay_hint_format_params(&m.params)
-                ),
-                m.docstring.as_deref().map(str::to_string),
+                format!("function {}({}){}", name, info.params, ret),
+                info.documentation,
+            ))
+        }
+        mir_analyzer::Name::Class(_) => {
+            Some((
+                format!("function __construct({})", info.params),
+                info.documentation,
             ))
         }
         _ => None,
@@ -1126,8 +1082,8 @@ impl LanguageServer for Backend {
                 Some(d) => d,
                 None => return Ok(None),
             };
-            let index_data = self.docs.get_workspace_index_salsa();
             let analysis = self.cached_analysis_async(uri).await;
+            let session = self.docs.current_analysis_session();
             let doc_clone = Arc::clone(&doc);
             let result = self
                 .blocking("signature_help", move || {
@@ -1135,8 +1091,8 @@ impl LanguageServer for Backend {
                         &source,
                         &doc_clone,
                         position,
-                        &index_data.files,
                         analysis.as_deref(),
+                        Some(&session),
                     )
                 })
                 .await

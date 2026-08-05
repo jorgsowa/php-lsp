@@ -1,92 +1,71 @@
-use std::sync::Arc;
-
 use php_ast::{ClassMemberKind, EnumMemberKind, NamespaceBody, Stmt, StmtKind};
 use tower_lsp_server::ls_types::{
     Documentation, MarkupContent, MarkupKind, ParameterInformation, ParameterLabel, Position,
-    SignatureHelp, SignatureInformation, Uri,
+    SignatureHelp, SignatureInformation,
 };
 
+use crate::analysis::callable_info::callable_info_for_name;
 use crate::document::ast::ParsedDoc;
 use crate::hover::format_params_str;
-use crate::index::file_index::{DocMethodParam, FileIndex, ParamDef};
-use crate::lang::docblock::find_docblock;
+use crate::lang::docblock::{find_docblock, parse_docblock};
 use crate::text::{fqn_short_name, split_params, utf16_offset_to_byte};
 
 /// Returns signature help for the function call the cursor is inside of.
 ///
-/// Falls back to `ws_indexes` for cross-file function lookup when the function
-/// is not defined in the current file. For method calls (`$obj->method()`),
-/// the receiver type is resolved so the correct class's method signature is
-/// returned even when multiple classes define a method with the same name —
-/// mir resolves the receiver directly, matching `completion/member.rs`/
-/// `hover/named_args.rs`. The `$this`/`self`/`static` branch still falls
-/// back to the AST-based `enclosing_class_at` when mir has no answer.
+/// Uses the current file's AST for same-file declarations (preserving exact
+/// default-value text), then falls back to mir-backed callable resolution for
+/// cross-file functions/methods/constructors.
 pub fn signature_help(
     source: &str,
     doc: &ParsedDoc,
     position: Position,
-    ws_indexes: &[(Uri, Arc<FileIndex>)],
     analysis: Option<&mir_analyzer::FileAnalysis>,
+    session: Option<&mir_analyzer::AnalysisSession>,
 ) -> Option<SignatureHelp> {
-    let (func_name, active_param, receiver) = call_context(source, position)?;
-
-    // When the receiver explicitly names another class (`parent::` or
-    // `ClassName::`) we must skip the in-file `find_signature` lookup because
-    // that would return the *current* class's override, not the target class.
+    let ctx = call_context(source, position)?;
+    let func_name = ctx.name.clone();
+    let active_param = ctx.active_param;
+    let receiver = ctx.receiver.clone();
     let explicit_class_receiver = receiver
         .as_deref()
         .is_some_and(|r| !r.starts_with('$') && r != "self" && r != "static");
 
-    let sig_text = if explicit_class_receiver {
-        let recv = receiver.as_deref().unwrap();
-        let class_name = if recv == "parent" {
-            // parent:: → find the enclosing class's parent in the workspace index
-            let enclosing = crate::types::type_map::enclosing_class_at(source, doc, position)?;
-            let short = fqn_short_name(&enclosing);
-            ws_indexes.iter().find_map(|(_, idx)| {
-                idx.classes
-                    .iter()
-                    .find(|cls| cls.name.as_ref() == short)
-                    .and_then(|cls| cls.parent.as_ref())
-                    .map(|p| fqn_short_name(p.as_ref()).to_string())
-            })?
+    let local_sig = (!explicit_class_receiver)
+        .then(|| find_signature(&doc.program().stmts, &func_name, receiver.is_some()))
+        .flatten();
+    let local_doc_method_sig = receiver.as_deref().and_then(|recv| {
+        let class_name = if recv == "$this" || recv == "self" || recv == "static" {
+            crate::types::type_map::enclosing_class_at(source, doc, position).or_else(|| {
+                analysis.and_then(|a| {
+                    receiver_var_offset(source, doc, position, "$this")
+                        .and_then(|off| crate::types::type_query::type_at_offset(a, off))
+                        .and_then(crate::types::type_query::primary_class_name)
+                })
+            })
+        } else if recv == "parent" {
+            crate::types::type_map::enclosing_class_at(source, doc, position)
+                .and_then(|fqcn| parent_class_in_doc(&doc.program().stmts, &fqcn))
+        } else if recv.starts_with('$') {
+            analysis.and_then(|a| {
+                receiver_var_offset(source, doc, position, recv)
+                    .and_then(|off| crate::types::type_query::type_at_offset(a, off))
+                    .and_then(crate::types::type_query::primary_class_name)
+            })
         } else {
-            // ClassName:: - use the short name directly
-            recv.to_string()
-        };
-        find_method_params_in_hierarchy(&class_name, &func_name, ws_indexes)?
-    } else {
-        find_signature(&doc.program().stmts, &func_name, receiver.is_some())
-            .or_else(|| builtin_signature(&func_name).map(|s| s.to_string()))
-            .or_else(|| {
-                if let Some(recv) = receiver.as_deref() {
-                    // Receiver-typed method call ($this / $var): resolve the
-                    // receiver class then walk the inheritance chain.
-                    let class_name = if recv == "$this" || recv == "self" || recv == "static" {
-                        crate::types::type_map::enclosing_class_at(source, doc, position).or_else(
-                            || {
-                                analysis.and_then(|a| {
-                                    receiver_var_offset(source, doc, position, "$this")
-                                        .and_then(|off| {
-                                            crate::types::type_query::type_at_offset(a, off)
-                                        })
-                                        .and_then(crate::types::type_query::primary_class_name)
-                                })
-                            },
-                        )
-                    } else {
-                        analysis.and_then(|a| {
-                            receiver_var_offset(source, doc, position, recv)
-                                .and_then(|off| crate::types::type_query::type_at_offset(a, off))
-                                .and_then(crate::types::type_query::primary_class_name)
-                        })
-                    }?;
-                    find_method_params_in_hierarchy(&class_name, &func_name, ws_indexes)
-                } else {
-                    find_params_in_index(&func_name, ws_indexes)
-                }
-            })?
-    };
+            Some(recv.to_string())
+        }?;
+        find_doc_method_params_in_doc(&doc.program().stmts, &class_name, &func_name)
+    });
+    let resolved = session.and_then(|session| {
+        analysis
+            .and_then(|a| a.symbol_at(ctx.name_byte_offset))
+            .and_then(|symbol| symbol.to_symbol())
+            .and_then(|symbol| callable_info_for_name(session, &symbol))
+    });
+    let sig_text = local_sig
+        .or(local_doc_method_sig)
+        .or_else(|| resolved.as_ref().map(|info| info.params.clone()))
+        .or_else(|| builtin_signature(&func_name).map(|s| s.to_string()))?;
 
     let display_name = func_name.trim_start_matches('\\');
     let label = format!("{}({})", display_name, sig_text);
@@ -129,10 +108,17 @@ pub fn signature_help(
     let sig_doc = docblock
         .as_ref()
         .filter(|db| !db.description.is_empty())
-        .map(|db| {
+        .map(|db| db.description.clone())
+        .or_else(|| {
+            resolved
+                .as_ref()
+                .and_then(|info| info.documentation.clone())
+                .filter(|s| !s.is_empty())
+        })
+        .map(|value| {
             Documentation::MarkupContent(MarkupContent {
                 kind: MarkupKind::Markdown,
-                value: db.description.clone(),
+                value,
             })
         });
 
@@ -155,7 +141,14 @@ pub fn signature_help(
 /// Scan backward from the cursor to find the enclosing function call name,
 /// the index of the current parameter (0-based comma count), and — for method
 /// calls — the receiver token (e.g. `"$this"`, `"$obj"`, `"ClassName"`).
-fn call_context(source: &str, position: Position) -> Option<(String, usize, Option<String>)> {
+struct CallContext {
+    name: String,
+    active_param: usize,
+    receiver: Option<String>,
+    name_byte_offset: u32,
+}
+
+fn call_context(source: &str, position: Position) -> Option<CallContext> {
     let mut chars_before = String::new();
     for (i, line) in source.lines().enumerate() {
         if i < position.line as usize {
@@ -193,10 +186,17 @@ fn call_context(source: &str, position: Position) -> Option<(String, usize, Opti
             ')' | ']' => depth += 1,
             '(' | '[' if depth > 0 => depth -= 1,
             '(' if depth == 0 => {
-                let name = extract_name_before(&text, i);
-                if !name.is_empty() {
+                if let Some((name, name_start)) = extract_name_before(&text, i) {
                     let receiver = extract_receiver_before(&text, i, name.chars().count());
-                    return Some((name, commas, receiver));
+                    return Some(CallContext {
+                        name,
+                        active_param: commas,
+                        receiver,
+                        name_byte_offset: text[..name_start]
+                            .iter()
+                            .collect::<String>()
+                            .len() as u32,
+                    });
                 }
                 return None;
             }
@@ -373,9 +373,9 @@ fn extract_receiver_before(text: &[char], paren_pos: usize, name_len: usize) -> 
     Some(text[recv_start..recv_end].iter().collect())
 }
 
-fn extract_name_before(text: &[char], paren_pos: usize) -> String {
+fn extract_name_before(text: &[char], paren_pos: usize) -> Option<(String, usize)> {
     if paren_pos == 0 {
-        return String::new();
+        return None;
     }
     let is_ident = |c: char| c.is_alphanumeric() || c == '_' || c == '\\';
     let mut end = paren_pos;
@@ -387,127 +387,90 @@ fn extract_name_before(text: &[char], paren_pos: usize) -> String {
         start -= 1;
     }
     if start == end {
-        return String::new();
+        return None;
     }
-    text[start..end].iter().collect()
+    Some((text[start..end].iter().collect(), start))
 }
 
-/// Search the workspace index for a function matching `name` and return its
-/// parameter list string (same format as `find_signature`).
-///
-/// Strips a leading `\` and matches either the bare name or the FQN, so both
-/// `process($0)` and `\App\process($0)` resolve.
-fn find_params_in_index(name: &str, ws_indexes: &[(Uri, Arc<FileIndex>)]) -> Option<String> {
-    let bare = name.trim_start_matches('\\');
-    let local = fqn_short_name(bare);
-    for (_, idx) in ws_indexes {
-        for f in &idx.functions {
-            let f_name = f.name.as_ref();
-            let f_fqn = f.fqn.trim_start_matches('\\');
-            if f_name == local || f_fqn == bare {
-                let params = f
-                    .params
-                    .iter()
-                    .map(format_param)
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                return Some(params);
+fn parent_class_in_doc(stmts: &[Stmt<'_, '_>], fqcn: &str) -> Option<String> {
+    parent_class_in_doc_impl(stmts, fqn_short_name(fqcn))
+}
+
+fn parent_class_in_doc_impl(stmts: &[Stmt<'_, '_>], class_name: &str) -> Option<String> {
+    for stmt in stmts {
+        match &stmt.kind {
+            StmtKind::Class(c) if c.name.as_ref().and_then(|n| n.as_str()) == Some(class_name) => {
+                return c.extends.as_ref().map(|p| p.to_string_repr().into_owned());
             }
+            StmtKind::Namespace(ns) => {
+                if let NamespaceBody::Braced(inner) = &ns.body
+                    && let Some(parent) = parent_class_in_doc_impl(&inner.stmts, class_name)
+                {
+                    return Some(parent);
+                }
+            }
+            _ => {}
         }
     }
     None
 }
 
-fn format_param(p: &ParamDef) -> String {
-    let mut s = String::new();
-    if let Some(t) = &p.type_hint {
-        s.push_str(t);
-        s.push(' ');
-    }
-    if p.variadic {
-        s.push_str("...");
-    }
-    s.push('$');
-    s.push_str(&p.name);
-    if p.has_default {
-        s.push_str(" = ...");
-    }
-    s
-}
-
-fn format_doc_param(p: &DocMethodParam) -> String {
-    let mut s = String::new();
-    if let Some(t) = &p.type_hint {
-        s.push_str(t);
-        s.push(' ');
-    }
-    if p.is_byref {
-        s.push('&');
-    }
-    if p.is_variadic {
-        s.push_str("...");
-    }
-    s.push('$');
-    s.push_str(&p.name);
-    if p.is_optional {
-        s.push_str(" = ...");
-    }
-    s
-}
-
-/// Walk the class hierarchy starting from `class_name` (short name) and return
-/// the parameter list string of the first matching method. Follows `parent`
-/// links stored in `FileIndex` up to 10 levels deep to handle inherited methods.
-fn find_method_params_in_hierarchy(
+fn find_doc_method_params_in_doc(
+    stmts: &[Stmt<'_, '_>],
     class_name: &str,
     method_name: &str,
-    ws_indexes: &[(Uri, Arc<FileIndex>)],
 ) -> Option<String> {
-    let short = fqn_short_name(class_name);
-    let mut current = short.to_string();
-    let mut seen = std::collections::HashSet::new();
-    for _ in 0..10 {
-        if !seen.insert(current.clone()) {
-            break;
-        }
-        let mut parent: Option<String> = None;
-        for (_, idx) in ws_indexes {
-            for cls in &idx.classes {
-                if cls.name.as_ref() != current.as_str() {
-                    continue;
-                }
-                for m in &cls.methods {
-                    if m.name.as_ref() == method_name {
-                        return Some(
-                            m.params
-                                .iter()
-                                .map(format_param)
-                                .collect::<Vec<_>>()
-                                .join(", "),
-                        );
-                    }
-                }
-                for dm in &cls.doc_methods {
-                    if dm.name.as_ref() == method_name {
-                        return Some(
-                            dm.params
-                                .iter()
-                                .map(format_doc_param)
-                                .collect::<Vec<_>>()
-                                .join(", "),
-                        );
-                    }
-                }
-                if parent.is_none()
-                    && let Some(p) = &cls.parent
+    find_doc_method_params_in_doc_impl(stmts, fqn_short_name(class_name), method_name)
+}
+
+fn find_doc_method_params_in_doc_impl(
+    stmts: &[Stmt<'_, '_>],
+    class_name: &str,
+    method_name: &str,
+) -> Option<String> {
+    for stmt in stmts {
+        match &stmt.kind {
+            StmtKind::Class(c) if c.name.as_ref().and_then(|n| n.as_str()) == Some(class_name) => {
+                let method = parse_docblock(c.doc_comment?.text)
+                    .methods
+                    .into_iter()
+                    .find(|m| m.name.eq_ignore_ascii_case(method_name))?;
+                return Some(
+                    method
+                        .params
+                        .iter()
+                        .map(|p| {
+                            let mut s = String::new();
+                            if !p.type_hint.is_empty() {
+                                s.push_str(&p.type_hint);
+                                s.push(' ');
+                            }
+                            if p.is_byref {
+                                s.push('&');
+                            }
+                            if p.is_variadic {
+                                s.push_str("...");
+                            }
+                            s.push('$');
+                            s.push_str(&p.name);
+                            if p.is_optional {
+                                s.push_str(" = ...");
+                            }
+                            s
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                );
+            }
+            StmtKind::Namespace(ns) => {
+                if let NamespaceBody::Braced(inner) = &ns.body
+                    && let Some(params) =
+                        find_doc_method_params_in_doc_impl(&inner.stmts, class_name, method_name)
                 {
-                    parent = Some(fqn_short_name(p.as_ref()).to_string());
+                    return Some(params);
                 }
             }
-        }
-        match parent {
-            Some(p) => current = p,
-            None => break,
+            _ => {}
         }
     }
     None

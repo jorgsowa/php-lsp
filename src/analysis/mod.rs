@@ -1,3 +1,4 @@
+pub mod callable_info;
 pub mod code_lens;
 pub mod diagnostics;
 pub mod document_highlight;
