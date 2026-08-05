@@ -100,6 +100,17 @@ fn hover_markup(value: String) -> Hover {
     }
 }
 
+fn hover_display_class_name(session: &mir_analyzer::AnalysisSession, name: &str) -> String {
+    let normalized = name.trim_start_matches('\\');
+    if normalized.contains('\\') {
+        return normalized.to_string();
+    }
+    if crate::types::stub_members::stub_class_members(session, normalized).is_some() {
+        return format!("\\{normalized}");
+    }
+    normalized.to_string()
+}
+
 fn class_hover_for_fqcn(session: &mir_analyzer::AnalysisSession, fqcn: &str) -> Option<Hover> {
     let db = session.snapshot_db();
     let here = mir_analyzer::db::Fqcn::from_str(&db, fqcn);
@@ -116,10 +127,17 @@ fn class_hover_for_fqcn(session: &mir_analyzer::AnalysisSession, fqcn: &str) -> 
                 format!("class {}", c.short_name)
             };
             if let Some(parent) = &c.parent {
-                sig.push_str(&format!(" extends {}", parent));
+                sig.push_str(&format!(
+                    " extends {}",
+                    hover_display_class_name(session, parent)
+                ));
             }
             if !c.interfaces.is_empty() {
-                let list: Vec<&str> = c.interfaces.iter().map(|s| s.as_ref()).collect();
+                let list: Vec<String> = c
+                    .interfaces
+                    .iter()
+                    .map(|s| hover_display_class_name(session, s))
+                    .collect();
                 sig.push_str(&format!(" implements {}", list.join(", ")));
             }
             sig
@@ -127,7 +145,11 @@ fn class_hover_for_fqcn(session: &mir_analyzer::AnalysisSession, fqcn: &str) -> 
         mir_analyzer::db::ClassLike::Interface(i) => {
             let mut sig = format!("interface {}", i.short_name);
             if !i.extends.is_empty() {
-                let list: Vec<&str> = i.extends.iter().map(|s| s.as_ref()).collect();
+                let list: Vec<String> = i
+                    .extends
+                    .iter()
+                    .map(|s| hover_display_class_name(session, s))
+                    .collect();
                 sig.push_str(&format!(" extends {}", list.join(", ")));
             }
             sig
@@ -140,7 +162,11 @@ fn class_hover_for_fqcn(session: &mir_analyzer::AnalysisSession, fqcn: &str) -> 
                 format!("enum {}", e.short_name)
             };
             if !e.interfaces.is_empty() {
-                let list: Vec<&str> = e.interfaces.iter().map(|s| s.as_ref()).collect();
+                let list: Vec<String> = e
+                    .interfaces
+                    .iter()
+                    .map(|s| hover_display_class_name(session, s))
+                    .collect();
                 sig.push_str(&format!(" implements {}", list.join(", ")));
             }
             sig
