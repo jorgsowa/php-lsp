@@ -28,6 +28,16 @@ fn make_item_from_index(
     }
 }
 
+fn sort_items_stably(items: &mut [TypeHierarchyItem]) {
+    items.sort_by(|a, b| {
+        a.name
+            .cmp(&b.name)
+            .then_with(|| a.uri.as_str().cmp(b.uri.as_str()))
+            .then_with(|| a.range.start.line.cmp(&b.range.start.line))
+            .then_with(|| a.range.start.character.cmp(&b.range.start.character))
+    });
+}
+
 pub fn item_fqn(item: &TypeHierarchyItem) -> Option<&str> {
     item.data
         .as_ref()
@@ -66,7 +76,13 @@ pub fn prepare_type_hierarchy_from_workspace(
         ClassKind::Interface => SymbolKind::INTERFACE,
         ClassKind::Enum => SymbolKind::ENUM,
     };
-    Some(make_item_from_index(&cls.name, kind, uri, cls.start_line, &cls.fqn))
+    Some(make_item_from_index(
+        &cls.name,
+        kind,
+        uri,
+        cls.start_line,
+        &cls.fqn,
+    ))
 }
 
 /// Phase J — Supertypes via the aggregate. Collect parent/interface names from
@@ -160,7 +176,10 @@ pub fn subtypes_of_mir_backed(
             }
         };
         let extends_match = cls.parent.as_deref().is_some_and(matches_name);
-        let implements_match = cls.implements.iter().any(|iface| matches_name(iface.as_ref()));
+        let implements_match = cls
+            .implements
+            .iter()
+            .any(|iface| matches_name(iface.as_ref()));
         let uses_match = cls.traits.iter().any(|t| matches_name(t.as_ref()));
         if extends_match || implements_match || uses_match {
             let kind = match cls.kind {
@@ -177,6 +196,7 @@ pub fn subtypes_of_mir_backed(
             ));
         }
     });
+    sort_items_stably(&mut result);
     result
 }
 
@@ -204,43 +224,44 @@ pub fn subtypes_of_from_workspace(
     let mut results = Vec::new();
     let candidate_uris = mention_candidates(&item.name);
     wi.for_each_class_in_uris(&candidate_uris, |uri, cls| {
-            let doc = get_doc(uri);
-            let imports = doc.as_ref().map(|doc| doc.file_imports());
-            let matches = match item_fqn {
-                Some(f) => {
-                    let named = |name: &str| {
-                        let (Some(doc), Some(imports)) = (doc.as_ref(), imports.as_ref()) else {
-                            return false;
-                        };
-                        crate::navigation::moniker::resolve_fqn(doc, name, imports)
-                            .trim_start_matches('\\')
-                            .eq_ignore_ascii_case(f)
+        let doc = get_doc(uri);
+        let imports = doc.as_ref().map(|doc| doc.file_imports());
+        let matches = match item_fqn {
+            Some(f) => {
+                let named = |name: &str| {
+                    let (Some(doc), Some(imports)) = (doc.as_ref(), imports.as_ref()) else {
+                        return false;
                     };
-                    cls.parent.as_deref().is_some_and(named)
-                        || cls.implements.iter().any(|iface| named(iface.as_ref()))
-                        || cls.traits.iter().any(|t| named(t.as_ref()))
-                }
-                None => {
-                    let named = |name: &str| name == item.name;
-                    cls.parent.as_deref().is_some_and(named)
-                        || cls.implements.iter().any(|iface| named(iface.as_ref()))
-                        || cls.traits.iter().any(|t| named(t.as_ref()))
-                }
-            };
-            if matches {
-                let kind = match cls.kind {
-                    ClassKind::Class | ClassKind::Trait => SymbolKind::CLASS,
-                    ClassKind::Interface => SymbolKind::INTERFACE,
-                    ClassKind::Enum => SymbolKind::ENUM,
+                    crate::navigation::moniker::resolve_fqn(doc, name, imports)
+                        .trim_start_matches('\\')
+                        .eq_ignore_ascii_case(f)
                 };
-                results.push(make_item_from_index(
-                    &cls.name,
-                    kind,
-                    uri,
-                    cls.start_line,
-                    &cls.fqn,
-                ));
+                cls.parent.as_deref().is_some_and(named)
+                    || cls.implements.iter().any(|iface| named(iface.as_ref()))
+                    || cls.traits.iter().any(|t| named(t.as_ref()))
             }
-        });
+            None => {
+                let named = |name: &str| name == item.name;
+                cls.parent.as_deref().is_some_and(named)
+                    || cls.implements.iter().any(|iface| named(iface.as_ref()))
+                    || cls.traits.iter().any(|t| named(t.as_ref()))
+            }
+        };
+        if matches {
+            let kind = match cls.kind {
+                ClassKind::Class | ClassKind::Trait => SymbolKind::CLASS,
+                ClassKind::Interface => SymbolKind::INTERFACE,
+                ClassKind::Enum => SymbolKind::ENUM,
+            };
+            results.push(make_item_from_index(
+                &cls.name,
+                kind,
+                uri,
+                cls.start_line,
+                &cls.fqn,
+            ));
+        }
+    });
+    sort_items_stably(&mut results);
     results
 }
