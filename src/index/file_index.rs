@@ -72,8 +72,6 @@ pub struct FunctionDef {
     pub fqn: Box<str>,
     pub params: Vec<ParamDef>,
     pub return_type: Option<Box<str>>,
-    /// Raw docblock text (the `/** … */` comment before the declaration).
-    pub docblock: Option<Box<str>>,
     pub start_line: u32,
     /// Character position of the function name on its line (UTF-16 code units).
     pub name_char: u32,
@@ -96,9 +94,6 @@ pub struct ClassDef {
     pub is_abstract: bool,
     /// `true` for `readonly class Foo {}` (PHP 8.2+).
     pub is_readonly: bool,
-    /// `true` for backed enums (`enum Status: string {}`); always `false` for
-    /// pure enums and non-enum class kinds.
-    pub is_backed_enum: bool,
     /// `extends` clause as written in source (may be short name or FQN).
     pub parent: Option<Arc<str>>,
     pub implements: Vec<Arc<str>>,
@@ -171,7 +166,6 @@ pub struct MethodDef {
     pub visibility: Visibility,
     pub params: Vec<ParamDef>,
     pub return_type: Option<Box<str>>,
-    pub docblock: Option<Box<str>>,
     pub start_line: u32,
     /// Character position of the method name on its line (UTF-16 code units).
     pub name_char: u32,
@@ -258,7 +252,6 @@ fn collect_stmts(
             }
 
             StmtKind::Function(f) => {
-                let doc_text = f.doc_comment.as_ref().map(|c| c.text.into());
                 let start_line = view.position_of(stmt.span.start).line;
                 let ns = cur_ns.as_deref();
                 let f_name = f.name.or_error();
@@ -267,7 +260,6 @@ fn collect_stmts(
                     fqn: fqn(ns, f_name),
                     params: extract_params(&f.params),
                     return_type: f.return_type.as_ref().map(|t| format_type_hint(t).into()),
-                    docblock: doc_text,
                     start_line,
                     name_char: name_char(f_name),
                 });
@@ -285,7 +277,6 @@ fn collect_stmts(
                     kind: ClassKind::Class,
                     is_abstract: c.modifiers.is_abstract,
                     is_readonly: c.modifiers.is_readonly,
-                    is_backed_enum: false,
                     parent: c
                         .extends
                         .as_ref()
@@ -310,7 +301,6 @@ fn collect_stmts(
                 for member in c.body.members.iter() {
                     match &member.kind {
                         ClassMemberKind::Method(m) => {
-                            let mdoc = m.doc_comment.as_ref().map(|c| c.text.into());
                             let mstart = view.position_of(member.span.start).line;
                             let vis = method_visibility(m.visibility);
                             let method_params = extract_params(&m.params);
@@ -345,7 +335,6 @@ fn collect_stmts(
                                     .return_type
                                     .as_ref()
                                     .map(|t| format_type_hint(t).into()),
-                                docblock: mdoc,
                                 start_line: mstart,
                                 name_char: name_char(m_name),
                             });
@@ -445,7 +434,6 @@ fn collect_stmts(
                     kind: ClassKind::Interface,
                     is_abstract: true,
                     is_readonly: false,
-                    is_backed_enum: false,
                     parent: None,
                     implements: i
                         .extends
@@ -467,7 +455,6 @@ fn collect_stmts(
                 for member in i.body.members.iter() {
                     match &member.kind {
                         ClassMemberKind::Method(m) => {
-                            let mdoc = m.doc_comment.as_ref().map(|c| c.text.into());
                             let mstart = view.position_of(member.span.start).line;
                             let m_name = m.name.or_error();
                             iface_def.methods.push(MethodDef {
@@ -480,7 +467,6 @@ fn collect_stmts(
                                     .return_type
                                     .as_ref()
                                     .map(|t| format_type_hint(t).into()),
-                                docblock: mdoc,
                                 start_line: mstart,
                                 name_char: name_char(m_name),
                             });
@@ -505,7 +491,6 @@ fn collect_stmts(
                     kind: ClassKind::Trait,
                     is_abstract: false,
                     is_readonly: false,
-                    is_backed_enum: false,
                     parent: None,
                     implements: Vec::new(),
                     traits: Vec::new(),
@@ -523,7 +508,6 @@ fn collect_stmts(
                 for member in t.body.members.iter() {
                     match &member.kind {
                         ClassMemberKind::Method(m) => {
-                            let mdoc = m.doc_comment.as_ref().map(|c| c.text.into());
                             let mstart = view.position_of(member.span.start).line;
                             let vis = method_visibility(m.visibility);
                             let m_name = m.name.or_error();
@@ -537,7 +521,6 @@ fn collect_stmts(
                                     .return_type
                                     .as_ref()
                                     .map(|t| format_type_hint(t).into()),
-                                docblock: mdoc,
                                 start_line: mstart,
                                 name_char: name_char(m_name),
                             });
@@ -599,7 +582,6 @@ fn collect_stmts(
                     kind: ClassKind::Enum,
                     is_abstract: false,
                     is_readonly: false,
-                    is_backed_enum: e.scalar_type.is_some(),
                     parent: None,
                     implements: e
                         .implements
@@ -624,7 +606,6 @@ fn collect_stmts(
                             enum_def.cases.push(Box::from(c.name.or_error()));
                         }
                         EnumMemberKind::Method(m) => {
-                            let mdoc = m.doc_comment.as_ref().map(|c| c.text.into());
                             let mstart = view.position_of(member.span.start).line;
                             let vis = method_visibility(m.visibility);
                             let m_name = m.name.or_error();
@@ -638,7 +619,6 @@ fn collect_stmts(
                                     .return_type
                                     .as_ref()
                                     .map(|t| format_type_hint(t).into()),
-                                docblock: mdoc,
                                 start_line: mstart,
                                 name_char: name_char(m_name),
                             });
@@ -806,22 +786,6 @@ mod tests {
                 .iter()
                 .any(|c| c.as_ref() == "Inactive")
         );
-    }
-
-    #[test]
-    fn pure_enum_is_not_backed() {
-        let src = "<?php\nenum Direction { case North; case South; }";
-        let doc = ParsedDoc::parse(src.to_string());
-        let idx = FileIndex::extract(&doc);
-        assert!(!idx.classes[0].is_backed_enum);
-    }
-
-    #[test]
-    fn backed_enum_is_marked() {
-        let src = "<?php\nenum Status: string { case Active = 'active'; }";
-        let doc = ParsedDoc::parse(src.to_string());
-        let idx = FileIndex::extract(&doc);
-        assert!(idx.classes[0].is_backed_enum);
     }
 
     #[test]
