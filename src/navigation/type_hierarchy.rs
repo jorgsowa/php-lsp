@@ -39,12 +39,12 @@ pub fn prepare_type_hierarchy_from_workspace(
     uri: &Uri,
     wi: &crate::db::workspace_index::WorkspaceIndexData,
     position: Position,
-    class_candidates: &dyn Fn(&str) -> Vec<crate::db::workspace_index::ClassRef>,
+    class_candidates_by_short_name: &dyn Fn(&str) -> Vec<crate::db::workspace_index::ClassRef>,
 ) -> Option<TypeHierarchyItem> {
     use crate::index::file_index::ClassKind;
     use crate::text::word_at_position;
     let word = word_at_position(source, position)?;
-    let refs = class_candidates(&word);
+    let refs = class_candidates_by_short_name(&word);
     let (uri, cls) = refs
         .iter()
         .filter_map(|r| wi.at(*r))
@@ -64,12 +64,12 @@ pub fn prepare_type_hierarchy_from_workspace(
 pub fn supertypes_of_from_workspace(
     item: &TypeHierarchyItem,
     wi: &crate::db::workspace_index::WorkspaceIndexData,
-    class_candidates: &dyn Fn(&str) -> Vec<crate::db::workspace_index::ClassRef>,
+    class_candidates_by_short_name: &dyn Fn(&str) -> Vec<crate::db::workspace_index::ClassRef>,
 ) -> Vec<TypeHierarchyItem> {
     use crate::index::file_index::ClassKind;
     // Collect (super_name_as_written, file_index_for_that_class) pairs.
     let mut super_pairs: Vec<(Arc<str>, Option<&crate::index::file_index::FileIndex>)> = Vec::new();
-    for r in class_candidates(&item.name) {
+    for r in class_candidates_by_short_name(&item.name) {
         if let Some((_, cls)) = wi.at(r) {
             let file_idx = wi.files.get(r.file as usize).map(|(_, idx)| idx.as_ref());
             if let Some(p) = &cls.parent {
@@ -93,7 +93,7 @@ pub fn supertypes_of_from_workspace(
     let mut seen_fqns: HashSet<Box<str>> = HashSet::new();
     for (name, file_idx) in super_pairs {
         // Direct lookup: class is named exactly as written.
-        let direct = class_candidates(name.as_ref());
+        let direct = class_candidates_by_short_name(name.as_ref());
         let canonical = if !direct.is_empty() {
             Some(name.as_ref().to_string())
         } else {
@@ -108,7 +108,7 @@ pub fn supertypes_of_from_workspace(
         let Some(canonical_name) = canonical else {
             continue;
         };
-        let refs = class_candidates(&canonical_name);
+        let refs = class_candidates_by_short_name(&canonical_name);
         if let Some((uri, cls)) = refs.first().and_then(|r| wi.at(*r))
             && seen_fqns.insert(cls.fqn.clone())
         {

@@ -118,16 +118,16 @@ fn definition_name_range(sv: SourceView<'_>, decl: &Declaration<'_>) -> Range {
 /// mention-index-narrowed) instead of a linear scan over every workspace
 /// class.
 ///
-/// Deliberately does not use `resolve_class_ref`: that picks a single
-/// disambiguated candidate, but a hierarchy walk must visit *every* class
-/// sharing a short name (workspaces commonly have several, e.g. Laravel's
-/// many `Factory`/`Request` classes), since any of them may contribute a
-/// matching trait/parent to the search.
+/// Deliberately does not use the single-candidate class-ref helpers: a
+/// hierarchy walk must visit *every* class sharing a short name
+/// (workspaces commonly have several, e.g. Laravel's many
+/// `Factory`/`Request` classes), since any of them may contribute a matching
+/// trait/parent to the search.
 pub fn find_method_in_class_hierarchy(
     class_name: &str,
     method_name: &str,
     wi: &crate::db::workspace_index::WorkspaceIndexData,
-    class_candidates: &dyn Fn(&str) -> Vec<crate::db::workspace_index::ClassRef>,
+    class_candidates_by_short_name: &dyn Fn(&str) -> Vec<crate::db::workspace_index::ClassRef>,
 ) -> Option<Location> {
     let mut queue: std::collections::VecDeque<String> =
         std::collections::VecDeque::from([class_name.to_owned()]);
@@ -138,7 +138,7 @@ pub fn find_method_in_class_hierarchy(
             continue;
         }
         let short = crate::text::fqn_short_name(&current);
-        let candidates = class_candidates(short);
+        let candidates = class_candidates_by_short_name(short);
         for cr in &candidates {
             let Some((uri, cls)) = wi.at(*cr) else {
                 continue;
@@ -175,7 +175,12 @@ pub fn find_method_in_class_hierarchy(
                     };
                     for trt_name in search_in {
                         if let Some(loc) =
-                            find_method_in_class_hierarchy(trt_name, orig, wi, class_candidates)
+                            find_method_in_class_hierarchy(
+                                trt_name,
+                                orig,
+                                wi,
+                                class_candidates_by_short_name,
+                            )
                         {
                             return Some(loc);
                         }

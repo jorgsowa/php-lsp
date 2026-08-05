@@ -321,7 +321,7 @@ impl Backend {
         item_name: &str,
         wi: &crate::db::workspace_index::WorkspaceIndexData,
     ) -> bool {
-        let refs = self.docs.class_candidates(wi, item_name);
+        let refs = self.docs.class_candidates_by_short_name(wi, item_name);
         if refs.is_empty() {
             return false;
         }
@@ -343,7 +343,7 @@ impl Backend {
 
             for name in super_names {
                 let short = crate::text::fqn_short_name(&name);
-                if !self.docs.class_candidates(wi, short).is_empty() {
+                if !self.docs.class_candidates_by_short_name(wi, short).is_empty() {
                     continue;
                 }
                 // Resolve short name to FQN via the implementing file's use_imports.

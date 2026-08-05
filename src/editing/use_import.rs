@@ -8,10 +8,10 @@ use crate::types::resolve::{Declaration, resolve_declaration};
 
 pub(crate) fn find_fqn_for_class(
     name: &str,
-    class_candidates: &dyn Fn(&str) -> Vec<crate::db::workspace_index::ClassRef>,
+    class_candidates_by_short_name: &dyn Fn(&str) -> Vec<crate::db::workspace_index::ClassRef>,
     resolve_class_fqn: &dyn Fn(crate::db::workspace_index::ClassRef) -> Option<String>,
 ) -> Option<String> {
-    class_candidates(name)
+    class_candidates_by_short_name(name)
         .into_iter()
         .find_map(resolve_class_fqn)
 }

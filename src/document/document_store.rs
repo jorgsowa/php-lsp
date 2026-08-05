@@ -433,8 +433,8 @@ impl DocumentStore {
     /// The sweep's front of the queue: `priority` files themselves plus the
     /// files declaring the classes they reference (type hints, `use` imports,
     /// `new`, `extends`, …) — the set a request against an open file most
-    /// likely touches. Resolution goes through the memoized workspace index,
-    /// matching by FQN with a short-name fallback.
+        /// likely touches. Resolution goes through the memoized workspace index,
+        /// matching by FQN first with an explicit short-name fallback.
     fn sweep_priority_files(&self, priority: &[Uri]) -> Vec<Arc<str>> {
         if priority.is_empty() {
             return Vec::new();
@@ -456,13 +456,10 @@ impl DocumentStore {
                 continue;
             };
             for fqn in crate::navigation::references::collect_referenced_class_fqns(&doc) {
-                let short = crate::text::fqn_short_name(&fqn);
-                for r in self.class_candidates(&ws, short) {
-                    if let Some((decl_uri, cls)) = ws.at(r)
-                        && cls.fqn.trim_start_matches('\\') == fqn
-                    {
-                        push(decl_uri, &mut out, &mut seen);
-                    }
+                if let Some(r) = self.resolve_class_ref_by_fqn_or_short_name_fallback(&ws, &fqn)
+                    && let Some((decl_uri, _)) = ws.at(r)
+                {
+                    push(decl_uri, &mut out, &mut seen);
                 }
             }
         }
@@ -1442,13 +1439,7 @@ impl DocumentStore {
 
         let ws = self.get_workspace_index_salsa();
         let owner_fqn = owner_fqn.trim_start_matches('\\');
-        let owner_short = crate::text::fqn_short_name(owner_fqn);
-
-        let owner_candidates = self.class_candidates(&ws, owner_short);
-        let Some((decl_uri, decl_class)) = owner_candidates
-            .iter()
-            .filter_map(|&r| ws.at(r))
-            .find(|(_, cls)| cls.fqn.trim_start_matches('\\') == owner_fqn)
+        let Some(owner_ref) = self.resolve_class_ref_by_fqn_or_short_name_fallback(&ws, owner_fqn)
         else {
             // No project/vendor declaration matches this FQN — a builtin
             // owner (`Closure`, `ReflectionParameter`, ...) always lands
@@ -1466,6 +1457,9 @@ impl DocumentStore {
                         .collect(),
                 );
             }
+            return MethodScopePlan::FullWorkspace;
+        };
+        let Some((decl_uri, decl_class)) = ws.at(owner_ref) else {
             return MethodScopePlan::FullWorkspace;
         };
 
@@ -2596,11 +2590,13 @@ impl DocumentStore {
     /// Every class in the workspace whose own (unqualified) name is exactly
     /// `short_name`, via mir's `classes_named` (O(1) short-name bucket,
     /// incrementally maintained — no per-call scan over every workspace
-    /// file, unlike the mention-index-based narrowing this used to do). The
-    /// multi-candidate sibling of [`Self::resolve_class_ref`] for callers
-    /// that must consider every same-named class themselves (hierarchy
-    /// walks, ambiguity handling) rather than have one picked for them.
-    pub fn class_candidates(
+    /// file, unlike the mention-index-based narrowing this used to do).
+    ///
+    /// This is the explicit short-name fallback path. Prefer
+    /// [`Self::resolve_class_ref_by_fqn`] whenever the caller already has a
+    /// resolved FQN; use this only for true ambiguity handling where the
+    /// source text is still just a bare short name.
+    pub fn class_candidates_by_short_name(
         &self,
         wi: &crate::db::workspace_index::WorkspaceIndexData,
         short_name: &str,
@@ -2643,36 +2639,54 @@ impl DocumentStore {
         })
     }
 
-    /// Resolve `name` to a single class, disambiguating same-named classes in
-    /// different namespaces. `name` may be a bare short name (resolves to the
-    /// first match via the mention-index-narrowed [`Self::class_candidates`])
-    /// or a fully-qualified name (`Foo\Bar\Baz`, optionally leading with `\`),
-    /// in which case [`Self::class_ref_by_fqn`]'s O(1) mir-backed lookup is
-    /// tried first — the common case for a caller that already resolved an
-    /// alias/import — falling back to the short-name candidate scan (which
-    /// also re-verifies by FQN) only when mir doesn't have it yet.
-    pub fn resolve_class_ref(
+    /// Resolve a *known* FQN to its declaring class. This is the default
+    /// lookup path for callers that already resolved imports/aliases or are
+    /// following a semantic symbol carrying an FQN.
+    pub fn resolve_class_ref_by_fqn(
         &self,
         wi: &crate::db::workspace_index::WorkspaceIndexData,
-        name: &str,
+        fqn: &str,
     ) -> Option<crate::db::workspace_index::ClassRef> {
-        let trimmed = name.trim_start_matches('\\');
-        if trimmed.contains('\\')
-            && let Some(cr) = self.class_ref_by_fqn(wi, trimmed)
-        {
+        self.class_ref_by_fqn(wi, fqn)
+    }
+
+    /// Resolve a bare short name to the first same-named class in the
+    /// workspace. This is intentionally the explicit fallback path.
+    pub fn resolve_class_ref_by_short_name(
+        &self,
+        wi: &crate::db::workspace_index::WorkspaceIndexData,
+        short_name: &str,
+    ) -> Option<crate::db::workspace_index::ClassRef> {
+        self.class_candidates_by_short_name(wi, short_name)
+            .first()
+            .copied()
+    }
+
+    /// Resolve a known FQN, falling back to the short-name bucket only when
+    /// mir's direct FQN lookup has not loaded/committed the class yet.
+    ///
+    /// Callers should use this only when they already have an FQN but still
+    /// want the previous resilience against a cold mir cache. New callers
+    /// should prefer [`Self::resolve_class_ref_by_fqn`] and reserve this for
+    /// compatibility with existing `FileIndex`-backed behavior.
+    pub fn resolve_class_ref_by_fqn_or_short_name_fallback(
+        &self,
+        wi: &crate::db::workspace_index::WorkspaceIndexData,
+        fqn: &str,
+    ) -> Option<crate::db::workspace_index::ClassRef> {
+        let trimmed = fqn.trim_start_matches('\\');
+        if let Some(cr) = self.resolve_class_ref_by_fqn(wi, trimmed) {
             return Some(cr);
         }
         let short = trimmed.rsplit('\\').next().unwrap_or(trimmed);
-        let candidates = self.class_candidates(wi, short);
-        if trimmed.contains('\\')
-            && let Some(cr) = candidates.iter().find(|cr| {
-                wi.at(**cr).is_some_and(|(_, cls)| {
-                    cls.fqn
-                        .trim_start_matches('\\')
-                        .eq_ignore_ascii_case(trimmed)
-                })
+        let candidates = self.class_candidates_by_short_name(wi, short);
+        if let Some(cr) = candidates.iter().find(|cr| {
+            wi.at(**cr).is_some_and(|(_, cls)| {
+                cls.fqn
+                    .trim_start_matches('\\')
+                    .eq_ignore_ascii_case(trimmed)
             })
-        {
+        }) {
             return Some(*cr);
         }
         candidates.first().copied()

@@ -71,7 +71,8 @@ impl Backend {
             let mut actions: Vec<CodeActionOrCommand> = Vec::new();
             let wi = docs.get_workspace_index_salsa();
             {
-                let class_candidates = |short: &str| docs.class_candidates(&wi, short);
+                let class_candidates =
+                    |short: &str| docs.class_candidates_by_short_name(&wi, short);
                 let resolve_class_fqn = |cr| wi.at(cr).map(|(_, cls)| cls.fqn.to_string());
                 let get_doc = |uri: &Uri| docs.get_doc_salsa(uri);
                 let function_candidates = |name: &str| docs.declaration_candidate_files(&wi, name);

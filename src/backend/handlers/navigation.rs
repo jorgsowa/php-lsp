@@ -113,7 +113,8 @@ impl Backend {
                 });
                 if let Some((cls, class_fqn_arc)) = resolved_method_target {
                     let wi = self.workspace_index_cached(&mut wi_cache).await;
-                    let class_candidates = |short: &str| self.docs.class_candidates(&wi, short);
+                    let class_candidates =
+                        |short: &str| self.docs.class_candidates_by_short_name(&wi, short);
                     if let Some(loc) =
                         find_method_in_class_hierarchy(&cls, &word, &wi, &class_candidates)
                     {
@@ -168,7 +169,8 @@ impl Backend {
                 if let Some(cls) = class_name {
                     let first_cls = cls.split('|').next().unwrap_or(&cls).to_owned();
                     let wi2 = self.workspace_index_cached(&mut wi_cache).await;
-                    let class_candidates = |short: &str| self.docs.class_candidates(&wi2, short);
+                    let class_candidates =
+                        |short: &str| self.docs.class_candidates_by_short_name(&wi2, short);
                     if let Some(loc) =
                         find_method_in_class_hierarchy(&first_cls, &word, &wi2, &class_candidates)
                     {
@@ -751,7 +753,7 @@ impl Backend {
         match symbol {
             mir_analyzer::Name::Class(fqn) => {
                 let target = fqn.trim_start_matches('\\');
-                for r in &self.docs.class_candidates(&ws, word) {
+                for r in &self.docs.class_candidates_by_short_name(&ws, word) {
                     let Some((uri, cls)) = ws.at(*r) else {
                         continue;
                     };

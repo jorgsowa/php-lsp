@@ -174,26 +174,10 @@ impl LensEnv<'_> {
             if !seen.insert(current.clone()) {
                 return None;
             }
-            let candidates = self.store.class_candidates(&ws, fqn_short_name(&current));
-            if candidates.is_empty() {
-                return None;
-            }
-            let class_loc = |r: &crate::db::workspace_index::ClassRef| {
-                let (uri, cls) = ws.at(*r)?;
-                Some((uri, cls))
-            };
-            let mut fallback = None;
-            let mut chosen = None;
-            for r in &candidates {
-                if let Some((uri, cls)) = class_loc(r) {
-                    if cls.fqn.trim_start_matches('\\') == current {
-                        chosen = Some((uri, cls));
-                        break;
-                    }
-                    fallback.get_or_insert((uri, cls));
-                }
-            }
-            let (uri, cls) = chosen.or(fallback)?;
+            let chosen = self
+                .store
+                .resolve_class_ref_by_fqn_or_short_name_fallback(&ws, &current)?;
+            let (uri, cls) = ws.at(chosen)?;
             let declaring_fqn = cls.fqn.trim_start_matches('\\').to_string();
             if let Some(m) = cls.methods.iter().find(|m| m.name.as_ref() == method) {
                 let start = tower_lsp_server::ls_types::Position {

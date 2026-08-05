@@ -833,7 +833,11 @@ impl LanguageServer for Backend {
             let uri_for_class_search = uri.clone();
             let docs_for_lookup = Arc::clone(&self.docs);
             let find_class_doc_fn = move |name: &str| -> Option<Arc<ParsedDoc>> {
-                let cr = docs_for_lookup.resolve_class_ref(&wi, name)?;
+                let cr = if name.trim_start_matches('\\').contains('\\') {
+                    docs_for_lookup.resolve_class_ref_by_fqn_or_short_name_fallback(&wi, name)?
+                } else {
+                    docs_for_lookup.resolve_class_ref_by_short_name(&wi, name)?
+                };
                 let (uri, _) = wi.at(cr)?;
                 docs_for_lookup.get_doc_salsa(uri)
             };
@@ -1155,7 +1159,11 @@ impl LanguageServer for Backend {
             let wi = self.workspace_index_cached(&mut wi_cache).await;
             let docs_for_lookup = Arc::clone(&self.docs);
             let find_class_doc_fn = move |name: &str| -> Option<Arc<ParsedDoc>> {
-                let cr = docs_for_lookup.resolve_class_ref(&wi, name)?;
+                let cr = if name.trim_start_matches('\\').contains('\\') {
+                    docs_for_lookup.resolve_class_ref_by_fqn_or_short_name_fallback(&wi, name)?
+                } else {
+                    docs_for_lookup.resolve_class_ref_by_short_name(&wi, name)?
+                };
                 let (uri, _) = wi.at(cr)?;
                 docs_for_lookup.get_doc_salsa(uri)
             };
@@ -1183,9 +1191,16 @@ impl LanguageServer for Backend {
             // `use Foo as Bar` works even when Foo is only in the index.
             if let Some(word) = crate::text::word_at_position(&source, position) {
                 let wi = self.workspace_index_cached(&mut wi_cache).await;
-                let resolve_class_ref = |name: &str| self.docs.resolve_class_ref(&wi, name);
+                let resolve_class_ref_fallback = |name: &str| {
+                    if name.trim_start_matches('\\').contains('\\') {
+                        self.docs
+                            .resolve_class_ref_by_fqn_or_short_name_fallback(&wi, name)
+                    } else {
+                        self.docs.resolve_class_ref_by_short_name(&wi, name)
+                    }
+                };
                 let fallback_class_fqcn = |name: &str| {
-                    resolve_class_ref(name).and_then(|cr| {
+                    resolve_class_ref_fallback(name).and_then(|cr| {
                         wi.at(cr)
                             .map(|(_, cls)| cls.fqn.trim_start_matches('\\').to_string())
                     })
@@ -1849,7 +1864,7 @@ impl LanguageServer for Backend {
                     }
                     if results.is_empty() {
                         let class_candidate_uris = |short: &str| {
-                            docs.class_candidates(&wi, short)
+                            docs.class_candidates_by_short_name(&wi, short)
                                 .into_iter()
                                 .filter_map(|cr| wi.at(cr).map(|(uri, _)| uri.clone()))
                                 .collect()
@@ -1891,7 +1906,8 @@ impl LanguageServer for Backend {
             let source = self.get_open_text(uri).unwrap_or_default();
             // Phase J: use the salsa-memoized aggregate, mention-index-narrowed.
             let wi = self.workspace_index_async().await;
-            let class_candidates = |short: &str| self.docs.class_candidates(&wi, short);
+            let class_candidates =
+                |short: &str| self.docs.class_candidates_by_short_name(&wi, short);
             Ok(prepare_type_hierarchy_from_workspace(
                 &source,
                 uri,
@@ -1921,7 +1937,8 @@ impl LanguageServer for Backend {
             } else {
                 wi
             };
-            let class_candidates = |short: &str| self.docs.class_candidates(&wi, short);
+            let class_candidates =
+                |short: &str| self.docs.class_candidates_by_short_name(&wi, short);
             let result = supertypes_of_from_workspace(&params.item, &wi, &class_candidates);
             Ok(if result.is_empty() {
                 None
@@ -1942,7 +1959,9 @@ impl LanguageServer for Backend {
             // many classes across the workspace (e.g. Laravel's ~16 `Factory`
             // classes) needs `params.item.uri` to pick the right one instead of
             // an arbitrary first match.
-            let candidates = self.docs.class_candidates(&wi, &params.item.name);
+            let candidates = self
+                .docs
+                .class_candidates_by_short_name(&wi, &params.item.name);
             let item_fqn = candidates
                 .iter()
                 .filter_map(|r| wi.at(*r))
