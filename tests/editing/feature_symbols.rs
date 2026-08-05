@@ -49,8 +49,8 @@ enum Status {
     .assert_eq(&out);
 }
 
-/// Promoted constructor properties exist only as `Param` nodes on
-/// `__construct`; they must still surface somewhere in the outline.
+/// Promoted constructor properties must surface as class properties in the
+/// outline, not only as constructor parameters.
 #[tokio::test]
 async fn document_symbols_promoted_constructor_properties() {
     let mut s = TestServer::new().await;
@@ -67,8 +67,8 @@ class Point {
     expect![[r#"
         Class Point @L1
           Method __construct @L2
-            Variable $x @L2
-            Variable $y @L2"#]]
+          Property $x @L2
+          Property $y @L2"#]]
     .assert_eq(&out);
 }
 
@@ -170,6 +170,25 @@ class Config {
         )
         .await;
     expect!["Property    $apiKey @ main.php:2"].assert_eq(&out);
+}
+
+#[tokio::test]
+async fn workspace_symbols_finds_promoted_class_property() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_workspace_symbols(
+            r#"<?php
+class Mailer {
+    public function __construct(
+        private string $client,
+    ) {}
+}
+"#,
+            "client",
+        )
+        .await;
+    expect!["Property    $client @ main.php:3"].assert_eq(&out);
 }
 
 /// `workspace/symbol` must find class constants — same gap as properties.

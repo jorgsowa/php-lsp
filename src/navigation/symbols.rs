@@ -129,15 +129,16 @@ fn param_range(sv: SourceView<'_>, param: &php_ast::Param<'_, '_>) -> Range {
 }
 
 /// Per-parameter document symbols, used both for top-level functions and for
-/// class/trait methods — most importantly `__construct`, whose promoted
-/// properties (`public readonly Foo $foo`) exist only as `Param` nodes and
-/// would otherwise be entirely invisible in the outline.
+/// class/trait methods. Promoted constructor properties are emitted separately
+/// as class-level `Property` symbols, so this helper intentionally keeps
+/// parameters as parameters-only.
 fn param_children_for(
     sv: SourceView<'_>,
     params: &[php_ast::Param<'_, '_>],
 ) -> Option<Vec<DocumentSymbol>> {
     let children: Vec<DocumentSymbol> = params
         .iter()
+        .filter(|p| p.visibility.is_none())
         .map(|p| {
             let prange = param_range(sv, p);
             let psel = sv.name_range_after_attrs(&p.name.to_string(), &p.attributes, p.span);
@@ -158,6 +159,30 @@ fn param_children_for(
     } else {
         Some(children)
     }
+}
+
+fn promoted_property_symbols_for(
+    sv: SourceView<'_>,
+    params: &[php_ast::Param<'_, '_>],
+) -> Vec<DocumentSymbol> {
+    params
+        .iter()
+        .filter(|p| p.visibility.is_some())
+        .map(|p| {
+            let prange = param_range(sv, p);
+            let psel = sv.name_range_after_attrs(&p.name.to_string(), &p.attributes, p.span);
+            DocumentSymbol {
+                name: format!("${}", p.name),
+                detail: None,
+                kind: SymbolKind::PROPERTY,
+                tags: None,
+                deprecated: None,
+                range: prange,
+                selection_range: psel,
+                children: None,
+            }
+        })
+        .collect()
 }
 
 fn statement_to_symbol(sv: SourceView<'_>, stmt: &Stmt<'_, '_>) -> Option<DocumentSymbol> {
@@ -214,6 +239,9 @@ fn statement_to_symbol(sv: SourceView<'_>, stmt: &Stmt<'_, '_>) -> Option<Docume
                                 selection_range: msel,
                                 children: param_children_for(sv, &m.params),
                             }]
+                            .into_iter()
+                            .chain(promoted_property_symbols_for(sv, &m.params))
+                            .collect()
                         }
                         ClassMemberKind::Property(p) => {
                             let prange = member_range(sv, member);
