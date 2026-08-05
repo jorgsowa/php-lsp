@@ -12,9 +12,7 @@ use crate::navigation::references::{
     build_mir_symbol, dedup_ref_locations, session_tuple_to_location,
 };
 use crate::navigation::walk::collect_var_refs_in_scope;
-use crate::text::{
-    fqn_short_name, utf16_code_units, word_at_position,
-};
+use crate::text::{fqn_short_name, utf16_code_units, word_at_position};
 use crate::types::type_map::{enclosing_class_at, enclosing_class_fqn_at};
 
 use super::super::helpers::{

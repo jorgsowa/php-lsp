@@ -174,12 +174,9 @@ pub fn find_method_in_class_hierarchy(
                         None => cls.traits.iter().map(|t| t.as_ref()).collect(),
                     };
                     for trt_name in search_in {
-                        if let Some(loc) = find_method_in_class_hierarchy(
-                            trt_name,
-                            orig,
-                            wi,
-                            class_candidates,
-                        ) {
+                        if let Some(loc) =
+                            find_method_in_class_hierarchy(trt_name, orig, wi, class_candidates)
+                        {
                             return Some(loc);
                         }
                     }

@@ -106,7 +106,8 @@ impl Client {
         tokio::time::timeout(Duration::from_secs(30), async {
             loop {
                 let msg = read_msg(&mut self.read).await;
-                if msg.get("method").and_then(|v| v.as_str()) == Some("textDocument/publishDiagnostics")
+                if msg.get("method").and_then(|v| v.as_str())
+                    == Some("textDocument/publishDiagnostics")
                     && msg["params"]["uri"].as_str() == Some(uri)
                 {
                     return;
@@ -142,7 +143,11 @@ impl Client {
         let attempts = timeout_secs * 4;
         for _ in 0..attempts {
             let resp = self.request_no_params("$/php-lsp/debugStats").await;
-            if resp["result"]["warm_sweeps_completed"].as_u64().unwrap_or(0) >= 1 {
+            if resp["result"]["warm_sweeps_completed"]
+                .as_u64()
+                .unwrap_or(0)
+                >= 1
+            {
                 return true;
             }
             tokio::time::sleep(Duration::from_millis(250)).await;
@@ -171,7 +176,10 @@ fn rss_mb() -> f64 {
         .args(["-o", "rss=", "-p", &std::process::id().to_string()])
         .output()
         .expect("ps");
-    let kb: f64 = String::from_utf8_lossy(&out.stdout).trim().parse().unwrap_or(0.0);
+    let kb: f64 = String::from_utf8_lossy(&out.stdout)
+        .trim()
+        .parse()
+        .unwrap_or(0.0);
     kb / 1024.0
 }
 
@@ -233,7 +241,10 @@ async fn run() {
     }
 
     let baseline = rss_mb();
-    println!("baseline RSS after index + {} opens: {baseline:.1} MB", uris.len());
+    println!(
+        "baseline RSS after index + {} opens: {baseline:.1} MB",
+        uris.len()
+    );
 
     macro_rules! feature_block {
         ($name:expr, $method:expr, $params:expr) => {{
@@ -278,25 +289,40 @@ async fn run() {
         "textDocument": {"uri": uri}, "position": {"line": 20, "character": 12}
     }));
 
-    feature_block!("completion", "textDocument/completion", |uri: &String| json!({
-        "textDocument": {"uri": uri}, "position": {"line": 20, "character": 12}
-    }));
+    feature_block!(
+        "completion",
+        "textDocument/completion",
+        |uri: &String| json!({
+            "textDocument": {"uri": uri}, "position": {"line": 20, "character": 12}
+        })
+    );
 
-    feature_block!("references", "textDocument/references", |uri: &String| json!({
-        "textDocument": {"uri": uri}, "position": {"line": 20, "character": 12},
-        "context": {"includeDeclaration": true}
-    }));
+    feature_block!(
+        "references",
+        "textDocument/references",
+        |uri: &String| json!({
+            "textDocument": {"uri": uri}, "position": {"line": 20, "character": 12},
+            "context": {"includeDeclaration": true}
+        })
+    );
 
     feature_block!("code_lens", "textDocument/codeLens", |uri: &String| json!({
         "textDocument": {"uri": uri}
     }));
 
-    feature_block!("semantic_tokens", "textDocument/semanticTokens/full", |uri: &String| json!({
-        "textDocument": {"uri": uri}
-    }));
+    feature_block!(
+        "semantic_tokens",
+        "textDocument/semanticTokens/full",
+        |uri: &String| json!({
+            "textDocument": {"uri": uri}
+        })
+    );
 
     let end = rss_mb();
-    println!("\nfinal: baseline {baseline:.1} MB -> end {end:.1} MB (total Δ {:+.1})", end - baseline);
+    println!(
+        "\nfinal: baseline {baseline:.1} MB -> end {end:.1} MB (total Δ {:+.1})",
+        end - baseline
+    );
     let stats = c.request_no_params("$/php-lsp/debugStats").await;
     println!(
         "cache sizes: workspace_file_count={} mir_mention_scans_recorded={} text_cache_len={} decl_fingerprints_len={} analysis_cache_len={} parsed_cache_len={}",

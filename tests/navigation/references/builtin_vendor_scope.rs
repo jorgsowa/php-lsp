@@ -52,7 +52,9 @@ async fn references_on_closure_import_excludes_vendor_usages() {
 
     let (_, line, col) = server.locate("src/Handler.php", "use Closure", 0);
     // Cursor on the `C` of `Closure` (after "use ").
-    let resp = server.references("src/Handler.php", line, col + 4, false).await;
+    let resp = server
+        .references("src/Handler.php", line, col + 4, false)
+        .await;
     assert!(resp["error"].is_null(), "references error: {resp:?}");
 
     expect!["src/Handler.php:6:27-6:34"].assert_eq(&render_locations(&resp, &server.uri("")));
@@ -75,7 +77,9 @@ async fn references_on_closure_typehint_excludes_vendor_usages() {
     server.open("src/Handler.php", &handler).await;
 
     let (_, line, col) = server.locate("src/Handler.php", "Closure $cb", 0);
-    let resp = server.references("src/Handler.php", line, col + 1, false).await;
+    let resp = server
+        .references("src/Handler.php", line, col + 1, false)
+        .await;
     assert!(resp["error"].is_null(), "references error: {resp:?}");
 
     // Same target result as the import-cursor test above — invocation site
@@ -101,7 +105,9 @@ async fn references_on_closure_return_type_excludes_vendor_usages() {
     server.open("src/Handler.php", &handler).await;
 
     let (_, line, col) = server.locate("src/Handler.php", "): Closure", 0);
-    let resp = server.references("src/Handler.php", line, col + 3, false).await;
+    let resp = server
+        .references("src/Handler.php", line, col + 3, false)
+        .await;
     assert!(resp["error"].is_null(), "references error: {resp:?}");
 
     expect!["src/Handler.php:6:36-6:43"].assert_eq(&render_locations(&resp, &server.uri("")));
@@ -113,7 +119,9 @@ async fn references_on_closure_return_type_excludes_vendor_usages() {
 async fn references_on_closure_typed_property_excludes_vendor_usages() {
     let dir = tempfile::tempdir().unwrap();
     write_vendor_fixture(dir.path());
-    let handler = "<?php\nnamespace App;\n\nuse Closure;\n\nclass Handler {\n    private Closure $cb;\n}\n".to_string();
+    let handler =
+        "<?php\nnamespace App;\n\nuse Closure;\n\nclass Handler {\n    private Closure $cb;\n}\n"
+            .to_string();
     std::fs::create_dir_all(dir.path().join("src")).unwrap();
     std::fs::write(dir.path().join("src/Handler.php"), &handler).unwrap();
 
@@ -122,7 +130,9 @@ async fn references_on_closure_typed_property_excludes_vendor_usages() {
     server.open("src/Handler.php", &handler).await;
 
     let (_, line, col) = server.locate("src/Handler.php", "private Closure", 0);
-    let resp = server.references("src/Handler.php", line, col + 9, false).await;
+    let resp = server
+        .references("src/Handler.php", line, col + 9, false)
+        .await;
     assert!(resp["error"].is_null(), "references error: {resp:?}");
 
     expect!["src/Handler.php:6:12-6:19"].assert_eq(&render_locations(&resp, &server.uri("")));
@@ -146,7 +156,9 @@ async fn references_on_nullable_closure_param_excludes_vendor_usages() {
     server.open("src/Handler.php", &handler).await;
 
     let (_, line, col) = server.locate("src/Handler.php", "?Closure $cb", 0);
-    let resp = server.references("src/Handler.php", line, col + 2, false).await;
+    let resp = server
+        .references("src/Handler.php", line, col + 2, false)
+        .await;
     assert!(resp["error"].is_null(), "references error: {resp:?}");
 
     expect!["src/Handler.php:6:28-6:35"].assert_eq(&render_locations(&resp, &server.uri("")));

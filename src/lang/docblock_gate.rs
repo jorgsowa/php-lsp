@@ -116,7 +116,8 @@ fn is_unresolvable_body_token(
         // keep resolving as it does today, so only ever gate `$`-led words.
         "param" | "var" | "property" | "property-read" | "property-write" | "method" => {
             word.starts_with('$')
-                && token_range_containing(body_text, rel_in_body).is_some_and(|r| &body_text[r] == word)
+                && token_range_containing(body_text, rel_in_body)
+                    .is_some_and(|r| &body_text[r] == word)
         }
         _ => false,
     }
@@ -250,7 +251,8 @@ mod tests {
 
     #[test]
     fn var_doc_variable_name_is_unresolvable() {
-        let src = "<?php\nclass C {\n    /**\n     * @var int $count\n     */\n    public $count;\n}\n";
+        let src =
+            "<?php\nclass C {\n    /**\n     * @var int $count\n     */\n    public $count;\n}\n";
         let p = pos(src, "$count\n");
         assert!(is_unresolvable_docblock_token_at(src, p, "$count"));
     }

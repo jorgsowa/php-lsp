@@ -66,7 +66,9 @@ fn is_reserved_builtin_type_word(word: &str) -> bool {
         BuiltinType::True,
         BuiltinType::False,
     ];
-    RESERVED.iter().any(|t| t.as_str().eq_ignore_ascii_case(word))
+    RESERVED
+        .iter()
+        .any(|t| t.as_str().eq_ignore_ascii_case(word))
 }
 
 /// Whether the word at `position` is a bare PHP reserved keyword — i.e. not
@@ -171,7 +173,10 @@ mod tests {
             "int", "float", "bool", "string", "void", "never", "mixed", "object", "iterable",
             "callable", "array", "self", "parent", "static", "null", "true", "false",
         ] {
-            assert!(is_php_keyword(word), "{word} should be a reserved type-hint word");
+            assert!(
+                is_php_keyword(word),
+                "{word} should be a reserved type-hint word"
+            );
             assert!(
                 is_php_keyword(&word.to_ascii_uppercase()),
                 "{word} should be reserved case-insensitively"
@@ -191,7 +196,10 @@ mod tests {
             "__namespace__",
             "__trait__",
         ] {
-            assert!(is_php_keyword(word), "{word} should be a recognized magic constant");
+            assert!(
+                is_php_keyword(word),
+                "{word} should be a recognized magic constant"
+            );
         }
     }
 
@@ -201,23 +209,86 @@ mod tests {
         // `resolve_keyword`-backed lookup: every word the old list already
         // covered must still come back true.
         for word in [
-            "abstract", "and", "as", "break", "case", "catch", "class", "clone", "const",
-            "continue", "declare", "default", "die", "do", "echo", "else", "elseif", "empty",
-            "enddeclare", "endfor", "endforeach", "endif", "endswitch", "endwhile", "enum",
-            "eval", "exit", "extends", "final", "finally", "fn", "for", "foreach", "function",
-            "global", "goto", "if", "implements", "include", "include_once", "instanceof",
-            "interface", "isset", "list", "match", "namespace", "new", "or", "print", "private",
-            "protected", "public", "readonly", "require", "require_once", "return", "switch",
-            "throw", "trait", "try", "unset", "use", "while", "xor", "yield",
+            "abstract",
+            "and",
+            "as",
+            "break",
+            "case",
+            "catch",
+            "class",
+            "clone",
+            "const",
+            "continue",
+            "declare",
+            "default",
+            "die",
+            "do",
+            "echo",
+            "else",
+            "elseif",
+            "empty",
+            "enddeclare",
+            "endfor",
+            "endforeach",
+            "endif",
+            "endswitch",
+            "endwhile",
+            "enum",
+            "eval",
+            "exit",
+            "extends",
+            "final",
+            "finally",
+            "fn",
+            "for",
+            "foreach",
+            "function",
+            "global",
+            "goto",
+            "if",
+            "implements",
+            "include",
+            "include_once",
+            "instanceof",
+            "interface",
+            "isset",
+            "list",
+            "match",
+            "namespace",
+            "new",
+            "or",
+            "print",
+            "private",
+            "protected",
+            "public",
+            "readonly",
+            "require",
+            "require_once",
+            "return",
+            "switch",
+            "throw",
+            "trait",
+            "try",
+            "unset",
+            "use",
+            "while",
+            "xor",
+            "yield",
         ] {
-            assert!(is_php_keyword(word), "{word} regressed from the old keyword list");
+            assert!(
+                is_php_keyword(word),
+                "{word} regressed from the old keyword list"
+            );
         }
     }
 
     #[test]
     fn ordinary_identifiers_are_not_keywords() {
         for word in ["myFunction", "Suit", "handle", "PHP_EOL_ish", "runner", ""] {
-            assert!(!is_php_keyword(word), "{word} must not be treated as a keyword");
+            assert!(
+                !is_php_keyword(word),
+                "{word} must not be treated as a keyword"
+            );
         }
     }
 

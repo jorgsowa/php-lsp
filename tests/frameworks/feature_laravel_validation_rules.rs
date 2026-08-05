@@ -88,8 +88,7 @@ async fn completion_suggests_rule_names_in_validator_make_second_argument() {
 async fn completion_suggests_rule_names_in_rules_method_return() {
     let tmp = tempfile::tempdir().unwrap();
     write_minimal_laravel_project(tmp.path());
-    let php =
-        "<?php\nclass StoreUserRequest {\n    public function rules() {\n        return ['email' => 'requ\n    }\n}\n";
+    let php = "<?php\nclass StoreUserRequest {\n    public function rules() {\n        return ['email' => 'requ\n    }\n}\n";
     std::fs::write(tmp.path().join("app.php"), php).unwrap();
 
     let mut s = TestServer::with_root(tmp.path()).await;

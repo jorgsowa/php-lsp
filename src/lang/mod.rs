@@ -14,8 +14,8 @@ pub(crate) mod docblock_gate;
 pub(crate) mod keywords;
 
 use docblock_gate::is_unresolvable_docblock_token_at;
-pub(crate) use keywords::is_php_keyword;
 use keywords::is_bare_keyword_at;
+pub(crate) use keywords::is_php_keyword;
 
 /// Whether the word at `position` is a bareword token that can never
 /// resolve to a real declaration: a PHP reserved keyword/type-hint word

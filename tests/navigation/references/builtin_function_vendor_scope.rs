@@ -37,7 +37,11 @@ async fn references_on_global_builtin_function_excludes_vendor_usages() {
     let dir = tempfile::tempdir().unwrap();
     write_composer(dir.path());
     let vendor_caller = "<?php\nnamespace Acme\\Lib;\n\nclass Runner {\n    public function run(array $items): array {\n        return array_map(fn($x) => $x, $items);\n    }\n}\n";
-    std::fs::write(dir.path().join("vendor/acme/lib/src/Runner.php"), vendor_caller).unwrap();
+    std::fs::write(
+        dir.path().join("vendor/acme/lib/src/Runner.php"),
+        vendor_caller,
+    )
+    .unwrap();
     let project_caller = "<?php\nnamespace App;\n\nclass Handler {\n    public function handle(array $items): array {\n        return array_map(fn($x) => $x, $items);\n    }\n}\n".to_string();
     std::fs::write(dir.path().join("src/Handler.php"), &project_caller).unwrap();
 
@@ -46,7 +50,9 @@ async fn references_on_global_builtin_function_excludes_vendor_usages() {
     server.open("src/Handler.php", &project_caller).await;
 
     let (_, line, col) = server.locate("src/Handler.php", "array_map", 0);
-    let resp = server.references("src/Handler.php", line, col + 1, false).await;
+    let resp = server
+        .references("src/Handler.php", line, col + 1, false)
+        .await;
     assert!(resp["error"].is_null(), "references error: {resp:?}");
 
     expect!["src/Handler.php:5:15-5:24"].assert_eq(&render_locations(&resp, &server.uri("")));
@@ -63,7 +69,11 @@ async fn references_on_backslash_prefixed_builtin_function_excludes_vendor_usage
     let dir = tempfile::tempdir().unwrap();
     write_composer(dir.path());
     let vendor_caller = "<?php\nnamespace Acme\\Lib;\n\nclass Runner {\n    public function run(array $items): array {\n        return \\array_map(fn($x) => $x, $items);\n    }\n}\n";
-    std::fs::write(dir.path().join("vendor/acme/lib/src/Runner.php"), vendor_caller).unwrap();
+    std::fs::write(
+        dir.path().join("vendor/acme/lib/src/Runner.php"),
+        vendor_caller,
+    )
+    .unwrap();
     let project_caller = "<?php\nnamespace App;\n\nclass Handler {\n    public function handle(array $items): array {\n        return \\array_map(fn($x) => $x, $items);\n    }\n}\n".to_string();
     std::fs::write(dir.path().join("src/Handler.php"), &project_caller).unwrap();
 
@@ -72,7 +82,9 @@ async fn references_on_backslash_prefixed_builtin_function_excludes_vendor_usage
     server.open("src/Handler.php", &project_caller).await;
 
     let (_, line, col) = server.locate("src/Handler.php", "array_map", 0);
-    let resp = server.references("src/Handler.php", line, col + 1, false).await;
+    let resp = server
+        .references("src/Handler.php", line, col + 1, false)
+        .await;
     assert!(resp["error"].is_null(), "references error: {resp:?}");
 
     expect!["src/Handler.php:5:15-5:25"].assert_eq(&render_locations(&resp, &server.uri("")));
@@ -91,7 +103,11 @@ async fn references_on_namespaced_function_shadowing_builtin_name_still_includes
     let decl = "<?php\nnamespace App;\n\nfunction array_map(callable $fn, array $items): array {\n    return [];\n}\n".to_string();
     std::fs::write(dir.path().join("src/functions.php"), &decl).unwrap();
     let vendor_caller = "<?php\nnamespace Acme\\Lib;\n\nclass Runner {\n    public function run(array $items): array {\n        return \\App\\array_map(fn($x) => $x, $items);\n    }\n}\n";
-    std::fs::write(dir.path().join("vendor/acme/lib/src/Runner.php"), vendor_caller).unwrap();
+    std::fs::write(
+        dir.path().join("vendor/acme/lib/src/Runner.php"),
+        vendor_caller,
+    )
+    .unwrap();
     let project_caller = "<?php\nnamespace App;\n\nclass Handler {\n    public function handle(array $items): array {\n        return array_map(fn($x) => $x, $items);\n    }\n}\n";
     std::fs::write(dir.path().join("src/Handler.php"), project_caller).unwrap();
 
@@ -100,7 +116,9 @@ async fn references_on_namespaced_function_shadowing_builtin_name_still_includes
     server.open("src/functions.php", &decl).await;
 
     let (_, line, col) = server.locate("src/functions.php", "function array_map", 0);
-    let resp = server.references("src/functions.php", line, col + 9, false).await;
+    let resp = server
+        .references("src/functions.php", line, col + 9, false)
+        .await;
     assert!(resp["error"].is_null(), "references error: {resp:?}");
 
     expect![[r#"

@@ -23,7 +23,8 @@ use super::*;
 
 use serde_json::json;
 
-const VENDOR_WIDGET: &str = "<?php\nnamespace Acme\\Lib;\n\nclass Widget {\n    public function spin(): void {}\n}\n";
+const VENDOR_WIDGET: &str =
+    "<?php\nnamespace Acme\\Lib;\n\nclass Widget {\n    public function spin(): void {}\n}\n";
 
 #[tokio::test]
 #[ignore = "warmVendorAnalysis sweep not implemented yet (ROADMAP 0c step 2)"]

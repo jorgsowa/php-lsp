@@ -250,11 +250,16 @@ fn dir_size(dir: &Path) -> io::Result<u64> {
 /// `read_dir`); only the recursive removal is deferred. Returns the join
 /// handle so tests can wait for completion; normal callers drop it and let
 /// the cleanup finish in its own time.
-fn prune_stale_schema_dirs(php_lsp_dir: &Path, current_schema: &str) -> Option<std::thread::JoinHandle<()>> {
+fn prune_stale_schema_dirs(
+    php_lsp_dir: &Path,
+    current_schema: &str,
+) -> Option<std::thread::JoinHandle<()>> {
     let entries = std::fs::read_dir(php_lsp_dir).ok()?;
     let stale: Vec<PathBuf> = entries
         .flatten()
-        .filter(|entry| entry.file_name() != current_schema && entry.file_type().is_ok_and(|t| t.is_dir()))
+        .filter(|entry| {
+            entry.file_name() != current_schema && entry.file_type().is_ok_and(|t| t.is_dir())
+        })
         .map(|entry| entry.path())
         .collect();
     if stale.is_empty() {

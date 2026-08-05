@@ -164,7 +164,11 @@ fn is_ident(expr: &Expr<'_, '_>, name: &str) -> bool {
 /// indistinguishable from a real one. The recursive call into a nested
 /// array-form rule list passes `require_key: false`, since that list's
 /// entries are genuinely unkeyed.
-fn rule_value_span_at(elements: &[ArrayElement<'_, '_>], cursor: u32, require_key: bool) -> Option<Span> {
+fn rule_value_span_at(
+    elements: &[ArrayElement<'_, '_>],
+    cursor: u32,
+    require_key: bool,
+) -> Option<Span> {
     for el in elements {
         if require_key && el.key.is_none() {
             continue;
@@ -288,11 +292,18 @@ fn find_rules_method_return_span<'a>(stmts: &[Stmt<'a, 'a>], cursor: u32) -> Opt
 /// part of a recognized rules array. `None` when the cursor isn't in any of
 /// the three recognized shapes at all — the caller should fall through to
 /// normal completion.
-pub(crate) fn validation_rule_prefix(doc: &ParsedDoc, source: &str, position: Position) -> Option<String> {
+pub(crate) fn validation_rule_prefix(
+    doc: &ParsedDoc,
+    source: &str,
+    position: Position,
+) -> Option<String> {
     let sv = doc.view();
     let cursor = sv.byte_of_position(position);
 
-    let mut visitor = RulesCallVisitor { cursor, found: None };
+    let mut visitor = RulesCallVisitor {
+        cursor,
+        found: None,
+    };
     for stmt in doc.program().stmts.iter() {
         if matches!(visitor.visit_stmt(stmt), ControlFlow::Break(())) {
             break;
@@ -352,7 +363,10 @@ mod tests {
             line: 3,
             character: 44,
         };
-        assert_eq!(validation_rule_prefix(&doc, src, pos).as_deref(), Some("requ"));
+        assert_eq!(
+            validation_rule_prefix(&doc, src, pos).as_deref(),
+            Some("requ")
+        );
     }
 
     #[test]
@@ -363,7 +377,10 @@ mod tests {
             line: 3,
             character: 51,
         };
-        assert_eq!(validation_rule_prefix(&doc, src, pos).as_deref(), Some("em"));
+        assert_eq!(
+            validation_rule_prefix(&doc, src, pos).as_deref(),
+            Some("em")
+        );
     }
 
     #[test]
@@ -374,7 +391,10 @@ mod tests {
             line: 3,
             character: 55,
         };
-        assert_eq!(validation_rule_prefix(&doc, src, pos).as_deref(), Some("em"));
+        assert_eq!(
+            validation_rule_prefix(&doc, src, pos).as_deref(),
+            Some("em")
+        );
     }
 
     #[test]
@@ -385,7 +405,10 @@ mod tests {
             line: 1,
             character: 40,
         };
-        assert_eq!(validation_rule_prefix(&doc, src, pos).as_deref(), Some("requ"));
+        assert_eq!(
+            validation_rule_prefix(&doc, src, pos).as_deref(),
+            Some("requ")
+        );
     }
 
     #[test]
@@ -396,7 +419,10 @@ mod tests {
             line: 3,
             character: 32,
         };
-        assert_eq!(validation_rule_prefix(&doc, src, pos).as_deref(), Some("requ"));
+        assert_eq!(
+            validation_rule_prefix(&doc, src, pos).as_deref(),
+            Some("requ")
+        );
     }
 
     #[test]

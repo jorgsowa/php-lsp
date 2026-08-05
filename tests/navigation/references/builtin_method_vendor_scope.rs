@@ -29,7 +29,11 @@ async fn references_on_closure_static_method_excludes_vendor_usages() {
     let dir = tempfile::tempdir().unwrap();
     write_composer(dir.path());
     let vendor_caller = "<?php\nnamespace Acme\\Lib;\n\nclass Runner {\n    public function run($fn): \\Closure {\n        return \\Closure::fromCallable($fn);\n    }\n}\n";
-    std::fs::write(dir.path().join("vendor/acme/lib/src/Runner.php"), vendor_caller).unwrap();
+    std::fs::write(
+        dir.path().join("vendor/acme/lib/src/Runner.php"),
+        vendor_caller,
+    )
+    .unwrap();
     let project_caller = "<?php\nnamespace App;\n\nuse Closure;\n\nclass Handler {\n    public function handle($fn): Closure {\n        return Closure::fromCallable($fn);\n    }\n}\n".to_string();
     std::fs::write(dir.path().join("src/Handler.php"), &project_caller).unwrap();
 
@@ -38,7 +42,9 @@ async fn references_on_closure_static_method_excludes_vendor_usages() {
     server.open("src/Handler.php", &project_caller).await;
 
     let (_, line, col) = server.locate("src/Handler.php", "fromCallable", 0);
-    let resp = server.references("src/Handler.php", line, col + 1, false).await;
+    let resp = server
+        .references("src/Handler.php", line, col + 1, false)
+        .await;
     assert!(resp["error"].is_null(), "references error: {resp:?}");
 
     expect!["src/Handler.php:7:24-7:36"].assert_eq(&render_locations(&resp, &server.uri("")));
@@ -51,7 +57,11 @@ async fn references_on_closure_instance_method_excludes_vendor_usages() {
     let dir = tempfile::tempdir().unwrap();
     write_composer(dir.path());
     let vendor_caller = "<?php\nnamespace Acme\\Lib;\n\nclass Runner {\n    public function run(\\Closure $cb): mixed {\n        return $cb->call($this);\n    }\n}\n";
-    std::fs::write(dir.path().join("vendor/acme/lib/src/Runner.php"), vendor_caller).unwrap();
+    std::fs::write(
+        dir.path().join("vendor/acme/lib/src/Runner.php"),
+        vendor_caller,
+    )
+    .unwrap();
     let project_caller = "<?php\nnamespace App;\n\nuse Closure;\n\nclass Handler {\n    public function handle(Closure $cb): mixed {\n        return $cb->call($this);\n    }\n}\n".to_string();
     std::fs::write(dir.path().join("src/Handler.php"), &project_caller).unwrap();
 
@@ -60,7 +70,9 @@ async fn references_on_closure_instance_method_excludes_vendor_usages() {
     server.open("src/Handler.php", &project_caller).await;
 
     let (_, line, col) = server.locate("src/Handler.php", "->call(", 0);
-    let resp = server.references("src/Handler.php", line, col + 3, false).await;
+    let resp = server
+        .references("src/Handler.php", line, col + 3, false)
+        .await;
     assert!(resp["error"].is_null(), "references error: {resp:?}");
 
     expect!["src/Handler.php:7:20-7:24"].assert_eq(&render_locations(&resp, &server.uri("")));
@@ -75,7 +87,8 @@ async fn references_on_closure_instance_method_excludes_vendor_usages() {
 async fn references_on_unrelated_class_method_named_call_still_includes_vendor_usages() {
     let dir = tempfile::tempdir().unwrap();
     write_composer(dir.path());
-    let widget = "<?php\nnamespace Acme\\Lib;\n\nclass Widget {\n    public function call(): void {}\n}\n";
+    let widget =
+        "<?php\nnamespace Acme\\Lib;\n\nclass Widget {\n    public function call(): void {}\n}\n";
     std::fs::write(dir.path().join("vendor/acme/lib/src/Widget.php"), widget).unwrap();
     let vendor_caller = "<?php\nnamespace Acme\\Lib;\n\nclass Factory {\n    public function make(Widget $w): void {\n        $w->call();\n    }\n}\n";
     std::fs::write(

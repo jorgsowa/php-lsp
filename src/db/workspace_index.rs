@@ -147,10 +147,12 @@ pub(crate) fn build_maps(files: &[(Uri, Arc<FileIndex>)]) -> Vec<(Box<str>, Clas
     for (file_idx, (_, idx)) in files.iter().enumerate() {
         let file_idx = file_idx as u32;
         for (cls_idx, cls) in idx.classes.iter().enumerate() {
-            first_by_name.entry(cls.name.as_ref().into()).or_insert(ClassRef {
-                file: file_idx,
-                class: cls_idx as u32,
-            });
+            first_by_name
+                .entry(cls.name.as_ref().into())
+                .or_insert(ClassRef {
+                    file: file_idx,
+                    class: cls_idx as u32,
+                });
         }
     }
     let mut classes_by_lowercase_name: Vec<(Box<str>, ClassRef)> = first_by_name
