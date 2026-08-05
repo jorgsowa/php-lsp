@@ -125,8 +125,9 @@ pub fn goto_declaration_from_index(
         return None;
     }
     let bare = strip_variable_sigil(&word);
+    let candidate_uris = mention_candidates(&word);
 
-    for (uri, _) in &wi.files {
+    for uri in &candidate_uris {
         let Some(doc) = get_doc(uri) else { continue };
         if let Some(loc) = abstract_declaration_in_doc(uri, &doc, &word) {
             return Some(loc);
@@ -140,7 +141,7 @@ pub fn goto_declaration_from_index(
     // keyed under `bare`, `@method` doc-methods (not indexed at all), and
     // any candidate miss fall back to the exhaustive scan below, identical
     // to the original behavior.
-    for uri in &mention_candidates(&word) {
+    for uri in &candidate_uris {
         if let Some(doc) = get_doc(uri)
             && let Some(loc) = any_declaration_in_doc(uri, &doc, &word, bare)
         {
