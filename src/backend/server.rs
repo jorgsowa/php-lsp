@@ -9,9 +9,8 @@ use crate::completion::{CompletionCtx, filtered_completions_at};
 use crate::document::ast::ParsedDoc;
 use crate::document::open_files::compute_open_file_diagnostics;
 use crate::hover::{
-    class_hover_from_workspace_index, docs_for_symbol_from_workspace_index_scoped,
-    extract_static_class_before_cursor, hover_info_with_maps, method_hover_from_workspace_index,
-    signature_for_symbol_from_workspace_index_scoped,
+    class_hover_from_workspace_index, extract_static_class_before_cursor, hover_info_with_maps,
+    method_hover_from_workspace_index,
 };
 use crate::index::file_index::ClassKind;
 use crate::index::workspace_scan::{scan_workspace, send_refresh_requests};
@@ -76,6 +75,23 @@ fn inlay_hint_symbol_from_data(data: &serde_json::Value) -> Option<mir_analyzer:
     }
 }
 
+fn completion_symbol_from_item(
+    name: &str,
+    kind: Option<CompletionItemKind>,
+    class_hint: Option<&str>,
+) -> Option<mir_analyzer::Name> {
+    if let Some(class_name) = class_hint {
+        return Some(mir_analyzer::Name::method(class_name, name));
+    }
+    match kind {
+        Some(CompletionItemKind::FUNCTION) => Some(mir_analyzer::Name::function(name)),
+        Some(CompletionItemKind::CLASS)
+        | Some(CompletionItemKind::INTERFACE)
+        | Some(CompletionItemKind::ENUM) => Some(mir_analyzer::Name::class(name)),
+        _ => None,
+    }
+}
+
 fn inlay_hint_format_params(params: &[mir_analyzer::DeclaredParam]) -> String {
     params
         .iter()
@@ -94,13 +110,17 @@ fn inlay_hint_format_params(params: &[mir_analyzer::DeclaredParam]) -> String {
         .join(", ")
 }
 
-fn inlay_hint_tooltip_for_symbol(
+fn callable_signature_for_symbol(
     session: &mir_analyzer::AnalysisSession,
     symbol: &mir_analyzer::Name,
-) -> Option<String> {
+) -> Option<(String, Option<String>)> {
     let db = session.snapshot_db();
-    let (signature, docstring) = match symbol {
+    match symbol {
         mir_analyzer::Name::Function(fqn) => {
+            let short = fqn.rsplit('\\').next().unwrap_or(fqn.as_ref());
+            if mir_analyzer::is_builtin_function(short) {
+                return None;
+            }
             let f = mir_analyzer::db::find_function(
                 &db,
                 mir_analyzer::db::Fqcn::from_str(&db, fqn.as_ref()),
@@ -109,7 +129,7 @@ fn inlay_hint_tooltip_for_symbol(
                 .effective_return_type()
                 .map(|ty| format!(": {ty}"))
                 .unwrap_or_default();
-            (
+            Some((
                 format!(
                     "function {}({}){}",
                     f.short_name,
@@ -117,7 +137,7 @@ fn inlay_hint_tooltip_for_symbol(
                     ret
                 ),
                 f.docstring.as_deref().map(str::to_string),
-            )
+            ))
         }
         mir_analyzer::Name::Method { class, name } => {
             let (_, m) = mir_analyzer::db::find_method_in_chain(
@@ -131,7 +151,7 @@ fn inlay_hint_tooltip_for_symbol(
                 .or(m.inferred_return_type.as_deref())
                 .map(|ty| format!(": {ty}"))
                 .unwrap_or_default();
-            (
+            Some((
                 format!(
                     "function {}({}){}",
                     m.name,
@@ -139,7 +159,7 @@ fn inlay_hint_tooltip_for_symbol(
                     ret
                 ),
                 m.docstring.as_deref().map(str::to_string),
-            )
+            ))
         }
         mir_analyzer::Name::Class(fqcn) => {
             let (_, m) = mir_analyzer::db::find_method_in_chain(
@@ -147,22 +167,52 @@ fn inlay_hint_tooltip_for_symbol(
                 mir_analyzer::db::Fqcn::from_str(&db, fqcn.as_ref()),
                 "__construct",
             )?;
-            (
+            Some((
                 format!(
                     "function __construct({})",
                     inlay_hint_format_params(&m.params)
                 ),
                 m.docstring.as_deref().map(str::to_string),
-            )
+            ))
         }
-        _ => return None,
-    };
+        _ => None,
+    }
+}
+
+fn inlay_hint_tooltip_for_symbol(
+    session: &mir_analyzer::AnalysisSession,
+    symbol: &mir_analyzer::Name,
+) -> Option<String> {
+    let (signature, docstring) = callable_signature_for_symbol(session, symbol)?;
     let mut value = format!("```php\n{signature}\n```");
     if let Some(docstring) = docstring.filter(|s| !s.is_empty()) {
         value.push_str("\n\n---\n\n");
         value.push_str(&docstring);
     }
     Some(value)
+}
+
+fn completion_signature_and_docstring_for_symbol(
+    session: &mir_analyzer::AnalysisSession,
+    symbol: &mir_analyzer::Name,
+) -> (Option<String>, Option<String>) {
+    if let Some((signature, docstring)) = callable_signature_for_symbol(session, symbol) {
+        return (Some(signature), docstring.filter(|s| !s.is_empty()));
+    }
+    if let mir_analyzer::Name::Function(fqn) = symbol {
+        let short = fqn.rsplit('\\').next().unwrap_or(fqn.as_ref());
+        if mir_analyzer::is_builtin_function(short) {
+            return (
+                None,
+                Some(format!(
+                    "```php\nfunction {}()\n```\n\n[php.net documentation]({})",
+                    short,
+                    crate::lang::php_names::php_doc_url(short)
+                )),
+            );
+        }
+    }
+    (None, None)
 }
 
 impl LanguageServer for Backend {
@@ -827,40 +877,34 @@ impl LanguageServer for Backend {
                 .and_then(|d| d.get("class"))
                 .and_then(|v| v.as_str())
                 .map(str::to_string);
+            let symbol = completion_symbol_from_item(&name, item.kind, class_hint.as_deref());
             let need_detail = item.detail.is_none();
             let need_docs = item.documentation.is_none();
             let docs = Arc::clone(&self.docs);
-            // Resolve against the shared workspace index plus mir's candidate
-            // narrowing, rather than rescanning every indexed file for each
-            // resolve request. Still keep the cold workspace-index build off
-            // the async runtime worker.
             let (detail, documentation) = self
                 .blocking_gated(super::debug_gate::GATE_COMPLETION_RESOLVE, move || {
-                    let wi = docs.get_workspace_index_salsa();
-                    let resolve_class_ref =
-                        |class_name: &str| docs.resolve_class_ref(&wi, class_name);
-                    let declaration_candidates =
-                        |symbol_name: &str| docs.declaration_candidate_files(&wi, symbol_name);
-                    let detail = need_detail
-                        .then(|| {
-                            signature_for_symbol_from_workspace_index_scoped(
-                                &name,
-                                &wi,
-                                class_hint.as_deref(),
-                                &resolve_class_ref,
-                                &declaration_candidates,
-                            )
-                        })
-                        .flatten();
+                    let Some(symbol) = symbol.as_ref() else {
+                        return (None, None);
+                    };
+                    let session = docs.current_analysis_session();
+                    let (resolved_detail, resolved_docstring) =
+                        completion_signature_and_docstring_for_symbol(&session, symbol);
+                    let detail = if need_detail {
+                        resolved_detail.clone()
+                    } else {
+                        None
+                    };
                     let documentation = need_docs
                         .then(|| {
-                            docs_for_symbol_from_workspace_index_scoped(
-                                &name,
-                                &wi,
-                                class_hint.as_deref(),
-                                &resolve_class_ref,
-                                &declaration_candidates,
-                            )
+                            match (resolved_detail.as_deref(), resolved_docstring.as_deref()) {
+                                (Some(_), Some(doc)) if need_detail => Some(doc.to_string()),
+                                (Some(sig), Some(doc)) => {
+                                    Some(format!("```php\n{sig}\n```\n\n---\n\n{doc}"))
+                                }
+                                (Some(sig), None) => Some(format!("```php\n{sig}\n```")),
+                                (None, Some(doc)) => Some(doc.to_string()),
+                                (None, None) => None,
+                            }
                         })
                         .flatten();
                     (detail, documentation)
