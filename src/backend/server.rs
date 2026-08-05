@@ -1930,7 +1930,11 @@ impl LanguageServer for Backend {
             // workspace index before the lookup runs.
             let wi = self.workspace_index_async().await;
             let loaded_new = self
-                .ensure_direct_supertypes_loaded(&params.item.name, &wi)
+                .ensure_direct_supertypes_loaded(
+                    &params.item.name,
+                    crate::navigation::type_hierarchy::item_fqn(&params.item),
+                    &wi,
+                )
                 .await;
             let wi = if loaded_new {
                 self.workspace_index_async().await
@@ -1966,19 +1970,20 @@ impl LanguageServer for Backend {
     ) -> Result<Option<Vec<TypeHierarchyItem>>> {
         guard_async_result("subtypes", async move {
             let wi = self.workspace_index_async().await;
-            // Resolve the item's FQCN for mir's subtype graph. A name shared by
-            // many classes across the workspace (e.g. Laravel's ~16 `Factory`
-            // classes) needs `params.item.uri` to pick the right one instead of
-            // an arbitrary first match.
-            let candidates = self
-                .docs
-                .class_candidates_by_short_name(&wi, &params.item.name);
-            let item_fqn = candidates
-                .iter()
-                .filter_map(|r| wi.at(*r))
-                .find(|(u, _)| **u == params.item.uri)
-                .or_else(|| candidates.first().and_then(|r| wi.at(*r)))
-                .map(|(_, cls)| cls.fqn.as_ref().to_string());
+            let item_fqn = crate::navigation::type_hierarchy::item_fqn(&params.item)
+                .map(str::to_string)
+                .or_else(|| {
+                    // Fallback for older clients/items lacking `data.fqn`.
+                    let candidates = self
+                        .docs
+                        .class_candidates_by_short_name(&wi, &params.item.name);
+                    candidates
+                        .iter()
+                        .filter_map(|r| wi.at(*r))
+                        .find(|(u, _)| **u == params.item.uri)
+                        .or_else(|| candidates.first().and_then(|r| wi.at(*r)))
+                        .map(|(_, cls)| cls.fqn.as_ref().to_string())
+                });
             let subtype_urls = item_fqn
                 .as_deref()
                 .map(|f| self.docs.class_subtype_urls(f))

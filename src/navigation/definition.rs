@@ -128,6 +128,8 @@ pub fn find_method_in_class_hierarchy(
     method_name: &str,
     wi: &crate::db::workspace_index::WorkspaceIndexData,
     class_candidates_by_short_name: &dyn Fn(&str) -> Vec<crate::db::workspace_index::ClassRef>,
+    get_doc: &dyn Fn(&Uri) -> Option<Arc<crate::document::ast::ParsedDoc>>,
+    resolve_class_ref: &dyn Fn(&str) -> Option<crate::db::workspace_index::ClassRef>,
 ) -> Option<Location> {
     let mut queue: std::collections::VecDeque<String> =
         std::collections::VecDeque::from([class_name.to_owned()]);
@@ -137,8 +139,12 @@ pub fn find_method_in_class_hierarchy(
         if !visited.insert(current.clone()) {
             continue;
         }
-        let short = crate::text::fqn_short_name(&current);
-        let candidates = class_candidates_by_short_name(short);
+        let candidates: Vec<crate::db::workspace_index::ClassRef> = if current.contains('\\') {
+            resolve_class_ref(&current).into_iter().collect()
+        } else {
+            let short = crate::text::fqn_short_name(&current);
+            class_candidates_by_short_name(short)
+        };
         for cr in &candidates {
             let Some((uri, cls)) = wi.at(*cr) else {
                 continue;
@@ -180,6 +186,8 @@ pub fn find_method_in_class_hierarchy(
                                 orig,
                                 wi,
                                 class_candidates_by_short_name,
+                                get_doc,
+                                resolve_class_ref,
                             )
                         {
                             return Some(loc);
@@ -188,14 +196,33 @@ pub fn find_method_in_class_hierarchy(
                 }
             }
             // Traits first (PHP MRO), then `@mixin` targets, then parent.
-            for trt in &cls.traits {
-                queue.push_back(trt.as_ref().to_owned());
-            }
-            for mx in &cls.mixins {
-                queue.push_back(mx.as_ref().to_owned());
-            }
-            if let Some(parent) = &cls.parent {
-                queue.push_back(parent.as_ref().to_owned());
+            let resolved_supertypes = get_doc(uri).map(|doc| {
+                let imports = doc.file_imports();
+                cls.traits
+                    .iter()
+                    .map(|name| crate::navigation::moniker::resolve_fqn(&doc, name.as_ref(), &imports))
+                    .chain(
+                        cls.mixins.iter().map(|name| {
+                            crate::navigation::moniker::resolve_fqn(&doc, name.as_ref(), &imports)
+                        }),
+                    )
+                    .chain(cls.parent.iter().map(|name| {
+                        crate::navigation::moniker::resolve_fqn(&doc, name.as_ref(), &imports)
+                    }))
+                    .collect::<Vec<_>>()
+            });
+            if let Some(resolved) = resolved_supertypes {
+                queue.extend(resolved);
+            } else {
+                for trt in &cls.traits {
+                    queue.push_back(trt.as_ref().to_owned());
+                }
+                for mx in &cls.mixins {
+                    queue.push_back(mx.as_ref().to_owned());
+                }
+                if let Some(parent) = &cls.parent {
+                    queue.push_back(parent.as_ref().to_owned());
+                }
             }
         }
     }

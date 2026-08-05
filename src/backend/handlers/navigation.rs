@@ -111,18 +111,34 @@ impl Backend {
                         _ => None,
                     }
                 });
-                if let Some((cls, class_fqn_arc)) = resolved_method_target {
+                if let Some((_, class_fqn_arc)) = resolved_method_target {
                     let wi = self.workspace_index_cached(&mut wi_cache).await;
                     let class_candidates =
                         |short: &str| self.docs.class_candidates_by_short_name(&wi, short);
+                    let get_doc = |uri: &Uri| self.docs.get_doc_salsa(uri);
+                    let resolve_class_ref = |fqn: &str| {
+                        self.docs
+                            .resolve_class_ref_by_fqn_or_short_name_fallback(&wi, fqn)
+                    };
                     if let Some(loc) =
-                        find_method_in_class_hierarchy(&cls, &word, &wi, &class_candidates)
+                        find_method_in_class_hierarchy(
+                            class_fqn_arc.as_ref(),
+                            &word,
+                            &wi,
+                            &class_candidates,
+                            &get_doc,
+                            &resolve_class_ref,
+                        )
                     {
                         let refined = self
                             .docs
                             .get_doc_salsa(&loc.uri)
                             .and_then(|d| {
-                                let range = find_method_range_in_class(&d, &cls, &word)
+                                let range = find_method_range_in_class(
+                                    &d,
+                                    crate::text::fqn_short_name(class_fqn_arc.as_ref()),
+                                    &word,
+                                )
                                     .or_else(|| find_declaration_range(d.source(), &d, &word));
                                 range.map(|range| Location {
                                     uri: loc.uri.clone(),
@@ -171,8 +187,20 @@ impl Backend {
                     let wi2 = self.workspace_index_cached(&mut wi_cache).await;
                     let class_candidates =
                         |short: &str| self.docs.class_candidates_by_short_name(&wi2, short);
+                    let get_doc = |uri: &Uri| self.docs.get_doc_salsa(uri);
+                    let resolve_class_ref = |fqn: &str| {
+                        self.docs
+                            .resolve_class_ref_by_fqn_or_short_name_fallback(&wi2, fqn)
+                    };
                     if let Some(loc) =
-                        find_method_in_class_hierarchy(&first_cls, &word, &wi2, &class_candidates)
+                        find_method_in_class_hierarchy(
+                            &first_cls,
+                            &word,
+                            &wi2,
+                            &class_candidates,
+                            &get_doc,
+                            &resolve_class_ref,
+                        )
                     {
                         let refined = self
                             .docs
@@ -190,15 +218,8 @@ impl Backend {
                     }
                     // Fallback: resolve the class FQN via the workspace index and
                     // walk the PSR-4 vendor hierarchy starting from there.
-                    let class_fqn = wi2
-                        .files
-                        .iter()
-                        .find_map(|(_, idx)| {
-                            idx.classes
-                                .iter()
-                                .find(|c| c.name.as_ref() == first_cls.as_str())
-                                .map(|c| c.fqn.trim_start_matches('\\').to_owned())
-                        })
+                    let class_fqn = resolve_class_ref(&first_cls)
+                        .and_then(|cr| wi2.at(cr).map(|(_, cls)| cls.fqn.trim_start_matches('\\').to_owned()))
                         .unwrap_or_else(|| first_cls.clone());
                     if let Some(loc) = self.psr4_method_goto(&class_fqn, &word).await {
                         return Ok(Some(GotoDefinitionResponse::Scalar(loc)));

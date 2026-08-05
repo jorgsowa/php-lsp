@@ -2,6 +2,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
+use serde_json::{Value, json};
 use tower_lsp_server::ls_types::{Position, SymbolKind, TypeHierarchyItem, Uri};
 
 use crate::document::ast::ParsedDoc;
@@ -12,6 +13,7 @@ fn make_item_from_index(
     kind: SymbolKind,
     uri: &Uri,
     start_line: u32,
+    fqn: &str,
 ) -> TypeHierarchyItem {
     let range = zero_width_range(start_line);
     TypeHierarchyItem {
@@ -22,8 +24,16 @@ fn make_item_from_index(
         uri: uri.clone(),
         range,
         selection_range: range,
-        data: None,
+        data: Some(json!({ "fqn": fqn.trim_start_matches('\\') })),
     }
+}
+
+pub fn item_fqn(item: &TypeHierarchyItem) -> Option<&str> {
+    item.data
+        .as_ref()
+        .and_then(Value::as_object)
+        .and_then(|obj| obj.get("fqn"))
+        .and_then(Value::as_str)
 }
 
 /// Phase J — Prepare from the salsa-memoized workspace aggregate.
@@ -56,7 +66,7 @@ pub fn prepare_type_hierarchy_from_workspace(
         ClassKind::Interface => SymbolKind::INTERFACE,
         ClassKind::Enum => SymbolKind::ENUM,
     };
-    Some(make_item_from_index(&cls.name, kind, uri, cls.start_line))
+    Some(make_item_from_index(&cls.name, kind, uri, cls.start_line, &cls.fqn))
 }
 
 /// Phase J — Supertypes via the aggregate. Collect parent/interface names from
@@ -104,6 +114,7 @@ pub fn supertypes_of_from_workspace(
                     kind,
                     super_uri,
                     super_cls.start_line,
+                    &super_cls.fqn,
                 ));
             }
         }
@@ -162,7 +173,13 @@ pub fn subtypes_of_mir_backed(
                     ClassKind::Interface => SymbolKind::INTERFACE,
                     ClassKind::Enum => SymbolKind::ENUM,
                 };
-                result.push(make_item_from_index(&cls.name, kind, uri, cls.start_line));
+                result.push(make_item_from_index(
+                    &cls.name,
+                    kind,
+                    uri,
+                    cls.start_line,
+                    &cls.fqn,
+                ));
             }
         }
     }
@@ -236,7 +253,7 @@ pub fn subtypes_of_from_workspace(
                 ClassKind::Interface => SymbolKind::INTERFACE,
                 ClassKind::Enum => SymbolKind::ENUM,
             };
-            make_item_from_index(&cls.name, kind, uri, cls.start_line)
+            make_item_from_index(&cls.name, kind, uri, cls.start_line, &cls.fqn)
         })
         .collect()
 }

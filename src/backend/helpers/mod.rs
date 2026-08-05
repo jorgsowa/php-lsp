@@ -319,9 +319,17 @@ impl Backend {
     pub(super) async fn ensure_direct_supertypes_loaded(
         &self,
         item_name: &str,
+        item_fqn: Option<&str>,
         wi: &crate::db::workspace_index::WorkspaceIndexData,
     ) -> bool {
-        let refs = self.docs.class_candidates_by_short_name(wi, item_name);
+        let refs = if let Some(fqn) = item_fqn {
+            self.docs
+                .resolve_class_ref_by_fqn_or_short_name_fallback(wi, fqn)
+                .into_iter()
+                .collect()
+        } else {
+            self.docs.class_candidates_by_short_name(wi, item_name)
+        };
         if refs.is_empty() {
             return false;
         }
@@ -345,11 +353,14 @@ impl Backend {
             }
 
             for name in super_names {
-                let short = crate::text::fqn_short_name(&name);
-                if !self.docs.class_candidates_by_short_name(wi, short).is_empty() {
+                let fqn = crate::navigation::moniker::resolve_fqn(&doc, &name, &imports);
+                if self
+                    .docs
+                    .resolve_class_ref_by_fqn_or_short_name_fallback(wi, &fqn)
+                    .is_some()
+                {
                     continue;
                 }
-                let fqn = crate::navigation::moniker::resolve_fqn(&doc, &name, &imports);
                 let path = match self.psr4.load().resolve(&fqn) {
                     Some(p) => p,
                     None => continue,
