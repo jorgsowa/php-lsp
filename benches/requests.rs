@@ -636,14 +636,18 @@ fn bench_definition_index_fallback(c: &mut Criterion) {
     group.finish();
 }
 
-/// Reconstruction of the pre-refactor `build_maps` (the full `classes_by_name`
-/// + `subtypes_of` + `decls_by_name` construction that `WorkspaceIndexData`
-/// used to rebuild from scratch on every edit, before ROADMAP.md 0f's
-/// `WorkspaceIndexData`-consolidation pass retired it in favor of mir's
-/// mention index). Kept here, not in `src/`, purely to give the removed cost
-/// a real number instead of an assertion — this is dead code otherwise.
+/// Reconstruction of the pre-refactor `build_maps`.
+///
+/// It covers the full `classes_by_name` + `subtypes_of` + `decls_by_name`
+/// construction that `WorkspaceIndexData` used to rebuild from scratch on
+/// every edit before ROADMAP.md 0f's `WorkspaceIndexData`-consolidation pass
+/// retired it in favor of mir's mention index.
+///
+/// Kept here, not in `src/`, purely to give the removed cost a real number
+/// instead of an assertion; this is otherwise benchmark-only dead code.
 fn old_build_maps_reconstruction(files: &[(Uri, Arc<FileIndex>)]) {
     use std::collections::HashMap;
+    #[allow(dead_code)]
     #[derive(Clone, Copy)]
     struct ClassRef {
         file: u32,
@@ -657,6 +661,7 @@ fn old_build_maps_reconstruction(files: &[(Uri, Arc<FileIndex>)]) {
         Constant,
         EnumCase,
     }
+    #[allow(dead_code)]
     struct DeclRef {
         file: u32,
         line: u32,
@@ -704,7 +709,11 @@ fn old_build_maps_reconstruction(files: &[(Uri, Arc<FileIndex>)]) {
                     .iter()
                     .find(|(alias, _)| alias.as_ref() == iface.as_ref())
                 {
-                    let short = fqn.trim_start_matches('\\').rsplit('\\').next().unwrap_or(fqn);
+                    let short = fqn
+                        .trim_start_matches('\\')
+                        .rsplit('\\')
+                        .next()
+                        .unwrap_or(fqn);
                     if short != iface.as_ref() {
                         subtypes_of.entry(Arc::from(short)).or_default().push(cr);
                     }
@@ -763,7 +772,12 @@ fn old_build_maps_reconstruction(files: &[(Uri, Arc<FileIndex>)]) {
         .filter_map(|(name, refs)| refs.first().map(|cr| (name.to_lowercase().into(), *cr)))
         .collect();
     classes_by_lowercase_name.sort_unstable_by(|a, b| a.0.cmp(&b.0));
-    black_box((classes_by_name, subtypes_of, decls_by_name, classes_by_lowercase_name));
+    black_box((
+        classes_by_name,
+        subtypes_of,
+        decls_by_name,
+        classes_by_lowercase_name,
+    ));
 }
 
 /// The actual removed cost: rebuilding the whole aggregate from scratch,
@@ -789,9 +803,7 @@ fn bench_workspace_index_rebuild(c: &mut Criterion) {
     });
     group.bench_function("new_classes_by_lowercase_name_only", |b| {
         b.iter(|| {
-            black_box(php_lsp::db::workspace_index::WorkspaceIndexData::from_files(
-                indexes.clone(),
-            ))
+            black_box(php_lsp::db::workspace_index::WorkspaceIndexData::from_files(indexes.clone()))
         });
     });
     group.finish();
@@ -868,7 +880,8 @@ fn bench_call_hierarchy(c: &mut Criterion) {
         });
         // `Str` is a class name; prepare only yields items for functions and
         // methods, so the outgoing bench needs a method symbol.
-        let method_item = prepare_call_hierarchy_indexed("camel", &wi, &get_doc, &mention_candidates);
+        let method_item =
+            prepare_call_hierarchy_indexed("camel", &wi, &get_doc, &mention_candidates);
         assert!(
             method_item.is_some(),
             "expected `camel` (Str::camel) to resolve in the Laravel fixture"

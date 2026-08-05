@@ -9,9 +9,9 @@ use crate::completion::{CompletionCtx, filtered_completions_at};
 use crate::document::ast::ParsedDoc;
 use crate::document::open_files::compute_open_file_diagnostics;
 use crate::hover::{
-    class_hover_from_workspace_index, docs_for_symbol_from_index,
-    docs_for_symbol_from_index_scoped, extract_static_class_before_cursor, hover_info_with_maps,
-    method_hover_from_workspace_index, signature_for_symbol_from_index_scoped,
+    class_hover_from_workspace_index, docs_for_symbol_from_workspace_index_scoped,
+    extract_static_class_before_cursor, hover_info_with_maps, method_hover_from_workspace_index,
+    signature_for_symbol_from_workspace_index_scoped,
 };
 use crate::index::file_index::ClassKind;
 use crate::index::workspace_scan::{scan_workspace, send_refresh_requests};
@@ -727,33 +727,40 @@ impl LanguageServer for Backend {
             let need_detail = item.detail.is_none();
             let need_docs = item.documentation.is_none();
             let docs = Arc::clone(&self.docs);
-            // `with_all_indexes` scans every indexed workspace file for a name
-            // match, and a cold workspace-index rebuild walks every
-            // `FileIndex` (see `workspace_index_async`); keep both off the
-            // async runtime worker.
+            // Resolve against the shared workspace index plus mir's candidate
+            // narrowing, rather than rescanning every indexed file for each
+            // resolve request. Still keep the cold workspace-index build off
+            // the async runtime worker.
             let (detail, documentation) = self
                 .blocking_gated(super::debug_gate::GATE_COMPLETION_RESOLVE, move || {
-                    docs.with_all_indexes(|all_indexes| {
-                        let detail = need_detail
-                            .then(|| {
-                                signature_for_symbol_from_index_scoped(
-                                    &name,
-                                    all_indexes,
-                                    class_hint.as_deref(),
-                                )
-                            })
-                            .flatten();
-                        let documentation = need_docs
-                            .then(|| {
-                                docs_for_symbol_from_index_scoped(
-                                    &name,
-                                    all_indexes,
-                                    class_hint.as_deref(),
-                                )
-                            })
-                            .flatten();
-                        (detail, documentation)
-                    })
+                    let wi = docs.get_workspace_index_salsa();
+                    let resolve_class_ref =
+                        |class_name: &str| docs.resolve_class_ref(&wi, class_name);
+                    let declaration_candidates =
+                        |symbol_name: &str| docs.declaration_candidate_files(&wi, symbol_name);
+                    let detail = need_detail
+                        .then(|| {
+                            signature_for_symbol_from_workspace_index_scoped(
+                                &name,
+                                &wi,
+                                class_hint.as_deref(),
+                                &resolve_class_ref,
+                                &declaration_candidates,
+                            )
+                        })
+                        .flatten();
+                    let documentation = need_docs
+                        .then(|| {
+                            docs_for_symbol_from_workspace_index_scoped(
+                                &name,
+                                &wi,
+                                class_hint.as_deref(),
+                                &resolve_class_ref,
+                                &declaration_candidates,
+                            )
+                        })
+                        .flatten();
+                    (detail, documentation)
                 })
                 .await
                 .unwrap_or_default();
@@ -986,7 +993,8 @@ impl LanguageServer for Backend {
                 let wi = self.workspace_index_cached(&mut wi_cache).await;
                 let resolve_class_ref = |name: &str| self.docs.resolve_class_ref(&wi, name);
                 // Try the literal word first.
-                if let Some(h) = class_hover_from_workspace_index(&word, None, &wi, &resolve_class_ref)
+                if let Some(h) =
+                    class_hover_from_workspace_index(&word, None, &wi, &resolve_class_ref)
                 {
                     return Ok(Some(h));
                 }
@@ -1125,13 +1133,19 @@ impl LanguageServer for Backend {
                 .map(str::to_string);
             if let Some(name) = func_name {
                 let docs = Arc::clone(&self.docs);
-                // Same whole-workspace-index scan as `completion_resolve`;
-                // keep it off the async runtime worker.
+                // Same candidate-narrowed workspace lookup as
+                // `completion_resolve`; keep the cold workspace-index build
+                // off the async runtime worker.
                 let tooltip = self
                     .blocking_gated(super::debug_gate::GATE_INLAY_HINT_RESOLVE, move || {
-                        docs.with_all_indexes(|all_indexes| {
-                            docs_for_symbol_from_index(&name, all_indexes)
-                        })
+                        let wi = docs.get_workspace_index_salsa();
+                        docs_for_symbol_from_workspace_index_scoped(
+                            &name,
+                            &wi,
+                            None,
+                            &|class_name: &str| docs.resolve_class_ref(&wi, class_name),
+                            &|symbol_name: &str| docs.declaration_candidate_files(&wi, symbol_name),
+                        )
                     })
                     .await
                     .flatten();
@@ -1748,8 +1762,7 @@ impl LanguageServer for Backend {
                 .as_deref()
                 .map(|f| self.docs.class_subtype_urls(f))
                 .unwrap_or_default();
-            let mention_candidates =
-                |name: &str| self.docs.declaration_candidate_files(&wi, name);
+            let mention_candidates = |name: &str| self.docs.declaration_candidate_files(&wi, name);
             let result = subtypes_of_mir_backed(
                 &params.item,
                 item_fqn.as_deref(),

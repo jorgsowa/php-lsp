@@ -1257,7 +1257,10 @@ impl DocumentStore {
             mir_analyzer::Name::Class(fqcn) => {
                 if let Some(files) = self.fqn_reachable_files(std::slice::from_ref(fqcn)) {
                     return if mir_analyzer::stub_path_for_class(fqcn).is_some() {
-                        files.into_iter().filter(|f| !is_vendor_path_str(f)).collect()
+                        files
+                            .into_iter()
+                            .filter(|f| !is_vendor_path_str(f))
+                            .collect()
                     } else {
                         files
                     };
@@ -1944,9 +1947,7 @@ impl DocumentStore {
                             }
                         }
                     }
-                    if needs_scan
-                        && let Some(mir_scanner) = &mir_scanner
-                    {
+                    if needs_scan && let Some(mir_scanner) = &mir_scanner {
                         // Scanned against the *whole* current universe, not
                         // just this call's needles, so a future, differently-
                         // shaped query against this same file is also a
@@ -2535,14 +2536,12 @@ impl DocumentStore {
                     let Some(scanner) = &scanner else {
                         // Defensive only: the needles were admitted above,
                         // so the universe (and scanner) can't be empty.
-                        return needles.iter().any(|n| {
-                            crate::text::contains_ascii_case_insensitive(&text, n)
-                        });
+                        return needles
+                            .iter()
+                            .any(|n| crate::text::contains_ascii_case_insensitive(&text, n));
                     };
                     let names = scanner.scan(text.as_ref());
-                    let hit = queries
-                        .iter()
-                        .any(|q| names.binary_search(&q.name).is_ok());
+                    let hit = queries.iter().any(|q| names.binary_search(&q.name).is_ok());
                     mir_db.set_file_class_mentions(
                         &Arc::<str>::from(url_str),
                         &text,
@@ -2668,7 +2667,9 @@ impl DocumentStore {
         if trimmed.contains('\\')
             && let Some(cr) = candidates.iter().find(|cr| {
                 wi.at(**cr).is_some_and(|(_, cls)| {
-                    cls.fqn.trim_start_matches('\\').eq_ignore_ascii_case(trimmed)
+                    cls.fqn
+                        .trim_start_matches('\\')
+                        .eq_ignore_ascii_case(trimmed)
                 })
             })
         {
@@ -3209,9 +3210,13 @@ mod tests {
 
         let target: Arc<str> = Arc::from("App\\Owner");
         let first = store
-            .fqn_reachable_files(&[target.clone()])
+            .fqn_reachable_files(std::slice::from_ref(&target))
             .expect("index is ready");
-        assert_eq!(first.len(), 5, "every noise file textually mentions the target");
+        assert_eq!(
+            first.len(),
+            5,
+            "every noise file textually mentions the target"
+        );
         let scans_after_first = store.mir_mention_scans_recorded();
         assert!(
             scans_after_first > 0,
@@ -3283,7 +3288,7 @@ mod tests {
         store.mark_index_ready();
 
         let before = store
-            .fqn_reachable_files(&[target.clone()])
+            .fqn_reachable_files(std::slice::from_ref(&target))
             .expect("index is ready");
         assert!(before.is_empty(), "file does not mention the target yet");
 
@@ -3326,7 +3331,7 @@ mod tests {
 
         let target: Arc<str> = Arc::from("App\\Owner");
         store
-            .fqn_reachable_files(&[target.clone()])
+            .fqn_reachable_files(std::slice::from_ref(&target))
             .expect("index is ready");
         let passes_after_first = store.reachability_scan_passes();
         assert!(
@@ -3360,8 +3365,7 @@ mod tests {
         open(
             &store,
             uri("/App/Owner.php"),
-            "<?php\nnamespace App;\nclass Owner { public function __construct() {} }\n"
-                .to_string(),
+            "<?php\nnamespace App;\nclass Owner { public function __construct() {} }\n".to_string(),
         );
         open(
             &store,

@@ -254,6 +254,116 @@ fn class_matches_hint(cls: &crate::index::file_index::ClassDef, class_hint: Opti
         || cls.name.eq_ignore_ascii_case(hint)
 }
 
+fn signature_for_symbol_in_index(
+    name: &str,
+    idx: &crate::index::file_index::FileIndex,
+    class_hint: Option<&str>,
+) -> Option<String> {
+    if class_hint.is_none() {
+        for f in &idx.functions {
+            if f.name.as_ref() == name {
+                let params_str = f
+                    .params
+                    .iter()
+                    .map(|p| {
+                        let mut s = String::new();
+                        if let Some(t) = &p.type_hint {
+                            s.push_str(&format!("{} ", t));
+                        }
+                        if p.variadic {
+                            s.push_str("...");
+                        }
+                        s.push_str(&format!("${}", p.name));
+                        s
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let ret = f
+                    .return_type
+                    .as_deref()
+                    .map(|r| format!(": {}", r))
+                    .unwrap_or_default();
+                return Some(format!("function {}({}){}", name, params_str, ret));
+            }
+        }
+    }
+    for cls in &idx.classes {
+        if !class_matches_hint(cls, class_hint) {
+            continue;
+        }
+        for m in &cls.methods {
+            if m.name.as_ref() == name {
+                let params_str = m
+                    .params
+                    .iter()
+                    .map(|p| {
+                        let mut s = String::new();
+                        if let Some(t) = &p.type_hint {
+                            s.push_str(&format!("{} ", t));
+                        }
+                        if p.variadic {
+                            s.push_str("...");
+                        }
+                        s.push_str(&format!("${}", p.name));
+                        s
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                let ret = m
+                    .return_type
+                    .as_deref()
+                    .map(|r| format!(": {}", r))
+                    .unwrap_or_default();
+                return Some(format!("function {}({}){}", name, params_str, ret));
+            }
+        }
+    }
+    None
+}
+
+fn docs_for_symbol_in_index(
+    name: &str,
+    idx: &crate::index::file_index::FileIndex,
+    class_hint: Option<&str>,
+) -> Option<String> {
+    let sig = signature_for_symbol_in_index(name, idx, class_hint)?;
+    let mut value = wrap_php(&sig);
+    if class_hint.is_none() {
+        for f in &idx.functions {
+            if f.name.as_ref() == name {
+                if let Some(raw) = &f.docblock {
+                    let db = crate::lang::docblock::parse_docblock(raw);
+                    let md = db.to_markdown();
+                    if !md.is_empty() {
+                        value.push_str("\n\n---\n\n");
+                        value.push_str(&md);
+                    }
+                }
+                return Some(value);
+            }
+        }
+    }
+    for cls in &idx.classes {
+        if !class_matches_hint(cls, class_hint) {
+            continue;
+        }
+        for m in &cls.methods {
+            if m.name.as_ref() == name {
+                if let Some(raw) = &m.docblock {
+                    let db = crate::lang::docblock::parse_docblock(raw);
+                    let md = db.to_markdown();
+                    if !md.is_empty() {
+                        value.push_str("\n\n---\n\n");
+                        value.push_str(&md);
+                    }
+                }
+                return Some(value);
+            }
+        }
+    }
+    Some(value)
+}
+
 pub fn signature_for_symbol_from_index(
     name: &str,
     indexes: &[(
@@ -279,64 +389,8 @@ pub fn signature_for_symbol_from_index_scoped(
     class_hint: Option<&str>,
 ) -> Option<String> {
     for (_, idx) in indexes {
-        if class_hint.is_none() {
-            for f in &idx.functions {
-                if f.name.as_ref() == name {
-                    let params_str = f
-                        .params
-                        .iter()
-                        .map(|p| {
-                            let mut s = String::new();
-                            if let Some(t) = &p.type_hint {
-                                s.push_str(&format!("{} ", t));
-                            }
-                            if p.variadic {
-                                s.push_str("...");
-                            }
-                            s.push_str(&format!("${}", p.name));
-                            s
-                        })
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    let ret = f
-                        .return_type
-                        .as_deref()
-                        .map(|r| format!(": {}", r))
-                        .unwrap_or_default();
-                    return Some(format!("function {}({}){}", name, params_str, ret));
-                }
-            }
-        }
-        for cls in &idx.classes {
-            if !class_matches_hint(cls, class_hint) {
-                continue;
-            }
-            for m in &cls.methods {
-                if m.name.as_ref() == name {
-                    let params_str = m
-                        .params
-                        .iter()
-                        .map(|p| {
-                            let mut s = String::new();
-                            if let Some(t) = &p.type_hint {
-                                s.push_str(&format!("{} ", t));
-                            }
-                            if p.variadic {
-                                s.push_str("...");
-                            }
-                            s.push_str(&format!("${}", p.name));
-                            s
-                        })
-                        .collect::<Vec<_>>()
-                        .join(", ");
-                    let ret = m
-                        .return_type
-                        .as_deref()
-                        .map(|r| format!(": {}", r))
-                        .unwrap_or_default();
-                    return Some(format!("function {}({}){}", name, params_str, ret));
-                }
-            }
+        if let Some(sig) = signature_for_symbol_in_index(name, idx, class_hint) {
+            return Some(sig);
         }
     }
     None
@@ -368,38 +422,9 @@ pub fn docs_for_symbol_from_index_scoped(
     if let Some(sig) = signature_for_symbol_from_index_scoped(name, indexes, class_hint) {
         let mut value = wrap_php(&sig);
         for (_, idx) in indexes {
-            if class_hint.is_none() {
-                for f in &idx.functions {
-                    if f.name.as_ref() == name {
-                        if let Some(raw) = &f.docblock {
-                            let db = crate::lang::docblock::parse_docblock(raw);
-                            let md = db.to_markdown();
-                            if !md.is_empty() {
-                                value.push_str("\n\n---\n\n");
-                                value.push_str(&md);
-                            }
-                        }
-                        break;
-                    }
-                }
-            }
-            for cls in &idx.classes {
-                if !class_matches_hint(cls, class_hint) {
-                    continue;
-                }
-                for m in &cls.methods {
-                    if m.name.as_ref() == name {
-                        if let Some(raw) = &m.docblock {
-                            let db = crate::lang::docblock::parse_docblock(raw);
-                            let md = db.to_markdown();
-                            if !md.is_empty() {
-                                value.push_str("\n\n---\n\n");
-                                value.push_str(&md);
-                            }
-                        }
-                        break;
-                    }
-                }
+            if let Some(doc) = docs_for_symbol_in_index(name, idx, class_hint) {
+                value = doc;
+                break;
             }
         }
         if class_hint.is_none() && is_php_builtin(name) {
@@ -411,6 +436,85 @@ pub fn docs_for_symbol_from_index_scoped(
         return Some(value);
     }
     if class_hint.is_none() && is_php_builtin(name) {
+        return Some(format!(
+            "```php\nfunction {}()\n```\n\n[php.net documentation]({})",
+            name,
+            php_doc_url(name)
+        ));
+    }
+    None
+}
+
+/// Workspace-index-aware symbol signature lookup: resolves a class-scoped
+/// method directly through `resolve_class_ref`, and narrows unscoped
+/// function/method lookups to mir's candidate file set rather than scanning
+/// every indexed file.
+pub fn signature_for_symbol_from_workspace_index_scoped(
+    name: &str,
+    wi: &crate::db::workspace_index::WorkspaceIndexData,
+    class_hint: Option<&str>,
+    resolve_class_ref: &dyn Fn(&str) -> Option<crate::db::workspace_index::ClassRef>,
+    declaration_candidates: &dyn Fn(&str) -> Vec<tower_lsp_server::ls_types::Uri>,
+) -> Option<String> {
+    if let Some(class_hint) = class_hint {
+        let cr = resolve_class_ref(class_hint)?;
+        let (_, cls) = wi.at(cr)?;
+        let idx = crate::index::file_index::FileIndex {
+            namespace: None,
+            functions: Vec::new(),
+            classes: vec![cls.clone()],
+            constants: Vec::new(),
+            use_imports: Vec::new(),
+        };
+        return signature_for_symbol_in_index(name, &idx, Some(class_hint));
+    }
+    for uri in declaration_candidates(name) {
+        let Some(file_idx) = wi.path_to_file_idx.get(uri.as_str()).copied() else {
+            continue;
+        };
+        let (_, idx) = &wi.files[file_idx as usize];
+        if let Some(sig) = signature_for_symbol_in_index(name, idx, None) {
+            return Some(sig);
+        }
+    }
+    None
+}
+
+/// Workspace-index-aware symbol documentation lookup; same narrowing strategy
+/// as [`signature_for_symbol_from_workspace_index_scoped`].
+pub fn docs_for_symbol_from_workspace_index_scoped(
+    name: &str,
+    wi: &crate::db::workspace_index::WorkspaceIndexData,
+    class_hint: Option<&str>,
+    resolve_class_ref: &dyn Fn(&str) -> Option<crate::db::workspace_index::ClassRef>,
+    declaration_candidates: &dyn Fn(&str) -> Vec<tower_lsp_server::ls_types::Uri>,
+) -> Option<String> {
+    if let Some(class_hint) = class_hint {
+        let cr = resolve_class_ref(class_hint)?;
+        let (_, cls) = wi.at(cr)?;
+        let idx = crate::index::file_index::FileIndex {
+            namespace: None,
+            functions: Vec::new(),
+            classes: vec![cls.clone()],
+            constants: Vec::new(),
+            use_imports: Vec::new(),
+        };
+        return docs_for_symbol_in_index(name, &idx, Some(class_hint));
+    }
+    for uri in declaration_candidates(name) {
+        let Some(file_idx) = wi.path_to_file_idx.get(uri.as_str()).copied() else {
+            continue;
+        };
+        let (_, idx) = &wi.files[file_idx as usize];
+        if let Some(doc) = docs_for_symbol_in_index(name, idx, None) {
+            return Some(if is_php_builtin(name) {
+                format!("{doc}\n\n[php.net documentation]({})", php_doc_url(name))
+            } else {
+                doc
+            });
+        }
+    }
+    if is_php_builtin(name) {
         return Some(format!(
             "```php\nfunction {}()\n```\n\n[php.net documentation]({})",
             name,

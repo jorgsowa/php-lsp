@@ -10,6 +10,9 @@ pub use formatting::class_hover_from_workspace_index;
 pub use formatting::format_params_str;
 pub use formatting::method_hover_from_index;
 pub use formatting::method_hover_from_workspace_index;
+pub use formatting::{
+    docs_for_symbol_from_workspace_index_scoped, signature_for_symbol_from_workspace_index_scoped,
+};
 pub use hover_impl::hover_info_with_maps;
 pub use parsing::extract_receiver_var_before_cursor;
 pub use parsing::extract_static_class_before_cursor;
