@@ -113,10 +113,10 @@ fn definition_name_range(sv: SourceView<'_>, decl: &Declaration<'_>) -> Range {
 /// `method_name` defined in `class_name` or any of its superclasses/traits.
 ///
 /// Returns the first match in PHP's resolution order: class itself → traits →
-/// parent → parent's traits, etc. Uses `wi`'s `classes_by_name` short-name
-/// bucket lookup instead of a linear scan over every workspace class — the
-/// same candidate set the old scan visited (same key: `cls.name`'s short
-/// form), just found in O(1) instead of O(all files × all classes).
+/// parent → parent's traits, etc. `class_candidates` resolves a short name to
+/// every class sharing it (typically `DocumentStore::class_candidates`,
+/// mention-index-narrowed) instead of a linear scan over every workspace
+/// class.
 ///
 /// Deliberately does not use `resolve_class_ref`: that picks a single
 /// disambiguated candidate, but a hierarchy walk must visit *every* class
@@ -127,6 +127,7 @@ pub fn find_method_in_class_hierarchy(
     class_name: &str,
     method_name: &str,
     wi: &crate::db::workspace_index::WorkspaceIndexData,
+    class_candidates: &dyn Fn(&str) -> Vec<crate::db::workspace_index::ClassRef>,
 ) -> Option<Location> {
     let mut queue: std::collections::VecDeque<String> =
         std::collections::VecDeque::from([class_name.to_owned()]);
@@ -137,10 +138,8 @@ pub fn find_method_in_class_hierarchy(
             continue;
         }
         let short = crate::text::fqn_short_name(&current);
-        let Some(candidates) = wi.classes_by_name.get(short) else {
-            continue;
-        };
-        for cr in candidates {
+        let candidates = class_candidates(short);
+        for cr in &candidates {
             let Some((uri, cls)) = wi.at(*cr) else {
                 continue;
             };
@@ -175,7 +174,12 @@ pub fn find_method_in_class_hierarchy(
                         None => cls.traits.iter().map(|t| t.as_ref()).collect(),
                     };
                     for trt_name in search_in {
-                        if let Some(loc) = find_method_in_class_hierarchy(trt_name, orig, wi) {
+                        if let Some(loc) = find_method_in_class_hierarchy(
+                            trt_name,
+                            orig,
+                            wi,
+                            class_candidates,
+                        ) {
                             return Some(loc);
                         }
                     }

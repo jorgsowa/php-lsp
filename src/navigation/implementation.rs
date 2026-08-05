@@ -49,8 +49,8 @@ pub(crate) fn alias_resolves_to(
 /// resolution, mirroring how PHP resolves an unqualified class name with no
 /// matching `use` statement to `<current-namespace>\<written>`.
 ///
-/// This is the disambiguation the raw `subtypes_of` short-name prefilter
-/// cannot do on its own: many unrelated classes across a large workspace can
+/// This is the disambiguation a raw short-name mention prefilter cannot do
+/// on its own: many unrelated classes across a large workspace can
 /// share both a short name (e.g. `Factory`) and a same-named `use` alias
 /// (e.g. `FactoryContract`) while resolving to entirely different FQNs.
 pub(crate) fn resolves_to_fqn(

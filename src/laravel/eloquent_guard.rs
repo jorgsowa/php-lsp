@@ -157,7 +157,7 @@ fn classify_mass_assignment(
             return None;
         }
 
-        let cr = wi.resolve_class_ref(&fqn)?;
+        let cr = docs.resolve_class_ref(wi, &fqn)?;
         let (decl_uri, cls) = wi.at(cr)?;
 
         if verdict.is_none() {

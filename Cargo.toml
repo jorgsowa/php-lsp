@@ -50,10 +50,10 @@ dhat = { version = "0.3", optional = true }
 mimalloc = { version = "0.1", default-features = false }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
-mir-analyzer = { version = "0.69.0", git = "https://github.com/jorgsowa/mir" }
-mir-issues = { version = "0.69.0", git = "https://github.com/jorgsowa/mir" }
-mir-codebase = { version = "0.69.0", git = "https://github.com/jorgsowa/mir" }
-mir-types = { version = "0.69.0", git = "https://github.com/jorgsowa/mir" }
+mir-analyzer = { version = "0.70.0", git = "https://github.com/jorgsowa/mir" }
+mir-issues = { version = "0.70.0", git = "https://github.com/jorgsowa/mir" }
+mir-codebase = { version = "0.70.0", git = "https://github.com/jorgsowa/mir" }
+mir-types = { version = "0.70.0", git = "https://github.com/jorgsowa/mir" }
 php-rs-parser = "0.19"
 php-ast = "0.19"
 php-lexer = "0.19"

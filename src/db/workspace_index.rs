@@ -8,23 +8,28 @@
 //! `get_index_salsa` → `snapshot_query`, so a workspace with 1600 files
 //! paid 1600 lock acquisitions per lookup.
 //!
-//! This query runs once per workspace revision and returns:
-//!
-//! - `files`: the flat `(Uri, Arc<FileIndex>)` list every handler used to
-//!   rebuild by hand,
-//! - `classes_by_name`: `name → [ClassRef]` for constant-time prepare /
-//!   supertype resolution,
-//! - `subtypes_of`: `name → [ClassRef]` for constant-time subtype /
-//!   implementation lookups.
+//! This query runs once per workspace revision and returns `files`: the flat
+//! `(Uri, Arc<FileIndex>)` list every handler used to rebuild by hand, plus
+//! `classes_by_lowercase_name` for completion's prefix search.
 //!
 //! All lookups on the aggregate run in memory against an already-materialised
 //! `Arc`; edits invalidate the aggregate through `file_index` dependency
 //! tracking as usual.
 //!
-//! Vocabulary note: the `-Ref` types here (`ClassRef`, `DeclRef`) are internal
-//! back-pointers/handles into the index — *not* LSP references. A symbol usage
-//! in code is a "reference" spelled out (see `navigation/references.rs`). See
-//! the crate-root glossary in `lib.rs`.
+//! Vocabulary note: `ClassRef` is an internal back-pointer/handle into the
+//! index — *not* an LSP reference. A symbol usage in code is a "reference"
+//! spelled out (see `navigation/references.rs`). See the crate-root glossary
+//! in `lib.rs`.
+//!
+//! Short-name class lookup and disambiguation (`DocumentStore::
+//! resolve_class_ref`/`class_candidates`) and arbitrary-name declaration
+//! lookup (`DocumentStore::declaration_candidate_files`/`find_declaration`)
+//! no longer have eagerly rebuilt-per-revision maps here. Both narrow
+//! candidates via mir's persistent per-file mention cache instead: an edit
+//! invalidates only that file's cached mention set, not the whole
+//! workspace's. Only `classes_by_lowercase_name` remains eager — prefix
+//! search genuinely needs to enumerate every distinct name, which a
+//! point-query mention cache can't answer.
 
 use std::collections::HashMap;
 use std::sync::{Arc, OnceLock};
@@ -41,46 +46,18 @@ pub struct ClassRef {
     pub class: u32,
 }
 
-/// What kind of declaration a [`DeclRef`] points at. Drives the per-kind
-/// matching rules in [`WorkspaceIndexData::find_declaration`] (e.g. a `$foo`
-/// query matches properties and functions/classes named `foo`, but never
-/// methods or constants).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DeclKind {
-    Function,
-    Class,
-    Method,
-    Property,
-    Constant,
-    EnumCase,
-}
-
-/// One named declaration, pre-resolved to its file and (zero-width) line.
-/// Stored in encounter order — file order, then within a file: functions
-/// first, then per class: the class itself, methods, properties, constants,
-/// enum cases — which is exactly the precedence the old linear scan (since
-/// removed in favor of this map) had.
-#[derive(Debug, Clone, Copy)]
-pub struct DeclRef {
-    pub file: u32,
-    pub line: u32,
-    pub kind: DeclKind,
-}
-
 /// Aggregated workspace-level index. Constructed once per salsa revision by
 /// `workspace_index` and held behind an `Arc` for cheap cross-request sharing.
 pub struct WorkspaceIndexData {
     pub files: Vec<(Uri, Arc<FileIndex>)>,
-    pub classes_by_name: HashMap<String, Vec<ClassRef>>,
-    /// `parent_or_interface_or_trait_name → [subtype ClassRef]`.
-    /// A class that extends `X` AND implements `Y` contributes separate entries
-    /// under both keys. Keyed by `Arc<str>` so insertions from `ClassDef`'s
-    /// already-interned fields are pointer copies rather than heap allocations.
-    pub subtypes_of: HashMap<Arc<str>, Vec<ClassRef>>,
-    /// `declared_name → [DeclRef]` over every function, class, method,
-    /// property (stored without `$`), class constant, and enum case in the
-    /// workspace; enables O(1) go-to-definition lookups.
-    pub decls_by_name: HashMap<String, Vec<DeclRef>>,
+    /// `files`' URIs as mir path strings, precomputed once per revision so
+    /// `DocumentStore::declaration_candidate_files`/`class_candidates` don't
+    /// re-allocate one `Arc<str>` per file on every call.
+    pub(crate) file_paths: Vec<Arc<str>>,
+    /// `file_paths[i] → i`, for O(1) resolution of a mention-index candidate
+    /// path back to its `files`/`file_paths` index (no per-candidate linear
+    /// scan or `Uri` round-trip).
+    pub(crate) path_to_file_idx: HashMap<Arc<str>, u32>,
     /// One `(lowercase_short_name, ClassRef)` pair per distinct class name,
     /// sorted by the lowercase key. Built once per revision so completion's
     /// prefix search can binary-search a range instead of scanning every
@@ -158,124 +135,30 @@ pub fn build_func_signatures(files: &[(Uri, Arc<FileIndex>)]) -> HashMap<String,
     map
 }
 
-pub(crate) type BuildMapsResult = (
-    HashMap<String, Vec<ClassRef>>,
-    HashMap<Arc<str>, Vec<ClassRef>>,
-    HashMap<String, Vec<DeclRef>>,
-    Vec<(Box<str>, ClassRef)>,
-);
-
-pub(crate) fn build_maps(files: &[(Uri, Arc<FileIndex>)]) -> BuildMapsResult {
-    let mut classes_by_name: HashMap<String, Vec<ClassRef>> = HashMap::new();
-    let mut subtypes_of: HashMap<Arc<str>, Vec<ClassRef>> = HashMap::new();
-    let mut decls_by_name: HashMap<String, Vec<DeclRef>> = HashMap::new();
-    let push_decl = |map: &mut HashMap<String, Vec<DeclRef>>,
-                     name: &str,
-                     file: u32,
-                     line: u32,
-                     kind: DeclKind| {
-        map.entry(name.to_string())
-            .or_default()
-            .push(DeclRef { file, line, kind });
-    };
+/// One entry per distinct class name (first-encountered `ClassRef` wins —
+/// matches the old `classes_by_name`-derived construction), for
+/// [`WorkspaceIndexData::classes_by_lowercase_name`]'s sorted table. No
+/// longer builds a full name→candidates map or a subtype reverse map: every
+/// other caller now resolves those via mir's mention index
+/// (`DocumentStore::class_candidates`/`resolve_class_ref`/
+/// `declaration_candidate_files`) instead of an eagerly rebuilt structure.
+pub(crate) fn build_maps(files: &[(Uri, Arc<FileIndex>)]) -> Vec<(Box<str>, ClassRef)> {
+    let mut first_by_name: HashMap<Box<str>, ClassRef> = HashMap::new();
     for (file_idx, (_, idx)) in files.iter().enumerate() {
         let file_idx = file_idx as u32;
-        for f in &idx.functions {
-            push_decl(
-                &mut decls_by_name,
-                &f.name,
-                file_idx,
-                f.start_line,
-                DeclKind::Function,
-            );
-        }
         for (cls_idx, cls) in idx.classes.iter().enumerate() {
-            let cr = ClassRef {
+            first_by_name.entry(cls.name.as_ref().into()).or_insert(ClassRef {
                 file: file_idx,
                 class: cls_idx as u32,
-            };
-            classes_by_name
-                .entry(cls.name.as_ref().to_string())
-                .or_default()
-                .push(cr);
-            if let Some(parent) = &cls.parent {
-                subtypes_of.entry(Arc::clone(parent)).or_default().push(cr);
-            }
-            for iface in &cls.implements {
-                subtypes_of.entry(Arc::clone(iface)).or_default().push(cr);
-                // If this implements name is a use-import alias, also index by
-                // the short name of the resolved FQN so cursor-on-interface-name
-                // lookups work regardless of how the implementor named the interface.
-                if let Some((_, fqn)) = idx
-                    .use_imports
-                    .iter()
-                    .find(|(alias, _)| alias.as_ref() == iface.as_ref())
-                {
-                    let short = crate::text::fqn_short_name(fqn);
-                    if short != iface.as_ref() {
-                        subtypes_of.entry(Arc::from(short)).or_default().push(cr);
-                    }
-                }
-            }
-            for trt in &cls.traits {
-                subtypes_of.entry(Arc::clone(trt)).or_default().push(cr);
-            }
-            push_decl(
-                &mut decls_by_name,
-                &cls.name,
-                file_idx,
-                cls.start_line,
-                DeclKind::Class,
-            );
-            for m in &cls.methods {
-                push_decl(
-                    &mut decls_by_name,
-                    &m.name,
-                    file_idx,
-                    m.start_line,
-                    DeclKind::Method,
-                );
-            }
-            for p in &cls.properties {
-                push_decl(
-                    &mut decls_by_name,
-                    &p.name,
-                    file_idx,
-                    p.start_line,
-                    DeclKind::Property,
-                );
-            }
-            for cc in &cls.constants {
-                push_decl(
-                    &mut decls_by_name,
-                    cc,
-                    file_idx,
-                    cls.start_line,
-                    DeclKind::Constant,
-                );
-            }
-            for case in &cls.cases {
-                push_decl(
-                    &mut decls_by_name,
-                    case,
-                    file_idx,
-                    cls.start_line,
-                    DeclKind::EnumCase,
-                );
-            }
+            });
         }
     }
-    let mut classes_by_lowercase_name: Vec<(Box<str>, ClassRef)> = classes_by_name
-        .iter()
-        .filter_map(|(name, refs)| refs.first().map(|cr| (name.to_lowercase().into(), *cr)))
+    let mut classes_by_lowercase_name: Vec<(Box<str>, ClassRef)> = first_by_name
+        .into_iter()
+        .map(|(name, cr)| (name.to_lowercase().into(), cr))
         .collect();
     classes_by_lowercase_name.sort_unstable_by(|a, b| a.0.cmp(&b.0));
-    (
-        classes_by_name,
-        subtypes_of,
-        decls_by_name,
-        classes_by_lowercase_name,
-    )
+    classes_by_lowercase_name
 }
 
 impl WorkspaceIndexData {
@@ -286,71 +169,6 @@ impl WorkspaceIndexData {
         Some((uri, cls))
     }
 
-    /// Resolve `name` to a single `ClassRef`, disambiguating same-named
-    /// classes in different namespaces. `classes_by_name` is keyed by short
-    /// name only, so two unrelated classes sharing a name (e.g. Laravel's
-    /// `Illuminate\Support\Facades\Auth` vs `Illuminate\Container\Attributes\
-    /// Auth`) collide in one bucket; picking `.first()` unconditionally
-    /// silently returns whichever happens to be indexed first.
-    ///
-    /// `name` may be a bare short name (kept for compatibility — resolves to
-    /// the first match, as before) or a fully-qualified name (`Foo\Bar\Baz`,
-    /// optionally leading with `\`), in which case the candidate whose own
-    /// FQN matches (case-insensitively, PHP class names are
-    /// case-insensitive) is preferred over an arbitrary first match.
-    pub fn resolve_class_ref(&self, name: &str) -> Option<ClassRef> {
-        let trimmed = name.trim_start_matches('\\');
-        let short = trimmed.rsplit('\\').next().unwrap_or(trimmed);
-        let candidates = self.classes_by_name.get(short)?;
-        if trimmed.contains('\\')
-            && let Some(cr) = candidates.iter().find(|cr| {
-                self.at(**cr).is_some_and(|(_, cls)| {
-                    cls.fqn
-                        .trim_start_matches('\\')
-                        .eq_ignore_ascii_case(trimmed)
-                })
-            })
-        {
-            return Some(*cr);
-        }
-        candidates.first().copied()
-    }
-
-    /// O(1) replacement for the old linear per-file scan (since removed):
-    /// find a declaration by name, optionally excluding one file (the current
-    /// document, which the caller has already searched with accurate AST
-    /// ranges). Matching rules mirror the old scan: a sigil query (`$foo`)
-    /// matches functions, classes, and properties named `foo`; a bare query
-    /// matches every declaration kind. Returns a zero-width line `Location`.
-    pub fn find_declaration(
-        &self,
-        name: &str,
-        exclude: Option<&Uri>,
-    ) -> Option<tower_lsp_server::ls_types::Location> {
-        let bare = crate::text::strip_variable_sigil(name);
-        let sigil = bare != name;
-        let refs = self.decls_by_name.get(bare)?;
-        for r in refs {
-            if sigil
-                && !matches!(
-                    r.kind,
-                    DeclKind::Function | DeclKind::Class | DeclKind::Property
-                )
-            {
-                continue;
-            }
-            let (uri, _) = self.files.get(r.file as usize)?;
-            if exclude.is_some_and(|e| e == uri) {
-                continue;
-            }
-            return Some(tower_lsp_server::ls_types::Location {
-                uri: uri.clone(),
-                range: crate::text::zero_width_range(r.line),
-            });
-        }
-        None
-    }
-
     /// Constructor that builds the reverse maps from an already-materialised
     /// `(Uri, Arc<FileIndex>)` slice. Exposed so callers that don't want to
     /// spin up a full `AnalysisHost` (unit tests of
@@ -358,13 +176,17 @@ impl WorkspaceIndexData {
     /// the aggregate-shaped helpers directly. Production code goes through
     /// the `workspace_index` salsa query instead.
     pub fn from_files(files: Vec<(Uri, Arc<FileIndex>)>) -> Self {
-        let (classes_by_name, subtypes_of, decls_by_name, classes_by_lowercase_name) =
-            build_maps(&files);
+        let classes_by_lowercase_name = build_maps(&files);
+        let file_paths: Vec<Arc<str>> = files.iter().map(|(u, _)| Arc::from(u.as_str())).collect();
+        let path_to_file_idx = file_paths
+            .iter()
+            .enumerate()
+            .map(|(i, p)| (Arc::clone(p), i as u32))
+            .collect();
         Self {
             files,
-            classes_by_name,
-            subtypes_of,
-            decls_by_name,
+            file_paths,
+            path_to_file_idx,
             classes_by_lowercase_name,
             func_signatures: OnceLock::new(),
         }

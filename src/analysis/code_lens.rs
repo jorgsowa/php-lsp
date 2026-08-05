@@ -174,14 +174,17 @@ impl LensEnv<'_> {
             if !seen.insert(current.clone()) {
                 return None;
             }
-            let candidates = ws.classes_by_name.get(fqn_short_name(&current))?;
+            let candidates = self.store.class_candidates(&ws, fqn_short_name(&current));
+            if candidates.is_empty() {
+                return None;
+            }
             let class_loc = |r: &crate::db::workspace_index::ClassRef| {
                 let (uri, cls) = ws.at(*r)?;
                 Some((uri, cls))
             };
             let mut fallback = None;
             let mut chosen = None;
-            for r in candidates {
+            for r in &candidates {
                 if let Some((uri, cls)) = class_loc(r) {
                     if cls.fqn.trim_start_matches('\\') == current {
                         chosen = Some((uri, cls));

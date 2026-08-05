@@ -499,17 +499,19 @@ pub fn method_hover_from_index(
     None
 }
 
-/// O(1) variant of [`class_hover_from_index`]: resolves `word`/`fqn` via
-/// `WorkspaceIndexData::resolve_class_ref` first, falling back to the full
-/// linear scan only when the index doesn't resolve the class — preserves
-/// every edge case the scan covers (e.g. names the aggregate's short-name
-/// map doesn't disambiguate the same way), just skips the common-case cost.
+/// O(candidates) variant of [`class_hover_from_index`]: resolves `word`/`fqn`
+/// via `resolve_class_ref` (typically `DocumentStore::resolve_class_ref`)
+/// first, falling back to the full linear scan only when that doesn't
+/// resolve the class — preserves every edge case the scan covers (e.g.
+/// names the mention index doesn't disambiguate the same way), just skips
+/// the common-case cost.
 pub fn class_hover_from_workspace_index(
     word: &str,
     fqn: Option<&str>,
     wi: &crate::db::workspace_index::WorkspaceIndexData,
+    resolve_class_ref: &dyn Fn(&str) -> Option<crate::db::workspace_index::ClassRef>,
 ) -> Option<Hover> {
-    if let Some(cr) = wi.resolve_class_ref(fqn.unwrap_or(word))
+    if let Some(cr) = resolve_class_ref(fqn.unwrap_or(word))
         && let Some((_, cls)) = wi.at(cr)
     {
         return Some(class_hover_for(cls));
@@ -517,14 +519,15 @@ pub fn class_hover_from_workspace_index(
     class_hover_from_index(word, fqn, &wi.files)
 }
 
-/// O(1) variant of [`method_hover_from_index`], same fallback contract as
-/// [`class_hover_from_workspace_index`].
+/// O(candidates) variant of [`method_hover_from_index`], same fallback
+/// contract as [`class_hover_from_workspace_index`].
 pub fn method_hover_from_workspace_index(
     class_name: &str,
     method_name: &str,
     wi: &crate::db::workspace_index::WorkspaceIndexData,
+    resolve_class_ref: &dyn Fn(&str) -> Option<crate::db::workspace_index::ClassRef>,
 ) -> Option<Hover> {
-    if let Some(cr) = wi.resolve_class_ref(class_name)
+    if let Some(cr) = resolve_class_ref(class_name)
         && let Some((_, cls)) = wi.at(cr)
         && let Some(h) = method_hover_from_class(class_name, method_name, cls)
     {

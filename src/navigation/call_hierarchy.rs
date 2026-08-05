@@ -16,14 +16,16 @@ use crate::document::ast::{ParsedDoc, SourceView, span_to_range};
 use crate::lang::is_php_keyword;
 
 /// Finds the declaration matching `name` and returns a `CallHierarchyItem`,
-/// resolving candidate declaring files via the workspace aggregate's
-/// `decls_by_name` map instead of walking every document's AST: O(matches)
-/// docs fetched and scanned instead of O(workspace).
+/// narrowing candidate declaring files via mir's persistent per-file mention
+/// cache (`mention_candidates`) instead of walking every document's AST:
+/// O(matches) docs fetched and scanned instead of O(workspace). A candidate
+/// is a *possible* declarer (mention, not proof) — `find_declaration_item`
+/// below still does the real AST-level check.
 /// `get_doc` resolves a candidate file to its parsed doc (typically
 /// `DocumentStore::get_doc_salsa` — a memo hit for indexed files).
 ///
-/// The workspace-wide trait-alias scan below only runs when `name` has no
-/// `decls_by_name` entry at all — i.e. it's not a class/function/method/
+/// The workspace-wide trait-alias fallback only runs when no candidate
+/// actually declares `name` — i.e. it's not a class/function/method/
 /// property/constant under that literal spelling anywhere. When `name` *is*
 /// declared as something but that something has no `CallHierarchyItem`
 /// (nothing currently classifies as one other than functions/methods/
@@ -33,38 +35,27 @@ pub fn prepare_call_hierarchy_indexed(
     name: &str,
     wi: &crate::db::workspace_index::WorkspaceIndexData,
     get_doc: &dyn Fn(&Uri) -> Option<Arc<ParsedDoc>>,
+    mention_candidates: &dyn Fn(&str) -> Vec<Uri>,
 ) -> Option<CallHierarchyItem> {
-    let Some(refs) = wi.decls_by_name.get(name) else {
-        // `name` might be a `use Trait { method as name; }` alias, which
-        // never appears as a literal declaration in `decls_by_name`.
-        let original = resolve_trait_alias_indexed(name, wi)?;
-        if original == name {
-            return None;
-        }
-        return prepare_call_hierarchy_indexed(&original, wi, get_doc);
-    };
-    // Visit each candidate file once, in declaration encounter order.
-    let mut last_file = u32::MAX;
-    for r in refs {
-        if r.file == last_file {
-            continue;
-        }
-        last_file = r.file;
-        let Some((uri, _)) = wi.files.get(r.file as usize) else {
-            continue;
-        };
+    for uri in &mention_candidates(name) {
         let Some(doc) = get_doc(uri) else { continue };
         if let Some(item) = find_declaration_item(name, &doc.program().stmts, doc.view(), uri) {
             return Some(item);
         }
     }
-    None
+    // `name` might be a `use Trait { method as name; }` alias, which never
+    // appears as a literal declaration anywhere.
+    let original = resolve_trait_alias_indexed(name, wi)?;
+    if original == name {
+        return None;
+    }
+    prepare_call_hierarchy_indexed(&original, wi, get_doc, mention_candidates)
 }
 
 /// Resolves `name` against every class's recorded trait-method aliases in
 /// the workspace index (`FileIndex::extract` already collects these from
 /// `use Trait { method as alias; }`). Fallback only — the common path
-/// resolves via `decls_by_name`, which has no entry for alias spellings.
+/// resolves via a literal declaration, which never matches an alias spelling.
 fn resolve_trait_alias_indexed(
     name: &str,
     wi: &crate::db::workspace_index::WorkspaceIndexData,
@@ -89,6 +80,7 @@ pub fn outgoing_calls_indexed(
     item: &CallHierarchyItem,
     wi: &crate::db::workspace_index::WorkspaceIndexData,
     get_doc: &dyn Fn(&Uri) -> Option<Arc<ParsedDoc>>,
+    mention_candidates: &dyn Fn(&str) -> Vec<Uri>,
 ) -> Vec<CallHierarchyOutgoingCall> {
     let Some(doc) = get_doc(&item.uri) else {
         return Vec::new();
@@ -104,7 +96,8 @@ pub fn outgoing_calls_indexed(
         let call_range = span_to_range(item_source, item_line_starts, span);
         if let Some(&idx) = index.get(&callee_name) {
             result[idx].from_ranges.push(call_range);
-        } else if let Some(callee_item) = prepare_call_hierarchy_indexed(&callee_name, wi, get_doc)
+        } else if let Some(callee_item) =
+            prepare_call_hierarchy_indexed(&callee_name, wi, get_doc, mention_candidates)
         {
             let idx = result.len();
             index.insert(callee_name, idx);
@@ -226,10 +219,10 @@ fn find_declaration_item(
                 });
             }
             // Class-name-itself match: `new X()` extracts the bare class name as
-            // its "callee", and `decls_by_name` indexes class declarations under
-            // that same name — without this arm, that lookup always missed here
-            // and fell through to the workspace-wide trait-alias scan for every
-            // `new` expression in the codebase.
+            // its "callee", and a class declaration named `X` is a valid
+            // candidate here — without this arm, that lookup always missed
+            // and fell through to the workspace-wide trait-alias scan for
+            // every `new` expression in the codebase.
             StmtKind::Class(c) if c.name.is_some_and(|n| n == name) => {
                 let range = sv.range_of(stmt.span);
                 let sel = sv.name_range_after_attrs(name, &c.attributes, stmt.span);
@@ -652,10 +645,10 @@ impl<'arena, 'src> Visitor<'arena, 'src> for CallCollector<'_> {
                 if let ExprKind::Identifier(class_name) = &n.class.kind {
                     let class_name = class_name.to_string();
                     // `self`/`static`/`parent` are late-binding class refs, not
-                    // literal declarations — `decls_by_name` always misses them,
-                    // which would otherwise trigger the workspace-wide
-                    // trait-alias scan in `prepare_call_hierarchy_indexed` on
-                    // every `new self/static/parent()` call site.
+                    // literal declarations — nothing ever declares them, which
+                    // would otherwise trigger the workspace-wide trait-alias
+                    // scan in `prepare_call_hierarchy_indexed` on every
+                    // `new self/static/parent()` call site.
                     if !is_php_keyword(&class_name) {
                         self.out.push((class_name, n.class.span));
                     }

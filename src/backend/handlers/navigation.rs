@@ -115,7 +115,10 @@ impl Backend {
                 });
                 if let Some((cls, class_fqn_arc)) = resolved_method_target {
                     let wi = self.workspace_index_cached(&mut wi_cache).await;
-                    if let Some(loc) = find_method_in_class_hierarchy(&cls, &word, &wi) {
+                    let class_candidates = |short: &str| self.docs.class_candidates(&wi, short);
+                    if let Some(loc) =
+                        find_method_in_class_hierarchy(&cls, &word, &wi, &class_candidates)
+                    {
                         let refined = self
                             .docs
                             .get_doc_salsa(&loc.uri)
@@ -167,7 +170,10 @@ impl Backend {
                 if let Some(cls) = class_name {
                     let first_cls = cls.split('|').next().unwrap_or(&cls).to_owned();
                     let wi2 = self.workspace_index_cached(&mut wi_cache).await;
-                    if let Some(loc) = find_method_in_class_hierarchy(&first_cls, &word, &wi2) {
+                    let class_candidates = |short: &str| self.docs.class_candidates(&wi2, short);
+                    if let Some(loc) =
+                        find_method_in_class_hierarchy(&first_cls, &word, &wi2, &class_candidates)
+                    {
                         let refined = self
                             .docs
                             .get_doc_salsa(&loc.uri)
@@ -205,7 +211,7 @@ impl Backend {
 
             let wi = self.workspace_index_cached(&mut wi_cache).await;
             if let Some(word) = crate::text::word_at_position(&source, position)
-                && let Some(loc) = wi.find_declaration(&word, Some(uri))
+                && let Some(loc) = self.docs.find_declaration(&wi, &word, Some(uri))
             {
                 let refined = self
                     .docs
@@ -356,7 +362,8 @@ impl Backend {
                     Some(decl_class)
                 } else if is_parent_call_site {
                     let wi = self.workspace_index_async().await;
-                    resolve_parent_construct_class(&doc, position, &wi)
+                    let imports = self.file_imports(uri);
+                    resolve_parent_construct_class(&doc, position, &wi, &self.docs, &imports)
                         .or_else(|| enclosing_class_fqn_at(doc.source(), &doc, position))
                 } else {
                     enclosing_class_fqn_at(doc.source(), &doc, position)
@@ -746,12 +753,7 @@ impl Backend {
         match symbol {
             mir_analyzer::Name::Class(fqn) => {
                 let target = fqn.trim_start_matches('\\');
-                for r in ws
-                    .classes_by_name
-                    .get(word)
-                    .map(|v| v.as_slice())
-                    .unwrap_or(&[])
-                {
+                for r in &self.docs.class_candidates(&ws, word) {
                     let Some((uri, cls)) = ws.at(*r) else {
                         continue;
                     };
@@ -874,37 +876,30 @@ fn expand_alias_prefix(word: &str, imports: &std::collections::HashMap<String, S
 
 /// Resolve a `parent::__construct()` call site to the FQN of the class named
 /// in the enclosing class's `extends` clause. Looks up the `extends` name
-/// (same-file, as written in source) and confirms it against an indexed
-/// class across the workspace, since the raw `extends` text alone doesn't
-/// tell us whether it's an external/vendor class we can't scope to. Returns
-/// `None` when no such class is indexed, so the caller can fall back to the
-/// enclosing-class heuristic.
-///
-/// Resolves via `WorkspaceIndexData::classes_by_name` — O(candidates sharing
-/// the parent's short name) instead of a linear scan over every class in
-/// every workspace file. When multiple classes share that short name (e.g.
-/// same-named classes in different namespaces), the one whose FQN matches
-/// the `extends` clause exactly wins; otherwise the first indexed candidate
-/// is used, matching the previous scan's first-match behavior.
+/// (same-file, as written in source) and resolves it the same way PHP
+/// itself would: `use`-import match, else the declaring file's own
+/// namespace — never a same-short-name guess across the workspace. A bare
+/// `extends Base` has exactly one meaning (PHP has no "which same-named
+/// `Base` did you mean" concept); disambiguating via a workspace-wide
+/// short-name candidate list was solving the wrong problem; this resolves
+/// it the way the language actually does. Confirmed against an indexed
+/// class via `DocumentStore::class_ref_by_fqn` (O(1) FQCN lookup, not a
+/// short-name scan) — an external/vendor parent with no workspace
+/// `FileIndex` entry returns `None` so the caller falls back to the
+/// enclosing-class heuristic, same as when nothing resolves at all.
 fn resolve_parent_construct_class(
     doc: &crate::document::ast::ParsedDoc,
     position: Position,
     wi: &crate::db::workspace_index::WorkspaceIndexData,
+    docs: &crate::document::document_store::DocumentStore,
+    file_imports: &std::collections::HashMap<String, String>,
 ) -> Option<String> {
     let child_short = enclosing_class_at(doc.source(), doc, position)?;
     let raw_parent = crate::types::type_map::parent_class_name(doc, &child_short)?;
-    let parent_short = fqn_short_name(&raw_parent);
-    let parent_bare = raw_parent.trim_start_matches('\\');
-    let refs = wi.classes_by_name.get(parent_short)?;
-    let mut first: Option<&str> = None;
-    for (_, cls) in refs.iter().filter_map(|r| wi.at(*r)) {
-        let fqn = cls.fqn.trim_start_matches('\\');
-        if fqn == parent_bare {
-            return Some(fqn.to_owned());
-        }
-        first.get_or_insert(fqn);
-    }
-    first.map(str::to_owned)
+    let resolved = crate::navigation::moniker::resolve_fqn(doc, &raw_parent, file_imports);
+    let resolved = resolved.trim_start_matches('\\').to_string();
+    docs.class_ref_by_fqn(wi, &resolved)?;
+    Some(resolved)
 }
 
 /// Byte offset of the last char of `receiver_var` in the nearest

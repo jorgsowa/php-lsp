@@ -107,9 +107,9 @@ fn precise_range(line: u32, name_char: u32, name: &str) -> tower_lsp_server::ls_
 
 /// Pass-2 body scoped to a single file: any declaration named `word`
 /// (`bare` for properties, which are indexed without their `$` sigil).
-/// Shared by the `decls_by_name` fast path and the exhaustive fallback scan
-/// below, so both paths apply identical matching rules.
-fn any_declaration_in_file(
+/// Shared by the mention-index-narrowed fast path and the exhaustive
+/// fallback scan below, so both paths apply identical matching rules.
+pub(crate) fn any_declaration_in_file(
     uri: &tower_lsp_server::ls_types::Uri,
     idx: &crate::index::file_index::FileIndex,
     word: &str,
@@ -198,13 +198,14 @@ pub fn goto_declaration_from_index(
     source: &str,
     wi: &crate::db::workspace_index::WorkspaceIndexData,
     position: tower_lsp_server::ls_types::Position,
+    mention_candidates: &dyn Fn(&str) -> Vec<tower_lsp_server::ls_types::Uri>,
 ) -> Option<Location> {
     use crate::index::file_index::ClassKind;
     use crate::text::word_at_position;
     let word = word_at_position(source, position)?;
     // A bare keyword (`abstract`, `final`, `class`, ...) can never be a
     // declaration name — bail out before either full-workspace scan below.
-    // `decls_by_name` would always miss for these anyway, so without this
+    // No candidate would ever declare a bare keyword anyway, so without this
     // check every keyword click pays for the exhaustive fallback loop.
     if is_unresolvable_bareword_at(source, position, &word) {
         return None;
@@ -262,20 +263,19 @@ pub fn goto_declaration_from_index(
         }
     }
 
-    // Second pass: any declaration. `decls_by_name` gives an O(1) candidate
+    // Second pass: any declaration. mir's mention index gives a candidate
     // file list for the common kinds (function/class/method/constant/
-    // enum-case, all keyed by `word` — see `build_maps`), so the usual case
-    // scans one file's classes instead of every class in every workspace
-    // file. Properties keyed under `bare`, `@method` doc-methods (not
-    // indexed at all), and any `decls_by_name` miss fall back to the
-    // exhaustive scan below, identical to the original behavior.
-    if let Some(refs) = wi.decls_by_name.get(&word) {
-        for r in refs {
-            if let Some((uri, idx)) = wi.files.get(r.file as usize)
-                && let Some(loc) = any_declaration_in_file(uri, idx, &word, bare)
-            {
-                return Some(loc);
-            }
+    // enum-case, all keyed by `word`), so the usual case scans one file's
+    // classes instead of every class in every workspace file. Properties
+    // keyed under `bare`, `@method` doc-methods (not indexed at all), and
+    // any candidate miss fall back to the exhaustive scan below, identical
+    // to the original behavior.
+    for uri in &mention_candidates(&word) {
+        if let Some(&file_idx) = wi.path_to_file_idx.get(uri.as_str())
+            && let Some((_, idx)) = wi.files.get(file_idx as usize)
+            && let Some(loc) = any_declaration_in_file(uri, idx, &word, bare)
+        {
+            return Some(loc);
         }
     }
 

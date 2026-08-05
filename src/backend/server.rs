@@ -636,7 +636,7 @@ impl LanguageServer for Backend {
             let uri_for_class_search = uri.clone();
             let docs_for_lookup = Arc::clone(&self.docs);
             let find_class_doc_fn = move |name: &str| -> Option<Arc<ParsedDoc>> {
-                let cr = wi.resolve_class_ref(name)?;
+                let cr = docs_for_lookup.resolve_class_ref(&wi, name)?;
                 let (uri, _) = wi.at(cr)?;
                 docs_for_lookup.get_doc_salsa(uri)
             };
@@ -956,7 +956,7 @@ impl LanguageServer for Backend {
             let wi = self.workspace_index_cached(&mut wi_cache).await;
             let docs_for_lookup = Arc::clone(&self.docs);
             let find_class_doc_fn = move |name: &str| -> Option<Arc<ParsedDoc>> {
-                let cr = wi.resolve_class_ref(name)?;
+                let cr = docs_for_lookup.resolve_class_ref(&wi, name)?;
                 let (uri, _) = wi.at(cr)?;
                 docs_for_lookup.get_doc_salsa(uri)
             };
@@ -984,8 +984,10 @@ impl LanguageServer for Backend {
             // `use Foo as Bar` works even when Foo is only in the index.
             if let Some(word) = crate::text::word_at_position(&source, position) {
                 let wi = self.workspace_index_cached(&mut wi_cache).await;
+                let resolve_class_ref = |name: &str| self.docs.resolve_class_ref(&wi, name);
                 // Try the literal word first.
-                if let Some(h) = class_hover_from_workspace_index(&word, None, &wi) {
+                if let Some(h) = class_hover_from_workspace_index(&word, None, &wi, &resolve_class_ref)
+                {
                     return Ok(Some(h));
                 }
                 // Try alias resolution. The resolved FQN disambiguates between
@@ -993,8 +995,12 @@ impl LanguageServer for Backend {
                 // vendored `Factory` classes all aliased to `FactoryContract`).
                 if let Some((resolved, resolved_fqn)) =
                     crate::hover::resolve_use_alias_fqn(&doc.program().stmts, &word)
-                    && let Some(h) =
-                        class_hover_from_workspace_index(&resolved, Some(&resolved_fqn), &wi)
+                    && let Some(h) = class_hover_from_workspace_index(
+                        &resolved,
+                        Some(&resolved_fqn),
+                        &wi,
+                        &resolve_class_ref,
+                    )
                 {
                     return Ok(Some(h));
                 }
@@ -1003,13 +1009,22 @@ impl LanguageServer for Backend {
                     && let Some(class_token) =
                         extract_static_class_before_cursor(line_text, position.character as usize)
                 {
-                    if let Some(h) = method_hover_from_workspace_index(&class_token, &word, &wi) {
+                    if let Some(h) = method_hover_from_workspace_index(
+                        &class_token,
+                        &word,
+                        &wi,
+                        &resolve_class_ref,
+                    ) {
                         return Ok(Some(h));
                     }
                     if let Some(resolved_class) =
                         crate::hover::resolve_use_alias(&doc.program().stmts, &class_token)
-                        && let Some(h) =
-                            method_hover_from_workspace_index(&resolved_class, &word, &wi)
+                        && let Some(h) = method_hover_from_workspace_index(
+                            &resolved_class,
+                            &word,
+                            &wi,
+                            &resolve_class_ref,
+                        )
                     {
                         return Ok(Some(h));
                     }
@@ -1327,22 +1342,24 @@ impl LanguageServer for Backend {
                 Some(w) => w,
                 None => return Ok(None),
             };
-            // A bare keyword can never be a callable name; skip it here so a
-            // `decls_by_name` miss doesn't fall through to the trait-alias
-            // exhaustive scan in `prepare_call_hierarchy_indexed`.
+            // A bare keyword can never be a callable name; skip it here so it
+            // doesn't fall through to the trait-alias exhaustive scan in
+            // `prepare_call_hierarchy_indexed`.
             if is_unresolvable_bareword_at(&source, position, &word) {
                 return Ok(None);
             }
-            // O(matches) lookup via the aggregate's `decls_by_name` map instead
-            // of scanning every workspace doc, but a miss falls through to a
+            // O(matches) lookup via mir's mention index instead of scanning
+            // every workspace doc, but a miss falls through to a
             // workspace-wide trait-alias scan — keep that off the async
             // runtime worker, same as incoming_calls/outgoing_calls below.
             let wi = self.workspace_index_async().await;
             let docs = Arc::clone(&self.docs);
             let item = self
                 .blocking_gated(super::debug_gate::GATE_PREPARE_CALL_HIERARCHY, move || {
-                    let get_doc = move |u: &Uri| docs.get_doc_salsa(u);
-                    prepare_call_hierarchy_indexed(&word, &wi, &get_doc)
+                    let get_doc = |u: &Uri| docs.get_doc_salsa(u);
+                    let mention_candidates =
+                        |name: &str| docs.declaration_candidate_files(&wi, name);
+                    prepare_call_hierarchy_indexed(&word, &wi, &get_doc, &mention_candidates)
                 })
                 .await
                 .flatten();
@@ -1379,15 +1396,18 @@ impl LanguageServer for Backend {
         params: CallHierarchyOutgoingCallsParams,
     ) -> Result<Option<Vec<CallHierarchyOutgoingCall>>> {
         guard_async_result("outgoing_calls", async move {
-            // Per-callee declaration lookups go through `decls_by_name` — the old
-            // path re-scanned the whole workspace once per distinct callee.
+            // Per-callee declaration lookups go through mir's mention index — an
+            // edit to file X only invalidates X's own cached mention set, not
+            // the whole workspace's (see `declaration_candidate_files`).
             let wi = self.workspace_index_async().await;
             let docs = Arc::clone(&self.docs);
             let item = params.item;
             let calls = self
                 .blocking("outgoing_calls", move || {
                     let get_doc = |u: &Uri| docs.get_doc_salsa(u);
-                    outgoing_calls_indexed(&item, &wi, &get_doc)
+                    let mention_candidates =
+                        |name: &str| docs.declaration_candidate_files(&wi, name);
+                    outgoing_calls_indexed(&item, &wi, &get_doc, &mention_candidates)
                 })
                 .await
                 .unwrap_or_default();
@@ -1559,11 +1579,14 @@ impl LanguageServer for Backend {
                 return Ok(Some(GotoDefinitionResponse::Scalar(loc)));
             }
             // Second pass: background files via the aggregated workspace index
-            // (line-only positions for anything not covered by decls_by_name).
+            // (line-only positions for anything not covered by a mention hit).
             let wi = self.workspace_index_async().await;
+            let docs = Arc::clone(&self.docs);
             let second_pass = self
                 .blocking("goto_declaration.index", move || {
-                    goto_declaration_from_index(&source, &wi, position)
+                    let mention_candidates =
+                        |name: &str| docs.declaration_candidate_files(&wi, name);
+                    goto_declaration_from_index(&source, &wi, position, &mention_candidates)
                 })
                 .await
                 .unwrap_or_default();
@@ -1661,12 +1684,17 @@ impl LanguageServer for Backend {
             let uri = &params.text_document_position_params.text_document.uri;
             let position = params.text_document_position_params.position;
             let source = self.get_open_text(uri).unwrap_or_default();
-            // Phase J: use the salsa-memoized aggregate's `classes_by_name` map.
+            // Phase J: use the salsa-memoized aggregate, mention-index-narrowed.
             let wi = self.workspace_index_async().await;
-            Ok(
-                prepare_type_hierarchy_from_workspace(&source, uri, &wi, position)
-                    .map(|item| vec![item]),
+            let class_candidates = |short: &str| self.docs.class_candidates(&wi, short);
+            Ok(prepare_type_hierarchy_from_workspace(
+                &source,
+                uri,
+                &wi,
+                position,
+                &class_candidates,
             )
+            .map(|item| vec![item]))
         })
         .await
     }
@@ -1676,7 +1704,7 @@ impl LanguageServer for Backend {
         params: TypeHierarchySupertypesParams,
     ) -> Result<Option<Vec<TypeHierarchyItem>>> {
         guard_async_result("supertypes", async move {
-            // Phase J: resolve parents via the aggregate's `classes_by_name` map.
+            // Phase J: resolve parents via the aggregate, mention-index-narrowed.
             // Pre-load any direct vendor supertypes via PSR-4 so they appear in the
             // workspace index before the lookup runs.
             let wi = self.workspace_index_async().await;
@@ -1688,7 +1716,8 @@ impl LanguageServer for Backend {
             } else {
                 wi
             };
-            let result = supertypes_of_from_workspace(&params.item, &wi);
+            let class_candidates = |short: &str| self.docs.class_candidates(&wi, short);
+            let result = supertypes_of_from_workspace(&params.item, &wi, &class_candidates);
             Ok(if result.is_empty() {
                 None
             } else {
@@ -1704,27 +1733,30 @@ impl LanguageServer for Backend {
     ) -> Result<Option<Vec<TypeHierarchyItem>>> {
         guard_async_result("subtypes", async move {
             let wi = self.workspace_index_async().await;
-            // Resolve the item's FQCN for mir's subtype graph. `classes_by_name`
-            // is keyed by short name only, so a name shared by many classes
-            // across the workspace (e.g. Laravel's ~16 `Factory` classes) needs
-            // `params.item.uri` to pick the right one instead of an arbitrary
-            // first match.
-            let item_fqn = wi
-                .classes_by_name
-                .get(&params.item.name)
-                .and_then(|refs| {
-                    refs.iter()
-                        .filter_map(|r| wi.at(*r))
-                        .find(|(u, _)| **u == params.item.uri)
-                        .or_else(|| refs.first().and_then(|r| wi.at(*r)))
-                })
+            // Resolve the item's FQCN for mir's subtype graph. A name shared by
+            // many classes across the workspace (e.g. Laravel's ~16 `Factory`
+            // classes) needs `params.item.uri` to pick the right one instead of
+            // an arbitrary first match.
+            let candidates = self.docs.class_candidates(&wi, &params.item.name);
+            let item_fqn = candidates
+                .iter()
+                .filter_map(|r| wi.at(*r))
+                .find(|(u, _)| **u == params.item.uri)
+                .or_else(|| candidates.first().and_then(|r| wi.at(*r)))
                 .map(|(_, cls)| cls.fqn.as_ref().to_string());
             let subtype_urls = item_fqn
                 .as_deref()
                 .map(|f| self.docs.class_subtype_urls(f))
                 .unwrap_or_default();
-            let result =
-                subtypes_of_mir_backed(&params.item, item_fqn.as_deref(), &wi, &subtype_urls);
+            let mention_candidates =
+                |name: &str| self.docs.declaration_candidate_files(&wi, name);
+            let result = subtypes_of_mir_backed(
+                &params.item,
+                item_fqn.as_deref(),
+                &wi,
+                &subtype_urls,
+                &mention_candidates,
+            );
             Ok(if result.is_empty() {
                 None
             } else {

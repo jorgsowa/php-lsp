@@ -241,7 +241,14 @@ fn scope_narrowing_comparison(store: &DocumentStore, total_files: usize) {
             // Cheap heuristic to pick a demo target that has at least one
             // (plain `extends`) subclass; the scope itself is measured below via
             // method_reference_scope, which goes through mir's resolved graph.
-            let sub_count = ws.subtypes_of.get(cls.name.as_ref()).map_or(0, |v| v.len());
+            // One-off setup scan (not the measured path), so a plain linear
+            // scan over every workspace class is fine here.
+            let sub_count = ws
+                .files
+                .iter()
+                .flat_map(|(_, idx)| idx.classes.iter())
+                .filter(|c| c.parent.as_deref() == Some(cls.name.as_ref()))
+                .count();
             if protected_target.is_none()
                 && sub_count > 0
                 && let Some(m) = cls

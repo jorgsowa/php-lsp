@@ -111,8 +111,8 @@ pub struct DocumentStore {
     /// not discoverable by namespace walk. Pre-ingested into the AnalysisSession
     /// before each file analysis so mir doesn't emit false UndefinedFunction.
     autoload_uris: std::sync::RwLock<Vec<Uri>>,
-    /// Set once the workspace scan's reference-index phase finishes, i.e. the
-    /// `subtypes_of` map in `workspace_index` is complete. Visibility-derived
+    /// Set once the workspace scan's reference-index phase finishes, i.e.
+    /// mir's own subtype graph is complete for the workspace. Visibility-derived
     /// scope narrowing that relies on the full subtype set (protected methods)
     /// only applies once this is `true`; before then it falls back to the full
     /// workspace scope so references are never under-reported.
@@ -457,10 +457,7 @@ impl DocumentStore {
             };
             for fqn in crate::navigation::references::collect_referenced_class_fqns(&doc) {
                 let short = crate::text::fqn_short_name(&fqn);
-                let Some(refs) = ws.classes_by_name.get(short) else {
-                    continue;
-                };
-                for &r in refs {
+                for r in self.class_candidates(&ws, short) {
                     if let Some((decl_uri, cls)) = ws.at(r)
                         && cls.fqn.trim_start_matches('\\') == fqn
                     {
@@ -617,7 +614,8 @@ impl DocumentStore {
     ///
     /// Used by `goto_implementation` and `subtypes` to scope their lookups to
     /// the correct files, fixing aliased `extends` and FQN-qualified forms that
-    /// the raw-name `subtypes_of` map misses.
+    /// the mention-index-narrowed raw-name fallback (`subtypes_of_from_workspace`)
+    /// misses.
     pub fn class_subtype_urls(&self, class_fqn: &str) -> Vec<tower_lsp_server::ls_types::Uri> {
         let session = self.current_analysis_session();
         session
@@ -1443,11 +1441,12 @@ impl DocumentStore {
         let owner_fqn = owner_fqn.trim_start_matches('\\');
         let owner_short = crate::text::fqn_short_name(owner_fqn);
 
-        let Some((decl_uri, decl_class)) = ws.classes_by_name.get(owner_short).and_then(|refs| {
-            refs.iter()
-                .filter_map(|&r| ws.at(r))
-                .find(|(_, cls)| cls.fqn.trim_start_matches('\\') == owner_fqn)
-        }) else {
+        let owner_candidates = self.class_candidates(&ws, owner_short);
+        let Some((decl_uri, decl_class)) = owner_candidates
+            .iter()
+            .filter_map(|&r| ws.at(r))
+            .find(|(_, cls)| cls.fqn.trim_start_matches('\\') == owner_fqn)
+        else {
             // No project/vendor declaration matches this FQN — a builtin
             // owner (`Closure`, `ReflectionParameter`, ...) always lands
             // here, since PHP core/extension classes have no `FileIndex`
@@ -1991,13 +1990,15 @@ impl DocumentStore {
 
     /// Phase J: salsa-memoized aggregate workspace index.
     ///
-    /// Returns the shared `Arc<WorkspaceIndexData>` with flat
-    /// `(Uri, Arc<FileIndex>)` list plus pre-built `classes_by_name` and
-    /// `subtypes_of` reverse maps. Used by workspace_symbols,
+    /// Returns the shared `Arc<WorkspaceIndexData>` with the flat
+    /// `(Uri, Arc<FileIndex>)` list plus `classes_by_lowercase_name` (for
+    /// completion's prefix search). Used by workspace_symbols,
     /// prepare_type_hierarchy, supertypes_of, subtypes_of, and
     /// find_implementations so they don't each rebuild the aggregate per
     /// request. Invalidates automatically when any file's `file_index`
-    /// changes.
+    /// changes. Class/declaration name lookups no longer come from this
+    /// aggregate — see `Self::resolve_class_ref`/`class_candidates`/
+    /// `declaration_candidate_files`, which query mir's mention index instead.
     pub fn get_workspace_index_salsa(&self) -> Arc<crate::db::workspace_index::WorkspaceIndexData> {
         self.sync_workspace_files();
         let ws = *self.lsp_workspace.lock().unwrap();
@@ -2570,6 +2571,134 @@ impl DocumentStore {
     ) -> Vec<Arc<str>> {
         self.current_analysis_session()
             .files_mentioning_any(files, &[short_name])
+    }
+
+    /// Candidate files that may *declare* something named `name` anywhere in
+    /// the workspace (function/class/method/property/constant/enum-case),
+    /// narrowed via mir's persistent per-file mention cache instead of an
+    /// eagerly-rebuilt `name → [DeclRef]` map. A miss means no file's text
+    /// contains `name` at all, so nothing declares it either — same
+    /// necessary-not-sufficient contract as `files_mentioning_short_name`;
+    /// callers must still verify the candidate actually declares `name` (via
+    /// its own `FileIndex`/AST), same as they always have. Unlike an eagerly
+    /// rebuilt map, an edit to file X only invalidates X's own cached mention
+    /// set, not the whole workspace's.
+    pub fn declaration_candidate_files(
+        &self,
+        wi: &crate::db::workspace_index::WorkspaceIndexData,
+        name: &str,
+    ) -> Vec<Uri> {
+        self.files_mentioning_short_name(&wi.file_paths, name)
+            .iter()
+            .filter_map(|p| p.parse::<Uri>().ok())
+            .collect()
+    }
+
+    /// Every class in the workspace whose own (unqualified) name is exactly
+    /// `short_name`, via mir's `classes_named` (O(1) short-name bucket,
+    /// incrementally maintained — no per-call scan over every workspace
+    /// file, unlike the mention-index-based narrowing this used to do). The
+    /// multi-candidate sibling of [`Self::resolve_class_ref`] for callers
+    /// that must consider every same-named class themselves (hierarchy
+    /// walks, ambiguity handling) rather than have one picked for them.
+    pub fn class_candidates(
+        &self,
+        wi: &crate::db::workspace_index::WorkspaceIndexData,
+        short_name: &str,
+    ) -> Vec<crate::db::workspace_index::ClassRef> {
+        self.current_analysis_session()
+            .classes_named(short_name)
+            .into_iter()
+            .filter_map(|(fqcn, _)| self.class_ref_by_fqn(wi, &fqcn))
+            .collect()
+    }
+
+    /// O(1) resolution of a *known* FQN to its declaring class, via mir's own
+    /// incrementally-maintained FQN→location index (`definition_of_cached`,
+    /// backed by the same singleton `all_classes()`/`workspace_classes` read
+    /// from — no rebuild-from-scratch, no per-call scan over every workspace
+    /// file). No php-lsp-side duplicate structure involved. Use this whenever
+    /// the caller already has a resolved FQN, not just a bare short name
+    /// needing disambiguation; falls back to `None` (never wrong, just not
+    /// fast) when mir hasn't loaded/committed the class yet.
+    pub fn class_ref_by_fqn(
+        &self,
+        wi: &crate::db::workspace_index::WorkspaceIndexData,
+        fqn: &str,
+    ) -> Option<crate::db::workspace_index::ClassRef> {
+        let trimmed = fqn.trim_start_matches('\\');
+        let name = mir_analyzer::Name::Class(Arc::from(trimmed));
+        let loc = self
+            .current_analysis_session()
+            .definition_of_cached(&name)
+            .ok()?;
+        let &file_idx = wi.path_to_file_idx.get(loc.file.as_ref())?;
+        let (_, idx) = wi.files.get(file_idx as usize)?;
+        let class_idx = idx
+            .classes
+            .iter()
+            .position(|c| c.fqn.trim_start_matches('\\').eq_ignore_ascii_case(trimmed))?;
+        Some(crate::db::workspace_index::ClassRef {
+            file: file_idx,
+            class: class_idx as u32,
+        })
+    }
+
+    /// Resolve `name` to a single class, disambiguating same-named classes in
+    /// different namespaces. `name` may be a bare short name (resolves to the
+    /// first match via the mention-index-narrowed [`Self::class_candidates`])
+    /// or a fully-qualified name (`Foo\Bar\Baz`, optionally leading with `\`),
+    /// in which case [`Self::class_ref_by_fqn`]'s O(1) mir-backed lookup is
+    /// tried first — the common case for a caller that already resolved an
+    /// alias/import — falling back to the short-name candidate scan (which
+    /// also re-verifies by FQN) only when mir doesn't have it yet.
+    pub fn resolve_class_ref(
+        &self,
+        wi: &crate::db::workspace_index::WorkspaceIndexData,
+        name: &str,
+    ) -> Option<crate::db::workspace_index::ClassRef> {
+        let trimmed = name.trim_start_matches('\\');
+        if trimmed.contains('\\')
+            && let Some(cr) = self.class_ref_by_fqn(wi, trimmed)
+        {
+            return Some(cr);
+        }
+        let short = trimmed.rsplit('\\').next().unwrap_or(trimmed);
+        let candidates = self.class_candidates(wi, short);
+        if trimmed.contains('\\')
+            && let Some(cr) = candidates.iter().find(|cr| {
+                wi.at(**cr).is_some_and(|(_, cls)| {
+                    cls.fqn.trim_start_matches('\\').eq_ignore_ascii_case(trimmed)
+                })
+            })
+        {
+            return Some(*cr);
+        }
+        candidates.first().copied()
+    }
+
+    /// O(candidates) replacement for the old `decls_by_name`-backed linear
+    /// scan: find a declaration named `word` anywhere in the workspace,
+    /// optionally excluding one file (the current document, which the
+    /// caller has already searched with accurate AST ranges), via
+    /// [`Self::declaration_candidate_files`] + the same per-file check
+    /// `goto_declaration_from_index` uses.
+    pub fn find_declaration(
+        &self,
+        wi: &crate::db::workspace_index::WorkspaceIndexData,
+        word: &str,
+        exclude: Option<&Uri>,
+    ) -> Option<tower_lsp_server::ls_types::Location> {
+        let bare = crate::text::strip_variable_sigil(word);
+        let exclude = exclude.map(|u| u.as_str());
+        self.files_mentioning_short_name(&wi.file_paths, word)
+            .into_iter()
+            .filter(|p| exclude != Some(p.as_ref()))
+            .find_map(|p| {
+                let &file_idx = wi.path_to_file_idx.get(p.as_ref())?;
+                let (uri, idx) = wi.files.get(file_idx as usize)?;
+                crate::navigation::declaration::any_declaration_in_file(uri, idx, word, bare)
+            })
     }
 
     /// Files whose `use` imports include `fqn` (leading `\` and ASCII case

@@ -25,25 +25,26 @@ fn make_item_from_index(
     }
 }
 
-/// Phase J — Prepare from the salsa-memoized workspace aggregate. Constant-time
-/// name lookup via `classes_by_name` instead of walking every file's classes.
+/// Phase J — Prepare from the salsa-memoized workspace aggregate.
+/// Mention-index-narrowed name lookup instead of walking every file's classes.
 ///
-/// `uri` is the document the cursor is in. `classes_by_name` is keyed by
-/// short name only, so an unqualified name shared by many classes across the
-/// workspace (e.g. Laravel's ~16 `Factory` classes) would otherwise resolve
-/// to an arbitrary one via `.first()`. When one of the candidates is declared
-/// in `uri` itself — the common case of the cursor sitting on that class's
-/// own declaration — it is preferred over an arbitrary first match.
+/// `uri` is the document the cursor is in. A short name shared by many
+/// classes across the workspace (e.g. Laravel's ~16 `Factory` classes) would
+/// otherwise resolve to an arbitrary one via `.first()`. When one of the
+/// candidates is declared in `uri` itself — the common case of the cursor
+/// sitting on that class's own declaration — it is preferred over an
+/// arbitrary first match.
 pub fn prepare_type_hierarchy_from_workspace(
     source: &str,
     uri: &Uri,
     wi: &crate::db::workspace_index::WorkspaceIndexData,
     position: Position,
+    class_candidates: &dyn Fn(&str) -> Vec<crate::db::workspace_index::ClassRef>,
 ) -> Option<TypeHierarchyItem> {
     use crate::index::file_index::ClassKind;
     use crate::text::word_at_position;
     let word = word_at_position(source, position)?;
-    let refs = wi.classes_by_name.get(&word)?;
+    let refs = class_candidates(&word);
     let (uri, cls) = refs
         .iter()
         .filter_map(|r| wi.at(*r))
@@ -59,41 +60,41 @@ pub fn prepare_type_hierarchy_from_workspace(
 
 /// Phase J — Supertypes via the aggregate. Collect parent/interface names from
 /// every declaration of `item.name`, then resolve each name through
-/// `classes_by_name`. O(definitions-of-item + parents) instead of O(files × classes).
+/// `class_candidates`. O(definitions-of-item + parents) instead of O(files × classes).
 pub fn supertypes_of_from_workspace(
     item: &TypeHierarchyItem,
     wi: &crate::db::workspace_index::WorkspaceIndexData,
+    class_candidates: &dyn Fn(&str) -> Vec<crate::db::workspace_index::ClassRef>,
 ) -> Vec<TypeHierarchyItem> {
     use crate::index::file_index::ClassKind;
     // Collect (super_name_as_written, file_index_for_that_class) pairs.
     let mut super_pairs: Vec<(Arc<str>, Option<&crate::index::file_index::FileIndex>)> = Vec::new();
-    if let Some(refs) = wi.classes_by_name.get(&item.name) {
-        for r in refs {
-            if let Some((_, cls)) = wi.at(*r) {
-                let file_idx = wi.files.get(r.file as usize).map(|(_, idx)| idx.as_ref());
-                if let Some(p) = &cls.parent {
-                    super_pairs.push((Arc::clone(p), file_idx));
-                }
-                for iface in &cls.implements {
-                    super_pairs.push((Arc::clone(iface), file_idx));
-                }
-                for used_trait in &cls.traits {
-                    super_pairs.push((Arc::clone(used_trait), file_idx));
-                }
+    for r in class_candidates(&item.name) {
+        if let Some((_, cls)) = wi.at(r) {
+            let file_idx = wi.files.get(r.file as usize).map(|(_, idx)| idx.as_ref());
+            if let Some(p) = &cls.parent {
+                super_pairs.push((Arc::clone(p), file_idx));
+            }
+            for iface in &cls.implements {
+                super_pairs.push((Arc::clone(iface), file_idx));
+            }
+            for used_trait in &cls.traits {
+                super_pairs.push((Arc::clone(used_trait), file_idx));
             }
         }
     }
 
     let mut result = Vec::new();
-    // `wi.classes_by_name` is keyed by short name only, so distinct classes
-    // sharing a name (e.g. two `BlogController`s in different namespaces)
-    // each contribute their own `super_pairs` entries above; when both extend
-    // the same parent, that parent would otherwise be pushed twice. Dedup on
-    // FQN to collapse those repeats without narrowing which parents count.
+    // Distinct classes sharing a name (e.g. two `BlogController`s in
+    // different namespaces) each contribute their own `super_pairs` entries
+    // above; when both extend the same parent, that parent would otherwise
+    // be pushed twice. Dedup on FQN to collapse those repeats without
+    // narrowing which parents count.
     let mut seen_fqns: HashSet<Box<str>> = HashSet::new();
     for (name, file_idx) in super_pairs {
         // Direct lookup: class is named exactly as written.
-        let canonical = if wi.classes_by_name.contains_key(name.as_ref()) {
+        let direct = class_candidates(name.as_ref());
+        let canonical = if !direct.is_empty() {
             Some(name.as_ref().to_string())
         } else {
             // Resolve through the implementing file's use_imports.
@@ -107,8 +108,8 @@ pub fn supertypes_of_from_workspace(
         let Some(canonical_name) = canonical else {
             continue;
         };
-        if let Some(refs) = wi.classes_by_name.get(&canonical_name)
-            && let Some((uri, cls)) = refs.first().and_then(|r| wi.at(*r))
+        let refs = class_candidates(&canonical_name);
+        if let Some((uri, cls)) = refs.first().and_then(|r| wi.at(*r))
             && seen_fqns.insert(cls.fqn.clone())
         {
             let kind = match cls.kind {
@@ -134,9 +135,10 @@ pub fn subtypes_of_mir_backed(
     item_fqn: Option<&str>,
     wi: &crate::db::workspace_index::WorkspaceIndexData,
     subtype_urls: &[Uri],
+    mention_candidates: &dyn Fn(&str) -> Vec<Uri>,
 ) -> Vec<TypeHierarchyItem> {
     if subtype_urls.is_empty() {
-        return subtypes_of_from_workspace(item, item_fqn, wi);
+        return subtypes_of_from_workspace(item, item_fqn, wi, mention_candidates);
     }
     use crate::index::file_index::ClassKind;
     use crate::navigation::implementation::{alias_resolves_to, name_matches};
@@ -177,40 +179,52 @@ pub fn subtypes_of_mir_backed(
     result
 }
 
-/// Phase J — Subtypes via the pre-built `subtypes_of` reverse map. O(matches)
-/// instead of O(files × classes).
+/// Phase J — Subtypes via mir's mention index: files that mention
+/// `item.name` at all are the only ones whose `extends`/`implements`/`use`
+/// clause could possibly name it, so mention-candidates replaces the old
+/// eagerly-rebuilt `subtypes_of` reverse map as the narrowing step.
 ///
-/// `item_fqn` is the FQCN of the hierarchy item when known. The raw-name
-/// `subtypes_of` map is keyed by short name only, so it is over-inclusive
-/// across a large workspace (e.g. many unrelated `Factory` interfaces each
-/// aliased to the same `FactoryContract` locally). Each candidate is
-/// therefore re-checked against `item_fqn` via `resolves_to_fqn`, which
-/// resolves the candidate's own `extends`/`implements`/`use` clause through
-/// its `use_imports` and namespace before accepting the match. Falls back to
-/// a bare short-name match when `item_fqn` is unavailable.
+/// `item_fqn` is the FQCN of the hierarchy item when known. A mention hit is
+/// necessary but not sufficient (over-inclusive across a large workspace,
+/// e.g. many unrelated `Factory` interfaces each aliased to the same
+/// `FactoryContract` locally), so each candidate is re-checked against
+/// `item_fqn` via `resolves_to_fqn`, which resolves the candidate's own
+/// `extends`/`implements`/`use` clause through its `use_imports` and
+/// namespace before accepting the match. Falls back to a bare short-name
+/// match when `item_fqn` is unavailable.
 pub fn subtypes_of_from_workspace(
     item: &TypeHierarchyItem,
     item_fqn: Option<&str>,
     wi: &crate::db::workspace_index::WorkspaceIndexData,
+    mention_candidates: &dyn Fn(&str) -> Vec<Uri>,
 ) -> Vec<TypeHierarchyItem> {
     use crate::index::file_index::ClassKind;
     use crate::navigation::implementation::resolves_to_fqn;
-    let Some(refs) = wi.subtypes_of.get(item.name.as_str()) else {
-        return Vec::new();
-    };
-    refs.iter()
-        .filter_map(|r| {
-            let (uri, cls) = wi.at(*r)?;
-            let file_idx = wi.files.get(r.file as usize).map(|(_, idx)| idx.as_ref());
+    let candidates: Vec<&(Uri, std::sync::Arc<crate::index::file_index::FileIndex>)> =
+        mention_candidates(&item.name)
+            .iter()
+            .filter_map(|u| {
+                let &file_idx = wi.path_to_file_idx.get(u.as_str())?;
+                wi.files.get(file_idx as usize)
+            })
+            .collect();
+    candidates
+        .iter()
+        .flat_map(|(uri, idx)| idx.classes.iter().map(move |cls| (uri, idx.as_ref(), cls)))
+        .filter_map(|(uri, file_idx, cls)| {
             let matches = match item_fqn {
                 Some(f) => {
-                    let named =
-                        |name: &str| file_idx.is_some_and(|idx| resolves_to_fqn(name, f, idx));
-                    cls.parent.as_deref().is_some_and(&named)
+                    let named = |name: &str| resolves_to_fqn(name, f, file_idx);
+                    cls.parent.as_deref().is_some_and(named)
                         || cls.implements.iter().any(|iface| named(iface.as_ref()))
                         || cls.traits.iter().any(|t| named(t.as_ref()))
                 }
-                None => true,
+                None => {
+                    let named = |name: &str| name == item.name;
+                    cls.parent.as_deref().is_some_and(named)
+                        || cls.implements.iter().any(|iface| named(iface.as_ref()))
+                        || cls.traits.iter().any(|t| named(t.as_ref()))
+                }
             };
             matches.then_some((uri, cls))
         })

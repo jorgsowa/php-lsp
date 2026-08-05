@@ -10,6 +10,7 @@ use php_lsp::ast::ParsedDoc;
 use php_lsp::call_hierarchy::{outgoing_calls_indexed, prepare_call_hierarchy_indexed};
 use php_lsp::completion::{CompletionCtx, filtered_completions_at};
 use php_lsp::definition::goto_definition;
+use php_lsp::document_store::DocumentStore;
 use php_lsp::file_index::FileIndex;
 use php_lsp::hover::hover_info_with_maps;
 use php_lsp::symbol_map::SymbolMap;
@@ -609,7 +610,11 @@ fn bench_definition_index_fallback(c: &mut Criterion) {
         docs.len()
     );
     let indexes = to_indexes(&docs);
-    let wi = php_lsp::db::workspace_index::WorkspaceIndexData::from_files(indexes.clone());
+    let store = DocumentStore::new();
+    for (uri, parsed) in &docs {
+        store.ingest(uri.clone(), parsed.source());
+    }
+    let wi = store.get_workspace_index_salsa();
 
     let mut group = c.benchmark_group("definition");
     group.sample_size(10);
@@ -619,14 +624,175 @@ fn bench_definition_index_fallback(c: &mut Criterion) {
         b.iter(|| black_box(find_declaration_linear_scan("zzz_no_such_symbol", &indexes)));
     });
     group.bench_function("index_fallback_map_miss", |b| {
-        b.iter(|| black_box(wi.find_declaration("zzz_no_such_symbol", None)));
+        b.iter(|| black_box(store.find_declaration(&wi, "zzz_no_such_symbol", None)));
     });
     // Typical hit: a method name defined deep in the framework.
     group.bench_function("index_fallback_linear_hit", |b| {
         b.iter(|| black_box(find_declaration_linear_scan("firstOrCreate", &indexes)));
     });
     group.bench_function("index_fallback_map_hit", |b| {
-        b.iter(|| black_box(wi.find_declaration("firstOrCreate", None)));
+        b.iter(|| black_box(store.find_declaration(&wi, "firstOrCreate", None)));
+    });
+    group.finish();
+}
+
+/// Reconstruction of the pre-refactor `build_maps` (the full `classes_by_name`
+/// + `subtypes_of` + `decls_by_name` construction that `WorkspaceIndexData`
+/// used to rebuild from scratch on every edit, before ROADMAP.md 0f's
+/// `WorkspaceIndexData`-consolidation pass retired it in favor of mir's
+/// mention index). Kept here, not in `src/`, purely to give the removed cost
+/// a real number instead of an assertion — this is dead code otherwise.
+fn old_build_maps_reconstruction(files: &[(Uri, Arc<FileIndex>)]) {
+    use std::collections::HashMap;
+    #[derive(Clone, Copy)]
+    struct ClassRef {
+        file: u32,
+        class: u32,
+    }
+    enum DeclKind {
+        Function,
+        Class,
+        Method,
+        Property,
+        Constant,
+        EnumCase,
+    }
+    struct DeclRef {
+        file: u32,
+        line: u32,
+        kind: DeclKind,
+    }
+    let mut classes_by_name: HashMap<String, Vec<ClassRef>> = HashMap::new();
+    let mut subtypes_of: HashMap<Arc<str>, Vec<ClassRef>> = HashMap::new();
+    let mut decls_by_name: HashMap<String, Vec<DeclRef>> = HashMap::new();
+    let push_decl = |map: &mut HashMap<String, Vec<DeclRef>>,
+                     name: &str,
+                     file: u32,
+                     line: u32,
+                     kind: DeclKind| {
+        map.entry(name.to_string())
+            .or_default()
+            .push(DeclRef { file, line, kind });
+    };
+    for (file_idx, (_, idx)) in files.iter().enumerate() {
+        let file_idx = file_idx as u32;
+        for f in &idx.functions {
+            push_decl(
+                &mut decls_by_name,
+                &f.name,
+                file_idx,
+                f.start_line,
+                DeclKind::Function,
+            );
+        }
+        for (cls_idx, cls) in idx.classes.iter().enumerate() {
+            let cr = ClassRef {
+                file: file_idx,
+                class: cls_idx as u32,
+            };
+            classes_by_name
+                .entry(cls.name.as_ref().to_string())
+                .or_default()
+                .push(cr);
+            if let Some(parent) = &cls.parent {
+                subtypes_of.entry(Arc::clone(parent)).or_default().push(cr);
+            }
+            for iface in &cls.implements {
+                subtypes_of.entry(Arc::clone(iface)).or_default().push(cr);
+                if let Some((_, fqn)) = idx
+                    .use_imports
+                    .iter()
+                    .find(|(alias, _)| alias.as_ref() == iface.as_ref())
+                {
+                    let short = fqn.trim_start_matches('\\').rsplit('\\').next().unwrap_or(fqn);
+                    if short != iface.as_ref() {
+                        subtypes_of.entry(Arc::from(short)).or_default().push(cr);
+                    }
+                }
+            }
+            for trt in &cls.traits {
+                subtypes_of.entry(Arc::clone(trt)).or_default().push(cr);
+            }
+            push_decl(
+                &mut decls_by_name,
+                &cls.name,
+                file_idx,
+                cls.start_line,
+                DeclKind::Class,
+            );
+            for m in &cls.methods {
+                push_decl(
+                    &mut decls_by_name,
+                    &m.name,
+                    file_idx,
+                    m.start_line,
+                    DeclKind::Method,
+                );
+            }
+            for p in &cls.properties {
+                push_decl(
+                    &mut decls_by_name,
+                    &p.name,
+                    file_idx,
+                    p.start_line,
+                    DeclKind::Property,
+                );
+            }
+            for cc in &cls.constants {
+                push_decl(
+                    &mut decls_by_name,
+                    cc,
+                    file_idx,
+                    cls.start_line,
+                    DeclKind::Constant,
+                );
+            }
+            for case in &cls.cases {
+                push_decl(
+                    &mut decls_by_name,
+                    case,
+                    file_idx,
+                    cls.start_line,
+                    DeclKind::EnumCase,
+                );
+            }
+        }
+    }
+    let mut classes_by_lowercase_name: Vec<(Box<str>, ClassRef)> = classes_by_name
+        .iter()
+        .filter_map(|(name, refs)| refs.first().map(|cr| (name.to_lowercase().into(), *cr)))
+        .collect();
+    classes_by_lowercase_name.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+    black_box((classes_by_name, subtypes_of, decls_by_name, classes_by_lowercase_name));
+}
+
+/// The actual removed cost: rebuilding the whole aggregate from scratch,
+/// which used to happen on every single-file edit (any change bumps the
+/// salsa revision the `workspace_index` query depends on). Old vs new,
+/// same fixture, same machine — the real "what got eliminated" number,
+/// not an assumption.
+fn bench_workspace_index_rebuild(c: &mut Criterion) {
+    let Some(docs) = laravel_docs() else {
+        eprintln!("Laravel fixture not found — skipping workspace_index_rebuild/*");
+        return;
+    };
+    let indexes = to_indexes(&docs);
+    eprintln!(
+        "Laravel fixture: {} PHP files (workspace_index_rebuild)",
+        indexes.len()
+    );
+
+    let mut group = c.benchmark_group("workspace_index_rebuild");
+    group.sample_size(10);
+    group.bench_function("old_classes_subtypes_decls_by_name", |b| {
+        b.iter(|| old_build_maps_reconstruction(&indexes));
+    });
+    group.bench_function("new_classes_by_lowercase_name_only", |b| {
+        b.iter(|| {
+            black_box(php_lsp::db::workspace_index::WorkspaceIndexData::from_files(
+                indexes.clone(),
+            ))
+        });
     });
     group.finish();
 }
@@ -679,25 +845,44 @@ fn bench_call_hierarchy(c: &mut Criterion) {
         eprintln!("Laravel fixture: {} PHP files (call_hierarchy)", docs.len());
         group.sample_size(10);
 
-        // Indexed variants: decls_by_name lookups instead of per-callee
-        // workspace scans — the path the server handlers use.
-        let wi = php_lsp::db::workspace_index::WorkspaceIndexData::from_files(to_indexes(&docs));
+        // Indexed variants: mir-mention-index-narrowed lookups instead of
+        // per-callee workspace scans — the path the server handlers use.
+        let store = DocumentStore::new();
+        for (uri, parsed) in &docs {
+            store.ingest(uri.clone(), parsed.source());
+        }
+        let wi = store.get_workspace_index_salsa();
         let doc_map: std::collections::HashMap<Uri, Arc<ParsedDoc>> =
             docs.iter().cloned().collect();
         let get_doc = |u: &Uri| doc_map.get(u).cloned();
+        let mention_candidates = |name: &str| store.declaration_candidate_files(&wi, name);
         group.bench_function("prepare_indexed/laravel_framework", |b| {
-            b.iter(|| black_box(prepare_call_hierarchy_indexed("camel", &wi, &get_doc)));
+            b.iter(|| {
+                black_box(prepare_call_hierarchy_indexed(
+                    "camel",
+                    &wi,
+                    &get_doc,
+                    &mention_candidates,
+                ))
+            });
         });
         // `Str` is a class name; prepare only yields items for functions and
         // methods, so the outgoing bench needs a method symbol.
-        let method_item = prepare_call_hierarchy_indexed("camel", &wi, &get_doc);
+        let method_item = prepare_call_hierarchy_indexed("camel", &wi, &get_doc, &mention_candidates);
         assert!(
             method_item.is_some(),
             "expected `camel` (Str::camel) to resolve in the Laravel fixture"
         );
         if let Some(item) = method_item {
             group.bench_function("outgoing_indexed/laravel_framework", |b| {
-                b.iter(|| black_box(outgoing_calls_indexed(&item, &wi, &get_doc)));
+                b.iter(|| {
+                    black_box(outgoing_calls_indexed(
+                        &item,
+                        &wi,
+                        &get_doc,
+                        &mention_candidates,
+                    ))
+                });
             });
         }
     } else {
@@ -816,6 +1001,7 @@ criterion_group!(
     bench_hover,
     bench_definition,
     bench_definition_index_fallback,
+    bench_workspace_index_rebuild,
     bench_semantic_tokens,
     bench_inlay_hints,
     bench_completion,

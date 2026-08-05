@@ -321,10 +321,10 @@ impl Backend {
         item_name: &str,
         wi: &crate::db::workspace_index::WorkspaceIndexData,
     ) -> bool {
-        let refs = match wi.classes_by_name.get(item_name) {
-            Some(r) => r.clone(),
-            None => return false,
-        };
+        let refs = self.docs.class_candidates(wi, item_name);
+        if refs.is_empty() {
+            return false;
+        }
 
         let mut ingested = false;
         for r in &refs {
@@ -343,7 +343,7 @@ impl Backend {
 
             for name in super_names {
                 let short = crate::text::fqn_short_name(&name);
-                if wi.classes_by_name.contains_key(short) {
+                if !self.docs.class_candidates(wi, short).is_empty() {
                     continue;
                 }
                 // Resolve short name to FQN via the implementing file's use_imports.
