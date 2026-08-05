@@ -494,7 +494,6 @@ fn bench_semantic_tokens(c: &mut Criterion) {
 
 fn bench_inlay_hints(c: &mut Criterion) {
     use php_lsp::analysis::inlay_hints::inlay_hints;
-    use php_lsp::db::workspace_index::build_func_signatures;
 
     let full_range = tower_lsp_server::ls_types::Range {
         start: Position {
@@ -509,38 +508,15 @@ fn bench_inlay_hints(c: &mut Criterion) {
 
     let mut group = c.benchmark_group("inlay_hints");
     let medium = Arc::new(ParsedDoc::parse(MEDIUM.to_owned()));
-    let no_workspace_defs = std::collections::HashMap::new();
     group.bench_function("medium_no_workspace", |b| {
-        b.iter(|| {
-            black_box(inlay_hints(
-                MEDIUM,
-                &medium,
-                None,
-                full_range,
-                &no_workspace_defs,
-            ))
-        });
+        b.iter(|| black_box(inlay_hints(MEDIUM, &medium, None, None, full_range)));
     });
 
-    if let Some(docs) = laravel_docs() {
-        let indexes = to_indexes(&docs);
-        // Built once, outside the timed closure: production caches this on
-        // WorkspaceIndexData per revision (see WorkspaceIndexData::func_signatures),
-        // so a real inlay_hint request only pays this cost once per edit, not
-        // once per request.
-        let workspace_defs = build_func_signatures(&indexes);
+    if laravel_docs().is_some() {
         let ctrl = Arc::new(ParsedDoc::parse(CONTROLLER.to_owned()));
         group.sample_size(20);
-        group.bench_function("controller_laravel_workspace", |b| {
-            b.iter(|| {
-                black_box(inlay_hints(
-                    CONTROLLER,
-                    &ctrl,
-                    None,
-                    full_range,
-                    &workspace_defs,
-                ))
-            });
+        group.bench_function("controller_laravel_parse_only", |b| {
+            b.iter(|| black_box(inlay_hints(CONTROLLER, &ctrl, None, None, full_range)));
         });
     } else {
         eprintln!("Laravel fixture not found — skipping inlay_hints/laravel bench");

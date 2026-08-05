@@ -6,7 +6,6 @@ use php_ast::{
 use serde_json::json;
 use tower_lsp_server::ls_types::{InlayHint, InlayHintKind, InlayHintLabel, Position, Range};
 
-use crate::db::workspace_index::FuncSignature;
 use crate::document::ast::{ParsedDoc, SourceView, format_type_hint};
 use crate::text::fqn_short_name;
 
@@ -29,35 +28,53 @@ fn foreach_var_class(
 /// Returns parameter-name inlay hints AND return-type hints for all
 /// function/method declarations and calls in `doc`.
 ///
-/// `workspace_defs` is the workspace-wide function/method signature map
-/// (`WorkspaceIndexData::func_signatures`, cached per revision); definitions
-/// not found in the current document fall back to it so that calls to
-/// cross-file functions/methods still get parameter-name hints.
 pub fn inlay_hints(
     _source: &str,
     doc: &ParsedDoc,
     analysis: Option<&mir_analyzer::FileAnalysis>,
+    session: Option<&mir_analyzer::AnalysisSession>,
     range: Range,
-    workspace_defs: &HashMap<String, FuncSignature>,
 ) -> Vec<InlayHint> {
     let sv = doc.view();
     let defs = collect_defs(&doc.program().stmts);
     let mut hints = Vec::new();
-    hints_in_stmts(
+    let ctx = HintCtx {
         sv,
-        &doc.program().stmts,
-        &defs,
-        workspace_defs,
+        defs: &defs,
         analysis,
+        session,
         range,
-        &mut hints,
-    );
+    };
+    hints_in_stmts(&ctx, &doc.program().stmts, &mut hints);
     hints
+}
+
+#[derive(Clone)]
+struct CallableSignature {
+    params: Vec<String>,
+    variadic_last: bool,
+    return_type: Option<String>,
+    tooltip: Option<TooltipSymbol>,
+}
+
+#[derive(Clone)]
+struct TooltipSymbol {
+    kind: &'static str,
+    name: String,
+    class: Option<String>,
+}
+
+struct HintCtx<'a> {
+    sv: SourceView<'a>,
+    defs: &'a HashMap<String, CallableSignature>,
+    analysis: Option<&'a mir_analyzer::FileAnalysis>,
+    session: Option<&'a mir_analyzer::AnalysisSession>,
+    range: Range,
 }
 
 // === Definition collection ===
 
-fn collect_defs(stmts: &[Stmt<'_, '_>]) -> HashMap<String, FuncSignature> {
+fn collect_defs(stmts: &[Stmt<'_, '_>]) -> HashMap<String, CallableSignature> {
     let mut map = HashMap::new();
     collect_defs_stmts(stmts, &mut map);
     map
@@ -65,12 +82,15 @@ fn collect_defs(stmts: &[Stmt<'_, '_>]) -> HashMap<String, FuncSignature> {
 
 /// Extract param names and whether the last param is variadic from a param list.
 fn params_from_list(params: &[Param<'_, '_>]) -> (Vec<String>, bool) {
-    let names = params.iter().map(|p| p.name.to_string()).collect();
+    let names = params
+        .iter()
+        .map(|p| p.name.to_string().trim_start_matches('$').to_string())
+        .collect();
     let variadic_last = params.last().map(|p| p.variadic).unwrap_or(false);
     (names, variadic_last)
 }
 
-fn collect_defs_stmts(stmts: &[Stmt<'_, '_>], map: &mut HashMap<String, FuncSignature>) {
+fn collect_defs_stmts(stmts: &[Stmt<'_, '_>], map: &mut HashMap<String, CallableSignature>) {
     for stmt in stmts {
         match &stmt.kind {
             StmtKind::Function(f) => {
@@ -78,10 +98,15 @@ fn collect_defs_stmts(stmts: &[Stmt<'_, '_>], map: &mut HashMap<String, FuncSign
                 let return_type = f.return_type.as_ref().map(|t| format_type_hint(t));
                 map.insert(
                     f.name.to_string(),
-                    FuncSignature {
+                    CallableSignature {
                         params,
                         variadic_last,
                         return_type,
+                        tooltip: Some(TooltipSymbol {
+                            kind: "function",
+                            name: f.name.to_string(),
+                            class: None,
+                        }),
                     },
                 );
             }
@@ -90,10 +115,15 @@ fn collect_defs_stmts(stmts: &[Stmt<'_, '_>], map: &mut HashMap<String, FuncSign
                     if let ClassMemberKind::Method(m) = &member.kind {
                         let (params, variadic_last) = params_from_list(&m.params);
                         let return_type = m.return_type.as_ref().map(|t| format_type_hint(t));
-                        let func_def = FuncSignature {
+                        let func_def = CallableSignature {
                             params: params.clone(),
                             variadic_last,
                             return_type: return_type.clone(),
+                            tooltip: c.name.map(|cn| TooltipSymbol {
+                                kind: "method",
+                                name: m.name.to_string(),
+                                class: Some(cn.to_string()),
+                            }),
                         };
                         // Register with qualified key "ClassName::methodName" for unambiguous lookup
                         if let Some(cn) = c.name {
@@ -106,10 +136,15 @@ fn collect_defs_stmts(stmts: &[Stmt<'_, '_>], map: &mut HashMap<String, FuncSign
                         {
                             map.insert(
                                 class_name.to_string(),
-                                FuncSignature {
+                                CallableSignature {
                                     params: params.clone(),
                                     variadic_last,
                                     return_type: None,
+                                    tooltip: Some(TooltipSymbol {
+                                        kind: "class",
+                                        name: class_name.to_string(),
+                                        class: None,
+                                    }),
                                 },
                             );
                         }
@@ -122,10 +157,15 @@ fn collect_defs_stmts(stmts: &[Stmt<'_, '_>], map: &mut HashMap<String, FuncSign
                     if let ClassMemberKind::Method(m) = &member.kind {
                         let (params, variadic_last) = params_from_list(&m.params);
                         let return_type = m.return_type.as_ref().map(|t| format_type_hint(t));
-                        let func_def = FuncSignature {
+                        let func_def = CallableSignature {
                             params,
                             variadic_last,
                             return_type,
+                            tooltip: Some(TooltipSymbol {
+                                kind: "method",
+                                name: m.name.to_string(),
+                                class: Some(t.name.to_string()),
+                            }),
                         };
                         // Register with qualified key for unambiguous lookup
                         let qualified = format!("{}::{}", t.name, m.name);
@@ -139,10 +179,15 @@ fn collect_defs_stmts(stmts: &[Stmt<'_, '_>], map: &mut HashMap<String, FuncSign
                     if let EnumMemberKind::Method(m) = &member.kind {
                         let (params, variadic_last) = params_from_list(&m.params);
                         let return_type = m.return_type.as_ref().map(|t| format_type_hint(t));
-                        let func_def = FuncSignature {
+                        let func_def = CallableSignature {
                             params,
                             variadic_last,
                             return_type,
+                            tooltip: Some(TooltipSymbol {
+                                kind: "method",
+                                name: m.name.to_string(),
+                                class: Some(e.name.to_string()),
+                            }),
                         };
                         // Register with qualified key for unambiguous lookup
                         let qualified = format!("{}::{}", e.name, m.name);
@@ -168,10 +213,11 @@ fn collect_defs_stmts(stmts: &[Stmt<'_, '_>], map: &mut HashMap<String, FuncSign
                             let return_type = c.return_type.as_ref().map(|t| format_type_hint(t));
                             map.insert(
                                 key,
-                                FuncSignature {
+                                CallableSignature {
                                     params,
                                     variadic_last,
                                     return_type,
+                                    tooltip: None,
                                 },
                             );
                         }
@@ -180,10 +226,11 @@ fn collect_defs_stmts(stmts: &[Stmt<'_, '_>], map: &mut HashMap<String, FuncSign
                             let return_type = a.return_type.as_ref().map(|t| format_type_hint(t));
                             map.insert(
                                 key,
-                                FuncSignature {
+                                CallableSignature {
                                     params,
                                     variadic_last,
                                     return_type,
+                                    tooltip: None,
                                 },
                             );
                         }
@@ -198,56 +245,28 @@ fn collect_defs_stmts(stmts: &[Stmt<'_, '_>], map: &mut HashMap<String, FuncSign
 
 // === AST walking ===
 
-fn hints_in_stmts(
-    sv: SourceView<'_>,
-    stmts: &[Stmt<'_, '_>],
-    defs: &HashMap<String, FuncSignature>,
-    workspace_defs: &HashMap<String, FuncSignature>,
-    analysis: Option<&mir_analyzer::FileAnalysis>,
-    range: Range,
-    out: &mut Vec<InlayHint>,
-) {
+fn hints_in_stmts(ctx: &HintCtx<'_>, stmts: &[Stmt<'_, '_>], out: &mut Vec<InlayHint>) {
     for stmt in stmts {
-        hints_in_stmt(sv, stmt, defs, workspace_defs, analysis, range, out);
+        hints_in_stmt(ctx, stmt, out);
     }
 }
 
-fn hints_in_stmt(
-    sv: SourceView<'_>,
-    stmt: &Stmt<'_, '_>,
-    defs: &HashMap<String, FuncSignature>,
-    workspace_defs: &HashMap<String, FuncSignature>,
-    analysis: Option<&mir_analyzer::FileAnalysis>,
-    range: Range,
-    out: &mut Vec<InlayHint>,
-) {
+fn hints_in_stmt(ctx: &HintCtx<'_>, stmt: &Stmt<'_, '_>, out: &mut Vec<InlayHint>) {
     match &stmt.kind {
-        StmtKind::Expression(e) => hints_in_expr(sv, e, defs, workspace_defs, analysis, range, out),
-        StmtKind::Return(Some(v)) => {
-            hints_in_expr(sv, v, defs, workspace_defs, analysis, range, out)
-        }
+        StmtKind::Expression(e) => hints_in_expr(ctx, e, out),
+        StmtKind::Return(Some(v)) => hints_in_expr(ctx, v, out),
         StmtKind::Echo(exprs) => {
             for expr in exprs.iter() {
-                hints_in_expr(sv, expr, defs, workspace_defs, analysis, range, out);
+                hints_in_expr(ctx, expr, out);
             }
         }
-        StmtKind::Function(f) => {
-            hints_in_stmts(
-                sv,
-                &f.body.stmts,
-                defs,
-                workspace_defs,
-                analysis,
-                range,
-                out,
-            );
-        }
+        StmtKind::Function(f) => hints_in_stmts(ctx, &f.body.stmts, out),
         StmtKind::Class(c) => {
             for member in c.body.members.iter() {
                 if let ClassMemberKind::Method(m) = &member.kind
                     && let Some(body) = &m.body
                 {
-                    hints_in_stmts(sv, &body.stmts, defs, workspace_defs, analysis, range, out);
+                    hints_in_stmts(ctx, &body.stmts, out);
                 }
             }
         }
@@ -256,7 +275,7 @@ fn hints_in_stmt(
                 if let ClassMemberKind::Method(m) = &member.kind
                     && let Some(body) = &m.body
                 {
-                    hints_in_stmts(sv, &body.stmts, defs, workspace_defs, analysis, range, out);
+                    hints_in_stmts(ctx, &body.stmts, out);
                 }
             }
         }
@@ -265,260 +284,184 @@ fn hints_in_stmt(
                 if let EnumMemberKind::Method(m) = &member.kind
                     && let Some(body) = &m.body
                 {
-                    hints_in_stmts(sv, &body.stmts, defs, workspace_defs, analysis, range, out);
+                    hints_in_stmts(ctx, &body.stmts, out);
                 }
             }
         }
         StmtKind::Namespace(ns) => {
             if let NamespaceBody::Braced(inner) = &ns.body {
-                hints_in_stmts(sv, &inner.stmts, defs, workspace_defs, analysis, range, out);
+                hints_in_stmts(ctx, &inner.stmts, out);
             }
         }
         StmtKind::If(i) => {
-            hints_in_expr(sv, &i.condition, defs, workspace_defs, analysis, range, out);
-            hints_in_stmt(
-                sv,
-                i.then_branch,
-                defs,
-                workspace_defs,
-                analysis,
-                range,
-                out,
-            );
+            hints_in_expr(ctx, &i.condition, out);
+            hints_in_stmt(ctx, i.then_branch, out);
             for ei in i.elseif_branches.iter() {
-                hints_in_expr(
-                    sv,
-                    &ei.condition,
-                    defs,
-                    workspace_defs,
-                    analysis,
-                    range,
-                    out,
-                );
-                hints_in_stmt(sv, &ei.body, defs, workspace_defs, analysis, range, out);
+                hints_in_expr(ctx, &ei.condition, out);
+                hints_in_stmt(ctx, &ei.body, out);
             }
             if let Some(e) = &i.else_branch {
-                hints_in_stmt(sv, e, defs, workspace_defs, analysis, range, out);
+                hints_in_stmt(ctx, e, out);
             }
         }
         StmtKind::While(w) => {
-            hints_in_expr(sv, &w.condition, defs, workspace_defs, analysis, range, out);
-            hints_in_stmt(sv, w.body, defs, workspace_defs, analysis, range, out);
+            hints_in_expr(ctx, &w.condition, out);
+            hints_in_stmt(ctx, w.body, out);
         }
         StmtKind::For(f) => {
             for e in f.init.iter() {
-                hints_in_expr(sv, e, defs, workspace_defs, analysis, range, out);
+                hints_in_expr(ctx, e, out);
             }
             for cond in f.condition.iter() {
-                hints_in_expr(sv, cond, defs, workspace_defs, analysis, range, out);
+                hints_in_expr(ctx, cond, out);
             }
             for e in f.update.iter() {
-                hints_in_expr(sv, e, defs, workspace_defs, analysis, range, out);
+                hints_in_expr(ctx, e, out);
             }
-            hints_in_stmt(sv, f.body, defs, workspace_defs, analysis, range, out);
+            hints_in_stmt(ctx, f.body, out);
         }
         StmtKind::Foreach(f) => {
-            hints_in_expr(sv, &f.expr, defs, workspace_defs, analysis, range, out);
+            hints_in_expr(ctx, &f.expr, out);
             // Emit type hint after the value variable, e.g. `foreach ($arr as $item /* : Foo */)`.
             if let ExprKind::Variable(_) = &f.value.kind
-                && let Some(ty) = foreach_var_class(analysis, f.value.span.start)
+                && let Some(ty) = foreach_var_class(ctx.analysis, f.value.span.start)
             {
-                let pos = sv.position_of(f.value.span.end);
-                if pos_in_range(pos, range) {
+                let pos = ctx.sv.position_of(f.value.span.end);
+                if pos_in_range(pos, ctx.range) {
                     out.push(make_foreach_type_hint(pos, &ty));
                 }
             }
             // Emit type hint after the key variable if present, e.g. `foreach ($map as $key => $value)`.
             if let Some(key_expr) = &f.key
                 && let ExprKind::Variable(_) = &key_expr.kind
-                && let Some(ty) = foreach_var_class(analysis, key_expr.span.start)
+                && let Some(ty) = foreach_var_class(ctx.analysis, key_expr.span.start)
             {
-                let pos = sv.position_of(key_expr.span.end);
-                if pos_in_range(pos, range) {
+                let pos = ctx.sv.position_of(key_expr.span.end);
+                if pos_in_range(pos, ctx.range) {
                     out.push(make_foreach_type_hint(pos, &ty));
                 }
             }
-            hints_in_stmt(sv, f.body, defs, workspace_defs, analysis, range, out);
+            hints_in_stmt(ctx, f.body, out);
         }
         StmtKind::TryCatch(t) => {
-            hints_in_stmts(
-                sv,
-                &t.body.stmts,
-                defs,
-                workspace_defs,
-                analysis,
-                range,
-                out,
-            );
+            hints_in_stmts(ctx, &t.body.stmts, out);
             for catch in t.catches.iter() {
-                hints_in_stmts(
-                    sv,
-                    &catch.body.stmts,
-                    defs,
-                    workspace_defs,
-                    analysis,
-                    range,
-                    out,
-                );
+                hints_in_stmts(ctx, &catch.body.stmts, out);
             }
             if let Some(finally) = &t.finally {
-                hints_in_stmts(
-                    sv,
-                    &finally.stmts,
-                    defs,
-                    workspace_defs,
-                    analysis,
-                    range,
-                    out,
-                );
+                hints_in_stmts(ctx, &finally.stmts, out);
             }
         }
-        StmtKind::Block(stmts) => {
-            hints_in_stmts(sv, &stmts.stmts, defs, workspace_defs, analysis, range, out)
-        }
+        StmtKind::Block(stmts) => hints_in_stmts(ctx, &stmts.stmts, out),
         StmtKind::DoWhile(d) => {
-            hints_in_stmt(sv, d.body, defs, workspace_defs, analysis, range, out);
-            hints_in_expr(sv, &d.condition, defs, workspace_defs, analysis, range, out);
+            hints_in_stmt(ctx, d.body, out);
+            hints_in_expr(ctx, &d.condition, out);
         }
         StmtKind::Switch(s) => {
-            hints_in_expr(sv, &s.expr, defs, workspace_defs, analysis, range, out);
+            hints_in_expr(ctx, &s.expr, out);
             for case in s.body.cases.iter() {
                 if let Some(v) = &case.value {
-                    hints_in_expr(sv, v, defs, workspace_defs, analysis, range, out);
+                    hints_in_expr(ctx, v, out);
                 }
-                hints_in_stmts(sv, &case.body, defs, workspace_defs, analysis, range, out);
+                hints_in_stmts(ctx, &case.body, out);
             }
         }
         _ => {}
     }
 }
 
-fn hints_in_expr(
-    sv: SourceView<'_>,
-    expr: &Expr<'_, '_>,
-    defs: &HashMap<String, FuncSignature>,
-    workspace_defs: &HashMap<String, FuncSignature>,
-    analysis: Option<&mir_analyzer::FileAnalysis>,
-    range: Range,
-    out: &mut Vec<InlayHint>,
-) {
+fn hints_in_expr(ctx: &HintCtx<'_>, expr: &Expr<'_, '_>, out: &mut Vec<InlayHint>) {
     match &expr.kind {
         ExprKind::FunctionCall(f) => {
-            // Look up by identifier name or by variable name (for closure vars like `$fn(...)`).
-            let key: Option<String> = ident_name(f.name).map(|n| n.to_string()).or_else(|| {
-                if let ExprKind::Variable(n) = &f.name.kind {
-                    Some(format!("${}", n.as_str()))
-                } else {
-                    None
-                }
-            });
-            if let Some(k) = key
-                && let Some(def) = defs.get(&k).or_else(|| workspace_defs.get(&k))
-            {
-                emit_param_hints(sv, &f.args, def, &k, range, out);
+            let def = ident_name(f.name)
+                .and_then(|_| callable_from_symbol(ctx, f.name.span.start))
+                .or_else(|| callable_from_local_function(ctx, f.name));
+            if let Some(def) = def {
+                emit_param_hints(ctx, &f.args, &def, out);
             }
-            hints_in_expr(sv, f.name, defs, workspace_defs, analysis, range, out);
+            hints_in_expr(ctx, f.name, out);
             for arg in f.args.iter() {
                 if let Some(value) = &arg.value {
-                    hints_in_expr(sv, value, defs, workspace_defs, analysis, range, out);
+                    hints_in_expr(ctx, value, out);
                 }
             }
         }
         ExprKind::MethodCall(m) | ExprKind::NullsafeMethodCall(m) => {
-            if let Some(name) = ident_name(m.method)
-                && let Some(def) = defs.get(name).or_else(|| workspace_defs.get(name))
-            {
-                emit_param_hints(sv, &m.args, def, name, range, out);
+            if let Some(def) = callable_from_symbol(ctx, m.method.span.start) {
+                emit_param_hints(ctx, &m.args, &def, out);
             }
-            hints_in_expr(sv, m.object, defs, workspace_defs, analysis, range, out);
+            hints_in_expr(ctx, m.object, out);
             for arg in m.args.iter() {
                 if let Some(value) = &arg.value {
-                    hints_in_expr(sv, value, defs, workspace_defs, analysis, range, out);
+                    hints_in_expr(ctx, value, out);
                 }
             }
         }
         ExprKind::StaticMethodCall(m) => {
-            if let Some(name) = ident_name(m.method)
-                && let Some(def) = defs.get(name).or_else(|| workspace_defs.get(name))
-            {
-                emit_param_hints(sv, &m.args, def, name, range, out);
+            if let Some(def) = callable_from_symbol(ctx, m.method.span.start) {
+                emit_param_hints(ctx, &m.args, &def, out);
             }
-            hints_in_expr(sv, m.class, defs, workspace_defs, analysis, range, out);
+            hints_in_expr(ctx, m.class, out);
             for arg in m.args.iter() {
                 if let Some(value) = &arg.value {
-                    hints_in_expr(sv, value, defs, workspace_defs, analysis, range, out);
+                    hints_in_expr(ctx, value, out);
                 }
             }
         }
         ExprKind::New(n) => {
-            if let Some(class_name) = ident_name(n.class)
-                && let Some(def) = defs
-                    .get(class_name)
-                    .or_else(|| workspace_defs.get(class_name))
-            {
-                emit_param_hints(sv, &n.args, def, class_name, range, out);
+            let def = callable_from_symbol(ctx, n.class.span.start).or_else(|| {
+                ident_name(n.class).and_then(|class_name| ctx.defs.get(class_name).cloned())
+            });
+            if let Some(def) = def {
+                emit_param_hints(ctx, &n.args, &def, out);
             }
             for arg in n.args.iter() {
                 if let Some(value) = &arg.value {
-                    hints_in_expr(sv, value, defs, workspace_defs, analysis, range, out);
+                    hints_in_expr(ctx, value, out);
                 }
             }
         }
         ExprKind::Assign(a) => {
             // Emit return-type hint after a function call on the RHS
-            emit_return_type_hint(sv, a.value, defs, workspace_defs, range, out);
-            hints_in_expr(sv, a.target, defs, workspace_defs, analysis, range, out);
-            hints_in_expr(sv, a.value, defs, workspace_defs, analysis, range, out);
+            emit_return_type_hint(ctx, a.value, out);
+            hints_in_expr(ctx, a.target, out);
+            hints_in_expr(ctx, a.value, out);
         }
         // Walk into closure bodies so nested function calls get hints.
-        ExprKind::Closure(c) => {
-            hints_in_stmts(
-                sv,
-                &c.body.stmts,
-                defs,
-                workspace_defs,
-                analysis,
-                range,
-                out,
-            );
-        }
+        ExprKind::Closure(c) => hints_in_stmts(ctx, &c.body.stmts, out),
         // Walk into arrow function bodies so nested calls get hints.
         // No return-type hint: the annotation is already visible in the source,
         // and php-lsp has no type inference to supply hints for unannotated fns.
-        ExprKind::ArrowFunction(a) => {
-            hints_in_expr(sv, a.body, defs, workspace_defs, analysis, range, out);
-        }
-        ExprKind::Parenthesized(e) => {
-            hints_in_expr(sv, e, defs, workspace_defs, analysis, range, out)
-        }
+        ExprKind::ArrowFunction(a) => hints_in_expr(ctx, a.body, out),
+        ExprKind::Parenthesized(e) => hints_in_expr(ctx, e, out),
         ExprKind::Ternary(t) => {
-            hints_in_expr(sv, t.condition, defs, workspace_defs, analysis, range, out);
+            hints_in_expr(ctx, t.condition, out);
             if let Some(then_expr) = t.then_expr {
-                hints_in_expr(sv, then_expr, defs, workspace_defs, analysis, range, out);
+                hints_in_expr(ctx, then_expr, out);
             }
-            hints_in_expr(sv, t.else_expr, defs, workspace_defs, analysis, range, out);
+            hints_in_expr(ctx, t.else_expr, out);
         }
         ExprKind::NullCoalesce(n) => {
-            hints_in_expr(sv, n.left, defs, workspace_defs, analysis, range, out);
-            hints_in_expr(sv, n.right, defs, workspace_defs, analysis, range, out);
+            hints_in_expr(ctx, n.left, out);
+            hints_in_expr(ctx, n.right, out);
         }
         ExprKind::Binary(b) => {
-            hints_in_expr(sv, b.left, defs, workspace_defs, analysis, range, out);
-            hints_in_expr(sv, b.right, defs, workspace_defs, analysis, range, out);
+            hints_in_expr(ctx, b.left, out);
+            hints_in_expr(ctx, b.right, out);
         }
         ExprKind::CloneWith(target, withs) => {
-            hints_in_expr(sv, target, defs, workspace_defs, analysis, range, out);
-            hints_in_expr(sv, withs, defs, workspace_defs, analysis, range, out);
+            hints_in_expr(ctx, target, out);
+            hints_in_expr(ctx, withs, out);
         }
         ExprKind::Match(m) => {
-            hints_in_expr(sv, m.subject, defs, workspace_defs, analysis, range, out);
+            hints_in_expr(ctx, m.subject, out);
             for arm in m.arms.iter() {
                 if let Some(conds) = &arm.conditions {
                     for c in conds.iter() {
-                        hints_in_expr(sv, c, defs, workspace_defs, analysis, range, out);
+                        hints_in_expr(ctx, c, out);
                     }
                 }
-                hints_in_expr(sv, &arm.body, defs, workspace_defs, analysis, range, out);
+                hints_in_expr(ctx, &arm.body, out);
             }
         }
         _ => {}
@@ -526,11 +469,9 @@ fn hints_in_expr(
 }
 
 fn emit_param_hints(
-    sv: SourceView<'_>,
+    ctx: &HintCtx<'_>,
     args: &[php_ast::Arg<'_, '_>],
-    def: &FuncSignature,
-    func_name: &str,
-    range: Range,
+    def: &CallableSignature,
     out: &mut Vec<InlayHint>,
 ) {
     for (i, arg) in args.iter().enumerate() {
@@ -556,39 +497,130 @@ fn emit_param_hints(
         } else {
             continue;
         };
-        let pos = sv.position_of(arg.span.start);
-        if pos_in_range(pos, range) {
-            out.push(make_param_hint(pos, param, func_name));
+        let pos = ctx.sv.position_of(arg.span.start);
+        if pos_in_range(pos, ctx.range) {
+            out.push(make_param_hint(pos, param, def.tooltip.as_ref()));
         }
     }
 }
 
-fn emit_return_type_hint(
-    sv: SourceView<'_>,
-    expr: &Expr<'_, '_>,
-    defs: &HashMap<String, FuncSignature>,
-    workspace_defs: &HashMap<String, FuncSignature>,
-    range: Range,
-    out: &mut Vec<InlayHint>,
-) {
-    let name = match &expr.kind {
-        ExprKind::FunctionCall(f) => ident_name(f.name),
-        ExprKind::MethodCall(m) | ExprKind::NullsafeMethodCall(m) => ident_name(m.method),
-        ExprKind::StaticMethodCall(m) => ident_name(m.method),
-        _ => return,
+fn emit_return_type_hint(ctx: &HintCtx<'_>, expr: &Expr<'_, '_>, out: &mut Vec<InlayHint>) {
+    let def = match &expr.kind {
+        ExprKind::FunctionCall(f) => {
+            ident_name(f.name).and_then(|_| callable_from_symbol(ctx, f.name.span.start))
+        }
+        ExprKind::MethodCall(m) | ExprKind::NullsafeMethodCall(m) => {
+            callable_from_symbol(ctx, m.method.span.start)
+        }
+        ExprKind::StaticMethodCall(m) => callable_from_symbol(ctx, m.method.span.start),
+        _ => None,
     };
-    if let Some(name) = name
-        && let Some(def) = defs.get(name).or_else(|| workspace_defs.get(name))
+    if let Some(def) = def
         && let Some(ret_type) = &def.return_type
     {
         if ret_type == "void" {
             return;
         }
-        let pos = sv.position_of(expr.span.end);
-        if pos_in_range(pos, range) {
-            out.push(make_return_hint(pos, ret_type, name));
+        let pos = ctx.sv.position_of(expr.span.end);
+        if pos_in_range(pos, ctx.range) {
+            out.push(make_return_hint(pos, ret_type, def.tooltip.as_ref()));
         }
     }
+}
+
+fn callable_from_local_function(
+    ctx: &HintCtx<'_>,
+    expr: &Expr<'_, '_>,
+) -> Option<CallableSignature> {
+    ident_name(expr)
+        .map(str::to_string)
+        .or_else(|| {
+            if let ExprKind::Variable(n) = &expr.kind {
+                Some(format!("${}", n.as_str()))
+            } else {
+                None
+            }
+        })
+        .and_then(|key| ctx.defs.get(&key).cloned())
+}
+
+fn callable_from_symbol(ctx: &HintCtx<'_>, offset: u32) -> Option<CallableSignature> {
+    let symbol = ctx.analysis?.symbol_at(offset)?.to_symbol()?;
+    callable_signature_from_name(ctx.session?, &symbol)
+}
+
+fn callable_signature_from_name(
+    session: &mir_analyzer::AnalysisSession,
+    symbol: &mir_analyzer::Name,
+) -> Option<CallableSignature> {
+    let db = session.snapshot_db();
+    match symbol {
+        mir_analyzer::Name::Function(fqn) => {
+            let f = mir_analyzer::db::find_function(
+                &db,
+                mir_analyzer::db::Fqcn::from_str(&db, fqn.as_ref()),
+            )?;
+            if mir_analyzer::is_builtin_function(&f.short_name) {
+                return None;
+            }
+            Some(CallableSignature {
+                params: declared_param_names(&f.params),
+                variadic_last: f.params.last().is_some_and(|p| p.is_variadic),
+                return_type: f.effective_return_type().map(ToString::to_string),
+                tooltip: Some(TooltipSymbol {
+                    kind: "function",
+                    name: f.short_name.to_string(),
+                    class: None,
+                }),
+            })
+        }
+        mir_analyzer::Name::Method { class, name } => {
+            let (_, m) = mir_analyzer::db::find_method_in_chain(
+                &db,
+                mir_analyzer::db::Fqcn::from_str(&db, class.as_ref()),
+                name.as_ref(),
+            )?;
+            Some(CallableSignature {
+                params: declared_param_names(&m.params),
+                variadic_last: m.params.last().is_some_and(|p| p.is_variadic),
+                return_type: m
+                    .return_type
+                    .as_deref()
+                    .or(m.inferred_return_type.as_deref())
+                    .map(ToString::to_string),
+                tooltip: Some(TooltipSymbol {
+                    kind: "method",
+                    name: m.name.to_string(),
+                    class: Some(class.to_string()),
+                }),
+            })
+        }
+        mir_analyzer::Name::Class(fqcn) => {
+            let (_, m) = mir_analyzer::db::find_method_in_chain(
+                &db,
+                mir_analyzer::db::Fqcn::from_str(&db, fqcn.as_ref()),
+                "__construct",
+            )?;
+            Some(CallableSignature {
+                params: declared_param_names(&m.params),
+                variadic_last: m.params.last().is_some_and(|p| p.is_variadic),
+                return_type: None,
+                tooltip: Some(TooltipSymbol {
+                    kind: "class",
+                    name: fqcn.to_string(),
+                    class: None,
+                }),
+            })
+        }
+        _ => None,
+    }
+}
+
+fn declared_param_names(params: &[mir_analyzer::DeclaredParam]) -> Vec<String> {
+    params
+        .iter()
+        .map(|p| p.name.as_str().trim_start_matches('$').to_string())
+        .collect()
 }
 
 fn ident_name<'a>(expr: &'a Expr<'_, '_>) -> Option<&'a str> {
@@ -599,7 +631,11 @@ fn ident_name<'a>(expr: &'a Expr<'_, '_>) -> Option<&'a str> {
     }
 }
 
-fn make_param_hint(position: Position, param_name: &str, func_name: &str) -> InlayHint {
+fn make_param_hint(
+    position: Position,
+    param_name: &str,
+    symbol: Option<&TooltipSymbol>,
+) -> InlayHint {
     InlayHint {
         position,
         label: InlayHintLabel::String(format!("{}:", param_name)),
@@ -608,11 +644,15 @@ fn make_param_hint(position: Position, param_name: &str, func_name: &str) -> Inl
         tooltip: None,
         padding_left: None,
         padding_right: Some(true),
-        data: Some(json!({"php_lsp_fn": func_name})),
+        data: hint_data(symbol),
     }
 }
 
-fn make_return_hint(position: Position, ret_type: &str, func_name: &str) -> InlayHint {
+fn make_return_hint(
+    position: Position,
+    ret_type: &str,
+    symbol: Option<&TooltipSymbol>,
+) -> InlayHint {
     InlayHint {
         position,
         label: InlayHintLabel::String(format!(": {ret_type}")),
@@ -621,8 +661,20 @@ fn make_return_hint(position: Position, ret_type: &str, func_name: &str) -> Inla
         tooltip: None,
         padding_left: Some(true),
         padding_right: None,
-        data: Some(json!({"php_lsp_fn": func_name})),
+        data: hint_data(symbol),
     }
+}
+
+fn hint_data(symbol: Option<&TooltipSymbol>) -> Option<serde_json::Value> {
+    let symbol = symbol?;
+    let mut value = json!({
+        "php_lsp_fn": symbol.name,
+        "php_lsp_symbol_kind": symbol.kind,
+    });
+    if let Some(class) = &symbol.class {
+        value["php_lsp_class"] = json!(class);
+    }
+    Some(value)
 }
 
 fn make_foreach_type_hint(position: Position, ty: &str) -> InlayHint {

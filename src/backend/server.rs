@@ -62,6 +62,109 @@ use super::{Backend, publish_with_dependents};
 /// short enough that references asked "shortly after editing" are warm again.
 const WARM_RESWEEP_IDLE_MS: u64 = 1_000;
 
+fn inlay_hint_symbol_from_data(data: &serde_json::Value) -> Option<mir_analyzer::Name> {
+    let kind = data.get("php_lsp_symbol_kind")?.as_str()?;
+    let name = data.get("php_lsp_fn")?.as_str()?;
+    match kind {
+        "function" => Some(mir_analyzer::Name::function(name)),
+        "method" => {
+            let class = data.get("php_lsp_class")?.as_str()?;
+            Some(mir_analyzer::Name::method(class, name))
+        }
+        "class" => Some(mir_analyzer::Name::class(name)),
+        _ => None,
+    }
+}
+
+fn inlay_hint_format_params(params: &[mir_analyzer::DeclaredParam]) -> String {
+    params
+        .iter()
+        .map(|p| {
+            let mut s = String::new();
+            if let Some(ty) = &p.ty {
+                s.push_str(&format!("{ty} "));
+            }
+            if p.is_variadic {
+                s.push_str("...");
+            }
+            s.push_str(&format!("${}", p.name.as_str().trim_start_matches('$')));
+            s
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn inlay_hint_tooltip_for_symbol(
+    session: &mir_analyzer::AnalysisSession,
+    symbol: &mir_analyzer::Name,
+) -> Option<String> {
+    let db = session.snapshot_db();
+    let (signature, docstring) = match symbol {
+        mir_analyzer::Name::Function(fqn) => {
+            let f = mir_analyzer::db::find_function(
+                &db,
+                mir_analyzer::db::Fqcn::from_str(&db, fqn.as_ref()),
+            )?;
+            let ret = f
+                .effective_return_type()
+                .map(|ty| format!(": {ty}"))
+                .unwrap_or_default();
+            (
+                format!(
+                    "function {}({}){}",
+                    f.short_name,
+                    inlay_hint_format_params(&f.params),
+                    ret
+                ),
+                f.docstring.as_deref().map(str::to_string),
+            )
+        }
+        mir_analyzer::Name::Method { class, name } => {
+            let (_, m) = mir_analyzer::db::find_method_in_chain(
+                &db,
+                mir_analyzer::db::Fqcn::from_str(&db, class.as_ref()),
+                name.as_ref(),
+            )?;
+            let ret = m
+                .return_type
+                .as_deref()
+                .or(m.inferred_return_type.as_deref())
+                .map(|ty| format!(": {ty}"))
+                .unwrap_or_default();
+            (
+                format!(
+                    "function {}({}){}",
+                    m.name,
+                    inlay_hint_format_params(&m.params),
+                    ret
+                ),
+                m.docstring.as_deref().map(str::to_string),
+            )
+        }
+        mir_analyzer::Name::Class(fqcn) => {
+            let (_, m) = mir_analyzer::db::find_method_in_chain(
+                &db,
+                mir_analyzer::db::Fqcn::from_str(&db, fqcn.as_ref()),
+                "__construct",
+            )?;
+            (
+                format!(
+                    "function __construct({})",
+                    inlay_hint_format_params(&m.params)
+                ),
+                m.docstring.as_deref().map(str::to_string),
+            )
+        }
+        _ => return None,
+    };
+    let mut value = format!("```php\n{signature}\n```");
+    if let Some(docstring) = docstring.filter(|s| !s.is_empty()) {
+        value.push_str("\n\n---\n\n");
+        value.push_str(&docstring);
+    }
+    Some(value)
+}
+
 impl LanguageServer for Backend {
     async fn initialize(&self, params: InitializeParams) -> Result<InitializeResult> {
         self.handle_initialize(params).await
@@ -1097,19 +1200,15 @@ impl LanguageServer for Backend {
                 None => return Ok(None),
             };
             let analysis = self.cached_analysis_async(uri).await;
-            let wi = self.workspace_index_async().await;
+            let session = self.docs.current_analysis_session();
             let hints = self
                 .blocking("inlay_hint", move || {
-                    // Built once per workspace-index revision and cached on `wi`
-                    // (a salsa-memoized Arc); only actually walks the workspace on
-                    // the first inlay_hint request after an edit.
-                    let workspace_defs = wi.func_signatures();
                     inlay_hints(
                         doc.source(),
                         &doc,
                         analysis.as_deref(),
+                        Some(&session),
                         params.range,
-                        &workspace_defs,
                     )
                 })
                 .await
@@ -1125,27 +1224,13 @@ impl LanguageServer for Backend {
             if item.tooltip.is_some() {
                 return Some(item);
             }
-            let func_name = item
-                .data
-                .as_ref()
-                .and_then(|d| d.get("php_lsp_fn"))
-                .and_then(|v| v.as_str())
-                .map(str::to_string);
-            if let Some(name) = func_name {
+            let symbol = item.data.as_ref().and_then(inlay_hint_symbol_from_data);
+            if let Some(symbol) = symbol {
                 let docs = Arc::clone(&self.docs);
-                // Same candidate-narrowed workspace lookup as
-                // `completion_resolve`; keep the cold workspace-index build
-                // off the async runtime worker.
                 let tooltip = self
                     .blocking_gated(super::debug_gate::GATE_INLAY_HINT_RESOLVE, move || {
-                        let wi = docs.get_workspace_index_salsa();
-                        docs_for_symbol_from_workspace_index_scoped(
-                            &name,
-                            &wi,
-                            None,
-                            &|class_name: &str| docs.resolve_class_ref(&wi, class_name),
-                            &|symbol_name: &str| docs.declaration_candidate_files(&wi, symbol_name),
-                        )
+                        let session = docs.current_analysis_session();
+                        inlay_hint_tooltip_for_symbol(&session, &symbol)
                     })
                     .await
                     .flatten();
