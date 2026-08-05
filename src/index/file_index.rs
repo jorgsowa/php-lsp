@@ -41,28 +41,6 @@ impl FileIndex {
     pub fn declares_nothing(&self) -> bool {
         self.functions.is_empty() && self.classes.is_empty() && self.constants.is_empty()
     }
-
-    /// Resolve a potentially-short class `name` to a fully-qualified name via
-    /// this file's `use_imports` and `namespace`. Used when walking a class
-    /// hierarchy where parent/interface/trait names are stored as written in
-    /// the source (e.g. `"AbstractController"` rather than the full FQN).
-    pub(crate) fn resolve_name_to_fqn(&self, name: &str) -> String {
-        // Already qualified — strip leading backslash and return.
-        if name.contains('\\') {
-            return name.trim_start_matches('\\').to_owned();
-        }
-        // Resolve through `use` imports (e.g. `use Symfony\...\AbstractController`).
-        for (alias, fqn) in &self.use_imports {
-            if alias.as_ref() == name {
-                return fqn.as_ref().trim_start_matches('\\').to_owned();
-            }
-        }
-        // Apply the current namespace as the last resort.
-        if let Some(ns) = &self.namespace {
-            return format!("{}\\{}", ns.trim_start_matches('\\'), name);
-        }
-        name.to_owned()
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]

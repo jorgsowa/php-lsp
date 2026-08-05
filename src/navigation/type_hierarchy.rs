@@ -218,21 +218,18 @@ pub fn subtypes_of_from_workspace(
     candidates
         .iter()
         .flat_map(|(uri, idx)| idx.classes.iter().map(move |cls| (uri, idx.as_ref(), cls)))
-        .filter_map(|(uri, file_idx, cls)| {
+        .filter_map(|(uri, _file_idx, cls)| {
             let doc = get_doc(uri);
             let imports = doc.as_ref().map(|doc| doc.file_imports());
             let matches = match item_fqn {
                 Some(f) => {
                     let named = |name: &str| {
-                        if let (Some(doc), Some(imports)) = (doc.as_ref(), imports.as_ref()) {
-                            crate::navigation::moniker::resolve_fqn(doc, name, imports)
-                                .trim_start_matches('\\')
-                                .eq_ignore_ascii_case(f)
-                        } else {
-                            file_idx
-                                .resolve_name_to_fqn(name)
-                                .eq_ignore_ascii_case(f)
-                        }
+                        let (Some(doc), Some(imports)) = (doc.as_ref(), imports.as_ref()) else {
+                            return false;
+                        };
+                        crate::navigation::moniker::resolve_fqn(doc, name, imports)
+                            .trim_start_matches('\\')
+                            .eq_ignore_ascii_case(f)
                     };
                     cls.parent.as_deref().is_some_and(named)
                         || cls.implements.iter().any(|iface| named(iface.as_ref()))

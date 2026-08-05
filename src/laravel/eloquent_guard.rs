@@ -146,8 +146,11 @@ fn classify_mass_assignment(
 
     for _ in 0..MAX_HIERARCHY_DEPTH {
         let fqn = docs
-            .get_index_salsa(&current_uri)
-            .map(|fi| fi.resolve_name_to_fqn(&current_name))
+            .get_doc_salsa(&current_uri)
+            .map(|doc| {
+                let imports = doc.file_imports();
+                crate::navigation::moniker::resolve_fqn(&doc, &current_name, &imports)
+            })
             .unwrap_or_else(|| current_name.trim_start_matches('\\').to_string());
 
         if fqn.eq_ignore_ascii_case(ELOQUENT_MODEL_FQN) {

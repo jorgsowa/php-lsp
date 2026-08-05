@@ -296,15 +296,22 @@ impl Backend {
                     }
                 }
 
+                let imports = doc.file_imports();
                 // Queue parent chain in PHP MRO order: traits → mixins → parent.
                 for trt in &cls.traits {
-                    queue.push_back(index.resolve_name_to_fqn(trt.as_ref()));
+                    queue.push_back(
+                        crate::navigation::moniker::resolve_fqn(&doc, trt.as_ref(), &imports),
+                    );
                 }
                 for mx in &cls.mixins {
-                    queue.push_back(index.resolve_name_to_fqn(mx.as_ref()));
+                    queue.push_back(
+                        crate::navigation::moniker::resolve_fqn(&doc, mx.as_ref(), &imports),
+                    );
                 }
                 if let Some(parent) = &cls.parent {
-                    queue.push_back(index.resolve_name_to_fqn(parent.as_ref()));
+                    queue.push_back(
+                        crate::navigation::moniker::resolve_fqn(&doc, parent.as_ref(), &imports),
+                    );
                 }
             }
         }
