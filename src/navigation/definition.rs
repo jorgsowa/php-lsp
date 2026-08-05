@@ -229,7 +229,91 @@ pub fn find_method_in_class_hierarchy(
     None
 }
 
+/// Walk the class hierarchy (extends + traits) in the workspace index to find
+/// `property_name` declared on `class_name` or any of its parents/traits.
+///
+/// Returns the first match in PHP's resolution order: class itself → traits →
+/// parent → parent's traits, etc.
+pub fn find_property_in_class_hierarchy(
+    class_name: &str,
+    property_name: &str,
+    wi: &crate::db::workspace_index::WorkspaceIndexData,
+    class_candidates_by_short_name: &dyn Fn(&str) -> Vec<crate::db::workspace_index::ClassRef>,
+    get_doc: &dyn Fn(&Uri) -> Option<Arc<crate::document::ast::ParsedDoc>>,
+    resolve_class_ref: &dyn Fn(&str) -> Option<crate::db::workspace_index::ClassRef>,
+) -> Option<Location> {
+    let mut queue: std::collections::VecDeque<String> =
+        std::collections::VecDeque::from([class_name.to_owned()]);
+    let mut visited = std::collections::HashSet::new();
+
+    while let Some(current) = queue.pop_front() {
+        if !visited.insert(current.clone()) {
+            continue;
+        }
+        let candidates: Vec<crate::db::workspace_index::ClassRef> = if current.contains('\\') {
+            resolve_class_ref(&current).into_iter().collect()
+        } else {
+            let short = crate::text::fqn_short_name(&current);
+            class_candidates_by_short_name(short)
+        };
+        for cr in &candidates {
+            let Some((uri, cls)) = wi.at(*cr) else {
+                continue;
+            };
+            if cls.name.as_ref() != current.as_str()
+                && cls.fqn.as_ref().trim_start_matches('\\') != current.as_str()
+            {
+                continue;
+            }
+            if let Some(prop) = cls.properties.iter().find(|p| p.name.as_ref() == property_name) {
+                return Some(precise_property_location(
+                    uri,
+                    prop.start_line,
+                    prop.name_char,
+                    prop.name.len(),
+                ));
+            }
+            let resolved_supertypes = get_doc(uri).map(|doc| {
+                let imports = doc.file_imports();
+                cls.traits
+                    .iter()
+                    .map(|name| crate::navigation::moniker::resolve_fqn(&doc, name.as_ref(), &imports))
+                    .chain(cls.parent.iter().map(|name| {
+                        crate::navigation::moniker::resolve_fqn(&doc, name.as_ref(), &imports)
+                    }))
+                    .collect::<Vec<_>>()
+            });
+            if let Some(resolved) = resolved_supertypes {
+                queue.extend(resolved);
+            } else {
+                for trt in &cls.traits {
+                    queue.push_back(trt.as_ref().to_owned());
+                }
+                if let Some(parent) = &cls.parent {
+                    queue.push_back(parent.as_ref().to_owned());
+                }
+            }
+        }
+    }
+    None
+}
+
 fn precise_method_location(uri: &Uri, line: u32, name_char: u32, name_len: usize) -> Location {
+    let start = Position {
+        line,
+        character: name_char,
+    };
+    let end = Position {
+        line,
+        character: name_char + name_len as u32,
+    };
+    Location {
+        uri: uri.clone(),
+        range: Range { start, end },
+    }
+}
+
+fn precise_property_location(uri: &Uri, line: u32, name_char: u32, name_len: usize) -> Location {
     let start = Position {
         line,
         character: name_char,

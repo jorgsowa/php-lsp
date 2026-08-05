@@ -7,6 +7,7 @@ use crate::analysis::document_highlight::document_highlights;
 use crate::lang::is_unresolvable_bareword_at;
 use crate::navigation::definition::{
     find_declaration_range, find_method_in_class_hierarchy, find_method_range_in_class,
+    find_property_in_class_hierarchy,
 };
 use crate::navigation::references::{
     build_mir_symbol, dedup_ref_locations, session_tuple_to_location,
@@ -157,6 +158,38 @@ impl Backend {
                     // May have lazily ingested a vendor file — force the next
                     // fetch to see it.
                     wi_cache = None;
+                }
+
+                let resolved_property_target = analysis.as_deref().and_then(|a| {
+                    let off = crate::text::word_range_at(&source, position)
+                        .map(|r| doc.view().byte_of_position(r.start))?;
+                    let sym = a.symbol_at(off)?;
+                    match sym.kind.to_name()? {
+                        mir_analyzer::Name::Property { class, name } => Some((class, name)),
+                        _ => None,
+                    }
+                });
+                if let Some((class_fqn_arc, property_name_arc)) = resolved_property_target {
+                    let wi = self.workspace_index_cached(&mut wi_cache).await;
+                    let class_candidates =
+                        |short: &str| self.docs.class_candidates_by_short_name(&wi, short);
+                    let get_doc = |uri: &Uri| self.docs.get_doc_salsa(uri);
+                    let resolve_class_ref = |fqn: &str| {
+                        self.docs
+                            .resolve_class_ref_by_fqn_or_short_name_fallback(&wi, fqn)
+                    };
+                    if let Some(loc) =
+                        find_property_in_class_hierarchy(
+                            class_fqn_arc.as_ref(),
+                            property_name_arc.as_ref(),
+                            &wi,
+                            &class_candidates,
+                            &get_doc,
+                            &resolve_class_ref,
+                        )
+                    {
+                        return Ok(Some(GotoDefinitionResponse::Scalar(loc)));
+                    }
                 }
             }
 
