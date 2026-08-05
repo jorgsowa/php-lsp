@@ -1771,7 +1771,14 @@ impl LanguageServer for Backend {
                 .blocking("goto_declaration.index", move || {
                     let mention_candidates =
                         |name: &str| docs.declaration_candidate_files(&wi, name);
-                    goto_declaration_from_index(&source, &wi, position, &mention_candidates)
+                    let get_doc = |uri: &Uri| docs.get_doc_salsa(uri);
+                    goto_declaration_from_index(
+                        &source,
+                        &wi,
+                        position,
+                        &get_doc,
+                        &mention_candidates,
+                    )
                 })
                 .await
                 .unwrap_or_default();
@@ -1795,6 +1802,7 @@ impl LanguageServer for Backend {
             let analysis = self.cached_analysis_async(uri).await;
             let open_docs = self.docs.docs_for(&self.open_urls());
             let docs = Arc::clone(&self.docs);
+            let wi = self.workspace_index_async().await;
 
             // Every fallback pass below is CPU-bound — the exact/short-name
             // passes walk every open doc's AST, the index passes do lookup
@@ -1814,15 +1822,19 @@ impl LanguageServer for Backend {
                         position,
                     );
                     if results.is_empty() {
-                        results = docs.with_all_indexes(|all_indexes| {
-                            goto_type_definition_from_index_exact(
-                                &source,
-                                &doc,
-                                analysis.as_deref(),
-                                all_indexes,
-                                position,
-                            )
-                        });
+                        let exact_uri = |fqn: &str| {
+                            docs.class_ref_by_fqn(&wi, fqn)
+                                .and_then(|cr| wi.at(cr).map(|(uri, _)| uri.clone()))
+                        };
+                        let get_doc = |uri: &Uri| docs.get_doc_salsa(uri);
+                        results = goto_type_definition_from_index_exact(
+                            &source,
+                            &doc,
+                            analysis.as_deref(),
+                            position,
+                            &exact_uri,
+                            &get_doc,
+                        );
                     }
                     if results.is_empty() {
                         results = goto_type_definition_short_name_fallback(
@@ -1834,15 +1846,21 @@ impl LanguageServer for Backend {
                         );
                     }
                     if results.is_empty() {
-                        results = docs.with_all_indexes(|all_indexes| {
-                            goto_type_definition_from_index_short_name_fallback(
-                                &source,
-                                &doc,
-                                analysis.as_deref(),
-                                all_indexes,
-                                position,
-                            )
-                        });
+                        let class_candidate_uris = |short: &str| {
+                            docs.class_candidates(&wi, short)
+                                .into_iter()
+                                .filter_map(|cr| wi.at(cr).map(|(uri, _)| uri.clone()))
+                                .collect()
+                        };
+                        let get_doc = |uri: &Uri| docs.get_doc_salsa(uri);
+                        results = goto_type_definition_from_index_short_name_fallback(
+                            &source,
+                            &doc,
+                            analysis.as_deref(),
+                            position,
+                            &class_candidate_uris,
+                            &get_doc,
+                        );
                     }
 
                     // Format response: scalar for single result, array for multiple, none for empty

@@ -12,7 +12,7 @@ use tower_lsp_server::ls_types::{Location, Position, Range, Uri};
 use crate::document::ast::{ParsedDoc, SourceView, format_type_hint, str_offset_in_range};
 use crate::navigation::moniker::resolve_fqn;
 use crate::navigation::references::collect_class_imports;
-use crate::text::{fqn_short_name, utf16_code_units, word_at_position, word_range_at};
+use crate::text::{fqn_short_name, word_at_position, word_range_at};
 use mir_analyzer::FileAnalysis;
 
 /// Resolve the PHP type at `position` to a fully-qualified class name.
@@ -463,8 +463,9 @@ pub fn goto_type_definition_from_index_exact(
     source: &str,
     doc: &ParsedDoc,
     analysis: Option<&FileAnalysis>,
-    indexes: &[(Uri, std::sync::Arc<crate::index::file_index::FileIndex>)],
     position: Position,
+    class_uri_by_fqn: &dyn Fn(&str) -> Option<Uri>,
+    get_doc: &dyn Fn(&Uri) -> Option<Arc<ParsedDoc>>,
 ) -> Vec<Location> {
     let Some((_, class_name)) = resolve_type_at_cursor(source, doc, analysis, position) else {
         return Vec::new();
@@ -473,17 +474,11 @@ pub fn goto_type_definition_from_index_exact(
     let mut results = Vec::new();
     for candidate in type_candidates(&class_name) {
         let cand_fqn = candidate.trim_start_matches('\\');
-        for (uri, idx) in indexes {
-            for cls in &idx.classes {
-                let cls_fqn = cls.fqn.as_ref().trim_start_matches('\\');
-                if cls_fqn == cand_fqn {
-                    let range = class_name_range(cls);
-                    results.push(Location {
-                        uri: uri.clone(),
-                        range,
-                    });
-                }
-            }
+        if let Some(uri) = class_uri_by_fqn(cand_fqn)
+            && let Some(other_doc) = get_doc(&uri)
+            && let Some(range) = find_class_range(other_doc.view(), &other_doc.program().stmts, fqn_short_name(cand_fqn))
+        {
+            results.push(Location { uri, range });
         }
     }
     dedup_locations(&mut results);
@@ -499,8 +494,9 @@ pub fn goto_type_definition_from_index_short_name_fallback(
     source: &str,
     doc: &ParsedDoc,
     analysis: Option<&FileAnalysis>,
-    indexes: &[(Uri, std::sync::Arc<crate::index::file_index::FileIndex>)],
     position: Position,
+    class_candidate_uris: &dyn Fn(&str) -> Vec<Uri>,
+    get_doc: &dyn Fn(&Uri) -> Option<Arc<ParsedDoc>>,
 ) -> Vec<Location> {
     let Some((imports, class_name)) = resolve_type_at_cursor(source, doc, analysis, position)
     else {
@@ -513,35 +509,14 @@ pub fn goto_type_definition_from_index_short_name_fallback(
     let mut results = Vec::new();
     for candidate in type_candidates(&class_name) {
         let cn_short = fqn_short_name(candidate);
-        for (uri, idx) in indexes {
-            for cls in &idx.classes {
-                let short = fqn_short_name(cls.name.as_ref());
-                if short == cn_short {
-                    let range = class_name_range(cls);
-                    results.push(Location {
-                        uri: uri.clone(),
-                        range,
-                    });
-                }
+        for uri in class_candidate_uris(cn_short) {
+            let Some(other_doc) = get_doc(&uri) else { continue };
+            if let Some(range) = find_class_range(other_doc.view(), &other_doc.program().stmts, cn_short)
+            {
+                results.push(Location { uri, range });
             }
         }
     }
     dedup_locations(&mut results);
     results
-}
-
-/// Precise range of a class/interface/trait/enum name from `FileIndex` data,
-/// mirroring `goto_declaration_from_index`'s `precise_range` closure.
-fn class_name_range(cls: &crate::index::file_index::ClassDef) -> Range {
-    let end_char = cls.name_char + utf16_code_units(&cls.name);
-    Range {
-        start: Position {
-            line: cls.start_line,
-            character: cls.name_char,
-        },
-        end: Position {
-            line: cls.start_line,
-            character: end_char,
-        },
-    }
 }

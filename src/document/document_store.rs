@@ -2697,8 +2697,9 @@ impl DocumentStore {
             .filter(|p| exclude != Some(p.as_ref()))
             .find_map(|p| {
                 let &file_idx = wi.path_to_file_idx.get(p.as_ref())?;
-                let (uri, idx) = wi.files.get(file_idx as usize)?;
-                crate::navigation::declaration::any_declaration_in_file(uri, idx, word, bare)
+                let (uri, _) = wi.files.get(file_idx as usize)?;
+                let doc = self.get_doc_salsa(uri)?;
+                crate::navigation::declaration::any_declaration_in_doc(uri, &doc, word, bare)
             })
     }
 
