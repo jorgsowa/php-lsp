@@ -147,7 +147,9 @@ fn main() {
 
     let elapsed = t0.elapsed();
     let rss_final = rss_kb();
-    let _indexes = store.all_indexes(); // force retention
+    store.with_all_indexes(|indexes| {
+        let _ = std::hint::black_box(indexes.len());
+    }); // force retention
 
     println!(
         "Indexed {} files in {:.1}s",

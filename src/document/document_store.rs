@@ -2459,17 +2459,8 @@ impl DocumentStore {
             .collect()
     }
 
-    /// Compact symbol index for every mirrored file.
-    pub fn all_indexes(&self) -> Vec<(Uri, Arc<FileIndex>)> {
-        self.get_workspace_index_salsa().files.clone()
-    }
-
-    /// Borrow-scoped alternative to `all_indexes()` for callers that only
-    /// need the slice for the duration of one synchronous call — avoids
-    /// cloning every `Uri` in the aggregate (`get_workspace_index_salsa()`
-    /// itself is a cheap `Arc` clone; `all_indexes()`'s `.files.clone()` is
-    /// the expensive part). Use `all_indexes()` instead when the result must
-    /// be moved across an `.await`/`spawn_blocking` boundary.
+    /// Borrow-scoped access to the aggregate `(Uri, Arc<FileIndex>)` slice,
+    /// avoiding per-call cloning of the workspace-wide vector.
     pub fn with_all_indexes<R>(&self, f: impl FnOnce(&[(Uri, Arc<FileIndex>)]) -> R) -> R {
         f(&self.get_workspace_index_salsa().files)
     }
@@ -2487,16 +2478,6 @@ impl DocumentStore {
             .vendor_index_cache
             .get(uri)
             .map(|e| Arc::clone(&*e))
-    }
-
-    /// Same as `all_indexes` but excludes `uri`.
-    pub fn other_indexes(&self, uri: &Uri) -> Vec<(Uri, Arc<FileIndex>)> {
-        self.get_workspace_index_salsa()
-            .files
-            .iter()
-            .filter(|(u, _)| u != uri)
-            .cloned()
-            .collect()
     }
 
     /// Parsed documents for every mirrored file (open or background-indexed).
@@ -3192,20 +3173,17 @@ mod tests {
         let store = DocumentStore::new();
         open(&store, uri("/a.php"), "<?php\nfunction a() {}".to_string());
         store.ingest(uri("/b.php"), "<?php\nfunction b() {}");
-        let indexes = store.all_indexes();
-        let mut uris: Vec<&str> = indexes.iter().map(|(u, _)| u.as_str()).collect();
+        let mut uris: Vec<String> = store.with_all_indexes(|indexes| {
+            indexes.iter().map(|(u, _)| u.as_str().to_string()).collect()
+        });
         uris.sort();
-        assert_eq!(uris, vec![uri("/a.php").as_str(), uri("/b.php").as_str()]);
-    }
-
-    #[test]
-    fn other_indexes_excludes_current_uri() {
-        let store = DocumentStore::new();
-        open(&store, uri("/a.php"), "<?php\nfunction a() {}".to_string());
-        open(&store, uri("/b.php"), "<?php\nfunction b() {}".to_string());
-        let others = store.other_indexes(&uri("/a.php"));
-        assert_eq!(others.len(), 1);
-        assert_eq!(others[0].0.as_str(), uri("/b.php").as_str());
+        assert_eq!(
+            uris,
+            vec![
+                uri("/a.php").as_str().to_string(),
+                uri("/b.php").as_str().to_string()
+            ]
+        );
     }
 
     #[test]
