@@ -16,7 +16,7 @@
 use std::sync::Arc;
 
 use php_ast::{
-    ClassMemberKind, EnumMemberKind, NamespaceBody, Stmt, StmtKind, TraitAdaptationKind, UseKind,
+    ClassMemberKind, EnumMemberKind, NamespaceBody, Stmt, StmtKind, TraitAdaptationKind,
 };
 
 use crate::document::ast::{ParsedDoc, format_type_hint};
@@ -28,11 +28,6 @@ pub struct FileIndex {
     pub functions: Vec<FunctionDef>,
     pub classes: Vec<ClassDef>,
     pub constants: Vec<Box<str>>,
-    /// Class-import aliases from `use Foo\Bar as Alias` statements.
-    /// Maps alias (or short name when no alias) → fully-qualified name.
-    /// Used by the workspace index to resolve `implements Alias` to its canonical
-    /// short name so `subtypes_of` is keyed consistently.
-    pub use_imports: Vec<(Box<str>, Box<str>)>,
 }
 
 impl FileIndex {
@@ -615,14 +610,6 @@ fn collect_stmts(
                     index.constants.push(Box::from(c.name.or_error()));
                 }
             }
-
-            StmtKind::Use(u) if u.kind == UseKind::Normal => {
-                for item in u.uses.iter() {
-                    let (alias, fqn) = crate::document::ast::use_item_alias_and_fqn(item);
-                    index.use_imports.push((alias.into(), fqn.into()));
-                }
-            }
-
             _ => {}
         }
     }

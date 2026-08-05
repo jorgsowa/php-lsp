@@ -303,7 +303,7 @@ pub(crate) fn cache_base_dir() -> Option<PathBuf> {
 /// changes what gets extracted. `FileIndex` has no dependency on any mir
 /// type, so a mir version has no bearing on this cache's validity.
 fn schema_version() -> &'static str {
-    concat!(env!("CARGO_PKG_VERSION"), "-fi-v4")
+    concat!(env!("CARGO_PKG_VERSION"), "-fi-v5")
 }
 
 fn workspace_hash(root: &Path) -> String {

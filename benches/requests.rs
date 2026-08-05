@@ -680,20 +680,6 @@ fn old_build_maps_reconstruction(files: &[(Uri, Arc<FileIndex>)]) {
             }
             for iface in &cls.implements {
                 subtypes_of.entry(Arc::clone(iface)).or_default().push(cr);
-                if let Some((_, fqn)) = idx
-                    .use_imports
-                    .iter()
-                    .find(|(alias, _)| alias.as_ref() == iface.as_ref())
-                {
-                    let short = fqn
-                        .trim_start_matches('\\')
-                        .rsplit('\\')
-                        .next()
-                        .unwrap_or(fqn);
-                    if short != iface.as_ref() {
-                        subtypes_of.entry(Arc::from(short)).or_default().push(cr);
-                    }
-                }
             }
             for trt in &cls.traits {
                 subtypes_of.entry(Arc::clone(trt)).or_default().push(cr);
