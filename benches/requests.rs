@@ -14,7 +14,7 @@ use php_lsp::document_store::DocumentStore;
 use php_lsp::file_index::FileIndex;
 use php_lsp::hover::hover_info_with_maps;
 use php_lsp::symbol_map::SymbolMap;
-use php_lsp::symbols::{document_symbols, workspace_symbols_from_index};
+use php_lsp::symbols::{document_symbols, workspace_symbols_from_workspace};
 
 const MEDIUM: &str = include_str!("fixtures/medium_class.php");
 const SMALL: &str = include_str!("fixtures/small_class.php");
@@ -788,11 +788,20 @@ fn bench_workspace_index_rebuild(c: &mut Criterion) {
 fn bench_workspace_symbol(c: &mut Criterion) {
     let other_docs = cross_file_docs();
     let other_indexes = to_indexes(&other_docs);
+    let other_wi = php_lsp::db::workspace_index::WorkspaceIndexData::from_files(other_indexes);
 
     let mut group = c.benchmark_group("workspace_symbol");
     // Small-set fuzzy search: query matches `UserService`, `UserRepository`, etc.
     group.bench_function("fuzzy_small", |b| {
-        b.iter(|| black_box(workspace_symbols_from_index("User", &other_indexes)));
+        b.iter(|| {
+            let get_doc = |uri: &Uri| {
+                other_docs
+                    .iter()
+                    .find(|(u, _)| u == uri)
+                    .map(|(_, d)| Arc::clone(d))
+            };
+            black_box(workspace_symbols_from_workspace("User", &other_wi, &get_doc))
+        });
     });
 
     if let Some(docs) = laravel_docs() {
@@ -801,10 +810,18 @@ fn bench_workspace_symbol(c: &mut Criterion) {
             docs.len()
         );
         let indexes = to_indexes(&docs);
+        let wi = php_lsp::db::workspace_index::WorkspaceIndexData::from_files(indexes);
         group.sample_size(10);
         // Common prefix across Illuminate — should match many symbols.
         group.bench_function("laravel_framework", |b| {
-            b.iter(|| black_box(workspace_symbols_from_index("Str", &indexes)));
+            b.iter(|| {
+                let get_doc = |uri: &Uri| {
+                    docs.iter()
+                        .find(|(u, _)| u == uri)
+                        .map(|(_, d)| Arc::clone(d))
+                };
+                black_box(workspace_symbols_from_workspace("Str", &wi, &get_doc))
+            });
         });
     } else {
         eprintln!("Laravel fixture not found — skipping workspace_symbol/laravel_framework");

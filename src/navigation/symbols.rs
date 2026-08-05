@@ -26,7 +26,7 @@ pub fn document_symbols(_source: &str, doc: &ParsedDoc) -> Vec<DocumentSymbol> {
     symbols_from_statements(sv, &doc.program().stmts)
 }
 
-/// A `Location`'s range is a `workspace_symbols_from_index` placeholder — `zero_width_range`
+/// A `Location`'s range is a workspace-symbol placeholder — `zero_width_range`
 /// collapsed to the start of a line — rather than a genuinely precise, already-resolved range.
 fn is_placeholder_range(range: &Range) -> bool {
     range.start == range.end && range.start.character == 0
@@ -34,7 +34,7 @@ fn is_placeholder_range(range: &Range) -> bool {
 
 /// Fill in the sv.source() range for a `WorkspaceSymbol` whose `location` carries only a URI
 /// (i.e. `OneOf::Right(WorkspaceLocation)`) or a line-level placeholder range produced by
-/// `workspace_symbols_from_index`. If the range is already precise, or if the document cannot
+/// workspace symbol search. If the range is already precise, or if the document cannot
 /// be found, the symbol is returned unchanged. If the symbol name is not found in the source,
 /// the existing location is preserved.
 pub fn resolve_workspace_symbol(
@@ -519,144 +519,75 @@ fn format_fn_signature(
     format!("({}){}", params_str, ret_str)
 }
 
-/// `workspace_symbols` variant that queries `FileIndex` entries instead of
-/// full `ParsedDoc` ASTs.  Used by the backend for cross-file symbol search
-/// when background files only retain a compact index.
-#[allow(deprecated)]
-pub fn workspace_symbols_from_index(
+pub fn workspace_symbols_from_workspace(
     query: &str,
-    indexes: &[(Uri, Arc<crate::index::file_index::FileIndex>)],
+    wi: &crate::db::workspace_index::WorkspaceIndexData,
+    get_doc: &dyn Fn(&Uri) -> Option<Arc<ParsedDoc>>,
 ) -> Vec<SymbolInformation> {
-    use crate::index::file_index::ClassKind;
-
     let (kind_filter, term) = parse_kind_filter(query);
     let matches_kind = |k: SymbolKind| kind_filter.is_none_or(|f| f == k);
-    // Lowercase the query once; the per-candidate match is allocation-free.
-    // This loop visits every symbol of every FileIndex on each picker keystroke.
     let fq = crate::text::FuzzyQuery::new(term);
 
     let mut results = Vec::new();
-    for (uri, idx) in indexes {
-        if matches_kind(SymbolKind::FUNCTION) {
-            for f in &idx.functions {
-                if fq.symbol_match(&f.name) {
-                    results.push(SymbolInformation {
-                        name: f.name.to_string(),
-                        kind: SymbolKind::FUNCTION,
-                        location: Location {
-                            uri: uri.clone(),
-                            range: zero_width_range(f.start_line),
-                        },
-                        tags: None,
-                        deprecated: None,
-                        container_name: None,
-                    });
-                }
-            }
-        }
-        for cls in &idx.classes {
-            let class_kind = match cls.kind {
-                ClassKind::Class | ClassKind::Trait => SymbolKind::CLASS,
-                ClassKind::Interface => SymbolKind::INTERFACE,
-                ClassKind::Enum => SymbolKind::ENUM,
-            };
-            if matches_kind(class_kind) && fq.symbol_match(&cls.name) {
-                results.push(SymbolInformation {
-                    name: cls.name.to_string(),
-                    kind: class_kind,
-                    location: Location {
-                        uri: uri.clone(),
-                        range: zero_width_range(cls.start_line),
-                    },
-                    tags: None,
-                    deprecated: None,
-                    container_name: None,
-                });
-            }
-            if matches_kind(SymbolKind::METHOD) {
-                for m in &cls.methods {
-                    if fq.symbol_match(&m.name) {
-                        results.push(SymbolInformation {
-                            name: m.name.to_string(),
-                            kind: SymbolKind::METHOD,
-                            location: Location {
-                                uri: uri.clone(),
-                                range: zero_width_range(m.start_line),
-                            },
-                            tags: None,
-                            deprecated: None,
-                            container_name: Some(cls.name.to_string()),
-                        });
-                    }
-                }
-            }
-            if matches_kind(SymbolKind::ENUM_MEMBER) && cls.kind == ClassKind::Enum {
-                for case in &cls.cases {
-                    if fq.symbol_match(case) {
-                        results.push(SymbolInformation {
-                            name: case.to_string(),
-                            kind: SymbolKind::ENUM_MEMBER,
-                            location: Location {
-                                uri: uri.clone(),
-                                range: zero_width_range(cls.start_line),
-                            },
-                            tags: None,
-                            deprecated: None,
-                            container_name: Some(cls.name.to_string()),
-                        });
-                    }
-                }
-            }
-            if matches_kind(SymbolKind::PROPERTY) {
-                for p in &cls.properties {
-                    if fq.symbol_match(&p.name) {
-                        results.push(SymbolInformation {
-                            name: format!("${}", p.name),
-                            kind: SymbolKind::PROPERTY,
-                            location: Location {
-                                uri: uri.clone(),
-                                range: zero_width_range(p.start_line),
-                            },
-                            tags: None,
-                            deprecated: None,
-                            container_name: Some(cls.name.to_string()),
-                        });
-                    }
-                }
-            }
-            if matches_kind(SymbolKind::CONSTANT) {
-                for c in &cls.constants {
-                    if fq.symbol_match(c) {
-                        results.push(SymbolInformation {
-                            name: c.to_string(),
-                            kind: SymbolKind::CONSTANT,
-                            location: Location {
-                                uri: uri.clone(),
-                                range: zero_width_range(cls.start_line),
-                            },
-                            tags: None,
-                            deprecated: None,
-                            container_name: Some(cls.name.to_string()),
-                        });
-                    }
-                }
-            }
+    for (uri, _) in &wi.files {
+        let Some(doc) = get_doc(uri) else { continue };
+        for sym in document_symbols(doc.source(), &doc) {
+            collect_workspace_symbols(
+                uri,
+                &sym,
+                None,
+                sym.selection_range.start.line,
+                &matches_kind,
+                &fq,
+                &mut results,
+            );
         }
     }
     results
 }
 
-/// Phase J — Thin wrapper over `workspace_symbols_from_index` that reads the
-/// `(Uri, Arc<FileIndex>)` list out of the salsa-memoized aggregate. The
-/// inner walk is unchanged (fuzzy match is inherently O(total symbols)); the
-/// win is that every handler shares the same aggregate `Arc`, rebuilt only on
-/// edits, instead of each request rebuilding the list via `all_indexes()`
-/// (which takes the host mutex once per file).
-pub fn workspace_symbols_from_workspace(
-    query: &str,
-    wi: &crate::db::workspace_index::WorkspaceIndexData,
-) -> Vec<SymbolInformation> {
-    workspace_symbols_from_index(query, &wi.files)
+fn collect_workspace_symbols(
+    uri: &Uri,
+    sym: &DocumentSymbol,
+    container_name: Option<&str>,
+    container_line: u32,
+    matches_kind: &dyn Fn(SymbolKind) -> bool,
+    fq: &crate::text::FuzzyQuery,
+    out: &mut Vec<SymbolInformation>,
+) {
+    if sym.kind == SymbolKind::VARIABLE {
+        return;
+    }
+    let line = match sym.kind {
+        SymbolKind::CONSTANT | SymbolKind::ENUM_MEMBER => container_line,
+        _ => sym.selection_range.start.line,
+    };
+    if matches_kind(sym.kind) && fq.symbol_match(&sym.name) {
+        out.push(SymbolInformation {
+            name: sym.name.clone(),
+            kind: sym.kind,
+            location: Location {
+                uri: uri.clone(),
+                range: zero_width_range(line),
+            },
+            tags: sym.tags.clone(),
+            deprecated: sym.deprecated,
+            container_name: container_name.map(str::to_string),
+        });
+    }
+    if let Some(children) = &sym.children {
+        for child in children {
+            collect_workspace_symbols(
+                uri,
+                child,
+                Some(&sym.name),
+                sym.selection_range.start.line,
+                matches_kind,
+                fq,
+                out,
+            );
+        }
+    }
 }
 
 #[cfg(test)]

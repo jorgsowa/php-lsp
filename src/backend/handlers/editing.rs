@@ -69,7 +69,12 @@ impl Backend {
                 .unwrap_or_default();
 
             let mut actions: Vec<CodeActionOrCommand> = Vec::new();
-            docs.with_all_indexes(|all_indexes| {
+            let wi = docs.get_workspace_index_salsa();
+            {
+                let class_candidates = |short: &str| docs.class_candidates(&wi, short);
+                let resolve_class_fqn = |cr| wi.at(cr).map(|(_, cls)| cls.fqn.to_string());
+                let get_doc = |uri: &Uri| docs.get_doc_salsa(uri);
+                let function_candidates = |name: &str| docs.declaration_candidate_files(&wi, name);
                 for diag in &sem_diags {
                     if diag.code != Some(NumberOrString::String("UndefinedClass".to_string())) {
                         continue;
@@ -93,7 +98,9 @@ impl Backend {
                     // the developer wrote — take the last segment to recover the short name
                     // the workspace index stores classes under.
                     let class_name = resolved_name.rsplit('\\').next().unwrap_or(resolved_name);
-                    if let Some(fqn) = find_fqn_for_class(class_name, all_indexes) {
+                    if let Some(fqn) =
+                        find_fqn_for_class(class_name, &class_candidates, &resolve_class_fqn)
+                    {
                         let edit = build_use_import_edit(&source, &uri, &fqn);
                         let action = CodeAction {
                             title: format!("Add use {fqn}"),
@@ -125,7 +132,9 @@ impl Backend {
                     if fn_name.is_empty() {
                         continue;
                     }
-                    if let Some(fqn) = find_fqn_for_function(fn_name, all_indexes) {
+                    if let Some(fqn) =
+                        find_fqn_for_function(fn_name, &get_doc, &function_candidates)
+                    {
                         let edit = build_use_function_import_edit(&source, &uri, &fqn);
                         let action = CodeAction {
                             title: format!("Add use function {fqn}"),
@@ -137,7 +146,7 @@ impl Backend {
                         actions.push(CodeActionOrCommand::CodeAction(action));
                     }
                 }
-            });
+            }
 
             for tag in DEFERRED_ACTION_TAGS {
                 actions.extend(defer_actions(

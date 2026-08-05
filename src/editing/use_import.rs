@@ -1,24 +1,50 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use tower_lsp_server::ls_types::{Position, Range, TextEdit, Uri, WorkspaceEdit};
 
-use crate::index::file_index::FileIndex;
+use crate::document::ast::ParsedDoc;
+use crate::types::resolve::{Declaration, resolve_declaration};
 
-/// Find a class FQN matching `name` in the workspace indexes. Unlike
-/// `find_fqn_for_function`, a match is returned even when the class lives in
-/// the global namespace (`fqn` has no `\`): referencing a global-namespace
-/// class from inside a namespaced file still requires an explicit `use`,
-/// since (unlike functions/constants) unqualified class names never fall
-/// back to the global namespace.
 pub(crate) fn find_fqn_for_class(
     name: &str,
-    indexes: &[(Uri, std::sync::Arc<FileIndex>)],
+    class_candidates: &dyn Fn(&str) -> Vec<crate::db::workspace_index::ClassRef>,
+    resolve_class_fqn: &dyn Fn(crate::db::workspace_index::ClassRef) -> Option<String>,
 ) -> Option<String> {
-    for (_uri, idx) in indexes {
-        for class in &idx.classes {
-            if class.name.as_ref() == name {
-                return Some(class.fqn.to_string());
+    class_candidates(name)
+        .into_iter()
+        .find_map(resolve_class_fqn)
+}
+
+pub(crate) fn find_fqn_for_function(
+    name: &str,
+    get_doc: &dyn Fn(&Uri) -> Option<Arc<ParsedDoc>>,
+    function_candidates: &dyn Fn(&str) -> Vec<Uri>,
+) -> Option<String> {
+    for uri in function_candidates(name) {
+        let Some(doc) = get_doc(&uri) else { continue };
+        let Some(decl) = resolve_declaration(&doc.program().stmts, name, &|decl| {
+            matches!(decl, Declaration::Function { .. })
+        }) else {
+            continue;
+        };
+        if let Declaration::Function { decl, .. } = decl {
+            let ns = doc
+                .program()
+                .stmts
+                .iter()
+                .find_map(|stmt| {
+                    if let php_ast::StmtKind::Namespace(ns) = &stmt.kind {
+                        ns.name.as_ref().map(|n| n.to_string_repr().to_string())
+                    } else {
+                        None
+                    }
+                })
+                .unwrap_or_default();
+            if ns.is_empty() {
+                continue;
             }
+            return Some(format!("{}\\{}", ns.trim_start_matches('\\'), decl.name.or_error()));
         }
     }
     None
@@ -26,7 +52,6 @@ pub(crate) fn find_fqn_for_class(
 
 /// Build a `WorkspaceEdit` that inserts `use FQN;` near the top of the file.
 pub(crate) fn build_use_import_edit(source: &str, uri: &Uri, fqn: &str) -> WorkspaceEdit {
-    // Insert after the `<?php` line and any existing `use` / `namespace` lines
     let insert_line = find_use_insert_line(source);
     let insert_text = format!("use {fqn};\n");
     let pos = Position {
@@ -46,22 +71,6 @@ pub(crate) fn build_use_import_edit(source: &str, uri: &Uri, fqn: &str) -> Works
         changes: Some(changes),
         ..Default::default()
     }
-}
-
-/// Find a namespaced function FQN matching `name` in the workspace indexes.
-/// Returns `Some(fqn)` only when the FQN is namespaced (contains `\`).
-pub(crate) fn find_fqn_for_function(
-    name: &str,
-    indexes: &[(Uri, std::sync::Arc<FileIndex>)],
-) -> Option<String> {
-    for (_uri, idx) in indexes {
-        for func in &idx.functions {
-            if func.name.as_ref() == name && func.fqn.contains('\\') {
-                return Some(func.fqn.trim_start_matches('\\').to_string());
-            }
-        }
-    }
-    None
 }
 
 /// Build a `WorkspaceEdit` that inserts `use function FQN;` near the top of the file.

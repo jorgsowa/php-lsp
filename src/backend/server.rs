@@ -1342,10 +1342,12 @@ impl LanguageServer for Backend {
             // workspace-symbol queries (every keystroke in the picker) share the
             // same `Arc` until a file changes.
             let wi = self.workspace_index_async().await;
+            let docs = Arc::clone(&self.docs);
             let query = params.query;
             let results = self
                 .blocking("workspace/symbol", move || {
-                    workspace_symbols_from_workspace(&query, &wi)
+                    let get_doc = |uri: &Uri| docs.get_doc_salsa(uri);
+                    workspace_symbols_from_workspace(&query, &wi, &get_doc)
                 })
                 .await
                 .unwrap_or_default();
