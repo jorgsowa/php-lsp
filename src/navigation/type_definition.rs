@@ -112,33 +112,21 @@ pub fn goto_type_definition_exact(
     let Some((_, class_name)) = resolve_type_at_cursor(source, doc, analysis, position) else {
         return Vec::new();
     };
-
-    let mut results = Vec::new();
-    for candidate in type_candidates(&class_name) {
-        let cand_short = fqn_short_name(candidate.trim_start_matches('\\'));
-        let cand_fqn = candidate.trim_start_matches('\\');
-
-        for (uri, other_doc) in all_docs {
-            // Skip files whose namespace can't contain this FQN.
-            if !cand_fqn.is_empty() && cand_fqn.contains('\\') {
-                let ns_prefix = &cand_fqn[..cand_fqn.rfind('\\').unwrap_or(0)];
-                let file_ns = file_namespace(other_doc);
-                if file_ns.as_deref() != Some(ns_prefix) {
-                    continue;
-                }
+    collect_exact_type_definition_locations(&class_name, |candidate| {
+        let cand_short = fqn_short_name(candidate.trim_start_matches('\\')).to_string();
+        let cand_fqn = candidate.trim_start_matches('\\').to_string();
+        all_docs.iter().filter_map(|(uri, other_doc)| {
+            if !doc_matches_fqn_namespace(other_doc, &cand_fqn) {
+                return None;
             }
-            let other_sv = other_doc.view();
-            if let Some(range) = find_class_range(other_sv, &other_doc.program().stmts, cand_short)
-            {
-                results.push(Location {
+            find_class_range(other_doc.view(), &other_doc.program().stmts, &cand_short)
+                .map(|range| Location {
                     uri: uri.clone(),
                     range,
-                });
-            }
-        }
-    }
-    dedup_locations(&mut results);
-    results
+                })
+        })
+        .collect::<Vec<_>>()
+    })
 }
 
 /// Fallback: short-name search across all open docs, ignoring namespace.
@@ -159,23 +147,19 @@ pub fn goto_type_definition_short_name_fallback(
     if imports.values().any(|v| v == &class_name) {
         return Vec::new();
     }
-
-    let mut results = Vec::new();
-    for candidate in type_candidates(&class_name) {
-        let cand_short = fqn_short_name(candidate.trim_start_matches('\\'));
-        for (uri, other_doc) in all_docs {
-            let other_sv = other_doc.view();
-            if let Some(range) = find_class_range(other_sv, &other_doc.program().stmts, cand_short)
-            {
-                results.push(Location {
-                    uri: uri.clone(),
-                    range,
-                });
-            }
-        }
-    }
-    dedup_locations(&mut results);
-    results
+    collect_short_name_type_definition_locations(&class_name, |short| {
+        all_docs
+            .iter()
+            .filter_map(|(uri, other_doc)| {
+                find_class_range(other_doc.view(), &other_doc.program().stmts, short).map(
+                    |range| Location {
+                        uri: uri.clone(),
+                        range,
+                    },
+                )
+            })
+            .collect::<Vec<_>>()
+    })
 }
 
 fn dedup_locations(results: &mut Vec<Location>) {
@@ -470,19 +454,21 @@ pub fn goto_type_definition_from_index_exact(
     let Some((_, class_name)) = resolve_type_at_cursor(source, doc, analysis, position) else {
         return Vec::new();
     };
-
-    let mut results = Vec::new();
-    for candidate in type_candidates(&class_name) {
-        let cand_fqn = candidate.trim_start_matches('\\');
-        if let Some(uri) = class_uri_by_fqn(cand_fqn)
-            && let Some(other_doc) = get_doc(&uri)
-            && let Some(range) = find_class_range(other_doc.view(), &other_doc.program().stmts, fqn_short_name(cand_fqn))
-        {
-            results.push(Location { uri, range });
-        }
-    }
-    dedup_locations(&mut results);
-    results
+    collect_exact_type_definition_locations(&class_name, |candidate| {
+        let cand_fqn = candidate.trim_start_matches('\\').to_string();
+        class_uri_by_fqn(&cand_fqn)
+            .into_iter()
+            .filter_map(|uri| {
+                let other_doc = get_doc(&uri)?;
+                let range = find_class_range(
+                    other_doc.view(),
+                    &other_doc.program().stmts,
+                    fqn_short_name(&cand_fqn),
+                )?;
+                Some(Location { uri, range })
+            })
+            .collect::<Vec<_>>()
+    })
 }
 
 /// Fallback: short-name match in `FileIndex` entries, ignoring namespace
@@ -505,18 +491,46 @@ pub fn goto_type_definition_from_index_short_name_fallback(
     if imports.values().any(|v| v == &class_name) {
         return Vec::new();
     }
+    collect_short_name_type_definition_locations(&class_name, |short| {
+        class_candidate_uris(short)
+            .into_iter()
+            .filter_map(|uri| {
+                let other_doc = get_doc(&uri)?;
+                let range = find_class_range(other_doc.view(), &other_doc.program().stmts, short)?;
+                Some(Location { uri, range })
+            })
+            .collect::<Vec<_>>()
+    })
+}
 
+fn collect_exact_type_definition_locations<F>(class_name: &str, mut resolve: F) -> Vec<Location>
+where
+    F: FnMut(&str) -> Vec<Location>,
+{
     let mut results = Vec::new();
-    for candidate in type_candidates(&class_name) {
-        let cn_short = fqn_short_name(candidate);
-        for uri in class_candidate_uris(cn_short) {
-            let Some(other_doc) = get_doc(&uri) else { continue };
-            if let Some(range) = find_class_range(other_doc.view(), &other_doc.program().stmts, cn_short)
-            {
-                results.push(Location { uri, range });
-            }
-        }
+    for candidate in type_candidates(class_name) {
+        results.extend(resolve(candidate));
     }
     dedup_locations(&mut results);
     results
+}
+
+fn collect_short_name_type_definition_locations<F>(class_name: &str, mut resolve: F) -> Vec<Location>
+where
+    F: FnMut(&str) -> Vec<Location>,
+{
+    let mut results = Vec::new();
+    for candidate in type_candidates(class_name) {
+        results.extend(resolve(fqn_short_name(candidate.trim_start_matches('\\'))));
+    }
+    dedup_locations(&mut results);
+    results
+}
+
+fn doc_matches_fqn_namespace(doc: &ParsedDoc, fqn: &str) -> bool {
+    if fqn.is_empty() || !fqn.contains('\\') {
+        return true;
+    }
+    let ns_prefix = &fqn[..fqn.rfind('\\').unwrap_or(0)];
+    file_namespace(doc).as_deref() == Some(ns_prefix)
 }
