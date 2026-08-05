@@ -2717,21 +2717,21 @@ impl DocumentStore {
             })
     }
 
-    /// Files whose `use` imports include `fqn` (leading `\` and ASCII case
-    /// ignored — PHP names are case-insensitive), from the workspace symbol
-    /// index — no parsing, no text scan. The candidate scope for `use`-line
-    /// rewrites on file rename/delete: only importers can carry such a line.
+    /// Files whose `use` imports include the class `fqn` (leading `\` ignored
+    /// — PHP names are case-insensitive), from mir's `use:` postings. The
+    /// candidate scope for `use`-line rewrites on file rename/delete: only
+    /// importers can carry such a line.
     pub fn files_importing(&self, fqn: &str) -> Vec<Uri> {
-        let target = fqn.trim_start_matches('\\');
-        self.get_workspace_index_salsa()
-            .files
-            .iter()
-            .filter(|(_, idx)| {
-                idx.use_imports
-                    .iter()
-                    .any(|(_, f)| f.trim_start_matches('\\').eq_ignore_ascii_case(target))
-            })
-            .map(|(u, _)| u.clone())
+        let symbol = mir_analyzer::Name::class(fqn.trim_start_matches('\\').to_string());
+        let files = self.reference_candidate_files(&symbol);
+        // `use:` postings are read-only lookups; warm the candidate set first
+        // so cold/uncommitted files commit their current import postings.
+        let _ = self.indexed_references(&symbol, &files, false, None);
+        self.indexed_use_imports(&symbol, &files)
+            .into_iter()
+            .filter_map(|(file, _, _, _)| file.parse::<Uri>().ok())
+            .collect::<std::collections::HashSet<_>>()
+            .into_iter()
             .collect()
     }
 }
