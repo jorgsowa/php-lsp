@@ -4,9 +4,50 @@ All notable changes to php-lsp are documented here.
 
 ## [Unreleased]
 
+## [0.24.0] — 2026-08-06
+
+### Added
+
+- **Laravel Vite asset resolution**: `vite('path')` and `Vite::asset('path')` resolve against `public/build/manifest.json` for go-to-definition, hover, completion, and document links.
+- **Laravel Mix asset resolution**: `mix('path')` resolves against `public/mix-manifest.json` the same way.
+- **Laravel validation rule-name completion**: built-in rule names (`required`, `email`, `max`, ...) complete inside `->validate([...])`, `Validator::make([...], [...])`, and a `rules()` method's return array, in both pipe-delimited and array form.
+- **Laravel middleware groups**: `$middleware->group('name', [...])` registrations in `bootstrap/app.php` are now indexed, so `Route::middleware('name')` resolves to the group registration.
+- **Laravel translations**: `lang/` is now scanned recursively (previously only direct children of each locale directory), and a `group.item` miss with an existing `<group>.php` array file now offers a quick-fix that inserts the missing key.
+- **Laravel routes**: `routes/` is scanned recursively, and `Route::resource()`/`apiResource()` calls synthesize their implicit CRUD route names, respecting an enclosing `as` prefix.
+- **Laravel config**: `config/` is scanned recursively, deriving dotted key prefixes from nested paths (e.g. `config/services/stripe.php` → `services.stripe`).
+- **`debugStats`**: reports per-cache entry counts (token/text/parsed/analysis/owned-program/decl-fingerprint/vendor-index) plus workspace file count, for diagnosing memory growth without an external profiler.
+
+### Fixed
+
+- **Promoted constructor property symbols** now report correct output.
+- **Type hierarchy subtype ordering is now deterministic.**
+- **Cross-file promoted property definition lookup** now resolves correctly.
+- **Global interface names are preserved in fallback hover** instead of being dropped.
+- **FQCNs are preserved through type-hierarchy flows.**
+- **Diagnostics are now composed and ordered consistently across every publish path**: the cross-file republish path fed mir's raw parse errors straight to the client, bypassing the same-issue exclusion the primary path applies, and merged external diagnostics before semantic/Laravel diagnostics instead of after; the batched dependent-file publish path also omitted Laravel's unguarded-model diagnostic entirely.
+- **A cursor on a semi-reserved keyword** (`final`, `list`, `class`, `public`, ...) used as a method/property/constant name no longer falls through to an ungated workspace lookup that could resolve to an unrelated same-named symbol, across go-to-definition, go-to-declaration, hover, and document-highlight/linked-editing-range.
+- **A cursor on a PHPDoc-only token** (a tag name, a `@template` parameter, or the `$var` half of `@param`/`@var`/`@property*`/`@method`) is now gated the same way, instead of resolving to an unrelated same-named workspace symbol.
+- **The PHP keyword list is now sourced from `php-lexer`/`php-ast`** instead of a hand-maintained list that was missing `__halt_compiler`.
+- **References/goto-definition/hover on a builtin global constant** (`PHP_EOL`, `PHP_VERSION`, ...) now excludes vendor from the candidate scope, matching the existing class/function/method builtin-scoping fix.
+- **A leaked on-disk cache file per edited revision**: the cache is now keyed on URI hash alone (with the content hash validated from the entry), so editing a file overwrites its existing slot instead of leaving the prior revision to rot until the size cap forces a full wipe.
+
+### Performance
+
+- **Startup no longer stalls behind synchronous cache-directory pruning**: on a long-lived dev cache, the old schema-version `remove_dir_all` could cover millions of files and delay `indexReady` by 20+ minutes. Now runs on a background thread.
+- **A warm-started file with an unresolved reference posting is now reanalyzed in the background** instead of on the first query that touches it: first-touch query cost on a real Laravel fixture drops from ~4-9ms to ~76µs.
+- **Reference and reachability queries now answer from mir's persistent per-file mention index** instead of a per-query Aho-Corasick scan, with full query results memoized per revision; a file scanned by a code action now answers a later reference query for free, and vice versa. Drops the direct `aho-corasick` dependency.
+
+### Changed
+
+- **Symbol lookups migrated off the legacy per-file `FileIndex` onto mir's own indexes**: type hierarchy, hover, signature help, completion docs, background navigation, and importer resolution now resolve through mir postings/mention index. Several now-redundant `FileIndex` fields and accessors were retired accordingly.
+
+### Maintenance
+
+- **Release workflow**: added an `aarch64-unknown-linux-musl` release target (cross-compiled via `cross-rs`), plus a CI concurrency group and a docs fix for the release-target download table.
+
 ### Dependencies
 
-- **mir updated to 0.70.1** (from 0.70.0).
+- **mir updated to 0.70.1** (from 0.67.0): retires `classes_by_name`/`subtypes_of`/`decls_by_name` in favor of the mention index, adds `is_builtin_constant`, and rolls up the 0.68–0.70 line of fixes and performance work this release depends on.
 
 ## [0.23.0] — 2026-08-03
 
