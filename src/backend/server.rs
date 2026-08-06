@@ -239,12 +239,10 @@ fn callable_signature_for_symbol(
                 info.documentation,
             ))
         }
-        mir_analyzer::Name::Class(_) => {
-            Some((
-                format!("function __construct({})", info.params),
-                info.documentation,
-            ))
-        }
+        mir_analyzer::Name::Class(_) => Some((
+            format!("function __construct({})", info.params),
+            info.documentation,
+        )),
         _ => None,
     }
 }

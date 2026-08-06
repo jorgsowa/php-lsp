@@ -433,8 +433,8 @@ impl DocumentStore {
     /// The sweep's front of the queue: `priority` files themselves plus the
     /// files declaring the classes they reference (type hints, `use` imports,
     /// `new`, `extends`, …) — the set a request against an open file most
-        /// likely touches. Resolution goes through the memoized workspace index,
-        /// matching by FQN first with an explicit short-name fallback.
+    /// likely touches. Resolution goes through the memoized workspace index,
+    /// matching by FQN first with an explicit short-name fallback.
     fn sweep_priority_files(&self, priority: &[Uri]) -> Vec<Arc<str>> {
         if priority.is_empty() {
             return Vec::new();
@@ -3174,7 +3174,10 @@ mod tests {
         open(&store, uri("/a.php"), "<?php\nfunction a() {}".to_string());
         store.ingest(uri("/b.php"), "<?php\nfunction b() {}");
         let mut uris: Vec<String> = store.with_all_indexes(|indexes| {
-            indexes.iter().map(|(u, _)| u.as_str().to_string()).collect()
+            indexes
+                .iter()
+                .map(|(u, _)| u.as_str().to_string())
+                .collect()
         });
         uris.sort();
         assert_eq!(

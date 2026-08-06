@@ -180,16 +180,14 @@ pub fn find_method_in_class_hierarchy(
                         None => cls.traits.iter().map(|t| t.as_ref()).collect(),
                     };
                     for trt_name in search_in {
-                        if let Some(loc) =
-                            find_method_in_class_hierarchy(
-                                trt_name,
-                                orig,
-                                wi,
-                                class_candidates_by_short_name,
-                                get_doc,
-                                resolve_class_ref,
-                            )
-                        {
+                        if let Some(loc) = find_method_in_class_hierarchy(
+                            trt_name,
+                            orig,
+                            wi,
+                            class_candidates_by_short_name,
+                            get_doc,
+                            resolve_class_ref,
+                        ) {
                             return Some(loc);
                         }
                     }
@@ -200,12 +198,12 @@ pub fn find_method_in_class_hierarchy(
                 let imports = doc.file_imports();
                 cls.traits
                     .iter()
-                    .map(|name| crate::navigation::moniker::resolve_fqn(&doc, name.as_ref(), &imports))
-                    .chain(
-                        cls.mixins.iter().map(|name| {
-                            crate::navigation::moniker::resolve_fqn(&doc, name.as_ref(), &imports)
-                        }),
-                    )
+                    .map(|name| {
+                        crate::navigation::moniker::resolve_fqn(&doc, name.as_ref(), &imports)
+                    })
+                    .chain(cls.mixins.iter().map(|name| {
+                        crate::navigation::moniker::resolve_fqn(&doc, name.as_ref(), &imports)
+                    }))
                     .chain(cls.parent.iter().map(|name| {
                         crate::navigation::moniker::resolve_fqn(&doc, name.as_ref(), &imports)
                     }))
@@ -265,7 +263,11 @@ pub fn find_property_in_class_hierarchy(
             {
                 continue;
             }
-            if let Some(prop) = cls.properties.iter().find(|p| p.name.as_ref() == property_name) {
+            if let Some(prop) = cls
+                .properties
+                .iter()
+                .find(|p| p.name.as_ref() == property_name)
+            {
                 return Some(precise_property_location(
                     uri,
                     prop.start_line,
@@ -277,7 +279,9 @@ pub fn find_property_in_class_hierarchy(
                 let imports = doc.file_imports();
                 cls.traits
                     .iter()
-                    .map(|name| crate::navigation::moniker::resolve_fqn(&doc, name.as_ref(), &imports))
+                    .map(|name| {
+                        crate::navigation::moniker::resolve_fqn(&doc, name.as_ref(), &imports)
+                    })
                     .chain(cls.parent.iter().map(|name| {
                         crate::navigation::moniker::resolve_fqn(&doc, name.as_ref(), &imports)
                     }))

@@ -160,11 +160,9 @@ pub fn goto_declaration_from_index(
 
 fn abstract_declaration_in_doc(uri: &Uri, doc: &ParsedDoc, word: &str) -> Option<Location> {
     let sv = doc.view();
-    resolve_declaration(&doc.program().stmts, word, &is_abstract_declaration).map(|decl| {
-        Location {
-            uri: uri.clone(),
-            range: sv.name_range_in_span(decl.name(), decl.span()),
-        }
+    resolve_declaration(&doc.program().stmts, word, &is_abstract_declaration).map(|decl| Location {
+        uri: uri.clone(),
+        range: sv.name_range_in_span(decl.name(), decl.span()),
     })
 }
 
@@ -199,12 +197,8 @@ fn any_declaration_in_stmts(
                     owner_name: name_text(c.name),
                     doc_comment: c.doc_comment,
                 };
-                if let Some(loc) = any_class_like_declaration_in_members(
-                    &scope,
-                    &c.body.members,
-                    word,
-                    bare,
-                )
+                if let Some(loc) =
+                    any_class_like_declaration_in_members(&scope, &c.body.members, word, bare)
                 {
                     return Some(loc);
                 }
@@ -378,7 +372,10 @@ fn doc_method_tag_line(
         let segment = &text[segment_start..];
         let line_len = segment.find('\n').unwrap_or(segment.len());
         let needle = format!("{}(", method_name);
-        if segment[..line_len].to_ascii_lowercase().contains(&needle.to_ascii_lowercase()) {
+        if segment[..line_len]
+            .to_ascii_lowercase()
+            .contains(&needle.to_ascii_lowercase())
+        {
             return Some(view.position_of((base + segment_start) as u32).line);
         }
         offset = segment_start + "@method".len();

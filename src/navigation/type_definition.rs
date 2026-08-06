@@ -115,17 +115,20 @@ pub fn goto_type_definition_exact(
     collect_exact_type_definition_locations(&class_name, |candidate| {
         let cand_short = fqn_short_name(candidate.trim_start_matches('\\')).to_string();
         let cand_fqn = candidate.trim_start_matches('\\').to_string();
-        all_docs.iter().filter_map(|(uri, other_doc)| {
-            if !doc_matches_fqn_namespace(other_doc, &cand_fqn) {
-                return None;
-            }
-            find_class_range(other_doc.view(), &other_doc.program().stmts, &cand_short)
-                .map(|range| Location {
-                    uri: uri.clone(),
-                    range,
-                })
-        })
-        .collect::<Vec<_>>()
+        all_docs
+            .iter()
+            .filter_map(|(uri, other_doc)| {
+                if !doc_matches_fqn_namespace(other_doc, &cand_fqn) {
+                    return None;
+                }
+                find_class_range(other_doc.view(), &other_doc.program().stmts, &cand_short).map(
+                    |range| Location {
+                        uri: uri.clone(),
+                        range,
+                    },
+                )
+            })
+            .collect::<Vec<_>>()
     })
 }
 
@@ -151,12 +154,12 @@ pub fn goto_type_definition_short_name_fallback(
         all_docs
             .iter()
             .filter_map(|(uri, other_doc)| {
-                find_class_range(other_doc.view(), &other_doc.program().stmts, short).map(
-                    |range| Location {
+                find_class_range(other_doc.view(), &other_doc.program().stmts, short).map(|range| {
+                    Location {
                         uri: uri.clone(),
                         range,
-                    },
-                )
+                    }
+                })
             })
             .collect::<Vec<_>>()
     })
@@ -515,7 +518,10 @@ where
     results
 }
 
-fn collect_short_name_type_definition_locations<F>(class_name: &str, mut resolve: F) -> Vec<Location>
+fn collect_short_name_type_definition_locations<F>(
+    class_name: &str,
+    mut resolve: F,
+) -> Vec<Location>
 where
     F: FnMut(&str) -> Vec<Location>,
 {

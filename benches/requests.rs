@@ -786,7 +786,9 @@ fn bench_workspace_symbol(c: &mut Criterion) {
                     .find(|(u, _)| u == uri)
                     .map(|(_, d)| Arc::clone(d))
             };
-            black_box(workspace_symbols_from_workspace("User", &other_wi, &get_doc))
+            black_box(workspace_symbols_from_workspace(
+                "User", &other_wi, &get_doc,
+            ))
         });
     });
 

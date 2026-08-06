@@ -192,10 +192,8 @@ fn call_context(source: &str, position: Position) -> Option<CallContext> {
                         name,
                         active_param: commas,
                         receiver,
-                        name_byte_offset: text[..name_start]
-                            .iter()
-                            .collect::<String>()
-                            .len() as u32,
+                        name_byte_offset: text[..name_start].iter().collect::<String>().len()
+                            as u32,
                     });
                 }
                 return None;

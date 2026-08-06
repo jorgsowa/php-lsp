@@ -102,10 +102,7 @@ impl WorkspaceIndexData {
     }
 
     /// Visit every class-like declaration stored in the aggregate.
-    pub fn for_each_class(
-        &self,
-        mut f: impl FnMut(&Uri, &crate::index::file_index::ClassDef),
-    ) {
+    pub fn for_each_class(&self, mut f: impl FnMut(&Uri, &crate::index::file_index::ClassDef)) {
         for (uri, idx) in &self.files {
             for cls in &idx.classes {
                 f(uri, cls);

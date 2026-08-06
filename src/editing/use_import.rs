@@ -44,7 +44,11 @@ pub(crate) fn find_fqn_for_function(
             if ns.is_empty() {
                 continue;
             }
-            return Some(format!("{}\\{}", ns.trim_start_matches('\\'), decl.name.or_error()));
+            return Some(format!(
+                "{}\\{}",
+                ns.trim_start_matches('\\'),
+                decl.name.or_error()
+            ));
         }
     }
     None

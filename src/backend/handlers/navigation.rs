@@ -121,16 +121,14 @@ impl Backend {
                         self.docs
                             .resolve_class_ref_by_fqn_or_short_name_fallback(&wi, fqn)
                     };
-                    if let Some(loc) =
-                        find_method_in_class_hierarchy(
-                            class_fqn_arc.as_ref(),
-                            &word,
-                            &wi,
-                            &class_candidates,
-                            &get_doc,
-                            &resolve_class_ref,
-                        )
-                    {
+                    if let Some(loc) = find_method_in_class_hierarchy(
+                        class_fqn_arc.as_ref(),
+                        &word,
+                        &wi,
+                        &class_candidates,
+                        &get_doc,
+                        &resolve_class_ref,
+                    ) {
                         let refined = self
                             .docs
                             .get_doc_salsa(&loc.uri)
@@ -140,7 +138,7 @@ impl Backend {
                                     crate::text::fqn_short_name(class_fqn_arc.as_ref()),
                                     &word,
                                 )
-                                    .or_else(|| find_declaration_range(d.source(), &d, &word));
+                                .or_else(|| find_declaration_range(d.source(), &d, &word));
                                 range.map(|range| Location {
                                     uri: loc.uri.clone(),
                                     range,
@@ -178,16 +176,14 @@ impl Backend {
                         self.docs
                             .resolve_class_ref_by_fqn_or_short_name_fallback(&wi, fqn)
                     };
-                    if let Some(loc) =
-                        find_property_in_class_hierarchy(
-                            class_fqn_arc.as_ref(),
-                            property_name_arc.as_ref(),
-                            &wi,
-                            &class_candidates,
-                            &get_doc,
-                            &resolve_class_ref,
-                        )
-                    {
+                    if let Some(loc) = find_property_in_class_hierarchy(
+                        class_fqn_arc.as_ref(),
+                        property_name_arc.as_ref(),
+                        &wi,
+                        &class_candidates,
+                        &get_doc,
+                        &resolve_class_ref,
+                    ) {
                         return Ok(Some(GotoDefinitionResponse::Scalar(loc)));
                     }
                 }
@@ -225,16 +221,14 @@ impl Backend {
                         self.docs
                             .resolve_class_ref_by_fqn_or_short_name_fallback(&wi2, fqn)
                     };
-                    if let Some(loc) =
-                        find_method_in_class_hierarchy(
-                            &first_cls,
-                            &word,
-                            &wi2,
-                            &class_candidates,
-                            &get_doc,
-                            &resolve_class_ref,
-                        )
-                    {
+                    if let Some(loc) = find_method_in_class_hierarchy(
+                        &first_cls,
+                        &word,
+                        &wi2,
+                        &class_candidates,
+                        &get_doc,
+                        &resolve_class_ref,
+                    ) {
                         let refined = self
                             .docs
                             .get_doc_salsa(&loc.uri)
@@ -252,7 +246,10 @@ impl Backend {
                     // Fallback: resolve the class FQN via the workspace index and
                     // walk the PSR-4 vendor hierarchy starting from there.
                     let class_fqn = resolve_class_ref(&first_cls)
-                        .and_then(|cr| wi2.at(cr).map(|(_, cls)| cls.fqn.trim_start_matches('\\').to_owned()))
+                        .and_then(|cr| {
+                            wi2.at(cr)
+                                .map(|(_, cls)| cls.fqn.trim_start_matches('\\').to_owned())
+                        })
                         .unwrap_or_else(|| first_cls.clone());
                     if let Some(loc) = self.psr4_method_goto(&class_fqn, &word).await {
                         return Ok(Some(GotoDefinitionResponse::Scalar(loc)));
