@@ -269,20 +269,24 @@ impl Backend {
         // `generate_deferred_actions` can run a full-workspace scan (the
         // "implement" tag's Aho-Corasick search over every cached doc);
         // keep it off the async runtime worker, matching `handle_code_action`.
-        let resolved = tokio::task::spawn_blocking(move || {
-            let candidates =
-                generate_deferred_actions(&docs, &kind_tag, &source, &doc, range, &uri);
-            for candidate in candidates {
-                if let CodeActionOrCommand::CodeAction(ca) = candidate
-                    && ca.title == item.title
-                {
-                    return ca;
-                }
-            }
-            item
-        })
-        .await
-        .unwrap_or(fallback);
+        let resolved = self
+            .blocking_gated(
+                super::super::debug_gate::GATE_CODE_ACTION_RESOLVE,
+                move || {
+                    let candidates =
+                        generate_deferred_actions(&docs, &kind_tag, &source, &doc, range, &uri);
+                    for candidate in candidates {
+                        if let CodeActionOrCommand::CodeAction(ca) = candidate
+                            && ca.title == item.title
+                        {
+                            return ca;
+                        }
+                    }
+                    item
+                },
+            )
+            .await
+            .unwrap_or(fallback);
 
         Ok(resolved)
     }

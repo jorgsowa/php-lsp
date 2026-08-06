@@ -1014,7 +1014,11 @@ async fn code_action_resolve_implement_stays_responsive_on_large_workspace() {
         .expect("implement missing methods action should be offered");
 
     server
-        .assert_stays_responsive("codeAction/resolve", action)
+        .assert_request_stays_responsive_via_gate(
+            "codeAction/resolve",
+            action,
+            php_lsp::backend::debug_gate::GATE_CODE_ACTION_RESOLVE,
+        )
         .await;
 }
 

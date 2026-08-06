@@ -61,6 +61,8 @@ pub const GATE_SEMANTIC_TOKENS_FULL_DELTA: &str = "semanticTokensFullDelta.walk"
 pub const GATE_LINKED_EDITING_RANGE: &str = "linkedEditingRange.walk";
 /// Gate section around `goto_type_definition`'s exact/short-name fallback chain.
 pub const GATE_GOTO_TYPE_DEFINITION: &str = "gotoTypeDefinition.walk";
+/// Gate section around `codeAction/resolve`'s deferred action generation.
+pub const GATE_CODE_ACTION_RESOLVE: &str = "codeActionResolve.generate";
 
 #[cfg(not(feature = "test-hooks"))]
 #[derive(Default)]
