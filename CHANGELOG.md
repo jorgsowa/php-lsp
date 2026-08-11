@@ -4,6 +4,12 @@ All notable changes to php-lsp are documented here.
 
 ## [Unreleased]
 
+## [0.24.1] — 2026-08-11
+
+### Maintenance
+
+- **Re-cut the release**: the tag-triggered Release workflow run for v0.24.0 got stuck queued with no jobs ever starting. No functional changes; retagging to get a clean pipeline run through build, crates.io publish, and the GitHub release.
+
 ## [0.24.0] — 2026-08-06
 
 ### Added
