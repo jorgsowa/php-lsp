@@ -114,37 +114,46 @@ impl Backend {
                 });
                 if let Some((_, class_fqn_arc)) = resolved_method_target {
                     let wi = self.workspace_index_cached(&mut wi_cache).await;
-                    let class_candidates =
-                        |short: &str| self.docs.class_candidates_by_short_name(&wi, short);
-                    let get_doc = |uri: &Uri| self.docs.get_doc_salsa(uri);
-                    let resolve_class_ref = |fqn: &str| {
-                        self.docs
-                            .resolve_class_ref_by_fqn_or_short_name_fallback(&wi, fqn)
-                    };
-                    if let Some(loc) = find_method_in_class_hierarchy(
-                        class_fqn_arc.as_ref(),
-                        &word,
-                        &wi,
-                        &class_candidates,
-                        &get_doc,
-                        &resolve_class_ref,
-                    ) {
-                        let refined = self
-                            .docs
-                            .get_doc_salsa(&loc.uri)
-                            .and_then(|d| {
-                                let range = find_method_range_in_class(
-                                    &d,
-                                    crate::text::fqn_short_name(class_fqn_arc.as_ref()),
-                                    &word,
-                                )
-                                .or_else(|| find_declaration_range(d.source(), &d, &word));
-                                range.map(|range| Location {
-                                    uri: loc.uri.clone(),
-                                    range,
+                    let docs = Arc::clone(&self.docs);
+                    let wi_task = Arc::clone(&wi);
+                    let class_fqn_task = Arc::clone(&class_fqn_arc);
+                    let word_task = word.clone();
+                    let found = self
+                        .blocking_gated(super::super::debug_gate::GATE_GOTO_DEFINITION, move || {
+                            let class_candidates =
+                                |short: &str| docs.class_candidates_by_short_name(&wi_task, short);
+                            let get_doc = |uri: &Uri| docs.get_doc_salsa(uri);
+                            let resolve_class_ref = |fqn: &str| {
+                                docs.resolve_class_ref_by_fqn_or_short_name_fallback(&wi_task, fqn)
+                            };
+                            let loc = find_method_in_class_hierarchy(
+                                class_fqn_task.as_ref(),
+                                &word_task,
+                                &wi_task,
+                                &class_candidates,
+                                &get_doc,
+                                &resolve_class_ref,
+                            )?;
+                            let refined = docs
+                                .get_doc_salsa(&loc.uri)
+                                .and_then(|d| {
+                                    let range = find_method_range_in_class(
+                                        &d,
+                                        crate::text::fqn_short_name(class_fqn_task.as_ref()),
+                                        &word_task,
+                                    )
+                                    .or_else(|| find_declaration_range(d.source(), &d, &word_task));
+                                    range.map(|range| Location {
+                                        uri: loc.uri.clone(),
+                                        range,
+                                    })
                                 })
-                            })
-                            .unwrap_or(loc);
+                                .unwrap_or(loc);
+                            Some(refined)
+                        })
+                        .await
+                        .flatten();
+                    if let Some(refined) = found {
                         return Ok(Some(GotoDefinitionResponse::Scalar(refined)));
                     }
                     // Fallback: walk the PSR-4 vendor hierarchy for the resolved class.
@@ -169,29 +178,49 @@ impl Backend {
                 });
                 if let Some((class_fqn_arc, property_name_arc)) = resolved_property_target {
                     let wi = self.workspace_index_cached(&mut wi_cache).await;
-                    let class_candidates =
-                        |short: &str| self.docs.class_candidates_by_short_name(&wi, short);
-                    let get_doc = |uri: &Uri| self.docs.get_doc_salsa(uri);
-                    let resolve_class_ref = |fqn: &str| {
-                        self.docs
-                            .resolve_class_ref_by_fqn_or_short_name_fallback(&wi, fqn)
-                    };
-                    if let Some(loc) = find_property_in_class_hierarchy(
-                        class_fqn_arc.as_ref(),
-                        property_name_arc.as_ref(),
-                        &wi,
-                        &class_candidates,
-                        &get_doc,
-                        &resolve_class_ref,
-                    ) {
+                    let docs = Arc::clone(&self.docs);
+                    let wi_task = Arc::clone(&wi);
+                    let loc = self
+                        .blocking_gated(super::super::debug_gate::GATE_GOTO_DEFINITION, move || {
+                            let class_candidates =
+                                |short: &str| docs.class_candidates_by_short_name(&wi_task, short);
+                            let get_doc = |uri: &Uri| docs.get_doc_salsa(uri);
+                            let resolve_class_ref = |fqn: &str| {
+                                docs.resolve_class_ref_by_fqn_or_short_name_fallback(&wi_task, fqn)
+                            };
+                            find_property_in_class_hierarchy(
+                                class_fqn_arc.as_ref(),
+                                property_name_arc.as_ref(),
+                                &wi_task,
+                                &class_candidates,
+                                &get_doc,
+                                &resolve_class_ref,
+                            )
+                        })
+                        .await
+                        .flatten();
+                    if let Some(loc) = loc {
                         return Ok(Some(GotoDefinitionResponse::Scalar(loc)));
                     }
                 }
             }
 
-            if let Some(loc) =
-                crate::navigation::definition::goto_definition(uri, &source, &doc, &[], position)
-            {
+            let uri_task = uri.clone();
+            let source_task = Arc::clone(&source);
+            let doc_task = Arc::clone(&doc);
+            let local_definition = self
+                .blocking_gated(super::super::debug_gate::GATE_GOTO_DEFINITION, move || {
+                    crate::navigation::definition::goto_definition(
+                        &uri_task,
+                        &source_task,
+                        &doc_task,
+                        &[],
+                        position,
+                    )
+                })
+                .await
+                .flatten();
+            if let Some(loc) = local_definition {
                 return Ok(Some(GotoDefinitionResponse::Scalar(loc)));
             }
             if let Some(line_text) = source.lines().nth(position.line as usize)
@@ -214,38 +243,49 @@ impl Backend {
                 if let Some(cls) = class_name {
                     let first_cls = cls.split('|').next().unwrap_or(&cls).to_owned();
                     let wi2 = self.workspace_index_cached(&mut wi_cache).await;
-                    let class_candidates =
-                        |short: &str| self.docs.class_candidates_by_short_name(&wi2, short);
-                    let get_doc = |uri: &Uri| self.docs.get_doc_salsa(uri);
-                    let resolve_class_ref = |fqn: &str| {
-                        self.docs
-                            .resolve_class_ref_by_fqn_or_short_name_fallback(&wi2, fqn)
-                    };
-                    if let Some(loc) = find_method_in_class_hierarchy(
-                        &first_cls,
-                        &word,
-                        &wi2,
-                        &class_candidates,
-                        &get_doc,
-                        &resolve_class_ref,
-                    ) {
-                        let refined = self
-                            .docs
-                            .get_doc_salsa(&loc.uri)
-                            .and_then(|doc| {
-                                find_declaration_range(doc.source(), &doc, &word).map(|range| {
-                                    Location {
-                                        uri: loc.uri.clone(),
-                                        range,
-                                    }
+                    let docs = Arc::clone(&self.docs);
+                    let wi_task = Arc::clone(&wi2);
+                    let first_cls_task = first_cls.clone();
+                    let word_task = word.clone();
+                    let found = self
+                        .blocking_gated(super::super::debug_gate::GATE_GOTO_DEFINITION, move || {
+                            let class_candidates =
+                                |short: &str| docs.class_candidates_by_short_name(&wi_task, short);
+                            let get_doc = |uri: &Uri| docs.get_doc_salsa(uri);
+                            let resolve_class_ref = |fqn: &str| {
+                                docs.resolve_class_ref_by_fqn_or_short_name_fallback(&wi_task, fqn)
+                            };
+                            let loc = find_method_in_class_hierarchy(
+                                &first_cls_task,
+                                &word_task,
+                                &wi_task,
+                                &class_candidates,
+                                &get_doc,
+                                &resolve_class_ref,
+                            )?;
+                            let refined = docs
+                                .get_doc_salsa(&loc.uri)
+                                .and_then(|doc| {
+                                    find_declaration_range(doc.source(), &doc, &word_task).map(
+                                        |range| Location {
+                                            uri: loc.uri.clone(),
+                                            range,
+                                        },
+                                    )
                                 })
-                            })
-                            .unwrap_or(loc);
+                                .unwrap_or(loc);
+                            Some(refined)
+                        })
+                        .await
+                        .flatten();
+                    if let Some(refined) = found {
                         return Ok(Some(GotoDefinitionResponse::Scalar(refined)));
                     }
                     // Fallback: resolve the class FQN via the workspace index and
                     // walk the PSR-4 vendor hierarchy starting from there.
-                    let class_fqn = resolve_class_ref(&first_cls)
+                    let class_fqn = self
+                        .docs
+                        .resolve_class_ref_by_fqn_or_short_name_fallback(&wi2, &first_cls)
                         .and_then(|cr| {
                             wi2.at(cr)
                                 .map(|(_, cls)| cls.fqn.trim_start_matches('\\').to_owned())
@@ -261,20 +301,31 @@ impl Backend {
             }
 
             let wi = self.workspace_index_cached(&mut wi_cache).await;
-            if let Some(word) = crate::text::word_at_position(&source, position)
-                && let Some(loc) = self.docs.find_declaration(&wi, &word, Some(uri))
-            {
-                let refined = self
-                    .docs
-                    .get_doc_salsa(&loc.uri)
-                    .and_then(|doc| {
-                        find_declaration_range(doc.source(), &doc, &word).map(|range| Location {
-                            uri: loc.uri.clone(),
-                            range,
-                        })
+            if let Some(word) = crate::text::word_at_position(&source, position) {
+                let docs = Arc::clone(&self.docs);
+                let wi_task = Arc::clone(&wi);
+                let uri_task = uri.clone();
+                let found = self
+                    .blocking_gated(super::super::debug_gate::GATE_GOTO_DEFINITION, move || {
+                        let loc = docs.find_declaration(&wi_task, &word, Some(&uri_task))?;
+                        let refined = docs
+                            .get_doc_salsa(&loc.uri)
+                            .and_then(|doc| {
+                                find_declaration_range(doc.source(), &doc, &word).map(|range| {
+                                    Location {
+                                        uri: loc.uri.clone(),
+                                        range,
+                                    }
+                                })
+                            })
+                            .unwrap_or(loc);
+                        Some(refined)
                     })
-                    .unwrap_or(loc);
-                return Ok(Some(GotoDefinitionResponse::Scalar(refined)));
+                    .await
+                    .flatten();
+                if let Some(refined) = found {
+                    return Ok(Some(GotoDefinitionResponse::Scalar(refined)));
+                }
             }
 
             if let Some(word) = word_at_position(&source, position)

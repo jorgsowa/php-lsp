@@ -1930,16 +1930,23 @@ impl LanguageServer for Backend {
             let source = self.get_open_text(uri).unwrap_or_default();
             // Phase J: use the salsa-memoized aggregate, mention-index-narrowed.
             let wi = self.workspace_index_async().await;
-            let class_candidates =
-                |short: &str| self.docs.class_candidates_by_short_name(&wi, short);
-            Ok(prepare_type_hierarchy_from_workspace(
-                &source,
-                uri,
-                &wi,
-                position,
-                &class_candidates,
-            )
-            .map(|item| vec![item]))
+            let docs = Arc::clone(&self.docs);
+            let uri = uri.clone();
+            let item = self
+                .blocking_gated(super::debug_gate::GATE_TYPE_HIERARCHY, move || {
+                    let class_candidates =
+                        |short: &str| docs.class_candidates_by_short_name(&wi, short);
+                    prepare_type_hierarchy_from_workspace(
+                        &source,
+                        &uri,
+                        &wi,
+                        position,
+                        &class_candidates,
+                    )
+                })
+                .await
+                .flatten();
+            Ok(item.map(|item| vec![item]))
         })
         .await
     }
@@ -1965,20 +1972,25 @@ impl LanguageServer for Backend {
             } else {
                 wi
             };
-            let class_candidates =
-                |short: &str| self.docs.class_candidates_by_short_name(&wi, short);
-            let get_doc = |uri: &Uri| self.docs.get_doc_salsa(uri);
-            let resolve_class_ref = |fqn: &str| {
-                self.docs
-                    .resolve_class_ref_by_fqn_or_short_name_fallback(&wi, fqn)
-            };
-            let result = supertypes_of_from_workspace(
-                &params.item,
-                &wi,
-                &class_candidates,
-                &get_doc,
-                &resolve_class_ref,
-            );
+            let docs = Arc::clone(&self.docs);
+            let item = params.item;
+            let result = self
+                .blocking_gated(super::debug_gate::GATE_TYPE_HIERARCHY, move || {
+                    let class_candidates =
+                        |short: &str| docs.class_candidates_by_short_name(&wi, short);
+                    let get_doc = |uri: &Uri| docs.get_doc_salsa(uri);
+                    let resolve_class_ref =
+                        |fqn: &str| docs.resolve_class_ref_by_fqn_or_short_name_fallback(&wi, fqn);
+                    supertypes_of_from_workspace(
+                        &item,
+                        &wi,
+                        &class_candidates,
+                        &get_doc,
+                        &resolve_class_ref,
+                    )
+                })
+                .await
+                .unwrap_or_default();
             Ok(if result.is_empty() {
                 None
             } else {
@@ -1994,34 +2006,40 @@ impl LanguageServer for Backend {
     ) -> Result<Option<Vec<TypeHierarchyItem>>> {
         guard_async_result("subtypes", async move {
             let wi = self.workspace_index_async().await;
-            let item_fqn = crate::navigation::type_hierarchy::item_fqn(&params.item)
-                .map(str::to_string)
-                .or_else(|| {
-                    // Fallback for older clients/items lacking `data.fqn`.
-                    let candidates = self
-                        .docs
-                        .class_candidates_by_short_name(&wi, &params.item.name);
-                    candidates
-                        .iter()
-                        .filter_map(|r| wi.at(*r))
-                        .find(|(u, _)| **u == params.item.uri)
-                        .or_else(|| candidates.first().and_then(|r| wi.at(*r)))
-                        .map(|(_, cls)| cls.fqn.as_ref().to_string())
-                });
-            let subtype_urls = item_fqn
-                .as_deref()
-                .map(|f| self.docs.class_subtype_urls(f))
+            let docs = Arc::clone(&self.docs);
+            let item = params.item;
+            let result = self
+                .blocking_gated(super::debug_gate::GATE_TYPE_HIERARCHY, move || {
+                    let item_fqn = crate::navigation::type_hierarchy::item_fqn(&item)
+                        .map(str::to_string)
+                        .or_else(|| {
+                            // Fallback for older clients/items lacking `data.fqn`.
+                            let candidates = docs.class_candidates_by_short_name(&wi, &item.name);
+                            candidates
+                                .iter()
+                                .filter_map(|r| wi.at(*r))
+                                .find(|(u, _)| **u == item.uri)
+                                .or_else(|| candidates.first().and_then(|r| wi.at(*r)))
+                                .map(|(_, cls)| cls.fqn.as_ref().to_string())
+                        });
+                    let subtype_urls = item_fqn
+                        .as_deref()
+                        .map(|f| docs.class_subtype_urls(f))
+                        .unwrap_or_default();
+                    let mention_candidates =
+                        |name: &str| docs.declaration_candidate_files(&wi, name);
+                    let get_doc = |uri: &Uri| docs.get_doc_salsa(uri);
+                    subtypes_of_mir_backed(
+                        &item,
+                        item_fqn.as_deref(),
+                        &wi,
+                        &subtype_urls,
+                        &mention_candidates,
+                        &get_doc,
+                    )
+                })
+                .await
                 .unwrap_or_default();
-            let mention_candidates = |name: &str| self.docs.declaration_candidate_files(&wi, name);
-            let get_doc = |uri: &Uri| self.docs.get_doc_salsa(uri);
-            let result = subtypes_of_mir_backed(
-                &params.item,
-                item_fqn.as_deref(),
-                &wi,
-                &subtype_urls,
-                &mention_candidates,
-                &get_doc,
-            );
             Ok(if result.is_empty() {
                 None
             } else {
@@ -2262,7 +2280,13 @@ impl LanguageServer for Backend {
                 None => return Ok(None),
             };
             let imports = self.file_imports(uri);
-            Ok(moniker_at(&source, &doc, position, &imports).map(|m| vec![m]))
+            let moniker = self
+                .blocking_gated(super::debug_gate::GATE_MONIKER, move || {
+                    moniker_at(&source, &doc, position, &imports)
+                })
+                .await
+                .flatten();
+            Ok(moniker.map(|m| vec![m]))
         })
         .await
     }
@@ -2271,7 +2295,13 @@ impl LanguageServer for Backend {
         guard_async_result("inline_value", async move {
             let uri = &params.text_document.uri;
             let source = self.get_open_text(uri).unwrap_or_default();
-            let values = inline_values_in_range(&source, params.range);
+            let range = params.range;
+            let values = self
+                .blocking_gated(super::debug_gate::GATE_INLINE_VALUE, move || {
+                    inline_values_in_range(&source, range)
+                })
+                .await
+                .unwrap_or_default();
             Ok(if values.is_empty() {
                 None
             } else {

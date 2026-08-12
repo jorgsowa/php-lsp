@@ -35,6 +35,8 @@ pub const GATE_PREPARE_CALL_HIERARCHY: &str = "prepareCallHierarchy.lookup";
 pub const GATE_SELECTION_RANGE: &str = "selectionRange.walk";
 /// Gate section around `goto_implementation`'s method-decl cursor check.
 pub const GATE_GOTO_IMPLEMENTATION: &str = "gotoImplementation.methodDeclCheck";
+/// Gate section around `goto_definition`'s same-document/index fallback work.
+pub const GATE_GOTO_DEFINITION: &str = "gotoDefinition.lookup";
 /// Gate section around `rename`'s property-decl cursor check + variable rename.
 pub const GATE_RENAME_VARIABLE: &str = "rename.variable";
 /// Gate section around `references`' same-document variable walk.
@@ -63,6 +65,12 @@ pub const GATE_SEMANTIC_TOKENS_FULL_DELTA: &str = "semanticTokensFullDelta.walk"
 pub const GATE_LINKED_EDITING_RANGE: &str = "linkedEditingRange.walk";
 /// Gate section around `goto_type_definition`'s exact/short-name fallback chain.
 pub const GATE_GOTO_TYPE_DEFINITION: &str = "gotoTypeDefinition.walk";
+/// Gate section around type-hierarchy lookup/result construction.
+pub const GATE_TYPE_HIERARCHY: &str = "typeHierarchy.lookup";
+/// Gate section around `moniker`'s AST member lookup.
+pub const GATE_MONIKER: &str = "moniker.lookup";
+/// Gate section around `inline_value`'s range text scan.
+pub const GATE_INLINE_VALUE: &str = "inlineValue.scan";
 /// Gate section around `codeAction/resolve`'s deferred action generation.
 pub const GATE_CODE_ACTION_RESOLVE: &str = "codeActionResolve.generate";
 
