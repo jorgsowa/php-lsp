@@ -37,10 +37,12 @@ pub fn document_highlights(
         let byte_off = sv.byte_of_position(position) as usize;
         let mut var_spans = Vec::new();
         collect_var_refs_in_scope(&doc.program().stmts, bare, byte_off, &mut var_spans);
+        let starts: Vec<u32> = var_spans.iter().map(|(span, _)| span.start).collect();
+        let positions = sv.positions_of_offsets(&starts);
         var_spans
             .into_iter()
-            .map(|(span, kind)| {
-                let start = sv.position_of(span.start);
+            .zip(positions)
+            .map(|((_, kind), start)| {
                 let end = Position {
                     line: start.line,
                     character: start.character + word_utf16_len,
@@ -61,10 +63,12 @@ pub fn document_highlights(
         // AST node location.
         let mut spans = Vec::new();
         refs_in_stmts(doc.source(), &doc.program().stmts, &word, &mut spans);
+        let starts: Vec<u32> = spans.iter().map(|span| span.start).collect();
+        let positions = sv.positions_of_offsets(&starts);
         spans
             .into_iter()
-            .map(|span| {
-                let start = sv.position_of(span.start);
+            .zip(positions)
+            .map(|(_, start)| {
                 let end = Position {
                     line: start.line,
                     character: start.character + word_utf16_len,

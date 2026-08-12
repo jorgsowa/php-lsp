@@ -219,6 +219,72 @@ impl<'a> SourceView<'a> {
         offset_to_position(self.source, self.line_starts, offset)
     }
 
+    /// Convert many byte offsets to LSP positions in one pass per touched line.
+    ///
+    /// Calling [`Self::position_of`] repeatedly is fine for a handful of spans,
+    /// but local-variable features can produce hundreds of ranges in one large
+    /// method. Grouping by line avoids rescanning the same line prefix for
+    /// every occurrence.
+    pub fn positions_of_offsets(self, offsets: &[u32]) -> Vec<Position> {
+        let mut out = vec![
+            Position {
+                line: 0,
+                character: 0,
+            };
+            offsets.len()
+        ];
+        if offsets.is_empty() {
+            return out;
+        }
+
+        let mut indexed: Vec<(usize, u32)> = offsets.iter().copied().enumerate().collect();
+        indexed.sort_by_key(|&(_, offset)| offset);
+
+        let mut i = 0usize;
+        while i < indexed.len() {
+            let offset = indexed[i].1.min(self.source.len() as u32);
+            let line = self.line_of(offset);
+            let line_idx = line as usize;
+            let line_start = self.line_starts.get(line_idx).copied().unwrap_or(0) as usize;
+            let line_end = self
+                .line_starts
+                .get(line_idx + 1)
+                .map(|&s| (s as usize).saturating_sub(1))
+                .unwrap_or(self.source.len())
+                .min(self.source.len());
+            let raw = &self.source[line_start..line_end];
+            let line_text = raw.strip_suffix('\r').unwrap_or(raw);
+
+            let mut group_end = i + 1;
+            while group_end < indexed.len() && self.line_of(indexed[group_end].1) == line {
+                group_end += 1;
+            }
+
+            let mut char_iter = line_text.char_indices().peekable();
+            let mut utf16_col = 0u32;
+            for &(original_idx, target_offset) in &indexed[i..group_end] {
+                let target_in_line = (target_offset as usize)
+                    .saturating_sub(line_start)
+                    .min(line_text.len());
+                while let Some(&(byte_idx, ch)) = char_iter.peek() {
+                    if byte_idx >= target_in_line {
+                        break;
+                    }
+                    utf16_col += ch.len_utf16() as u32;
+                    char_iter.next();
+                }
+                out[original_idx] = Position {
+                    line,
+                    character: utf16_col,
+                };
+            }
+
+            i = group_end;
+        }
+
+        out
+    }
+
     #[inline]
     pub fn line_starts(self) -> &'a [u32] {
         self.line_starts
@@ -578,6 +644,47 @@ mod tests {
                 line: 1,
                 character: 0
             }
+        );
+    }
+
+    #[test]
+    fn positions_of_offsets_matches_single_lookup() {
+        let src = "<?php\r\n$a = \"café\";\r\n$b = \"😀\";\r\n";
+        let doc = ParsedDoc::parse(src.to_string());
+        let offsets = vec![0, 6, 10, 18, 23, 28, 32, src.len() as u32];
+        let batched = doc.view().positions_of_offsets(&offsets);
+        let expected: Vec<Position> = offsets
+            .iter()
+            .map(|&offset| offset_to_position(src, doc.line_starts(), offset))
+            .collect();
+        assert_eq!(batched, expected);
+    }
+
+    #[test]
+    fn positions_of_offsets_preserves_input_order() {
+        let src = "a\nbb\nccc";
+        let doc = ParsedDoc::parse(src.to_string());
+        let offsets = vec![5, 0, 3, 1];
+        assert_eq!(
+            doc.view().positions_of_offsets(&offsets),
+            vec![
+                Position {
+                    line: 2,
+                    character: 0,
+                },
+                Position {
+                    line: 0,
+                    character: 0,
+                },
+                Position {
+                    line: 1,
+                    character: 1,
+                },
+                Position {
+                    line: 0,
+                    character: 1,
+                },
+            ]
         );
     }
 

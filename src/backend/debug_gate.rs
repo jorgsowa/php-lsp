@@ -37,6 +37,8 @@ pub const GATE_SELECTION_RANGE: &str = "selectionRange.walk";
 pub const GATE_GOTO_IMPLEMENTATION: &str = "gotoImplementation.methodDeclCheck";
 /// Gate section around `rename`'s property-decl cursor check + variable rename.
 pub const GATE_RENAME_VARIABLE: &str = "rename.variable";
+/// Gate section around `references`' same-document variable walk.
+pub const GATE_REFERENCES_VARIABLE: &str = "references.variable";
 /// Gate section around `completion_resolve`'s all-indexes signature/doc lookup.
 pub const GATE_COMPLETION_RESOLVE: &str = "completionResolve.lookup";
 /// Gate section around `inlay_hint_resolve`'s all-indexes doc lookup.

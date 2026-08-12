@@ -910,6 +910,32 @@ async fn rename_stays_responsive_while_property_decl_check_is_in_flight() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn references_variable_stays_responsive_while_scope_walk_is_in_flight() {
+    // Local-variable references walk the enclosing function/method scope and
+    // convert every hit back to LSP positions. That CPU work must not run on
+    // the async runtime worker, or cursor-driven requests can stall PHPStorm.
+    let mut server = TestServer::new().await;
+    server
+        .open(
+            "gated_references_variable.php",
+            "<?php\nfunction gated(): void {\n    $gatedVar = 1;\n    echo $gatedVar;\n}\n",
+        )
+        .await;
+    let uri = server.uri("gated_references_variable.php");
+    server
+        .assert_request_stays_responsive_via_gate(
+            "textDocument/references",
+            serde_json::json!({
+                "textDocument": { "uri": uri },
+                "position": { "line": 2, "character": 8 },
+                "context": { "includeDeclaration": true },
+            }),
+            php_lsp::backend::debug_gate::GATE_REFERENCES_VARIABLE,
+        )
+        .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn completion_resolve_stays_responsive_while_all_indexes_lookup_is_in_flight() {
     // A cold workspace-index rebuild walks every `FileIndex` in the
     // workspace, and the signature/doc lookup itself scans every indexed

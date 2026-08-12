@@ -467,31 +467,55 @@ impl Backend {
             if word.starts_with('$')
                 && let Some(doc) = self.get_doc(uri)
             {
-                let is_promoted =
-                    promoted_property_at_cursor(doc.source(), &doc.program().stmts, position)
-                        .is_some();
-                if !is_promoted {
-                    let bare = word.trim_start_matches('$');
-                    let byte_off = doc.view().byte_of_position(position) as usize;
-                    let mut var_spans = Vec::new();
-                    collect_var_refs_in_scope(&doc.program().stmts, bare, byte_off, &mut var_spans);
-                    if !var_spans.is_empty() {
-                        let name_with_sigil = format!("${bare}");
-                        let name_utf16_len = utf16_code_units(&name_with_sigil);
-                        let sv = doc.view();
-                        let src = doc.source();
-                        let locations: Vec<Location> = var_spans
-                            .into_iter()
-                            .map(|(span, _kind)| {
-                                // param spans include type annotation; narrow to $var_name.
-                                let precise_start = crate::document::ast::str_offset_in_range(
-                                    src,
-                                    span,
-                                    &name_with_sigil,
-                                )
-                                .unwrap_or(span.start);
-                                let start = sv.position_of(precise_start);
-                                Location {
+                let uri = uri.clone();
+                let local_word = word.clone();
+                let local_locations = self
+                    .blocking_gated(
+                        super::super::debug_gate::GATE_REFERENCES_VARIABLE,
+                        move || {
+                            let is_promoted = promoted_property_at_cursor(
+                                doc.source(),
+                                &doc.program().stmts,
+                                position,
+                            )
+                            .is_some();
+                            if is_promoted {
+                                return None;
+                            }
+
+                            let bare = local_word.trim_start_matches('$');
+                            let byte_off = doc.view().byte_of_position(position) as usize;
+                            let mut var_spans = Vec::new();
+                            collect_var_refs_in_scope(
+                                &doc.program().stmts,
+                                bare,
+                                byte_off,
+                                &mut var_spans,
+                            );
+                            if var_spans.is_empty() {
+                                return None;
+                            }
+
+                            let name_with_sigil = format!("${bare}");
+                            let name_utf16_len = utf16_code_units(&name_with_sigil);
+                            let sv = doc.view();
+                            let src = doc.source();
+                            let precise_starts: Vec<u32> = var_spans
+                                .iter()
+                                .map(|(span, _kind)| {
+                                    // Param spans include type annotations; narrow to $var_name.
+                                    crate::document::ast::str_offset_in_range(
+                                        src,
+                                        *span,
+                                        &name_with_sigil,
+                                    )
+                                    .unwrap_or(span.start)
+                                })
+                                .collect();
+                            let starts = sv.positions_of_offsets(&precise_starts);
+                            let locations: Vec<Location> = starts
+                                .into_iter()
+                                .map(|start| Location {
                                     uri: uri.clone(),
                                     range: Range {
                                         start,
@@ -500,11 +524,15 @@ impl Backend {
                                             character: start.character + name_utf16_len,
                                         },
                                     },
-                                }
-                            })
-                            .collect();
-                        return Ok(Some(locations));
-                    }
+                                })
+                                .collect();
+                            Some(locations)
+                        },
+                    )
+                    .await
+                    .flatten();
+                if let Some(locations) = local_locations {
+                    return Ok(Some(locations));
                 }
             }
             // Fall through to the general reference path for:
