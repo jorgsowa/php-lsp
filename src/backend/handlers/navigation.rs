@@ -13,7 +13,7 @@ use crate::navigation::references::{
     build_mir_symbol, dedup_ref_locations, session_tuple_to_location,
 };
 use crate::navigation::walk::collect_var_refs_in_scope;
-use crate::text::{fqn_short_name, utf16_code_units, word_at_position};
+use crate::text::{fqn_short_name, utf16_code_units, utf16_offset_to_byte, word_at_position};
 use crate::types::type_map::{enclosing_class_at, enclosing_class_fqn_at};
 
 use super::super::helpers::{
@@ -714,12 +714,18 @@ impl Backend {
             // batch was streamed above — `analyze_file`'s LRU makes
             // re-analyzing the priority subset here nearly free.
             let docs = Arc::clone(&self.docs);
+            let symbol_for_query = symbol.clone();
             let locations = tokio::task::spawn_blocking(move || {
                 // Pause the background scan and snapshot a settled revision so
                 // only a genuine user edit cancels the search.
                 let (_interactive, cancel_rev) = docs.settled_write_rev_guard();
                 let mut locs: Vec<Location> = docs
-                    .indexed_references(&symbol, &files, include_declaration, Some(cancel_rev))
+                    .indexed_references(
+                        &symbol_for_query,
+                        &files,
+                        include_declaration,
+                        Some(cancel_rev),
+                    )
                     .into_iter()
                     .filter_map(session_tuple_to_location)
                     .collect();
@@ -728,7 +734,7 @@ impl Backend {
                     // the separate `use:` postings are current before this
                     // read-only lookup appends them.
                     locs.extend(
-                        docs.indexed_use_imports(&symbol, &files)
+                        docs.indexed_use_imports(&symbol_for_query, &files)
                             .into_iter()
                             .filter_map(session_tuple_to_location),
                     );
@@ -738,6 +744,13 @@ impl Backend {
             })
             .await
             .unwrap_or_default();
+
+            let mut locations = locations;
+            if include_declaration {
+                locations.retain(|loc| location_starts_on_symbol(&self.docs, loc));
+                locations.extend(self.workspace_decl_locations(&symbol, &word));
+                dedup_ref_locations(&mut locations);
+            }
 
             Ok((!locations.is_empty()).then_some(locations))
         })
@@ -1009,6 +1022,31 @@ impl Backend {
             .await
             .unwrap_or_default())
     }
+}
+
+fn location_starts_on_symbol(
+    docs: &crate::document::document_store::DocumentStore,
+    loc: &Location,
+) -> bool {
+    let Some(source) = docs.source_text(&loc.uri) else {
+        return true;
+    };
+    let Some(raw_line) = source.split('\n').nth(loc.range.start.line as usize) else {
+        return true;
+    };
+    let line = raw_line.strip_suffix('\r').unwrap_or(raw_line);
+    let start = utf16_offset_to_byte(line, loc.range.start.character as usize);
+    let Some(text) = line.get(start..) else {
+        return true;
+    };
+    text.chars().next().is_some_and(|c| {
+        c.is_alphabetic()
+            || c == '_'
+            || c.is_ascii_digit()
+            || c == '\\'
+            || c == '$'
+            || c == '&'
+    })
 }
 
 fn expand_alias_prefix(word: &str, imports: &std::collections::HashMap<String, String>) -> String {

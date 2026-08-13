@@ -92,6 +92,26 @@ fn is_unresolvable_body_token(
     let body_text = &doc_text[start..end];
     let rel_in_body = rel_offset as usize - start;
 
+    // Hyphenated pseudo-types like `non-empty-string` are documentation-only
+    // compound tokens. `word_at_position` splits them into bareword segments
+    // (`non`, `empty`, `string`), any of which can falsely collide with a real
+    // declaration elsewhere in the workspace. If the cursor's word token sits
+    // inside a larger non-whitespace body token containing `-`, gate it before
+    // the bareword fallback searches for that segment by name.
+    if matches!(
+        (
+            token_range_containing(body_text, rel_in_body),
+            non_whitespace_token_range_containing(body_text, rel_in_body),
+        ),
+        (Some(word_range), Some(compound_range))
+            if &body_text[word_range.clone()] == word
+                && compound_range.start <= word_range.start
+                && word_range.end <= compound_range.end
+                && body_text[compound_range.clone()].contains('-')
+    ) {
+        return true;
+    }
+
     match tag_name.to_ascii_lowercase().as_str() {
         // `@template T` / `@template T of Base`: the parameter name is the
         // first whitespace-separated token, never a resolvable symbol.
@@ -130,6 +150,36 @@ fn first_token_range(text: &str) -> Option<std::ops::Range<usize>> {
     let rest = &text[tok_start..];
     let tok_len = rest.find(|c: char| !is_word(c)).unwrap_or(rest.len());
     Some(tok_start..tok_start + tok_len)
+}
+
+/// Byte range of the enclosing non-whitespace token in `text` containing
+/// byte offset `at`, if any.
+fn non_whitespace_token_range_containing(text: &str, at: usize) -> Option<std::ops::Range<usize>> {
+    let at = at.min(text.len());
+
+    let mut start = at;
+    while start > 0 {
+        let Some(prev) = text[..start].chars().next_back() else {
+            break;
+        };
+        if prev.is_whitespace() {
+            break;
+        }
+        start -= prev.len_utf8();
+    }
+
+    let mut end = at;
+    while end < text.len() {
+        let Some(next) = text[end..].chars().next() else {
+            break;
+        };
+        if next.is_whitespace() {
+            break;
+        }
+        end += next.len_utf8();
+    }
+
+    if start == end { None } else { Some(start..end) }
 }
 
 /// Byte range of the identifier/variable token in `text` containing byte
@@ -276,6 +326,13 @@ mod tests {
         let src = "<?php\n/**\n * @see Helper\n */\nfunction f() {}\n";
         let p = pos(src, "Helper");
         assert!(!is_unresolvable_docblock_token_at(src, p, "Helper"));
+    }
+
+    #[test]
+    fn hyphenated_pseudo_type_segment_is_unresolvable() {
+        let src = "<?php\n/**\n * @param non-empty-string $value\n */\nfunction f($value) {}\n";
+        let p = pos(src, "non-empty-string");
+        assert!(is_unresolvable_docblock_token_at(src, p, "non"));
     }
 
     #[test]
