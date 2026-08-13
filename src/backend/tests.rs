@@ -3,7 +3,39 @@ use super::*;
 use crate::document::ast::ParsedDoc;
 use crate::editing::use_import::{build_use_import_edit, find_use_insert_line};
 use crate::lang::config::{DiagnosticsConfig, FeaturesConfig, MAX_INDEXED_FILES};
+use std::sync::Arc;
 use tower_lsp_server::ls_types::{Position, Range, Uri};
+
+#[tokio::test]
+async fn dependent_reanalysis_is_skipped_before_index_ready() {
+    // Given two open files while the workspace index is not ready.
+    let docs = Arc::new(DocumentStore::new());
+    let open_files = OpenFiles::new();
+    let changed_uri = "file:///changed.php".parse::<Uri>().unwrap();
+    let dependent_uri = "file:///dependent.php".parse::<Uri>().unwrap();
+    open_files.set_open_text(
+        &docs,
+        changed_uri.clone(),
+        "<?php\nfunction changed(): void {}\n".to_owned(),
+    );
+    open_files.set_open_text(&docs, dependent_uri, "<?php\nchanged();\n".to_owned());
+
+    // When the changed file asks for dependent diagnostic publishes.
+    let publishes = compute_dependent_publishes_owned(
+        Arc::clone(&docs),
+        open_files,
+        changed_uri,
+        DiagnosticsConfig::default(),
+        false,
+    )
+    .await;
+
+    // Then no dependent sweep starts before the initial scan completes.
+    assert!(
+        publishes.is_empty(),
+        "dependent reanalysis must wait until the workspace index is ready"
+    );
+}
 
 // DiagnosticsConfig::from_value tests
 #[test]
