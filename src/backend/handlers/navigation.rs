@@ -637,6 +637,12 @@ impl Backend {
             // methods, else the whole workspace — mir gates never-committed
             // candidates on a symbol-name text mention internally.
             let files: Vec<Arc<str>> = self.docs.reference_candidate_files(&symbol);
+            let wants_use_imports = matches!(
+                symbol,
+                mir_analyzer::Name::Class(_)
+                    | mir_analyzer::Name::Function(_)
+                    | mir_analyzer::Name::GlobalConstant(_)
+            );
 
             // Priority streaming: if the client asked for partial results,
             // analyze the subset of candidates that already mention the
@@ -717,6 +723,16 @@ impl Backend {
                     .into_iter()
                     .filter_map(session_tuple_to_location)
                     .collect();
+                if wants_use_imports {
+                    // The freshness pass above commits candidate analyses, so
+                    // the separate `use:` postings are current before this
+                    // read-only lookup appends them.
+                    locs.extend(
+                        docs.indexed_use_imports(&symbol, &files)
+                            .into_iter()
+                            .filter_map(session_tuple_to_location),
+                    );
+                }
                 dedup_ref_locations(&mut locs);
                 locs
             })

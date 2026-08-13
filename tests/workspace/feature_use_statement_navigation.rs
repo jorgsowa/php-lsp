@@ -1,9 +1,8 @@
 //! Hover/references/definition with the cursor inside a `use` import line
 //! itself (not on a usage site). Hover echoes the raw `use` line back as
-//! text; references/definition currently resolve to nothing from this
-//! position — these tests pin that behavior. Coverage for the actual
-//! willRenameFiles/willDeleteFiles use-statement rewrite lives in
-//! feature_file_ops.rs.
+//! text; references should still resolve across the import and declaration.
+//! Coverage for the actual willRenameFiles/willDeleteFiles use-statement
+//! rewrite lives in feature_file_ops.rs.
 
 use super::*;
 use expect_test::expect;
@@ -42,20 +41,24 @@ echo 'ok';
 }
 
 #[tokio::test]
-async fn aliased_import_cursor_finds_no_references() {
+async fn aliased_import_cursor_finds_references() {
     let mut s = TestServer::new().await;
     s.validate_syntax(false);
     let refs = s
         .check_references(
-            r#"<?php
+            r#"//- /main.php
+<?php
 use App$0\Services\OldService as Service;
 
+//- /App/Services/OldService.php
+<?php
+namespace App\Services;
 class OldService {}
 "#,
         )
         .await;
-    // Cursor on the original class name inside an aliased import — no refs resolve.
-    expect!["<none>"].assert_eq(&refs);
+    expect!["App/Services/OldService.php:2:6-2:16\nmain.php:1:4-1:38"]
+    .assert_eq(&refs);
 }
 
 #[tokio::test]
@@ -71,8 +74,8 @@ $x = new FooExtra();
 "#,
         )
         .await;
-    // When searching for Foo, should not match FooExtra
-    expect!["<none>"].assert_eq(&refs);
+    // The import itself is a reference, but like-named classes must not match.
+    expect!["main.php:1:4-1:20"].assert_eq(&refs);
 }
 
 #[tokio::test]
@@ -128,10 +131,11 @@ class Class {}
 async fn references_across_use_statements() {
     let mut s = TestServer::new().await;
     s.validate_syntax(false);
-    // References should find the class usage.
+    // References should find both the import and the class usage.
     s.check_references_annotated(
         r#"<?php
 use App$0\Logger;
+//  ^^^^^^^^^^ ref
 
 class Logger {}
 
@@ -159,18 +163,22 @@ echo 'test';
 }
 
 #[tokio::test]
-async fn aliased_import_alias_cursor_finds_no_references() {
+async fn aliased_import_alias_cursor_finds_references() {
     let mut s = TestServer::new().await;
     s.validate_syntax(false);
     let refs = s
         .check_references(
-            r#"<?php
+            r#"//- /main.php
+<?php
 use App\Se$0rvices\MyClass as MC;
 
+//- /App/Services/MyClass.php
+<?php
+namespace App\Services;
 class MyClass {}
 "#,
         )
         .await;
-    // Cursor on the class-name segment of an aliased import — no refs resolve.
-    expect!["<none>"].assert_eq(&refs);
+    expect!["App/Services/MyClass.php:2:6-2:13\nmain.php:1:4-1:30"]
+    .assert_eq(&refs);
 }

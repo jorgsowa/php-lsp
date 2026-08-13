@@ -1,65 +1,85 @@
 //! References import collection tests (protocol-wired).
-//! Cursor placed on a `use` import segment currently resolves to nothing —
-//! these tests pin that known limitation so a future change to it is visible.
+//! `use` imports for importable symbols should participate in find-references
+//! just like regular usage sites.
 
 use super::*;
 
 #[tokio::test]
-async fn references_excludes_class_import_alias() {
+async fn references_include_class_imports() {
     let mut s = TestServer::new().await;
     s.validate_syntax(false);
-    // Cursor on an import alias — no definitions or usages resolve through it.
     s.check_references_annotated(
-        r#"<?php
+        r#"//- /main.php
+<?php
 use App\Ba$0r;
+//  ^^^^^^^ ref
 use function App\helper;
 use const App\LIMIT;
 
+//- /App/Bar.php
+<?php
+namespace App;
 class Bar {}
+//    ^^^ def
 "#,
     )
     .await;
 }
 
 #[tokio::test]
-async fn references_excludes_function_imports() {
+async fn references_include_function_imports() {
     let mut s = TestServer::new().await;
     s.validate_syntax(false);
-    // Cursor on a `use function` import segment — no cross-file refs resolve.
     s.check_references_annotated(
-        r#"<?php
+        r#"//- /main.php
+<?php
 use function App\he$0lper;
+//           ^^^^^^^^^^ ref
 
+//- /App/functions.php
+<?php
+namespace App;
 function helper() {}
+//       ^^^^^^ def
 "#,
     )
     .await;
 }
 
 #[tokio::test]
-async fn references_excludes_const_imports() {
+async fn references_include_const_imports() {
     let mut s = TestServer::new().await;
-    // Cursor on a `use const` import segment — no refs resolve.
     s.check_references_annotated(
-        r#"<?php
+        r#"//- /main.php
+<?php
 use const App\LI$0MIT;
+//        ^^^^^^^^^ ref
 
-define('LIMIT', 100);
+//- /App/constants.php
+<?php
+namespace App;
+const LIMIT = 100;
+//    ^^^^^ def
 "#,
     )
     .await;
 }
 
 #[tokio::test]
-async fn references_excludes_aliased_class_import() {
+async fn references_include_aliased_class_imports() {
     let mut s = TestServer::new().await;
     s.validate_syntax(false);
-    // Cursor on the original class name in an aliased import — no refs resolve.
     s.check_references_annotated(
-        r#"<?php
+        r#"//- /main.php
+<?php
 use App\Services\OldSe$0rvice as Service;
+//  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ ref
 
+//- /App/Services/OldService.php
+<?php
+namespace App\Services;
 class OldService {}
+//    ^^^^^^^^^^ def
 "#,
     )
     .await;
@@ -99,31 +119,41 @@ $x = Status::Status;
 }
 
 #[tokio::test]
-async fn references_excludes_namespaced_import() {
+async fn references_include_namespaced_imports() {
     let mut s = TestServer::new().await;
     s.validate_syntax(false);
-    // Cursor on an import inside a namespace — no cross-file refs resolve.
     s.check_references_annotated(
-        r#"<?php
+        r#"//- /main.php
+<?php
 namespace App;
-use Services\Log$0ger;
+use App\Services\Log$0ger;
+//  ^^^^^^^^^^^^^^^^^^^ ref
 
+//- /App/Services/Logger.php
+<?php
+namespace App\Services;
 class Logger {}
+//    ^^^^^^ def
 "#,
     )
     .await;
 }
 
 #[tokio::test]
-async fn references_excludes_builtin_function_import() {
+async fn references_include_imported_function_with_same_name_as_builtin() {
     let mut s = TestServer::new().await;
     s.validate_syntax(false);
-    // Cursor on a built-in function import segment — no refs resolve.
     s.check_references_annotated(
-        r#"<?php
+        r#"//- /main.php
+<?php
 use function App\str$0len;
+//           ^^^^^^^^^^ ref
 
-strlen('test');
+//- /App/functions.php
+<?php
+namespace App;
+function strlen(string $value): int { return 0; }
+//       ^^^^^^ def
 "#,
     )
     .await;
