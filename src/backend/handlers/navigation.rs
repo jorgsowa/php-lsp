@@ -666,42 +666,90 @@ impl Backend {
                     _ => None,
                 };
                 if let Some(owner_short) = owner_short {
-                    let sym = symbol.clone();
                     let docs = Arc::clone(&self.docs);
                     let all_files = files.clone();
                     // The owner-mention partition may scan candidate texts
                     // (cold files only — warm ones answer from mir's mention
                     // cache) — do it on the blocking pool, never on the
-                    // tokio worker. mir parallelizes internally.
-                    let priority_locations = tokio::task::spawn_blocking(move || {
-                        let priority_files: Vec<Arc<str>> =
-                            docs.files_mentioning_short_name(&all_files, &owner_short);
-                        if priority_files.is_empty() {
-                            return Vec::new();
-                        }
-                        let (_interactive, cancel_rev) = docs.settled_write_rev_guard();
-                        let mut locs: Vec<Location> = docs
-                            .indexed_references(
-                                &sym,
-                                &priority_files,
-                                include_declaration,
-                                Some(cancel_rev),
+                    // tokio worker. mir parallelizes internally. Once split,
+                    // query the priority subset and the remainder separately
+                    // so the authoritative response doesn't pay the priority
+                    // files twice.
+                    let (priority_files, remainder_files) =
+                        tokio::task::spawn_blocking(move || {
+                            let priority_files: Vec<Arc<str>> =
+                                docs.files_mentioning_short_name(&all_files, &owner_short);
+                            let priority_set: std::collections::HashSet<&str> =
+                                priority_files.iter().map(|f| f.as_ref()).collect();
+                            let remainder_files: Vec<Arc<str>> = all_files
+                                .into_iter()
+                                .filter(|f| !priority_set.contains(f.as_ref()))
+                                .collect();
+                            (priority_files, remainder_files)
+                        })
+                        .await
+                        .unwrap_or_default();
+
+                    if !priority_files.is_empty() {
+                        let priority_docs = Arc::clone(&self.docs);
+                        let priority_sym = symbol.clone();
+                        let mut locations = tokio::task::spawn_blocking(move || {
+                            let (_interactive, cancel_rev) =
+                                priority_docs.settled_write_rev_guard();
+                            let mut locs: Vec<Location> = priority_docs
+                                .indexed_references(
+                                    &priority_sym,
+                                    &priority_files,
+                                    include_declaration,
+                                    Some(cancel_rev),
+                                )
+                                .into_iter()
+                                .filter_map(session_tuple_to_location)
+                                .collect();
+                            dedup_ref_locations(&mut locs);
+                            locs
+                        })
+                        .await
+                        .unwrap_or_default();
+                        if !locations.is_empty() {
+                            super::super::send_references_partial_result(
+                                &self.client,
+                                token,
+                                locations.clone(),
                             )
-                            .into_iter()
-                            .filter_map(session_tuple_to_location)
-                            .collect();
-                        dedup_ref_locations(&mut locs);
-                        locs
-                    })
-                    .await
-                    .unwrap_or_default();
-                    if !priority_locations.is_empty() {
-                        super::super::send_references_partial_result(
-                            &self.client,
-                            token,
-                            priority_locations,
-                        )
-                        .await;
+                            .await;
+                        }
+                        if !remainder_files.is_empty() {
+                            let remainder_docs = Arc::clone(&self.docs);
+                            let remainder_sym = symbol.clone();
+                            locations.extend(
+                                tokio::task::spawn_blocking(move || {
+                                    let (_interactive, cancel_rev) =
+                                        remainder_docs.settled_write_rev_guard();
+                                    let mut locs: Vec<Location> = remainder_docs
+                                        .indexed_references(
+                                            &remainder_sym,
+                                            &remainder_files,
+                                            include_declaration,
+                                            Some(cancel_rev),
+                                        )
+                                        .into_iter()
+                                        .filter_map(session_tuple_to_location)
+                                        .collect();
+                                    dedup_ref_locations(&mut locs);
+                                    locs
+                                })
+                                .await
+                                .unwrap_or_default(),
+                            );
+                            dedup_ref_locations(&mut locations);
+                        }
+                        if include_declaration {
+                            locations.retain(|loc| location_starts_on_symbol(&self.docs, loc));
+                            locations.extend(self.workspace_decl_locations(&symbol, &word));
+                            dedup_ref_locations(&mut locations);
+                        }
+                        return Ok((!locations.is_empty()).then_some(locations));
                     }
                 }
             }
@@ -1040,12 +1088,7 @@ fn location_starts_on_symbol(
         return true;
     };
     text.chars().next().is_some_and(|c| {
-        c.is_alphabetic()
-            || c == '_'
-            || c.is_ascii_digit()
-            || c == '\\'
-            || c == '$'
-            || c == '&'
+        c.is_alphabetic() || c == '_' || c.is_ascii_digit() || c == '\\' || c == '$' || c == '&'
     })
 }
 

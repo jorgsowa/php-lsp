@@ -185,6 +185,82 @@ async fn references_final_result_unchanged_by_partial_result_token() {
     );
 }
 
+const PRIORITY_AND_REMAINDER_FIXTURE: &str = r#"//- /src/Owner.php
+<?php
+class Owner {
+    public function pro$0cess(): void {}
+}
+
+//- /src/PriorityCaller.php
+<?php
+$o = new Owner();
+$o->process();
+
+//- /src/Base.php
+<?php
+class Base {
+    protected Owner $svc;
+}
+
+//- /src/Caller.php
+<?php
+class Caller extends Base {
+    public function run(): void {
+        $this->svc->process();
+    }
+}
+"#;
+
+/// Public instance-method streaming should prioritize the owner-mentioning
+/// subset without re-running the authoritative query over those same files.
+/// This fixture has one real call site in the priority batch
+/// (`PriorityCaller.php`, which names `Owner`) and one real call site only in
+/// the remainder (`Caller.php`, whose type comes from `Base` and never spells
+/// `Owner` itself). The progress batch must surface only the former, while the
+/// final response still contains both.
+#[tokio::test]
+async fn references_with_partial_result_token_streams_priority_subset_and_final_includes_remainder()
+{
+    let mut s = TestServer::new().await;
+    let opened = s.open_fixture(PRIORITY_AND_REMAINDER_FIXTURE).await;
+    let c = opened.cursor().clone();
+    let uri = s.uri(&c.path);
+
+    let (resp, progress) = s
+        .client()
+        .request_capturing_notifications(
+            "textDocument/references",
+            references_params(&uri, c.line, c.character, Some("refs-token-split")),
+            "$/progress",
+        )
+        .await;
+
+    assert!(resp["error"].is_null(), "references errored: {resp:?}");
+    assert!(
+        !progress.is_empty(),
+        "expected at least one $/progress notification, got none"
+    );
+
+    let streamed = progress
+        .iter()
+        .map(|notif| {
+            let batch = json!({ "result": notif["params"]["value"] });
+            render_locations(&batch, &s.uri(""))
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    expect_test::expect![[r#"
+        src/Owner.php:2:20-2:27
+        src/PriorityCaller.php:2:4-2:11"#]]
+    .assert_eq(&streamed);
+
+    expect_test::expect![[r#"
+        src/Caller.php:3:20-3:27
+        src/Owner.php:2:20-2:27
+        src/PriorityCaller.php:2:4-2:11"#]]
+    .assert_eq(&render_locations(&resp, &s.uri("")));
+}
+
 const CASE_DIVERGENT_FIXTURE: &str = r#"//- /src/Owner.php
 <?php
 class Owner {
