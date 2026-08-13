@@ -6,7 +6,7 @@ use arc_swap::{ArcSwap, ArcSwapOption};
 
 use dashmap::{DashMap, DashSet};
 use salsa::Setter;
-use tower_lsp_server::ls_types::{SemanticToken, Uri};
+use tower_lsp_server::ls_types::{Position, SemanticToken, Uri};
 
 use crate::db::mir_queries::{LspWorkspace, LspWsFile};
 use crate::document::ast::ParsedDoc;
@@ -1144,10 +1144,11 @@ impl DocumentStore {
         };
         raw.into_iter()
             .map(|(file, range)| {
-                // mir uses 1-based lines; 0-based columns (since mir 0.42.0).
-                let line = range.start.line.saturating_sub(1);
-                let col_start = range.start.column;
-                let col_end = range.end.column;
+                // mir uses 1-based lines; reference postings still report
+                // byte columns, so normalize through the source text before
+                // handing ranges to LSP/UTF-16 consumers.
+                let (line, col_start, col_end) =
+                    self.mir_reference_range_to_lsp_columns(&file, &range);
                 (file, line, col_start, col_end)
             })
             .collect()
@@ -1179,6 +1180,59 @@ impl DocumentStore {
                 (file, line, range.start.column, range.end.column)
             })
             .collect()
+    }
+
+    fn mir_reference_range_to_lsp_columns(
+        &self,
+        file: &Arc<str>,
+        range: &mir_analyzer::Range,
+    ) -> (u32, u32, u32) {
+        let line = range.start.line.saturating_sub(1);
+        let Some(uri) = file.parse::<Uri>().ok() else {
+            return (line, range.start.column, range.end.column);
+        };
+        let Some(doc) = self.get_doc_salsa(&uri) else {
+            return (line, range.start.column, range.end.column);
+        };
+        let sv = doc.view();
+        let start = self.mir_reference_line_column_to_offset(&doc, line, range.start.column);
+        let end = self
+            .mir_reference_line_column_to_offset(&doc, line, range.end.column)
+            .max(start);
+        let start_pos = sv.position_of(start);
+        let end_pos = sv.position_of(end);
+        (start_pos.line, start_pos.character, end_pos.character)
+    }
+
+    fn mir_reference_line_column_to_offset(&self, doc: &ParsedDoc, line: u32, column: u32) -> u32 {
+        let source = doc.source();
+        let line_starts = doc.line_starts();
+        let line_idx = line as usize;
+        let line_start = line_starts
+            .get(line_idx)
+            .copied()
+            .unwrap_or(source.len() as u32) as usize;
+        let next_line_start = line_starts
+            .get(line_idx + 1)
+            .copied()
+            .unwrap_or(source.len() as u32) as usize;
+        let mut line_end = next_line_start.min(source.len());
+        if source.as_bytes().get(line_end.saturating_sub(1)) == Some(&b'\n') {
+            line_end = line_end.saturating_sub(1);
+        }
+        if source.as_bytes().get(line_end.saturating_sub(1)) == Some(&b'\r') {
+            line_end = line_end.saturating_sub(1);
+        }
+        let byte_offset = line_start
+            .saturating_add(column as usize)
+            .min(line_end);
+        if source.is_char_boundary(byte_offset) {
+            return byte_offset.try_into().unwrap_or(u32::MAX);
+        }
+        doc.view().byte_of_position(Position {
+            line,
+            character: column,
+        })
     }
 
     /// Replay disk-cached reference postings and subtype edges for the whole
