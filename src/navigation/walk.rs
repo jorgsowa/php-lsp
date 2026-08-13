@@ -3,9 +3,9 @@
 use std::ops::ControlFlow;
 
 use php_ast::{
-    Attribute, CatchClause, ClassMember, ClassMemberKind, EnumMember, EnumMemberKind, Expr,
-    ExprKind, MethodDecl, Name, NamespaceBody, Span, Stmt, StmtKind, TraitUseDecl, TypeHint,
-    TypeHintKind, UnaryPostfixOp, UnaryPrefixOp,
+    ArrowFunctionExpr, Attribute, CatchClause, ClassMember, ClassMemberKind, ClosureExpr,
+    EnumMember, EnumMemberKind, Expr, ExprKind, MethodDecl, Name, NamespaceBody, Span, Stmt,
+    StmtKind, TraitUseDecl, TypeHint, TypeHintKind, UnaryPostfixOp, UnaryPrefixOp,
     visitor::{
         Visitor, walk_attribute, walk_catch_clause, walk_class_member, walk_enum_member, walk_expr,
         walk_stmt, walk_trait_use, walk_type_hint,
@@ -139,6 +139,23 @@ fn var_refs_in_stmts(
     out.append(&mut v.out);
 }
 
+fn var_refs_in_expr(
+    expr: &Expr<'_, '_>,
+    var_name: &str,
+    out: &mut Vec<(Span, DocumentHighlightKind)>,
+) {
+    let mut v = VarRefsVisitor {
+        var_name,
+        out: Vec::new(),
+    };
+    let _ = v.visit_expr(expr);
+    out.append(&mut v.out);
+}
+
+fn span_contains_byte(span: Span, byte_off: usize) -> bool {
+    byte_off >= span.start as usize && byte_off < span.end as usize
+}
+
 struct VarRefsVisitor<'a> {
     var_name: &'a str,
     out: Vec<(Span, DocumentHighlightKind)>,
@@ -167,6 +184,298 @@ impl VarRefsVisitor<'_> {
             }
         }
     }
+}
+
+struct VarDeclsVisitor<'a> {
+    var_name: &'a str,
+    found: bool,
+}
+
+impl VarDeclsVisitor<'_> {
+    fn mark_lvalue_decl(&mut self, expr: &Expr<'_, '_>) {
+        match &expr.kind {
+            ExprKind::Variable(name) if name.as_str() == self.var_name => {
+                self.found = true;
+            }
+            ExprKind::Array(elements) => {
+                for elem in elements.iter() {
+                    if !self.found && !matches!(elem.value.kind, ExprKind::Omit) {
+                        self.mark_lvalue_decl(&elem.value);
+                    }
+                }
+            }
+            _ => {
+                let _ = self.visit_expr(expr);
+            }
+        }
+    }
+}
+
+impl<'arena, 'src> Visitor<'arena, 'src> for VarDeclsVisitor<'_> {
+    fn visit_stmt(&mut self, stmt: &Stmt<'arena, 'src>) -> ControlFlow<()> {
+        if self.found {
+            return ControlFlow::Break(());
+        }
+        match &stmt.kind {
+            StmtKind::Function(_)
+            | StmtKind::Class(_)
+            | StmtKind::Trait(_)
+            | StmtKind::Enum(_)
+            | StmtKind::Interface(_) => ControlFlow::Continue(()),
+            StmtKind::Foreach(f) => {
+                if let Some(key) = &f.key
+                    && let ExprKind::Variable(name) = &key.kind
+                    && name.as_str() == self.var_name
+                {
+                    self.found = true;
+                    return ControlFlow::Break(());
+                }
+                if let ExprKind::Variable(name) = &f.value.kind
+                    && name.as_str() == self.var_name
+                {
+                    self.found = true;
+                    return ControlFlow::Break(());
+                }
+                let _ = self.visit_stmt(f.body);
+                ControlFlow::Continue(())
+            }
+            StmtKind::Global(exprs) => {
+                for expr in exprs.iter() {
+                    if let ExprKind::Variable(name) = &expr.kind
+                        && name.as_str() == self.var_name
+                    {
+                        self.found = true;
+                        return ControlFlow::Break(());
+                    }
+                }
+                ControlFlow::Continue(())
+            }
+            StmtKind::StaticVar(vars) => {
+                for sv in vars.iter() {
+                    if sv.name.or_error() == self.var_name {
+                        self.found = true;
+                        return ControlFlow::Break(());
+                    }
+                }
+                ControlFlow::Continue(())
+            }
+            StmtKind::TryCatch(t) => {
+                for catch in t.catches.iter() {
+                    if catch.var == Some(self.var_name) {
+                        self.found = true;
+                        return ControlFlow::Break(());
+                    }
+                    for stmt in catch.body.stmts.iter() {
+                        let _ = self.visit_stmt(stmt);
+                        if self.found {
+                            return ControlFlow::Break(());
+                        }
+                    }
+                }
+                if let Some(finally) = &t.finally {
+                    for stmt in finally.stmts.iter() {
+                        let _ = self.visit_stmt(stmt);
+                        if self.found {
+                            return ControlFlow::Break(());
+                        }
+                    }
+                }
+                ControlFlow::Continue(())
+            }
+            _ => walk_stmt(self, stmt),
+        }
+    }
+
+    fn visit_expr(&mut self, expr: &Expr<'arena, 'src>) -> ControlFlow<()> {
+        if self.found {
+            return ControlFlow::Break(());
+        }
+        match &expr.kind {
+            ExprKind::Assign(a) => {
+                self.mark_lvalue_decl(a.target);
+                if self.found {
+                    ControlFlow::Break(())
+                } else {
+                    let _ = self.visit_expr(a.value);
+                    ControlFlow::Continue(())
+                }
+            }
+            ExprKind::UnaryPrefix(u) => {
+                if matches!(
+                    u.op,
+                    UnaryPrefixOp::PreIncrement | UnaryPrefixOp::PreDecrement
+                ) && let ExprKind::Variable(name) = &u.operand.kind
+                    && name.as_str() == self.var_name
+                {
+                    self.found = true;
+                    return ControlFlow::Break(());
+                }
+                walk_expr(self, expr)
+            }
+            ExprKind::UnaryPostfix(u) => {
+                if matches!(
+                    u.op,
+                    UnaryPostfixOp::PostIncrement | UnaryPostfixOp::PostDecrement
+                ) && let ExprKind::Variable(name) = &u.operand.kind
+                    && name.as_str() == self.var_name
+                {
+                    self.found = true;
+                    return ControlFlow::Break(());
+                }
+                walk_expr(self, expr)
+            }
+            ExprKind::Closure(_) | ExprKind::ArrowFunction(_) => ControlFlow::Continue(()),
+            _ => walk_expr(self, expr),
+        }
+    }
+}
+
+fn scope_declares_var_in_stmts(stmts: &[Stmt<'_, '_>], var_name: &str) -> bool {
+    let mut v = VarDeclsVisitor {
+        var_name,
+        found: false,
+    };
+    for stmt in stmts {
+        let _ = v.visit_stmt(stmt);
+        if v.found {
+            break;
+        }
+    }
+    v.found
+}
+
+fn scope_declares_var_in_expr(expr: &Expr<'_, '_>, var_name: &str) -> bool {
+    let mut v = VarDeclsVisitor {
+        var_name,
+        found: false,
+    };
+    let _ = v.visit_expr(expr);
+    v.found
+}
+
+fn closure_owns_var(c: &ClosureExpr<'_, '_>, var_name: &str) -> bool {
+    c.params.iter().any(|p| p.name == var_name)
+        || scope_declares_var_in_stmts(&c.body.stmts, var_name)
+}
+
+fn arrow_owns_var(af: &ArrowFunctionExpr<'_, '_>, var_name: &str) -> bool {
+    af.params.iter().any(|p| p.name == var_name) || scope_declares_var_in_expr(af.body, var_name)
+}
+
+fn collect_current_closure_scope(
+    c: &ClosureExpr<'_, '_>,
+    var_name: &str,
+    out: &mut Vec<(Span, DocumentHighlightKind)>,
+) {
+    for p in c.params.iter() {
+        if p.name == var_name {
+            out.push((p.span, DocumentHighlightKind::WRITE));
+        }
+    }
+    for use_var in c.use_vars.iter() {
+        if use_var.name == var_name {
+            out.push((use_var.span, DocumentHighlightKind::READ));
+        }
+    }
+    var_refs_in_stmts(&c.body.stmts, var_name, out);
+}
+
+fn collect_current_arrow_scope(
+    af: &ArrowFunctionExpr<'_, '_>,
+    var_name: &str,
+    out: &mut Vec<(Span, DocumentHighlightKind)>,
+) {
+    for p in af.params.iter() {
+        if p.name == var_name {
+            out.push((p.span, DocumentHighlightKind::WRITE));
+        }
+    }
+    var_refs_in_expr(af.body, var_name, out);
+}
+
+struct NestedVarScopeVisitor<'a, 'out> {
+    var_name: &'a str,
+    byte_off: usize,
+    out: &'out mut Vec<(Span, DocumentHighlightKind)>,
+    found: bool,
+}
+
+impl<'arena, 'src> Visitor<'arena, 'src> for NestedVarScopeVisitor<'_, '_> {
+    fn visit_expr(&mut self, expr: &Expr<'arena, 'src>) -> ControlFlow<()> {
+        if self.found {
+            return ControlFlow::Break(());
+        }
+        match &expr.kind {
+            ExprKind::Closure(c) if span_contains_byte(expr.span, self.byte_off) => {
+                if collect_nested_var_scope_in_stmts(
+                    &c.body.stmts,
+                    self.var_name,
+                    self.byte_off,
+                    self.out,
+                ) {
+                    self.found = true;
+                    return ControlFlow::Break(());
+                }
+                if closure_owns_var(c, self.var_name) {
+                    collect_current_closure_scope(c, self.var_name, self.out);
+                    self.found = true;
+                    return ControlFlow::Break(());
+                }
+                walk_expr(self, expr)
+            }
+            ExprKind::ArrowFunction(af) if span_contains_byte(expr.span, self.byte_off) => {
+                if collect_nested_var_scope_in_expr(af.body, self.var_name, self.byte_off, self.out)
+                {
+                    self.found = true;
+                    return ControlFlow::Break(());
+                }
+                if arrow_owns_var(af, self.var_name) {
+                    collect_current_arrow_scope(af, self.var_name, self.out);
+                    self.found = true;
+                    return ControlFlow::Break(());
+                }
+                walk_expr(self, expr)
+            }
+            _ => walk_expr(self, expr),
+        }
+    }
+}
+
+fn collect_nested_var_scope_in_stmts(
+    stmts: &[Stmt<'_, '_>],
+    var_name: &str,
+    byte_off: usize,
+    out: &mut Vec<(Span, DocumentHighlightKind)>,
+) -> bool {
+    let mut v = NestedVarScopeVisitor {
+        var_name,
+        byte_off,
+        out,
+        found: false,
+    };
+    for stmt in stmts {
+        let _ = v.visit_stmt(stmt);
+        if v.found {
+            break;
+        }
+    }
+    v.found
+}
+
+fn collect_nested_var_scope_in_expr(
+    expr: &Expr<'_, '_>,
+    var_name: &str,
+    byte_off: usize,
+    out: &mut Vec<(Span, DocumentHighlightKind)>,
+) -> bool {
+    let mut v = NestedVarScopeVisitor {
+        var_name,
+        byte_off,
+        out,
+        found: false,
+    };
+    let _ = v.visit_expr(expr);
+    v.found
 }
 
 impl<'arena, 'src> Visitor<'arena, 'src> for VarRefsVisitor<'_> {
@@ -310,6 +619,9 @@ pub fn collect_var_refs_in_scope(
         }
     }
     // Not inside any function — collect top-level
+    if collect_nested_var_scope_in_stmts(stmts, var_name, byte_off, out) {
+        return;
+    }
     var_refs_in_stmts(stmts, var_name, out);
 }
 
@@ -326,6 +638,9 @@ fn collect_method_scope(
         return false;
     }
     if let Some(body) = &m.body {
+        if collect_nested_var_scope_in_stmts(&body.stmts, var_name, byte_off, out) {
+            return true;
+        }
         for inner in body.stmts.iter() {
             if collect_in_fn_at(inner, var_name, byte_off, out) {
                 return true;
@@ -371,6 +686,9 @@ fn collect_in_fn_at(
         StmtKind::Function(f) => {
             if byte_off < stmt.span.start as usize || byte_off >= stmt.span.end as usize {
                 return false;
+            }
+            if collect_nested_var_scope_in_stmts(&f.body.stmts, var_name, byte_off, out) {
+                return true;
             }
             for inner in f.body.stmts.iter() {
                 if collect_in_fn_at(inner, var_name, byte_off, out) {

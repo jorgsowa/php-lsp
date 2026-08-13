@@ -212,3 +212,44 @@ class Factory {
     )
     .await;
 }
+
+/// A nested arrow function parameter must own its own `$x` references and must
+/// not merge with an outer `$x` when the cursor is inside the arrow body.
+#[tokio::test]
+async fn references_variable_arrow_param_shadowing_owns_nested_scope() {
+    let mut s = TestServer::new().await;
+    s.check_references_annotated(
+        r#"<?php
+function demo(int $x): int {
+    $outer = $x;
+    $calc = fn(int $x$0) => $x + 1;
+//                 ^^ def
+//                        ^^ ref
+    return $calc(2) + $outer + $x;
+}
+"#,
+    )
+    .await;
+}
+
+/// A closure with its own local variable must be treated as a nested
+/// variable owner instead of being merged into the enclosing function scope.
+#[tokio::test]
+async fn references_variable_closure_scope_owns_shadowed_name() {
+    let mut s = TestServer::new().await;
+    s.check_references_annotated(
+        r#"<?php
+function demo(int $x): int {
+    $outer = $x;
+    $calc = function () use ($outer): int {
+        $x = $outer + 1;
+//      ^^ def
+        return $x$0;
+//             ^^ ref
+    };
+    return $calc(2) + $x;
+}
+"#,
+    )
+    .await;
+}
