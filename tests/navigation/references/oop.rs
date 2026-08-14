@@ -43,6 +43,37 @@ $p->touchAt();
     .await;
 }
 
+/// Trait adaptation clauses also refer to methods. `use Auditable { record as
+/// audit; }` creates an alias whose calls still use the trait method body, so a
+/// complete find-usages result from the original trait method should include
+/// both the adaptation entry and calls through the alias.
+#[tokio::test]
+#[ignore = "known gap: trait method references do not include adaptation aliases and alias call sites"]
+async fn references_trait_method_includes_adaptation_alias_usages() {
+    let mut s = TestServer::new().await;
+    s.check_references_annotated(
+        r#"<?php
+trait Auditable {
+    public function rec$0ord(): void {}
+    //              ^^^^^^ def
+}
+class Post {
+    use Auditable {
+        record as audit;
+        // ^^^^^^ ref
+    }
+    public function save(): void {
+        $this->record();
+        //     ^^^^^^ ref
+        $this->audit();
+        //     ^^^^^ ref
+    }
+}
+"#,
+    )
+    .await;
+}
+
 #[tokio::test]
 async fn references_interface_method_finds_call_sites() {
     // Cursor on the interface method declaration: must find both the
