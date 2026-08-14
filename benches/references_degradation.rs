@@ -15,7 +15,7 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use mir_analyzer::{AnalysisSession, Name, PhpVersion};
+use mir_analyzer::{AnalysisSession, Name, PhpVersion, ReferenceIncludes};
 use php_lsp::document_store::DocumentStore;
 use tower_lsp_server::ls_types::Uri;
 
@@ -55,7 +55,13 @@ fn laravel_sources() -> Option<Vec<SourceFile>> {
 /// over the candidate set. Warm files answer from the index; stale ones
 /// re-analyze once and recommit.
 fn references(session: &AnalysisSession, sym: &Name, files: &[Arc<str>]) {
-    std::hint::black_box(session.indexed_references_to(sym, files, false, &|| false));
+    std::hint::black_box(session.indexed_references_to(
+        sym,
+        files,
+        false,
+        ReferenceIncludes::Plain,
+        &|| false,
+    ));
 }
 
 fn mean_ms(samples: &[Duration]) -> f64 {

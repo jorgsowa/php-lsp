@@ -5,6 +5,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use arc_swap::{ArcSwap, ArcSwapOption};
 
 use dashmap::{DashMap, DashSet};
+use mir_analyzer::ReferenceIncludes;
 use salsa::Setter;
 use tower_lsp_server::ls_types::{SemanticToken, Uri};
 
@@ -1123,7 +1124,13 @@ impl DocumentStore {
         let raw = loop {
             let session = self.analysis_session(php_version);
             match salsa::Cancelled::catch(std::panic::AssertUnwindSafe(|| {
-                session.indexed_references_to(symbol, files, include_declaration, &stale)
+                session.indexed_references_to(
+                    symbol,
+                    files,
+                    include_declaration,
+                    ReferenceIncludes::Plain,
+                    &stale,
+                )
             })) {
                 Ok(Some(refs)) => break refs,
                 // mir aborted via the staleness probe — or a Phase-1 unwind

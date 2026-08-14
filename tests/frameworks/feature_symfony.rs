@@ -690,6 +690,7 @@ mod references {
                     &mir_analyzer::Name::class("App\\Entity\\Post"),
                     &paths,
                     false,
+                    mir_analyzer::ReferenceIncludes::Plain,
                     &|| false,
                 )
                 .unwrap()
