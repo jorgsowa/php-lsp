@@ -735,6 +735,16 @@ impl TestServer {
             .unwrap_or_else(|| panic!("debugStats lacked numeric `ref_index_locks`: {resp}"))
     }
 
+    /// Cumulative per-file text scans in mir's class/member mention index.
+    pub async fn debug_stats_mir_mention_scans_recorded(&mut self) -> u64 {
+        let resp = self.client.request_no_params("$/php-lsp/debugStats").await;
+        resp["result"]["mir_mention_scans_recorded"]
+            .as_u64()
+            .unwrap_or_else(|| {
+                panic!("debugStats lacked numeric `mir_mention_scans_recorded`: {resp}")
+            })
+    }
+
     /// Poll `$/php-lsp/debugStats` until at least `n` analysis warm sweeps
     /// have completed. Returns `false` on timeout (~15 s).
     pub async fn wait_for_warm_sweeps(&mut self, n: u64) -> bool {
