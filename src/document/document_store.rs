@@ -1191,12 +1191,24 @@ impl DocumentStore {
 
     fn mir_reference_range_to_lsp_columns(
         &self,
-        _file: &Arc<str>,
+        file: &Arc<str>,
         range: &mir_analyzer::Range,
     ) -> (u32, u32, u32) {
         let line = range.start.line.saturating_sub(1);
-        // MIR reports columns as Unicode code-point positions which equal LSP character counts.
-        (line, range.start.column, range.end.column)
+        let Some(uri) = file.parse::<Uri>().ok() else {
+            return (line, range.start.column, range.end.column);
+        };
+        let Some(doc) = self.get_doc_salsa(&uri) else {
+            return (line, range.start.column, range.end.column);
+        };
+        let sv = doc.view();
+        let start = self.mir_reference_line_column_to_offset(&doc, line, range.start.column);
+        let end = self
+            .mir_reference_line_column_to_offset(&doc, line, range.end.column)
+            .max(start);
+        let start_pos = sv.position_of(start);
+        let end_pos = sv.position_of(end);
+        (start_pos.line, start_pos.character, end_pos.character)
     }
 
     fn mir_reference_line_column_to_offset(&self, doc: &ParsedDoc, line: u32, column: u32) -> u32 {
@@ -1218,7 +1230,9 @@ impl DocumentStore {
         if source.as_bytes().get(line_end.saturating_sub(1)) == Some(&b'\r') {
             line_end = line_end.saturating_sub(1);
         }
-        let byte_offset = line_start.saturating_add(column as usize).min(line_end);
+        let byte_offset = line_start
+            .saturating_add(column as usize)
+            .min(line_end);
         if source.is_char_boundary(byte_offset) {
             return byte_offset.try_into().unwrap_or(u32::MAX);
         }
