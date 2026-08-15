@@ -169,7 +169,9 @@ async fn references_include_crlf_import_ranges_with_utf16_columns() {
 
     let resp = server.references("src/Emoji.php", 2, 8, false).await;
     assert!(resp["error"].is_null(), "references error: {resp:?}");
-    expect!["<none>"]
+    expect![[r#"
+        src/main.php:2:4-2:13
+        src/main.php:3:12-3:16"#]]
     .assert_eq(&render_locations(&resp, &server.uri("")));
 }
 

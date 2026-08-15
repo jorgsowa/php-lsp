@@ -1235,8 +1235,15 @@ impl DocumentStore {
             return byte_offset.try_into().unwrap_or(u32::MAX);
         }
         // MIR's column may land mid-character in multi-byte UTF-8 sequences.
-        let segment = &source[line_start..byte_offset];
-        segment.chars().map(|c| c.len_utf16() as u32).sum::<u32>()
+        // Find the previous char boundary (start of the character containing this column).
+        let start_of_char = if line_start < byte_offset {
+            (line_start..byte_offset).rev()
+                .find(|&i| source.is_char_boundary(i))
+                .unwrap_or(line_start)
+        } else {
+            line_start
+        };
+        start_of_char.try_into().unwrap_or(u32::MAX)
     }
 
     /// Replay disk-cached reference postings and subtype edges for the whole

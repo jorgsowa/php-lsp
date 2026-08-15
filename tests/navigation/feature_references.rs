@@ -87,3 +87,6 @@ mod warm_start_untrusted_replay;
 
 #[path = "references/vendor_warm_sweep.rs"]
 mod vendor_warm_sweep;
+
+#[path = "references/mid_char.rs"]
+mod mid_char;
