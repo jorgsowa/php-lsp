@@ -2525,11 +2525,6 @@ class Counter {
 /// reserved, so an unrelated real `function non()` elsewhere in the
 /// workspace makes an unambiguous collision.
 #[tokio::test]
-#[ignore = "known bug: the PHPDoc documentation-only-token gate doesn't \
-            cover hyphenated psalm/phpstan pseudo-types (non-empty-string, \
-            class-string<T>, ...) — word_at_position splits on the hyphen, \
-            and a resulting bareword segment that collides with a real \
-            declaration elsewhere in the workspace resolves to it"]
 async fn references_on_hyphenated_pseudo_type_segment_finds_cross_file_name_collision() {
     let mut s = TestServer::new().await;
     let out = s
@@ -2547,5 +2542,5 @@ function describe(string $s): void {}
 "#,
         )
         .await;
-    expect!["src/Unrelated.php:1:9-1:12"].assert_eq(&out);
+    expect!["<none>"].assert_eq(&out);
 }

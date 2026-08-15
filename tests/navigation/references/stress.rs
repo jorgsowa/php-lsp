@@ -72,6 +72,57 @@ async fn references_public_method_does_not_parse_candidate_files() {
     );
 }
 
+/// Slowness gap: public instance methods currently fall back to the full
+/// workspace candidate set and rely on mir's internal text gate to reject files
+/// that do not even spell the method token. That keeps results correct, but on
+/// a cold large workspace it still means a broad mention-index pass before the
+/// user sees final references. A host-side method-token candidate prefilter
+/// should keep the first query proportional to files that can actually contain
+/// the method reference.
+#[tokio::test]
+#[ignore = "known slowness gap: public instance-method references scan files that do not mention the method token"]
+async fn references_public_instance_method_skips_files_without_member_token() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("Target.php"),
+        "<?php\nclass Target {\n    public function pro$0cess(): void {}\n}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("Caller.php"),
+        "<?php\n$t = new Target();\n$t->process();\n",
+    )
+    .unwrap();
+    for i in 0..80 {
+        std::fs::write(
+            dir.path().join(format!("Noise{i}.php")),
+            format!("<?php\nclass Noise{i} {{ public function idle(): void {{}} }}\n"),
+        )
+        .unwrap();
+    }
+
+    let mut server = TestServer::with_root(dir.path()).await;
+    server.wait_for_index_ready().await;
+    server
+        .open(
+            "Target.php",
+            "<?php\nclass Target {\n    public function process(): void {}\n}\n",
+        )
+        .await;
+
+    let before = server.debug_stats_mir_mention_scans_recorded().await;
+    let resp = server.references("Target.php", 2, 20, false).await;
+    let after = server.debug_stats_mir_mention_scans_recorded().await;
+
+    expect!["Caller.php:2:4-2:11"].assert_eq(&render_locations(&resp, &server.uri("")));
+    let scans = after - before;
+    assert!(
+        scans <= 3,
+        "public instance-method references scanned {scans} file texts; expected only \
+         declaration/caller-sized work, not the 80 files that never mention `process`"
+    );
+}
+
 #[tokio::test]
 async fn references_protected_method_narrowed_to_hierarchy_stays_complete() {
     // Once the index is ready, `Base::boot` (protected) is narrowed to the

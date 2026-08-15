@@ -445,6 +445,31 @@ async fn goto_type_definition_stays_responsive_with_many_open_documents() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn goto_definition_stays_responsive_while_fallback_lookup_is_in_flight() {
+    // `$variable` goto-definition walks the enclosing local scope before
+    // returning the first assignment/parameter. Keep that fallback off the
+    // async runtime worker like the references/rename variable paths.
+    let mut server = TestServer::new().await;
+    server
+        .open(
+            "gated_goto_definition.php",
+            "<?php\nfunction gated(): void {\n    $gatedVar = 1;\n    echo $gatedVar;\n}\n",
+        )
+        .await;
+    let uri = server.uri("gated_goto_definition.php");
+    server
+        .assert_request_stays_responsive_via_gate(
+            "textDocument/definition",
+            serde_json::json!({
+                "textDocument": { "uri": uri },
+                "position": { "line": 3, "character": 11 },
+            }),
+            php_lsp::backend::debug_gate::GATE_GOTO_DEFINITION,
+        )
+        .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn prepare_rename_stays_responsive_for_keyword_shaped_identifier_on_large_file() {
     // `prepare_rename` only walks the whole AST when the word under the
     // cursor is shaped like a PHP keyword (`list`, `match`, ...) used
@@ -467,6 +492,79 @@ async fn prepare_rename_stays_responsive_for_keyword_shaped_identifier_on_large_
                 "position": { "line": list_line as u32, "character": list_char },
             }),
             php_lsp::backend::debug_gate::GATE_PREPARE_RENAME,
+        )
+        .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn type_hierarchy_prepare_stays_responsive_while_lookup_is_in_flight() {
+    let mut server = TestServer::new().await;
+    server
+        .open("gated_type_hierarchy.php", "<?php\nclass GatedType {}\n")
+        .await;
+    let uri = server.uri("gated_type_hierarchy.php");
+    server
+        .assert_request_stays_responsive_via_gate(
+            "textDocument/prepareTypeHierarchy",
+            serde_json::json!({
+                "textDocument": { "uri": uri },
+                "position": { "line": 1, "character": 8 },
+            }),
+            php_lsp::backend::debug_gate::GATE_TYPE_HIERARCHY,
+        )
+        .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn moniker_stays_responsive_while_member_lookup_is_in_flight() {
+    let mut server = TestServer::new().await;
+    server
+        .open(
+            "gated_moniker.php",
+            "<?php\nclass GatedMoniker {\n    public function work(): void {}\n}\n",
+        )
+        .await;
+    let uri = server.uri("gated_moniker.php");
+    server
+        .assert_request_stays_responsive_via_gate(
+            "textDocument/moniker",
+            serde_json::json!({
+                "textDocument": { "uri": uri },
+                "position": { "line": 2, "character": 22 },
+            }),
+            php_lsp::backend::debug_gate::GATE_MONIKER,
+        )
+        .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn inline_value_stays_responsive_while_range_scan_is_in_flight() {
+    let mut server = TestServer::new().await;
+    server
+        .open(
+            "gated_inline_value.php",
+            "<?php\n$first = 1;\n$second = $first + 1;\n",
+        )
+        .await;
+    let uri = server.uri("gated_inline_value.php");
+    server
+        .assert_request_stays_responsive_via_gate(
+            "textDocument/inlineValue",
+            serde_json::json!({
+                "textDocument": { "uri": uri },
+                "range": {
+                    "start": { "line": 1, "character": 0 },
+                    "end": { "line": 2, "character": 20 },
+                },
+                "context": {
+                    "frameId": 0,
+                    "stoppedLocation": {
+                        "start": { "line": 1, "character": 0 },
+                        "end": { "line": 2, "character": 20 },
+                    },
+                },
+            }),
+            php_lsp::backend::debug_gate::GATE_INLINE_VALUE,
         )
         .await;
 }
@@ -905,6 +1003,32 @@ async fn rename_stays_responsive_while_property_decl_check_is_in_flight() {
                 "newName": "$renamedVar",
             }),
             php_lsp::backend::debug_gate::GATE_RENAME_VARIABLE,
+        )
+        .await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn references_variable_stays_responsive_while_scope_walk_is_in_flight() {
+    // Local-variable references walk the enclosing function/method scope and
+    // convert every hit back to LSP positions. That CPU work must not run on
+    // the async runtime worker, or cursor-driven requests can stall PHPStorm.
+    let mut server = TestServer::new().await;
+    server
+        .open(
+            "gated_references_variable.php",
+            "<?php\nfunction gated(): void {\n    $gatedVar = 1;\n    echo $gatedVar;\n}\n",
+        )
+        .await;
+    let uri = server.uri("gated_references_variable.php");
+    server
+        .assert_request_stays_responsive_via_gate(
+            "textDocument/references",
+            serde_json::json!({
+                "textDocument": { "uri": uri },
+                "position": { "line": 2, "character": 8 },
+                "context": { "includeDeclaration": true },
+            }),
+            php_lsp::backend::debug_gate::GATE_REFERENCES_VARIABLE,
         )
         .await;
 }

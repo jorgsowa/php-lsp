@@ -77,8 +77,6 @@ class Box {}
 /// investigation into mir's per-file analysis; out of scope for the
 /// PHPDoc-annotation bareword gate this file otherwise covers.
 #[tokio::test]
-#[ignore = "separate pre-existing bug: @template's bound type resolves to a bogus \
-            docblock-start location, unrelated to the bareword gate this file covers"]
 async fn template_bound_type_still_resolves() {
     let mut s = TestServer::new().await;
     s.validate_syntax(false);

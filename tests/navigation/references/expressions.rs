@@ -147,3 +147,49 @@ unset($obj->getProp());
     )
     .await;
 }
+
+/// PHP callable arrays encode method references in string literals:
+/// `[Service::class, 'handle']`, `[$service, 'handle']`, and similar framework
+/// callback registrations. PHPStorm includes these in find-usages; omitting
+/// them makes controller/listener/action methods look unused even when they are
+/// wired through a dispatcher.
+#[tokio::test]
+#[ignore = "known gap: method references do not include PHP callable-array string method names"]
+async fn references_method_includes_callable_array_string_entries() {
+    let mut s = TestServer::new().await;
+    s.check_references_annotated(
+        r#"<?php
+class Handler {
+    public function han$0dle(): void {}
+    //              ^^^^^^ def
+}
+$handler = new Handler();
+$callable = [$handler, 'handle'];
+//                       ^^^^^^ ref
+$static = [Handler::class, 'handle'];
+//                          ^^^^^^ ref
+"#,
+    )
+    .await;
+}
+
+/// Bare string callables are function references in PHP APIs such as
+/// `array_map`, `usort`, and event/hook registration. A complete references
+/// implementation should include those string literals when resolving from the
+/// target function declaration.
+#[tokio::test]
+#[ignore = "known gap: function references do not include bare string callable entries"]
+async fn references_function_includes_string_callable_entries() {
+    let mut s = TestServer::new().await;
+    s.check_references_annotated(
+        r#"<?php
+function norm$0alize(string $s): string { return trim($s); }
+//       ^^^^^^^^^ def
+$items = array_map('normalize', [' a ']);
+//                  ^^^^^^^^^ ref
+register_shutdown_function('normalize');
+//                          ^^^^^^^^^ ref
+"#,
+    )
+    .await;
+}

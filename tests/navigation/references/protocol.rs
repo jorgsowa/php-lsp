@@ -37,8 +37,10 @@ async fn references_include_use_imports_across_files() {
         .await;
 
     expect![[r#"
+        src/Service/Greeter.php:4:4-4:18
         src/Service/Greeter.php:8:26-8:30
-        src/Service/Registry.php:11:29-11:33"#]]
+        src/Service/Registry.php:11:29-11:33
+        src/Service/Registry.php:4:4-4:18"#]]
     .assert_eq(&render_locations(&resp, &server.uri("")));
 }
 
@@ -120,4 +122,79 @@ async fn references_after_did_change_reflects_added_call() {
         main.php:2:0-2:7
         main.php:3:0-3:7"#]]
     .assert_eq(&render_locations(&resp2, &server.uri("")));
+}
+
+#[tokio::test]
+async fn references_cross_file_multibyte_prefixes_use_utf16_columns() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let opened = s
+        .open_fixture(
+        r#"//- /src/Greeter.php
+<?php
+namespace App;
+class Gree$0ter {}
+
+//- /src/main.php
+<?php
+use App\Greeter;
+echo "hé"; $g = new Greeter();
+"#,
+        )
+        .await;
+    let c = opened.cursor();
+    let resp = s.references(&c.path, c.line, c.character, false).await;
+    assert!(resp["error"].is_null(), "references error: {resp:?}");
+    expect![[r#"
+        src/main.php:1:4-1:15
+        src/main.php:2:19-2:26"#]]
+    .assert_eq(&render_locations(&resp, &s.uri("")));
+}
+
+#[tokio::test]
+async fn references_include_crlf_import_ranges_with_utf16_columns() {
+    let mut server = TestServer::new().await;
+    server
+        .open(
+            "src/Emoji.php",
+            "<?php\r\nnamespace App;\r\nclass Emojí {}\r\n",
+        )
+        .await;
+    server
+        .open(
+            "src/main.php",
+            "<?php\r\n$prefix = \"hé\";\r\nuse App\\Emojí;\r\n$item = new Emojí();\r\n",
+        )
+        .await;
+
+    let resp = server.references("src/Emoji.php", 2, 8, false).await;
+    assert!(resp["error"].is_null(), "references error: {resp:?}");
+    expect![[r#"
+        src/main.php:2:4-2:13
+        src/main.php:3:12-3:17"#]]
+    .assert_eq(&render_locations(&resp, &server.uri("")));
+}
+
+#[tokio::test]
+async fn references_cross_file_crlf_prefixes_use_utf16_columns() {
+    let mut server = TestServer::new().await;
+    server
+        .open(
+            "src/Emoji.php",
+            "<?php\r\nnamespace App;\r\nclass Emoji {}\r\n",
+        )
+        .await;
+    server
+        .open(
+            "src/main.php",
+            "<?php\r\nuse App\\Emoji;\r\necho \"hé\"; $g = new Emoji();\r\n",
+        )
+        .await;
+
+    let resp = server.references("src/Emoji.php", 2, 8, false).await;
+    assert!(resp["error"].is_null(), "references error: {resp:?}");
+    expect![[r#"
+        src/main.php:1:4-1:13
+        src/main.php:2:19-2:24"#]]
+    .assert_eq(&render_locations(&resp, &server.uri("")));
 }

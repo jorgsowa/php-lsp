@@ -13,7 +13,7 @@ use crate::navigation::references::{
     build_mir_symbol, dedup_ref_locations, session_tuple_to_location,
 };
 use crate::navigation::walk::collect_var_refs_in_scope;
-use crate::text::{fqn_short_name, utf16_code_units, word_at_position};
+use crate::text::{fqn_short_name, utf16_code_units, utf16_offset_to_byte, word_at_position};
 use crate::types::type_map::{enclosing_class_at, enclosing_class_fqn_at};
 
 use super::super::helpers::{
@@ -114,37 +114,46 @@ impl Backend {
                 });
                 if let Some((_, class_fqn_arc)) = resolved_method_target {
                     let wi = self.workspace_index_cached(&mut wi_cache).await;
-                    let class_candidates =
-                        |short: &str| self.docs.class_candidates_by_short_name(&wi, short);
-                    let get_doc = |uri: &Uri| self.docs.get_doc_salsa(uri);
-                    let resolve_class_ref = |fqn: &str| {
-                        self.docs
-                            .resolve_class_ref_by_fqn_or_short_name_fallback(&wi, fqn)
-                    };
-                    if let Some(loc) = find_method_in_class_hierarchy(
-                        class_fqn_arc.as_ref(),
-                        &word,
-                        &wi,
-                        &class_candidates,
-                        &get_doc,
-                        &resolve_class_ref,
-                    ) {
-                        let refined = self
-                            .docs
-                            .get_doc_salsa(&loc.uri)
-                            .and_then(|d| {
-                                let range = find_method_range_in_class(
-                                    &d,
-                                    crate::text::fqn_short_name(class_fqn_arc.as_ref()),
-                                    &word,
-                                )
-                                .or_else(|| find_declaration_range(d.source(), &d, &word));
-                                range.map(|range| Location {
-                                    uri: loc.uri.clone(),
-                                    range,
+                    let docs = Arc::clone(&self.docs);
+                    let wi_task = Arc::clone(&wi);
+                    let class_fqn_task = Arc::clone(&class_fqn_arc);
+                    let word_task = word.clone();
+                    let found = self
+                        .blocking_gated(super::super::debug_gate::GATE_GOTO_DEFINITION, move || {
+                            let class_candidates =
+                                |short: &str| docs.class_candidates_by_short_name(&wi_task, short);
+                            let get_doc = |uri: &Uri| docs.get_doc_salsa(uri);
+                            let resolve_class_ref = |fqn: &str| {
+                                docs.resolve_class_ref_by_fqn_or_short_name_fallback(&wi_task, fqn)
+                            };
+                            let loc = find_method_in_class_hierarchy(
+                                class_fqn_task.as_ref(),
+                                &word_task,
+                                &wi_task,
+                                &class_candidates,
+                                &get_doc,
+                                &resolve_class_ref,
+                            )?;
+                            let refined = docs
+                                .get_doc_salsa(&loc.uri)
+                                .and_then(|d| {
+                                    let range = find_method_range_in_class(
+                                        &d,
+                                        crate::text::fqn_short_name(class_fqn_task.as_ref()),
+                                        &word_task,
+                                    )
+                                    .or_else(|| find_declaration_range(d.source(), &d, &word_task));
+                                    range.map(|range| Location {
+                                        uri: loc.uri.clone(),
+                                        range,
+                                    })
                                 })
-                            })
-                            .unwrap_or(loc);
+                                .unwrap_or(loc);
+                            Some(refined)
+                        })
+                        .await
+                        .flatten();
+                    if let Some(refined) = found {
                         return Ok(Some(GotoDefinitionResponse::Scalar(refined)));
                     }
                     // Fallback: walk the PSR-4 vendor hierarchy for the resolved class.
@@ -169,29 +178,49 @@ impl Backend {
                 });
                 if let Some((class_fqn_arc, property_name_arc)) = resolved_property_target {
                     let wi = self.workspace_index_cached(&mut wi_cache).await;
-                    let class_candidates =
-                        |short: &str| self.docs.class_candidates_by_short_name(&wi, short);
-                    let get_doc = |uri: &Uri| self.docs.get_doc_salsa(uri);
-                    let resolve_class_ref = |fqn: &str| {
-                        self.docs
-                            .resolve_class_ref_by_fqn_or_short_name_fallback(&wi, fqn)
-                    };
-                    if let Some(loc) = find_property_in_class_hierarchy(
-                        class_fqn_arc.as_ref(),
-                        property_name_arc.as_ref(),
-                        &wi,
-                        &class_candidates,
-                        &get_doc,
-                        &resolve_class_ref,
-                    ) {
+                    let docs = Arc::clone(&self.docs);
+                    let wi_task = Arc::clone(&wi);
+                    let loc = self
+                        .blocking_gated(super::super::debug_gate::GATE_GOTO_DEFINITION, move || {
+                            let class_candidates =
+                                |short: &str| docs.class_candidates_by_short_name(&wi_task, short);
+                            let get_doc = |uri: &Uri| docs.get_doc_salsa(uri);
+                            let resolve_class_ref = |fqn: &str| {
+                                docs.resolve_class_ref_by_fqn_or_short_name_fallback(&wi_task, fqn)
+                            };
+                            find_property_in_class_hierarchy(
+                                class_fqn_arc.as_ref(),
+                                property_name_arc.as_ref(),
+                                &wi_task,
+                                &class_candidates,
+                                &get_doc,
+                                &resolve_class_ref,
+                            )
+                        })
+                        .await
+                        .flatten();
+                    if let Some(loc) = loc {
                         return Ok(Some(GotoDefinitionResponse::Scalar(loc)));
                     }
                 }
             }
 
-            if let Some(loc) =
-                crate::navigation::definition::goto_definition(uri, &source, &doc, &[], position)
-            {
+            let uri_task = uri.clone();
+            let source_task = Arc::clone(&source);
+            let doc_task = Arc::clone(&doc);
+            let local_definition = self
+                .blocking_gated(super::super::debug_gate::GATE_GOTO_DEFINITION, move || {
+                    crate::navigation::definition::goto_definition(
+                        &uri_task,
+                        &source_task,
+                        &doc_task,
+                        &[],
+                        position,
+                    )
+                })
+                .await
+                .flatten();
+            if let Some(loc) = local_definition {
                 return Ok(Some(GotoDefinitionResponse::Scalar(loc)));
             }
             if let Some(line_text) = source.lines().nth(position.line as usize)
@@ -214,38 +243,49 @@ impl Backend {
                 if let Some(cls) = class_name {
                     let first_cls = cls.split('|').next().unwrap_or(&cls).to_owned();
                     let wi2 = self.workspace_index_cached(&mut wi_cache).await;
-                    let class_candidates =
-                        |short: &str| self.docs.class_candidates_by_short_name(&wi2, short);
-                    let get_doc = |uri: &Uri| self.docs.get_doc_salsa(uri);
-                    let resolve_class_ref = |fqn: &str| {
-                        self.docs
-                            .resolve_class_ref_by_fqn_or_short_name_fallback(&wi2, fqn)
-                    };
-                    if let Some(loc) = find_method_in_class_hierarchy(
-                        &first_cls,
-                        &word,
-                        &wi2,
-                        &class_candidates,
-                        &get_doc,
-                        &resolve_class_ref,
-                    ) {
-                        let refined = self
-                            .docs
-                            .get_doc_salsa(&loc.uri)
-                            .and_then(|doc| {
-                                find_declaration_range(doc.source(), &doc, &word).map(|range| {
-                                    Location {
-                                        uri: loc.uri.clone(),
-                                        range,
-                                    }
+                    let docs = Arc::clone(&self.docs);
+                    let wi_task = Arc::clone(&wi2);
+                    let first_cls_task = first_cls.clone();
+                    let word_task = word.clone();
+                    let found = self
+                        .blocking_gated(super::super::debug_gate::GATE_GOTO_DEFINITION, move || {
+                            let class_candidates =
+                                |short: &str| docs.class_candidates_by_short_name(&wi_task, short);
+                            let get_doc = |uri: &Uri| docs.get_doc_salsa(uri);
+                            let resolve_class_ref = |fqn: &str| {
+                                docs.resolve_class_ref_by_fqn_or_short_name_fallback(&wi_task, fqn)
+                            };
+                            let loc = find_method_in_class_hierarchy(
+                                &first_cls_task,
+                                &word_task,
+                                &wi_task,
+                                &class_candidates,
+                                &get_doc,
+                                &resolve_class_ref,
+                            )?;
+                            let refined = docs
+                                .get_doc_salsa(&loc.uri)
+                                .and_then(|doc| {
+                                    find_declaration_range(doc.source(), &doc, &word_task).map(
+                                        |range| Location {
+                                            uri: loc.uri.clone(),
+                                            range,
+                                        },
+                                    )
                                 })
-                            })
-                            .unwrap_or(loc);
+                                .unwrap_or(loc);
+                            Some(refined)
+                        })
+                        .await
+                        .flatten();
+                    if let Some(refined) = found {
                         return Ok(Some(GotoDefinitionResponse::Scalar(refined)));
                     }
                     // Fallback: resolve the class FQN via the workspace index and
                     // walk the PSR-4 vendor hierarchy starting from there.
-                    let class_fqn = resolve_class_ref(&first_cls)
+                    let class_fqn = self
+                        .docs
+                        .resolve_class_ref_by_fqn_or_short_name_fallback(&wi2, &first_cls)
                         .and_then(|cr| {
                             wi2.at(cr)
                                 .map(|(_, cls)| cls.fqn.trim_start_matches('\\').to_owned())
@@ -261,20 +301,31 @@ impl Backend {
             }
 
             let wi = self.workspace_index_cached(&mut wi_cache).await;
-            if let Some(word) = crate::text::word_at_position(&source, position)
-                && let Some(loc) = self.docs.find_declaration(&wi, &word, Some(uri))
-            {
-                let refined = self
-                    .docs
-                    .get_doc_salsa(&loc.uri)
-                    .and_then(|doc| {
-                        find_declaration_range(doc.source(), &doc, &word).map(|range| Location {
-                            uri: loc.uri.clone(),
-                            range,
-                        })
+            if let Some(word) = crate::text::word_at_position(&source, position) {
+                let docs = Arc::clone(&self.docs);
+                let wi_task = Arc::clone(&wi);
+                let uri_task = uri.clone();
+                let found = self
+                    .blocking_gated(super::super::debug_gate::GATE_GOTO_DEFINITION, move || {
+                        let loc = docs.find_declaration(&wi_task, &word, Some(&uri_task))?;
+                        let refined = docs
+                            .get_doc_salsa(&loc.uri)
+                            .and_then(|doc| {
+                                find_declaration_range(doc.source(), &doc, &word).map(|range| {
+                                    Location {
+                                        uri: loc.uri.clone(),
+                                        range,
+                                    }
+                                })
+                            })
+                            .unwrap_or(loc);
+                        Some(refined)
                     })
-                    .unwrap_or(loc);
-                return Ok(Some(GotoDefinitionResponse::Scalar(refined)));
+                    .await
+                    .flatten();
+                if let Some(refined) = found {
+                    return Ok(Some(GotoDefinitionResponse::Scalar(refined)));
+                }
             }
 
             if let Some(word) = word_at_position(&source, position)
@@ -467,31 +518,55 @@ impl Backend {
             if word.starts_with('$')
                 && let Some(doc) = self.get_doc(uri)
             {
-                let is_promoted =
-                    promoted_property_at_cursor(doc.source(), &doc.program().stmts, position)
-                        .is_some();
-                if !is_promoted {
-                    let bare = word.trim_start_matches('$');
-                    let byte_off = doc.view().byte_of_position(position) as usize;
-                    let mut var_spans = Vec::new();
-                    collect_var_refs_in_scope(&doc.program().stmts, bare, byte_off, &mut var_spans);
-                    if !var_spans.is_empty() {
-                        let name_with_sigil = format!("${bare}");
-                        let name_utf16_len = utf16_code_units(&name_with_sigil);
-                        let sv = doc.view();
-                        let src = doc.source();
-                        let locations: Vec<Location> = var_spans
-                            .into_iter()
-                            .map(|(span, _kind)| {
-                                // param spans include type annotation; narrow to $var_name.
-                                let precise_start = crate::document::ast::str_offset_in_range(
-                                    src,
-                                    span,
-                                    &name_with_sigil,
-                                )
-                                .unwrap_or(span.start);
-                                let start = sv.position_of(precise_start);
-                                Location {
+                let uri = uri.clone();
+                let local_word = word.clone();
+                let local_locations = self
+                    .blocking_gated(
+                        super::super::debug_gate::GATE_REFERENCES_VARIABLE,
+                        move || {
+                            let is_promoted = promoted_property_at_cursor(
+                                doc.source(),
+                                &doc.program().stmts,
+                                position,
+                            )
+                            .is_some();
+                            if is_promoted {
+                                return None;
+                            }
+
+                            let bare = local_word.trim_start_matches('$');
+                            let byte_off = doc.view().byte_of_position(position) as usize;
+                            let mut var_spans = Vec::new();
+                            collect_var_refs_in_scope(
+                                &doc.program().stmts,
+                                bare,
+                                byte_off,
+                                &mut var_spans,
+                            );
+                            if var_spans.is_empty() {
+                                return None;
+                            }
+
+                            let name_with_sigil = format!("${bare}");
+                            let name_utf16_len = utf16_code_units(&name_with_sigil);
+                            let sv = doc.view();
+                            let src = doc.source();
+                            let precise_starts: Vec<u32> = var_spans
+                                .iter()
+                                .map(|(span, _kind)| {
+                                    // Param spans include type annotations; narrow to $var_name.
+                                    crate::document::ast::str_offset_in_range(
+                                        src,
+                                        *span,
+                                        &name_with_sigil,
+                                    )
+                                    .unwrap_or(span.start)
+                                })
+                                .collect();
+                            let starts = sv.positions_of_offsets(&precise_starts);
+                            let locations: Vec<Location> = starts
+                                .into_iter()
+                                .map(|start| Location {
                                     uri: uri.clone(),
                                     range: Range {
                                         start,
@@ -500,11 +575,15 @@ impl Backend {
                                             character: start.character + name_utf16_len,
                                         },
                                     },
-                                }
-                            })
-                            .collect();
-                        return Ok(Some(locations));
-                    }
+                                })
+                                .collect();
+                            Some(locations)
+                        },
+                    )
+                    .await
+                    .flatten();
+                if let Some(locations) = local_locations {
+                    return Ok(Some(locations));
                 }
             }
             // Fall through to the general reference path for:
@@ -558,6 +637,12 @@ impl Backend {
             // methods, else the whole workspace — mir gates never-committed
             // candidates on a symbol-name text mention internally.
             let files: Vec<Arc<str>> = self.docs.reference_candidate_files(&symbol);
+            let wants_use_imports = matches!(
+                symbol,
+                mir_analyzer::Name::Class(_)
+                    | mir_analyzer::Name::Function(_)
+                    | mir_analyzer::Name::GlobalConstant(_)
+            );
 
             // Priority streaming: if the client asked for partial results,
             // analyze the subset of candidates that already mention the
@@ -581,42 +666,90 @@ impl Backend {
                     _ => None,
                 };
                 if let Some(owner_short) = owner_short {
-                    let sym = symbol.clone();
                     let docs = Arc::clone(&self.docs);
                     let all_files = files.clone();
                     // The owner-mention partition may scan candidate texts
                     // (cold files only — warm ones answer from mir's mention
                     // cache) — do it on the blocking pool, never on the
-                    // tokio worker. mir parallelizes internally.
-                    let priority_locations = tokio::task::spawn_blocking(move || {
-                        let priority_files: Vec<Arc<str>> =
-                            docs.files_mentioning_short_name(&all_files, &owner_short);
-                        if priority_files.is_empty() {
-                            return Vec::new();
-                        }
-                        let (_interactive, cancel_rev) = docs.settled_write_rev_guard();
-                        let mut locs: Vec<Location> = docs
-                            .indexed_references(
-                                &sym,
-                                &priority_files,
-                                include_declaration,
-                                Some(cancel_rev),
+                    // tokio worker. mir parallelizes internally. Once split,
+                    // query the priority subset and the remainder separately
+                    // so the authoritative response doesn't pay the priority
+                    // files twice.
+                    let (priority_files, remainder_files) =
+                        tokio::task::spawn_blocking(move || {
+                            let priority_files: Vec<Arc<str>> =
+                                docs.files_mentioning_short_name(&all_files, &owner_short);
+                            let priority_set: std::collections::HashSet<&str> =
+                                priority_files.iter().map(|f| f.as_ref()).collect();
+                            let remainder_files: Vec<Arc<str>> = all_files
+                                .into_iter()
+                                .filter(|f| !priority_set.contains(f.as_ref()))
+                                .collect();
+                            (priority_files, remainder_files)
+                        })
+                        .await
+                        .unwrap_or_default();
+
+                    if !priority_files.is_empty() {
+                        let priority_docs = Arc::clone(&self.docs);
+                        let priority_sym = symbol.clone();
+                        let mut locations = tokio::task::spawn_blocking(move || {
+                            let (_interactive, cancel_rev) =
+                                priority_docs.settled_write_rev_guard();
+                            let mut locs: Vec<Location> = priority_docs
+                                .indexed_references(
+                                    &priority_sym,
+                                    &priority_files,
+                                    include_declaration,
+                                    Some(cancel_rev),
+                                )
+                                .into_iter()
+                                .filter_map(session_tuple_to_location)
+                                .collect();
+                            dedup_ref_locations(&mut locs);
+                            locs
+                        })
+                        .await
+                        .unwrap_or_default();
+                        if !locations.is_empty() {
+                            super::super::send_references_partial_result(
+                                &self.client,
+                                token,
+                                locations.clone(),
                             )
-                            .into_iter()
-                            .filter_map(session_tuple_to_location)
-                            .collect();
-                        dedup_ref_locations(&mut locs);
-                        locs
-                    })
-                    .await
-                    .unwrap_or_default();
-                    if !priority_locations.is_empty() {
-                        super::super::send_references_partial_result(
-                            &self.client,
-                            token,
-                            priority_locations,
-                        )
-                        .await;
+                            .await;
+                        }
+                        if !remainder_files.is_empty() {
+                            let remainder_docs = Arc::clone(&self.docs);
+                            let remainder_sym = symbol.clone();
+                            locations.extend(
+                                tokio::task::spawn_blocking(move || {
+                                    let (_interactive, cancel_rev) =
+                                        remainder_docs.settled_write_rev_guard();
+                                    let mut locs: Vec<Location> = remainder_docs
+                                        .indexed_references(
+                                            &remainder_sym,
+                                            &remainder_files,
+                                            include_declaration,
+                                            Some(cancel_rev),
+                                        )
+                                        .into_iter()
+                                        .filter_map(session_tuple_to_location)
+                                        .collect();
+                                    dedup_ref_locations(&mut locs);
+                                    locs
+                                })
+                                .await
+                                .unwrap_or_default(),
+                            );
+                            dedup_ref_locations(&mut locations);
+                        }
+                        if include_declaration {
+                            locations.retain(|loc| location_starts_on_symbol(&self.docs, loc));
+                            locations.extend(self.workspace_decl_locations(&symbol, &word));
+                            dedup_ref_locations(&mut locations);
+                        }
+                        return Ok((!locations.is_empty()).then_some(locations));
                     }
                 }
             }
@@ -629,20 +762,43 @@ impl Backend {
             // batch was streamed above — `analyze_file`'s LRU makes
             // re-analyzing the priority subset here nearly free.
             let docs = Arc::clone(&self.docs);
+            let symbol_for_query = symbol.clone();
             let locations = tokio::task::spawn_blocking(move || {
                 // Pause the background scan and snapshot a settled revision so
                 // only a genuine user edit cancels the search.
                 let (_interactive, cancel_rev) = docs.settled_write_rev_guard();
                 let mut locs: Vec<Location> = docs
-                    .indexed_references(&symbol, &files, include_declaration, Some(cancel_rev))
+                    .indexed_references(
+                        &symbol_for_query,
+                        &files,
+                        include_declaration,
+                        Some(cancel_rev),
+                    )
                     .into_iter()
                     .filter_map(session_tuple_to_location)
                     .collect();
+                if wants_use_imports {
+                    // The freshness pass above commits candidate analyses, so
+                    // the separate `use:` postings are current before this
+                    // read-only lookup appends them.
+                    locs.extend(
+                        docs.indexed_use_imports(&symbol_for_query, &files)
+                            .into_iter()
+                            .filter_map(session_tuple_to_location),
+                    );
+                }
                 dedup_ref_locations(&mut locs);
                 locs
             })
             .await
             .unwrap_or_default();
+
+            let mut locations = locations;
+            if include_declaration {
+                locations.retain(|loc| location_starts_on_symbol(&self.docs, loc));
+                locations.extend(self.workspace_decl_locations(&symbol, &word));
+                dedup_ref_locations(&mut locations);
+            }
 
             Ok((!locations.is_empty()).then_some(locations))
         })
@@ -914,6 +1070,26 @@ impl Backend {
             .await
             .unwrap_or_default())
     }
+}
+
+fn location_starts_on_symbol(
+    docs: &crate::document::document_store::DocumentStore,
+    loc: &Location,
+) -> bool {
+    let Some(source) = docs.source_text(&loc.uri) else {
+        return true;
+    };
+    let Some(raw_line) = source.split('\n').nth(loc.range.start.line as usize) else {
+        return true;
+    };
+    let line = raw_line.strip_suffix('\r').unwrap_or(raw_line);
+    let start = utf16_offset_to_byte(line, loc.range.start.character as usize);
+    let Some(text) = line.get(start..) else {
+        return true;
+    };
+    text.chars().next().is_some_and(|c| {
+        c.is_alphabetic() || c == '_' || c.is_ascii_digit() || c == '\\' || c == '$' || c == '&'
+    })
 }
 
 fn expand_alias_prefix(word: &str, imports: &std::collections::HashMap<String, String>) -> String {

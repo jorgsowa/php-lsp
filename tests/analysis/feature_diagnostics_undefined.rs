@@ -252,12 +252,12 @@ fn write_decoy_files(root: &std::path::Path, n: usize) {
     }
 }
 
-/// Issue #242: a truly undefined function in a rooted workspace must be
-/// suppressed on the pre-ready `did_open` publish (the server can't yet
-/// tell "not indexed" from "doesn't exist" — see
-/// `compute_open_file_diagnostics`), but a corrected `publishDiagnostics`
-/// must follow once the index is ready, so push-only clients aren't stuck
-/// with a stale "no errors" view for the rest of the session.
+/// Issue #242, integration-level counterpart: when a file opens during the
+/// initial workspace scan, the first `did_open` publish may legitimately be
+/// either the pre-ready suppressed `<empty>` result or the final undefined-
+/// function diagnostic if the scan won the race and `index_ready` flipped
+/// first. In both orderings, once the index is ready the client must end up
+/// showing the correct undefined-function diagnostic.
 #[tokio::test]
 async fn open_file_diagnostics_republish_once_index_ready() {
     let tmp = tempfile::tempdir().unwrap();
@@ -268,21 +268,30 @@ async fn open_file_diagnostics_republish_once_index_ready() {
     let mut s = TestServer::with_root(tmp.path()).await;
     let uri = s.uri("app.php");
     let first = s.open("app.php", src).await;
-    expect!["<empty>"].assert_eq(&render_diagnostics_notification(&first));
+    let first_rendered = render_diagnostics_notification(&first);
+    let expected = "2:0-2:22 [1] UndefinedFunction: Function truly_nonexistent_fn() is not defined";
+    assert!(
+        first_rendered == "<empty>" || first_rendered == expected,
+        "unexpected initial didOpen diagnostics: {first_rendered}"
+    );
 
     s.wait_for_index_ready_secs(30).await;
-    // The republish runs in a spawned task that competes with the
-    // post-index warm-analysis sweep over the 1000 decoy files for the
-    // blocking pool, so it can lag well behind the `indexReady` notification
-    // under load.
-    let corrected = s.client().wait_for_diagnostics_secs(&uri, 30).await;
-    expect!["2:0-2:22 [1] UndefinedFunction: Function truly_nonexistent_fn() is not defined"]
-        .assert_eq(&render_diagnostics_notification(&corrected));
+    if first_rendered == "<empty>" {
+        // The republish runs in a spawned task that competes with the
+        // post-index warm-analysis sweep over the decoy files for the
+        // blocking pool, so it can lag well behind the `indexReady`
+        // notification under load.
+        let corrected = s.client().wait_for_diagnostics_secs(&uri, 30).await;
+        expect!["2:0-2:22 [1] UndefinedFunction: Function truly_nonexistent_fn() is not defined"]
+            .assert_eq(&render_diagnostics_notification(&corrected));
+    }
 }
 
-/// Pull-model counterpart: `textDocument/diagnostic` must also suppress
-/// workspace-resolution diagnostics before the index is ready, not just the
-/// push (`did_open`) path.
+/// Pull-model counterpart: if `textDocument/diagnostic` races the initial
+/// scan before `index_ready`, it may return the pre-ready suppressed result;
+/// if readiness wins first, the request may already return the final
+/// undefined-class diagnostic. Either way, once ready the client must see
+/// the correct undefined-class diagnostic.
 #[tokio::test]
 async fn pull_diagnostic_suppressed_before_index_ready() {
     let tmp = tempfile::tempdir().unwrap();
@@ -299,7 +308,12 @@ async fn pull_diagnostic_suppressed_before_index_ready() {
     s.open("app.php", src).await;
 
     let resp = s.pull_diagnostics("app.php").await;
-    expect!["<empty>"].assert_eq(&render_pull_diagnostics(&resp));
+    let first_rendered = render_pull_diagnostics(&resp);
+    let expected = "2:4-2:21 [1] UndefinedClass: Class TrulyMissingClass does not exist";
+    assert!(
+        first_rendered == "<empty>" || first_rendered == expected,
+        "unexpected initial pull diagnostics: {first_rendered}"
+    );
 
     s.wait_for_index_ready_secs(30).await;
     let resp = s.pull_diagnostics("app.php").await;
