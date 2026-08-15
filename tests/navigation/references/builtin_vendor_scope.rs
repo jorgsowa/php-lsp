@@ -57,7 +57,10 @@ async fn references_on_closure_import_excludes_vendor_usages() {
         .await;
     assert!(resp["error"].is_null(), "references error: {resp:?}");
 
-    expect!["src/Handler.php:6:27-6:34"].assert_eq(&render_locations(&resp, &server.uri("")));
+    expect![[r#"
+        src/Handler.php:3:4-3:11
+        src/Handler.php:6:27-6:34"#]]
+    .assert_eq(&render_locations(&resp, &server.uri("")));
 }
 
 /// Same symbol, cursor on an ordinary usage site (the parameter type-hint)
@@ -84,7 +87,10 @@ async fn references_on_closure_typehint_excludes_vendor_usages() {
 
     // Same target result as the import-cursor test above — invocation site
     // must not change the result.
-    expect!["src/Handler.php:6:27-6:34"].assert_eq(&render_locations(&resp, &server.uri("")));
+    expect![[r#"
+        src/Handler.php:3:4-3:11
+        src/Handler.php:6:27-6:34"#]]
+    .assert_eq(&render_locations(&resp, &server.uri("")));
 }
 
 /// Same symbol, cursor on a *return-type* position — the fix is resolution-
@@ -110,7 +116,10 @@ async fn references_on_closure_return_type_excludes_vendor_usages() {
         .await;
     assert!(resp["error"].is_null(), "references error: {resp:?}");
 
-    expect!["src/Handler.php:6:36-6:43"].assert_eq(&render_locations(&resp, &server.uri("")));
+    expect![[r#"
+        src/Handler.php:3:4-3:11
+        src/Handler.php:6:36-6:43"#]]
+    .assert_eq(&render_locations(&resp, &server.uri("")));
 }
 
 /// Typed *property* declaration — a third position beyond param/return that
@@ -135,7 +144,10 @@ async fn references_on_closure_typed_property_excludes_vendor_usages() {
         .await;
     assert!(resp["error"].is_null(), "references error: {resp:?}");
 
-    expect!["src/Handler.php:6:12-6:19"].assert_eq(&render_locations(&resp, &server.uri("")));
+    expect![[r#"
+        src/Handler.php:3:4-3:11
+        src/Handler.php:6:12-6:19"#]]
+    .assert_eq(&render_locations(&resp, &server.uri("")));
 }
 
 /// Nullable union form (`?Closure`) — guards against the fix accidentally
@@ -161,7 +173,10 @@ async fn references_on_nullable_closure_param_excludes_vendor_usages() {
         .await;
     assert!(resp["error"].is_null(), "references error: {resp:?}");
 
-    expect!["src/Handler.php:6:28-6:35"].assert_eq(&render_locations(&resp, &server.uri("")));
+    expect![[r#"
+        src/Handler.php:3:4-3:11
+        src/Handler.php:6:28-6:35"#]]
+    .assert_eq(&render_locations(&resp, &server.uri("")));
 }
 
 /// Critical false-positive guard: a *namespaced* class that merely shares
@@ -205,6 +220,7 @@ async fn references_on_namespaced_class_shadowing_builtin_name_still_includes_ve
     assert!(resp["error"].is_null(), "references error: {resp:?}");
 
     expect![[r#"
+        src/App.php:3:4-3:20
         src/App.php:5:17-5:24
         src/App.php:6:15-6:22
         vendor/acme/lib/src/Factory.php:4:28-4:35
@@ -247,6 +263,7 @@ async fn references_on_vendor_defined_class_still_includes_vendor_usages() {
     assert!(resp["error"].is_null(), "references error: {resp:?}");
 
     expect![[r#"
+        src/App.php:3:4-3:19
         src/App.php:5:17-5:23
         src/App.php:6:15-6:21
         vendor/acme/lib/src/Factory.php:4:28-4:34

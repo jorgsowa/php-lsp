@@ -446,7 +446,10 @@ async fn narrowing_finds_class_symbol_via_aliased_import() {
     let (_, line, ch) = server.locate("widget.php", "Widget", 0);
     let resp = server.references("widget.php", line, ch, false).await;
     assert!(resp["error"].is_null(), "references error: {resp:?}");
-    expect!["caller.php:3:11-3:15"].assert_eq(&render_locations(&resp, &server.uri("")));
+    expect![[r#"
+        caller.php:2:4-2:22
+        caller.php:3:11-3:15"#]]
+    .assert_eq(&render_locations(&resp, &server.uri("")));
 }
 
 /// Soundness guard, constructor flavor of the test above: an explicit
@@ -549,5 +552,8 @@ async fn narrowing_finds_namespaced_function_via_use_function_import() {
     let (_, line, ch) = server.locate("helper.php", "helper", 0);
     let resp = server.references("helper.php", line, ch, false).await;
     assert!(resp["error"].is_null(), "references error: {resp:?}");
-    expect!["caller.php:3:0-3:6"].assert_eq(&render_locations(&resp, &server.uri("")));
+    expect![[r#"
+        caller.php:2:13-2:28
+        caller.php:3:0-3:6"#]]
+    .assert_eq(&render_locations(&resp, &server.uri("")));
 }

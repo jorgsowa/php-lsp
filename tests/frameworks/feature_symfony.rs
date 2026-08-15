@@ -630,25 +630,34 @@ mod references {
         expect![[r#"
             src/Controller/Admin/BlogController.php:122:25-122:29
             src/Controller/Admin/BlogController.php:138:43-138:47
+            src/Controller/Admin/BlogController.php:13:4-13:19
             src/Controller/Admin/BlogController.php:161:45-161:49
             src/Controller/Admin/BlogController.php:79:20-79:24
             src/Controller/BlogController.php:110:54-110:58
+            src/Controller/BlogController.php:14:4-14:19
             src/Controller/BlogController.php:150:32-150:36
             src/Controller/BlogController.php:80:29-80:33
+            src/DataFixtures/AppFixtures.php:14:4-14:19
             src/DataFixtures/AppFixtures.php:73:24-73:28
             src/Entity/Comment.php:101:32-101:36
             src/Entity/Comment.php:106:28-106:32
             src/Entity/Comment.php:37:34-37:38
             src/Entity/Comment.php:39:13-39:17
+            src/EventSubscriber/CommentNotificationSubscriber.php:13:4-13:19
             src/EventSubscriber/CommentNotificationSubscriber.php:51:8-51:36
+            src/Form/PostType.php:13:4-13:19
             src/Form/PostType.php:77:16-77:42
             src/Form/PostType.php:88:28-88:32
+            src/Repository/PostRepository.php:13:4-13:19
             src/Repository/PostRepository.php:20:0-20:3
             src/Repository/PostRepository.php:38:39-38:43
+            src/Security/PostVoter.php:13:4-13:19
             src/Security/PostVoter.php:19:0-19:3
             src/Security/PostVoter.php:40:35-40:39
             src/Security/PostVoter.php:46:23-46:38
+            src/Twig/Components/BlogSearchComponent.php:13:4-13:19
             tests/Controller/Admin/BlogControllerTest.php:167:8-167:41
+            tests/Controller/DefaultControllerTest.php:13:4-13:19
             tests/Controller/DefaultControllerTest.php:64:45-64:49
             tests/Controller/DefaultControllerTest.php:64:8-64:67"#]]
         .assert_eq(&out);

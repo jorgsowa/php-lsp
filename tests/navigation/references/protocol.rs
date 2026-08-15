@@ -130,7 +130,7 @@ async fn references_cross_file_multibyte_prefixes_use_utf16_columns() {
     s.validate_syntax(false);
     let opened = s
         .open_fixture(
-        r#"//- /src/Greeter.php
+            r#"//- /src/Greeter.php
 <?php
 namespace App;
 class Gree$0ter {}

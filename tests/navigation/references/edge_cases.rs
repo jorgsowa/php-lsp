@@ -313,11 +313,11 @@ async fn references_method_with_non_ascii_name_declaration_range_is_correct() {
         r#"<?php
 class Doc {
     public function gér$0er(): void {}
-    //              ^^^^^ def
+    //              ^^^^ def
 }
 $d = new Doc();
 $d->gérer();
-//  ^^^^^ ref
+//  ^^^^ ref
 "#,
     )
     .await;
