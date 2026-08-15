@@ -57,8 +57,7 @@ class OldService {}
 "#,
         )
         .await;
-    expect!["App/Services/OldService.php:2:6-2:16\nmain.php:1:4-1:38"]
-    .assert_eq(&refs);
+    expect!["App/Services/OldService.php:2:6-2:16\nmain.php:1:4-1:38"].assert_eq(&refs);
 }
 
 #[tokio::test]
@@ -179,6 +178,5 @@ class MyClass {}
 "#,
         )
         .await;
-    expect!["App/Services/MyClass.php:2:6-2:13\nmain.php:1:4-1:30"]
-    .assert_eq(&refs);
+    expect!["App/Services/MyClass.php:2:6-2:13\nmain.php:1:4-1:30"].assert_eq(&refs);
 }
