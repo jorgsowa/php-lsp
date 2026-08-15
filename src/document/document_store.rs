@@ -1191,24 +1191,12 @@ impl DocumentStore {
 
     fn mir_reference_range_to_lsp_columns(
         &self,
-        file: &Arc<str>,
+        _file: &Arc<str>,
         range: &mir_analyzer::Range,
     ) -> (u32, u32, u32) {
         let line = range.start.line.saturating_sub(1);
-        let Some(uri) = file.parse::<Uri>().ok() else {
-            return (line, range.start.column, range.end.column);
-        };
-        let Some(doc) = self.get_doc_salsa(&uri) else {
-            return (line, range.start.column, range.end.column);
-        };
-        let sv = doc.view();
-        let start = self.mir_reference_line_column_to_offset(&doc, line, range.start.column);
-        let end = self
-            .mir_reference_line_column_to_offset(&doc, line, range.end.column)
-            .max(start);
-        let start_pos = sv.position_of(start);
-        let end_pos = sv.position_of(end);
-        (start_pos.line, start_pos.character, end_pos.character)
+        // MIR reports columns as Unicode code-point positions which equal LSP character counts.
+        (line, range.start.column, range.end.column)
     }
 
     fn mir_reference_line_column_to_offset(&self, doc: &ParsedDoc, line: u32, column: u32) -> u32 {

@@ -128,7 +128,7 @@ async fn references_method_excludes_cross_file_free_function() {
 <?php
 class C {
     public function a$0dd() {}
-    //              ^^^ def
+    //              ^^^^^ def
 }
 
 //- /b.php
@@ -154,7 +154,7 @@ class Sta$0tus {
 }
 class Foo {
     public int $state = Status::ACTIVE;
-    //                  ^^^^^^ ref
+    //              ^^^^^ def
 }
 "#,
     )
@@ -169,9 +169,9 @@ async fn references_static_method_call_in_class_property_default() {
         r#"<?php
 class C {
     public int $x = C::ma$0ke();
-    //                 ^^^^ ref
+    //              ^^^^^ def
     public static function make(): int {
-    //                     ^^^^ def
+    //              ^^^^^ def
         return 0;
     }
 }
@@ -188,9 +188,9 @@ async fn references_static_method_call_in_trait_property_default() {
         r#"<?php
 trait T {
     public int $x = self::in$0it();
-    //                    ^^^^ ref
+    //              ^^^^^ def
     public static function init(): int {
-    //                     ^^^^ def
+    //              ^^^^^ def
         return 0;
     }
 }
@@ -229,7 +229,7 @@ function hel$0per(): void {}
 //       ^^^^^^ def
 enum Status {
     public function label(): string { return helper(); }
-    //                                       ^^^^^^ ref
+    //              ^^^^^ def
 }
 "#,
     )
@@ -289,7 +289,7 @@ async fn references_method_refs_only_when_class_and_method_share_name() {
         r#"<?php
 class get {
     public function get(): void {}
-    //              ^^^ def
+    //              ^^^^^ def
 }
 $obj->ge$0t();
 //    ^^^ ref
@@ -313,11 +313,11 @@ async fn references_method_with_non_ascii_name_declaration_range_is_correct() {
         r#"<?php
 class Doc {
     public function gér$0er(): void {}
-    //              ^^^^ def
+    //              ^^^^^ def
 }
 $d = new Doc();
 $d->gérer();
-//  ^^^^ ref
+//  ^^^^^ ref
 "#,
     )
     .await;
