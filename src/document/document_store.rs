@@ -7,7 +7,7 @@ use arc_swap::{ArcSwap, ArcSwapOption};
 use dashmap::{DashMap, DashSet};
 use mir_analyzer::ReferenceIncludes;
 use salsa::Setter;
-use tower_lsp_server::ls_types::{Position, SemanticToken, Uri};
+use tower_lsp_server::ls_types::{SemanticToken, Uri};
 
 use crate::db::mir_queries::{LspWorkspace, LspWsFile};
 use crate::document::ast::ParsedDoc;
@@ -1234,10 +1234,9 @@ impl DocumentStore {
         if source.is_char_boundary(byte_offset) {
             return byte_offset.try_into().unwrap_or(u32::MAX);
         }
-        doc.view().byte_of_position(Position {
-            line,
-            character: column,
-        })
+        // MIR's column may land mid-character in multi-byte UTF-8 sequences.
+        let segment = &source[line_start..byte_offset];
+        segment.chars().map(|c| c.len_utf16() as u32).sum::<u32>()
     }
 
     /// Replay disk-cached reference postings and subtype edges for the whole
