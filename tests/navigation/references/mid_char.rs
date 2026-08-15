@@ -37,7 +37,7 @@ async fn references_on_crlf_class_with_multibyte_name() {
 
     expect![[r#"
         src/main.php:2:4-2:13
-        src/main.php:3:12-3:16"#]]
+        src/main.php:3:12-3:17"#]]
     .assert_eq(&render_locations(&resp, &s.uri("")));
 }
 
@@ -65,7 +65,7 @@ async fn references_on_crlf_class_with_n_tilde_name() {
     assert!(resp["error"].is_null(), "references error: {:?}", &resp);
     expect![[r#"
         src/main.php:2:4-2:14
-        src/main.php:3:9-3:14"#]]
+        src/main.php:3:9-3:15"#]]
     .assert_eq(&render_locations(&resp, &s.uri("")));
 }
 
@@ -85,7 +85,11 @@ async fn document_highlight_multibyte_character() {
 
     // Cursor on 'é' in method name gérer (line 2, inside "public function gérer()").
     let resp = s.document_highlight("main.php", 1, 23).await;
-    assert!(resp["error"].is_null(), "document_highlight error: {:?}", &resp);
+    assert!(
+        resp["error"].is_null(),
+        "document_highlight error: {:?}",
+        &resp
+    );
 }
 
 /// Regression: verify go-to-definition on an import with multi-byte characters works correctly.
@@ -135,6 +139,8 @@ async fn references_with_latin_extended_class_name() {
 
 /// Helper to check if a response contains location data (not error/empty).
 fn response_has_location(resp: &serde_json::Value) -> bool {
-    !resp["result"].is_array() || resp["result"].get(0).map_or(false, |l| l.get("range").is_some())
+    !resp["result"].is_array()
+        || resp["result"]
+            .get(0)
+            .map_or(false, |l| l.get("range").is_some())
 }
-

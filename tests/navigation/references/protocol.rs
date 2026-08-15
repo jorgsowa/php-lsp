@@ -147,7 +147,7 @@ echo "hé"; $g = new Greeter();
     assert!(resp["error"].is_null(), "references error: {resp:?}");
     expect![[r#"
         src/main.php:1:4-1:15
-        src/main.php:2:19-2:26"#]]
+        src/main.php:2:20-2:27"#]]
     .assert_eq(&render_locations(&resp, &s.uri("")));
 }
 
@@ -171,7 +171,7 @@ async fn references_include_crlf_import_ranges_with_utf16_columns() {
     assert!(resp["error"].is_null(), "references error: {resp:?}");
     expect![[r#"
         src/main.php:2:4-2:13
-        src/main.php:3:12-3:16"#]]
+        src/main.php:3:12-3:17"#]]
     .assert_eq(&render_locations(&resp, &server.uri("")));
 }
 
@@ -195,6 +195,6 @@ async fn references_cross_file_crlf_prefixes_use_utf16_columns() {
     assert!(resp["error"].is_null(), "references error: {resp:?}");
     expect![[r#"
         src/main.php:1:4-1:13
-        src/main.php:2:19-2:24"#]]
+        src/main.php:2:20-2:25"#]]
     .assert_eq(&render_locations(&resp, &server.uri("")));
 }

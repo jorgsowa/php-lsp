@@ -1151,12 +1151,11 @@ impl DocumentStore {
         };
         raw.into_iter()
             .map(|(file, range)| {
-                // mir uses 1-based lines; reference postings still report
-                // byte columns, so normalize through the source text before
-                // handing ranges to LSP/UTF-16 consumers.
-                let (line, col_start, col_end) =
-                    self.mir_reference_range_to_lsp_columns(&file, &range);
-                (file, line, col_start, col_end)
+                // Mirror columns are 0-based code points (UTF-16 code units),
+                // the same convention used by LSP. We only need to convert
+                // mir's 1-based line numbers to 0-based for LSP.
+                let line = range.start.line.saturating_sub(1);
+                (file, line, range.start.column, range.end.column)
             })
             .collect()
     }
@@ -1187,63 +1186,6 @@ impl DocumentStore {
                 (file, line, range.start.column, range.end.column)
             })
             .collect()
-    }
-
-    fn mir_reference_range_to_lsp_columns(
-        &self,
-        file: &Arc<str>,
-        range: &mir_analyzer::Range,
-    ) -> (u32, u32, u32) {
-        let line = range.start.line.saturating_sub(1);
-        let Some(uri) = file.parse::<Uri>().ok() else {
-            return (line, range.start.column, range.end.column);
-        };
-        let Some(doc) = self.get_doc_salsa(&uri) else {
-            return (line, range.start.column, range.end.column);
-        };
-        let sv = doc.view();
-        let start = self.mir_reference_line_column_to_offset(&doc, line, range.start.column);
-        let end = self
-            .mir_reference_line_column_to_offset(&doc, line, range.end.column)
-            .max(start);
-        let start_pos = sv.position_of(start);
-        let end_pos = sv.position_of(end);
-        (start_pos.line, start_pos.character, end_pos.character)
-    }
-
-    fn mir_reference_line_column_to_offset(&self, doc: &ParsedDoc, line: u32, column: u32) -> u32 {
-        let source = doc.source();
-        let line_starts = doc.line_starts();
-        let line_idx = line as usize;
-        let line_start = line_starts
-            .get(line_idx)
-            .copied()
-            .unwrap_or(source.len() as u32) as usize;
-        let next_line_start = line_starts
-            .get(line_idx + 1)
-            .copied()
-            .unwrap_or(source.len() as u32) as usize;
-        let mut line_end = next_line_start.min(source.len());
-        if source.as_bytes().get(line_end.saturating_sub(1)) == Some(&b'\n') {
-            line_end = line_end.saturating_sub(1);
-        }
-        if source.as_bytes().get(line_end.saturating_sub(1)) == Some(&b'\r') {
-            line_end = line_end.saturating_sub(1);
-        }
-        let byte_offset = line_start.saturating_add(column as usize).min(line_end);
-        if source.is_char_boundary(byte_offset) {
-            return byte_offset.try_into().unwrap_or(u32::MAX);
-        }
-        // MIR's column may land mid-character in multi-byte UTF-8 sequences.
-        // Find the previous char boundary (start of the character containing this column).
-        let start_of_char = if line_start < byte_offset {
-            (line_start..byte_offset).rev()
-                .find(|&i| source.is_char_boundary(i))
-                .unwrap_or(line_start)
-        } else {
-            line_start
-        };
-        start_of_char.try_into().unwrap_or(u32::MAX)
     }
 
     /// Replay disk-cached reference postings and subtype edges for the whole

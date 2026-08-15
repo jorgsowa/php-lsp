@@ -111,9 +111,12 @@ class User$0 {
 
     expect![[r#"
         packages/api/src/Controller/UserController.php:11:36-11:40
+        packages/api/src/Controller/UserController.php:3:4-3:25
         packages/core/src/Entity/User.php:3:6-3:10
         packages/core/src/Repository/UserRepository.php:22:25-22:29
+        packages/core/src/Repository/UserRepository.php:3:4-3:25
         packages/core/src/Repository/UserRepository.php:9:40-9:44
+        packages/tests/src/Integration/UserTest.php:3:4-3:25
         packages/tests/src/Integration/UserTest.php:9:20-9:24"#]]
     .assert_eq(&out);
 }
