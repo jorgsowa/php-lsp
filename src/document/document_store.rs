@@ -1230,9 +1230,7 @@ impl DocumentStore {
         if source.as_bytes().get(line_end.saturating_sub(1)) == Some(&b'\r') {
             line_end = line_end.saturating_sub(1);
         }
-        let byte_offset = line_start
-            .saturating_add(column as usize)
-            .min(line_end);
+        let byte_offset = line_start.saturating_add(column as usize).min(line_end);
         if source.is_char_boundary(byte_offset) {
             return byte_offset.try_into().unwrap_or(u32::MAX);
         }
