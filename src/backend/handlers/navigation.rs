@@ -675,8 +675,16 @@ impl Backend {
                     // query the priority subset and the remainder separately
                     // so the authoritative response doesn't pay the priority
                     // files twice.
+                    //
+                    // Must settle first, same as the `indexed_references`
+                    // calls below: mir's mention scan silently drops any file
+                    // not yet registered as a salsa source (a background
+                    // write still in flight), which would misclassify a
+                    // genuine owner mention as absent under load instead of
+                    // just seeing it late.
                     let (priority_files, remainder_files) =
                         tokio::task::spawn_blocking(move || {
+                            let _interactive = docs.settled_write_rev_guard();
                             let priority_files: Vec<Arc<str>> =
                                 docs.files_mentioning_short_name(&all_files, &owner_short);
                             let priority_set: std::collections::HashSet<&str> =

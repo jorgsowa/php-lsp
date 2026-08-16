@@ -595,6 +595,29 @@ impl TestClient {
         })
         .await
         .unwrap_or_else(|_| panic!("timed out waiting for response to {method_owned}"));
+
+        // The server always sends a `capture_method` notification (if any)
+        // before returning its response — but those two messages travel
+        // through separate internal channels that tower-lsp-server merges
+        // with no cross-channel ordering guarantee (`stream_select!` over
+        // the response channel and the client-notification channel), so
+        // under scheduler contention the response can reach this side
+        // first. Give one bounded extra read a chance to catch a same-
+        // request notification that's still in flight; this costs the full
+        // 200ms whenever there truly is nothing left (the common case), but
+        // that's cheaper than a flaky assertion on wire-arrival order.
+        if let Ok(msg) =
+            tokio::time::timeout(Duration::from_millis(200), async {
+                recv_or_buffered(pending, read, write, &mut budget).await
+            })
+            .await
+        {
+            if msg.get("method") == Some(&json!(capture_method)) {
+                captured.push(msg);
+            } else {
+                pending.push_back(msg);
+            }
+        }
         (resp, captured)
     }
 
