@@ -4,6 +4,12 @@ All notable changes to php-lsp are documented here.
 
 ## [Unreleased]
 
+## [0.25.0] — TBD
+
+### Maintenance
+
+- **Style updates**: formatting fixes across several files to align with rustfmt rules.
+
 ## [0.24.1] — 2026-08-11
 
 ### Maintenance
