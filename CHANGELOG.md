@@ -6,9 +6,27 @@ All notable changes to php-lsp are documented here.
 
 ## [0.25.0] — TBD
 
-### Maintenance
+### Added
 
-- **Style updates**: formatting fixes across several files to align with rustfmt rules.
+- **Use imports included in find references**: imported symbols (e.g., from `use` statements) are now included when resolving references across the workspace, matching PHP's scope resolution behavior.
+
+### Fixed
+
+- **Companion-file index-lag race on references**: references and related lookups now wait for mir's own per-file resolution with a dedicated retry path after detecting an empty first result, ensuring declarations in recently opened companion files are found reliably instead of falling back to AST heuristics or being lost.
+- **PHPDoc navigation false positives**: resolved incorrect resolution targeting PHPDoc tokens (tag names, `@template` parameters, `@param`/`@var`/`@property*`/`@method` variable syntax) that could previously resolve to unrelated workspace symbols.
+- **Nested local variable reference scoping**: fixed incorrect scoping of references in nested scopes (closures, anonymous functions, loops) where outer-scope variables were incorrectly included in or excluded from result sets.
+- **Non-ASCII declaration range boundaries**: the fallback declaration-range width construction in `handle_references` previously used UTF-8 byte counts instead of LSP-compliant string spans, causing definition ranges for multi-byte/non-ASCII identifiers to extend past the actual identifier boundary. Now uses correct token-length calculations aligned with MIR's UTF-16 column data.
+- **Unicode and CRLF reference range conversion**: fixed offset calculations for reference span widths in files containing non-BMP Unicode characters or CRLF line endings, ensuring ranges never drift from their intended positions.
+- **MIR column-to-offset panic**: resolved a panic when MIR's reported source column landed mid-character (e.g., on multi-byte UTF-8 sequences) during `mir_reference_line_column_to_offset` — now clamps to valid character boundaries safely.
+
+### Performance
+
+- **Responsive local variable references**: offloaded blocking navigation lookups (including local variable resolution) to prevent blocking the LSP request loop under concurrent edits, keeping completions and references responsive while index builds are in-flight.
+- **Optimized references partial-result final pass**: reduced unnecessary work in the final pass of large-scale reference queries by short-circuiting already-resolved files.
+
+### Dependencies
+
+- **mir bumped to 0.72**: adopted the updated MIR dependency with API changes including column offset reporting aligned with UTF-16 LSP conventions (see `Fix` section above).
 
 ## [0.24.1] — 2026-08-11
 
