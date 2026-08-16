@@ -636,7 +636,18 @@ impl Backend {
             // Candidate scope: visibility narrowing for private/protected
             // methods, else the whole workspace — mir gates never-committed
             // candidates on a symbol-name text mention internally.
-            let files: Vec<Arc<str>> = self.docs.reference_candidate_files(&symbol);
+            let mut files: Vec<Arc<str>> = self.docs.reference_candidate_files(&symbol);
+            // The requesting file's own text is what the cursor's `use`
+            // import (or any other mention) lives in, so it must always be
+            // in scope regardless of what the narrowing above computed —
+            // a companion file opened just before this request (the common
+            // `use`-import shape: declaring file opened right after the
+            // importing one) can make the reachability narrowing's mention/
+            // posting data for *this* file briefly lag, wrongly dropping it.
+            let uri_str: Arc<str> = Arc::from(uri.as_str());
+            if !files.iter().any(|f| f.as_ref() == uri_str.as_ref()) {
+                files.push(uri_str);
+            }
             let wants_use_imports = matches!(
                 symbol,
                 mir_analyzer::Name::Class(_)
@@ -951,7 +962,23 @@ impl Backend {
     /// workspace index — case-sensitive by `word` (the declared name as the
     /// user wrote it). Prefers declarations whose FQN matches the symbol;
     /// falls back to same-named declarations when none does.
+    ///
+    /// A companion file opened moments earlier (e.g. the declaring file for
+    /// a `use` import, opened right before this request in the same batch)
+    /// can race the workspace-index snapshot this reads: [`Self::workspace_decl_locations_once`]
+    /// comes back empty on the first try, then non-empty on a fresh re-fetch,
+    /// which is only explainable by that snapshot having briefly lagged
+    /// behind the file set — so one retry closes the window instead of
+    /// dropping every reference to a real, just-declared symbol.
     fn workspace_decl_locations(&self, symbol: &mir_analyzer::Name, word: &str) -> Vec<Location> {
+        let first = self.workspace_decl_locations_once(symbol, word);
+        if !first.is_empty() {
+            return first;
+        }
+        self.workspace_decl_locations_once(symbol, word)
+    }
+
+    fn workspace_decl_locations_once(&self, symbol: &mir_analyzer::Name, word: &str) -> Vec<Location> {
         let ws = self.docs.get_workspace_index_salsa();
         let name_range = |line: u32, ch: u32| tower_lsp_server::ls_types::Range {
             start: Position {
