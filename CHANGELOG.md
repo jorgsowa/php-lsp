@@ -4,7 +4,7 @@ All notable changes to php-lsp are documented here.
 
 ## [Unreleased]
 
-## [0.25.0] — TBD
+## [0.25.0] — 2026-08-21
 
 ### Added
 
