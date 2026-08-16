@@ -1034,6 +1034,58 @@ async fn references_variable_stays_responsive_while_scope_walk_is_in_flight() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn references_finds_declaration_opened_while_usage_symbol_lookup_is_gated() {
+    // Regression test for the companion-file index-lag race: a `use`
+    // import's declaring file can only become known to mir's own per-file
+    // resolution while `resolve_usage_symbol_with_retry`'s first (empty)
+    // attempt is already in flight. Forces that exact interleaving via the
+    // debug gate instead of hoping real scheduling reproduces it, so this
+    // fails deterministically if the wait-then-retry regresses — and proves
+    // mir's own resolution finds it on retry, without ever needing the
+    // AST-heuristic FQN fallback.
+    let mut server = TestServer::new().await;
+    server.validate_syntax(false);
+    server
+        .open(
+            "main.php",
+            "<?php\nnamespace App;\nuse App\\Services\\Logger;\n",
+        )
+        .await;
+    let uri = server.uri("main.php");
+
+    let slow_id = server
+        .send_slow_request_and_wait_for_gate(
+            "textDocument/references",
+            serde_json::json!({
+                "textDocument": { "uri": uri },
+                "position": { "line": 2, "character": 20 },
+                "context": { "includeDeclaration": true },
+            }),
+            php_lsp::backend::debug_gate::GATE_USAGE_SYMBOL_RETRY,
+        )
+        .await;
+
+    // Opened only now, after the first usage-symbol resolution already ran
+    // and came back empty (the request is provably parked past that point).
+    server
+        .open(
+            "App/Services/Logger.php",
+            "<?php\nnamespace App\\Services;\nclass Logger {}\n",
+        )
+        .await;
+
+    let resp = server.release_gate_and_recv_response(slow_id).await;
+
+    assert!(resp["error"].is_null(), "references errored: {resp}");
+    let locations = render_locations(&resp, &server.uri(""));
+    assert!(
+        locations.contains("App/Services/Logger.php"),
+        "expected the just-opened companion file's declaration among the \
+         references, got:\n{locations}\nfull response: {resp}"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn completion_resolve_stays_responsive_while_all_indexes_lookup_is_in_flight() {
     // A cold workspace-index rebuild walks every `FileIndex` in the
     // workspace, and the signature/doc lookup itself scans every indexed

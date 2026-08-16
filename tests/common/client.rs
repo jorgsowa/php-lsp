@@ -541,6 +541,101 @@ impl TestClient {
         .unwrap_or_else(|_| panic!("timed out waiting for {slow_method} response"));
     }
 
+    /// Arms `gate_section`, fires `slow_method` as a request without
+    /// waiting, and blocks until its handler parks at the gate. Unlike
+    /// [`Self::assert_request_stays_responsive_via_gate`], this returns
+    /// control to the caller instead of immediately releasing — pair with
+    /// [`Self::release_gate_and_recv_response`] once a companion action (e.g.
+    /// opening another file) has run while the handler is provably still
+    /// parked, to reproduce a race against that action deterministically
+    /// instead of hoping real scheduling lands it.
+    pub async fn send_slow_request_and_wait_for_gate(
+        &mut self,
+        slow_method: &str,
+        slow_params: Value,
+        gate_section: &str,
+    ) -> u64 {
+        let armed = self
+            .request(
+                "$/php-lsp/debugHoldGate",
+                json!({ "section": gate_section }),
+            )
+            .await;
+        assert!(
+            armed.get("error").is_none(),
+            "debugHoldGate failed, gate never armed: {armed}"
+        );
+        let slow_id = self.send_request(slow_method, slow_params).await;
+
+        let mut probes_sent = 0u32;
+        let mut probes_answered = 0u32;
+        let probe_phase = std::time::Instant::now();
+        let parked = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                probes_sent += 1;
+                let probe_id = self.send_request_no_params("$/php-lsp/debugStats").await;
+                let resp = {
+                    let mut budget = self.pending.len();
+                    let TestClient {
+                        pending,
+                        read,
+                        write,
+                        ..
+                    } = &mut *self;
+                    loop {
+                        let msg = recv_or_buffered(pending, read, write, &mut budget).await;
+                        if msg.get("id") == Some(&json!(probe_id)) {
+                            break msg;
+                        }
+                        pending.push_back(msg);
+                    }
+                };
+                probes_answered += 1;
+                if resp["result"]["debug_gate_held"] == json!(gate_section) {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(5)).await;
+            }
+        })
+        .await;
+        assert!(
+            parked.is_ok(),
+            "{slow_method} never parked at debug gate {gate_section:?} \
+             ({probes_answered}/{probes_sent} probes answered in {:?}) — either the \
+             handler never ran or its gate pass() call no longer covers this path",
+            probe_phase.elapsed()
+        );
+        slow_id
+    }
+
+    /// Releases a gate armed via [`Self::send_slow_request_and_wait_for_gate`]
+    /// and returns the parked request's own response.
+    pub async fn release_gate_and_recv_response(&mut self, slow_id: u64) -> Value {
+        let released = self.request_no_params("$/php-lsp/debugReleaseGate").await;
+        assert!(
+            released.get("error").is_none(),
+            "debugReleaseGate failed, parked handler left stranded: {released}"
+        );
+        let mut budget = self.pending.len();
+        let TestClient {
+            pending,
+            read,
+            write,
+            ..
+        } = self;
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let msg = recv_or_buffered(pending, read, write, &mut budget).await;
+                if msg.get("id") == Some(&json!(slow_id)) {
+                    return msg;
+                }
+                pending.push_back(msg);
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("timed out waiting for response to id {slow_id}"))
+    }
+
     pub async fn notify(&mut self, method: &str, params: Value) {
         let msg = json!({
             "jsonrpc": "2.0",

@@ -563,6 +563,23 @@ impl TestServer {
             .await
     }
 
+    /// See [`TestClient::send_slow_request_and_wait_for_gate`].
+    pub async fn send_slow_request_and_wait_for_gate(
+        &mut self,
+        slow_method: &str,
+        slow_params: serde_json::Value,
+        gate_section: &str,
+    ) -> u64 {
+        self.client
+            .send_slow_request_and_wait_for_gate(slow_method, slow_params, gate_section)
+            .await
+    }
+
+    /// See [`TestClient::release_gate_and_recv_response`].
+    pub async fn release_gate_and_recv_response(&mut self, slow_id: u64) -> serde_json::Value {
+        self.client.release_gate_and_recv_response(slow_id).await
+    }
+
     pub async fn wait_for_index_ready(&mut self) -> &mut Self {
         self.client.wait_for_index_ready().await;
         self

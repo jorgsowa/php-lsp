@@ -595,16 +595,13 @@ impl Backend {
 
             // Usage-site cursor: mir's per-file analysis already resolved the
             // symbol under the cursor (receiver types, aliases, namespaces) —
-            // its `ReferenceKind` maps 1:1 onto the index key.
-            let usage_symbol: Option<mir_analyzer::Name> = {
-                let analysis = self.cached_analysis_async(uri).await;
-                analysis.as_deref().and_then(|a| {
-                    let doc = doc_opt.as_ref()?;
-                    let off = crate::text::word_range_at(&source, position)
-                        .map(|r| doc.view().byte_of_position(r.start))?;
-                    a.symbol_at(off).and_then(|s| s.kind.to_name())
-                })
-            };
+            // its `ReferenceKind` maps 1:1 onto the index key. Waits and
+            // retries once if mir hasn't resolved it yet (a companion file
+            // this reference depends on, e.g. a `use` import's declaring
+            // file, can still be settling in the background).
+            let usage_symbol = self
+                .resolve_usage_symbol_with_retry(uri, doc_opt.as_ref(), &source, position)
+                .await;
 
             // Declaration-site cursor (or no analysis): classify the cursor
             // context and resolve the owner/target FQN.
@@ -765,7 +762,7 @@ impl Backend {
                         }
                         if include_declaration {
                             locations.retain(|loc| location_starts_on_symbol(&self.docs, loc));
-                            locations.extend(self.workspace_decl_locations(&symbol, &word));
+                            locations.extend(self.workspace_decl_locations(&symbol, &word).await);
                             dedup_ref_locations(&mut locations);
                         }
                         return Ok((!locations.is_empty()).then_some(locations));
@@ -815,7 +812,7 @@ impl Backend {
             let mut locations = locations;
             if include_declaration {
                 locations.retain(|loc| location_starts_on_symbol(&self.docs, loc));
-                locations.extend(self.workspace_decl_locations(&symbol, &word));
+                locations.extend(self.workspace_decl_locations(&symbol, &word).await);
                 dedup_ref_locations(&mut locations);
             }
 
@@ -847,16 +844,12 @@ impl Backend {
         let doc_opt = self.get_doc(uri);
 
         // Usage-site cursor: mir's per-file analysis already resolved the
-        // symbol (receiver types, aliases, namespaces).
-        let usage_symbol: Option<mir_analyzer::Name> = {
-            let analysis = self.cached_analysis_async(uri).await;
-            analysis.as_deref().and_then(|a| {
-                let doc = doc_opt.as_ref()?;
-                let off = crate::text::word_range_at(&source, position)
-                    .map(|r| doc.view().byte_of_position(r.start))?;
-                a.symbol_at(off).and_then(|s| s.kind.to_name())
-            })
-        };
+        // symbol (receiver types, aliases, namespaces). Waits and retries
+        // once if mir hasn't resolved it yet — see
+        // `resolve_usage_symbol_with_retry`.
+        let usage_symbol = self
+            .resolve_usage_symbol_with_retry(uri, doc_opt.as_ref(), &source, position)
+            .await;
 
         // Declaration-site cursor (or no analysis): classify the cursor
         // context and resolve the owner/target FQN.
@@ -924,7 +917,7 @@ impl Backend {
         .unwrap_or_default();
 
         if !mir_include_decl {
-            locations.extend(self.workspace_decl_locations(&symbol, &word));
+            locations.extend(self.workspace_decl_locations(&symbol, &word).await);
             dedup_ref_locations(&mut locations);
         }
 
@@ -958,28 +951,131 @@ impl Backend {
         })
     }
 
+    /// Mir's own per-file resolution of the symbol under the cursor
+    /// (receiver types, aliases, namespaces) — its `ReferenceKind` maps 1:1
+    /// onto the index key. `None` either because the cursor is on a
+    /// declaration (mir only resolves usages) or because mir hasn't yet
+    /// analyzed a companion file this reference depends on.
+    async fn resolve_usage_symbol(
+        &self,
+        uri: &Uri,
+        doc_opt: Option<&Arc<crate::document::ast::ParsedDoc>>,
+        source: &str,
+        position: Position,
+    ) -> Option<mir_analyzer::Name> {
+        let analysis = self.cached_analysis_async(uri).await;
+        analysis.as_deref().and_then(|a| {
+            let doc = doc_opt?;
+            let off = crate::text::word_range_at(source, position)
+                .map(|r| doc.view().byte_of_position(r.start))?;
+            a.symbol_at(off).and_then(|s| s.kind.to_name())
+        })
+    }
+
+    /// [`Self::resolve_usage_symbol`], but when the first attempt comes back
+    /// empty, waits for the write revision to quiesce and retries once
+    /// before giving up. A companion file a usage-site reference depends on
+    /// (e.g. a `use` import's declaring file, opened right before this
+    /// request in the same batch) can still be settling in the background
+    /// when the first attempt runs — trust mir's own resolution over the
+    /// AST-heuristic FQN fallback (`resolve_reference_target_fqn`) whenever
+    /// it can actually produce one, rather than falling through to that
+    /// fallback the moment mir is merely running behind.
+    async fn resolve_usage_symbol_with_retry(
+        &self,
+        uri: &Uri,
+        doc_opt: Option<&Arc<crate::document::ast::ParsedDoc>>,
+        source: &str,
+        position: Position,
+    ) -> Option<mir_analyzer::Name> {
+        let first = self
+            .resolve_usage_symbol(uri, doc_opt, source, position)
+            .await;
+        if first.is_some() {
+            return first;
+        }
+        // Test-only hold point: lets a test force a companion declaring file
+        // to open between this empty attempt and the settle-wait/retry
+        // below, proving the retry actually observes it. No-op outside test
+        // builds.
+        self.blocking_gated(super::super::debug_gate::GATE_USAGE_SYMBOL_RETRY, || ())
+            .await;
+        if !self.docs.is_index_ready() {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_millis(50);
+            let mut rev = self.docs.write_rev();
+            loop {
+                tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+                let now = self.docs.write_rev();
+                let quiet = now == rev;
+                rev = now;
+                if quiet || std::time::Instant::now() >= deadline {
+                    break;
+                }
+            }
+        }
+        self.resolve_usage_symbol(uri, doc_opt, source, position)
+            .await
+    }
+
     /// Declaration name tokens for a class or function symbol from the salsa
-    /// workspace index — case-sensitive by `word` (the declared name as the
-    /// user wrote it). Prefers declarations whose FQN matches the symbol;
-    /// falls back to same-named declarations when none does.
+    /// workspace index — matched and ranged by `word`'s own short name (a
+    /// no-op shortening when `word` is already bare), never by the resolved
+    /// FQN's short name: mir's own resolution follows PHP's case-insensitive
+    /// dispatch, so it can differ in case from what the user actually typed.
+    /// Prefers declarations whose FQN matches the symbol; falls back to
+    /// same-named declarations when none does.
     ///
     /// A companion file opened moments earlier (e.g. the declaring file for
     /// a `use` import, opened right before this request in the same batch)
     /// can race the workspace-index snapshot this reads: [`Self::workspace_decl_locations_once`]
     /// comes back empty on the first try, then non-empty on a fresh re-fetch,
     /// which is only explainable by that snapshot having briefly lagged
-    /// behind the file set — so one retry closes the window instead of
-    /// dropping every reference to a real, just-declared symbol.
-    fn workspace_decl_locations(&self, symbol: &mir_analyzer::Name, word: &str) -> Vec<Location> {
+    /// behind the file set. An immediate re-read only wins that race by luck
+    /// (whatever scheduling happens to land between the two calls), so under
+    /// real concurrent load it can still lose — wait for the write revision
+    /// to quiesce first, the same freshness condition `settled_write_rev_guard`
+    /// enforces for the mir query paths, before retrying.
+    async fn workspace_decl_locations(&self, symbol: &mir_analyzer::Name, word: &str) -> Vec<Location> {
         let first = self.workspace_decl_locations_once(symbol, word);
         if !first.is_empty() {
             return first;
+        }
+        // Test-only hold point: lets a test force a companion declaring file
+        // to open between this empty attempt and the settle-wait/retry below,
+        // proving the retry actually observes it. No-op outside test builds.
+        self.blocking_gated(
+            super::super::debug_gate::GATE_WORKSPACE_DECL_LOCATIONS_RETRY,
+            || (),
+        )
+        .await;
+        if !self.docs.is_index_ready() {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_millis(50);
+            let mut rev = self.docs.write_rev();
+            loop {
+                tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+                let now = self.docs.write_rev();
+                let quiet = now == rev;
+                rev = now;
+                if quiet || std::time::Instant::now() >= deadline {
+                    break;
+                }
+            }
         }
         self.workspace_decl_locations_once(symbol, word)
     }
 
     fn workspace_decl_locations_once(&self, symbol: &mir_analyzer::Name, word: &str) -> Vec<Location> {
         let ws = self.docs.get_workspace_index_salsa();
+        // The cursor's own `word` is whatever's under it as literally typed —
+        // on a qualified path (e.g. a `use` import's `App\Services\Logger`)
+        // that's the whole path, not the declared short name a
+        // workspace-index class/function is keyed and ranged by. Shorten
+        // `word` itself (a no-op when it's already a bare name) rather than
+        // using the resolved FQN's short name: mir's own FQN resolution
+        // follows PHP's case-insensitive dispatch and can differ in case
+        // from what the user actually typed, which would silently break
+        // rename's case-sensitive declaration matching below.
+        let short = fqn_short_name(word);
         let name_range = |line: u32, ch: u32| tower_lsp_server::ls_types::Range {
             start: Position {
                 line,
@@ -987,7 +1083,7 @@ impl Backend {
             },
             end: Position {
                 line,
-                character: ch + utf16_code_units(word),
+                character: ch + utf16_code_units(short),
             },
         };
         let mut exact = Vec::new();
@@ -995,11 +1091,11 @@ impl Backend {
         match symbol {
             mir_analyzer::Name::Class(fqn) => {
                 let target = fqn.trim_start_matches('\\');
-                for r in &self.docs.class_candidates_by_short_name(&ws, word) {
+                for r in &self.docs.class_candidates_by_short_name(&ws, short) {
                     let Some((uri, cls)) = ws.at(*r) else {
                         continue;
                     };
-                    if cls.name.as_ref() != word {
+                    if cls.name.as_ref() != short {
                         continue;
                     }
                     let loc = Location {
@@ -1017,7 +1113,7 @@ impl Backend {
                 let target = fqn.trim_start_matches('\\');
                 for (uri, idx) in &ws.files {
                     for f in &idx.functions {
-                        if f.name.as_ref() != word {
+                        if f.name.as_ref() != short {
                             continue;
                         }
                         let loc = Location {
@@ -1034,7 +1130,20 @@ impl Backend {
             }
             _ => {}
         }
-        if exact.is_empty() { by_name } else { exact }
+        if !exact.is_empty() {
+            exact
+        } else if word.contains('\\') {
+            // A qualified cursor word already names its own namespace, so a
+            // same-short-name declaration elsewhere that its FQN doesn't
+            // match is a different symbol, not a stale-index near-miss —
+            // e.g. `use App\Logger;` referring to nothing real must not
+            // spuriously match an unrelated global `class Logger {}`.
+            // Bare-word cursors carry no such namespace claim, so their
+            // by-name fallback stands.
+            Vec::new()
+        } else {
+            by_name
+        }
     }
 
     pub(crate) async fn handle_linked_editing_range(

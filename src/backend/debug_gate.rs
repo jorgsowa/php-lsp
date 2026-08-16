@@ -73,6 +73,19 @@ pub const GATE_MONIKER: &str = "moniker.lookup";
 pub const GATE_INLINE_VALUE: &str = "inlineValue.scan";
 /// Gate section around `codeAction/resolve`'s deferred action generation.
 pub const GATE_CODE_ACTION_RESOLVE: &str = "codeActionResolve.generate";
+/// Gate section around `workspace_decl_locations`'s post-empty-attempt
+/// settle-wait, held right after the first workspace-index read comes back
+/// empty and before the wait-then-retry — lets a test force a companion
+/// declaring file to open while the read that missed it is still in flight.
+pub const GATE_WORKSPACE_DECL_LOCATIONS_RETRY: &str = "workspaceDeclLocations.retry";
+/// Gate section around the usage-symbol settle-wait in `handle_references`/
+/// `indexed_rename`, held right after mir's own per-file resolution first
+/// comes back empty (companion file not yet known) and before the
+/// wait-then-retry — lets a test force a companion declaring file to open
+/// while mir's resolution attempt is still in flight, so the retry can
+/// observe mir resolving it correctly instead of falling through to the
+/// AST-heuristic FQN fallback.
+pub const GATE_USAGE_SYMBOL_RETRY: &str = "usageSymbol.retry";
 
 #[cfg(not(feature = "test-hooks"))]
 #[derive(Default)]
