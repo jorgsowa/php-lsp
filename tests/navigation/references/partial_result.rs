@@ -283,6 +283,7 @@ class CaseDivergent {
 /// different case (`new OWNER()` for `class Owner`) is still a genuine
 /// reference and must stream in the priority batch, not wait for the
 /// authoritative pass.
+#[serial_test::serial]
 #[tokio::test]
 async fn references_priority_batch_matches_owner_mention_case_insensitively() {
     let mut s = TestServer::new().await;
