@@ -977,8 +977,10 @@ impl Backend {
     /// before giving up. A companion file a usage-site reference depends on
     /// (e.g. a `use` import's declaring file, opened right before this
     /// request in the same batch) can still be settling in the background
-    /// when the first attempt runs — we rely strictly on mir's own resolution
-    /// rather than any heuristic fallback.
+    /// when the first attempt runs — trust mir's own resolution over the
+    /// AST-heuristic FQN fallback (`resolve_reference_target_fqn`) whenever
+    /// it can actually produce one, rather than falling through to that
+    /// fallback the moment mir is merely running behind.
     async fn resolve_usage_symbol_with_retry(
         &self,
         uri: &Uri,
@@ -1138,11 +1140,17 @@ impl Backend {
         }
         if !exact.is_empty() {
             exact
-        } else {
-            // Strictly return MIR's result (empty if not found).
-            // We removed the heuristic fallback to avoid false positives 
-            // and ensure we only report symbols the index actually contains.
+        } else if word.contains('\\') {
+            // A qualified cursor word already names its own namespace, so a
+            // same-short-name declaration elsewhere that its FQN doesn't
+            // match is a different symbol, not a stale-index near-miss —
+            // e.g. `use App\Logger;` referring to nothing real must not
+            // spuriously match an unrelated global `class Logger {}`.
+            // Bare-word cursors carry no such namespace claim, so their
+            // by-name fallback stands.
             Vec::new()
+        } else {
+            by_name
         }
     }
 
