@@ -1035,7 +1035,11 @@ impl Backend {
     /// real concurrent load it can still lose — wait for the write revision
     /// to quiesce first, the same freshness condition `settled_write_rev_guard`
     /// enforces for the mir query paths, before retrying.
-    async fn workspace_decl_locations(&self, symbol: &mir_analyzer::Name, word: &str) -> Vec<Location> {
+    async fn workspace_decl_locations(
+        &self,
+        symbol: &mir_analyzer::Name,
+        word: &str,
+    ) -> Vec<Location> {
         let first = self.workspace_decl_locations_once(symbol, word);
         if !first.is_empty() {
             return first;
@@ -1064,7 +1068,11 @@ impl Backend {
         self.workspace_decl_locations_once(symbol, word)
     }
 
-    fn workspace_decl_locations_once(&self, symbol: &mir_analyzer::Name, word: &str) -> Vec<Location> {
+    fn workspace_decl_locations_once(
+        &self,
+        symbol: &mir_analyzer::Name,
+        word: &str,
+    ) -> Vec<Location> {
         let ws = self.docs.get_workspace_index_salsa();
         // The cursor's own `word` is whatever's under it as literally typed —
         // on a qualified path (e.g. a `use` import's `App\Services\Logger`)

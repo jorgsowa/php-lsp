@@ -701,11 +701,10 @@ impl TestClient {
         // request notification that's still in flight; this costs the full
         // 200ms whenever there truly is nothing left (the common case), but
         // that's cheaper than a flaky assertion on wire-arrival order.
-        if let Ok(msg) =
-            tokio::time::timeout(Duration::from_millis(200), async {
-                recv_or_buffered(pending, read, write, &mut budget).await
-            })
-            .await
+        if let Ok(msg) = tokio::time::timeout(Duration::from_millis(200), async {
+            recv_or_buffered(pending, read, write, &mut budget).await
+        })
+        .await
         {
             if msg.get("method") == Some(&json!(capture_method)) {
                 captured.push(msg);
