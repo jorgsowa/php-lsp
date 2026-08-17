@@ -777,39 +777,47 @@ impl Backend {
             // authoritative response, identical whether or not a priority
             // batch was streamed above — `analyze_file`'s LRU makes
             // re-analyzing the priority subset here nearly free.
-            let docs = Arc::clone(&self.docs);
-            let symbol_for_query = symbol.clone();
-            let locations = tokio::task::spawn_blocking(move || {
-                // Pause the background scan and snapshot a settled revision so
-                // only a genuine user edit cancels the search.
-                let (_interactive, cancel_rev) = docs.settled_write_rev_guard();
-                let mut locs: Vec<Location> = docs
-                    .indexed_references(
-                        &symbol_for_query,
+            let mut locations = self
+                .indexed_references_for_symbol(
+                    &symbol,
+                    &files,
+                    include_declaration,
+                    wants_use_imports,
+                )
+                .await;
+            if locations.is_empty() {
+                // A candidate admitted by the cold-file text-mention gate but
+                // never analyzed before this query (e.g. an edit that just
+                // introduced the only cross-file usage) can still be
+                // committing its class relationship into mir's index — that
+                // commit can itself advance mir's own generation counter
+                // mid-query, which is exactly the condition mir's result
+                // cache treats as too fresh to cache. Same settle-then-retry
+                // shape as `resolve_usage_symbol_with_retry`; a genuinely
+                // empty result just repeats (cheap: mir's cache serves the
+                // repeat from memo).
+                if !self.docs.is_index_ready() {
+                    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(50);
+                    let mut rev = self.docs.write_rev();
+                    loop {
+                        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+                        let now = self.docs.write_rev();
+                        let quiet = now == rev;
+                        rev = now;
+                        if quiet || std::time::Instant::now() >= deadline {
+                            break;
+                        }
+                    }
+                }
+                locations = self
+                    .indexed_references_for_symbol(
+                        &symbol,
                         &files,
                         include_declaration,
-                        Some(cancel_rev),
+                        wants_use_imports,
                     )
-                    .into_iter()
-                    .filter_map(session_tuple_to_location)
-                    .collect();
-                if wants_use_imports {
-                    // The freshness pass above commits candidate analyses, so
-                    // the separate `use:` postings are current before this
-                    // read-only lookup appends them.
-                    locs.extend(
-                        docs.indexed_use_imports(&symbol_for_query, &files)
-                            .into_iter()
-                            .filter_map(session_tuple_to_location),
-                    );
-                }
-                dedup_ref_locations(&mut locs);
-                locs
-            })
-            .await
-            .unwrap_or_default();
-
-            let mut locations = locations;
+                    .await;
+            }
             if include_declaration {
                 locations.retain(|loc| location_starts_on_symbol(&self.docs, loc));
                 locations.extend(self.workspace_decl_locations(&symbol, &word).await);
@@ -949,6 +957,46 @@ impl Backend {
             changes: Some(changes),
             ..Default::default()
         })
+    }
+
+    /// Run mir's indexed-references query for `symbol` over `files` plus,
+    /// when `wants_use_imports`, the separate `use:` postings — the shared
+    /// body behind `handle_references`'s authoritative (and, on an empty
+    /// first attempt, retried) lookup.
+    async fn indexed_references_for_symbol(
+        &self,
+        symbol: &mir_analyzer::Name,
+        files: &[Arc<str>],
+        include_declaration: bool,
+        wants_use_imports: bool,
+    ) -> Vec<Location> {
+        let docs = Arc::clone(&self.docs);
+        let symbol = symbol.clone();
+        let files = files.to_vec();
+        tokio::task::spawn_blocking(move || {
+            // Pause the background scan and snapshot a settled revision so
+            // only a genuine user edit cancels the search.
+            let (_interactive, cancel_rev) = docs.settled_write_rev_guard();
+            let mut locs: Vec<Location> = docs
+                .indexed_references(&symbol, &files, include_declaration, Some(cancel_rev))
+                .into_iter()
+                .filter_map(session_tuple_to_location)
+                .collect();
+            if wants_use_imports {
+                // The freshness pass above commits candidate analyses, so
+                // the separate `use:` postings are current before this
+                // read-only lookup appends them.
+                locs.extend(
+                    docs.indexed_use_imports(&symbol, &files)
+                        .into_iter()
+                        .filter_map(session_tuple_to_location),
+                );
+            }
+            dedup_ref_locations(&mut locs);
+            locs
+        })
+        .await
+        .unwrap_or_default()
     }
 
     /// Mir's own per-file resolution of the symbol under the cursor
