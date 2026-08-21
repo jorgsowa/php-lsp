@@ -567,6 +567,14 @@ async fn compute_dependent_publishes_owned(
     is_laravel: bool,
 ) -> Vec<(Uri, Vec<Diagnostic>)> {
     tokio::task::spawn_blocking(move || {
+        // A dependent sweep started during the initial scan can deadlock the
+        // shared rayon pool: reanalysis retains salsa snapshots while a scan
+        // writer waits for them to drop. Defer the sweep until readiness;
+        // post-scan republishing covers every open file.
+        if !docs.is_index_ready() {
+            return Vec::new();
+        }
+
         // rust-analyzer model: we only ever publish for files the editor has
         // open, so re-analyze exactly that set and let salsa memoization make
         // the unaffected ones ~free. No dependent set is computed at all —
