@@ -107,6 +107,35 @@ impl Backend {
         }
     }
 
+    /// Like [`Self::cached_analysis_async`], but aborts the cold analysis path
+    /// when `write_rev` advances past `cancel_rev`. This is useful for
+    /// high-frequency UI requests such as completion: after a newer keystroke
+    /// arrives, the editor will ask again and the older analysis should stop
+    /// retrying through salsa cancellation.
+    pub(super) async fn cached_analysis_async_cancellable(
+        &self,
+        uri: &Uri,
+        cancel_rev: u64,
+    ) -> Option<Arc<mir_analyzer::FileAnalysis>> {
+        if let Some(hit) = self.docs.cached_analysis_if_fresh(uri) {
+            return Some(hit);
+        }
+        let docs = Arc::clone(&self.docs);
+        let docs_cancel = Arc::clone(&self.docs);
+        let uri_owned = uri.clone();
+        match tokio::task::spawn_blocking(move || {
+            docs.cached_analysis_cancellable(&uri_owned, &|| docs_cancel.write_rev() != cancel_rev)
+        })
+        .await
+        {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!("cached_analysis panicked for {uri:?}: {e}");
+                None
+            }
+        }
+    }
+
     /// Fetch the salsa-memoized workspace aggregate without blocking the async
     /// executor. A warm memo returns quickly, but the cold rebuild after any
     /// file change walks every `FileIndex` in the workspace — run it on the

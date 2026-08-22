@@ -834,6 +834,7 @@ impl LanguageServer for Backend {
         guard_async_result("completion", async move {
             let uri = &params.text_document_position.text_document.uri;
             let position = params.text_document_position.position;
+            let cancel_rev = self.docs.write_rev();
             let source = self.get_open_text(uri).unwrap_or_default();
             let doc = match self.get_doc(uri) {
                 Some(d) => d,
@@ -905,7 +906,9 @@ impl LanguageServer for Backend {
                     }
                     out
                 };
-            let analysis = self.cached_analysis_async(uri).await;
+            let analysis = self
+                .cached_analysis_async_cancellable(uri, cancel_rev)
+                .await;
             let session = self.docs.current_analysis_session();
             let uri_owned = uri.clone();
             // Offload to spawn_blocking: filtered_completions_at walks the full
