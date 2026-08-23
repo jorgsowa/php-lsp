@@ -1783,8 +1783,9 @@ impl TestServer {
     /// as sorted `line:col <label>` lines.
     pub async fn check_inlay_hints(&mut self, src: &str) -> String {
         let opened = self.open_fixture(src).await;
-        let path = opened.fixture.files[0].path.clone();
-        let line_count = opened.fixture.files[0].text.lines().count() as u32;
+        let file = &opened.fixture.files[0];
+        let path = file.path.clone();
+        let line_count = file.text.lines().count() as u32;
         let resp = self.inlay_hints(&path, 0, 0, line_count + 1, 0).await;
         render_inlay_hints(&resp)
     }

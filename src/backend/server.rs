@@ -480,6 +480,13 @@ impl LanguageServer for Backend {
             // This also mirrors the new text into salsa, so the codebase query
             // sees it when semantic_diagnostics runs below.
             self.set_open_text(uri.clone(), text);
+            // `didOpen` can make a brand-new declaring file visible to sibling
+            // open files that were analyzed earlier. Mirror the same
+            // declaration-version invalidation used by newly discovered
+            // workspace files so cached cross-file analyses (hover/inlay
+            // hints/signature help) don't stay stale until the opened file is
+            // itself queried.
+            self.docs.note_new_file_declarations(&uri);
 
             // Seed parse diagnostics from the salsa-cached doc. On the fast
             // path this is a lock-free DashMap lookup — no re-parse — but a
