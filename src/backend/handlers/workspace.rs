@@ -583,13 +583,38 @@ impl Backend {
                 // the replayed freshness marks, paying the whole-workspace
                 // defs walk the replay exists to avoid. Both steps are
                 // no-ops-per-file on a first-ever run.
-                {
+                let (workspace_index_elapsed_s, warm_start_elapsed_s) = {
                     let pre = Arc::clone(&salsa_docs);
-                    let _ = tokio::task::spawn_blocking(move || {
-                        pre.get_workspace_index_salsa();
-                        pre.warm_start_indexes();
-                    })
-                    .await;
+                    let (workspace_index_elapsed, warm_start_elapsed) =
+                        tokio::task::spawn_blocking(move || {
+                            let workspace_index_start = std::time::Instant::now();
+                            pre.get_workspace_index_salsa();
+                            let workspace_index_elapsed = workspace_index_start.elapsed();
+
+                            let warm_start_begin = std::time::Instant::now();
+                            pre.warm_start_indexes();
+                            let warm_start_elapsed = warm_start_begin.elapsed();
+
+                            (workspace_index_elapsed, warm_start_elapsed)
+                        })
+                        .await
+                        .unwrap_or_default();
+                    (
+                        workspace_index_elapsed.as_secs_f64(),
+                        warm_start_elapsed.as_secs_f64(),
+                    )
+                };
+                if debug {
+                    client
+                        .log_message(
+                            MessageType::INFO,
+                            format!(
+                                "php-lsp: debug: pre-ready workspace_index={workspace_index_elapsed_s:.3}s \
+                                 warm_start={warm_start_elapsed_s:.3}s total={:.3}s",
+                                workspace_index_elapsed_s + warm_start_elapsed_s
+                            ),
+                        )
+                        .await;
                 }
                 docs.mark_index_ready();
                 drop(docs);

@@ -350,7 +350,11 @@ mod perf_measure {
         let t0 = std::time::Instant::now();
         let mut server = TestServer::with_fixture_and_options(
             "symfony-demo",
-            serde_json::json!({ "diagnostics": { "enabled": true }, "indexVendor": true }),
+            serde_json::json!({
+                "diagnostics": { "enabled": true },
+                "indexVendor": true,
+                "debug": true
+            }),
         )
         .await;
         let t_init = t0.elapsed();
@@ -360,6 +364,38 @@ mod perf_measure {
             "MEASURE eager-vendor symfony-demo: init={:?}, indexReady={:?}",
             t_init, t_ready
         );
+    }
+
+    #[tokio::test]
+    #[ignore = "manual benchmark; run with --nocapture to print startup log timings"]
+    async fn profile_indexready_symfony_demo_eager_debug() {
+        let fixture = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/symfony-demo");
+        let t0 = std::time::Instant::now();
+        let mut server = TestServer::with_root_and_options(
+            &fixture,
+            serde_json::json!({
+                "diagnostics": { "enabled": true },
+                "indexVendor": true,
+                "debug": true
+            }),
+        )
+        .await;
+        let init_elapsed = t0.elapsed();
+        let notifications = server.client().collect_until_index_ready().await;
+        let ready_elapsed = t0.elapsed();
+        println!(
+            "PROFILE eager-vendor symfony-demo: init={:?}, indexReady={:?}",
+            init_elapsed, ready_elapsed
+        );
+        for msg in notifications {
+            if msg.get("method") == Some(&serde_json::json!("window/logMessage"))
+                && let Some(text) = msg["params"]["message"].as_str()
+                && text.starts_with("php-lsp:")
+            {
+                println!("{text}");
+            }
+        }
     }
 
     /// Manual benchmark for the workspace-wide class-name search behind
