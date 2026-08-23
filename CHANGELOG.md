@@ -4,6 +4,13 @@ All notable changes to php-lsp are documented here.
 
 ## [Unreleased]
 
+## [0.25.1] — 2026-08-22
+
+### Fixed
+
+- **Stale completion analysis is now canceled**: completion requests no longer let outdated analysis work continue after newer edits arrive, preventing stale background work from competing with current requests.
+- **`didOpen` no longer deadlocks during the initial workspace scan**: opening a document while startup indexing is still in flight now completes reliably instead of getting stuck behind the initial scan.
+
 ## [0.25.0] — 2026-08-21
 
 ### Added
