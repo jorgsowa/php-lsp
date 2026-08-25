@@ -470,6 +470,10 @@ impl DocumentStore {
     /// Mark the workspace reference index as fully built. Called by the scan
     /// when its final phase completes (alongside `$/php-lsp/indexReady`).
     pub fn mark_index_ready(&self) {
+        // Every cached analysis predates the finished workspace, and the
+        // scan bumped nothing on its way through — `note_new_file_declarations`
+        // is the same invalidation on the `didChangeWatchedFiles` path.
+        self.caches.bump_decl_version();
         self.index_ready.store(true, Ordering::Release);
     }
 
@@ -4019,6 +4023,39 @@ mod tests {
                 .any(|i| matches!(i.kind, mir_issues::IssueKind::UndefinedClass { .. })),
             "Mage now exists, but consumer.php's cached analysis was never \
              invalidated: {issues:?}"
+        );
+    }
+
+    /// The same staleness, reached by the other caller on that path: the
+    /// initial workspace scan mirrors every file it reads and never calls
+    /// `note_new_file_declarations`, so a file opened while the scan is still
+    /// running keeps the memo it left behind against a partial index.
+    #[test]
+    fn stale_cached_analysis_not_invalidated_by_finished_scan() {
+        let store = DocumentStore::new();
+        let consumer_uri = uri("/app.php");
+        let dep_uri = uri("/Mage.php");
+
+        store.mirror_text(&consumer_uri, "<?php\n\nnew Mage();\n");
+        let issues = store.get_semantic_issues_salsa(&consumer_uri).unwrap();
+        assert!(
+            issues
+                .iter()
+                .any(|i| matches!(i.kind, mir_issues::IssueKind::UndefinedClass { .. })),
+            "sanity check: Mage must be reported missing before the scan reaches it"
+        );
+
+        // The scan reaches Mage.php and then finishes. `mirror_text` alone is
+        // what `index::workspace_scan` does with every file it reads.
+        store.mirror_text(&dep_uri, "<?php\nclass Mage {}\n");
+        store.mark_index_ready();
+
+        let issues = store.get_semantic_issues_salsa(&consumer_uri).unwrap();
+        assert!(
+            !issues
+                .iter()
+                .any(|i| matches!(i.kind, mir_issues::IssueKind::UndefinedClass { .. })),
+            "the finished scan did not invalidate app.php's analysis: {issues:?}"
         );
     }
 
