@@ -4,6 +4,10 @@ All notable changes to php-lsp are documented here.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Stale diagnostics survive the initial workspace scan**: a file opened while indexing was still running was analyzed against a partial index, and the analysis cache — keyed on `(source, decl_version)` — was never invalidated when the scan finished, so the post-index republish re-served the same memo. Symbols declared in files the scan had not yet reached stayed reported as undefined until the file was edited. `mark_index_ready` now bumps `decl_version`, the same invalidation `note_new_file_declarations` performs on the `didChangeWatchedFiles` path.
+
 ## [0.25.1] — 2026-08-22
 
 ### Fixed
