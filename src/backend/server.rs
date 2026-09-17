@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use tower_lsp_server::LanguageServer;
@@ -58,6 +59,22 @@ use super::{Backend, publish_with_dependents};
 /// short enough that references asked "shortly after editing" are warm again.
 const WARM_RESWEEP_IDLE_MS: u64 = 1_000;
 
+fn normalized_php_fqn(name: &str) -> &str {
+    name.trim_start_matches('\\')
+}
+
+fn is_bare_php_name(name: &str) -> bool {
+    crate::text::fqn_short_name(name) == name
+}
+
+fn class_lookup_fqn(doc: &ParsedDoc, name: &str, imports: &HashMap<String, String>) -> String {
+    if is_bare_php_name(name) {
+        crate::navigation::moniker::resolve_fqn(doc, name, imports)
+    } else {
+        normalized_php_fqn(name).to_string()
+    }
+}
+
 fn inlay_hint_symbol_from_data(data: &serde_json::Value) -> Option<mir_analyzer::Name> {
     let kind = data.get("php_lsp_symbol_kind")?.as_str()?;
     let name = data.get("php_lsp_fn")?.as_str()?;
@@ -100,8 +117,8 @@ fn hover_markup(value: String) -> Hover {
 }
 
 fn hover_display_class_name(session: &mir_analyzer::AnalysisSession, name: &str) -> String {
-    let normalized = name.trim_start_matches('\\');
-    if normalized.contains('\\') {
+    let normalized = normalized_php_fqn(name);
+    if !is_bare_php_name(normalized) {
         return normalized.to_string();
     }
     if crate::types::stub_members::stub_class_members(session, normalized).is_some() {
@@ -877,19 +894,11 @@ impl LanguageServer for Backend {
             let doc_for_lookup = Arc::clone(&doc);
             let imports_for_lookup = imports.clone();
             let find_class_doc_fn = move |name: &str| -> Option<Arc<ParsedDoc>> {
-                let fqn = if name.contains('\\') {
-                    name.trim_start_matches('\\').to_string()
-                } else {
-                    crate::navigation::moniker::resolve_fqn(
-                        &doc_for_lookup,
-                        name,
-                        &imports_for_lookup,
-                    )
-                };
+                let fqn = class_lookup_fqn(&doc_for_lookup, name, &imports_for_lookup);
                 let cr = docs_for_lookup
                     .resolve_class_ref_by_fqn(&wi, &fqn)
                     .or_else(|| {
-                        if name.contains('\\') {
+                        if !is_bare_php_name(name) {
                             return None;
                         }
                         let name_lc = name.to_lowercase();
@@ -1229,19 +1238,11 @@ impl LanguageServer for Backend {
             let imports_for_lookup = doc.file_imports();
             let doc_for_lookup = Arc::clone(&doc);
             let find_class_doc_fn = move |name: &str| -> Option<Arc<ParsedDoc>> {
-                let fqn = if name.contains('\\') {
-                    name.trim_start_matches('\\').to_string()
-                } else {
-                    crate::navigation::moniker::resolve_fqn(
-                        &doc_for_lookup,
-                        name,
-                        &imports_for_lookup,
-                    )
-                };
+                let fqn = class_lookup_fqn(&doc_for_lookup, name, &imports_for_lookup);
                 let cr = docs_for_lookup
                     .resolve_class_ref_by_fqn(&wi, &fqn)
                     .or_else(|| {
-                        if name.contains('\\') {
+                        if !is_bare_php_name(name) {
                             return None;
                         }
                         let name_lc = name.to_lowercase();
@@ -1279,15 +1280,18 @@ impl LanguageServer for Backend {
             // `use Foo as Bar` works even when Foo is only in the index.
             if let Some(word) = crate::text::word_at_position(&source, position) {
                 let wi = self.workspace_index_cached(&mut wi_cache).await;
+                let fallback_imports = doc.file_imports();
                 let fallback_class_fqcn = |name: &str| {
+                    let fqn = class_lookup_fqn(&doc, name, &fallback_imports);
                     self.docs
-                        .resolve_class_ref_by_fqn(&wi, name)
+                        .resolve_class_ref_by_fqn(&wi, &fqn)
                         .and_then(|cr| {
                             wi.at(cr)
-                                .map(|(_, cls)| cls.fqn.trim_start_matches('\\').to_string())
+                                .map(|(_, cls)| normalized_php_fqn(&cls.fqn).to_string())
                         })
                 };
-                // Try the literal word first.
+                // Try the cursor word first, resolved through this file's
+                // imports and namespace when it is a bare class name.
                 if let Some(fqcn) = fallback_class_fqcn(&word)
                     && let Some(h) = class_hover_for_fqcn(&hover_session, &fqcn)
                 {
@@ -1755,14 +1759,7 @@ impl LanguageServer for Backend {
             }
             // `word_at_position` includes `\` as a word character, so the cursor on
             // a use-statement import (`use A\B\Foo`) returns the full qualified name.
-            let (word, fqn): (String, String) = if raw_word.contains('\\') {
-                let short = raw_word
-                    .rsplit('\\')
-                    .next()
-                    .unwrap_or(&raw_word)
-                    .to_string();
-                (short, raw_word.trim_start_matches('\\').to_string())
-            } else {
+            let (word, fqn): (String, String) = if is_bare_php_name(&raw_word) {
                 // Resolve via this file's imports + namespace; covers usages,
                 // aliases, and the type's own declaration (which resolves to
                 // `<current-namespace>\<word>`).
@@ -1770,7 +1767,10 @@ impl LanguageServer for Backend {
                     Some(doc) => crate::navigation::moniker::resolve_fqn(&doc, &raw_word, &imports),
                     None => raw_word.clone(),
                 };
-                (raw_word, resolved.trim_start_matches('\\').to_string())
+                (raw_word, normalized_php_fqn(&resolved).to_string())
+            } else {
+                let short = crate::text::fqn_short_name(&raw_word).to_string();
+                (short, normalized_php_fqn(&raw_word).to_string())
             };
 
             // A method declaration name can collide case-insensitively with a
@@ -1812,10 +1812,9 @@ impl LanguageServer for Backend {
                 && let Some(enclosing) =
                     crate::types::type_map::enclosing_class_at(&source, &doc, position)
             {
-                let enclosing_fqn =
-                    crate::navigation::moniker::resolve_fqn(&doc, &enclosing, &imports)
-                        .trim_start_matches('\\')
-                        .to_string();
+                let resolved_enclosing =
+                    crate::navigation::moniker::resolve_fqn(&doc, &enclosing, &imports);
+                let enclosing_fqn = normalized_php_fqn(&resolved_enclosing).to_string();
                 let docs = Arc::clone(&self.docs);
                 let method = word.clone();
                 let impls = self

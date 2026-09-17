@@ -19,6 +19,13 @@ pub(crate) const PARSED_CACHE_CAP: usize = 2048;
 pub(crate) const ANALYSIS_CACHE_CAP: usize = 512;
 pub(crate) const OWNED_PROGRAM_CACHE_CAP: usize = 256;
 
+pub(crate) struct AnalysisCacheEntry {
+    pub(crate) source: Arc<str>,
+    pub(crate) decl_version: u64,
+    pub(crate) decl_index: Option<Arc<FileIndex>>,
+    pub(crate) analysis: Option<Arc<mir_analyzer::FileAnalysis>>,
+}
+
 /// All per-file caches owned by `DocumentStore`, grouped so eviction logic
 /// lives in one place. Adding a new cache only requires: add the field here,
 /// then add `self.field.remove(uri)` to `evict()`.
@@ -29,17 +36,14 @@ pub(crate) struct CacheRegistry {
     pub(crate) text_cache: DashMap<Uri, Arc<str>>,
     /// G3: cross-revision read-through cache for parsed_doc.
     pub(crate) parsed_cache: DashMap<Uri, (Arc<str>, Arc<ParsedDoc>)>,
-    /// Per-file mir body analysis cache: (source_arc, decl_ver, analysis).
-    pub(crate) analysis_cache: DashMap<Uri, (Arc<str>, u64, Arc<mir_analyzer::FileAnalysis>)>,
+    /// Per-file mir body analysis cache plus the file's last declaration index.
+    pub(crate) analysis_cache: DashMap<Uri, AnalysisCacheEntry>,
     /// Monotonically increasing counter bumped on any declaration-level change.
     pub(crate) decl_version: AtomicU64,
     /// Count of real `ParsedDoc` parses served by `get_parsed_cached` (cache
     /// misses only). Read via `$/php-lsp/debugStats` to guard the references
     /// read path against re-introducing whole-workspace parsing.
     pub(crate) parse_count: AtomicU64,
-    /// Last-seen FileIndex per URI, used to detect declaration changes during
-    /// that file's own analysis.
-    pub(crate) decl_fingerprints: DashMap<Uri, Arc<FileIndex>>,
     /// Owned-program cache: (source_arc, owned_program). Avoids repeating the
     /// deep arena clone in `cached_analysis` when `decl_version` bumps due to
     /// a sibling file's declaration change — the file's own source is unchanged,
@@ -69,7 +73,6 @@ impl CacheRegistry {
             analysis_cache: DashMap::new(),
             decl_version: AtomicU64::new(0),
             parse_count: AtomicU64::new(0),
-            decl_fingerprints: DashMap::new(),
             owned_program_cache: DashMap::new(),
             vendor_index_cache: DashMap::new(),
             access_tick: AtomicU64::new(0),
@@ -143,7 +146,6 @@ impl CacheRegistry {
         self.text_cache.remove(uri);
         self.parsed_cache.remove(uri);
         self.analysis_cache.remove(uri);
-        self.decl_fingerprints.remove(uri);
         self.owned_program_cache.remove(uri);
         self.vendor_index_cache.remove(uri);
         self.last_access.remove(uri);
@@ -152,7 +154,9 @@ impl CacheRegistry {
     /// Evict only the mir analysis cache for `uri`. Used on text change so the
     /// next request re-runs Pass 1 + Pass 2 with the new content.
     pub(crate) fn evict_analysis(&self, uri: &Uri) {
-        self.analysis_cache.remove(uri);
+        if let Some(mut entry) = self.analysis_cache.get_mut(uri) {
+            entry.analysis = None;
+        }
     }
 
     /// Clear the entire analysis cache. Used when the PHP version or

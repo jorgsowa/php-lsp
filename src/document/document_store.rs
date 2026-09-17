@@ -11,7 +11,7 @@ use tower_lsp_server::ls_types::{SemanticToken, Uri};
 
 use crate::db::mir_queries::{LspWorkspace, LspWsFile};
 use crate::document::ast::ParsedDoc;
-use crate::document::cache_registry::CacheRegistry;
+use crate::document::cache_registry::{AnalysisCacheEntry, CacheRegistry};
 use crate::index::file_index::FileIndex;
 use crate::lang::autoload::Psr4Map;
 
@@ -2357,7 +2357,8 @@ impl DocumentStore {
         let cur_ver = self.caches.decl_version();
         let analysis = {
             let entry = self.caches.analysis_cache.get(uri)?;
-            (Arc::ptr_eq(&entry.0, &source) && entry.1 == cur_ver).then(|| Arc::clone(&entry.2))?
+            (Arc::ptr_eq(&entry.source, &source) && entry.decl_version == cur_ver)
+                .then(|| entry.analysis.as_ref().map(Arc::clone))??
         };
         self.caches.touch(uri);
         Some(analysis)
@@ -2372,26 +2373,44 @@ impl DocumentStore {
     /// declarations changed or this is the file's first-seen fingerprint.
     /// Body-only edits leave the counter unchanged so sibling files keep
     /// serving from cache. Returns whether it bumped.
-    fn sync_decl_fingerprint(&self, uri: &Uri, session: &mir_analyzer::AnalysisSession) -> bool {
+    fn sync_decl_fingerprint(
+        &self,
+        uri: &Uri,
+        session: &mir_analyzer::AnalysisSession,
+    ) -> (bool, Option<Arc<FileIndex>>) {
         let new_index = self.get_index_salsa(uri);
         let old_fp = self
             .caches
-            .decl_fingerprints
+            .analysis_cache
             .get(uri)
-            .map(|e| Arc::clone(&*e));
+            .and_then(|e| e.decl_index.as_ref().map(Arc::clone));
         let decl_changed = match (&old_fp, &new_index) {
             (Some(old), Some(new)) => **old != **new,
             (None, Some(new)) => !new.declares_nothing(),
             _ => false,
         };
         if decl_changed {
-            if let Some(idx) = new_index {
-                self.caches.decl_fingerprints.insert(uri.clone(), idx);
-            }
             self.caches.bump_decl_version();
             session.bump_prepare_generation();
+            if let Some(source) = self.caches.text_cache.get(uri).map(|t| Arc::clone(&*t)) {
+                if let Some(mut entry) = self.caches.analysis_cache.get_mut(uri) {
+                    entry.source = source;
+                    entry.decl_index = new_index.as_ref().map(Arc::clone);
+                    entry.analysis = None;
+                } else {
+                    self.caches.analysis_cache.insert(
+                        uri.clone(),
+                        AnalysisCacheEntry {
+                            source,
+                            decl_version: self.caches.decl_version(),
+                            decl_index: new_index.as_ref().map(Arc::clone),
+                            analysis: None,
+                        },
+                    );
+                }
+            }
         }
-        decl_changed
+        (decl_changed, new_index)
     }
 
     /// Sync declaration freshness for a file mirrored outside its own
@@ -2521,16 +2540,22 @@ impl DocumentStore {
         // Keep php-lsp's retained FileAnalysis cache coherent with declaration
         // changes discovered while analyzing this file. Mir owns its own
         // invalidation; this protects only php-lsp's in-memory analysis_cache.
-        let decl_changed = self.sync_decl_fingerprint(uri, &session);
+        let (decl_changed, decl_index) = self.sync_decl_fingerprint(uri, &session);
         let ver = cur_ver + u64::from(decl_changed);
         self.caches.shed_stale(
             &self.caches.analysis_cache,
             crate::document::cache_registry::ANALYSIS_CACHE_CAP,
         );
         self.caches.touch(uri);
-        self.caches
-            .analysis_cache
-            .insert(uri.clone(), (source, ver, Arc::clone(&analysis)));
+        self.caches.analysis_cache.insert(
+            uri.clone(),
+            AnalysisCacheEntry {
+                source,
+                decl_version: ver,
+                decl_index,
+                analysis: Some(Arc::clone(&analysis)),
+            },
+        );
         Some(analysis)
     }
 
