@@ -819,9 +819,8 @@ impl DocumentStore {
     }
 
     /// Mirror a file's current text into the salsa layer. Creates the
-    /// `FileText` input on first sight, otherwise updates `text` on the
-    /// existing input (bumping the salsa revision so downstream queries
-    /// invalidate).
+    /// `SourceFile` input on first sight, otherwise updates it through mir's
+    /// session write API so mir's own invalidation state stays in sync.
     pub fn mirror_text(&self, uri: &Uri, text: &str) {
         // G2 fast path: compare against the lock-free text cache. When the
         // new text byte-matches what we already mirrored, skip the host
@@ -863,9 +862,8 @@ impl DocumentStore {
             {
                 return;
             }
+            session.upsert_source_file(path, text_arc.clone(), dur);
             session.with_db_mut(|db| {
-                let sf = wf.source(db);
-                sf.set_text(db).with_durability(dur).to(text_arc.clone());
                 // Any text change invalidates a previously-seeded cached index.
                 // Only set when present to avoid a spurious second revision bump.
                 if wf.cached_index(db).is_some() {
@@ -878,10 +876,8 @@ impl DocumentStore {
             self.caches.evict_analysis(uri);
             self.write_revision.fetch_add(1, Ordering::Release);
         } else {
-            let wf = session.with_db_mut(|db| {
-                let sf = db.upsert_source_file_with_durability(path, text_arc.clone(), dur);
-                LspWsFile::new(db, sf, None)
-            });
+            let sf = session.upsert_source_file(path, text_arc.clone(), dur);
+            let wf = session.with_db_mut(|db| LspWsFile::new(db, sf, None));
             self.lsp_ws_files.insert(uri.clone(), wf);
             self.caches.text_cache.insert(uri.clone(), text_arc);
             self.mark_workspace_files_dirty();
