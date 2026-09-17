@@ -37,7 +37,8 @@ pub(crate) struct CacheRegistry {
     /// misses only). Read via `$/php-lsp/debugStats` to guard the references
     /// read path against re-introducing whole-workspace parsing.
     pub(crate) parse_count: AtomicU64,
-    /// Last-seen FileIndex per URI, used to detect declaration changes.
+    /// Last-seen FileIndex per URI, used to detect declaration changes during
+    /// that file's own analysis.
     pub(crate) decl_fingerprints: DashMap<Uri, Arc<FileIndex>>,
     /// Owned-program cache: (source_arc, owned_program). Avoids repeating the
     /// deep arena clone in `cached_analysis` when `decl_version` bumps due to

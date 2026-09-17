@@ -588,9 +588,8 @@ impl DocumentStore {
     /// Mark the workspace reference index as fully built. Called by the scan
     /// when its final phase completes (alongside `$/php-lsp/indexReady`).
     pub fn mark_index_ready(&self) {
-        // Every cached analysis predates the finished workspace, and the
-        // scan bumped nothing on its way through — `note_new_file_declarations`
-        // is the same invalidation on the `didChangeWatchedFiles` path.
+        // Analyses computed while the scan was still incomplete may have
+        // unresolved workspace names.
         self.caches.bump_decl_version();
         self.index_ready.store(true, Ordering::Release);
     }
@@ -2235,13 +2234,6 @@ impl DocumentStore {
         self.caches.owned_program_cache.len() as u64
     }
 
-    /// Entries in the declaration-fingerprint cache — one per file that
-    /// declares something, used to detect cross-file declaration changes.
-    /// Expected to track [`Self::workspace_file_count`], not grow past it.
-    pub fn decl_fingerprints_len(&self) -> u64 {
-        self.caches.decl_fingerprints.len() as u64
-    }
-
     /// Entries in the lazily-loaded vendor `FileIndex` cache, populated by
     /// PSR-4 "go to definition" navigation into `vendor/`. Unlike the other
     /// per-file caches above, this one has no LRU cap today — a session with
@@ -2376,10 +2368,10 @@ impl DocumentStore {
     }
 
     /// Compare `uri`'s current `FileIndex` against its stored declaration
-    /// fingerprint, bumping `decl_version` (and `session`'s prepare
-    /// generation) when declarations changed or this is the file's
-    /// first-seen fingerprint. Body-only edits leave the counter unchanged so
-    /// sibling files keep serving from cache. Returns whether it bumped.
+    /// fingerprint, bumping php-lsp's analysis-cache generation when
+    /// declarations changed or this is the file's first-seen fingerprint.
+    /// Body-only edits leave the counter unchanged so sibling files keep
+    /// serving from cache. Returns whether it bumped.
     fn sync_decl_fingerprint(&self, uri: &Uri, session: &mir_analyzer::AnalysisSession) -> bool {
         let new_index = self.get_index_salsa(uri);
         let old_fp = self
@@ -2389,9 +2381,6 @@ impl DocumentStore {
             .map(|e| Arc::clone(&*e));
         let decl_changed = match (&old_fp, &new_index) {
             (Some(old), Some(new)) => **old != **new,
-            // First analysis: only a file that actually declares something can
-            // affect other files. Opening a plain script must not invalidate
-            // every open file's analysis cache and mir's warm-up marks.
             (None, Some(new)) => !new.declares_nothing(),
             _ => false,
         };
@@ -2400,33 +2389,16 @@ impl DocumentStore {
                 self.caches.decl_fingerprints.insert(uri.clone(), idx);
             }
             self.caches.bump_decl_version();
-            // Text reaches mir via direct salsa `set_text` writes, so mir can't
-            // see declaration deletions itself. A deleted declaration may
-            // unshadow a lazy-loadable symbol — invalidate mir's warm-up skip
-            // set so reference queries re-run their prepare pass once.
             session.bump_prepare_generation();
         }
         decl_changed
     }
 
-    /// Register a newly-discovered file's declarations so a consumer that was
-    /// analyzed *before* this file existed doesn't keep a stale cached
-    /// analysis forever.
-    ///
-    /// `mirror_text`/`ingest_from_doc` alone never bump `decl_version` —
-    /// that only happens inside `cached_analysis_cancellable`'s own
-    /// first-analysis check, which runs when a file undergoes its *own* full
-    /// analysis. A file that is merely scanned or created as someone else's
-    /// dependency (what a workspace scan or a `didChangeWatchedFiles`
-    /// CREATED/CHANGED event does) never goes through that path, so without
-    /// this call, a consumer analyzed earlier keeps returning a stale
-    /// `UndefinedClass` (or similar) even after the dependency shows up.
-    ///
-    /// Call this after mirroring a file from one of those discovery paths —
-    /// not from every `mirror_text` call, which would also fire on every
-    /// keystroke edit to an already-open file and defeat the whole point of
-    /// caching sibling files' analyses across those edits.
-    pub fn note_new_file_declarations(&self, uri: &Uri) {
+    /// Sync declaration freshness for a file mirrored outside its own
+    /// analysis pass. Mir owns resolver/cache invalidation; this protects only
+    /// php-lsp's retained [`mir_analyzer::FileAnalysis`] cache, whose entries
+    /// are tagged by `decl_version`.
+    pub fn sync_analysis_cache_declarations(&self, uri: &Uri) {
         let session = self.current_analysis_session();
         self.sync_decl_fingerprint(uri, &session);
     }
@@ -2546,17 +2518,10 @@ impl DocumentStore {
                 }
             }
         };
-        // Compare the new FileIndex against the stored fingerprint. If
-        // declarations changed (or this is the first analysis), bump
-        // `decl_version` so other files' cache entries become stale. Body-only
-        // edits leave the counter unchanged, allowing sibling files to be
-        // served from cache on the next request.
+        // Keep php-lsp's retained FileAnalysis cache coherent with declaration
+        // changes discovered while analyzing this file. Mir owns its own
+        // invalidation; this protects only php-lsp's in-memory analysis_cache.
         let decl_changed = self.sync_decl_fingerprint(uri, &session);
-        // Tag with the version observed before the analysis ran, plus this
-        // file's own bump. Reading `decl_version()` here instead would absorb
-        // a concurrent bump from another file's mid-compute declaration change
-        // into the tag, marking a possibly-stale result as fresh. The
-        // conservative tag errs toward one extra recompute, never staleness.
         let ver = cur_ver + u64::from(decl_changed);
         self.caches.shed_stale(
             &self.caches.analysis_cache,
@@ -4067,17 +4032,12 @@ mod tests {
 
     /// Regression (found while investigating issue #242, root cause is
     /// distinct from it — not fixed by the `is_index_ready` gate):
-    /// `cached_analysis_if_fresh`'s staleness check is keyed on
-    /// `decl_version`, which only bumps inside `cached_analysis_cancellable`
-    /// when a file undergoes its *own* full analysis. Mirroring a brand new
-    /// file into the store (`mirror_text`/`ingest_from_doc`, what a workspace
-    /// scan or `didChangeWatchedFiles` CREATED event does) doesn't go through
-    /// that path, so callers on that path must explicitly call
-    /// `note_new_file_declarations` — exactly what `did_change_watched_files`
-    /// now does — to invalidate consumers analyzed before the dependency
-    /// existed.
+    /// `cached_analysis_if_fresh` is keyed on php-lsp's retained analysis-cache
+    /// generation. A newly mirrored file still has to sync that generation so
+    /// consumers analyzed before the dependency existed do not keep a stale
+    /// `UndefinedClass` analysis.
     #[test]
-    fn stale_cached_analysis_not_invalidated_by_new_dependency_file() {
+    fn cached_analysis_invalidated_by_new_dependency_file() {
         let store = DocumentStore::new();
         let consumer_uri = uri("/app.php");
         let dep_uri = uri("/Mage.php");
@@ -4096,7 +4056,7 @@ mod tests {
         // Mage now becomes known to the store — exactly what a workspace
         // scan or a `didChangeWatchedFiles` CREATED event does.
         store.mirror_text(&dep_uri, "<?php\nclass Mage {}\n");
-        store.note_new_file_declarations(&dep_uri);
+        store.sync_analysis_cache_declarations(&dep_uri);
 
         // Consumer's diagnostics should now resolve cleanly.
         let issues = store.get_semantic_issues_salsa(&consumer_uri).unwrap();
@@ -4109,12 +4069,11 @@ mod tests {
         );
     }
 
-    /// The same staleness, reached by the other caller on that path: the
-    /// initial workspace scan mirrors every file it reads and never calls
-    /// `note_new_file_declarations`, so a file opened while the scan is still
-    /// running keeps the memo it left behind against a partial index.
+    /// The same staleness, reached by the initial workspace scan path: a file
+    /// opened while the scan is still running must not keep the memo it left
+    /// behind against a partial index.
     #[test]
-    fn stale_cached_analysis_not_invalidated_by_finished_scan() {
+    fn cached_analysis_invalidated_by_finished_scan() {
         let store = DocumentStore::new();
         let consumer_uri = uri("/app.php");
         let dep_uri = uri("/Mage.php");
@@ -4229,7 +4188,7 @@ mod tests {
         let analysis_b_first = store.cached_analysis(&ub).unwrap();
         let ver_after_warm = store.caches.decl_version();
 
-        // Body-only edit to A: same function name, different body → FileIndex unchanged.
+        // Body-only edit to A: same function name, different body -> FileIndex unchanged.
         store.mirror_text(&ua, "<?php\nfunction a() { return 999; }");
         let _ = store.cached_analysis(&ua);
         let ver_after_body_edit = store.caches.decl_version();
@@ -4249,7 +4208,7 @@ mod tests {
             "B's analysis should be the identical Arc (no re-analysis)"
         );
 
-        // Declaration edit to A: rename the function → FileIndex changes.
+        // Declaration edit to A: rename the function -> FileIndex changes.
         store.mirror_text(&ua, "<?php\nfunction a_renamed() { return 999; }");
         let _ = store.cached_analysis(&ua);
         let ver_after_decl_edit = store.caches.decl_version();

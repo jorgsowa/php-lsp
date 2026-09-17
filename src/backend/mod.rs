@@ -114,9 +114,6 @@ pub struct DebugStats {
     pub analysis_cache_len: u64,
     /// Entries in the owned-`Program` cache (LRU-capped).
     pub owned_program_cache_len: u64,
-    /// Entries in the declaration-fingerprint cache. Expected to track
-    /// `workspace_file_count`.
-    pub decl_fingerprints_len: u64,
     /// Entries in the lazily-loaded vendor `FileIndex` cache. Not
     /// LRU-capped today — the one cache size here worth watching on a
     /// long-running session with heavy vendor navigation.
@@ -234,7 +231,6 @@ impl Backend {
             parsed_cache_len: self.docs.parsed_cache_len(),
             analysis_cache_len: self.docs.analysis_cache_len(),
             owned_program_cache_len: self.docs.owned_program_cache_len(),
-            decl_fingerprints_len: self.docs.decl_fingerprints_len(),
             vendor_index_cache_len: self.docs.vendor_index_cache_len(),
             mir_ref_query_cache_hits: self.docs.mir_ref_query_cache_hits(),
             mir_subtype_query_cache_hits: self.docs.mir_subtype_query_cache_hits(),

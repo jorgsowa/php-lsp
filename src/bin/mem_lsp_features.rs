@@ -325,11 +325,10 @@ async fn run() {
     );
     let stats = c.request_no_params("$/php-lsp/debugStats").await;
     println!(
-        "cache sizes: workspace_file_count={} mir_mention_scans_recorded={} text_cache_len={} decl_fingerprints_len={} analysis_cache_len={} parsed_cache_len={}",
+        "cache sizes: workspace_file_count={} mir_mention_scans_recorded={} text_cache_len={} analysis_cache_len={} parsed_cache_len={}",
         stats["result"]["workspace_file_count"],
         stats["result"]["mir_mention_scans_recorded"],
         stats["result"]["text_cache_len"],
-        stats["result"]["decl_fingerprints_len"],
         stats["result"]["analysis_cache_len"],
         stats["result"]["parsed_cache_len"],
     );

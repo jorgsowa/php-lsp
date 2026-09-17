@@ -1316,18 +1316,12 @@ async fn enum_implementing_use_imported_interface_not_flagged() {
 }
 
 /// Regression (found while investigating issue #242, not fixed by it — root
-/// cause is different): a file's `cached_analysis` is only invalidated by
-/// `decl_version` bumping, and `decl_version` only bumped when a file went
-/// through its *own* full semantic analysis (`cached_analysis_cancellable`'s
-/// "first analysis" branch in `document_store.rs`) — never when a file was
-/// merely scanned/mirrored/created as someone else's dependency. `did_change_watched_files`
-/// now calls `DocumentStore::note_new_file_declarations` for every
-/// CREATED/CHANGED file so a consumer analyzed before the dependency existed
-/// gets invalidated too. Same repro at the `DocumentStore` level in
-/// `document_store.rs`'s
-/// `stale_cached_analysis_not_invalidated_by_new_dependency_file`; this is
-/// the full LSP-server level, via the realistic trigger of a teammate's new
-/// file landing (e.g. after a `git pull`).
+/// cause is different): a file's `cached_analysis` must be invalidated when a
+/// dependency file is newly mirrored into Mir's workspace. Same repro at the
+/// `DocumentStore` level in `document_store.rs`'s
+/// `cached_analysis_invalidated_by_new_dependency_file`; this is the full
+/// LSP-server level, via the realistic trigger of a teammate's new file
+/// landing (e.g. after a `git pull`).
 #[tokio::test]
 async fn undefined_class_diagnostic_not_refreshed_after_dependency_file_created() {
     let tmp = tempfile::tempdir().unwrap();

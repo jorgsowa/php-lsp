@@ -497,8 +497,8 @@ async fn rapid_concurrent_edits_and_queries_no_panic() {
 
 #[tokio::test]
 async fn declaration_change_in_one_file_does_not_break_sibling_hover() {
-    // When file A's declaration changes (bumping decl_version), file B's
-    // owned_program_cache entry should be reused since B's source is unchanged.
+    // When file A's declaration changes, file B's owned_program_cache entry
+    // should be reused since B's source is unchanged.
     // We verify this indirectly: hover on B must return correct results both
     // before and after the sibling declaration edit, with no panics.
     let mut server = TestServer::new().await;
@@ -518,8 +518,8 @@ async fn declaration_change_in_one_file_does_not_break_sibling_hover() {
         ```"#]]
     .assert_eq(&render_hover(&hover_before));
 
-    // Edit sib_a.php — this is a declaration change that bumps decl_version
-    // and would previously force a fresh to_owned_program() for sib_b.
+    // Edit sib_a.php — this declaration change used to force a fresh
+    // to_owned_program() for sib_b.
     server
         .change("sib_a.php", 2, "<?php\nclass AlphaRenamed {}\n")
         .await;

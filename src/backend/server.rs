@@ -489,14 +489,10 @@ impl LanguageServer for Backend {
             // This also mirrors the new text into salsa, so the codebase query
             // sees it when semantic_diagnostics runs below.
             self.set_open_text(uri.clone(), text);
-            // `didOpen` can make a brand-new declaring file visible to sibling
-            // open files that were analyzed earlier. Mirror the same
-            // declaration-version invalidation used by newly discovered
-            // workspace files so cached cross-file analyses (hover/inlay
-            // hints/signature help) don't stay stale until the opened file is
-            // itself queried.
-            self.docs.note_new_file_declarations(&uri);
-
+            // didOpen can make a brand-new declaring file visible to sibling
+            // open files that were analyzed earlier. Mir invalidates its own
+            // resolver caches; sync only php-lsp's retained analysis_cache.
+            self.docs.sync_analysis_cache_declarations(&uri);
             // Seed parse diagnostics from the salsa-cached doc. On the fast
             // path this is a lock-free DashMap lookup — no re-parse — but a
             // cache miss triggers a full parse, so keep it off the async task.
@@ -814,10 +810,11 @@ impl LanguageServer for Backend {
                                 if !open_files.contains(&uri) {
                                     docs.ingest_from_doc(uri.clone(), &doc);
                                 }
-                                // A consumer analyzed before this file existed
-                                // must not keep a stale cached analysis now that
-                                // it's known — see `note_new_file_declarations`.
-                                docs.note_new_file_declarations(&uri);
+                                // Keep php-lsp's retained FileAnalysis cache
+                                // coherent for consumers analyzed before this
+                                // external file change landed. Mir handles its
+                                // own workspace invalidation.
+                                docs.sync_analysis_cache_declarations(&uri);
                             }
                             Change::Delete(uri) => docs.remove(&uri),
                         }
@@ -880,12 +877,29 @@ impl LanguageServer for Backend {
             let doc_for_lookup = Arc::clone(&doc);
             let imports_for_lookup = imports.clone();
             let find_class_doc_fn = move |name: &str| -> Option<Arc<ParsedDoc>> {
-                let fqn = crate::navigation::moniker::resolve_fqn(
-                    &doc_for_lookup,
-                    name,
-                    &imports_for_lookup,
-                );
-                let cr = docs_for_lookup.resolve_class_ref_by_fqn(&wi, &fqn)?;
+                let fqn = if name.contains('\\') {
+                    name.trim_start_matches('\\').to_string()
+                } else {
+                    crate::navigation::moniker::resolve_fqn(
+                        &doc_for_lookup,
+                        name,
+                        &imports_for_lookup,
+                    )
+                };
+                let cr = docs_for_lookup
+                    .resolve_class_ref_by_fqn(&wi, &fqn)
+                    .or_else(|| {
+                        if name.contains('\\') {
+                            return None;
+                        }
+                        let name_lc = name.to_lowercase();
+                        let table = &wi.classes_by_lowercase_name;
+                        let pos =
+                            table.partition_point(|(short, _)| short.as_ref() < name_lc.as_str());
+                        table.get(pos).and_then(|(short, cr)| {
+                            (short.as_ref() == name_lc.as_str()).then_some(*cr)
+                        })
+                    })?;
                 let (uri, _) = wi.at(cr)?;
                 docs_for_lookup.get_doc_salsa(uri)
             };
@@ -1215,12 +1229,29 @@ impl LanguageServer for Backend {
             let imports_for_lookup = doc.file_imports();
             let doc_for_lookup = Arc::clone(&doc);
             let find_class_doc_fn = move |name: &str| -> Option<Arc<ParsedDoc>> {
-                let fqn = crate::navigation::moniker::resolve_fqn(
-                    &doc_for_lookup,
-                    name,
-                    &imports_for_lookup,
-                );
-                let cr = docs_for_lookup.resolve_class_ref_by_fqn(&wi, &fqn)?;
+                let fqn = if name.contains('\\') {
+                    name.trim_start_matches('\\').to_string()
+                } else {
+                    crate::navigation::moniker::resolve_fqn(
+                        &doc_for_lookup,
+                        name,
+                        &imports_for_lookup,
+                    )
+                };
+                let cr = docs_for_lookup
+                    .resolve_class_ref_by_fqn(&wi, &fqn)
+                    .or_else(|| {
+                        if name.contains('\\') {
+                            return None;
+                        }
+                        let name_lc = name.to_lowercase();
+                        let table = &wi.classes_by_lowercase_name;
+                        let pos =
+                            table.partition_point(|(short, _)| short.as_ref() < name_lc.as_str());
+                        table.get(pos).and_then(|(short, cr)| {
+                            (short.as_ref() == name_lc.as_str()).then_some(*cr)
+                        })
+                    })?;
                 let (uri, _) = wi.at(cr)?;
                 docs_for_lookup.get_doc_salsa(uri)
             };
