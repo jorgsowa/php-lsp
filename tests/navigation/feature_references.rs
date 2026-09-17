@@ -82,9 +82,6 @@ mod builtin_method_vendor_scope;
 #[path = "references/builtin_constant_vendor_scope.rs"]
 mod builtin_constant_vendor_scope;
 
-#[path = "references/warm_start_untrusted_replay.rs"]
-mod warm_start_untrusted_replay;
-
 #[path = "references/vendor_warm_sweep.rs"]
 mod vendor_warm_sweep;
 

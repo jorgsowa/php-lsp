@@ -463,10 +463,10 @@ impl LanguageServer for Backend {
                             .await;
                             // Replay disk-cached index postings/subtype edges for
                             // this folder's files, then run the reference-warm
-                            // phase (untrusted subset, plus the ambient sweep when
-                            // configured) — same as the boot path, so a folder
-                            // added at runtime ends up as warm as the startup
-                            // roots, not just scan-mirrored.
+                            // phase (Mir's returned priority set, plus the
+                            // ambient sweep when configured) — same as the boot
+                            // path, so a folder added at runtime ends up as warm
+                            // as the startup roots, not just scan-mirrored.
                             super::offload::run("workspaceFolders.warmStart", move || {
                                 docs.get_workspace_index_salsa();
                                 let untrusted = docs.warm_start_indexes();

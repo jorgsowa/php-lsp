@@ -638,13 +638,12 @@ impl Backend {
                     is_laravel,
                 ));
 
-                // Reference-warm phase, behind readiness. Its `untrusted`
-                // queue always runs — mir's untrusted replay subset would
-                // otherwise pay a full synchronous `analyze_file` on the
-                // first query to touch one — while the ambient project sweep
-                // only joins the queue when `warmAnalysis` is on. Reporting
-                // work-done progress keeps the seconds it costs visible
-                // without holding a request or the readiness gate.
+                // Reference-warm phase, behind readiness. Mir's returned
+                // warm-start priority set always runs as a cheap performance
+                // warm-up, while the ambient project sweep only joins the
+                // queue when `warmAnalysis` is on. Reporting work-done
+                // progress keeps the seconds it costs visible without holding
+                // a request or the readiness gate.
                 let phase_open = open_files.urls();
                 drop(tokio::spawn(async move {
                     let token = NumberOrString::String("php-lsp/warming".to_string());

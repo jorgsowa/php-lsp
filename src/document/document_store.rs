@@ -141,13 +141,6 @@ pub struct DocumentStore {
     /// via `$/php-lsp/debugStats` so tests can await a runtime-added folder's
     /// warm-start replay instead of guessing a fixed delay.
     warm_start_replays_completed: AtomicU64,
-    /// Files the warm phase actually reanalyzed from the untrusted replay
-    /// subset (mir's `warm_start_files` flags a replayed file untrusted when
-    /// its disk-cache postings carry an unresolved name — see mir's 0.67.0
-    /// changelog entry). Observability only, surfaced via
-    /// `$/php-lsp/debugStats` so a protocol test can assert the reanalysis
-    /// happened in the background warm phase, without ever issuing a query.
-    warm_start_untrusted_reanalyzed: AtomicU64,
     /// Throttled/idle-priority vendor warm-analysis sweeps run to completion
     /// (only meaningful when `warmVendorAnalysis: true` — see `LspConfig`).
     /// Always 0 until that sweep is implemented (ROADMAP 0c step 2,
@@ -223,7 +216,6 @@ impl DocumentStore {
             warm_sweep_cancel: Mutex::new(mir_analyzer::IndexCancel::new()),
             warm_sweeps_completed: AtomicU64::new(0),
             warm_start_replays_completed: AtomicU64::new(0),
-            warm_start_untrusted_reanalyzed: AtomicU64::new(0),
             vendor_warm_sweeps_completed: AtomicU64::new(0),
             interactive_reads: AtomicU64::new(0),
         }
@@ -330,8 +322,7 @@ impl DocumentStore {
                 .stack_size(64 * 1024 * 1024)
                 .spawn_scoped(s, || {
                     let queue = self.sweep_candidate_files(priority);
-                    let untrusted: HashSet<Arc<str>> = HashSet::new();
-                    if self.run_warm_queue(&queue, &untrusted, cancel, None) {
+                    if self.run_warm_queue(&queue, cancel, None) {
                         // The sweep staged each analyzed file's reference
                         // postings into mir's AnalysisCache; persist them so
                         // the next launch's `warm_start_indexes` replays
@@ -379,14 +370,11 @@ impl DocumentStore {
     /// guaranteed follow-up, and a caller polling the counter (e.g. a test
     /// waiting for the reference index to be fully warm) can observe
     /// "done" while some files' postings were never written.
-    ///
-    /// Bumps `warm_start_untrusted_reanalyzed` by the count of `untrusted`
-    /// files each chunk actually reanalyzed. `progress`, when given,
-    /// receives `(settled files, total files)` after each chunk.
+    /// `progress`, when given, receives `(settled files, total files)` after
+    /// each chunk.
     fn run_warm_queue(
         &self,
         queue: &[Arc<str>],
-        untrusted: &HashSet<Arc<str>>,
         cancel: &mir_analyzer::IndexCancel,
         progress: Option<&tokio::sync::mpsc::UnboundedSender<(u32, u32)>>,
     ) -> bool {
@@ -418,22 +406,14 @@ impl DocumentStore {
                     all_settled = false;
                     break 'chunks;
                 }
-                if let Ok(analyzed) = salsa::Cancelled::catch(std::panic::AssertUnwindSafe(|| {
+                if salsa::Cancelled::catch(std::panic::AssertUnwindSafe(|| {
                     session.reanalyze_files_cancellable(chunk, cancel)
-                })) {
+                }))
+                .is_ok()
+                {
                     done = done.saturating_add(chunk.len() as u32);
                     if let Some(tx) = progress {
                         let _ = tx.send((done, total));
-                    }
-                    if !untrusted.is_empty() {
-                        let n = analyzed
-                            .iter()
-                            .filter(|(f, _)| untrusted.contains(f.as_ref()))
-                            .count();
-                        if n > 0 {
-                            self.warm_start_untrusted_reanalyzed
-                                .fetch_add(n as u64, Ordering::Relaxed);
-                        }
                     }
                     break;
                 }
@@ -442,12 +422,10 @@ impl DocumentStore {
         all_settled
     }
 
-    /// The reference-warm phase: one deduped reanalysis queue holding the
-    /// `untrusted` replay subset first (files whose disk-cache postings
-    /// carry an unresolved name, so the first live query to touch one pays a
-    /// full synchronous `analyze_file`), then — when `ambient` — the project
-    /// sweep set with `priority` files at its front, so a file in both is
-    /// analyzed once rather than twice. Flushes the analysis cache and
+    /// The reference-warm phase: one deduped reanalysis queue holding mir's
+    /// returned warm-start priority set first, then — when `ambient` — the
+    /// project sweep set with `priority` files at its front, so a file in both
+    /// is analyzed once rather than twice. Flushes the analysis cache and
     /// counts as a completed warm sweep on full completion.
     ///
     /// Every caller runs this in the background *after* publishing
@@ -492,7 +470,6 @@ impl DocumentStore {
         ambient: bool,
         progress: Option<&tokio::sync::mpsc::UnboundedSender<(u32, u32)>>,
     ) {
-        let untrusted_set: HashSet<Arc<str>> = untrusted.iter().cloned().collect();
         let mut queue: Vec<Arc<str>> = Vec::with_capacity(untrusted.len());
         let mut seen: HashSet<Arc<str>> = HashSet::new();
         for f in untrusted.iter() {
@@ -511,7 +488,7 @@ impl DocumentStore {
             return;
         }
         let cancel = self.begin_warm_sweep();
-        let completed = self.run_warm_queue(&queue, &untrusted_set, &cancel, progress);
+        let completed = self.run_warm_queue(&queue, &cancel, progress);
         if !completed {
             return;
         }
@@ -537,11 +514,6 @@ impl DocumentStore {
 
     pub fn warm_start_replays_completed(&self) -> u64 {
         self.warm_start_replays_completed.load(Ordering::Relaxed)
-    }
-
-    /// See the `warm_start_untrusted_reanalyzed` field's docs.
-    pub fn warm_start_untrusted_reanalyzed(&self) -> u64 {
-        self.warm_start_untrusted_reanalyzed.load(Ordering::Relaxed)
     }
 
     /// See the `vendor_warm_sweeps_completed` field's docs.
@@ -1311,15 +1283,13 @@ impl DocumentStore {
     /// so a returning session starts index-warm. Cheap enough to sit on the
     /// pre-`indexReady` path — it replays cache entries, it does not analyze.
     ///
-    /// Returns the subset of replayed files that mir flags as untrusted —
-    /// their postings carry an unresolved name, so the first live query to
-    /// touch one pays a full synchronous `analyze_file` (mir's changelog
-    /// measured ~1.3-1.5s on a real 15K-file workspace). The caller feeds
-    /// this list to the front of [`Self::warm_references_phase`]'s queue, so
-    /// the cost lands in the background warm phase instead of the user's
-    /// first request — and shares that phase's cancellation and
-    /// interactive-read yielding instead of racing requests on its own
-    /// detached thread.
+    /// Returns the subset of replayed files that mir considers worth
+    /// prioritizing for follow-up warming. Mir now tracks and evicts
+    /// unresolved entries internally, so php-lsp treats this as a performance
+    /// hint: callers feed the list to the front of
+    /// [`Self::warm_references_phase`]'s queue so likely-cold files warm in
+    /// the background before the broader ambient sweep, when any, reaches
+    /// them.
     pub fn warm_start_indexes(&self) -> Vec<Arc<str>> {
         let files: Vec<(Arc<str>, Arc<str>)> = self
             .lsp_ws_files
