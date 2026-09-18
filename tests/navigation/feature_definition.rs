@@ -1758,6 +1758,53 @@ class Dog extends Animal {}
     expect!["Dog.php:1:6-1:9"].assert_eq(&out);
 }
 
+/// When an exact fully-qualified subtype exists, it wins over legacy short-name
+/// matches that would resolve to a different FQN in their own file.
+#[tokio::test]
+async fn implementation_exact_extends_suppresses_short_name_fallback() {
+    let mut s = TestServer::new().await;
+    let out = s
+        .check_implementation(
+            r#"//- /search.php
+<?php
+use App\Animal;
+function foo(Animal$0 $a): void {}
+
+//- /Cat.php
+<?php
+class Cat extends \App\Animal {}
+
+//- /Dog.php
+<?php
+namespace Other;
+class Dog extends Animal {}
+"#,
+        )
+        .await;
+    expect!["Cat.php:1:6-1:9"].assert_eq(&out);
+}
+
+/// Same guard as the `extends` case, but through an `implements` clause. The
+/// namespaced short-name relation is only a compatibility fallback when no
+/// exact FQN relation is available.
+#[tokio::test]
+async fn implementation_exact_implements_suppresses_short_name_fallback() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_implementation(
+            r#"<?php
+interface Runner$0 {}
+class Exact implements \Runner {}
+namespace App {
+    class Task implements Runner {}
+}
+"#,
+        )
+        .await;
+    expect!["main.php:2:6-2:11"].assert_eq(&out);
+}
+
 // ── @method docblock go-to-definition ─────────────────────────────────────────
 
 /// Calling a method declared only via `@method` on a typed parameter navigates
