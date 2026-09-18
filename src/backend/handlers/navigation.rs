@@ -1146,11 +1146,29 @@ impl Backend {
                     .docs
                     .class_ref_by_fqn(&ws, target)
                     .and_then(|r| ws.at(r))
+                    .filter(|(_, cls)| cls.name.as_ref() == short)
                 {
                     exact.push(Location {
                         uri: uri.clone(),
                         range: name_range(cls.start_line, cls.name_char),
                     });
+                }
+                if exact.is_empty() {
+                    for (uri, idx) in &ws.files {
+                        for cls in &idx.classes {
+                            if cls.name.as_ref() == short
+                                && cls
+                                    .fqn
+                                    .trim_start_matches('\\')
+                                    .eq_ignore_ascii_case(target)
+                            {
+                                exact.push(Location {
+                                    uri: uri.clone(),
+                                    range: name_range(cls.start_line, cls.name_char),
+                                });
+                            }
+                        }
+                    }
                 }
             }
             mir_analyzer::Name::Function(fqn) => {
@@ -1159,11 +1177,29 @@ impl Backend {
                     .docs
                     .function_ref_by_fqn(&ws, target)
                     .and_then(|r| ws.function_at(r))
+                    .filter(|(_, function)| function.name.as_ref() == short)
                 {
                     exact.push(Location {
                         uri: uri.clone(),
                         range: name_range(function.start_line, function.name_char),
                     });
+                }
+                if exact.is_empty() {
+                    for (uri, idx) in &ws.files {
+                        for function in &idx.functions {
+                            if function.name.as_ref() == short
+                                && function
+                                    .fqn
+                                    .trim_start_matches('\\')
+                                    .eq_ignore_ascii_case(target)
+                            {
+                                exact.push(Location {
+                                    uri: uri.clone(),
+                                    range: name_range(function.start_line, function.name_char),
+                                });
+                            }
+                        }
+                    }
                 }
             }
             _ => {}
