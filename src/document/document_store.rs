@@ -1284,9 +1284,8 @@ impl DocumentStore {
     /// pre-`indexReady` path — it replays cache entries, it does not analyze.
     ///
     /// Returns the subset of replayed files that mir considers worth
-    /// prioritizing for follow-up warming. Mir now tracks and evicts
-    /// unresolved entries internally, so php-lsp treats this as a performance
-    /// hint: callers feed the list to the front of
+    /// prioritizing for follow-up warming. php-lsp treats this as a
+    /// performance hint: callers feed the list to the front of
     /// [`Self::warm_references_phase`]'s queue so likely-cold files warm in
     /// the background before the broader ambient sweep, when any, reaches
     /// them.
@@ -2291,10 +2290,10 @@ impl DocumentStore {
 
     /// Resolve only the codebase symbol identity at `offset` in `uri`.
     ///
-    /// mir 0.72.1 provides this targeted navigation path so reference queries
-    /// do not need php-lsp's retained whole-file [`mir_analyzer::FileAnalysis`]
-    /// merely to call `symbol_at(...).kind.to_name()`. The interactive guard
-    /// pauses background writes; the retry covers a write already in flight.
+    /// This targeted navigation path lets reference queries avoid php-lsp's
+    /// retained whole-file [`mir_analyzer::FileAnalysis`] merely to call
+    /// `symbol_at(...).kind.to_name()`. The interactive guard pauses
+    /// background writes; the retry covers a write already in flight.
     pub fn mir_name_at(&self, uri: &Uri, offset: u32) -> Option<mir_analyzer::Name> {
         let _interactive = self.interactive_read_guard();
         let session = self.current_analysis_session();
@@ -2891,10 +2890,6 @@ mod tests {
     fn open(store: &DocumentStore, u: Uri, text: String) {
         store.mirror_text(&u, &text);
     }
-
-    // Removed `salsa_codebase_aggregates_all_files`: the salsa-side codebase
-    // aggregation was deleted with the mir 0.22 migration. Equivalent
-    // behaviour is now covered by mir-analyzer's own session tests.
 
     // Spawn a thread that calls `yield_to_interactive_reads` and hands back
     // the elapsed time it spent waiting. It signals `ready` right before
@@ -3923,8 +3918,8 @@ mod tests {
                         let _ = store.get_doc_salsa(u);
                         let _ = store.get_index_salsa(u);
                     }
-                    // Post mir 0.22: codebase + refs live in the session,
-                    // not salsa. Concurrent-read smoke is limited to the
+                    // Codebase and references live in the session, not salsa.
+                    // Concurrent-read smoke is limited to the
                     // remaining salsa surface (parsed_doc, file_index).
                 }
             }));

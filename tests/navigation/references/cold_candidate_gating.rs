@@ -1,9 +1,9 @@
 //! Protocol-wired regression pins for the cold (never-analyzed) candidate
-//! path. Since mir 0.61 the host hands mir the whole workspace and mir gates
-//! never-committed files on a whole-identifier, case-insensitive mention of
-//! the symbol's name. Every test runs with `warmAnalysis: false` so unopened
-//! files stay never-committed and the query genuinely exercises that gate —
-//! these pin the bugs the old host-side text prefilter had:
+//! path. The host hands mir the whole workspace, and mir gates never-committed
+//! files on a whole-identifier, case-insensitive mention of the symbol's name.
+//! Every test runs with `warmAnalysis: false` so unopened files stay
+//! never-committed and the query genuinely exercises that gate. These pin the
+//! expected edge cases:
 //!
 //! - case-sensitive scanning dropped `$s->PROCESS()` call sites entirely
 //! - constructor references live at `new Cls(` sites that never spell
@@ -61,9 +61,8 @@ async fn cold_references_on_common_name_return_only_real_sites() {
 }
 
 /// PHP method dispatch is case-insensitive: `$s->PROCESS()` is a real call to
-/// `Service::process`. The old host-side prefilter scanned case-sensitively,
-/// so this file never entered the cold candidate set and the reference was
-/// silently missing until a background sweep happened to commit the file.
+/// `Service::process`, even when the file has not yet been committed by a
+/// background sweep.
 #[tokio::test]
 async fn cold_references_find_case_divergent_method_call() {
     let dir = tempfile::tempdir().unwrap();
@@ -213,13 +212,9 @@ async fn cold_private_method_references_stay_in_declaring_file() {
 /// `Illuminate\Console\Application`, which extends the unindexed
 /// `Symfony\Component\Console\Application`) alongside the real results.
 ///
-/// Root cause: mir's static-call analyzer recorded an unresolved receiver's
-/// call under a bare, class-agnostic `methname:<name>` posting, and the
-/// consolidated candidate path's empty-scoped-lookup fallback read that
-/// bucket workspace-wide with no class affinity. Fixed in mir by scoping the
-/// posting to the concrete (even if unresolved) receiver FQN instead — see
-/// `static_call_on_unresolved_ancestor_does_not_collide_with_unrelated_class`
-/// in mir's `crates/mir-analyzer/tests/indexed_queries.rs`.
+/// Unresolved receiver calls should be scoped to the concrete receiver FQN, so
+/// a bare method-name posting from an unrelated class cannot join the candidate
+/// set.
 #[tokio::test]
 async fn cold_unresolved_parent_construct_is_not_a_false_positive_reference() {
     let dir = tempfile::tempdir().unwrap();

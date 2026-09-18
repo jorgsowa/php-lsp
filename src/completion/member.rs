@@ -427,10 +427,7 @@ pub(super) fn receiver_class_at(
     var_offset: u32,
 ) -> Option<String> {
     let ty = crate::types::type_query::type_at_offset(analysis, var_offset)?;
-    let names: Vec<String> = crate::types::type_query::class_names(ty)
-        .iter()
-        .cloned()
-        .collect();
+    let names: Vec<String> = crate::types::type_query::class_names(ty).to_vec();
     (!names.is_empty()).then(|| names.join("|"))
 }
 

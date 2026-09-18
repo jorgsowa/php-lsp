@@ -390,8 +390,7 @@ class StringHelper {
     .await;
 }
 
-// PHP version filtering across a monorepo fixture: depends on the salsa db being
-// seeded with the configured version (fixed in mir-analyzer 0.31.0).
+// PHP version filtering across a monorepo fixture.
 #[tokio::test]
 async fn monorepo_php74_str_contains_error() {
     let mut s = TestServer::with_fixture_and_options(

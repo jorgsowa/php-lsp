@@ -83,11 +83,11 @@ impl Backend {
             {
                 let analysis = self.cached_analysis_async(uri).await;
 
-                // mir 0.41: ClassReference is recorded on the class token in
-                // static calls (Foo::bar), new expressions, instanceof, and
-                // type hints. When the cursor sits on a class name, jump
-                // directly to the class via PSR-4 using the resolved FQN —
-                // more accurate than the workspace index for aliased names.
+                // ClassReference is recorded on the class token in static
+                // calls (Foo::bar), new expressions, instanceof, and type
+                // hints. When the cursor sits on a class name, jump directly
+                // to the class via PSR-4 using the resolved FQN — more
+                // accurate than the workspace index for aliased names.
                 if let Some(fqn) = analysis.as_deref().and_then(|a| {
                     let off = crate::text::word_range_at(&source, position)
                         .map(|r| doc.view().byte_of_position(r.start))?;

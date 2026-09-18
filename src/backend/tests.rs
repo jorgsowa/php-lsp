@@ -1,4 +1,3 @@
-use super::helpers::*;
 use super::*;
 use crate::document::ast::ParsedDoc;
 use crate::editing::use_import::{build_use_import_edit, find_use_insert_line};

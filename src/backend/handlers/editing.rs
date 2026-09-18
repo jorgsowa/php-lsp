@@ -103,7 +103,7 @@ impl Backend {
                     let Some(fqn) = wi.unique_class_fqn_by_short_name(class_name) else {
                         continue;
                     };
-                    let edit = build_use_import_edit(&source, &uri, &fqn);
+                    let edit = build_use_import_edit(&source, &uri, fqn);
                     actions.push(CodeActionOrCommand::CodeAction(CodeAction {
                         title: format!("Add use {fqn}"),
                         kind: Some(CodeActionKind::QUICKFIX),

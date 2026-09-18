@@ -1372,10 +1372,9 @@ if ($x instanceof Foo) { $x->$0 }
     .assert_eq(&out);
 }
 
-/// `array_map` with a closure typed to return `Widget` — mir's opaque-callback
-/// inference (mir 0.59) resolves the returned array's element type, so the
-/// foreach value variable's members complete without any php-lsp-side
-/// array_map handling.
+/// `array_map` with a closure typed to return `Widget`: opaque-callback
+/// inference resolves the returned array's element type, so the foreach value
+/// variable's members complete without any php-lsp-side array_map handling.
 #[tokio::test]
 async fn completion_array_map_foreach_element_type() {
     let mut s = TestServer::new().await;

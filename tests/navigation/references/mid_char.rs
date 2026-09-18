@@ -33,7 +33,7 @@ async fn references_on_crlf_class_with_multibyte_name() {
     .await;
 
     let resp = s.references("src/Emoji.php", 2, 8, false).await;
-    assert!(resp["error"].is_null(), "references error: {:?}", &resp);
+    assert!(resp["error"].is_null(), "references error: {:?}", resp);
 
     expect![[r#"
         src/main.php:2:4-2:13
@@ -62,7 +62,7 @@ async fn references_on_crlf_class_with_n_tilde_name() {
     .await;
 
     let resp = s.references("src/Pinata.php", 2, 8, false).await;
-    assert!(resp["error"].is_null(), "references error: {:?}", &resp);
+    assert!(resp["error"].is_null(), "references error: {:?}", resp);
     expect![[r#"
         src/main.php:2:4-2:14
         src/main.php:3:9-3:15"#]]
@@ -88,7 +88,7 @@ async fn document_highlight_multibyte_character() {
     assert!(
         resp["error"].is_null(),
         "document_highlight error: {:?}",
-        &resp
+        resp
     );
 }
 
@@ -106,11 +106,7 @@ async fn goto_definition_on_multibyte_import_in_crlf() {
 
     // Go-to-definition on 'E' in the import line (column 4 of line 1).
     let resp = s.definition("src/main.php", 1, 4).await;
-    assert!(
-        response_has_location(&resp),
-        "definition error: {:?}",
-        &resp
-    );
+    assert!(response_has_location(&resp), "definition error: {:?}", resp);
 }
 
 /// Regression: references with class name that has characters from the Latin Extended-A block.
@@ -134,7 +130,7 @@ async fn references_with_latin_extended_class_name() {
     .await;
 
     let resp = s.references("src/ClassM.php", 2, 8, false).await;
-    assert!(resp["error"].is_null(), "references error: {:?}", &resp);
+    assert!(resp["error"].is_null(), "references error: {:?}", resp);
 }
 
 /// Helper to check if a response contains location data (not error/empty).
@@ -142,5 +138,5 @@ fn response_has_location(resp: &serde_json::Value) -> bool {
     !resp["result"].is_array()
         || resp["result"]
             .get(0)
-            .map_or(false, |l| l.get("range").is_some())
+            .is_some_and(|l| l.get("range").is_some())
 }

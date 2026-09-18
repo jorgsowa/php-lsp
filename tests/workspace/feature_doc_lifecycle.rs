@@ -392,13 +392,10 @@ async fn document_link_returns_array() {
     expect!["1:14 -> autoload.php"].assert_eq(&out);
 }
 
-// --- cross-file analysis cache invalidation ---
+// --- cross-file analysis freshness ---
 //
-// When a dependency's method return type changes (without changing the
-// dependent's own diagnostics), the dependent's mir-resolved cross-file variable
-// type must refresh. mir-analyzer 0.31.0 fixed this: `ingest_file` now evicts
-// dependents' cached analysis on a content change, so the stale result is no
-// longer replayed across incremental re-analysis.
+// When a dependency's method return type changes, the dependent's cross-file
+// variable type must refresh even if the dependent file itself is untouched.
 
 /// Regression guard for cross-file type freshness after a dependency edit.
 #[tokio::test]

@@ -360,10 +360,9 @@ pub fn parse_docblock(raw: &str) -> Docblock {
         None
     };
 
-    // mir 0.22's template-bound parsing over-reads (it captures every tag
-    // line after `@template T` as the bound). Parse the @template body
-    // ourselves: "T" → name=T, bound=None; "T of Bound" → name=T,
-    // bound=Some("Bound"); "T as Bound" likewise.
+    // Parse the @template body from the raw tag text: "T" -> name=T,
+    // bound=None; "T of Bound" -> name=T, bound=Some("Bound"); "T as Bound"
+    // likewise.
     let templates: Vec<DocTemplate> = raw_doc
         .tags
         .iter()
@@ -448,9 +447,8 @@ pub fn parse_docblock(raw: &str) -> Docblock {
         })
         .collect();
 
-    // Pull the var type from the raw `@var` body directly: mir 0.22's
-    // `var_type` may swallow the trailing description as part of the type
-    // string. The body's first non-`$` whitespace token is the type hint.
+    // Pull the var type from the raw `@var` body directly. The body's first
+    // non-`$` whitespace token is the type hint.
     let (var_type_from_body, var_name_from_body) = raw_doc
         .tags
         .iter()

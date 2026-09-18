@@ -348,8 +348,8 @@ class Profile { public string $bio = ''; }
 $p = new Profile();
 $p?->bi$0o;
 "#,
-        // mir 0.54.0: the declared property type, no blanket `|null` widening —
-        // `$p` is provably non-null here.
+        // The declared property type, no blanket `|null` widening: `$p` is
+        // provably non-null here.
         expect![[r#"
             ```php
             (property) public Profile::$bio: string

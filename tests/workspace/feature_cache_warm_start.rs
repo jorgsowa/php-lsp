@@ -274,11 +274,10 @@ async fn did_save_cache_is_found_by_subsequent_scan() {
 
 /// Reference postings persist across launches. The first server's analysis
 /// warm sweep stages each analyzed file's postings into mir's session
-/// `AnalysisCache` and flushes it on completion — before mir 0.56.0 only the
-/// CLI batch pipeline ever wrote these entries, so `cache.bin` proves the
-/// LSP-path write hook ran. A second server on the same cache dir (warm
-/// sweep disabled so nothing re-derives postings in the background) then
-/// answers a cross-file references query from the replayed index.
+/// `AnalysisCache` and flushes it on completion. A second server on the same
+/// cache dir (warm sweep disabled so nothing re-derives postings in the
+/// background) then answers a cross-file references query from the replayed
+/// index.
 #[tokio::test]
 async fn warm_start_replays_reference_postings_from_first_session() {
     let workspace = tempfile::tempdir().expect("workspace tempdir");

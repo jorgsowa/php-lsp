@@ -22,10 +22,7 @@ fn resolve_method_receiver_class(
     if let Some(a) = analysis
         && let Some(ty) = crate::types::type_query::type_at_offset(a, receiver_offset)
     {
-        let names: Vec<String> = crate::types::type_query::class_names(ty)
-            .iter()
-            .cloned()
-            .collect();
+        let names: Vec<String> = crate::types::type_query::class_names(ty).to_vec();
         if !names.is_empty() {
             return Some(names.join("|"));
         }

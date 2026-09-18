@@ -1030,8 +1030,7 @@ fn decode_semantic_token_ints(data: &[Value], legend_types: &[&str]) -> String {
     }
     let mut rows = Vec::new();
     let (mut abs_line, mut abs_col) = (0u64, 0u64);
-    for chunk in ints.chunks_exact(5) {
-        let (dl, dc, len, tt, tm) = (chunk[0], chunk[1], chunk[2], chunk[3], chunk[4]);
+    for &[dl, dc, len, tt, tm] in ints.as_chunks::<5>().0 {
         abs_line += dl;
         abs_col = if dl == 0 { abs_col + dc } else { dc };
         let type_name = legend_types.get(tt as usize).copied().unwrap_or("?");

@@ -803,12 +803,7 @@ interface Cat extends Animal {}
 
 /// An implementor that satisfies an interface method purely by *inheriting*
 /// it from an ancestor which itself does not declare `implements` — the
-/// ancestor never overrides the method locally. Confirmed live gap against a
-/// real ~15K-file codebase: 11 of 15 real implementors of
-/// `Indexable::serializeToElasticsearchDocument` were invisible because they
-/// relied on an inherited, non-overriding ancestor method. mir commit
-/// 7b5ce9e8 ("indexed_method_implementations walks the inheritance chain")
-/// closes this for the mir 0.61.0 bump.
+/// ancestor never overrides the method locally.
 #[tokio::test]
 async fn implementation_via_inherited_non_overriding_method() {
     let mut s = TestServer::new().await;

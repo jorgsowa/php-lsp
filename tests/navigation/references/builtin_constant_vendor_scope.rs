@@ -5,7 +5,7 @@
 //! (`PHP_EOL`, `PHP_VERSION`, ...) is never declared in vendor, so vendor's
 //! own usages of it are dependency-internal noise, same as a builtin class
 //! or function.
-//! Narrowing uses `mir_analyzer::is_builtin_constant` (mir 0.69.0) in
+//! Narrowing uses `mir_analyzer::is_builtin_constant` in
 //! `reference_candidate_files`'s `Name::GlobalConstant` arm, mirroring the
 //! `Name::Function` arm's `is_builtin_function` check.
 

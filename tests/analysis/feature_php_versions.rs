@@ -4,10 +4,8 @@ use serde_json::json;
 
 // ── PHP 8.0 functions (str_contains, str_starts_with, str_ends_with) ────────────
 
-// PHP version-aware @since/@removed filtering: AnalysisSession::new() seeds the
-// configured PHP version into the salsa db, so stdlib functions are reported as
-// undefined below the version that introduced them. Fixed in mir-analyzer 0.31.0
-// ("wire php_version into salsa db").
+// PHP version-aware @since/@removed filtering: stdlib functions are reported
+// as undefined below the version that introduced them.
 #[tokio::test]
 async fn str_contains_undefined_on_php74() {
     let (mut s, _) = TestServer::new_with_options(json!({

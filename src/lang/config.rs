@@ -22,9 +22,9 @@ pub struct DiagnosticsConfig {
     /// Duplicate class / function declarations.
     pub duplicate_declarations: bool,
     /// Unused-symbol warnings (unused variables / parameters / methods /
-    /// properties / functions). New in mir 0.22; defaults to `false` so the
-    /// LSP doesn't add noisy warnings to existing workspaces without an
-    /// opt-in. Toggle via `diagnostics.unusedSymbols` in initializationOptions.
+    /// properties / functions). Defaults to `false` so the LSP doesn't add
+    /// noisy warnings to existing workspaces without an opt-in. Toggle via
+    /// `diagnostics.unusedSymbols` in initializationOptions.
     pub unused_symbols: bool,
     /// Missing type annotations on interface methods and class properties
     /// (MissingReturnType, MissingParamType, MissingPropertyType). Off by

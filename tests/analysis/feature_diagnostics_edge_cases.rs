@@ -896,9 +896,8 @@ echo $bound();
 
 // ── property visibility on `->` access ───────────────────────────────────────
 
-/// mir 0.65.0 added `InaccessibleProperty`: reading a `private` property from
-/// outside its class is now flagged, matching the existing class-constant and
-/// method-call visibility checks.
+/// Reading a `private` property from outside its class is flagged, matching
+/// the class-constant and method-call visibility checks.
 #[tokio::test]
 async fn private_property_access_from_outside_class_is_flagged() {
     let mut s = TestServer::new().await;
