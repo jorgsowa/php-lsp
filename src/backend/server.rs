@@ -1804,6 +1804,27 @@ impl LanguageServer for Backend {
                 .filter_map(|site| subtype_site_to_location(&site.file, &site.range))
                 .collect()
             };
+            if locs.is_empty() && !on_method_decl {
+                let wi = self.workspace_index_async().await;
+                let docs = Arc::clone(&self.docs);
+                let target_fqn = fqn.clone();
+                let target_short = word.clone();
+                locs = self
+                    .blocking("goto_implementation.index_fallback", move || {
+                        let mention_candidates =
+                            |name: &str| docs.declaration_candidate_files(&wi, name);
+                        let get_doc = |uri: &Uri| docs.get_doc_salsa(uri);
+                        implementation_locations_from_index(
+                            &wi,
+                            &target_fqn,
+                            &target_short,
+                            &mention_candidates,
+                            &get_doc,
+                        )
+                    })
+                    .await
+                    .unwrap_or_default();
+            }
 
             // Cursor on a method name inside its declaring class/interface:
             // concrete overrides in every subtype.
@@ -2379,4 +2400,83 @@ fn subtype_site_to_location(file: &str, range: &mir_analyzer::Range) -> Option<L
             },
         },
     })
+}
+
+/// Fallback for `goto_implementation` when mir has no resolved subtype sites.
+///
+/// The primary path above is the authoritative one: mir's graph has already
+/// resolved aliases, leading slashes, and namespace context. This fallback keeps
+/// interactive behavior useful while the graph is cold or while a workspace has
+/// incomplete/invalid PHP by narrowing to files that mention the target short
+/// name, then verifying each candidate's declaration-level `extends`/
+/// `implements` clauses against its own namespace/import context. Exact FQN
+/// matches are preferred; the short-name pass preserves the legacy behavior for
+/// unresolved symbols without scanning the whole workspace.
+fn implementation_locations_from_index(
+    wi: &crate::db::workspace_index::WorkspaceIndexData,
+    target_fqn: &str,
+    target_short: &str,
+    mention_candidates: &dyn Fn(&str) -> Vec<Uri>,
+    get_doc: &dyn Fn(&Uri) -> Option<Arc<ParsedDoc>>,
+) -> Vec<Location> {
+    let mut exact = Vec::new();
+    let mut short_name = Vec::new();
+    let candidate_uris = mention_candidates(target_short);
+    wi.for_each_class_in_uris(&candidate_uris, |uri, cls| {
+        let Some(doc) = get_doc(uri) else {
+            return;
+        };
+        let imports = doc.file_imports();
+        let mut saw_short_name_match = false;
+        let mut relation_matches = |name: &str| {
+            let resolved = crate::navigation::moniker::resolve_fqn(&doc, name, &imports);
+            if normalized_php_fqn(&resolved).eq_ignore_ascii_case(target_fqn) {
+                return true;
+            }
+            if crate::text::fqn_short_name(name).eq_ignore_ascii_case(target_short) {
+                saw_short_name_match = true;
+            }
+            false
+        };
+        let exact_match = cls.parent.as_deref().is_some_and(&mut relation_matches)
+            || cls
+                .implements
+                .iter()
+                .any(|iface| relation_matches(iface.as_ref()));
+
+        let loc = class_index_location(uri, cls);
+        if exact_match {
+            exact.push(loc);
+        } else if saw_short_name_match {
+            short_name.push(loc);
+        }
+    });
+
+    let mut result = if exact.is_empty() { short_name } else { exact };
+    result.sort_by(|a, b| {
+        a.uri
+            .as_str()
+            .cmp(b.uri.as_str())
+            .then(a.range.start.line.cmp(&b.range.start.line))
+            .then(a.range.start.character.cmp(&b.range.start.character))
+    });
+    result.dedup_by(|a, b| a.uri == b.uri && a.range == b.range);
+    result
+}
+
+fn class_index_location(uri: &Uri, cls: &crate::index::file_index::ClassDef) -> Location {
+    let start = Position {
+        line: cls.start_line,
+        character: cls.name_char,
+    };
+    Location {
+        uri: uri.clone(),
+        range: Range {
+            start,
+            end: Position {
+                line: cls.start_line,
+                character: cls.name_char + cls.name.len() as u32,
+            },
+        },
+    }
 }
