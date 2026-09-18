@@ -297,12 +297,8 @@ impl Backend {
         self.open_files.set_parse_diagnostics(uri, diagnostics);
     }
 
-    fn get_parse_diagnostics(&self, uri: &Uri) -> Option<Vec<Diagnostic>> {
-        self.open_files.parse_diagnostics(uri)
-    }
-
-    fn all_open_files_with_diagnostics(&self) -> Vec<(Uri, Vec<Diagnostic>, Option<i64>)> {
-        self.open_files.all_with_diagnostics()
+    fn all_open_files_with_diagnostic_versions(&self) -> Vec<(Uri, Option<i64>)> {
+        self.open_files.all_with_versions()
     }
 
     fn open_urls(&self) -> Vec<Uri> {

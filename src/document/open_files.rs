@@ -124,16 +124,10 @@ impl OpenFiles {
             .unwrap_or_default()
     }
 
-    pub(crate) fn all_with_diagnostics(&self) -> Vec<(Uri, Vec<Diagnostic>, Option<i64>)> {
+    pub(crate) fn all_with_versions(&self) -> Vec<(Uri, Option<i64>)> {
         self.0
             .iter()
-            .map(|e| {
-                (
-                    e.key().clone(),
-                    e.value().parse_diagnostics.clone(),
-                    Some(e.value().version as i64),
-                )
-            })
+            .map(|e| (e.key().clone(), Some(e.value().version as i64)))
             .collect()
     }
 
