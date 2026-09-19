@@ -1164,6 +1164,7 @@ dependencies = [
  "serial_test",
  "tempfile",
  "tokio",
+ "tower",
  "tower-lsp-server",
  "tracing",
  "tracing-subscriber",

@@ -503,6 +503,13 @@ impl LanguageServer for Backend {
             let text = params.text_document.text;
             let version = params.text_document.version;
 
+            // The transport recorded a later close before this future got a
+            // chance to run. Do not resurrect a document the client has
+            // already closed.
+            if !self.open_files.should_apply_open(&uri) {
+                return;
+            }
+
             // Store text immediately so other features work while parsing.
             // This also mirrors the new text into salsa, so the codebase query
             // sees it when semantic_diagnostics runs below.
@@ -639,6 +646,12 @@ impl LanguageServer for Backend {
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
         guard_async("did_close", async move {
             let uri = params.text_document.uri;
+            // `didOpen` may have arrived after this close but begun execution
+            // first. The transport ingress state is authoritative, so an old
+            // close must not erase that reopened buffer.
+            if !self.open_files.should_apply_close(&uri) {
+                return;
+            }
             self.close_open_file(&uri);
             // The salsa-mirrored text still holds the last edited buffer, which may
             // include unsaved changes the user just discarded on close. Re-sync from

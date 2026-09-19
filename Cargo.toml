@@ -59,6 +59,7 @@ php-ast = "0.19"
 php-lexer = "0.19"
 bumpalo = { version = "3", features = ["collections"] }
 tower-lsp-server = "0.23"
+tower = "0.5"
 tokio = { version = "1", features = ["full"] }
 futures = "0.3"
 serde = { version = "1", features = ["derive"] }

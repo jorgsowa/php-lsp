@@ -1,10 +1,13 @@
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::task::{Context, Poll};
 
 #[allow(unused_imports)]
 use self::helpers::*;
 
 use arc_swap::ArcSwap;
+use tower::Service;
+use tower_lsp_server::jsonrpc::{Request as JsonRpcRequest, Response as JsonRpcResponse};
 
 /// Sent to the client once Phase 3 (reference index build) finishes.
 /// Allows tests and tooling to wait for the codebase fast path to be active.
@@ -140,17 +143,37 @@ pub struct DebugHoldGateParams {
 /// both build the service here so their method tables can never drift. The
 /// gate methods exist only under `test-hooks` (test targets); a production
 /// build answers them with MethodNotFound like any unknown method.
-pub fn build_lsp_service() -> (
-    tower_lsp_server::LspService<Backend>,
-    tower_lsp_server::ClientSocket,
-) {
+pub fn build_lsp_service() -> (LifecycleService, tower_lsp_server::ClientSocket) {
     let builder = tower_lsp_server::LspService::build(Backend::new)
         .custom_method("$/php-lsp/debugStats", Backend::debug_stats);
     #[cfg(feature = "test-hooks")]
     let builder = builder
         .custom_method("$/php-lsp/debugHoldGate", Backend::debug_hold_gate)
         .custom_method("$/php-lsp/debugReleaseGate", Backend::debug_release_gate);
-    builder.finish()
+    let (service, socket) = builder.finish();
+    (LifecycleService { inner: service }, socket)
+}
+
+/// Records document lifecycle order before tower starts polling notification
+/// futures. The transport deliberately runs up to four messages concurrently,
+/// so handler start order alone is not the order in which the client sent them.
+pub struct LifecycleService {
+    inner: tower_lsp_server::LspService<Backend>,
+}
+
+impl Service<JsonRpcRequest> for LifecycleService {
+    type Response = Option<JsonRpcResponse>;
+    type Error = tower_lsp_server::ExitedError;
+    type Future = <tower_lsp_server::LspService<Backend> as Service<JsonRpcRequest>>::Future;
+
+    fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        self.inner.poll_ready(cx)
+    }
+
+    fn call(&mut self, request: JsonRpcRequest) -> Self::Future {
+        self.inner.inner().note_lifecycle_intent(&request);
+        self.inner.call(request)
+    }
 }
 
 use crate::document::ast::ParsedDoc;
@@ -203,6 +226,30 @@ impl Backend {
             client_capabilities: Arc::new(ArcSwap::from_pointee(ClientCapabilities::default())),
             debug_gate: Arc::new(debug_gate::DebugGate::new()),
         }
+    }
+
+    /// Capture `didOpen`/`didClose` state as soon as it enters the service,
+    /// rather than when its async handler happens to be polled.
+    fn note_lifecycle_intent(&self, request: &JsonRpcRequest) {
+        let is_open = match request.method() {
+            "textDocument/didOpen" => true,
+            "textDocument/didClose" => false,
+            _ => return,
+        };
+        let Some(uri) = request
+            .params()
+            .and_then(|params| serde_json::to_value(params).ok())
+            .and_then(|params| {
+                params
+                    .pointer("/textDocument/uri")?
+                    .as_str()
+                    .map(str::to_owned)
+            })
+            .and_then(|uri| uri.parse::<Uri>().ok())
+        else {
+            return;
+        };
+        self.open_files.note_lifecycle_intent(uri, is_open);
     }
 
     /// `$/php-lsp/debugStats` — internal observability counters, used by the
