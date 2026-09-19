@@ -724,6 +724,10 @@ pub(super) async fn publish_with_dependents(
     docs: Arc<DocumentStore>,
     open_files: OpenFiles,
     uri: Uri,
+    // Version of the buffer whose diagnostics are being published. Supplying
+    // this lets clients discard a late diagnostic notification from an older
+    // document lifecycle instead of treating it as the result of a reopen.
+    version: Option<i32>,
     diag_cfg: crate::lang::config::DiagnosticsConfig,
     is_laravel: bool,
 ) {
@@ -744,7 +748,7 @@ pub(super) async fn publish_with_dependents(
     .unwrap_or_default();
     open_files.note_published(&uri, diagnostics_content_hash(&all_diags));
     client
-        .publish_diagnostics(uri.clone(), all_diags, None)
+        .publish_diagnostics(uri.clone(), all_diags, version)
         .await;
     let dependents =
         compute_dependent_publishes_owned(docs, open_files.clone(), uri, diag_cfg, is_laravel)

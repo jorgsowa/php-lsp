@@ -484,7 +484,7 @@ impl TestServer {
                 }),
             )
             .await;
-        self.client.wait_for_diagnostics(&uri).await
+        self.client.wait_for_diagnostics_version(&uri, 1).await
     }
 
     /// Send a full-text `didChange` and wait for the resulting
@@ -501,7 +501,9 @@ impl TestServer {
                 }),
             )
             .await;
-        self.client.wait_for_diagnostics(&uri).await
+        self.client
+            .wait_for_diagnostics_version(&uri, version)
+            .await
     }
 
     /// Send an incremental `didChange` with ranged content changes and wait
@@ -536,7 +538,9 @@ impl TestServer {
                 }),
             )
             .await;
-        self.client.wait_for_diagnostics(&uri).await
+        self.client
+            .wait_for_diagnostics_version(&uri, version)
+            .await
     }
 
     /// Send a request immediately followed by `$/cancelRequest` for its id;

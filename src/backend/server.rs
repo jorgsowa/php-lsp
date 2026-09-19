@@ -501,6 +501,7 @@ impl LanguageServer for Backend {
         guard_async("did_open", async move {
             let uri = params.text_document.uri;
             let text = params.text_document.text;
+            let version = params.text_document.version;
 
             // Store text immediately so other features work while parsing.
             // This also mirrors the new text into salsa, so the codebase query
@@ -530,6 +531,7 @@ impl LanguageServer for Backend {
                 Arc::clone(&self.docs),
                 self.open_files.clone(),
                 uri,
+                Some(version),
                 self.config.load().diagnostics.clone(),
                 self.laravel.load_full().is_laravel,
             )
@@ -542,6 +544,7 @@ impl LanguageServer for Backend {
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
         guard_async("did_change", async move {
             let uri = params.text_document.uri;
+            let document_version = params.text_document.version;
             // Incremental sync: apply changes in order to the live buffer.
             // Each ranged change refers to the document state produced by the
             // previous one; a change without a range is a full-document
@@ -602,6 +605,7 @@ impl LanguageServer for Backend {
                     Arc::clone(&docs),
                     open_files.clone(),
                     uri.clone(),
+                    Some(document_version),
                     diag_cfg,
                     is_laravel,
                 )
@@ -776,7 +780,7 @@ impl LanguageServer for Backend {
                         }
                         open_files.set_external_diagnostics(&uri, version, diagnostics);
                         publish_with_dependents(
-                            client, docs, open_files, uri, diag_cfg, is_laravel,
+                            client, docs, open_files, uri, None, diag_cfg, is_laravel,
                         )
                         .await;
                     });
