@@ -1188,10 +1188,24 @@ impl LanguageServer for Backend {
             let _interactive = self.docs.interactive_read_guard();
             let uri = &params.text_document_position_params.text_document.uri;
             let position = params.text_document_position_params.position;
-            let source = self.get_open_text(uri).unwrap_or_default();
+            let mut source = self.get_open_text(uri).unwrap_or_default();
             let doc = match self.get_doc(uri) {
                 Some(d) => d,
-                None => return Ok(None),
+                None => {
+                    // tower-lsp-server polls concurrent inbound messages out
+                    // of order. A hover sent immediately after didClose then
+                    // didOpen can therefore run while the earlier didOpen is
+                    // queued but has not yet installed its buffer. Yield one
+                    // turn only on this closed-document path so that lifecycle
+                    // notification can publish its state; ordinary hovers keep
+                    // the zero-yield fast path.
+                    tokio::task::yield_now().await;
+                    source = self.get_open_text(uri).unwrap_or_default();
+                    match self.get_doc(uri) {
+                        Some(d) => d,
+                        None => return Ok(None),
+                    }
+                }
             };
             // Laravel string-key calls (`env('KEY')`, `config('a.b')`, ...) —
             // resolved before the general hover pipeline below, since a
