@@ -5,6 +5,7 @@ use tower_lsp_server::LanguageServer;
 use tower_lsp_server::jsonrpc::Result;
 use tower_lsp_server::ls_types::*;
 
+use super::DiagnosticPublish;
 use super::panic_guard::{guard_async, guard_async_result};
 use crate::analysis::callable_info::{callable_info_for_name, format_declared_params};
 use crate::completion::{CompletionCtx, filtered_completions_at};
@@ -502,11 +503,15 @@ impl LanguageServer for Backend {
             let uri = params.text_document.uri;
             let text = params.text_document.text;
             let version = params.text_document.version;
+            let lifecycle_generation = super::lifecycle_generation();
 
             // The transport recorded a later close before this future got a
             // chance to run. Do not resurrect a document the client has
             // already closed.
-            if !self.open_files.should_apply_open(&uri) {
+            if !self
+                .open_files
+                .should_apply_lifecycle(&uri, lifecycle_generation, true)
+            {
                 return;
             }
 
@@ -532,6 +537,12 @@ impl LanguageServer for Backend {
                 })
                 .await
                 .unwrap_or_default();
+            if !self
+                .open_files
+                .should_apply_lifecycle(&uri, lifecycle_generation, true)
+            {
+                return;
+            }
             self.set_parse_diagnostics(&uri, parse_diags);
 
             publish_with_dependents(
@@ -539,7 +550,10 @@ impl LanguageServer for Backend {
                 Arc::clone(&self.docs),
                 self.open_files.clone(),
                 uri,
-                Some(version),
+                DiagnosticPublish::Open {
+                    version,
+                    generation: lifecycle_generation,
+                },
                 self.config.load().diagnostics.clone(),
                 self.laravel.load_full().is_laravel,
             )
@@ -615,7 +629,7 @@ impl LanguageServer for Backend {
                     Arc::clone(&docs),
                     open_files.clone(),
                     uri.clone(),
-                    Some(document_version),
+                    DiagnosticPublish::Other(Some(document_version)),
                     diag_cfg,
                     is_laravel,
                 )
@@ -649,10 +663,14 @@ impl LanguageServer for Backend {
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
         guard_async("did_close", async move {
             let uri = params.text_document.uri;
+            let lifecycle_generation = super::lifecycle_generation();
             // `didOpen` may have arrived after this close but begun execution
             // first. The transport ingress state is authoritative, so an old
             // close must not erase that reopened buffer.
-            if !self.open_files.should_apply_close(&uri) {
+            if !self
+                .open_files
+                .should_apply_lifecycle(&uri, lifecycle_generation, false)
+            {
                 return;
             }
             self.close_open_file(&uri);
@@ -660,10 +678,19 @@ impl LanguageServer for Backend {
             // include unsaved changes the user just discarded on close. Re-sync from
             // disk so cross-file features resolve against the on-disk content; if the
             // file is gone (never saved / deleted), drop it from the index.
-            let disk_text = match uri.to_file_path() {
-                Some(path) => tokio::fs::read_to_string(&path).await.ok(),
-                None => None,
-            };
+            let disk_path = uri.to_file_path().map(|path| path.into_owned());
+            let disk_text = self
+                .blocking_gated(super::debug_gate::GATE_DID_CLOSE_DISK_SYNC, move || {
+                    disk_path.and_then(|path| std::fs::read_to_string(path).ok())
+                })
+                .await
+                .flatten();
+            if !self
+                .open_files
+                .should_apply_lifecycle(&uri, lifecycle_generation, false)
+            {
+                return;
+            }
             // The disk read awaited above; a reopen may have raced in. Only mutate
             // the index if the file is still closed, so we never clobber a fresh
             // buffer.
@@ -796,7 +823,13 @@ impl LanguageServer for Backend {
                         }
                         open_files.set_external_diagnostics(&uri, version, diagnostics);
                         publish_with_dependents(
-                            client, docs, open_files, uri, None, diag_cfg, is_laravel,
+                            client,
+                            docs,
+                            open_files,
+                            uri,
+                            DiagnosticPublish::Other(None),
+                            diag_cfg,
+                            is_laravel,
                         )
                         .await;
                     });

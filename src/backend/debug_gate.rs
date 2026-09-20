@@ -21,6 +21,8 @@
 
 /// Gate section around `did_open`'s parse-diagnostics closure.
 pub const GATE_DID_OPEN_PARSE: &str = "didOpen.parse";
+/// Gate section around `did_close`'s on-disk resynchronization.
+pub const GATE_DID_CLOSE_DISK_SYNC: &str = "didClose.diskSync";
 /// Gate section around `did_save`'s diagnostics-recompute closure.
 pub const GATE_DID_SAVE_DIAGNOSTICS: &str = "didSave.diagnostics";
 /// Gate section around `did_change_watched_files`' batched parse closure.

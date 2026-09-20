@@ -315,6 +315,109 @@ async fn hover_during_close_and_reopen_uses_reopened_buffer() {
     );
 }
 
+#[tokio::test]
+async fn close_while_open_is_parsing_does_not_publish_stale_open_diagnostics() {
+    let mut server = TestServer::new().await;
+    let uri = server.uri("close_during_open.php");
+
+    server
+        .client()
+        .arm_debug_gate(php_lsp::backend::debug_gate::GATE_DID_OPEN_PARSE)
+        .await;
+    server
+        .client()
+        .notify(
+            "textDocument/didOpen",
+            serde_json::json!({
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "php",
+                    "version": 1,
+                    "text": "<?php function() {}\n",
+                }
+            }),
+        )
+        .await;
+    server
+        .client()
+        .wait_for_debug_gate(php_lsp::backend::debug_gate::GATE_DID_OPEN_PARSE)
+        .await;
+
+    server.close("close_during_open.php").await;
+    let close_diagnostics = server.client().wait_for_diagnostics(&uri).await;
+    assert!(
+        close_diagnostics["params"]["version"].is_null(),
+        "didClose must publish an unversioned clear: {close_diagnostics}"
+    );
+
+    server.client().release_debug_gate().await;
+    server.client().wait_for_lifecycle_idle().await;
+    assert_eq!(
+        server.client().take_buffered_diagnostic_versions(&uri),
+        Vec::<Option<i64>>::new(),
+        "the superseded didOpen published diagnostics after didClose completed"
+    );
+
+    let hover = server.hover("close_during_open.php", 0, 8).await;
+    assert!(
+        hover["result"].is_null(),
+        "closed file was resurrected: {hover}"
+    );
+}
+
+#[tokio::test]
+async fn reopen_while_close_is_syncing_does_not_clear_fresh_diagnostics() {
+    let mut server = TestServer::new().await;
+    server
+        .open(
+            "reopen_during_close.php",
+            "<?php function first(): void {}\n",
+        )
+        .await;
+    let uri = server.uri("reopen_during_close.php");
+
+    server
+        .client()
+        .arm_debug_gate(php_lsp::backend::debug_gate::GATE_DID_CLOSE_DISK_SYNC)
+        .await;
+    server.close("reopen_during_close.php").await;
+    server
+        .client()
+        .wait_for_debug_gate(php_lsp::backend::debug_gate::GATE_DID_CLOSE_DISK_SYNC)
+        .await;
+
+    server
+        .client()
+        .notify(
+            "textDocument/didOpen",
+            serde_json::json!({
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "php",
+                    "version": 2,
+                    "text": "<?php function second(): void {}\n",
+                }
+            }),
+        )
+        .await;
+    server.client().wait_for_diagnostics_version(&uri, 2).await;
+
+    server.client().release_debug_gate().await;
+    server.client().wait_for_lifecycle_idle().await;
+    assert_eq!(
+        server.client().take_buffered_diagnostic_versions(&uri),
+        Vec::<Option<i64>>::new(),
+        "the superseded didClose cleared diagnostics from the reopened buffer"
+    );
+
+    let hover = server.hover("reopen_during_close.php", 0, 20).await;
+    expect![[r#"
+        ```php
+        function second(): void
+        ```"#]]
+    .assert_eq(&render_hover(&hover));
+}
+
 // ── $/cancelRequest ──────────────────────────────────────────────────────────
 
 #[tokio::test]

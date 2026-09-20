@@ -1,4 +1,6 @@
+use std::future::Future;
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
@@ -6,6 +8,7 @@ use std::task::{Context, Poll};
 use self::helpers::*;
 
 use arc_swap::ArcSwap;
+use futures::future::Either;
 use tower::Service;
 use tower_lsp_server::jsonrpc::{Request as JsonRpcRequest, Response as JsonRpcResponse};
 
@@ -95,6 +98,9 @@ pub struct DebugStats {
     /// any. The responsiveness tests poll this to prove a handler's blocking
     /// work is both off the serve future and genuinely in flight.
     pub debug_gate_held: Option<String>,
+    /// Lifecycle notifications currently executing. Used by race tests as a
+    /// completion barrier; settled URIs must not remain retained here.
+    pub lifecycle_intents: u64,
     /// Files mirrored into the salsa workspace. Denominator for the per-file
     /// cache sizes below.
     pub workspace_file_count: u64,
@@ -157,18 +163,61 @@ pub struct LifecycleService {
     inner: tower_lsp_server::LspService<Backend>,
 }
 
+tokio::task_local! {
+    static LIFECYCLE_GENERATION: u64;
+}
+
+fn lifecycle_generation() -> u64 {
+    LIFECYCLE_GENERATION
+        .try_with(|generation| *generation)
+        .expect("document lifecycle handler called outside LifecycleService")
+}
+
+struct LifecycleIntentGuard {
+    open_files: OpenFiles,
+    uri: Uri,
+    generation: u64,
+}
+
+impl Drop for LifecycleIntentGuard {
+    fn drop(&mut self) {
+        self.open_files.finish_lifecycle_intent(&self.uri);
+    }
+}
+
 impl Service<JsonRpcRequest> for LifecycleService {
     type Response = Option<JsonRpcResponse>;
     type Error = tower_lsp_server::ExitedError;
-    type Future = <tower_lsp_server::LspService<Backend> as Service<JsonRpcRequest>>::Future;
+    type Future = Either<
+        Pin<
+            Box<
+                dyn Future<Output = Result<Option<JsonRpcResponse>, tower_lsp_server::ExitedError>>
+                    + Send,
+            >,
+        >,
+        <tower_lsp_server::LspService<Backend> as Service<JsonRpcRequest>>::Future,
+    >;
 
     fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         self.inner.poll_ready(cx)
     }
 
     fn call(&mut self, request: JsonRpcRequest) -> Self::Future {
-        self.inner.inner().note_lifecycle_intent(&request);
-        self.inner.call(request)
+        let lifecycle = self.inner.inner().note_lifecycle_intent(&request);
+        let future = self.inner.call(request);
+        match lifecycle {
+            Some(guard) => {
+                let generation = guard.generation;
+                Either::Left(Box::pin(LIFECYCLE_GENERATION.scope(
+                    generation,
+                    async move {
+                        let _guard = guard;
+                        future.await
+                    },
+                )))
+            }
+            None => Either::Right(future),
+        }
     }
 }
 
@@ -226,13 +275,13 @@ impl Backend {
 
     /// Capture `didOpen`/`didClose` state as soon as it enters the service,
     /// rather than when its async handler happens to be polled.
-    fn note_lifecycle_intent(&self, request: &JsonRpcRequest) {
+    fn note_lifecycle_intent(&self, request: &JsonRpcRequest) -> Option<LifecycleIntentGuard> {
         let is_open = match request.method() {
             "textDocument/didOpen" => true,
             "textDocument/didClose" => false,
-            _ => return,
+            _ => return None,
         };
-        let Some(uri) = request
+        let uri = request
             .params()
             .and_then(|params| serde_json::to_value(params).ok())
             .and_then(|params| {
@@ -241,11 +290,13 @@ impl Backend {
                     .as_str()
                     .map(str::to_owned)
             })
-            .and_then(|uri| uri.parse::<Uri>().ok())
-        else {
-            return;
-        };
-        self.open_files.note_lifecycle_intent(uri, is_open);
+            .and_then(|uri| uri.parse::<Uri>().ok())?;
+        let generation = self.open_files.note_lifecycle_intent(uri.clone(), is_open);
+        Some(LifecycleIntentGuard {
+            open_files: self.open_files.clone(),
+            uri,
+            generation,
+        })
     }
 
     /// `$/php-lsp/debugStats` — internal observability counters, used by the
@@ -262,6 +313,7 @@ impl Backend {
             analysis_compute_count: self.docs.analysis_compute_count(),
             warm_start_replays_completed: self.docs.warm_start_replays_completed(),
             debug_gate_held: self.debug_gate.held_section(),
+            lifecycle_intents: self.open_files.lifecycle_intent_count() as u64,
             workspace_file_count: self.docs.workspace_file_count(),
             token_cache_len: self.docs.token_cache_len(),
             text_cache_len: self.docs.text_cache_len(),
@@ -686,18 +738,27 @@ pub(super) fn diagnostics_content_hash(diagnostics: &[Diagnostic]) -> u64 {
 /// Dependents publish only when their content differs from the last publish —
 /// the sweep re-analyzes every open file on every edit, and unchanged results
 /// would otherwise flood the client with no-op notifications.
+pub(super) enum DiagnosticPublish {
+    Open { version: i32, generation: u64 },
+    Other(Option<i32>),
+}
+
 pub(super) async fn publish_with_dependents(
     client: Client,
     docs: Arc<DocumentStore>,
     open_files: OpenFiles,
     uri: Uri,
-    // Version of the buffer whose diagnostics are being published. Supplying
-    // this lets clients discard a late diagnostic notification from an older
-    // document lifecycle instead of treating it as the result of a reopen.
-    version: Option<i32>,
+    publish: DiagnosticPublish,
     diag_cfg: crate::lang::config::DiagnosticsConfig,
     is_laravel: bool,
 ) {
+    let (version, expected_open_generation) = match publish {
+        DiagnosticPublish::Open {
+            version,
+            generation,
+        } => (Some(version), Some(generation)),
+        DiagnosticPublish::Other(version) => (version, None),
+    };
     let docs_ref = Arc::clone(&docs);
     let open_files_ref = open_files.clone();
     let uri_ref = uri.clone();
@@ -713,6 +774,11 @@ pub(super) async fn publish_with_dependents(
     })
     .await
     .unwrap_or_default();
+    if expected_open_generation
+        .is_some_and(|generation| !open_files.should_apply_lifecycle(&uri, generation, true))
+    {
+        return;
+    }
     open_files.note_published(&uri, diagnostics_content_hash(&all_diags));
     client
         .publish_diagnostics(uri.clone(), all_diags, version)

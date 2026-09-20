@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use dashmap::DashMap;
 use tower_lsp_server::ls_types::{Diagnostic, Uri};
@@ -51,7 +52,15 @@ pub struct OpenFiles {
     /// URI. Tower processes requests concurrently, so a `didClose` can begin
     /// after the following `didOpen`; retaining the ingress intent prevents
     /// that stale close from erasing the reopened buffer.
-    lifecycle_intents: Arc<DashMap<Uri, bool>>,
+    lifecycle_intents: Arc<DashMap<Uri, LifecycleIntent>>,
+    next_lifecycle_generation: Arc<AtomicU64>,
+}
+
+#[derive(Clone, Copy)]
+struct LifecycleIntent {
+    generation: u64,
+    is_open: bool,
+    in_flight: usize,
 }
 
 impl OpenFiles {
@@ -148,20 +157,49 @@ impl OpenFiles {
 
     /// Record lifecycle intent at transport ingress, before tower schedules
     /// the async notification handler.
-    pub(crate) fn note_lifecycle_intent(&self, uri: Uri, is_open: bool) {
-        self.lifecycle_intents.insert(uri, is_open);
+    pub(crate) fn note_lifecycle_intent(&self, uri: Uri, is_open: bool) -> u64 {
+        let generation = self
+            .next_lifecycle_generation
+            .fetch_add(1, Ordering::Relaxed);
+        self.lifecycle_intents
+            .entry(uri)
+            .and_modify(|intent| {
+                intent.generation = generation;
+                intent.is_open = is_open;
+                intent.in_flight += 1;
+            })
+            .or_insert(LifecycleIntent {
+                generation,
+                is_open,
+                in_flight: 1,
+            });
+        generation
     }
 
-    /// Whether no later lifecycle notification has superseded a close.
-    pub(crate) fn should_apply_close(&self, uri: &Uri) -> bool {
+    pub(crate) fn finish_lifecycle_intent(&self, uri: &Uri) {
+        let should_remove = self
+            .lifecycle_intents
+            .get_mut(uri)
+            .is_some_and(|mut intent| {
+                intent.in_flight -= 1;
+                intent.in_flight == 0
+            });
+        if should_remove {
+            self.lifecycle_intents
+                .remove_if(uri, |_, intent| intent.in_flight == 0);
+        }
+    }
+
+    /// Whether this exact lifecycle notification is still the newest intent
+    /// accepted from the transport for `uri`.
+    pub(crate) fn should_apply_lifecycle(&self, uri: &Uri, generation: u64, is_open: bool) -> bool {
         self.lifecycle_intents
             .get(uri)
-            .is_none_or(|intent| !*intent)
+            .is_some_and(|intent| intent.generation == generation && intent.is_open == is_open)
     }
 
-    /// Whether no later lifecycle notification has superseded an open.
-    pub(crate) fn should_apply_open(&self, uri: &Uri) -> bool {
-        self.lifecycle_intents.get(uri).is_none_or(|intent| *intent)
+    pub(crate) fn lifecycle_intent_count(&self) -> usize {
+        self.lifecycle_intents.len()
     }
 
     /// Open-gated parsed doc: returns `Some` only when `uri` is currently open.
@@ -249,14 +287,17 @@ mod tests {
         let open_files = OpenFiles::new();
         let uri = "file:///reopen.php".parse::<Uri>().unwrap();
 
-        open_files.note_lifecycle_intent(uri.clone(), false);
-        open_files.note_lifecycle_intent(uri.clone(), true);
+        let close_generation = open_files.note_lifecycle_intent(uri.clone(), false);
+        let reopen_generation = open_files.note_lifecycle_intent(uri.clone(), true);
 
-        assert!(open_files.should_apply_open(&uri));
+        assert!(open_files.should_apply_lifecycle(&uri, reopen_generation, true));
         assert!(
-            !open_files.should_apply_close(&uri),
+            !open_files.should_apply_lifecycle(&uri, close_generation, false),
             "a close received before a reopen must not apply after it"
         );
+        open_files.finish_lifecycle_intent(&uri);
+        open_files.finish_lifecycle_intent(&uri);
+        assert_eq!(open_files.lifecycle_intent_count(), 0);
     }
 
     /// Issue #242: before the workspace index is ready, a reference to a

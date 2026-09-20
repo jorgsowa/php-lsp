@@ -98,6 +98,72 @@ pub struct TestClient {
 }
 
 impl TestClient {
+    pub async fn arm_debug_gate(&mut self, section: &str) {
+        let response = self
+            .request("$/php-lsp/debugHoldGate", json!({ "section": section }))
+            .await;
+        assert!(
+            response.get("error").is_none(),
+            "debugHoldGate failed for {section:?}: {response}"
+        );
+    }
+
+    pub async fn wait_for_debug_gate(&mut self, section: &str) {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let response = self.request_no_params("$/php-lsp/debugStats").await;
+                if response["result"]["debug_gate_held"] == json!(section) {
+                    return;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("timed out waiting for debug gate {section:?}"));
+    }
+
+    pub async fn release_debug_gate(&mut self) {
+        let response = self.request_no_params("$/php-lsp/debugReleaseGate").await;
+        assert!(
+            response.get("error").is_none(),
+            "debugReleaseGate failed: {response}"
+        );
+    }
+
+    /// Wait until every accepted didOpen/didClose handler has returned. Since
+    /// the counter is decremented after the handler's final client send, the
+    /// successful probe is also a deterministic wire-order barrier for any
+    /// lifecycle diagnostics emitted before completion.
+    pub async fn wait_for_lifecycle_idle(&mut self) {
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let response = self.request_no_params("$/php-lsp/debugStats").await;
+                if response["result"]["lifecycle_intents"] == json!(0) {
+                    return;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("timed out waiting for document lifecycle handlers to finish");
+    }
+
+    /// Remove and return versions from diagnostics already observed while a
+    /// request waiter was advancing the wire. Call after a server-side barrier
+    /// such as [`Self::wait_for_lifecycle_idle`].
+    pub fn take_buffered_diagnostic_versions(&mut self, uri: &str) -> Vec<Option<i64>> {
+        let mut versions = Vec::new();
+        self.pending.retain(|message| {
+            let matches = message.get("method") == Some(&json!("textDocument/publishDiagnostics"))
+                && message["params"]["uri"] == json!(uri);
+            if matches {
+                versions.push(message["params"]["version"].as_i64());
+            }
+            !matches
+        });
+        versions
+    }
+
     pub async fn request(&mut self, method: &str, params: Value) -> Value {
         self.request_with_timeout(method, params, Duration::from_secs(10))
             .await
