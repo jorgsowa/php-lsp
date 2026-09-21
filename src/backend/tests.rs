@@ -281,14 +281,29 @@ fn find_use_insert_line_empty_file() {
     assert_eq!(find_use_insert_line(""), 0);
 }
 
-// php_file_op tests
+// indexed_file_op tests
 #[test]
-fn php_file_op_matches_php_files() {
-    let op = php_file_op();
+fn indexed_file_op_matches_php_files_by_default() {
+    let op = indexed_file_op(&["php".to_string()]);
     assert_eq!(op.filters.len(), 1);
     let filter = &op.filters[0];
     assert_eq!(filter.scheme.as_deref(), Some("file"));
     assert_eq!(filter.pattern.glob, "**/*.php");
+}
+
+#[test]
+fn indexed_file_op_adds_a_filter_per_configured_extension() {
+    let op = indexed_file_op(&["php".to_string(), "phpt".to_string()]);
+    let globs: Vec<&str> = op.filters.iter().map(|f| f.pattern.glob.as_str()).collect();
+    assert_eq!(globs, vec!["**/*.php", "**/*.phpt"]);
+}
+
+#[test]
+fn has_indexed_extension_matches_configured_extensions_only() {
+    let exts = vec!["php".to_string(), "phpt".to_string()];
+    assert!(has_indexed_extension("/src/Foo.php", &exts));
+    assert!(has_indexed_extension("/tests/bug12345.phpt", &exts));
+    assert!(!has_indexed_extension("/AGENTS.md", &exts));
 }
 
 // Uri regression tests (url::Url -> ls_types::Uri migration; the new Uri

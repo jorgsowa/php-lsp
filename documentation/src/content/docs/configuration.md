@@ -26,6 +26,7 @@ All options are optional.
 | `debug` | `boolean` | `false` | Emit extra diagnostic log messages on startup: cache hit/miss ratio, workspace root paths, and PSR-4 namespace count. |
 | `cachePath` | `string` | platform default | Override the on-disk analysis-cache directory (used verbatim, no schema-version or workspace-hash subdirectories appended). Falls back to `$XDG_CACHE_HOME`/`$HOME/.cache` on Unix, `%LOCALAPPDATA%` on Windows. Mainly useful for non-standard cache locations (containers, CI). |
 | `externalTools` | `object` | see below | Optional PHPStan / PHPCS integration, run as external processes on save. |
+| `indexedExtensions` | `string[]` | `["php"]` | File extensions (without the leading dot) the server registers for file-operation notifications (`willRenameFiles`/`didRenameFiles`/create/delete) and the `workspace/didChangeWatchedFiles` watcher glob. Add `"phpt"` to also track `.phpt` test files. Files with an extension outside this list are not forwarded to the server by a spec-compliant client. |
 
 ### `diagnostics` object
 

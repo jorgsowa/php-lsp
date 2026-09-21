@@ -387,6 +387,15 @@ pub struct LspConfig {
     /// External static-analysis tool integration (PHPStan / PHPCS). Both
     /// default off; see [`ExternalToolsConfig`].
     pub external_tools: ExternalToolsConfig,
+    /// File extensions (without the leading dot) the server treats as
+    /// PHP-relevant for file-operation registration and the
+    /// `workspace/didChangeWatchedFiles` watcher glob. Defaults to
+    /// `["php"]`; add `"phpt"` to also register rename/create/delete
+    /// notifications and the file watcher for `.phpt` test files. Renames of
+    /// files with an extension outside this list are not forwarded to the
+    /// server by a spec-compliant client and skip the rename-triggered
+    /// refresh-request fan-out in `handle_did_rename_files`.
+    pub indexed_extensions: Vec<String>,
 }
 
 impl Default for LspConfig {
@@ -407,6 +416,7 @@ impl Default for LspConfig {
             cache_path: None,
             flush_interval_ms: 20_000,
             external_tools: ExternalToolsConfig::default(),
+            indexed_extensions: vec!["php".to_string()],
         }
     }
 }
@@ -517,6 +527,17 @@ impl LspConfig {
         if let Some(v) = v.get("externalTools") {
             cfg.external_tools = ExternalToolsConfig::from_value(v);
         }
+        if let Some(arr) = v.get("indexedExtensions").and_then(|x| x.as_array()) {
+            let exts: Vec<String> = arr
+                .iter()
+                .filter_map(|x| x.as_str())
+                .map(|s| s.trim_start_matches('.').to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+            if !exts.is_empty() {
+                cfg.indexed_extensions = exts;
+            }
+        }
         cfg
     }
 }
@@ -599,6 +620,9 @@ mod tests {
                         standard: None,
                     },
                 },
+                indexed_extensions: [
+                    "php",
+                ],
             }"#]]
         .assert_eq(&format!("{:#?}", LspConfig::default()));
     }

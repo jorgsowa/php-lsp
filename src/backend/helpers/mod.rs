@@ -33,17 +33,31 @@ pub(super) use cursor_decl::*;
 pub(super) use phpunit::*;
 pub(super) use position::*;
 
-pub(super) fn php_file_op() -> FileOperationRegistrationOptions {
+/// Build file-operation registration options with one glob filter per
+/// configured extension (`LspConfig::indexed_extensions`), so `.phpt` (or
+/// any other extension a user configures) gets the same rename/create/delete
+/// notifications as `.php` without a code change.
+pub(super) fn indexed_file_op(extensions: &[String]) -> FileOperationRegistrationOptions {
     FileOperationRegistrationOptions {
-        filters: vec![FileOperationFilter {
-            scheme: Some("file".to_string()),
-            pattern: FileOperationPattern {
-                glob: "**/*.php".to_string(),
-                matches: Some(FileOperationPatternKind::File),
-                options: None,
-            },
-        }],
+        filters: extensions
+            .iter()
+            .map(|ext| FileOperationFilter {
+                scheme: Some("file".to_string()),
+                pattern: FileOperationPattern {
+                    glob: format!("**/*.{ext}"),
+                    matches: Some(FileOperationPatternKind::File),
+                    options: None,
+                },
+            })
+            .collect(),
     }
+}
+
+/// Whether `path` ends in one of the configured indexed extensions.
+pub(super) fn has_indexed_extension(path: &str, extensions: &[String]) -> bool {
+    extensions
+        .iter()
+        .any(|ext| path.ends_with(&format!(".{ext}")))
 }
 
 /// Strip the `edit` from each `CodeAction` and attach a `data` payload so the

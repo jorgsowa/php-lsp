@@ -13,7 +13,7 @@ use crate::lang::autoload::Psr4Map;
 use crate::lang::config::LspConfig;
 use crate::text::fqn_short_name;
 
-use super::super::helpers::php_file_op;
+use super::super::helpers::{has_indexed_extension, indexed_file_op};
 use super::super::{Backend, IndexReadyNotification};
 
 impl Backend {
@@ -270,14 +270,17 @@ impl Backend {
                         supported: Some(true),
                         change_notifications: Some(OneOf::Left(true)),
                     }),
-                    file_operations: Some(WorkspaceFileOperationsServerCapabilities {
-                        will_rename: Some(php_file_op()),
-                        did_rename: Some(php_file_op()),
-                        will_create: Some(php_file_op()),
-                        did_create: Some(php_file_op()),
-                        will_delete: Some(php_file_op()),
-                        did_delete: Some(php_file_op()),
-                    }),
+                    file_operations: {
+                        let indexed_extensions = self.config.load().indexed_extensions.clone();
+                        Some(WorkspaceFileOperationsServerCapabilities {
+                            will_rename: Some(indexed_file_op(&indexed_extensions)),
+                            did_rename: Some(indexed_file_op(&indexed_extensions)),
+                            will_create: Some(indexed_file_op(&indexed_extensions)),
+                            did_create: Some(indexed_file_op(&indexed_extensions)),
+                            will_delete: Some(indexed_file_op(&indexed_extensions)),
+                            did_delete: Some(indexed_file_op(&indexed_extensions)),
+                        })
+                    },
                 }),
                 linked_editing_range_provider: feat
                     .linked_editing_range
@@ -307,13 +310,18 @@ impl Backend {
         }
 
         let php_selector = serde_json::json!([{"language": "php"}]);
+        let watched_globs: Vec<serde_json::Value> = self
+            .config
+            .load()
+            .indexed_extensions
+            .iter()
+            .map(|ext| serde_json::json!({"globPattern": format!("**/*.{ext}")}))
+            .collect();
         let mut registrations = vec![
             Registration {
                 id: "php-lsp-file-watcher".to_string(),
                 method: "workspace/didChangeWatchedFiles".to_string(),
-                register_options: Some(serde_json::json!({
-                    "watchers": [{"globPattern": "**/*.php"}]
-                })),
+                register_options: Some(serde_json::json!({ "watchers": watched_globs })),
             },
             Registration {
                 id: "php-lsp-config-change".to_string(),
@@ -869,8 +877,14 @@ impl Backend {
     }
 
     pub(crate) async fn handle_did_rename_files(&self, params: RenameFilesParams) {
+        let indexed_extensions = self.config.load().indexed_extensions.clone();
+        let mut any_indexed = false;
         for file_rename in &params.files {
-            if let Ok(old_uri) = file_rename.old_uri.parse::<Uri>() {
+            let old_is_indexed = has_indexed_extension(&file_rename.old_uri, &indexed_extensions);
+            let new_is_indexed = has_indexed_extension(&file_rename.new_uri, &indexed_extensions);
+            any_indexed |= old_is_indexed || new_is_indexed;
+
+            if old_is_indexed && let Ok(old_uri) = file_rename.old_uri.parse::<Uri>() {
                 self.docs.remove(&old_uri);
                 // Clear diagnostics under the old path — same as did_delete_files —
                 // or a client keeps showing them for a URI that no longer exists.
@@ -878,14 +892,21 @@ impl Backend {
                     .note_published(&old_uri, crate::backend::diagnostics_content_hash(&[]));
                 self.client.publish_diagnostics(old_uri, vec![], None).await;
             }
-            if let Ok(new_uri) = file_rename.new_uri.parse::<Uri>()
+            if new_is_indexed
+                && let Ok(new_uri) = file_rename.new_uri.parse::<Uri>()
                 && let Some(path) = new_uri.to_file_path()
                 && let Ok(text) = tokio::fs::read_to_string(&path).await
             {
                 self.ingest_if_not_open(new_uri, &text);
             }
         }
-        send_refresh_requests(&self.client).await;
+        // Only ask clients to re-pull semantic tokens/diagnostics/etc. when a
+        // renamed file was actually indexed-relevant — otherwise a rename of
+        // an unrelated file (e.g. a doc renamed alongside the project) fans
+        // out five refresh requests to every open editor for nothing.
+        if any_indexed {
+            send_refresh_requests(&self.client).await;
+        }
     }
 
     pub(crate) async fn handle_will_create_files(
