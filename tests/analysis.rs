@@ -16,6 +16,8 @@ pub use common::{
 
 #[path = "analysis/feature_code_lens.rs"]
 mod feature_code_lens;
+#[path = "analysis/feature_concurrent_sweep.rs"]
+mod feature_concurrent_sweep;
 #[path = "analysis/feature_diagnostics_edge_cases.rs"]
 mod feature_diagnostics_edge_cases;
 #[path = "analysis/feature_diagnostics_inheritance.rs"]
