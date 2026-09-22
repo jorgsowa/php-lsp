@@ -234,6 +234,87 @@ async fn request_after_close_and_reopen_returns_fresh_data() {
     .assert_eq(&render_hover(&resp));
 }
 
+/// `didClose` awaits its disk re-sync while the replacement `didOpen` parses
+/// asynchronously. A cursor request is allowed to arrive in that interval;
+/// it must use the newly mirrored buffer, not observe the temporarily closed
+/// document.
+#[tokio::test]
+async fn hover_during_close_and_reopen_uses_reopened_buffer() {
+    let mut server = TestServer::new().await;
+    server
+        .open("reopen_race.php", "<?php\nfunction first(): void {}\n")
+        .await;
+
+    let uri = server.uri("reopen_race.php");
+    let armed = server
+        .client()
+        .request(
+            "$/php-lsp/debugHoldGate",
+            serde_json::json!({
+                "section": php_lsp::backend::debug_gate::GATE_DID_OPEN_PARSE,
+            }),
+        )
+        .await;
+    assert!(
+        armed["error"].is_null(),
+        "failed to arm didOpen gate: {armed}"
+    );
+
+    server
+        .client()
+        .notify(
+            "textDocument/didClose",
+            serde_json::json!({ "textDocument": { "uri": uri } }),
+        )
+        .await;
+    server
+        .client()
+        .notify(
+            "textDocument/didOpen",
+            serde_json::json!({
+                "textDocument": {
+                    "uri": uri,
+                    "languageId": "php",
+                    "version": 2,
+                    "text": "<?php\nfunction second(): void {}\n",
+                }
+            }),
+        )
+        .await;
+
+    // The transport may poll this later request before the queued `didOpen`.
+    // Hover must yield that one turn, then read the buffer which didOpen
+    // installs before beginning its gated parse.
+    let resp = server.hover("reopen_race.php", 1, 10).await;
+    let hover = render_hover(&resp);
+    let stats = server
+        .client()
+        .request_no_params("$/php-lsp/debugStats")
+        .await;
+
+    let released = server
+        .client()
+        .request_no_params("$/php-lsp/debugReleaseGate")
+        .await;
+    assert!(
+        released["error"].is_null(),
+        "failed to release didOpen gate: {released}"
+    );
+
+    // Release before asserting so a failure cannot strand the server's
+    // blocking task until the debug gate's safety timeout expires.
+    expect![[r#"
+        ```php
+        function second(): void
+        ```"#]]
+    .assert_eq(&hover);
+    assert_eq!(
+        stats["result"]["debug_gate_held"],
+        php_lsp::backend::debug_gate::GATE_DID_OPEN_PARSE,
+        "reopened didOpen did not reach its parse hold: {stats}"
+    );
+}
+
 // ── $/cancelRequest ──────────────────────────────────────────────────────────
 
 #[tokio::test]

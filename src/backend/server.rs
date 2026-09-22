@@ -501,6 +501,14 @@ impl LanguageServer for Backend {
         guard_async("did_open", async move {
             let uri = params.text_document.uri;
             let text = params.text_document.text;
+            let version = params.text_document.version;
+
+            // The transport recorded a later close before this future got a
+            // chance to run. Do not resurrect a document the client has
+            // already closed.
+            if !self.open_files.should_apply_open(&uri) {
+                return;
+            }
 
             // Store text immediately so other features work while parsing.
             // This also mirrors the new text into salsa, so the codebase query
@@ -530,6 +538,7 @@ impl LanguageServer for Backend {
                 Arc::clone(&self.docs),
                 self.open_files.clone(),
                 uri,
+                Some(version),
                 self.config.load().diagnostics.clone(),
                 self.laravel.load_full().is_laravel,
             )
@@ -542,6 +551,7 @@ impl LanguageServer for Backend {
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
         guard_async("did_change", async move {
             let uri = params.text_document.uri;
+            let document_version = params.text_document.version;
             // Incremental sync: apply changes in order to the live buffer.
             // Each ranged change refers to the document state produced by the
             // previous one; a change without a range is a full-document
@@ -602,6 +612,7 @@ impl LanguageServer for Backend {
                     Arc::clone(&docs),
                     open_files.clone(),
                     uri.clone(),
+                    Some(document_version),
                     diag_cfg,
                     is_laravel,
                 )
@@ -635,6 +646,12 @@ impl LanguageServer for Backend {
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
         guard_async("did_close", async move {
             let uri = params.text_document.uri;
+            // `didOpen` may have arrived after this close but begun execution
+            // first. The transport ingress state is authoritative, so an old
+            // close must not erase that reopened buffer.
+            if !self.open_files.should_apply_close(&uri) {
+                return;
+            }
             self.close_open_file(&uri);
             // The salsa-mirrored text still holds the last edited buffer, which may
             // include unsaved changes the user just discarded on close. Re-sync from
@@ -776,7 +793,7 @@ impl LanguageServer for Backend {
                         }
                         open_files.set_external_diagnostics(&uri, version, diagnostics);
                         publish_with_dependents(
-                            client, docs, open_files, uri, diag_cfg, is_laravel,
+                            client, docs, open_files, uri, None, diag_cfg, is_laravel,
                         )
                         .await;
                     });
@@ -1188,10 +1205,24 @@ impl LanguageServer for Backend {
             let _interactive = self.docs.interactive_read_guard();
             let uri = &params.text_document_position_params.text_document.uri;
             let position = params.text_document_position_params.position;
-            let source = self.get_open_text(uri).unwrap_or_default();
+            let mut source = self.get_open_text(uri).unwrap_or_default();
             let doc = match self.get_doc(uri) {
                 Some(d) => d,
-                None => return Ok(None),
+                None => {
+                    // tower-lsp-server polls concurrent inbound messages out
+                    // of order. A hover sent immediately after didClose then
+                    // didOpen can therefore run while the earlier didOpen is
+                    // queued but has not yet installed its buffer. Yield one
+                    // turn only on this closed-document path so that lifecycle
+                    // notification can publish its state; ordinary hovers keep
+                    // the zero-yield fast path.
+                    tokio::task::yield_now().await;
+                    source = self.get_open_text(uri).unwrap_or_default();
+                    match self.get_doc(uri) {
+                        Some(d) => d,
+                        None => return Ok(None),
+                    }
+                }
             };
             // Laravel string-key calls (`env('KEY')`, `config('a.b')`, ...) —
             // resolved before the general hover pipeline below, since a

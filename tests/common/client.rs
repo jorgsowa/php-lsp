@@ -753,6 +753,40 @@ impl TestClient {
         self.wait_for_diagnostics_secs(uri, 10).await
     }
 
+    /// Block until diagnostics for exactly this document version arrive.
+    ///
+    /// A `didClose` clears diagnostics with no version. Requiring the version
+    /// here prevents that clear from being mistaken for a following `didOpen`
+    /// or `didChange` when the server processes lifecycle notifications
+    /// concurrently.
+    pub async fn wait_for_diagnostics_version(&mut self, uri: &str, version: i32) -> Value {
+        let uri_val = json!(uri);
+        let version_val = json!(version);
+        let mut budget = 0;
+        let TestClient {
+            pending,
+            read,
+            write,
+            ..
+        } = self;
+        tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let msg = recv_or_buffered(pending, read, write, &mut budget).await;
+                if msg.get("method") == Some(&json!("textDocument/publishDiagnostics"))
+                    && msg["params"]["uri"] == uri_val
+                    && msg["params"]["version"] == version_val
+                {
+                    return msg;
+                }
+                pending.push_back(msg);
+            }
+        })
+        .await
+        .unwrap_or_else(|_| {
+            panic!("timed out waiting for publishDiagnostics for {uri} at version {version}")
+        })
+    }
+
     /// Same as [`Self::wait_for_diagnostics`], with a caller-chosen timeout.
     /// Use for setups where the publish can be delayed by a heavy background
     /// task (e.g. a large decoy workspace competing for the blocking pool).

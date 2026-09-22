@@ -954,8 +954,8 @@ dependencies = [
 
 [[package]]
 name = "mir-analyzer"
-version = "0.76.0"
-source = "git+https://github.com/jorgsowa/mir#8714cdfbfe0e615f1eefa6c34ca0ebd145536881"
+version = "0.77.0"
+source = "git+https://github.com/jorgsowa/mir#5841e9d85a7a90bf53e9d6b82078bcd62543b2b7"
 dependencies = [
  "aho-corasick",
  "bincode 1.3.3",
@@ -983,8 +983,8 @@ dependencies = [
 
 [[package]]
 name = "mir-codebase"
-version = "0.76.0"
-source = "git+https://github.com/jorgsowa/mir#8714cdfbfe0e615f1eefa6c34ca0ebd145536881"
+version = "0.77.0"
+source = "git+https://github.com/jorgsowa/mir#5841e9d85a7a90bf53e9d6b82078bcd62543b2b7"
 dependencies = [
  "dashmap",
  "indexmap",
@@ -995,8 +995,8 @@ dependencies = [
 
 [[package]]
 name = "mir-issues"
-version = "0.76.0"
-source = "git+https://github.com/jorgsowa/mir#8714cdfbfe0e615f1eefa6c34ca0ebd145536881"
+version = "0.77.0"
+source = "git+https://github.com/jorgsowa/mir#5841e9d85a7a90bf53e9d6b82078bcd62543b2b7"
 dependencies = [
  "mir-types",
  "serde",
@@ -1004,8 +1004,8 @@ dependencies = [
 
 [[package]]
 name = "mir-plugin"
-version = "0.76.0"
-source = "git+https://github.com/jorgsowa/mir#8714cdfbfe0e615f1eefa6c34ca0ebd145536881"
+version = "0.77.0"
+source = "git+https://github.com/jorgsowa/mir#5841e9d85a7a90bf53e9d6b82078bcd62543b2b7"
 dependencies = [
  "mir-issues",
  "mir-types",
@@ -1017,8 +1017,8 @@ dependencies = [
 
 [[package]]
 name = "mir-types"
-version = "0.76.0"
-source = "git+https://github.com/jorgsowa/mir#8714cdfbfe0e615f1eefa6c34ca0ebd145536881"
+version = "0.77.0"
+source = "git+https://github.com/jorgsowa/mir#5841e9d85a7a90bf53e9d6b82078bcd62543b2b7"
 dependencies = [
  "dashmap",
  "indexmap",
@@ -1164,6 +1164,7 @@ dependencies = [
  "serial_test",
  "tempfile",
  "tokio",
+ "tower",
  "tower-lsp-server",
  "tracing",
  "tracing-subscriber",
@@ -1278,9 +1279,9 @@ dependencies = [
 
 [[package]]
 name = "quick-xml"
-version = "0.41.0"
+version = "0.42.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e660451e55124f798a69a5af3f49ccfbefbd41910eefd25caf2393e1f3473ec1"
+checksum = "41b1177fdf999d2321d3fb46ff47159d9c1fb9ad66a4879f8c50a0b504615e9b"
 dependencies = [
  "memchr",
 ]
@@ -1426,9 +1427,9 @@ checksum = "cf54715a573b99ac80df0bc206da022bcd442c974952c7b9720069370852e21f"
 
 [[package]]
 name = "salsa"
-version = "0.28.2"
+version = "0.28.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cf0e374215cd2db2b5c75d7b3a99cb0cc052c0595335dfdefc03d4eb08f4aa81"
+checksum = "5ad7a025e8eda1fcde5a8c442e2cdd34be28ba1c7bb5328c541b82cda212165f"
 dependencies = [
  "boxcar",
  "crossbeam-queue",
@@ -1452,15 +1453,15 @@ dependencies = [
 
 [[package]]
 name = "salsa-macro-rules"
-version = "0.28.2"
+version = "0.28.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "85f4b7d4405540bbd6d4ffa52d4322d983f3781954d3073067ac1bdb028459b3"
+checksum = "40bc5a70f76d5f539e1e2f892006f523669845b6c879a70b3ed1996f47cfbb2e"
 
 [[package]]
 name = "salsa-macros"
-version = "0.28.2"
+version = "0.28.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "445be2bfbb2f67cb663225ecd7bc5a25370c0250fca30f9d8cbad9a913650370"
+checksum = "ea978f07c8d78cb5f4dd25bd005d9ff08f60909e089136d5fc36c847fa9005a9"
 dependencies = [
  "proc-macro2",
  "quote",

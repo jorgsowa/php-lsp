@@ -45,7 +45,14 @@ pub(crate) struct OpenFile {
 /// Shared handle to open-file state. Cheaply cloneable — wraps an `Arc<DashMap>`
 /// so it can be captured by async closures alongside `Arc<DocumentStore>`.
 #[derive(Clone, Default)]
-pub struct OpenFiles(Arc<DashMap<Uri, OpenFile>>);
+pub struct OpenFiles {
+    files: Arc<DashMap<Uri, OpenFile>>,
+    /// The most recent open/close intent accepted from the transport for a
+    /// URI. Tower processes requests concurrently, so a `didClose` can begin
+    /// after the following `didOpen`; retaining the ingress intent prevents
+    /// that stale close from erasing the reopened buffer.
+    lifecycle_intents: Arc<DashMap<Uri, bool>>,
+}
 
 impl OpenFiles {
     pub(crate) fn new() -> Self {
@@ -58,46 +65,46 @@ impl OpenFiles {
         // `Arc::from` copy `mirror_text` would otherwise make from `&text`.
         let text: Arc<str> = Arc::from(text);
         docs.mirror_text_arc(&uri, Arc::clone(&text));
-        let mut entry = self.0.entry(uri).or_default();
+        let mut entry = self.files.entry(uri).or_default();
         entry.version += 1;
         entry.text = text;
         entry.version
     }
 
     pub(crate) fn close(&self, docs: &DocumentStore, uri: &Uri) {
-        self.0.remove(uri);
+        self.files.remove(uri);
         docs.evict_token_cache(uri);
     }
 
     pub(crate) fn current_version(&self, uri: &Uri) -> Option<u64> {
-        self.0.get(uri).map(|e| e.version)
+        self.files.get(uri).map(|e| e.version)
     }
 
     pub(crate) fn text(&self, uri: &Uri) -> Option<Arc<str>> {
-        self.0.get(uri).map(|e| Arc::clone(&e.text))
+        self.files.get(uri).map(|e| Arc::clone(&e.text))
     }
 
     pub(crate) fn set_parse_diagnostics(&self, uri: &Uri, diagnostics: Vec<Diagnostic>) {
-        if let Some(mut entry) = self.0.get_mut(uri) {
+        if let Some(mut entry) = self.files.get_mut(uri) {
             entry.parse_diagnostics = diagnostics;
         }
     }
 
     pub(crate) fn parse_diagnostics(&self, uri: &Uri) -> Option<Vec<Diagnostic>> {
-        self.0.get(uri).map(|e| e.parse_diagnostics.clone())
+        self.files.get(uri).map(|e| e.parse_diagnostics.clone())
     }
 
     /// Record the content hash of a `publishDiagnostics` just sent for `uri`.
     /// No-op when the file closed mid-flight (entry gone).
     pub(crate) fn note_published(&self, uri: &Uri, hash: u64) {
-        if let Some(mut entry) = self.0.get_mut(uri) {
+        if let Some(mut entry) = self.files.get_mut(uri) {
             entry.published_hash = Some(hash);
         }
     }
 
     /// Hash of the last publish sent for `uri`, if it is still open.
     pub(crate) fn published_hash(&self, uri: &Uri) -> Option<u64> {
-        self.0.get(uri).and_then(|e| e.published_hash)
+        self.files.get(uri).and_then(|e| e.published_hash)
     }
 
     /// Cache `diagnostics` from an external tool run against `uri` at
@@ -108,7 +115,7 @@ impl OpenFiles {
         version: u64,
         diagnostics: Vec<Diagnostic>,
     ) {
-        if let Some(mut entry) = self.0.get_mut(uri) {
+        if let Some(mut entry) = self.files.get_mut(uri) {
             entry.external_diagnostics = diagnostics;
             entry.external_diagnostics_version = Some(version);
         }
@@ -117,7 +124,7 @@ impl OpenFiles {
     /// Cached external-tool diagnostics for `uri`, or empty if none have
     /// been computed yet or the buffer has changed since they were.
     pub(crate) fn external_diagnostics(&self, uri: &Uri) -> Vec<Diagnostic> {
-        self.0
+        self.files
             .get(uri)
             .filter(|e| e.external_diagnostics_version == Some(e.version))
             .map(|e| e.external_diagnostics.clone())
@@ -125,18 +132,36 @@ impl OpenFiles {
     }
 
     pub(crate) fn all_with_versions(&self) -> Vec<(Uri, Option<i64>)> {
-        self.0
+        self.files
             .iter()
             .map(|e| (e.key().clone(), Some(e.value().version as i64)))
             .collect()
     }
 
     pub(crate) fn urls(&self) -> Vec<Uri> {
-        self.0.iter().map(|e| e.key().clone()).collect()
+        self.files.iter().map(|e| e.key().clone()).collect()
     }
 
     pub(crate) fn contains(&self, uri: &Uri) -> bool {
-        self.0.contains_key(uri)
+        self.files.contains_key(uri)
+    }
+
+    /// Record lifecycle intent at transport ingress, before tower schedules
+    /// the async notification handler.
+    pub(crate) fn note_lifecycle_intent(&self, uri: Uri, is_open: bool) {
+        self.lifecycle_intents.insert(uri, is_open);
+    }
+
+    /// Whether no later lifecycle notification has superseded a close.
+    pub(crate) fn should_apply_close(&self, uri: &Uri) -> bool {
+        self.lifecycle_intents
+            .get(uri)
+            .is_none_or(|intent| !*intent)
+    }
+
+    /// Whether no later lifecycle notification has superseded an open.
+    pub(crate) fn should_apply_open(&self, uri: &Uri) -> bool {
+        self.lifecycle_intents.get(uri).is_none_or(|intent| *intent)
     }
 
     /// Open-gated parsed doc: returns `Some` only when `uri` is currently open.
@@ -216,6 +241,21 @@ mod tests {
         assert!(
             Arc::ptr_eq(&first, &second),
             "repeated reads must share one allocation, not clone the buffer per call"
+        );
+    }
+
+    #[test]
+    fn reopen_supersedes_an_earlier_close_at_transport_ingress() {
+        let open_files = OpenFiles::new();
+        let uri = "file:///reopen.php".parse::<Uri>().unwrap();
+
+        open_files.note_lifecycle_intent(uri.clone(), false);
+        open_files.note_lifecycle_intent(uri.clone(), true);
+
+        assert!(open_files.should_apply_open(&uri));
+        assert!(
+            !open_files.should_apply_close(&uri),
+            "a close received before a reopen must not apply after it"
         );
     }
 
