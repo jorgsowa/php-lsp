@@ -942,10 +942,7 @@ class Greeter {
 /// (`EntityGetterTrait/GetCreatedAtTest.php` and
 /// `OffsetPaginationFieldsTest.php`).
 #[tokio::test]
-#[ignore = "known bug: a method call through an object-typed property \
-            holding an anonymous class + trait resolves to a same-named \
-            method on the enclosing class instead of the trait's own \
-            method — the two are otherwise unrelated"]
+#[ignore = "known bug: name-matching fallback jumps to the enclosing class's method"]
 async fn definition_through_object_property_resolves_to_enclosing_class_not_trait() {
     let mut s = TestServer::new().await;
     let out = s
@@ -1020,6 +1017,39 @@ final class Service
     expect!["main.php:15:23-15:31"].assert_eq(&out);
 }
 
+/// Same-file variant: the imported-name-free bare call resolves to the
+/// namespaced function declared in the same file, not the same-named method.
+#[tokio::test]
+async fn definition_on_bare_call_resolves_same_file_function_not_method() {
+    let mut s = TestServer::new().await;
+    let out = s
+        .check_definition(
+            r#"<?php
+
+namespace App;
+
+function shout(string $msg): void
+{
+    echo $msg;
+}
+
+class Logger
+{
+    public function log(string $msg): void
+    {
+        shou$0t($msg);
+    }
+
+    private function shout(string $msg): void
+    {
+    }
+}
+"#,
+        )
+        .await;
+    expect!["main.php:4:9-4:14"].assert_eq(&out);
+}
+
 /// A method returning `self` is lexically bound to the *declaring* class at
 /// compile time — unlike `static`, it must NOT resolve using the calling
 /// instance's actual (subclass) type. `Base::returnsSelf(): self` returns
@@ -1065,23 +1095,10 @@ $a = $sub->returnsSelf()->subO$0nly();
     expect!["main.php:12:20-12:27"].assert_eq(&out);
 }
 
-/// A bare call to a name pulled in via `use function` must invoke the
-/// imported function — but when a method of the same name also exists on
-/// the enclosing class, the bare call resolves to the local method instead,
-/// even though a bare call (no `$this->`/`self::`) can never mean "call my
-/// own method" in PHP. The control case (`$this->shout(...)`, not included
-/// here) correctly resolves to the local method, and `references` on the
-/// local method correctly excludes the bare call site — the bug is isolated
-/// to hover/goto-definition's callee resolution. Found via app-server's
-/// `SentryLogWriter.php`, which imports `use function
-/// Sentry\captureException` and also declares a same-named private method
-/// that itself calls the bare (intended-to-be-imported) function.
+/// A bare call to a `use function`-imported name resolves to the imported
+/// function even when the enclosing class declares a same-named method.
 #[tokio::test]
-#[ignore = "known bug: a bare call to a use-function-imported name resolves \
-            to a same-named local method instead of the imported function, \
-            even though a bare call can never mean \"call my own method\" \
-            in PHP"]
-async fn definition_on_bare_call_prefers_local_method_over_use_function_import() {
+async fn definition_on_bare_call_resolves_use_function_import_not_local_method() {
     let mut s = TestServer::new().await;
     let out = s
         .check_definition(
@@ -1117,7 +1134,7 @@ class Logger
 "#,
         )
         .await;
-    expect!["src/app.php:13:21-13:26"].assert_eq(&out);
+    expect!["src/vendorlib.php:4:9-4:14"].assert_eq(&out);
 }
 
 #[tokio::test]

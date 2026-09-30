@@ -78,6 +78,23 @@ pub fn goto_definition(
     None
 }
 
+/// Like [`goto_definition`], restricted to function declarations in `doc`.
+pub fn goto_function_definition(
+    uri: &Uri,
+    source: &str,
+    doc: &ParsedDoc,
+    position: Position,
+) -> Option<Location> {
+    let word = word_at_position(source, position)?;
+    let decl = resolve_declaration(&doc.program().stmts, &word, &|d| {
+        matches!(d, Declaration::Function { .. })
+    })?;
+    Some(Location {
+        uri: uri.clone(),
+        range: definition_name_range(doc.view(), &decl),
+    })
+}
+
 /// Search an AST for a declaration named `name`, returning its selection range.
 /// Used by the PSR-4 fallback in the backend after resolving a class to a file.
 pub fn find_declaration_range(_source: &str, doc: &ParsedDoc, name: &str) -> Option<Range> {

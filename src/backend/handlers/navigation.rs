@@ -101,6 +101,52 @@ impl Backend {
                     return Ok(Some(GotoDefinitionResponse::Scalar(loc)));
                 }
 
+                // A bare call can only mean a function, never a same-named method.
+                let resolved_function = analysis.as_deref().and_then(|a| {
+                    let off = crate::text::word_range_at(&source, position)
+                        .map(|r| doc.view().byte_of_position(r.start))?;
+                    match &a.symbol_at(off)?.kind {
+                        mir_analyzer::ReferenceKind::FunctionCall(fqn) => Some(Arc::clone(fqn)),
+                        _ => None,
+                    }
+                });
+                if let Some(function_fqn) = resolved_function {
+                    let wi = self.workspace_index_cached(&mut wi_cache).await;
+                    let docs = Arc::clone(&self.docs);
+                    let uri_task = uri.clone();
+                    let source_task = Arc::clone(&source);
+                    let doc_task = Arc::clone(&doc);
+                    let loc = self
+                        .blocking_gated(super::super::debug_gate::GATE_GOTO_DEFINITION, move || {
+                            let indexed = docs
+                                .function_ref_by_fqn(&wi, &function_fqn)
+                                .and_then(|r| wi.function_at(r))
+                                .and_then(|(fn_uri, function)| {
+                                    let fn_doc = docs.get_doc_salsa(fn_uri)?;
+                                    let range = find_declaration_range(
+                                        fn_doc.source(),
+                                        &fn_doc,
+                                        &function.name,
+                                    )?;
+                                    Some(Location {
+                                        uri: fn_uri.clone(),
+                                        range,
+                                    })
+                                });
+                            indexed.or_else(|| {
+                                crate::navigation::definition::goto_function_definition(
+                                    &uri_task,
+                                    &source_task,
+                                    &doc_task,
+                                    position,
+                                )
+                            })
+                        })
+                        .await
+                        .flatten();
+                    return Ok(loc.map(GotoDefinitionResponse::Scalar));
+                }
+
                 // Keep both the short name (workspace-index lookup) and the full
                 // FQN Arc (PSR-4 vendor fallback). Arc<str> clone is an atomic
                 // increment — no heap allocation on the hot path.
