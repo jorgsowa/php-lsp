@@ -624,7 +624,6 @@ async fn compute_dependent_publishes_owned(
             return Vec::new();
         }
 
-        let session = docs.current_analysis_session();
         // The user is typing: pause the background scan's write storm so this
         // sweep's snapshots aren't repeatedly cancelled while indexing runs.
         let _interactive = docs.interactive_read_guard();
@@ -632,7 +631,8 @@ async fn compute_dependent_publishes_owned(
         // next edit starts its own sweep, this one stops at its next file
         // boundary instead of blocking typing behind the previous sweep.
         let cancel = docs.begin_reanalyze();
-        let analyses = session.reanalyze_files_cancellable(&open_set, &cancel);
+        let analyses =
+            docs.with_session(|session| session.reanalyze_files_cancellable(&open_set, &cancel));
         // A newer edit that flipped `cancel` mid-sweep is now authoritative and
         // will republish; drop this sweep's partial results so they can't land
         // out of order and leave stale diagnostics as the final state.
@@ -658,7 +658,7 @@ async fn compute_dependent_publishes_owned(
             .iter()
             .map(|(u, _)| Arc::from(u.as_str()))
             .collect();
-        let class_issues = session.class_issues(&dep_files);
+        let class_issues = docs.with_session(|session| session.class_issues(&dep_files));
         let mut class_issues_by_file: std::collections::HashMap<Arc<str>, Vec<mir_issues::Issue>> =
             std::collections::HashMap::new();
         for issue in class_issues {

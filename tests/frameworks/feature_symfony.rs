@@ -720,7 +720,7 @@ mod references {
                     .replace("\r\n", "\n")
                     .replace('\n', line_ending)
             };
-            let session = mir_analyzer::AnalysisSession::new(mir_analyzer::PhpVersion::LATEST);
+            let mut session = mir_analyzer::AnalysisSession::new(mir_analyzer::PhpVersion::LATEST);
             let files = ["src/Entity/Post.php", "src/DataFixtures/AppFixtures.php"];
             for f in files {
                 session.ingest_file(

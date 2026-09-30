@@ -12,6 +12,7 @@ use tower_lsp_server::ls_types::request::{
 use crate::analysis::diagnostics::parse_document_no_diags;
 use crate::document::document_store::DocumentStore;
 use crate::document::open_files::OpenFiles;
+use crate::index::file_index::FileIndex;
 
 /// Ask all connected clients to re-request semantic tokens, code lenses, inlay hints,
 /// and diagnostics. Called after bulk index operations so that previously-opened editors
@@ -187,42 +188,47 @@ pub(crate) async fn scan_workspace(
     tokio::task::spawn_blocking(move || {
         let cache_hits = std::sync::atomic::AtomicUsize::new(0);
 
-        let index_file = |(uri, text): &(Uri, String)| -> usize {
-            // Requests the user is waiting on take priority over indexing:
-            // pause before this file's salsa writes while any interactive
-            // read is in flight, so its snapshot isn't repeatedly cancelled.
-            docs.yield_to_interactive_reads();
+        // Parallel half: cache lookup, parse and index extraction only. Salsa
+        // writes happen in the serial half below — a rayon worker blocked on
+        // the session mutex would starve the pool that mir's own `par_iter`
+        // needs while the lock holder waits on it.
+        // `None`: skip (open in the editor). `Some(None)`: mirror text only.
+        let prepare_file = |(uri, text): &(Uri, String)| -> Option<Option<Arc<FileIndex>>> {
             if open_files.contains(uri) {
-                return 0;
+                return None;
             }
-
-            let cache_key = cache
-                .as_ref()
-                .map(|_| crate::index::cache::WorkspaceCache::key_for(uri.as_str(), text));
-            if let (Some(cache), Some(key)) = (cache.as_ref(), cache_key.as_ref())
-                && let Some(index) = cache.read::<crate::index::file_index::FileIndex>(key)
-            {
-                docs.mirror_text(uri, text);
-                docs.seed_cached_index(uri, Arc::new(index));
+            let Some(cache) = cache.as_ref() else {
+                return Some(None);
+            };
+            let key = crate::index::cache::WorkspaceCache::key_for(uri.as_str(), text);
+            if let Some(index) = cache.read::<FileIndex>(&key) {
                 cache_hits.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                return 1;
+                return Some(Some(Arc::new(index)));
             }
-
-            let doc = parse_document_no_diags(text);
-            if let (Some(cache), Some(key)) = (cache.as_ref(), cache_key.as_ref()) {
-                let index = crate::index::file_index::FileIndex::extract(&doc);
-                let _ = cache.write(key, &index);
-                docs.mirror_text(uri, text);
-                docs.seed_cached_index(uri, Arc::new(index));
-            } else {
-                docs.ingest_from_doc(uri.clone(), &doc);
-            }
-            1
+            let index = FileIndex::extract(&parse_document_no_diags(text));
+            let _ = cache.write(&key, &index);
+            Some(Some(Arc::new(index)))
         };
 
         let mut total = 0usize;
         for chunk in file_contents.chunks(500) {
-            total += chunk.par_iter().map(index_file).sum::<usize>();
+            let prepared: Vec<Option<Option<Arc<FileIndex>>>> =
+                chunk.par_iter().map(prepare_file).collect();
+            for ((uri, text), index) in chunk.iter().zip(prepared) {
+                let Some(index) = index else { continue };
+                // Requests the user is waiting on take priority over indexing:
+                // pause before this file's salsa writes while any interactive
+                // read is in flight, so its snapshot isn't repeatedly cancelled.
+                docs.yield_to_interactive_reads();
+                if open_files.contains(uri) {
+                    continue;
+                }
+                docs.mirror_text(uri, text);
+                if let Some(index) = index {
+                    docs.seed_cached_index(uri, index);
+                }
+                total += 1;
+            }
             docs.sync_workspace_files();
             if let Some(ref tx) = progress {
                 let _ = tx.send((total, total_files));

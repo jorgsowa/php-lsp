@@ -50,7 +50,7 @@ fn new_session() -> mir_analyzer::AnalysisSession {
     // Sessions here run mir's parallel analysis before any DocumentStore
     // exists — size the rayon stacks like production first.
     php_lsp::document_store::ensure_rayon_worker_stacks();
-    let s = mir_analyzer::AnalysisSession::new(mir_analyzer::PhpVersion::LATEST);
+    let mut s = mir_analyzer::AnalysisSession::new(mir_analyzer::PhpVersion::LATEST);
     s.ensure_all_stubs();
     s
 }
@@ -63,8 +63,8 @@ fn bench_single_file(c: &mut Criterion) {
 
     c.bench_function("semantic/single_file/medium", |b| {
         b.iter(|| {
-            let session = new_session();
-            black_box(semantic_diagnostics(&uri, &doc, &session, &cfg));
+            let mut session = new_session();
+            black_box(semantic_diagnostics(&uri, &doc, &mut session, &cfg));
         });
     });
 }
@@ -74,14 +74,14 @@ fn bench_edit_loop(c: &mut Criterion) {
     let uri = ("file:///bench/medium.php").parse::<Uri>().unwrap();
     let doc = ParsedDoc::parse(MEDIUM.to_owned());
     let cfg = all_enabled();
-    let session = new_session();
+    let mut session = new_session();
 
     // Warm so the first iter isn't an outlier.
-    let _ = semantic_diagnostics(&uri, &doc, &session, &cfg);
+    let _ = semantic_diagnostics(&uri, &doc, &mut session, &cfg);
 
     c.bench_function("semantic/edit_loop/medium", |b| {
         b.iter(|| {
-            black_box(semantic_diagnostics(&uri, &doc, &session, &cfg));
+            black_box(semantic_diagnostics(&uri, &doc, &mut session, &cfg));
         });
     });
 }
@@ -115,7 +115,7 @@ fn bench_laravel_scale(c: &mut Criterion) {
 
     eprintln!("Laravel fixture: {} PHP files (semantic)", parsed.len());
 
-    let session = new_session();
+    let mut session = new_session();
     for (url, _doc, src_arc) in &parsed {
         let file: Arc<str> = Arc::from(url.as_str());
         session.ingest_file(file, src_arc.clone());
@@ -133,7 +133,7 @@ fn bench_laravel_scale(c: &mut Criterion) {
 
     group.bench_function("reanalyze_str", |b| {
         b.iter(|| {
-            black_box(semantic_diagnostics(&hot.0, &hot.1, &session, &cfg));
+            black_box(semantic_diagnostics(&hot.0, &hot.1, &mut session, &cfg));
         });
     });
 

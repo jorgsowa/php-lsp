@@ -4,6 +4,7 @@ use tower_lsp_server::ls_types::{Hover, HoverContents, MarkupContent, MarkupKind
 
 use crate::completion::ClassDocLookup;
 use crate::document::ast::ParsedDoc;
+use crate::document::document_store::DocumentStore;
 use crate::lang::docblock::find_docblock;
 use crate::lang::is_unresolvable_bareword_at;
 use crate::lang::php_names::{is_php_builtin, php_doc_url};
@@ -44,7 +45,7 @@ pub fn hover_info_with_maps(
     position: Position,
     other_docs: &[(Uri, Arc<ParsedDoc>)],
     other_maps: &[(Uri, Arc<SymbolMap>)],
-    session: Option<&mir_analyzer::AnalysisSession>,
+    session: Option<&DocumentStore>,
     find_class_doc: Option<ClassDocLookup<'_>>,
 ) -> Option<Hover> {
     hover_at_core(
@@ -131,7 +132,7 @@ fn hover_at_core(
     analysis: Option<&mir_analyzer::FileAnalysis>,
     other_docs: &[(Uri, Arc<ParsedDoc>)],
     position: Position,
-    session: Option<&mir_analyzer::AnalysisSession>,
+    session: Option<&DocumentStore>,
     find_class_doc: Option<ClassDocLookup<'_>>,
     resolve_cross_file: impl Fn(&str) -> Option<(String, Option<String>)>,
 ) -> Option<Hover> {
@@ -488,9 +489,9 @@ fn hover_at_core(
         });
     }
 
-    if let Some(stub) =
-        session.and_then(|s| crate::types::stub_members::stub_class_members(s, &resolved_word))
-    {
+    if let Some(stub) = session.and_then(|docs| {
+        docs.with_session(|s| crate::types::stub_members::stub_class_members(s, &resolved_word))
+    }) {
         return Some(builtin_class_hover(stub, &resolved_word, hover_range));
     }
 

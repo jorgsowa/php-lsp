@@ -64,6 +64,7 @@ impl OpenFiles {
         // mirror and the open-file entry — `mirror_text_arc` skips the extra
         // `Arc::from` copy `mirror_text` would otherwise make from `&text`.
         let text: Arc<str> = Arc::from(text);
+        docs.announce_edit();
         docs.mirror_text_arc(&uri, Arc::clone(&text));
         let mut entry = self.files.entry(uri).or_default();
         entry.version += 1;

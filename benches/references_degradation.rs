@@ -54,7 +54,7 @@ fn laravel_sources() -> Option<Vec<SourceFile>> {
 /// The production references read: an `indexed_references_to` posting lookup
 /// over the candidate set. Warm files answer from the index; stale ones
 /// re-analyze once and recommit.
-fn references(session: &AnalysisSession, sym: &Name, files: &[Arc<str>]) {
+fn references(session: &mut AnalysisSession, sym: &Name, files: &[Arc<str>]) {
     std::hint::black_box(session.indexed_references_to(
         sym,
         files,
@@ -128,12 +128,12 @@ fn main() {
     // Throwaway run so the first measured level isn't paying first-touch
     // CPU/allocator costs that would skew the cold sample.
     {
-        let session = AnalysisSession::new(PhpVersion::LATEST);
+        let mut session = AnalysisSession::new(PhpVersion::LATEST);
         for cand in &candidates {
             session.set_file_text(cand.file.clone(), cand.text.clone());
         }
         for _ in 0..WARMUP_ITERS {
-            references(&session, &sym, &candidate_files);
+            references(&mut session, &sym, &candidate_files);
         }
     }
 
@@ -150,14 +150,14 @@ fn main() {
     let mut first = f64::NAN;
     let mut last = f64::NAN;
     for &warm in &warm_levels {
-        let session = AnalysisSession::new(PhpVersion::LATEST);
+        let mut session = AnalysisSession::new(PhpVersion::LATEST);
         for sf in background.iter().take(warm) {
             session.set_file_text(sf.file.clone(), sf.text.clone());
         }
         for cand in &candidates {
             session.set_file_text(cand.file.clone(), cand.text.clone());
         }
-        let m = measure(|| references(&session, &sym, &candidate_files));
+        let m = measure(|| references(&mut session, &sym, &candidate_files));
         if first.is_nan() {
             first = m;
         }
@@ -180,7 +180,7 @@ fn main() {
     // Visibility scoping: a private method's references can only live in its
     // declaring file, so the handler narrows the candidate set to that one file.
     {
-        let session = AnalysisSession::new(PhpVersion::LATEST);
+        let mut session = AnalysisSession::new(PhpVersion::LATEST);
         for sf in &background {
             session.set_file_text(sf.file.clone(), sf.text.clone());
         }
@@ -188,11 +188,11 @@ fn main() {
             session.set_file_text(cand.file.clone(), cand.text.clone());
         }
         for _ in 0..WARMUP_ITERS {
-            references(&session, &sym, &candidate_files);
-            references(&session, &sym, &candidate_files[..1]);
+            references(&mut session, &sym, &candidate_files);
+            references(&mut session, &sym, &candidate_files[..1]);
         }
-        let full = measure(|| references(&session, &sym, &candidate_files));
-        let scoped = measure(|| references(&session, &sym, &candidate_files[..1]));
+        let full = measure(|| references(&mut session, &sym, &candidate_files));
+        let scoped = measure(|| references(&mut session, &sym, &candidate_files[..1]));
         println!(
             "\nprivate scoping @ full warm: {}-file {full:.3} ms → 1-file {scoped:.3} ms  ({:.0}x)",
             candidates.len(),

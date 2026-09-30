@@ -22,7 +22,7 @@ use crate::lang::config::DiagnosticsConfig;
 pub fn semantic_diagnostics(
     uri: &Uri,
     doc: &ParsedDoc,
-    session: &mir_analyzer::AnalysisSession,
+    session: &mut mir_analyzer::AnalysisSession,
     cfg: &DiagnosticsConfig,
 ) -> Vec<Diagnostic> {
     if !cfg.enabled {

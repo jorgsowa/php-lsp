@@ -455,7 +455,7 @@ impl Backend {
 
             let warm_docs = Arc::clone(&self.docs);
             tokio::task::spawn_blocking(move || {
-                warm_docs.current_analysis_session();
+                warm_docs.with_session(|_| ());
             });
 
             let docs = Arc::clone(&self.docs);

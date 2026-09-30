@@ -120,7 +120,7 @@ fn main() {
     let t0 = Instant::now();
 
     let store = DocumentStore::new();
-    let session = if full_pipeline {
+    let mut session = if full_pipeline {
         Some(mir_analyzer::AnalysisSession::new(
             mir_analyzer::PhpVersion::LATEST,
         ))
@@ -129,7 +129,7 @@ fn main() {
     };
 
     for (url, src) in php_files.iter() {
-        if let Some(s) = session.as_ref() {
+        if let Some(s) = session.as_mut() {
             let src_arc: Arc<str> = Arc::from(src.as_str());
             let doc = ParsedDoc::parse(src_arc.clone());
             let file: Arc<str> = Arc::from(url.as_str());

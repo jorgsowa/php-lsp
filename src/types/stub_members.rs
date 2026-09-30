@@ -8,7 +8,7 @@ use crate::types::type_map::ClassMembers;
 /// known built-in class. Stubs load lazily: this faults in the single stub
 /// file defining `fqcn` (no-op once loaded) before reading, so it works
 /// even when the class is not referenced by any analyzed file.
-pub fn stub_class_members(session: &AnalysisSession, fqcn: &str) -> Option<ClassMembers> {
+pub fn stub_class_members(session: &mut AnalysisSession, fqcn: &str) -> Option<ClassMembers> {
     let normalized = fqcn.strip_prefix('\\').unwrap_or(fqcn);
     if !session.ensure_stub_for_class(normalized) {
         return None;

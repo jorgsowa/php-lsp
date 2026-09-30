@@ -57,7 +57,7 @@ struct Workspace {
 /// Build a session with `size` ingested dependents, `OPEN_FILES` of which are
 /// treated as the editor's open files.
 fn build(size: usize) -> Workspace {
-    let session = AnalysisSession::new(PhpVersion::LATEST);
+    let mut session = AnalysisSession::new(PhpVersion::LATEST);
     session.ensure_all_stubs();
 
     let base: Arc<str> = Arc::from("bench://base.php");
@@ -84,15 +84,20 @@ fn mean_ms(samples: &[Duration]) -> f64 {
 
 /// Simulated keystrokes on the base file, each followed by the republish
 /// sweep. Returns (ingest ms, sweep ms) means so a slope in either phase is
-/// attributable.
-fn measure_edits(ws: &Workspace, sweep: impl Fn()) -> (f64, f64) {
+/// attributable. `sweep` takes the session and open set explicitly (rather
+/// than closing over `ws`) since mir's single-owner session can't be
+/// borrowed both by the closure and by this function at once.
+fn measure_edits(
+    ws: &mut Workspace,
+    mut sweep: impl FnMut(&mut AnalysisSession, &Arc<str>, &[Arc<str>]),
+) -> (f64, f64) {
     let mut ingest = Vec::with_capacity(EDITS - WARMUP_EDITS);
     let mut sweeps = Vec::with_capacity(EDITS - WARMUP_EDITS);
     for edit in 0..EDITS {
         let t0 = Instant::now();
         ws.session.ingest_file(ws.base.clone(), base_text(edit + 1));
         let t1 = Instant::now();
-        sweep();
+        sweep(&mut ws.session, &ws.base, &ws.open_set);
         let t2 = Instant::now();
         if edit >= WARMUP_EDITS {
             ingest.push(t1 - t0);
@@ -119,11 +124,9 @@ fn main() {
     let mut sweep_max = 0f64;
     for &size in SIZES {
         // New path: re-analyze exactly the open files; no dependency graph.
-        let ws = build(size);
-        let (open_ingest, open_sweep) = measure_edits(&ws, || {
-            let analyses = ws
-                .session
-                .reanalyze_files_cancellable(&ws.open_set, &IndexCancel::new());
+        let mut ws = build(size);
+        let (open_ingest, open_sweep) = measure_edits(&mut ws, |session, _base, open_set| {
+            let analyses = session.reanalyze_files_cancellable(open_set, &IndexCancel::new());
             std::hint::black_box(analyses);
         });
         // Control: the same sweep with no edit in between — a pure memo hit.
@@ -145,9 +148,9 @@ fn main() {
         };
 
         // Old path: compute + re-analyze the transitive dependents of base.
-        let ws_old = build(size);
-        let (dep_ingest, dep_sweep) = measure_edits(&ws_old, || {
-            let analyses = ws_old.session.reanalyze_dependents(ws_old.base.as_ref());
+        let mut ws_old = build(size);
+        let (dep_ingest, dep_sweep) = measure_edits(&mut ws_old, |session, base, _open_set| {
+            let analyses = session.reanalyze_dependents(base.as_ref());
             std::hint::black_box(analyses);
         });
 

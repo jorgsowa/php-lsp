@@ -300,9 +300,14 @@ pub struct CompletionCtx<'a> {
     /// (`$obj->`, match subjects) are read from its `symbol_at`; `None` in unit
     /// tests that don't supply it.
     pub analysis: Option<&'a mir_analyzer::FileAnalysis>,
-    /// mir-analyzer session for querying phpstorm-stubs member info on
-    /// built-in PHP classes. `None` in unit tests that don't require stubs.
-    pub session: Option<std::sync::Arc<mir_analyzer::AnalysisSession>>,
+    /// Store handle for querying phpstorm-stubs member info on built-in PHP
+    /// classes via its mir-analyzer session. A handle rather than a borrowed
+    /// `&mut AnalysisSession`: `find_class_doc` (above) can itself lock the
+    /// session (`DocumentStore::resolve_class_ref_by_fqn`), and mir's
+    /// session mutex isn't reentrant, so nothing here may hold it across
+    /// that call — each session use below is its own short-lived lock.
+    /// `None` in unit tests that don't require stubs.
+    pub session: Option<&'a crate::document::document_store::DocumentStore>,
     /// Laravel string-key index (`env`/`config`/`view`/... — see
     /// `crate::laravel`), for completion inside those helper calls' string
     /// arguments. `None` in unit tests that don't supply it, and inert
@@ -514,7 +519,7 @@ pub fn filtered_completions_at(
                         doc,
                         other_docs,
                         ctx.find_class_doc,
-                        ctx.session.as_deref(),
+                        ctx.session,
                     ) {
                         if seen.insert(item.label.clone()) {
                             items.push(item);
@@ -542,7 +547,7 @@ pub fn filtered_completions_at(
                     doc,
                     other_docs,
                     ctx.find_class_doc,
-                    ctx.session.as_deref(),
+                    ctx.session,
                 );
                 if !items.is_empty() {
                     return items;
@@ -624,7 +629,7 @@ pub fn filtered_completions_at(
                             doc,
                             other_docs,
                             ctx.find_class_doc,
-                            ctx.session.as_deref(),
+                            ctx.session,
                         );
                         if !items.is_empty() {
                             return items;
@@ -663,7 +668,7 @@ pub fn filtered_completions_at(
                                 doc,
                                 other_docs,
                                 ctx.find_class_doc,
-                                ctx.session.as_deref(),
+                                ctx.session,
                             ) {
                                 if seen.insert(item.label.clone()) {
                                     items.push(item);

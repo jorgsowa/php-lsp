@@ -116,7 +116,7 @@ fn hover_markup(value: String) -> Hover {
     }
 }
 
-fn hover_display_class_name(session: &mir_analyzer::AnalysisSession, name: &str) -> String {
+fn hover_display_class_name(session: &mut mir_analyzer::AnalysisSession, name: &str) -> String {
     let normalized = normalized_php_fqn(name);
     if !is_bare_php_name(normalized) {
         return normalized.to_string();
@@ -127,10 +127,14 @@ fn hover_display_class_name(session: &mir_analyzer::AnalysisSession, name: &str)
     normalized.to_string()
 }
 
-fn class_hover_for_fqcn(session: &mir_analyzer::AnalysisSession, fqcn: &str) -> Option<Hover> {
-    let db = session.snapshot_db();
-    let here = mir_analyzer::db::Fqcn::from_str(&db, fqcn);
-    let class = mir_analyzer::db::find_class_like(&db, here)?;
+fn class_hover_for_fqcn(session: &mut mir_analyzer::AnalysisSession, fqcn: &str) -> Option<Hover> {
+    // The db handle must drop before `hover_display_class_name`: its stub
+    // load writes salsa inputs, which wait for every outstanding handle.
+    let class = {
+        let db = session.snapshot_db();
+        let here = mir_analyzer::db::Fqcn::from_str(&db, fqcn);
+        mir_analyzer::db::find_class_like(&db, here)?
+    };
     let sig = match &class {
         mir_analyzer::db::ClassLike::Class(c) => {
             let mut sig = if c.is_abstract {
@@ -972,7 +976,7 @@ impl LanguageServer for Backend {
             let analysis = self
                 .cached_analysis_async_cancellable(uri, cancel_rev)
                 .await;
-            let session = self.docs.current_analysis_session();
+            let docs = Arc::clone(&self.docs);
             let uri_owned = uri.clone();
             // Offload to spawn_blocking: filtered_completions_at walks the full
             // AST + workspace index which can take tens of milliseconds on large
@@ -987,7 +991,7 @@ impl LanguageServer for Backend {
                         find_class_doc: Some(&find_class_doc_fn),
                         workspace_class_search: Some(&workspace_class_search_fn),
                         analysis: analysis.as_deref(),
-                        session: Some(session),
+                        session: Some(&docs),
                         laravel: Some(&laravel_arc),
                     };
                     filtered_completions_at(&doc, &other_docs, trigger.as_deref(), &ctx)
@@ -1024,9 +1028,9 @@ impl LanguageServer for Backend {
                     let Some(symbol) = symbol.as_ref() else {
                         return (None, None);
                     };
-                    let session = docs.current_analysis_session();
-                    let (resolved_detail, resolved_docstring) =
-                        completion_signature_and_docstring_for_symbol(&session, symbol);
+                    let (resolved_detail, resolved_docstring) = docs.with_session(|session| {
+                        completion_signature_and_docstring_for_symbol(&*session, symbol)
+                    });
                     let detail = if need_detail {
                         resolved_detail.clone()
                     } else {
@@ -1177,17 +1181,19 @@ impl LanguageServer for Backend {
                 None => return Ok(None),
             };
             let analysis = self.cached_analysis_async(uri).await;
-            let session = self.docs.current_analysis_session();
+            let docs = Arc::clone(&self.docs);
             let doc_clone = Arc::clone(&doc);
             let result = self
                 .blocking("signature_help", move || {
-                    signature_help(
-                        &source,
-                        &doc_clone,
-                        position,
-                        analysis.as_deref(),
-                        Some(&session),
-                    )
+                    docs.with_session(|session| {
+                        signature_help(
+                            &source,
+                            &doc_clone,
+                            position,
+                            analysis.as_deref(),
+                            Some(&*session),
+                        )
+                    })
                 })
                 .await
                 .flatten();
@@ -1253,8 +1259,7 @@ impl LanguageServer for Backend {
             let other_docs = self.docs.other_docs(uri, &open);
             let other_maps = self.docs.other_symbol_maps(uri, &open);
             let analysis = self.cached_analysis_async(uri).await;
-            let hover_session = self.docs.current_analysis_session();
-            let hover_session_for_primary = Arc::clone(&hover_session);
+            let docs_for_hover = Arc::clone(&self.docs);
             let source_clone = source.clone();
             let doc_clone = Arc::clone(&doc);
             // Lets mir-member/static-prop hover resolve a class's declaring doc
@@ -1296,7 +1301,7 @@ impl LanguageServer for Backend {
                         position,
                         &other_docs,
                         &other_maps,
-                        Some(&hover_session_for_primary),
+                        Some(&docs_for_hover),
                         Some(&find_class_doc_fn),
                     )
                 })
@@ -1311,53 +1316,70 @@ impl LanguageServer for Backend {
             // `use Foo as Bar` works even when Foo is only in the index.
             if let Some(word) = crate::text::word_at_position(&source, position) {
                 let wi = self.workspace_index_cached(&mut wi_cache).await;
-                let fallback_imports = doc.file_imports();
-                let fallback_class_fqcn = |name: &str| {
-                    let fqn = class_lookup_fqn(&doc, name, &fallback_imports);
-                    self.docs
-                        .resolve_class_ref_by_fqn(&wi, &fqn)
-                        .and_then(|cr| {
-                            wi.at(cr)
-                                .map(|(_, cls)| normalized_php_fqn(&cls.fqn).to_string())
-                        })
-                };
-                // Try the cursor word first, resolved through this file's
-                // imports and namespace when it is a bare class name.
-                if let Some(fqcn) = fallback_class_fqcn(&word)
-                    && let Some(h) = class_hover_for_fqcn(&hover_session, &fqcn)
-                {
-                    return Ok(Some(h));
-                }
-                // Try alias resolution. The resolved FQN disambiguates between
-                // same-named classes in different namespaces (e.g. many
-                // vendored `Factory` classes all aliased to `FactoryContract`).
-                if let Some((resolved, resolved_fqn)) =
-                    crate::hover::resolve_use_alias_fqn(&doc.program().stmts, &word)
-                    && let Some(fqcn) = fallback_class_fqcn(&resolved)
-                        .filter(|fqcn| fqcn.eq_ignore_ascii_case(&resolved_fqn))
-                        .or(Some(resolved_fqn))
-                    && let Some(h) = class_hover_for_fqcn(&hover_session, &fqcn)
-                {
-                    return Ok(Some(h));
-                }
-                // Try static method hover: `ClassName::method(…)`.
-                if let Some(line_text) = source.lines().nth(position.line as usize)
-                    && let Some(class_token) =
-                        extract_static_class_before_cursor(line_text, position.character as usize)
-                {
-                    if let Some(fqcn) = fallback_class_fqcn(&class_token)
-                        && let Some(h) = method_hover_for_fqcn(&hover_session, &fqcn, &word)
-                    {
-                        return Ok(Some(h));
-                    }
-                    if let Some(resolved_class) =
-                        crate::hover::resolve_use_alias(&doc.program().stmts, &class_token)
-                        && let Some(fqcn) = fallback_class_fqcn(&resolved_class)
-                        && let Some(h) = method_hover_for_fqcn(&hover_session, &fqcn, &word)
-                    {
-                        return Ok(Some(h));
-                    }
-                }
+                let docs = Arc::clone(&self.docs);
+                let doc = Arc::clone(&doc);
+                let source = source.clone();
+                // Off the async worker: every step below takes the session lock.
+                let fallback = self
+                    .blocking("hover_fallback", move || {
+                        let fallback_imports = doc.file_imports();
+                        let fallback_class_fqcn = |name: &str| {
+                            let fqn = class_lookup_fqn(&doc, name, &fallback_imports);
+                            docs.resolve_class_ref_by_fqn(&wi, &fqn).and_then(|cr| {
+                                wi.at(cr)
+                                    .map(|(_, cls)| normalized_php_fqn(&cls.fqn).to_string())
+                            })
+                        };
+                        // Try the cursor word first, resolved through this file's
+                        // imports and namespace when it is a bare class name.
+                        if let Some(fqcn) = fallback_class_fqcn(&word)
+                            && let Some(h) =
+                                docs.with_session(|session| class_hover_for_fqcn(session, &fqcn))
+                        {
+                            return Some(h);
+                        }
+                        // Try alias resolution. The resolved FQN disambiguates between
+                        // same-named classes in different namespaces (e.g. many
+                        // vendored `Factory` classes all aliased to `FactoryContract`).
+                        if let Some((resolved, resolved_fqn)) =
+                            crate::hover::resolve_use_alias_fqn(&doc.program().stmts, &word)
+                            && let Some(fqcn) = fallback_class_fqcn(&resolved)
+                                .filter(|fqcn| fqcn.eq_ignore_ascii_case(&resolved_fqn))
+                                .or(Some(resolved_fqn))
+                            && let Some(h) =
+                                docs.with_session(|session| class_hover_for_fqcn(session, &fqcn))
+                        {
+                            return Some(h);
+                        }
+                        // Try static method hover: `ClassName::method(…)`.
+                        if let Some(line_text) = source.lines().nth(position.line as usize)
+                            && let Some(class_token) = extract_static_class_before_cursor(
+                                line_text,
+                                position.character as usize,
+                            )
+                        {
+                            if let Some(fqcn) = fallback_class_fqcn(&class_token)
+                                && let Some(h) = docs.with_session(|session| {
+                                    method_hover_for_fqcn(session, &fqcn, &word)
+                                })
+                            {
+                                return Some(h);
+                            }
+                            if let Some(resolved_class) =
+                                crate::hover::resolve_use_alias(&doc.program().stmts, &class_token)
+                                && let Some(fqcn) = fallback_class_fqcn(&resolved_class)
+                                && let Some(h) = docs.with_session(|session| {
+                                    method_hover_for_fqcn(session, &fqcn, &word)
+                                })
+                            {
+                                return Some(h);
+                            }
+                        }
+                        None
+                    })
+                    .await
+                    .flatten();
+                return Ok(fallback);
             }
             Ok(None)
         })
@@ -1418,16 +1440,18 @@ impl LanguageServer for Backend {
                 None => return Ok(None),
             };
             let analysis = self.cached_analysis_async(uri).await;
-            let session = self.docs.current_analysis_session();
+            let docs = Arc::clone(&self.docs);
             let hints = self
                 .blocking("inlay_hint", move || {
-                    inlay_hints(
-                        doc.source(),
-                        &doc,
-                        analysis.as_deref(),
-                        Some(&session),
-                        params.range,
-                    )
+                    docs.with_session(|session| {
+                        inlay_hints(
+                            doc.source(),
+                            &doc,
+                            analysis.as_deref(),
+                            Some(&*session),
+                            params.range,
+                        )
+                    })
                 })
                 .await
                 .unwrap_or_default();
@@ -1447,8 +1471,9 @@ impl LanguageServer for Backend {
                 let docs = Arc::clone(&self.docs);
                 let tooltip = self
                     .blocking_gated(super::debug_gate::GATE_INLAY_HINT_RESOLVE, move || {
-                        let session = docs.current_analysis_session();
-                        inlay_hint_tooltip_for_symbol(&session, &symbol)
+                        docs.with_session(|session| {
+                            inlay_hint_tooltip_for_symbol(&*session, &symbol)
+                        })
                     })
                     .await
                     .flatten();
@@ -2509,5 +2534,36 @@ fn class_index_location(uri: &Uri, cls: &crate::index::file_index::ClassDef) -> 
                 character: cls.name_char + cls.name.len() as u32,
             },
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Resolving a bare builtin interface loads its stub (a salsa input
+    /// write) — the hover's own db handle must be gone by then. Mirrored via
+    /// `upsert_source_file`, like the workspace scan, so no stub is preloaded.
+    #[test]
+    fn class_hover_loads_builtin_interface_stub_without_deadlock() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut session = mir_analyzer::AnalysisSession::new(mir_analyzer::PhpVersion::LATEST);
+            session.upsert_source_file(
+                Arc::from("file:///foo.php"),
+                Arc::from("<?php\nclass Foo implements Countable {\n    public function count(): int { return 0; }\n}\n"),
+                salsa::Durability::LOW,
+            );
+            let hover = class_hover_for_fqcn(&mut session, "Foo");
+            let _ = tx.send(hover.map(|h| match h.contents {
+                HoverContents::Markup(m) => m.value,
+                _ => String::new(),
+            }));
+        });
+        let value = rx
+            .recv_timeout(std::time::Duration::from_secs(30))
+            .expect("class hover deadlocked")
+            .expect("class hover for Foo");
+        assert!(value.contains("implements \\Countable"), "{value}");
     }
 }

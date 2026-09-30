@@ -1,10 +1,10 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use mir_analyzer::AnalysisSession;
 use tower_lsp_server::ls_types::{CompletionItem, CompletionItemKind, InsertTextFormat, Position};
 
 use crate::document::ast::ParsedDoc;
+use crate::document::document_store::DocumentStore;
 use crate::text::utf16_offset_to_byte;
 use crate::types::stub_members::stub_class_members;
 use crate::types::type_map::{
@@ -19,7 +19,7 @@ pub(super) fn all_instance_members(
     doc: &ParsedDoc,
     other_docs: &[Arc<ParsedDoc>],
     find_class_doc: Option<super::ClassDocLookup<'_>>,
-    session: Option<&AnalysisSession>,
+    session: Option<&DocumentStore>,
 ) -> Vec<CompletionItem> {
     all_members(class_name, doc, other_docs, find_class_doc, session, false)
 }
@@ -29,7 +29,7 @@ pub(super) fn all_static_members(
     doc: &ParsedDoc,
     other_docs: &[Arc<ParsedDoc>],
     find_class_doc: Option<super::ClassDocLookup<'_>>,
-    session: Option<&AnalysisSession>,
+    session: Option<&DocumentStore>,
 ) -> Vec<CompletionItem> {
     all_members(class_name, doc, other_docs, find_class_doc, session, true)
 }
@@ -43,7 +43,7 @@ fn all_members(
     doc: &ParsedDoc,
     other_docs: &[Arc<ParsedDoc>],
     find_class_doc: Option<super::ClassDocLookup<'_>>,
-    session: Option<&AnalysisSession>,
+    session: Option<&DocumentStore>,
     is_static: bool,
 ) -> Vec<CompletionItem> {
     let all: Vec<&ParsedDoc> = std::iter::once(doc)
@@ -167,7 +167,9 @@ fn all_members(
 
         // Built-in stubs only apply when the class is not defined in any user
         // document — a user class shadowing a built-in name wins.
-        if !found_in_docs && let Some(stub) = session.and_then(|s| stub_class_members(s, &current))
+        if !found_in_docs
+            && let Some(stub) =
+                session.and_then(|docs| docs.with_session(|s| stub_class_members(s, &current)))
         {
             if parent.is_none() {
                 parent = stub.parent.clone();

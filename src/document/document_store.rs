@@ -89,14 +89,16 @@ pub struct DocumentStore {
     /// `(target PHP version, cached AnalysisSession built for that version)`.
     /// One lock for both — `workspace_php_version()` used to read a separate
     /// `Mutex<PhpVersion>`, so fetching the version and then building/fetching
-    /// the session used to take two locks per call; `current_analysis_session()`
+    /// the session used to take two locks per call; `with_session()`
     /// takes one. `None` only before the first build, or right after
     /// `set_php_version` invalidates it.
     /// mir-analyzer's `AnalysisSession` owns the workspace MirDb, runs Pass-2
-    /// analysis, and lazy-loads dependencies via PSR-4.
+    /// analysis, and lazy-loads dependencies via PSR-4. It is single-owner
+    /// (`Send`, not `Sync`), so every access — read or write — goes through
+    /// this mutex.
     analysis_session: Mutex<(
         mir_analyzer::PhpVersion,
-        Option<Arc<mir_analyzer::AnalysisSession>>,
+        Option<mir_analyzer::AnalysisSession>,
     )>,
     /// Cache directory shared with the workspace file-index cache. When set,
     /// new `AnalysisSession`s are built with `with_cache_dir` so that stub
@@ -124,6 +126,10 @@ pub struct DocumentStore {
     /// cancel themselves if it advances — avoiding stale results and
     /// unbounded retry loops after concurrent edits.
     write_revision: AtomicU64,
+    /// Editor edits announced via [`Self::announce_edit`] before they queue
+    /// on the session mutex. Folded into [`Self::write_rev`] so a long read
+    /// holding that mutex sees the edit coming instead of blocking it.
+    edit_intents: AtomicU64,
     /// Cancel token for the in-flight dependent-diagnostics sweep. A newer
     /// edit's sweep cancels the previous one via [`Self::begin_reanalyze`], so
     /// fast typing preempts stale workspace re-analysis rather than queueing
@@ -212,6 +218,7 @@ impl DocumentStore {
             autoload_uris: std::sync::RwLock::new(Vec::new()),
             index_ready: AtomicBool::new(false),
             write_revision: AtomicU64::new(0),
+            edit_intents: AtomicU64::new(0),
             reanalyze_cancel: Mutex::new(mir_analyzer::IndexCancel::new()),
             warm_sweep_cancel: Mutex::new(mir_analyzer::IndexCancel::new()),
             warm_sweeps_completed: AtomicU64::new(0),
@@ -384,7 +391,6 @@ impl DocumentStore {
         // chunk multiplies the worst-case stall rather than improving
         // responsiveness; 32 files is one mir prepare+analyze pass.
         const CHUNK: usize = 32;
-        let session = self.current_analysis_session();
         let total = queue.len() as u32;
         let mut done: u32 = 0;
         let mut all_settled = true;
@@ -406,8 +412,11 @@ impl DocumentStore {
                     all_settled = false;
                     break 'chunks;
                 }
+                // Acquired fresh per chunk (not held across the loop) so an
+                // interactive request queued behind `yield_to_interactive_reads`
+                // above can actually get the session lock between chunks.
                 if salsa::Cancelled::catch(std::panic::AssertUnwindSafe(|| {
-                    session.reanalyze_files_cancellable(chunk, cancel)
+                    self.with_session(|session| session.reanalyze_files_cancellable(chunk, cancel))
                 }))
                 .is_ok()
                 {
@@ -504,7 +513,7 @@ impl DocumentStore {
     /// Persist mir's staged analysis-cache entries (reference postings) to
     /// disk. No-op when nothing changed since the last flush.
     pub fn flush_analysis_cache(&self) {
-        self.current_analysis_session().flush_analysis_cache();
+        self.with_session(|session| session.flush_analysis_cache());
     }
 
     /// Warm sweeps that ran to completion. See `$/php-lsp/debugStats`.
@@ -576,7 +585,15 @@ impl DocumentStore {
     /// if the counter advances, those operations abort and return empty rather
     /// than looping indefinitely against a newly-invalidated database.
     pub fn write_rev(&self) -> u64 {
-        self.write_revision.load(Ordering::Acquire)
+        self.write_revision
+            .load(Ordering::Acquire)
+            .wrapping_add(self.edit_intents.load(Ordering::Acquire))
+    }
+
+    /// Advance [`Self::write_rev`] ahead of an editor edit's session write,
+    /// so cancellable reads that hold the session mutex abort and let it in.
+    pub fn announce_edit(&self) {
+        self.edit_intents.fetch_add(1, Ordering::Release);
     }
 
     /// Set the directory used to persist stub-parse and analysis results across
@@ -635,8 +652,7 @@ impl DocumentStore {
         self.caches.evict_analysis_all();
     }
 
-    /// Get or build the `AnalysisSession` for the given PHP version. Rebuilds
-    /// when the version changes (e.g. user flipped config). The session owns
+    /// Build a fresh `AnalysisSession` for `php_version`. The session owns
     /// the shared salsa db and AnalysisCache; lazy-loads vendor files via the
     /// shared PSR-4 map. Built-in stubs are *not* pre-loaded: mir's
     /// `prepare_ast_for_analysis` ingests the stubs each analyzed file
@@ -645,19 +661,12 @@ impl DocumentStore {
     /// [`Self::set_user_stub_dirs`]) are configured on the builder here; mir's
     /// `ingest_file` — called for every mirrored document — is what actually
     /// registers them (and the built-in stubs) as `SourceFile` inputs.
-    pub fn analysis_session(
+    fn build_session(
         &self,
         php_version: mir_analyzer::PhpVersion,
-    ) -> Arc<mir_analyzer::AnalysisSession> {
-        let mut guard = self.analysis_session.lock().unwrap();
-        if guard.0 == php_version
-            && let Some(session) = guard.1.as_ref()
-        {
-            return Arc::clone(session);
-        }
-        // Build a fresh session. Hand it the shared PSR-4 map so it can
-        // lazy-resolve `UndefinedClass` candidates without us having to mirror
-        // every vendor file upfront.
+    ) -> mir_analyzer::AnalysisSession {
+        // Hand it the shared PSR-4 map so it can lazy-resolve `UndefinedClass`
+        // candidates without us having to mirror every vendor file upfront.
         let resolver: Arc<dyn mir_analyzer::ClassResolver> = self.psr4.load_full();
         // References/implementations are answered from mir's delta-maintained
         // inverted indexes (posting lists + subtype edges), which the session
@@ -675,23 +684,33 @@ impl DocumentStore {
         if let Some(dir) = self.session_cache_dir.get() {
             builder = builder.with_cache_dir(dir);
         }
-        let session = Arc::new(builder);
-        *guard = (php_version, Some(Arc::clone(&session)));
-        session
+        builder
     }
 
-    /// Get-or-build the `AnalysisSession` for the *current* workspace PHP
-    /// version — a single lock acquisition on the common (already-built)
-    /// path. Replaces `self.analysis_session(self.workspace_php_version())`,
-    /// which took two separate locks per call.
-    pub fn current_analysis_session(&self) -> Arc<mir_analyzer::AnalysisSession> {
-        let guard = self.analysis_session.lock().unwrap();
-        if let Some(session) = guard.1.as_ref() {
-            return Arc::clone(session);
+    /// Run `f` against the `AnalysisSession` for `php_version`, rebuilding it
+    /// first when the version changed or no session exists yet.
+    ///
+    /// This mutex is the only synchronization for session access and it is
+    /// not reentrant: never call back into the store from inside `f`.
+    pub fn with_session_for<R>(
+        &self,
+        php_version: mir_analyzer::PhpVersion,
+        f: impl FnOnce(&mut mir_analyzer::AnalysisSession) -> R,
+    ) -> R {
+        let mut guard = self.analysis_session.lock().unwrap();
+        if guard.0 != php_version || guard.1.is_none() {
+            let session = self.build_session(php_version);
+            *guard = (php_version, Some(session));
         }
-        let php_version = guard.0;
-        drop(guard);
-        self.analysis_session(php_version)
+        f(guard.1.as_mut().unwrap())
+    }
+
+    /// [`Self::with_session_for`] against the *current* workspace PHP
+    /// version — a single lock acquisition on the common (already-built)
+    /// path.
+    pub fn with_session<R>(&self, f: impl FnOnce(&mut mir_analyzer::AnalysisSession) -> R) -> R {
+        let php_version = self.workspace_php_version();
+        self.with_session_for(php_version, f)
     }
 
     /// Current PHP version tracked by the workspace input.
@@ -707,9 +726,7 @@ impl DocumentStore {
     /// the correct files, fixing aliased `extends` and FQN-qualified forms that
     /// a raw textual search could miss.
     pub fn class_subtype_urls(&self, class_fqn: &str) -> Vec<tower_lsp_server::ls_types::Uri> {
-        let session = self.current_analysis_session();
-        session
-            .subtype_files(class_fqn)
+        self.with_session(|session| session.subtype_files(class_fqn))
             .into_iter()
             .filter_map(|p| p.parse::<Uri>().ok())
             .collect()
@@ -752,13 +769,14 @@ impl DocumentStore {
     fn snapshot_mir_query<R>(&self, f: impl Fn(&mir_analyzer::db::MirDbStorage) -> R) -> R {
         use std::panic::AssertUnwindSafe;
         let _interactive = self.interactive_read_guard();
-        let session = self.current_analysis_session();
-        // Each iteration's snapshot clone MUST drop before the next snapshot:
-        // a concurrent writer's salsa `set` holds the mir write lock and waits
-        // for outstanding db handles to drop, while the next `snapshot_db` needs
-        // the read lock — keeping the clone alive across the retry deadlocks.
+        // Each iteration takes a fresh snapshot under its own brief lock
+        // acquisition (not held across the retry): a concurrent writer's
+        // salsa `set` holds the mir write lock and waits for outstanding db
+        // handles to drop, while the next `snapshot_db` needs the read lock —
+        // keeping either the clone or the session lock alive across the retry
+        // deadlocks.
         loop {
-            let db = session.snapshot_db();
+            let db = self.with_session(|session| session.snapshot_db());
             match salsa::Cancelled::catch(AssertUnwindSafe(|| f(&db))) {
                 Ok(r) => return r,
                 Err(_) => drop(db),
@@ -778,9 +796,8 @@ impl DocumentStore {
     ) -> Option<R> {
         use std::panic::AssertUnwindSafe;
         let _interactive = self.interactive_read_guard();
-        let session = self.current_analysis_session();
         for _ in 0..attempts {
-            let db = session.snapshot_db();
+            let db = self.with_session(|session| session.snapshot_db());
             match salsa::Cancelled::catch(AssertUnwindSafe(|| f(&db))) {
                 Ok(r) => return Some(r),
                 Err(_) => drop(db),
@@ -817,43 +834,44 @@ impl DocumentStore {
     pub fn mirror_text_arc(&self, uri: &Uri, text_arc: Arc<str>) {
         let dur = Self::input_durability(uri);
         let path: Arc<str> = Arc::from(uri.as_str());
-        let session = self.current_analysis_session();
-        if let Some(wf) = self.lsp_ws_files.get(uri).map(|e| *e) {
-            // A resurrected (previously-deleted) file changes
-            // `workspace_file_paths()`'s result set — invalidate its cache.
-            // The common case (an edit to an already-live file) hits `None`
-            // here and pays nothing extra.
-            if self.deleted_uris.remove(uri).is_some() {
-                self.workspace_file_paths_cache.store(None);
-            }
-            // Fast path: byte-identical text already mirrored — skip the write
-            // lock and the revision bump entirely.
-            if let Some(cached) = self.caches.text_cache.get(uri)
-                && **cached == *text_arc
-            {
-                return;
-            }
-            session.upsert_source_file(path, text_arc.clone(), dur);
-            session.with_db_mut(|db| {
-                // Any text change invalidates a previously-seeded cached index.
-                // Only set when present to avoid a spurious second revision bump.
-                if wf.cached_index(db).is_some() {
-                    wf.set_cached_index(db).to(None);
+        self.with_session(|session| {
+            if let Some(wf) = self.lsp_ws_files.get(uri).map(|e| *e) {
+                // A resurrected (previously-deleted) file changes
+                // `workspace_file_paths()`'s result set — invalidate its cache.
+                // The common case (an edit to an already-live file) hits `None`
+                // here and pays nothing extra.
+                if self.deleted_uris.remove(uri).is_some() {
+                    self.workspace_file_paths_cache.store(None);
                 }
-            });
-            self.caches.text_cache.insert(uri.clone(), text_arc);
-            // Evict only this file's analysis; cross-file invalidation is handled
-            // lazily in `cached_analysis` via the declaration fingerprint.
-            self.caches.evict_analysis(uri);
-            self.write_revision.fetch_add(1, Ordering::Release);
-        } else {
-            let sf = session.upsert_source_file(path, text_arc.clone(), dur);
-            let wf = session.with_db_mut(|db| LspWsFile::new(db, sf, None));
-            self.lsp_ws_files.insert(uri.clone(), wf);
-            self.caches.text_cache.insert(uri.clone(), text_arc);
-            self.mark_workspace_files_dirty();
-            self.write_revision.fetch_add(1, Ordering::Release);
-        }
+                // Fast path: byte-identical text already mirrored — skip the write
+                // lock and the revision bump entirely.
+                if let Some(cached) = self.caches.text_cache.get(uri)
+                    && **cached == *text_arc
+                {
+                    return;
+                }
+                session.upsert_source_file(path, text_arc.clone(), dur);
+                session.with_db_mut(|db| {
+                    // Any text change invalidates a previously-seeded cached index.
+                    // Only set when present to avoid a spurious second revision bump.
+                    if wf.cached_index(db).is_some() {
+                        wf.set_cached_index(db).to(None);
+                    }
+                });
+                self.caches.text_cache.insert(uri.clone(), text_arc);
+                // Evict only this file's analysis; cross-file invalidation is handled
+                // lazily in `cached_analysis` via the declaration fingerprint.
+                self.caches.evict_analysis(uri);
+                self.write_revision.fetch_add(1, Ordering::Release);
+            } else {
+                let sf = session.upsert_source_file(path, text_arc.clone(), dur);
+                let wf = session.with_db_mut(|db| LspWsFile::new(db, sf, None));
+                self.lsp_ws_files.insert(uri.clone(), wf);
+                self.caches.text_cache.insert(uri.clone(), text_arc);
+                self.mark_workspace_files_dirty();
+                self.write_revision.fetch_add(1, Ordering::Release);
+            }
+        });
     }
 
     /// Return the `LspWsFile` handle for a URL, if active (not deleted).
@@ -881,8 +899,9 @@ impl DocumentStore {
         let Some(wf) = self.lsp_ws_file(uri) else {
             return false;
         };
-        let session = self.current_analysis_session();
-        session.with_db_mut(|db| wf.set_cached_index(db).to(Some(index)));
+        self.with_session(|session| {
+            session.with_db_mut(|db| wf.set_cached_index(db).to(Some(index)));
+        });
         true
     }
 
@@ -954,8 +973,8 @@ impl DocumentStore {
         // Also evict the file from the `AnalysisSession`'s internal state so
         // workspace symbol queries don't keep returning the deleted file's
         // declarations. Cheap when the session hasn't ingested this file.
-        let guard = self.analysis_session.lock().unwrap();
-        if let Some(session) = guard.1.as_ref() {
+        let mut guard = self.analysis_session.lock().unwrap();
+        if let Some(session) = guard.1.as_mut() {
             session.invalidate_file(uri.as_str());
             // `file_index` has no LRU cap (unlike `parsed_doc`/`symbol_map`),
             // so without this it would keep holding this file's pre-deletion
@@ -1113,13 +1132,14 @@ impl DocumentStore {
         entries.sort_unstable_by(|(a, _), (b, _)| a.cmp(b));
         let files: Arc<[LspWsFile]> = entries.iter().map(|(_, wf)| *wf).collect();
 
-        let session = self.current_analysis_session();
         let mut guard = self.lsp_workspace.lock().unwrap();
-        session.with_db_mut(|db| match *guard {
-            Some(ws) => {
-                ws.set_files(db).to(files);
-            }
-            None => *guard = Some(LspWorkspace::new(db, files)),
+        self.with_session(|session| {
+            session.with_db_mut(|db| match *guard {
+                Some(ws) => {
+                    ws.set_files(db).to(files);
+                }
+                None => *guard = Some(LspWorkspace::new(db, files)),
+            });
         });
     }
 
@@ -1146,11 +1166,10 @@ impl DocumentStore {
             if guard.0 == version {
                 return false;
             }
-            // Clear the cached session too: `current_analysis_session()` trusts
-            // `guard.1` unconditionally when present, so leaving the old
-            // version's session behind here would silently hand it out under
-            // the new version until something calls `analysis_session(version)`
-            // explicitly to force the mismatch-triggered rebuild.
+            // Clear the cached session too: `with_session`/`with_session_for`
+            // trust `guard.1` unconditionally once `guard.0` matches, so
+            // leaving the old version's session behind here would silently
+            // hand it out under the new version.
             guard.0 = version;
             guard.1 = None;
         }
@@ -1204,21 +1223,21 @@ impl DocumentStore {
         // concurrent edit aborts *inside* mir's retry loop instead of spinning
         // there indefinitely (mir catches `Cancelled` internally, so an outer
         // catch alone never fires for the parallel phase).
-        let stale =
-            || cancel_rev.is_some_and(|rev| self.write_revision.load(Ordering::Acquire) != rev);
+        let stale = || cancel_rev.is_some_and(|rev| self.write_rev() != rev);
         // Retry: concurrent db writes (background indexing) cancel snapshot
         // queries via resume_unwind; without the loop the panic propagates out
         // of the caller's spawn_blocking and the request silently returns empty.
         let raw = loop {
-            let session = self.analysis_session(php_version);
             match salsa::Cancelled::catch(std::panic::AssertUnwindSafe(|| {
-                session.indexed_references_to(
-                    symbol,
-                    files,
-                    include_declaration,
-                    ReferenceIncludes::Plain,
-                    &stale,
-                )
+                self.with_session_for(php_version, |session| {
+                    session.indexed_references_to(
+                        symbol,
+                        files,
+                        include_declaration,
+                        ReferenceIncludes::Plain,
+                        &stale,
+                    )
+                })
             })) {
                 Ok(Some(refs)) => break refs,
                 // mir aborted via the staleness probe — or a Phase-1 unwind
@@ -1258,11 +1277,10 @@ impl DocumentStore {
         symbol: &mir_analyzer::Name,
         files: &[Arc<str>],
     ) -> Vec<(Arc<str>, u32, u32, u32)> {
-        let session = self.current_analysis_session();
         let _interactive = self.interactive_read_guard();
         let raw = loop {
             if let Ok(locs) = salsa::Cancelled::catch(std::panic::AssertUnwindSafe(|| {
-                session.indexed_use_import_locations(symbol, files)
+                self.with_session(|session| session.indexed_use_import_locations(symbol, files))
             })) {
                 break locs;
             }
@@ -1302,8 +1320,7 @@ impl DocumentStore {
         if files.is_empty() {
             return Vec::new();
         }
-        let session = self.current_analysis_session();
-        let untrusted = session.warm_start_files(&files);
+        let untrusted = self.with_session(|session| session.warm_start_files(&files));
         self.warm_start_replays_completed
             .fetch_add(1, Ordering::Relaxed);
         untrusted
@@ -1424,11 +1441,12 @@ impl DocumentStore {
         include_trait_users: bool,
     ) -> Vec<mir_analyzer::SubtypeClassSite> {
         let files = self.workspace_file_paths();
-        let session = self.current_analysis_session();
         let _interactive = self.interactive_read_guard();
         loop {
             if let Ok(sites) = salsa::Cancelled::catch(std::panic::AssertUnwindSafe(|| {
-                session.indexed_subtype_classes(class_fqn, &files, include_trait_users)
+                self.with_session(|session| {
+                    session.indexed_subtype_classes(class_fqn, &files, include_trait_users)
+                })
             })) {
                 break sites;
             }
@@ -1443,11 +1461,12 @@ impl DocumentStore {
         method: &str,
     ) -> Vec<(Arc<str>, Arc<str>, mir_analyzer::Range)> {
         let files = self.workspace_file_paths();
-        let session = self.current_analysis_session();
         let _interactive = self.interactive_read_guard();
         loop {
             if let Ok(sites) = salsa::Cancelled::catch(std::panic::AssertUnwindSafe(|| {
-                session.indexed_method_implementations(class_fqn, method, &files)
+                self.with_session(|session| {
+                    session.indexed_method_implementations(class_fqn, method, &files)
+                })
             })) {
                 break sites;
             }
@@ -1569,9 +1588,8 @@ impl DocumentStore {
                 // matches subclasses by FQCN, so `extends \Ns\Base` and aliased
                 // `use ... as` forms are all found. Falls back to full scope if
                 // mir can't resolve the owner.
-                let session = self.current_analysis_session();
-                let mut files: std::collections::HashSet<Uri> = session
-                    .subtype_files(owner_fqn)
+                let mut files: std::collections::HashSet<Uri> = self
+                    .with_session(|session| session.subtype_files(owner_fqn))
                     .into_iter()
                     .filter_map(|p| p.parse::<Uri>().ok())
                     .collect();
@@ -1945,7 +1963,7 @@ impl DocumentStore {
         // parallel loop below takes its own fresh snapshot instead of
         // reusing this one.
         {
-            let mir_db = self.current_analysis_session().snapshot_db();
+            let mir_db = self.with_session(|session| session.snapshot_db());
             let all_needles = per_query_needles.iter().flatten().map(|s| s.as_str());
             let (raw_needles, bounded_needles): (Vec<&str>, Vec<&str>) =
                 all_needles.partition(|n| needle_needs_raw_match(n));
@@ -1993,7 +2011,7 @@ impl DocumentStore {
             })
             .collect();
 
-        let mir_db = self.current_analysis_session().snapshot_db();
+        let mir_db = self.with_session(|session| session.snapshot_db());
         let mir_scanner = mir_db.class_mention_scanner();
         let per_query_mir_queries: Vec<Vec<mir_analyzer::db::MentionQuery>> = per_query_needles
             .iter()
@@ -2134,32 +2152,30 @@ impl DocumentStore {
     /// grows by a small bounded amount per operation — never per candidate.
     /// Surfaced via `$/php-lsp/debugStats` for the stress-test guard.
     pub fn ref_index_lock_count(&self) -> u64 {
-        self.current_analysis_session().ref_index_lock_count()
+        self.with_session(|session| session.ref_index_lock_count())
     }
 
     /// Diagnostic: mir's `indexed_references_to` memoization hits, surfaced
     /// via `$/php-lsp/debugStats` so a host-side query can be attributed to
     /// the right layer when diagnosing latency.
     pub fn mir_ref_query_cache_hits(&self) -> u64 {
-        self.current_analysis_session().ref_query_cache_hits()
+        self.with_session(|session| session.ref_query_cache_hits())
     }
 
     /// Diagnostic: mir's `indexed_subtype_classes` memoization hits.
     pub fn mir_subtype_query_cache_hits(&self) -> u64 {
-        self.current_analysis_session().subtype_query_cache_hits()
+        self.with_session(|session| session.subtype_query_cache_hits())
     }
 
     /// Whether mir's workspace symbol index singleton is populated (warm-start
     /// seed or first sweep). See `DebugStats::workspace_symbol_index_ready`.
     pub fn workspace_symbol_index_ready(&self) -> bool {
-        self.analysis_session(self.workspace_php_version())
-            .workspace_symbol_index_ready()
+        self.with_session(|session| session.workspace_symbol_index_ready())
     }
 
     /// Executions of mir's tracked O(all-files) symbol-index walk.
     pub fn workspace_index_walks(&self) -> u64 {
-        self.analysis_session(self.workspace_php_version())
-            .workspace_index_walks()
+        self.with_session(|session| session.workspace_index_walks())
     }
 
     /// Number of files mirrored into the salsa workspace (open + background
@@ -2220,9 +2236,7 @@ impl DocumentStore {
     /// query should bump `reachability_scan_passes` without bumping this at
     /// all.
     pub(crate) fn mir_mention_scans_recorded(&self) -> u64 {
-        self.current_analysis_session()
-            .class_mention_stats()
-            .scans_recorded
+        self.with_session(|session| session.class_mention_stats().scans_recorded)
     }
 
     /// Return the raw source text for `uri` if it has been mirrored into the
@@ -2261,9 +2275,8 @@ impl DocumentStore {
             let _s = tracing::debug_span!("session.class_issues_for").entered();
             // Retry: concurrent db writes cancel snapshot queries via resume_unwind.
             loop {
-                let session = self.current_analysis_session();
                 if let Ok(issues) = salsa::Cancelled::catch(std::panic::AssertUnwindSafe(|| {
-                    session.class_issues(std::slice::from_ref(&file))
+                    self.with_session(|session| session.class_issues(std::slice::from_ref(&file)))
                 })) {
                     break issues;
                 }
@@ -2273,10 +2286,8 @@ impl DocumentStore {
         // those out downstream in `issues_to_diagnostics` (php-lsp already
         // surfaces parse errors as `SyntaxError` diagnostics from its own
         // parser pass), so this returns them unfiltered here.
-        let collector_issues = {
-            let session = self.current_analysis_session();
-            session.collector_issues(std::slice::from_ref(&file))
-        };
+        let collector_issues =
+            self.with_session(|session| session.collector_issues(std::slice::from_ref(&file)));
         let combined: Vec<mir_issues::Issue> = analysis
             .issues
             .iter()
@@ -2296,10 +2307,9 @@ impl DocumentStore {
     /// background writes; the retry covers a write already in flight.
     pub fn mir_name_at(&self, uri: &Uri, offset: u32) -> Option<mir_analyzer::Name> {
         let _interactive = self.interactive_read_guard();
-        let session = self.current_analysis_session();
         loop {
             match salsa::Cancelled::catch(std::panic::AssertUnwindSafe(|| {
-                session.name_at(uri.as_str(), offset)
+                self.with_session(|session| session.name_at(uri.as_str(), offset))
             })) {
                 Ok(name) => return name,
                 Err(_) => std::thread::yield_now(),
@@ -2338,15 +2348,12 @@ impl DocumentStore {
     }
 
     /// Compare `uri`'s current `FileIndex` against its stored declaration
-    /// fingerprint, bumping php-lsp's analysis-cache generation when
-    /// declarations changed or this is the file's first-seen fingerprint.
-    /// Body-only edits leave the counter unchanged so sibling files keep
-    /// serving from cache. Returns whether it bumped.
-    fn sync_decl_fingerprint(
-        &self,
-        uri: &Uri,
-        session: &mir_analyzer::AnalysisSession,
-    ) -> (bool, Option<Arc<FileIndex>>) {
+    /// fingerprint. Read-only against the session (`get_index_salsa` takes
+    /// its own brief lock via `snapshot_mir_query`) — callers that already
+    /// hold the session lock must call this *before* entering `with_session`,
+    /// never from inside it: `get_index_salsa` locks the same mutex, and
+    /// `std::sync::Mutex` isn't reentrant.
+    fn decl_fingerprint_delta(&self, uri: &Uri) -> (bool, Option<Arc<FileIndex>>) {
         let new_index = self.get_index_salsa(uri);
         let old_fp = self
             .caches
@@ -2358,28 +2365,39 @@ impl DocumentStore {
             (None, Some(new)) => !new.declares_nothing(),
             _ => false,
         };
-        if decl_changed {
-            self.caches.bump_decl_version();
-            session.bump_prepare_generation();
-            if let Some(source) = self.caches.text_cache.get(uri).map(|t| Arc::clone(&*t)) {
-                if let Some(mut entry) = self.caches.analysis_cache.get_mut(uri) {
-                    entry.source = source;
-                    entry.decl_index = new_index.as_ref().map(Arc::clone);
-                    entry.analysis = None;
-                } else {
-                    self.caches.analysis_cache.insert(
-                        uri.clone(),
-                        AnalysisCacheEntry {
-                            source,
-                            decl_version: self.caches.decl_version(),
-                            decl_index: new_index.as_ref().map(Arc::clone),
-                            analysis: None,
-                        },
-                    );
-                }
+        (decl_changed, new_index)
+    }
+
+    /// Bump php-lsp's analysis-cache generation and refresh the retained
+    /// fingerprint entry for a [`Self::decl_fingerprint_delta`] that found a
+    /// change. `session` is only needed for `bump_prepare_generation` — the
+    /// delta itself must already be computed outside any `with_session` scope
+    /// (see that method's doc).
+    fn apply_decl_fingerprint(
+        &self,
+        uri: &Uri,
+        session: &mut mir_analyzer::AnalysisSession,
+        new_index: &Option<Arc<FileIndex>>,
+    ) {
+        self.caches.bump_decl_version();
+        session.bump_prepare_generation();
+        if let Some(source) = self.caches.text_cache.get(uri).map(|t| Arc::clone(&*t)) {
+            if let Some(mut entry) = self.caches.analysis_cache.get_mut(uri) {
+                entry.source = source;
+                entry.decl_index = new_index.as_ref().map(Arc::clone);
+                entry.analysis = None;
+            } else {
+                self.caches.analysis_cache.insert(
+                    uri.clone(),
+                    AnalysisCacheEntry {
+                        source,
+                        decl_version: self.caches.decl_version(),
+                        decl_index: new_index.as_ref().map(Arc::clone),
+                        analysis: None,
+                    },
+                );
             }
         }
-        (decl_changed, new_index)
     }
 
     /// Sync declaration freshness for a file mirrored outside its own
@@ -2387,8 +2405,10 @@ impl DocumentStore {
     /// php-lsp's retained [`mir_analyzer::FileAnalysis`] cache, whose entries
     /// are tagged by `decl_version`.
     pub fn sync_analysis_cache_declarations(&self, uri: &Uri) {
-        let session = self.current_analysis_session();
-        self.sync_decl_fingerprint(uri, &session);
+        let (decl_changed, new_index) = self.decl_fingerprint_delta(uri);
+        if decl_changed {
+            self.with_session(|session| self.apply_decl_fingerprint(uri, session, &new_index));
+        }
     }
 
     /// [`Self::cached_analysis`] with an early exit: `should_cancel` is
@@ -2434,7 +2454,6 @@ impl DocumentStore {
         }
         let cur_ver = self.caches.decl_version();
 
-        let session = self.current_analysis_session();
         let file: Arc<str> = Arc::from(uri.as_str());
 
         let source_map = php_rs_parser::source_map::SourceMap::new(doc.source());
@@ -2472,44 +2491,53 @@ impl DocumentStore {
 
         // ingest_file/load_class/analyze take internal salsa snapshots; a concurrent db write cancels them via resume_unwind. Retry the idempotent sequence.
         let _interactive = self.interactive_read_guard();
-        let analysis = loop {
-            let attempt = salsa::Cancelled::catch(std::panic::AssertUnwindSafe(|| {
-                session.ingest_file(file.clone(), source.clone());
-                for (afile, atext) in &autoload_texts {
-                    session.ingest_file(afile.clone(), atext.clone());
-                }
-                for fqcn in &class_fqns {
-                    let _ = session.load_class(fqcn);
-                }
-                let analyzer = mir_analyzer::FileAnalyzer::new(&session);
-                analyzer.analyze(file.clone(), doc.source(), &owned_program, &source_map)
-            }));
-            match attempt {
-                Ok(a) => {
-                    self.analysis_compute_count.fetch_add(1, Ordering::Relaxed);
-                    break Arc::new(a);
-                }
-                Err(_) => {
-                    // A write cancelled the attempt. If it replaced THIS
-                    // file's text the result is already obsolete (the cache
-                    // key is the source Arc) and the editor re-requests after
-                    // its didChange — stop burning the blocking thread.
-                    // Writes elsewhere just retry as before.
-                    let text_changed = self
-                        .caches
-                        .text_cache
-                        .get(uri)
-                        .is_none_or(|t| !Arc::ptr_eq(&t, &source));
-                    if text_changed || should_cancel() {
-                        return None;
+        let analysis = self.with_session(|session| -> Option<Arc<mir_analyzer::FileAnalysis>> {
+            loop {
+                let attempt = salsa::Cancelled::catch(std::panic::AssertUnwindSafe(|| {
+                    session.ingest_file(file.clone(), source.clone());
+                    for (afile, atext) in &autoload_texts {
+                        session.ingest_file(afile.clone(), atext.clone());
+                    }
+                    for fqcn in &class_fqns {
+                        let _ = session.load_class(fqcn);
+                    }
+                    let mut analyzer = mir_analyzer::FileAnalyzer::new(session);
+                    analyzer.analyze(file.clone(), doc.source(), &owned_program, &source_map)
+                }));
+                match attempt {
+                    Ok(a) => {
+                        self.analysis_compute_count.fetch_add(1, Ordering::Relaxed);
+                        return Some(Arc::new(a));
+                    }
+                    Err(_) => {
+                        // A write cancelled the attempt. If it replaced THIS
+                        // file's text the result is already obsolete (the cache
+                        // key is the source Arc) and the editor re-requests after
+                        // its didChange — stop burning the blocking thread.
+                        // Writes elsewhere just retry as before.
+                        let text_changed = self
+                            .caches
+                            .text_cache
+                            .get(uri)
+                            .is_none_or(|t| !Arc::ptr_eq(&t, &source));
+                        if text_changed || should_cancel() {
+                            return None;
+                        }
                     }
                 }
             }
-        };
+        })?;
         // Keep php-lsp's retained FileAnalysis cache coherent with declaration
         // changes discovered while analyzing this file. Mir owns its own
         // invalidation; this protects only php-lsp's in-memory analysis_cache.
-        let (decl_changed, decl_index) = self.sync_decl_fingerprint(uri, &session);
+        // Computed *after* `with_session` above returns (its lock released):
+        // `decl_fingerprint_delta` takes its own brief lock via
+        // `get_index_salsa`, and nesting it inside the still-held lock above
+        // would deadlock on the non-reentrant session mutex.
+        let (decl_changed, decl_index) = self.decl_fingerprint_delta(uri);
+        if decl_changed {
+            self.with_session(|session| self.apply_decl_fingerprint(uri, session, &decl_index));
+        }
         let ver = cur_ver + u64::from(decl_changed);
         self.caches.shed_stale(
             &self.caches.analysis_cache,
@@ -2606,7 +2634,7 @@ impl DocumentStore {
         // same writer-starvation discipline as
         // `resolve_reachability_queries_uncached`.
         let urls: Vec<Uri> = {
-            let mir_db = self.current_analysis_session().snapshot_db();
+            let mir_db = self.with_session(|session| session.snapshot_db());
             mir_db.add_literal_mention_names(needles.iter().map(|s| s.as_str()));
             let queries: Vec<mir_analyzer::db::MentionQuery> = needles
                 .iter()
@@ -2670,8 +2698,7 @@ impl DocumentStore {
         files: &[Arc<str>],
         short_name: &str,
     ) -> Vec<Arc<str>> {
-        self.current_analysis_session()
-            .files_mentioning_any(files, &[short_name])
+        self.with_session(|session| session.files_mentioning_any(files, &[short_name]))
     }
 
     /// Candidate files that may *declare* something named `name` anywhere in
@@ -2711,8 +2738,7 @@ impl DocumentStore {
         let trimmed = fqn.trim_start_matches('\\');
         let name = mir_analyzer::Name::Class(Arc::from(trimmed));
         let loc = self
-            .current_analysis_session()
-            .definition_of_cached(&name)
+            .with_session(|session| session.definition_of_cached(&name))
             .ok()?;
         let &file_idx = wi.path_to_file_idx.get(loc.file.as_ref())?;
         let (_, idx) = wi.files.get(file_idx as usize)?;
@@ -2749,8 +2775,7 @@ impl DocumentStore {
         let trimmed = fqn.trim_start_matches('\\');
         let name = mir_analyzer::Name::function(trimmed.to_string());
         let loc = self
-            .current_analysis_session()
-            .definition_of_cached(&name)
+            .with_session(|session| session.definition_of_cached(&name))
             .ok()?;
         let &file_idx = wi.path_to_file_idx.get(loc.file.as_ref())?;
         let (_, idx) = wi.files.get(file_idx as usize)?;
@@ -2982,8 +3007,7 @@ mod tests {
         let big_text = format!("<?php\n{}", "// pad\n".repeat(1000));
         store.ingest(u.clone(), &big_text);
 
-        let session = store.current_analysis_session();
-        let sf = session.lookup_source_file(u.as_str()).unwrap();
+        let sf = store.with_session(|session| session.lookup_source_file(u.as_str()).unwrap());
         let len_before = store.snapshot_mir_query(|db| sf.text(db).len());
         assert!(len_before > 1000, "sanity: source text should be mirrored");
 
@@ -4637,6 +4661,28 @@ mod tests {
         );
     }
 
+    /// An announced edit must abort a references query that holds the
+    /// session mutex, before the edit's own write can land.
+    #[test]
+    fn announced_edit_cancels_in_flight_references() {
+        let store = DocumentStore::new();
+        let u = uri("/announce.php");
+        store.mirror_text(&u, "<?php\nfunction target() {}\ntarget();\n");
+        let rev = store.write_rev();
+        store.announce_edit();
+        assert_ne!(
+            store.write_rev(),
+            rev,
+            "announce_edit must advance write_rev"
+        );
+        let files = [Arc::<str>::from(u.as_str())];
+        let name = mir_analyzer::Name::function("target".to_string());
+        let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            store.indexed_references(&name, &files, true, Some(rev))
+        }));
+        assert!(out.is_err(), "a stale cancel_rev must abort the query");
+    }
+
     /// begin_reanalyze() cancels the previously-issued sweep token so a newer
     /// edit preempts an in-flight dependent walk, and hands back a fresh token.
     #[test]
@@ -4662,14 +4708,16 @@ mod tests {
     #[test]
     fn set_session_cache_dir_rebuilds_pinned_session() {
         let store = DocumentStore::new();
-        let early = store.analysis_session(mir_analyzer::PhpVersion::LATEST);
+        // Force-build the early, cache-less session.
+        store.with_session(|_| ());
         let dir = tempfile::tempdir().unwrap();
-        store.set_session_cache_dir(dir.path().to_path_buf());
-        let rebuilt = store.analysis_session(mir_analyzer::PhpVersion::LATEST);
+        let dropped = store.set_session_cache_dir(dir.path().to_path_buf());
         assert!(
-            !Arc::ptr_eq(&early, &rebuilt),
+            dropped,
             "the cache-less early session must be dropped and rebuilt"
         );
+        // Force the rebuild so the cache dir actually opens on disk.
+        store.with_session(|_| ());
         assert!(
             dir.path().join("stubs").exists(),
             "the rebuilt session must have opened the on-disk stub cache"
@@ -4681,12 +4729,12 @@ mod tests {
     #[test]
     fn set_user_stub_dirs_rebuilds_pinned_session() {
         let store = DocumentStore::new();
-        let early = store.analysis_session(mir_analyzer::PhpVersion::LATEST);
+        // Force-build the early, stub-dir-less session.
+        store.with_session(|_| ());
         let dir = tempfile::tempdir().unwrap();
-        store.set_user_stub_dirs(vec![dir.path().to_path_buf()]);
-        let rebuilt = store.analysis_session(mir_analyzer::PhpVersion::LATEST);
+        let dropped = store.set_user_stub_dirs(vec![dir.path().to_path_buf()]);
         assert!(
-            !Arc::ptr_eq(&early, &rebuilt),
+            dropped,
             "the stub-dir-less early session must be dropped and rebuilt"
         );
     }
