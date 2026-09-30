@@ -47,6 +47,35 @@ pub fn extract_receiver_var_before_cursor(line: &str, cursor_col_utf16: usize) -
     extract_name_from_chars_end(&chars[..arrow_end])
 }
 
+/// The cursor's member name follows `->`/`?->` on a receiver other than `$this`.
+pub fn is_arrow_access_on_non_this_receiver(line: &str, cursor_col_utf16: usize) -> bool {
+    let chars: Vec<char> = line.chars().collect();
+    let mut utf16 = 0usize;
+    let mut char_idx = 0usize;
+    for ch in &chars {
+        if utf16 >= cursor_col_utf16 {
+            break;
+        }
+        utf16 += ch.len_utf16();
+        char_idx += 1;
+    }
+    let mut word_start = char_idx;
+    while word_start > 0
+        && (chars[word_start - 1].is_alphanumeric() || chars[word_start - 1] == '_')
+    {
+        word_start -= 1;
+    }
+    let arrow_end = if word_start >= 3 && chars[word_start - 3..word_start] == ['?', '-', '>'] {
+        word_start - 3
+    } else if word_start >= 2 && chars[word_start - 2..word_start] == ['-', '>'] {
+        word_start - 2
+    } else {
+        return false;
+    };
+    let receiver: String = chars[..arrow_end].iter().collect();
+    !receiver.trim_end().ends_with("$this")
+}
+
 /// Extract the class name from immediately before `::` at the cursor's column.
 pub fn extract_static_class_before_cursor(line: &str, cursor_col_utf16: usize) -> Option<String> {
     let chars: Vec<char> = line.chars().collect();
@@ -167,4 +196,28 @@ pub fn resolve_use_alias_fqn(stmts: &[Stmt<'_, '_>], word: &str) -> Option<(Stri
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_arrow_access_on_non_this_receiver as foreign;
+
+    #[test]
+    fn arrow_on_this_is_not_foreign() {
+        assert!(!foreign("$this->run()", 8));
+        assert!(!foreign("$this?->run()", 9));
+    }
+
+    #[test]
+    fn arrow_on_property_or_variable_is_foreign() {
+        assert!(foreign("$this->sut->run()", 13));
+        assert!(foreign("$obj->run()", 7));
+        assert!(foreign("$notthis->run()", 11));
+    }
+
+    #[test]
+    fn non_arrow_positions_are_not_foreign() {
+        assert!(!foreign("run()", 2));
+        assert!(!foreign("Foo::run()", 7));
+    }
 }

@@ -250,8 +250,22 @@ impl Backend {
             let uri_task = uri.clone();
             let source_task = Arc::clone(&source);
             let doc_task = Arc::clone(&doc);
+            // mir found no member here, so a same-file name match would pair the
+            // call with an unrelated declaration of that name.
+            let foreign_receiver = source
+                .lines()
+                .nth(position.line as usize)
+                .is_some_and(|line| {
+                    crate::hover::is_arrow_access_on_non_this_receiver(
+                        line,
+                        position.character as usize,
+                    )
+                });
             let local_definition = self
                 .blocking_gated(super::super::debug_gate::GATE_GOTO_DEFINITION, move || {
+                    if foreign_receiver {
+                        return None;
+                    }
                     crate::navigation::definition::goto_definition(
                         &uri_task,
                         &source_task,

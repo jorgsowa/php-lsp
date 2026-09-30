@@ -929,21 +929,10 @@ class Greeter {
     .await;
 }
 
-/// A method call through an `object`-typed property holding an anonymous
-/// class that composes a trait resolves to a same-named method on the
-/// *enclosing* class instead of the trait's — even though the anonymous
-/// class has no relation whatsoever to the enclosing class. Order-dependent
-/// (reproduces with the trait defined before or after the class) but not
-/// file-count-dependent, and unaffected by waiting for indexReady, so this
-/// isn't a warm-up race — it looks like a fallback that name-matches
-/// against the enclosing class when the anonymous class's actual member
-/// (through the untyped `object`) can't be resolved directly. Found via a
-/// real PHPUnit `getMockedXTrait()`-returns-`object` pattern in app-server
-/// (`EntityGetterTrait/GetCreatedAtTest.php` and
-/// `OffsetPaginationFieldsTest.php`).
+/// A method call through an `object`-typed property (receiver type unknown to
+/// mir) must not jump to a same-named method on the enclosing class.
 #[tokio::test]
-#[ignore = "known bug: name-matching fallback jumps to the enclosing class's method"]
-async fn definition_through_object_property_resolves_to_enclosing_class_not_trait() {
+async fn definition_through_object_property_skips_enclosing_class_method() {
     let mut s = TestServer::new().await;
     let out = s
         .check_definition(
@@ -984,7 +973,31 @@ final class Outer
 "#,
         )
         .await;
-    expect!["src/Outer.php:13:20-13:28"].assert_eq(&out);
+    expect!["src/Trait.php:4:20-4:28"].assert_eq(&out);
+}
+
+/// With no other candidate anywhere, an unresolved member call yields nothing
+/// rather than the enclosing class's same-named method.
+#[tokio::test]
+async fn definition_through_untyped_property_ignores_enclosing_class_method() {
+    let mut s = TestServer::new().await;
+    let out = s
+        .check_definition(
+            r#"<?php declare(strict_types=1);
+
+final class Outer
+{
+    private object $sut;
+
+    public function getTotal(): int
+    {
+        return $this->sut->getTo$0tal();
+    }
+}
+"#,
+        )
+        .await;
+    expect!["<none>"].assert_eq(&out);
 }
 
 /// An arrow-fn parameter shadows a same-named outer variable for the whole body.
