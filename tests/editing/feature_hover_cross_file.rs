@@ -115,17 +115,11 @@ $s = new Send$0er();
     .await;
 }
 
-/// Companion to `hover_use_alias_resolves_to_class` above: when the aliased
-/// import's *pre-alias* short name collides with the short name of the class
-/// doing the importing (different namespaces, different files — only the
-/// bare identifier matches), hover on the alias's usage misattributes to the
-/// enclosing class instead of the actual aliased target.
+/// Companion to `hover_use_alias_resolves_to_class`: when the alias target's
+/// short name equals the enclosing class's short name (different namespaces),
+/// hover shows the aliased target, not the enclosing class.
 #[tokio::test]
-#[ignore = "known bug: hover on an aliased-import usage shows the enclosing \
-            class's own card when the alias's pre-alias short name collides \
-            with the enclosing class's short name — goto-definition resolves \
-            correctly through this same alias, only hover is affected"]
-async fn hover_use_alias_misattributes_on_short_name_collision() {
+async fn hover_use_alias_resolves_target_on_short_name_collision() {
     let mut s = TestServer::new().await;
     s.validate_syntax(false);
     s.check_hover_annotated(
@@ -153,7 +147,7 @@ class Widget {
 
             ---
 
-            The enclosing class — hover must NOT show this docblock here."#]],
+            The real aliased target — hover should show this docblock."#]],
     )
     .await;
 }

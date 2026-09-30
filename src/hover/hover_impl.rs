@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use tower_lsp_server::ls_types::{Hover, HoverContents, MarkupContent, MarkupKind, Position, Uri};
@@ -19,7 +20,7 @@ use super::members::{
     scan_enum_case_of_class, scan_method_of_class,
 };
 use super::named_args::{find_named_arg_at, named_arg_hover_value};
-use super::parsing::{extract_static_class_before_cursor, resolve_use_alias};
+use super::parsing::{extract_static_class_before_cursor, resolve_use_alias_fqn};
 
 /// Hover handles every declaration kind except properties (covered by the
 /// dedicated mir-primary path) and promoted parameters.
@@ -435,18 +436,32 @@ fn hover_at_core(
     }
 
     let all_stmts = &*doc.program().stmts as &[_];
-    let resolved_word = resolve_use_alias(all_stmts, &word).unwrap_or_else(|| word.clone());
+    let alias = resolve_use_alias_fqn(all_stmts, &word);
+    let resolved_word = alias
+        .as_ref()
+        .map_or_else(|| word.clone(), |(short, _)| short.clone());
+    // An alias may share its target's short name with a different declaration
+    // in this file (e.g. the enclosing class); only that declaration's own FQN counts.
+    let alias_targets_current_doc = alias.as_ref().is_none_or(|(short, fqn)| {
+        let local_fqn = crate::navigation::moniker::resolve_fqn(doc, short, &HashMap::new());
+        local_fqn
+            .trim_start_matches('\\')
+            .eq_ignore_ascii_case(fqn.trim_start_matches('\\'))
+    });
 
     // Current-doc: still uses the AST walker (doc is already in memory, fast).
-    let current_doc_found =
-        resolve_declaration(&doc.program().stmts, &resolved_word, &is_hoverable)
-            .and_then(|d| declaration_signature(&d, &resolved_word))
-            .map(|sig| {
-                let doc_md = find_docblock(&doc.program().stmts, &resolved_word)
-                    .map(|db| db.to_markdown())
-                    .filter(|md| !md.is_empty());
-                (sig, doc_md)
-            });
+    let current_doc_found = alias_targets_current_doc
+        .then(|| {
+            resolve_declaration(&doc.program().stmts, &resolved_word, &is_hoverable)
+                .and_then(|d| declaration_signature(&d, &resolved_word))
+                .map(|sig| {
+                    let doc_md = find_docblock(&doc.program().stmts, &resolved_word)
+                        .map(|db| db.to_markdown())
+                        .filter(|md| !md.is_empty());
+                    (sig, doc_md)
+                })
+        })
+        .flatten();
 
     // Cross-file: delegated to the caller's strategy (AST walk or symbol-map lookup).
     let found = current_doc_found.or_else(|| resolve_cross_file(&resolved_word));
