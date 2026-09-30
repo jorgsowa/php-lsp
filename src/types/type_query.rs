@@ -11,9 +11,11 @@
 //!
 //! For variable/identifier symbols, mir spans are **end-exclusive and
 //! identifier-only**: the variable `$q` at bytes `76..78` is found by
-//! `symbol_at(76)` or `symbol_at(77)` but **not** `symbol_at(78)`. Callers must
-//! pass a byte offset that lands strictly inside the token of interest — for a
-//! variable, `word_range_at(..).start` (the `$`) is always inside.
+//! `symbol_at(76)` or `symbol_at(77)`; `symbol_at(78)` finds it only when no
+//! call's `expr_span` contains 78 (inside `foo($q)` it resolves to the call).
+//! Callers must pass a byte offset that lands strictly inside the token of
+//! interest — for a variable, `word_range_at(..).start` (the `$`) is always
+//! inside.
 //!
 //! Call-like symbols (method/static/function calls) additionally carry an
 //! `expr_span` covering the whole call node; when an offset misses every

@@ -84,8 +84,8 @@ impl Backend {
                 let analysis = self.cached_analysis_async(uri).await;
 
                 // ClassReference is recorded on the class token in static
-                // calls (Foo::bar), new expressions, instanceof, and type
-                // hints. When the cursor sits on a class name, jump directly
+                // calls (Foo::bar), class-constant fetches (Foo::BAR), new
+                // expressions, instanceof, and type hints. When the cursor sits on a class name, jump directly
                 // to the class via PSR-4 using the resolved FQN — more
                 // accurate than the workspace index for aliased names.
                 if let Some(fqn) = analysis.as_deref().and_then(|a| {

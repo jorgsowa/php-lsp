@@ -48,7 +48,6 @@ $p->touchAt();
 /// complete find-usages result from the original trait method should include
 /// both the adaptation entry and calls through the alias.
 #[tokio::test]
-#[ignore = "known gap: trait method references do not include adaptation aliases and alias call sites"]
 async fn references_trait_method_includes_adaptation_alias_usages() {
     let mut s = TestServer::new().await;
     s.check_references_annotated(
@@ -60,7 +59,7 @@ trait Auditable {
 class Post {
     use Auditable {
         record as audit;
-        // ^^^^^^ ref
+      //^^^^^^ ref
     }
     public function save(): void {
         $this->record();

@@ -990,21 +990,8 @@ final class Outer
     expect!["src/Outer.php:13:20-13:28"].assert_eq(&out);
 }
 
-/// PHP arrow-function parameters strictly shadow any outer variable of the
-/// same name for the entire arrow-fn body — but goto-definition on a
-/// shadowing use resolves to the *outer*, shadowed variable instead of the
-/// arrow-fn's own parameter. Internally inconsistent, not just wrong: hover
-/// on the exact same token correctly infers the parameter's declared type
-/// (`Item`), proving the type-inference and goto-definition paths disagree
-/// about which declaration this token even is. Found via a real
-/// `fn(Catalog $catalog) => ...` case in app-server
-/// (`GetCatalogService.php`) shadowing an outer `$catalog` of a different
-/// type.
+/// An arrow-fn parameter shadows a same-named outer variable for the whole body.
 #[tokio::test]
-#[ignore = "known bug: goto-definition on an arrow-fn parameter that shadows \
-            an outer same-named variable resolves to the outer variable \
-            instead of the parameter — hover on the same token correctly \
-            uses the parameter's type, so the two paths disagree"]
 async fn definition_on_arrow_fn_param_ignores_outer_shadow() {
     let mut s = TestServer::new().await;
     let out = s
@@ -1030,7 +1017,7 @@ final class Service
 "#,
         )
         .await;
-    expect!["main.php:13:8-13:16"].assert_eq(&out);
+    expect!["main.php:15:23-15:31"].assert_eq(&out);
 }
 
 /// A method returning `self` is lexically bound to the *declaring* class at
