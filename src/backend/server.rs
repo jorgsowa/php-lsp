@@ -527,8 +527,9 @@ impl LanguageServer for Backend {
             let uri_for_task = uri.clone();
             let parse_diags = self
                 .blocking_gated(super::debug_gate::GATE_DID_OPEN_PARSE, move || {
+                    let target = docs.workspace_php_version();
                     docs.get_doc_salsa(&uri_for_task)
-                        .map(|doc| diagnostics_from_doc(&doc))
+                        .map(|doc| diagnostics_from_doc(&doc, target))
                         .unwrap_or_default()
                 })
                 .await
@@ -599,10 +600,12 @@ impl LanguageServer for Backend {
                     return;
                 }
 
-                let (_doc, parse_diags) =
-                    super::offload::run("did_change.parse", move || parse_document(&text))
-                        .await
-                        .unwrap_or_default();
+                let parse_docs = Arc::clone(&docs);
+                let (_doc, parse_diags) = super::offload::run("did_change.parse", move || {
+                    parse_document(&text, parse_docs.workspace_php_version())
+                })
+                .await
+                .unwrap_or_default();
 
                 // Only apply if no newer edit arrived while we were parsing.
                 if open_files.current_version(&uri) != Some(version) {

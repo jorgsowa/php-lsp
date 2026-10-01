@@ -308,6 +308,35 @@ async fn array_last_defined_on_php85() {
         .await;
 }
 
+// ── PHP 8.6 partial function application ───────────────────────────────────────
+
+const PARTIAL_APPLICATION: &str =
+    "<?php\nfunction add(int $a, int $b): int { return $a + $b; }\n$inc = add(1, ?);\n";
+
+#[tokio::test]
+async fn partial_application_rejected_on_php85() {
+    let (mut s, _) = TestServer::new_with_options(json!({
+        "phpVersion": "8.5",
+        "diagnostics": { "enabled": true }
+    }))
+    .await;
+    let notif = s.open("test.php", PARTIAL_APPLICATION).await;
+    expect!["2:14-2:15 [1] SyntaxError: 'partial function application' requires PHP 8.6 or higher"]
+        .assert_eq(&render_diagnostics_notification(&notif));
+}
+
+#[tokio::test]
+async fn partial_application_accepted_on_php86() {
+    let (mut s, _) = TestServer::new_with_options(json!({
+        "phpVersion": "8.6",
+        "diagnostics": { "enabled": true }
+    }))
+    .await;
+    // Not `check_no_diagnostics`: its `php -l` fixture lint rejects 8.6 syntax.
+    let notif = s.open("test.php", PARTIAL_APPLICATION).await;
+    expect!["<empty>"].assert_eq(&render_diagnostics_notification(&notif));
+}
+
 // ── Version change re-triggers diagnostics ─────────────────────────────────────
 
 #[tokio::test]
@@ -352,7 +381,7 @@ async fn latest_version_has_all_85_functions() {
 
 #[tokio::test]
 async fn all_versions_have_basic_stdlib() {
-    for version in &["7.4", "8.0", "8.1", "8.2", "8.3", "8.4", "8.5"] {
+    for version in &["7.4", "8.0", "8.1", "8.2", "8.3", "8.4", "8.5", "8.6"] {
         let (mut s, _) = TestServer::new_with_options(json!({
             "phpVersion": version,
             "diagnostics": { "enabled": true }

@@ -9,9 +9,10 @@ pub const PHP_8_2: &str = "8.2";
 pub const PHP_8_3: &str = "8.3";
 pub const PHP_8_4: &str = "8.4";
 pub const PHP_8_5: &str = "8.5";
+pub const PHP_8_6: &str = "8.6";
 
 pub const SUPPORTED_PHP_VERSIONS: &[&str] = &[
-    PHP_7_4, PHP_8_0, PHP_8_1, PHP_8_2, PHP_8_3, PHP_8_4, PHP_8_5,
+    PHP_7_4, PHP_8_0, PHP_8_1, PHP_8_2, PHP_8_3, PHP_8_4, PHP_8_5, PHP_8_6,
 ];
 
 pub fn is_valid_php_version(v: &str) -> bool {
@@ -22,7 +23,7 @@ pub fn is_valid_php_version(v: &str) -> bool {
 ///
 /// The version is parsed as `"major.minor"`. If it is below the minimum
 /// supported version it is clamped to `PHP_7_4`; if it is above the maximum
-/// it is clamped to `PHP_8_5`. Already-valid versions are returned unchanged.
+/// it is clamped to `PHP_8_6`. Already-valid versions are returned unchanged.
 pub fn clamp_php_version(v: &str) -> &'static str {
     if is_valid_php_version(v) {
         return SUPPORTED_PHP_VERSIONS
@@ -52,11 +53,11 @@ pub fn clamp_php_version(v: &str) -> &'static str {
         .last()
         .and_then(|s| s.split_once('.'))
         .and_then(|(a, b)| Some((a.parse::<u32>().ok()?, b.parse::<u32>().ok()?)))
-        .unwrap_or((8, 5));
+        .unwrap_or((8, 6));
     if (major, minor) < (min_maj, min_min) {
         SUPPORTED_PHP_VERSIONS.first().copied().unwrap_or(PHP_7_4)
     } else if (major, minor) > (max_maj, max_min) {
-        SUPPORTED_PHP_VERSIONS.last().copied().unwrap_or(PHP_8_5)
+        SUPPORTED_PHP_VERSIONS.last().copied().unwrap_or(PHP_8_6)
     } else {
         // Between min and max but not in the list — pick the highest version ≤ input.
         SUPPORTED_PHP_VERSIONS
@@ -1044,8 +1045,8 @@ mod tests {
 
     #[test]
     fn clamp_future_version_to_maximum() {
-        assert_eq!(clamp_php_version("9.0"), PHP_8_5);
-        assert_eq!(clamp_php_version("10.1"), PHP_8_5);
+        assert_eq!(clamp_php_version("9.0"), PHP_8_6);
+        assert_eq!(clamp_php_version("10.1"), PHP_8_6);
     }
 
     #[test]

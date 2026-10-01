@@ -150,7 +150,7 @@ Available settings (VS Code `settings.json`):
 | Setting | Default | Description |
 |---|---|---|
 | `php-lsp.serverPath` | *(auto)* | Path to the `php-lsp` binary; leave empty for auto-detection |
-| `php-lsp.phpVersion` | `8.5` | PHP version (`7.4` – `8.5`) |
+| `php-lsp.phpVersion` | `8.5` | PHP version (`7.4` – `8.6`) |
 | `php-lsp.excludePaths` | `[]` | Glob patterns to exclude from the workspace |
 | `php-lsp.diagnostics.*` | `true` | Per-diagnostic toggles (undefined variables/functions/classes, arity errors, type mismatches, deprecated calls, duplicate declarations) |
 

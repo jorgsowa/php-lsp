@@ -43,7 +43,7 @@ async fn change_configuration_invalid_php_version_logs_warning() {
     let warning_msg = server.client().read_notification("window/logMessage").await;
     let warning_text = extract_log_message(&warning_msg);
     expect![[
-        r#"php-lsp: unsupported phpVersion "5.6" — valid values: 7.4, 8.0, 8.1, 8.2, 8.3, 8.4, 8.5"#
+        r#"php-lsp: unsupported phpVersion "5.6" — valid values: 7.4, 8.0, 8.1, 8.2, 8.3, 8.4, 8.5, 8.6"#
     ]]
     .assert_eq(&warning_text);
 
