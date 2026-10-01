@@ -139,7 +139,7 @@ fn cold_ms(
         let files = select(&store, &reachable);
         count = files.len();
         let t = Instant::now();
-        std::hint::black_box(store.indexed_references(sym, &files, false, None));
+        std::hint::black_box(store.indexed_references(sym, &files, false, None).unwrap());
         samples.push(t.elapsed());
     }
     (count, median_ms(samples))
@@ -190,7 +190,7 @@ fn main() {
             .cloned()
             .collect();
         let t = Instant::now();
-        std::hint::black_box(store.indexed_references(&sym, &files, false, None));
+        std::hint::black_box(store.indexed_references(&sym, &files, false, None).unwrap());
         let cold_ms = t.elapsed().as_secs_f64() * 1000.0;
 
         // Warmed: the sweep runs in the background after indexing; the first
@@ -207,7 +207,7 @@ fn main() {
         store.warm_analysis_sweep(&[], &cancel);
         let sweep_ms = t.elapsed().as_secs_f64() * 1000.0;
         let t = Instant::now();
-        std::hint::black_box(store.indexed_references(&sym, &files, false, None));
+        std::hint::black_box(store.indexed_references(&sym, &files, false, None).unwrap());
         let warmed_ms = t.elapsed().as_secs_f64() * 1000.0;
         // No-op re-sweep: nothing changed, so this is pure memo validation.
         let t = Instant::now();
@@ -249,7 +249,7 @@ fn main() {
         .cloned()
         .collect();
     for _ in 0..3 {
-        std::hint::black_box(store.indexed_references(&sym, &after, false, None));
+        std::hint::black_box(store.indexed_references(&sym, &after, false, None).unwrap());
     }
     println!("{:>5}  {:>10}  {:>13}", "iter", "edited", "references_ms");
     let mut session = Vec::new();
@@ -265,7 +265,7 @@ fn main() {
             ),
         );
         let t0 = Instant::now();
-        std::hint::black_box(store.indexed_references(&sym, &after, false, None));
+        std::hint::black_box(store.indexed_references(&sym, &after, false, None).unwrap());
         let ms = t0.elapsed().as_secs_f64() * 1000.0;
         session.push(ms);
         println!("{iter:>5}  {:>10}  {ms:>13.3}", format!("N{victim}"));
@@ -338,7 +338,7 @@ fn long_session_gate(sym: &Name) -> bool {
         let cancel = store.begin_warm_sweep();
         store.warm_analysis_sweep(&[], &cancel);
         let t = Instant::now();
-        std::hint::black_box(store.indexed_references(sym, &files, false, None));
+        std::hint::black_box(store.indexed_references(sym, &files, false, None).unwrap());
         queries.push(t.elapsed().as_secs_f64() * 1000.0);
     }
     let median = |s: &[f64]| -> f64 {

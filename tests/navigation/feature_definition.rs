@@ -1063,22 +1063,11 @@ class Logger
     expect!["main.php:4:9-4:14"].assert_eq(&out);
 }
 
-/// A method returning `self` is lexically bound to the *declaring* class at
-/// compile time — unlike `static`, it must NOT resolve using the calling
-/// instance's actual (subclass) type. `Base::returnsSelf(): self` returns
-/// `Base`, which has no `subOnly()` — a real static analyzer (PHPStan/Psalm)
-/// flags `$sub->returnsSelf()->subOnly()` as calling an undefined method.
-/// php-lsp instead confidently resolves it to `Sub::subOnly()`, silently
-/// treating `self` as if it were late-static-bound `static`. Found via
-/// app-server's `Document`/`Holders` hierarchy, which declares both a
-/// `self`-returning factory and separate `static`-returning fluent methods.
+/// A method returning `self` is bound to the *declaring* class, unlike
+/// `static`: `Base::returnsSelf(): self` returns `Base`, which has no
+/// `subOnly()`, so the chained call must not resolve to `Sub::subOnly()`.
 #[tokio::test]
-#[ignore = "known bug: a method declared to return `self` is resolved as if \
-            it returned `static` (late static binding) — the next call in \
-            the chain uses the calling subclass's members instead of the \
-            declaring class's, which can point at a method that doesn't \
-            exist on the declared return type at all"]
-async fn definition_on_self_return_type_uses_subclass_members() {
+async fn definition_on_self_return_type_ignores_subclass_members() {
     let mut s = TestServer::new().await;
     let out = s
         .check_definition(
@@ -1105,7 +1094,7 @@ $a = $sub->returnsSelf()->subO$0nly();
 "#,
         )
         .await;
-    expect!["main.php:12:20-12:27"].assert_eq(&out);
+    expect!["<none>"].assert_eq(&out);
 }
 
 /// A bare call to a `use function`-imported name resolves to the imported

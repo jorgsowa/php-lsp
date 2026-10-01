@@ -504,9 +504,7 @@ fn hover_at_core(
         });
     }
 
-    if let Some(stub) = session.and_then(|docs| {
-        docs.with_session(|s| crate::types::stub_members::stub_class_members(s, &resolved_word))
-    }) {
+    if let Some(stub) = session.and_then(|docs| docs.stub_class_members(&resolved_word)) {
         return Some(builtin_class_hover(stub, &resolved_word, hover_range));
     }
 

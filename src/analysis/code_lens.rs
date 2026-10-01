@@ -125,6 +125,7 @@ impl LensEnv<'_> {
         let mut locations: Vec<Location> = self
             .store
             .indexed_references(&symbol, files, false, self.cancel_rev)
+            .unwrap_or_default()
             .into_iter()
             .filter_map(session_tuple_to_location)
             .collect();
@@ -146,6 +147,7 @@ impl LensEnv<'_> {
         let locations: Vec<Location> = self
             .store
             .indexed_subtype_classes(fqn, include_trait_users)
+            .unwrap_or_default()
             .into_iter()
             .filter_map(|site| subtype_site_to_location(&site.file, &site.range))
             .collect();

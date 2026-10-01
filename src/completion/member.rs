@@ -6,7 +6,6 @@ use tower_lsp_server::ls_types::{CompletionItem, CompletionItemKind, InsertTextF
 use crate::document::ast::ParsedDoc;
 use crate::document::document_store::DocumentStore;
 use crate::text::utf16_offset_to_byte;
-use crate::types::stub_members::stub_class_members;
 use crate::types::type_map::{
     ClassMembers, enclosing_class_at, enum_backing_type, is_enum, members_of_class,
     mixin_classes_of, parent_class_name,
@@ -168,8 +167,7 @@ fn all_members(
         // Built-in stubs only apply when the class is not defined in any user
         // document — a user class shadowing a built-in name wins.
         if !found_in_docs
-            && let Some(stub) =
-                session.and_then(|docs| docs.with_session(|s| stub_class_members(s, &current)))
+            && let Some(stub) = session.and_then(|docs| docs.stub_class_members(&current))
         {
             if parent.is_none() {
                 parent = stub.parent.clone();

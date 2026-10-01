@@ -147,6 +147,7 @@ pub fn incoming_calls_indexed(
     let files = store.reference_candidate_files(&symbol);
     let mut call_sites: Vec<tower_lsp_server::ls_types::Location> = store
         .indexed_references(&symbol, &files, false, cancel_rev)
+        .unwrap_or_default()
         .into_iter()
         .filter_map(crate::navigation::references::session_tuple_to_location)
         .collect();

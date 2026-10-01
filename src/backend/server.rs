@@ -116,24 +116,22 @@ fn hover_markup(value: String) -> Hover {
     }
 }
 
-fn hover_display_class_name(session: &mut mir_analyzer::AnalysisSession, name: &str) -> String {
+fn hover_display_class_name(snapshot: &mir_analyzer::AnalysisSnapshot, name: &str) -> String {
     let normalized = normalized_php_fqn(name);
     if !is_bare_php_name(normalized) {
         return normalized.to_string();
     }
-    if crate::types::stub_members::stub_class_members(session, normalized).is_some() {
+    if let Ok(true) = snapshot.is_builtin_class(normalized) {
         return format!("\\{normalized}");
     }
     normalized.to_string()
 }
 
-fn class_hover_for_fqcn(session: &mut mir_analyzer::AnalysisSession, fqcn: &str) -> Option<Hover> {
-    // The db handle must drop before `hover_display_class_name`: its stub
-    // load writes salsa inputs, which wait for every outstanding handle.
+fn class_hover_for_fqcn(session: &mir_analyzer::AnalysisSnapshot, fqcn: &str) -> Option<Hover> {
     let class = {
-        let db = session.snapshot_db();
-        let here = mir_analyzer::db::Fqcn::from_str(&db, fqcn);
-        mir_analyzer::db::find_class_like(&db, here)?
+        let db = session.db();
+        let here = mir_analyzer::db::Fqcn::from_str(db, fqcn);
+        mir_analyzer::db::find_class_like(db, here)?
     };
     let sig = match &class {
         mir_analyzer::db::ClassLike::Class(c) => {
@@ -196,14 +194,14 @@ fn class_hover_for_fqcn(session: &mut mir_analyzer::AnalysisSession, fqcn: &str)
 }
 
 fn method_hover_for_fqcn(
-    session: &mir_analyzer::AnalysisSession,
+    session: &mir_analyzer::AnalysisSnapshot,
     fqcn: &str,
     method_name: &str,
 ) -> Option<Hover> {
-    let db = session.snapshot_db();
+    let db = session.db();
     let (_, m) = mir_analyzer::db::find_method_in_chain(
-        &db,
-        mir_analyzer::db::Fqcn::from_str(&db, fqcn),
+        db,
+        mir_analyzer::db::Fqcn::from_str(db, fqcn),
         method_name,
     )?;
     let ret = m
@@ -1333,8 +1331,10 @@ impl LanguageServer for Backend {
                         // Try the cursor word first, resolved through this file's
                         // imports and namespace when it is a bare class name.
                         if let Some(fqcn) = fallback_class_fqcn(&word)
-                            && let Some(h) =
-                                docs.with_session(|session| class_hover_for_fqcn(session, &fqcn))
+                            && let Some(h) = docs
+                                .read_snapshot(|snap| class_hover_for_fqcn(snap, &fqcn))
+                                .ok()
+                                .flatten()
                         {
                             return Some(h);
                         }
@@ -1346,8 +1346,10 @@ impl LanguageServer for Backend {
                             && let Some(fqcn) = fallback_class_fqcn(&resolved)
                                 .filter(|fqcn| fqcn.eq_ignore_ascii_case(&resolved_fqn))
                                 .or(Some(resolved_fqn))
-                            && let Some(h) =
-                                docs.with_session(|session| class_hover_for_fqcn(session, &fqcn))
+                            && let Some(h) = docs
+                                .read_snapshot(|snap| class_hover_for_fqcn(snap, &fqcn))
+                                .ok()
+                                .flatten()
                         {
                             return Some(h);
                         }
@@ -1359,18 +1361,20 @@ impl LanguageServer for Backend {
                             )
                         {
                             if let Some(fqcn) = fallback_class_fqcn(&class_token)
-                                && let Some(h) = docs.with_session(|session| {
-                                    method_hover_for_fqcn(session, &fqcn, &word)
-                                })
+                                && let Some(h) = docs
+                                    .read_snapshot(|snap| method_hover_for_fqcn(snap, &fqcn, &word))
+                                    .ok()
+                                    .flatten()
                             {
                                 return Some(h);
                             }
                             if let Some(resolved_class) =
                                 crate::hover::resolve_use_alias(&doc.program().stmts, &class_token)
                                 && let Some(fqcn) = fallback_class_fqcn(&resolved_class)
-                                && let Some(h) = docs.with_session(|session| {
-                                    method_hover_for_fqcn(session, &fqcn, &word)
-                                })
+                                && let Some(h) = docs
+                                    .read_snapshot(|snap| method_hover_for_fqcn(snap, &fqcn, &word))
+                                    .ok()
+                                    .flatten()
                             {
                                 return Some(h);
                             }
@@ -1855,7 +1859,7 @@ impl LanguageServer for Backend {
                     docs.indexed_subtype_classes(&fqn_task, false)
                 })
                 .await
-                .unwrap_or_default()
+                .unwrap_or_else(|| Ok(Vec::new()))?
                 .into_iter()
                 .filter_map(|site| subtype_site_to_location(&site.file, &site.range))
                 .collect()
@@ -1899,7 +1903,7 @@ impl LanguageServer for Backend {
                         docs.indexed_method_implementations(&enclosing_fqn, &method)
                     })
                     .await
-                    .unwrap_or_default();
+                    .unwrap_or_else(|| Ok(Vec::new()))?;
                 locs = impls
                     .into_iter()
                     .filter_map(|(_, file, range)| subtype_site_to_location(&file, &range))
@@ -2105,21 +2109,23 @@ impl LanguageServer for Backend {
             let item_fqn = item_fqn.to_owned();
             let result = self
                 .blocking_gated(super::debug_gate::GATE_TYPE_HIERARCHY, move || {
-                    let subtype_urls = docs.class_subtype_urls(&item_fqn);
+                    let subtype_urls = docs.class_subtype_urls(&item_fqn)?;
                     let mention_candidates =
                         |name: &str| docs.declaration_candidate_files(&wi, name);
                     let get_doc = |uri: &Uri| docs.get_doc_salsa(uri);
-                    subtypes_of_mir_backed(
-                        &item,
-                        &item_fqn,
-                        &wi,
-                        &subtype_urls,
-                        &mention_candidates,
-                        &get_doc,
+                    Ok::<_, crate::document::document_store::ContentModified>(
+                        subtypes_of_mir_backed(
+                            &item,
+                            &item_fqn,
+                            &wi,
+                            &subtype_urls,
+                            &mention_candidates,
+                            &get_doc,
+                        ),
                     )
                 })
                 .await
-                .unwrap_or_default();
+                .unwrap_or_else(|| Ok(Vec::new()))?;
             Ok(if result.is_empty() {
                 None
             } else {
@@ -2554,7 +2560,7 @@ mod tests {
                 Arc::from("<?php\nclass Foo implements Countable {\n    public function count(): int { return 0; }\n}\n"),
                 salsa::Durability::LOW,
             );
-            let hover = class_hover_for_fqcn(&mut session, "Foo");
+            let hover = class_hover_for_fqcn(&session.snapshot(), "Foo");
             let _ = tx.send(hover.map(|h| match h.contents {
                 HoverContents::Markup(m) => m.value,
                 _ => String::new(),

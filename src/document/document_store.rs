@@ -15,6 +15,24 @@ use crate::document::cache_registry::{AnalysisCacheEntry, CacheRegistry};
 use crate::index::file_index::FileIndex;
 use crate::lang::autoload::Psr4Map;
 
+/// A write invalidated a read and every bounded retry; the client should re-request.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ContentModified;
+
+impl From<ContentModified> for tower_lsp_server::jsonrpc::Error {
+    fn from(_: ContentModified) -> Self {
+        tower_lsp_server::jsonrpc::Error::new(tower_lsp_server::jsonrpc::ErrorCode::ContentModified)
+    }
+}
+
+const SNAPSHOT_ATTEMPTS: usize = 3;
+
+/// `(file, 0-based line, start column, end column)`.
+pub type RefLocation = (Arc<str>, u32, u32, u32);
+
+/// `(implementing class, file, range)`.
+pub type MethodImplSite = (Arc<str>, Arc<str>, mir_analyzer::Range);
+
 pub struct DocumentStore {
     /// Per-file caches with unified eviction logic. See [`CacheRegistry`].
     caches: CacheRegistry,
@@ -126,10 +144,6 @@ pub struct DocumentStore {
     /// cancel themselves if it advances — avoiding stale results and
     /// unbounded retry loops after concurrent edits.
     write_revision: AtomicU64,
-    /// Editor edits announced via [`Self::announce_edit`] before they queue
-    /// on the session mutex. Folded into [`Self::write_rev`] so a long read
-    /// holding that mutex sees the edit coming instead of blocking it.
-    edit_intents: AtomicU64,
     /// Cancel token for the in-flight dependent-diagnostics sweep. A newer
     /// edit's sweep cancels the previous one via [`Self::begin_reanalyze`], so
     /// fast typing preempts stale workspace re-analysis rather than queueing
@@ -218,7 +232,6 @@ impl DocumentStore {
             autoload_uris: std::sync::RwLock::new(Vec::new()),
             index_ready: AtomicBool::new(false),
             write_revision: AtomicU64::new(0),
-            edit_intents: AtomicU64::new(0),
             reanalyze_cancel: Mutex::new(mir_analyzer::IndexCancel::new()),
             warm_sweep_cancel: Mutex::new(mir_analyzer::IndexCancel::new()),
             warm_sweeps_completed: AtomicU64::new(0),
@@ -412,14 +425,7 @@ impl DocumentStore {
                     all_settled = false;
                     break 'chunks;
                 }
-                // Acquired fresh per chunk (not held across the loop) so an
-                // interactive request queued behind `yield_to_interactive_reads`
-                // above can actually get the session lock between chunks.
-                if salsa::Cancelled::catch(std::panic::AssertUnwindSafe(|| {
-                    self.with_session(|session| session.reanalyze_files_cancellable(chunk, cancel))
-                }))
-                .is_ok()
-                {
+                if self.reanalyze_files(chunk, cancel).is_some() {
                     done = done.saturating_add(chunk.len() as u32);
                     if let Some(tx) = progress {
                         let _ = tx.send((done, total));
@@ -585,15 +591,7 @@ impl DocumentStore {
     /// if the counter advances, those operations abort and return empty rather
     /// than looping indefinitely against a newly-invalidated database.
     pub fn write_rev(&self) -> u64 {
-        self.write_revision
-            .load(Ordering::Acquire)
-            .wrapping_add(self.edit_intents.load(Ordering::Acquire))
-    }
-
-    /// Advance [`Self::write_rev`] ahead of an editor edit's session write,
-    /// so cancellable reads that hold the session mutex abort and let it in.
-    pub fn announce_edit(&self) {
-        self.edit_intents.fetch_add(1, Ordering::Release);
+        self.write_revision.load(Ordering::Acquire)
     }
 
     /// Set the directory used to persist stub-parse and analysis results across
@@ -713,6 +711,91 @@ impl DocumentStore {
         self.with_session_for(php_version, f)
     }
 
+    /// Run `f` on a read snapshot without holding the session lock: the lock
+    /// is taken only for `prepare` and the snapshot grab. A write that
+    /// cancels `f` retries it on a fresh snapshot, at most
+    /// [`SNAPSHOT_ATTEMPTS`] times, then yields [`ContentModified`].
+    ///
+    /// `f` must not call back into the store: a live snapshot blocks the
+    /// next input write, so taking the session lock inside it can deadlock.
+    pub fn with_snapshot<R>(
+        &self,
+        prepare: impl Fn(&mut mir_analyzer::AnalysisSession),
+        f: impl Fn(&mir_analyzer::AnalysisSnapshot) -> Result<R, salsa::Cancelled>,
+    ) -> Result<R, ContentModified> {
+        let _interactive = self.interactive_read_guard();
+        self.with_background_snapshot(prepare, f)
+    }
+
+    /// [`Self::with_snapshot`] without the interactive-read guard, for
+    /// background sweeps that must not stall other background writers.
+    fn with_background_snapshot<R>(
+        &self,
+        prepare: impl Fn(&mut mir_analyzer::AnalysisSession),
+        f: impl Fn(&mir_analyzer::AnalysisSnapshot) -> Result<R, salsa::Cancelled>,
+    ) -> Result<R, ContentModified> {
+        use std::panic::AssertUnwindSafe;
+        for _ in 0..SNAPSHOT_ATTEMPTS {
+            let snapshot = self.with_session(|session| {
+                prepare(session);
+                session.snapshot()
+            });
+            let result = salsa::Cancelled::catch(AssertUnwindSafe(|| f(&snapshot))).and_then(|r| r);
+            drop(snapshot);
+            if let Ok(value) = result {
+                return Ok(value);
+            }
+        }
+        Err(ContentModified)
+    }
+
+    /// [`Self::with_snapshot`] for reads that need no preparation and cannot
+    /// return `Cancelled` themselves; a cancellation unwinds into the retry.
+    pub fn read_snapshot<R>(
+        &self,
+        f: impl Fn(&mir_analyzer::AnalysisSnapshot) -> R,
+    ) -> Result<R, ContentModified> {
+        self.with_snapshot(|_| {}, |snap| Ok(f(snap)))
+    }
+
+    /// Re-analyze `files` off the session lock, committing their reference
+    /// postings. `None` when `cancel` stopped the pass or writes kept
+    /// cancelling it.
+    pub fn reanalyze_files(
+        &self,
+        files: &[Arc<str>],
+        cancel: &mir_analyzer::IndexCancel,
+    ) -> Option<Vec<(Arc<str>, mir_analyzer::FileAnalysis)>> {
+        if files.is_empty() || cancel.is_cancelled() {
+            return None;
+        }
+        self.with_background_snapshot(
+            |session| {
+                session.prepare_for_query(None);
+                for file in files {
+                    if cancel.is_cancelled() {
+                        return;
+                    }
+                    session.prepare_file_for_analysis(file);
+                }
+            },
+            |snap| snap.reanalyze_files(files, cancel),
+        )
+        .ok()
+        .flatten()
+    }
+
+    /// Members of a built-in PHP class from the phpstorm stubs, or `None`
+    /// when `fqcn` is not one (or a write kept cancelling the lookup).
+    pub fn stub_class_members(&self, fqcn: &str) -> Option<crate::types::type_map::ClassMembers> {
+        self.with_snapshot(
+            |_| {},
+            |snap| crate::types::stub_members::stub_class_members(snap, fqcn),
+        )
+        .ok()
+        .flatten()
+    }
+
     /// Current PHP version tracked by the workspace input.
     pub fn workspace_php_version(&self) -> mir_analyzer::PhpVersion {
         self.analysis_session.lock().unwrap().0
@@ -725,11 +808,23 @@ impl DocumentStore {
     /// Used by `goto_implementation` and `subtypes` to scope their lookups to
     /// the correct files, fixing aliased `extends` and FQN-qualified forms that
     /// a raw textual search could miss.
-    pub fn class_subtype_urls(&self, class_fqn: &str) -> Vec<tower_lsp_server::ls_types::Uri> {
-        self.with_session(|session| session.subtype_files(class_fqn))
-            .into_iter()
-            .filter_map(|p| p.parse::<Uri>().ok())
-            .collect()
+    pub fn class_subtype_urls(
+        &self,
+        class_fqn: &str,
+    ) -> Result<Vec<tower_lsp_server::ls_types::Uri>, ContentModified> {
+        self.subtype_files(class_fqn).map(|files| {
+            files
+                .into_iter()
+                .filter_map(|p| p.parse::<Uri>().ok())
+                .collect()
+        })
+    }
+
+    fn subtype_files(&self, class_fqn: &str) -> Result<Vec<Arc<str>>, ContentModified> {
+        self.with_snapshot(
+            |session| session.prepare_for_query(None),
+            |snap| snap.subtype_files(class_fqn),
+        )
     }
 
     /// Return the `Arc<ArcSwap<Psr4Map>>` so callers can share it.
@@ -1205,58 +1300,39 @@ impl DocumentStore {
     ///
     /// Returns LSP-style 0-based line/column.
     ///
-    /// `cancel_rev`: when `Some(rev)`, the loop throws `salsa::Cancelled` and
-    /// returns empty if a concurrent write advances the `write_revision` counter
-    /// past `rev` — preventing unbounded retries against a newly-invalidated db.
-    /// Pass `None` to retain the original indefinite-retry behaviour (fast ops
-    /// like single-file reads where a stale result is not a concern).
+    /// `cancel_rev`: when `Some(rev)`, the query aborts with [`ContentModified`]
+    /// if a concurrent write advances the `write_revision` counter past `rev`.
     pub fn indexed_references(
         &self,
         symbol: &mir_analyzer::Name,
         files: &[Arc<str>],
         include_declaration: bool,
         cancel_rev: Option<u64>,
-    ) -> Vec<(Arc<str>, u32, u32, u32)> {
-        let php_version = self.workspace_php_version();
-        // Staleness probe threaded into mir: polled at phase boundaries and
-        // between cancellation retries, so a request invalidated by a
-        // concurrent edit aborts *inside* mir's retry loop instead of spinning
-        // there indefinitely (mir catches `Cancelled` internally, so an outer
-        // catch alone never fires for the parallel phase).
+    ) -> Result<Vec<RefLocation>, ContentModified> {
         let stale = || cancel_rev.is_some_and(|rev| self.write_rev() != rev);
-        // Retry: concurrent db writes (background indexing) cancel snapshot
-        // queries via resume_unwind; without the loop the panic propagates out
-        // of the caller's spawn_blocking and the request silently returns empty.
-        let raw = loop {
-            match salsa::Cancelled::catch(std::panic::AssertUnwindSafe(|| {
-                self.with_session_for(php_version, |session| {
-                    session.indexed_references_to(
-                        symbol,
-                        files,
-                        include_declaration,
-                        ReferenceIncludes::Plain,
-                        &stale,
-                    )
-                })
-            })) {
-                Ok(Some(refs)) => break refs,
-                // mir aborted via the staleness probe — or a Phase-1 unwind
-                // hit an already-stale request. Propagate as salsa::Cancelled
-                // so spawn_blocking callers see a JoinError::Panicked and
-                // return empty via unwrap_or_default.
-                Ok(None) => {
-                    std::panic::resume_unwind(Box::new(salsa::Cancelled::PendingWrite));
+        // Scanned before the lock: on a cold workspace this reads file text.
+        let candidates = self.with_snapshot(
+            |_| {},
+            |snap| snap.stale_reference_candidates(symbol, files),
+        )?;
+        let raw = self.with_snapshot(
+            |session| {
+                session.prepare_references_query(symbol, &candidates, include_declaration, &stale);
+            },
+            |snap| {
+                if stale() {
+                    return Err(salsa::Cancelled::PendingWrite);
                 }
-                Err(_) if stale() => {
-                    std::panic::resume_unwind(Box::new(salsa::Cancelled::PendingWrite));
-                }
-                // Phase-1 unwind from a write that doesn't invalidate this
-                // request (mir-internal load_class, scan writes with no
-                // cancel_rev) — retry.
-                Err(_) => {}
-            }
-        };
-        raw.into_iter()
+                snap.indexed_references_to(
+                    symbol,
+                    files,
+                    include_declaration,
+                    ReferenceIncludes::Plain,
+                )
+            },
+        )?;
+        Ok(raw
+            .into_iter()
             .map(|(file, range)| {
                 // Mirror columns are 0-based code points (UTF-16 code units),
                 // the same convention used by LSP. We only need to convert
@@ -1264,7 +1340,7 @@ impl DocumentStore {
                 let line = range.start.line.saturating_sub(1);
                 (file, line, range.start.column, range.end.column)
             })
-            .collect()
+            .collect())
     }
 
     /// `use`-import lines referencing `symbol`, from mir's `use:` postings.
@@ -1276,22 +1352,19 @@ impl DocumentStore {
         &self,
         symbol: &mir_analyzer::Name,
         files: &[Arc<str>],
-    ) -> Vec<(Arc<str>, u32, u32, u32)> {
-        let _interactive = self.interactive_read_guard();
-        let raw = loop {
-            if let Ok(locs) = salsa::Cancelled::catch(std::panic::AssertUnwindSafe(|| {
-                self.with_session(|session| session.indexed_use_import_locations(symbol, files))
-            })) {
-                break locs;
-            }
-        };
-        raw.into_iter()
+    ) -> Result<Vec<RefLocation>, ContentModified> {
+        let raw = self.with_snapshot(
+            |session| session.prepare_for_query(None),
+            |snap| snap.indexed_use_import_locations(symbol, files),
+        )?;
+        Ok(raw
+            .into_iter()
             .map(|(file, range)| {
                 // mir uses 1-based lines; 0-based columns.
                 let line = range.start.line.saturating_sub(1);
                 (file, line, range.start.column, range.end.column)
             })
-            .collect()
+            .collect())
     }
 
     /// Replay disk-cached reference postings and subtype edges for the whole
@@ -1347,10 +1420,14 @@ impl DocumentStore {
             // types have no user-authored declaration for any file to
             // legitimately "be" — so vendor mentions of it are dependency-
             // internal noise, same call TypeScript makes for `node_modules`
-            // usages of `Promise`.
+            // usages of `Promise`. A vendor polyfill shadowing the stub makes
+            // the class a vendor declaration, so it is not builtin here.
             mir_analyzer::Name::Class(fqcn) => {
                 if let Some(files) = self.fqn_reachable_files(std::slice::from_ref(fqcn)) {
-                    return if mir_analyzer::stub_path_for_class(fqcn).is_some() {
+                    let builtin = self
+                        .with_snapshot(|_| {}, |snap| snap.is_builtin_class(fqcn))
+                        .unwrap_or(false);
+                    return if builtin {
                         files
                             .into_iter()
                             .filter(|f| !is_vendor_path_str(f))
@@ -1439,18 +1516,12 @@ impl DocumentStore {
         &self,
         class_fqn: &str,
         include_trait_users: bool,
-    ) -> Vec<mir_analyzer::SubtypeClassSite> {
+    ) -> Result<Vec<mir_analyzer::SubtypeClassSite>, ContentModified> {
         let files = self.workspace_file_paths();
-        let _interactive = self.interactive_read_guard();
-        loop {
-            if let Ok(sites) = salsa::Cancelled::catch(std::panic::AssertUnwindSafe(|| {
-                self.with_session(|session| {
-                    session.indexed_subtype_classes(class_fqn, &files, include_trait_users)
-                })
-            })) {
-                break sites;
-            }
-        }
+        self.with_snapshot(
+            |session| session.prepare_for_query(None),
+            |snap| snap.indexed_subtype_classes(class_fqn, &files, include_trait_users),
+        )
     }
 
     /// Concrete implementations of `class_fqn::method` across its subtypes:
@@ -1459,18 +1530,12 @@ impl DocumentStore {
         &self,
         class_fqn: &str,
         method: &str,
-    ) -> Vec<(Arc<str>, Arc<str>, mir_analyzer::Range)> {
+    ) -> Result<Vec<MethodImplSite>, ContentModified> {
         let files = self.workspace_file_paths();
-        let _interactive = self.interactive_read_guard();
-        loop {
-            if let Ok(sites) = salsa::Cancelled::catch(std::panic::AssertUnwindSafe(|| {
-                self.with_session(|session| {
-                    session.indexed_method_implementations(class_fqn, method, &files)
-                })
-            })) {
-                break sites;
-            }
-        }
+        self.with_snapshot(
+            |session| session.prepare_for_query(None),
+            |snap| snap.indexed_method_implementations(class_fqn, method, &files),
+        )
     }
 
     /// The complete set of files a `private` method's references can occur in,
@@ -1588,8 +1653,10 @@ impl DocumentStore {
                 // matches subclasses by FQCN, so `extends \Ns\Base` and aliased
                 // `use ... as` forms are all found. Falls back to full scope if
                 // mir can't resolve the owner.
-                let mut files: std::collections::HashSet<Uri> = self
-                    .with_session(|session| session.subtype_files(owner_fqn))
+                let Ok(subtypes) = self.subtype_files(owner_fqn) else {
+                    return MethodScopePlan::FullWorkspace;
+                };
+                let mut files: std::collections::HashSet<Uri> = subtypes
                     .into_iter()
                     .filter_map(|p| p.parse::<Uri>().ok())
                     .collect();
@@ -1617,12 +1684,11 @@ impl DocumentStore {
                 if !self.is_index_ready() {
                     return MethodScopePlan::FullWorkspace;
                 }
+                let Ok(subtypes) = self.indexed_subtype_classes(owner_fqn, false) else {
+                    return MethodScopePlan::FullWorkspace;
+                };
                 let mut fqns: Vec<Arc<str>> = vec![Arc::from(owner_fqn)];
-                fqns.extend(
-                    self.indexed_subtype_classes(owner_fqn, false)
-                        .into_iter()
-                        .map(|s| s.fqcn),
-                );
+                fqns.extend(subtypes.into_iter().map(|s| s.fqcn));
                 // `__construct`'s extra needle is the call-shaped
                 // `->__construct` (explicit re-init on a typed receiver),
                 // not the bare identifier — that would drag in every file
@@ -2003,6 +2069,7 @@ impl DocumentStore {
                     let _ = self.indexed_references(symbol, &workspace_files, false, None);
                     matches.extend(
                         self.indexed_use_imports(symbol, &workspace_files)
+                            .unwrap_or_default()
                             .into_iter()
                             .map(|(file, _, _, _)| file),
                     );
@@ -2273,21 +2340,22 @@ impl DocumentStore {
         // per-file body analysis.
         let class_issues = {
             let _s = tracing::debug_span!("session.class_issues_for").entered();
-            // Retry: concurrent db writes cancel snapshot queries via resume_unwind.
-            loop {
-                if let Ok(issues) = salsa::Cancelled::catch(std::panic::AssertUnwindSafe(|| {
-                    self.with_session(|session| session.class_issues(std::slice::from_ref(&file)))
-                })) {
-                    break issues;
-                }
-            }
+            self.with_snapshot(
+                |session| session.prepare_for_query(None),
+                |snap| snap.class_issues(std::slice::from_ref(&file)),
+            )
+            .ok()?
         };
         // `collector_issues` includes raw `ParseError` issues; callers filter
         // those out downstream in `issues_to_diagnostics` (php-lsp already
         // surfaces parse errors as `SyntaxError` diagnostics from its own
         // parser pass), so this returns them unfiltered here.
-        let collector_issues =
-            self.with_session(|session| session.collector_issues(std::slice::from_ref(&file)));
+        let collector_issues = self
+            .with_snapshot(
+                |_| {},
+                |snap| snap.collector_issues(std::slice::from_ref(&file)),
+            )
+            .ok()?;
         let combined: Vec<mir_issues::Issue> = analysis
             .issues
             .iter()
@@ -2303,18 +2371,17 @@ impl DocumentStore {
     ///
     /// This targeted navigation path lets reference queries avoid php-lsp's
     /// retained whole-file [`mir_analyzer::FileAnalysis`] merely to call
-    /// `symbol_at(...).kind.to_name()`. The interactive guard pauses
-    /// background writes; the retry covers a write already in flight.
-    pub fn mir_name_at(&self, uri: &Uri, offset: u32) -> Option<mir_analyzer::Name> {
-        let _interactive = self.interactive_read_guard();
-        loop {
-            match salsa::Cancelled::catch(std::panic::AssertUnwindSafe(|| {
-                self.with_session(|session| session.name_at(uri.as_str(), offset))
-            })) {
-                Ok(name) => return name,
-                Err(_) => std::thread::yield_now(),
-            }
-        }
+    /// `symbol_at(...).kind.to_name()`.
+    pub fn mir_name_at(
+        &self,
+        uri: &Uri,
+        offset: u32,
+    ) -> Result<Option<mir_analyzer::Name>, ContentModified> {
+        let file: Arc<str> = Arc::from(uri.as_str());
+        self.with_snapshot(
+            |session| session.prepare_for_query(Some(&file)),
+            |snap| snap.name_at(&file, offset),
+        )
     }
 
     /// Run (or reuse) mir's per-file body analysis, retaining the full
@@ -2489,51 +2556,43 @@ impl DocumentStore {
         // Bare same-namespace / use-imported class refs aren't resolved by mir's priority_index_for_ast; preload them.
         let class_fqns = crate::navigation::references::collect_referenced_class_fqns(&doc);
 
-        // ingest_file/load_class/analyze take internal salsa snapshots; a concurrent db write cancels them via resume_unwind. Retry the idempotent sequence.
-        let _interactive = self.interactive_read_guard();
-        let analysis = self.with_session(|session| -> Option<Arc<mir_analyzer::FileAnalysis>> {
-            loop {
-                let attempt = salsa::Cancelled::catch(std::panic::AssertUnwindSafe(|| {
-                    session.ingest_file(file.clone(), source.clone());
-                    for (afile, atext) in &autoload_texts {
-                        session.ingest_file(afile.clone(), atext.clone());
-                    }
-                    for fqcn in &class_fqns {
-                        let _ = session.load_class(fqcn);
-                    }
-                    let mut analyzer = mir_analyzer::FileAnalyzer::new(session);
-                    analyzer.analyze(file.clone(), doc.source(), &owned_program, &source_map)
-                }));
-                match attempt {
-                    Ok(a) => {
-                        self.analysis_compute_count.fetch_add(1, Ordering::Relaxed);
-                        return Some(Arc::new(a));
-                    }
-                    Err(_) => {
-                        // A write cancelled the attempt. If it replaced THIS
-                        // file's text the result is already obsolete (the cache
-                        // key is the source Arc) and the editor re-requests after
-                        // its didChange — stop burning the blocking thread.
-                        // Writes elsewhere just retry as before.
-                        let text_changed = self
-                            .caches
-                            .text_cache
-                            .get(uri)
-                            .is_none_or(|t| !Arc::ptr_eq(&t, &source));
-                        if text_changed || should_cancel() {
-                            return None;
-                        }
-                    }
+        // Re-ingesting on a retry would overwrite a newer edit with `source`,
+        // so a superseded attempt skips the write and fails fast.
+        let superseded = std::cell::Cell::new(false);
+        let analysis = self.with_snapshot(
+            |session| {
+                let text_changed = self
+                    .caches
+                    .text_cache
+                    .get(uri)
+                    .is_none_or(|t| !Arc::ptr_eq(&t, &source));
+                if text_changed || should_cancel() {
+                    superseded.set(true);
+                    return;
                 }
-            }
-        })?;
+                session.ingest_file(file.clone(), source.clone());
+                for (afile, atext) in &autoload_texts {
+                    session.ingest_file(afile.clone(), atext.clone());
+                }
+                for fqcn in &class_fqns {
+                    let _ = session.load_class(fqcn);
+                }
+                session.prepare_for_query(Some(&file));
+            },
+            |snap| {
+                if superseded.get() {
+                    return Err(salsa::Cancelled::PendingWrite);
+                }
+                snap.analyze(file.clone(), doc.source(), &owned_program, &source_map)
+            },
+        );
+        let analysis = Arc::new(analysis.ok()?);
+        self.analysis_compute_count.fetch_add(1, Ordering::Relaxed);
         // Keep php-lsp's retained FileAnalysis cache coherent with declaration
         // changes discovered while analyzing this file. Mir owns its own
         // invalidation; this protects only php-lsp's in-memory analysis_cache.
-        // Computed *after* `with_session` above returns (its lock released):
-        // `decl_fingerprint_delta` takes its own brief lock via
-        // `get_index_salsa`, and nesting it inside the still-held lock above
-        // would deadlock on the non-reentrant session mutex.
+        // `decl_fingerprint_delta` takes its own brief session lock, so it
+        // must run outside any `with_session` scope.
         let (decl_changed, decl_index) = self.decl_fingerprint_delta(uri);
         if decl_changed {
             self.with_session(|session| self.apply_decl_fingerprint(uri, session, &decl_index));
@@ -2722,6 +2781,12 @@ impl DocumentStore {
             .collect()
     }
 
+    fn definition_location(&self, name: &mir_analyzer::Name) -> Option<mir_types::Location> {
+        self.with_snapshot(|_| {}, |snap| snap.definition_of_cached(name))
+            .ok()?
+            .ok()
+    }
+
     /// O(1) resolution of a *known* FQN to its declaring class, via mir's own
     /// incrementally-maintained FQN→location index (`definition_of_cached`,
     /// backed by the same singleton `all_classes()`/`workspace_classes` read
@@ -2737,9 +2802,7 @@ impl DocumentStore {
     ) -> Option<crate::db::workspace_index::ClassRef> {
         let trimmed = fqn.trim_start_matches('\\');
         let name = mir_analyzer::Name::Class(Arc::from(trimmed));
-        let loc = self
-            .with_session(|session| session.definition_of_cached(&name))
-            .ok()?;
+        let loc = self.definition_location(&name)?;
         let &file_idx = wi.path_to_file_idx.get(loc.file.as_ref())?;
         let (_, idx) = wi.files.get(file_idx as usize)?;
         let class_idx = idx
@@ -2774,9 +2837,7 @@ impl DocumentStore {
     ) -> Option<crate::db::workspace_index::FunctionRef> {
         let trimmed = fqn.trim_start_matches('\\');
         let name = mir_analyzer::Name::function(trimmed.to_string());
-        let loc = self
-            .with_session(|session| session.definition_of_cached(&name))
-            .ok()?;
+        let loc = self.definition_location(&name)?;
         let &file_idx = wi.path_to_file_idx.get(loc.file.as_ref())?;
         let (_, idx) = wi.files.get(file_idx as usize)?;
         let function_idx = idx
@@ -2825,6 +2886,7 @@ impl DocumentStore {
         // so cold/uncommitted files commit their current import postings.
         let _ = self.indexed_references(&symbol, &files, false, None);
         self.indexed_use_imports(&symbol, &files)
+            .unwrap_or_default()
             .into_iter()
             .filter_map(|(file, _, _, _)| file.parse::<Uri>().ok())
             .collect::<std::collections::HashSet<_>>()
@@ -3104,7 +3166,7 @@ mod tests {
             .iter()
             .map(|u| Arc::from(u.as_str()))
             .collect();
-        let cold = store.indexed_references(&sym, &files, false, None);
+        let cold = store.indexed_references(&sym, &files, false, None).unwrap();
         assert_eq!(cold.len(), 1, "caller.php references Svc::run once");
         expect_test::expect![[r#"
             [
@@ -3120,7 +3182,7 @@ mod tests {
 
         let cancel = store.begin_warm_sweep();
         store.warm_analysis_sweep(&[], &cancel);
-        let warm = store.indexed_references(&sym, &files, false, None);
+        let warm = store.indexed_references(&sym, &files, false, None).unwrap();
         assert_eq!(cold, warm, "sweep must not change reference results");
 
         // An edit after the sweep is still picked up (memos revalidate).
@@ -3130,7 +3192,7 @@ mod tests {
         );
         let cancel = store.begin_warm_sweep();
         store.warm_analysis_sweep(&[], &cancel);
-        let after_edit = store.indexed_references(&sym, &files, false, None);
+        let after_edit = store.indexed_references(&sym, &files, false, None).unwrap();
         assert_eq!(after_edit.len(), 2, "re-sweep must see the new reference");
         expect_test::expect![[r#"
             [
@@ -4661,26 +4723,21 @@ mod tests {
         );
     }
 
-    /// An announced edit must abort a references query that holds the
-    /// session mutex, before the edit's own write can land.
+    /// A write after the captured revision makes a references query answer
+    /// `ContentModified` instead of a stale result.
     #[test]
-    fn announced_edit_cancels_in_flight_references() {
+    fn stale_cancel_rev_yields_content_modified() {
         let store = DocumentStore::new();
-        let u = uri("/announce.php");
+        let u = uri("/stale.php");
         store.mirror_text(&u, "<?php\nfunction target() {}\ntarget();\n");
         let rev = store.write_rev();
-        store.announce_edit();
-        assert_ne!(
-            store.write_rev(),
-            rev,
-            "announce_edit must advance write_rev"
-        );
+        store.mirror_text(&u, "<?php\nfunction target() {}\ntarget();\ntarget();\n");
         let files = [Arc::<str>::from(u.as_str())];
         let name = mir_analyzer::Name::function("target".to_string());
-        let out = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            store.indexed_references(&name, &files, true, Some(rev))
-        }));
-        assert!(out.is_err(), "a stale cancel_rev must abort the query");
+        assert_eq!(
+            store.indexed_references(&name, &files, true, Some(rev)),
+            Err(ContentModified)
+        );
     }
 
     /// begin_reanalyze() cancels the previously-issued sweep token so a newer

@@ -138,7 +138,7 @@ fn cold_ms(n: usize, reps: usize, sym: &Name, noise: fn(usize) -> (Uri, String))
         let files: Vec<Arc<str>> = store.workspace_file_paths().to_vec();
         count = files.len();
         let t = Instant::now();
-        std::hint::black_box(store.indexed_references(sym, &files, false, None));
+        std::hint::black_box(store.indexed_references(sym, &files, false, None).unwrap());
         samples.push(t.elapsed());
     }
     (count, median_ms(samples))

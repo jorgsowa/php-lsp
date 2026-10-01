@@ -4,6 +4,7 @@ use tower_lsp_server::jsonrpc::Result;
 use tower_lsp_server::ls_types::*;
 
 use crate::analysis::document_highlight::document_highlights;
+use crate::document::document_store::ContentModified;
 use crate::lang::is_unresolvable_bareword_at;
 use crate::navigation::definition::{
     find_declaration_range, find_method_in_class_hierarchy, find_method_range_in_class,
@@ -548,15 +549,15 @@ impl Backend {
                     let locations = tokio::task::spawn_blocking(move || {
                         let (_interactive, cancel_rev) = docs.settled_write_rev_guard();
                         let mut locs: Vec<Location> = docs
-                            .indexed_references(&sym, &files, incl_decl, Some(cancel_rev))
+                            .indexed_references(&sym, &files, incl_decl, Some(cancel_rev))?
                             .into_iter()
                             .filter_map(session_tuple_to_location)
                             .collect();
                         dedup_ref_locations(&mut locs);
-                        locs
+                        Ok::<_, ContentModified>(locs)
                     })
                     .await
-                    .unwrap_or_default();
+                    .unwrap_or_else(|_| Ok(Vec::new()))?;
                     return Ok((!locations.is_empty()).then_some(locations));
                 }
                 // Cannot determine the owning class — return empty rather than
@@ -774,15 +775,15 @@ impl Backend {
                                     &priority_files,
                                     include_declaration,
                                     Some(cancel_rev),
-                                )
+                                )?
                                 .into_iter()
                                 .filter_map(session_tuple_to_location)
                                 .collect();
                             dedup_ref_locations(&mut locs);
-                            locs
+                            Ok::<_, ContentModified>(locs)
                         })
                         .await
-                        .unwrap_or_default();
+                        .unwrap_or_else(|_| Ok(Vec::new()))?;
                         if !locations.is_empty() {
                             super::super::send_references_partial_result(
                                 &self.client,
@@ -804,15 +805,15 @@ impl Backend {
                                             &remainder_files,
                                             include_declaration,
                                             Some(cancel_rev),
-                                        )
+                                        )?
                                         .into_iter()
                                         .filter_map(session_tuple_to_location)
                                         .collect();
                                     dedup_ref_locations(&mut locs);
-                                    locs
+                                    Ok::<_, ContentModified>(locs)
                                 })
                                 .await
-                                .unwrap_or_default(),
+                                .unwrap_or_else(|_| Ok(Vec::new()))?,
                             );
                             dedup_ref_locations(&mut locations);
                         }
@@ -840,7 +841,7 @@ impl Backend {
                     include_declaration,
                     wants_use_imports,
                 )
-                .await;
+                .await?;
             if locations.is_empty() {
                 // A candidate admitted by the cold-file text-mention gate but
                 // never analyzed before this query (e.g. an edit that just
@@ -872,7 +873,7 @@ impl Backend {
                         include_declaration,
                         wants_use_imports,
                     )
-                    .await;
+                    .await?;
             }
             if include_declaration {
                 locations.retain(|loc| location_starts_on_symbol(&self.docs, loc));
@@ -961,7 +962,7 @@ impl Backend {
         let mut locations = tokio::task::spawn_blocking(move || {
             let (_interactive, cancel_rev) = docs.settled_write_rev_guard();
             let mut locs: Vec<Location> = docs
-                .indexed_references(&sym, &files, mir_include_decl, Some(cancel_rev))
+                .indexed_references(&sym, &files, mir_include_decl, Some(cancel_rev))?
                 .into_iter()
                 .filter_map(session_tuple_to_location)
                 .collect();
@@ -969,16 +970,17 @@ impl Backend {
                 // The freshness pass above committed the candidates, so this
                 // read-only lookup observes their current `use:` postings.
                 locs.extend(
-                    docs.indexed_use_imports(&sym, &files)
+                    docs.indexed_use_imports(&sym, &files)?
                         .into_iter()
                         .filter_map(session_tuple_to_location),
                 );
             }
             dedup_ref_locations(&mut locs);
-            locs
+            Ok::<_, ContentModified>(locs)
         })
         .await
-        .unwrap_or_default();
+        .ok()?
+        .ok()?;
 
         if !mir_include_decl {
             locations.extend(self.workspace_decl_locations(&symbol, &word).await);
@@ -1025,7 +1027,7 @@ impl Backend {
         files: &[Arc<str>],
         include_declaration: bool,
         wants_use_imports: bool,
-    ) -> Vec<Location> {
+    ) -> Result<Vec<Location>> {
         let docs = Arc::clone(&self.docs);
         let symbol = symbol.clone();
         let files = files.to_vec();
@@ -1034,7 +1036,7 @@ impl Backend {
             // only a genuine user edit cancels the search.
             let (_interactive, cancel_rev) = docs.settled_write_rev_guard();
             let mut locs: Vec<Location> = docs
-                .indexed_references(&symbol, &files, include_declaration, Some(cancel_rev))
+                .indexed_references(&symbol, &files, include_declaration, Some(cancel_rev))?
                 .into_iter()
                 .filter_map(session_tuple_to_location)
                 .collect();
@@ -1043,16 +1045,17 @@ impl Backend {
                 // the separate `use:` postings are current before this
                 // read-only lookup appends them.
                 locs.extend(
-                    docs.indexed_use_imports(&symbol, &files)
+                    docs.indexed_use_imports(&symbol, &files)?
                         .into_iter()
                         .filter_map(session_tuple_to_location),
                 );
             }
             dedup_ref_locations(&mut locs);
-            locs
+            Ok::<_, ContentModified>(locs)
         })
         .await
-        .unwrap_or_default()
+        .unwrap_or_else(|_| Ok(Vec::new()))
+        .map_err(Into::into)
     }
 
     /// Mir's targeted per-file resolution of the symbol identity under the
@@ -1073,7 +1076,8 @@ impl Backend {
         let uri = uri.clone();
         tokio::task::spawn_blocking(move || docs.mir_name_at(&uri, offset))
             .await
-            .unwrap_or_default()
+            .ok()?
+            .ok()?
     }
 
     /// [`Self::resolve_usage_symbol`], but when the first attempt comes back

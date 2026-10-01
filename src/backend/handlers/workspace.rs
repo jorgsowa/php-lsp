@@ -822,7 +822,7 @@ impl Backend {
                     docs.indexed_references(&symbol, &files, true, Some(cancel_rev))
                 })
                 .await
-                .unwrap_or_default();
+                .unwrap_or_else(|_| Ok(Vec::new()))?;
                 let docs = std::sync::Arc::clone(&self.docs);
                 let old_short_task = old_short.clone();
                 let new_short_task = new_short.clone();

@@ -80,7 +80,7 @@ class Point {
     public function __construct(public int $x, public int $y) {}
 }
 new Point(x: 0, y: 1, x: 2);
-//                    ^^^^ error: Point::__construct() has no parameter named $x
+//                    ^^^^ error: Point::__construct() argument $x overwrites a previous argument
 "#,
     )
     .await;
@@ -93,7 +93,7 @@ async fn duplicate_named_arg_in_function_call() {
         r#"<?php
 function foo(int $a, int $b): void {}
 foo(a: 1, b: 2, a: 3);
-//              ^^^^ error: foo() has no parameter named $a
+//              ^^^^ error: foo() argument $a overwrites a previous argument
 "#,
     )
     .await;
@@ -108,7 +108,7 @@ class C {
     public function run(int $x, int $y): void {}
 }
 (new C())->run(x: 1, y: 2, x: 99);
-//                         ^^^^^ error: run() has no parameter named $x
+//                         ^^^^^ error: run() argument $x overwrites a previous argument
 "#,
     )
     .await;
@@ -186,6 +186,6 @@ async fn workspace_diagnostic_named_arguments() {
 
     expect![[r#"
         ws_named_args.php
-          2:16 foo() has no parameter named $a [InvalidNamedArgument] (error)"#]]
+          2:16 foo() argument $a overwrites a previous argument [InvalidNamedArgument] (error)"#]]
     .assert_eq(&out);
 }

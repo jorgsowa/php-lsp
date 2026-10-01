@@ -631,11 +631,12 @@ async fn compute_dependent_publishes_owned(
         // next edit starts its own sweep, this one stops at its next file
         // boundary instead of blocking typing behind the previous sweep.
         let cancel = docs.begin_reanalyze();
-        let analyses =
-            docs.with_session(|session| session.reanalyze_files_cancellable(&open_set, &cancel));
         // A newer edit that flipped `cancel` mid-sweep is now authoritative and
         // will republish; drop this sweep's partial results so they can't land
         // out of order and leave stale diagnostics as the final state.
+        let Some(analyses) = docs.reanalyze_files(&open_set, &cancel) else {
+            return Vec::new();
+        };
         if cancel.is_cancelled() || analyses.is_empty() {
             return Vec::new();
         }
@@ -658,7 +659,12 @@ async fn compute_dependent_publishes_owned(
             .iter()
             .map(|(u, _)| Arc::from(u.as_str()))
             .collect();
-        let class_issues = docs.with_session(|session| session.class_issues(&dep_files));
+        let Ok(class_issues) = docs.with_snapshot(
+            |session| session.prepare_for_query(None),
+            |snap| snap.class_issues(&dep_files),
+        ) else {
+            return Vec::new();
+        };
         let mut class_issues_by_file: std::collections::HashMap<Arc<str>, Vec<mir_issues::Issue>> =
             std::collections::HashMap::new();
         for issue in class_issues {
