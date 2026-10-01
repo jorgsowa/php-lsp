@@ -32,7 +32,7 @@ pub fn inlay_hints(
     _source: &str,
     doc: &ParsedDoc,
     analysis: Option<&mir_analyzer::FileAnalysis>,
-    session: Option<&mir_analyzer::AnalysisSession>,
+    db: Option<&mir_analyzer::db::MirDbStorage>,
     range: Range,
 ) -> Vec<InlayHint> {
     let sv = doc.view();
@@ -42,7 +42,7 @@ pub fn inlay_hints(
         sv,
         defs: &defs,
         analysis,
-        session,
+        db,
         range,
     };
     hints_in_stmts(&ctx, &doc.program().stmts, &mut hints);
@@ -68,7 +68,7 @@ struct HintCtx<'a> {
     sv: SourceView<'a>,
     defs: &'a HashMap<String, CallableSignature>,
     analysis: Option<&'a mir_analyzer::FileAnalysis>,
-    session: Option<&'a mir_analyzer::AnalysisSession>,
+    db: Option<&'a mir_analyzer::db::MirDbStorage>,
     range: Range,
 }
 
@@ -546,19 +546,18 @@ fn callable_from_local_function(
 
 fn callable_from_symbol(ctx: &HintCtx<'_>, offset: u32) -> Option<CallableSignature> {
     let symbol = ctx.analysis?.symbol_at(offset)?.to_symbol()?;
-    callable_signature_from_name(ctx.session?, &symbol)
+    callable_signature_from_name(ctx.db?, &symbol)
 }
 
 fn callable_signature_from_name(
-    session: &mir_analyzer::AnalysisSession,
+    db: &mir_analyzer::db::MirDbStorage,
     symbol: &mir_analyzer::Name,
 ) -> Option<CallableSignature> {
-    let db = session.snapshot_db();
     match symbol {
         mir_analyzer::Name::Function(fqn) => {
             let f = mir_analyzer::db::find_function(
-                &db,
-                mir_analyzer::db::Fqcn::from_str(&db, fqn.as_ref()),
+                db,
+                mir_analyzer::db::Fqcn::from_str(db, fqn.as_ref()),
             )?;
             if mir_analyzer::is_builtin_function(&f.short_name) {
                 return None;
@@ -576,8 +575,8 @@ fn callable_signature_from_name(
         }
         mir_analyzer::Name::Method { class, name } => {
             let (_, m) = mir_analyzer::db::find_method_in_chain(
-                &db,
-                mir_analyzer::db::Fqcn::from_str(&db, class.as_ref()),
+                db,
+                mir_analyzer::db::Fqcn::from_str(db, class.as_ref()),
                 name.as_ref(),
             )?;
             Some(CallableSignature {
@@ -597,8 +596,8 @@ fn callable_signature_from_name(
         }
         mir_analyzer::Name::Class(fqcn) => {
             let (_, m) = mir_analyzer::db::find_method_in_chain(
-                &db,
-                mir_analyzer::db::Fqcn::from_str(&db, fqcn.as_ref()),
+                db,
+                mir_analyzer::db::Fqcn::from_str(db, fqcn.as_ref()),
                 "__construct",
             )?;
             Some(CallableSignature {

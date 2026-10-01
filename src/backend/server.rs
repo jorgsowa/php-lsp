@@ -226,10 +226,10 @@ fn method_hover_for_fqcn(
 }
 
 fn callable_signature_for_symbol(
-    session: &mir_analyzer::AnalysisSession,
+    db: &mir_analyzer::db::MirDbStorage,
     symbol: &mir_analyzer::Name,
 ) -> Option<(String, Option<String>)> {
-    let info = callable_info_for_name(session, symbol)?;
+    let info = callable_info_for_name(db, symbol)?;
     match symbol {
         mir_analyzer::Name::Function(fqn) => {
             let short = fqn.rsplit('\\').next().unwrap_or(fqn.as_ref());
@@ -266,10 +266,10 @@ fn callable_signature_for_symbol(
 }
 
 fn inlay_hint_tooltip_for_symbol(
-    session: &mir_analyzer::AnalysisSession,
+    db: &mir_analyzer::db::MirDbStorage,
     symbol: &mir_analyzer::Name,
 ) -> Option<String> {
-    let (signature, docstring) = callable_signature_for_symbol(session, symbol)?;
+    let (signature, docstring) = callable_signature_for_symbol(db, symbol)?;
     let mut value = format!("```php\n{signature}\n```");
     if let Some(docstring) = docstring.filter(|s| !s.is_empty()) {
         value.push_str("\n\n---\n\n");
@@ -279,10 +279,10 @@ fn inlay_hint_tooltip_for_symbol(
 }
 
 fn completion_signature_and_docstring_for_symbol(
-    session: &mir_analyzer::AnalysisSession,
+    db: &mir_analyzer::db::MirDbStorage,
     symbol: &mir_analyzer::Name,
 ) -> (Option<String>, Option<String>) {
-    if let Some((signature, docstring)) = callable_signature_for_symbol(session, symbol) {
+    if let Some((signature, docstring)) = callable_signature_for_symbol(db, symbol) {
         return (Some(signature), docstring.filter(|s| !s.is_empty()));
     }
     if let mir_analyzer::Name::Function(fqn) = symbol {
@@ -1029,9 +1029,11 @@ impl LanguageServer for Backend {
                     let Some(symbol) = symbol.as_ref() else {
                         return (None, None);
                     };
-                    let (resolved_detail, resolved_docstring) = docs.with_session(|session| {
-                        completion_signature_and_docstring_for_symbol(&*session, symbol)
-                    });
+                    let (resolved_detail, resolved_docstring) = docs
+                        .read_snapshot(|snap| {
+                            completion_signature_and_docstring_for_symbol(snap.db(), symbol)
+                        })
+                        .unwrap_or_default();
                     let detail = if need_detail {
                         resolved_detail.clone()
                     } else {
@@ -1186,17 +1188,19 @@ impl LanguageServer for Backend {
             let doc_clone = Arc::clone(&doc);
             let result = self
                 .blocking("signature_help", move || {
-                    docs.with_session(|session| {
+                    docs.read_snapshot(|snap| {
                         signature_help(
                             &source,
                             &doc_clone,
                             position,
                             analysis.as_deref(),
-                            Some(&*session),
+                            Some(snap.db()),
                         )
                     })
+                    .ok()
                 })
                 .await
+                .flatten()
                 .flatten();
             Ok(result)
         })
@@ -1450,15 +1454,16 @@ impl LanguageServer for Backend {
             let docs = Arc::clone(&self.docs);
             let hints = self
                 .blocking("inlay_hint", move || {
-                    docs.with_session(|session| {
+                    docs.read_snapshot(|snap| {
                         inlay_hints(
                             doc.source(),
                             &doc,
                             analysis.as_deref(),
-                            Some(&*session),
+                            Some(snap.db()),
                             params.range,
                         )
                     })
+                    .unwrap_or_default()
                 })
                 .await
                 .unwrap_or_default();
@@ -1478,11 +1483,11 @@ impl LanguageServer for Backend {
                 let docs = Arc::clone(&self.docs);
                 let tooltip = self
                     .blocking_gated(super::debug_gate::GATE_INLAY_HINT_RESOLVE, move || {
-                        docs.with_session(|session| {
-                            inlay_hint_tooltip_for_symbol(&*session, &symbol)
-                        })
+                        docs.read_snapshot(|snap| inlay_hint_tooltip_for_symbol(snap.db(), &symbol))
+                            .ok()
                     })
                     .await
+                    .flatten()
                     .flatten();
                 if let Some(md) = tooltip {
                     item.tooltip = Some(InlayHintTooltip::MarkupContent(MarkupContent {

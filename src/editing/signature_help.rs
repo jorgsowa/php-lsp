@@ -20,7 +20,7 @@ pub fn signature_help(
     doc: &ParsedDoc,
     position: Position,
     analysis: Option<&mir_analyzer::FileAnalysis>,
-    session: Option<&mir_analyzer::AnalysisSession>,
+    db: Option<&mir_analyzer::db::MirDbStorage>,
 ) -> Option<SignatureHelp> {
     let ctx = call_context(source, position)?;
     let func_name = ctx.name.clone();
@@ -71,10 +71,10 @@ pub fn signature_help(
         }?;
         find_doc_method_params_in_doc(&doc.program().stmts, &class_name, &func_name)
     });
-    let resolved = session.and_then(|session| {
+    let resolved = db.and_then(|db| {
         symbol
             .as_ref()
-            .and_then(|symbol| callable_info_for_name(session, symbol))
+            .and_then(|symbol| callable_info_for_name(db, symbol))
     });
     let sig_text = local_sig
         .or(local_doc_method_sig)
