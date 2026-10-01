@@ -51,7 +51,7 @@ pub(crate) struct CacheRegistry {
     pub(crate) owned_program_cache: DashMap<Uri, (Arc<str>, Arc<php_ast::owned::Program>)>,
     /// On-demand `FileIndex` store for vendor files loaded lazily via PSR-4
     /// navigation. Vendor is excluded from the eager workspace scan; files
-    /// ingested by `psr4_method_goto` are not in the salsa workspace_index.
+    /// ingested by PSR-4 navigation are not in the salsa workspace_index.
     /// Evicted alongside all other per-file caches via `evict()`.
     pub(crate) vendor_index_cache: DashMap<Uri, Arc<FileIndex>>,
     /// Monotonic counter driving `last_access`.

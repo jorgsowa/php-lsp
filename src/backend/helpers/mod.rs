@@ -168,8 +168,7 @@ impl Backend {
 
     /// Reuse `slot` if already populated this request; otherwise fetch and
     /// populate it. Callers MUST reset `slot` to `None` immediately after any
-    /// operation that can lazily ingest a new file (`psr4_goto`,
-    /// `psr4_method_goto`) so the next fetch sees the fresh file set — this
+    /// operation that can lazily ingest a new file (`psr4_goto`) so the next fetch sees the fresh file set — this
     /// is a lock-count optimization for the common case where no such
     /// ingestion happens between fallback branches, not an unconditional
     /// cache.
@@ -266,112 +265,6 @@ impl Backend {
             uri: file_uri,
             range,
         })
-    }
-
-    /// Walk the PSR-4 class hierarchy starting from `class_fqn` to find the
-    /// definition of `method_name`. Follows the PHP method-resolution order
-    /// (traits → parent) through vendor files that were excluded from the
-    /// eager workspace scan. Files are lazily ingested into the document store
-    /// on first visit; their `FileIndex` is cached in `vendor_index_cache` so
-    /// repeated navigation to the same vendor class is cheap.
-    pub(super) async fn psr4_method_goto(
-        &self,
-        class_fqn: &str,
-        method_name: &str,
-    ) -> Option<Location> {
-        use crate::index::file_index::FileIndex;
-        use crate::navigation::definition::{find_declaration_range, find_method_range_in_class};
-        use crate::text::zero_width_range;
-        use std::collections::{HashSet, VecDeque};
-
-        let mut queue: VecDeque<String> = VecDeque::from([class_fqn.to_owned()]);
-        let mut visited: HashSet<String> = HashSet::new();
-
-        while let Some(fqn) = queue.pop_front() {
-            if !visited.insert(fqn.clone()) {
-                continue;
-            }
-
-            let path = match self.psr4.load().resolve(&fqn) {
-                Some(p) => p,
-                None => continue,
-            };
-            let uri = match Uri::from_file_path(&path) {
-                Some(u) => u,
-                None => continue,
-            };
-
-            // Lazy-load into the workspace so get_doc_salsa works below.
-            if self.docs.get_doc_salsa(&uri).is_none() {
-                let text = match tokio::fs::read_to_string(&path).await {
-                    Ok(t) => t,
-                    Err(_) => continue,
-                };
-                self.ingest_if_not_open(uri.clone(), &text);
-            }
-
-            let doc = match self.docs.get_doc_salsa(&uri) {
-                Some(d) => d,
-                None => continue,
-            };
-
-            // Use a cached FileIndex when available to avoid re-extracting.
-            let index = self.docs.get_vendor_index(&uri).unwrap_or_else(|| {
-                let idx = Arc::new(FileIndex::extract(&doc));
-                self.docs.cache_vendor_index(uri.clone(), Arc::clone(&idx));
-                idx
-            });
-
-            let short = crate::text::fqn_short_name(&fqn);
-
-            for cls in &index.classes {
-                if cls.name.as_ref() != short {
-                    continue;
-                }
-
-                for m in &cls.methods {
-                    if m.name.as_ref() == method_name {
-                        let range = find_method_range_in_class(&doc, short, method_name)
-                            .or_else(|| find_declaration_range(doc.source(), &doc, method_name))
-                            .unwrap_or_else(|| zero_width_range(m.start_line));
-                        return Some(Location { uri, range });
-                    }
-                }
-                for dm in &cls.doc_methods {
-                    if dm.name.as_ref() == method_name {
-                        return Some(Location {
-                            uri,
-                            range: zero_width_range(dm.start_line),
-                        });
-                    }
-                }
-
-                let imports = doc.file_imports();
-                // Queue parent chain in PHP MRO order: traits → mixins → parent.
-                for trt in &cls.traits {
-                    queue.push_back(crate::navigation::moniker::resolve_fqn(
-                        &doc,
-                        trt.as_ref(),
-                        &imports,
-                    ));
-                }
-                for mx in &cls.mixins {
-                    queue.push_back(crate::navigation::moniker::resolve_fqn(
-                        &doc,
-                        mx.as_ref(),
-                        &imports,
-                    ));
-                }
-                if let Some(parent) = &cls.parent {
-                    queue.push_back(crate::navigation::moniker::resolve_fqn(
-                        &doc,
-                        parent.as_ref(),
-                        &imports,
-                    ));
-                }
-            }
-        }
-        None
     }
 
     /// Pre-load via PSR-4 any direct supertypes of `item_fqn` that are not yet

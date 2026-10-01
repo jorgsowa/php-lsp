@@ -6,10 +6,7 @@ use tower_lsp_server::ls_types::*;
 use crate::analysis::document_highlight::document_highlights;
 use crate::document::document_store::ContentModified;
 use crate::lang::is_unresolvable_bareword_at;
-use crate::navigation::definition::{
-    find_declaration_range, find_method_in_class_hierarchy, find_method_range_in_class,
-    find_property_in_class_hierarchy,
-};
+use crate::navigation::definition::find_declaration_range;
 use crate::navigation::references::{
     build_mir_symbol, dedup_ref_locations, session_tuple_to_location,
 };
@@ -44,7 +41,7 @@ impl Backend {
             // Reused across the fallback branches below when no lazy vendor
             // ingestion happens in between (the common case) — collapses to
             // one workspace-index fetch instead of up to three. Reset to
-            // `None` after any `psr4_method_goto`/`psr4_goto` call that can
+            // `None` after any `psr4_goto` call that can
             // lazily ingest a new file, so a later branch never reads a
             // pre-ingestion snapshot.
             let mut wi_cache: Option<Arc<crate::db::workspace_index::WorkspaceIndexData>> = None;
@@ -79,175 +76,20 @@ impl Backend {
             {
                 return Ok(None);
             }
-            if let Some(word) = crate::text::word_at_position(&source, position)
-                && !word.starts_with('$')
+            if let Some(offset) = crate::text::word_range_at(&source, position)
+                .map(|range| doc.view().byte_of_position(range.start))
             {
-                let analysis = self.cached_analysis_async(uri).await;
-
-                // ClassReference is recorded on the class token in static
-                // calls (Foo::bar), class-constant fetches (Foo::BAR), new
-                // expressions, instanceof, and type hints. When the cursor sits on a class name, jump directly
-                // to the class via PSR-4 using the resolved FQN — more
-                // accurate than the workspace index for aliased names.
-                if let Some(fqn) = analysis.as_deref().and_then(|a| {
-                    let off = crate::text::word_range_at(&source, position)
-                        .map(|r| doc.view().byte_of_position(r.start))?;
-                    let sym = a.symbol_at(off)?;
-                    match &sym.kind {
-                        mir_analyzer::ReferenceKind::ClassReference(fqn) => Some(fqn.to_string()),
-                        _ => None,
-                    }
-                }) && let Some(loc) = self.psr4_goto(&fqn).await
-                {
+                let docs = Arc::clone(&self.docs);
+                let uri_task = uri.clone();
+                let located = self
+                    .blocking_gated(super::super::debug_gate::GATE_GOTO_DEFINITION, move || {
+                        crate::navigation::mir_definition::mir_definition(&docs, &uri_task, offset)
+                    })
+                    .await;
+                if let Some(Ok(Some(loc))) = located {
                     return Ok(Some(GotoDefinitionResponse::Scalar(loc)));
                 }
-
-                // A bare call can only mean a function, never a same-named method.
-                let resolved_function = analysis.as_deref().and_then(|a| {
-                    let off = crate::text::word_range_at(&source, position)
-                        .map(|r| doc.view().byte_of_position(r.start))?;
-                    match &a.symbol_at(off)?.kind {
-                        mir_analyzer::ReferenceKind::FunctionCall(fqn) => Some(Arc::clone(fqn)),
-                        _ => None,
-                    }
-                });
-                if let Some(function_fqn) = resolved_function {
-                    let wi = self.workspace_index_cached(&mut wi_cache).await;
-                    let docs = Arc::clone(&self.docs);
-                    let uri_task = uri.clone();
-                    let source_task = Arc::clone(&source);
-                    let doc_task = Arc::clone(&doc);
-                    let loc = self
-                        .blocking_gated(super::super::debug_gate::GATE_GOTO_DEFINITION, move || {
-                            let indexed = docs
-                                .function_ref_by_fqn(&wi, &function_fqn)
-                                .and_then(|r| wi.function_at(r))
-                                .and_then(|(fn_uri, function)| {
-                                    let fn_doc = docs.get_doc_salsa(fn_uri)?;
-                                    let range = find_declaration_range(
-                                        fn_doc.source(),
-                                        &fn_doc,
-                                        &function.name,
-                                    )?;
-                                    Some(Location {
-                                        uri: fn_uri.clone(),
-                                        range,
-                                    })
-                                });
-                            indexed.or_else(|| {
-                                crate::navigation::definition::goto_function_definition(
-                                    &uri_task,
-                                    &source_task,
-                                    &doc_task,
-                                    position,
-                                )
-                            })
-                        })
-                        .await
-                        .flatten();
-                    return Ok(loc.map(GotoDefinitionResponse::Scalar));
-                }
-
-                // Keep both the short name (workspace-index lookup) and the full
-                // FQN Arc (PSR-4 vendor fallback). Arc<str> clone is an atomic
-                // increment — no heap allocation on the hot path.
-                let resolved_method_target = analysis.as_deref().and_then(|a| {
-                    let off = crate::text::word_range_at(&source, position)
-                        .map(|r| doc.view().byte_of_position(r.start))?;
-                    let sym = a.symbol_at(off)?;
-                    match &sym.kind {
-                        mir_analyzer::ReferenceKind::MethodCall { class, .. }
-                        | mir_analyzer::ReferenceKind::StaticCall { class, .. } => {
-                            Some((fqn_short_name(class).to_string(), Arc::clone(class)))
-                        }
-                        _ => None,
-                    }
-                });
-                if let Some((_, class_fqn_arc)) = resolved_method_target {
-                    let wi = self.workspace_index_cached(&mut wi_cache).await;
-                    let docs = Arc::clone(&self.docs);
-                    let wi_task = Arc::clone(&wi);
-                    let class_fqn_task = Arc::clone(&class_fqn_arc);
-                    let word_task = word.clone();
-                    let found = self
-                        .blocking_gated(super::super::debug_gate::GATE_GOTO_DEFINITION, move || {
-                            let get_doc = |uri: &Uri| docs.get_doc_salsa(uri);
-                            let resolve_class_ref =
-                                |fqn: &str| docs.resolve_class_ref_by_fqn(&wi_task, fqn);
-                            let loc = find_method_in_class_hierarchy(
-                                class_fqn_task.as_ref(),
-                                &word_task,
-                                &wi_task,
-                                &get_doc,
-                                &resolve_class_ref,
-                            )?;
-                            let refined = docs
-                                .get_doc_salsa(&loc.uri)
-                                .and_then(|d| {
-                                    let range = find_method_range_in_class(
-                                        &d,
-                                        crate::text::fqn_short_name(class_fqn_task.as_ref()),
-                                        &word_task,
-                                    )
-                                    .or_else(|| find_declaration_range(d.source(), &d, &word_task));
-                                    range.map(|range| Location {
-                                        uri: loc.uri.clone(),
-                                        range,
-                                    })
-                                })
-                                .unwrap_or(loc);
-                            Some(refined)
-                        })
-                        .await
-                        .flatten();
-                    if let Some(refined) = found {
-                        return Ok(Some(GotoDefinitionResponse::Scalar(refined)));
-                    }
-                    // Fallback: walk the PSR-4 vendor hierarchy for the resolved class.
-                    // trim_start_matches is a pointer offset (no allocation).
-                    let class_fqn = class_fqn_arc.trim_start_matches('\\');
-                    if let Some(loc) = self.psr4_method_goto(class_fqn, &word).await {
-                        return Ok(Some(GotoDefinitionResponse::Scalar(loc)));
-                    }
-                    // May have lazily ingested a vendor file — force the next
-                    // fetch to see it.
-                    wi_cache = None;
-                }
-
-                let resolved_property_target = analysis.as_deref().and_then(|a| {
-                    let off = crate::text::word_range_at(&source, position)
-                        .map(|r| doc.view().byte_of_position(r.start))?;
-                    let sym = a.symbol_at(off)?;
-                    match sym.kind.to_name()? {
-                        mir_analyzer::Name::Property { class, name } => Some((class, name)),
-                        _ => None,
-                    }
-                });
-                if let Some((class_fqn_arc, property_name_arc)) = resolved_property_target {
-                    let wi = self.workspace_index_cached(&mut wi_cache).await;
-                    let docs = Arc::clone(&self.docs);
-                    let wi_task = Arc::clone(&wi);
-                    let loc = self
-                        .blocking_gated(super::super::debug_gate::GATE_GOTO_DEFINITION, move || {
-                            let get_doc = |uri: &Uri| docs.get_doc_salsa(uri);
-                            let resolve_class_ref =
-                                |fqn: &str| docs.resolve_class_ref_by_fqn(&wi_task, fqn);
-                            find_property_in_class_hierarchy(
-                                class_fqn_arc.as_ref(),
-                                property_name_arc.as_ref(),
-                                &wi_task,
-                                &get_doc,
-                                &resolve_class_ref,
-                            )
-                        })
-                        .await
-                        .flatten();
-                    if let Some(loc) = loc {
-                        return Ok(Some(GotoDefinitionResponse::Scalar(loc)));
-                    }
-                }
             }
-
             let uri_task = uri.clone();
             let source_task = Arc::clone(&source);
             let doc_task = Arc::clone(&doc);
@@ -280,79 +122,6 @@ impl Backend {
             if let Some(loc) = local_definition {
                 return Ok(Some(GotoDefinitionResponse::Scalar(loc)));
             }
-            if let Some(line_text) = source.lines().nth(position.line as usize)
-                && let Some(word) = crate::text::word_at_position(&source, position)
-                && let Some(receiver) = crate::hover::extract_receiver_var_before_cursor(
-                    line_text,
-                    position.character as usize,
-                )
-            {
-                let class_name = if receiver == "$this" {
-                    enclosing_class_at(&source, &doc, position)
-                } else {
-                    let analysis = self.cached_analysis_async(uri).await;
-                    analysis.as_deref().and_then(|a| {
-                        let off = receiver_var_offset(&doc, line_text, position, &receiver)?;
-                        crate::types::type_query::type_at_offset(a, off)
-                            .and_then(crate::types::type_query::primary_class_name)
-                    })
-                };
-                if let Some(cls) = class_name {
-                    let first_cls = cls.split('|').next().unwrap_or(&cls).to_owned();
-                    let wi2 = self.workspace_index_cached(&mut wi_cache).await;
-                    let docs = Arc::clone(&self.docs);
-                    let wi_task = Arc::clone(&wi2);
-                    let first_cls_task = first_cls.clone();
-                    let word_task = word.clone();
-                    let found = self
-                        .blocking_gated(super::super::debug_gate::GATE_GOTO_DEFINITION, move || {
-                            let get_doc = |uri: &Uri| docs.get_doc_salsa(uri);
-                            let resolve_class_ref =
-                                |fqn: &str| docs.resolve_class_ref_by_fqn(&wi_task, fqn);
-                            let loc = find_method_in_class_hierarchy(
-                                &first_cls_task,
-                                &word_task,
-                                &wi_task,
-                                &get_doc,
-                                &resolve_class_ref,
-                            )?;
-                            let refined = docs
-                                .get_doc_salsa(&loc.uri)
-                                .and_then(|doc| {
-                                    find_declaration_range(doc.source(), &doc, &word_task).map(
-                                        |range| Location {
-                                            uri: loc.uri.clone(),
-                                            range,
-                                        },
-                                    )
-                                })
-                                .unwrap_or(loc);
-                            Some(refined)
-                        })
-                        .await
-                        .flatten();
-                    if let Some(refined) = found {
-                        return Ok(Some(GotoDefinitionResponse::Scalar(refined)));
-                    }
-                    // Fallback: resolve the class FQN via the workspace index and
-                    // walk the PSR-4 vendor hierarchy starting from there.
-                    let class_fqn = self
-                        .docs
-                        .resolve_class_ref_by_fqn(&wi2, &first_cls)
-                        .and_then(|cr| {
-                            wi2.at(cr)
-                                .map(|(_, cls)| cls.fqn.trim_start_matches('\\').to_owned())
-                        })
-                        .unwrap_or_else(|| first_cls.clone());
-                    if let Some(loc) = self.psr4_method_goto(&class_fqn, &word).await {
-                        return Ok(Some(GotoDefinitionResponse::Scalar(loc)));
-                    }
-                    // May have lazily ingested a vendor file — force the next
-                    // fetch to see it.
-                    wi_cache = None;
-                }
-            }
-
             let wi = self.workspace_index_cached(&mut wi_cache).await;
             if let Some(word) = crate::text::word_at_position(&source, position) {
                 let docs = Arc::clone(&self.docs);
@@ -1396,28 +1165,4 @@ fn resolve_parent_construct_class(
     let resolved = resolved.trim_start_matches('\\').to_string();
     docs.class_ref_by_fqn(wi, &resolved)?;
     Some(resolved)
-}
-
-/// Byte offset of the last char of `receiver_var` in the nearest
-/// `receiver_var->` / `receiver_var?->` / `receiver_var::` occurrence before
-/// the cursor — a position inside mir's end-exclusive variable span. Mirrors
-/// `editing/signature_help.rs::receiver_var_offset`.
-fn receiver_var_offset(
-    doc: &crate::document::ast::ParsedDoc,
-    line_text: &str,
-    position: Position,
-    receiver_var: &str,
-) -> Option<u32> {
-    let cursor_byte = crate::text::utf16_offset_to_byte(line_text, position.character as usize)
-        .min(line_text.len());
-    let before = &line_text[..cursor_byte];
-    let p = before
-        .rfind(&format!("{receiver_var}?->"))
-        .or_else(|| before.rfind(&format!("{receiver_var}->")))
-        .or_else(|| before.rfind(&format!("{receiver_var}::")))?;
-    let line_start = doc.view().byte_of_position(Position {
-        line: position.line,
-        character: 0,
-    });
-    Some(line_start + (p + receiver_var.len()) as u32 - 1)
 }

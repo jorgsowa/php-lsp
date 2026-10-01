@@ -357,7 +357,7 @@ fn collect_stmts(
                 }
                 // Extract `@method` and `@mixin` docblock tags.
                 // `@method` tags become virtual method entries for go-to-definition.
-                // `@mixin` tags extend the class hierarchy walked by find_method_in_class_hierarchy.
+                // `@mixin` tags extend the class hierarchy walked by mir.
                 if let Some(doc) = &c.doc_comment {
                     let db = parse_docblock(doc.text);
                     for dm in &db.methods {

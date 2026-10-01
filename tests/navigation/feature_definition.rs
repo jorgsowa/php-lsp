@@ -1828,7 +1828,7 @@ function getUser(Model $m): void {
 "#,
         )
         .await;
-    expect!["main.php:2:0-2:0"].assert_eq(&out);
+    expect!["main.php:2:16-2:20"].assert_eq(&out);
 }
 
 /// `@method static` on a class: each tag navigates to its own line.
@@ -1850,7 +1850,7 @@ function query(Model $m): void {
 "#,
         )
         .await;
-    expect!["main.php:3:0-3:0"].assert_eq(&out);
+    expect!["main.php:3:26-3:31"].assert_eq(&out);
 }
 
 /// Cross-file: `@method` declared in an un-opened background-indexed file still
@@ -1873,7 +1873,7 @@ async fn definition_doc_method_cross_file() {
     let (_, line, ch) = s.locate("caller.php", "find(1)", 0);
     let resp = s.definition("caller.php", line, ch).await;
     let out = common::render_locations(&resp, &s.uri(""));
-    expect!["Model.php:2:0-2:0"].assert_eq(&out);
+    expect!["Model.php:2:16-2:20"].assert_eq(&out);
 }
 
 // ── @mixin docblock go-to-definition ─────────────────────────────────────────
@@ -2591,4 +2591,91 @@ function describe(string $s): void {}
         )
         .await;
     expect!["<none>"].assert_eq(&out);
+}
+
+#[tokio::test]
+async fn definition_enum_case_ignores_same_named_case_elsewhere() {
+    let mut s = TestServer::new().await;
+    s.check_definition_annotated(
+        r#"//- /a.php
+<?php
+enum Other { case ACTIVE; }
+//- /b.php
+<?php
+enum Status { case ACTIVE; }
+//                 ^^^^^^ def
+//- /main.php
+<?php
+Status::AC$0TIVE;
+"#,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn definition_class_constant_uses_owning_class() {
+    let mut s = TestServer::new().await;
+    s.check_definition_annotated(
+        r#"//- /a.php
+<?php
+class A { const FOO = 1; }
+//- /b.php
+<?php
+class B { const FOO = 2; }
+//              ^^^ def
+//- /main.php
+<?php
+echo B::F$0OO;
+"#,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn definition_static_property_uses_owning_class() {
+    let mut s = TestServer::new().await;
+    s.check_definition_annotated(
+        r#"//- /a.php
+<?php
+class Other { public static $env = 1; }
+//- /b.php
+<?php
+class Config { public static $env = 2; }
+//                            ^^^ def
+//- /main.php
+<?php
+echo Config::$e$0nv;
+"#,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn definition_method_is_case_insensitive() {
+    let mut s = TestServer::new().await;
+    s.check_definition_annotated(
+        r#"<?php
+class Greeter {
+    public function sayHello(): void {}
+    //              ^^^^^^^^ def
+}
+$g = new Greeter();
+$g->sayhe$0llo();
+"#,
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn definition_method_declared_on_interface() {
+    let mut s = TestServer::new().await;
+    s.check_definition_annotated(
+        r#"<?php
+interface Runner { public function run(): void; }
+//                                 ^^^ def
+abstract class Base implements Runner {}
+function go(Base $b) { $b->r$0un(); }
+"#,
+    )
+    .await;
 }
