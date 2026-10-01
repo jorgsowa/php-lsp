@@ -16,6 +16,3 @@ pub mod workspace_index;
 
 #[cfg(test)]
 mod gc_gate_test;
-
-#[cfg(test)]
-mod convergence_spike;

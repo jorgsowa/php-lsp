@@ -161,13 +161,6 @@ pub struct DocumentStore {
     /// via `$/php-lsp/debugStats` so tests can await a runtime-added folder's
     /// warm-start replay instead of guessing a fixed delay.
     warm_start_replays_completed: AtomicU64,
-    /// Throttled/idle-priority vendor warm-analysis sweeps run to completion
-    /// (only meaningful when `warmVendorAnalysis: true` — see `LspConfig`).
-    /// Always 0 until that sweep is implemented (ROADMAP 0c step 2,
-    /// `~/.claude/plans/crispy-noodling-key.md`). Observability only,
-    /// surfaced via `$/php-lsp/debugStats` so tests can await vendor warmth
-    /// the same way `warm_sweeps_completed` lets them await the main sweep.
-    vendor_warm_sweeps_completed: AtomicU64,
     /// Count of in-flight interactive reads (requests the user is waiting on).
     /// The workspace scan yields at file boundaries while this is non-zero, so
     /// its per-file salsa writes can't starve a request's snapshot into an
@@ -236,7 +229,6 @@ impl DocumentStore {
             warm_sweep_cancel: Mutex::new(mir_analyzer::IndexCancel::new()),
             warm_sweeps_completed: AtomicU64::new(0),
             warm_start_replays_completed: AtomicU64::new(0),
-            vendor_warm_sweeps_completed: AtomicU64::new(0),
             interactive_reads: AtomicU64::new(0),
         }
     }
@@ -529,11 +521,6 @@ impl DocumentStore {
 
     pub fn warm_start_replays_completed(&self) -> u64 {
         self.warm_start_replays_completed.load(Ordering::Relaxed)
-    }
-
-    /// See the `vendor_warm_sweeps_completed` field's docs.
-    pub fn vendor_warm_sweeps_completed(&self) -> u64 {
-        self.vendor_warm_sweeps_completed.load(Ordering::Relaxed)
     }
 
     /// The sweep's front of the queue: `priority` files themselves plus the
@@ -2677,22 +2664,7 @@ impl DocumentStore {
             .map(|e| Arc::clone(&*e))
     }
 
-    /// Parsed documents for every mirrored file (open or background-indexed).
-    /// Suitable for full-scan operations: find-references, rename,
-    /// call_hierarchy, code_lens.
-    pub fn all_docs_for_scan(&self) -> Vec<(Uri, Arc<ParsedDoc>)> {
-        let urls: Vec<Uri> = self
-            .lsp_ws_files
-            .iter()
-            .filter(|e| !self.deleted_uris.contains(e.key()))
-            .map(|e| e.key().clone())
-            .collect();
-        urls.into_iter()
-            .filter_map(|u| self.get_doc_salsa(&u).map(|d| (u, d)))
-            .collect()
-    }
-
-    /// Like [`Self::all_docs_for_scan`], but only parses files whose raw text
+    /// Parses only the workspace files whose raw text
     /// mentions at least one of `needles` as a whole identifier
     /// (ASCII-case-insensitive — PHP class names are case-insensitive). Used
     /// by callers scanning for a class/interface *declaration* by name (e.g.
@@ -4201,7 +4173,7 @@ mod tests {
     /// Issue #191 regression: workspace-wide scans (find-references, rename,
     /// call-hierarchy) must not re-parse closed/indexed files on repeated
     /// invocations. Once a file's `ParsedDoc` has been produced, subsequent
-    /// `all_docs_for_scan()` calls must hit the cache and return the same
+    /// repeated `get_doc_salsa` calls must hit the cache and return the same
     /// `Arc<ParsedDoc>` (pointer equality), proving no re-parse occurred.
     ///
     /// The cache layers protecting this are:
@@ -4213,7 +4185,7 @@ mod tests {
     /// Together they keep every workspace-scan op O(N) memo lookups, never
     /// O(N) parses, for any workspace whose file count fits the cap.
     #[test]
-    fn all_docs_for_scan_does_not_reparse_indexed_files() {
+    fn repeated_doc_lookups_do_not_reparse_indexed_files() {
         let store = DocumentStore::new();
         const N: usize = 50;
         for i in 0..N {
@@ -4221,8 +4193,17 @@ mod tests {
             store.ingest(u, &format!("<?php\nclass C{i} {{}}\nfunction f{i}() {{}}"));
         }
 
-        let first: Vec<_> = store.all_docs_for_scan();
-        let second: Vec<_> = store.all_docs_for_scan();
+        let scan = || -> Vec<(Uri, Arc<ParsedDoc>)> {
+            (0..N)
+                .map(|i| {
+                    let u = uri(&format!("/scan/file{i}.php"));
+                    let d = store.get_doc_salsa(&u).unwrap();
+                    (u, d)
+                })
+                .collect()
+        };
+        let first = scan();
+        let second = scan();
         assert_eq!(first.len(), N);
         assert_eq!(second.len(), N);
 
@@ -4234,7 +4215,7 @@ mod tests {
                 .expect("second scan returned a URL the first didn't");
             assert!(
                 Arc::ptr_eq(doc1, &doc2),
-                "{u:?} re-parsed across all_docs_for_scan calls — \
+                "{u:?} re-parsed across lookups — \
                  cache (parsed_cache + salsa parsed_doc memo) failed to hit"
             );
         }

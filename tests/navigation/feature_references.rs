@@ -82,8 +82,5 @@ mod builtin_method_vendor_scope;
 #[path = "references/builtin_constant_vendor_scope.rs"]
 mod builtin_constant_vendor_scope;
 
-#[path = "references/vendor_warm_sweep.rs"]
-mod vendor_warm_sweep;
-
 #[path = "references/mid_char.rs"]
 mod mid_char;
