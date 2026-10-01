@@ -493,6 +493,10 @@ pub fn filtered_completions_at(
     }
     let empty_imports = HashMap::new();
     let imports = ctx.file_imports.unwrap_or(&empty_imports);
+    let in_class_scope = matches!(
+        (source, position),
+        (Some(src), Some(pos)) if enclosing_class_at(src, doc, pos).is_some()
+    );
 
     match trigger_character {
         Some("$") => {
@@ -520,6 +524,7 @@ pub fn filtered_completions_at(
                         other_docs,
                         ctx.find_class_doc,
                         ctx.session,
+                        in_class_scope,
                     ) {
                         if seen.insert(item.label.clone()) {
                             items.push(item);
@@ -548,6 +553,7 @@ pub fn filtered_completions_at(
                     other_docs,
                     ctx.find_class_doc,
                     ctx.session,
+                    in_class_scope,
                 );
                 if !items.is_empty() {
                     return items;
@@ -630,6 +636,7 @@ pub fn filtered_completions_at(
                             other_docs,
                             ctx.find_class_doc,
                             ctx.session,
+                            in_class_scope,
                         );
                         if !items.is_empty() {
                             return items;
@@ -669,6 +676,7 @@ pub fn filtered_completions_at(
                                 other_docs,
                                 ctx.find_class_doc,
                                 ctx.session,
+                                in_class_scope,
                             ) {
                                 if seen.insert(item.label.clone()) {
                                     items.push(item);

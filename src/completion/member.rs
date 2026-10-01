@@ -8,7 +8,7 @@ use crate::document::document_store::DocumentStore;
 use crate::text::utf16_offset_to_byte;
 use crate::types::type_map::{
     ClassMembers, enclosing_class_at, enum_backing_type, is_enum, members_of_class,
-    mixin_classes_of, parent_class_name,
+    mixin_classes_of, parent_class_name, resolve_class_ref,
 };
 
 use super::callable_item;
@@ -19,8 +19,17 @@ pub(super) fn all_instance_members(
     other_docs: &[Arc<ParsedDoc>],
     find_class_doc: Option<super::ClassDocLookup<'_>>,
     session: Option<&DocumentStore>,
+    in_class_scope: bool,
 ) -> Vec<CompletionItem> {
-    all_members(class_name, doc, other_docs, find_class_doc, session, false)
+    all_members(
+        class_name,
+        doc,
+        other_docs,
+        find_class_doc,
+        session,
+        false,
+        in_class_scope,
+    )
 }
 
 pub(super) fn all_static_members(
@@ -29,14 +38,26 @@ pub(super) fn all_static_members(
     other_docs: &[Arc<ParsedDoc>],
     find_class_doc: Option<super::ClassDocLookup<'_>>,
     session: Option<&DocumentStore>,
+    in_class_scope: bool,
 ) -> Vec<CompletionItem> {
-    all_members(class_name, doc, other_docs, find_class_doc, session, true)
+    all_members(
+        class_name,
+        doc,
+        other_docs,
+        find_class_doc,
+        session,
+        true,
+        in_class_scope,
+    )
 }
 
 /// Common class-hierarchy traversal for both instance (`->`) and static (`::`)
 /// member completion. `is_static` selects which subset of members to surface:
 /// - `false` (instance): non-static methods + properties, enum built-ins, mixins
 /// - `true`  (static):   static methods + properties, constants
+///
+/// Inherited private members are never offered; inherited protected ones only
+/// when the cursor sits inside a class (`in_class_scope`).
 fn all_members(
     class_name: &str,
     doc: &ParsedDoc,
@@ -44,6 +65,7 @@ fn all_members(
     find_class_doc: Option<super::ClassDocLookup<'_>>,
     session: Option<&DocumentStore>,
     is_static: bool,
+    in_class_scope: bool,
 ) -> Vec<CompletionItem> {
     let all: Vec<&ParsedDoc> = std::iter::once(doc)
         .chain(other_docs.iter().map(|d| d.as_ref()))
@@ -51,8 +73,8 @@ fn all_members(
     let mut items = Vec::new();
     let mut seen_names: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut visited: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut queue: Vec<String> = vec![class_name.to_string()];
-    while let Some(current) = queue.pop() {
+    let mut queue: Vec<(String, bool)> = vec![(class_name.to_string(), false)];
+    while let Some((current, inherited)) = queue.pop() {
         if !visited.insert(current.clone()) {
             continue;
         }
@@ -88,9 +110,21 @@ fn all_members(
 
         if let Some((d, members)) = defining {
             found_in_docs = true;
-            parent = members.parent.clone();
+            parent = members
+                .parent
+                .as_deref()
+                .map(|p| resolve_class_ref(d, short, p));
+            let hidden = |restricted: &[(String, bool)], name: &str| {
+                inherited
+                    && restricted
+                        .iter()
+                        .any(|(n, private)| n == name && (*private || !in_class_scope))
+            };
             for (name, meth_is_static, has_params) in members.methods {
-                if (meth_is_static == is_static) && seen_names.insert(name.clone()) {
+                if (meth_is_static == is_static)
+                    && !hidden(&members.restricted_methods, &name)
+                    && seen_names.insert(name.clone())
+                {
                     let mut item = callable_item(&name, CompletionItemKind::METHOD, has_params);
                     // Disambiguates completion_resolve's lookup when another
                     // class elsewhere in the workspace declares a method of
@@ -100,7 +134,7 @@ fn all_members(
                 }
             }
             for (name, prop_is_static) in &members.properties {
-                if *prop_is_static == is_static {
+                if *prop_is_static == is_static && !hidden(&members.restricted_properties, name) {
                     let label = format!("${name}");
                     if seen_names.insert(label.clone()) {
                         let detail = if !is_static && members.readonly_properties.contains(name) {
@@ -124,7 +158,9 @@ fn all_members(
             }
             if is_static {
                 for name in members.constants {
-                    if seen_names.insert(name.clone()) {
+                    if !hidden(&members.restricted_constants, &name)
+                        && seen_names.insert(name.clone())
+                    {
                         items.push(CompletionItem {
                             label: name,
                             kind: Some(CompletionItemKind::CONSTANT),
@@ -156,11 +192,11 @@ fn all_members(
                     }
                 }
                 for mixin in mixin_classes_of(d, short) {
-                    queue.push(mixin);
+                    queue.push((resolve_class_ref(d, short, &mixin), true));
                 }
             }
             for trait_name in members.trait_uses {
-                queue.push(trait_name);
+                queue.push((resolve_class_ref(d, short, &trait_name), inherited));
             }
         }
 
@@ -206,7 +242,7 @@ fn all_members(
             }
         }
         if let Some(p) = parent {
-            queue.push(p);
+            queue.push((p, true));
         }
     }
     items

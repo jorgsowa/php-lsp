@@ -47,12 +47,13 @@ pub(super) fn match_arm_completions(
             if let Some(members) = members
                 && !members.constants.is_empty()
             {
+                let display_name = crate::text::fqn_short_name(&class_name);
                 return Some(
                     members
                         .constants
                         .iter()
                         .map(|c| CompletionItem {
-                            label: format!("{class_name}::{c}"),
+                            label: format!("{display_name}::{c}"),
                             kind: Some(CompletionItemKind::CONSTANT),
                             ..Default::default()
                         })

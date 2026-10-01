@@ -75,6 +75,8 @@ mod feature_hover_types;
 mod feature_item_resolve;
 #[path = "editing/feature_linked_editing.rs"]
 mod feature_linked_editing;
+#[path = "editing/feature_member_model.rs"]
+mod feature_member_model;
 #[path = "editing/feature_selection_range.rs"]
 mod feature_selection_range;
 #[path = "editing/feature_signature_help.rs"]

@@ -2,7 +2,7 @@
 //! properties, constants, mixins), enclosing class at a cursor position, enum
 //! backing type, and function/method parameter lists. These answer
 //! structural facts directly from the parsed source and don't depend on mir.
-use php_ast::{ClassMemberKind, EnumMemberKind, NamespaceBody, Stmt, StmtKind};
+use php_ast::{ClassMemberKind, EnumMemberKind, NamespaceBody, Stmt, StmtKind, Visibility};
 use tower_lsp_server::ls_types::Position;
 
 use crate::document::ast::{ParsedDoc, SourceView};
@@ -43,9 +43,14 @@ pub struct ClassMembers {
     /// Names of readonly properties (PHP 8.1+).
     pub readonly_properties: Vec<String>,
     pub constants: Vec<String>,
+    /// Non-public members as `(name, is_private)`; `false` means protected.
+    pub restricted_methods: Vec<(String, bool)>,
+    pub restricted_properties: Vec<(String, bool)>,
+    pub restricted_constants: Vec<(String, bool)>,
     /// Direct parent class name, if any.
     pub parent: Option<String>,
-    /// Trait names used by this class (`use Foo, Bar;`).
+    /// Trait names used by this class (`use Foo, Bar;`), or the parent
+    /// interfaces of an interface.
     pub trait_uses: Vec<String>,
     /// True when a class/enum/trait with this name was found in the doc.
     /// Lets workspace-wide loops short-circuit once the defining doc is hit
@@ -56,9 +61,103 @@ pub struct ClassMembers {
 /// Return all members (methods, properties, constants) of `class_name`.
 /// Also returns the direct parent class name via `ClassMembers::parent`.
 pub fn members_of_class(doc: &ParsedDoc, class_name: &str) -> ClassMembers {
+    let short = class_name.rsplit('\\').next().unwrap_or(class_name);
     let mut out = ClassMembers::default();
-    out.parent = collect_members_stmts(doc.source(), &doc.program().stmts, class_name, &mut out);
+    out.parent = collect_members_stmts(doc.source(), &doc.program().stmts, short, &mut out);
     out
+}
+
+/// Fully-qualified name for `name` as written inside the declaration of
+/// `declaring_class` in `doc`: resolved through that file's `use` imports and
+/// namespace, not the viewer's.
+pub fn resolve_class_ref(doc: &ParsedDoc, declaring_class: &str, name: &str) -> String {
+    if let Some(rest) = name.strip_prefix('\\') {
+        return rest.to_owned();
+    }
+    let (first, rest) = match name.split_once('\\') {
+        Some((first, rest)) => (first, Some(rest)),
+        None => (name, None),
+    };
+    let join = |base: &str| match rest {
+        Some(rest) => format!("{base}\\{rest}"),
+        None => base.to_owned(),
+    };
+    if let Some(target) = doc.file_imports().get(first) {
+        return join(target.trim_start_matches('\\'));
+    }
+    let short = declaring_class
+        .rsplit('\\')
+        .next()
+        .unwrap_or(declaring_class);
+    match namespace_of_class(&doc.program().stmts, short, "") {
+        Some(ns) if !ns.is_empty() => format!("{ns}\\{name}"),
+        _ => name.to_owned(),
+    }
+}
+
+fn namespace_of_class(stmts: &[Stmt<'_, '_>], short: &str, ns_prefix: &str) -> Option<String> {
+    let mut current_ns = ns_prefix.to_owned();
+    for stmt in stmts {
+        let declared = match &stmt.kind {
+            StmtKind::Class(c) => c.name.as_ref().is_some_and(|n| *n == short),
+            StmtKind::Interface(i) => i.name == short,
+            StmtKind::Trait(t) => t.name == short,
+            StmtKind::Enum(e) => e.name == short,
+            StmtKind::Namespace(ns) => {
+                let ns_name = ns
+                    .name
+                    .as_ref()
+                    .map(|n| n.to_string_repr().to_string())
+                    .unwrap_or_default();
+                match &ns.body {
+                    NamespaceBody::Braced(inner) => {
+                        if let found @ Some(_) = namespace_of_class(&inner.stmts, short, &ns_name) {
+                            return found;
+                        }
+                    }
+                    NamespaceBody::Simple => current_ns = ns_name,
+                }
+                false
+            }
+            _ => false,
+        };
+        if declared {
+            return Some(current_ns);
+        }
+    }
+    None
+}
+
+/// `Some(true)` for private, `Some(false)` for protected, `None` for public.
+fn restriction(visibility: Option<Visibility>) -> Option<bool> {
+    match visibility {
+        Some(Visibility::Private) => Some(true),
+        Some(Visibility::Protected) => Some(false),
+        _ => None,
+    }
+}
+
+fn push_method(out: &mut ClassMembers, m: &php_ast::MethodDecl<'_, '_>) {
+    out.methods
+        .push((m.name.to_string(), m.is_static, !m.params.is_empty()));
+    if let Some(private) = restriction(m.visibility) {
+        out.restricted_methods.push((m.name.to_string(), private));
+    }
+}
+
+fn push_property(out: &mut ClassMembers, p: &php_ast::PropertyDecl<'_, '_>) {
+    out.properties.push((p.name.to_string(), p.is_static));
+    if let Some(private) = restriction(p.visibility) {
+        out.restricted_properties
+            .push((p.name.to_string(), private));
+    }
+}
+
+fn push_const(out: &mut ClassMembers, c: &php_ast::ClassConstDecl<'_, '_>) {
+    out.constants.push(c.name.to_string());
+    if let Some(private) = restriction(c.visibility) {
+        out.restricted_constants.push((c.name.to_string(), private));
+    }
 }
 
 fn collect_members_stmts(
@@ -93,15 +192,15 @@ fn collect_members_stmts(
                 for member in c.body.members.iter() {
                     match &member.kind {
                         ClassMemberKind::Method(m) => {
-                            out.methods.push((
-                                m.name.to_string(),
-                                m.is_static,
-                                !m.params.is_empty(),
-                            ));
+                            push_method(out, m);
                             if m.name == "__construct" {
                                 for p in m.params.iter() {
                                     if p.visibility.is_some() {
                                         out.properties.push((p.name.to_string(), false));
+                                        if let Some(private) = restriction(p.visibility) {
+                                            out.restricted_properties
+                                                .push((p.name.to_string(), private));
+                                        }
                                         if p.is_readonly || class_is_readonly {
                                             out.readonly_properties.push(p.name.to_string());
                                         }
@@ -110,14 +209,12 @@ fn collect_members_stmts(
                             }
                         }
                         ClassMemberKind::Property(p) => {
-                            out.properties.push((p.name.to_string(), p.is_static));
+                            push_property(out, p);
                             if p.is_readonly || class_is_readonly {
                                 out.readonly_properties.push(p.name.to_string());
                             }
                         }
-                        ClassMemberKind::ClassConst(c) => {
-                            out.constants.push(c.name.to_string());
-                        }
+                        ClassMemberKind::ClassConst(c) => push_const(out, c),
                         ClassMemberKind::TraitUse(t) => {
                             for name in t.traits.iter() {
                                 out.trait_uses.push(name.to_string_repr().to_string());
@@ -144,38 +241,35 @@ fn collect_members_stmts(
                         EnumMemberKind::Case(c) => {
                             out.constants.push(c.name.to_string());
                         }
-                        EnumMemberKind::Method(m) => {
-                            out.methods.push((
-                                m.name.to_string(),
-                                m.is_static,
-                                !m.params.is_empty(),
-                            ));
-                        }
-                        EnumMemberKind::ClassConst(c) => {
-                            out.constants.push(c.name.to_string());
-                        }
+                        EnumMemberKind::Method(m) => push_method(out, m),
+                        EnumMemberKind::ClassConst(c) => push_const(out, c),
                         _ => {}
                     }
                 }
                 return None; // enums have no parent class
             }
+            StmtKind::Interface(i) if i.name == class_name => {
+                out.found = true;
+                for member in i.body.members.iter() {
+                    match &member.kind {
+                        ClassMemberKind::Method(m) => push_method(out, m),
+                        ClassMemberKind::Property(p) => push_property(out, p),
+                        ClassMemberKind::ClassConst(c) => push_const(out, c),
+                        ClassMemberKind::TraitUse(_) => {}
+                    }
+                }
+                for parent in i.extends.iter() {
+                    out.trait_uses.push(parent.to_string_repr().to_string());
+                }
+                return None;
+            }
             StmtKind::Trait(t) if t.name == class_name => {
                 out.found = true;
                 for member in t.body.members.iter() {
                     match &member.kind {
-                        ClassMemberKind::Method(m) => {
-                            out.methods.push((
-                                m.name.to_string(),
-                                m.is_static,
-                                !m.params.is_empty(),
-                            ));
-                        }
-                        ClassMemberKind::Property(p) => {
-                            out.properties.push((p.name.to_string(), p.is_static));
-                        }
-                        ClassMemberKind::ClassConst(c) => {
-                            out.constants.push(c.name.to_string());
-                        }
+                        ClassMemberKind::Method(m) => push_method(out, m),
+                        ClassMemberKind::Property(p) => push_property(out, p),
+                        ClassMemberKind::ClassConst(c) => push_const(out, c),
                         ClassMemberKind::TraitUse(t) => {
                             for name in t.traits.iter() {
                                 out.trait_uses.push(name.to_string_repr().to_string());
@@ -451,8 +545,9 @@ pub fn params_of_function(doc: &ParsedDoc, func_name: &str) -> Vec<String> {
 /// Return the parameter names of `method_name` on class `class_name`.
 /// Primarily used to offer named-argument completions for attribute constructors.
 pub fn params_of_method(doc: &ParsedDoc, class_name: &str, method_name: &str) -> Vec<String> {
+    let short = class_name.rsplit('\\').next().unwrap_or(class_name);
     let mut out = Vec::new();
-    collect_method_params_stmts(&doc.program().stmts, class_name, method_name, &mut out);
+    collect_method_params_stmts(&doc.program().stmts, short, method_name, &mut out);
     out
 }
 

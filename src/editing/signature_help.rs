@@ -30,9 +30,24 @@ pub fn signature_help(
         .as_deref()
         .is_some_and(|r| !r.starts_with('$') && r != "self" && r != "static");
 
-    let local_sig = (!explicit_class_receiver)
-        .then(|| find_signature(&doc.program().stmts, &func_name, receiver.is_some()))
-        .flatten();
+    let symbol = analysis
+        .and_then(|a| a.symbol_at(ctx.name_byte_offset))
+        .and_then(|symbol| symbol.to_symbol());
+    let local_sig = if explicit_class_receiver {
+        None
+    } else if receiver.is_some() {
+        // A bare name match could pick another class's same-named method, so
+        // the lookup is scoped to the receiver's resolved class; without one
+        // it answers only when a single class in the file declares the method.
+        match &symbol {
+            Some(mir_analyzer::Name::Method { class, .. }) => {
+                find_method_signature(&doc.program().stmts, fqn_short_name(class), &func_name)
+            }
+            _ => unambiguous_method_signature(&doc.program().stmts, &func_name),
+        }
+    } else {
+        find_signature(&doc.program().stmts, &func_name, false)
+    };
     let local_doc_method_sig = receiver.as_deref().and_then(|recv| {
         let class_name = if recv == "$this" || recv == "self" || recv == "static" {
             crate::types::type_map::enclosing_class_at(source, doc, position).or_else(|| {
@@ -57,10 +72,9 @@ pub fn signature_help(
         find_doc_method_params_in_doc(&doc.program().stmts, &class_name, &func_name)
     });
     let resolved = session.and_then(|session| {
-        analysis
-            .and_then(|a| a.symbol_at(ctx.name_byte_offset))
-            .and_then(|symbol| symbol.to_symbol())
-            .and_then(|symbol| callable_info_for_name(session, &symbol))
+        symbol
+            .as_ref()
+            .and_then(|symbol| callable_info_for_name(session, symbol))
     });
     let sig_text = local_sig
         .or(local_doc_method_sig)
@@ -506,6 +520,88 @@ fn class_matches_declaration(target: &str, declared: &str, namespace: Option<&st
 /// declaration (or a class name used as `new ClassName(...)`), never a
 /// member of the same name, since PHP has no syntax to invoke a method
 /// without a receiver.
+/// Parameter text of `method` declared directly on the class-like named
+/// `class_short`.
+fn find_method_signature(
+    stmts: &[Stmt<'_, '_>],
+    class_short: &str,
+    method: &str,
+) -> Option<String> {
+    for stmt in stmts {
+        let found = match &stmt.kind {
+            StmtKind::Class(c) if c.name.as_ref().is_some_and(|n| *n == class_short) => {
+                class_method_params(&c.body.members, method)
+            }
+            StmtKind::Interface(i) if i.name == class_short => {
+                class_method_params(&i.body.members, method)
+            }
+            StmtKind::Trait(t) if t.name == class_short => {
+                class_method_params(&t.body.members, method)
+            }
+            StmtKind::Enum(e) if e.name == class_short => {
+                e.body.members.iter().find_map(|m| match &m.kind {
+                    EnumMemberKind::Method(m) if m.name.or_error().eq_ignore_ascii_case(method) => {
+                        Some(format_params_str(&m.params))
+                    }
+                    _ => None,
+                })
+            }
+            StmtKind::Namespace(ns) => match &ns.body {
+                NamespaceBody::Braced(inner) => {
+                    find_method_signature(&inner.stmts, class_short, method)
+                }
+                NamespaceBody::Simple => None,
+            },
+            _ => None,
+        };
+        if found.is_some() {
+            return found;
+        }
+    }
+    None
+}
+
+fn class_method_params(members: &[php_ast::ClassMember<'_, '_>], method: &str) -> Option<String> {
+    members.iter().find_map(|m| match &m.kind {
+        ClassMemberKind::Method(m) if m.name.or_error().eq_ignore_ascii_case(method) => {
+            Some(format_params_str(&m.params))
+        }
+        _ => None,
+    })
+}
+
+/// The signature of `method` when exactly one distinct signature exists
+/// among the file's class-likes.
+fn unambiguous_method_signature(stmts: &[Stmt<'_, '_>], method: &str) -> Option<String> {
+    let mut sigs = Vec::new();
+    collect_method_signatures(stmts, method, &mut sigs);
+    sigs.sort_unstable();
+    sigs.dedup();
+    (sigs.len() == 1).then(|| sigs.remove(0))
+}
+
+fn collect_method_signatures(stmts: &[Stmt<'_, '_>], method: &str, out: &mut Vec<String>) {
+    for stmt in stmts {
+        match &stmt.kind {
+            StmtKind::Class(c) => out.extend(class_method_params(&c.body.members, method)),
+            StmtKind::Interface(i) => out.extend(class_method_params(&i.body.members, method)),
+            StmtKind::Trait(t) => out.extend(class_method_params(&t.body.members, method)),
+            StmtKind::Enum(e) => out.extend(e.body.members.iter().find_map(|m| match &m.kind {
+                EnumMemberKind::Method(m) if m.name.or_error().eq_ignore_ascii_case(method) => {
+                    Some(format_params_str(&m.params))
+                }
+                _ => None,
+            })),
+            StmtKind::Namespace(ns) => {
+                if let NamespaceBody::Braced(inner) = &ns.body {
+                    collect_method_signatures(&inner.stmts, method, out);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 fn find_signature(stmts: &[Stmt<'_, '_>], word: &str, has_receiver: bool) -> Option<String> {
     for stmt in stmts {
         match &stmt.kind {
