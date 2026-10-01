@@ -306,7 +306,10 @@ impl<'a> SourceView<'a> {
     /// source when the cursor is late in the file.
     pub fn byte_of_position(self, pos: Position) -> u32 {
         let line_idx = pos.line as usize;
-        let line_start = self.line_starts.get(line_idx).copied().unwrap_or(0) as usize;
+        let Some(&line_start) = self.line_starts.get(line_idx) else {
+            return self.source.len() as u32;
+        };
+        let line_start = line_start as usize;
         let line_end = self
             .line_starts
             .get(line_idx + 1)
@@ -533,6 +536,17 @@ fn fmt_kind(kind: &TypeHintKind<'_, '_>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn byte_of_position_past_last_line_clamps_to_end() {
+        let src = "<?php\nfoo";
+        let doc = ParsedDoc::parse(src.to_string());
+        let pos = Position {
+            line: 99,
+            character: 0,
+        };
+        assert_eq!(doc.view().byte_of_position(pos), src.len() as u32);
+    }
 
     #[test]
     fn parses_empty_source() {

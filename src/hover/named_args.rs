@@ -5,6 +5,7 @@ use php_ast::{Arg, ClassMemberKind, Expr, ExprKind, NamespaceBody, Param, Stmt, 
 use tower_lsp_server::ls_types::Position;
 
 use crate::document::ast::{ParsedDoc, format_type_hint};
+use crate::text::class_matches_declaration;
 
 /// Resolve the class(es) of a named-argument call's receiver variable, for
 /// looking up the method's parameter signature. `receiver_offset` is a byte
@@ -319,21 +320,6 @@ fn find_param_sig_in_namespace(
         }
     }
     None
-}
-
-/// Compare an already-resolved class identity with a declaration in one
-/// document. A short name is an intentional fallback; an FQCN must match both
-/// the namespace and the declaration name.
-fn class_matches_declaration(target: &str, declared: &str, namespace: Option<&str>) -> bool {
-    let target = target.trim_start_matches('\\');
-    if !target.contains('\\') {
-        return target.eq_ignore_ascii_case(declared);
-    }
-    let declared_fqcn = namespace
-        .filter(|ns| !ns.is_empty())
-        .map(|ns| format!("{ns}\\{declared}"))
-        .unwrap_or_else(|| declared.to_string());
-    target.eq_ignore_ascii_case(&declared_fqcn)
 }
 
 fn format_single_param(p: &Param<'_, '_>) -> String {

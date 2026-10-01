@@ -424,7 +424,10 @@ fn property_name(class_fqn: &str, prop: &str) -> mir_analyzer::Name {
     mir_analyzer::Name::property(class_fqn, prop)
 }
 
-fn subtype_site_to_location(file: &str, range: &mir_analyzer::Range) -> Option<Location> {
+pub(crate) fn subtype_site_to_location(
+    file: &str,
+    range: &mir_analyzer::Range,
+) -> Option<Location> {
     let uri = (file).parse::<Uri>().ok()?;
     // mir uses 1-based lines; 0-based columns.
     let line = range.start.line.saturating_sub(1);

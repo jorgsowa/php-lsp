@@ -603,19 +603,7 @@ impl Backend {
                 // shape as `resolve_usage_symbol_with_retry`; a genuinely
                 // empty result just repeats (cheap: mir's cache serves the
                 // repeat from memo).
-                if !self.docs.is_index_ready() {
-                    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(50);
-                    let mut rev = self.docs.write_rev();
-                    loop {
-                        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
-                        let now = self.docs.write_rev();
-                        let quiet = now == rev;
-                        rev = now;
-                        if quiet || std::time::Instant::now() >= deadline {
-                            break;
-                        }
-                    }
-                }
+                self.settle_write_rev().await;
                 locations = self
                     .indexed_references_for_symbol(
                         &symbol,
@@ -858,19 +846,7 @@ impl Backend {
         // builds.
         self.blocking_gated(super::super::debug_gate::GATE_USAGE_SYMBOL_RETRY, || ())
             .await;
-        if !self.docs.is_index_ready() {
-            let deadline = std::time::Instant::now() + std::time::Duration::from_millis(50);
-            let mut rev = self.docs.write_rev();
-            loop {
-                tokio::time::sleep(std::time::Duration::from_millis(2)).await;
-                let now = self.docs.write_rev();
-                let quiet = now == rev;
-                rev = now;
-                if quiet || std::time::Instant::now() >= deadline {
-                    break;
-                }
-            }
-        }
+        self.settle_write_rev().await;
         self.resolve_usage_symbol(uri, doc_opt, source, position)
             .await
     }
@@ -902,28 +878,27 @@ impl Backend {
         if !first.is_empty() {
             return first;
         }
-        // Test-only hold point: lets a test force a companion declaring file
-        // to open between this empty attempt and the settle-wait/retry below,
-        // proving the retry actually observes it. No-op outside test builds.
-        self.blocking_gated(
-            super::super::debug_gate::GATE_WORKSPACE_DECL_LOCATIONS_RETRY,
-            || (),
-        )
-        .await;
-        if !self.docs.is_index_ready() {
-            let deadline = std::time::Instant::now() + std::time::Duration::from_millis(50);
-            let mut rev = self.docs.write_rev();
-            loop {
-                tokio::time::sleep(std::time::Duration::from_millis(2)).await;
-                let now = self.docs.write_rev();
-                let quiet = now == rev;
-                rev = now;
-                if quiet || std::time::Instant::now() >= deadline {
-                    break;
-                }
+        self.settle_write_rev().await;
+        self.workspace_decl_locations_once(symbol, word)
+    }
+
+    /// Wait (up to 50ms) for the write revision to stop advancing while the
+    /// initial index scan is still running; a no-op once the index is ready.
+    async fn settle_write_rev(&self) {
+        if self.docs.is_index_ready() {
+            return;
+        }
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(50);
+        let mut rev = self.docs.write_rev();
+        loop {
+            tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+            let now = self.docs.write_rev();
+            let quiet = now == rev;
+            rev = now;
+            if quiet || std::time::Instant::now() >= deadline {
+                break;
             }
         }
-        self.workspace_decl_locations_once(symbol, word)
     }
 
     fn workspace_decl_locations_once(

@@ -7,8 +7,8 @@ use crate::document::ast::ParsedDoc;
 use crate::document::document_store::DocumentStore;
 use crate::text::utf16_offset_to_byte;
 use crate::types::type_map::{
-    ClassMembers, enclosing_class_at, enum_backing_type, is_enum, members_of_class,
-    mixin_classes_of, parent_class_name, resolve_class_ref,
+    ClassMembers, enclosing_class_at, members_of_class, mixin_classes_of, parent_class_name,
+    resolve_class_ref,
 };
 
 use super::callable_item;
@@ -169,28 +169,6 @@ fn all_members(
                     }
                 }
             } else {
-                // Built-in enum properties: every enum case has `->name: string`
-                // and backed enums also have `->value`.
-                if is_enum(d, short) {
-                    if seen_names.insert("name".to_string()) {
-                        items.push(CompletionItem {
-                            label: "name".to_string(),
-                            kind: Some(CompletionItemKind::PROPERTY),
-                            detail: Some("string".to_string()),
-                            ..Default::default()
-                        });
-                    }
-                    if let Some(backing_type) = enum_backing_type(d, short)
-                        && seen_names.insert("value".to_string())
-                    {
-                        items.push(CompletionItem {
-                            label: "value".to_string(),
-                            kind: Some(CompletionItemKind::PROPERTY),
-                            detail: Some(backing_type),
-                            ..Default::default()
-                        });
-                    }
-                }
                 for mixin in mixin_classes_of(d, short) {
                     queue.push((resolve_class_ref(d, short, &mixin), true));
                 }

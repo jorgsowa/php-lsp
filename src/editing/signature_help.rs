@@ -8,7 +8,7 @@ use crate::analysis::callable_info::callable_info_for_name;
 use crate::document::ast::ParsedDoc;
 use crate::hover::format_params_str;
 use crate::lang::docblock::{find_docblock, parse_docblock};
-use crate::text::{fqn_short_name, split_params, utf16_offset_to_byte};
+use crate::text::{class_matches_declaration, fqn_short_name, split_params, utf16_offset_to_byte};
 
 /// Returns signature help for the function call the cursor is inside of.
 ///
@@ -499,20 +499,6 @@ fn find_doc_method_params_in_doc_impl(
         }
     }
     None
-}
-
-/// Match a semantic class identity against a declaration in its namespace.
-/// Short names are only a deliberate fallback for unresolved source names.
-fn class_matches_declaration(target: &str, declared: &str, namespace: Option<&str>) -> bool {
-    let target = target.trim_start_matches('\\');
-    if !target.contains('\\') {
-        return target.eq_ignore_ascii_case(declared);
-    }
-    let declared_fqcn = namespace
-        .filter(|namespace| !namespace.is_empty())
-        .map(|namespace| format!("{namespace}\\{declared}"))
-        .unwrap_or_else(|| declared.to_owned());
-    target.eq_ignore_ascii_case(&declared_fqcn)
 }
 
 /// `has_receiver` gates class/interface/trait/enum member matching: a bare

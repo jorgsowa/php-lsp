@@ -30,7 +30,7 @@ use crate::navigation::type_hierarchy::{
     prepare_type_hierarchy_from_fqn, subtypes_of_mir_backed, supertypes_of_from_workspace,
 };
 
-use crate::analysis::code_lens::code_lenses;
+use crate::analysis::code_lens::{code_lenses, subtype_site_to_location};
 use crate::analysis::diagnostics::{diagnostics_from_doc, parse_document, parse_document_no_diags};
 use crate::analysis::document_highlight::document_highlights;
 use crate::analysis::inlay_hints::inlay_hints;
@@ -2403,26 +2403,6 @@ impl LanguageServer for Backend {
         })
         .await
     }
-}
-
-/// Convert a mir subtype/implementation hit — file path plus a name range in
-/// mir coordinates (1-based line, 0-based char columns) — to an LSP Location.
-fn subtype_site_to_location(file: &str, range: &mir_analyzer::Range) -> Option<Location> {
-    let uri = (file).parse::<Uri>().ok()?;
-    let line = range.start.line.saturating_sub(1);
-    Some(Location {
-        uri,
-        range: tower_lsp_server::ls_types::Range {
-            start: tower_lsp_server::ls_types::Position {
-                line,
-                character: range.start.column,
-            },
-            end: tower_lsp_server::ls_types::Position {
-                line,
-                character: range.end.column,
-            },
-        },
-    })
 }
 
 /// Fallback for `goto_implementation` when mir has no resolved subtype sites.

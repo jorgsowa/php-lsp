@@ -1292,8 +1292,7 @@ $s = Suit::Hearts; $s->$0
         )
         .await;
     expect![[r#"
-        Property    $name
-        Property    name | string"#]]
+        Property    $name"#]]
     .assert_eq(&out);
 }
 
@@ -1311,9 +1310,7 @@ $s = Status::Active; $s->$0
         .await;
     expect![[r#"
         Property    $name
-        Property    $value
-        Property    name | string
-        Property    value | string"#]]
+        Property    $value"#]]
     .assert_eq(&out);
 }
 
@@ -1331,9 +1328,7 @@ $p = Priority::Low; $p->$0
         .await;
     expect![[r#"
         Property    $name
-        Property    $value
-        Property    name | string
-        Property    value | int"#]]
+        Property    $value"#]]
     .assert_eq(&out);
 }
 
@@ -1350,8 +1345,7 @@ $s = Suit::Hearts; $s->$0
         )
         .await;
     expect![[r#"
-        Property    $name
-        Property    name | string"#]]
+        Property    $name"#]]
     .assert_eq(&out);
 }
 

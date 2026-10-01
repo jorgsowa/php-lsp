@@ -156,6 +156,25 @@ pub(crate) fn fqn_short_name(fqn: &str) -> &str {
     fqn.rsplit('\\').next().unwrap_or(fqn)
 }
 
+/// Compare an already-resolved class identity with a declaration in one
+/// document. A short name is an intentional fallback; an FQCN must match both
+/// the namespace and the declaration name.
+pub(crate) fn class_matches_declaration(
+    target: &str,
+    declared: &str,
+    namespace: Option<&str>,
+) -> bool {
+    let target = target.trim_start_matches('\\');
+    if !target.contains('\\') {
+        return target.eq_ignore_ascii_case(declared);
+    }
+    let declared_fqcn = namespace
+        .filter(|ns| !ns.is_empty())
+        .map(|ns| format!("{ns}\\{declared}"))
+        .unwrap_or_else(|| declared.to_string());
+    target.eq_ignore_ascii_case(&declared_fqcn)
+}
+
 /// Whether `haystack` contains `needle` as an ASCII-case-insensitive
 /// substring — PHP class/method names are case-insensitive (`new COLOR()`
 /// resolves to `class Color`), matching the semantics mir's own candidate
