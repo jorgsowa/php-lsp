@@ -801,23 +801,44 @@ impl DocumentStore {
         self.analysis_session.lock().unwrap().0
     }
 
-    /// File URIs of all direct and transitive subclasses of `class_fqn`,
-    /// resolved via mir's inheritance graph. Returns an empty vec when the mir
-    /// session hasn't ingested the class yet (cold start, excluded paths).
-    ///
-    /// Used by `goto_implementation` and `subtypes` to scope their lookups to
-    /// the correct files, fixing aliased `extends` and FQN-qualified forms that
-    /// a raw textual search could miss.
+    /// File URIs of all direct and transitive subtypes of `class_fqn`, including
+    /// classes composing it as a trait, via mir's subtype edge index.
     pub fn class_subtype_urls(
         &self,
         class_fqn: &str,
     ) -> Result<Vec<tower_lsp_server::ls_types::Uri>, ContentModified> {
-        self.subtype_files(class_fqn).map(|files| {
-            files
-                .into_iter()
-                .filter_map(|p| p.parse::<Uri>().ok())
-                .collect()
-        })
+        let mut urls: Vec<Uri> = self
+            .indexed_subtype_classes(class_fqn, true)?
+            .into_iter()
+            .filter_map(|site| site.file.parse::<Uri>().ok())
+            .collect();
+        urls.sort_by(|a, b| a.as_str().cmp(b.as_str()));
+        urls.dedup();
+        Ok(urls)
+    }
+
+    /// Direct parent, interfaces and used traits of `class_fqn` as resolved FQCNs,
+    /// via mir's class table. Empty when mir doesn't know the class.
+    pub fn class_direct_supertypes(
+        &self,
+        class_fqn: &str,
+    ) -> Result<Vec<Arc<str>>, ContentModified> {
+        let class_like = self.with_snapshot(
+            |_| {},
+            |snap| snap.find_class_like(class_fqn.trim_start_matches('\\')),
+        )?;
+        let Some(class_like) = class_like else {
+            return Ok(Vec::new());
+        };
+        let mut ordered: Vec<Arc<str>> = class_like.parent().cloned().into_iter().collect();
+        ordered.extend(class_like.interfaces().iter().cloned());
+        ordered.extend(class_like.extends().iter().cloned());
+        for ancestor in class_like.ancestor_fqcns() {
+            if !ordered.contains(&ancestor) {
+                ordered.push(ancestor);
+            }
+        }
+        Ok(ordered)
     }
 
     fn subtype_files(&self, class_fqn: &str) -> Result<Vec<Arc<str>>, ContentModified> {

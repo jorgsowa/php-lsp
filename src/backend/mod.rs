@@ -479,7 +479,7 @@ impl Backend {
 ///
 /// Checks, in order: promoted constructor property params (so `$name` in
 /// `__construct(public string $name)` resolves to the `->name` property, not
-/// `$name` variable occurrences), then method / property / constant
+/// `$name` variable occurrences), then property / constant
 /// declarations, falling back to the character-based `symbol_kind_at` heuristic.
 fn resolve_reference_symbol(
     doc_opt: Option<&Arc<ParsedDoc>>,
@@ -500,9 +500,7 @@ fn resolve_reference_symbol(
         (prop_name, Some(SymbolKind::Property))
     } else if let Some(doc) = doc_opt {
         let stmts = &doc.program().stmts;
-        if cursor_is_on_method_decl(doc.source(), stmts, position) {
-            (word, Some(SymbolKind::Method))
-        } else if let Some(prop_name) = cursor_is_on_property_decl(doc.source(), stmts, position) {
+        if let Some(prop_name) = cursor_is_on_property_decl(doc.source(), stmts, position) {
             (prop_name, Some(SymbolKind::Property))
         } else if let Some((const_name, owner)) =
             cursor_is_on_constant_decl(doc.source(), stmts, position)

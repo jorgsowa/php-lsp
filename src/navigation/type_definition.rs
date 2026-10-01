@@ -4,15 +4,14 @@
 /// Works for variables resolved by mir (flow-sensitive, generics/unions)
 /// and for function parameters with a declared type hint.
 use std::collections::HashMap;
-use std::sync::Arc;
 
 use php_ast::{ClassMemberKind, EnumMemberKind, Expr, ExprKind, NamespaceBody, Stmt, StmtKind};
-use tower_lsp_server::ls_types::{Location, Position, Range, Uri};
+use tower_lsp_server::ls_types::Position;
 
-use crate::document::ast::{ParsedDoc, SourceView, format_type_hint, str_offset_in_range};
+use crate::document::ast::{ParsedDoc, format_type_hint};
 use crate::navigation::moniker::resolve_fqn;
 use crate::navigation::references::collect_class_imports;
-use crate::text::{fqn_short_name, word_at_position, word_range_at};
+use crate::text::{word_at_position, word_range_at};
 use mir_analyzer::FileAnalysis;
 
 /// Resolve the PHP type at `position` to a fully-qualified class name.
@@ -92,63 +91,22 @@ fn resolve_type_at_cursor(
     Some((imports, class_name))
 }
 
-/// Given the cursor position, resolve the type of the symbol and return all
-/// matching locations for that type's class/interface declarations.
-/// Returns empty vec if no type found, single-element vec for simple types,
-/// multiple elements for union types (e.g., Admin|User).
-/// First pass: look only in files whose namespace + short class name matches
-/// the cursor's resolved FQN exactly. Callers should try this — and the index
-/// equivalent, `goto_type_definition_from_index_exact`, so an unrelated
-/// same-short-named class in another open file/namespace can never preempt a
-/// correctly-namespaced match that only lives in the background index.
-pub fn goto_type_definition_exact(
+/// Class FQNs of the type at `position`: one per member of a union/intersection.
+pub fn type_class_fqns(
     source: &str,
     doc: &ParsedDoc,
     analysis: Option<&FileAnalysis>,
-    all_docs: &[(Uri, Arc<ParsedDoc>)],
     position: Position,
-) -> Vec<Location> {
+) -> Vec<String> {
     let Some((_, class_name)) = resolve_type_at_cursor(source, doc, analysis, position) else {
         return Vec::new();
     };
-    collect_exact_type_definition_locations(&class_name, |candidate| {
-        let cand_short = fqn_short_name(candidate.trim_start_matches('\\')).to_string();
-        let cand_fqn = candidate.trim_start_matches('\\').to_string();
-        all_docs
-            .iter()
-            .filter_map(|(uri, other_doc)| {
-                if !doc_matches_fqn_namespace(other_doc, &cand_fqn) {
-                    return None;
-                }
-                find_class_range(other_doc.view(), &other_doc.program().stmts, &cand_short).map(
-                    |range| Location {
-                        uri: uri.clone(),
-                        range,
-                    },
-                )
-            })
-            .collect::<Vec<_>>()
-    })
-}
-
-fn dedup_locations(results: &mut Vec<Location>) {
-    results.sort_by(|a, b| {
-        a.uri
-            .as_str()
-            .cmp(b.uri.as_str())
-            .then_with(|| a.range.start.line.cmp(&b.range.start.line))
-    });
-    results.dedup_by(|a, b| a.uri == b.uri && a.range.start.line == b.range.start.line);
-}
-
-/// Return the namespace declared in a doc's top-level statements, if any.
-fn file_namespace(doc: &ParsedDoc) -> Option<String> {
-    for stmt in doc.program().stmts.iter() {
-        if let StmtKind::Namespace(ns) = &stmt.kind {
-            return ns.name.as_ref().map(|n| n.to_string_repr().to_string());
-        }
-    }
-    None
+    let mut fqns: Vec<String> = type_candidates(&class_name)
+        .into_iter()
+        .map(|c| c.trim_start_matches('\\').to_string())
+        .collect();
+    fqns.dedup();
+    fqns
 }
 
 /// Decompose a formatted type hint into searchable class-name candidates.
@@ -343,116 +301,4 @@ fn param_type_for(stmts: &[Stmt<'_, '_>], word: &str) -> Option<String> {
         }
     }
     None
-}
-
-/// Find the range of the class or interface declaration named `name`.
-fn find_class_range(sv: SourceView<'_>, stmts: &[Stmt<'_, '_>], name: &str) -> Option<Range> {
-    for stmt in stmts {
-        match &stmt.kind {
-            StmtKind::Class(c) if c.name.map(|n| n.or_error()) == Some(name) => {
-                // Use statement span to find the name within the declaration context,
-                // not the first occurrence in the file (which might be a different use).
-                let stmt_range = sv.range_of(stmt.span);
-                let name_in_source = c.name.expect("match guard ensures Some").or_error();
-                if let Some(pos) = str_offset_in_range(sv.source(), stmt.span, name_in_source) {
-                    return Some(Range {
-                        start: sv.position_of(pos),
-                        end: sv.position_of(pos + name_in_source.len() as u32),
-                    });
-                }
-                return Some(stmt_range);
-            }
-            StmtKind::Interface(i) if i.name == name => {
-                // Use statement span to find the name within the declaration context.
-                let name_str = i.name.or_error();
-                if let Some(pos) = str_offset_in_range(sv.source(), stmt.span, name_str) {
-                    return Some(Range {
-                        start: sv.position_of(pos),
-                        end: sv.position_of(pos + name_str.len() as u32),
-                    });
-                }
-                return Some(sv.range_of(stmt.span));
-            }
-            StmtKind::Trait(t) if t.name == name => {
-                // Use statement span to find the name within the declaration context.
-                let name_str = t.name.or_error();
-                if let Some(pos) = str_offset_in_range(sv.source(), stmt.span, name_str) {
-                    return Some(Range {
-                        start: sv.position_of(pos),
-                        end: sv.position_of(pos + name_str.len() as u32),
-                    });
-                }
-                return Some(sv.range_of(stmt.span));
-            }
-            StmtKind::Enum(e) if e.name == name => {
-                // Use statement span to find the name within the declaration context.
-                let name_str = e.name.or_error();
-                if let Some(pos) = str_offset_in_range(sv.source(), stmt.span, name_str) {
-                    return Some(Range {
-                        start: sv.position_of(pos),
-                        end: sv.position_of(pos + name_str.len() as u32),
-                    });
-                }
-                return Some(sv.range_of(stmt.span));
-            }
-            StmtKind::Namespace(ns) => {
-                if let NamespaceBody::Braced(inner) = &ns.body
-                    && let Some(r) = find_class_range(sv, &inner.stmts, name)
-                {
-                    return Some(r);
-                }
-            }
-            _ => {}
-        }
-    }
-    None
-}
-
-/// Look for an exact FQN match in `FileIndex` entries.
-pub fn goto_type_definition_from_index_exact(
-    source: &str,
-    doc: &ParsedDoc,
-    analysis: Option<&FileAnalysis>,
-    position: Position,
-    class_uri_by_fqn: &dyn Fn(&str) -> Option<Uri>,
-    get_doc: &dyn Fn(&Uri) -> Option<Arc<ParsedDoc>>,
-) -> Vec<Location> {
-    let Some((_, class_name)) = resolve_type_at_cursor(source, doc, analysis, position) else {
-        return Vec::new();
-    };
-    collect_exact_type_definition_locations(&class_name, |candidate| {
-        let cand_fqn = candidate.trim_start_matches('\\').to_string();
-        class_uri_by_fqn(&cand_fqn)
-            .into_iter()
-            .filter_map(|uri| {
-                let other_doc = get_doc(&uri)?;
-                let range = find_class_range(
-                    other_doc.view(),
-                    &other_doc.program().stmts,
-                    fqn_short_name(&cand_fqn),
-                )?;
-                Some(Location { uri, range })
-            })
-            .collect::<Vec<_>>()
-    })
-}
-
-fn collect_exact_type_definition_locations<F>(class_name: &str, mut resolve: F) -> Vec<Location>
-where
-    F: FnMut(&str) -> Vec<Location>,
-{
-    let mut results = Vec::new();
-    for candidate in type_candidates(class_name) {
-        results.extend(resolve(candidate));
-    }
-    dedup_locations(&mut results);
-    results
-}
-
-fn doc_matches_fqn_namespace(doc: &ParsedDoc, fqn: &str) -> bool {
-    if fqn.is_empty() || !fqn.contains('\\') {
-        return true;
-    }
-    let ns_prefix = &fqn[..fqn.rfind('\\').unwrap_or(0)];
-    file_namespace(doc).as_deref() == Some(ns_prefix)
 }

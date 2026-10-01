@@ -68,39 +68,19 @@ pub fn prepare_type_hierarchy_from_fqn(
     ))
 }
 
-/// Supertypes via the canonical FQN carried in the hierarchy item.
+/// Hierarchy items for `supertype_fqns` (direct parent, interfaces, traits as
+/// resolved by mir) that are declared in the workspace.
 pub fn supertypes_of_from_workspace(
-    item: &TypeHierarchyItem,
+    supertype_fqns: &[Arc<str>],
     wi: &crate::db::workspace_index::WorkspaceIndexData,
-    get_doc: &dyn Fn(&Uri) -> Option<Arc<ParsedDoc>>,
     resolve_class_ref: &dyn Fn(&str) -> Option<crate::db::workspace_index::ClassRef>,
 ) -> Vec<TypeHierarchyItem> {
     use crate::index::file_index::ClassKind;
     let mut result = Vec::new();
     let mut seen_fqns: HashSet<Box<str>> = HashSet::new();
-    let Some(item_fqn) = item_fqn(item) else {
-        return result;
-    };
-    let Some(class_ref) = resolve_class_ref(item_fqn) else {
-        return result;
-    };
-    let Some((uri, cls)) = wi.at(class_ref) else {
-        return result;
-    };
-    let Some(doc) = get_doc(uri) else {
-        return result;
-    };
-    let imports = doc.file_imports();
-    let super_names = cls
-        .parent
-        .iter()
-        .cloned()
-        .chain(cls.implements.iter().cloned())
-        .chain(cls.traits.iter().cloned());
-    for name in super_names {
-        let resolved = crate::navigation::moniker::resolve_fqn(&doc, name.as_ref(), &imports);
+    for fqn in supertype_fqns {
         let Some((super_uri, super_cls)) =
-            resolve_class_ref(&resolved).and_then(|class_ref| wi.at(class_ref))
+            resolve_class_ref(fqn).and_then(|class_ref| wi.at(class_ref))
         else {
             continue;
         };
@@ -122,24 +102,14 @@ pub fn supertypes_of_from_workspace(
     result
 }
 
-/// Mir-backed variant of [`subtypes_of_from_workspace`].
-///
-/// `item_fqn` is the FQCN of the hierarchy item (e.g. `"App\\Animal"`),
-/// resolved in the handler from the workspace index. `subtype_urls` is the
-/// file set from `DocumentStore::class_subtype_urls`. When non-empty this
-/// fixes aliased `extends` and FQN-qualified forms the raw-name map misses.
-/// Falls back to [`subtypes_of_from_workspace`] when `subtype_urls` is empty.
+/// Direct subtypes of `item_fqn` among the classes declared in `subtype_urls`
+/// (mir's subtype-edge files, including trait users).
 pub fn subtypes_of_mir_backed(
-    item: &TypeHierarchyItem,
     item_fqn: &str,
     wi: &crate::db::workspace_index::WorkspaceIndexData,
     subtype_urls: &[Uri],
-    mention_candidates: &dyn Fn(&str) -> Vec<Uri>,
     get_doc: &dyn Fn(&Uri) -> Option<Arc<ParsedDoc>>,
 ) -> Vec<TypeHierarchyItem> {
-    if subtype_urls.is_empty() {
-        return subtypes_of_from_workspace(item, item_fqn, wi, mention_candidates, get_doc);
-    }
     use crate::index::file_index::ClassKind;
     let mut result = Vec::new();
     wi.for_each_class_in_uris(subtype_urls, |uri, cls| {
@@ -177,59 +147,4 @@ pub fn subtypes_of_mir_backed(
     });
     sort_items_stably(&mut result);
     result
-}
-
-/// Phase J — Subtypes via mir's mention index: files that mention
-/// `item.name` at all are the only ones whose `extends`/`implements`/`use`
-/// clause could possibly name it, so mention-candidates replaces the old
-/// eagerly-rebuilt `subtypes_of` reverse map as the narrowing step.
-///
-/// `item_fqn` is the canonical FQCN of the hierarchy item. A mention hit is
-/// necessary but not sufficient (over-inclusive across a large workspace,
-/// e.g. many unrelated `Factory` interfaces each aliased to the same
-/// `FactoryContract` locally), so each candidate is re-checked against
-/// `item_fqn` via `resolves_to_fqn`, which resolves the candidate's own
-/// `extends`/`implements`/`use` clause through its `use_imports` and
-/// namespace before accepting the match.
-pub fn subtypes_of_from_workspace(
-    item: &TypeHierarchyItem,
-    item_fqn: &str,
-    wi: &crate::db::workspace_index::WorkspaceIndexData,
-    mention_candidates: &dyn Fn(&str) -> Vec<Uri>,
-    get_doc: &dyn Fn(&Uri) -> Option<Arc<ParsedDoc>>,
-) -> Vec<TypeHierarchyItem> {
-    use crate::index::file_index::ClassKind;
-    let mut results = Vec::new();
-    let candidate_uris = mention_candidates(&item.name);
-    wi.for_each_class_in_uris(&candidate_uris, |uri, cls| {
-        let doc = get_doc(uri);
-        let imports = doc.as_ref().map(|doc| doc.file_imports());
-        let named = |name: &str| {
-            let (Some(doc), Some(imports)) = (doc.as_ref(), imports.as_ref()) else {
-                return false;
-            };
-            crate::navigation::moniker::resolve_fqn(doc, name, imports)
-                .trim_start_matches('\\')
-                .eq_ignore_ascii_case(item_fqn)
-        };
-        let matches = cls.parent.as_deref().is_some_and(named)
-            || cls.implements.iter().any(|iface| named(iface.as_ref()))
-            || cls.traits.iter().any(|t| named(t.as_ref()));
-        if matches {
-            let kind = match cls.kind {
-                ClassKind::Class | ClassKind::Trait => SymbolKind::CLASS,
-                ClassKind::Interface => SymbolKind::INTERFACE,
-                ClassKind::Enum => SymbolKind::ENUM,
-            };
-            results.push(make_item_from_index(
-                &cls.name,
-                kind,
-                uri,
-                cls.start_line,
-                &cls.fqn,
-            ));
-        }
-    });
-    sort_items_stably(&mut results);
-    results
 }

@@ -25,6 +25,38 @@ pub fn mir_definition(
     Ok(resolved.and_then(|(name, loc)| to_lsp_location(docs, &name, &loc)))
 }
 
+/// Declaration locations of the classes named by `fqns`; unknown names are skipped.
+pub fn mir_class_locations(
+    docs: &DocumentStore,
+    fqns: &[String],
+) -> Result<Vec<Location>, ContentModified> {
+    if fqns.is_empty() {
+        return Ok(Vec::new());
+    }
+    let names: Vec<Name> = fqns
+        .iter()
+        .map(|f| Name::Class(Arc::from(f.as_str())))
+        .collect();
+    let resolved = docs.with_snapshot(
+        |_| {},
+        |snap| {
+            let mut found = Vec::new();
+            for name in &names {
+                if let Ok(loc) = snap.definition_of_cached(name)? {
+                    found.push((name.clone(), loc));
+                }
+            }
+            Ok(found)
+        },
+    )?;
+    let mut locations: Vec<Location> = resolved
+        .iter()
+        .filter_map(|(name, loc)| to_lsp_location(docs, name, loc))
+        .collect();
+    locations.dedup();
+    Ok(locations)
+}
+
 fn to_lsp_location(
     docs: &DocumentStore,
     name: &Name,

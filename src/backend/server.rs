@@ -25,9 +25,7 @@ use crate::navigation::call_hierarchy::{
 };
 use crate::navigation::declaration::{goto_declaration, goto_declaration_from_index};
 use crate::navigation::moniker::moniker_at;
-use crate::navigation::type_definition::{
-    goto_type_definition_exact, goto_type_definition_from_index_exact,
-};
+use crate::navigation::type_definition::type_class_fqns;
 use crate::navigation::type_hierarchy::{
     prepare_type_hierarchy_from_fqn, subtypes_of_mir_backed, supertypes_of_from_workspace,
 };
@@ -49,9 +47,7 @@ use crate::editing::rename::{prepare_rename, rename_variable};
 use crate::editing::selection_range::selection_ranges;
 use crate::editing::signature_help::signature_help;
 
-use super::helpers::{
-    cursor_is_on_method_decl, cursor_is_on_property_decl, promoted_property_at_cursor, run_phpunit,
-};
+use super::helpers::{cursor_is_on_property_decl, promoted_property_at_cursor, run_phpunit};
 use super::{Backend, publish_with_dependents};
 
 /// Idle time after the last edit before the background analysis re-warm runs.
@@ -1324,6 +1320,7 @@ impl LanguageServer for Backend {
                 let docs = Arc::clone(&self.docs);
                 let doc = Arc::clone(&doc);
                 let source = source.clone();
+                let uri = uri.clone();
                 // Off the async worker: every step below takes the session lock.
                 let fallback = self
                     .blocking("hover_fallback", move || {
@@ -1335,24 +1332,12 @@ impl LanguageServer for Backend {
                                     .map(|(_, cls)| normalized_php_fqn(&cls.fqn).to_string())
                             })
                         };
-                        // Try the cursor word first, resolved through this file's
-                        // imports and namespace when it is a bare class name.
-                        if let Some(fqcn) = fallback_class_fqcn(&word)
-                            && let Some(h) = docs
-                                .read_snapshot(|snap| class_hover_for_fqcn(snap, &fqcn))
-                                .ok()
-                                .flatten()
-                        {
-                            return Some(h);
-                        }
-                        // Try alias resolution. The resolved FQN disambiguates between
-                        // same-named classes in different namespaces (e.g. many
-                        // vendored `Factory` classes all aliased to `FactoryContract`).
-                        if let Some((resolved, resolved_fqn)) =
-                            crate::hover::resolve_use_alias_fqn(&doc.program().stmts, &word)
-                            && let Some(fqcn) = fallback_class_fqcn(&resolved)
-                                .filter(|fqcn| fqcn.eq_ignore_ascii_case(&resolved_fqn))
-                                .or(Some(resolved_fqn))
+                        // mir resolves the cursor class through imports, aliases and the
+                        // namespace, so same-short-named classes can't be confused.
+                        if let Some(offset) = crate::text::word_range_at(&source, position)
+                            .map(|r| doc.view().byte_of_position(r.start))
+                            && let Ok(Some(mir_analyzer::Name::Class(fqcn))) =
+                                docs.mir_name_at(&uri, offset)
                             && let Some(h) = docs
                                 .read_snapshot(|snap| class_hover_for_fqcn(snap, &fqcn))
                                 .ok()
@@ -1841,16 +1826,22 @@ impl LanguageServer for Backend {
                 (short, normalized_php_fqn(&raw_word).to_string())
             };
 
-            // A method declaration name can collide case-insensitively with a
-            // class name (`Guard` interface vs `guard()` method in one
-            // namespace); the cursor context decides which sense wins. The
-            // check walks every member of every class in the document, so
-            // keep it off the async runtime worker.
-            let doc_for_method_check = self.get_doc(uri);
+            // A method name can collide case-insensitively with a class name
+            // (`Guard` interface vs `guard()` method in one namespace); mir's
+            // symbol at the cursor decides which sense wins.
+            let method_offset = self.get_doc(uri).and_then(|doc| {
+                crate::text::word_range_at(&source, position)
+                    .map(|r| doc.view().byte_of_position(r.start))
+            });
+            let docs_for_method_check = Arc::clone(&self.docs);
+            let uri_for_method_check = uri.clone();
             let on_method_decl = self
                 .blocking_gated(super::debug_gate::GATE_GOTO_IMPLEMENTATION, move || {
-                    doc_for_method_check.is_some_and(|doc| {
-                        cursor_is_on_method_decl(doc.source(), &doc.program().stmts, position)
+                    method_offset.is_some_and(|offset| {
+                        matches!(
+                            docs_for_method_check.mir_name_at(&uri_for_method_check, offset),
+                            Ok(Some(mir_analyzer::Name::Method { .. }))
+                        )
                     })
                 })
                 .await
@@ -1987,53 +1978,22 @@ impl LanguageServer for Backend {
                 None => return Ok(None),
             };
             let analysis = self.cached_analysis_async(uri).await;
-            let open_docs = self.docs.docs_for(&self.open_urls());
             let docs = Arc::clone(&self.docs);
-            let wi = self.workspace_index_async().await;
 
-            // Every exact-resolution pass below is CPU-bound — the open-doc
-            // pass walks ASTs and the index pass reads the aggregated index —
-            // so run the whole chain off
-            // the async runtime worker in one hop, matching hover.
-            let response = self
+            let results = self
                 .blocking_gated(super::debug_gate::GATE_GOTO_TYPE_DEFINITION, move || {
-                    // Exact FQN/namespace matches (open docs, then background index)
-                    // ensure an unrelated same-short-named class in another open
-                    // file can never preempt a correctly-namespaced target.
-                    let mut results = goto_type_definition_exact(
-                        &source,
-                        &doc,
-                        analysis.as_deref(),
-                        &open_docs,
-                        position,
-                    );
-                    if results.is_empty() {
-                        let exact_uri = |fqn: &str| {
-                            docs.class_ref_by_fqn(&wi, fqn)
-                                .and_then(|cr| wi.at(cr).map(|(uri, _)| uri.clone()))
-                        };
-                        let get_doc = |uri: &Uri| docs.get_doc_salsa(uri);
-                        results = goto_type_definition_from_index_exact(
-                            &source,
-                            &doc,
-                            analysis.as_deref(),
-                            position,
-                            &exact_uri,
-                            &get_doc,
-                        );
-                    }
-                    // Format response: scalar for single result, array for multiple, none for empty
-                    match results.len() {
-                        0 => None,
-                        1 => Some(GotoDefinitionResponse::Scalar(
-                            results.into_iter().next().unwrap(),
-                        )),
-                        _ => Some(GotoDefinitionResponse::Array(results)),
-                    }
+                    let fqns = type_class_fqns(&source, &doc, analysis.as_deref(), position);
+                    crate::navigation::mir_definition::mir_class_locations(&docs, &fqns)
                 })
                 .await
-                .unwrap_or_default();
-            Ok(response)
+                .unwrap_or_else(|| Ok(Vec::new()))?;
+            Ok(match results.len() {
+                0 => None,
+                1 => Some(GotoDefinitionResponse::Scalar(
+                    results.into_iter().next().unwrap(),
+                )),
+                _ => Some(GotoDefinitionResponse::Array(results)),
+            })
         })
         .await
     }
@@ -2085,15 +2045,17 @@ impl LanguageServer for Backend {
                 wi
             };
             let docs = Arc::clone(&self.docs);
-            let item = params.item;
+            let item_fqn = item_fqn.to_owned();
             let result = self
                 .blocking_gated(super::debug_gate::GATE_TYPE_HIERARCHY, move || {
-                    let get_doc = |uri: &Uri| docs.get_doc_salsa(uri);
+                    let supertype_fqns = docs.class_direct_supertypes(&item_fqn)?;
                     let resolve_class_ref = |fqn: &str| docs.resolve_class_ref_by_fqn(&wi, fqn);
-                    supertypes_of_from_workspace(&item, &wi, &get_doc, &resolve_class_ref)
+                    Ok::<_, crate::document::document_store::ContentModified>(
+                        supertypes_of_from_workspace(&supertype_fqns, &wi, &resolve_class_ref),
+                    )
                 })
                 .await
-                .unwrap_or_default();
+                .unwrap_or_else(|| Ok(Vec::new()))?;
             Ok(if result.is_empty() {
                 None
             } else {
@@ -2118,18 +2080,9 @@ impl LanguageServer for Backend {
             let result = self
                 .blocking_gated(super::debug_gate::GATE_TYPE_HIERARCHY, move || {
                     let subtype_urls = docs.class_subtype_urls(&item_fqn)?;
-                    let mention_candidates =
-                        |name: &str| docs.declaration_candidate_files(&wi, name);
                     let get_doc = |uri: &Uri| docs.get_doc_salsa(uri);
                     Ok::<_, crate::document::document_store::ContentModified>(
-                        subtypes_of_mir_backed(
-                            &item,
-                            &item_fqn,
-                            &wi,
-                            &subtype_urls,
-                            &mention_candidates,
-                            &get_doc,
-                        ),
+                        subtypes_of_mir_backed(&item_fqn, &wi, &subtype_urls, &get_doc),
                     )
                 })
                 .await

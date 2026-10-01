@@ -14,9 +14,7 @@ use crate::navigation::walk::collect_var_refs_in_scope;
 use crate::text::{fqn_short_name, utf16_code_units, utf16_offset_to_byte, word_at_position};
 use crate::types::type_map::{enclosing_class_at, enclosing_class_fqn_at};
 
-use super::super::helpers::{
-    class_name_at_construct_decl, promoted_property_at_cursor, range_within,
-};
+use super::super::helpers::{promoted_property_at_cursor, range_within};
 use super::super::panic_guard::guard_async_result;
 use super::super::{Backend, class_before_double_colon, resolve_reference_symbol};
 
@@ -271,36 +269,19 @@ impl Backend {
                 return Ok(None);
             }
 
+            // `parent::` is compile-time resolved: it always names the literal
+            // `extends` class. Only that call site needs its own resolution; every
+            // other `__construct` cursor goes through mir's symbol resolution below.
             if word == "__construct"
+                && class_before_double_colon(&source, position).as_deref() == Some("parent")
                 && let Some(doc) = self.get_doc(uri)
             {
-                // Try declaration site first. `parent::` is compile-time resolved
-                // in PHP — it always names the literal `extends` class, never
-                // subject to late static binding — so a `parent::__construct()`
-                // call site must resolve to that parent, not the enclosing
-                // (child) class. Only fall back to the enclosing-class heuristic
-                // when the parent can't be resolved (e.g. an external/vendor
-                // base class not present in the workspace index).
-                let decl_class =
-                    class_name_at_construct_decl(doc.source(), &doc.program().stmts, position);
-                let on_call_site = decl_class.is_none();
-                let is_parent_call_site = on_call_site
-                    && class_before_double_colon(&source, position).as_deref() == Some("parent");
-                let class_name = if let Some(decl_class) = decl_class {
-                    Some(decl_class)
-                } else if is_parent_call_site {
-                    let wi = self.workspace_index_async().await;
-                    let imports = self.file_imports(uri);
+                let wi = self.workspace_index_async().await;
+                let imports = self.file_imports(uri);
+                let class_name =
                     resolve_parent_construct_class(&doc, position, &wi, &self.docs, &imports)
-                        .or_else(|| enclosing_class_fqn_at(doc.source(), &doc, position))
-                } else {
-                    enclosing_class_fqn_at(doc.source(), &doc, position)
-                };
+                        .or_else(|| enclosing_class_fqn_at(doc.source(), &doc, position));
                 if let Some(class_name) = class_name {
-                    // When cursor is on a call site (not the `function __construct`
-                    // declaration), exclude the cursor span from results — it points
-                    // to the `parent::__construct()` text, not to the declaration.
-                    let incl_decl = include_declaration && !on_call_site;
                     // Instantiation sites (`new Short(...)`) always name the
                     // class's short name; mir records them under
                     // `meth:{fqcn}::__construct`.
@@ -318,7 +299,7 @@ impl Backend {
                     let locations = tokio::task::spawn_blocking(move || {
                         let (_interactive, cancel_rev) = docs.settled_write_rev_guard();
                         let mut locs: Vec<Location> = docs
-                            .indexed_references(&sym, &files, incl_decl, Some(cancel_rev))?
+                            .indexed_references(&sym, &files, false, Some(cancel_rev))?
                             .into_iter()
                             .filter_map(session_tuple_to_location)
                             .collect();
