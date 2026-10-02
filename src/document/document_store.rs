@@ -168,6 +168,30 @@ pub struct DocumentStore {
     interactive_reads: AtomicU64,
 }
 
+const SETTLE_BUDGET: std::time::Duration = std::time::Duration::from_millis(50);
+pub(crate) const SETTLE_POLL: std::time::Duration = std::time::Duration::from_millis(2);
+
+/// Tracks write-revision polls until the revision stops advancing or
+/// [`SETTLE_BUDGET`] elapses.
+pub(crate) struct WriteSettle {
+    deadline: std::time::Instant,
+    rev: u64,
+}
+
+impl WriteSettle {
+    pub(crate) fn new(rev: u64) -> Self {
+        Self {
+            deadline: std::time::Instant::now() + SETTLE_BUDGET,
+            rev,
+        }
+    }
+
+    pub(crate) fn settled(&mut self, now: u64) -> bool {
+        let quiet = now == std::mem::replace(&mut self.rev, now);
+        quiet || std::time::Instant::now() >= self.deadline
+    }
+}
+
 /// RAII handle marking an interactive read in flight; see
 /// [`DocumentStore::interactive_read_guard`].
 pub struct InteractiveReadGuard<'a>(&'a AtomicU64);
@@ -254,14 +278,10 @@ impl DocumentStore {
         // Post-scan there is no background write storm to settle; skip the
         // sleep so steady-state requests pay only the guard's atomic inc.
         if !self.is_index_ready() {
-            let deadline = std::time::Instant::now() + std::time::Duration::from_millis(50);
-            let mut rev = self.write_rev();
+            let mut settle = WriteSettle::new(self.write_rev());
             loop {
-                std::thread::sleep(std::time::Duration::from_millis(2));
-                let now = self.write_rev();
-                let quiet = now == rev;
-                rev = now;
-                if quiet || std::time::Instant::now() >= deadline {
+                std::thread::sleep(SETTLE_POLL);
+                if settle.settled(self.write_rev()) {
                     break;
                 }
             }
@@ -849,45 +869,42 @@ impl DocumentStore {
     /// on `salsa::Cancelled` (raised when a concurrent writer bumps the
     /// revision). Mirrors [`Self::snapshot_query`] for the converged db.
     ///
-    /// The loop terminates as soon as the writer pauses long enough for one
-    /// query to complete. Handlers that want an early exit under sustained
-    /// write pressure should pass a write-rev closure (see `code_lenses`) and
-    /// check it at coarser granularity rather than here.
+    /// After [`SNAPSHOT_ATTEMPTS`] cancellations the last attempt runs under
+    /// the session lock, which keeps new writers out and guarantees progress.
     fn snapshot_mir_query<R>(&self, f: impl Fn(&mir_analyzer::db::MirDbStorage) -> R) -> R {
-        use std::panic::AssertUnwindSafe;
         let _interactive = self.interactive_read_guard();
-        // Each iteration takes a fresh snapshot under its own brief lock
-        // acquisition (not held across the retry): a concurrent writer's
-        // salsa `set` holds the mir write lock and waits for outstanding db
-        // handles to drop, while the next `snapshot_db` needs the read lock —
-        // keeping either the clone or the session lock alive across the retry
-        // deadlocks.
-        loop {
-            let db = self.with_session(|session| session.snapshot_db());
-            match salsa::Cancelled::catch(AssertUnwindSafe(|| f(&db))) {
-                Ok(r) => return r,
-                Err(_) => drop(db),
-            }
-        }
+        self.attempt_mir_query(SNAPSHOT_ATTEMPTS, &f)
+            .unwrap_or_else(|| self.with_session(|session| f(&session.snapshot_db())))
     }
 
     /// Bounded variant of [`Self::snapshot_mir_query`] for cosmetic,
     /// cursor-triggered reads that must not spin under sustained write pressure.
     /// Returns `None` if a concurrent writer cancels the query `attempts` times
-    /// in a row (the caller then falls back to a stale result). Same
-    /// drop-before-retry discipline as `snapshot_mir_query`.
+    /// in a row (the caller then falls back to a stale result).
     fn try_snapshot_mir_query<R>(
         &self,
         attempts: usize,
         f: impl Fn(&mir_analyzer::db::MirDbStorage) -> R,
     ) -> Option<R> {
-        use std::panic::AssertUnwindSafe;
         let _interactive = self.interactive_read_guard();
+        self.attempt_mir_query(attempts, &f)
+    }
+
+    /// Each attempt takes a fresh snapshot under its own brief lock
+    /// acquisition: a concurrent writer's salsa `set` holds the mir write lock
+    /// and waits for outstanding db handles to drop, while the next
+    /// `snapshot_db` needs the read lock — keeping either the clone or the
+    /// session lock alive across a retry deadlocks.
+    fn attempt_mir_query<R>(
+        &self,
+        attempts: usize,
+        f: &impl Fn(&mir_analyzer::db::MirDbStorage) -> R,
+    ) -> Option<R> {
+        use std::panic::AssertUnwindSafe;
         for _ in 0..attempts {
             let db = self.with_session(|session| session.snapshot_db());
-            match salsa::Cancelled::catch(AssertUnwindSafe(|| f(&db))) {
-                Ok(r) => return Some(r),
-                Err(_) => drop(db),
+            if let Ok(r) = salsa::Cancelled::catch(AssertUnwindSafe(|| f(&db))) {
+                return Some(r);
             }
         }
         None
@@ -2962,6 +2979,14 @@ type ReachabilityResultCache = DashMap<ReachabilityQuery, (u64, Arc<Vec<Arc<str>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn write_settle_waits_for_a_quiet_revision() {
+        let mut settle = WriteSettle::new(1);
+        assert!(!settle.settled(2));
+        assert!(!settle.settled(3));
+        assert!(settle.settled(3));
+    }
 
     fn uri(path: &str) -> Uri {
         format!("file://{path}").parse::<Uri>().unwrap()

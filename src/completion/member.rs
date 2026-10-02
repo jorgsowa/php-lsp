@@ -97,13 +97,13 @@ fn all_members(
         let fast_doc: Option<Arc<ParsedDoc>> = find_class_doc.and_then(|f| f(&current));
         let fast_ref: Option<&ParsedDoc> = fast_doc.as_deref();
         let defining: Option<(&ParsedDoc, ClassMembers)> = if let Some(fd) = fast_ref {
-            let m = members_of_class(fd, short);
+            let m = members_of_class(fd, &current);
             m.found.then_some((fd, m))
         } else {
             // PHP defines a class in exactly one file, so stop scanning once
             // the defining doc is hit.
             all.iter().find_map(|d| {
-                let m = members_of_class(d, short);
+                let m = members_of_class(d, &current);
                 m.found.then_some((*d, m))
             })
         };

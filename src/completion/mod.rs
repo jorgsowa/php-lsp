@@ -1021,6 +1021,24 @@ pub fn filtered_completions_at(
 mod tests {
     use super::*;
 
+    #[test]
+    fn method_params_ignore_same_short_name_in_other_namespace() {
+        let doc = ParsedDoc::parse("<?php".to_string());
+        let others = [
+            Arc::new(ParsedDoc::parse(
+                "<?php\nnamespace Other;\nclass Svc { public function run(int $wrong) {} }"
+                    .to_string(),
+            )),
+            Arc::new(ParsedDoc::parse(
+                "<?php\nnamespace App;\nclass Svc { public function run(int $right) {} }"
+                    .to_string(),
+            )),
+        ];
+        let params =
+            params_of_method_anywhere("App\\Svc", "run", &doc, &others, &CompletionCtx::default());
+        assert_eq!(params, ["right"]);
+    }
+
     fn labels(items: &[CompletionItem]) -> Vec<&str> {
         items.iter().map(|i| i.label.as_str()).collect()
     }

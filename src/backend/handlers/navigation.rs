@@ -4,7 +4,7 @@ use tower_lsp_server::jsonrpc::Result;
 use tower_lsp_server::ls_types::*;
 
 use crate::analysis::document_highlight::document_highlights;
-use crate::document::document_store::ContentModified;
+use crate::document::document_store::{ContentModified, SETTLE_POLL, WriteSettle};
 use crate::lang::is_unresolvable_bareword_at;
 use crate::navigation::definition::find_declaration_range;
 use crate::navigation::references::{
@@ -888,14 +888,10 @@ impl Backend {
         if self.docs.is_index_ready() {
             return;
         }
-        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(50);
-        let mut rev = self.docs.write_rev();
+        let mut settle = WriteSettle::new(self.docs.write_rev());
         loop {
-            tokio::time::sleep(std::time::Duration::from_millis(2)).await;
-            let now = self.docs.write_rev();
-            let quiet = now == rev;
-            rev = now;
-            if quiet || std::time::Instant::now() >= deadline {
+            tokio::time::sleep(SETTLE_POLL).await;
+            if settle.settled(self.docs.write_rev()) {
                 break;
             }
         }

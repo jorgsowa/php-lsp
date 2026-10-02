@@ -63,6 +63,9 @@ pub struct ClassMembers {
 pub fn members_of_class(doc: &ParsedDoc, class_name: &str) -> ClassMembers {
     let short = class_name.rsplit('\\').next().unwrap_or(class_name);
     let mut out = ClassMembers::default();
+    if !declared_in_namespace_of(doc, class_name) {
+        return out;
+    }
     out.parent = collect_members_stmts(doc.source(), &doc.program().stmts, short, &mut out);
     out
 }
@@ -93,6 +96,16 @@ pub fn resolve_class_ref(doc: &ParsedDoc, declaring_class: &str, name: &str) -> 
         Some(ns) if !ns.is_empty() => format!("{ns}\\{name}"),
         _ => name.to_owned(),
     }
+}
+
+/// False when `class_name` is namespace-qualified and `doc` declares a class
+/// of that short name in a different namespace. Bare names always match.
+fn declared_in_namespace_of(doc: &ParsedDoc, class_name: &str) -> bool {
+    let Some((ns, short)) = class_name.trim_start_matches('\\').rsplit_once('\\') else {
+        return true;
+    };
+    namespace_of_class(&doc.program().stmts, short, "")
+        .is_none_or(|declared| declared.eq_ignore_ascii_case(ns))
 }
 
 fn namespace_of_class(stmts: &[Stmt<'_, '_>], short: &str, ns_prefix: &str) -> Option<String> {
@@ -547,6 +560,9 @@ pub fn params_of_function(doc: &ParsedDoc, func_name: &str) -> Vec<String> {
 pub fn params_of_method(doc: &ParsedDoc, class_name: &str, method_name: &str) -> Vec<String> {
     let short = class_name.rsplit('\\').next().unwrap_or(class_name);
     let mut out = Vec::new();
+    if !declared_in_namespace_of(doc, class_name) {
+        return out;
+    }
     collect_method_params_stmts(&doc.program().stmts, short, method_name, &mut out);
     out
 }
@@ -617,6 +633,24 @@ fn collect_params_stmts(stmts: &[Stmt<'_, '_>], func_name: &str, out: &mut Vec<S
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const OTHER_SVC: &str =
+        "<?php\nnamespace Other;\nclass Svc { const B = 2; public function run(int $wrong) {} }";
+
+    #[test]
+    fn members_of_class_respects_namespace_of_qualified_name() {
+        let doc = ParsedDoc::parse(OTHER_SVC.to_string());
+        assert_eq!(members_of_class(&doc, "\\Other\\Svc").constants, ["B"]);
+        assert!(!members_of_class(&doc, "App\\Svc").found);
+        assert!(members_of_class(&doc, "Svc").found);
+    }
+
+    #[test]
+    fn params_of_method_respects_namespace_of_qualified_name() {
+        let doc = ParsedDoc::parse(OTHER_SVC.to_string());
+        assert_eq!(params_of_method(&doc, "Other\\Svc", "run"), ["wrong"]);
+        assert!(params_of_method(&doc, "App\\Svc", "run").is_empty());
+    }
 
     #[test]
     fn parent_class_name_finds_parent() {
