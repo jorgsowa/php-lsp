@@ -27,7 +27,7 @@ use crate::navigation::declaration::{goto_declaration, goto_declaration_from_ind
 use crate::navigation::moniker::moniker_at;
 use crate::navigation::type_definition::type_class_fqns;
 use crate::navigation::type_hierarchy::{
-    prepare_type_hierarchy_from_fqn, subtypes_of_mir_backed, supertypes_of_from_workspace,
+    prepare_type_hierarchy_from_fqn, subtypes_from_sites, supertypes_of_from_workspace,
 };
 
 use crate::analysis::code_lens::{code_lenses, subtype_site_to_location};
@@ -2070,7 +2070,6 @@ impl LanguageServer for Backend {
         params: TypeHierarchySubtypesParams,
     ) -> Result<Option<Vec<TypeHierarchyItem>>> {
         guard_async_result("subtypes", async move {
-            let wi = self.workspace_index_async().await;
             let docs = Arc::clone(&self.docs);
             let item = params.item;
             let Some(item_fqn) = crate::navigation::type_hierarchy::item_fqn(&item) else {
@@ -2079,11 +2078,10 @@ impl LanguageServer for Backend {
             let item_fqn = item_fqn.to_owned();
             let result = self
                 .blocking_gated(super::debug_gate::GATE_TYPE_HIERARCHY, move || {
-                    let subtype_urls = docs.class_subtype_urls(&item_fqn)?;
-                    let get_doc = |uri: &Uri| docs.get_doc_salsa(uri);
-                    Ok::<_, crate::document::document_store::ContentModified>(
-                        subtypes_of_mir_backed(&item_fqn, &wi, &subtype_urls, &get_doc),
-                    )
+                    let sites = docs.indexed_direct_subtype_classes(&item_fqn, true)?;
+                    Ok::<_, crate::document::document_store::ContentModified>(subtypes_from_sites(
+                        &sites,
+                    ))
                 })
                 .await
                 .unwrap_or_else(|| Ok(Vec::new()))?;

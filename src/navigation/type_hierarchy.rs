@@ -5,7 +5,6 @@ use std::sync::Arc;
 use serde_json::{Value, json};
 use tower_lsp_server::ls_types::{SymbolKind, TypeHierarchyItem, Uri};
 
-use crate::document::ast::ParsedDoc;
 use crate::text::zero_width_range;
 
 fn make_item_from_index(
@@ -102,49 +101,29 @@ pub fn supertypes_of_from_workspace(
     result
 }
 
-/// Direct subtypes of `item_fqn` among the classes declared in `subtype_urls`
-/// (mir's subtype-edge files, including trait users).
-pub fn subtypes_of_mir_backed(
-    item_fqn: &str,
-    wi: &crate::db::workspace_index::WorkspaceIndexData,
-    subtype_urls: &[Uri],
-    get_doc: &dyn Fn(&Uri) -> Option<Arc<ParsedDoc>>,
-) -> Vec<TypeHierarchyItem> {
-    use crate::index::file_index::ClassKind;
-    let mut result = Vec::new();
-    wi.for_each_class_in_uris(subtype_urls, |uri, cls| {
-        let doc = get_doc(uri);
-        let imports = doc.as_ref().map(|doc| doc.file_imports());
-        let matches_name = |name: &str| {
-            if let (Some(doc), Some(imports)) = (doc.as_ref(), imports.as_ref()) {
-                crate::navigation::moniker::resolve_fqn(doc, name, imports)
-                    .trim_start_matches('\\')
-                    .eq_ignore_ascii_case(item_fqn)
-            } else {
-                false
-            }
-        };
-        let extends_match = cls.parent.as_deref().is_some_and(matches_name);
-        let implements_match = cls
-            .implements
-            .iter()
-            .any(|iface| matches_name(iface.as_ref()));
-        let uses_match = cls.traits.iter().any(|t| matches_name(t.as_ref()));
-        if extends_match || implements_match || uses_match {
-            let kind = match cls.kind {
-                ClassKind::Class | ClassKind::Trait => SymbolKind::CLASS,
-                ClassKind::Interface => SymbolKind::INTERFACE,
-                ClassKind::Enum => SymbolKind::ENUM,
+/// Direct subtypes (`extends`, `implements` or `use`) from mir's subtype index.
+pub fn subtypes_from_sites(sites: &[mir_analyzer::SubtypeClassSite]) -> Vec<TypeHierarchyItem> {
+    use mir_analyzer::db::ClassLikeKind;
+    let mut result: Vec<TypeHierarchyItem> = sites
+        .iter()
+        // Anonymous classes are indexed as `class@anonymous…` and have no name to show.
+        .filter(|site| !site.fqcn.contains('@'))
+        .filter_map(|site| {
+            let uri = site.file.parse::<Uri>().ok()?;
+            let kind = match site.kind {
+                ClassLikeKind::Class | ClassLikeKind::Trait => SymbolKind::CLASS,
+                ClassLikeKind::Interface => SymbolKind::INTERFACE,
+                ClassLikeKind::Enum => SymbolKind::ENUM,
             };
-            result.push(make_item_from_index(
-                &cls.name,
+            Some(make_item_from_index(
+                crate::text::fqn_short_name(&site.fqcn),
                 kind,
-                uri,
-                cls.start_line,
-                &cls.fqn,
-            ));
-        }
-    });
+                &uri,
+                site.range.start.line.saturating_sub(1),
+                &site.fqcn,
+            ))
+        })
+        .collect();
     sort_items_stably(&mut result);
     result
 }

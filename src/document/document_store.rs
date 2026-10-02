@@ -788,22 +788,6 @@ impl DocumentStore {
         self.analysis_session.lock().unwrap().0
     }
 
-    /// File URIs of all direct and transitive subtypes of `class_fqn`, including
-    /// classes composing it as a trait, via mir's subtype edge index.
-    pub fn class_subtype_urls(
-        &self,
-        class_fqn: &str,
-    ) -> Result<Vec<tower_lsp_server::ls_types::Uri>, ContentModified> {
-        let mut urls: Vec<Uri> = self
-            .indexed_subtype_classes(class_fqn, true)?
-            .into_iter()
-            .filter_map(|site| site.file.parse::<Uri>().ok())
-            .collect();
-        urls.sort_by(|a, b| a.as_str().cmp(b.as_str()));
-        urls.dedup();
-        Ok(urls)
-    }
-
     /// Direct parent, interfaces and used traits of `class_fqn` as resolved FQCNs,
     /// via mir's class table. Empty when mir doesn't know the class.
     pub fn class_direct_supertypes(
@@ -831,7 +815,7 @@ impl DocumentStore {
     fn subtype_files(&self, class_fqn: &str) -> Result<Vec<Arc<str>>, ContentModified> {
         self.with_snapshot(
             |session| session.prepare_for_query(None),
-            |snap| snap.subtype_files(class_fqn),
+            |snap| snap.subtype_files(class_fqn, false),
         )
     }
 
@@ -1529,6 +1513,20 @@ impl DocumentStore {
         self.with_snapshot(
             |session| session.prepare_for_query(None),
             |snap| snap.indexed_subtype_classes(class_fqn, &files, include_trait_users),
+        )
+    }
+
+    /// [`Self::indexed_subtype_classes`] restricted to subtypes naming
+    /// `class_fqn` directly in `extends`/`implements` (or `use`).
+    pub fn indexed_direct_subtype_classes(
+        &self,
+        class_fqn: &str,
+        include_trait_users: bool,
+    ) -> Result<Vec<mir_analyzer::SubtypeClassSite>, ContentModified> {
+        let files = self.workspace_file_paths();
+        self.with_snapshot(
+            |session| session.prepare_for_query(None),
+            |snap| snap.indexed_direct_subtype_classes(class_fqn, &files, include_trait_users),
         )
     }
 
