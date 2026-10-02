@@ -26,6 +26,60 @@ impl From<ContentModified> for tower_lsp_server::jsonrpc::Error {
 }
 
 const SNAPSHOT_ATTEMPTS: usize = 3;
+/// Consecutive failed passes over one warm-sweep chunk before it is skipped.
+const WARM_CHUNK_ATTEMPTS: usize = 5;
+
+/// Drives `queue` through `pass` in chunks; see [`DocumentStore::run_warm_queue`].
+fn run_chunks(
+    queue: &[Arc<str>],
+    cancel: &mir_analyzer::IndexCancel,
+    progress: Option<&tokio::sync::mpsc::UnboundedSender<(u32, u32)>>,
+    yield_to_interactive: impl Fn(),
+    pass: impl Fn(&[Arc<str>]) -> bool,
+) -> bool {
+    // Chunk size trades sweep throughput against how often the queue reaches
+    // a `yield_to_interactive` boundary. Each boundary can sleep up to 500 ms
+    // while a request is in flight, so shrinking the chunk multiplies the
+    // worst-case stall rather than improving responsiveness; 32 files is one
+    // mir prepare+analyze pass.
+    const CHUNK: usize = 32;
+    let total = queue.len() as u32;
+    let mut done: u32 = 0;
+    let mut all_settled = true;
+    'chunks: for chunk in queue.chunks(CHUNK) {
+        if cancel.is_cancelled() {
+            all_settled = false;
+            break;
+        }
+        yield_to_interactive();
+        // A concurrent write (e.g. another file being ingested) can land
+        // mid-chunk and cancel the analysis snapshot, so a failed pass is
+        // retried — but only a bounded number of times: a pass that fails
+        // without any writer (e.g. a poisoned salsa revision) never succeeds
+        // on retry and would pin a core. A skipped chunk leaves the sweep
+        // unsettled so completion is not published.
+        let mut settled = false;
+        for _ in 0..WARM_CHUNK_ATTEMPTS {
+            if cancel.is_cancelled() {
+                all_settled = false;
+                break 'chunks;
+            }
+            if pass(chunk) {
+                settled = true;
+                break;
+            }
+        }
+        if settled {
+            done = done.saturating_add(chunk.len() as u32);
+            if let Some(tx) = progress {
+                let _ = tx.send((done, total));
+            }
+        } else {
+            all_settled = false;
+        }
+    }
+    all_settled
+}
 
 /// `(file, 0-based line, start column, end column)`.
 pub type RefLocation = (Arc<str>, u32, u32, u32);
@@ -410,43 +464,13 @@ impl DocumentStore {
         cancel: &mir_analyzer::IndexCancel,
         progress: Option<&tokio::sync::mpsc::UnboundedSender<(u32, u32)>>,
     ) -> bool {
-        // Chunk size trades sweep throughput against how often the queue
-        // reaches a `yield_to_interactive_reads` boundary. Each boundary can
-        // sleep up to 500 ms while a request is in flight, so shrinking the
-        // chunk multiplies the worst-case stall rather than improving
-        // responsiveness; 32 files is one mir prepare+analyze pass.
-        const CHUNK: usize = 32;
-        let total = queue.len() as u32;
-        let mut done: u32 = 0;
-        let mut all_settled = true;
-        'chunks: for chunk in queue.chunks(CHUNK) {
-            if cancel.is_cancelled() {
-                all_settled = false;
-                break;
-            }
-            self.yield_to_interactive_reads();
-            // A concurrent write (e.g. another file being ingested) can land
-            // mid-chunk and cancel the analysis snapshot. Retry the same
-            // chunk immediately — `cancel` (not just the transient snapshot
-            // cancellation) is the authoritative stop signal, so a retry loop
-            // here only spins while an unrelated writer keeps landing, and
-            // exits promptly once `cancel` itself flips (a real edit
-            // superseding this sweep).
-            loop {
-                if cancel.is_cancelled() {
-                    all_settled = false;
-                    break 'chunks;
-                }
-                if self.reanalyze_files(chunk, cancel).is_some() {
-                    done = done.saturating_add(chunk.len() as u32);
-                    if let Some(tx) = progress {
-                        let _ = tx.send((done, total));
-                    }
-                    break;
-                }
-            }
-        }
-        all_settled
+        run_chunks(
+            queue,
+            cancel,
+            progress,
+            || self.yield_to_interactive_reads(),
+            |chunk| self.reanalyze_files(chunk, cancel).is_some(),
+        )
     }
 
     /// The reference-warm phase: one deduped reanalysis queue holding mir's
@@ -2978,6 +3002,45 @@ type ReachabilityResultCache = DashMap<ReachabilityQuery, (u64, Arc<Vec<Arc<str>
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn warm_chunk_that_never_settles_is_skipped_after_bounded_attempts() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let queue: Vec<Arc<str>> = (0..70).map(|i| Arc::from(format!("f{i}.php"))).collect();
+        let cancel = mir_analyzer::IndexCancel::new();
+        let calls = AtomicUsize::new(0);
+        let settled = run_chunks(
+            &queue,
+            &cancel,
+            None,
+            || {},
+            |chunk| {
+                calls.fetch_add(1, Ordering::Relaxed);
+                // Only the middle chunk (files 32..64) always fails.
+                chunk[0].as_ref() != "f32.php"
+            },
+        );
+        assert!(!settled, "a skipped chunk must leave the sweep unsettled");
+        // Two healthy chunks once each, plus the failing one bounded.
+        assert_eq!(calls.load(Ordering::Relaxed), 2 + WARM_CHUNK_ATTEMPTS);
+    }
+
+    #[test]
+    fn warm_chunk_retries_until_a_transient_failure_clears() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let queue: Vec<Arc<str>> = vec![Arc::from("a.php")];
+        let cancel = mir_analyzer::IndexCancel::new();
+        let calls = AtomicUsize::new(0);
+        let settled = run_chunks(
+            &queue,
+            &cancel,
+            None,
+            || {},
+            |_| calls.fetch_add(1, Ordering::Relaxed) >= 2,
+        );
+        assert!(settled);
+        assert_eq!(calls.load(Ordering::Relaxed), 3);
+    }
+
     use super::*;
 
     #[test]

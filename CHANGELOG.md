@@ -4,6 +4,10 @@ All notable changes to php-lsp are documented here.
 
 ## [Unreleased]
 
+### Fixed
+
+- The reference warm sweep no longer pins a core when a chunk keeps failing: each chunk is retried a bounded number of times, then skipped, and the sweep is not reported complete.
+
 ## [0.26.0] — 2026-10-03
 
 ### Added
