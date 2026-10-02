@@ -4,14 +4,36 @@ All notable changes to php-lsp are documented here.
 
 ## [Unreleased]
 
+## [0.26.0] — 2026-10-03
+
+### Added
+
+- **`indexedExtensions` setting** (default `["php"]`): drives the file-operation registration globs and the watched-files glob instead of a hardcoded `*.php`. Rename refresh requests are only sent when a rename touches an indexed extension.
+- **PHP 8.6 target version**: accepted as a target, so partial-application placeholders no longer report a syntax error. The default stays 8.5.
+- **Real parameter defaults**: signature help and hover show the actual default values of indexed callables.
+
 ### Changed
 
-- **Outgoing calls resolved by mir**: call hierarchy now uses mir's `outgoing_calls` instead of an AST walk matching callees by name. `new Foo` is no longer listed as a call.
+- **Navigation resolved by mir**: go-to-definition, go-to-declaration (including method overrides), type definition, hover class lookup, declaration name ranges, type-hierarchy supertypes/subtypes (including trait users) and outgoing calls now come from mir instead of AST walks and name matching. `new Foo` is no longer listed as an outgoing call.
+- **Call hierarchy by position**: prepare picks the method under the cursor, and outgoing calls end on the declaration mir resolved rather than the first of that name.
 - **PSR-0 fallback removed**: mir's autoload map already resolves PSR-0, including namespaced `Foo_Bar` classes the duplicate resolver mapped to the wrong path.
+- **Signature help, inlay hints and resolve handlers run on a snapshot**: they no longer hold the session lock for the whole request, so edits are not blocked.
 
 ### Fixed
 
+- **Member completion**: interface members (including parent interfaces) are offered, inherited private members and protected members outside a class are hidden, parent/trait/mixin names resolve in the declaring file's namespace, and FQCN receivers match by short name. Built-in class methods keep their real case (`getMessage`), and enum completions are no longer duplicated.
+- **Namespace-aware lookups**: qualified class names no longer match same-named classes in other namespaces in member and parameter lookups.
+- **Hover**: a `use` alias no longer resolves to a same-named enclosing declaration; hover survives close and reopen.
+- **Goto-definition**: bare function calls resolve by FQN, and member calls on foreign receivers skip the same-file name match.
+- **Document lifecycle**: notifications are ordered, and lifecycle diagnostics are versioned.
+- **Rename**: declaration lookup is case-insensitive.
+- **Positions past EOF** are clamped to the end of the source.
+- **Analysis locks**: a panicked analysis no longer poisons that file's in-flight lock, and the mention scan reads off the session lock.
 - **Stale diagnostics survive the initial workspace scan**: a file opened while indexing was still running was analyzed against a partial index, and the analysis cache — keyed on `(source, decl_version)` — was never invalidated when the scan finished, so the post-index republish re-served the same memo. Symbols declared in files the scan had not yet reached stayed reported as undefined until the file was edited. `mark_index_ready` now bumps `decl_version`, the same invalidation `note_new_file_declarations` performs on the `didChangeWatchedFiles` path.
+
+### Dependencies
+
+- **mir updated to 0.84.0** (from 0.73.0), php-rs-parser/php-ast/php-lexer to 0.21, salsa to 0.28.5.
 
 ## [0.25.4] — 2026-09-11
 
