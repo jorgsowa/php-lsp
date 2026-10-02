@@ -16,7 +16,9 @@ pub(crate) fn format_declared_params(params: &[mir_analyzer::DeclaredParam]) -> 
                 s.push_str("...");
             }
             s.push_str(&format!("${}", p.name.as_str().trim_start_matches('$')));
-            if p.has_default {
+            if let Some(text) = &p.default_text {
+                s.push_str(&format!(" = {text}"));
+            } else if p.has_default {
                 s.push_str(" = ...");
             }
             s

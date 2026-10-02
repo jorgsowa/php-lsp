@@ -484,7 +484,7 @@ class Page extends Base {
         )
         .await;
     // FileIndex stores has_default:bool, not the actual default value text.
-    expect!["▶ render(string $template, array $vars = ...)  @param0"].assert_eq(&out);
+    expect!["▶ render(string $template, array $vars = [])  @param0"].assert_eq(&out);
 }
 
 /// Static dispatch: `ClassName::method(` must show the signature for that class.
@@ -535,7 +535,7 @@ class App extends Base {
 "#,
         )
         .await;
-    expect!["▶ boot(string $env, bool $debug = ...)  @param0"].assert_eq(&out);
+    expect!["▶ boot(string $env, bool $debug = false)  @param0"].assert_eq(&out);
 }
 
 /// A function with a docblock description surfaces that description as
