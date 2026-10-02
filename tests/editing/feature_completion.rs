@@ -381,6 +381,26 @@ $x->$0
 }
 
 #[tokio::test]
+async fn completion_inherited_builtin_methods_keep_declared_case() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_completion(
+            r#"<?php
+class AppException extends \Exception {}
+$e = new AppException();
+$e->$0
+"#,
+        )
+        .await;
+    let labels: Vec<&str> = out
+        .lines()
+        .filter(|l| l.contains("getMessage") || l.contains("getmessage"))
+        .collect();
+    expect!["Method      getMessage"].assert_eq(&labels.join("\n"));
+}
+
+#[tokio::test]
 async fn completion_enum_case_access() {
     let mut s = TestServer::new().await;
     s.validate_syntax(false);

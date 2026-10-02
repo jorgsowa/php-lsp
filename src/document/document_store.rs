@@ -2515,7 +2515,10 @@ impl DocumentStore {
                 .or_insert_with(|| Arc::new(Mutex::new(())))
                 .value(),
         );
-        let _inflight_guard = inflight.lock().unwrap();
+        // Guards `()`: a panicked analysis must not wedge this URI forever.
+        let _inflight_guard = inflight
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
 
         // Re-check now that we hold the per-URI lock: whoever we waited on
         // may have just populated the cache. `cur_ver` becomes the freshness
@@ -2740,15 +2743,18 @@ impl DocumentStore {
 
     /// Subset of `files` (mir paths) mentioning `short_name` as a whole
     /// identifier, ASCII-case-insensitive, via mir's shared per-file mention
-    /// cache (`AnalysisSession::files_mentioning_any`). A file mir doesn't
-    /// know is omitted — callers use this as a prioritization heuristic, not
-    /// an authoritative filter.
+    /// cache, scanned off the session lock. A file mir doesn't know is
+    /// omitted; if writes keep cancelling the scan, every file is returned.
     pub fn files_mentioning_short_name(
         &self,
         files: &[Arc<str>],
         short_name: &str,
     ) -> Vec<Arc<str>> {
-        self.with_session(|session| session.files_mentioning_any(files, &[short_name]))
+        self.with_snapshot(
+            |_| {},
+            |snap| snap.files_mentioning_any(files, &[short_name]),
+        )
+        .unwrap_or_else(|_| files.to_vec())
     }
 
     /// Candidate files that may *declare* something named `name` anywhere in

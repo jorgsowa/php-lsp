@@ -23,9 +23,10 @@ pub fn stub_class_members(
             found: true,
             ..Default::default()
         };
-        for (name, method) in class_like.own_methods() {
+        // Map keys are lowercased; `method.name` keeps the declared case.
+        for method in class_like.own_methods().values() {
             members.methods.push((
-                name.to_string(),
+                method.name.to_string(),
                 method.is_static,
                 !method.params.is_empty(),
             ));
