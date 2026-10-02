@@ -87,9 +87,6 @@ pub struct Psr4Map {
     /// only. Vendor packages are excluded: rename/delete only targets project
     /// files, so the reverse index never needs vendor entries.
     project_entries: Vec<(String, PathBuf)>,
-    /// PSR-0 entries from all `autoload.psr-0` sections (project + vendor).
-    /// Used as a fallback when PSR-4 resolution returns `None`.
-    psr0_entries: Vec<(String, PathBuf)>,
 }
 
 impl mir_analyzer::ClassResolver for Psr4Map {
@@ -103,7 +100,6 @@ impl Psr4Map {
         Psr4Map {
             inners: vec![],
             project_entries: vec![],
-            psr0_entries: vec![],
         }
     }
 
@@ -122,11 +118,9 @@ impl Psr4Map {
             inners.push(Arc::new(map));
         }
         let project_entries = read_project_psr4_entries(&composer_root);
-        let psr0_entries = read_psr0_entries(&composer_root);
         Psr4Map {
             inners,
             project_entries,
-            psr0_entries,
         }
     }
 
@@ -135,9 +129,6 @@ impl Psr4Map {
         self.inners.extend(other.inners);
         self.project_entries.extend(other.project_entries);
         self.project_entries
-            .sort_by_key(|e| std::cmp::Reverse(e.0.len()));
-        self.psr0_entries.extend(other.psr0_entries);
-        self.psr0_entries
             .sort_by_key(|e| std::cmp::Reverse(e.0.len()));
     }
 
@@ -162,27 +153,6 @@ impl Psr4Map {
     /// Resolve a fully-qualified class name to an existing file on disk.
     pub fn resolve(&self, fqcn: &str) -> Option<PathBuf> {
         self.inners.iter().find_map(|m| m.resolve(fqcn))
-    }
-
-    /// Resolve a PSR-0 class name to an existing file on disk.
-    ///
-    /// PSR-0 maps `_` in class names to directory separators. For example,
-    /// `Acme_Client` with prefix `Acme_` and base `vendor/acme/lib/src/`
-    /// resolves to `vendor/acme/lib/src/Acme/Client.php`.
-    pub fn psr0_resolve(&self, class_name: &str) -> Option<PathBuf> {
-        let class_name = class_name.trim_start_matches('\\');
-        // Sort by longest prefix first (already guaranteed by extend/load).
-        for (prefix, base_dir) in &self.psr0_entries {
-            if class_name.starts_with(prefix.as_str()) {
-                // PSR-0: replace `\` and `_` with the path separator.
-                let file_path = class_name.replace(['\\', '_'], "/");
-                let candidate = base_dir.join(format!("{file_path}.php"));
-                if candidate.exists() {
-                    return Some(candidate);
-                }
-            }
-        }
-        None
     }
 }
 
@@ -244,80 +214,6 @@ fn read_project_psr4_entries(root: &Path) -> Vec<(String, PathBuf)> {
     }
     entries.sort_by_key(|e| std::cmp::Reverse(e.0.len()));
     entries
-}
-
-/// Read PSR-0 entries from `composer.json` and `vendor/composer/installed.json`
-/// at `root`. Returns `(prefix, base_dir)` pairs sorted by descending prefix
-/// length so the longest prefix wins when multiple entries could match.
-fn read_psr0_entries(root: &Path) -> Vec<(String, PathBuf)> {
-    let mut entries: Vec<(String, PathBuf)> = Vec::new();
-
-    // Project-level composer.json
-    if let Ok(text) = std::fs::read_to_string(root.join("composer.json"))
-        && let Ok(json) = serde_json::from_str::<serde_json::Value>(&text)
-    {
-        for section in ["autoload", "autoload-dev"] {
-            if let Some(psr0) = json
-                .get(section)
-                .and_then(|a| a.get("psr-0"))
-                .and_then(|v| v.as_object())
-            {
-                collect_psr0_entries(psr0, root, &mut entries);
-            }
-        }
-    }
-
-    // Vendor packages via installed.json
-    let installed_path = root.join("vendor/composer/installed.json");
-    if let Ok(text) = std::fs::read_to_string(&installed_path)
-        && let Ok(json) = serde_json::from_str::<serde_json::Value>(&text)
-    {
-        let packages = json
-            .get("packages")
-            .and_then(|v| v.as_array())
-            .or_else(|| json.as_array())
-            .into_iter()
-            .flatten();
-        for pkg in packages {
-            let install_path = pkg
-                .get("install-path")
-                .and_then(|v| v.as_str())
-                .map(|p| installed_path.parent().unwrap_or(root).join(p))
-                .unwrap_or_else(|| root.join("vendor"));
-            if let Some(psr0) = pkg
-                .get("autoload")
-                .and_then(|a| a.get("psr-0"))
-                .and_then(|v| v.as_object())
-            {
-                collect_psr0_entries(psr0, &install_path, &mut entries);
-            }
-        }
-    }
-
-    entries.sort_by_key(|e| std::cmp::Reverse(e.0.len()));
-    entries
-}
-
-fn collect_psr0_entries(
-    map: &serde_json::Map<String, serde_json::Value>,
-    base: &Path,
-    entries: &mut Vec<(String, PathBuf)>,
-) {
-    for (prefix, paths) in map {
-        match paths {
-            serde_json::Value::String(s) => {
-                entries.push((prefix.clone(), base.join(s)));
-            }
-            serde_json::Value::Array(arr) => {
-                for item in arr {
-                    if let Some(s) = item.as_str() {
-                        entries.push((prefix.clone(), base.join(s)));
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
 }
 
 /// Detect PHP version from `config.platform.php` in `composer.json`.

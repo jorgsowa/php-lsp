@@ -378,15 +378,8 @@ function boo$0t(): void { $c = new Config(defaults()); }
 "#,
         )
         .await;
-    // `Config` itself now resolves to the class declaration: `new X()` targets
-    // are indexed under the class's own name in `decls_by_name`, and
-    // `find_declaration_item` matches the class-name-itself case (previously
-    // it only matched functions/methods, so every `new` expression fell
-    // through to the workspace-wide trait-alias scan for nothing).
-    expect![[r#"
-        Config @ main.php:2:6 fromRanges=[3:33-3:39]
-        defaults @ main.php:1:9 fromRanges=[3:40-3:48]"#]]
-    .assert_eq(&out);
+    // `new Config` is a class reference, not a call; only the argument call is reported.
+    expect!["defaults @ main.php:1:9 fromRanges=[3:40-3:48]"].assert_eq(&out);
 }
 
 /// `self`/`static`/`parent` are late-binding class references, never literal
@@ -646,10 +639,7 @@ class Worker {
 "#,
         )
         .await;
-    expect![[r#"
-        Helper @ main.php:1:6 fromRanges=[3:44-3:50]
-        process @ main.php:1:31 fromRanges=[3:58-3:65, 3:73-3:80]"#]]
-    .assert_eq(&out);
+    expect!["process @ main.php:1:31 fromRanges=[3:58-3:65, 3:73-3:80]"].assert_eq(&out);
 }
 
 /// Nullsafe method calls must be included in outgoing calls.
@@ -661,12 +651,12 @@ async fn outgoing_calls_includes_nullsafe_method_call() {
             r#"<?php
 class Service { public function handle(): void {} }
 class Proxy {
-    public function deleate$0(): void { $svc?->handle(); }
+    public function deleate$0(Service $svc): void { $svc?->handle(); }
 }
 "#,
         )
         .await;
-    expect!["handle @ main.php:1:32 fromRanges=[3:45-3:51]"].assert_eq(&out);
+    expect!["handle @ main.php:1:32 fromRanges=[3:57-3:63]"].assert_eq(&out);
 }
 
 /// Calls in conditional expressions must be detected.

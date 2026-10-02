@@ -206,3 +206,51 @@ fn find_word(haystack: &str, word: &str, from: usize) -> Option<usize> {
     }
     None
 }
+
+/// Calls inside the function or method declared at `offset`, as
+/// `(callee declaration name token, call-site range)` in source order.
+/// Callees mir cannot locate are skipped.
+pub fn mir_outgoing_callees(
+    docs: &DocumentStore,
+    uri: &Uri,
+    offset: u32,
+) -> Result<Vec<(Location, Range)>, ContentModified> {
+    let file: Arc<str> = Arc::from(uri.as_str());
+    let resolved = docs.with_snapshot(
+        |session| session.prepare_for_query(Some(&file)),
+        |snap| {
+            let calls = snap.outgoing_calls(&file, offset)?;
+            let mut out = Vec::with_capacity(calls.len());
+            for (name, range) in calls {
+                if let Ok(loc) = snap.definition_of_cached(&name)? {
+                    out.push((name, loc, range));
+                }
+            }
+            Ok(out)
+        },
+    )?;
+    let call_source = docs.get_doc_salsa(uri);
+    Ok(resolved
+        .into_iter()
+        .filter_map(|(name, loc, range)| {
+            let target = to_lsp_location(docs, &name, &loc)?;
+            let source = call_source.as_ref()?.source();
+            Some((target, mir_range_to_lsp(source, range)))
+        })
+        .collect())
+}
+
+/// mir ranges are 1-based lines with code-point columns.
+fn mir_range_to_lsp(source: &str, range: mir_analyzer::Range) -> Range {
+    let convert = |p: mir_analyzer::Position| {
+        let line = p.line.saturating_sub(1);
+        let text = source.split('\n').nth(line as usize).unwrap_or("");
+        let character = text
+            .chars()
+            .take(p.column as usize)
+            .map(char::len_utf16)
+            .sum::<usize>() as u32;
+        Position::new(line, character)
+    };
+    Range::new(convert(range.start), convert(range.end))
+}

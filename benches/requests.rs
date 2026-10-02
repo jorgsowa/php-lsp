@@ -7,7 +7,7 @@ use rayon::prelude::*;
 use tower_lsp_server::ls_types::{Location, Position, Range, Uri};
 
 use php_lsp::ast::ParsedDoc;
-use php_lsp::call_hierarchy::{outgoing_calls_indexed, prepare_call_hierarchy_indexed};
+use php_lsp::call_hierarchy::prepare_call_hierarchy_indexed;
 use php_lsp::completion::{CompletionCtx, filtered_completions_at};
 use php_lsp::definition::goto_definition;
 use php_lsp::document_store::DocumentStore;
@@ -859,26 +859,6 @@ fn bench_call_hierarchy(c: &mut Criterion) {
                 ))
             });
         });
-        // `Str` is a class name; prepare only yields items for functions and
-        // methods, so the outgoing bench needs a method symbol.
-        let method_item =
-            prepare_call_hierarchy_indexed("camel", &wi, &get_doc, &mention_candidates);
-        assert!(
-            method_item.is_some(),
-            "expected `camel` (Str::camel) to resolve in the Laravel fixture"
-        );
-        if let Some(item) = method_item {
-            group.bench_function("outgoing_indexed/laravel_framework", |b| {
-                b.iter(|| {
-                    black_box(outgoing_calls_indexed(
-                        &item,
-                        &wi,
-                        &get_doc,
-                        &mention_candidates,
-                    ))
-                });
-            });
-        }
     } else {
         eprintln!("Laravel fixture not found — skipping call_hierarchy/laravel_framework");
     }

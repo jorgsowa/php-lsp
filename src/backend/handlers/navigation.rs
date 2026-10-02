@@ -170,8 +170,8 @@ impl Backend {
                 {
                     return Ok(Some(GotoDefinitionResponse::Scalar(loc)));
                 }
-                // PSR-0 fallback: bare class names with underscores (e.g. `Acme_Client`)
-                // are not in the workspace index when vendor is excluded. Try PSR-0 resolution.
+                // Bare PSR-0 names (e.g. `Acme_Client`) aren't in the workspace index
+                // when vendor is excluded; the autoload map resolves them.
                 if let Some(word) = word_at_position(&source, position)
                     && let Some(loc) = self.psr4_goto(&word).await
                 {

@@ -237,11 +237,11 @@ impl Backend {
         .await;
     }
 
-    /// Try to resolve a fully-qualified name via the PSR-4 map, with PSR-0 fallback.
+    /// Try to resolve a fully-qualified name via the autoload map (PSR-4, PSR-0, classmap).
     /// Indexes the file on-demand if it is not already in the document store.
     pub(super) async fn psr4_goto(&self, fqn: &str) -> Option<Location> {
         let psr4 = self.psr4.load();
-        let path = psr4.resolve(fqn).or_else(|| psr4.psr0_resolve(fqn))?;
+        let path = psr4.resolve(fqn)?;
 
         let file_uri = Uri::from_file_path(&path)?;
 

@@ -2,18 +2,16 @@ use std::collections::HashMap;
 use std::ops::ControlFlow;
 use std::sync::Arc;
 
-use php_ast::visitor::{Visitor, walk_expr, walk_stmt};
+use php_ast::visitor::{Visitor, walk_expr};
 use php_ast::{
-    ClassMemberKind, EnumMemberKind, ExprKind, NamespaceBody, Span, Stmt, StmtKind,
-    TraitAdaptationKind,
+    ClassMemberKind, EnumMemberKind, ExprKind, NamespaceBody, Stmt, StmtKind, TraitAdaptationKind,
 };
 use tower_lsp_server::ls_types::{
     CallHierarchyIncomingCall, CallHierarchyItem, CallHierarchyOutgoingCall, Position, Range,
     SymbolKind, Uri,
 };
 
-use crate::document::ast::{ParsedDoc, SourceView, span_to_range};
-use crate::lang::is_php_keyword;
+use crate::document::ast::{ParsedDoc, SourceView};
 
 /// Finds the declaration matching `name` and returns a `CallHierarchyItem`,
 /// narrowing candidate declaring files via mir's persistent per-file mention
@@ -75,43 +73,86 @@ fn resolve_trait_alias_indexed(
     resolved
 }
 
-/// Finds all calls made by the body of `item.name`, resolving the item's own
-/// document and every callee declaration through the workspace aggregate
-/// instead of a pre-materialised all-docs list. Avoids the per-callee
-/// O(workspace) scan that made outgoing calls quadratic in practice.
-pub fn outgoing_calls_indexed(
+/// Calls made by the body of `item`, resolved by mir. Callee declarations are
+/// located through mir and mapped back to hierarchy items by the name token
+/// at the declaration.
+pub fn outgoing_calls_via_mir(
+    docs: &crate::document::document_store::DocumentStore,
     item: &CallHierarchyItem,
-    wi: &crate::db::workspace_index::WorkspaceIndexData,
-    get_doc: &dyn Fn(&Uri) -> Option<Arc<ParsedDoc>>,
-    mention_candidates: &dyn Fn(&str) -> Vec<Uri>,
-) -> Vec<CallHierarchyOutgoingCall> {
-    let Some(doc) = get_doc(&item.uri) else {
-        return Vec::new();
+) -> Result<Vec<CallHierarchyOutgoingCall>, crate::document::document_store::ContentModified> {
+    let Some(doc) = docs.get_doc_salsa(&item.uri) else {
+        return Ok(Vec::new());
     };
-    let item_source = doc.source();
-    let mut calls: Vec<(String, Span)> = Vec::new();
-    collect_calls_for(&item.name, &doc.program().stmts, &mut calls);
+    let source = doc.source();
+    let offset = crate::text::position_to_byte_offset(source, item.selection_range.start) as u32;
+    let callees = crate::navigation::mir_definition::mir_outgoing_callees(docs, &item.uri, offset)?;
+    // mir attributes anonymous-class method bodies to the enclosing function.
+    let anon_ranges = anonymous_class_ranges(&doc);
 
     let mut result: Vec<CallHierarchyOutgoingCall> = Vec::new();
-    let mut index: HashMap<String, usize> = HashMap::new();
-    let item_line_starts = doc.line_starts();
-    for (callee_name, span) in calls {
-        let call_range = span_to_range(item_source, item_line_starts, span);
-        if let Some(&idx) = index.get(&callee_name) {
-            result[idx].from_ranges.push(call_range);
-        } else if let Some(callee_item) =
-            prepare_call_hierarchy_indexed(&callee_name, wi, get_doc, mention_candidates)
+    let mut index: HashMap<(Uri, Position), usize> = HashMap::new();
+    for (callee, call_range) in callees {
+        if anon_ranges
+            .iter()
+            .any(|r| range_contains(*r, call_range.start))
         {
-            let idx = result.len();
-            index.insert(callee_name, idx);
+            continue;
+        }
+        let Some(target_doc) = docs.get_doc_salsa(&callee.uri) else {
+            continue;
+        };
+        let target_source = target_doc.source();
+        let start = crate::text::position_to_byte_offset(target_source, callee.range.start);
+        let end = crate::text::position_to_byte_offset(target_source, callee.range.end);
+        let Some(name) = target_source.get(start..end) else {
+            continue;
+        };
+        let Some(callee_item) = find_declaration_item(
+            name,
+            &target_doc.program().stmts,
+            target_doc.view(),
+            &callee.uri,
+        ) else {
+            continue;
+        };
+        let key = (callee_item.uri.clone(), callee_item.selection_range.start);
+        if let Some(&idx) = index.get(&key) {
+            // mir can report a call site more than once (e.g. loop update clauses).
+            if !result[idx].from_ranges.contains(&call_range) {
+                result[idx].from_ranges.push(call_range);
+            }
+        } else {
+            index.insert(key, result.len());
             result.push(CallHierarchyOutgoingCall {
                 to: callee_item,
                 from_ranges: vec![call_range],
             });
         }
     }
+    Ok(result)
+}
 
-    result
+fn anonymous_class_ranges(doc: &ParsedDoc) -> Vec<Range> {
+    struct Finder<'a> {
+        doc: &'a ParsedDoc,
+        out: Vec<Range>,
+    }
+    impl<'arena, 'src> Visitor<'arena, 'src> for Finder<'_> {
+        fn visit_expr(&mut self, expr: &php_ast::Expr<'arena, 'src>) -> ControlFlow<()> {
+            if matches!(expr.kind, ExprKind::AnonymousClass(_)) {
+                self.out.push(self.doc.view().range_of(expr.span));
+            }
+            walk_expr(self, expr)
+        }
+    }
+    let mut finder = Finder {
+        doc,
+        out: Vec::new(),
+    };
+    for stmt in doc.program().stmts.iter() {
+        let _ = finder.visit_stmt(stmt);
+    }
+    finder.out
 }
 
 /// Find all callers of `item` and return them grouped by enclosing function.
@@ -561,142 +602,6 @@ fn range_contains(range: Range, pos: Position) -> bool {
         return false;
     }
     true
-}
-
-/// Collect all (callee_name, span) for calls made inside the body of `fn_name`.
-fn collect_calls_for(fn_name: &str, stmts: &[Stmt<'_, '_>], out: &mut Vec<(String, Span)>) {
-    for stmt in stmts {
-        match &stmt.kind {
-            StmtKind::Function(f) if f.name == fn_name => {
-                calls_in_stmts(&f.body.stmts, out);
-                return;
-            }
-            StmtKind::Class(c) => {
-                for member in c.body.members.iter() {
-                    if let ClassMemberKind::Method(m) = &member.kind
-                        && m.name == fn_name
-                        && let Some(body) = &m.body
-                    {
-                        calls_in_stmts(&body.stmts, out);
-                        return;
-                    }
-                }
-            }
-            StmtKind::Trait(t) => {
-                for member in t.body.members.iter() {
-                    if let ClassMemberKind::Method(m) = &member.kind
-                        && m.name == fn_name
-                        && let Some(body) = &m.body
-                    {
-                        calls_in_stmts(&body.stmts, out);
-                        return;
-                    }
-                }
-            }
-            StmtKind::Enum(e) => {
-                for member in e.body.members.iter() {
-                    if let EnumMemberKind::Method(m) = &member.kind
-                        && m.name == fn_name
-                        && let Some(body) = &m.body
-                    {
-                        calls_in_stmts(&body.stmts, out);
-                        return;
-                    }
-                }
-            }
-            StmtKind::Namespace(ns) => {
-                if let NamespaceBody::Braced(inner) = &ns.body {
-                    collect_calls_for(fn_name, &inner.stmts, out);
-                }
-            }
-            _ => {}
-        }
-    }
-}
-
-/// Collects all (callee_name, span) call sites reachable from a slice of statements,
-/// without descending into nested named declarations (functions, classes, etc.).
-fn calls_in_stmts(stmts: &[Stmt<'_, '_>], out: &mut Vec<(String, Span)>) {
-    let mut collector = CallCollector { out };
-    for stmt in stmts {
-        let _ = collector.visit_stmt(stmt);
-    }
-}
-
-struct CallCollector<'c> {
-    out: &'c mut Vec<(String, Span)>,
-}
-
-impl<'arena, 'src> Visitor<'arena, 'src> for CallCollector<'_> {
-    fn visit_expr(&mut self, expr: &php_ast::Expr<'arena, 'src>) -> ControlFlow<()> {
-        match &expr.kind {
-            ExprKind::FunctionCall(f) => {
-                if let ExprKind::Identifier(name) = &f.name.kind {
-                    self.out.push((name.to_string(), f.name.span));
-                }
-            }
-            ExprKind::MethodCall(m) | ExprKind::NullsafeMethodCall(m) => {
-                if let ExprKind::Identifier(name) = &m.method.kind {
-                    self.out.push((name.to_string(), m.method.span));
-                }
-            }
-            ExprKind::StaticMethodCall(s) => {
-                if let ExprKind::Identifier(name) = &s.method.kind {
-                    self.out.push((name.to_string(), s.method.span));
-                }
-            }
-            ExprKind::New(n) => {
-                if let ExprKind::Identifier(class_name) = &n.class.kind {
-                    let class_name = class_name.to_string();
-                    // `self`/`static`/`parent` are late-binding class refs, not
-                    // literal declarations — nothing ever declares them, which
-                    // would otherwise trigger the workspace-wide trait-alias
-                    // scan in `prepare_call_hierarchy_indexed` on every
-                    // `new self/static/parent()` call site.
-                    if !is_php_keyword(&class_name) {
-                        self.out.push((class_name, n.class.span));
-                    }
-                }
-            }
-            // First-class callable syntax (PHP 8.1): `foo(...)`, `$obj->method(...)`,
-            // `$obj?->method(...)`, `Foo::bar(...)` — same callee-name extraction as
-            // the corresponding regular call, just without arguments.
-            ExprKind::CallableCreate(cc) => match &cc.kind {
-                php_ast::CallableCreateKind::Function(f) => {
-                    if let ExprKind::Identifier(name) = &f.kind {
-                        self.out.push((name.to_string(), f.span));
-                    }
-                }
-                php_ast::CallableCreateKind::Method { method, .. }
-                | php_ast::CallableCreateKind::NullsafeMethod { method, .. }
-                | php_ast::CallableCreateKind::StaticMethod { method, .. } => {
-                    if let ExprKind::Identifier(name) = &method.kind {
-                        self.out.push((name.to_string(), method.span));
-                    }
-                }
-            },
-            // An anonymous class is its own callable unit (like a nested named
-            // class); its method bodies are not outgoing calls of whatever
-            // function/method textually contains the `new class {...}` expression.
-            ExprKind::AnonymousClass(_) => return ControlFlow::Continue(()),
-            _ => {}
-        }
-        walk_expr(self, expr)
-    }
-
-    fn visit_stmt(&mut self, stmt: &php_ast::Stmt<'arena, 'src>) -> ControlFlow<()> {
-        // Skip nested named declarations — they are separate callable units with
-        // their own call hierarchy entries; their internals are not outgoing calls
-        // of the function currently being analysed.
-        match &stmt.kind {
-            StmtKind::Function(_)
-            | StmtKind::Class(_)
-            | StmtKind::Trait(_)
-            | StmtKind::Enum(_)
-            | StmtKind::Interface(_) => ControlFlow::Continue(()),
-            _ => walk_stmt(self, stmt),
-        }
-    }
 }
 
 #[cfg(test)]

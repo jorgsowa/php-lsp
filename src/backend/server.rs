@@ -21,7 +21,7 @@ use crate::navigation::symbols::{
 use crate::text::word_at_position;
 
 use crate::navigation::call_hierarchy::{
-    incoming_calls_indexed, outgoing_calls_indexed, prepare_call_hierarchy_indexed,
+    incoming_calls_indexed, outgoing_calls_via_mir, prepare_call_hierarchy_indexed,
 };
 use crate::navigation::declaration::{goto_declaration, goto_declaration_from_index};
 use crate::navigation::moniker::moniker_at;
@@ -1737,18 +1737,11 @@ impl LanguageServer for Backend {
         params: CallHierarchyOutgoingCallsParams,
     ) -> Result<Option<Vec<CallHierarchyOutgoingCall>>> {
         guard_async_result("outgoing_calls", async move {
-            // Per-callee declaration lookups go through mir's mention index — an
-            // edit to file X only invalidates X's own cached mention set, not
-            // the whole workspace's (see `declaration_candidate_files`).
-            let wi = self.workspace_index_async().await;
             let docs = Arc::clone(&self.docs);
             let item = params.item;
             let calls = self
                 .blocking("outgoing_calls", move || {
-                    let get_doc = |u: &Uri| docs.get_doc_salsa(u);
-                    let mention_candidates =
-                        |name: &str| docs.declaration_candidate_files(&wi, name);
-                    outgoing_calls_indexed(&item, &wi, &get_doc, &mention_candidates)
+                    outgoing_calls_via_mir(&docs, &item).unwrap_or_default()
                 })
                 .await
                 .unwrap_or_default();
