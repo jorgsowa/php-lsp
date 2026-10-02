@@ -1695,12 +1695,19 @@ impl LanguageServer for Backend {
             // runtime worker, same as incoming_calls/outgoing_calls below.
             let wi = self.workspace_index_async().await;
             let docs = Arc::clone(&self.docs);
+            let cursor_uri = uri.clone();
             let item = self
                 .blocking_gated(super::debug_gate::GATE_PREPARE_CALL_HIERARCHY, move || {
                     let get_doc = |u: &Uri| docs.get_doc_salsa(u);
                     let mention_candidates =
                         |name: &str| docs.declaration_candidate_files(&wi, name);
-                    prepare_call_hierarchy_indexed(&word, &wi, &get_doc, &mention_candidates)
+                    prepare_call_hierarchy_indexed(
+                        &word,
+                        (&cursor_uri, position),
+                        &wi,
+                        &get_doc,
+                        &mention_candidates,
+                    )
                 })
                 .await
                 .flatten();

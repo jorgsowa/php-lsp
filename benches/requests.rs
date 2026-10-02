@@ -849,10 +849,12 @@ fn bench_call_hierarchy(c: &mut Criterion) {
             docs.iter().cloned().collect();
         let get_doc = |u: &Uri| doc_map.get(u).cloned();
         let mention_candidates = |name: &str| store.declaration_candidate_files(&wi, name);
+        let cursor_uri = docs[0].0.clone();
         group.bench_function("prepare_indexed/laravel_framework", |b| {
             b.iter(|| {
                 black_box(prepare_call_hierarchy_indexed(
                     "camel",
+                    (&cursor_uri, Position::new(0, 0)),
                     &wi,
                     &get_doc,
                     &mention_candidates,

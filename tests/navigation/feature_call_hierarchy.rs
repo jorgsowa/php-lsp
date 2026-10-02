@@ -811,3 +811,48 @@ class EventBus {
         .await;
     expect!["dispatch @ main.php:4:20 fromRanges=[5:15-5:24]"].assert_eq(&out);
 }
+
+#[tokio::test]
+async fn prepare_picks_same_named_method_under_cursor() {
+    let mut s = TestServer::new().await;
+    let out = s
+        .check_prepare_call_hierarchy(
+            r#"<?php
+class A { public function run(): void {} }
+class B { public function ru$0n(): void {} }
+"#,
+        )
+        .await;
+    expect!["run (Method) [B] @ main.php:2:26"].assert_eq(&out);
+}
+
+#[tokio::test]
+async fn incoming_calls_for_same_named_method_use_cursor_owner() {
+    let mut s = TestServer::new().await;
+    let out = s
+        .check_incoming_calls(
+            r#"<?php
+class A { public function run(): void {} }
+class B { public function ru$0n(): void {} }
+function viaA(A $a): void { $a->run(); }
+function viaB(B $b): void { $b->run(); }
+"#,
+        )
+        .await;
+    expect!["viaB @ main.php:4:9 fromRanges=[4:32-4:35]"].assert_eq(&out);
+}
+
+#[tokio::test]
+async fn outgoing_calls_end_on_resolved_same_named_method() {
+    let mut s = TestServer::new().await;
+    let out = s
+        .check_outgoing_calls(
+            r#"<?php
+class Logger { public function save(): void {} }
+class Repo { public function save(): void {} }
+function wor$0k(Repo $r): void { $r->save(); }
+"#,
+        )
+        .await;
+    expect!["save @ main.php:2:29 fromRanges=[3:35-3:39]"].assert_eq(&out);
+}

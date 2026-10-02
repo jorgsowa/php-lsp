@@ -31,10 +31,17 @@ use crate::document::ast::{ParsedDoc, SourceView};
 /// literal declaration is never also a trait-alias spelling.
 pub fn prepare_call_hierarchy_indexed(
     name: &str,
+    cursor: (&Uri, Position),
     wi: &crate::db::workspace_index::WorkspaceIndexData,
     get_doc: &dyn Fn(&Uri) -> Option<Arc<ParsedDoc>>,
     mention_candidates: &dyn Fn(&str) -> Vec<Uri>,
 ) -> Option<CallHierarchyItem> {
+    // Same-named declarations in one file: prefer the one under the cursor.
+    if let Some(doc) = get_doc(cursor.0)
+        && let Some(item) = declaration_item_at(&doc, cursor.0, cursor.1, name)
+    {
+        return Some(item);
+    }
     for uri in &mention_candidates(name) {
         let Some(doc) = get_doc(uri) else { continue };
         if let Some(item) = find_declaration_item(name, &doc.program().stmts, doc.view(), uri) {
@@ -47,7 +54,7 @@ pub fn prepare_call_hierarchy_indexed(
     if original == name {
         return None;
     }
-    prepare_call_hierarchy_indexed(&original, wi, get_doc, mention_candidates)
+    prepare_call_hierarchy_indexed(&original, cursor, wi, get_doc, mention_candidates)
 }
 
 /// Resolves `name` against every class's recorded trait-method aliases in
@@ -107,12 +114,16 @@ pub fn outgoing_calls_via_mir(
         let Some(name) = target_source.get(start..end) else {
             continue;
         };
-        let Some(callee_item) = find_declaration_item(
-            name,
-            &target_doc.program().stmts,
-            target_doc.view(),
-            &callee.uri,
-        ) else {
+        let Some(callee_item) =
+            declaration_item_at(&target_doc, &callee.uri, callee.range.start, name).or_else(|| {
+                find_declaration_item(
+                    name,
+                    &target_doc.program().stmts,
+                    target_doc.view(),
+                    &callee.uri,
+                )
+            })
+        else {
             continue;
         };
         let key = (callee_item.uri.clone(), callee_item.selection_range.start);
@@ -240,6 +251,17 @@ pub fn incoming_calls_indexed(
 }
 
 // === Internal helpers ===
+
+/// The function or method named `name` whose name token contains `pos`.
+fn declaration_item_at(
+    doc: &ParsedDoc,
+    uri: &Uri,
+    pos: Position,
+    name: &str,
+) -> Option<CallHierarchyItem> {
+    enclosing_function(doc.view(), &doc.program().stmts, pos, uri)
+        .filter(|item| item.name == name && range_contains(item.selection_range, pos))
+}
 
 fn find_declaration_item(
     name: &str,
@@ -528,6 +550,28 @@ fn enclosing_in_stmt(
                         kind: SymbolKind::METHOD,
                         tags: None,
                         detail: c.name.map(|n| n.to_string()),
+                        uri: uri.clone(),
+                        range: m_range,
+                        selection_range: sel,
+                        data: None,
+                    });
+                }
+            }
+            None
+        }
+        StmtKind::Interface(i) => {
+            for member in i.body.members.iter() {
+                let m_range = sv.range_of(member.span);
+                if range_contains(m_range, pos)
+                    && let ClassMemberKind::Method(m) = &member.kind
+                {
+                    let sel =
+                        sv.name_range_after_attrs(&m.name.to_string(), &m.attributes, member.span);
+                    return Some(CallHierarchyItem {
+                        name: m.name.to_string(),
+                        kind: SymbolKind::METHOD,
+                        tags: None,
+                        detail: Some(i.name.to_string()),
                         uri: uri.clone(),
                         range: m_range,
                         selection_range: sel,
