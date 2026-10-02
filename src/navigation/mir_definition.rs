@@ -24,6 +24,29 @@ pub fn mir_definition(
     Ok(resolved.and_then(|(name, (file, range))| to_lsp_location(docs, &name, &file, range)))
 }
 
+/// The interface or abstract method that the method under `offset` implements.
+pub fn mir_implemented_declaration(
+    docs: &DocumentStore,
+    uri: &Uri,
+    offset: u32,
+) -> Result<Option<Location>, ContentModified> {
+    let file: Arc<str> = Arc::from(uri.as_str());
+    let resolved = docs.with_snapshot(
+        |session| session.prepare_for_query(Some(&file)),
+        |snap| {
+            let Some(name) = snap.name_at(&file, offset)? else {
+                return Ok(None);
+            };
+            let Some(implemented) = snap.implemented_method(&name)? else {
+                return Ok(None);
+            };
+            let site = snap.declaration_name_range_cached(&implemented)?;
+            Ok(site.map(|site| (implemented, site)))
+        },
+    )?;
+    Ok(resolved.and_then(|(name, (file, range))| to_lsp_location(docs, &name, &file, range)))
+}
+
 /// Declaration locations of the classes named by `fqns`; unknown names are skipped.
 pub fn mir_class_locations(
     docs: &DocumentStore,

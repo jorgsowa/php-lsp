@@ -1925,6 +1925,23 @@ impl LanguageServer for Backend {
             let uri = &params.text_document_position_params.text_document.uri;
             let position = params.text_document_position_params.position;
             let source = self.get_open_text(uri).unwrap_or_default();
+            if let Some(doc) = self.get_doc(uri)
+                && let Some(offset) = crate::text::word_range_at(&source, position)
+                    .map(|range| doc.view().byte_of_position(range.start))
+            {
+                let docs = Arc::clone(&self.docs);
+                let uri_task = uri.clone();
+                let implemented = self
+                    .blocking("goto_declaration.implemented", move || {
+                        crate::navigation::mir_definition::mir_implemented_declaration(
+                            &docs, &uri_task, offset,
+                        )
+                    })
+                    .await;
+                if let Some(Ok(Some(loc))) = implemented {
+                    return Ok(Some(GotoDefinitionResponse::Scalar(loc)));
+                }
+            }
             // First pass: open-file ParsedDocs give accurate character
             // positions. Walking every open doc's AST is CPU-bound; keep it
             // off the async runtime worker. A separate hop (rather than one

@@ -241,7 +241,6 @@ fn collect_stmts<'a>(
                             let mname = m.name.or_error();
                             let m_decl = Declaration::Method {
                                 method: m,
-                                container: Container::Enum,
                                 member_span: member.span,
                             };
                             let sig = declaration_signature(&m_decl, mname);
@@ -309,7 +308,6 @@ fn collect_members<'a>(
                 let mname = m.name.or_error();
                 let m_decl = Declaration::Method {
                     method: m,
-                    container,
                     member_span: member.span,
                 };
                 let sig = declaration_signature(&m_decl, mname);

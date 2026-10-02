@@ -14,7 +14,7 @@ use crate::document::ast::ParsedDoc;
 use crate::lang::docblock::parse_docblock;
 use crate::lang::is_unresolvable_bareword_at;
 use crate::text::{strip_variable_sigil, word_at_position};
-use crate::types::resolve::{Container, Declaration, resolve_declaration};
+use crate::types::resolve::{Declaration, resolve_declaration};
 
 /// Find the abstract or interface declaration of `word`.
 /// Prefers abstract/interface declarations; falls back to any declaration.
@@ -36,20 +36,6 @@ pub fn goto_declaration(
         return None;
     }
 
-    // First pass: look for an abstract or interface declaration
-    for (uri, doc) in all_docs {
-        let sv = doc.view();
-        if let Some(decl) =
-            resolve_declaration(&doc.program().stmts, &word, &is_abstract_declaration)
-        {
-            return Some(Location {
-                uri: uri.clone(),
-                range: sv.name_range_in_span(decl.name(), decl.span()),
-            });
-        }
-    }
-
-    // Second pass: any declaration (same as goto_definition)
     for (uri, doc) in all_docs {
         let sv = doc.view();
         if let Some(decl) = resolve_declaration(&doc.program().stmts, &word, &is_any_declaration) {
@@ -61,29 +47,6 @@ pub fn goto_declaration(
     }
 
     None
-}
-
-/// Pass 1: abstract/interface declarations only — interface members and names,
-/// plus abstract methods on classes and traits.
-///
-/// `resolve_declaration` checks a type's name before its members, whereas the original
-/// walker checked interface members first. This only differs for an interface
-/// named the same as a method it contains — syntactically legal but absurd, and
-/// never seen in real PHP, so the order is harmless here.
-fn is_abstract_declaration(decl: &Declaration<'_>) -> bool {
-    match decl {
-        Declaration::Interface { .. } => true,
-        Declaration::Method {
-            container: Container::Interface,
-            ..
-        } => true,
-        Declaration::Method {
-            method,
-            container: Container::Class | Container::Trait,
-            ..
-        } => method.is_abstract,
-        _ => false,
-    }
 }
 
 /// Pass 2: any declaration. Constructor-promoted parameters are not surfaced as
@@ -127,13 +90,6 @@ pub fn goto_declaration_from_index(
     let bare = strip_variable_sigil(&word);
     let candidate_uris = mention_candidates(&word);
 
-    for uri in &candidate_uris {
-        let Some(doc) = get_doc(uri) else { continue };
-        if let Some(loc) = abstract_declaration_in_doc(uri, &doc, &word) {
-            return Some(loc);
-        }
-    }
-
     // Second pass: any declaration. mir's mention index gives a candidate
     // file list for the common kinds (function/class/method/constant/
     // enum-case, all keyed by `word`), so the usual case scans one file's
@@ -156,14 +112,6 @@ pub fn goto_declaration_from_index(
         }
     }
     None
-}
-
-fn abstract_declaration_in_doc(uri: &Uri, doc: &ParsedDoc, word: &str) -> Option<Location> {
-    let sv = doc.view();
-    resolve_declaration(&doc.program().stmts, word, &is_abstract_declaration).map(|decl| Location {
-        uri: uri.clone(),
-        range: sv.name_range_in_span(decl.name(), decl.span()),
-    })
 }
 
 fn any_declaration_in_stmts(

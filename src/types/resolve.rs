@@ -71,7 +71,6 @@ pub enum Declaration<'a> {
     },
     Method {
         method: &'a MethodDecl<'a, 'a>,
-        container: Container,
         member_span: Span,
     },
     ClassConst {
@@ -229,7 +228,6 @@ pub fn resolve_declaration<'a>(
                         EnumMemberKind::Method(m) if m.name == word => {
                             let d = Declaration::Method {
                                 method: m,
-                                container: Container::Enum,
                                 member_span: member.span,
                             };
                             if accept(&d) {
@@ -278,7 +276,6 @@ fn resolve_member<'a>(
                 if m.name == word {
                     let d = Declaration::Method {
                         method: m,
-                        container,
                         member_span: member.span,
                     };
                     if accept(&d) {
