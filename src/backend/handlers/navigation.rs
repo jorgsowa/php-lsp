@@ -417,20 +417,7 @@ impl Backend {
             let symbol = match usage_symbol {
                 Some(sym) => sym,
                 None => {
-                    let target_fqn = self.resolve_reference_target_fqn(
-                        uri,
-                        doc_opt.as_ref(),
-                        &word,
-                        kind,
-                        position,
-                        constant_owner.clone(),
-                    );
-                    match build_mir_symbol(
-                        &word,
-                        kind,
-                        target_fqn.as_deref(),
-                        constant_owner.is_some(),
-                    ) {
+                    match build_mir_symbol(&word, kind, None, constant_owner.is_some()) {
                         Some(sym) => sym,
                         None => return Ok(None),
                     }
@@ -661,15 +648,7 @@ impl Backend {
         let symbol = match usage_symbol {
             Some(sym) => sym,
             None => {
-                let target_fqn = self.resolve_reference_target_fqn(
-                    uri,
-                    doc_opt.as_ref(),
-                    &word,
-                    kind,
-                    position,
-                    constant_owner.clone(),
-                );
-                build_mir_symbol(&word, kind, target_fqn.as_deref(), constant_owner.is_some())?
+                build_mir_symbol(&word, kind, None, constant_owner.is_some())?
             }
         };
 
@@ -823,10 +802,9 @@ impl Backend {
     /// before giving up. A companion file a usage-site reference depends on
     /// (e.g. a `use` import's declaring file, opened right before this
     /// request in the same batch) can still be settling in the background
-    /// when the first attempt runs — trust mir's own resolution over the
-    /// AST-heuristic FQN fallback (`resolve_reference_target_fqn`) whenever
-    /// it can actually produce one, rather than falling through to that
-    /// fallback the moment mir is merely running behind.
+    /// when the first attempt runs — trust mir's own resolution rather than
+    /// falling through to the name-only fallback the moment mir is merely
+    /// running behind.
     async fn resolve_usage_symbol_with_retry(
         &self,
         uri: &Uri,
