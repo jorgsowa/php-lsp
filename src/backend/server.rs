@@ -438,6 +438,7 @@ impl LanguageServer for Backend {
                         let open_urls = open_files.urls();
                         let ex = exclude_paths.clone();
                         let ip = include_paths.clone();
+                        let extensions = self.config.load().php_file_extensions();
                         let path_clone = path.clone();
                         let client = self.client.clone();
                         let cp = cache_path.clone();
@@ -455,6 +456,7 @@ impl LanguageServer for Backend {
                                 cache,
                                 &ex,
                                 &ip,
+                                &extensions,
                                 max_indexed_files,
                                 None,
                             )

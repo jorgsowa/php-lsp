@@ -204,6 +204,7 @@ impl Backend {
                 cfg.cache_path.clone(),
             )
         };
+        let extensions = self.config.load().php_file_extensions();
         for root in roots {
             let cache = if let Some(ref p) = cache_path {
                 Some(crate::index::cache::WorkspaceCache::with_dir(p.clone()))
@@ -217,6 +218,7 @@ impl Backend {
                 cache,
                 &exclude_paths,
                 &include_paths,
+                &extensions,
                 max_indexed_files,
                 None,
             )

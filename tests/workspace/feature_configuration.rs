@@ -157,3 +157,47 @@ async fn change_configuration_php_version_change_rescans_workspace() {
         Property    $users @ src/Service/Registry.php:9"#]]
     .assert_eq(&out);
 }
+
+#[tokio::test]
+async fn indexed_extensions_index_drupal_files_and_resolve_includes() {
+    let module = "<?php\ninclude_once __DIR__ . '/helpers.inc';\nfunction mymod_boot() { drupal_helper(); }\n";
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(tmp.path().join("mymod.module"), module).unwrap();
+    std::fs::write(
+        tmp.path().join("helpers.inc"),
+        "<?php\nfunction drupal_helper(): void {}\n",
+    )
+    .unwrap();
+
+    let mut s = TestServer::with_root_and_options(
+        tmp.path(),
+        json!({ "indexedExtensions": ["php", "module", "inc"] }),
+    )
+    .await;
+    s.wait_for_index_ready().await;
+
+    let symbols = s.snapshot_workspace_symbols("drupal_helper").await;
+    assert!(symbols.contains("helpers.inc"), "symbols: {symbols}");
+
+    s.open("mymod.module", module).await;
+    let diags = s.pull_diagnostics("mymod.module").await;
+    assert!(
+        !diags.to_string().contains("UndefinedFunction"),
+        "diagnostics: {diags}"
+    );
+}
+
+#[tokio::test]
+async fn default_extensions_skip_drupal_files() {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        tmp.path().join("helpers.inc"),
+        "<?php\nfunction drupal_helper(): void {}\n",
+    )
+    .unwrap();
+
+    let mut s = TestServer::with_root(tmp.path()).await;
+    s.wait_for_index_ready().await;
+    let symbols = s.snapshot_workspace_symbols("drupal_helper").await;
+    assert!(!symbols.contains("helpers.inc"), "symbols: {symbols}");
+}

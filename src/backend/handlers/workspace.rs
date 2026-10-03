@@ -92,13 +92,14 @@ impl Backend {
             let mut cfg = LspConfig::from_value(&merged);
 
             let roots_for_psr4 = (*roots).clone();
+            let psr4_extensions = cfg.php_file_extensions();
             let roots_for_ver = (*roots).clone();
             let explicit_version = cfg.php_version.clone();
             let (psr4_result, ver_result) = tokio::join!(
                 tokio::task::spawn_blocking(move || {
                     let mut merged = Psr4Map::empty();
                     for root in &roots_for_psr4 {
-                        merged.extend(Psr4Map::load(root));
+                        merged.extend(Psr4Map::load_with_extensions(root, psr4_extensions.clone()));
                     }
                     merged
                 }),
@@ -354,8 +355,9 @@ impl Backend {
         if !roots.is_empty() {
             {
                 let mut merged = Psr4Map::empty();
+                let extensions = self.config.load().php_file_extensions();
                 for root in &roots {
-                    merged.extend(Psr4Map::load(root));
+                    merged.extend(Psr4Map::load_with_extensions(root, extensions.clone()));
                 }
                 self.psr4.store(Arc::new(merged));
             }
@@ -371,6 +373,7 @@ impl Backend {
                 .await
                 .ok();
 
+            let extensions = self.config.load().php_file_extensions();
             let (
                 exclude_paths,
                 include_paths,
@@ -530,6 +533,7 @@ impl Backend {
                         cache,
                         &exclude_paths,
                         &include_paths,
+                        &extensions,
                         max_indexed_files,
                         Some(progress_tx.clone()),
                     )

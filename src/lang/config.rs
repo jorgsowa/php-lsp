@@ -413,6 +413,10 @@ impl Default for LspConfig {
 }
 
 impl LspConfig {
+    pub fn php_file_extensions(&self) -> mir_analyzer::PhpFileExtensions {
+        mir_analyzer::PhpFileExtensions::new(&self.indexed_extensions)
+    }
+
     /// Merge a `.php-lsp.json` value with editor `initializationOptions` /
     /// `workspace/configuration`. Editor settings win per-key; `excludePaths`,
     /// `includePaths`, and `stubDirs` arrays are **concatenated** (file entries

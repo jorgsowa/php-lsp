@@ -66,6 +66,7 @@ pub(crate) async fn scan_workspace(
     cache: Option<crate::index::cache::WorkspaceCache>,
     exclude_paths: &[String],
     include_paths: &[String],
+    extensions: &mir_analyzer::PhpFileExtensions,
     max_files: usize,
     progress: Option<ScanProgressTx>,
 ) -> (usize, usize) {
@@ -106,7 +107,7 @@ pub(crate) async fn scan_workspace(
                     for file in json[key]["files"].as_array().unwrap_or(&vec![]) {
                         if let Some(rel) = file.as_str() {
                             let abs = proj_root.join(rel);
-                            if abs.extension().is_some_and(|e| e == "php") && abs.exists() {
+                            if extensions.is_php_source(&abs) && abs.exists() {
                                 paths.push(abs);
                             }
                         }
@@ -132,10 +133,20 @@ pub(crate) async fn scan_workspace(
     let root2 = root.clone();
     let excl: Vec<String> = exclude_paths.to_vec();
     let incl: Vec<String> = include_paths.to_vec();
+    let exts = extensions.clone();
     let php_paths: Vec<std::path::PathBuf> = tokio::task::spawn_blocking(move || {
         let out = Mutex::new(Vec::new());
         let count = AtomicUsize::new(0);
-        walk_dir_parallel(root2.clone(), &root2, &excl, &incl, max_files, &out, &count);
+        walk_dir_parallel(
+            root2.clone(),
+            &root2,
+            &excl,
+            &incl,
+            &exts,
+            max_files,
+            &out,
+            &count,
+        );
         out.into_inner().unwrap()
     })
     .await
@@ -259,11 +270,13 @@ pub(crate) async fn scan_workspace(
 /// via a compare-exchange reservation on `count`: each directory's file batch
 /// atomically claims only as much of the remaining budget as is left, so the
 /// total pushed to `out` across every parallel branch never exceeds the cap.
+#[allow(clippy::too_many_arguments)]
 fn walk_dir_parallel(
     dir: std::path::PathBuf,
     root: &std::path::Path,
     excl: &[String],
     incl: &[String],
+    extensions: &mir_analyzer::PhpFileExtensions,
     max_files: usize,
     out: &Mutex<Vec<std::path::PathBuf>>,
     count: &AtomicUsize,
@@ -300,7 +313,7 @@ fn walk_dir_parallel(
             if !name.starts_with('.') {
                 subdirs.push(path);
             }
-        } else if ft.is_file() && path.extension().is_some_and(|e| e == "php") {
+        } else if ft.is_file() && extensions.is_php_source(&path) {
             files.push(path);
         }
     }
@@ -329,7 +342,7 @@ fn walk_dir_parallel(
     }
 
     subdirs.into_par_iter().for_each(|sub| {
-        walk_dir_parallel(sub, root, excl, incl, max_files, out, count);
+        walk_dir_parallel(sub, root, excl, incl, extensions, max_files, out, count);
     });
 }
 
@@ -385,6 +398,7 @@ mod tests {
 
         let docs = Arc::new(DocumentStore::new());
         let guard = docs.interactive_read_guard();
+        let extensions: &'static mir_analyzer::PhpFileExtensions = Box::leak(Box::default());
         let scan = tokio::spawn(scan_workspace(
             src_dir.path().to_path_buf(),
             Arc::clone(&docs),
@@ -392,6 +406,7 @@ mod tests {
             None,
             &[],
             &[],
+            extensions,
             50_000,
             None,
         ));
@@ -407,6 +422,40 @@ mod tests {
         drop(guard);
         let (indexed, _) = scan.await.unwrap();
         assert_eq!(indexed, 3, "scan must resume and index everything");
+    }
+
+    #[tokio::test]
+    async fn scan_indexes_only_configured_extensions() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in ["a.php", "b.module", "c.inc", "d.txt"] {
+            std::fs::write(dir.path().join(name), "<?php\nfunction f() {}").unwrap();
+        }
+        let scan = |exts: mir_analyzer::PhpFileExtensions| {
+            let root = dir.path().to_path_buf();
+            async move {
+                scan_workspace(
+                    root,
+                    Arc::new(DocumentStore::new()),
+                    OpenFiles::default(),
+                    None,
+                    &[],
+                    &[],
+                    &exts,
+                    50_000,
+                    None,
+                )
+                .await
+                .0
+            }
+        };
+        assert_eq!(scan(Default::default()).await, 1);
+        assert_eq!(
+            scan(mir_analyzer::PhpFileExtensions::new([
+                "php", ".module", "inc"
+            ]))
+            .await,
+            3
+        );
     }
 
     #[tokio::test]
@@ -431,6 +480,7 @@ mod tests {
             Some(cache.clone()),
             &[],
             &[],
+            &Default::default(),
             50_000,
             None,
         )
@@ -458,6 +508,7 @@ mod tests {
             Some(cache.clone()),
             &[],
             &[],
+            &Default::default(),
             50_000,
             None,
         )
@@ -502,6 +553,7 @@ mod tests {
             Some(cache.clone()),
             &[],
             &[],
+            &Default::default(),
             50_000,
             None,
         )
@@ -621,7 +673,16 @@ mod tests {
         let php_parallel: Vec<std::path::PathBuf> = tokio::task::spawn_blocking(move || {
             let out = super::Mutex::new(Vec::new());
             let count = super::AtomicUsize::new(0);
-            super::walk_dir_parallel(root3.clone(), &root3, &[], &[], 50_000, &out, &count);
+            super::walk_dir_parallel(
+                root3.clone(),
+                &root3,
+                &[],
+                &[],
+                &Default::default(),
+                50_000,
+                &out,
+                &count,
+            );
             out.into_inner().unwrap()
         })
         .await

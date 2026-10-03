@@ -112,9 +112,15 @@ impl Psr4Map {
     /// find one (up to 8 levels). This handles workspaces rooted at a `src/`
     /// subdirectory where the project's `composer.json` lives one level up.
     pub fn load(root: &Path) -> Self {
+        Self::load_with_extensions(root, mir_analyzer::PhpFileExtensions::default())
+    }
+
+    pub fn load_with_extensions(root: &Path, extensions: mir_analyzer::PhpFileExtensions) -> Self {
         let composer_root = find_composer_root(root).unwrap_or_else(|| root.to_path_buf());
         let mut inners = Vec::new();
-        if let Ok(map) = mir_analyzer::Psr4Map::from_composer(&composer_root) {
+        if let Ok(map) =
+            mir_analyzer::Psr4Map::from_composer_with_extensions(&composer_root, extensions)
+        {
             inners.push(Arc::new(map));
         }
         let project_entries = read_project_psr4_entries(&composer_root);
