@@ -29,9 +29,17 @@ const SNAPSHOT_ATTEMPTS: usize = 3;
 /// Consecutive failed passes over one warm-sweep chunk before it is skipped.
 const WARM_CHUNK_ATTEMPTS: usize = 5;
 
-/// Drives `queue` through `pass` in chunks; see [`DocumentStore::run_warm_queue`].
+/// Files per mir pass: 32 per core, up to 16 cores. A pass fans out across
+/// cores, so a small chunk leaves workers idle at its tail and repeats the
+/// per-pass setup (on Symfony, 32 files cost 3x the time per file of 256).
+fn warm_chunk_size() -> usize {
+    32 * std::thread::available_parallelism().map_or(1, |n| n.get().min(16))
+}
+
+/// Drives `queue` through `pass` in chunks of `chunk_size`; see [`DocumentStore::run_warm_queue`].
 fn run_chunks(
     queue: &[Arc<str>],
+    chunk_size: usize,
     cancel: &mir_analyzer::IndexCancel,
     progress: Option<&tokio::sync::mpsc::UnboundedSender<(u32, u32)>>,
     yield_to_interactive: impl Fn(),
@@ -40,13 +48,11 @@ fn run_chunks(
     // Chunk size trades sweep throughput against how often the queue reaches
     // a `yield_to_interactive` boundary. Each boundary can sleep up to 500 ms
     // while a request is in flight, so shrinking the chunk multiplies the
-    // worst-case stall rather than improving responsiveness; 32 files is one
-    // mir prepare+analyze pass.
-    const CHUNK: usize = 32;
+    // worst-case stall rather than improving responsiveness.
     let total = queue.len() as u32;
     let mut done: u32 = 0;
     let mut all_settled = true;
-    'chunks: for chunk in queue.chunks(CHUNK) {
+    'chunks: for chunk in queue.chunks(chunk_size) {
         if cancel.is_cancelled() {
             all_settled = false;
             break;
@@ -466,6 +472,7 @@ impl DocumentStore {
     ) -> bool {
         run_chunks(
             queue,
+            warm_chunk_size(),
             cancel,
             progress,
             || self.yield_to_interactive_reads(),
@@ -3010,6 +3017,7 @@ mod tests {
         let calls = AtomicUsize::new(0);
         let settled = run_chunks(
             &queue,
+            32,
             &cancel,
             None,
             || {},
@@ -3032,6 +3040,7 @@ mod tests {
         let calls = AtomicUsize::new(0);
         let settled = run_chunks(
             &queue,
+            32,
             &cancel,
             None,
             || {},

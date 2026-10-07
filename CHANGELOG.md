@@ -4,6 +4,10 @@ All notable changes to php-lsp are documented here.
 
 ## [Unreleased]
 
+### Changed
+
+- The warm sweep analyses 32 files per core (up to 16 cores) per pass instead of 32, so mir's parallel workers stay busy. With mir's parallel warm pass, a full Symfony sweep drops from ~12.4s to ~3.6s (#250).
+
 ### Fixed
 
 - `indexedExtensions` now also drives the workspace scan, composer `autoload.files` and `include`/`require` following, so non-`.php` sources (Drupal's `.module`, `.inc`, `.install`, `.theme`) are indexed and resolved (#260). Requires mir 0.85.
