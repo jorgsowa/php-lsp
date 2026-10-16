@@ -54,6 +54,9 @@ pub mod navigation;
 pub mod db;
 
 // ── Server entry point & cross-cutting infrastructure ────────────────────────
+// The server needs threads, files and child processes. Everything above it builds for
+// wasm32-wasip1, so the completion, hover and analysis code can run in a browser worker.
+#[cfg(not(target_family = "wasm"))]
 pub mod backend;
 #[cfg(test)]
 mod test_utils;

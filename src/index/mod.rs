@@ -4,4 +4,5 @@
 pub mod file_index;
 
 pub mod cache;
+#[cfg(not(target_family = "wasm"))]
 pub(crate) mod workspace_scan;
