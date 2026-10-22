@@ -651,7 +651,8 @@ impl DocumentStore {
         if self.session_cache_dir.set(dir).is_err() {
             return false;
         }
-        let dropped = self.analysis_session.lock().unwrap().1.take().is_some();
+        let mut guard = self.analysis_session.lock().unwrap();
+        let dropped = guard.1.take().is_some();
         if dropped {
             self.drop_session_scoped_state();
         }
@@ -671,7 +672,8 @@ impl DocumentStore {
         if self.user_stub_dirs.set(dirs).is_err() {
             return false;
         }
-        let dropped = self.analysis_session.lock().unwrap().1.take().is_some();
+        let mut guard = self.analysis_session.lock().unwrap();
+        let dropped = guard.1.take().is_some();
         if dropped {
             self.drop_session_scoped_state();
         }
@@ -723,30 +725,20 @@ impl DocumentStore {
         builder
     }
 
-    /// Run `f` against the `AnalysisSession` for `php_version`, rebuilding it
-    /// first when the version changed or no session exists yet.
+    /// Run `f` against the `AnalysisSession` for the workspace PHP version,
+    /// building it first when none exists yet.
+    ///
+    /// The version is read under the same lock as the session: a version read
+    /// beforehand could be stale and rebuild the session behind
+    /// `drop_session_scoped_state`'s back.
     ///
     /// This mutex is the only synchronization for session access and it is
     /// not reentrant: never call back into the store from inside `f`.
-    pub fn with_session_for<R>(
-        &self,
-        php_version: mir_analyzer::PhpVersion,
-        f: impl FnOnce(&mut mir_analyzer::AnalysisSession) -> R,
-    ) -> R {
-        let mut guard = self.analysis_session.lock().unwrap();
-        if guard.0 != php_version || guard.1.is_none() {
-            let session = self.build_session(php_version);
-            *guard = (php_version, Some(session));
-        }
-        f(guard.1.as_mut().unwrap())
-    }
-
-    /// [`Self::with_session_for`] against the *current* workspace PHP
-    /// version — a single lock acquisition on the common (already-built)
-    /// path.
     pub fn with_session<R>(&self, f: impl FnOnce(&mut mir_analyzer::AnalysisSession) -> R) -> R {
-        let php_version = self.workspace_php_version();
-        self.with_session_for(php_version, f)
+        let mut guard = self.analysis_session.lock().unwrap();
+        let (php_version, session) = &mut *guard;
+        let session = session.get_or_insert_with(|| self.build_session(*php_version));
+        f(session)
     }
 
     /// Run `f` on a read snapshot without holding the session lock: the lock
@@ -921,29 +913,48 @@ impl DocumentStore {
         self.lsp_ws_files.get(uri).map(|e| *e)
     }
 
-    /// Take a cheap snapshot of the shared mir db and run `f` on it, retrying
-    /// on `salsa::Cancelled` (raised when a concurrent writer bumps the
-    /// revision). Mirrors [`Self::snapshot_query`] for the converged db.
-    ///
-    /// After [`SNAPSHOT_ATTEMPTS`] cancellations the last attempt runs under
-    /// the session lock, which keeps new writers out and guarantees progress.
+    #[cfg(test)]
     fn snapshot_mir_query<R>(&self, f: impl Fn(&mir_analyzer::db::MirDbStorage) -> R) -> R {
-        let _interactive = self.interactive_read_guard();
-        self.attempt_mir_query(SNAPSHOT_ATTEMPTS, &f)
-            .unwrap_or_else(|| self.with_session(|session| f(&session.snapshot_db())))
+        self.snapshot_mir_handle_query(|| Some(()), |db, ()| f(db))
+            .expect("unit handle is always present")
     }
 
-    /// Bounded variant of [`Self::snapshot_mir_query`] for cosmetic,
+    /// Take a cheap snapshot of the shared mir db and run `f` on it with the
+    /// salsa input `handle` returns, retrying on `salsa::Cancelled` (raised
+    /// when a concurrent writer bumps the revision). Mirrors
+    /// [`Self::snapshot_query`] for the converged db. `None` when `handle`
+    /// finds none.
+    ///
+    /// `handle` runs under the session lock together with the snapshot grab,
+    /// so a concurrent session rebuild never pairs an old db's handle with
+    /// the new db. After [`SNAPSHOT_ATTEMPTS`] cancellations the last attempt
+    /// runs under the session lock, which keeps new writers out and
+    /// guarantees progress.
+    fn snapshot_mir_handle_query<H: Copy, R>(
+        &self,
+        handle: impl Fn() -> Option<H>,
+        f: impl Fn(&mir_analyzer::db::MirDbStorage, H) -> R,
+    ) -> Option<R> {
+        let _interactive = self.interactive_read_guard();
+        self.attempt_mir_handle_query(SNAPSHOT_ATTEMPTS, &handle, &f)
+            .unwrap_or_else(|| {
+                self.with_session(|session| Some(f(&session.snapshot_db(), handle()?)))
+            })
+    }
+
+    /// Bounded variant of [`Self::snapshot_mir_handle_query`] for cosmetic,
     /// cursor-triggered reads that must not spin under sustained write pressure.
     /// Returns `None` if a concurrent writer cancels the query `attempts` times
     /// in a row (the caller then falls back to a stale result).
-    fn try_snapshot_mir_query<R>(
+    fn try_snapshot_mir_handle_query<H: Copy, R>(
         &self,
         attempts: usize,
-        f: impl Fn(&mir_analyzer::db::MirDbStorage) -> R,
+        handle: impl Fn() -> Option<H>,
+        f: impl Fn(&mir_analyzer::db::MirDbStorage, H) -> R,
     ) -> Option<R> {
         let _interactive = self.interactive_read_guard();
-        self.attempt_mir_query(attempts, &f)
+        self.attempt_mir_handle_query(attempts, &handle, &f)
+            .flatten()
     }
 
     /// Each attempt takes a fresh snapshot under its own brief lock
@@ -951,16 +962,23 @@ impl DocumentStore {
     /// and waits for outstanding db handles to drop, while the next
     /// `snapshot_db` needs the read lock — keeping either the clone or the
     /// session lock alive across a retry deadlocks.
-    fn attempt_mir_query<R>(
+    ///
+    /// `None` when every attempt was cancelled; `Some(None)` when `handle`
+    /// found none.
+    fn attempt_mir_handle_query<H: Copy, R>(
         &self,
         attempts: usize,
-        f: &impl Fn(&mir_analyzer::db::MirDbStorage) -> R,
-    ) -> Option<R> {
+        handle: &impl Fn() -> Option<H>,
+        f: &impl Fn(&mir_analyzer::db::MirDbStorage, H) -> R,
+    ) -> Option<Option<R>> {
         use std::panic::AssertUnwindSafe;
         for _ in 0..attempts {
-            let db = self.with_session(|session| session.snapshot_db());
-            if let Ok(r) = salsa::Cancelled::catch(AssertUnwindSafe(|| f(&db))) {
-                return Some(r);
+            let (db, h) = self.with_session(|session| (session.snapshot_db(), handle()));
+            let Some(h) = h else {
+                return Some(None);
+            };
+            if let Ok(r) = salsa::Cancelled::catch(AssertUnwindSafe(|| f(&db, h))) {
+                return Some(Some(r));
             }
         }
         None
@@ -1056,13 +1074,13 @@ impl DocumentStore {
     /// Returns `false` when `uri` was not mirrored (caller should mirror
     /// first); returns `true` on success.
     pub fn seed_cached_index(&self, uri: &Uri, index: Arc<FileIndex>) -> bool {
-        let Some(wf) = self.lsp_ws_file(uri) else {
-            return false;
-        };
         self.with_session(|session| {
+            let Some(wf) = self.lsp_ws_file(uri) else {
+                return false;
+            };
             session.with_db_mut(|db| wf.set_cached_index(db).to(Some(index)));
-        });
-        true
+            true
+        })
     }
 
     /// Evict the semantic-tokens cache for `uri`. Called by Backend when a
@@ -1087,11 +1105,9 @@ impl DocumentStore {
         &self,
         uri: &Uri,
     ) -> Option<crate::index::file_index::FileIndex> {
-        let wf = self.lsp_ws_file(uri)?;
-        Some(
-            self.snapshot_mir_query(move |db| {
-                (*crate::db::mir_queries::file_index(db, wf).0).clone()
-            }),
+        self.snapshot_mir_handle_query(
+            || self.lsp_ws_file(uri),
+            |db, wf| (*crate::db::mir_queries::file_index(db, wf).0).clone(),
         )
     }
 
@@ -1174,9 +1190,9 @@ impl DocumentStore {
 
     /// Salsa-backed compact symbol index.
     pub fn get_index_salsa(&self, uri: &Uri) -> Option<Arc<FileIndex>> {
-        let wf = self.lsp_ws_file(uri)?;
-        Some(
-            self.snapshot_mir_query(move |db| crate::db::mir_queries::file_index(db, wf).0.clone()),
+        self.snapshot_mir_handle_query(
+            || self.lsp_ws_file(uri),
+            |db, wf| crate::db::mir_queries::file_index(db, wf).0.clone(),
         )
     }
 
@@ -1187,11 +1203,13 @@ impl DocumentStore {
         uri: &Uri,
     ) -> Option<Arc<crate::types::symbol_map::SymbolMap>> {
         // Symbol map runs on the shared mir db, sharing its memoized `parsed_doc`.
-        let wf = self.lsp_ws_file(uri)?;
-        Some(self.snapshot_mir_query(move |db| {
-            let sf = *wf.source(db);
-            crate::db::mir_queries::symbol_map(db, sf).0.clone()
-        }))
+        self.snapshot_mir_handle_query(
+            || self.lsp_ws_file(uri),
+            |db, wf| {
+                let sf = *wf.source(db);
+                crate::db::mir_queries::symbol_map(db, sf).0.clone()
+            },
+        )
     }
 
     /// Pre-computed symbol maps for every entry in `open_urls` except `uri`.
@@ -1225,14 +1243,16 @@ impl DocumentStore {
         }
 
         // Parse runs on the shared mir db.
-        let wf = self.lsp_ws_file(uri)?;
+        let (text, doc) = self.snapshot_mir_handle_query(
+            || self.lsp_ws_file(uri),
+            |db, wf| {
+                let sf = *wf.source(db);
+                let text = sf.text(db).clone();
+                let doc = crate::db::mir_queries::parsed_doc(db, sf).0.clone();
+                (text, doc)
+            },
+        )?;
         self.caches.bump_parse_count();
-        let (text, doc) = self.snapshot_mir_query(move |db| {
-            let sf = *wf.source(db);
-            let text = sf.text(db).clone();
-            let doc = crate::db::mir_queries::parsed_doc(db, sf).0.clone();
-            (text, doc)
-        });
         self.caches.insert_parsed(uri.clone(), text, doc.clone());
         Some(doc)
     }
@@ -1255,14 +1275,16 @@ impl DocumentStore {
             return Some(doc);
         }
 
-        if let Some(wf) = self.lsp_ws_file(uri)
-            && let Some((text, doc)) = self.try_snapshot_mir_query(3, move |db| {
+        if let Some((text, doc)) = self.try_snapshot_mir_handle_query(
+            3,
+            || self.lsp_ws_file(uri),
+            |db, wf| {
                 let sf = *wf.source(db);
                 let text = sf.text(db).clone();
                 let doc = crate::db::mir_queries::parsed_doc(db, sf).0.clone();
                 (text, doc)
-            })
-        {
+            },
+        ) {
             self.caches.bump_parse_count();
             self.caches.insert_parsed(uri.clone(), text, doc.clone());
             return Some(doc);
@@ -1282,18 +1304,18 @@ impl DocumentStore {
             return;
         }
 
-        // Collect active (non-deleted) files, sorted by URI for stable ordering.
-        let mut entries: Vec<(Arc<str>, LspWsFile)> = self
-            .lsp_ws_files
-            .iter()
-            .filter(|e| !self.deleted_uris.contains(e.key()))
-            .map(|e| (Arc::<str>::from(e.key().as_str()), *e.value()))
-            .collect();
-        entries.sort_unstable_by(|(a, _), (b, _)| a.cmp(b));
-        let files: Arc<[LspWsFile]> = entries.iter().map(|(_, wf)| *wf).collect();
-
-        let mut guard = self.lsp_workspace.lock().unwrap();
         self.with_session(|session| {
+            // Collect active (non-deleted) files, sorted by URI for stable ordering.
+            let mut entries: Vec<(Arc<str>, LspWsFile)> = self
+                .lsp_ws_files
+                .iter()
+                .filter(|e| !self.deleted_uris.contains(e.key()))
+                .map(|e| (Arc::<str>::from(e.key().as_str()), *e.value()))
+                .collect();
+            entries.sort_unstable_by(|(a, _), (b, _)| a.cmp(b));
+            let files: Arc<[LspWsFile]> = entries.iter().map(|(_, wf)| *wf).collect();
+
+            let mut guard = self.lsp_workspace.lock().unwrap();
             session.with_db_mut(|db| match *guard {
                 Some(ws) => {
                     ws.set_files(db).to(files);
@@ -1326,18 +1348,18 @@ impl DocumentStore {
             if guard.0 == version {
                 return false;
             }
-            // Clear the cached session too: `with_session`/`with_session_for`
-            // trust `guard.1` unconditionally once `guard.0` matches, so
-            // leaving the old version's session behind here would silently
-            // hand it out under the new version.
+            // Clear the cached session too: `with_session` reuses `guard.1`
+            // whenever it is set, so leaving the old version's session behind
+            // here would silently hand it out under the new version.
             guard.0 = version;
             guard.1 = None;
+            // Changing the version selects a different `AnalysisSession` (and
+            // thus a different db). In practice the version is set once at
+            // init, before any file is mirrored — but a runtime change is
+            // possible too (the caller must re-scan in that case, see the
+            // `bool` return above).
+            self.drop_session_scoped_state();
         }
-        // Changing the version selects a different `AnalysisSession` (and thus
-        // a different db). In practice the version is set once at init, before
-        // any file is mirrored — but a runtime change is possible too (the
-        // caller must re-scan in that case, see the `bool` return above).
-        self.drop_session_scoped_state();
         true
     }
 
@@ -1350,6 +1372,8 @@ impl DocumentStore {
     /// session, but it explicitly skips anything already open in the editor
     /// (so it doesn't clobber live buffer edits with disk content) — callers
     /// whose drop can race an open buffer must re-mirror open files themselves.
+    ///
+    /// Call with the session lock held, so no reader pairs an old handle with the new db.
     fn drop_session_scoped_state(&self) {
         self.lsp_ws_files.clear();
         *self.lsp_workspace.lock().unwrap() = None;
@@ -2104,7 +2128,7 @@ impl DocumentStore {
         // *every* outstanding snapshot to drop while a fresh `snapshot_db`
         // waits for the read lock behind that same writer; keeping this
         // snapshot alive across the call is exactly the deadlock
-        // `Self::snapshot_mir_query`'s doc comment warns about. The
+        // `Self::attempt_mir_handle_query`'s doc comment warns about. The
         // parallel loop below takes its own fresh snapshot instead of
         // reusing this one.
         {
@@ -2277,13 +2301,15 @@ impl DocumentStore {
     /// `declaration_candidate_files`, which query mir's mention index instead.
     pub fn get_workspace_index_salsa(&self) -> Arc<crate::db::workspace_index::WorkspaceIndexData> {
         self.sync_workspace_files();
-        let ws = *self.lsp_workspace.lock().unwrap();
-        let Some(ws) = ws else {
-            return Arc::new(crate::db::workspace_index::WorkspaceIndexData::from_files(
+        self.snapshot_mir_handle_query(
+            || *self.lsp_workspace.lock().unwrap(),
+            |db, ws| crate::db::mir_queries::workspace_index(db, ws).0.clone(),
+        )
+        .unwrap_or_else(|| {
+            Arc::new(crate::db::workspace_index::WorkspaceIndexData::from_files(
                 Vec::new(),
-            ));
-        };
-        self.snapshot_mir_query(move |db| crate::db::mir_queries::workspace_index(db, ws).0.clone())
+            ))
+        })
     }
 
     /// Total number of real `ParsedDoc` parses served so far (cache misses).
@@ -2495,7 +2521,7 @@ impl DocumentStore {
 
     /// Compare `uri`'s current `FileIndex` against its stored declaration
     /// fingerprint. Read-only against the session (`get_index_salsa` takes
-    /// its own brief lock via `snapshot_mir_query`) — callers that already
+    /// its own brief lock via `snapshot_mir_handle_query`) — callers that already
     /// hold the session lock must call this *before* entering `with_session`,
     /// never from inside it: `get_index_salsa` locks the same mutex, and
     /// `std::sync::Mutex` isn't reentrant.
@@ -4970,5 +4996,43 @@ mod tests {
         let before = store.write_rev();
         store.remove(&u);
         assert!(store.write_rev() > before, "remove must bump the revision");
+    }
+
+    /// Session rebuilds racing reads and writes never hand an old db's
+    /// `LspWsFile`/`LspWorkspace` handle to the new db.
+    #[test]
+    fn session_rebuild_racing_handle_users_does_not_panic() {
+        use mir_analyzer::PhpVersion;
+        let store = Arc::new(DocumentStore::new());
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let workers: Vec<_> = (0..4)
+            .map(|t| {
+                let (store, stop) = (Arc::clone(&store), Arc::clone(&stop));
+                std::thread::spawn(move || {
+                    let mut n = 0u32;
+                    while !stop.load(Ordering::Relaxed) {
+                        let u = uri(&format!("/race_{t}_{}.php", n % 8));
+                        store.mirror_text(&u, &format!("<?php\nclass Race{t}_{n} {{}}\n"));
+                        let _ = store.get_doc_salsa(&u);
+                        let _ = store.get_index_salsa(&u);
+                        let _ = store.get_symbol_map_salsa(&u);
+                        let _ = store.get_workspace_index_salsa();
+                        n += 1;
+                    }
+                })
+            })
+            .collect();
+        for i in 0..200 {
+            let version = if i % 2 == 0 {
+                PhpVersion::LATEST
+            } else {
+                PhpVersion::new(8, 1)
+            };
+            store.set_php_version(version);
+        }
+        stop.store(true, Ordering::Relaxed);
+        for w in workers {
+            w.join().expect("worker panicked");
+        }
     }
 }

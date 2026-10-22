@@ -19,6 +19,7 @@ All notable changes to php-lsp are documented here.
 
 - `indexedExtensions` now also drives the workspace scan, composer `autoload.files` and `include`/`require` following, so non-`.php` sources (Drupal's `.module`, `.inc`, `.install`, `.theme`) are indexed and resolved (#260). Requires mir 0.85.
 
+- Intermittent `index N is uninitialized` panic when the analysis session was rebuilt (cache directory attached, stub directories set, or PHP version changed) while requests were in flight: a file or workspace handle from the old database could be used against the new one.
 - The reference warm sweep no longer pins a core when a chunk keeps failing: each chunk is retried a bounded number of times, then skipped, and the sweep is not reported complete.
 - Configuration docs listed `diagnostics.enabled` as off by default; it defaults to `true`.
 
