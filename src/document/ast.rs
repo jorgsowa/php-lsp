@@ -418,14 +418,6 @@ pub fn offset_to_position(source: &str, line_starts: &[u32], offset: u32) -> Pos
     Position { line, character }
 }
 
-/// Convert a `Span` (byte-offset pair) to an LSP `Range`.
-pub fn span_to_range(source: &str, line_starts: &[u32], span: Span) -> Range {
-    Range {
-        start: offset_to_position(source, line_starts, span.start),
-        end: offset_to_position(source, line_starts, span.end),
-    }
-}
-
 /// Return the byte offset of `substr` within `source`, or None if not found.
 ///
 /// Uses pointer arithmetic when `substr` is a true sub-slice of `source`

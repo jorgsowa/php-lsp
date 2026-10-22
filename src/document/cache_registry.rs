@@ -49,11 +49,6 @@ pub(crate) struct CacheRegistry {
     /// a sibling file's declaration change — the file's own source is unchanged,
     /// so the owned AST copy can be reused.
     pub(crate) owned_program_cache: DashMap<Uri, (Arc<str>, Arc<php_ast::owned::Program>)>,
-    /// On-demand `FileIndex` store for vendor files loaded lazily via PSR-4
-    /// navigation. Vendor is excluded from the eager workspace scan; files
-    /// ingested by PSR-4 navigation are not in the salsa workspace_index.
-    /// Evicted alongside all other per-file caches via `evict()`.
-    pub(crate) vendor_index_cache: DashMap<Uri, Arc<FileIndex>>,
     /// Monotonic counter driving `last_access`.
     access_tick: AtomicU64,
     /// Last-use tick per file, shared by every bounded per-file cache. Updated
@@ -74,7 +69,6 @@ impl CacheRegistry {
             decl_version: AtomicU64::new(0),
             parse_count: AtomicU64::new(0),
             owned_program_cache: DashMap::new(),
-            vendor_index_cache: DashMap::new(),
             access_tick: AtomicU64::new(0),
             last_access: DashMap::new(),
         }
@@ -147,7 +141,6 @@ impl CacheRegistry {
         self.parsed_cache.remove(uri);
         self.analysis_cache.remove(uri);
         self.owned_program_cache.remove(uri);
-        self.vendor_index_cache.remove(uri);
         self.last_access.remove(uri);
     }
 

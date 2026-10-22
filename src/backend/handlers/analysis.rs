@@ -15,11 +15,7 @@ impl Backend {
     ) -> Result<DocumentDiagnosticReportResult> {
         let uri = &params.text_document.uri;
         let previous_result_id = params.previous_result_id.clone();
-        let (diag_cfg, php_version) = {
-            let cfg = self.config.load();
-            (cfg.diagnostics.clone(), cfg.php_version.clone())
-        };
-        let _ = php_version;
+        let diag_cfg = self.config.load().diagnostics.clone();
 
         let items = if self.open_files.contains(uri) {
             let docs = Arc::clone(&self.docs);
@@ -70,11 +66,7 @@ impl Backend {
         params: WorkspaceDiagnosticParams,
     ) -> Result<WorkspaceDiagnosticReportResult> {
         let open_files_with_versions = self.all_open_files_with_diagnostic_versions();
-        let (diag_cfg, php_version) = {
-            let cfg = self.config.load();
-            (cfg.diagnostics.clone(), cfg.php_version.clone())
-        };
-        let _ = php_version;
+        let diag_cfg = self.config.load().diagnostics.clone();
 
         let previous_map: std::collections::HashMap<Uri, String> = params
             .previous_result_ids

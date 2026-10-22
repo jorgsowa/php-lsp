@@ -2392,15 +2392,6 @@ impl DocumentStore {
         self.caches.owned_program_cache.len() as u64
     }
 
-    /// Entries in the lazily-loaded vendor `FileIndex` cache, populated by
-    /// PSR-4 "go to definition" navigation into `vendor/`. Unlike the other
-    /// per-file caches above, this one has no LRU cap today — a session with
-    /// heavy navigation through a large dependency tree will keep growing
-    /// this for the life of the process.
-    pub fn vendor_index_cache_len(&self) -> u64 {
-        self.caches.vendor_index_cache.len() as u64
-    }
-
     /// Per-file text scans recorded in mir's own `ClassMentionIndex` — the
     /// single shared backend every [`Self::resolve_reachability_queries`]
     /// needle is answered by, whether it's a fully-qualified literal or a
@@ -2748,21 +2739,6 @@ impl DocumentStore {
     /// avoiding per-call cloning of the workspace-wide vector.
     pub fn with_all_indexes<R>(&self, f: impl FnOnce(&[(Uri, Arc<FileIndex>)]) -> R) -> R {
         f(&self.get_workspace_index_salsa().files)
-    }
-
-    /// Store a lazily-loaded vendor `FileIndex` in the session cache.
-    /// Only call this for files that are not part of the normal workspace scan
-    /// (i.e. vendor files loaded on-demand by PSR-4 navigation).
-    pub fn cache_vendor_index(&self, uri: Uri, index: Arc<FileIndex>) {
-        self.caches.vendor_index_cache.insert(uri, index);
-    }
-
-    /// Retrieve a previously cached vendor `FileIndex`.
-    pub fn get_vendor_index(&self, uri: &Uri) -> Option<Arc<FileIndex>> {
-        self.caches
-            .vendor_index_cache
-            .get(uri)
-            .map(|e| Arc::clone(&*e))
     }
 
     /// Parses only the workspace files whose raw text
@@ -3492,22 +3468,6 @@ mod tests {
         assert!(store.get_token_cache(&u, "id1").is_some());
         store.evict_token_cache(&u);
         assert!(store.get_token_cache(&u, "id1").is_none());
-    }
-
-    #[test]
-    fn vendor_index_cache_evicted_on_remove() {
-        let store = DocumentStore::new();
-        let u = uri("/vendor/acme/lib.php");
-        store.ingest(u.clone(), "<?php\nclass Lib {}");
-        let idx = store.get_index_salsa(&u).unwrap();
-        store.cache_vendor_index(u.clone(), idx.clone());
-        let cached = store.get_vendor_index(&u).unwrap();
-        assert!(
-            Arc::ptr_eq(&idx, &cached),
-            "get_vendor_index must return the exact FileIndex that was cached"
-        );
-        store.remove(&u);
-        assert!(store.get_vendor_index(&u).is_none());
     }
 
     /// A repeat reachability query against unchanged files must not re-scan

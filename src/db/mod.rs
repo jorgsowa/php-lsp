@@ -13,6 +13,3 @@ pub mod mir_queries;
 pub mod parse;
 pub mod symbol_map;
 pub mod workspace_index;
-
-#[cfg(test)]
-mod gc_gate_test;

@@ -261,7 +261,7 @@ impl Backend {
         // Classes are declared by their short (unqualified) name, e.g. `class Foo`
         // not `class App\Services\Foo`.
         let short_name = fqn.split('\\').next_back()?;
-        let range = find_declaration_range(doc.source(), &doc, short_name)?;
+        let range = find_declaration_range(&doc, short_name)?;
 
         Some(Location {
             uri: file_uri,

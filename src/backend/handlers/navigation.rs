@@ -131,11 +131,9 @@ impl Backend {
                         let refined = docs
                             .get_doc_salsa(&loc.uri)
                             .and_then(|doc| {
-                                find_declaration_range(doc.source(), &doc, &word).map(|range| {
-                                    Location {
-                                        uri: loc.uri.clone(),
-                                        range,
-                                    }
+                                find_declaration_range(&doc, &word).map(|range| Location {
+                                    uri: loc.uri.clone(),
+                                    range,
                                 })
                             })
                             .unwrap_or(loc);
