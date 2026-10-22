@@ -2899,7 +2899,7 @@ impl DocumentStore {
         let trimmed = fqn.trim_start_matches('\\');
         let name = mir_analyzer::Name::Class(Arc::from(trimmed));
         let loc = self.definition_location(&name)?;
-        let &file_idx = wi.path_to_file_idx.get(loc.file.as_ref())?;
+        let file_idx = wi.file_idx_for_mir_file(&loc.file)?;
         let (_, idx) = wi.files.get(file_idx as usize)?;
         let class_idx = idx
             .classes
@@ -2934,7 +2934,7 @@ impl DocumentStore {
         let trimmed = fqn.trim_start_matches('\\');
         let name = mir_analyzer::Name::function(trimmed.to_string());
         let loc = self.definition_location(&name)?;
-        let &file_idx = wi.path_to_file_idx.get(loc.file.as_ref())?;
+        let file_idx = wi.file_idx_for_mir_file(&loc.file)?;
         let (_, idx) = wi.files.get(file_idx as usize)?;
         let function_idx = idx
             .functions
@@ -5034,5 +5034,42 @@ mod tests {
         for w in workers {
             w.join().expect("worker panicked");
         }
+    }
+
+    /// A vendor class mir loaded on demand through the PSR-4 resolver
+    /// (keyed by filesystem path) still resolves once the scan mirrors its
+    /// file under a `file://` URI.
+    #[test]
+    fn class_ref_by_fqn_resolves_on_demand_loaded_vendor_class() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("vendor/acme/src")).unwrap();
+        let base_src = "<?php\nnamespace Acme;\nclass Base { public function hello(): void {} }\n";
+        std::fs::write(tmp.path().join("vendor/acme/src/Base.php"), base_src).unwrap();
+        std::fs::write(
+            tmp.path().join("composer.json"),
+            r#"{"autoload":{"psr-4":{"Acme\\":"vendor/acme/src/"}}}"#,
+        )
+        .unwrap();
+
+        let store = DocumentStore::new();
+        store
+            .psr4
+            .store(Arc::new(crate::lang::autoload::Psr4Map::load(tmp.path())));
+
+        let app = Uri::from_file_path(tmp.path().join("src/App.php")).unwrap();
+        store.mirror_text(
+            &app,
+            "<?php\nnamespace App;\nuse Acme\\Base;\nclass App extends Base {}\n",
+        );
+        let _ = store.get_semantic_issues_salsa(&app);
+
+        let base = Uri::from_file_path(tmp.path().join("vendor/acme/src/Base.php")).unwrap();
+        store.mirror_text(&base, base_src);
+
+        let wi = store.get_workspace_index_salsa();
+        let class_ref = store
+            .class_ref_by_fqn(&wi, "Acme\\Base")
+            .expect("on-demand loaded vendor class must resolve");
+        assert_eq!(wi.files[class_ref.file as usize].0, base);
     }
 }
