@@ -43,6 +43,7 @@ fn all_enabled() -> DiagnosticsConfig {
         unused_symbols: false,
         missing_types: false,
         mixed_usage: false,
+        disabled: Vec::new(),
     }
 }
 

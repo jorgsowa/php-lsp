@@ -4,6 +4,10 @@ All notable changes to php-lsp are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- **`diagnostics.disabled` setting**: a list of issue names (the diagnostic `code`, e.g. `MissingThrowsDocblock`) to suppress individually (#262).
+
 ### Changed
 
 - The warm sweep analyses 32 files per core (up to 16 cores) per pass instead of 32, so mir's parallel workers stay busy. With mir's parallel warm pass, a full Symfony sweep drops from ~12.4s to ~3.6s (#250).
@@ -13,6 +17,7 @@ All notable changes to php-lsp are documented here.
 - `indexedExtensions` now also drives the workspace scan, composer `autoload.files` and `include`/`require` following, so non-`.php` sources (Drupal's `.module`, `.inc`, `.install`, `.theme`) are indexed and resolved (#260). Requires mir 0.85.
 
 - The reference warm sweep no longer pins a core when a chunk keeps failing: each chunk is retried a bounded number of times, then skipped, and the sweep is not reported complete.
+- Configuration docs listed `diagnostics.enabled` as off by default; it defaults to `true`.
 
 ## [0.26.0] — 2026-10-03
 

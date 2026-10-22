@@ -85,6 +85,15 @@ fn diagnostics_config_can_disable_individual_flags() {
 }
 
 #[test]
+fn diagnostics_config_parses_disabled_list() {
+    let cfg = DiagnosticsConfig::from_value(&serde_json::json!({
+        "disabled": ["MissingThrowsDocblock", 42, "UnusedParam"],
+    }));
+    assert_eq!(cfg.disabled, vec!["MissingThrowsDocblock", "UnusedParam"]);
+    assert!(DiagnosticsConfig::default().disabled.is_empty());
+}
+
+#[test]
 fn diagnostics_config_master_switch_disables_all() {
     let cfg = DiagnosticsConfig::from_value(&serde_json::json!({"enabled": false}));
     assert!(!cfg.enabled);

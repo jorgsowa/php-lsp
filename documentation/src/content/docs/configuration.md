@@ -32,7 +32,7 @@ All options are optional.
 
 | Key | Default | Description |
 |---|---|---|
-| `enabled` | `false` | Master switch — diagnostics are off by default; set to `true` to emit them. |
+| `enabled` | `true` | Master switch for the built-in analyzer; set to `false` to emit no semantic diagnostics (e.g. when another tool handles static analysis). |
 | `undefinedVariables` | `true` | Undefined variable references. |
 | `undefinedFunctions` | `true` | Calls to undefined functions. |
 | `undefinedClasses` | `true` | References to undefined classes, interfaces, or traits. |
@@ -43,6 +43,7 @@ All options are optional.
 | `unusedSymbols` | `false` | Unused-symbol warnings (unused variables, parameters, methods, properties, functions). Off by default so existing workspaces don't get a wave of new noisy warnings. |
 | `missingTypes` | `false` | Missing type annotations on interface methods and class properties. |
 | `mixedUsage` | `false` | Mixed-type usage lints: passing `mixed` to a typed parameter, assigning `mixed` to a typed property, array/property access on `mixed`, etc. |
+| `disabled` | `[]` | Issue names to suppress regardless of category, matching the diagnostic's `code`, e.g. `["MissingThrowsDocblock", "UnusedParam"]`. |
 
 ### `features` object
 
@@ -118,7 +119,8 @@ refresh after every `textDocument/didSave`.
   "diagnostics": {
     "enabled": true,
     "undefinedVariables": true,
-    "deprecatedCalls": false
+    "deprecatedCalls": false,
+    "disabled": ["MissingThrowsDocblock"]
   },
   "features": {
     "callHierarchy": false,

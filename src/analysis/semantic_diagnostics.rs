@@ -115,6 +115,10 @@ pub fn issue_needs_workspace_index(kind: &mir_issues::IssueKind) -> bool {
 /// Returns `true` if the mir-analyzer issue is allowed through by the config.
 fn issue_passes_filter(issue: &mir_issues::Issue, cfg: &DiagnosticsConfig) -> bool {
     use mir_issues::IssueKind;
+    let name = issue.kind.name();
+    if cfg.disabled.iter().any(|d| d == name) {
+        return false;
+    }
     match &issue.kind {
         IssueKind::UndefinedVariable { .. } | IssueKind::PossiblyUndefinedVariable { .. } => {
             cfg.undefined_variables
@@ -246,5 +250,29 @@ mod tests {
             diag.message.contains("Foo"),
             "diagnostic message should mention the class name"
         );
+    }
+
+    #[test]
+    fn disabled_list_filters_issue_by_name() {
+        use mir_issues::{Issue, IssueKind, Location};
+        use std::sync::Arc;
+
+        let issue = Issue::new(
+            IssueKind::UndefinedClass {
+                name: "Foo".to_string(),
+            },
+            Location {
+                file: Arc::from("file:///test.php"),
+                line: 1,
+                line_end: 1,
+                col_start: 0,
+                col_end: 3,
+            },
+        );
+        let uri: Uri = "file:///test.php".parse().unwrap();
+        let mut cfg = DiagnosticsConfig::default();
+        assert_eq!(issues_to_diagnostics(&[issue.clone()], &uri, &cfg).len(), 1);
+        cfg.disabled = vec!["UndefinedClass".to_string()];
+        assert!(issues_to_diagnostics(&[issue], &uri, &cfg).is_empty());
     }
 }

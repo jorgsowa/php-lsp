@@ -34,6 +34,8 @@ pub struct DiagnosticsConfig {
     /// mixed to a typed property, array/property access on mixed, etc. Off by
     /// default; opt in via `diagnostics.mixedUsage`.
     pub mixed_usage: bool,
+    /// Issue names (the diagnostic `code`, e.g. `MissingThrowsDocblock`) that are never emitted.
+    pub disabled: Vec<String>,
 }
 
 impl Default for DiagnosticsConfig {
@@ -50,6 +52,7 @@ impl Default for DiagnosticsConfig {
             unused_symbols: false,
             missing_types: false,
             mixed_usage: false,
+            disabled: Vec::new(),
         }
     }
 }
@@ -89,6 +92,15 @@ impl DiagnosticsConfig {
             .get("mixedUsage")
             .and_then(|x| x.as_bool())
             .unwrap_or(false);
+        cfg.disabled = obj
+            .get("disabled")
+            .and_then(|x| x.as_array())
+            .map(|arr| {
+                arr.iter()
+                    .filter_map(|x| x.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default();
         cfg
     }
 }
@@ -565,6 +577,7 @@ mod tests {
                     unused_symbols: false,
                     missing_types: false,
                     mixed_usage: false,
+                    disabled: [],
                 },
                 features: FeaturesConfig {
                     completion: true,
