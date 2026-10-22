@@ -2,12 +2,6 @@
 
 All notable changes to php-lsp are documented here.
 
-## [Unreleased]
-
-### Fixed
-
-- **On-demand vendor files**: a vendor file mir loaded through the autoloader before the workspace scan reached it is no longer kept as a second, path-keyed copy that location lookups dropped; the scan and later edits update the loaded copy (#250).
-
 ## [0.27.0] — 2026-10-22
 
 ### Added
@@ -26,7 +20,7 @@ All notable changes to php-lsp are documented here.
 ### Fixed
 
 - **`indexedExtensions`** now also drives the workspace scan, composer `autoload.files` and `include`/`require` following, so non-`.php` sources (Drupal's `.module`, `.inc`, `.install`, `.theme`) are indexed and resolved (#260).
-- **On-demand vendor symbols**: classes and functions mir loaded through the autoloader resolve again in type-hierarchy supertypes, declaration lookup and other FQN-based lookups (#250).
+- **On-demand vendor symbols**: classes and functions mir loaded through the autoloader resolve again in type-hierarchy supertypes, declaration lookup and other FQN-based lookups, and the workspace scan and later edits update the loaded copy instead of adding a second one (#250).
 - **Union receivers**: method-call signature help and match-arm completion look up each class of a union instead of the joined name.
 - **Session rebuild panic**: an intermittent `index N is uninitialized` panic when the analysis session was rebuilt (cache directory attached, stub directories set, or PHP version changed) while requests were in flight.
 - **Document lifecycle**: closing a file while its open is still parsing no longer publishes stale diagnostics, and reopening while a close is syncing no longer clears fresh ones.
