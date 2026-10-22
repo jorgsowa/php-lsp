@@ -685,10 +685,10 @@ mod references {
             src/Form/PostType.php:77:16-77:42
             src/Form/PostType.php:88:28-88:32
             src/Repository/PostRepository.php:13:4-13:19
-            src/Repository/PostRepository.php:20:0-20:3
+            src/Repository/PostRepository.php:30:3-30:54
             src/Repository/PostRepository.php:38:39-38:43
             src/Security/PostVoter.php:13:4-13:19
-            src/Security/PostVoter.php:19:0-19:3
+            src/Security/PostVoter.php:27:3-27:41
             src/Security/PostVoter.php:40:35-40:39
             src/Security/PostVoter.php:46:23-46:38
             src/Twig/Components/BlogSearchComponent.php:13:4-13:19

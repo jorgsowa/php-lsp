@@ -870,7 +870,7 @@ async fn backed_enum_case_value_type_mismatch_is_flagged() {
 
     expect![[r#"
         ws_enum.php
-          2:0 Backed enum case Suit::Hearts has value of type 1, but backing type is string [BackedEnumCaseTypeMismatch] (error)"#]]
+          2:18 Backed enum case Suit::Hearts has value of type 1, but backing type is string [BackedEnumCaseTypeMismatch] (error)"#]]
     .assert_eq(&out);
 }
 

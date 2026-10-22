@@ -271,7 +271,10 @@ mod tests {
         );
         let uri: Uri = "file:///test.php".parse().unwrap();
         let mut cfg = DiagnosticsConfig::default();
-        assert_eq!(issues_to_diagnostics(&[issue.clone()], &uri, &cfg).len(), 1);
+        assert_eq!(
+            issues_to_diagnostics(std::slice::from_ref(&issue), &uri, &cfg).len(),
+            1
+        );
         cfg.disabled = vec!["UndefinedClass".to_string()];
         assert!(issues_to_diagnostics(&[issue], &uri, &cfg).is_empty());
     }

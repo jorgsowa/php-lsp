@@ -601,7 +601,7 @@ async fn hover_first_class_callable_typed_as_closure() {
 $fn = strlen(...);
 $fn$0;
 "#,
-        expect!["`$fn` `Closure(string): int<0, max>`"],
+        expect!["`$fn` `pure-Closure(string): int<0, max>`"],
     )
     .await;
 }
