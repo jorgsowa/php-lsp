@@ -204,9 +204,12 @@ fn resolve_call_params(
     };
     if before_receiver.ends_with("->") || before_receiver.ends_with("?->") {
         return resolve_receiver_class(source, doc, receiver_pos, ctx.analysis)
+            .unwrap_or_default()
+            .iter()
             .map(|class_name| {
-                params_of_method_anywhere(&class_name, &func_name, doc, other_docs, ctx)
+                params_of_method_anywhere(class_name, &func_name, doc, other_docs, ctx)
             })
+            .find(|params| !params.is_empty())
             .unwrap_or_default();
     }
     if before_receiver.ends_with("::") {
@@ -516,8 +519,7 @@ pub fn filtered_completions_at(
                 // Feature 5: support union types (Foo|Bar)
                 let mut items = Vec::new();
                 let mut seen = std::collections::HashSet::new();
-                for class_name in class_names.split('|') {
-                    let class_name = class_name.trim();
+                for class_name in &class_names {
                     for item in all_instance_members(
                         class_name,
                         doc,
@@ -669,9 +671,9 @@ pub fn filtered_completions_at(
                     if let Some(cls) = resolve_receiver_class(src, doc, arrow_pos, ctx.analysis) {
                         let mut items = Vec::new();
                         let mut seen = std::collections::HashSet::new();
-                        for class_name in cls.split('|') {
+                        for class_name in &cls {
                             for item in all_instance_members(
-                                class_name.trim(),
+                                class_name,
                                 doc,
                                 other_docs,
                                 ctx.find_class_doc,

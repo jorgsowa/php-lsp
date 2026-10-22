@@ -367,7 +367,7 @@ pub(super) fn resolve_receiver_class(
     doc: &ParsedDoc,
     position: Position,
     analysis: Option<&mir_analyzer::FileAnalysis>,
-) -> Option<String> {
+) -> Option<Vec<String>> {
     let line = source.lines().nth(position.line as usize)?;
     let col = utf16_offset_to_byte(line, position.character as usize);
     let before = &line[..col];
@@ -384,19 +384,19 @@ pub(super) fn resolve_receiver_class(
         // spelling *within an already-selected document*; using one to select
         // the document makes same-named classes ambiguous.
         if class_name.starts_with('\\') || class_name.contains('\\') {
-            return Some(class_name.trim_start_matches('\\').to_owned());
+            return Some(vec![class_name.trim_start_matches('\\').to_owned()]);
         }
         let imports = doc.file_imports();
         if let Some(fqcn) = imports.get(&class_name) {
-            return Some(fqcn.trim_start_matches('\\').to_owned());
+            return Some(vec![fqcn.trim_start_matches('\\').to_owned()]);
         }
         if let Some((_, fqcn)) = imports
             .iter()
             .find(|(alias, _)| alias.eq_ignore_ascii_case(&class_name))
         {
-            return Some(fqcn.trim_start_matches('\\').to_owned());
+            return Some(vec![fqcn.trim_start_matches('\\').to_owned()]);
         }
-        return Some(class_name);
+        return Some(vec![class_name]);
     }
 
     let var_name: String = before
@@ -424,6 +424,7 @@ pub(super) fn resolve_receiver_class(
     let var_offset = line_byte_offset(doc, position.line, before.len());
     if var_name == "$this" {
         return enclosing_class_at(source, doc, position)
+            .map(|c| vec![c])
             .or_else(|| analysis.and_then(|a| receiver_class_at(a, var_offset)));
     }
     analysis.and_then(|a| receiver_class_at(a, var_offset))
@@ -431,18 +432,17 @@ pub(super) fn resolve_receiver_class(
 
 /// Resolve the class(es) of a receiver variable from mir's recorded symbol at
 /// `var_offset` (a byte offset inside the variable token), preserving fully
-/// qualified names for member lookup. A union receiver yields
-/// `App\\Foo|Vendor\\Bar`. Keeping the namespace is essential: the workspace
+/// qualified names for member lookup, one per union member. Keeping the namespace is essential: the workspace
 /// can contain unrelated classes with the same short name, and
 /// `all_members` uses the FQCN to select the right defining document.
 /// Returns `None` if mir recorded no class-typed symbol there.
 pub(super) fn receiver_class_at(
     analysis: &mir_analyzer::FileAnalysis,
     var_offset: u32,
-) -> Option<String> {
+) -> Option<Vec<String>> {
     let ty = crate::types::type_query::type_at_offset(analysis, var_offset)?;
-    let names: Vec<String> = crate::types::type_query::class_names(ty).to_vec();
-    (!names.is_empty()).then(|| names.join("|"))
+    let names = crate::types::type_query::class_names(ty);
+    (!names.is_empty()).then_some(names)
 }
 
 /// Doc byte offset of `byte_in_line` bytes into line `line`, minus one — i.e.

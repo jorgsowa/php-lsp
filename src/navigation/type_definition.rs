@@ -14,17 +14,17 @@ use crate::navigation::references::collect_class_imports;
 use crate::text::{word_at_position, word_range_at};
 use mir_analyzer::FileAnalysis;
 
-/// Resolve the PHP type at `position` to a fully-qualified class name.
-/// Returns `(imports, fqn)` on success, or `None` if no type could be inferred.
+/// Resolve the PHP type at `position` to fully-qualified class names, one per
+/// union/intersection member. Returns `None` if no type could be inferred.
 fn resolve_type_at_cursor(
     source: &str,
     doc: &ParsedDoc,
     analysis: Option<&FileAnalysis>,
     position: Position,
-) -> Option<(HashMap<String, String>, String)> {
+) -> Option<Vec<String>> {
     let imports = collect_class_imports(doc);
 
-    let class_name = if let Some(word) = word_at_position(source, position) {
+    let class_names = if let Some(word) = word_at_position(source, position) {
         if word.starts_with('$') {
             // Primary: resolve the variable's type from mir's recorded symbols
             // (flow-sensitive, carries generics/unions). mir produces a name
@@ -57,18 +57,19 @@ fn resolve_type_at_cursor(
                     let names = crate::types::type_query::class_names(
                         crate::types::type_query::type_at_offset(a, offset)?,
                     );
-                    // Join named classes with `|`; the downstream `type_candidates`
-                    // splits unions back apart for the declaration search.
-                    (!names.is_empty()).then(|| names.join("|"))
+                    (!names.is_empty()).then_some(names)
                 });
                 match from_mir {
-                    Some(joined) => joined,
+                    Some(names) => names,
                     None => param_decl_type(source, doc, &imports, &word, position)?,
                 }
             }
         } else {
             let raw = param_type_for(&doc.program().stmts, &word)?;
-            resolve_fqn(doc, &raw, &imports)
+            type_candidates(&raw)
+                .into_iter()
+                .map(|c| resolve_fqn(doc, c, &imports))
+                .collect()
         }
     } else {
         // Cursor is not on a word — it sits in a method-call chain gap such as
@@ -85,10 +86,10 @@ fn resolve_type_at_cursor(
         if names.is_empty() {
             return None;
         }
-        names.join("|")
+        names
     };
 
-    Some((imports, class_name))
+    Some(class_names)
 }
 
 /// Class FQNs of the type at `position`: one per member of a union/intersection.
@@ -98,11 +99,11 @@ pub fn type_class_fqns(
     analysis: Option<&FileAnalysis>,
     position: Position,
 ) -> Vec<String> {
-    let Some((_, class_name)) = resolve_type_at_cursor(source, doc, analysis, position) else {
+    let Some(class_names) = resolve_type_at_cursor(source, doc, analysis, position) else {
         return Vec::new();
     };
-    let mut fqns: Vec<String> = type_candidates(&class_name)
-        .into_iter()
+    let mut fqns: Vec<String> = class_names
+        .iter()
         .map(|c| c.trim_start_matches('\\').to_string())
         .collect();
     fqns.dedup();
@@ -186,9 +187,8 @@ fn span_contains_cursor(span: php_ast::Span, cursor: u32) -> bool {
     cursor >= span.start && cursor <= span.end
 }
 
-/// Resolve the declared type of a parameter named `word` at `position`, to a
-/// `|`-joined string of FQNs that the downstream `type_candidates` search can
-/// consume. Used when the mir symbol path is skipped (e.g. late-binding type
+/// Resolve the declared type of a parameter named `word` at `position` to
+/// FQNs, one per union/intersection member. Used when the mir symbol path is skipped (e.g. late-binding type
 /// hints: `parent`/`self`/`static`) or when mir returns no symbol.
 ///
 /// Reads the type hint, strips nullable `?`, splits unions/intersections,
@@ -200,7 +200,7 @@ fn param_decl_type(
     imports: &HashMap<String, String>,
     word: &str,
     position: Position,
-) -> Option<String> {
+) -> Option<Vec<String>> {
     // Param names in the AST are stored without the leading `$`; accept both.
     let raw = param_type_for(&doc.program().stmts, word)
         .or_else(|| param_type_for(&doc.program().stmts, word.trim_start_matches('$')))?;
@@ -220,7 +220,7 @@ fn param_decl_type(
             other => resolve_fqn(doc, other, imports),
         })
         .collect();
-    (!resolved.is_empty()).then(|| resolved.join("|"))
+    (!resolved.is_empty()).then_some(resolved)
 }
 
 /// Look up the declared type hint for a parameter named `word` in any function/method.

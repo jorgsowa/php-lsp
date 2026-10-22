@@ -11,7 +11,7 @@ use crate::text::class_matches_declaration;
 /// looking up the method's parameter signature. `receiver_offset` is a byte
 /// offset landing inside the receiver's variable token (see
 /// `find_named_arg_at`), used to look up mir's recorded type there. Returns
-/// fully-qualified class names, `|`-joined for unions.
+/// fully-qualified class names, one per union member.
 fn resolve_method_receiver_class(
     source: &str,
     doc: &ParsedDoc,
@@ -19,17 +19,17 @@ fn resolve_method_receiver_class(
     receiver_var: &str,
     receiver_offset: u32,
     analysis: Option<&mir_analyzer::FileAnalysis>,
-) -> Option<String> {
+) -> Option<Vec<String>> {
     if let Some(a) = analysis
         && let Some(ty) = crate::types::type_query::type_at_offset(a, receiver_offset)
     {
-        let names: Vec<String> = crate::types::type_query::class_names(ty).to_vec();
+        let names = crate::types::type_query::class_names(ty);
         if !names.is_empty() {
-            return Some(names.join("|"));
+            return Some(names);
         }
     }
     if receiver_var == "$this" {
-        return crate::types::type_map::enclosing_class_at(source, doc, position);
+        return crate::types::type_map::enclosing_class_at(source, doc, position).map(|c| vec![c]);
     }
     None
 }
@@ -167,7 +167,7 @@ pub(crate) fn named_arg_hover_value(
             receiver_offset,
             method,
         } => {
-            let class_name = resolve_method_receiver_class(
+            let class_names = resolve_method_receiver_class(
                 source,
                 doc,
                 position,
@@ -175,20 +175,17 @@ pub(crate) fn named_arg_hover_value(
                 *receiver_offset,
                 analysis,
             )?;
-            let first_class = class_name
-                .split('|')
-                .next()
-                .unwrap_or(&class_name)
-                .to_owned();
-            for d in all_docs() {
-                if let Some((sig, db)) = find_param_sig_in_stmts(
-                    d.source(),
-                    &d.program().stmts,
-                    method,
-                    Some(&first_class),
-                    label,
-                ) {
-                    return Some(format_named_param_hover(&sig, db.as_ref(), label));
+            for class_name in &class_names {
+                for d in all_docs() {
+                    if let Some((sig, db)) = find_param_sig_in_stmts(
+                        d.source(),
+                        &d.program().stmts,
+                        method,
+                        Some(class_name),
+                        label,
+                    ) {
+                        return Some(format_named_param_hover(&sig, db.as_ref(), label));
+                    }
                 }
             }
             None
