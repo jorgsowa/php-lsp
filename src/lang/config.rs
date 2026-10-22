@@ -36,6 +36,9 @@ pub struct DiagnosticsConfig {
     pub mixed_usage: bool,
     /// Issue names (the diagnostic `code`, e.g. `MissingThrowsDocblock`) that are never emitted.
     pub disabled: Vec<String>,
+    /// Patterns (same syntax as the top-level `excludePaths`) for files that never get diagnostics,
+    /// even when open; indexing is unaffected.
+    pub exclude_paths: Vec<String>,
 }
 
 impl Default for DiagnosticsConfig {
@@ -53,6 +56,7 @@ impl Default for DiagnosticsConfig {
             missing_types: false,
             mixed_usage: false,
             disabled: Vec::new(),
+            exclude_paths: Vec::new(),
         }
     }
 }
@@ -92,15 +96,17 @@ impl DiagnosticsConfig {
             .get("mixedUsage")
             .and_then(|x| x.as_bool())
             .unwrap_or(false);
-        cfg.disabled = obj
-            .get("disabled")
-            .and_then(|x| x.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|x| x.as_str().map(str::to_string))
-                    .collect()
-            })
-            .unwrap_or_default();
+        let strings = |v: Option<&serde_json::Value>| -> Vec<String> {
+            v.and_then(|x| x.as_array())
+                .map(|arr| {
+                    arr.iter()
+                        .filter_map(|x| x.as_str().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        cfg.disabled = strings(obj.get("disabled"));
+        cfg.exclude_paths = strings(obj.get("excludePaths"));
         cfg
     }
 }
@@ -578,6 +584,7 @@ mod tests {
                     missing_types: false,
                     mixed_usage: false,
                     disabled: [],
+                    exclude_paths: [],
                 },
                 features: FeaturesConfig {
                     completion: true,

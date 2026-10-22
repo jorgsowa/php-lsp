@@ -244,6 +244,9 @@ pub(crate) fn compute_open_file_diagnostics(
     diag_cfg: &DiagnosticsConfig,
     is_laravel: bool,
 ) -> Vec<Diagnostic> {
+    if crate::index::workspace_scan::matches_any(uri.path().as_str(), &diag_cfg.exclude_paths) {
+        return Vec::new();
+    }
     let mut out = open_files.parse_diagnostics(uri).unwrap_or_default();
     if let Some(issues) = docs.get_semantic_issues_salsa(uri) {
         out.extend(issues_to_diagnostics_gated(
@@ -353,6 +356,29 @@ mod tests {
         assert!(
             !before.is_empty(),
             "a same-file return-type mismatch must not wait on the workspace index"
+        );
+    }
+
+    #[test]
+    fn exclude_paths_suppresses_all_diagnostics_for_matching_files() {
+        let docs = DocumentStore::new();
+        let open_files = OpenFiles::new();
+        let src = "<?php\nfunction f(): string { return 42; }\n";
+        let vendor = ("file:///proj/vendor/acme/Lib.php").parse::<Uri>().unwrap();
+        let app = ("file:///proj/src/App.php").parse::<Uri>().unwrap();
+        open_files.set_open_text(&docs, vendor.clone(), src.to_owned());
+        open_files.set_open_text(&docs, app.clone(), src.to_owned());
+        open_files.set_parse_diagnostics(&vendor, vec![Diagnostic::default()]);
+        let diag_cfg = DiagnosticsConfig {
+            exclude_paths: vec!["vendor/*".to_string()],
+            ..DiagnosticsConfig::default()
+        };
+
+        assert!(
+            compute_open_file_diagnostics(&docs, &open_files, &vendor, &diag_cfg, false).is_empty()
+        );
+        assert!(
+            !compute_open_file_diagnostics(&docs, &open_files, &app, &diag_cfg, false).is_empty()
         );
     }
 }

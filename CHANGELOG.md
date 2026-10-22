@@ -7,6 +7,7 @@ All notable changes to php-lsp are documented here.
 ### Added
 
 - **`diagnostics.disabled` setting**: a list of issue names (the diagnostic `code`, e.g. `MissingThrowsDocblock`) to suppress individually (#262).
+- **`diagnostics.excludePaths` setting**: paths (e.g. `vendor/*`) whose files never get diagnostics, even when opened, while still being indexed (#247).
 
 ### Changed
 

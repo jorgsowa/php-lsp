@@ -44,6 +44,7 @@ fn all_enabled() -> DiagnosticsConfig {
         missing_types: false,
         mixed_usage: false,
         disabled: Vec::new(),
+        exclude_paths: Vec::new(),
     }
 }
 

@@ -346,7 +346,7 @@ fn walk_dir_parallel(
     });
 }
 
-fn matches_any(rel_path: &str, patterns: &[String]) -> bool {
+pub(crate) fn matches_any(rel_path: &str, patterns: &[String]) -> bool {
     patterns.iter().any(|pat| {
         let p = pat.trim_end_matches('*').trim_end_matches('/');
         rel_path.split('/').any(|c| c == p)

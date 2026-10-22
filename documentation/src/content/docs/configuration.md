@@ -44,6 +44,7 @@ All options are optional.
 | `missingTypes` | `false` | Missing type annotations on interface methods and class properties. |
 | `mixedUsage` | `false` | Mixed-type usage lints: passing `mixed` to a typed parameter, assigning `mixed` to a typed property, array/property access on `mixed`, etc. |
 | `disabled` | `[]` | Issue names to suppress regardless of category, matching the diagnostic's `code`, e.g. `["MissingThrowsDocblock", "UnusedParam"]`. |
+| `excludePaths` | `[]` | Paths whose files never get diagnostics, even when opened, e.g. `["vendor/*"]`. Same pattern syntax as the top-level `excludePaths`, but indexing is unaffected, so excluded files still feed completion, hover, and navigation. |
 
 ### `features` object
 
@@ -120,7 +121,8 @@ refresh after every `textDocument/didSave`.
     "enabled": true,
     "undefinedVariables": true,
     "deprecatedCalls": false,
-    "disabled": ["MissingThrowsDocblock"]
+    "disabled": ["MissingThrowsDocblock"],
+    "excludePaths": ["vendor/*"]
   },
   "features": {
     "callHierarchy": false,

@@ -94,6 +94,15 @@ fn diagnostics_config_parses_disabled_list() {
 }
 
 #[test]
+fn diagnostics_config_parses_exclude_paths() {
+    let cfg = DiagnosticsConfig::from_value(&serde_json::json!({
+        "excludePaths": ["vendor/*", 1, "src/Generated"],
+    }));
+    assert_eq!(cfg.exclude_paths, vec!["vendor/*", "src/Generated"]);
+    assert!(DiagnosticsConfig::default().exclude_paths.is_empty());
+}
+
+#[test]
 fn diagnostics_config_master_switch_disables_all() {
     let cfg = DiagnosticsConfig::from_value(&serde_json::json!({"enabled": false}));
     assert!(!cfg.enabled);
