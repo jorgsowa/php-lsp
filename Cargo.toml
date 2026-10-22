@@ -47,7 +47,6 @@ test-hooks = []
 
 [dependencies]
 dhat = { version = "0.3", optional = true }
-mimalloc = { version = "0.1", default-features = false }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 mir-analyzer = { version = "0.86.0", git = "https://github.com/jorgsowa/mir" }
@@ -60,7 +59,8 @@ php-lexer = "0.21"
 bumpalo = { version = "3", features = ["collections"] }
 tower-lsp-server = "0.23"
 tower = "0.5"
-tokio = { version = "1", features = ["full"] }
+# Only what builds for wasm32; the server's `fs`, `process`, `net`, `signal` come in below, off wasm.
+tokio = { version = "1", features = ["sync", "macros", "io-util", "rt", "time"] }
 futures = "0.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -71,6 +71,12 @@ rayon = "1"
 salsa = "=0.28.5"
 arc-swap = "1"
 percent-encoding = "2"
+
+# The language server itself (`backend`, the workspace scan, external phpstan/phpcs) needs all of tokio,
+# and its allocator, `mimalloc`, is C: the library alone has no C in it on wasm.
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+mimalloc = { version = "0.1", default-features = false }
+tokio = { version = "1", features = ["full"] }
 
 [dependencies.walkdir]
 version = "2"

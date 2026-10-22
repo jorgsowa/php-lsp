@@ -4,7 +4,9 @@
 //! findings are merged into the diagnostics the built-in `mir`-backed
 //! analyzer already produces — see [`crate::lang::config::ExternalToolsConfig`]
 //! for why both default off.
+#[cfg(not(target_family = "wasm"))]
 pub mod phpcs;
+#[cfg(not(target_family = "wasm"))]
 pub mod phpstan;
 
 use std::path::Path;
@@ -17,6 +19,7 @@ use crate::lang::config::ExternalToolsConfig;
 /// diagnostics. Tools run one after another rather than concurrently so a
 /// single caller gets one complete `Vec` back instead of having to merge two
 /// independently-arriving results.
+#[cfg(not(target_family = "wasm"))]
 pub async fn run_external_diagnostics(
     cfg: &ExternalToolsConfig,
     path: &Path,
