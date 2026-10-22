@@ -844,6 +844,21 @@ impl DocumentStore {
         .flatten()
     }
 
+    /// `method` as mir resolves it along `class`'s ancestor chain, then its mixins.
+    pub fn find_method_in_chain(
+        &self,
+        class: &str,
+        method: &str,
+    ) -> Option<Arc<mir_codebase::definitions::MethodDef>> {
+        self.with_snapshot(
+            |_| {},
+            |snap| snap.find_method_in_chain(class.trim_start_matches('\\'), method),
+        )
+        .ok()
+        .flatten()
+        .map(|(_, method)| method)
+    }
+
     /// Current PHP version tracked by the workspace input.
     pub fn workspace_php_version(&self) -> mir_analyzer::PhpVersion {
         self.analysis_session.lock().unwrap().0

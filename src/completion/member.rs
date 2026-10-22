@@ -224,15 +224,41 @@ fn mir_class_like(
     name: &str,
     is_root: bool,
 ) -> Option<ClassLike> {
-    if is_root && !name.contains('\\') {
-        let resolved = resolve_fqn(doc, name, &doc.file_imports());
-        if resolved != name
-            && let Some(found) = docs.find_class_like(&resolved)
-        {
-            return Some(found);
-        }
+    if !is_root {
+        return docs.find_class_like(name);
     }
-    docs.find_class_like(name)
+    mir_name_candidates(doc, name).find_map(|fqcn| docs.find_class_like(&fqcn))
+}
+
+/// Parameter names of `method` as mir resolves it on `class`, inherited,
+/// trait and `@mixin` methods included.
+pub(super) fn mir_method_params(
+    docs: &DocumentStore,
+    doc: &ParsedDoc,
+    class: &str,
+    method: &str,
+) -> Option<Vec<String>> {
+    let method = mir_name_candidates(doc, class)
+        .find_map(|fqcn| docs.find_method_in_chain(&fqcn, method))?;
+    Some(
+        method
+            .params
+            .iter()
+            .map(|p| p.name.as_str().trim_start_matches('$'))
+            // mir's synthetic variadic for `func_get_args()` bodies.
+            .filter(|name| *name != "...")
+            .map(str::to_owned)
+            .collect(),
+    )
+}
+
+/// Spellings of a class name to try in mir, most specific first: a bare name
+/// resolved against the current file's namespace and imports, then as written.
+fn mir_name_candidates(doc: &ParsedDoc, name: &str) -> impl Iterator<Item = String> {
+    let resolved = (!name.contains('\\'))
+        .then(|| resolve_fqn(doc, name, &doc.file_imports()))
+        .filter(|resolved| resolved != name);
+    resolved.into_iter().chain(std::iter::once(name.to_owned()))
 }
 
 fn push_mir_members(

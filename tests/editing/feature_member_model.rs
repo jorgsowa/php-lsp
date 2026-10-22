@@ -393,3 +393,139 @@ async fn vendor_parent_traits_and_grandparent_members_are_offered() {
         Method      run"#]]
     .assert_eq(&members(&out));
 }
+
+/// Completion at `$0` triggered by `(`, the only trigger that offers named arguments.
+async fn paren_completion(s: &mut TestServer, src: &str) -> String {
+    let opened = s.open_fixture(src).await;
+    let c = opened.cursor().clone();
+    let uri = s.uri(&c.path);
+    let resp = s
+        .client()
+        .request(
+            "textDocument/completion",
+            serde_json::json!({
+                "textDocument": { "uri": uri },
+                "position": { "line": c.line, "character": c.character },
+                "context": { "triggerKind": 2, "triggerCharacter": "(" },
+            }),
+        )
+        .await;
+    render_completion(&resp)
+}
+
+#[tokio::test]
+async fn inherited_method_gets_named_argument_completion() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = paren_completion(
+        &mut s,
+        r#"<?php
+namespace App;
+class Base { public function send(string $to, string $body): void {} }
+class Mailer extends Base {}
+function f(Mailer $m) { $m->send($0); }
+"#,
+    )
+    .await;
+    expect![[r#"
+        Variable    body:
+        Variable    to:"#]]
+    .assert_eq(&out);
+}
+
+#[tokio::test]
+async fn trait_and_mixin_methods_get_named_argument_completion() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = paren_completion(
+        &mut s,
+        r#"<?php
+class Builder { public function where(string $column, mixed $value): static { return $this; } }
+trait Logs { public function log(string $message): void {} }
+/** @mixin Builder */
+class Model { use Logs; }
+function f(Model $m) { $m->where($0); }
+"#,
+    )
+    .await;
+    expect![[r#"
+        Variable    column:
+        Variable    value:"#]]
+    .assert_eq(&out);
+
+    let out = paren_completion(
+        &mut s,
+        r#"<?php
+class Builder { public function where(string $column, mixed $value): static { return $this; } }
+trait Logs { public function log(string $message): void {} }
+/** @mixin Builder */
+class Model { use Logs; }
+function f(Model $m) { $m->log($0); }
+"#,
+    )
+    .await;
+    expect!["Variable    message:"].assert_eq(&out);
+}
+
+#[tokio::test]
+async fn inherited_static_method_gets_named_argument_completion() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = paren_completion(
+        &mut s,
+        r#"<?php
+namespace App;
+class Factory { public static function make(string $name, int $size): static { return new static(); } }
+class Widget extends Factory {}
+Widget::make($0);
+"#,
+    )
+    .await;
+    expect![[r#"
+        Variable    name:
+        Variable    size:"#]]
+    .assert_eq(&out);
+}
+
+/// Attribute classes usually live in unopened vendor files.
+#[tokio::test]
+async fn unopened_vendor_attribute_gets_constructor_named_arguments() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("vendor/acme/routing/src");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(
+        tmp.path().join("composer.json"),
+        r#"{"autoload":{"psr-4":{"Acme\\Routing\\":"vendor/acme/routing/src/"}}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        src.join("Route.php"),
+        "<?php\nnamespace Acme\\Routing;\n#[\\Attribute]\nclass Route {\n    public function __construct(string $path, array $methods = []) {}\n}\n",
+    )
+    .unwrap();
+    let caller = "<?php\nnamespace App;\nuse Acme\\Routing\\Route;\nclass Home {\n    #[Route(\n    public function index(): void {}\n}\n";
+    std::fs::write(tmp.path().join("Home.php"), caller).unwrap();
+
+    let mut s = TestServer::with_root(tmp.path()).await;
+    s.validate_syntax(false);
+    s.wait_for_index_ready().await;
+    s.open("Home.php", caller).await;
+
+    let (_, line, ch) = s.locate("Home.php", "#[Route(", 0);
+    let uri = s.uri("Home.php");
+    let resp = s
+        .client()
+        .request(
+            "textDocument/completion",
+            serde_json::json!({
+                "textDocument": { "uri": uri },
+                "position": { "line": line, "character": ch + "#[Route(".len() as u32 },
+                "context": { "triggerKind": 2, "triggerCharacter": "(" },
+            }),
+        )
+        .await;
+    expect![[r#"
+        Variable    methods: | #Route argument
+        Variable    path: | #Route argument"#]]
+    .assert_eq(&render_completion_ordered(&resp));
+}

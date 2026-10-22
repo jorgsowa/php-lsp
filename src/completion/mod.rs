@@ -15,8 +15,8 @@ use match_arm::match_arm_completions;
 
 mod member;
 use member::{
-    all_instance_members, all_static_members, magic_method_completions, resolve_receiver_class,
-    resolve_static_receiver,
+    all_instance_members, all_static_members, magic_method_completions, mir_method_params,
+    resolve_receiver_class, resolve_static_receiver,
 };
 
 mod namespace;
@@ -234,12 +234,10 @@ fn resolve_call_params(
     params
 }
 
-/// Find `method_name`'s parameter names on exactly `class_name` — the
-/// current doc, then the workspace-index-backed lookup, then every other
-/// open doc. Deliberately does *not* fall back further (e.g. to an
-/// unrelated same-named method, or to a superclass): a resolved receiver
-/// class that doesn't declare the method directly should offer no
-/// named-argument completions rather than risk a wrong class's parameters.
+/// Find `method_name`'s parameter names on `class_name` — declared directly
+/// in the current doc, the workspace-index-backed lookup, or another open
+/// doc, else as mir resolves it along the class's ancestor chain. Never falls
+/// back to an unrelated same-named method on another class.
 fn params_of_method_anywhere(
     class_name: &str,
     method_name: &str,
@@ -265,7 +263,9 @@ fn params_of_method_anywhere(
             return params;
         }
     }
-    vec![]
+    ctx.session
+        .and_then(|docs| mir_method_params(docs, doc, class_name, method_name))
+        .unwrap_or_default()
 }
 
 /// Workspace-index-backed class lookup: maps a short class name to the
@@ -599,6 +599,12 @@ pub fn filtered_completions_at(
                                 break;
                             }
                         }
+                    }
+                    if attr_params.is_empty()
+                        && let Some(docs) = ctx.session
+                    {
+                        attr_params = mir_method_params(docs, doc, &attr_class, "__construct")
+                            .unwrap_or_default();
                     }
                     if !attr_params.is_empty() {
                         return attr_params
