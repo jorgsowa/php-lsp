@@ -4,25 +4,34 @@ All notable changes to php-lsp are documented here.
 
 ## [Unreleased]
 
+## [0.27.0] — 2026-10-22
+
 ### Added
 
 - **`diagnostics.disabled` setting**: a list of issue names (the diagnostic `code`, e.g. `MissingThrowsDocblock`) to suppress individually (#262).
 - **`diagnostics.excludePaths` setting**: paths (e.g. `vendor/*`) whose files never get diagnostics, even when opened, while still being indexed (#247).
+- **wasm32-wasip1 library build**: the parser, analysis session, completion, hover and navigation build for `wasm32-wasip1`; the server, workspace scan and external tools stay native-only (#267).
 
 ### Changed
 
-- The warm sweep analyses 32 files per core (up to 16 cores) per pass instead of 32, so mir's parallel workers stay busy. With mir's parallel warm pass, a full Symfony sweep drops from ~12.4s to ~3.6s (#250).
-- Member completion (`->`, `::`) reads classes from mir's class table, falling back to the AST for classes mir doesn't know. It now also offers interface constants and methods, `@property`/`@method` tags on traits and interfaces, and private members of a class's own traits; enum `$name`/`$value` show as `readonly` (#250).
-- Named-argument completion (`$obj->method(`, `Class::method(`, `#[Attr(`) falls back to mir's method resolution, so inherited, trait and `@mixin` methods and attribute constructors from unopened vendor files get parameter names.
+- **Faster warm sweep**: 32 files per core (up to 16 cores) per pass instead of 32 in total, so mir's parallel workers stay busy. A full Symfony sweep drops from ~12.4s to ~3.6s (#250).
+- **Member completion from mir** (`->`, `::`): classes come from mir's class table, falling back to the AST for classes mir doesn't know. Interface constants and methods, `@property`/`@method` tags on traits and interfaces, and private members of a class's own traits are now offered; enum `$name`/`$value` show as `readonly` (#250).
+- **Named-argument completion** (`$obj->method(`, `Class::method(`, `#[Attr(`) falls back to mir's method resolution, so inherited, trait and `@mixin` methods and attribute constructors from unopened vendor files get parameter names.
+- **References**: the AST-heuristic FQN fallback is gone; references rely on mir's resolution.
 
 ### Fixed
 
-- `indexedExtensions` now also drives the workspace scan, composer `autoload.files` and `include`/`require` following, so non-`.php` sources (Drupal's `.module`, `.inc`, `.install`, `.theme`) are indexed and resolved (#260). Requires mir 0.85.
+- **`indexedExtensions`** now also drives the workspace scan, composer `autoload.files` and `include`/`require` following, so non-`.php` sources (Drupal's `.module`, `.inc`, `.install`, `.theme`) are indexed and resolved (#260).
+- **On-demand vendor symbols**: classes and functions mir loaded through the autoloader resolve again in type-hierarchy supertypes, declaration lookup and other FQN-based lookups (#250).
+- **Union receivers**: method-call signature help and match-arm completion look up each class of a union instead of the joined name.
+- **Session rebuild panic**: an intermittent `index N is uninitialized` panic when the analysis session was rebuilt (cache directory attached, stub directories set, or PHP version changed) while requests were in flight.
+- **Document lifecycle**: closing a file while its open is still parsing no longer publishes stale diagnostics, and reopening while a close is syncing no longer clears fresh ones.
+- **Warm sweep**: a chunk that keeps failing is retried a bounded number of times, then skipped, instead of pinning a core; the sweep is then not reported complete.
+- **Docs**: `diagnostics.enabled` was listed as off by default; it defaults to `true`.
 
-- Vendor classes and functions mir loaded on demand through the autoloader resolve again in type-hierarchy supertypes, declaration lookup and other FQN-based lookups; their locations came back as filesystem paths that missed the workspace index (#250).
-- Intermittent `index N is uninitialized` panic when the analysis session was rebuilt (cache directory attached, stub directories set, or PHP version changed) while requests were in flight: a file or workspace handle from the old database could be used against the new one.
-- The reference warm sweep no longer pins a core when a chunk keeps failing: each chunk is retried a bounded number of times, then skipped, and the sweep is not reported complete.
-- Configuration docs listed `diagnostics.enabled` as off by default; it defaults to `true`.
+### Dependencies
+
+- **mir updated to 0.88.0** (from 0.84.0), pinned to its release tag. Docblock issues are reported at the tag rather than the docblock opener.
 
 ## [0.26.0] — 2026-10-03
 
