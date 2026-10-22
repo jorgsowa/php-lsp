@@ -9,10 +9,13 @@ pub mod phpcs;
 #[cfg(not(target_family = "wasm"))]
 pub mod phpstan;
 
+#[cfg(not(target_family = "wasm"))]
 use std::path::Path;
 
+#[cfg(not(target_family = "wasm"))]
 use tower_lsp_server::ls_types::Diagnostic;
 
+#[cfg(not(target_family = "wasm"))]
 use crate::lang::config::ExternalToolsConfig;
 
 /// Run every enabled external tool against `path` and return their combined

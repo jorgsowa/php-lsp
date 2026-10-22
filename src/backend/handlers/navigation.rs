@@ -416,12 +416,10 @@ impl Backend {
                 resolve_reference_symbol(doc_opt.as_ref(), &source, position, word);
             let symbol = match usage_symbol {
                 Some(sym) => sym,
-                None => {
-                    match build_mir_symbol(&word, kind, None, constant_owner.is_some()) {
-                        Some(sym) => sym,
-                        None => return Ok(None),
-                    }
-                }
+                None => match build_mir_symbol(&word, kind, None, constant_owner.is_some()) {
+                    Some(sym) => sym,
+                    None => return Ok(None),
+                },
             };
 
             // Candidate scope: visibility narrowing for private/protected
@@ -647,9 +645,7 @@ impl Backend {
             resolve_reference_symbol(doc_opt.as_ref(), &source, position, word);
         let symbol = match usage_symbol {
             Some(sym) => sym,
-            None => {
-                build_mir_symbol(&word, kind, None, constant_owner.is_some())?
-            }
+            None => build_mir_symbol(&word, kind, None, constant_owner.is_some())?,
         };
 
         // Candidate scope: same shape as the references handler — visibility

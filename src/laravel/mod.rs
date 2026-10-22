@@ -71,6 +71,7 @@ use tower_lsp_server::ls_types::{
     CodeActionOrCommand, CompletionItem, DocumentLink, Hover, Location, Position, Range, Uri,
 };
 
+#[cfg(not(target_family = "wasm"))]
 pub(crate) use string_call::find_call_sites;
 
 /// Bare function names recognized as the `env()` string-key helper call.

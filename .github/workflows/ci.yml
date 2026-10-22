@@ -105,3 +105,5 @@ jobs:
 
       - name: Check the library
         run: cargo check --lib --target wasm32-wasip1
+        env:
+          RUSTFLAGS: -D warnings
