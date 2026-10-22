@@ -13,6 +13,7 @@ use crate::analysis::diagnostics::parse_document_no_diags;
 use crate::document::document_store::DocumentStore;
 use crate::document::open_files::OpenFiles;
 use crate::index::file_index::FileIndex;
+use crate::index::matches_any;
 
 /// Ask all connected clients to re-request semantic tokens, code lenses, inlay hints,
 /// and diagnostics. Called after bulk index operations so that previously-opened editors
@@ -346,17 +347,6 @@ fn walk_dir_parallel(
     });
 }
 
-pub(crate) fn matches_any(rel_path: &str, patterns: &[String]) -> bool {
-    patterns.iter().any(|pat| {
-        let p = pat.trim_end_matches('*').trim_end_matches('/');
-        rel_path.split('/').any(|c| c == p)
-            || rel_path.starts_with(&format!("{p}/"))
-            || rel_path.contains(&format!("/{p}/"))
-            || rel_path
-                .split('/')
-                .any(|c| c.ends_with(".php") && c.strip_suffix(".php").unwrap_or(c) == p)
-    })
-}
 fn matches_include_prefix(rel_path: &str, patterns: &[String]) -> bool {
     patterns.iter().any(|pat| {
         let p = pat.trim_end_matches('*').trim_end_matches('/');

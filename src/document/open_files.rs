@@ -244,7 +244,7 @@ pub(crate) fn compute_open_file_diagnostics(
     diag_cfg: &DiagnosticsConfig,
     is_laravel: bool,
 ) -> Vec<Diagnostic> {
-    if crate::index::workspace_scan::matches_any(uri.path().as_str(), &diag_cfg.exclude_paths) {
+    if crate::index::matches_any(uri.path().as_str(), &diag_cfg.exclude_paths) {
         return Vec::new();
     }
     let mut out = open_files.parse_diagnostics(uri).unwrap_or_default();
