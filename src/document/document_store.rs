@@ -834,6 +834,16 @@ impl DocumentStore {
         .flatten()
     }
 
+    /// mir's class-like for `fqcn`; `None` when unknown or every snapshot attempt was cancelled.
+    pub fn find_class_like(&self, fqcn: &str) -> Option<mir_analyzer::db::ClassLike> {
+        self.with_snapshot(
+            |_| {},
+            |snap| snap.find_class_like(fqcn.trim_start_matches('\\')),
+        )
+        .ok()
+        .flatten()
+    }
+
     /// Current PHP version tracked by the workspace input.
     pub fn workspace_php_version(&self) -> mir_analyzer::PhpVersion {
         self.analysis_session.lock().unwrap().0

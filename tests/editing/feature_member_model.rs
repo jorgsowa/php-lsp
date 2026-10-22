@@ -215,3 +215,181 @@ Mailer::send($0);
         .collect();
     expect!["Method      send(to:, body:) | named args"].assert_eq(&named.join("\n"));
 }
+
+#[tokio::test]
+async fn docblock_property_and_method_tags_are_offered() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_completion_ordered(
+            r#"<?php
+/**
+ * @property string $email
+ * @property-read int $id
+ * @method int total()
+ * @method static self make()
+ */
+class User {}
+function f(User $u) { $u->$0 }
+"#,
+        )
+        .await;
+    expect![[r#"
+        Property    $email
+        Property    $id
+        Method      total"#]]
+    .assert_eq(&members(&out));
+}
+
+#[tokio::test]
+async fn mixin_public_members_are_offered() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_completion_ordered(
+            r#"<?php
+class Builder {
+    public function where(): static { return $this; }
+    protected function guarded(): void {}
+    public static function query(): void {}
+}
+/** @mixin Builder */
+class Model { public function save(): void {} }
+function f(Model $m) { $m->$0 }
+"#,
+        )
+        .await;
+    expect![[r#"
+        Method      save
+        Method      where"#]]
+    .assert_eq(&members(&out));
+}
+
+#[tokio::test]
+async fn private_trait_members_are_offered_inside_the_using_class() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_completion_ordered(
+            r#"<?php
+trait Helpers {
+    private function helper(): void {}
+}
+class Base {
+    use Helpers;
+}
+class Child extends Base {
+    use Helpers2;
+    public function run(): void { $this->$0 }
+}
+trait Helpers2 {
+    private function own(): void {}
+}
+"#,
+        )
+        .await;
+    expect![[r#"
+        Method      own
+        Method      run"#]]
+    .assert_eq(&members(&out));
+}
+
+#[tokio::test]
+async fn interface_constants_are_offered_on_implementing_class() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_completion_ordered(
+            r#"<?php
+namespace App;
+interface HasVersion { const VERSION = 1; }
+class Release implements HasVersion { const NAME = 'x'; }
+Release::$0
+"#,
+        )
+        .await;
+    expect![[r#"
+        Constant    NAME
+        Constant    VERSION"#]]
+    .assert_eq(&members(&out));
+}
+
+#[tokio::test]
+async fn backed_enum_static_access_offers_cases_and_builtins() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_completion_ordered(
+            r#"<?php
+namespace App;
+enum Suit: string {
+    case Hearts = 'h';
+    const DEFAULT = self::Hearts;
+    public static function random(): self { return self::Hearts; }
+}
+Suit::$0
+"#,
+        )
+        .await;
+    expect![[r#"
+        Constant    DEFAULT
+        Constant    Hearts
+        Method      cases
+        Method      from
+        Method      random
+        Method      tryFrom"#]]
+    .assert_eq(&members(&out));
+}
+
+/// Unopened PSR-4 vendor classes: traits and the grandparent of a vendor
+/// parent must all contribute members.
+#[tokio::test]
+async fn vendor_parent_traits_and_grandparent_members_are_offered() {
+    let tmp = tempfile::tempdir().unwrap();
+    let src = tmp.path().join("vendor/acme/console/src");
+    std::fs::create_dir_all(&src).unwrap();
+    std::fs::write(
+        tmp.path().join("composer.json"),
+        r#"{"autoload":{"psr-4":{"Acme\\Console\\":"vendor/acme/console/src/"}}}"#,
+    )
+    .unwrap();
+    std::fs::write(
+        src.join("BaseCommand.php"),
+        "<?php\nnamespace Acme\\Console;\nclass BaseCommand { public function run(): int { return 0; } }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        src.join("InteractsWithIO.php"),
+        "<?php\nnamespace Acme\\Console;\ntrait InteractsWithIO { public function line(): void {} }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        src.join("CallsCommands.php"),
+        "<?php\nnamespace Acme\\Console;\ntrait CallsCommands { protected function call(): void {} }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        src.join("Command.php"),
+        "<?php\nnamespace Acme\\Console;\nclass Command extends BaseCommand {\n    use InteractsWithIO, CallsCommands;\n    private function secret(): void {}\n}\n",
+    )
+    .unwrap();
+    let caller = "<?php\nnamespace App;\nuse Acme\\Console\\Command;\nclass Sync extends Command {\n    public function handle(): void {\n        $this->\n    }\n}\n";
+    std::fs::write(tmp.path().join("Sync.php"), caller).unwrap();
+
+    let mut s = TestServer::with_root(tmp.path()).await;
+    s.validate_syntax(false);
+    s.wait_for_index_ready().await;
+    s.open("Sync.php", caller).await;
+
+    let (_, line, ch) = s.locate("Sync.php", "$this->", 0);
+    let resp = s
+        .completion("Sync.php", line, ch + "$this->".len() as u32)
+        .await;
+    let out = render_completion_ordered(&resp);
+    expect![[r#"
+        Method      call
+        Method      handle
+        Method      line
+        Method      run"#]]
+    .assert_eq(&members(&out));
+}

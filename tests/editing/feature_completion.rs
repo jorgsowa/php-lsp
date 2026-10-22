@@ -1312,7 +1312,7 @@ $s = Suit::Hearts; $s->$0
         )
         .await;
     expect![[r#"
-        Property    $name"#]]
+        Property    $name | readonly"#]]
     .assert_eq(&out);
 }
 
@@ -1329,8 +1329,8 @@ $s = Status::Active; $s->$0
         )
         .await;
     expect![[r#"
-        Property    $name
-        Property    $value"#]]
+        Property    $name | readonly
+        Property    $value | readonly"#]]
     .assert_eq(&out);
 }
 
@@ -1347,8 +1347,8 @@ $p = Priority::Low; $p->$0
         )
         .await;
     expect![[r#"
-        Property    $name
-        Property    $value"#]]
+        Property    $name | readonly
+        Property    $value | readonly"#]]
     .assert_eq(&out);
 }
 
@@ -1365,7 +1365,7 @@ $s = Suit::Hearts; $s->$0
         )
         .await;
     expect![[r#"
-        Property    $name"#]]
+        Property    $name | readonly"#]]
     .assert_eq(&out);
 }
 

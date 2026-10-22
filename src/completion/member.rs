@@ -1,10 +1,13 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+use mir_analyzer::Visibility;
+use mir_analyzer::db::ClassLike;
 use tower_lsp_server::ls_types::{CompletionItem, CompletionItemKind, InsertTextFormat, Position};
 
 use crate::document::ast::ParsedDoc;
 use crate::document::document_store::DocumentStore;
+use crate::navigation::moniker::resolve_fqn;
 use crate::text::utf16_offset_to_byte;
 use crate::types::type_map::{
     ClassMembers, enclosing_class_at, members_of_class, mixin_classes_of, parent_class_name,
@@ -58,6 +61,9 @@ pub(super) fn all_static_members(
 ///
 /// Inherited private members are never offered; inherited protected ones only
 /// when the cursor sits inside a class (`in_class_scope`).
+///
+/// Each class is read from mir's class table when `session` knows it, else
+/// from the AST of its defining document.
 fn all_members(
     class_name: &str,
     doc: &ParsedDoc,
@@ -71,29 +77,56 @@ fn all_members(
         .chain(other_docs.iter().map(|d| d.as_ref()))
         .collect();
     let mut items = Vec::new();
-    let mut seen_names: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut visited: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut seen_names: HashSet<String> = HashSet::new();
+    let mut visited: HashSet<String> = HashSet::new();
     let mut queue: Vec<(String, bool)> = vec![(class_name.to_string(), false)];
+    let mut is_root = true;
     while let Some((current, inherited)) = queue.pop() {
         if !visited.insert(current.clone()) {
             continue;
         }
-        let mut parent: Option<String> = None;
-        let mut found_in_docs = false;
+        let class_like = session.and_then(|docs| mir_class_like(docs, doc, &current, is_root));
+        is_root = false;
+        if let Some(class_like) = class_like {
+            push_mir_members(
+                &class_like,
+                inherited,
+                is_static,
+                in_class_scope,
+                &mut items,
+                &mut seen_names,
+            );
+            let own_traits = class_like.class_traits();
+            let mut next: Vec<(String, bool)> = class_like
+                .ancestor_fqcns()
+                .into_iter()
+                .map(|a| {
+                    // Private members of a class's own traits stay visible to it.
+                    let via_own_trait = own_traits.contains(&a);
+                    (a.to_string(), inherited || !via_own_trait)
+                })
+                .collect();
+            if !is_static {
+                next.extend(class_like.mixins().iter().map(|m| (m.to_string(), true)));
+            }
+            // `queue` is a stack: push in reverse so traits are visited before the parent.
+            queue.extend(next.into_iter().rev());
+            continue;
+        }
 
         // `current` may be a bare short name or a full FQN (an import-
         // resolved receiver keeps its FQN so `find_class_doc` can pick the
         // right same-named class from a different namespace — see
         // `resolve_static_receiver`). AST-level matching (`members_of_class`
         // and friends below) always compares against the short name as
-        // declared in source, so that's what they get; `find_class_doc` and
-        // `stub_class_members` want the disambiguating full name.
+        // declared in source, so that's what they get; `find_class_doc`
+        // wants the disambiguating full name.
         let short: &str = current.rsplit('\\').next().unwrap_or(&current);
 
         // Fast path: workspace-index lookup gives O(1) access to the one doc
         // that defines `current`. Fallback: scan all docs linearly (original
         // behaviour, used when the index is unavailable or the class is not
-        // yet indexed, e.g. built-ins or unsaved files).
+        // yet indexed, e.g. unsaved files).
         let fast_doc: Option<Arc<ParsedDoc>> = find_class_doc.and_then(|f| f(&current));
         let fast_ref: Option<&ParsedDoc> = fast_doc.as_deref();
         let defining: Option<(&ParsedDoc, ClassMembers)> = if let Some(fd) = fast_ref {
@@ -108,122 +141,173 @@ fn all_members(
             })
         };
 
-        if let Some((d, members)) = defining {
-            found_in_docs = true;
-            parent = members
-                .parent
-                .as_deref()
-                .map(|p| resolve_class_ref(d, short, p));
-            let hidden = |restricted: &[(String, bool)], name: &str| {
-                inherited
-                    && restricted
-                        .iter()
-                        .any(|(n, private)| n == name && (*private || !in_class_scope))
-            };
-            for (name, meth_is_static, has_params) in members.methods {
-                if (meth_is_static == is_static)
-                    && !hidden(&members.restricted_methods, &name)
-                    && seen_names.insert(name.clone())
-                {
-                    let mut item = callable_item(&name, CompletionItemKind::METHOD, has_params);
-                    // Disambiguates completion_resolve's lookup when another
-                    // class elsewhere in the workspace declares a method of
-                    // the same name — see resolve_static_receiver's FQN note.
-                    item.data = Some(serde_json::json!({ "class": current }));
-                    items.push(item);
-                }
-            }
-            for (name, prop_is_static) in &members.properties {
-                if *prop_is_static == is_static && !hidden(&members.restricted_properties, name) {
-                    let label = format!("${name}");
-                    if seen_names.insert(label.clone()) {
-                        let detail = if !is_static && members.readonly_properties.contains(name) {
-                            Some("readonly".to_string())
-                        } else {
-                            None
-                        };
-                        // Static access (Class::$prop) keeps "$name" as the inserted text because
-                        // the $ is syntactically required. Instance access ($obj->prop) must NOT
-                        // insert the $, or the client produces `$obj->$prop` (invalid PHP).
-                        let insert_text = if is_static { None } else { Some(name.clone()) };
-                        items.push(CompletionItem {
-                            label,
-                            kind: Some(CompletionItemKind::PROPERTY),
-                            detail,
-                            insert_text,
-                            ..Default::default()
-                        });
-                    }
-                }
-            }
-            if is_static {
-                for name in members.constants {
-                    if !hidden(&members.restricted_constants, &name)
-                        && seen_names.insert(name.clone())
-                    {
-                        items.push(CompletionItem {
-                            label: name,
-                            kind: Some(CompletionItemKind::CONSTANT),
-                            ..Default::default()
-                        });
-                    }
-                }
-            } else {
-                for mixin in mixin_classes_of(d, short) {
-                    queue.push((resolve_class_ref(d, short, &mixin), true));
-                }
-            }
-            for trait_name in members.trait_uses {
-                queue.push((resolve_class_ref(d, short, &trait_name), inherited));
+        let Some((d, members)) = defining else {
+            continue;
+        };
+        let parent = members
+            .parent
+            .as_deref()
+            .map(|p| resolve_class_ref(d, short, p));
+        let hidden = |restricted: &[(String, bool)], name: &str| {
+            inherited
+                && restricted
+                    .iter()
+                    .any(|(n, private)| n == name && (*private || !in_class_scope))
+        };
+        for (name, meth_is_static, has_params) in members.methods {
+            if (meth_is_static == is_static)
+                && !hidden(&members.restricted_methods, &name)
+                && seen_names.insert(name.clone())
+            {
+                let mut item = callable_item(&name, CompletionItemKind::METHOD, has_params);
+                // Disambiguates completion_resolve's lookup when another
+                // class elsewhere in the workspace declares a method of
+                // the same name — see resolve_static_receiver's FQN note.
+                item.data = Some(serde_json::json!({ "class": current }));
+                items.push(item);
             }
         }
-
-        // Built-in stubs only apply when the class is not defined in any user
-        // document — a user class shadowing a built-in name wins.
-        if !found_in_docs
-            && let Some(stub) = session.and_then(|docs| docs.stub_class_members(&current))
-        {
-            if parent.is_none() {
-                parent = stub.parent.clone();
-            }
-            for (name, meth_is_static, has_params) in &stub.methods {
-                if (*meth_is_static == is_static) && seen_names.insert(name.clone()) {
-                    let mut item = callable_item(name, CompletionItemKind::METHOD, *has_params);
-                    item.data = Some(serde_json::json!({ "class": current }));
-                    items.push(item);
+        for (name, prop_is_static) in &members.properties {
+            if *prop_is_static == is_static && !hidden(&members.restricted_properties, name) {
+                let label = format!("${name}");
+                if seen_names.insert(label.clone()) {
+                    let detail = if !is_static && members.readonly_properties.contains(name) {
+                        Some("readonly".to_string())
+                    } else {
+                        None
+                    };
+                    // Static access (Class::$prop) keeps "$name" as the inserted text because
+                    // the $ is syntactically required. Instance access ($obj->prop) must NOT
+                    // insert the $, or the client produces `$obj->$prop` (invalid PHP).
+                    let insert_text = if is_static { None } else { Some(name.clone()) };
+                    items.push(CompletionItem {
+                        label,
+                        kind: Some(CompletionItemKind::PROPERTY),
+                        detail,
+                        insert_text,
+                        ..Default::default()
+                    });
                 }
             }
-            for (name, prop_is_static) in &stub.properties {
-                if *prop_is_static == is_static {
-                    let label = format!("${name}");
-                    if seen_names.insert(label.clone()) {
-                        let insert_text = if is_static { None } else { Some(name.clone()) };
-                        items.push(CompletionItem {
-                            label,
-                            kind: Some(CompletionItemKind::PROPERTY),
-                            insert_text,
-                            ..Default::default()
-                        });
-                    }
+        }
+        if is_static {
+            for name in members.constants {
+                if !hidden(&members.restricted_constants, &name) && seen_names.insert(name.clone())
+                {
+                    items.push(CompletionItem {
+                        label: name,
+                        kind: Some(CompletionItemKind::CONSTANT),
+                        ..Default::default()
+                    });
                 }
             }
-            if is_static {
-                for name in &stub.constants {
-                    if seen_names.insert(name.clone()) {
-                        items.push(CompletionItem {
-                            label: name.clone(),
-                            kind: Some(CompletionItemKind::CONSTANT),
-                            ..Default::default()
-                        });
-                    }
-                }
+        } else {
+            for mixin in mixin_classes_of(d, short) {
+                queue.push((resolve_class_ref(d, short, &mixin), true));
             }
+        }
+        for trait_name in members.trait_uses {
+            queue.push((resolve_class_ref(d, short, &trait_name), inherited));
         }
         if let Some(p) = parent {
             queue.push((p, true));
         }
     }
     items
+}
+
+/// Look up `name` in mir. A bare root name is tried against the current
+/// file's namespace and imports first, then as a global name.
+fn mir_class_like(
+    docs: &DocumentStore,
+    doc: &ParsedDoc,
+    name: &str,
+    is_root: bool,
+) -> Option<ClassLike> {
+    if is_root && !name.contains('\\') {
+        let resolved = resolve_fqn(doc, name, &doc.file_imports());
+        if resolved != name
+            && let Some(found) = docs.find_class_like(&resolved)
+        {
+            return Some(found);
+        }
+    }
+    docs.find_class_like(name)
+}
+
+fn push_mir_members(
+    class_like: &ClassLike,
+    inherited: bool,
+    is_static: bool,
+    in_class_scope: bool,
+    items: &mut Vec<CompletionItem>,
+    seen_names: &mut HashSet<String>,
+) {
+    let hidden = |visibility: Visibility| {
+        inherited
+            && match visibility {
+                Visibility::Public => false,
+                Visibility::Protected => !in_class_scope,
+                Visibility::Private => true,
+            }
+    };
+    let owner = class_like.fqcn().to_string();
+    for method in class_like.own_methods().values() {
+        if method.is_static == is_static
+            && !hidden(method.visibility)
+            && seen_names.insert(method.name.to_string())
+        {
+            let mut item = callable_item(
+                &method.name,
+                CompletionItemKind::METHOD,
+                !method.params.is_empty(),
+            );
+            item.data = Some(serde_json::json!({ "class": owner }));
+            items.push(item);
+        }
+    }
+    for prop in class_like
+        .own_properties()
+        .into_iter()
+        .flat_map(|p| p.values())
+    {
+        if prop.is_static != is_static || hidden(prop.visibility) {
+            continue;
+        }
+        let label = format!("${}", prop.name);
+        if seen_names.insert(label.clone()) {
+            let detail = (!is_static && prop.has_native_readonly).then(|| "readonly".to_string());
+            // `Class::$prop` needs the `$`; `$obj->prop` must not get it.
+            let insert_text = (!is_static).then(|| prop.name.to_string());
+            items.push(CompletionItem {
+                label,
+                kind: Some(CompletionItemKind::PROPERTY),
+                detail,
+                insert_text,
+                ..Default::default()
+            });
+        }
+    }
+    if is_static {
+        let cases = match class_like {
+            ClassLike::Enum(e) => e.cases.keys().cloned().collect(),
+            _ => Vec::new(),
+        };
+        let constants = class_like
+            .own_constants()
+            .values()
+            .filter(|c| !c.visibility.is_some_and(hidden))
+            .map(|c| c.name.clone());
+        for name in cases.into_iter().chain(constants) {
+            if seen_names.insert(name.to_string()) {
+                items.push(CompletionItem {
+                    label: name.to_string(),
+                    kind: Some(CompletionItemKind::CONSTANT),
+                    ..Default::default()
+                });
+            }
+        }
+    }
 }
 
 /// Resolve `ClassName::` or the aliases `self::`, `static::`, `parent::`.

@@ -12,6 +12,7 @@ All notable changes to php-lsp are documented here.
 ### Changed
 
 - The warm sweep analyses 32 files per core (up to 16 cores) per pass instead of 32, so mir's parallel workers stay busy. With mir's parallel warm pass, a full Symfony sweep drops from ~12.4s to ~3.6s (#250).
+- Member completion (`->`, `::`) reads classes from mir's class table, falling back to the AST for classes mir doesn't know. It now also offers interface constants and methods, `@property`/`@method` tags on traits and interfaces, and private members of a class's own traits; enum `$name`/`$value` show as `readonly` (#250).
 
 ### Fixed
 
