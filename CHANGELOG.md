@@ -4,6 +4,10 @@ All notable changes to php-lsp are documented here.
 
 ## [Unreleased]
 
+### Fixed
+
+- **On-demand vendor files**: a vendor file mir loaded through the autoloader before the workspace scan reached it is no longer kept as a second, path-keyed copy that location lookups dropped; the scan and later edits update the loaded copy (#250).
+
 ## [0.27.0] — 2026-10-22
 
 ### Added

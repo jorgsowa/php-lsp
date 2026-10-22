@@ -173,19 +173,6 @@ impl WorkspaceIndexData {
         }
     }
 
-    /// `files` index of a mir file key: a URI, or the filesystem path mir keys
-    /// files with when its class resolver loads them on demand.
-    pub(crate) fn file_idx_for_mir_file(&self, file: &str) -> Option<u32> {
-        if let Some(&idx) = self.path_to_file_idx.get(file) {
-            return Some(idx);
-        }
-        if file.contains("://") {
-            return None;
-        }
-        let uri = Uri::from_file_path(file)?;
-        self.path_to_file_idx.get(uri.as_str()).copied()
-    }
-
     /// Constructor that builds the reverse maps from an already-materialised
     /// `(Uri, Arc<FileIndex>)` slice. Exposed so callers that don't want to
     /// spin up a full `AnalysisHost` (unit tests of
@@ -219,26 +206,5 @@ impl WorkspaceIndexArc {
     #[cfg(test)]
     pub fn get(&self) -> &WorkspaceIndexData {
         &self.0
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn file_idx_for_mir_file_accepts_uri_and_filesystem_path() {
-        let uri = Uri::from_file_path("/proj/vendor/acme/src/Base.php").unwrap();
-        let wi = WorkspaceIndexData::from_files(vec![(uri.clone(), Arc::default())]);
-        assert_eq!(wi.file_idx_for_mir_file(uri.as_str()), Some(0));
-        assert_eq!(
-            wi.file_idx_for_mir_file("/proj/vendor/acme/src/Base.php"),
-            Some(0)
-        );
-        assert_eq!(
-            wi.file_idx_for_mir_file("/proj/vendor/acme/src/Other.php"),
-            None
-        );
-        assert_eq!(wi.file_idx_for_mir_file("untitled:Untitled-1"), None);
     }
 }

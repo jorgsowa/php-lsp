@@ -709,8 +709,9 @@ impl DocumentStore {
         // References/implementations are answered from mir's delta-maintained
         // inverted indexes (posting lists + subtype edges), which the session
         // keeps in step with every edit path.
-        let mut builder =
-            mir_analyzer::AnalysisSession::new(php_version).with_class_resolver(resolver);
+        let mut builder = mir_analyzer::AnalysisSession::new(php_version)
+            .with_class_resolver(resolver)
+            .with_source_provider(Arc::new(crate::lang::autoload::UriSourceProvider::default()));
         // Must run before `with_cache_dir`: the cache epoch folds in a
         // fingerprint of the user stub set, which `with_cache_dir` only picks
         // up if it's already been configured.
@@ -2899,7 +2900,7 @@ impl DocumentStore {
         let trimmed = fqn.trim_start_matches('\\');
         let name = mir_analyzer::Name::Class(Arc::from(trimmed));
         let loc = self.definition_location(&name)?;
-        let file_idx = wi.file_idx_for_mir_file(&loc.file)?;
+        let &file_idx = wi.path_to_file_idx.get(loc.file.as_ref())?;
         let (_, idx) = wi.files.get(file_idx as usize)?;
         let class_idx = idx
             .classes
@@ -2934,7 +2935,7 @@ impl DocumentStore {
         let trimmed = fqn.trim_start_matches('\\');
         let name = mir_analyzer::Name::function(trimmed.to_string());
         let loc = self.definition_location(&name)?;
-        let file_idx = wi.file_idx_for_mir_file(&loc.file)?;
+        let &file_idx = wi.path_to_file_idx.get(loc.file.as_ref())?;
         let (_, idx) = wi.files.get(file_idx as usize)?;
         let function_idx = idx
             .functions
@@ -5036,9 +5037,8 @@ mod tests {
         }
     }
 
-    /// A vendor class mir loaded on demand through the PSR-4 resolver
-    /// (keyed by filesystem path) still resolves once the scan mirrors its
-    /// file under a `file://` URI.
+    /// mir keys a vendor class it loads on demand by the same URI the scan
+    /// later mirrors the file under, so the two share one mir file.
     #[test]
     fn class_ref_by_fqn_resolves_on_demand_loaded_vendor_class() {
         let tmp = tempfile::tempdir().unwrap();
@@ -5064,7 +5064,20 @@ mod tests {
         let _ = store.get_semantic_issues_salsa(&app);
 
         let base = Uri::from_file_path(tmp.path().join("vendor/acme/src/Base.php")).unwrap();
-        store.mirror_text(&base, base_src);
+        let base_class = mir_analyzer::Name::Class(Arc::from("Acme\\Base"));
+        let loaded = store
+            .definition_location(&base_class)
+            .expect("Acme\\Base must load on demand");
+        assert_eq!(loaded.file.as_ref(), base.as_str());
+
+        let edited = "<?php\nnamespace Acme;\n\nclass Base { public function hello(): void {} }\n";
+        store.mirror_text(&base, edited);
+        let moved = store.definition_location(&base_class).unwrap();
+        assert_eq!(moved.file.as_ref(), base.as_str());
+        assert_eq!(
+            moved.line, 4,
+            "the mirrored text must replace the on-demand copy"
+        );
 
         let wi = store.get_workspace_index_salsa();
         let class_ref = store

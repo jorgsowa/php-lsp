@@ -1,6 +1,8 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use tower_lsp_server::ls_types::Uri;
+
 /// Supported PHP version strings.
 pub const PHP_7_4: &str = "7.4";
 pub const PHP_8_0: &str = "8.0";
@@ -89,9 +91,43 @@ pub struct Psr4Map {
     project_entries: Vec<(String, PathBuf)>,
 }
 
+/// Returns the file as a `file://` URI string: mir keys files by the exact
+/// string, and php-lsp registers every file under its URI.
 impl mir_analyzer::ClassResolver for Psr4Map {
     fn resolve(&self, fqcn: &str) -> Option<PathBuf> {
-        self.inners.iter().find_map(|m| m.resolve(fqcn))
+        let path = Psr4Map::resolve(self, fqcn)?;
+        let uri = Uri::from_file_path(&path)?;
+        Some(PathBuf::from(uri.as_str()))
+    }
+}
+
+/// Reads the `file://` URI keys [`Psr4Map`] hands mir, plus plain paths.
+#[derive(Default)]
+pub struct UriSourceProvider(mir_analyzer::FsSourceProvider);
+
+fn file_path_of_key(key: &str) -> Option<String> {
+    let uri = key.parse::<Uri>().ok()?;
+    Some(uri.to_file_path()?.to_string_lossy().into_owned())
+}
+
+impl mir_analyzer::SourceProvider for UriSourceProvider {
+    fn read(&self, key: &str) -> Option<Arc<str>> {
+        match file_path_of_key(key) {
+            Some(path) => self.0.read(&path),
+            None => self.0.read(key),
+        }
+    }
+
+    fn prefetch(&self, keys: &[String]) {
+        let paths: Vec<String> = keys
+            .iter()
+            .map(|k| file_path_of_key(k).unwrap_or_else(|| k.clone()))
+            .collect();
+        self.0.prefetch(&paths);
+    }
+
+    fn clear_prefetch(&self) {
+        self.0.clear_prefetch();
     }
 }
 
@@ -458,6 +494,32 @@ mod tests {
         let resolved = m.resolve("App\\Services\\Foo");
         assert!(resolved.is_some(), "should resolve App\\Services\\Foo");
         assert!(resolved.unwrap().ends_with("src/Services/Foo.php"));
+    }
+
+    #[test]
+    fn class_resolver_returns_file_uri_readable_by_source_provider() {
+        use mir_analyzer::{ClassResolver, SourceProvider};
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("my project");
+        write(&root.join("src/Foo.php"), "<?php class Foo {}");
+        write(
+            &root.join("composer.json"),
+            r#"{"autoload": {"psr-4": {"App\\": "src/"}}}"#,
+        );
+        let m = Psr4Map::load(&root);
+        let key = ClassResolver::resolve(&m, "App\\Foo").unwrap();
+        let key = key.to_string_lossy();
+        let path = Psr4Map::resolve(&m, "App\\Foo").unwrap();
+        assert_eq!(key, Uri::from_file_path(&path).unwrap().as_str());
+
+        let provider = UriSourceProvider::default();
+        assert_eq!(provider.read(&key).as_deref(), Some("<?php class Foo {}"));
+        assert_eq!(
+            provider.read(&path.to_string_lossy()).as_deref(),
+            Some("<?php class Foo {}")
+        );
+        provider.prefetch(&[key.to_string()]);
+        assert_eq!(provider.read(&key).as_deref(), Some("<?php class Foo {}"));
     }
 
     #[test]
