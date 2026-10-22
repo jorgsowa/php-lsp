@@ -190,7 +190,7 @@ pub fn incoming_calls_indexed(
     // unresolvable owner becomes the empty class, which mir answers from its
     // name-keyed fallback postings.
     let symbol = if item.kind == SymbolKind::METHOD {
-        let owner = item.detail.as_deref().map(&resolve).unwrap_or_default();
+        let owner = item.detail.as_deref().map(resolve).unwrap_or_default();
         mir_analyzer::Name::method(owner.as_str(), &item.name)
     } else {
         mir_analyzer::Name::function(resolve(&item.name))
