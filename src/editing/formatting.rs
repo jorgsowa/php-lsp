@@ -46,8 +46,11 @@ pub fn format_document(source: &str) -> Option<Vec<TextEdit>> {
 /// the snippet, then returns an edit targeting just that range.
 pub fn format_range(source: &str, range: Range) -> Option<Vec<TextEdit>> {
     let lines: Vec<&str> = source.lines().collect();
-    let start = range.start.line as usize;
     let end = (range.end.line as usize + 1).min(lines.len());
+    let start = (range.start.line as usize).min(end);
+    if start == end {
+        return None;
+    }
     let snippet = lines[start..end].join("\n") + "\n";
 
     // Wrap in `<?php` if the snippet doesn't have an opener (needed for
@@ -148,4 +151,25 @@ fn try_phpcbf(source: &str) -> Option<String> {
         }
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn format_range_past_end_of_document_returns_none() {
+        let range = Range {
+            start: Position {
+                line: 10,
+                character: 0,
+            },
+            end: Position {
+                line: 12,
+                character: 0,
+            },
+        };
+        assert_eq!(format_range("<?php\n$a = 1;\n", range), None);
+        assert_eq!(format_range("", range), None);
+    }
 }
