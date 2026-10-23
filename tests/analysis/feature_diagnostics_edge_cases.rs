@@ -110,7 +110,7 @@ async fn parse_error_emits_diagnostic() {
     expect![[r#"
         1:12-1:13 [1] SyntaxError: expected variable, found '{'
         1:12-1:13 [1] SyntaxError: unclosed '')'' opened at 1:10
-        2:0-2:1 [1] SyntaxError: unclosed ''}'' opened at 1:12"#]]
+        2:0-2:0 [1] SyntaxError: unclosed ''}'' opened at 1:12"#]]
     .assert_eq(&render_diagnostics_notification(&notif));
 }
 
@@ -405,7 +405,7 @@ async fn requests_on_parse_error_file_do_not_error() {
         .await;
     expect![[r#"
         1:15-1:16 [1] SyntaxError: unclosed '')'' opened at 1:10
-        2:0-2:1 [1] SyntaxError: unclosed ''}'' opened at 1:15"#]]
+        2:0-2:0 [1] SyntaxError: unclosed ''}'' opened at 1:15"#]]
     .assert_eq(&render_diagnostics_notification(&notif));
 
     let resp = server.hover("broken.php", 1, 10).await;
@@ -676,7 +676,7 @@ async fn syntax_error_produces_error_diagnostic() {
     let notif = s.open("syntax_err.php", "<?php\nclass {\n").await;
     expect![[r#"
         1:6-1:7 [1] SyntaxError: expected class name, found '{'
-        2:0-2:1 [1] SyntaxError: expected '}', found end of file"#]]
+        2:0-2:0 [1] SyntaxError: expected '}', found end of file"#]]
     .assert_eq(&render_diagnostics_notification(&notif));
 }
 

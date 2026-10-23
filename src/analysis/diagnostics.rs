@@ -52,14 +52,13 @@ pub fn diagnostics_from_doc(doc: &ParsedDoc, target: mir_analyzer::PhpVersion) -
             let end = if span.end > span.start {
                 sv.position_of(span.end)
             } else {
-                // Zero-width span: advance by the UTF-16 width of the character
-                // at the error position so the range is never a mid-surrogate
-                // slice (characters outside the BMP take 2 UTF-16 code units).
-                let ch_width = sv.source()[span.start as usize..]
-                    .chars()
-                    .next()
-                    .map(|c| c.len_utf16() as u32)
-                    .unwrap_or(1);
+                // Zero-width span: widen by the UTF-16 width of the character at
+                // the error (non-BMP chars take 2 units), but stay zero-width at
+                // a line break or EOF so the range never points past the line.
+                let ch_width = match sv.source()[span.start as usize..].chars().next() {
+                    None | Some('\n' | '\r') => 0,
+                    Some(c) => c.len_utf16() as u32,
+                };
                 Position {
                     line: start.line,
                     character: start.character + ch_width,
@@ -112,4 +111,37 @@ pub fn parse_document(
     let doc = parse_document_no_diags(source);
     let diagnostics = diagnostics_from_doc(&doc, target);
     (doc, diagnostics)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn assert_ranges_within_lines(source: &str) {
+        let doc = parse_document_no_diags(source);
+        let diags = diagnostics_from_doc(&doc, mir_analyzer::PhpVersion::LATEST);
+        assert!(!diags.is_empty(), "expected a parse error for {source:?}");
+        let lines: Vec<&str> = source.split('\n').collect();
+        for d in diags {
+            let line = lines[d.range.end.line as usize].trim_end_matches('\r');
+            let len = line.chars().map(|c| c.len_utf16() as u32).sum::<u32>();
+            assert!(
+                d.range.end.character <= len,
+                "range {:?} extends past line {:?}",
+                d.range,
+                line
+            );
+        }
+    }
+
+    #[test]
+    fn parse_error_at_eof_stays_within_file() {
+        assert_ranges_within_lines("<?php\nfoo(");
+    }
+
+    #[test]
+    fn parse_error_at_line_end_stays_within_line() {
+        assert_ranges_within_lines("<?php\n$a = \n");
+        assert_ranges_within_lines("<?php\r\n$a = \r\n");
+    }
 }

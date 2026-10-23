@@ -20,7 +20,7 @@ async fn did_change_pushes_on_parse_error_introduction() {
     let notif = s.change("a.php", 2, "<?php\nclass {\n").await;
     expect![[r#"
         1:6-1:7 [1] SyntaxError: expected class name, found '{'
-        2:0-2:1 [1] SyntaxError: expected '}', found end of file"#]]
+        2:0-2:0 [1] SyntaxError: expected '}', found end of file"#]]
     .assert_eq(&render_diagnostics_notification(&notif));
 }
 
@@ -84,7 +84,7 @@ async fn did_change_push_replaces_semantic_with_parse_errors() {
     let notif = s.change("a.php", 2, "<?php\nclass {\n").await;
     expect![[r#"
         1:6-1:7 [1] SyntaxError: expected class name, found '{'
-        2:0-2:1 [1] SyntaxError: expected '}', found end of file"#]]
+        2:0-2:0 [1] SyntaxError: expected '}', found end of file"#]]
     .assert_eq(&render_diagnostics_notification(&notif));
 }
 

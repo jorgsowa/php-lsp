@@ -19,7 +19,7 @@ async fn did_close_clears_diagnostics() {
     let open_rendered = render_diagnostics_notification(&open_notif);
     expect![[r#"
         0:6-0:19 [3] MissingClosureReturnType: Closure has no return type annotation
-        1:0-1:1 [1] SyntaxError: expected ';' after expression"#]]
+        1:0-1:0 [1] SyntaxError: expected ';' after expression"#]]
     .assert_eq(&open_rendered);
 
     server.close("close_test.php").await;
