@@ -193,3 +193,31 @@ function greet(): string {
     "#]]
     .assert_eq(&out);
 }
+
+// A watched-file delete blanks the file's salsa text; a later edit must re-attach
+// the open buffer instead of leaving the AST parsed from "" (byte offsets underflow).
+#[tokio::test]
+async fn extract_variable_after_open_file_deleted_on_disk() {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(tmp.path().join("main.php"), "<?php\n$b = 3 + 4\n;\n").unwrap();
+    let mut s = TestServer::with_root(tmp.path()).await;
+    s.wait_for_index_ready().await;
+    s.open("main.php", "<?php\n$b = 3 + 4\n;\n").await;
+
+    std::fs::remove_file(tmp.path().join("main.php")).unwrap();
+    let uri = s.uri("main.php");
+    s.did_change_watched_files(vec![(uri, 3)]).await;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !s.code_action("main.php", 1, 5, 1, 10).await["result"].is_null() {
+        assert!(std::time::Instant::now() < deadline, "delete never applied");
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+
+    let padded = format!("<?php\n$a = 1 + 2{}\n;\n", " ".repeat(40));
+    s.change("main.php", 2, &padded).await;
+    let resp = s.code_action("main.php", 1, 5, 1, 50).await;
+    assert!(
+        resp.to_string().contains("$extracted = 1 + 2;"),
+        "extract variable must see the edited buffer, got: {resp}"
+    );
+}

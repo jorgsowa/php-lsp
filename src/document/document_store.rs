@@ -1036,8 +1036,12 @@ impl DocumentStore {
                 {
                     return;
                 }
-                session.upsert_source_file(path, text_arc.clone(), dur);
+                let sf = session.upsert_source_file(path, text_arc.clone(), dur);
                 session.with_db_mut(|db| {
+                    // mir re-creates a removed path's `SourceFile`; the old one is blanked to "".
+                    if *wf.source(db) != sf {
+                        wf.set_source(db).to(sf);
+                    }
                     // Any text change invalidates a previously-seeded cached index.
                     // Only set when present to avoid a spurious second revision bump.
                     if wf.cached_index(db).is_some() {
