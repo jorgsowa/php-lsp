@@ -1377,6 +1377,8 @@ impl DocumentStore {
     /// Call with the session lock held, so no reader pairs an old handle with the new db.
     fn drop_session_scoped_state(&self) {
         self.lsp_ws_files.clear();
+        // Tombstones only mark kept-alive `lsp_ws_files` handles; stale ones would hide a re-created file.
+        self.deleted_uris.clear();
         *self.lsp_workspace.lock().unwrap() = None;
         self.mark_workspace_files_dirty();
         // Cached FileAnalysis values reference the old session's state.
@@ -4908,6 +4910,25 @@ mod tests {
         assert!(
             dropped,
             "the stub-dir-less early session must be dropped and rebuilt"
+        );
+    }
+
+    /// A session drop discards the tombstoned handles, so a file deleted
+    /// before it must be re-creatable afterwards, not hidden for good.
+    #[test]
+    fn deleted_file_is_recreatable_after_session_drop() {
+        let store = DocumentStore::new();
+        let u = uri("/deleted_before_drop.php");
+        store.ingest(u.clone(), "<?php\nclass DeletedBeforeDrop {}\n");
+        store.remove(&u);
+        assert!(store.set_php_version(mir_analyzer::PhpVersion::new(8, 1)));
+        store.mirror_text(&u, "<?php\nclass DeletedBeforeDrop {}\n");
+        assert!(store.get_index_salsa(&u).is_some());
+        assert!(
+            store
+                .workspace_file_paths()
+                .iter()
+                .any(|p| **p == *u.as_str())
         );
     }
 

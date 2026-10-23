@@ -2,6 +2,12 @@
 
 All notable changes to php-lsp are documented here.
 
+## [Unreleased]
+
+### Fixed
+
+- **Re-created file hidden after a PHP version change**: a file deleted before the analysis session was rebuilt (PHP version change, cache or stub dir attach) stayed invisible after being re-created.
+
 ## [0.27.0] — 2026-10-22
 
 ### Added
