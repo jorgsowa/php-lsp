@@ -192,8 +192,14 @@ fn issue_passes_filter(issue: &mir_issues::Issue, cfg: &DiagnosticsConfig) -> bo
 fn to_lsp_diagnostic(issue: mir_issues::Issue) -> Diagnostic {
     // mir uses 1-based lines; LSP uses 0-based. Columns are 0-based on both sides.
     let line = issue.location.line.saturating_sub(1);
+    let line_end = issue.location.line_end.saturating_sub(1).max(line);
     let col_start = issue.location.col_start as u32;
     let col_end = issue.location.col_end as u32;
+    let end_character = if line_end == line {
+        col_end.max(col_start + 1)
+    } else {
+        col_end
+    };
     Diagnostic {
         range: Range {
             start: Position {
@@ -201,8 +207,8 @@ fn to_lsp_diagnostic(issue: mir_issues::Issue) -> Diagnostic {
                 character: col_start,
             },
             end: Position {
-                line,
-                character: col_end.max(col_start + 1),
+                line: line_end,
+                character: end_character,
             },
         },
         severity: Some(match issue.severity {
@@ -277,5 +283,27 @@ mod tests {
         );
         cfg.disabled = vec!["UndefinedClass".to_string()];
         assert!(issues_to_diagnostics(&[issue], &uri, &cfg).is_empty());
+    }
+
+    #[test]
+    fn to_lsp_diagnostic_spans_multiple_lines() {
+        use mir_issues::{Issue, IssueKind, Location};
+        use std::sync::Arc;
+
+        let issue = Issue::new(
+            IssueKind::UndefinedClass {
+                name: "Foo".to_string(),
+            },
+            Location {
+                file: Arc::from("file:///test.php"),
+                line: 2,
+                line_end: 4,
+                col_start: 8,
+                col_end: 1,
+            },
+        );
+        let range = to_lsp_diagnostic(issue).range;
+        assert_eq!(range.start, Position::new(1, 8));
+        assert_eq!(range.end, Position::new(3, 1));
     }
 }

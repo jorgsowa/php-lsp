@@ -803,21 +803,41 @@ function label(Suit $s): string {
 #[tokio::test]
 async fn match_on_enum_missing_case_is_flagged() {
     let mut s = TestServer::new().await;
-    s.check_diagnostics(
-        r#"<?php
+    let opened = s
+        .open_fixture(
+            r#"<?php
 enum Suit {
     case Hearts;
     case Spades;
 }
 function label(Suit $s): string {
     return match ($s) {
-//         ^ warning: Unhandled match condition
         Suit::Hearts => 'hearts',
     };
 }
 "#,
-    )
-    .await;
+        )
+        .await;
+    let diags = opened.diagnostics_for("main.php")["params"]["diagnostics"]
+        .as_array()
+        .unwrap()
+        .clone();
+    assert_eq!(diags.len(), 1, "{diags:#?}");
+    let d = &diags[0];
+    assert_eq!(d["severity"], 2);
+    assert!(
+        d["message"]
+            .as_str()
+            .unwrap()
+            .contains("Unhandled match condition")
+    );
+    assert_eq!(
+        d["range"],
+        serde_json::json!({
+            "start": {"line": 6, "character": 11},
+            "end": {"line": 8, "character": 5},
+        })
+    );
 }
 
 /// Contrast: a non-exhaustive `match` with a `default` arm covers every
