@@ -174,10 +174,7 @@ pub struct DocumentStore {
     /// analysis, and lazy-loads dependencies via PSR-4. It is single-owner
     /// (`Send`, not `Sync`), so every access — read or write — goes through
     /// this mutex.
-    analysis_session: Mutex<(
-        mir_analyzer::PhpVersion,
-        Option<mir_analyzer::AnalysisSession>,
-    )>,
+    analysis_session: Mutex<SessionSlot>,
     /// Cache directory shared with the workspace file-index cache. When set,
     /// new `AnalysisSession`s are built with `with_cache_dir` so that stub
     /// parsing results survive server restarts.
@@ -651,7 +648,7 @@ impl DocumentStore {
         if self.session_cache_dir.set(dir).is_err() {
             return false;
         }
-        let mut guard = self.analysis_session.lock().unwrap();
+        let mut guard = self.lock_session();
         let dropped = guard.1.take().is_some();
         if dropped {
             self.drop_session_scoped_state();
@@ -672,7 +669,7 @@ impl DocumentStore {
         if self.user_stub_dirs.set(dirs).is_err() {
             return false;
         }
-        let mut guard = self.analysis_session.lock().unwrap();
+        let mut guard = self.lock_session();
         let dropped = guard.1.take().is_some();
         if dropped {
             self.drop_session_scoped_state();
@@ -736,10 +733,20 @@ impl DocumentStore {
     /// This mutex is the only synchronization for session access and it is
     /// not reentrant: never call back into the store from inside `f`.
     pub fn with_session<R>(&self, f: impl FnOnce(&mut mir_analyzer::AnalysisSession) -> R) -> R {
-        let mut guard = self.analysis_session.lock().unwrap();
+        let mut guard = self.lock_session();
         let (php_version, session) = &mut *guard;
         let session = session.get_or_insert_with(|| self.build_session(*php_version));
         f(session)
+    }
+
+    /// Take the session lock, recovering it when a panic poisoned it: a
+    /// rebuild would turn a deterministic panic into a cold session per request.
+    fn lock_session(&self) -> std::sync::MutexGuard<'_, SessionSlot> {
+        self.analysis_session.lock().unwrap_or_else(|poisoned| {
+            self.analysis_session.clear_poison();
+            tracing::error!("analysis session lock poisoned by a panic; recovering");
+            poisoned.into_inner()
+        })
     }
 
     /// Run `f` on a read snapshot without holding the session lock: the lock
@@ -854,7 +861,7 @@ impl DocumentStore {
 
     /// Current PHP version tracked by the workspace input.
     pub fn workspace_php_version(&self) -> mir_analyzer::PhpVersion {
-        self.analysis_session.lock().unwrap().0
+        self.lock_session().0
     }
 
     /// Direct parent, interfaces and used traits of `class_fqn` as resolved FQCNs,
@@ -1150,7 +1157,7 @@ impl DocumentStore {
         // Also evict the file from the `AnalysisSession`'s internal state so
         // workspace symbol queries don't keep returning the deleted file's
         // declarations. Cheap when the session hasn't ingested this file.
-        let mut guard = self.analysis_session.lock().unwrap();
+        let mut guard = self.lock_session();
         if let Some(session) = guard.1.as_mut() {
             session.invalidate_file(uri.as_str());
             // `file_index` has no LRU cap (unlike `parsed_doc`/`symbol_map`),
@@ -1316,7 +1323,10 @@ impl DocumentStore {
             entries.sort_unstable_by(|(a, _), (b, _)| a.cmp(b));
             let files: Arc<[LspWsFile]> = entries.iter().map(|(_, wf)| *wf).collect();
 
-            let mut guard = self.lsp_workspace.lock().unwrap();
+            let mut guard = self
+                .lsp_workspace
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             session.with_db_mut(|db| match *guard {
                 Some(ws) => {
                     ws.set_files(db).to(files);
@@ -1345,7 +1355,7 @@ impl DocumentStore {
     /// nothing else repopulates it.
     pub fn set_php_version(&self, version: mir_analyzer::PhpVersion) -> bool {
         {
-            let mut guard = self.analysis_session.lock().unwrap();
+            let mut guard = self.lock_session();
             if guard.0 == version {
                 return false;
             }
@@ -1379,7 +1389,10 @@ impl DocumentStore {
         self.lsp_ws_files.clear();
         // Tombstones only mark kept-alive `lsp_ws_files` handles; stale ones would hide a re-created file.
         self.deleted_uris.clear();
-        *self.lsp_workspace.lock().unwrap() = None;
+        *self
+            .lsp_workspace
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
         self.mark_workspace_files_dirty();
         // Cached FileAnalysis values reference the old session's state.
         self.caches.evict_analysis_all();
@@ -2305,7 +2318,12 @@ impl DocumentStore {
     pub fn get_workspace_index_salsa(&self) -> Arc<crate::db::workspace_index::WorkspaceIndexData> {
         self.sync_workspace_files();
         self.snapshot_mir_handle_query(
-            || *self.lsp_workspace.lock().unwrap(),
+            || {
+                *self
+                    .lsp_workspace
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+            },
             |db, ws| crate::db::mir_queries::workspace_index(db, ws).0.clone(),
         )
         .unwrap_or_else(|| {
@@ -3036,6 +3054,12 @@ enum ReachabilitySymbolKind {
 /// -> `(write_revision computed at, resolved file list)`. See the field doc
 /// on `DocumentStore::reachability_result_cache`.
 type ReachabilityResultCache = DashMap<ReachabilityQuery, (u64, Arc<Vec<Arc<str>>>)>;
+
+/// See the field doc on `DocumentStore::analysis_session`.
+type SessionSlot = (
+    mir_analyzer::PhpVersion,
+    Option<mir_analyzer::AnalysisSession>,
+);
 
 #[cfg(test)]
 mod tests {
@@ -4911,6 +4935,108 @@ mod tests {
             dropped,
             "the stub-dir-less early session must be dropped and rebuilt"
         );
+    }
+
+    /// A panic under the session lock (and the nested `lsp_workspace` lock)
+    /// must not brick the store: later accesses keep the warm session and
+    /// writes and workspace queries keep working, panic after panic.
+    #[test]
+    fn panic_under_session_lock_recovers_in_place() {
+        use std::panic::{AssertUnwindSafe, catch_unwind};
+        let store = DocumentStore::new();
+        let live = uri("/poison_live.php");
+        store.ingest(live.clone(), "<?php\nclass PoisonLive {}\n");
+        let handle_before = store.source_file(&live).unwrap();
+
+        for round in 0..2 {
+            let panicked = catch_unwind(AssertUnwindSafe(|| {
+                store.with_session(|_| {
+                    let _ws = store.lsp_workspace.lock().unwrap();
+                    panic!("simulated panic under the session lock");
+                })
+            }));
+            assert!(panicked.is_err());
+
+            assert!(
+                store.source_file(&live).unwrap() == handle_before,
+                "the warm session must be kept, not rebuilt"
+            );
+            let added = uri(&format!("/poison_added_{round}.php"));
+            store.mirror_text(&added, &format!("<?php\nclass PoisonAdded{round} {{}}\n"));
+            assert!(store.get_index_salsa(&added).is_some());
+            let paths = store.workspace_file_paths();
+            assert!(paths.iter().any(|p| **p == *live.as_str()));
+            assert!(paths.iter().any(|p| **p == *added.as_str()));
+        }
+    }
+
+    /// Panics under the session lock — mid-salsa-write too — racing writers,
+    /// readers and panicking snapshot holders must leave no thread blocked.
+    #[test]
+    fn panics_under_session_lock_never_hang_other_threads() {
+        use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
+        // `resume_unwind` skips the panic hook, keeping test output quiet.
+        fn boom() -> ! {
+            resume_unwind(Box::new("simulated panic"))
+        }
+        let store = Arc::new(DocumentStore::new());
+        let mut workers: Vec<std::thread::JoinHandle<()>> = (0..3)
+            .map(|t| {
+                let store = Arc::clone(&store);
+                std::thread::spawn(move || {
+                    let u = uri(&format!("/hang_worker_{t}.php"));
+                    for i in 0..40 {
+                        store.mirror_text(&u, &format!("<?php\nclass HangW{t}V{i} {{}}\n"));
+                        assert!(store.get_index_salsa(&u).is_some());
+                        let _ = store.read_snapshot(|snap| snap.find_class_like("HangW0V0"));
+                        let _ = store.get_workspace_index_salsa();
+                    }
+                })
+            })
+            .collect();
+        let writer = Arc::clone(&store);
+        workers.push(std::thread::spawn(move || {
+            let path: Arc<str> = Arc::from("/hang_mid_write.php");
+            for i in 0..40 {
+                let _ = catch_unwind(AssertUnwindSafe(|| {
+                    writer.with_session(|session| match i % 3 {
+                        0 => session.with_db_mut(|_| boom()),
+                        1 => {
+                            let text: Arc<str> = Arc::from(format!("<?php // {i}"));
+                            session.upsert_source_file(path.clone(), text, salsa::Durability::LOW);
+                            boom()
+                        }
+                        _ => {
+                            let _ws = writer.lsp_workspace.lock().unwrap();
+                            boom()
+                        }
+                    })
+                }));
+            }
+        }));
+        let reader = Arc::clone(&store);
+        workers.push(std::thread::spawn(move || {
+            for _ in 0..40 {
+                let _ = catch_unwind(AssertUnwindSafe(|| {
+                    reader.read_snapshot(|_| -> () { boom() })
+                }));
+            }
+        }));
+
+        // Detached joiner: a hung worker fails the timeout instead of hanging the test.
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let all_ok = workers.into_iter().all(|w| w.join().is_ok());
+            let _ = done_tx.send(all_ok);
+        });
+        let all_ok = done_rx
+            .recv_timeout(std::time::Duration::from_secs(120))
+            .expect("a thread hung after a panic under the session lock");
+        assert!(all_ok, "a worker panicked on a recovered lock");
+
+        let u = uri("/hang_after.php");
+        store.mirror_text(&u, "<?php\nclass HangAfter {}\n");
+        assert!(store.get_index_salsa(&u).is_some());
     }
 
     /// A session drop discards the tombstoned handles, so a file deleted
