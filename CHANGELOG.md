@@ -4,6 +4,10 @@ All notable changes to php-lsp are documented here.
 
 ## [Unreleased]
 
+### Changed
+
+- **Unused workspace caches are deleted**: each workspace cache directory records its root and last-used time; on startup a background thread removes caches whose root no longer exists or that haven't been used for 30 days. Directories without that record are removed after a day.
+
 ### Fixed
 
 - **Server no longer wedges after a panic during analysis**: a panic while the analysis session was locked made every later request panic. The lock is now recovered and the session kept.

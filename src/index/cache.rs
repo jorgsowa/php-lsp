@@ -18,7 +18,10 @@
 //! - `<workspace-hash>` — blake3 of the canonicalized absolute path of the
 //!   first workspace root, truncated to 16 hex chars. Two separate projects
 //!   get isolated caches; two checkouts of the same project at the same
-//!   absolute path share one.
+//!   absolute path share one. Holds a `workspace.json` recording the root
+//!   path and last-used time, so the background pruner can drop caches for
+//!   roots that no longer exist or haven't been opened in
+//!   [`WORKSPACE_MAX_IDLE`].
 //! - `<uri-hash>` — blake3 of the URI, truncated to 32 hex chars. One file
 //!   per URI, not per `(uri, content)` pair: a content hash is stored inside
 //!   the entry and checked on read, so re-indexing an edited file overwrites
@@ -47,6 +50,7 @@
 
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Serialize, de::DeserializeOwned};
 
@@ -85,6 +89,15 @@ pub struct WorkspaceCache {
 /// small enough that no reasonable disk will choke on it.
 pub const CACHE_SIZE_CAP: u64 = 512 * 1024 * 1024;
 
+/// A workspace cache unused for this long is deleted on the next startup.
+const WORKSPACE_MAX_IDLE: Duration = Duration::from_secs(30 * 24 * 60 * 60);
+
+/// Age after which a workspace directory without a meta file is deleted;
+/// shields one that another instance has just created but not yet stamped.
+const NO_META_GRACE: Duration = Duration::from_secs(24 * 60 * 60);
+
+const META_FILE: &str = "workspace.json";
+
 impl WorkspaceCache {
     /// Create (or re-open) the cache directory for a workspace rooted at
     /// `root`. Returns `None` when the system has no usable home/cache
@@ -101,10 +114,11 @@ impl WorkspaceCache {
         let base = cache_base_dir()?;
         let schema = schema_version();
         let php_lsp_dir = base.join("php-lsp");
-        drop(prune_stale_schema_dirs(&php_lsp_dir, schema));
         let workspace = workspace_hash(root);
-        let dir = php_lsp_dir.join(schema).join(workspace);
+        let dir = php_lsp_dir.join(schema).join(&workspace);
         std::fs::create_dir_all(&dir).ok()?;
+        let _ = write_workspace_meta(&dir, root);
+        drop(prune_stale_dirs(php_lsp_dir, schema.to_string(), workspace));
         let cache = Self { dir };
         if cache.size_bytes().unwrap_or(0) > CACHE_SIZE_CAP {
             let _ = cache.clear();
@@ -230,46 +244,94 @@ fn dir_size(dir: &Path) -> io::Result<u64> {
 }
 
 /// Removes sibling schema-version directories under `php_lsp_dir` other than
-/// `current_schema`. `schema_version()` embeds `CARGO_PKG_VERSION`, so every
-/// php-lsp release moves to a new schema directory; without this, every past
-/// release's entire cache directory (including its nested mir `session/`
-/// cache) sits there forever since nothing else ever reads or removes it.
-/// Only directories are touched — `php_lsp_dir` also holds flat sibling files
-/// (e.g. `php-binary-version.json`, see `autoload::detect_php_binary_version`)
-/// that must survive. Best-effort: errors are ignored, same advisory-cache
-/// posture as the rest of this module.
+/// `current_schema`, plus workspace directories under `current_schema` other
+/// than `current_workspace` that [`is_stale_workspace_dir`] rejects.
+/// `schema_version()` embeds `CARGO_PKG_VERSION`, so every release moves to a
+/// new schema directory, and every workspace ever opened (including temp
+/// directories) gets its own; without this, nothing ever reads or removes
+/// them. Only directories are touched — `php_lsp_dir` also holds flat sibling
+/// files (e.g. `php-binary-version.json`, see
+/// `autoload::detect_php_binary_version`) that must survive. Best-effort:
+/// errors are ignored, same advisory-cache posture as the rest of this module.
 ///
-/// The actual deletion runs on a detached background thread rather than
-/// blocking the caller: on a long-lived dev machine a stale schema directory
-/// can hold many thousands of entries across many past workspaces (one
-/// `remove_dir_all` per schema version, each recursing into every workspace
-/// ever cached under it), and deleting that synchronously inside
-/// `WorkspaceCache::new()` — on the same path as the workspace scan — stalled
-/// startup for 20+ minutes on a real cache before `indexReady` ever fired.
-/// The listing/filtering above stays synchronous (cheap, one shallow
-/// `read_dir`); only the recursive removal is deferred. Returns the join
-/// handle so tests can wait for completion; normal callers drop it and let
-/// the cleanup finish in its own time.
-fn prune_stale_schema_dirs(
-    php_lsp_dir: &Path,
-    current_schema: &str,
-) -> Option<std::thread::JoinHandle<()>> {
-    let entries = std::fs::read_dir(php_lsp_dir).ok()?;
-    let stale: Vec<PathBuf> = entries
-        .flatten()
-        .filter(|entry| {
-            entry.file_name() != current_schema && entry.file_type().is_ok_and(|t| t.is_dir())
-        })
-        .map(|entry| entry.path())
-        .collect();
-    if stale.is_empty() {
-        return None;
-    }
-    Some(std::thread::spawn(move || {
-        for dir in stale {
-            let _ = std::fs::remove_dir_all(dir);
+/// Everything runs on a detached background thread: a stale schema directory
+/// on a long-lived dev machine can hold millions of entries, and deleting it
+/// inside `WorkspaceCache::new()` — on the same path as the workspace scan —
+/// stalled startup for 20+ minutes before `indexReady` ever fired. Returns the
+/// join handle so tests can wait for completion; normal callers drop it.
+fn prune_stale_dirs(
+    php_lsp_dir: PathBuf,
+    current_schema: String,
+    current_workspace: String,
+) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
+        let now = SystemTime::now();
+        for dir in subdirs(&php_lsp_dir) {
+            if dir.file_name() != Some(current_schema.as_ref()) {
+                let _ = std::fs::remove_dir_all(dir);
+            }
         }
-    }))
+        for dir in subdirs(&php_lsp_dir.join(&current_schema)) {
+            if dir.file_name() != Some(current_workspace.as_ref())
+                && is_stale_workspace_dir(&dir, now)
+            {
+                let _ = std::fs::remove_dir_all(dir);
+            }
+        }
+    })
+}
+
+fn subdirs(dir: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    entries
+        .flatten()
+        .filter(|entry| entry.file_type().is_ok_and(|t| t.is_dir()))
+        .map(|entry| entry.path())
+        .collect()
+}
+
+#[derive(Serialize, serde::Deserialize)]
+struct WorkspaceMeta {
+    root: PathBuf,
+    last_used_secs: u64,
+}
+
+fn write_workspace_meta(dir: &Path, root: &Path) -> io::Result<()> {
+    let meta = WorkspaceMeta {
+        root: root.canonicalize().unwrap_or_else(|_| root.to_path_buf()),
+        last_used_secs: SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs()),
+    };
+    let path = dir.join(META_FILE);
+    let tmp = path.with_extension("json.tmp");
+    std::fs::write(&tmp, serde_json::to_vec(&meta).map_err(io::Error::other)?)?;
+    std::fs::rename(&tmp, &path)
+}
+
+/// A workspace cache directory is stale when its recorded root is gone, or
+/// when neither its meta stamp nor its own mtime (bumped by every entry
+/// write, so a long-running instance keeps its directory fresh) falls within
+/// [`WORKSPACE_MAX_IDLE`]. Without a readable meta file it only survives
+/// [`NO_META_GRACE`].
+fn is_stale_workspace_dir(dir: &Path, now: SystemTime) -> bool {
+    let mtime = std::fs::metadata(dir)
+        .and_then(|m| m.modified())
+        .unwrap_or(now);
+    let idle_since = |t: SystemTime| now.duration_since(t).unwrap_or(Duration::ZERO);
+    let meta = std::fs::read(dir.join(META_FILE))
+        .ok()
+        .and_then(|bytes| serde_json::from_slice::<WorkspaceMeta>(&bytes).ok());
+    let Some(meta) = meta else {
+        return idle_since(mtime) > NO_META_GRACE;
+    };
+    if !meta.root.exists() {
+        return true;
+    }
+    let stamped = UNIX_EPOCH + Duration::from_secs(meta.last_used_secs);
+    idle_since(stamped.max(mtime)) > WORKSPACE_MAX_IDLE
 }
 
 /// Platform cache directory: `$XDG_CACHE_HOME` or `$HOME/.cache` on Unix,
@@ -297,7 +359,7 @@ pub(crate) fn cache_base_dir() -> Option<PathBuf> {
 
 /// Schema marker: bumping `php-lsp`'s crate version invalidates every cached
 /// entry (a new release moves to a new directory; see
-/// `prune_stale_schema_dirs` for cleanup of the old one). `fi-vN` is the one
+/// `prune_stale_dirs` for cleanup of the old one). `fi-vN` is the one
 /// manual knob — bump it whenever `FileIndex` or any type it contains gains,
 /// loses, or renames a field, including a `php_ast`/parser upgrade that
 /// changes what gets extracted. `FileIndex` has no dependency on any mir
@@ -554,7 +616,7 @@ mod tests {
     }
 
     #[test]
-    fn prune_stale_schema_dirs_removes_old_schemas_keeps_current_and_flat_files() {
+    fn prune_stale_dirs_removes_old_schemas_keeps_current_and_flat_files() {
         let dir = TempDir::new().unwrap();
         let php_lsp_dir = dir.path();
 
@@ -568,10 +630,13 @@ mod tests {
         // Sibling flat file, like `php-binary-version.json` — must survive.
         std::fs::write(php_lsp_dir.join("php-binary-version.json"), b"{}").unwrap();
 
-        prune_stale_schema_dirs(php_lsp_dir, "0.22.0-fi-v4")
-            .expect("a stale dir is present, so a cleanup thread must be spawned")
-            .join()
-            .unwrap();
+        prune_stale_dirs(
+            php_lsp_dir.to_path_buf(),
+            "0.22.0-fi-v4".into(),
+            "current".into(),
+        )
+        .join()
+        .unwrap();
 
         assert!(!stale.exists(), "stale schema directory must be removed");
         assert!(current.exists(), "current schema directory must survive");
@@ -579,5 +644,79 @@ mod tests {
             php_lsp_dir.join("php-binary-version.json").exists(),
             "flat sibling files must not be touched"
         );
+    }
+
+    fn workspace_dir_with_meta(parent: &Path, root: &Path) -> PathBuf {
+        let dir = parent.join(workspace_hash(root));
+        std::fs::create_dir_all(&dir).unwrap();
+        write_workspace_meta(&dir, root).unwrap();
+        dir
+    }
+
+    #[test]
+    fn workspace_dir_is_stale_once_its_root_is_deleted() {
+        let cache = TempDir::new().unwrap();
+        let root = TempDir::new().unwrap();
+        let dir = workspace_dir_with_meta(cache.path(), root.path());
+        assert!(!is_stale_workspace_dir(&dir, SystemTime::now()));
+
+        drop(root);
+        assert!(is_stale_workspace_dir(&dir, SystemTime::now()));
+    }
+
+    #[test]
+    fn workspace_dir_is_stale_after_max_idle() {
+        let cache = TempDir::new().unwrap();
+        let root = TempDir::new().unwrap();
+        let dir = workspace_dir_with_meta(cache.path(), root.path());
+        let now = SystemTime::now();
+        assert!(!is_stale_workspace_dir(&dir, now + WORKSPACE_MAX_IDLE / 2));
+        assert!(is_stale_workspace_dir(
+            &dir,
+            now + WORKSPACE_MAX_IDLE + Duration::from_secs(60)
+        ));
+    }
+
+    #[test]
+    fn workspace_dir_without_meta_survives_only_the_grace_period() {
+        let cache = TempDir::new().unwrap();
+        let dir = cache.path().join("legacy");
+        std::fs::create_dir_all(&dir).unwrap();
+        let now = SystemTime::now();
+        assert!(!is_stale_workspace_dir(&dir, now));
+        assert!(is_stale_workspace_dir(
+            &dir,
+            now + NO_META_GRACE + Duration::from_secs(60)
+        ));
+    }
+
+    #[test]
+    fn prune_stale_dirs_removes_orphaned_workspaces_keeps_current_and_live() {
+        let php_lsp_dir = TempDir::new().unwrap();
+        let schema_dir = php_lsp_dir.path().join("0.22.0-fi-v4");
+
+        let live_root = TempDir::new().unwrap();
+        let live = workspace_dir_with_meta(&schema_dir, live_root.path());
+
+        let gone_root = TempDir::new().unwrap();
+        let orphaned = workspace_dir_with_meta(&schema_dir, gone_root.path());
+        drop(gone_root);
+
+        // The current workspace survives even with a deleted root.
+        let current_root = TempDir::new().unwrap();
+        let current = workspace_dir_with_meta(&schema_dir, current_root.path());
+        drop(current_root);
+
+        prune_stale_dirs(
+            php_lsp_dir.path().to_path_buf(),
+            "0.22.0-fi-v4".into(),
+            current.file_name().unwrap().to_string_lossy().into_owned(),
+        )
+        .join()
+        .unwrap();
+
+        assert!(live.exists());
+        assert!(current.exists());
+        assert!(!orphaned.exists());
     }
 }
