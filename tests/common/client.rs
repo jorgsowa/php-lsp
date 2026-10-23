@@ -1114,7 +1114,21 @@ impl TestClient {
     }
 }
 
+/// Points `XDG_CACHE_HOME` at `target/tmp/` so servers never write into the
+/// real `~/.cache`. Process-wide because the servers run in-process; set once,
+/// before the first server spawns.
+pub(crate) fn isolate_cache_home() -> &'static std::path::Path {
+    static CACHE_HOME: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+    CACHE_HOME.get_or_init(|| {
+        let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("xdg-cache");
+        // SAFETY: runs once, before any server thread that reads the cache dir.
+        unsafe { std::env::set_var("XDG_CACHE_HOME", &dir) };
+        dir
+    })
+}
+
 pub(crate) fn spawn_server() -> TestClient {
+    isolate_cache_home();
     let (client_stream, server_stream) = tokio::io::duplex(1 << 20);
     let (server_read, server_write) = tokio::io::split(server_stream);
     let (client_read, client_write) = tokio::io::split(client_stream);

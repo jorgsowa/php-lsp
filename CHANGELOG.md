@@ -7,6 +7,7 @@ All notable changes to php-lsp are documented here.
 ### Changed
 
 - **Unused workspace caches are deleted**: each workspace cache directory records its root and last-used time; on startup a background thread removes caches whose root no longer exists or that haven't been used for 30 days. Directories without that record are removed after a day.
+- **Total cache size cap**: when all workspace caches together exceed 2 GiB, the least recently used ones are deleted until the total fits.
 
 ### Fixed
 

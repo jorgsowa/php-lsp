@@ -14,11 +14,7 @@ const WP_PATH: &str = "/tmp/wordpress";
 const LF_PATH: &str = "/tmp/laravel-framework";
 
 fn cache_root() -> Option<std::path::PathBuf> {
-    std::env::var_os("XDG_CACHE_HOME")
-        .filter(|v| !v.is_empty())
-        .map(std::path::PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".cache")))
-        .map(|d| d.join("php-lsp"))
+    Some(crate::common::isolate_cache_home().join("php-lsp"))
 }
 
 fn wipe_cache() {

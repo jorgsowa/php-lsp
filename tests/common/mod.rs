@@ -14,6 +14,7 @@ pub mod render;
 mod server;
 
 pub use client::TestClient;
+pub(crate) use client::isolate_cache_home;
 pub use render::{
     canonicalize_workspace_edit, lines_of, render_call_hierarchy, render_completion,
     render_completion_ordered, render_diagnostics_notification, render_document_highlight,

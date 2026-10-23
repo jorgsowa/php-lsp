@@ -90,6 +90,10 @@ pub struct WorkspaceCache {
 pub const CACHE_SIZE_CAP: u64 = 512 * 1024 * 1024;
 
 /// A workspace cache unused for this long is deleted on the next startup.
+/// Cap (bytes) on all workspace caches together. Past it, the least recently
+/// used workspace directories are deleted until the total fits again.
+pub const TOTAL_CACHE_SIZE_CAP: u64 = 2 * 1024 * 1024 * 1024;
+
 const WORKSPACE_MAX_IDLE: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 
 /// Age after which a workspace directory without a meta file is deleted;
@@ -245,7 +249,8 @@ fn dir_size(dir: &Path) -> io::Result<u64> {
 
 /// Removes sibling schema-version directories under `php_lsp_dir` other than
 /// `current_schema`, plus workspace directories under `current_schema` other
-/// than `current_workspace` that [`is_stale_workspace_dir`] rejects.
+/// than `current_workspace` that [`is_stale_workspace_dir`] rejects, then
+/// evicts least recently used workspaces past [`TOTAL_CACHE_SIZE_CAP`].
 /// `schema_version()` embeds `CARGO_PKG_VERSION`, so every release moves to a
 /// new schema directory, and every workspace ever opened (including temp
 /// directories) gets its own; without this, nothing ever reads or removes
@@ -271,14 +276,41 @@ fn prune_stale_dirs(
                 let _ = std::fs::remove_dir_all(dir);
             }
         }
-        for dir in subdirs(&php_lsp_dir.join(&current_schema)) {
+        let schema_dir = php_lsp_dir.join(&current_schema);
+        for dir in subdirs(&schema_dir) {
             if dir.file_name() != Some(current_workspace.as_ref())
                 && is_stale_workspace_dir(&dir, now)
             {
                 let _ = std::fs::remove_dir_all(dir);
             }
         }
+        evict_lru_workspaces(&schema_dir, &current_workspace, TOTAL_CACHE_SIZE_CAP);
     })
+}
+
+/// Deletes workspace directories under `schema_dir`, least recently used
+/// first, until their combined size is at most `cap`. `current_workspace`
+/// counts toward the total but is never deleted.
+fn evict_lru_workspaces(schema_dir: &Path, current_workspace: &str, cap: u64) {
+    let mut total = 0u64;
+    let mut candidates = Vec::new();
+    for dir in subdirs(schema_dir) {
+        let size = dir_size(&dir).unwrap_or(0);
+        total = total.saturating_add(size);
+        if dir.file_name() != Some(current_workspace.as_ref()) {
+            let used = last_used(&dir, read_workspace_meta(&dir).as_ref());
+            candidates.push((used, size, dir));
+        }
+    }
+    candidates.sort_by_key(|(used, _, _)| *used);
+    for (_, size, dir) in candidates {
+        if total <= cap {
+            break;
+        }
+        if std::fs::remove_dir_all(&dir).is_ok() {
+            total -= size;
+        }
+    }
 }
 
 fn subdirs(dir: &Path) -> Vec<PathBuf> {
@@ -317,21 +349,31 @@ fn write_workspace_meta(dir: &Path, root: &Path) -> io::Result<()> {
 /// [`WORKSPACE_MAX_IDLE`]. Without a readable meta file it only survives
 /// [`NO_META_GRACE`].
 fn is_stale_workspace_dir(dir: &Path, now: SystemTime) -> bool {
-    let mtime = std::fs::metadata(dir)
-        .and_then(|m| m.modified())
-        .unwrap_or(now);
     let idle_since = |t: SystemTime| now.duration_since(t).unwrap_or(Duration::ZERO);
-    let meta = std::fs::read(dir.join(META_FILE))
-        .ok()
-        .and_then(|bytes| serde_json::from_slice::<WorkspaceMeta>(&bytes).ok());
-    let Some(meta) = meta else {
-        return idle_since(mtime) > NO_META_GRACE;
+    let Some(meta) = read_workspace_meta(dir) else {
+        return idle_since(last_used(dir, None)) > NO_META_GRACE;
     };
     if !meta.root.exists() {
         return true;
     }
-    let stamped = UNIX_EPOCH + Duration::from_secs(meta.last_used_secs);
-    idle_since(stamped.max(mtime)) > WORKSPACE_MAX_IDLE
+    idle_since(last_used(dir, Some(&meta))) > WORKSPACE_MAX_IDLE
+}
+
+fn read_workspace_meta(dir: &Path) -> Option<WorkspaceMeta> {
+    let bytes = std::fs::read(dir.join(META_FILE)).ok()?;
+    serde_json::from_slice(&bytes).ok()
+}
+
+/// The later of the meta stamp and the directory's mtime; an unreadable
+/// mtime counts as "now" so an error never makes a directory look old.
+fn last_used(dir: &Path, meta: Option<&WorkspaceMeta>) -> SystemTime {
+    let mtime = std::fs::metadata(dir)
+        .and_then(|m| m.modified())
+        .unwrap_or_else(|_| SystemTime::now());
+    let stamped = meta.map_or(UNIX_EPOCH, |m| {
+        UNIX_EPOCH + Duration::from_secs(m.last_used_secs)
+    });
+    stamped.max(mtime)
 }
 
 /// Platform cache directory: `$XDG_CACHE_HOME` or `$HOME/.cache` on Unix,
@@ -718,5 +760,36 @@ mod tests {
         assert!(live.exists());
         assert!(current.exists());
         assert!(!orphaned.exists());
+    }
+
+    #[test]
+    fn evict_lru_workspaces_drops_oldest_until_under_cap() {
+        let schema_dir = TempDir::new().unwrap();
+        let root = TempDir::new().unwrap();
+        // Directory mtimes are all "now", so only a future stamp sorts newer.
+        let stamps = [u64::from(u32::MAX), 0, 0];
+        let dirs: Vec<PathBuf> = stamps
+            .iter()
+            .enumerate()
+            .map(|(i, &last_used_secs)| {
+                let dir = schema_dir.path().join(format!("ws{i}"));
+                std::fs::create_dir_all(&dir).unwrap();
+                std::fs::write(dir.join("a.bin"), vec![0u8; 1000]).unwrap();
+                let meta = WorkspaceMeta {
+                    root: root.path().to_path_buf(),
+                    last_used_secs,
+                };
+                std::fs::write(dir.join(META_FILE), serde_json::to_vec(&meta).unwrap()).unwrap();
+                dir
+            })
+            .collect();
+
+        // ws2 is current: counted, never deleted, so the older ws1 goes.
+        let per_dir = dir_size(&dirs[0]).unwrap();
+        evict_lru_workspaces(schema_dir.path(), "ws2", 2 * per_dir + per_dir / 2);
+
+        assert!(dirs[0].exists());
+        assert!(!dirs[1].exists());
+        assert!(dirs[2].exists());
     }
 }
