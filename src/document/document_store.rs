@@ -142,7 +142,7 @@ pub struct DocumentStore {
     /// Sum of `.len()` across every `reachability_result_cache` value.
     reachability_result_cache_files: AtomicU64,
     /// Per-URI lock so concurrent callers computing the same uncached file's
-    /// analysis (`cached_analysis_cancellable`) serialize onto one
+    /// analysis (`analysis_with`) serialize onto one
     /// computation instead of each redoing the full mir pass — e.g. `did_open`'s
     /// diagnostics trigger racing a fast-following hover on a large,
     /// just-opened file. Entries are never removed: bounded by the number of
@@ -150,7 +150,7 @@ pub struct DocumentStore {
     /// `lsp_ws_files`.
     analysis_inflight: DashMap<Uri, Arc<Mutex<()>>>,
     /// Diagnostic counter: incremented once per real `FileAnalyzer::analyze`
-    /// run in `cached_analysis_cancellable` (never on a cache hit). Lets
+    /// run in `analysis_with` (never on a cache hit). Lets
     /// tests assert that concurrent callers racing for the same uncached
     /// file's analysis (see `analysis_inflight`) compute it once, not once
     /// per caller.
@@ -2452,7 +2452,6 @@ impl DocumentStore {
     /// [`crate::semantic_diagnostics::issues_to_diagnostics`].
     #[tracing::instrument(skip_all)]
     pub fn get_semantic_issues_salsa(&self, uri: &Uri) -> Option<Arc<[mir_issues::Issue]>> {
-        let analysis = self.cached_analysis(uri)?;
         let file: Arc<str> = Arc::from(uri.as_str());
         // Workspace-level class issues for this file (circular inheritance,
         // override violations, abstract-method gaps). These are session-wide
@@ -2463,14 +2462,18 @@ impl DocumentStore {
         // those out downstream in `issues_to_diagnostics` (php-lsp already
         // surfaces parse errors as `SyntaxError` diagnostics from its own
         // parser pass), so this returns them unfiltered here.
-        let (class_issues, collector_issues) = {
-            let _s = tracing::debug_span!("session.class_and_collector_issues").entered();
-            let files = std::slice::from_ref(&file);
-            self.with_snapshot(
-                |session| session.prepare_for_query(None),
-                |snap| Ok((snap.class_issues(files)?, snap.collector_issues(files)?)),
-            )
-            .ok()?
+        let files = std::slice::from_ref(&file);
+        let session_issues = |snap: &mir_analyzer::AnalysisSnapshot| {
+            Ok((snap.class_issues(files)?, snap.collector_issues(files)?))
+        };
+        let (analysis, cold_issues) = self.analysis_with(uri, &|| false, &session_issues)?;
+        let (class_issues, collector_issues) = match cold_issues {
+            Some(issues) => issues,
+            None => {
+                let _s = tracing::debug_span!("session.class_and_collector_issues").entered();
+                self.with_snapshot(|session| session.prepare_for_query(None), session_issues)
+                    .ok()?
+            }
         };
         let combined: Vec<mir_issues::Issue> = analysis
             .issues
@@ -2599,18 +2602,32 @@ impl DocumentStore {
     /// A handler passes its write-revision staleness probe so a request made
     /// obsolete by newer typing stops burning a blocking-pool thread instead
     /// of retrying until the writer pauses — the editor re-requests anyway.
-    #[tracing::instrument(skip_all)]
     pub fn cached_analysis_cancellable(
         &self,
         uri: &Uri,
         should_cancel: &(dyn Fn() -> bool + Sync),
     ) -> Option<Arc<mir_analyzer::FileAnalysis>> {
+        self.analysis_with(uri, should_cancel, &|_| Ok(()))
+            .map(|(analysis, _)| analysis)
+    }
+
+    /// [`Self::cached_analysis_cancellable`] that also runs `extra` on the
+    /// analysis snapshot when the analysis is computed, so a caller needing
+    /// session reads alongside it shares one session lock. `extra`'s result
+    /// is `None` on a cache hit.
+    #[tracing::instrument(skip_all)]
+    fn analysis_with<T>(
+        &self,
+        uri: &Uri,
+        should_cancel: &(dyn Fn() -> bool + Sync),
+        extra: &dyn Fn(&mir_analyzer::AnalysisSnapshot) -> Result<T, salsa::Cancelled>,
+    ) -> Option<(Arc<mir_analyzer::FileAnalysis>, Option<T>)> {
         // Need the parsed doc both for the analyzer and as the cache key.
         let doc = self.get_doc_salsa(uri)?;
         let source = doc.source_arc();
 
         if let Some(hit) = self.cached_analysis_if_fresh(uri) {
-            return Some(hit);
+            return Some((hit, None));
         }
 
         // Serialize concurrent callers analyzing the SAME uncached file onto
@@ -2636,7 +2653,7 @@ impl DocumentStore {
         // a value captured before we waited) reflects what was actually true
         // right before we started computing, not before we started waiting.
         if let Some(hit) = self.cached_analysis_if_fresh(uri) {
-            return Some(hit);
+            return Some((hit, None));
         }
         let cur_ver = self.caches.decl_version();
 
@@ -2702,10 +2719,13 @@ impl DocumentStore {
                 if superseded.get() {
                     return Err(salsa::Cancelled::PendingWrite);
                 }
-                snap.analyze(file.clone(), doc.source(), &owned_program, &source_map)
+                let analysis =
+                    snap.analyze(file.clone(), doc.source(), &owned_program, &source_map)?;
+                Ok((analysis, extra(snap)?))
             },
         );
-        let analysis = Arc::new(analysis.ok()?);
+        let (analysis, extra_result) = analysis.ok()?;
+        let analysis = Arc::new(analysis);
         self.analysis_compute_count.fetch_add(1, Ordering::Relaxed);
         // Keep php-lsp's retained FileAnalysis cache coherent with declaration
         // changes discovered while analyzing this file. Mir owns its own
@@ -2731,7 +2751,7 @@ impl DocumentStore {
                 analysis: Some(Arc::clone(&analysis)),
             },
         );
-        Some(analysis)
+        Some((analysis, Some(extra_result)))
     }
 
     /// Returns `(uri, doc)` for files currently open in the editor.
