@@ -16,7 +16,7 @@ fn main() {
     // edit (measured by benches/rss_session.rs; the cap cuts it ~6x). All
     // blocking tasks here are bounded (no blocking task waits unboundedly on
     // another), so a small pool only queues work, never deadlocks.
-    tokio::runtime::Builder::new_multi_thread()
+    let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .max_blocking_threads(16)
         // Blocking threads run salsa queries; match the analysis stack size
@@ -24,8 +24,12 @@ fn main() {
         // not committed).
         .thread_stack_size(64 * 1024 * 1024)
         .build()
-        .expect("tokio runtime")
-        .block_on(main_async());
+        .expect("tokio runtime");
+    rt.block_on(main_async());
+    // Dropping the runtime joins every blocking task; a sweep that missed its
+    // cancel (e.g. mid-file on a huge AST) must not keep the process alive
+    // after `exit`.
+    rt.shutdown_timeout(std::time::Duration::from_secs(2));
 }
 
 async fn main_async() {

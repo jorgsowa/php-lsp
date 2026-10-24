@@ -489,6 +489,7 @@ impl LanguageServer for Backend {
     }
 
     async fn shutdown(&self) -> Result<()> {
+        self.docs.cancel_background_work();
         // Postings committed since the last warm sweep (on-demand query
         // freshness passes, edit re-sweeps) reach disk only via a flush.
         let docs = Arc::clone(&self.docs);

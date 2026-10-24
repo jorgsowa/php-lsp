@@ -210,6 +210,9 @@ pub struct DocumentStore {
     /// ([`Self::warm_analysis_sweep`]); a newer sweep cancels the previous one
     /// via [`Self::begin_warm_sweep`].
     warm_sweep_cancel: Mutex<mir_analyzer::IndexCancel>,
+    /// Set by [`Self::cancel_background_work`]; makes later `begin_*` calls
+    /// hand out pre-cancelled tokens so no sweep starts after `shutdown`.
+    background_work_cancelled: AtomicBool,
     /// Warm sweeps that ran to completion (not cancelled). Observability only,
     /// surfaced via `$/php-lsp/debugStats` so benches/tests can await warmth.
     warm_sweeps_completed: AtomicU64,
@@ -308,6 +311,7 @@ impl DocumentStore {
             write_revision: AtomicU64::new(0),
             reanalyze_cancel: Mutex::new(mir_analyzer::IndexCancel::new()),
             warm_sweep_cancel: Mutex::new(mir_analyzer::IndexCancel::new()),
+            background_work_cancelled: AtomicBool::new(false),
             warm_sweeps_completed: AtomicU64::new(0),
             warm_start_replays_completed: AtomicU64::new(0),
             interactive_reads: AtomicU64::new(0),
@@ -366,11 +370,7 @@ impl DocumentStore {
     /// this again the old token flips and that older sweep stops at its next
     /// file boundary instead of racing this one to publish stale diagnostics.
     pub fn begin_reanalyze(&self) -> mir_analyzer::IndexCancel {
-        let fresh = mir_analyzer::IndexCancel::new();
-        let mut guard = self.reanalyze_cancel.lock().unwrap();
-        guard.cancel();
-        *guard = fresh.clone();
-        fresh
+        Self::replace_cancel(&self.reanalyze_cancel, &self.background_work_cancelled)
     }
 
     /// Install a fresh cancel token for an analysis warm sweep, cancelling any
@@ -378,11 +378,34 @@ impl DocumentStore {
     /// separate slot: edit-triggered diagnostic sweeps and background warming
     /// must not cancel each other.
     pub fn begin_warm_sweep(&self) -> mir_analyzer::IndexCancel {
+        Self::replace_cancel(&self.warm_sweep_cancel, &self.background_work_cancelled)
+    }
+
+    fn replace_cancel(
+        slot: &Mutex<mir_analyzer::IndexCancel>,
+        cancelled: &AtomicBool,
+    ) -> mir_analyzer::IndexCancel {
         let fresh = mir_analyzer::IndexCancel::new();
-        let mut guard = self.warm_sweep_cancel.lock().unwrap();
+        let mut guard = slot.lock().unwrap();
         guard.cancel();
+        // Checked under the slot lock so a racing `cancel_background_work`
+        // either sees this token installed or this call sees its flag.
+        if cancelled.load(Ordering::SeqCst) {
+            fresh.cancel();
+        }
         *guard = fresh.clone();
         fresh
+    }
+
+    /// Stop in-flight warm and dependent-diagnostics sweeps at their next file
+    /// boundary and make every later `begin_*` token start cancelled. Called on
+    /// `shutdown`: the runtime joins blocking tasks on exit, so a sweep still
+    /// grinding through a large workspace would otherwise hold the process open.
+    pub fn cancel_background_work(&self) {
+        self.background_work_cancelled.store(true, Ordering::SeqCst);
+        for slot in [&self.reanalyze_cancel, &self.warm_sweep_cancel] {
+            slot.lock().unwrap().cancel();
+        }
     }
 
     /// Drive every workspace file through mir's memoized `analyze_file` query
@@ -3468,6 +3491,18 @@ mod tests {
         let old = store.begin_warm_sweep();
         let _new = store.begin_warm_sweep();
         assert!(old.is_cancelled());
+    }
+
+    #[test]
+    fn cancel_background_work_stops_current_and_future_sweeps() {
+        let store = DocumentStore::new();
+        let warm = store.begin_warm_sweep();
+        let reanalyze = store.begin_reanalyze();
+        store.cancel_background_work();
+        assert!(warm.is_cancelled());
+        assert!(reanalyze.is_cancelled());
+        assert!(store.begin_warm_sweep().is_cancelled());
+        assert!(store.begin_reanalyze().is_cancelled());
     }
 
     #[test]

@@ -16,6 +16,7 @@ All notable changes to php-lsp are documented here.
 - **Server no longer wedges after a panic during analysis**: a panic while the analysis session was locked made every later request panic. The lock is now recovered and the session kept.
 - **PHP version from a `composer.json` range**: when no PHP binary is found, a `require.php` range with an upper bound (`>=7.4 <9.0`, `7.4 - 8.2`) picks the highest supported version inside it instead of the lower bound.
 - **Re-created file hidden after a PHP version change**: a file deleted before the analysis session was rebuilt (PHP version change, cache or stub dir attach) stayed invisible after being re-created.
+- **Server hung on exit during a warm sweep**: `shutdown` now cancels in-flight warm and dependent-diagnostics sweeps, and the process waits at most 2 s for remaining background work after `exit`.
 
 ## [0.27.0] — 2026-10-22
 

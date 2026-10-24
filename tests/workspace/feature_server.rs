@@ -137,6 +137,42 @@ async fn shutdown_responds_correctly() {
     assert!(resp["result"].is_null(), "shutdown result should be null");
 }
 
+#[tokio::test]
+async fn shutdown_during_warm_sweep_responds_and_rejects_later_requests() {
+    let workspace = tempfile::tempdir().expect("workspace dir");
+    std::fs::write(
+        workspace.path().join("widget.php"),
+        "<?php\nclass Widget {\n    public function spin(): void {}\n}\n",
+    )
+    .expect("write widget.php");
+    for i in 0..50 {
+        std::fs::write(
+            workspace.path().join(format!("caller{i}.php")),
+            format!("<?php\nfunction caller{i}(Widget $w): void {{ $w->spin(); }}\n"),
+        )
+        .expect("write caller");
+    }
+    let mut server = TestServer::with_root_and_options(
+        workspace.path(),
+        serde_json::json!({ "diagnostics": { "enabled": false }, "warmAnalysis": true }),
+    )
+    .await;
+    server.wait_for_index_ready().await;
+
+    let resp = server.shutdown().await;
+    assert!(
+        resp["error"].is_null(),
+        "shutdown should not error: {resp:?}"
+    );
+    assert!(resp["result"].is_null(), "shutdown result should be null");
+
+    let after = server.hover("caller0.php", 1, 40).await;
+    assert!(
+        after["error"].is_object(),
+        "requests after shutdown must be rejected: {after:?}"
+    );
+}
+
 // ── concurrency ──────────────────────────────────────────────────────────────
 
 #[tokio::test]
