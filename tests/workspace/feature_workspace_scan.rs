@@ -703,7 +703,66 @@ async fn exclude_all_paths_leaves_nothing_indexed() {
     expect!["<no symbols>"].assert_eq(&server.snapshot_workspace_symbols("Greeter").await);
 }
 
+#[serial_test::serial]
+#[tokio::test]
+async fn exclude_paths_glob_with_double_star() {
+    let tmp = tempfile::tempdir().expect("create TempDir");
+    let mut server = TestServer::with_root_and_options(
+        tmp.path(),
+        json!({
+            "diagnostics": { "enabled": false },
+            "excludePaths": ["**/var/**", "src/**/Generated", "*Test.php"],
+        }),
+    )
+    .await;
+
+    server.write_file("var/cache/InVar.php", "<?php\nclass InVar {}\n");
+    server.write_file("app/var/InNestedVar.php", "<?php\nclass InNestedVar {}\n");
+    server.write_file(
+        "src/A/B/Generated/InGenerated.php",
+        "<?php\nclass InGenerated {}\n",
+    );
+    server.write_file("tests/FooTest.php", "<?php\nclass FooTest {}\n");
+    server.write_file("src/A/Kept.php", "<?php\nclass Kept {}\n");
+
+    server.wait_for_index_ready().await;
+
+    for name in ["InVar", "InNestedVar", "InGenerated", "FooTest"] {
+        assert_eq!(
+            server.snapshot_workspace_symbols(name).await,
+            "<no symbols>",
+            "{name} should be excluded"
+        );
+    }
+    expect!["Class       Kept @ src/A/Kept.php:1"]
+        .assert_eq(&server.snapshot_workspace_symbols("Kept").await);
+}
+
 // ── includePaths (override excludePaths) ──────────────────────────────────────
+
+#[serial_test::serial]
+#[tokio::test]
+async fn include_paths_double_star_reaches_into_excluded_dir() {
+    let tmp = tempfile::tempdir().expect("create TempDir");
+    let mut server = TestServer::with_root_and_options(
+        tmp.path(),
+        json!({
+            "diagnostics": { "enabled": false },
+            "excludePaths": ["src/"],
+            "includePaths": ["**/Model"],
+        }),
+    )
+    .await;
+
+    server.write_file("src/Model/User.php", "<?php\nclass User {}\n");
+    server.write_file("src/Service/Greeter.php", "<?php\nclass Greeter {}\n");
+
+    server.wait_for_index_ready().await;
+
+    expect!["Class       User @ src/Model/User.php:1"]
+        .assert_eq(&server.snapshot_workspace_symbols("User").await);
+    expect!["<no symbols>"].assert_eq(&server.snapshot_workspace_symbols("Greeter").await);
+}
 
 #[serial_test::serial]
 #[tokio::test]

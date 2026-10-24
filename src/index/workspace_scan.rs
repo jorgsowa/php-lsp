@@ -13,7 +13,7 @@ use crate::analysis::diagnostics::parse_document_no_diags;
 use crate::document::document_store::DocumentStore;
 use crate::document::open_files::OpenFiles;
 use crate::index::file_index::FileIndex;
-use crate::index::matches_any;
+use crate::index::{has_included_children, matches_any, matches_include_prefix};
 
 /// Ask all connected clients to re-request semantic tokens, code lenses, inlay hints,
 /// and diagnostics. Called after bulk index operations so that previously-opened editors
@@ -299,16 +299,16 @@ fn walk_dir_parallel(
             .map(|p| p.to_string_lossy().replace('\\', "/"))
             .unwrap_or_else(|_| path.to_string_lossy().replace('\\', "/"));
 
-        let is_excluded = matches_any(&rel_path, excl);
-        let is_included = matches_include_prefix(&rel_path, incl) || matches_any(&rel_path, incl);
-        if is_excluded && !is_included && !has_included_children(&rel_path, incl) {
-            continue;
-        }
-
         let ft = match entry.file_type() {
             Ok(f) => f,
             Err(_) => continue,
         };
+
+        let is_excluded = matches_any(&rel_path, excl);
+        let is_included = matches_include_prefix(&rel_path, incl) || matches_any(&rel_path, incl);
+        if is_excluded && !is_included && !(ft.is_dir() && has_included_children(&rel_path, incl)) {
+            continue;
+        }
         if ft.is_dir() {
             let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
             if !name.starts_with('.') {
@@ -345,19 +345,6 @@ fn walk_dir_parallel(
     subdirs.into_par_iter().for_each(|sub| {
         walk_dir_parallel(sub, root, excl, incl, extensions, max_files, out, count);
     });
-}
-
-fn matches_include_prefix(rel_path: &str, patterns: &[String]) -> bool {
-    patterns.iter().any(|pat| {
-        let p = pat.trim_end_matches('*').trim_end_matches('/');
-        rel_path.starts_with(&format!("{p}/")) || rel_path == p
-    })
-}
-fn has_included_children(rel_path: &str, patterns: &[String]) -> bool {
-    patterns.iter().any(|pat| {
-        let p = pat.trim_end_matches('*').trim_end_matches('/');
-        p.starts_with(&format!("{rel_path}/")) || p == rel_path
-    })
 }
 
 #[cfg(test)]
