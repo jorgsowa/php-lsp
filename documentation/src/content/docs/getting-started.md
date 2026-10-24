@@ -17,23 +17,27 @@ The binary is placed at `~/.cargo/bin/php-lsp`.
 
 **Pre-built binary** (no Rust required):
 
-Download the binary for your platform from [Releases](https://github.com/jorgsowa/php-lsp/releases):
+Download the archive for your platform from [Releases](https://github.com/jorgsowa/php-lsp/releases):
 
 | File | Platform |
 |---|---|
-| `php-lsp-aarch64-apple-darwin` | macOS — Apple Silicon |
-| `php-lsp-x86_64-apple-darwin` | macOS — Intel |
-| `php-lsp-x86_64-unknown-linux-gnu` | Linux — 64-bit (glibc) |
-| `php-lsp-aarch64-unknown-linux-gnu` | Linux — ARM64 (glibc) |
-| `php-lsp-x86_64-unknown-linux-musl` | Linux — 64-bit (musl, e.g. Alpine) |
-| `php-lsp-aarch64-unknown-linux-musl` | Linux — ARM64 (musl, e.g. Alpine) |
-| `php-lsp-x86_64-pc-windows-msvc` | Windows — 64-bit |
+| `php-lsp-aarch64-apple-darwin.tar.gz` | macOS — Apple Silicon |
+| `php-lsp-x86_64-apple-darwin.tar.gz` | macOS — Intel |
+| `php-lsp-x86_64-unknown-linux-gnu.tar.gz` | Linux — 64-bit (glibc) |
+| `php-lsp-aarch64-unknown-linux-gnu.tar.gz` | Linux — ARM64 (glibc) |
+| `php-lsp-x86_64-unknown-linux-musl.tar.gz` | Linux — 64-bit (musl, e.g. Alpine) |
+| `php-lsp-aarch64-unknown-linux-musl.tar.gz` | Linux — ARM64 (musl, e.g. Alpine) |
+| `php-lsp-x86_64-pc-windows-msvc.zip` | Windows — 64-bit |
 
-Then place it on your `PATH`:
+Each archive has a matching `.sha256` checksum file.
+
+On macOS and Linux, extract it and place the binary on your `PATH`:
 ```bash
+tar xzf php-lsp-<target>.tar.gz
 sudo mv php-lsp /usr/local/bin/php-lsp
-chmod +x /usr/local/bin/php-lsp
 ```
+
+On Windows, extract `php-lsp.exe` from the `.zip` and move it to a directory on your `PATH`.
 
 **Build from source:**
 ```bash
@@ -47,7 +51,7 @@ cargo build --release
 
 ```bash
 php-lsp --version
-# php-lsp 0.1.50
+# php-lsp 0.27.0
 ```
 
 If you get `command not found`, ensure the install directory is on your `PATH`:

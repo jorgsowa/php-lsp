@@ -29,9 +29,8 @@ Criterion prints per-bench deltas with confidence intervals and colours
 regressions red. HTML report: `target/criterion/report/index.html`.
 
 The `index/workspace_scan/laravel_framework` group exercises indexing the full
-Laravel codebase. Note: the store's default 1,000-file LRU cap means ~1,500
-files are evicted during this bench — realistic for what users experience, but
-not a clean "time to index N files" measurement.
+Laravel codebase. The store has no file cap and `ingest` only mirrors text, so
+this measures the time to ingest the whole tree without parsing it.
 
 ### What layer each Criterion bench targets
 
