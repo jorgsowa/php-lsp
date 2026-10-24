@@ -2459,24 +2459,19 @@ impl DocumentStore {
         // (a dependency edit changes them without changing this file's bytes),
         // so they are recomputed live rather than cached alongside the
         // per-file body analysis.
-        let class_issues = {
-            let _s = tracing::debug_span!("session.class_issues_for").entered();
-            self.with_snapshot(
-                |session| session.prepare_for_query(None),
-                |snap| snap.class_issues(std::slice::from_ref(&file)),
-            )
-            .ok()?
-        };
         // `collector_issues` includes raw `ParseError` issues; callers filter
         // those out downstream in `issues_to_diagnostics` (php-lsp already
         // surfaces parse errors as `SyntaxError` diagnostics from its own
         // parser pass), so this returns them unfiltered here.
-        let collector_issues = self
-            .with_snapshot(
-                |_| {},
-                |snap| snap.collector_issues(std::slice::from_ref(&file)),
+        let (class_issues, collector_issues) = {
+            let _s = tracing::debug_span!("session.class_and_collector_issues").entered();
+            let files = std::slice::from_ref(&file);
+            self.with_snapshot(
+                |session| session.prepare_for_query(None),
+                |snap| Ok((snap.class_issues(files)?, snap.collector_issues(files)?)),
             )
-            .ok()?;
+            .ok()?
+        };
         let combined: Vec<mir_issues::Issue> = analysis
             .issues
             .iter()
