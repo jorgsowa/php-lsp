@@ -84,16 +84,20 @@ pub fn signature_help(
     let display_name = func_name.trim_start_matches('\\');
     let label = format!("{}({})", display_name, sig_text);
     let docblock = find_docblock(&doc.program().stmts, &func_name);
+    let mut named_index = None;
     let params: Vec<ParameterInformation> = split_params(&sig_text)
         .into_iter()
         .filter(|p| !p.is_empty())
-        .map(|p| {
+        .enumerate()
+        .map(|(idx, p)| {
             // Extract the variable name (e.g. "$name") from the param string.
             let param_name = p
                 .split_whitespace()
-                .find(|t| t.starts_with('$'))
-                .unwrap_or("")
-                .trim_start_matches('$');
+                .find_map(|t| t.trim_start_matches(['&', '.']).strip_prefix('$'))
+                .unwrap_or("");
+            if named_index.is_none() && ctx.named_arg.as_deref() == Some(param_name) {
+                named_index = Some(idx);
+            }
             let doc = docblock.as_ref().and_then(|db| {
                 db.params
                     .iter()
@@ -116,7 +120,7 @@ pub fn signature_help(
     let effective_active: Option<u32> = if n == 0 {
         None
     } else {
-        Some(active_param.min(n - 1) as u32)
+        Some(named_index.unwrap_or(active_param).min(n - 1) as u32)
     };
 
     let sig_doc = docblock
@@ -160,6 +164,8 @@ struct CallContext {
     active_param: usize,
     receiver: Option<String>,
     name_byte_offset: u32,
+    /// Name of the named argument (`name: value`) the cursor is in, if any.
+    named_arg: Option<String>,
 }
 
 fn call_context(source: &str, position: Position) -> Option<CallContext> {
@@ -189,6 +195,7 @@ fn call_context(source: &str, position: Position) -> Option<CallContext> {
     let in_string = string_literal_mask(&text);
     let mut depth = 0i32;
     let mut commas = 0usize;
+    let mut arg_start = None;
     let mut i = text.len();
 
     while i > 0 {
@@ -208,15 +215,34 @@ fn call_context(source: &str, position: Position) -> Option<CallContext> {
                         receiver,
                         name_byte_offset: text[..name_start].iter().collect::<String>().len()
                             as u32,
+                        named_arg: named_arg_name(&text[arg_start.unwrap_or(i + 1)..]),
                     });
                 }
                 return None;
             }
-            ',' if depth == 0 => commas += 1,
+            ',' if depth == 0 => {
+                commas += 1;
+                arg_start.get_or_insert(i + 1);
+            }
             _ => {}
         }
     }
     None
+}
+
+/// The `name` in an argument starting `name:` (but not `Name::`).
+fn named_arg_name(arg: &[char]) -> Option<String> {
+    let start = arg.iter().position(|c| !c.is_whitespace())?;
+    let is_ident = |c: &char| c.is_alphanumeric() || *c == '_';
+    let len = arg[start..].iter().take_while(|c| is_ident(c)).count();
+    if len == 0 || arg[start].is_ascii_digit() {
+        return None;
+    }
+    let mut rest = arg[start + len..].iter().skip_while(|c| c.is_whitespace());
+    match (rest.next(), rest.next()) {
+        (Some(':'), next) if next != Some(&':') => Some(arg[start..start + len].iter().collect()),
+        _ => None,
+    }
 }
 
 /// Marks which positions in `text` fall inside a string literal or comment,

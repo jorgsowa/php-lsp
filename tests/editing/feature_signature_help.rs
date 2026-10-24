@@ -779,3 +779,65 @@ greet("oops)", $0);
         .await;
     expect!["▶ greet(string $target, int $times)  @param1"].assert_eq(&out);
 }
+
+#[tokio::test]
+async fn signature_help_named_arg_matches_parameter_name() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_signature_help(
+            r#"<?php
+function greet(string $name, int $count = 1, bool $loud = false): string { return $name; }
+greet(loud: $0);
+"#,
+        )
+        .await;
+    expect!["▶ greet(string $name, int $count = 1, bool $loud = false)  @param2"].assert_eq(&out);
+}
+
+#[tokio::test]
+async fn signature_help_named_arg_after_positional_arg() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_signature_help(
+            r#"<?php
+function greet(string $name, int $count = 1, bool $loud = false): string { return $name; }
+greet('x', loud: true, count: $0);
+"#,
+        )
+        .await;
+    expect!["▶ greet(string $name, int $count = 1, bool $loud = false)  @param1"].assert_eq(&out);
+}
+
+/// `Cls::CONST` is not a named argument; the comma count still applies.
+#[tokio::test]
+async fn signature_help_static_access_arg_is_not_named() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_signature_help(
+            r#"<?php
+class Cfg { const loud = true; }
+function greet(string $name, bool $loud = false): string { return $name; }
+greet(Cfg::loud$0);
+"#,
+        )
+        .await;
+    expect!["▶ greet(string $name, bool $loud = false)  @param0"].assert_eq(&out);
+}
+
+#[tokio::test]
+async fn signature_help_unknown_named_arg_falls_back_to_comma_count() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_signature_help(
+            r#"<?php
+function greet(string $name, int $count = 1): string { return $name; }
+greet('x', nope: $0);
+"#,
+        )
+        .await;
+    expect!["▶ greet(string $name, int $count = 1)  @param1"].assert_eq(&out);
+}
