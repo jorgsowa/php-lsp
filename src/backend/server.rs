@@ -32,7 +32,7 @@ use crate::navigation::type_hierarchy::{
 };
 
 use crate::analysis::code_lens::{code_lenses, subtype_site_to_location};
-use crate::analysis::diagnostics::{diagnostics_from_doc, parse_document, parse_document_no_diags};
+use crate::analysis::diagnostics::{diagnostics_from_doc, parse_document_no_diags};
 use crate::analysis::document_highlight::document_highlights;
 use crate::analysis::inlay_hints::inlay_hints;
 use crate::analysis::inline_value::inline_values_in_range;
@@ -590,7 +590,7 @@ impl LanguageServer for Backend {
             // Store text immediately and capture the version token.
             // Features (completion, hover, …) see the new text instantly while
             // the parse runs in the background.
-            let version = self.set_open_text(uri.clone(), text.clone());
+            let version = self.set_open_text(uri.clone(), text);
 
             let docs = Arc::clone(&self.docs);
             let open_files = self.open_files.clone();
@@ -612,9 +612,15 @@ impl LanguageServer for Backend {
                     return;
                 }
 
+                // Reuse the salsa-memoized parse that semantic analysis shares.
                 let parse_docs = Arc::clone(&docs);
-                let (_doc, parse_diags) = super::offload::run("did_change.parse", move || {
-                    parse_document(&text, parse_docs.workspace_php_version())
+                let parse_uri = uri.clone();
+                let parse_diags = super::offload::run("did_change.parse", move || {
+                    let target = parse_docs.workspace_php_version();
+                    parse_docs
+                        .get_doc_salsa(&parse_uri)
+                        .map(|doc| diagnostics_from_doc(&doc, target))
+                        .unwrap_or_default()
                 })
                 .await
                 .unwrap_or_default();
