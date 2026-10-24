@@ -422,39 +422,102 @@ fn extract_major_minor(version: &str) -> Option<String> {
     Some(format!("{}.{}", major, minor))
 }
 
-/// Extract the highest `"X.Y"` lower bound from a Composer version constraint
-/// like `"^8.1"`, `">=8.0"`, `"~8.2"`, `"7.4.*"`, `">=8.0 <9.0"`, or
+/// Extract a `"X.Y"` version from a Composer version constraint like `"^8.1"`,
+/// `">=8.0"`, `"~8.2"`, `"7.4.*"`, `">=8.0 <9.0"`, `"7.4 - 8.2"`, or
 /// `"^7.4 || ^8.1"`.
 ///
-/// For OR-constraints we take the **maximum** lower bound: a project that
-/// declares `"^7.4 || ^8.1"` is most likely running on 8.1 locally, so using
-/// the highest version gives the best LSP experience.
+/// A clause with an explicit upper bound yields the highest supported version
+/// inside the range; otherwise it yields its lower bound. For OR-constraints we
+/// take the **maximum** across clauses: a project that declares
+/// `"^7.4 || ^8.1"` is most likely running on 8.1 locally, so using the highest
+/// version gives the best LSP experience.
 fn parse_php_version_constraint(constraint: &str) -> Option<String> {
     constraint
         .split("||")
-        .filter_map(|clause| {
-            // Strip leading comparison/range operators from the clause.
-            let stripped = clause
-                .trim()
-                .trim_start_matches(['^', '~', '>', '<', '=', ' ']);
-            // Take the first whitespace-delimited token: "8.0 <9.0" → "8.0".
-            // TODO: for single-range constraints like ">=7.4 <9.0" this returns the
-            // lower bound (7.4) rather than the actual runtime version. There is no
-            // reliable way to infer the runtime from a range alone; the php binary
-            // (detect_php_binary_version) is a better signal for that case.
-            let token = stripped.split_whitespace().next().unwrap_or(stripped);
-            // Split on '.' to get major and minor, stripping trailing wildcards.
-            let mut parts = token.split('.');
-            let major = parts.next()?;
-            let minor_raw = parts.next().unwrap_or("0");
-            let minor = minor_raw.trim_end_matches('*');
-            let minor = if minor.is_empty() { "0" } else { minor };
-            let maj: u32 = major.parse().ok()?;
-            let min: u32 = minor.parse().ok()?;
-            Some((maj, min, format!("{}.{}", major, minor)))
-        })
+        .filter_map(parse_php_constraint_clause)
         .max_by_key(|&(maj, min, _)| (maj, min))
         .map(|(_, _, ver)| ver)
+}
+
+enum UpperBound {
+    Inclusive(u32, u32),
+    Exclusive(u32, u32, u32),
+}
+
+fn parse_php_constraint_clause(clause: &str) -> Option<(u32, u32, String)> {
+    let mut tokens: Vec<String> = Vec::new();
+    for tok in clause.replace(',', " ").split_whitespace() {
+        // Rejoin operators written with a space before the version: ">= 8.0".
+        match tokens.last_mut() {
+            Some(prev) if !prev.is_empty() && prev.chars().all(|c| "<>=!^~".contains(c)) => {
+                prev.push_str(tok)
+            }
+            _ => tokens.push(tok.to_string()),
+        }
+    }
+
+    let mut lower: Option<(u32, u32, String)> = None;
+    let mut upper: Option<UpperBound> = None;
+    if let [from, dash, to] = tokens.as_slice()
+        && dash == "-"
+    {
+        lower = parse_constraint_version(from);
+        let (maj, min, _) = parse_constraint_version(to)?;
+        upper = Some(UpperBound::Inclusive(maj, min));
+    } else {
+        for tok in &tokens {
+            let version = tok.trim_start_matches(['<', '>', '=', '!', '^', '~']);
+            let op = &tok[..tok.len() - version.len()];
+            match op {
+                "!=" => {}
+                "<" => {
+                    let (maj, min, patch) = parse_version_triple(version)?;
+                    upper = Some(UpperBound::Exclusive(maj, min, patch));
+                }
+                "<=" => {
+                    let (maj, min, _) = parse_version_triple(version)?;
+                    upper = Some(UpperBound::Inclusive(maj, min));
+                }
+                _ if lower.is_none() => lower = parse_constraint_version(version),
+                _ => {}
+            }
+        }
+    }
+
+    if let Some(upper) = upper {
+        let floor = lower.as_ref().map_or((0, 0), |&(maj, min, _)| (maj, min));
+        let highest = SUPPORTED_PHP_VERSIONS.iter().rev().find_map(|&v| {
+            let (maj, min) = v.split_once('.')?;
+            let (maj, min): (u32, u32) = (maj.parse().ok()?, min.parse().ok()?);
+            let below_upper = match upper {
+                UpperBound::Inclusive(umaj, umin) => (maj, min) <= (umaj, umin),
+                UpperBound::Exclusive(umaj, umin, upatch) => (maj, min, 0) < (umaj, umin, upatch),
+            };
+            (below_upper && (maj, min) >= floor).then(|| (maj, min, v.to_string()))
+        });
+        if highest.is_some() {
+            return highest;
+        }
+    }
+    lower
+}
+
+/// Parse `"X"`, `"X.Y"`, `"X.Y.Z"` or `"X.Y.*"` into `(major, minor, "X.Y")`.
+fn parse_constraint_version(version: &str) -> Option<(u32, u32, String)> {
+    let (maj, min, _) = parse_version_triple(version)?;
+    Some((maj, min, format!("{maj}.{min}")))
+}
+
+fn parse_version_triple(version: &str) -> Option<(u32, u32, u32)> {
+    let mut parts = version.split('.');
+    let maj = parts.next()?.parse().ok()?;
+    let mut rest = parts.map(|p| match p.trim_end_matches('*') {
+        "" => Some(0),
+        p => p.parse().ok(),
+    });
+    let min = rest.next().unwrap_or(Some(0))?;
+    let patch = rest.next().unwrap_or(Some(0))?;
+    Some((maj, min, patch))
 }
 
 #[cfg(test)]
@@ -678,11 +741,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         write(
             &dir.path().join("composer.json"),
-            r#"{"require": {"php": ">=8.1 <9.0"}}"#,
+            r#"{"require": {"php": ">=7.4 <9.0"}}"#,
         );
         assert_eq!(
             detect_php_require_version_from_composer(dir.path()),
-            Some(PHP_8_1.to_string())
+            Some(PHP_8_6.to_string())
         );
     }
 
@@ -896,6 +959,36 @@ mod tests {
     fn constraint_major_only_without_minor() {
         // ">=8" has no minor component — treated as "8.0".
         assert_eq!(parse_php_version_constraint(">=8"), Some("8.0".to_string()));
+    }
+
+    #[test]
+    fn constraint_with_upper_bound_picks_highest_supported_in_range() {
+        let cases = [
+            (">=7.4 <8.3", "8.2"),
+            (">=7.4,<8.3", "8.2"),
+            (">= 7.4 < 8.3", "8.2"),
+            (">=7.4 <=8.3", "8.3"),
+            (">=8.0 <8.3.5", "8.3"),
+            ("<8.0", "7.4"),
+            ("7.4 - 8.1", "8.1"),
+            (">=7.4 <8.2 || ^8.4", "8.4"),
+            (">=8.0 !=8.1.0 <8.2", "8.1"),
+        ];
+        for (constraint, expected) in cases {
+            assert_eq!(
+                parse_php_version_constraint(constraint).as_deref(),
+                Some(expected),
+                "{constraint}"
+            );
+        }
+    }
+
+    #[test]
+    fn constraint_with_unsatisfiable_upper_bound_falls_back_to_lower_bound() {
+        assert_eq!(
+            parse_php_version_constraint(">=9.0 <10.0").as_deref(),
+            Some("9.0")
+        );
     }
 
     // --- extract_major_minor edge cases ---
