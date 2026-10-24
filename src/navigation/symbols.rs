@@ -8,12 +8,14 @@ use tower_lsp_server::ls_types::{
 };
 
 use crate::document::ast::{ParsedDoc, SourceView, name_range};
+use crate::index::file_index::WorkspaceSymbolRow;
 use crate::lang::docblock::parse_docblock;
 use crate::text::zero_width_range;
 
 fn is_deprecated_doc(doc: Option<&php_ast::Comment<'_>>) -> Option<bool> {
     doc.and_then(|c| {
-        if parse_docblock(c.text).deprecated.is_some() {
+        // Cheap pre-check: the docblock parser only matches the literal `@deprecated` tag.
+        if c.text.contains("@deprecated") && parse_docblock(c.text).deprecated.is_some() {
             Some(true)
         } else {
             None
@@ -23,7 +25,20 @@ fn is_deprecated_doc(doc: Option<&php_ast::Comment<'_>>) -> Option<bool> {
 
 pub fn document_symbols(_source: &str, doc: &ParsedDoc) -> Vec<DocumentSymbol> {
     let sv = doc.view();
-    symbols_from_statements(sv, &doc.program().stmts)
+    symbols_from_statements(sv, &doc.program().stmts, true)
+}
+
+/// `document_symbols` without signature details or parameter children.
+fn outline_symbols(doc: &ParsedDoc) -> Vec<DocumentSymbol> {
+    symbols_from_statements(doc.view(), &doc.program().stmts, false)
+}
+
+fn fn_detail(
+    full: bool,
+    params: &[php_ast::Param<'_, '_>],
+    ret: Option<&php_ast::TypeHint<'_, '_>>,
+) -> Option<String> {
+    full.then(|| format_fn_signature(params, ret))
 }
 
 /// A `Location`'s range is a workspace-symbol placeholder — `zero_width_range`
@@ -91,17 +106,21 @@ fn parse_kind_filter(query: &str) -> (Option<SymbolKind>, &str) {
     (Some(kind), term)
 }
 
-fn symbols_from_statements(sv: SourceView<'_>, stmts: &[Stmt<'_, '_>]) -> Vec<DocumentSymbol> {
+fn symbols_from_statements(
+    sv: SourceView<'_>,
+    stmts: &[Stmt<'_, '_>],
+    full: bool,
+) -> Vec<DocumentSymbol> {
     let mut symbols = Vec::new();
     for stmt in stmts {
         match &stmt.kind {
             StmtKind::Namespace(ns) => {
                 if let NamespaceBody::Braced(inner) = &ns.body {
-                    symbols.extend(symbols_from_statements(sv, &inner.stmts));
+                    symbols.extend(symbols_from_statements(sv, &inner.stmts, full));
                 }
             }
             _ => {
-                if let Some(sym) = statement_to_symbol(sv, stmt) {
+                if let Some(sym) = statement_to_symbol(sv, stmt, full) {
                     symbols.push(sym);
                 }
             }
@@ -133,9 +152,13 @@ fn param_range(sv: SourceView<'_>, param: &php_ast::Param<'_, '_>) -> Range {
 /// as class-level `Property` symbols, so this helper intentionally keeps
 /// parameters as parameters-only.
 fn param_children_for(
+    full: bool,
     sv: SourceView<'_>,
     params: &[php_ast::Param<'_, '_>],
 ) -> Option<Vec<DocumentSymbol>> {
+    if !full {
+        return None;
+    }
     let children: Vec<DocumentSymbol> = params
         .iter()
         .filter(|p| p.visibility.is_none())
@@ -185,13 +208,17 @@ fn promoted_property_symbols_for(
         .collect()
 }
 
-fn statement_to_symbol(sv: SourceView<'_>, stmt: &Stmt<'_, '_>) -> Option<DocumentSymbol> {
+fn statement_to_symbol(
+    sv: SourceView<'_>,
+    stmt: &Stmt<'_, '_>,
+    full: bool,
+) -> Option<DocumentSymbol> {
     match &stmt.kind {
         StmtKind::Function(f) => {
             let range = stmt_range(sv, stmt);
             let selection_range =
                 sv.name_range_after_attrs(&f.name.to_string(), &f.attributes, stmt.span);
-            let detail = Some(format_fn_signature(&f.params, f.return_type.as_ref()));
+            let detail = fn_detail(full, &f.params, f.return_type.as_ref());
             let is_deprecated = is_deprecated_doc(f.doc_comment.as_ref());
 
             Some(DocumentSymbol {
@@ -202,7 +229,7 @@ fn statement_to_symbol(sv: SourceView<'_>, stmt: &Stmt<'_, '_>) -> Option<Docume
                 deprecated: is_deprecated,
                 range,
                 selection_range,
-                children: param_children_for(sv, &f.params),
+                children: param_children_for(full, sv, &f.params),
             })
         }
 
@@ -226,8 +253,7 @@ fn statement_to_symbol(sv: SourceView<'_>, stmt: &Stmt<'_, '_>) -> Option<Docume
                                 &m.attributes,
                                 member.span,
                             );
-                            let detail =
-                                Some(format_fn_signature(&m.params, m.return_type.as_ref()));
+                            let detail = fn_detail(full, &m.params, m.return_type.as_ref());
                             let method_deprecated = is_deprecated_doc(m.doc_comment.as_ref());
                             vec![DocumentSymbol {
                                 name: m.name.to_string(),
@@ -237,7 +263,7 @@ fn statement_to_symbol(sv: SourceView<'_>, stmt: &Stmt<'_, '_>) -> Option<Docume
                                 deprecated: method_deprecated,
                                 range: mrange,
                                 selection_range: msel,
-                                children: param_children_for(sv, &m.params),
+                                children: param_children_for(full, sv, &m.params),
                             }]
                             .into_iter()
                             .chain(promoted_property_symbols_for(sv, &m.params))
@@ -322,7 +348,7 @@ fn statement_to_symbol(sv: SourceView<'_>, stmt: &Stmt<'_, '_>) -> Option<Docume
                         let method_deprecated = is_deprecated_doc(m.doc_comment.as_ref());
                         Some(DocumentSymbol {
                             name: m.name.to_string(),
-                            detail: Some(format_fn_signature(&m.params, m.return_type.as_ref())),
+                            detail: fn_detail(full, &m.params, m.return_type.as_ref()),
                             kind: SymbolKind::METHOD,
                             tags: None,
                             deprecated: method_deprecated,
@@ -389,13 +415,13 @@ fn statement_to_symbol(sv: SourceView<'_>, stmt: &Stmt<'_, '_>) -> Option<Docume
                         let method_deprecated = is_deprecated_doc(m.doc_comment.as_ref());
                         Some(DocumentSymbol {
                             name: m.name.to_string(),
-                            detail: Some(format_fn_signature(&m.params, m.return_type.as_ref())),
+                            detail: fn_detail(full, &m.params, m.return_type.as_ref()),
                             kind: SymbolKind::METHOD,
                             tags: None,
                             deprecated: method_deprecated,
                             range: mrange,
                             selection_range: msel,
-                            children: param_children_for(sv, &m.params),
+                            children: param_children_for(full, sv, &m.params),
                         })
                     } else {
                         None
@@ -463,7 +489,7 @@ fn statement_to_symbol(sv: SourceView<'_>, stmt: &Stmt<'_, '_>) -> Option<Docume
                         let method_deprecated = is_deprecated_doc(m.doc_comment.as_ref());
                         Some(DocumentSymbol {
                             name: m.name.to_string(),
-                            detail: Some(format_fn_signature(&m.params, m.return_type.as_ref())),
+                            detail: fn_detail(full, &m.params, m.return_type.as_ref()),
                             kind: SymbolKind::METHOD,
                             tags: None,
                             deprecated: method_deprecated,
@@ -550,71 +576,69 @@ fn format_fn_signature(
 pub fn workspace_symbols_from_workspace(
     query: &str,
     wi: &crate::db::workspace_index::WorkspaceIndexData,
-    get_doc: &dyn Fn(&Uri) -> Option<Arc<ParsedDoc>>,
 ) -> Vec<SymbolInformation> {
     let (kind_filter, term) = parse_kind_filter(query);
     let matches_kind = |k: SymbolKind| kind_filter.is_none_or(|f| f == k);
     let fq = crate::text::FuzzyQuery::new(term);
 
     let mut results = Vec::new();
-    for (uri, _) in &wi.files {
-        let Some(doc) = get_doc(uri) else { continue };
-        for sym in document_symbols(doc.source(), &doc) {
-            collect_workspace_symbols(
-                uri,
-                &sym,
-                None,
-                sym.selection_range.start.line,
-                &matches_kind,
-                &fq,
-                &mut results,
-            );
+    for (uri, index) in &wi.files {
+        for row in &index.symbols {
+            if !matches_kind(row.kind) || !fq.symbol_match(&row.name) {
+                continue;
+            }
+            results.push(SymbolInformation {
+                name: row.name.to_string(),
+                kind: row.kind,
+                location: Location {
+                    uri: uri.clone(),
+                    range: zero_width_range(row.line),
+                },
+                tags: None,
+                deprecated: row.deprecated,
+                container_name: row
+                    .container
+                    .and_then(|i| index.symbols.get(i as usize))
+                    .map(|c| c.name.to_string()),
+            });
         }
     }
     results
 }
 
-fn collect_workspace_symbols(
-    uri: &Uri,
+/// Flattens `document_symbols` into the rows `workspace_symbols_from_workspace` matches against.
+pub fn workspace_symbol_rows(doc: &ParsedDoc) -> Vec<WorkspaceSymbolRow> {
+    let mut rows = Vec::new();
+    for sym in outline_symbols(doc) {
+        push_workspace_symbol_rows(&sym, None, sym.selection_range.start.line, &mut rows);
+    }
+    rows
+}
+
+fn push_workspace_symbol_rows(
     sym: &DocumentSymbol,
-    container_name: Option<&str>,
+    container: Option<u32>,
     container_line: u32,
-    matches_kind: &dyn Fn(SymbolKind) -> bool,
-    fq: &crate::text::FuzzyQuery,
-    out: &mut Vec<SymbolInformation>,
+    out: &mut Vec<WorkspaceSymbolRow>,
 ) {
     if sym.kind == SymbolKind::VARIABLE {
         return;
     }
+    // Constants and enum cases report their container's line.
     let line = match sym.kind {
         SymbolKind::CONSTANT | SymbolKind::ENUM_MEMBER => container_line,
         _ => sym.selection_range.start.line,
     };
-    if matches_kind(sym.kind) && fq.symbol_match(&sym.name) {
-        out.push(SymbolInformation {
-            name: sym.name.clone(),
-            kind: sym.kind,
-            location: Location {
-                uri: uri.clone(),
-                range: zero_width_range(line),
-            },
-            tags: sym.tags.clone(),
-            deprecated: sym.deprecated,
-            container_name: container_name.map(str::to_string),
-        });
-    }
-    if let Some(children) = &sym.children {
-        for child in children {
-            collect_workspace_symbols(
-                uri,
-                child,
-                Some(&sym.name),
-                sym.selection_range.start.line,
-                matches_kind,
-                fq,
-                out,
-            );
-        }
+    let own = out.len() as u32;
+    out.push(WorkspaceSymbolRow {
+        name: sym.name.as_str().into(),
+        kind: sym.kind,
+        line,
+        container,
+        deprecated: sym.deprecated,
+    });
+    for child in sym.children.iter().flatten() {
+        push_workspace_symbol_rows(child, Some(own), sym.selection_range.start.line, out);
     }
 }
 
@@ -634,5 +658,71 @@ mod tests {
         let (kind, term) = parse_kind_filter("MyClass");
         assert_eq!(kind, None);
         assert_eq!(term, "MyClass");
+    }
+
+    fn workspace_symbol_dump(src: &str, query: &str) -> String {
+        let uri: Uri = "file:///ws/a.php".parse().unwrap();
+        let doc = Arc::new(ParsedDoc::parse(src.to_owned()));
+        let index = Arc::new(crate::index::file_index::FileIndex::extract(&doc));
+        let wi =
+            crate::db::workspace_index::WorkspaceIndexData::from_files(vec![(uri.clone(), index)]);
+        workspace_symbols_from_workspace(query, &wi)
+            .iter()
+            .map(|s| {
+                format!(
+                    "{:?} {} L{} in={:?} dep={:?}",
+                    s.kind, s.name, s.location.range.start.line, s.container_name, s.deprecated
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn workspace_symbols_cover_every_declaration_kind() {
+        let src = r#"<?php
+namespace App {
+    #[Attr]
+    final class Svc {
+        public const A = 1;
+        /** @deprecated */
+        public int $count = 0;
+        public function __construct(private string $name, int $plain) {}
+        #[Pure]
+        public function run(int $x): void {}
+    }
+    interface Contract { const B = 2; public function go(): void; }
+    trait Helps { public $p; const C = 3; public function help() {} }
+    enum Suit: string { case Hearts = 'h'; const D = 4; public function label(): string { return ''; } }
+    /** @deprecated */
+    function helper($a) {}
+    $anon = new class { public function hidden() {} };
+}
+"#;
+        expect_test::expect![[r#"
+            Class Svc L3 in=None dep=None
+            Constant A L3 in=Some("Svc") dep=None
+            Property $count L6 in=Some("Svc") dep=Some(true)
+            Method __construct L7 in=Some("Svc") dep=None
+            Property $name L7 in=Some("Svc") dep=None
+            Method run L9 in=Some("Svc") dep=None
+            Interface Contract L11 in=None dep=None
+            Constant B L11 in=Some("Contract") dep=None
+            Method go L11 in=Some("Contract") dep=None
+            Class Helps L12 in=None dep=None
+            Method help L12 in=Some("Helps") dep=None
+            Enum Suit L13 in=None dep=None
+            EnumMember Hearts L13 in=Some("Suit") dep=None
+            Constant D L13 in=Some("Suit") dep=None
+            Method label L13 in=Some("Suit") dep=None
+            Function helper L15 in=None dep=Some(true)"#]]
+        .assert_eq(&workspace_symbol_dump(src, ""));
+        expect_test::expect![[r#"
+            Method __construct L7 in=Some("Svc") dep=None
+            Method run L9 in=Some("Svc") dep=None
+            Method go L11 in=Some("Contract") dep=None
+            Method help L12 in=Some("Helps") dep=None
+            Method label L13 in=Some("Suit") dep=None"#]]
+        .assert_eq(&workspace_symbol_dump(src, "#method:"));
     }
 }

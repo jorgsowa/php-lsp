@@ -28,6 +28,19 @@ pub struct FileIndex {
     pub functions: Vec<FunctionDef>,
     pub classes: Vec<ClassDef>,
     pub constants: Vec<Box<str>>,
+    /// `workspace/symbol` rows, precomputed so a query never re-parses the file.
+    pub symbols: Vec<WorkspaceSymbolRow>,
+}
+
+/// One flattened `document_symbols` entry, as `workspace/symbol` reports it.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct WorkspaceSymbolRow {
+    pub name: Box<str>,
+    pub kind: tower_lsp_server::ls_types::SymbolKind,
+    pub line: u32,
+    /// Index of the enclosing row in the same `symbols` vec.
+    pub container: Option<u32>,
+    pub deprecated: Option<bool>,
 }
 
 impl FileIndex {
@@ -170,6 +183,7 @@ impl FileIndex {
         let view = doc.view();
         let mut index = FileIndex::default();
         collect_stmts(source, &view, &doc.program().stmts, None, &mut index);
+        index.symbols = crate::navigation::symbols::workspace_symbol_rows(doc);
         index
     }
 }

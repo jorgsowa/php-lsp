@@ -779,17 +779,7 @@ fn bench_workspace_symbol(c: &mut Criterion) {
     let mut group = c.benchmark_group("workspace_symbol");
     // Small-set fuzzy search: query matches `UserService`, `UserRepository`, etc.
     group.bench_function("fuzzy_small", |b| {
-        b.iter(|| {
-            let get_doc = |uri: &Uri| {
-                other_docs
-                    .iter()
-                    .find(|(u, _)| u == uri)
-                    .map(|(_, d)| Arc::clone(d))
-            };
-            black_box(workspace_symbols_from_workspace(
-                "User", &other_wi, &get_doc,
-            ))
-        });
+        b.iter(|| black_box(workspace_symbols_from_workspace("User", &other_wi)));
     });
 
     if let Some(docs) = laravel_docs() {
@@ -802,14 +792,7 @@ fn bench_workspace_symbol(c: &mut Criterion) {
         group.sample_size(10);
         // Common prefix across Illuminate — should match many symbols.
         group.bench_function("laravel_framework", |b| {
-            b.iter(|| {
-                let get_doc = |uri: &Uri| {
-                    docs.iter()
-                        .find(|(u, _)| u == uri)
-                        .map(|(_, d)| Arc::clone(d))
-                };
-                black_box(workspace_symbols_from_workspace("Str", &wi, &get_doc))
-            });
+            b.iter(|| black_box(workspace_symbols_from_workspace("Str", &wi)));
         });
     } else {
         eprintln!("Laravel fixture not found — skipping workspace_symbol/laravel_framework");
