@@ -31,6 +31,7 @@ All notable changes to php-lsp are documented here.
 - **Signature help in CRLF files**: the call's position was computed one byte short per line, so the receiver's class wasn't resolved and method calls could show no signature or another class's.
 - **`prepareRename` on a variable's `$`**: with the cursor on the sigil, the returned range started at `$` and cut off the name's last character (`$fo` for `$foo`).
 - **On-type `}` dedent**: typing the `}` of a one-line block or closure (`function () { return 1; }`) re-indented the whole line to the enclosing block's level. Only a `}` that starts its line is re-indented, matched against braces up to the typed one.
+- **Extract method**: parameters and the return value were inferred from variables anywhere in the file, so a same-named variable in another method added a bogus parameter or return. A selection that included the method signature was accepted, and the call was inserted with doubled indentation and a stray blank line. Variables are now read from the enclosing method only, the selection must lie inside its body and is extended to whole lines.
 
 ## [0.28.0] — 2026-10-25
 

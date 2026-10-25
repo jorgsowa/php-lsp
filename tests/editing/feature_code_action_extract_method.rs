@@ -24,8 +24,7 @@ class Logger {
         <?php
         class Logger {
             public function run(): void {
-                        $this->extractedMethod();
-
+                $this->extractedMethod();
             }
 
             private function extractedMethod(): void
@@ -60,8 +59,7 @@ class Greeter {
         class Greeter {
             public function greet(): void {
                 $name = "Alice";
-                        $this->extractedMethod($name);
-
+                $this->extractedMethod($name);
             }
 
             private function extractedMethod(mixed $name): void
@@ -97,8 +95,7 @@ class Calculator {
         class Calculator {
             public function compute(): int {
                 $a = 10;
-                        $result = $this->extractedMethod($a);
-
+                $result = $this->extractedMethod($a);
                 return $result;
             }
 
@@ -137,8 +134,7 @@ class Math {
             public function process(): void {
                 $x = 5;
                 $y = 3;
-                        $this->extractedMethod($x, $y);
-
+                $this->extractedMethod($x, $y);
             }
 
             private function extractedMethod(mixed $x, mixed $y): void
@@ -171,8 +167,7 @@ class Helper {
         <?php
         class Helper {
             public static function run(): void {
-                        self::extractedMethod();
-
+                self::extractedMethod();
             }
 
             private static function extractedMethod(): void
@@ -208,8 +203,7 @@ class Processor {
         class Processor {
             public function handle(): void {
                 if (true) {
-                                $this->extractedMethod();
-
+                    $this->extractedMethod();
                 }
             }
 
@@ -244,8 +238,7 @@ class Logger {
         <?php
         class Logger {
             public function log(): void {
-                        $this->extractedMethod();
-
+                $this->extractedMethod();
             }
 
             private function extractedMethod(): void
@@ -302,8 +295,7 @@ class Greeter {
         <?php
         class Greeter {
             public function greet($name): void {
-                        $this->extractedMethod($name);
-
+                $this->extractedMethod($name);
             }
 
             private function extractedMethod(mixed $name): void
@@ -325,6 +317,74 @@ async fn extract_method_no_action_outside_class() {
 $0$a = 1;
 $b = 2;
 $c = 3;$0
+"#,
+            "Extract method",
+        )
+        .await;
+    expect!["<action not found: Extract method>"].assert_eq(&out);
+}
+
+/// Same-named variables in other methods neither become parameters nor a return value.
+#[tokio::test]
+async fn extract_method_ignores_variables_of_other_methods() {
+    let mut s = TestServer::new().await;
+    let out = s
+        .check_code_action_apply(
+            r#"<?php
+class Job {
+    public function setup(): void {
+        $x = 1;
+    }
+
+    public function run(): void {
+        $0$x = 2;
+        echo $x;$0
+    }
+
+    public function after(): void {
+        echo $x;
+    }
+}
+"#,
+            "Extract method",
+        )
+        .await;
+    expect![[r#"
+        <?php
+        class Job {
+            public function setup(): void {
+                $x = 1;
+            }
+
+            public function run(): void {
+                $this->extractedMethod();
+            }
+
+            public function after(): void {
+                echo $x;
+            }
+
+            private function extractedMethod(): void
+            {
+                $x = 2;
+                echo $x;
+            }
+        }
+    "#]]
+    .assert_eq(&out);
+}
+
+#[tokio::test]
+async fn extract_method_no_action_when_selection_includes_signature() {
+    let mut s = TestServer::new().await;
+    let out = s
+        .check_code_action_apply(
+            r#"<?php
+class Foo {
+    $0public function run(): void {
+        echo 1;$0
+    }
+}
 "#,
             "Extract method",
         )

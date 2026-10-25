@@ -8,13 +8,12 @@
 ///   the selection ends become the **return value** (single variable for now).
 use std::collections::HashMap;
 
-use php_ast::{ClassMemberKind, NamespaceBody, StmtKind};
+use php_ast::{ClassMemberKind, NamespaceBody, Span, StmtKind};
 use tower_lsp_server::ls_types::{
     CodeAction, CodeActionKind, CodeActionOrCommand, Position, Range, TextEdit, Uri, WorkspaceEdit,
 };
 
-use crate::document::ast::{ParsedDoc, SourceView};
-use crate::text::{selected_text_range, utf16_offset_to_byte};
+use crate::document::ast::ParsedDoc;
 
 /// Return a "Extract method" code action when `range` spans multiple lines inside
 /// a class method body. Returns an empty vec when the preconditions are not met.
@@ -30,45 +29,54 @@ pub fn extract_method_actions(
 
     let sv = doc.view();
     let stmts = &doc.program().stmts;
-    let (class_end_offset, method_is_static, enclosing_params) =
-        match find_enclosing_class(stmts, sv, range) {
-            Some(info) => info,
-            None => return vec![],
-        };
+    let Some((sel_start, sel_end)) = whole_line_selection(
+        source,
+        sv.byte_of_position(range.start) as usize,
+        sv.byte_of_position(range.end) as usize,
+    ) else {
+        return vec![];
+    };
+    let Some(method) = find_enclosing_method(stmts, sel_start as u32, sel_end as u32) else {
+        return vec![];
+    };
+    let range = Range {
+        start: sv.position_of(sel_start as u32),
+        end: sv.position_of(sel_end as u32),
+    };
 
-    let selected = selected_text_range(source, range);
+    let selected = &source[sel_start..sel_end];
     if selected.trim().is_empty() {
         return vec![];
     }
 
-    let before = text_before(source, range);
-    let after = text_after(source, range);
+    let before = &source[method.body.start as usize..sel_start];
+    let after = &source[sel_end..method.body.end as usize];
 
     // A variable is already bound before the selection either because it was
     // assigned there, or because it's a parameter of the enclosing method —
     // `collect_assigned_vars` only sees `$x = ...` text and has no notion of
     // the method signature, so parameters must be added explicitly.
-    let mut vars_before = collect_assigned_vars(&before);
-    for p in &enclosing_params {
+    let mut vars_before = collect_assigned_vars(before);
+    for p in &method.params {
         if !vars_before.contains(p) {
             vars_before.push(p.clone());
         }
     }
-    let vars_in_selection = collect_vars_in_text(&selected);
+    let vars_in_selection = collect_vars_in_text(selected);
     let params: Vec<String> = vars_in_selection
         .iter()
         .filter(|v| vars_before.contains(v))
         .cloned()
         .collect();
 
-    let vars_assigned_in = collect_assigned_vars(&selected);
-    let vars_used_after = collect_vars_in_text(&after);
+    let vars_assigned_in = collect_assigned_vars(selected);
+    let vars_used_after = collect_vars_in_text(after);
     let returned: Option<String> = vars_assigned_in
         .into_iter()
         .find(|v| vars_used_after.contains(v));
 
     let indent = line_indent(source, range.start.line);
-    let call_prefix = if method_is_static {
+    let call_prefix = if method.is_static {
         "self::"
     } else {
         "$this->"
@@ -81,7 +89,7 @@ pub fn extract_method_actions(
         None => format!("{indent}{call_prefix}extractedMethod({params_call_list});\n"),
     };
 
-    let static_kw = if method_is_static { "static " } else { "" };
+    let static_kw = if method.is_static { "static " } else { "" };
     let param_decls: String = params
         .iter()
         .map(|v| format!("mixed {v}"))
@@ -91,7 +99,7 @@ pub fn extract_method_actions(
         Some(_) => ": mixed",
         None => ": void",
     };
-    let method_body = selected.trim_end_matches('\n').to_string();
+    let method_body = selected.trim_end_matches('\n');
 
     let return_stmt = match &returned {
         Some(ret_var) => format!("\n        return {ret_var};"),
@@ -100,10 +108,10 @@ pub fn extract_method_actions(
 
     let new_method = format!(
         "\n    private {static_kw}function extractedMethod({param_decls}){return_type}\n    {{\n{body}{return_stmt}\n    }}\n",
-        body = indent_block(&method_body, "        "),
+        body = indent_block(method_body, "        "),
     );
 
-    let closing_line = sv.position_of(class_end_offset.saturating_sub(1)).line;
+    let closing_line = sv.position_of(method.class_end.saturating_sub(1)).line;
     let insert_pos = Position {
         line: closing_line,
         character: 0,
@@ -138,38 +146,61 @@ pub fn extract_method_actions(
     })]
 }
 
-/// Returns `(class_span_end_offset, method_is_static, enclosing_method_params)`
-/// when `range` is inside a class method body, walking into namespaced blocks
-/// as needed. `enclosing_method_params` holds the method's own parameter
-/// names (e.g. `"$name"`) — these are bound before the selection even though
-/// they're never assigned via `$x = ...`.
-fn find_enclosing_class(
+/// Expands `start..end` to whole lines, or `None` when the selection shares a
+/// line with code outside it.
+fn whole_line_selection(source: &str, start: usize, end: usize) -> Option<(usize, usize)> {
+    let line_start = source[..start].rfind('\n').map_or(0, |i| i + 1);
+    if !source[line_start..start].trim().is_empty() {
+        return None;
+    }
+    let end_line_start = source[..end].rfind('\n').map_or(0, |i| i + 1);
+    if end == end_line_start {
+        return Some((line_start, end));
+    }
+    let line_end = source[end..].find('\n').map_or(source.len(), |i| end + i);
+    if !source[end..line_end].trim().is_empty() {
+        return None;
+    }
+    Some((line_start, (line_end + 1).min(source.len())))
+}
+
+struct EnclosingMethod {
+    class_end: u32,
+    is_static: bool,
+    /// Parameter names (e.g. `"$name"`): bound before the selection though never assigned.
+    params: Vec<String>,
+    /// The body block, braces included.
+    body: Span,
+}
+
+/// The class method whose body strictly contains `start..end`, walking into
+/// namespaced blocks as needed.
+fn find_enclosing_method(
     stmts: &[php_ast::Stmt<'_, '_>],
-    sv: SourceView<'_>,
-    range: Range,
-) -> Option<(u32, bool, Vec<String>)> {
+    start: u32,
+    end: u32,
+) -> Option<EnclosingMethod> {
     for stmt in stmts {
         match &stmt.kind {
             StmtKind::Class(c) => {
-                let class_start = sv.position_of(stmt.span.start).line;
-                let class_end = sv.position_of(stmt.span.end).line;
-                if range.start.line < class_start || range.end.line > class_end {
-                    continue;
-                }
                 for member in c.body.members.iter() {
-                    if let ClassMemberKind::Method(m) = &member.kind {
-                        let method_start = sv.position_of(member.span.start).line;
-                        let method_end = sv.position_of(member.span.end).line;
-                        if range.start.line >= method_start && range.end.line <= method_end {
-                            let params = m.params.iter().map(|p| format!("${}", p.name)).collect();
-                            return Some((stmt.span.end, m.is_static, params));
-                        }
+                    if let ClassMemberKind::Method(m) = &member.kind
+                        && let Some(body) = m.body
+                        && body.span.start < start
+                        && end < body.span.end
+                    {
+                        return Some(EnclosingMethod {
+                            class_end: stmt.span.end,
+                            is_static: m.is_static,
+                            params: m.params.iter().map(|p| format!("${}", p.name)).collect(),
+                            body: body.span,
+                        });
                     }
                 }
             }
             StmtKind::Namespace(ns) => {
                 if let NamespaceBody::Braced(inner) = &ns.body
-                    && let Some(r) = find_enclosing_class(&inner.stmts, sv, range)
+                    && let Some(r) = find_enclosing_method(&inner.stmts, start, end)
                 {
                     return Some(r);
                 }
@@ -251,44 +282,6 @@ fn collect_assigned_vars(text: &str) -> Vec<String> {
         }
     }
     vars
-}
-
-/// Return the source text that comes before `range`.
-fn text_before(source: &str, range: Range) -> String {
-    let lines: Vec<&str> = source.lines().collect();
-    let mut result = String::new();
-    for (i, line) in lines.iter().enumerate() {
-        let i = i as u32;
-        if i < range.start.line {
-            result.push_str(line);
-            result.push('\n');
-        } else if i == range.start.line {
-            let end = utf16_offset_to_byte(line, range.start.character as usize);
-            result.push_str(&line[..end]);
-            break;
-        } else {
-            break;
-        }
-    }
-    result
-}
-
-/// Return the source text that comes after `range`.
-fn text_after(source: &str, range: Range) -> String {
-    let lines: Vec<&str> = source.lines().collect();
-    let mut result = String::new();
-    for (i, line) in lines.iter().enumerate() {
-        let i = i as u32;
-        if i > range.end.line {
-            result.push_str(line);
-            result.push('\n');
-        } else if i == range.end.line {
-            let start = utf16_offset_to_byte(line, range.end.character as usize);
-            result.push_str(&line[start..]);
-            result.push('\n');
-        }
-    }
-    result
 }
 
 /// Return the leading whitespace of line `line` in `source`.
