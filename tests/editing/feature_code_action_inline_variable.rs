@@ -460,3 +460,59 @@ function f($s) {
     "#]]
     .assert_eq(&out);
 }
+
+/// `$this->h(1)` would call a method, not the closure held in the property.
+#[tokio::test]
+async fn inline_variable_parenthesizes_called_property() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_code_action_apply(
+            r#"<?php
+class A {
+    private $h;
+    public function run() {
+        $cb = $this->h;
+        return $0$cb$0(1);
+    }
+}
+"#,
+            "Inline variable '$cb'",
+        )
+        .await;
+    expect![[r#"
+        <?php
+        class A {
+            private $h;
+            public function run() {
+                return ($this->h)(1);
+            }
+        }
+    "#]]
+    .assert_eq(&out);
+}
+
+/// A variable callee needs no parentheses.
+#[tokio::test]
+async fn inline_variable_called_variable_stays_bare() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_code_action_apply(
+            r#"<?php
+function f($fn) {
+    $cb = $fn;
+    return $0$cb$0(1);
+}
+"#,
+            "Inline variable '$cb'",
+        )
+        .await;
+    expect![[r#"
+        <?php
+        function f($fn) {
+            return $fn(1);
+        }
+    "#]]
+    .assert_eq(&out);
+}

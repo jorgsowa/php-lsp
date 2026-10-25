@@ -111,10 +111,12 @@ pub fn inline_variable_actions(
         source,
         reads: &reads,
         args: Vec::new(),
+        callees: Vec::new(),
     };
     for stmt in stmts.iter() {
         let _ = sites.visit_stmt(stmt);
     }
+    let callees = sites.callees;
     if sites.args.into_iter().any(is_byref_param) {
         return vec![];
     }
@@ -123,7 +125,13 @@ pub fn inline_variable_actions(
     let mut edits: Vec<TextEdit> = reads
         .iter()
         .map(|read| {
-            let new_text = if found.value_is_atomic || stands_alone(source, *read) {
+            let new_text = if callees.contains(read) {
+                if found.value_is_variable {
+                    rhs.to_string()
+                } else {
+                    format!("({rhs})")
+                }
+            } else if found.value_is_atomic || stands_alone(source, *read) {
                 rhs.to_string()
             } else {
                 format!("({rhs})")
@@ -184,6 +192,7 @@ struct FoundAssignment {
     stmt: Span,
     value: Span,
     value_is_atomic: bool,
+    value_is_variable: bool,
     /// Variables the initializer reads, other than `$this`.
     value_vars: Vec<String>,
     /// `Some(None)`: a direct child of the scope's top-level statement list;
@@ -213,6 +222,10 @@ impl<'arena, 'src> Visitor<'arena, 'src> for AssignmentFinder {
                     stmt: stmt.span,
                     value: assign.value.span,
                     value_is_atomic: is_atomic(assign.value),
+                    value_is_variable: matches!(
+                        assign.value.kind,
+                        ExprKind::Variable(_) | ExprKind::Parenthesized(_)
+                    ),
                     value_vars: variable_names(assign.value),
                     container: match self.containers.last() {
                         None => Some(None),
@@ -282,6 +295,8 @@ struct ReadSites<'s> {
     source: &'s str,
     reads: &'s [Span],
     args: Vec<ArgSlot<'s>>,
+    /// Reads called as a function: `$read(...)`.
+    callees: Vec<Span>,
 }
 
 impl ReadSites<'_> {
@@ -308,7 +323,12 @@ impl ReadSites<'_> {
 impl<'arena, 'src> Visitor<'arena, 'src> for ReadSites<'_> {
     fn visit_expr(&mut self, expr: &Expr<'arena, 'src>) -> ControlFlow<()> {
         match &expr.kind {
-            ExprKind::FunctionCall(call) => self.note_args(call.name.span.start, &call.args),
+            ExprKind::FunctionCall(call) => {
+                if self.reads.contains(&call.name.span) {
+                    self.callees.push(call.name.span);
+                }
+                self.note_args(call.name.span.start, &call.args)
+            }
             ExprKind::MethodCall(call) | ExprKind::NullsafeMethodCall(call) => {
                 self.note_args(call.method.span.start, &call.args)
             }
