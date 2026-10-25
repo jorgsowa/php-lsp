@@ -26,6 +26,7 @@ All notable changes to php-lsp are documented here.
 - **Formatting added a blank line at end of file**: the whole-document edit stopped before the final newline, so each format (and each format-on-save) appended another blank line and the file never settled.
 - **Format-on-save ignored `features.formatting`**: `willSaveWaitUntil` was always advertised and always ran the formatter. It now follows the `formatting` feature flag.
 - **Range formatting**: formatting a selection doubled the newline after it, converted CRLF line endings to LF, dropped the selection's indentation and inserted a blank line at its start.
+- **Inline variable**: the action replaced every same-named variable in the file, including parameters of other functions and `"$x"` inside strings, and inlined `$x = $a + $b` into `$x * 2` as `$a + $b * 2`. It now works on the variable's own scope, parenthesizes the initializer where precedence needs it, accepts multi-line initializers, and is not offered for an assignment inside a nested block or reads inside strings, `isset`/`unset` or closure `use`.
 
 ## [0.28.0] — 2026-10-25
 

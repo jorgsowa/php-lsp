@@ -1,61 +1,117 @@
 /// Code action: "Inline variable" — replaces all usages of a variable with its
-/// initializer expression and removes the assignment line.
+/// initializer expression and removes the assignment statement.
 ///
 /// Only acts when:
 /// - The cursor/selection is on or inside a variable name (e.g. `$extracted`).
-/// - There is exactly one visible assignment `$var = <expr>;` on a single line
-///   earlier in the same scope.
-/// - The RHS is a single-line expression (multi-line RHS is not supported).
+/// - The variable is written exactly once in its function scope, by a plain
+///   `$var = <expr>;` statement that precedes every read and sits in the same
+///   block as all of them.
+/// - No read is in a position an expression can't take (string interpolation,
+///   closure `use`, `isset`/`unset`, an assignment target).
 use std::collections::HashMap;
+use std::ops::ControlFlow;
 
+use php_ast::{
+    AssignOp, Block, ClosureUseVar, Expr, ExprKind, Span, Stmt, StmtKind,
+    visitor::{Visitor, walk_block, walk_expr, walk_stmt},
+};
 use tower_lsp_server::ls_types::{
-    CodeAction, CodeActionKind, CodeActionOrCommand, Position, Range, TextEdit, Uri, WorkspaceEdit,
+    CodeAction, CodeActionKind, CodeActionOrCommand, DocumentHighlightKind, Range, TextEdit, Uri,
+    WorkspaceEdit,
 };
 
+use crate::document::ast::ParsedDoc;
+use crate::navigation::walk::collect_var_refs_in_scope;
 use crate::text::word_at_position;
 
-pub fn inline_variable_actions(source: &str, range: Range, uri: &Uri) -> Vec<CodeActionOrCommand> {
-    // Determine the variable name under cursor (or at start of selection).
-    let cursor = range.start;
-    let var_name = match word_at_position(source, cursor) {
-        Some(w) if w.starts_with('$') => w,
+pub fn inline_variable_actions(
+    source: &str,
+    doc: &ParsedDoc,
+    range: Range,
+    uri: &Uri,
+) -> Vec<CodeActionOrCommand> {
+    let var_name = match word_at_position(source, range.start) {
+        Some(w) if w.starts_with('$') && w.len() > 1 => w,
         _ => return vec![],
     };
+    let sv = doc.view();
+    let stmts = &doc.program().stmts;
 
-    // Require exactly one visible assignment in the file. Multiple writes
-    // make inlining ambiguous (which RHS?) and unsafe (we'd silently drop
-    // one), so we refuse rather than guess.
-    let (assign_line_no, rhs) = match find_unique_assignment(source, &var_name, cursor.line) {
-        Some(v) => v,
-        None => return vec![],
+    let mut refs = Vec::new();
+    collect_var_refs_in_scope(
+        stmts,
+        &var_name[1..],
+        sv.byte_of_position(range.start) as usize,
+        &mut refs,
+    );
+    refs.sort_by_key(|(span, _)| span.start);
+    refs.dedup_by_key(|(span, _)| span.start);
+
+    let mut writes = refs
+        .iter()
+        .filter(|(_, kind)| *kind == DocumentHighlightKind::WRITE);
+    let (Some(&(write_span, _)), None) = (writes.next(), writes.next()) else {
+        return vec![];
     };
+    let reads: Vec<Span> = refs
+        .iter()
+        .filter(|(_, kind)| *kind == DocumentHighlightKind::READ)
+        .map(|(span, _)| *span)
+        .collect();
 
-    // Collect all usages of `$var` in the source below the assignment line.
-    let usages = collect_usages(source, &var_name, assign_line_no + 1);
-    if usages.is_empty() {
+    let mut finder = AssignmentFinder {
+        target: write_span,
+        containers: Vec::new(),
+        found: None,
+    };
+    for stmt in stmts.iter() {
+        let _ = finder.visit_stmt(stmt);
+    }
+    let Some(found) = finder.found else {
+        return vec![];
+    };
+    let Some(region) = found.container else {
+        return vec![];
+    };
+    let region = region.unwrap_or(Span::new(0, source.len() as u32));
+
+    let mut blockers = InlineBlockers { zones: Vec::new() };
+    for stmt in stmts.iter() {
+        let _ = blockers.visit_stmt(stmt);
+    }
+    let usable = |read: &Span| {
+        read.start >= found.stmt.end
+            && contains(region, *read)
+            && !blockers.zones.iter().any(|zone| contains(*zone, *read))
+    };
+    if reads.is_empty() || !reads.iter().all(usable) {
         return vec![];
     }
 
-    // Build edits: replace each usage with the RHS, then delete the assignment line.
-    let mut edits: Vec<TextEdit> = usages
-        .into_iter()
-        .map(|usage_range| TextEdit {
-            range: usage_range,
-            new_text: rhs.clone(),
+    let rhs = &source[found.value.start as usize..found.value.end as usize];
+    let mut edits: Vec<TextEdit> = reads
+        .iter()
+        .map(|read| {
+            let new_text = if found.value_is_atomic || stands_alone(source, *read) {
+                rhs.to_string()
+            } else {
+                format!("({rhs})")
+            };
+            TextEdit {
+                range: Range {
+                    start: sv.position_of(read.start),
+                    end: sv.position_of(read.end),
+                },
+                new_text,
+            }
         })
         .collect();
 
-    // Delete the assignment line (including its newline).
+    let (del_start, del_end) = statement_deletion(source, found.stmt);
     edits.push(TextEdit {
         range: Range {
-            start: Position {
-                line: assign_line_no,
-                character: 0,
-            },
-            end: Position {
-                line: assign_line_no + 1,
-                character: 0,
-            },
+            start: sv.position_of(del_start),
+            end: sv.position_of(del_end),
         },
         new_text: String::new(),
     });
@@ -74,138 +130,170 @@ pub fn inline_variable_actions(source: &str, range: Range, uri: &Uri) -> Vec<Cod
     })]
 }
 
-/// Find the single `$var = <expr>;` assignment in `source`. Returns
-/// `(line_number, rhs_text)` only if exactly one such line exists *and* it
-/// appears before `before_line` — any second write, before or after the
-/// cursor, disqualifies the inline. Compound assignments (`+=`, `-=`, …) and
-/// equality (`==`) are ignored.
-fn find_unique_assignment(source: &str, var_name: &str, before_line: u32) -> Option<(u32, String)> {
-    let lines: Vec<&str> = source.lines().collect();
-    let mut hit: Option<(u32, String)> = None;
-
-    for (i, line) in lines.iter().enumerate() {
-        let trimmed = line.trim();
-        let prefix = format!("{var_name} =");
-        let Some(rest) = trimmed.strip_prefix(prefix.as_str()) else {
-            continue;
-        };
-        // Reject `$var ==` (equality) — `strip_prefix("$var =")` matches both.
-        if rest.starts_with('=') {
-            continue;
-        }
-        // Cut at the statement's own terminating `;`, not just any trailing
-        // one — `$x = foo(); doSomethingElse();` must yield RHS `foo()`, not
-        // the whole rest of the line.
-        let Some((rhs_part, trailing)) = split_statement(rest) else {
-            continue;
-        };
-        let rhs = rhs_part.trim();
-        if rhs.is_empty() {
-            continue;
-        }
-        // A second statement on the same line can't be preserved by the
-        // whole-line deletion below — refuse rather than silently dropping it.
-        if !trailing.trim().is_empty() {
-            continue;
-        }
-        if hit.is_some() {
-            return None; // more than one write → ambiguous
-        }
-        hit = Some((i as u32, rhs.to_string()));
-    }
-
-    // The unique assignment must precede the cursor; otherwise usage collection
-    // (which only scans *below* the assignment) would miss the cursor's usage.
-    hit.filter(|(line_no, _)| *line_no < before_line)
+fn contains(outer: Span, inner: Span) -> bool {
+    outer.start <= inner.start && inner.end <= outer.end
 }
 
-/// Split `rest` (the source text after `$var =`) at its statement-terminating
-/// `;` — the first one appearing outside of any paren/bracket/brace nesting
-/// and outside of a string literal — returning `(rhs_expr, after_semicolon)`.
-/// `None` if no such `;` is found (malformed/incomplete line).
-fn split_statement(rest: &str) -> Option<(&str, &str)> {
-    let bytes = rest.as_bytes();
-    let mut depth: i32 = 0;
-    let mut i = 0usize;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'(' | b'[' | b'{' => depth += 1,
-            b')' | b']' | b'}' => depth -= 1,
-            b'\'' | b'"' => {
-                let quote = bytes[i];
-                i += 1;
-                while i < bytes.len() {
-                    if bytes[i] == b'\\' {
-                        i += 2;
-                        continue;
-                    }
-                    if bytes[i] == quote {
-                        break;
-                    }
-                    i += 1;
-                }
-            }
-            b';' if depth == 0 => return Some((&rest[..i], &rest[i + 1..])),
-            _ => {}
-        }
-        i += 1;
-    }
-    None
+struct FoundAssignment {
+    stmt: Span,
+    value: Span,
+    value_is_atomic: bool,
+    /// `Some(None)`: a direct child of the scope's top-level statement list;
+    /// `Some(Some(block))`: a direct child of `block`; `None`: the body of a
+    /// brace-less `if`/loop/`switch` case, which runs conditionally.
+    container: Option<Option<Span>>,
 }
 
-/// Find all occurrences of `$var` in `source` at or after `from_line`.
-/// Returns LSP `Range`s covering each occurrence.
-fn collect_usages(source: &str, var_name: &str, from_line: u32) -> Vec<Range> {
-    let mut usages = Vec::new();
-    for (line_idx, line) in source.lines().enumerate() {
-        if (line_idx as u32) < from_line {
-            continue;
-        }
-        let mut search_from = 0usize;
-        while let Some(pos) = line[search_from..].find(var_name) {
-            let abs = search_from + pos;
-            // Word-boundary check: character before must not be alphanumeric/$/_
-            let before_ok = abs == 0
-                || line
-                    .as_bytes()
-                    .get(abs - 1)
-                    .is_none_or(|b| !b.is_ascii_alphanumeric() && *b != b'_');
-            // Character after must not be alphanumeric/_
-            let after_ok = line
-                .as_bytes()
-                .get(abs + var_name.len())
-                .is_none_or(|b| !b.is_ascii_alphanumeric() && *b != b'_');
+/// Finds the `$var = <expr>;` statement whose target is `target` and the
+/// statement list it belongs to.
+struct AssignmentFinder {
+    target: Span,
+    /// Innermost-last: `Some(block)` for a block, `None` for a statement whose
+    /// body isn't a statement list.
+    containers: Vec<Option<Span>>,
+    found: Option<FoundAssignment>,
+}
 
-            if before_ok && after_ok {
-                // Skip if this looks like an assignment target: `$var =`
-                let after_var = line[abs + var_name.len()..].trim_start();
-                if after_var.starts_with('=') && !after_var.starts_with("==") {
-                    search_from = abs + var_name.len();
-                    continue;
-                }
-
-                let char_start = byte_col_to_utf16_col(line, abs);
-                let char_end = byte_col_to_utf16_col(line, abs + var_name.len());
-                usages.push(Range {
-                    start: Position {
-                        line: line_idx as u32,
-                        character: char_start as u32,
-                    },
-                    end: Position {
-                        line: line_idx as u32,
-                        character: char_end as u32,
+impl<'arena, 'src> Visitor<'arena, 'src> for AssignmentFinder {
+    fn visit_stmt(&mut self, stmt: &Stmt<'arena, 'src>) -> ControlFlow<()> {
+        if let StmtKind::Expression(expr) = &stmt.kind
+            && let ExprKind::Assign(assign) = &expr.kind
+            && assign.target.span == self.target
+        {
+            if assign.op == AssignOp::Assign && !assign.by_ref {
+                self.found = Some(FoundAssignment {
+                    stmt: stmt.span,
+                    value: assign.value.span,
+                    value_is_atomic: is_atomic(assign.value),
+                    container: match self.containers.last() {
+                        None => Some(None),
+                        Some(Some(block)) => Some(Some(*block)),
+                        Some(None) => None,
                     },
                 });
             }
-            search_from = abs + 1;
+            return ControlFlow::Break(());
         }
+        let conditional_body = matches!(
+            stmt.kind,
+            StmtKind::If(_)
+                | StmtKind::While(_)
+                | StmtKind::For(_)
+                | StmtKind::Foreach(_)
+                | StmtKind::DoWhile(_)
+                | StmtKind::Switch(_)
+                | StmtKind::Declare(_)
+        );
+        if conditional_body {
+            self.containers.push(None);
+        }
+        let flow = walk_stmt(self, stmt);
+        if conditional_body {
+            self.containers.pop();
+        }
+        flow
     }
-    usages
+
+    fn visit_block(&mut self, block: &Block<'arena, 'src>) -> ControlFlow<()> {
+        self.containers.push(Some(block.span));
+        let flow = walk_block(self, block);
+        self.containers.pop();
+        flow
+    }
 }
 
-fn byte_col_to_utf16_col(line: &str, byte_col: usize) -> usize {
-    line[..byte_col.min(line.len())]
-        .chars()
-        .map(|c| c.len_utf16())
-        .sum()
+/// Collects spans where a variable read can't be replaced by an expression.
+struct InlineBlockers {
+    zones: Vec<Span>,
+}
+
+impl<'arena, 'src> Visitor<'arena, 'src> for InlineBlockers {
+    fn visit_stmt(&mut self, stmt: &Stmt<'arena, 'src>) -> ControlFlow<()> {
+        if let StmtKind::Unset(_) = stmt.kind {
+            self.zones.push(stmt.span);
+        }
+        walk_stmt(self, stmt)
+    }
+
+    fn visit_expr(&mut self, expr: &Expr<'arena, 'src>) -> ControlFlow<()> {
+        match &expr.kind {
+            ExprKind::InterpolatedString(_)
+            | ExprKind::Heredoc { .. }
+            | ExprKind::ShellExec(_)
+            | ExprKind::Isset(_) => self.zones.push(expr.span),
+            ExprKind::Assign(assign) if !matches!(assign.target.kind, ExprKind::Variable(_)) => {
+                self.zones.push(assign.target.span)
+            }
+            _ => {}
+        }
+        walk_expr(self, expr)
+    }
+
+    fn visit_closure_use_var(&mut self, use_var: &ClosureUseVar<'src>) -> ControlFlow<()> {
+        self.zones.push(use_var.span);
+        ControlFlow::Continue(())
+    }
+}
+
+/// Whether `expr` binds tighter than any operator it could be placed next to.
+fn is_atomic(expr: &Expr<'_, '_>) -> bool {
+    matches!(
+        expr.kind,
+        ExprKind::Int(_)
+            | ExprKind::Float(_)
+            | ExprKind::String(_)
+            | ExprKind::InterpolatedString(_)
+            | ExprKind::Heredoc { .. }
+            | ExprKind::Nowdoc { .. }
+            | ExprKind::Bool(_)
+            | ExprKind::Null
+            | ExprKind::Variable(_)
+            | ExprKind::Identifier(_)
+            | ExprKind::FunctionCall(_)
+            | ExprKind::Array(_)
+            | ExprKind::ArrayAccess(_)
+            | ExprKind::Parenthesized(_)
+            | ExprKind::MagicConst(_)
+            | ExprKind::PropertyAccess(_)
+            | ExprKind::NullsafePropertyAccess(_)
+            | ExprKind::MethodCall(_)
+            | ExprKind::NullsafeMethodCall(_)
+            | ExprKind::StaticPropertyAccess(_)
+            | ExprKind::StaticMethodCall(_)
+            | ExprKind::ClassConstAccess(_)
+    )
+}
+
+/// Whether the read at `span` is a whole expression on its own — an argument,
+/// array element, assigned value, or `return`/`echo` operand — so it needs no
+/// parentheses whatever replaces it.
+fn stands_alone(source: &str, span: Span) -> bool {
+    let before = source[..span.start as usize].trim_end();
+    let after = source[span.end as usize..].trim_start();
+    let opens = before.ends_with(['(', '[', ','])
+        || before.ends_with("=>")
+        || (before.ends_with('=')
+            && !["==", "!=", "<=", ">="]
+                .iter()
+                .any(|op| before.ends_with(op)))
+        || ["return", "echo", "print"].iter().any(|kw| {
+            before.strip_suffix(kw).is_some_and(|rest| {
+                !rest.ends_with(|c: char| c.is_alphanumeric() || c == '_' || c == '$')
+            })
+        });
+    opens && after.starts_with([';', ')', ']', ','])
+}
+
+/// Byte range to delete for the statement at `stmt`: its whole line(s) when
+/// nothing else shares them, otherwise the statement and the space after it.
+fn statement_deletion(source: &str, stmt: Span) -> (u32, u32) {
+    let (start, end) = (stmt.start as usize, stmt.end as usize);
+    let line_start = source[..start].rfind('\n').map_or(0, |i| i + 1);
+    let rest_of_line = source[end..].find('\n').map_or(source.len(), |i| end + i);
+    if source[line_start..start].trim().is_empty() && source[end..rest_of_line].trim().is_empty() {
+        let line_end = (rest_of_line + 1).min(source.len());
+        return (line_start as u32, line_end as u32);
+    }
+    let trailing = source[end..rest_of_line].len() - source[end..rest_of_line].trim_start().len();
+    (start as u32, (end + trailing) as u32)
 }

@@ -160,7 +160,7 @@ impl Backend {
             actions.extend(extract_variable_actions(&source, &doc, range, &uri));
             actions.extend(extract_method_actions(&source, &doc, range, &uri));
             actions.extend(extract_constant_actions(&source, range, &uri));
-            actions.extend(inline_variable_actions(&source, range, &uri));
+            actions.extend(inline_variable_actions(&source, &doc, range, &uri));
             actions.extend(change_visibility_actions(&source, &doc, range, &uri));
             actions.extend(closure_to_arrow_function_actions(
                 &source, &doc, range, &uri,

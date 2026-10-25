@@ -209,12 +209,9 @@ if ($x == 2) {
     .assert_eq(&out);
 }
 
-/// A second statement on the same line as the assignment (`$x = foo();
-/// doSomethingElse();`) must not be swallowed into the RHS — deleting the
-/// whole line to inline would silently destroy `doSomethingElse()`, so the
-/// action must refuse rather than guess.
+/// A second statement on the assignment's line survives the deletion.
 #[tokio::test]
-async fn inline_variable_no_action_when_second_statement_on_same_line() {
+async fn inline_variable_keeps_second_statement_on_same_line() {
     let mut s = TestServer::new().await;
     s.validate_syntax(false);
     let out = s
@@ -226,7 +223,12 @@ echo $0$x$0;
             "Inline variable '$x'",
         )
         .await;
-    expect!["<action not found: Inline variable '$x'>"].assert_eq(&out);
+    expect![[r#"
+        <?php
+        doSomethingElse();
+        echo foo();
+    "#]]
+    .assert_eq(&out);
 }
 
 /// A semicolon inside a nested call's string argument must not be mistaken
@@ -247,6 +249,128 @@ echo $0$x$0;
     expect![[r#"
         <?php
         echo foo("a;b");
+    "#]]
+    .assert_eq(&out);
+}
+
+/// A same-named variable or parameter in another function is a different variable.
+#[tokio::test]
+async fn inline_variable_stays_in_its_function() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_code_action_apply(
+            r#"<?php
+function a() {
+    $x = compute();
+    return $0$x$0;
+}
+function b($x) {
+    return $x;
+}
+"#,
+            "Inline variable '$x'",
+        )
+        .await;
+    expect![[r#"
+        <?php
+        function a() {
+            return compute();
+        }
+        function b($x) {
+            return $x;
+        }
+    "#]]
+    .assert_eq(&out);
+}
+
+/// A lower-precedence initializer keeps its grouping where an operator follows.
+#[tokio::test]
+async fn inline_variable_parenthesizes_binary_expression() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_code_action_apply(
+            r#"<?php
+function f($a, $b) {
+    $x = $a + $b;
+    return $0$x$0 * 2;
+}
+"#,
+            "Inline variable '$x'",
+        )
+        .await;
+    expect![[r#"
+        <?php
+        function f($a, $b) {
+            return ($a + $b) * 2;
+        }
+    "#]]
+    .assert_eq(&out);
+}
+
+#[tokio::test]
+async fn inline_variable_no_action_when_read_in_string() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_code_action_apply(
+            r#"<?php
+$name = getName();
+echo $0$name$0;
+echo "Hi $name";
+"#,
+            "Inline variable '$name'",
+        )
+        .await;
+    expect!["<action not found: Inline variable '$name'>"].assert_eq(&out);
+}
+
+/// Inlining a conditional assignment past its `if` would run it unconditionally.
+#[tokio::test]
+async fn inline_variable_no_action_when_assigned_in_inner_block() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_code_action_apply(
+            r#"<?php
+function f($c) {
+    if ($c) {
+        $x = 1;
+    }
+    return $0$x$0;
+}
+"#,
+            "Inline variable '$x'",
+        )
+        .await;
+    expect!["<action not found: Inline variable '$x'>"].assert_eq(&out);
+}
+
+#[tokio::test]
+async fn inline_variable_multiline_initializer() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_code_action_apply(
+            r#"<?php
+function f() {
+    $x = [
+        'a' => 1,
+    ];
+    return $0$x$0;
+}
+"#,
+            "Inline variable '$x'",
+        )
+        .await;
+    expect![[r#"
+        <?php
+        function f() {
+            return [
+                'a' => 1,
+            ];
+        }
     "#]]
     .assert_eq(&out);
 }
