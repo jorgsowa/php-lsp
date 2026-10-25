@@ -41,53 +41,104 @@ fn whole_document_edit(source: &str, formatted: String) -> Option<Vec<TextEdit>>
 /// Format only the lines covered by `range`.  Extracts those lines, formats
 /// the snippet, then returns an edit targeting just that range.
 pub fn format_range(source: &str, range: Range) -> Option<Vec<TextEdit>> {
-    let lines: Vec<&str> = source.lines().collect();
-    let end = (range.end.line as usize + 1).min(lines.len());
-    let start = (range.start.line as usize).min(end);
-    if start == end {
+    range_edit(source, range, run_formatter)
+}
+
+fn range_edit(
+    source: &str,
+    range: Range,
+    format: impl Fn(&str) -> Option<String>,
+) -> Option<Vec<TextEdit>> {
+    // A selection ending at column 0 of a later line doesn't cover that line.
+    let last_line = if range.end.character == 0 && range.end.line > range.start.line {
+        range.end.line - 1
+    } else {
+        range.end.line
+    };
+    let start = line_start_byte(source, range.start.line)?;
+    let end = line_start_byte(source, last_line + 1).unwrap_or(source.len());
+    let snippet = &source[start..end];
+    if snippet.trim().is_empty() {
         return None;
     }
-    let snippet = lines[start..end].join("\n") + "\n";
 
-    // Wrap in `<?php` if the snippet doesn't have an opener (needed for
-    // php-cs-fixer to recognise it as PHP).
-    let needs_wrapper = !snippet.trim_start().starts_with("<?php");
-    let to_format = if needs_wrapper {
-        format!("<?php\n{snippet}")
+    let crlf = snippet.contains("\r\n");
+    let lf_snippet = snippet.replace("\r\n", "\n");
+    let formatted = if lf_snippet.trim_start().starts_with("<?php") {
+        format(&lf_snippet)?
     } else {
-        snippet.clone()
+        format_fragment(&lf_snippet, &format)?
     };
-
-    let mut formatted = run_formatter(&to_format)?;
-    if needs_wrapper {
-        // Strip the injected <?php header back out
-        formatted = formatted
-            .strip_prefix("<?php\n")
-            .unwrap_or(&formatted)
-            .to_string();
+    let mut formatted = formatted.trim_end_matches('\n').to_string();
+    if lf_snippet.ends_with('\n') {
+        formatted.push('\n');
     }
-
+    if crlf {
+        formatted = formatted.replace('\n', "\r\n");
+    }
     if formatted == snippet {
         return None;
     }
 
-    let end_char = lines
-        .get(end - 1)
-        .map(|l| l.chars().map(|c| c.len_utf16() as u32).sum())
-        .unwrap_or(0);
+    let end_pos = if end == source.len() {
+        end_position(source)
+    } else {
+        Position {
+            line: last_line + 1,
+            character: 0,
+        }
+    };
     Some(vec![TextEdit {
         range: Range {
             start: Position {
                 line: range.start.line,
                 character: 0,
             },
-            end: Position {
-                line: range.end.line,
-                character: end_char,
-            },
+            end: end_pos,
         },
         new_text: formatted,
     }])
+}
+
+/// Format a snippet without an opening tag: dedent it, format it behind an
+/// injected `<?php`, then restore the original indentation.
+fn format_fragment(snippet: &str, format: &impl Fn(&str) -> Option<String>) -> Option<String> {
+    let indent = snippet
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(|l| &l[..l.len() - l.trim_start().len()])
+        .min_by_key(|ws| ws.len())
+        .unwrap_or("");
+    let dedented: String = snippet
+        .lines()
+        .map(|l| l.strip_prefix(indent).unwrap_or(l.trim_start()))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let formatted = format(&format!("<?php\n{dedented}\n"))?;
+    // PSR-12 puts a blank line after `<?php`; it belongs to the wrapper, not the snippet.
+    let body = formatted.strip_prefix("<?php")?.trim_start_matches('\n');
+    let leading_blank_lines = snippet.len() - snippet.trim_start_matches('\n').len();
+    let mut out = "\n".repeat(leading_blank_lines);
+    for line in body.lines() {
+        if !line.is_empty() {
+            out.push_str(indent);
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    Some(out)
+}
+
+/// Byte offset where line `line` starts, or `None` past the last line.
+fn line_start_byte(source: &str, line: u32) -> Option<usize> {
+    if line == 0 {
+        return Some(0);
+    }
+    source
+        .match_indices('\n')
+        .nth(line as usize - 1)
+        .map(|(i, _)| i + 1)
+        .filter(|&i| i < source.len())
 }
 
 fn run_formatter(source: &str) -> Option<String> {
@@ -192,5 +243,56 @@ mod tests {
         let formatted = "<?php\r\nfunction f($x) {}\r\n";
         let edits = whole_document_edit(source, formatted.to_string()).unwrap();
         assert_eq!(apply(source, &edits), formatted);
+    }
+
+    fn range(start_line: u32, end_line: u32, end_char: u32) -> Range {
+        Range {
+            start: Position {
+                line: start_line,
+                character: 0,
+            },
+            end: Position {
+                line: end_line,
+                character: end_char,
+            },
+        }
+    }
+
+    /// Stands in for php-cs-fixer: fixes `( $x )` spacing and, like PSR-12, puts a
+    /// blank line after `<?php` and ends the file with one newline.
+    fn fake_formatter(src: &str) -> Option<String> {
+        let body = src.strip_prefix("<?php\n")?.trim_start_matches('\n');
+        let body = body.replace("( $x )", "($x)");
+        Some(format!("<?php\n\n{}\n", body.trim_end()))
+    }
+
+    #[test]
+    fn range_edit_keeps_single_newline_and_indent() {
+        let source = "<?php\nclass A {\n    function f( $x ) {}\n    function g() {}\n}\n";
+        let edits = range_edit(source, range(2, 2, 10), fake_formatter).unwrap();
+        assert_eq!(
+            apply(source, &edits),
+            "<?php\nclass A {\n    function f($x) {}\n    function g() {}\n}\n"
+        );
+    }
+
+    #[test]
+    fn range_edit_preserves_crlf() {
+        let source = "<?php\r\nf( $x );\r\ng( $x );\r\n";
+        let edits = range_edit(source, range(1, 3, 0), fake_formatter).unwrap();
+        assert_eq!(apply(source, &edits), "<?php\r\nf($x);\r\ng($x);\r\n");
+    }
+
+    #[test]
+    fn range_edit_last_line_without_newline() {
+        let source = "<?php\nf( $x );";
+        let edits = range_edit(source, range(1, 1, 3), fake_formatter).unwrap();
+        assert_eq!(apply(source, &edits), "<?php\nf($x);");
+    }
+
+    #[test]
+    fn range_edit_unchanged_returns_none() {
+        let source = "<?php\n    f($x);\n";
+        assert_eq!(range_edit(source, range(1, 1, 5), fake_formatter), None);
     }
 }

@@ -25,6 +25,7 @@ All notable changes to php-lsp are documented here.
 - **Organize imports deleting trait-use**: in a file with no top-level imports, "Organize imports" treated a class-body `use HasFactory;` as an unused import and removed it. Only `use` statements before the first declaration are organized.
 - **Formatting added a blank line at end of file**: the whole-document edit stopped before the final newline, so each format (and each format-on-save) appended another blank line and the file never settled.
 - **Format-on-save ignored `features.formatting`**: `willSaveWaitUntil` was always advertised and always ran the formatter. It now follows the `formatting` feature flag.
+- **Range formatting**: formatting a selection doubled the newline after it, converted CRLF line endings to LF, dropped the selection's indentation and inserted a blank line at its start.
 
 ## [0.28.0] — 2026-10-25
 
