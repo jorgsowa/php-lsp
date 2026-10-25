@@ -1,3 +1,6 @@
+use super::helpers::{
+    defer_actions, has_indexed_extension, indexed_file_op, position_to_byte_offset_strict,
+};
 use super::*;
 use crate::editing::use_import::{build_use_import_edit, find_use_insert_line};
 use crate::lang::config::{DiagnosticsConfig, FeaturesConfig, MAX_INDEXED_FILES};

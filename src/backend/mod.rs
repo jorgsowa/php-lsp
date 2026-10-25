@@ -4,13 +4,15 @@ use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
 
-#[allow(unused_imports)]
-use self::helpers::*;
-
 use arc_swap::ArcSwap;
 use futures::future::Either;
 use tower::Service;
 use tower_lsp_server::jsonrpc::{Request as JsonRpcRequest, Response as JsonRpcResponse};
+
+use self::helpers::{
+    cursor_is_on_constant_decl, cursor_is_on_property_decl, promoted_property_at_cursor,
+    symbol_kind_at,
+};
 
 /// Sent to the client once Phase 3 (reference index build) finishes.
 /// Allows tests and tooling to wait for the codebase fast path to be active.
