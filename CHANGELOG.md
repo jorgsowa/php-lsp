@@ -32,6 +32,7 @@ All notable changes to php-lsp are documented here.
 - **`prepareRename` on a variable's `$`**: with the cursor on the sigil, the returned range started at `$` and cut off the name's last character (`$fo` for `$foo`).
 - **On-type `}` dedent**: typing the `}` of a one-line block or closure (`function () { return 1; }`) re-indented the whole line to the enclosing block's level. Only a `}` that starts its line is re-indented, matched against braces up to the typed one.
 - **Extract method**: parameters and the return value were inferred from variables anywhere in the file, so a same-named variable in another method added a bogus parameter or return. A selection that included the method signature was accepted, and the call was inserted with doubled indentation and a stray blank line. Variables are now read from the enclosing method only, the selection must lie inside its body and is extended to whole lines.
+- **Hover on trait-use**: hovering a class-body `use HasFactory;` showed it as an import statement instead of the trait.
 
 ## [0.28.0] — 2026-10-25
 

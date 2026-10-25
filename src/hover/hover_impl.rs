@@ -7,6 +7,7 @@ use crate::completion::ClassDocLookup;
 use crate::document::ast::ParsedDoc;
 use crate::document::document_store::DocumentStore;
 use crate::lang::docblock::find_docblock;
+use crate::lang::file_header::header_line_count;
 use crate::lang::is_unresolvable_bareword_at;
 use crate::lang::php_names::{is_php_builtin, php_doc_url};
 use crate::text::{fqn_short_name, word_at_position, word_range_at};
@@ -139,7 +140,9 @@ fn hover_at_core(
 ) -> Option<Hover> {
     let hover_range = word_range_at(source, position);
 
-    if let Some(line_text) = source.lines().nth(position.line as usize) {
+    if let Some(line_text) = source.lines().nth(position.line as usize)
+        && (position.line as usize) < header_line_count(source)
+    {
         let trimmed = line_text.trim();
         if trimmed.starts_with("use ") {
             let (prefix, content) = if trimmed.starts_with("use function ") {
@@ -160,7 +163,14 @@ fn hover_at_core(
                 let maybe_word = word_at_position(source, position);
                 let alias = fqn_short_name(fqn);
                 let matches = match &maybe_word {
-                    Some(w) => w == alias || fqn.contains(w.as_str()),
+                    Some(w) => {
+                        let w = w.trim_start_matches('\\');
+                        w == alias
+                            || fqn.split([' ', ',', '{', '}']).any(|name| {
+                                name.trim_start_matches('\\') == w
+                                    || name.split('\\').any(|seg| seg == w)
+                            })
+                    }
                     None => true,
                 };
                 if matches {

@@ -408,3 +408,23 @@ class Service {
     )
     .await;
 }
+
+/// A class-body `use Trait;` is not an import: hover shows the trait.
+#[tokio::test]
+async fn hover_trait_use_in_class_body_shows_trait() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    s.check_hover_annotated(
+        r#"<?php
+trait HasFactory {}
+class User {
+    use Has$0Factory;
+}
+"#,
+        expect![[r#"
+            ```php
+            trait HasFactory
+            ```"#]],
+    )
+    .await;
+}
