@@ -502,6 +502,54 @@ async fn warm_start_seeds_symbol_index_and_first_query_avoids_tracked_walk() {
     }
 }
 
+/// A first-ever launch of a large workspace has nothing on disk to seed from;
+/// the index must still be built before `indexReady` so the first query skips
+/// the tracked walk.
+#[tokio::test]
+async fn cold_start_builds_symbol_index_and_first_query_avoids_tracked_walk() {
+    let workspace = tempfile::tempdir().expect("workspace tempdir");
+    let cache_dir = tempfile::tempdir().expect("cache tempdir");
+    let widget = "<?php\nclass Widget {\n    public function spin(): void {}\n}\n";
+    let caller = "<?php\n$w = new Widget();\n$w->spin();\n";
+    std::fs::write(workspace.path().join("widget.php"), widget).expect("write widget.php");
+    std::fs::write(workspace.path().join("caller.php"), caller).expect("write caller.php");
+    let filler = workspace.path().join("filler");
+    std::fs::create_dir(&filler).expect("create filler dir");
+    for i in 0..1024 {
+        std::fs::write(
+            filler.join(format!("F{i}.php")),
+            format!("<?php\nclass F{i} {{}}\n"),
+        )
+        .expect("write filler file");
+    }
+
+    let mut s = TestServer::with_root_and_options(
+        workspace.path(),
+        json!({
+            "cachePath": cache_dir.path().to_str().unwrap(),
+            "diagnostics": {"enabled": false},
+            "phpVersion": "8.3",
+            "warmAnalysis": false,
+        }),
+    )
+    .await;
+    s.wait_for_index_ready().await;
+    let (ready, _) = s.debug_stats_symbol_index().await;
+    assert!(ready, "a cold start must build the symbol index singleton");
+
+    s.open("widget.php", widget).await;
+    let resp = s.references("widget.php", 2, 20, false).await;
+    let out = render_locations(&resp, &s.uri(""));
+    expect![[r#"caller.php:2:4-2:8"#]].assert_eq(&out);
+
+    let (_, walks) = s.debug_stats_symbol_index().await;
+    assert_eq!(
+        walks, 0,
+        "a cold session must not run the tracked O(all-files) index walk"
+    );
+    s.shutdown().await;
+}
+
 /// External (watcher-shaped) file changes bypass `ingest_file`'s index
 /// maintenance; the settle path must reconcile the seeded singleton before
 /// queries read it. A class renamed on disk must be resolvable — and its

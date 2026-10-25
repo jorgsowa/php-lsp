@@ -28,6 +28,9 @@ impl From<ContentModified> for tower_lsp_server::jsonrpc::Error {
 const SNAPSHOT_ATTEMPTS: usize = 3;
 /// Consecutive failed passes over one warm-sweep chunk before it is skipped.
 const WARM_CHUNK_ATTEMPTS: usize = 5;
+/// Workspace size from which a cold start builds mir's symbol index before
+/// `indexReady`; smaller ones leave it to the first query's walk.
+const EAGER_SYMBOL_INDEX_MIN_FILES: usize = 1024;
 
 /// Files per mir pass: 32 per core, up to 16 cores. A pass fans out across
 /// cores, so a small chunk leaves workers idle at its tail and repeats the
@@ -1505,6 +1508,8 @@ impl DocumentStore {
     /// once after the scan mirrors texts, before the reference-warm phase,
     /// so a returning session starts index-warm. Cheap enough to sit on the
     /// pre-`indexReady` path — it replays cache entries, it does not analyze.
+    /// On a large workspace the cache can't seed mir's symbol index from, it
+    /// builds the index here.
     ///
     /// Returns the subset of replayed files that mir considers worth
     /// prioritizing for follow-up warming. php-lsp treats this as a
@@ -1525,7 +1530,17 @@ impl DocumentStore {
         if files.is_empty() {
             return Vec::new();
         }
-        let untrusted = self.with_session(|session| session.warm_start_files(&files));
+        let untrusted = self.with_session(|session| {
+            let untrusted = session.warm_start_files(&files);
+            // Unseeded, queries fall back to mir's serial all-files walk; rebuild parses in parallel.
+            if files.len() >= EAGER_SYMBOL_INDEX_MIN_FILES
+                && !session.workspace_symbol_index_ready()
+            {
+                session.ensure_all_stubs();
+                session.rebuild_workspace_symbol_index();
+            }
+            untrusted
+        });
         self.warm_start_replays_completed
             .fetch_add(1, Ordering::Relaxed);
         untrusted
