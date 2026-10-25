@@ -32,7 +32,7 @@ use crate::navigation::type_hierarchy::{
     prepare_type_hierarchy_from_fqn, subtypes_from_sites, supertypes_of_from_workspace,
 };
 
-use crate::analysis::code_lens::{code_lenses, subtype_site_to_location};
+use crate::analysis::code_lens::{code_lenses, resolve_code_lens, subtype_site_to_location};
 use crate::analysis::diagnostics::{diagnostics_from_doc, parse_document_no_diags};
 use crate::analysis::document_highlight::document_highlights;
 use crate::analysis::inlay_hints::inlay_hints;
@@ -2167,13 +2167,14 @@ impl LanguageServer for Backend {
                 Some(d) => d,
                 None => return Ok(None),
             };
-            // Lens counts come from mir's inverted indexes; still run on the
-            // blocking pool (index freshness passes may analyze on demand).
+            // Implementation and override lenses read mir's indexes; run on
+            // the blocking pool (index freshness passes may analyze on demand).
             // A write during computation (write_rev advances) cancels early —
-            // stale lens counts are useless and the editor will request fresh
-            // ones after the edit.
+            // stale lenses are useless and the editor will request fresh ones
+            // after the edit.
             let docs = Arc::clone(&self.docs);
             let docs_cancel = Arc::clone(&self.docs);
+            let scopes = Arc::clone(&self.code_lens_scopes);
             let uri_owned = uri.clone();
             let imports = self.file_imports(uri);
             let lenses = self
@@ -2181,14 +2182,9 @@ impl LanguageServer for Backend {
                     // Pause the background scan and snapshot a settled revision so
                     // only a genuine user edit cancels the sweep.
                     let (_interactive, cancel_rev) = docs.settled_write_rev_guard();
-                    code_lenses(
-                        &uri_owned,
-                        &doc,
-                        &docs,
-                        &imports,
-                        Some(cancel_rev),
-                        move || docs_cancel.write_rev() != cancel_rev,
-                    )
+                    code_lenses(&uri_owned, &doc, &docs, &imports, &scopes, move || {
+                        docs_cancel.write_rev() != cancel_rev
+                    })
                 })
                 .await
                 .unwrap_or_default();
@@ -2202,13 +2198,24 @@ impl LanguageServer for Backend {
     }
 
     async fn code_lens_resolve(&self, params: CodeLens) -> Result<CodeLens> {
+        if params.command.is_some() {
+            return Ok(params);
+        }
         let fallback = params.clone();
+        let docs = Arc::clone(&self.docs);
+        let scopes = Arc::clone(&self.code_lens_scopes);
         let resolved = guard_async("code_lens_resolve", async move {
-            // Lenses are fully populated by code_lens; nothing to add.
-            Some(params)
+            self.blocking("code_lens_resolve", move || {
+                let (_interactive, rev) = docs.settled_write_rev_guard();
+                resolve_code_lens(params, &docs, &scopes, rev)
+            })
+            .await
         })
         .await;
-        Ok(resolved.unwrap_or(fallback))
+        match resolved {
+            Some(lens) => Ok(lens?),
+            None => Ok(fallback),
+        }
     }
 
     async fn document_link(&self, params: DocumentLinkParams) -> Result<Option<Vec<DocumentLink>>> {

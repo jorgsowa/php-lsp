@@ -12,32 +12,35 @@
 /// Counts and locations come from mir's inverted indexes (reference posting
 /// lists and subtype edges) plus the salsa workspace index — never from a
 /// per-request AST walk over the workspace.
-use std::collections::HashMap;
+///
+/// Reference counts are deferred to `codeLens/resolve`, so only lenses the
+/// editor actually shows pay for a reference lookup.
+use std::collections::{HashMap, VecDeque};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use php_ast::{ClassMemberKind, EnumMemberKind, NamespaceBody, Stmt, StmtKind};
-use serde_json::json;
+use serde_json::{Value, json};
 use tower_lsp_server::ls_types::{CodeLens, Command, Location, Uri};
 
 use crate::document::ast::{ParsedDoc, SourceView};
-use crate::document::document_store::DocumentStore;
+use crate::document::document_store::{ContentModified, DocumentStore};
 use crate::navigation::moniker::resolve_fqn;
 use crate::navigation::references::{dedup_ref_locations, session_tuple_to_location};
 use crate::text::fqn_short_name;
 
-/// Build all code lenses for `uri`/`doc`, answering counts from the store's
-/// mir-backed indexes.
+/// Build all code lenses for `uri`/`doc`. Reference-count lenses come back
+/// without a command; [`resolve_code_lens`] fills them in. Their symbols are
+/// recorded in `scopes` so the first resolve can narrow them all at once.
 ///
-/// `cancel_rev` is threaded into mir's index queries so a concurrent edit
-/// aborts them at phase boundaries. `should_cancel` is polled between
-/// top-level declarations; when it returns `true` the function returns an
-/// empty `Vec` immediately. Pass `|| false` for requests that do not need
-/// cooperative cancellation.
+/// `should_cancel` is polled between top-level declarations; when it returns
+/// `true` the function returns an empty `Vec` immediately. Pass `|| false`
+/// for requests that do not need cooperative cancellation.
 pub fn code_lenses(
     uri: &Uri,
     doc: &ParsedDoc,
     store: &DocumentStore,
     imports: &HashMap<String, String>,
-    cancel_rev: Option<u64>,
+    scopes: &CodeLensScopeCache,
     should_cancel: impl Fn() -> bool,
 ) -> Vec<CodeLens> {
     let env = LensEnv {
@@ -45,7 +48,6 @@ pub fn code_lenses(
         doc,
         store,
         imports,
-        cancel_rev,
     };
     let sv = doc.view();
     let mut slots = Vec::new();
@@ -61,37 +63,179 @@ pub fn code_lenses(
         return Vec::new();
     }
 
-    // Every `RefCount` slot's candidate scope is resolved together in one
-    // workspace pass (see `DocumentStore::batch_reference_candidate_files`)
-    // instead of one pass per declaration — a class with many methods/
-    // properties would otherwise re-scan the whole workspace once per
-    // member just to compute this request's reference counts.
-    let symbols: Vec<mir_analyzer::Name> = slots
-        .iter()
-        .filter_map(|slot| match slot {
-            LensSlot::RefCount { symbol, .. } => Some(symbol.clone()),
-            LensSlot::Ready(_) => None,
-        })
-        .collect();
-    let mut scopes = env
-        .store
-        .batch_reference_candidate_files(&symbols)
-        .into_iter();
-
+    let mut symbols = Vec::new();
     let mut lenses = Vec::with_capacity(slots.len());
     for slot in slots {
-        if should_cancel() {
-            return Vec::new();
-        }
         lenses.push(match slot {
             LensSlot::Ready(lens) => lens,
             LensSlot::RefCount { range, symbol } => {
-                let files = scopes.next().expect("one scope per RefCount slot");
-                env.ref_count_lens(range, symbol, &files)
+                let lens = CodeLens {
+                    range,
+                    command: None,
+                    data: Some(ref_count_data(uri, &symbol)),
+                };
+                symbols.push(symbol);
+                lens
             }
         });
     }
+    scopes.record(uri, symbols);
     lenses
+}
+
+/// Fill in a reference-count lens produced by [`code_lenses`]; any other
+/// lens is returned unchanged. `rev` is the workspace write revision the
+/// lookup runs at: a write past it aborts with [`ContentModified`].
+pub fn resolve_code_lens(
+    unresolved: CodeLens,
+    store: &DocumentStore,
+    scopes: &CodeLensScopeCache,
+    rev: u64,
+) -> Result<CodeLens, ContentModified> {
+    if unresolved.command.is_some() {
+        return Ok(unresolved);
+    }
+    let Some((uri, symbol)) = unresolved.data.as_ref().and_then(decode_ref_count_data) else {
+        return Ok(unresolved);
+    };
+    let files = scopes.candidate_files(store, &uri, rev, &symbol);
+    let mut locations: Vec<Location> = store
+        .indexed_references(&symbol, &files, false, Some(rev))?
+        .into_iter()
+        .filter_map(session_tuple_to_location)
+        .collect();
+    dedup_ref_locations(&mut locations);
+    let label = match locations.len() {
+        0 => "0 references".to_string(),
+        1 => "1 reference".to_string(),
+        n => format!("{n} references"),
+    };
+    Ok(lens(unresolved.range, &uri, label, locations))
+}
+
+/// Files whose lens symbols are remembered for resolve; older ones fall
+/// back to narrowing each resolved symbol on its own.
+const SCOPE_CACHE_FILES: usize = 32;
+
+type ScopeMap = HashMap<mir_analyzer::Name, Arc<[Arc<str>]>>;
+type FileScopeCell = (Arc<[mir_analyzer::Name]>, Arc<OnceLock<ScopeMap>>);
+
+/// Reference-scope narrowing shared by every `codeLens/resolve` of a file.
+/// The first resolve at a write revision narrows all of the file's lens
+/// symbols in one workspace pass (see
+/// `DocumentStore::batch_reference_candidate_files`); concurrent and later
+/// resolves at that revision wait for and reuse it.
+#[derive(Default)]
+pub struct CodeLensScopeCache {
+    files: Mutex<VecDeque<(Uri, FileScopes)>>,
+}
+
+struct FileScopes {
+    symbols: Arc<[mir_analyzer::Name]>,
+    at_rev: Option<(u64, Arc<OnceLock<ScopeMap>>)>,
+}
+
+impl CodeLensScopeCache {
+    fn record(&self, uri: &Uri, symbols: Vec<mir_analyzer::Name>) {
+        let mut files = self.files.lock().unwrap();
+        files.retain(|(u, _)| u != uri);
+        if files.len() >= SCOPE_CACHE_FILES {
+            files.pop_front();
+        }
+        files.push_back((
+            uri.clone(),
+            FileScopes {
+                symbols: symbols.into(),
+                at_rev: None,
+            },
+        ));
+    }
+
+    fn scopes_at(&self, uri: &Uri, rev: u64) -> Option<FileScopeCell> {
+        let mut files = self.files.lock().unwrap();
+        let (_, file) = files.iter_mut().find(|(u, _)| u == uri)?;
+        let cell = match &file.at_rev {
+            Some((at, cell)) if *at == rev => Arc::clone(cell),
+            _ => {
+                let cell = Arc::new(OnceLock::new());
+                file.at_rev = Some((rev, Arc::clone(&cell)));
+                cell
+            }
+        };
+        Some((Arc::clone(&file.symbols), cell))
+    }
+
+    fn candidate_files(
+        &self,
+        store: &DocumentStore,
+        uri: &Uri,
+        rev: u64,
+        symbol: &mir_analyzer::Name,
+    ) -> Arc<[Arc<str>]> {
+        if let Some((symbols, cell)) = self.scopes_at(uri, rev) {
+            // Narrowed outside the cache lock; `OnceLock` blocks concurrent
+            // resolves of this file until the one batched pass finishes.
+            let map = cell.get_or_init(|| {
+                symbols
+                    .iter()
+                    .cloned()
+                    .zip(
+                        store
+                            .batch_reference_candidate_files(&symbols)
+                            .into_iter()
+                            .map(Arc::from),
+                    )
+                    .collect()
+            });
+            if let Some(files) = map.get(symbol) {
+                return Arc::clone(files);
+            }
+        }
+        store
+            .batch_reference_candidate_files(std::slice::from_ref(symbol))
+            .pop()
+            .unwrap_or_default()
+            .into()
+    }
+}
+
+fn ref_count_data(uri: &Uri, symbol: &mir_analyzer::Name) -> Value {
+    use mir_analyzer::Name;
+    let refs = match symbol {
+        Name::Class(n) => json!(["class", &**n]),
+        Name::Function(n) => json!(["function", &**n]),
+        Name::GlobalConstant(n) => json!(["constant", &**n]),
+        Name::Method { class, name } => json!(["method", &**class, &**name]),
+        Name::Property { class, name } => json!(["property", &**class, &**name]),
+        Name::ClassConstant { class, name } => json!(["class_constant", &**class, &**name]),
+    };
+    json!({ "uri": uri, "refs": refs })
+}
+
+fn decode_ref_count_data(data: &Value) -> Option<(Uri, mir_analyzer::Name)> {
+    use mir_analyzer::Name;
+    let uri = data.get("uri")?.as_str()?.parse::<Uri>().ok()?;
+    let parts = data.get("refs")?.as_array()?;
+    let part = |i: usize| parts.get(i)?.as_str().map(Arc::<str>::from);
+    let symbol = match parts.first()?.as_str()? {
+        "class" => Name::Class(part(1)?),
+        "function" => Name::Function(part(1)?),
+        "constant" => Name::GlobalConstant(part(1)?),
+        "method" => Name::Method {
+            class: part(1)?,
+            name: part(2)?,
+        },
+        "property" => Name::Property {
+            class: part(1)?,
+            name: part(2)?,
+        },
+        "class_constant" => Name::ClassConstant {
+            class: part(1)?,
+            name: part(2)?,
+        },
+        _ => return None,
+    };
+    Some((uri, symbol))
 }
 
 /// Shared lookup context for one code-lens request.
@@ -100,13 +244,9 @@ struct LensEnv<'a> {
     doc: &'a ParsedDoc,
     store: &'a DocumentStore,
     imports: &'a HashMap<String, String>,
-    cancel_rev: Option<u64>,
 }
 
-/// A lens that still needs its reference count resolved, or one that's
-/// already fully built. Deferring `RefCount` lets [`code_lenses`] batch
-/// every declaration's scope narrowing into one workspace pass after the
-/// AST walk finishes, instead of narrowing per declaration during the walk.
+/// A fully built lens, or a reference-count lens left for resolve.
 enum LensSlot {
     Ready(CodeLens),
     RefCount {
@@ -116,28 +256,6 @@ enum LensSlot {
 }
 
 impl LensEnv<'_> {
-    fn ref_count_lens(
-        &self,
-        range: tower_lsp_server::ls_types::Range,
-        symbol: mir_analyzer::Name,
-        files: &[std::sync::Arc<str>],
-    ) -> CodeLens {
-        let mut locations: Vec<Location> = self
-            .store
-            .indexed_references(&symbol, files, false, self.cancel_rev)
-            .unwrap_or_default()
-            .into_iter()
-            .filter_map(session_tuple_to_location)
-            .collect();
-        dedup_ref_locations(&mut locations);
-        let label = match locations.len() {
-            0 => "0 references".to_string(),
-            1 => "1 reference".to_string(),
-            n => format!("{n} references"),
-        };
-        lens(range, self.uri, label, locations)
-    }
-
     fn impl_count_lens(
         &self,
         range: tower_lsp_server::ls_types::Range,
@@ -577,7 +695,26 @@ mod tests {
         let uri = "file:///test.php".parse::<Uri>().unwrap();
         let store = DocumentStore::new();
 
-        let lenses = code_lenses(&uri, &doc, &store, &HashMap::new(), None, || true);
+        let scopes = CodeLensScopeCache::default();
+        let lenses = code_lenses(&uri, &doc, &store, &HashMap::new(), &scopes, || true);
         assert!(lenses.is_empty(), "cancelled sweep must return empty");
+    }
+
+    #[test]
+    fn ref_count_data_roundtrips_every_symbol_kind() {
+        use mir_analyzer::Name;
+        let uri = "file:///a.php".parse::<Uri>().unwrap();
+        let symbols = [
+            Name::Class(Arc::from("App\\Foo")),
+            Name::Function(Arc::from("App\\run")),
+            Name::GlobalConstant(Arc::from("LIMIT")),
+            Name::method("App\\Foo", "Bar"),
+            Name::property("App\\Foo", "baz"),
+            Name::class_constant("App\\Foo", "Case"),
+        ];
+        for symbol in symbols {
+            let decoded = decode_ref_count_data(&ref_count_data(&uri, &symbol));
+            assert_eq!(decoded, Some((uri.clone(), symbol)));
+        }
     }
 }

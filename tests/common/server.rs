@@ -1106,7 +1106,21 @@ impl TestServer {
             .await
     }
 
+    /// `textDocument/codeLens` with every unresolved lens then sent through
+    /// `codeLens/resolve`, as a resolve-capable editor does for visible lenses.
     pub async fn code_lens(&mut self, path: &str) -> Value {
+        let mut resp = self.code_lens_unresolved(path).await;
+        if let Some(lenses) = resp["result"].as_array_mut() {
+            for lens in lenses.iter_mut().filter(|l| l["command"].is_null()) {
+                let resolved = self.code_lens_resolve(lens.clone()).await;
+                assert!(resolved["error"].is_null(), "resolve error: {resolved:?}");
+                *lens = resolved["result"].clone();
+            }
+        }
+        resp
+    }
+
+    pub async fn code_lens_unresolved(&mut self, path: &str) -> Value {
         let uri = self.uri(path);
         self.client
             .request(

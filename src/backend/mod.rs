@@ -246,6 +246,7 @@ pub struct Backend {
     /// `typeHierarchy.dynamicRegistration` won't understand a
     /// `client/registerCapability` call for it).
     client_capabilities: Arc<ArcSwap<ClientCapabilities>>,
+    code_lens_scopes: Arc<crate::analysis::code_lens::CodeLensScopeCache>,
     /// Test-only hold points for the responsiveness regression tests.
     debug_gate: Arc<debug_gate::DebugGate>,
 }
@@ -267,6 +268,7 @@ impl Backend {
             laravel: Arc::new(ArcSwap::from_pointee(LaravelIndex::default())),
             config: Arc::new(ArcSwap::from_pointee(LspConfig::default())),
             client_capabilities: Arc::new(ArcSwap::from_pointee(ClientCapabilities::default())),
+            code_lens_scopes: Arc::default(),
             debug_gate: Arc::new(debug_gate::DebugGate::new()),
         }
     }

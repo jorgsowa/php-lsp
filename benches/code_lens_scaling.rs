@@ -1,12 +1,13 @@
 //! Code-lens reachability-scan batching benchmark.
 //!
-//! Every reference-count lens whose symbol needs FQN/text-needle narrowing
-//! (a class reference, or a public static method/constructor) used to call
-//! `DocumentStore::reference_candidate_files` independently, each paying its
-//! own full pass over the workspace. `code_lenses` now collects every such
-//! declaration in one AST walk and resolves all of their scopes together via
-//! `DocumentStore::batch_reference_candidate_files`, sharing one Aho-Corasick
-//! pass over the workspace instead of one per declaration.
+//! `code_lenses` leaves reference counts for `resolve_code_lens`. The first
+//! resolve of a file narrows every lens symbol together via
+//! `DocumentStore::batch_reference_candidate_files`, sharing one
+//! Aho-Corasick pass over the workspace instead of one per declaration;
+//! later resolves reuse it and pay only their own reference lookup.
+//!
+//! Reports the `codeLens` request alone, resolving the first `VISIBLE`
+//! lenses (what an editor viewport asks for), and resolving all of them.
 //!
 //! Models a class with N public static methods (each narrowing-eligible) in
 //! a workspace full of unrelated noise files that share neither the target's
@@ -20,12 +21,13 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use php_lsp::analysis::code_lens::code_lenses;
+use php_lsp::analysis::code_lens::{CodeLensScopeCache, code_lenses, resolve_code_lens};
 use php_lsp::ast::ParsedDoc;
 use php_lsp::document_store::DocumentStore;
 use tower_lsp_server::ls_types::Uri;
 
 const OWNER: &str = "Service";
+const VISIBLE: usize = 30;
 
 fn service_source(num_methods: usize) -> String {
     let mut methods = String::new();
@@ -71,19 +73,53 @@ fn median_ms(mut s: Vec<Duration>) -> f64 {
     s[s.len() / 2].as_secs_f64() * 1000.0
 }
 
-fn code_lens_ms(n_noise: usize, num_methods: usize, reps: usize) -> (usize, f64) {
-    let mut samples = Vec::with_capacity(reps);
+struct Timings {
+    lenses: usize,
+    lens_ms: f64,
+    visible_ms: f64,
+    all_ms: f64,
+}
+
+fn code_lens_ms(n_noise: usize, num_methods: usize, reps: usize) -> Timings {
+    let mut lens_samples = Vec::with_capacity(reps);
+    let mut visible_samples = Vec::with_capacity(reps);
+    let mut all_samples = Vec::with_capacity(reps);
     let mut lens_count = 0;
     for _ in 0..reps {
         let (store, doc, url) = build(n_noise, num_methods);
         let imports = HashMap::new();
+        let scopes = CodeLensScopeCache::default();
+        let rev = store.write_rev();
         let t = Instant::now();
-        let lenses =
-            std::hint::black_box(code_lenses(&url, &doc, &store, &imports, None, || false));
-        samples.push(t.elapsed());
+        let lenses = code_lenses(&url, &doc, &store, &imports, &scopes, || false);
+        lens_samples.push(t.elapsed());
         lens_count = lenses.len();
+
+        let t = Instant::now();
+        for lens in lenses.iter().take(VISIBLE) {
+            std::hint::black_box(resolve_code_lens(lens.clone(), &store, &scopes, rev).unwrap());
+        }
+        visible_samples.push(t.elapsed());
+
+        // Fresh store so "all" doesn't reuse the visible pass's warm caches.
+        let (store, doc, url) = build(n_noise, num_methods);
+        let rev = store.write_rev();
+        let scopes_all = CodeLensScopeCache::default();
+        let lenses = code_lenses(&url, &doc, &store, &imports, &scopes_all, || false);
+        let t = Instant::now();
+        for lens in &lenses {
+            std::hint::black_box(
+                resolve_code_lens(lens.clone(), &store, &scopes_all, rev).unwrap(),
+            );
+        }
+        all_samples.push(t.elapsed());
     }
-    (lens_count, median_ms(samples))
+    Timings {
+        lenses: lens_count,
+        lens_ms: median_ms(lens_samples),
+        visible_ms: median_ms(visible_samples),
+        all_ms: median_ms(all_samples),
+    }
 }
 
 fn main() {
@@ -92,15 +128,15 @@ fn main() {
         "=== CODE LENS: N narrowing-eligible declarations (1 class + N-1 public static methods) ==="
     );
     println!(
-        "{:>7}  {:>8}  {:>10}  {:>10}",
-        "files", "lenses", "cold_ms", "ms/lens"
+        "{:>7}  {:>8}  {:>10}  {:>12}  {:>12}",
+        "files", "lenses", "lens_ms", "visible_ms", "all_ms"
     );
     for &n_noise in &[500usize, 1500, 3000] {
         for &num_methods in &[10usize, 50, 100] {
-            let (lens_count, ms) = code_lens_ms(n_noise, num_methods, reps);
+            let t = code_lens_ms(n_noise, num_methods, reps);
             println!(
-                "{n_noise:>7}  {lens_count:>8}  {ms:>10.3}  {:>10.4}",
-                ms / lens_count as f64
+                "{n_noise:>7}  {:>8}  {:>10.3}  {:>12.3}  {:>12.3}",
+                t.lenses, t.lens_ms, t.visible_ms, t.all_ms
             );
         }
     }

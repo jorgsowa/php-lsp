@@ -367,8 +367,8 @@ shared();
 
 /// A file with several public-static-method (and class) declarations must
 /// resolve all of their reference counts with ONE workspace-wide
-/// reachability scan pass, not one pass per declaration — each such
-/// declaration used to run its own full `ws.files` scan independently.
+/// reachability scan pass, not one pass per declaration. `codeLens` itself
+/// pays none; the first resolve pays the shared pass.
 #[tokio::test]
 async fn code_lens_shares_one_reachability_scan_across_declarations() {
     let dir = tempfile::tempdir().unwrap();
@@ -391,24 +391,82 @@ async fn code_lens_shares_one_reachability_scan_across_declarations() {
     // `resolve_reachability_queries` — 4 declarations that, pre-fix, each
     // paid their own scan.
     let before = server.debug_stats_reachability_scan_passes().await;
-    let resp = server.code_lens("service.php").await;
+    let resp = server.code_lens_unresolved("service.php").await;
     assert!(resp["error"].is_null(), "code_lens error: {resp:?}");
     let lenses = resp["result"]
         .as_array()
+        .cloned()
         .expect("expected a code lens array");
     assert_eq!(
         lenses.len(),
         4,
         "expected one ref-count lens per declaration"
     );
-    let after = server.debug_stats_reachability_scan_passes().await;
-
+    assert!(
+        lenses.iter().all(|l| l["command"].is_null()),
+        "ref-count lenses must be left for resolve: {lenses:?}"
+    );
+    let after_lens = server.debug_stats_reachability_scan_passes().await;
     assert_eq!(
-        after - before,
+        after_lens - before,
+        0,
+        "codeLens must not scan the workspace"
+    );
+
+    let mut titles = Vec::new();
+    for lens in lenses {
+        let resp = server.code_lens_resolve(lens).await;
+        titles.push(render_resolved_lens(&resp));
+    }
+    let after_resolve = server.debug_stats_reachability_scan_passes().await;
+    assert_eq!(
+        after_resolve - after_lens,
         1,
-        "one code-lens request must pay exactly one reachability scan pass, \
+        "resolving every lens must pay exactly one reachability scan pass, \
          regardless of how many declarations need FQN/needle narrowing"
     );
+    expect![[r#"
+        L2: 0 references [editor.action.showReferences]
+        L3: 0 references [editor.action.showReferences]
+        L4: 0 references [editor.action.showReferences]
+        L5: 0 references [editor.action.showReferences]"#]]
+    .assert_eq(&titles.join("\n"));
+}
+
+/// A write between `codeLens` and resolve (or between two resolves) must
+/// not serve scopes narrowed at the older revision.
+#[tokio::test]
+async fn code_lens_resolve_sees_files_opened_after_the_lens_request() {
+    let mut server = TestServer::new().await;
+    server
+        .open("service.php", "<?php\nnamespace App;\nclass Service {}\n")
+        .await;
+    let lenses = server.code_lens_unresolved("service.php").await["result"]
+        .as_array()
+        .cloned()
+        .expect("expected a code lens array");
+    let first = server.code_lens_resolve(lenses[0].clone()).await;
+    expect!["L2: 0 references [editor.action.showReferences]"]
+        .assert_eq(&render_resolved_lens(&first));
+
+    server
+        .open(
+            "caller.php",
+            "<?php\nnamespace Other;\nuse App\\Service;\nnew Service();\n",
+        )
+        .await;
+    let second = server.code_lens_resolve(lenses[0].clone()).await;
+    expect!["L2: 1 reference [editor.action.showReferences]"]
+        .assert_eq(&render_resolved_lens(&second));
+}
+
+/// Reference counts are filled in by `codeLens/resolve`, so clients must be
+/// told to call it.
+#[tokio::test]
+async fn code_lens_resolve_advertised() {
+    let (_, init_resp) = TestServer::new_with_options(json!({})).await;
+    let provider = &init_resp["result"]["capabilities"]["codeLensProvider"];
+    assert_eq!(provider["resolveProvider"], true, "{provider:?}");
 }
 
 #[tokio::test]
