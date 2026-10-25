@@ -4,19 +4,26 @@ All notable changes to php-lsp are documented here.
 
 ## [Unreleased]
 
+## [0.28.0] — 2026-10-25
+
 ### Changed
 
-- **Unused workspace caches are deleted**: each workspace cache directory records its root and last-used time; on startup a background thread removes caches whose root no longer exists or that haven't been used for 30 days. Directories without that record are removed after a day.
+- **Unused workspace caches are deleted**: each workspace cache records its root and last-used time; on startup a background thread removes caches whose root no longer exists or that have been unused for 30 days. Caches without that record are removed after a day.
 - **Total cache size cap**: when all workspace caches together exceed 2 GiB, the least recently used ones are deleted until the total fits.
 - **Faster workspace symbol search**: symbols are indexed with each file instead of re-parsing every workspace file per query. On Symfony (16.7k files) a query drops from ~1.2 s to ~30 ms and peak memory from ~2.1 GB to ~1.2 GB.
+- **Less work per edit**: `didChange` parse diagnostics reuse the cached parse, and class and collector issues are read in the same session lock as the analysis.
 
 ### Fixed
 
-- **`excludePaths`/`includePaths` glob syntax**: `**` is honoured at the start, middle or end of a pattern (`**/var/**`, `src/**/Generated`), and `*`/`?` work inside a segment (`*Test.php`). Previously `**/var/**` silently matched nothing (#269).
-- **Server no longer wedges after a panic during analysis**: a panic while the analysis session was locked made every later request panic. The lock is now recovered and the session kept.
+- **`excludePaths`/`includePaths` glob syntax**: `**` is honoured at the start, middle or end of a pattern (`**/var/**`, `src/**/Generated`), and `*`/`?` work inside a segment (`*Test.php`). `**/var/**` previously matched nothing (#269).
+- **Class-name completion**: when the workspace class limit cuts off matches, the list is marked incomplete so the client re-queries as you type instead of filtering a truncated list.
+- **Signature help with named arguments**: the active parameter follows the argument's name (`foo(b: 1)`) rather than its position.
+- **Diagnostic ranges**: semantic diagnostics spanning several lines end on the right line, and parse errors at the end of a line or file no longer point past it.
+- **`rangeFormatting` panic** when the range starts past the end of the document.
+- **Server wedged after a panic during analysis**: a panic while the analysis session was locked made every later request panic; the lock is now recovered.
 - **PHP version from a `composer.json` range**: when no PHP binary is found, a `require.php` range with an upper bound (`>=7.4 <9.0`, `7.4 - 8.2`) picks the highest supported version inside it instead of the lower bound.
-- **Re-created file hidden after a PHP version change**: a file deleted before the analysis session was rebuilt (PHP version change, cache or stub dir attach) stayed invisible after being re-created.
-- **Server hung on exit during a warm sweep**: `shutdown` now cancels in-flight warm and dependent-diagnostics sweeps, and the process waits at most 2 s for remaining background work after `exit`.
+- **Deleted and re-created files**: a file deleted before the analysis session was rebuilt (PHP version change, cache or stub dir attach) stayed invisible after being re-created, and an open file deleted on disk was analyzed as empty after the next edit.
+- **Hang on exit during a warm sweep**: `shutdown` cancels in-flight warm and dependent-diagnostics sweeps, and the process waits at most 2 s for remaining background work after `exit`.
 
 ## [0.27.0] — 2026-10-22
 
