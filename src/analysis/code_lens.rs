@@ -117,7 +117,7 @@ pub fn resolve_code_lens(
 /// back to narrowing each resolved symbol on its own.
 const SCOPE_CACHE_FILES: usize = 32;
 
-type ScopeMap = HashMap<mir_analyzer::Name, Arc<[Arc<str>]>>;
+type ScopeMap = HashMap<mir_analyzer::Name, Arc<Vec<Arc<str>>>>;
 type FileScopeCell = (Arc<[mir_analyzer::Name]>, Arc<OnceLock<ScopeMap>>);
 
 /// Reference-scope narrowing shared by every `codeLens/resolve` of a file.
@@ -171,7 +171,7 @@ impl CodeLensScopeCache {
         uri: &Uri,
         rev: u64,
         symbol: &mir_analyzer::Name,
-    ) -> Arc<[Arc<str>]> {
+    ) -> Arc<Vec<Arc<str>>> {
         if let Some((symbols, cell)) = self.scopes_at(uri, rev) {
             // Narrowed outside the cache lock; `OnceLock` blocks concurrent
             // resolves of this file until the one batched pass finishes.
@@ -179,12 +179,7 @@ impl CodeLensScopeCache {
                 symbols
                     .iter()
                     .cloned()
-                    .zip(
-                        store
-                            .batch_reference_candidate_files(&symbols)
-                            .into_iter()
-                            .map(Arc::from),
-                    )
+                    .zip(store.batch_reference_candidate_files(&symbols))
                     .collect()
             });
             if let Some(files) = map.get(symbol) {
@@ -195,7 +190,6 @@ impl CodeLensScopeCache {
             .batch_reference_candidate_files(std::slice::from_ref(symbol))
             .pop()
             .unwrap_or_default()
-            .into()
     }
 }
 

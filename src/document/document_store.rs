@@ -1869,11 +1869,12 @@ impl DocumentStore {
     /// [`Self::fqn_reachable_files_with_needles`] — O(declarations × files)
     /// text scans instead of the one pass this performs.
     ///
-    /// Order-preserving: `result[i]` is the scope for `symbols[i]`.
+    /// Order-preserving: `result[i]` is the scope for `symbols[i]`. Every
+    /// un-narrowed symbol shares the one cached workspace file list.
     pub(crate) fn batch_reference_candidate_files(
         &self,
         symbols: &[mir_analyzer::Name],
-    ) -> Vec<Vec<Arc<str>>> {
+    ) -> Vec<Arc<Vec<Arc<str>>>> {
         let mut results: Vec<Option<Vec<Arc<str>>>> = vec![None; symbols.len()];
         let mut queries: Vec<ReachabilityQuery> = Vec::new();
         // queries[k] resolves the scope for symbols[query_targets[k]].
@@ -1937,7 +1938,7 @@ impl DocumentStore {
         let fallback = self.workspace_file_paths();
         results
             .into_iter()
-            .map(|r| r.unwrap_or_else(|| fallback.as_ref().clone()))
+            .map(|r| r.map_or_else(|| Arc::clone(&fallback), Arc::new))
             .collect()
     }
 
@@ -3713,6 +3714,28 @@ mod tests {
             store.reachability_scan_passes(),
             passes_after_first,
             "identical repeat query must be answered entirely from the result cache"
+        );
+    }
+
+    #[test]
+    fn batch_reference_candidate_files_shares_unnarrowed_scope() {
+        let store = DocumentStore::new();
+        open(
+            &store,
+            uri("/App/Owner.php"),
+            "<?php\nnamespace App;\nclass Owner { public function a() {} public function b() {} }\n"
+                .to_string(),
+        );
+        store.mark_index_ready();
+
+        let scopes = store.batch_reference_candidate_files(&[
+            mir_analyzer::Name::method("App\\Owner", "a"),
+            mir_analyzer::Name::method("App\\Owner", "b"),
+        ]);
+        assert!(!scopes[0].is_empty());
+        assert!(
+            Arc::ptr_eq(&scopes[0], &scopes[1]),
+            "whole-workspace scopes must share one list, not copy it per symbol"
         );
     }
 
