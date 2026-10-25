@@ -465,3 +465,37 @@ async fn dependency_edit_refreshes_cross_file_completion_members() {
     let after = server.completion("uses.php", 3, 4).await;
     expect!["Method      beta"].assert_eq(&render_completion(&after));
 }
+
+/// The same file reached through differently spelled drive letters
+/// (`c%3A`, `c:`, `C:`) is one document.
+#[tokio::test]
+async fn drive_letter_spellings_address_the_same_document() {
+    let mut server = TestServer::new().await;
+    server
+        .client()
+        .notify(
+            "textDocument/didOpen",
+            serde_json::json!({
+                "textDocument": {
+                    "uri": "file:///c%3A/proj/a.php",
+                    "languageId": "php",
+                    "version": 1,
+                    "text": "<?php\nclass DriveCase {}\n",
+                }
+            }),
+        )
+        .await;
+    server
+        .client()
+        .wait_for_diagnostics("file:///C%3A/proj/a.php")
+        .await;
+
+    let resp = server
+        .client()
+        .request(
+            "textDocument/documentSymbol",
+            serde_json::json!({ "textDocument": { "uri": "file:///c:/proj/a.php" } }),
+        )
+        .await;
+    assert_eq!(resp["result"][0]["name"], "DriveCase", "{resp}");
+}

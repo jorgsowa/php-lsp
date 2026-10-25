@@ -201,6 +201,7 @@ impl Service<JsonRpcRequest> for LifecycleService {
     }
 
     fn call(&mut self, request: JsonRpcRequest) -> Self::Future {
+        let request = drive_letter::normalize_request(request);
         let lifecycle = self.inner.inner().note_lifecycle_intent(&request);
         let future = self.inner.call(request);
         match lifecycle {
@@ -842,6 +843,7 @@ fn compute_diagnostic_result_id(diagnostics: &[Diagnostic], uri: &str) -> String
 }
 
 pub mod debug_gate;
+mod drive_letter;
 mod handlers;
 mod helpers;
 pub mod offload;
