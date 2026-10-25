@@ -442,6 +442,37 @@ fn bench_completion_laravel(c: &mut Criterion) {
     group.finish();
 }
 
+/// Identifier completion with the N largest Laravel files open: every open
+/// doc's symbols are candidates, so this scales with open-tab size.
+fn bench_completion_identifier(c: &mut Criterion) {
+    let Some(docs) = laravel_docs() else {
+        return;
+    };
+    let mut by_size: Vec<Arc<ParsedDoc>> = docs.into_iter().map(|(_, p)| p).collect();
+    by_size.sort_by_key(|d| std::cmp::Reverse(d.source().len()));
+
+    let mut group = c.benchmark_group("completion_identifier");
+    group.sample_size(20);
+    for (label, src, character) in [
+        ("prefix_get", "<?php\nfunction f() {\n    get", 7),
+        ("prefix_none", "<?php\nfunction f() {\n    ", 4),
+    ] {
+        let doc = Arc::new(ParsedDoc::parse(src.to_owned()));
+        let ctx = CompletionCtx {
+            source: Some(src),
+            position: Some(tower_lsp_server::ls_types::Position { line: 2, character }),
+            ..CompletionCtx::default()
+        };
+        for open in [20, 200] {
+            let others = &by_size[..open.min(by_size.len())];
+            group.bench_function(BenchmarkId::new(label, open), |b| {
+                b.iter(|| black_box(filtered_completions_at(&doc, others, None, &ctx)));
+            });
+        }
+    }
+    group.finish();
+}
+
 fn to_indexes(docs: &OtherDocs) -> Vec<(Uri, Arc<FileIndex>)> {
     docs.iter()
         .map(|(uri, parsed)| (uri.clone(), Arc::new(FileIndex::extract(parsed))))
@@ -965,6 +996,7 @@ criterion_group!(
     bench_inlay_hints,
     bench_completion,
     bench_completion_laravel,
+    bench_completion_identifier,
     bench_workspace_symbol,
     bench_document_symbol,
     bench_call_hierarchy,

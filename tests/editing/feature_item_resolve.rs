@@ -128,6 +128,34 @@ async fn completion_resolve_scopes_to_owning_class_on_name_collision() {
     );
 }
 
+#[tokio::test]
+async fn completion_resolve_fills_open_doc_namespaced_function() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let src = "<?php\nnamespace App\\Util;\n/** Says hello. */\nfunction greetUser(string $name): string { return $name; }\ngreetU";
+    s.open("file.php", src).await;
+    let resp = s.completion("file.php", 4, 6).await;
+    let items: Vec<_> = resp["result"]
+        .as_array()
+        .or_else(|| resp["result"]["items"].as_array())
+        .map(|a| a.to_vec())
+        .unwrap_or_default();
+    let item = items
+        .iter()
+        .find(|i| i["label"].as_str() == Some("greetUser"))
+        .expect("greetUser not in completions")
+        .clone();
+    assert_eq!(item["data"]["fqn"], "App\\Util\\greetUser");
+
+    let resolved = s.completion_resolve(item).await;
+    let out = render_resolved_completion_item(&resolved);
+    assert!(
+        out.contains("detail: function greetUser(string $name): string"),
+        "got: {out}"
+    );
+    assert!(out.contains("Says hello."), "got: {out}");
+}
+
 // ============================================================================
 // codeAction/resolve tests
 // ============================================================================

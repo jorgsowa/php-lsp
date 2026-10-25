@@ -7,6 +7,7 @@ All notable changes to php-lsp are documented here.
 ### Changed
 
 - **Code lens reference counts load on resolve**: `textDocument/codeLens` returns reference-count lenses without a title and `codeLens/resolve` fills them in, so editors only look up references for lenses on screen. The first resolve of a file still narrows every lens symbol in one shared workspace scan.
+- **Faster completion with many open files**: symbols from open files are filtered by the typed prefix before their items are built, and function/method signatures and docs come from `completionItem/resolve`. Identifier completion with 20 large files open dropped from ~32 ms to ~2 ms, and from ~67 ms to ~8 ms with no prefix. Highlighting an open-file function or method now shows its signature and docstring (as hover does), not the docblock rendered inline.
 
 ### Security
 

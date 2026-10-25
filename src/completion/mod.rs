@@ -28,7 +28,8 @@ use namespace::{
 mod symbols;
 pub use symbols::{
     builtin_completions, builtin_completions_matching, superglobal_completions,
-    superglobal_completions_matching, symbol_completions, symbol_completions_before,
+    superglobal_completions_matching, symbol_completions, symbol_completions_before_matching,
+    symbol_completions_matching,
 };
 
 use std::sync::Arc;
@@ -37,11 +38,7 @@ use tower_lsp_server::ls_types::{
     CompletionItem, CompletionItemKind, InsertTextFormat, Position, Range, TextEdit, Uri,
 };
 
-use tower_lsp_server::ls_types::{Documentation, MarkupContent, MarkupKind};
-
-use crate::document::ast::{ParsedDoc, format_type_hint};
-use crate::hover::format_params_str;
-use crate::lang::docblock::parse_docblock;
+use crate::document::ast::ParsedDoc;
 use crate::text::{camel_sort_key, utf16_offset_to_byte};
 use crate::types::type_map::{enclosing_class_at, params_of_function, params_of_method};
 use std::collections::HashMap;
@@ -70,30 +67,32 @@ fn callable_item(label: &str, kind: CompletionItemKind, has_params: bool) -> Com
     }
 }
 
-/// Build a named-argument `CompletionItem` for a callable when param names are
-/// known.  Produces a label like `create(name:, age:)` and a snippet like
-/// `create(name: $1, age: $2)`.  Returns `None` when the param list is empty
-/// (no advantage over the positional item in that case).
+/// Label for a named-argument item, e.g. `create(name:, age:)`.
+fn named_arg_label(label: &str, params: &[php_ast::Param<'_, '_>]) -> String {
+    let mut out = format!("{label}(");
+    for (i, p) in params.iter().enumerate() {
+        if i > 0 {
+            out.push_str(", ");
+        }
+        out.push_str(&p.name.to_string());
+        out.push(':');
+    }
+    out.push(')');
+    out
+}
+
+/// Build a named-argument `CompletionItem` from its [`named_arg_label`], with
+/// a snippet like `create(name: $1, age: $2)`.  Only meaningful for a
+/// non-empty param list (no advantage over the positional item otherwise).
 fn named_arg_item(
-    label: &str,
+    named_label: String,
     kind: CompletionItemKind,
     params: &[php_ast::Param<'_, '_>],
-) -> Option<CompletionItem> {
-    if params.is_empty() {
-        return None;
-    }
-    let named_label = format!(
-        "{}({})",
-        label,
-        params
-            .iter()
-            .map(|p| format!("{}:", p.name))
-            .collect::<Vec<_>>()
-            .join(", ")
-    );
+) -> CompletionItem {
+    let name = &named_label[..named_label.find('(').unwrap_or(named_label.len())];
     let snippet = format!(
         "{}({})",
-        label,
+        name,
         params
             .iter()
             .enumerate()
@@ -101,46 +100,13 @@ fn named_arg_item(
             .collect::<Vec<_>>()
             .join(", ")
     );
-    Some(CompletionItem {
+    CompletionItem {
         label: named_label,
         kind: Some(kind),
         insert_text: Some(snippet),
         insert_text_format: Some(InsertTextFormat::SNIPPET),
         detail: Some("named args".to_string()),
         ..Default::default()
-    })
-}
-
-/// Build the full signature string for a callable, e.g.
-/// `"function foo(string $bar, int $baz): bool"`.
-fn build_function_sig(
-    name: &str,
-    params: &[php_ast::Param<'_, '_>],
-    return_type: Option<&php_ast::TypeHint<'_, '_>>,
-) -> String {
-    let params_str = format_params_str(params);
-    let ret = return_type
-        .map(|r| format!(": {}", format_type_hint(r)))
-        .unwrap_or_default();
-    format!("function {}({}){}", name, params_str, ret)
-}
-
-/// Build a `Documentation` value for a caller that already has the declaration's
-/// own `doc_comment` node in hand (e.g. while walking every symbol in a file
-/// for completion) — skips `find_docblock`'s name-based tree re-search,
-/// which is O(symbols-in-file) per call and made whole-file completion
-/// O(n²) in the symbol count.
-pub(super) fn documentation_from_comment(
-    comment: Option<&php_ast::Comment<'_>>,
-) -> Option<Documentation> {
-    let md = parse_docblock(comment?.text).to_markdown();
-    if md.is_empty() {
-        None
-    } else {
-        Some(Documentation::MarkupContent(MarkupContent {
-            kind: MarkupKind::Markdown,
-            value: md,
-        }))
     }
 }
 
@@ -504,11 +470,9 @@ pub fn filtered_completions_at(
     match trigger_character {
         Some("$") => {
             let mut items = superglobal_completions();
-            items.extend(
-                symbol_completions(doc)
-                    .into_iter()
-                    .filter(|i| i.kind == Some(CompletionItemKind::VARIABLE)),
-            );
+            items.extend(symbol_completions_matching(doc, &|_, kind| {
+                kind == CompletionItemKind::VARIABLE
+            }));
             items
         }
         Some(">") => {
@@ -538,10 +502,7 @@ pub fn filtered_completions_at(
                 }
             }
             // Fallback: all methods from current doc
-            symbol_completions(doc)
-                .into_iter()
-                .filter(|i| i.kind == Some(CompletionItemKind::METHOD))
-                .collect()
+            symbol_completions_matching(doc, &|_, kind| kind == CompletionItemKind::METHOD)
         }
         Some(":") => {
             // Static access: ClassName:: / self:: / static:: / parent::
@@ -914,10 +875,11 @@ pub fn filtered_completions_at(
             items.extend(builtin_completions_matching(&keep_static));
             items.extend(superglobal_completions_matching(&keep_static));
             // Feature 2: scope variable completions to before cursor line
+            let keep_symbol = |label: &str, _| keep_static(label);
             let sym_items = if let (Some(_src), Some(pos)) = (source, position) {
-                symbol_completions_before(doc, pos.line)
+                symbol_completions_before_matching(doc, pos.line, &keep_symbol)
             } else {
-                symbol_completions(doc)
+                symbol_completions_matching(doc, &keep_symbol)
             };
             items.extend(sym_items);
             items.extend(magic_items);
@@ -974,18 +936,15 @@ pub fn filtered_completions_at(
                     push_class_item(&mut items, label, *kind, fqn);
                 }
                 // Non-class symbols (functions, methods, constants) need no use statement.
-                let cross: Vec<CompletionItem> = symbol_completions(other)
-                    .into_iter()
-                    .filter(|i| {
-                        !matches!(
-                            i.kind,
-                            Some(CompletionItemKind::CLASS)
-                                | Some(CompletionItemKind::INTERFACE)
-                                | Some(CompletionItemKind::ENUM)
-                        ) && i.kind != Some(CompletionItemKind::VARIABLE)
-                    })
-                    .collect();
-                items.extend(cross);
+                items.extend(symbol_completions_matching(other, &|label, kind| {
+                    !matches!(
+                        kind,
+                        CompletionItemKind::CLASS
+                            | CompletionItemKind::INTERFACE
+                            | CompletionItemKind::ENUM
+                            | CompletionItemKind::VARIABLE
+                    ) && keep_static(label)
+                }));
             }
 
             // Classes from files that aren't open in the editor (e.g.

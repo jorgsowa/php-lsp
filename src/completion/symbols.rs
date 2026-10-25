@@ -1,222 +1,221 @@
-use php_ast::{ClassMemberKind, EnumMemberKind, ExprKind, NamespaceBody, Stmt, StmtKind};
+use php_ast::{
+    ClassMemberKind, EnumMemberKind, ExprKind, NamespaceBody, NamespaceDecl, Param, Stmt, StmtKind,
+};
 use tower_lsp_server::ls_types::{CompletionItem, CompletionItemKind};
 
 use crate::document::ast::{ParsedDoc, SourceView};
 
-use super::{build_function_sig, callable_item, documentation_from_comment, named_arg_item};
+use super::{callable_item, named_arg_item, named_arg_label};
+
+/// Predicate over an item's label and kind, checked before the item is built.
+pub type SymbolFilter<'a> = &'a dyn Fn(&str, CompletionItemKind) -> bool;
 
 pub fn symbol_completions(doc: &ParsedDoc) -> Vec<CompletionItem> {
-    let mut items = Vec::new();
-    collect_from_statements_with_doc(&doc.program().stmts, &mut items);
-    items
+    symbol_completions_matching(doc, &|_, _| true)
 }
 
-/// Like `symbol_completions` but only includes variables declared at or before `line`.
-/// Non-variable items (functions, classes, etc.) are always included.
-pub fn symbol_completions_before(doc: &ParsedDoc, line: u32) -> Vec<CompletionItem> {
-    let sv = doc.view();
-    let mut items = Vec::new();
-    collect_from_statements_before(&doc.program().stmts, &mut items, line, sv);
-    items
+/// Like [`symbol_completions`] but only materializes items passing `keep`.
+/// Callables carry no signature or docs: `completion_resolve` fills them from
+/// the FQN hint in `data`, so a large unfiltered list stays cheap.
+pub fn symbol_completions_matching(doc: &ParsedDoc, keep: SymbolFilter<'_>) -> Vec<CompletionItem> {
+    let mut c = Collector::new(keep);
+    c.statements(&doc.program().stmts);
+    c.items
 }
 
-fn collect_from_statements_before(
-    stmts: &[Stmt<'_, '_>],
-    items: &mut Vec<CompletionItem>,
+/// Like [`symbol_completions_matching`] but only includes variables declared
+/// at or before `line`. Non-variable items (functions, classes, etc.) are always included.
+pub fn symbol_completions_before_matching(
+    doc: &ParsedDoc,
     line: u32,
-    sv: SourceView<'_>,
-) {
-    for stmt in stmts {
-        match &stmt.kind {
-            StmtKind::Expression(e) => {
-                // Only add variables if they appear at or before the cursor line
-                let stmt_line = sv.position_of(stmt.span.start).line;
-                if stmt_line <= line {
-                    collect_from_expression(e, items);
-                }
+    keep: SymbolFilter<'_>,
+) -> Vec<CompletionItem> {
+    let mut c = Collector::new(keep);
+    c.statements_before(&doc.program().stmts, line, doc.view());
+    c.items
+}
+
+struct Collector<'k> {
+    items: Vec<CompletionItem>,
+    keep: SymbolFilter<'k>,
+    namespace: String,
+    class_fqn: Option<String>,
+}
+
+impl<'k> Collector<'k> {
+    fn new(keep: SymbolFilter<'k>) -> Self {
+        Collector {
+            items: Vec::new(),
+            keep,
+            namespace: String::new(),
+            class_fqn: None,
+        }
+    }
+
+    fn qualify(&self, short: &str) -> String {
+        if self.namespace.is_empty() {
+            short.to_string()
+        } else {
+            format!("{}\\{}", self.namespace, short)
+        }
+    }
+
+    /// Enters `ns`: a braced body is walked by `walk` under that namespace,
+    /// a simple `namespace Foo;` applies to the statements that follow.
+    fn namespace<'a, 'b>(
+        &mut self,
+        ns: &NamespaceDecl<'a, 'b>,
+        walk: impl FnOnce(&mut Self, &[Stmt<'a, 'b>]),
+    ) {
+        let name = ns
+            .name
+            .as_ref()
+            .map(|n| n.to_string_repr().to_string())
+            .unwrap_or_default();
+        match &ns.body {
+            NamespaceBody::Braced(inner) => {
+                let outer = std::mem::replace(&mut self.namespace, name);
+                walk(self, &inner.stmts);
+                self.namespace = outer;
             }
-            StmtKind::Namespace(ns) => {
-                if let NamespaceBody::Braced(inner) = &ns.body {
-                    collect_from_statements_before(&inner.stmts, items, line, sv);
-                }
-            }
-            // Non-variable items: always include
-            _ => {
-                collect_from_statements_with_doc(std::slice::from_ref(stmt), items);
+            NamespaceBody::Simple => self.namespace = name,
+        }
+    }
+
+    fn push(&mut self, label: String, kind: CompletionItemKind) {
+        if (self.keep)(&label, kind) {
+            self.items.push(CompletionItem {
+                label,
+                kind: Some(kind),
+                ..Default::default()
+            });
+        }
+    }
+
+    fn push_variable(&mut self, name: &str) {
+        if name != "this" {
+            self.push(format!("${name}"), CompletionItemKind::VARIABLE);
+        }
+    }
+
+    fn push_callable(&mut self, name: &str, kind: CompletionItemKind, params: &[Param<'_, '_>]) {
+        if (self.keep)(name, kind) {
+            let mut item = callable_item(name, kind, !params.is_empty());
+            item.data = Some(match &self.class_fqn {
+                Some(class) => serde_json::json!({ "class": class }),
+                None => serde_json::json!({ "fqn": self.qualify(name) }),
+            });
+            self.items.push(item);
+        }
+        if !params.is_empty() {
+            let label = named_arg_label(name, params);
+            if (self.keep)(&label, kind) {
+                self.items.push(named_arg_item(label, kind, params));
             }
         }
     }
-}
 
-fn collect_from_statements_with_doc(stmts: &[Stmt<'_, '_>], items: &mut Vec<CompletionItem>) {
-    for stmt in stmts {
-        match &stmt.kind {
-            StmtKind::Function(f) => {
-                let name_str = f.name.to_string();
-                let sig = build_function_sig(&name_str, &f.params, f.return_type.as_ref());
-                let documentation = documentation_from_comment(f.doc_comment.as_ref());
-                let mut item = callable_item(
-                    &name_str,
-                    CompletionItemKind::FUNCTION,
-                    !f.params.is_empty(),
-                );
-                item.detail = Some(sig);
-                item.documentation = documentation;
-                items.push(item);
-                if let Some(named) =
-                    named_arg_item(&name_str, CompletionItemKind::FUNCTION, &f.params)
-                {
-                    items.push(named);
+    fn statements_before(&mut self, stmts: &[Stmt<'_, '_>], line: u32, sv: SourceView<'_>) {
+        for stmt in stmts {
+            match &stmt.kind {
+                StmtKind::Expression(e) => {
+                    // Only add variables if they appear at or before the cursor line
+                    let stmt_line = sv.position_of(stmt.span.start).line;
+                    if stmt_line <= line {
+                        self.expression(e);
+                    }
                 }
-                for param in f.params.iter() {
-                    items.push(CompletionItem {
-                        label: format!("${}", param.name),
-                        kind: Some(CompletionItemKind::VARIABLE),
-                        ..Default::default()
-                    });
+                StmtKind::Namespace(ns) => {
+                    self.namespace(ns, |c, inner| c.statements_before(inner, line, sv));
                 }
+                // Non-variable items: always include
+                _ => self.statements(std::slice::from_ref(stmt)),
             }
-            StmtKind::Class(c) => {
-                if let Some(class_name) = c.name.as_ref() {
-                    let class_name_str = class_name.to_string();
-                    items.push(CompletionItem {
-                        label: class_name_str,
-                        kind: Some(CompletionItemKind::CLASS),
-                        ..Default::default()
-                    });
+        }
+    }
+
+    fn statements(&mut self, stmts: &[Stmt<'_, '_>]) {
+        for stmt in stmts {
+            match &stmt.kind {
+                StmtKind::Function(f) => {
+                    self.push_callable(
+                        &f.name.to_string(),
+                        CompletionItemKind::FUNCTION,
+                        &f.params,
+                    );
+                    for param in f.params.iter() {
+                        self.push(format!("${}", param.name), CompletionItemKind::VARIABLE);
+                    }
                 }
-                for member in c.body.members.iter() {
-                    match &member.kind {
-                        ClassMemberKind::Method(m) => {
-                            let method_name_str = m.name.to_string();
-                            let sig = build_function_sig(
-                                &method_name_str,
-                                &m.params,
-                                m.return_type.as_ref(),
-                            );
-                            let documentation = documentation_from_comment(m.doc_comment.as_ref());
-                            let mut item = callable_item(
-                                &method_name_str,
-                                CompletionItemKind::METHOD,
-                                !m.params.is_empty(),
-                            );
-                            item.detail = Some(sig);
-                            item.documentation = documentation;
-                            items.push(item);
-                            if let Some(named) = named_arg_item(
-                                &method_name_str,
+                StmtKind::Class(c) => {
+                    let short = c.name.as_ref().map(|n| n.to_string());
+                    if let Some(short) = &short {
+                        self.push(short.clone(), CompletionItemKind::CLASS);
+                    }
+                    self.class_fqn = short.map(|s| self.qualify(&s));
+                    for member in c.body.members.iter() {
+                        match &member.kind {
+                            ClassMemberKind::Method(m) => self.push_callable(
+                                &m.name.to_string(),
                                 CompletionItemKind::METHOD,
                                 &m.params,
-                            ) {
-                                items.push(named);
+                            ),
+                            ClassMemberKind::Property(p) => {
+                                self.push(format!("${}", p.name), CompletionItemKind::PROPERTY);
                             }
+                            ClassMemberKind::ClassConst(c) => {
+                                self.push(c.name.to_string(), CompletionItemKind::CONSTANT);
+                            }
+                            _ => {}
                         }
-                        ClassMemberKind::Property(p) => {
-                            items.push(CompletionItem {
-                                label: format!("${}", p.name),
-                                kind: Some(CompletionItemKind::PROPERTY),
-                                ..Default::default()
-                            });
+                    }
+                    self.class_fqn = None;
+                }
+                StmtKind::Interface(i) => {
+                    self.push(i.name.to_string(), CompletionItemKind::INTERFACE);
+                }
+                StmtKind::Trait(t) => self.push(t.name.to_string(), CompletionItemKind::CLASS),
+                StmtKind::Enum(e) => {
+                    self.push(e.name.to_string(), CompletionItemKind::ENUM);
+                    for member in e.body.members.iter() {
+                        if let EnumMemberKind::Case(c) = &member.kind {
+                            self.push(
+                                format!("{}::{}", e.name, c.name),
+                                CompletionItemKind::ENUM_MEMBER,
+                            );
                         }
-                        ClassMemberKind::ClassConst(c) => {
-                            items.push(CompletionItem {
-                                label: c.name.to_string(),
-                                kind: Some(CompletionItemKind::CONSTANT),
-                                ..Default::default()
-                            });
-                        }
-                        _ => {}
                     }
                 }
+                StmtKind::Namespace(ns) => self.namespace(ns, |c, inner| c.statements(inner)),
+                StmtKind::Expression(e) => self.expression(e),
+                _ => {}
             }
-            StmtKind::Interface(i) => {
-                items.push(CompletionItem {
-                    label: i.name.to_string(),
-                    kind: Some(CompletionItemKind::INTERFACE),
-                    ..Default::default()
-                });
-            }
-            StmtKind::Trait(t) => {
-                items.push(CompletionItem {
-                    label: t.name.to_string(),
-                    kind: Some(CompletionItemKind::CLASS),
-                    ..Default::default()
-                });
-            }
-            StmtKind::Enum(e) => {
-                items.push(CompletionItem {
-                    label: e.name.to_string(),
-                    kind: Some(CompletionItemKind::ENUM),
-                    ..Default::default()
-                });
-                for member in e.body.members.iter() {
-                    if let EnumMemberKind::Case(c) = &member.kind {
-                        items.push(CompletionItem {
-                            label: format!("{}::{}", e.name, c.name),
-                            kind: Some(CompletionItemKind::ENUM_MEMBER),
-                            ..Default::default()
-                        });
-                    }
-                }
-            }
-            StmtKind::Namespace(ns) => {
-                if let NamespaceBody::Braced(inner) = &ns.body {
-                    collect_from_statements_with_doc(&inner.stmts, items);
-                }
-            }
-            StmtKind::Expression(e) => {
-                collect_from_expression(e, items);
-            }
-            _ => {}
         }
     }
-}
 
-fn collect_from_expression(expr: &php_ast::Expr<'_, '_>, items: &mut Vec<CompletionItem>) {
-    if let ExprKind::Assign(assign) = &expr.kind {
-        match &assign.target.kind {
-            ExprKind::Variable(name) => {
-                let label = format!("${}", name.as_str());
-                if label != "$this" {
-                    items.push(CompletionItem {
-                        label,
-                        kind: Some(CompletionItemKind::VARIABLE),
-                        ..Default::default()
-                    });
-                }
-            }
-            // Array destructuring: [$a, $b] = ... or list($a, $b) = ...
-            ExprKind::Array(elements) => {
-                for elem in elements.iter() {
-                    // Variables can be in the value (for indexed arrays) or as value/key pairs
-                    if let ExprKind::Variable(name) = &elem.value.kind {
-                        let label = format!("${}", name.as_str());
-                        if label != "$this" {
-                            items.push(CompletionItem {
-                                label,
-                                kind: Some(CompletionItemKind::VARIABLE),
-                                ..Default::default()
-                            });
+    fn expression(&mut self, expr: &php_ast::Expr<'_, '_>) {
+        if let ExprKind::Assign(assign) = &expr.kind {
+            match &assign.target.kind {
+                ExprKind::Variable(name) => self.push_variable(name.as_str()),
+                // Array destructuring: [$a, $b] = ... or list($a, $b) = ...
+                ExprKind::Array(elements) => {
+                    for elem in elements.iter() {
+                        // Variables can be in the value (for indexed arrays) or as value/key pairs
+                        if let ExprKind::Variable(name) = &elem.value.kind {
+                            self.push_variable(name.as_str());
                         }
-                    }
-                    // Also check key (for associative destructuring like [key => $var])
-                    if let Some(key) = &elem.key
-                        && let ExprKind::Variable(name) = &key.kind
-                    {
-                        let label = format!("${}", name.as_str());
-                        if label != "$this" {
-                            items.push(CompletionItem {
-                                label,
-                                kind: Some(CompletionItemKind::VARIABLE),
-                                ..Default::default()
-                            });
+                        // Also check key (for associative destructuring like [key => $var])
+                        if let Some(key) = &elem.key
+                            && let ExprKind::Variable(name) = &key.kind
+                        {
+                            self.push_variable(name.as_str());
                         }
                     }
                 }
+                _ => {}
             }
-            _ => {}
+            self.expression(assign.value);
         }
-        collect_from_expression(assign.value, items);
     }
 }
 

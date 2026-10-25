@@ -91,12 +91,15 @@ fn completion_symbol_from_item(
     name: &str,
     kind: Option<CompletionItemKind>,
     class_hint: Option<&str>,
+    fqn_hint: Option<&str>,
 ) -> Option<mir_analyzer::Name> {
     if let Some(class_name) = class_hint {
         return Some(mir_analyzer::Name::method(class_name, name));
     }
     match kind {
-        Some(CompletionItemKind::FUNCTION) => Some(mir_analyzer::Name::function(name)),
+        Some(CompletionItemKind::FUNCTION) => {
+            Some(mir_analyzer::Name::function(fqn_hint.unwrap_or(name)))
+        }
         Some(CompletionItemKind::CLASS)
         | Some(CompletionItemKind::INTERFACE)
         | Some(CompletionItemKind::ENUM) => Some(mir_analyzer::Name::class(name)),
@@ -1078,16 +1081,18 @@ impl LanguageServer for Backend {
             }
             // Strip trailing ':' from named-argument labels (e.g. "param:") before lookup.
             let name = item.label.trim_end_matches(':').to_string();
-            // Method completion items carry their owning class in `data` (see
-            // member.rs's all_members) so two unrelated classes declaring a
-            // same-named method don't resolve to whichever is indexed first.
-            let class_hint = item
-                .data
-                .as_ref()
-                .and_then(|d| d.get("class"))
-                .and_then(|v| v.as_str())
-                .map(str::to_string);
-            let symbol = completion_symbol_from_item(&name, item.kind, class_hint.as_deref());
+            // Method items carry their owning class and function items their
+            // FQN in `data` (see member.rs's all_members, symbols.rs) so
+            // same-named symbols elsewhere don't resolve to whichever is
+            // indexed first.
+            let data_str = |key: &str| {
+                item.data
+                    .as_ref()
+                    .and_then(|d| d.get(key))
+                    .and_then(|v| v.as_str())
+            };
+            let symbol =
+                completion_symbol_from_item(&name, item.kind, data_str("class"), data_str("fqn"));
             let need_detail = item.detail.is_none();
             let need_docs = item.documentation.is_none();
             let docs = Arc::clone(&self.docs);
