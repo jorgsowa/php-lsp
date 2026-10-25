@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use tower_lsp_server::LanguageServer;
 use tower_lsp_server::jsonrpc::Result;
@@ -983,6 +984,10 @@ impl LanguageServer for Backend {
             // prefix range instead of scanning + re-lowercasing every class
             // name on every keystroke.
             const WORKSPACE_CLASS_SEARCH_LIMIT: usize = 50;
+            // Set when the cap drops a match, so the client re-queries as the
+            // prefix grows instead of filtering a truncated list locally.
+            let class_search_truncated = Arc::new(AtomicBool::new(false));
+            let truncated_for_search = Arc::clone(&class_search_truncated);
             let workspace_class_search_fn =
                 move |prefix: &str| -> Vec<(String, CompletionItemKind, String)> {
                     let prefix_lc = prefix.to_lowercase();
@@ -1000,15 +1005,16 @@ impl LanguageServer for Backend {
                         if *file_uri == uri_for_class_search {
                             continue;
                         }
+                        if out.len() >= WORKSPACE_CLASS_SEARCH_LIMIT {
+                            truncated_for_search.store(true, Ordering::Relaxed);
+                            break;
+                        }
                         let kind = match cls.kind {
                             ClassKind::Class | ClassKind::Trait => CompletionItemKind::CLASS,
                             ClassKind::Interface => CompletionItemKind::INTERFACE,
                             ClassKind::Enum => CompletionItemKind::ENUM,
                         };
                         out.push((cls.name.to_string(), kind, cls.fqn.to_string()));
-                        if out.len() >= WORKSPACE_CLASS_SEARCH_LIMIT {
-                            break;
-                        }
                     }
                     out
                 };
@@ -1037,7 +1043,10 @@ impl LanguageServer for Backend {
                 })
                 .await
                 .unwrap_or_default();
-            Ok(Some(CompletionResponse::Array(items)))
+            Ok(Some(CompletionResponse::List(CompletionList {
+                is_incomplete: class_search_truncated.load(Ordering::Relaxed),
+                items,
+            })))
         })
         .await
     }

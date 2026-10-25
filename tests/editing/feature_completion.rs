@@ -5007,6 +5007,57 @@ async fn completion_bare_class_name_vendor_dir_indexed_by_default() {
     expect![[r#"1:0-1:0 → "use Acme\\Support\\Facades\\Http;\\n""#]].assert_eq(&out);
 }
 
+/// Completes `Wid` against `class_count` unopened `WidgetNN` classes and
+/// returns the response's `isIncomplete` flag.
+async fn workspace_class_completion_is_incomplete(class_count: usize) -> bool {
+    let tmp = tempfile::tempdir().unwrap();
+    let classes: String = (0..class_count)
+        .map(|i| format!("class Widget{i:03} {{}}\n"))
+        .collect();
+    std::fs::write(
+        tmp.path().join("Widgets.php"),
+        format!("<?php\n\nnamespace Acme;\n\n{classes}"),
+    )
+    .unwrap();
+    let caller = "<?php\n$r = Wid;\n";
+    std::fs::write(tmp.path().join("caller.php"), caller).unwrap();
+
+    let mut s = TestServer::with_root(tmp.path()).await;
+    s.validate_syntax(false);
+    s.wait_for_index_ready().await;
+    s.open("caller.php", caller).await;
+
+    let (_, line, ch) = s.locate("caller.php", "Wid", 0);
+    let resp = s.completion("caller.php", line, ch + 3).await;
+    let items = resp["result"]["items"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    let widgets = items
+        .iter()
+        .filter(|i| i["label"].as_str().is_some_and(|l| l.starts_with("Widget")))
+        .count();
+    assert_eq!(widgets, class_count.min(50));
+    resp["result"]["isIncomplete"]
+        .as_bool()
+        .expect("completion must return a CompletionList")
+}
+
+#[tokio::test]
+async fn completion_workspace_class_cap_hit_marks_list_incomplete() {
+    assert!(workspace_class_completion_is_incomplete(51).await);
+}
+
+#[tokio::test]
+async fn completion_workspace_class_exactly_at_cap_is_complete() {
+    assert!(!workspace_class_completion_is_incomplete(50).await);
+}
+
+#[tokio::test]
+async fn completion_workspace_class_under_cap_is_complete() {
+    assert!(!workspace_class_completion_is_incomplete(3).await);
+}
+
 /// Setting `indexVendor: false` opts back out of eager vendor indexing (for
 /// very large vendor trees where even the cheap declaration scan isn't worth
 /// it), so a vendor-defined class goes back to being invisible to the
