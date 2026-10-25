@@ -11,6 +11,7 @@ pub mod php_names;
 
 pub(crate) mod autoload;
 pub(crate) mod docblock_gate;
+pub(crate) mod file_header;
 pub(crate) mod keywords;
 
 use docblock_gate::is_unresolvable_docblock_token_at;

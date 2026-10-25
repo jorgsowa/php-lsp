@@ -530,3 +530,55 @@ helper();$0
     "#]]
     .assert_eq(&out);
 }
+
+/// A class-body trait-use is not an import: with no top-level imports there is
+/// nothing to organize.
+#[tokio::test]
+async fn organize_imports_not_offered_for_trait_use_only() {
+    let mut server = TestServer::new().await;
+    server
+        .open(
+            "User.php",
+            "<?php\nnamespace App;\n\nclass User {\n    use HasFactory;\n}\n",
+        )
+        .await;
+
+    let resp = server
+        .code_action_only("User.php", 4, 8, 4, 8, &["source.organizeImports"])
+        .await;
+    expect!["<no actions>"].assert_eq(&render_code_actions(&resp));
+}
+
+/// Organizing top-level imports leaves the class-body trait-use alone.
+#[tokio::test]
+async fn organize_imports_keeps_trait_use() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_code_action_apply(
+            r#"<?php
+use Zoo;
+use Apple;
+
+class User {
+    use HasFactory;$0
+
+    public function f() { return [new Apple(), new Zoo()]; }
+}
+"#,
+            "Organize imports",
+        )
+        .await;
+    expect![[r#"
+        <?php
+        use Apple;
+        use Zoo;
+
+        class User {
+            use HasFactory;
+
+            public function f() { return [new Apple(), new Zoo()]; }
+        }
+    "#]]
+    .assert_eq(&out);
+}

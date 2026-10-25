@@ -6,6 +6,7 @@ use tower_lsp_server::ls_types::{
     CodeAction, CodeActionKind, CodeActionOrCommand, Position, Range, TextEdit, Uri, WorkspaceEdit,
 };
 
+use crate::lang::file_header::header_lines;
 use crate::text::fqn_short_name;
 
 /// Analyse `source` and return an "Organize imports" code action if there is
@@ -166,8 +167,7 @@ fn find_use_block(source: &str) -> Option<UseBlock> {
     let mut statements: Vec<UseStatement> = Vec::new();
     let mut indent = String::new();
 
-    for (idx, line) in source.lines().enumerate() {
-        let line_no = idx as u32;
+    for (line_no, line) in header_lines(source) {
         let trimmed = line.trim();
 
         // Skip blank lines within (or between) use blocks.
@@ -175,19 +175,7 @@ fn find_use_block(source: &str) -> Option<UseBlock> {
             continue;
         }
 
-        // A `use` statement: `use Foo\Bar;` or `use Foo\Bar as Baz;`
-        // Exclude `use` inside classes/closures — those start with modifiers.
         if let Some(rest) = trimmed.strip_prefix("use ") {
-            // Reject trait-use (`use TraitName;` inside a class body without \)
-            // and closure-use (`use ($var)`).
-            if rest.trim_start().starts_with('(') {
-                // Closure use — skip.
-                if first_line.is_some() {
-                    break;
-                }
-                continue;
-            }
-
             // Detect `use function` / `use const`.
             let (kind, stmt_text) = if let Some(fn_rest) = rest.strip_prefix("function ") {
                 (UseKind::Function, fn_rest.trim_end_matches(';').trim())

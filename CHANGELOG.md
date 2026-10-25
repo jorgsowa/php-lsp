@@ -22,6 +22,7 @@ All notable changes to php-lsp are documented here.
 - **Symlinked directories and files are indexed**: the workspace scan skipped every symlink, so packages linked into `vendor/` by Composer path repositories were missing. Links pointing outside the workspace are followed (each target once, never into an ancestor); links to paths inside it are still skipped since the scan reaches those directly.
 - **Windows drive-letter spelling**: a file opened as `file:///c%3A/...` (VS Code) and the same file found by the workspace scan as `file:///C%3A/...` were tracked as two documents, duplicating declarations. Incoming URIs are normalized to the upper-case, encoded-colon form.
 - **Cache sweep on every save**: `didSave` reopened the workspace cache the way startup does, re-stamping it and starting a sweep of every cache directory on each save. It now only writes the entry.
+- **Organize imports deleting trait-use**: in a file with no top-level imports, "Organize imports" treated a class-body `use HasFactory;` as an unused import and removed it. Only `use` statements before the first declaration are organized.
 
 ## [0.28.0] — 2026-10-25
 
