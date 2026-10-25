@@ -8,6 +8,7 @@
 ///   block as all of them.
 /// - No read is in a position an expression can't take (string interpolation,
 ///   closure `use`, `isset`/`unset`, an assignment target).
+/// - No variable the initializer reads is reassigned before the last read.
 use std::collections::HashMap;
 use std::ops::ControlFlow;
 
@@ -87,6 +88,22 @@ pub fn inline_variable_actions(
     if reads.is_empty() || !reads.iter().all(usable) {
         return vec![];
     }
+    let last_read_end = reads
+        .iter()
+        .map(|read| read.end)
+        .max()
+        .unwrap_or(found.stmt.end);
+    if found.value_vars.iter().any(|name| {
+        written_between(
+            stmts,
+            name,
+            found.value.start,
+            found.stmt.end,
+            last_read_end,
+        )
+    }) {
+        return vec![];
+    }
 
     let rhs = &source[found.value.start as usize..found.value.end as usize];
     let mut edits: Vec<TextEdit> = reads
@@ -134,10 +151,27 @@ fn contains(outer: Span, inner: Span) -> bool {
     outer.start <= inner.start && inner.end <= outer.end
 }
 
+/// Whether `$name`, as seen from `scope_at`, is written somewhere in `start..end`.
+fn written_between(
+    stmts: &[Stmt<'_, '_>],
+    name: &str,
+    scope_at: u32,
+    start: u32,
+    end: u32,
+) -> bool {
+    let mut refs = Vec::new();
+    collect_var_refs_in_scope(stmts, name, scope_at as usize, &mut refs);
+    refs.iter().any(|(span, kind)| {
+        *kind == DocumentHighlightKind::WRITE && span.start >= start && span.start < end
+    })
+}
+
 struct FoundAssignment {
     stmt: Span,
     value: Span,
     value_is_atomic: bool,
+    /// Variables the initializer reads, other than `$this`.
+    value_vars: Vec<String>,
     /// `Some(None)`: a direct child of the scope's top-level statement list;
     /// `Some(Some(block))`: a direct child of `block`; `None`: the body of a
     /// brace-less `if`/loop/`switch` case, which runs conditionally.
@@ -165,6 +199,7 @@ impl<'arena, 'src> Visitor<'arena, 'src> for AssignmentFinder {
                     stmt: stmt.span,
                     value: assign.value.span,
                     value_is_atomic: is_atomic(assign.value),
+                    value_vars: variable_names(assign.value),
                     container: match self.containers.last() {
                         None => Some(None),
                         Some(Some(block)) => Some(Some(*block)),
@@ -200,6 +235,24 @@ impl<'arena, 'src> Visitor<'arena, 'src> for AssignmentFinder {
         self.containers.pop();
         flow
     }
+}
+
+fn variable_names(expr: &Expr<'_, '_>) -> Vec<String> {
+    struct Names(Vec<String>);
+    impl<'arena, 'src> Visitor<'arena, 'src> for Names {
+        fn visit_expr(&mut self, expr: &Expr<'arena, 'src>) -> ControlFlow<()> {
+            if let ExprKind::Variable(name) = &expr.kind
+                && name.as_str() != "this"
+                && !self.0.iter().any(|n| n == name.as_str())
+            {
+                self.0.push(name.as_str().to_string());
+            }
+            walk_expr(self, expr)
+        }
+    }
+    let mut names = Names(Vec::new());
+    let _ = names.visit_expr(expr);
+    names.0
 }
 
 /// Collects spans where a variable read can't be replaced by an expression.

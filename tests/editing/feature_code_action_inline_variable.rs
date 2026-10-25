@@ -374,3 +374,24 @@ function f() {
     "#]]
     .assert_eq(&out);
 }
+
+/// Inlining `$tmp` past `$a = $b` would read the new `$a` and break the swap.
+#[tokio::test]
+async fn inline_variable_no_action_when_initializer_operand_reassigned() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_code_action_apply(
+            r#"<?php
+function swap($a, $b) {
+    $tmp = $a;
+    $a = $b;
+    $b = $0$tmp$0;
+    return [$a, $b];
+}
+"#,
+            "Inline variable '$tmp'",
+        )
+        .await;
+    expect!["<action not found: Inline variable '$tmp'>"].assert_eq(&out);
+}
