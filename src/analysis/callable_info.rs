@@ -79,3 +79,43 @@ pub(crate) fn callable_info_for_name(
         _ => None,
     }
 }
+
+/// Whether the parameter of `symbol` that takes the `position`-th (or `name`d) argument is `&`.
+pub(crate) fn param_is_byref(
+    db: &mir_analyzer::db::MirDbStorage,
+    symbol: &mir_analyzer::Name,
+    position: usize,
+    name: Option<&str>,
+) -> bool {
+    let params = match symbol {
+        mir_analyzer::Name::Function(fqn) => {
+            mir_analyzer::db::find_function(db, mir_analyzer::db::Fqcn::from_str(db, fqn.as_ref()))
+                .map(|f| f.params.clone())
+        }
+        mir_analyzer::Name::Method { class, name } => mir_analyzer::db::find_method_in_chain(
+            db,
+            mir_analyzer::db::Fqcn::from_str(db, class.as_ref()),
+            name.as_ref(),
+        )
+        .map(|(_, m)| m.params.clone()),
+        mir_analyzer::Name::Class(fqcn) => mir_analyzer::db::find_method_in_chain(
+            db,
+            mir_analyzer::db::Fqcn::from_str(db, fqcn.as_ref()),
+            "__construct",
+        )
+        .map(|(_, m)| m.params.clone()),
+        _ => None,
+    };
+    let Some(params) = params else {
+        return false;
+    };
+    let param = match name {
+        Some(name) => params
+            .iter()
+            .find(|p| p.name.as_str().trim_start_matches('$') == name),
+        None => params
+            .get(position)
+            .or_else(|| params.last().filter(|p| p.is_variadic)),
+    };
+    param.is_some_and(|p| p.is_byref)
+}

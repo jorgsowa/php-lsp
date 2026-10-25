@@ -395,3 +395,68 @@ function swap($a, $b) {
         .await;
     expect!["<action not found: Inline variable '$tmp'>"].assert_eq(&out);
 }
+
+/// A by-reference argument must stay a variable.
+#[tokio::test]
+async fn inline_variable_no_action_when_passed_by_reference() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_code_action_apply(
+            r#"<?php
+function f($s) {
+    $m = null;
+    preg_match('/x/', $s, $0$m$0);
+    return $m;
+}
+"#,
+            "Inline variable '$m'",
+        )
+        .await;
+    expect!["<action not found: Inline variable '$m'>"].assert_eq(&out);
+}
+
+/// The same holds for a by-reference parameter of a user function.
+#[tokio::test]
+async fn inline_variable_no_action_when_passed_to_user_by_ref_param() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_code_action_apply(
+            r#"<?php
+function fill(array &$out) { $out[] = 1; }
+function f() {
+    $items = [];
+    fill($0$items$0);
+}
+"#,
+            "Inline variable '$items'",
+        )
+        .await;
+    expect!["<action not found: Inline variable '$items'>"].assert_eq(&out);
+}
+
+/// A by-value argument still inlines.
+#[tokio::test]
+async fn inline_variable_into_by_value_argument() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_code_action_apply(
+            r#"<?php
+function f($s) {
+    $p = '/x/';
+    return preg_match($0$p$0, $s);
+}
+"#,
+            "Inline variable '$p'",
+        )
+        .await;
+    expect![[r#"
+        <?php
+        function f($s) {
+            return preg_match('/x/', $s);
+        }
+    "#]]
+    .assert_eq(&out);
+}

@@ -13,12 +13,13 @@ use crate::actions::extract_interface_action::extract_interface_actions;
 use crate::actions::extract_method_action::extract_method_actions;
 use crate::actions::facade_to_di_action::facade_to_di_actions;
 use crate::actions::generate_validation_rules_action::generate_validation_rules_actions;
-use crate::actions::inline_action::inline_variable_actions;
+use crate::actions::inline_action::{ArgSlot, inline_variable_actions};
 use crate::actions::local_to_property_action::local_to_property_actions;
 use crate::actions::route_scaffold_action::unknown_route_actions;
 use crate::actions::switch_to_match_action::switch_to_match_actions;
 use crate::actions::update_phpdoc_action::update_phpdoc_actions;
 use crate::actions::visibility_action::change_visibility_actions;
+use crate::analysis::callable_info::param_is_byref;
 use crate::editing::organize_imports::organize_imports_action;
 use crate::editing::use_import::{
     build_use_function_import_edit, build_use_import_edit, find_fqn_for_function,
@@ -160,7 +161,28 @@ impl Backend {
             actions.extend(extract_variable_actions(&source, &doc, range, &uri));
             actions.extend(extract_method_actions(&source, &doc, range, &uri));
             actions.extend(extract_constant_actions(&source, range, &uri));
-            actions.extend(inline_variable_actions(&source, &doc, range, &uri));
+            let analysis = std::cell::OnceCell::new();
+            let is_byref_param = |slot: ArgSlot<'_>| {
+                let Some(symbol) = analysis
+                    .get_or_init(|| docs.cached_analysis(&uri))
+                    .as_ref()
+                    .and_then(|a| a.symbol_at(slot.callee_offset))
+                    .and_then(|s| s.to_symbol())
+                else {
+                    return false;
+                };
+                docs.read_snapshot(|snap| {
+                    param_is_byref(snap.db(), &symbol, slot.position, slot.name)
+                })
+                .unwrap_or(false)
+            };
+            actions.extend(inline_variable_actions(
+                &source,
+                &doc,
+                range,
+                &uri,
+                &is_byref_param,
+            ));
             actions.extend(change_visibility_actions(&source, &doc, range, &uri));
             actions.extend(closure_to_arrow_function_actions(
                 &source, &doc, range, &uri,

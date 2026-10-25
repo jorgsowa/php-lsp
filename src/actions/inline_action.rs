@@ -9,11 +9,12 @@
 /// - No read is in a position an expression can't take (string interpolation,
 ///   closure `use`, `isset`/`unset`, an assignment target).
 /// - No variable the initializer reads is reassigned before the last read.
+/// - No read is passed to a by-reference parameter.
 use std::collections::HashMap;
 use std::ops::ControlFlow;
 
 use php_ast::{
-    AssignOp, Block, ClosureUseVar, Expr, ExprKind, Span, Stmt, StmtKind,
+    Arg, AssignOp, Block, ClosureUseVar, Expr, ExprKind, Span, Stmt, StmtKind,
     visitor::{Visitor, walk_block, walk_expr, walk_stmt},
 };
 use tower_lsp_server::ls_types::{
@@ -30,6 +31,7 @@ pub fn inline_variable_actions(
     doc: &ParsedDoc,
     range: Range,
     uri: &Uri,
+    is_byref_param: &dyn Fn(ArgSlot<'_>) -> bool,
 ) -> Vec<CodeActionOrCommand> {
     let var_name = match word_at_position(source, range.start) {
         Some(w) if w.starts_with('$') && w.len() > 1 => w,
@@ -102,6 +104,18 @@ pub fn inline_variable_actions(
             last_read_end,
         )
     }) {
+        return vec![];
+    }
+
+    let mut sites = ReadSites {
+        source,
+        reads: &reads,
+        args: Vec::new(),
+    };
+    for stmt in stmts.iter() {
+        let _ = sites.visit_stmt(stmt);
+    }
+    if sites.args.into_iter().any(is_byref_param) {
         return vec![];
     }
 
@@ -253,6 +267,57 @@ fn variable_names(expr: &Expr<'_, '_>) -> Vec<String> {
     let mut names = Names(Vec::new());
     let _ = names.visit_expr(expr);
     names.0
+}
+
+/// A read passed as a whole argument: the callee's name starts at
+/// `callee_offset`, and the argument is the `position`-th or named `name`.
+pub struct ArgSlot<'a> {
+    pub callee_offset: u32,
+    pub position: usize,
+    pub name: Option<&'a str>,
+}
+
+/// Finds where the reads sit in their enclosing expressions.
+struct ReadSites<'s> {
+    source: &'s str,
+    reads: &'s [Span],
+    args: Vec<ArgSlot<'s>>,
+}
+
+impl ReadSites<'_> {
+    fn note_args(&mut self, callee_offset: u32, args: &[Arg<'_, '_>]) {
+        for (position, arg) in args.iter().enumerate() {
+            if let Some(value) = &arg.value
+                && !arg.unpack
+                && self.reads.contains(&value.span)
+            {
+                let source = self.source;
+                self.args.push(ArgSlot {
+                    callee_offset,
+                    position,
+                    name: arg.name.as_ref().map(|n| {
+                        let span = n.span();
+                        &source[span.start as usize..span.end as usize]
+                    }),
+                });
+            }
+        }
+    }
+}
+
+impl<'arena, 'src> Visitor<'arena, 'src> for ReadSites<'_> {
+    fn visit_expr(&mut self, expr: &Expr<'arena, 'src>) -> ControlFlow<()> {
+        match &expr.kind {
+            ExprKind::FunctionCall(call) => self.note_args(call.name.span.start, &call.args),
+            ExprKind::MethodCall(call) | ExprKind::NullsafeMethodCall(call) => {
+                self.note_args(call.method.span.start, &call.args)
+            }
+            ExprKind::StaticMethodCall(call) => self.note_args(call.method.span.start, &call.args),
+            ExprKind::New(new) => self.note_args(new.class.span.start, &new.args),
+            _ => {}
+        }
+        walk_expr(self, expr)
+    }
 }
 
 /// Collects spans where a variable read can't be replaced by an expression.
