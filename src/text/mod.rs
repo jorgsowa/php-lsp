@@ -5,9 +5,11 @@
 mod fuzzy;
 mod offset;
 mod range;
+mod source;
 mod word;
 
 pub(crate) use fuzzy::*;
 pub(crate) use offset::*;
 pub(crate) use range::*;
+pub(crate) use source::*;
 pub(crate) use word::*;

@@ -950,3 +950,30 @@ async fn unreadable_file_does_not_truncate_workspace_index() {
     expect!["Class       BigKlass @ src/BigKlass.php:3"]
         .assert_eq(&s.snapshot_workspace_symbols("BigKlass").await);
 }
+
+/// A legacy file that isn't valid UTF-8 (Latin-1 `é` in a comment) is
+/// indexed by the scan and by `didChangeWatchedFiles`, not skipped.
+#[tokio::test]
+async fn non_utf8_files_are_indexed() {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        tmp.path().join("Legacy.php"),
+        b"<?php\n// caf\xe9\nclass Legacy {}\n",
+    )
+    .unwrap();
+
+    let mut s = TestServer::with_root(tmp.path()).await;
+    s.wait_for_index_ready().await;
+    expect!["Class       Legacy @ Legacy.php:2"]
+        .assert_eq(&s.snapshot_workspace_symbols("Legacy").await);
+
+    std::fs::write(
+        tmp.path().join("Added.php"),
+        b"<?php\n// na\xefve\nclass Added {}\n",
+    )
+    .unwrap();
+    let uri = s.uri("Added.php");
+    s.did_change_watched_files(vec![(uri, 1)]).await;
+    s.wait_until_symbol_present("Added", std::time::Duration::from_secs(5))
+        .await;
+}

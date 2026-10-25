@@ -172,7 +172,7 @@ pub(crate) async fn scan_workspace(
         let permit = Arc::clone(&io_sem).acquire_owned().await.unwrap();
         read_set.spawn(async move {
             let _permit = permit;
-            let text = tokio::fs::read_to_string(&path).await.ok()?;
+            let text = crate::text::decode_source(tokio::fs::read(&path).await.ok()?);
             let uri = Uri::from_file_path(&path)?;
             Some((uri, text))
         });
@@ -180,7 +180,7 @@ pub(crate) async fn scan_workspace(
 
     // Drain every spawned read. A `while let Some(Ok(Some(_)))` here would stop
     // the loop the moment one task resolves to `Ok(None)` (a file that failed to
-    // read, e.g. non-UTF-8) or `Err` (a join error), silently dropping every
+    // read, e.g. permission denied) or `Err` (a join error), silently dropping every
     // not-yet-collected file — so a single unreadable file (common under
     // `vendor/`) could truncate the whole index. Match each result instead and
     // skip only the failures.

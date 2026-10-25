@@ -293,7 +293,7 @@ impl Backend {
         // the file is mirrored but background-only, and the call site needs
         // the AST regardless of whether the editor has the file open.
         if self.docs.get_doc_salsa(&file_uri).is_none() {
-            let text = tokio::fs::read_to_string(&path).await.ok()?;
+            let text = crate::text::decode_source(tokio::fs::read(&path).await.ok()?);
             self.ingest_if_not_open(file_uri.clone(), &text);
         }
 
@@ -358,7 +358,7 @@ impl Backend {
                 if self.docs.get_doc_salsa(&uri).is_some() {
                     continue;
                 }
-                let text = match tokio::fs::read_to_string(&path).await {
+                let text = match tokio::fs::read(&path).await.map(crate::text::decode_source) {
                     Ok(t) => t,
                     Err(_) => continue,
                 };

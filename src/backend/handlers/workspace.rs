@@ -929,7 +929,7 @@ impl Backend {
             if new_is_indexed
                 && let Ok(new_uri) = file_rename.new_uri.parse::<Uri>()
                 && let Some(path) = new_uri.to_file_path()
-                && let Ok(text) = tokio::fs::read_to_string(&path).await
+                && let Ok(text) = tokio::fs::read(&path).await.map(crate::text::decode_source)
             {
                 self.ingest_if_not_open(new_uri, &text);
             }
@@ -1009,7 +1009,7 @@ impl Backend {
         for file in &params.files {
             if let Ok(uri) = file.uri.parse::<Uri>()
                 && let Some(path) = uri.to_file_path()
-                && let Ok(text) = tokio::fs::read_to_string(&path).await
+                && let Ok(text) = tokio::fs::read(&path).await.map(crate::text::decode_source)
             {
                 self.ingest_if_not_open(uri, &text);
             }

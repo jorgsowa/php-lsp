@@ -18,6 +18,7 @@ All notable changes to php-lsp are documented here.
 - **PHPStan / PHPCS runs are bounded**: a run is killed after `externalTools.timeoutMs` (default 2 minutes), at most two runs execute at once, and a queued run is skipped if the file changed while it waited. A hung tool previously kept its process alive indefinitely, and every save started another.
 - **Two php-lsp versions deleting each other's cache**: startup removed every other version's cache directory, so two installed versions (e.g. two editors) wiped each other's cache on each launch. Another version's directory is now removed only after it has gone unused for a day.
 - **Escaped JSON keys in Laravel indexes**: translation keys in `lang/*.json` and paths in Mix/Vite manifests written with escapes (`"\/js\/app.js"`, `"Caf\u00e9"`) were missing from go-to-definition, hover and completion, and a key whose text first appeared as a value pointed at that value.
+- **Files that aren't valid UTF-8 are indexed**: legacy files in Latin-1 or another 8-bit encoding were skipped by the workspace scan, file-watcher updates and autoload lookups. Invalid bytes are now replaced with U+FFFD.
 - **Cache sweep on every save**: `didSave` reopened the workspace cache the way startup does, re-stamping it and starting a sweep of every cache directory on each save. It now only writes the entry.
 
 ## [0.28.0] — 2026-10-25

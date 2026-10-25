@@ -689,7 +689,8 @@ impl LanguageServer for Backend {
             let disk_path = uri.to_file_path().map(|path| path.into_owned());
             let disk_text = self
                 .blocking_gated(super::debug_gate::GATE_DID_CLOSE_DISK_SYNC, move || {
-                    disk_path.and_then(|path| std::fs::read_to_string(path).ok())
+                    disk_path
+                        .and_then(|path| std::fs::read(path).ok().map(crate::text::decode_source))
                 })
                 .await
                 .flatten();
@@ -793,7 +794,7 @@ impl LanguageServer for Backend {
                         } else {
                             return;
                         };
-                        let Ok(text) = std::fs::read_to_string(&path) else {
+                        let Ok(text) = std::fs::read(&path).map(crate::text::decode_source) else {
                             return;
                         };
                         let key = crate::index::cache::WorkspaceCache::key_for(uri.as_str(), &text);
@@ -873,7 +874,8 @@ impl LanguageServer for Backend {
                 match change.typ {
                     FileChangeType::CREATED | FileChangeType::CHANGED => {
                         if let Some(path) = change.uri.to_file_path()
-                            && let Ok(text) = tokio::fs::read_to_string(&path).await
+                            && let Ok(text) =
+                                tokio::fs::read(&path).await.map(crate::text::decode_source)
                         {
                             changes.push(Change::Upsert(change.uri.clone(), text));
                         }
