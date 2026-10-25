@@ -138,6 +138,7 @@ pub(crate) async fn scan_workspace(
     let php_paths: Vec<std::path::PathBuf> = tokio::task::spawn_blocking(move || {
         let out = Mutex::new(Vec::new());
         let count = AtomicUsize::new(0);
+        let links = SymlinkGuard::new(&root2);
         walk_dir_parallel(
             root2.clone(),
             &root2,
@@ -147,6 +148,7 @@ pub(crate) async fn scan_workspace(
             max_files,
             &out,
             &count,
+            &links,
         );
         out.into_inner().unwrap()
     })
@@ -281,6 +283,7 @@ fn walk_dir_parallel(
     max_files: usize,
     out: &Mutex<Vec<std::path::PathBuf>>,
     count: &AtomicUsize,
+    links: &SymlinkGuard,
 ) {
     if count.load(AtomicOrdering::Relaxed) >= max_files {
         return;
@@ -303,18 +306,26 @@ fn walk_dir_parallel(
             Ok(f) => f,
             Err(_) => continue,
         };
+        let (is_dir, is_file, link_target) = if ft.is_symlink() {
+            match links.resolve(&path, &dir) {
+                Some((target, meta)) => (meta.is_dir(), meta.is_file(), Some(target)),
+                None => continue,
+            }
+        } else {
+            (ft.is_dir(), ft.is_file(), None)
+        };
 
         let is_excluded = matches_any(&rel_path, excl);
         let is_included = matches_include_prefix(&rel_path, incl) || matches_any(&rel_path, incl);
-        if is_excluded && !is_included && !(ft.is_dir() && has_included_children(&rel_path, incl)) {
+        if is_excluded && !is_included && !(is_dir && has_included_children(&rel_path, incl)) {
             continue;
         }
-        if ft.is_dir() {
+        if is_dir {
             let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-            if !name.starts_with('.') {
+            if !name.starts_with('.') && link_target.is_none_or(|t| links.first_visit(t)) {
                 subdirs.push(path);
             }
-        } else if ft.is_file() && extensions.is_php_source(&path) {
+        } else if is_file && extensions.is_php_source(&path) {
             files.push(path);
         }
     }
@@ -343,8 +354,50 @@ fn walk_dir_parallel(
     }
 
     subdirs.into_par_iter().for_each(|sub| {
-        walk_dir_parallel(sub, root, excl, incl, extensions, max_files, out, count);
+        walk_dir_parallel(
+            sub, root, excl, incl, extensions, max_files, out, count, links,
+        );
     });
+}
+
+/// Decides which symlinks the scan follows. Only links whose target lies
+/// outside the workspace root are followed (targets inside it are reached
+/// directly, and following them would index the same file twice), and a
+/// directory link is entered once and never when it points at an ancestor.
+pub(crate) struct SymlinkGuard {
+    canonical_root: std::path::PathBuf,
+    visited: Mutex<std::collections::HashSet<std::path::PathBuf>>,
+}
+
+impl SymlinkGuard {
+    pub(crate) fn new(root: &std::path::Path) -> Self {
+        SymlinkGuard {
+            canonical_root: std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf()),
+            visited: Mutex::default(),
+        }
+    }
+
+    /// The canonical target and metadata of `link` (found in `parent`) when
+    /// it should be followed.
+    fn resolve(
+        &self,
+        link: &std::path::Path,
+        parent: &std::path::Path,
+    ) -> Option<(std::path::PathBuf, std::fs::Metadata)> {
+        let target = std::fs::canonicalize(link).ok()?;
+        if target.starts_with(&self.canonical_root) || self.canonical_root.starts_with(&target) {
+            return None;
+        }
+        let meta = std::fs::metadata(&target).ok()?;
+        if meta.is_dir() && std::fs::canonicalize(parent).ok()?.starts_with(&target) {
+            return None;
+        }
+        Some((target, meta))
+    }
+
+    fn first_visit(&self, target: std::path::PathBuf) -> bool {
+        self.visited.lock().unwrap().insert(target)
+    }
 }
 
 #[cfg(test)]
@@ -650,6 +703,7 @@ mod tests {
         let php_parallel: Vec<std::path::PathBuf> = tokio::task::spawn_blocking(move || {
             let out = super::Mutex::new(Vec::new());
             let count = super::AtomicUsize::new(0);
+            let links = super::SymlinkGuard::new(&root3);
             super::walk_dir_parallel(
                 root3.clone(),
                 &root3,
@@ -659,6 +713,7 @@ mod tests {
                 50_000,
                 &out,
                 &count,
+                &links,
             );
             out.into_inner().unwrap()
         })

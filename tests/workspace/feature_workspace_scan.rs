@@ -977,3 +977,28 @@ async fn non_utf8_files_are_indexed() {
     s.wait_until_symbol_present("Added", std::time::Duration::from_secs(5))
         .await;
 }
+
+/// A symlinked package outside the root (Composer path repositories) is
+/// indexed under its link path; a link back to an ancestor doesn't loop and a
+/// link to a directory already inside the root doesn't index files twice.
+#[cfg(unix)]
+#[tokio::test]
+async fn symlinked_directories_are_followed_once() {
+    use std::os::unix::fs::symlink;
+    let tmp = tempfile::tempdir().unwrap();
+    let package = tempfile::tempdir().unwrap();
+    std::fs::write(package.path().join("Pkg.php"), "<?php\nclass Pkg {}\n").unwrap();
+    std::fs::create_dir_all(tmp.path().join("vendor/acme")).unwrap();
+    symlink(package.path(), tmp.path().join("vendor/acme/pkg")).unwrap();
+    std::fs::create_dir(tmp.path().join("src")).unwrap();
+    std::fs::write(tmp.path().join("src/Own.php"), "<?php\nclass Own {}\n").unwrap();
+    symlink(tmp.path().join("src"), tmp.path().join("alias")).unwrap();
+    symlink(tmp.path(), tmp.path().join("src/loop")).unwrap();
+
+    let mut s = TestServer::with_root(tmp.path()).await;
+    s.wait_for_index_ready().await;
+    expect!["Class       Pkg @ vendor/acme/pkg/Pkg.php:1"]
+        .assert_eq(&s.snapshot_workspace_symbols("Pkg").await);
+    expect!["Class       Own @ src/Own.php:1"]
+        .assert_eq(&s.snapshot_workspace_symbols("Own").await);
+}
