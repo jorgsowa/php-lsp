@@ -62,6 +62,15 @@ pub(crate) fn byte_to_utf16(s: &str, byte_offset: usize) -> u32 {
         .sum()
 }
 
+/// The position just past the last character of `text`.
+pub(crate) fn end_position(text: &str) -> Position {
+    let last_line_start = text.rfind('\n').map_or(0, |i| i + 1);
+    Position {
+        line: text.matches('\n').count() as u32,
+        character: utf16_code_units(&text[last_line_start..]),
+    }
+}
+
 /// Count the UTF-16 code units in a string.
 /// Needed for LSP `Position.character` calculations, which use UTF-16 offsets.
 pub(crate) fn utf16_code_units(s: &str) -> u32 {

@@ -14,29 +14,25 @@
 use std::process::{Command, Stdio};
 use tower_lsp_server::ls_types::{Position, Range, TextEdit};
 
+use crate::text::end_position;
+
 /// Format `source` with the best available PHP formatter.
 /// Returns `None` if no formatter is installed or if the source was unchanged.
 pub fn format_document(source: &str) -> Option<Vec<TextEdit>> {
-    let formatted = run_formatter(source)?;
+    whole_document_edit(source, run_formatter(source)?)
+}
+
+fn whole_document_edit(source: &str, formatted: String) -> Option<Vec<TextEdit>> {
     if formatted == source {
-        return None; // already clean — no edits needed
+        return None;
     }
-    let line_count = source.lines().count() as u32;
-    let last_line_len = source
-        .lines()
-        .last()
-        .map(|l| l.chars().map(|c| c.len_utf16() as u32).sum())
-        .unwrap_or(0);
     Some(vec![TextEdit {
         range: Range {
             start: Position {
                 line: 0,
                 character: 0,
             },
-            end: Position {
-                line: line_count.saturating_sub(1),
-                character: last_line_len,
-            },
+            end: end_position(source),
         },
         new_text: formatted,
     }])
@@ -171,5 +167,30 @@ mod tests {
         };
         assert_eq!(format_range("<?php\n$a = 1;\n", range), None);
         assert_eq!(format_range("", range), None);
+    }
+
+    fn apply(source: &str, edits: &[TextEdit]) -> String {
+        let mut text = source.to_string();
+        for edit in edits.iter().rev() {
+            crate::text::apply_content_change(&mut text, edit.range, &edit.new_text);
+        }
+        text
+    }
+
+    #[test]
+    fn whole_document_edit_replaces_trailing_newline() {
+        let source = "<?php\nfunction f( $x ){}\n";
+        let formatted = "<?php\nfunction f($x) {}\n";
+        let edits = whole_document_edit(source, formatted.to_string()).unwrap();
+        assert_eq!(apply(source, &edits), formatted);
+        assert_eq!(whole_document_edit(formatted, formatted.to_string()), None);
+    }
+
+    #[test]
+    fn whole_document_edit_covers_crlf_source() {
+        let source = "<?php\r\nfunction f( $x ){}\r\n";
+        let formatted = "<?php\r\nfunction f($x) {}\r\n";
+        let edits = whole_document_edit(source, formatted.to_string()).unwrap();
+        assert_eq!(apply(source, &edits), formatted);
     }
 }
