@@ -487,7 +487,7 @@ async fn drive_letter_spellings_address_the_same_document() {
         .await;
     server
         .client()
-        .wait_for_diagnostics("file:///C%3A/proj/a.php")
+        .wait_for_diagnostics("file:///c%3A/proj/a.php")
         .await;
 
     let resp = server
@@ -498,4 +498,47 @@ async fn drive_letter_spellings_address_the_same_document() {
         )
         .await;
     assert_eq!(resp["result"][0]["name"], "DriveCase", "{resp}");
+}
+
+/// Diagnostics and locations name the file the way the client spelled it.
+#[tokio::test]
+async fn drive_letter_uris_go_back_in_the_client_spelling() {
+    let mut server = TestServer::new().await;
+    server
+        .client()
+        .notify(
+            "textDocument/didOpen",
+            serde_json::json!({
+                "textDocument": {
+                    "uri": "file:///c%3A/proj/b.php",
+                    "languageId": "php",
+                    "version": 1,
+                    "text": "<?php\nclass DriveBack {}\nnew DriveBack();\n",
+                }
+            }),
+        )
+        .await;
+    let diags = server
+        .client()
+        .wait_for_diagnostics("file:///c%3A/proj/b.php")
+        .await;
+    assert_eq!(diags["params"]["uri"], "file:///c%3A/proj/b.php");
+
+    let resp = server
+        .client()
+        .request(
+            "textDocument/definition",
+            serde_json::json!({
+                "textDocument": { "uri": "file:///c%3A/proj/b.php" },
+                "position": { "line": 2, "character": 6 },
+            }),
+        )
+        .await;
+    let result = &resp["result"];
+    let location = if result.is_array() {
+        &result[0]
+    } else {
+        result
+    };
+    assert_eq!(location["uri"], "file:///c%3A/proj/b.php", "{resp}");
 }

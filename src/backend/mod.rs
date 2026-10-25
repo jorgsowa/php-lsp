@@ -5,7 +5,6 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use arc_swap::ArcSwap;
-use futures::future::Either;
 use tower::Service;
 use tower_lsp_server::jsonrpc::{Request as JsonRpcRequest, Response as JsonRpcResponse};
 
@@ -143,7 +142,7 @@ pub struct DebugHoldGateParams {
 /// both build the service here so their method tables can never drift. The
 /// gate methods exist only under `test-hooks` (test targets); a production
 /// build answers them with MethodNotFound like any unknown method.
-pub fn build_lsp_service() -> (LifecycleService, tower_lsp_server::ClientSocket) {
+pub fn build_lsp_service() -> (LifecycleService, ClientLoopback) {
     let builder = tower_lsp_server::LspService::build(Backend::new)
         .custom_method("$/php-lsp/debugStats", Backend::debug_stats);
     #[cfg(feature = "test-hooks")]
@@ -151,7 +150,14 @@ pub fn build_lsp_service() -> (LifecycleService, tower_lsp_server::ClientSocket)
         .custom_method("$/php-lsp/debugHoldGate", Backend::debug_hold_gate)
         .custom_method("$/php-lsp/debugReleaseGate", Backend::debug_release_gate);
     let (service, socket) = builder.finish();
-    (LifecycleService { inner: service }, socket)
+    let spellings = drive_letter::ClientSpellings::default();
+    (
+        LifecycleService {
+            inner: service,
+            spellings: spellings.clone(),
+        },
+        ClientLoopback { socket, spellings },
+    )
 }
 
 /// Records document lifecycle order before tower starts polling notification
@@ -159,6 +165,7 @@ pub fn build_lsp_service() -> (LifecycleService, tower_lsp_server::ClientSocket)
 /// so handler start order alone is not the order in which the client sent them.
 pub struct LifecycleService {
     inner: tower_lsp_server::LspService<Backend>,
+    spellings: drive_letter::ClientSpellings,
 }
 
 tokio::task_local! {
@@ -186,36 +193,31 @@ impl Drop for LifecycleIntentGuard {
 impl Service<JsonRpcRequest> for LifecycleService {
     type Response = Option<JsonRpcResponse>;
     type Error = tower_lsp_server::ExitedError;
-    type Future = Either<
-        Pin<
-            Box<
-                dyn Future<Output = Result<Option<JsonRpcResponse>, tower_lsp_server::ExitedError>>
-                    + Send,
-            >,
-        >,
-        <tower_lsp_server::LspService<Backend> as Service<JsonRpcRequest>>::Future,
-    >;
+    type Future =
+        Pin<Box<dyn Future<Output = Result<Option<JsonRpcResponse>, Self::Error>> + Send>>;
 
     fn poll_ready(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
         self.inner.poll_ready(cx)
     }
 
     fn call(&mut self, request: JsonRpcRequest) -> Self::Future {
-        let request = drive_letter::normalize_request(request);
+        let request = self.spellings.normalize_request(request);
         let lifecycle = self.inner.inner().note_lifecycle_intent(&request);
         let future = self.inner.call(request);
+        let spellings = self.spellings.clone();
+        let future = async move {
+            let response = future.await?;
+            Ok(response.map(|response| spellings.restore_response(response)))
+        };
         match lifecycle {
             Some(guard) => {
                 let generation = guard.generation;
-                Either::Left(Box::pin(LIFECYCLE_GENERATION.scope(
-                    generation,
-                    async move {
-                        let _guard = guard;
-                        future.await
-                    },
-                )))
+                Box::pin(LIFECYCLE_GENERATION.scope(generation, async move {
+                    let _guard = guard;
+                    future.await
+                }))
             }
-            None => Either::Right(future),
+            None => Box::pin(future),
         }
     }
 }
@@ -844,6 +846,7 @@ fn compute_diagnostic_result_id(diagnostics: &[Diagnostic], uri: &str) -> String
 
 pub mod debug_gate;
 mod drive_letter;
+pub use drive_letter::ClientLoopback;
 mod handlers;
 mod helpers;
 pub mod offload;
