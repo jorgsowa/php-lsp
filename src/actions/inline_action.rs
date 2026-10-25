@@ -14,7 +14,7 @@ use std::collections::HashMap;
 use std::ops::ControlFlow;
 
 use php_ast::{
-    Arg, AssignOp, Block, ClosureUseVar, Expr, ExprKind, Span, Stmt, StmtKind,
+    Arg, AssignOp, BinaryOp, Block, ClosureUseVar, Expr, ExprKind, Span, Stmt, StmtKind,
     visitor::{Visitor, walk_block, walk_expr, walk_stmt},
 };
 use tower_lsp_server::ls_types::{
@@ -112,11 +112,19 @@ pub fn inline_variable_actions(
         reads: &reads,
         args: Vec::new(),
         callees: Vec::new(),
+        class_refs: Vec::new(),
     };
     for stmt in stmts.iter() {
         let _ = sites.visit_stmt(stmt);
     }
     let callees = sites.callees;
+    let class_refs = sites.class_refs;
+    let class_name = found
+        .class_name
+        .map(|span| &source[span.start as usize..span.end as usize]);
+    if !class_refs.is_empty() && class_name.is_none() {
+        return vec![];
+    }
     if sites.args.into_iter().any(is_byref_param) {
         return vec![];
     }
@@ -125,7 +133,11 @@ pub fn inline_variable_actions(
     let mut edits: Vec<TextEdit> = reads
         .iter()
         .map(|read| {
-            let new_text = if callees.contains(read) {
+            let new_text = if class_refs.contains(read)
+                && let Some(class_name) = class_name
+            {
+                class_name.to_string()
+            } else if callees.contains(read) {
                 if found.value_is_variable {
                     rhs.to_string()
                 } else {
@@ -193,6 +205,9 @@ struct FoundAssignment {
     value: Span,
     value_is_atomic: bool,
     value_is_variable: bool,
+    /// What replaces a read after `new` or `instanceof`: the variable, or `Foo`
+    /// of `Foo::class`.
+    class_name: Option<Span>,
     /// Variables the initializer reads, other than `$this`.
     value_vars: Vec<String>,
     /// `Some(None)`: a direct child of the scope's top-level statement list;
@@ -226,6 +241,7 @@ impl<'arena, 'src> Visitor<'arena, 'src> for AssignmentFinder {
                         assign.value.kind,
                         ExprKind::Variable(_) | ExprKind::Parenthesized(_)
                     ),
+                    class_name: class_name(assign.value),
                     value_vars: variable_names(assign.value),
                     container: match self.containers.last() {
                         None => Some(None),
@@ -264,6 +280,22 @@ impl<'arena, 'src> Visitor<'arena, 'src> for AssignmentFinder {
     }
 }
 
+fn class_name(expr: &Expr<'_, '_>) -> Option<Span> {
+    match &expr.kind {
+        ExprKind::Variable(_) => Some(expr.span),
+        ExprKind::ClassConstAccess(access)
+            if matches!(access.class.kind, ExprKind::Identifier(_))
+                && access
+                    .member
+                    .name_str()
+                    .is_some_and(|m| m.eq_ignore_ascii_case("class")) =>
+        {
+            Some(access.class.span)
+        }
+        _ => None,
+    }
+}
+
 fn variable_names(expr: &Expr<'_, '_>) -> Vec<String> {
     struct Names(Vec<String>);
     impl<'arena, 'src> Visitor<'arena, 'src> for Names {
@@ -297,6 +329,8 @@ struct ReadSites<'s> {
     args: Vec<ArgSlot<'s>>,
     /// Reads called as a function: `$read(...)`.
     callees: Vec<Span>,
+    /// Reads naming a class: `new $read`, `$x instanceof $read`.
+    class_refs: Vec<Span>,
 }
 
 impl ReadSites<'_> {
@@ -333,7 +367,17 @@ impl<'arena, 'src> Visitor<'arena, 'src> for ReadSites<'_> {
                 self.note_args(call.method.span.start, &call.args)
             }
             ExprKind::StaticMethodCall(call) => self.note_args(call.method.span.start, &call.args),
-            ExprKind::New(new) => self.note_args(new.class.span.start, &new.args),
+            ExprKind::New(new) => {
+                if self.reads.contains(&new.class.span) {
+                    self.class_refs.push(new.class.span);
+                }
+                self.note_args(new.class.span.start, &new.args)
+            }
+            ExprKind::Binary(binary)
+                if binary.op == BinaryOp::Instanceof && self.reads.contains(&binary.right.span) =>
+            {
+                self.class_refs.push(binary.right.span)
+            }
             _ => {}
         }
         walk_expr(self, expr)

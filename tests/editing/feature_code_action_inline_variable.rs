@@ -516,3 +516,51 @@ function f($fn) {
     "#]]
     .assert_eq(&out);
 }
+
+/// `new Foo::class` doesn't parse; the class name goes in instead.
+#[tokio::test]
+async fn inline_variable_class_string_into_new() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_code_action_apply(
+            r#"<?php
+class Foo {}
+function f($o) {
+    $cls = Foo::class;
+    $o instanceof $cls;
+    return new $0$cls$0;
+}
+"#,
+            "Inline variable '$cls'",
+        )
+        .await;
+    expect![[r#"
+        <?php
+        class Foo {}
+        function f($o) {
+            $o instanceof Foo;
+            return new Foo;
+        }
+    "#]]
+    .assert_eq(&out);
+}
+
+/// Only a variable or `Foo::class` can stand after `new`.
+#[tokio::test]
+async fn inline_variable_no_action_when_string_named_class_is_instantiated() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_code_action_apply(
+            r#"<?php
+function f() {
+    $cls = 'Foo';
+    return new $0$cls$0();
+}
+"#,
+            "Inline variable '$cls'",
+        )
+        .await;
+    expect!["<action not found: Inline variable '$cls'>"].assert_eq(&out);
+}
