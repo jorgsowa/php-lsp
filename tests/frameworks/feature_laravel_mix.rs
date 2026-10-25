@@ -76,3 +76,31 @@ async fn mix_call_not_resolved_outside_laravel_project() {
     let out = render_locations(&resp, &s.uri(""));
     expect!["<none>"].assert_eq(&out);
 }
+
+/// Laravel Mix writes its manifest with escaped slashes (`"\/js\/app.js"`);
+/// those keys must resolve like unescaped ones.
+#[tokio::test]
+async fn mix_call_goto_definition_resolves_escaped_manifest_key() {
+    let workspace = tempfile::tempdir().expect("workspace tempdir");
+    std::fs::write(workspace.path().join("artisan"), "#!/usr/bin/env php\n").unwrap();
+    let public = workspace.path().join("public");
+    std::fs::create_dir_all(&public).unwrap();
+    std::fs::write(
+        public.join("mix-manifest.json"),
+        r#"{
+    "\/js\/app.js": "\/js\/app.js?id=def456"
+}
+"#,
+    )
+    .unwrap();
+    let php = "<?php\n$src = mix('js/app.js');\n";
+    std::fs::write(workspace.path().join("app.php"), php).unwrap();
+
+    let mut s = TestServer::with_root(workspace.path()).await;
+    s.wait_for_index_ready().await;
+    s.open("app.php", php).await;
+
+    let resp = s.definition("app.php", 1, 15).await;
+    let out = render_locations(&resp, &s.uri(""));
+    expect!["public/mix-manifest.json:1:5-1:17"].assert_eq(&out);
+}

@@ -33,7 +33,7 @@ use tower_lsp_server::ls_types::{
 use crate::document::ast::{ParsedDoc, SourceView};
 
 use super::string_call::content_span;
-use super::translation_index::find_json_key_range;
+use super::translation_index::json_object_key_locations;
 
 #[derive(Debug, Default, Clone)]
 pub struct ViteIndex {
@@ -67,31 +67,8 @@ impl ViteIndex {
 }
 
 fn load_manifest(path: &Path, out: &mut HashMap<String, Location>) {
-    let Ok(text) = std::fs::read_to_string(path) else {
-        return;
-    };
-    let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) else {
-        return;
-    };
-    let Some(map) = json.as_object() else {
-        return;
-    };
-    let Some(uri) = Uri::from_file_path(path) else {
-        return;
-    };
-    for key in map.keys() {
-        if out.contains_key(key.as_str()) {
-            continue;
-        }
-        if let Some(range) = find_json_key_range(&text, key) {
-            out.insert(
-                key.clone(),
-                Location {
-                    uri: uri.clone(),
-                    range,
-                },
-            );
-        }
+    for (key, location) in json_object_key_locations(path) {
+        out.entry(key).or_insert(location);
     }
 }
 

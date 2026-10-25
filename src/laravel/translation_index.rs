@@ -162,50 +162,82 @@ fn collect_array_keys(
 /// string to its translation. The map *key itself* (not a dotted path) is
 /// what `__('...')` is called with.
 fn load_locale_json_file(path: &Path, out: &mut HashMap<String, Location>) {
+    for (key, location) in json_object_key_locations(path) {
+        out.entry(key).or_insert(location);
+    }
+}
+
+/// Each top-level key of the JSON object in `path`, decoded, with the
+/// location of its source text (quotes excluded), in file order. Empty when
+/// the file is unreadable or not a JSON object. Shared with
+/// `mix_index`/`vite_index`, which index a differently-shaped JSON manifest
+/// the same way.
+pub(super) fn json_object_key_locations(path: &Path) -> Vec<(String, Location)> {
     let Ok(text) = std::fs::read_to_string(path) else {
-        return;
+        return Vec::new();
     };
-    let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) else {
-        return;
-    };
-    let Some(map) = json.as_object() else {
-        return;
-    };
+    if !serde_json::from_str::<serde_json::Value>(&text).is_ok_and(|v| v.is_object()) {
+        return Vec::new();
+    }
     let Some(uri) = Uri::from_file_path(path) else {
-        return;
+        return Vec::new();
     };
-    for key in map.keys() {
-        if out.contains_key(key.as_str()) {
-            continue;
-        }
-        if let Some(range) = find_json_key_range(&text, key) {
-            out.insert(
-                key.clone(),
+    let line_starts = line_starts_of(&text);
+    json_object_key_spans(&text)
+        .into_iter()
+        .map(|(key, start, end)| {
+            let range = Range {
+                start: offset_to_position(&text, &line_starts, start as u32),
+                end: offset_to_position(&text, &line_starts, end as u32),
+            };
+            (
+                key,
                 Location {
                     uri: uri.clone(),
                     range,
                 },
-            );
-        }
-    }
+            )
+        })
+        .collect()
 }
 
-/// Locate `key`'s first `"key"` occurrence in raw JSON text and return the
-/// range of the key text itself (quotes excluded). Manual text search
-/// because `serde_json::Value` doesn't retain source spans. Shared with
-/// `mix_index`/`vite_index`, which index a differently-shaped JSON manifest
-/// the same way.
-pub(super) fn find_json_key_range(text: &str, key: &str) -> Option<Range> {
-    let escaped = key.replace('\\', "\\\\").replace('"', "\\\"");
-    let needle = format!("\"{escaped}\"");
-    let quote_byte = text.find(&needle)?;
-    let byte_start = (quote_byte + 1) as u32;
-    let byte_end = byte_start + escaped.len() as u32;
-    let line_starts = line_starts_of(text);
-    Some(Range {
-        start: offset_to_position(text, &line_starts, byte_start),
-        end: offset_to_position(text, &line_starts, byte_end),
-    })
+/// Top-level keys of a valid JSON object as `(decoded, start, end)`, where
+/// the byte span covers the raw key text between its quotes. Decoding the
+/// raw token keeps escaped keys (`"\/js\/app.js"`, `"caf\u00e9"`) findable.
+fn json_object_key_spans(text: &str) -> Vec<(String, usize, usize)> {
+    let bytes = text.as_bytes();
+    let mut out = Vec::new();
+    let mut depth = 0usize;
+    let mut expect_key = false;
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'"' => {
+                let start = i;
+                i += 1;
+                while i < bytes.len() && bytes[i] != b'"' {
+                    i += if bytes[i] == b'\\' { 2 } else { 1 };
+                }
+                if depth == 1
+                    && expect_key
+                    && let Some(raw) = text.get(start..=i)
+                    && let Ok(key) = serde_json::from_str::<String>(raw)
+                {
+                    out.push((key, start + 1, i));
+                }
+                expect_key = false;
+            }
+            b'{' | b'[' => {
+                depth += 1;
+                expect_key = depth == 1;
+            }
+            b'}' | b']' => depth = depth.saturating_sub(1),
+            b',' => expect_key = depth == 1,
+            _ => {}
+        }
+        i += 1;
+    }
+    out
 }
 
 fn line_starts_of(text: &str) -> Vec<u32> {
@@ -475,6 +507,24 @@ mod tests {
         let idx = TranslationIndex::load(tmp.path());
         let loc = idx.get("auth.failed").unwrap();
         assert!(!loc.uri.as_str().contains("resources"));
+    }
+
+    #[test]
+    fn json_object_key_spans_decodes_escapes_and_skips_values_and_nested_keys() {
+        let text = r#"{"a": "b", "b": {"inner": 1}, "\/x\u00e9": [ "c" ], "q\"": 2}"#;
+        let spans: Vec<(String, &str)> = json_object_key_spans(text)
+            .into_iter()
+            .map(|(key, start, end)| (key, &text[start..end]))
+            .collect();
+        assert_eq!(
+            spans,
+            vec![
+                ("a".to_string(), "a"),
+                ("b".to_string(), "b"),
+                ("/xé".to_string(), r"\/x\u00e9"),
+                ("q\"".to_string(), r#"q\""#),
+            ]
+        );
     }
 
     #[test]
