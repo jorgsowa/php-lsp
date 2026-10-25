@@ -14,6 +14,7 @@ All notable changes to php-lsp are documented here.
 
 ### Fixed
 
+- **PHPStan / PHPCS runs are bounded**: a run is killed after `externalTools.timeoutMs` (default 2 minutes), at most two runs execute at once, and a queued run is skipped if the file changed while it waited. A hung tool previously kept its process alive indefinitely, and every save started another.
 - **Cache sweep on every save**: `didSave` reopened the workspace cache the way startup does, re-stamping it and starting a sweep of every cache directory on each save. It now only writes the entry.
 
 ## [0.28.0] — 2026-10-25

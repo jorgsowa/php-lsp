@@ -38,7 +38,12 @@ struct Message {
 /// Returns an empty `Vec` whenever the tool can't be run at all (binary
 /// missing, spawn failure, unparseable output) — same best-effort contract
 /// as [`super::phpstan::run`].
-pub async fn run(cfg: &PhpcsConfig, path: &Path, workspace_root: Option<&Path>) -> Vec<Diagnostic> {
+pub async fn run(
+    cfg: &PhpcsConfig,
+    path: &Path,
+    workspace_root: Option<&Path>,
+    timeout: std::time::Duration,
+) -> Vec<Diagnostic> {
     let mut command = tokio::process::Command::new(&cfg.bin_path);
     command.arg("-q").arg("--report=json");
     if let Some(standard) = &cfg.standard {
@@ -52,12 +57,8 @@ pub async fn run(cfg: &PhpcsConfig, path: &Path, workspace_root: Option<&Path>) 
     command.stdout(Stdio::piped());
     command.stderr(Stdio::null());
 
-    let output = match command.output().await {
-        Ok(o) => o,
-        Err(e) => {
-            tracing::debug!("phpcs ({}) did not run: {e}", cfg.bin_path);
-            return Vec::new();
-        }
+    let Some(output) = super::output_with_timeout(command, timeout, &cfg.bin_path).await else {
+        return Vec::new();
     };
 
     // PHPCS exits non-zero when it finds violations — expected, unrelated to

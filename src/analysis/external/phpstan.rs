@@ -50,6 +50,7 @@ pub async fn run(
     cfg: &PhpstanConfig,
     path: &Path,
     workspace_root: Option<&Path>,
+    timeout: std::time::Duration,
 ) -> Vec<Diagnostic> {
     let mut command = tokio::process::Command::new(&cfg.bin_path);
     command
@@ -69,12 +70,8 @@ pub async fn run(
     command.stdout(Stdio::piped());
     command.stderr(Stdio::null());
 
-    let output = match command.output().await {
-        Ok(o) => o,
-        Err(e) => {
-            tracing::debug!("phpstan ({}) did not run: {e}", cfg.bin_path);
-            return Vec::new();
-        }
+    let Some(output) = super::output_with_timeout(command, timeout, &cfg.bin_path).await else {
+        return Vec::new();
     };
 
     // PHPStan exits non-zero when it finds errors — that's expected and

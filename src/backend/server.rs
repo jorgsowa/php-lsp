@@ -820,6 +820,10 @@ impl LanguageServer for Backend {
                     let diag_cfg = self.config.load().diagnostics.clone();
                     let uri = uri.clone();
                     tokio::spawn(async move {
+                        let _slot = crate::analysis::external::acquire_run_slot().await;
+                        if open_files.current_version(&uri) != Some(version) {
+                            return;
+                        }
                         let diagnostics = crate::analysis::external::run_external_diagnostics(
                             &ext_cfg,
                             &path,

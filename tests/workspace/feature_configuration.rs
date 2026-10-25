@@ -273,3 +273,124 @@ async fn editor_config_runs_external_tool_binaries() {
         "a binPath from editor settings must run on save"
     );
 }
+
+#[cfg(unix)]
+fn tool_script(dir: &std::path::Path, body: &str) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let script = dir.join("fake-tool.sh");
+    std::fs::write(&script, format!("#!/bin/sh\n{body}\n")).unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    script
+}
+
+#[cfg(unix)]
+fn process_is_running(pid: &str) -> bool {
+    let out = std::process::Command::new("ps")
+        .args(["-o", "stat=", "-p", pid])
+        .output()
+        .unwrap();
+    let stat = String::from_utf8_lossy(&out.stdout);
+    let stat = stat.trim();
+    !stat.is_empty() && !stat.starts_with('Z')
+}
+
+#[cfg(unix)]
+async fn poll_until(timeout: std::time::Duration, mut cond: impl FnMut() -> bool) -> bool {
+    let deadline = std::time::Instant::now() + timeout;
+    while std::time::Instant::now() < deadline {
+        if cond() {
+            return true;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    cond()
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn external_tool_is_killed_after_timeout() {
+    let tmp = tempfile::tempdir().unwrap();
+    let tools = tempfile::tempdir().unwrap();
+    let pid_file = tools.path().join("pid");
+    let script = tool_script(
+        tools.path(),
+        &format!("echo $$ > '{}'\nexec sleep 30", pid_file.display()),
+    );
+    std::fs::write(tmp.path().join("a.php"), "<?php\necho 1;\n").unwrap();
+
+    let mut s = TestServer::with_root_and_options(
+        tmp.path(),
+        json!({"externalTools": {
+            "timeoutMs": 3000,
+            "phpstan": {"enabled": true, "binPath": script},
+        }}),
+    )
+    .await;
+    s.wait_for_index_ready().await;
+    s.open("a.php", "<?php\necho 1;\n").await;
+    s.save("a.php").await;
+
+    let secs = std::time::Duration::from_secs(10);
+    assert!(
+        poll_until(secs, || std::fs::read_to_string(&pid_file)
+            .is_ok_and(|p| !p.trim().is_empty()))
+        .await,
+        "tool never started"
+    );
+    let pid = std::fs::read_to_string(&pid_file)
+        .unwrap()
+        .trim()
+        .to_string();
+    assert!(
+        poll_until(secs, || !process_is_running(&pid)).await,
+        "tool process {pid} still running after its timeout"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn external_tool_runs_are_capped() {
+    let tmp = tempfile::tempdir().unwrap();
+    let tools = tempfile::tempdir().unwrap();
+    let running = tools.path().join("running");
+    std::fs::create_dir(&running).unwrap();
+    let log = tools.path().join("log");
+    let script = tool_script(
+        tools.path(),
+        &format!(
+            "touch '{run}/'$$\nls '{run}' | wc -l >> '{log}'\nsleep 0.4\nrm '{run}/'$$",
+            run = running.display(),
+            log = log.display()
+        ),
+    );
+    std::fs::write(tmp.path().join("a.php"), "<?php\necho 1;\n").unwrap();
+
+    let mut s = TestServer::with_root_and_options(
+        tmp.path(),
+        json!({"externalTools": {"phpstan": {"enabled": true, "binPath": script}}}),
+    )
+    .await;
+    s.wait_for_index_ready().await;
+    s.open("a.php", "<?php\necho 1;\n").await;
+    const SAVES: usize = 6;
+    for _ in 0..SAVES {
+        s.save("a.php").await;
+    }
+
+    let read_counts = || -> Vec<usize> {
+        std::fs::read_to_string(&log)
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|l| l.trim().parse().ok())
+            .collect()
+    };
+    assert!(
+        poll_until(std::time::Duration::from_secs(10), || read_counts().len()
+            == SAVES)
+        .await,
+        "expected {SAVES} runs, got {:?}",
+        read_counts()
+    );
+    let max = read_counts().into_iter().max().unwrap();
+    assert!(max <= 2, "{max} tool runs overlapped");
+}

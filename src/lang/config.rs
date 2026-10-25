@@ -294,16 +294,31 @@ impl PhpcsConfig {
 /// External static-analysis tools run as child processes and merged into
 /// published diagnostics, in addition to (not instead of) the built-in
 /// analyzer. See [`PhpstanConfig`] / [`PhpcsConfig`] for why they default off.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct ExternalToolsConfig {
     pub phpstan: PhpstanConfig,
     pub phpcs: PhpcsConfig,
+    /// A tool still running after this long is killed and its run discarded.
+    pub timeout_ms: u64,
+}
+
+impl Default for ExternalToolsConfig {
+    fn default() -> Self {
+        ExternalToolsConfig {
+            phpstan: PhpstanConfig::default(),
+            phpcs: PhpcsConfig::default(),
+            timeout_ms: 120_000,
+        }
+    }
 }
 
 impl ExternalToolsConfig {
     pub(crate) fn from_value(v: &serde_json::Value) -> Self {
         let mut cfg = ExternalToolsConfig::default();
         let Some(obj) = v.as_object() else { return cfg };
+        if let Some(n) = obj.get("timeoutMs").and_then(|x| x.as_u64()) {
+            cfg.timeout_ms = n.max(1);
+        }
         if let Some(v) = obj.get("phpstan") {
             cfg.phpstan = PhpstanConfig::from_value(v);
         }
@@ -646,6 +661,7 @@ mod tests {
                         bin_path: "phpcs",
                         standard: None,
                     },
+                    timeout_ms: 120000,
                 },
                 indexed_extensions: [
                     "php",

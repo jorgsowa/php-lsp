@@ -89,6 +89,10 @@ Because it runs executables, `externalTools` is read only from editor settings
 (`initializationOptions` / `workspace/configuration`). A `.php-lsp.json` committed to a
 repository cannot set it.
 
+| Key | Default | Description |
+|---|---|---|
+| `timeoutMs` | `120000` | A tool still running after this many milliseconds is killed and its result dropped. At most two tool runs execute at once; further saves wait for a free slot. |
+
 #### `externalTools.phpstan` object
 
 | Key | Default | Description |
