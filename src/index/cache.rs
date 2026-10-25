@@ -119,8 +119,7 @@ impl WorkspaceCache {
         let schema = schema_version();
         let php_lsp_dir = base.join("php-lsp");
         let workspace = workspace_hash(root);
-        let dir = php_lsp_dir.join(schema).join(&workspace);
-        std::fs::create_dir_all(&dir).ok()?;
+        let dir = Self::open_in(&base, root)?.dir;
         let _ = write_workspace_meta(&dir, root);
         drop(prune_stale_dirs(php_lsp_dir, schema.to_string(), workspace));
         let cache = Self { dir };
@@ -128,6 +127,21 @@ impl WorkspaceCache {
             let _ = cache.clear();
         }
         Some(cache)
+    }
+
+    /// Re-open the cache directory for `root` without the pruning, stamping
+    /// and size check [`Self::new`] does; for per-request writes.
+    pub fn open(root: &Path) -> Option<Self> {
+        Self::open_in(&cache_base_dir()?, root)
+    }
+
+    fn open_in(base: &Path, root: &Path) -> Option<Self> {
+        let dir = base
+            .join("php-lsp")
+            .join(schema_version())
+            .join(workspace_hash(root));
+        std::fs::create_dir_all(&dir).ok()?;
+        Some(Self { dir })
     }
 
     /// The filesystem path of this workspace's cache directory.
@@ -655,6 +669,21 @@ mod tests {
         assert_eq!(decoded.classes[0].name.as_ref(), "Foo");
         assert_eq!(decoded.classes[0].methods.len(), 1);
         assert_eq!(decoded.classes[0].methods[0].name.as_ref(), "bar");
+    }
+
+    #[test]
+    fn open_in_leaves_other_cache_dirs_alone() {
+        let base = TempDir::new().unwrap();
+        let root = TempDir::new().unwrap();
+        let other_schema = base.path().join("php-lsp").join("0.0.0-old");
+        std::fs::create_dir_all(&other_schema).unwrap();
+
+        let cache = WorkspaceCache::open_in(base.path(), root.path()).unwrap();
+
+        assert!(cache.cache_dir().is_dir());
+        assert!(!cache.cache_dir().join(META_FILE).exists());
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        assert!(other_schema.is_dir());
     }
 
     #[test]

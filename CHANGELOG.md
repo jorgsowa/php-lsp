@@ -12,6 +12,10 @@ All notable changes to php-lsp are documented here.
 
 - **`.php-lsp.json` can no longer run programs**: `externalTools` and `cachePath` are read only from editor settings. A repository's `.php-lsp.json` could set `externalTools.*.binPath`, so opening a cloned project and saving a file ran any command it named. The server logs a warning when the file sets either key.
 
+### Fixed
+
+- **Cache sweep on every save**: `didSave` reopened the workspace cache the way startup does, re-stamping it and starting a sweep of every cache directory on each save. It now only writes the entry.
+
 ## [0.28.0] — 2026-10-25
 
 ### Changed

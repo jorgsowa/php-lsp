@@ -786,7 +786,7 @@ impl LanguageServer for Backend {
                         let cache = if let Some(p) = cache_path {
                             crate::index::cache::WorkspaceCache::with_dir(p)
                         } else if let Some(r) = &root {
-                            let Some(c) = crate::index::cache::WorkspaceCache::new(r) else {
+                            let Some(c) = crate::index::cache::WorkspaceCache::open(r) else {
                                 return;
                             };
                             c
