@@ -71,6 +71,22 @@ impl Backend {
                     .await;
             }
 
+            if let Some(serde_json::Value::Object(ref obj)) = file_cfg {
+                for key in crate::lang::config::EDITOR_ONLY_KEYS {
+                    if obj.contains_key(*key) {
+                        self.client
+                            .log_message(
+                                tower_lsp_server::ls_types::MessageType::WARNING,
+                                format!(
+                                    "php-lsp: ignoring {key:?} in .php-lsp.json — \
+                                     set it in editor settings instead"
+                                ),
+                            )
+                            .await;
+                    }
+                }
+            }
+
             if let Some(ver) = opts
                 .and_then(|o| o.get("phpVersion"))
                 .and_then(|v| v.as_str())

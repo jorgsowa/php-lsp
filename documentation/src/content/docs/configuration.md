@@ -23,8 +23,8 @@ All options are optional.
 | `analysisCacheFlushIntervalMs` | `number` | `20000` | How often staged analysis-cache postings are persisted to disk in the background, bounding data loss on an unclean exit (crash, kill) to roughly one interval. |
 | `debounceMs` | `number` | `100` | Delay in milliseconds between the last `textDocument/didChange` and the parse + analysis run. Set lower for fast machines, higher for slow machines or large files to reduce thrashing. |
 | `debug` | `boolean` | `false` | Emit extra diagnostic log messages on startup: cache hit/miss ratio, workspace root paths, and PSR-4 namespace count. |
-| `cachePath` | `string` | platform default | Override the on-disk analysis-cache directory (used verbatim, no schema-version or workspace-hash subdirectories appended). Falls back to `$XDG_CACHE_HOME`/`$HOME/.cache` on Unix, `%LOCALAPPDATA%` on Windows. Mainly useful for non-standard cache locations (containers, CI). |
-| `externalTools` | `object` | see below | Optional PHPStan / PHPCS integration, run as external processes on save. |
+| `cachePath` | `string` | platform default | Override the on-disk analysis-cache directory (used verbatim, no schema-version or workspace-hash subdirectories appended). Falls back to `$XDG_CACHE_HOME`/`$HOME/.cache` on Unix, `%LOCALAPPDATA%` on Windows. Mainly useful for non-standard cache locations (containers, CI). Editor settings only; ignored in `.php-lsp.json`. |
+| `externalTools` | `object` | see below | Optional PHPStan / PHPCS integration, run as external processes on save. Editor settings only; ignored in `.php-lsp.json`. |
 | `indexedExtensions` | `string[]` | `["php"]` | File extensions (without the leading dot) treated as PHP source: the workspace scan, `include`/`require` following, file-operation notifications (`willRenameFiles`/`didRenameFiles`/create/delete) and the `workspace/didChangeWatchedFiles` watcher glob. Add `"phpt"` for `.phpt` tests, or `"inc"`, `"module"`, `"install"`, `"theme"` for Drupal. Files with an extension outside this list are not forwarded to the server by a spec-compliant client. |
 
 ### `diagnostics` object
@@ -84,6 +84,10 @@ built-in analyzer. Both default to disabled: they can take seconds rather than m
 and depend on project-specific configuration, so enabling one is an explicit per-workspace
 opt-in. Findings are attributed with `source: "phpstan"` / `"phpcs"` on each diagnostic and
 refresh after every `textDocument/didSave`.
+
+Because it runs executables, `externalTools` is read only from editor settings
+(`initializationOptions` / `workspace/configuration`). A `.php-lsp.json` committed to a
+repository cannot set it.
 
 #### `externalTools.phpstan` object
 

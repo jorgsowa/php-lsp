@@ -8,6 +8,10 @@ All notable changes to php-lsp are documented here.
 
 - **Code lens reference counts load on resolve**: `textDocument/codeLens` returns reference-count lenses without a title and `codeLens/resolve` fills them in, so editors only look up references for lenses on screen. The first resolve of a file still narrows every lens symbol in one shared workspace scan.
 
+### Security
+
+- **`.php-lsp.json` can no longer run programs**: `externalTools` and `cachePath` are read only from editor settings. A repository's `.php-lsp.json` could set `externalTools.*.binPath`, so opening a cloned project and saving a file ran any command it named. The server logs a warning when the file sets either key.
+
 ## [0.28.0] — 2026-10-25
 
 ### Changed

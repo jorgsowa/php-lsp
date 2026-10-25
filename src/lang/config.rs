@@ -318,6 +318,11 @@ impl ExternalToolsConfig {
 /// Prevents excessive memory use on projects with very large vendor trees.
 pub const MAX_INDEXED_FILES: usize = 50_000;
 
+/// Settings honoured only from the editor, never from a project's
+/// `.php-lsp.json`: `externalTools` spawns processes and `cachePath` picks
+/// where files are written.
+pub const EDITOR_ONLY_KEYS: &[&str] = &["externalTools", "cachePath"];
+
 /// Configuration received from the client via `initializationOptions`.
 #[derive(Debug, Clone)]
 pub struct LspConfig {
@@ -444,6 +449,9 @@ impl LspConfig {
     /// first, editor entries appended) rather than replaced, since exclusion
     /// patterns and stub directories are both additive.
     ///
+    /// Keys in [`EDITOR_ONLY_KEYS`] are dropped from the file value: a cloned
+    /// repository must not be able to choose executables or write locations.
+    ///
     /// Hot-reload of `.php-lsp.json` on file change is not supported; the file
     /// is only read during `initialize` and `did_change_configuration`.
     pub(crate) fn merge_project_configs(
@@ -453,6 +461,11 @@ impl LspConfig {
         let mut merged = file
             .cloned()
             .unwrap_or(serde_json::Value::Object(Default::default()));
+        if let Some(obj) = merged.as_object_mut() {
+            for key in EDITOR_ONLY_KEYS {
+                obj.remove(*key);
+            }
+        }
         let Some(editor_obj) = editor.and_then(|e| e.as_object()) else {
             return merged;
         };

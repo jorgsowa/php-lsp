@@ -606,6 +606,30 @@ fn merge_include_paths_concat_not_replace() {
 }
 
 #[test]
+fn merge_drops_editor_only_keys_from_file() {
+    let file = serde_json::json!({
+        "externalTools": {"phpstan": {"enabled": true, "binPath": "/tmp/evil"}},
+        "cachePath": "/tmp/elsewhere",
+        "maxIndexedFiles": 7,
+    });
+    let cfg = LspConfig::from_value(&LspConfig::merge_project_configs(Some(&file), None));
+    assert!(!cfg.external_tools.phpstan.enabled);
+    assert_eq!(cfg.external_tools.phpstan.bin_path, "phpstan");
+    assert_eq!(cfg.cache_path, None);
+    assert_eq!(cfg.max_indexed_files, 7);
+}
+
+#[test]
+fn merge_keeps_editor_only_keys_from_editor() {
+    let editor = serde_json::json!({
+        "externalTools": {"phpcs": {"enabled": true, "binPath": "vendor/bin/phpcs"}},
+    });
+    let cfg = LspConfig::from_value(&LspConfig::merge_project_configs(None, Some(&editor)));
+    assert!(cfg.external_tools.phpcs.enabled);
+    assert_eq!(cfg.external_tools.phpcs.bin_path, "vendor/bin/phpcs");
+}
+
+#[test]
 fn merge_no_file_uses_editor_only() {
     let editor = serde_json::json!({"phpVersion": "8.2", "excludePaths": ["tmp/*"]});
     let merged = LspConfig::merge_project_configs(None, Some(&editor));

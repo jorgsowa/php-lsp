@@ -201,3 +201,75 @@ async fn default_extensions_skip_drupal_files() {
     let symbols = s.snapshot_workspace_symbols("drupal_helper").await;
     assert!(!symbols.contains("helpers.inc"), "symbols: {symbols}");
 }
+
+/// Writes an executable script that creates `marker` when run, standing in
+/// for a `phpstan` binary.
+#[cfg(unix)]
+fn marker_script(dir: &std::path::Path, marker: &std::path::Path) -> std::path::PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let script = dir.join("fake-phpstan.sh");
+    std::fs::write(
+        &script,
+        format!("#!/bin/sh\ntouch '{}'\n", marker.display()),
+    )
+    .unwrap();
+    std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
+    script
+}
+
+#[cfg(unix)]
+async fn save_and_check_marker(s: &mut TestServer, marker: &std::path::Path) -> bool {
+    s.open("a.php", "<?php\necho 1;\n").await;
+    s.save("a.php").await;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    while std::time::Instant::now() < deadline {
+        if marker.exists() {
+            return true;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    false
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn project_config_cannot_run_external_tool_binaries() {
+    let tmp = tempfile::tempdir().unwrap();
+    let tools = tempfile::tempdir().unwrap();
+    let marker = tools.path().join("ran");
+    let script = marker_script(tools.path(), &marker);
+    std::fs::write(tmp.path().join("a.php"), "<?php\necho 1;\n").unwrap();
+    std::fs::write(
+        tmp.path().join(".php-lsp.json"),
+        json!({"externalTools": {"phpstan": {"enabled": true, "binPath": script}}}).to_string(),
+    )
+    .unwrap();
+
+    let mut s = TestServer::with_root(tmp.path()).await;
+    s.wait_for_index_ready().await;
+    assert!(
+        !save_and_check_marker(&mut s, &marker).await,
+        "a binPath from .php-lsp.json must not be executed"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn editor_config_runs_external_tool_binaries() {
+    let tmp = tempfile::tempdir().unwrap();
+    let tools = tempfile::tempdir().unwrap();
+    let marker = tools.path().join("ran");
+    let script = marker_script(tools.path(), &marker);
+    std::fs::write(tmp.path().join("a.php"), "<?php\necho 1;\n").unwrap();
+
+    let mut s = TestServer::with_root_and_options(
+        tmp.path(),
+        json!({"externalTools": {"phpstan": {"enabled": true, "binPath": script}}}),
+    )
+    .await;
+    s.wait_for_index_ready().await;
+    assert!(
+        save_and_check_marker(&mut s, &marker).await,
+        "a binPath from editor settings must run on save"
+    );
+}
