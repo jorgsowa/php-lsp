@@ -722,6 +722,9 @@ impl LanguageServer for Backend {
         params: WillSaveTextDocumentParams,
     ) -> Result<Option<Vec<TextEdit>>> {
         guard_async_result("will_save_wait_until", async move {
+            if !self.config.load().features.formatting {
+                return Ok(None);
+            }
             let source = self
                 .get_open_text(&params.text_document.uri)
                 .unwrap_or_default();

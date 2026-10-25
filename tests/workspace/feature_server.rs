@@ -85,6 +85,20 @@ async fn all_features_enabled_by_default() {
     }
 }
 
+/// Format-on-save goes through `willSaveWaitUntil`, so it follows `features.formatting`.
+#[tokio::test]
+async fn will_save_wait_until_follows_formatting_feature() {
+    let (_, resp) = TestServer::new_with_options(serde_json::json!({})).await;
+    let sync = &resp["result"]["capabilities"]["textDocumentSync"];
+    assert_eq!(sync["willSaveWaitUntil"], true, "{sync}");
+
+    let (_, resp) =
+        TestServer::new_with_options(serde_json::json!({ "features": { "formatting": false } }))
+            .await;
+    let sync = &resp["result"]["capabilities"]["textDocumentSync"];
+    assert_eq!(sync["willSaveWaitUntil"], false, "{sync}");
+}
+
 #[tokio::test]
 async fn initialize_returns_server_capabilities() {
     let (mut server, init_resp) = TestServer::new_with_options(serde_json::json!({})).await;

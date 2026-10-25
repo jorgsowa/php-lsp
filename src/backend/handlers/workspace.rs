@@ -182,7 +182,7 @@ impl Backend {
                         open_close: Some(true),
                         change: Some(TextDocumentSyncKind::INCREMENTAL),
                         will_save: Some(true),
-                        will_save_wait_until: Some(true),
+                        will_save_wait_until: Some(feat.formatting),
                         save: Some(TextDocumentSyncSaveOptions::SaveOptions(SaveOptions {
                             include_text: Some(false),
                         })),
