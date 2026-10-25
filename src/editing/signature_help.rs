@@ -8,7 +8,10 @@ use crate::analysis::callable_info::callable_info_for_name;
 use crate::document::ast::ParsedDoc;
 use crate::hover::format_params_str;
 use crate::lang::docblock::{find_docblock, parse_docblock};
-use crate::text::{class_matches_declaration, fqn_short_name, split_params, utf16_offset_to_byte};
+use crate::text::{
+    class_matches_declaration, fqn_short_name, position_to_byte_offset, split_params,
+    utf16_offset_to_byte,
+};
 
 /// Returns signature help for the function call the cursor is inside of.
 ///
@@ -169,27 +172,7 @@ struct CallContext {
 }
 
 fn call_context(source: &str, position: Position) -> Option<CallContext> {
-    let mut chars_before = String::new();
-    for (i, line) in source.lines().enumerate() {
-        if i < position.line as usize {
-            chars_before.push_str(line);
-            chars_before.push('\n');
-        } else if i == position.line as usize {
-            let col = position.character as usize;
-            let line_chars: Vec<char> = line.chars().collect();
-            let mut utf16 = 0usize;
-            let mut char_col = 0usize;
-            for ch in &line_chars {
-                if utf16 >= col {
-                    break;
-                }
-                utf16 += ch.len_utf16();
-                char_col += 1;
-            }
-            chars_before.extend(line_chars.iter().take(char_col));
-            break;
-        }
-    }
+    let chars_before = &source[..position_to_byte_offset(source, position)];
 
     let text: Vec<char> = chars_before.chars().collect();
     let in_string = string_literal_mask(&text);

@@ -841,3 +841,15 @@ greet('x', nope: $0);
         .await;
     expect!["▶ greet(string $name, int $count = 1)  @param1"].assert_eq(&out);
 }
+
+/// In a CRLF file the call's name offset must count the `\r`s, or the receiver's
+/// class isn't resolved and the same-named method of another class can't be ruled out.
+#[tokio::test]
+async fn signature_help_method_call_in_crlf_file() {
+    let mut s = TestServer::new().await;
+    let src = "<?php\r\nclass A { public function run(int $a): void {} }\r\nclass B { public function run(string $b): void {} }\r\n$b = new B();\r\n$b->run();\r\n";
+    s.open("crlf.php", src).await;
+
+    let resp = s.signature_help("crlf.php", 4, 8).await;
+    expect!["▶ run(string $b)  @param0"].assert_eq(&common::render_signature_help(&resp));
+}
