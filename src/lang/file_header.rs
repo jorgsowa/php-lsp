@@ -6,8 +6,13 @@
 pub(crate) fn header_line_count(source: &str) -> usize {
     let mut in_use_stmt = false;
     let mut in_block_comment = false;
+    // A file starts as inline HTML; everything before the open tag is skipped.
+    let open_tag_line = source.lines().position(|line| line.contains("<?php"));
     for (idx, line) in source.lines().enumerate() {
         let trimmed = line.trim();
+        if open_tag_line.is_some_and(|open| idx <= open) {
+            continue;
+        }
         if in_block_comment {
             in_block_comment = !trimmed.contains("*/");
             continue;
@@ -26,10 +31,7 @@ pub(crate) fn header_line_count(source: &str) -> usize {
             in_block_comment = !trimmed.contains("*/");
             continue;
         }
-        if trimmed.starts_with("<?php")
-            || is_keyword_stmt(trimmed, "declare")
-            || is_keyword_stmt(trimmed, "namespace")
-        {
+        if is_keyword_stmt(trimmed, "declare") || is_keyword_stmt(trimmed, "namespace") {
             continue;
         }
         if is_keyword_stmt(trimmed, "use") {
@@ -75,7 +77,7 @@ pub(crate) fn use_insert_line(source: &str, is_anchor_use: impl Fn(&str) -> bool
             } else if anchors {
                 last_use = Some(i + 1);
             }
-        } else if trimmed.starts_with("<?php")
+        } else if trimmed.contains("<?php")
             || is_keyword_stmt(trimmed, "declare")
             || is_keyword_stmt(trimmed, "namespace")
         {
@@ -105,6 +107,13 @@ mod tests {
     fn header_skips_docblocks_and_multiline_group_use() {
         let src = "<?php\n/**\n * use Nope;\n */\nuse App\\{\n    A,\n    B\n};\nfunction f() {}\n";
         assert_eq!(header_line_count(src), 8);
+    }
+
+    #[test]
+    fn header_starts_after_leading_html() {
+        let src = "<div>\n<?php\nuse Foo;\n\nclass A {}\n";
+        assert_eq!(header_line_count(src), 4);
+        assert_eq!(use_insert_line(src, |_| false), 2);
     }
 
     #[test]

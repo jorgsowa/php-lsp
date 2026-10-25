@@ -582,3 +582,33 @@ class User {
     "#]]
     .assert_eq(&out);
 }
+
+/// Inline HTML before the open tag doesn't hide the imports after it.
+#[tokio::test]
+async fn organize_imports_after_leading_html() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_code_action_apply(
+            r#"<div>
+<?php
+use Zoo;
+use Apple;
+
+new Apple();
+new Zoo();$0
+"#,
+            "Organize imports",
+        )
+        .await;
+    expect![[r#"
+        <div>
+        <?php
+        use Apple;
+        use Zoo;
+
+        new Apple();
+        new Zoo();
+    "#]]
+    .assert_eq(&out);
+}
