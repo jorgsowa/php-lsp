@@ -564,3 +564,54 @@ function f() {
         .await;
     expect!["<action not found: Inline variable '$cls'>"].assert_eq(&out);
 }
+
+/// Two reads of `new Builder()` would build two objects.
+#[tokio::test]
+async fn inline_variable_no_action_when_new_is_read_twice() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_code_action_apply(
+            r#"<?php
+function f() {
+    $b = new Builder();
+    $0$b$0->add(1);
+    return $b->build();
+}
+"#,
+            "Inline variable '$b'",
+        )
+        .await;
+    expect!["<action not found: Inline variable '$b'>"].assert_eq(&out);
+}
+
+/// A side-effect-free initializer still inlines into every read.
+#[tokio::test]
+async fn inline_variable_property_read_twice() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_code_action_apply(
+            r#"<?php
+class A {
+    private $name;
+    public function f() {
+        $n = $this->name;
+        return $0$n$0 . $n;
+    }
+}
+"#,
+            "Inline variable '$n'",
+        )
+        .await;
+    expect![[r#"
+        <?php
+        class A {
+            private $name;
+            public function f() {
+                return $this->name . $this->name;
+            }
+        }
+    "#]]
+    .assert_eq(&out);
+}

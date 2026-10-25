@@ -10,11 +10,13 @@
 ///   closure `use`, `isset`/`unset`, an assignment target).
 /// - No variable the initializer reads is reassigned before the last read.
 /// - No read is passed to a by-reference parameter.
+/// - The initializer is read once, or evaluating it again is unobservable.
 use std::collections::HashMap;
 use std::ops::ControlFlow;
 
 use php_ast::{
     Arg, AssignOp, BinaryOp, Block, ClosureUseVar, Expr, ExprKind, Span, Stmt, StmtKind,
+    UnaryPrefixOp,
     visitor::{Visitor, walk_block, walk_expr, walk_stmt},
 };
 use tower_lsp_server::ls_types::{
@@ -88,6 +90,9 @@ pub fn inline_variable_actions(
             && !blockers.zones.iter().any(|zone| contains(*zone, *read))
     };
     if reads.is_empty() || !reads.iter().all(usable) {
+        return vec![];
+    }
+    if reads.len() > 1 && !found.value_is_repeatable {
         return vec![];
     }
     let last_read_end = reads
@@ -205,6 +210,7 @@ struct FoundAssignment {
     value: Span,
     value_is_atomic: bool,
     value_is_variable: bool,
+    value_is_repeatable: bool,
     /// What replaces a read after `new` or `instanceof`: the variable, or `Foo`
     /// of `Foo::class`.
     class_name: Option<Span>,
@@ -241,6 +247,7 @@ impl<'arena, 'src> Visitor<'arena, 'src> for AssignmentFinder {
                         assign.value.kind,
                         ExprKind::Variable(_) | ExprKind::Parenthesized(_)
                     ),
+                    value_is_repeatable: is_repeatable(assign.value),
                     class_name: class_name(assign.value),
                     value_vars: variable_names(assign.value),
                     container: match self.containers.last() {
@@ -277,6 +284,46 @@ impl<'arena, 'src> Visitor<'arena, 'src> for AssignmentFinder {
         let flow = walk_block(self, block);
         self.containers.pop();
         flow
+    }
+}
+
+/// Whether evaluating `expr` twice gives the same value with no side effect,
+/// so it can replace more than one read. Calls and `new` don't qualify.
+fn is_repeatable(expr: &Expr<'_, '_>) -> bool {
+    match &expr.kind {
+        ExprKind::Int(_)
+        | ExprKind::Float(_)
+        | ExprKind::String(_)
+        | ExprKind::Nowdoc { .. }
+        | ExprKind::Bool(_)
+        | ExprKind::Null
+        | ExprKind::Variable(_)
+        | ExprKind::Identifier(_)
+        | ExprKind::MagicConst(_)
+        | ExprKind::ClassConstAccess(_) => true,
+        ExprKind::Parenthesized(inner) | ExprKind::Cast(_, inner) => is_repeatable(inner),
+        ExprKind::UnaryPrefix(unary) => {
+            !matches!(
+                unary.op,
+                UnaryPrefixOp::PreIncrement | UnaryPrefixOp::PreDecrement
+            ) && is_repeatable(unary.operand)
+        }
+        ExprKind::Binary(binary) => {
+            binary.op != BinaryOp::Pipe && is_repeatable(binary.left) && is_repeatable(binary.right)
+        }
+        ExprKind::PropertyAccess(access) | ExprKind::NullsafePropertyAccess(access) => {
+            is_repeatable(access.object) && is_repeatable(access.property)
+        }
+        ExprKind::StaticPropertyAccess(access) => is_repeatable(access.class),
+        ExprKind::ArrayAccess(access) => {
+            is_repeatable(access.array) && access.index.is_none_or(is_repeatable)
+        }
+        ExprKind::Array(elements) => elements.iter().all(|element| {
+            !element.by_ref
+                && element.key.as_ref().is_none_or(is_repeatable)
+                && is_repeatable(&element.value)
+        }),
+        _ => false,
     }
 }
 
