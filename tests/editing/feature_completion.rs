@@ -1667,6 +1667,47 @@ class Mailer {}
     expect![[r#"2:0-2:0 → "use Lib\\Mailer;\\n""#]].assert_eq(&out);
 }
 
+/// `use` must follow `declare(strict_types=1)` (a `use` before it is a fatal
+/// error) and stay out of the class body's trait-use.
+#[tokio::test]
+async fn completion_use_import_after_declare_not_trait_use() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let opened = s
+        .open_fixture(
+            r#"//- /main.php
+<?php
+
+declare(strict_types=1);
+
+class User {
+    use HasFactory;
+
+    public function f() { return new $0; }
+}
+
+//- /lib/Mailer.php
+<?php
+namespace Lib;
+class Mailer {}
+"#,
+        )
+        .await;
+    let c = opened.cursor().clone();
+    let resp = s.completion(&c.path, c.line, c.character).await;
+    let items = match &resp["result"] {
+        v if v.is_array() => v.as_array().cloned().unwrap_or_default(),
+        v if v["items"].is_array() => v["items"].as_array().cloned().unwrap_or_default(),
+        _ => vec![],
+    };
+    let mailer_item = items
+        .iter()
+        .find(|i| i["label"].as_str() == Some("Mailer"))
+        .expect("Mailer class not in completions");
+    let out = render_text_edits(&json!({ "result": mailer_item["additionalTextEdits"] }));
+    expect![[r#"3:0-3:0 → "use Lib\\Mailer;\\n""#]].assert_eq(&out);
+}
+
 #[tokio::test]
 async fn completion_same_namespace_no_use_import() {
     let mut s = TestServer::new().await;

@@ -7,6 +7,7 @@ use std::sync::Arc;
 use tower_lsp_server::ls_types::{Position, Range, TextEdit, Uri, WorkspaceEdit};
 
 use crate::document::ast::ParsedDoc;
+use crate::lang::file_header::use_insert_line;
 use crate::types::resolve::{Declaration, resolve_declaration};
 
 pub(crate) fn find_fqn_for_function(
@@ -94,15 +95,5 @@ pub(crate) fn build_use_function_import_edit(source: &str, uri: &Uri, fqn: &str)
 }
 
 pub(crate) fn find_use_insert_line(source: &str) -> u32 {
-    let mut last_use_or_ns: u32 = 0;
-    for (i, line) in source.lines().enumerate() {
-        let trimmed = line.trim();
-        if trimmed.starts_with("<?php")
-            || trimmed.starts_with("namespace ")
-            || trimmed.starts_with("use ")
-        {
-            last_use_or_ns = i as u32 + 1;
-        }
-    }
-    last_use_or_ns
+    use_insert_line(source, |_| true)
 }

@@ -1055,6 +1055,39 @@ async fn code_action_quickfix_undefined_class_in_namespaced_file() {
     .assert_eq(&out);
 }
 
+/// The import quick-fix goes after `declare(strict_types=1)`, not before it.
+#[tokio::test]
+async fn code_action_quickfix_undefined_class_inserts_after_declare() {
+    let mut server = TestServer::new().await;
+    server
+        .open(
+            "Service/Widget.php",
+            "<?php\nnamespace App\\Service;\n\nclass Widget {}\n",
+        )
+        .await;
+    server
+        .open(
+            "main.php",
+            "<?php\ndeclare(strict_types=1);\n\nnamespace App;\n\nclass User {\n    use HasFactory;\n    function f() { return new Widget(); }\n}\n",
+        )
+        .await;
+
+    let resp = server.code_action("main.php", 7, 30, 7, 36).await;
+    let action = resp["result"]
+        .as_array()
+        .and_then(|actions| {
+            actions
+                .iter()
+                .find(|a| a["title"] == "Add use App\\Service\\Widget")
+        })
+        .unwrap_or_else(|| panic!("expected an Add use quick-fix: {resp:#}"));
+    let out = canonicalize_workspace_edit(&action["edit"], &server.uri(""));
+    expect![[r#"
+        // main.php
+        4:0-4:0 → "use App\\Service\\Widget;\n""#]]
+    .assert_eq(&out);
+}
+
 /// Several classes with the same short name are ambiguous, so an import
 /// quick-fix must not guess between them.
 #[tokio::test]

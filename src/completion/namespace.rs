@@ -1,6 +1,8 @@
 use php_ast::{ExprKind, NamespaceBody, Stmt, StmtKind};
 use tower_lsp_server::ls_types::{CompletionItem, CompletionItemKind, Position};
 
+use crate::lang::file_header::use_insert_line;
+
 /// An `#[\Attribute]`-annotated class with its resolved target bitmask.
 ///
 /// Target bitmask uses PHP's `Attribute::TARGET_*` constants:
@@ -254,19 +256,8 @@ pub(super) fn collect_classes_with_ns(
 
 /// The line+col where a new `use` statement should be inserted in the current file.
 pub(super) fn use_insert_position(source: &str) -> Position {
-    let mut last_use_line: Option<u32> = None;
-    let mut anchor_line: u32 = 0;
-    for (i, line) in source.lines().enumerate() {
-        let trimmed = line.trim();
-        if trimmed.starts_with("<?") || trimmed.starts_with("namespace ") {
-            anchor_line = i as u32;
-        }
-        if trimmed.starts_with("use ") && !trimmed.starts_with("use function ") {
-            last_use_line = Some(i as u32);
-        }
-    }
     Position {
-        line: last_use_line.unwrap_or(anchor_line) + 1,
+        line: use_insert_line(source, |stmt| !stmt.starts_with("use function ")),
         character: 0,
     }
 }
