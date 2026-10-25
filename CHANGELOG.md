@@ -29,6 +29,7 @@ All notable changes to php-lsp are documented here.
 - **Inline variable**: the action replaced every same-named variable in the file, including parameters of other functions and `"$x"` inside strings, and inlined `$x = $a + $b` into `$x * 2` as `$a + $b * 2`. It now works on the variable's own scope, parenthesizes the initializer where precedence needs it, accepts multi-line initializers, and is not offered for an assignment inside a nested block or reads inside strings, `isset`/`unset` or closure `use`.
 - **`use` inserted in the wrong place**: auto-import completion and the "Add use" quick-fix put the new `use` before `declare(strict_types=1)` (a fatal error) or after a class-body trait-use. It now goes after the file's last import, `declare` or `namespace`.
 - **Signature help in CRLF files**: the call's position was computed one byte short per line, so the receiver's class wasn't resolved and method calls could show no signature or another class's.
+- **`prepareRename` on a variable's `$`**: with the cursor on the sigil, the returned range started at `$` and cut off the name's last character (`$fo` for `$foo`).
 
 ## [0.28.0] — 2026-10-25
 

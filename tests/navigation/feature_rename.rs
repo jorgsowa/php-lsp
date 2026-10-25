@@ -18,6 +18,21 @@ function gre$0et(): void {}
     expect!["1:9-1:14"].assert_eq(&out);
 }
 
+/// With the cursor on the `$` sigil the range still covers just the name.
+#[tokio::test]
+async fn prepare_rename_variable_cursor_on_sigil() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_prepare_rename(
+            r#"<?php
+$0$foo = 1;
+"#,
+        )
+        .await;
+    expect!["1:1-1:4"].assert_eq(&out);
+}
+
 #[tokio::test]
 async fn rename_function_same_file() {
     let mut s = TestServer::new().await;

@@ -131,6 +131,9 @@ pub fn prepare_rename(doc: &ParsedDoc, position: Position) -> Option<Range> {
     while left > 0 && is_word(chars[left - 1]) {
         left -= 1;
     }
+    if chars.get(left) == Some(&'$') {
+        left += 1;
+    }
 
     let bare_word = word.trim_start_matches('$');
     let start_utf16: u32 = chars[..left].iter().map(|c| c.len_utf16() as u32).sum();
