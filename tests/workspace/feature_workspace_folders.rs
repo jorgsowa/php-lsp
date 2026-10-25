@@ -520,6 +520,51 @@ async fn changed_event_does_not_overwrite_open_editor_file() {
     .assert_eq(&out);
 }
 
+/// A PSR-4 mapping added to `composer.json` after startup is used for
+/// definition once the change is reported. `lib/` is excluded from the scan,
+/// so only the autoload map can find `Acme\Foo`.
+#[tokio::test]
+async fn composer_json_change_reloads_psr4_map() {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(tmp.path().join("composer.json"), "{}").unwrap();
+    std::fs::create_dir(tmp.path().join("lib")).unwrap();
+    std::fs::write(
+        tmp.path().join("lib/Foo.php"),
+        "<?php\nnamespace Acme;\n\nclass Foo {}\n",
+    )
+    .unwrap();
+    let app = "<?php\nnew \\Acme\\Foo();\n";
+    std::fs::write(tmp.path().join("app.php"), app).unwrap();
+
+    let mut server = TestServer::with_root_and_options(
+        tmp.path(),
+        serde_json::json!({"excludePaths": ["lib/"]}),
+    )
+    .await;
+    server.wait_for_index_ready().await;
+    server.open("app.php", app).await;
+    let resp = server.definition("app.php", 1, 11).await;
+    expect!["<none>"].assert_eq(&render_locations(&resp, &server.uri("")));
+
+    server.write_file(
+        "composer.json",
+        r#"{"autoload": {"psr-4": {"Acme\\": "lib/"}}}"#,
+    );
+    let uri = server.uri("composer.json");
+    server.did_change_watched_files(vec![(uri, CHANGED)]).await;
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let out = loop {
+        let resp = server.definition("app.php", 1, 11).await;
+        let out = render_locations(&resp, &server.uri(""));
+        if out != "<none>" || std::time::Instant::now() > deadline {
+            break out;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    expect!["lib/Foo.php:3:6-3:9"].assert_eq(&out);
+}
+
 #[tokio::test]
 async fn batch_changes_all_applied() {
     let mut server = TestServer::with_fixture("psr4-mini").await;

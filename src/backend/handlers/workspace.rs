@@ -16,6 +16,18 @@ use crate::text::fqn_short_name;
 use super::super::helpers::{has_indexed_extension, indexed_file_op};
 use super::super::{Backend, IndexReadyNotification};
 
+/// Non-PHP files whose changes reload the PSR-4 map or the Laravel index.
+const PROJECT_METADATA_GLOBS: &[&str] = &[
+    "**/composer.json",
+    "**/vendor/composer/installed.json",
+    "**/artisan",
+    "**/.env",
+    "**/.env.example",
+    "**/lang/*.json",
+    "**/mix-manifest.json",
+    "**/build/manifest.json",
+];
+
 impl Backend {
     pub(crate) async fn handle_initialize(
         &self,
@@ -332,7 +344,9 @@ impl Backend {
             .load()
             .indexed_extensions
             .iter()
-            .map(|ext| serde_json::json!({"globPattern": format!("**/*.{ext}")}))
+            .map(|ext| format!("**/*.{ext}"))
+            .chain(PROJECT_METADATA_GLOBS.iter().map(|g| g.to_string()))
+            .map(|glob| serde_json::json!({"globPattern": glob}))
             .collect();
         let mut registrations = vec![
             Registration {

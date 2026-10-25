@@ -239,6 +239,47 @@ impl Backend {
         .await;
     }
 
+    /// Rebuild the PSR-4 map when composer metadata is among `changed`, and
+    /// the Laravel index when any of its inputs under the first root is.
+    pub(super) async fn reload_project_metadata(&self, changed: &[std::path::PathBuf]) {
+        let roots: Vec<std::path::PathBuf> = (**self.root_paths.load()).clone();
+        let Some(first_root) = roots.first().cloned() else {
+            return;
+        };
+        let psr4_changed = changed.iter().any(|p| {
+            p.file_name().is_some_and(|n| n == "composer.json")
+                || p.parent()
+                    .is_some_and(|d| d.ends_with(std::path::Path::new("vendor/composer")))
+        });
+        let laravel_changed = changed
+            .iter()
+            .any(|p| crate::laravel::is_index_input(&first_root, p));
+        if psr4_changed {
+            let extensions = self.config.load().php_file_extensions();
+            let psr4 = tokio::task::spawn_blocking(move || {
+                let mut merged = crate::lang::autoload::Psr4Map::empty();
+                for root in &roots {
+                    merged.extend(crate::lang::autoload::Psr4Map::load_with_extensions(
+                        root,
+                        extensions.clone(),
+                    ));
+                }
+                merged
+            })
+            .await;
+            if let Ok(psr4) = psr4 {
+                self.psr4.store(Arc::new(psr4));
+            }
+        }
+        if laravel_changed
+            && let Ok(index) =
+                tokio::task::spawn_blocking(move || crate::laravel::LaravelIndex::load(&first_root))
+                    .await
+        {
+            self.laravel.store(Arc::new(index));
+        }
+    }
+
     /// Try to resolve a fully-qualified name via the autoload map (PSR-4, PSR-0, classmap).
     /// Indexes the file on-demand if it is not already in the document store.
     pub(super) async fn psr4_goto(&self, fqn: &str) -> Option<Location> {

@@ -133,6 +133,40 @@ impl LaravelIndex {
     }
 }
 
+/// Files and directories under a project root that [`LaravelIndex::load`]
+/// reads, relative to the root.
+#[cfg_attr(target_family = "wasm", allow(dead_code))]
+const INDEX_INPUT_FILES: &[&str] = &[
+    "artisan",
+    "composer.json",
+    ".env",
+    ".env.example",
+    "bootstrap/app.php",
+    "app/Http/Kernel.php",
+];
+#[cfg_attr(target_family = "wasm", allow(dead_code))]
+const INDEX_INPUT_DIRS: &[&str] = &[
+    "config",
+    "resources/views",
+    "lang",
+    "resources/lang",
+    "routes",
+    "public",
+    "app/View/Components",
+    "app/Livewire",
+    "app/Http/Livewire",
+];
+
+/// Whether a change to `path` can alter the [`LaravelIndex`] built for `root`.
+#[cfg_attr(target_family = "wasm", allow(dead_code))]
+pub fn is_index_input(root: &Path, path: &Path) -> bool {
+    let Ok(rel) = path.strip_prefix(root) else {
+        return false;
+    };
+    INDEX_INPUT_FILES.iter().any(|f| rel == Path::new(f))
+        || INDEX_INPUT_DIRS.iter().any(|d| rel.starts_with(d))
+}
+
 /// PascalCase segment (e.g. a PHP class name like `InputGroup`) to
 /// kebab-case (`input-group`) — used by [`ComponentIndex`] and
 /// [`LivewireIndex`] to convert discovered class filenames into the tag
@@ -547,6 +581,24 @@ pub(crate) fn missing_key_actions(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn index_inputs_cover_read_files_and_dirs_only() {
+        let root = Path::new("/proj");
+        for input in [
+            ".env",
+            "artisan",
+            "routes/api/v1.php",
+            "lang/en.json",
+            "public/x.css",
+        ] {
+            assert!(is_index_input(root, &root.join(input)), "{input}");
+        }
+        for other in ["app/Models/User.php", "vendor/a/b.php", "routes.php"] {
+            assert!(!is_index_input(root, &root.join(other)), "{other}");
+        }
+        assert!(!is_index_input(root, Path::new("/elsewhere/.env")));
+    }
 
     #[test]
     fn load_non_laravel_root_is_empty_and_inert() {

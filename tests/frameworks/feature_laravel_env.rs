@@ -116,3 +116,42 @@ async fn env_call_not_resolved_outside_laravel_project() {
     let out = render_locations(&resp, &s.uri(""));
     expect!["<none>"].assert_eq(&out);
 }
+
+/// A key added to `.env` after startup resolves once the client reports the
+/// change via `workspace/didChangeWatchedFiles`.
+#[tokio::test]
+async fn env_key_added_after_startup_resolves_after_watched_file_change() {
+    let workspace = tempfile::tempdir().expect("workspace tempdir");
+    let php = "<?php\n$v = env('NEW_KEY');\n";
+    write_minimal_laravel_project(workspace.path(), "APP_NAME=TestApp\n", php);
+
+    let mut s = TestServer::with_root(workspace.path()).await;
+    s.wait_for_index_ready().await;
+    s.open("app.php", php).await;
+    let resp = s.definition("app.php", 1, 13).await;
+    expect!["<none>"].assert_eq(&render_locations(&resp, &s.uri("")));
+
+    std::fs::write(
+        workspace.path().join(".env"),
+        "APP_NAME=TestApp\nNEW_KEY=1\n",
+    )
+    .unwrap();
+    let env_uri = s.uri(".env");
+    s.client()
+        .notify(
+            "workspace/didChangeWatchedFiles",
+            serde_json::json!({ "changes": [{ "uri": env_uri, "type": 2 }] }),
+        )
+        .await;
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let out = loop {
+        let resp = s.definition("app.php", 1, 13).await;
+        let out = render_locations(&resp, &s.uri(""));
+        if out != "<none>" || std::time::Instant::now() > deadline {
+            break out;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    };
+    expect![".env:1:0-1:7"].assert_eq(&out);
+}

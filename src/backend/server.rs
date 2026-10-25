@@ -857,8 +857,19 @@ impl LanguageServer for Backend {
                 Upsert(Uri, String),
                 Delete(Uri),
             }
+            let changed_paths: Vec<std::path::PathBuf> = params
+                .changes
+                .iter()
+                .filter_map(|c| c.uri.to_file_path().map(|p| p.into_owned()))
+                .collect();
+            self.reload_project_metadata(&changed_paths).await;
+
+            let extensions = self.config.load().indexed_extensions.clone();
             let mut changes = Vec::with_capacity(params.changes.len());
             for change in params.changes {
+                if !super::helpers::has_indexed_extension(change.uri.path().as_str(), &extensions) {
+                    continue;
+                }
                 match change.typ {
                     FileChangeType::CREATED | FileChangeType::CHANGED => {
                         if let Some(path) = change.uri.to_file_path()
