@@ -282,7 +282,15 @@ pub struct CompletionCtx<'a> {
     /// arguments. `None` in unit tests that don't supply it, and inert
     /// (empty) for non-Laravel workspaces.
     pub laravel: Option<&'a crate::laravel::LaravelIndex>,
+    /// Set when the returned list was capped, so the client re-queries as
+    /// the user types instead of filtering the truncated list locally.
+    pub incomplete: Option<&'a std::sync::atomic::AtomicBool>,
 }
+
+/// Cap on an unfiltered (empty-prefix) identifier list. With many large files
+/// open it reaches ~10k items, whose serialization and client-side decoding
+/// alone exceed a frame budget; the next keystroke re-queries with a prefix.
+const UNFILTERED_COMPLETION_LIMIT: usize = 1000;
 
 /// Returns `true` when `cursor_byte` falls inside a PHP string literal or
 /// comment. Scans the source from the beginning with a simple state machine;
@@ -930,7 +938,18 @@ pub fn filtered_completions_at(
                 });
             };
 
+            let mark_incomplete = || {
+                if let Some(flag) = ctx.incomplete {
+                    flag.store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+            };
             for (other, classes) in other_docs.iter().zip(other_classes()) {
+                // Other files' items come last, so once an unfiltered list is
+                // past the cap they would only be truncated away.
+                if prefix.is_empty() && items.len() > UNFILTERED_COMPLETION_LIMIT {
+                    mark_incomplete();
+                    break;
+                }
                 // Class-like symbols: add `use` insertion when needed.
                 for (label, kind, fqn) in classes {
                     push_class_item(&mut items, label, *kind, fqn);
@@ -978,6 +997,11 @@ pub fn filtered_completions_at(
                     item.sort_text = Some(camel_sort_key(&prefix, &item.label));
                     item.filter_text = Some(item.label.clone());
                 }
+            } else if items.len() > UNFILTERED_COMPLETION_LIMIT {
+                // Items are in priority order (keywords, builtins, this file,
+                // then other files), so truncation drops cross-file symbols.
+                items.truncate(UNFILTERED_COMPLETION_LIMIT);
+                mark_incomplete();
             }
             items
         }

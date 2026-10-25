@@ -1046,6 +1046,8 @@ impl LanguageServer for Backend {
                 .await;
             let docs = Arc::clone(&self.docs);
             let uri_owned = uri.clone();
+            let list_truncated = Arc::new(AtomicBool::new(false));
+            let list_truncated_for_ctx = Arc::clone(&list_truncated);
             // Offload to spawn_blocking: filtered_completions_at walks the full
             // AST + workspace index which can take tens of milliseconds on large
             // files, blocking the async executor from unrelated requests.
@@ -1061,13 +1063,15 @@ impl LanguageServer for Backend {
                         analysis: analysis.as_deref(),
                         session: Some(&docs),
                         laravel: Some(&laravel_arc),
+                        incomplete: Some(&list_truncated_for_ctx),
                     };
                     filtered_completions_at(&doc, &other_docs, trigger.as_deref(), &ctx)
                 })
                 .await
                 .unwrap_or_default();
             Ok(Some(CompletionResponse::List(CompletionList {
-                is_incomplete: class_search_truncated.load(Ordering::Relaxed),
+                is_incomplete: class_search_truncated.load(Ordering::Relaxed)
+                    || list_truncated.load(Ordering::Relaxed),
                 items,
             })))
         })

@@ -5099,6 +5099,66 @@ async fn completion_workspace_class_under_cap_is_complete() {
     assert!(!workspace_class_completion_is_incomplete(3).await);
 }
 
+#[tokio::test]
+async fn completion_unfiltered_list_is_capped_and_incomplete() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let funcs: String = (0..1200)
+        .map(|i| format!("function fn{i:04}() {{}}\n"))
+        .collect();
+    let src = format!("<?php\n{funcs}\n");
+    let last_line = src.lines().count() as u32;
+    s.open("file.php", &src).await;
+
+    let resp = s.completion("file.php", last_line, 0).await;
+    let items = resp["result"]["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1000);
+    assert_eq!(resp["result"]["isIncomplete"], true);
+
+    // A typed prefix filters server-side, so symbols past the cap stay reachable.
+    let mut typed = src.clone();
+    typed.push_str("fn119");
+    s.change("file.php", 2, &typed).await;
+    let resp = s.completion("file.php", last_line, 5).await;
+    let labels: Vec<&str> = resp["result"]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|i| i["label"].as_str())
+        .collect();
+    assert!(labels.contains(&"fn1199"), "got: {labels:?}");
+    assert_eq!(resp["result"]["isIncomplete"], false);
+}
+
+#[tokio::test]
+async fn completion_unfiltered_list_skips_other_files_past_cap() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    for file in ["a", "b", "c"] {
+        let funcs: String = (0..600)
+            .map(|i| format!("function {file}fn{i:03}() {{}}\n"))
+            .collect();
+        s.open(&format!("{file}.php"), &format!("<?php\n{funcs}"))
+            .await;
+    }
+    s.open("main.php", "<?php\n\n").await;
+
+    let resp = s.completion("main.php", 1, 0).await;
+    let items = resp["result"]["items"].as_array().unwrap();
+    assert!(items.len() <= 1000);
+    assert_eq!(resp["result"]["isIncomplete"], true);
+
+    s.change("main.php", 2, "<?php\ncfn59").await;
+    let resp = s.completion("main.php", 1, 5).await;
+    let labels: Vec<&str> = resp["result"]["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|i| i["label"].as_str())
+        .collect();
+    assert!(labels.contains(&"cfn599"), "got: {labels:?}");
+}
+
 /// Setting `indexVendor: false` opts back out of eager vendor indexing (for
 /// very large vendor trees where even the cheap declaration scan isn't worth
 /// it), so a vendor-defined class goes back to being invisible to the

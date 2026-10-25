@@ -269,6 +269,7 @@ fn bench_completion(c: &mut Criterion) {
         analysis: None,
         session: None,
         laravel: None,
+        incomplete: None,
     };
 
     c.bench_function("completion/cross_file_arrow", |b| {
@@ -350,6 +351,7 @@ fn bench_completion_laravel(c: &mut Criterion) {
         analysis: None,
         session: None,
         laravel: None,
+        incomplete: None,
     };
     group.bench_function("laravel_framework", |b| {
         b.iter(|| {
@@ -374,6 +376,7 @@ fn bench_completion_laravel(c: &mut Criterion) {
         analysis: None,
         session: None,
         laravel: None,
+        incomplete: None,
     };
     group.bench_function("laravel_framework_indexed", |b| {
         b.iter(|| {
@@ -405,6 +408,7 @@ fn bench_completion_laravel(c: &mut Criterion) {
         analysis: None,
         session: None,
         laravel: None,
+        incomplete: None,
     };
     group.bench_function("laravel_builder_linear", |b| {
         b.iter(|| {
@@ -427,6 +431,7 @@ fn bench_completion_laravel(c: &mut Criterion) {
         analysis: None,
         session: None,
         laravel: None,
+        incomplete: None,
     };
     group.bench_function("laravel_builder_indexed", |b| {
         b.iter(|| {
