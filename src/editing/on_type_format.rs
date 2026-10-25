@@ -68,12 +68,27 @@ fn close_brace(source: &str, position: Position) -> Vec<TextEdit> {
         }
     }
 
+    // Char index of the typed `}`: the one just before the cursor.
+    let mut utf16 = 0usize;
+    let brace_col = cur_line
+        .chars()
+        .take_while(|c| {
+            utf16 += c.len_utf16();
+            utf16 <= position.character as usize
+        })
+        .count()
+        .saturating_sub(1);
+    // Only a `}` that starts its line is re-indented.
+    if !cur_line.chars().take(brace_col).all(char::is_whitespace) {
+        return vec![];
+    }
+
     // Backward scan: depth=1 because we're looking for the `{` that opened
     // the block the just-typed `}` closes.
     let mut depth: i32 = 1;
     let mut match_line: Option<usize> = None;
     let mut scan_line = cur_idx;
-    let mut idx = line_start;
+    let mut idx = line_start + brace_col;
     while idx > 0 {
         idx -= 1;
         let c = chars[idx];

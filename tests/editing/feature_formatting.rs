@@ -159,6 +159,34 @@ async fn on_type_formatting_close_brace_already_aligned() {
     );
 }
 
+/// A `}` closing a `{` opened earlier on the same line (a one-line block or
+/// closure) leaves the line's indentation alone.
+#[tokio::test]
+async fn on_type_formatting_close_brace_one_line_block_no_edit() {
+    let mut server = TestServer::new().await;
+    server
+        .open(
+            "otfmt_oneline.php",
+            "<?php\nfunction f() {\n    if (true) {\n        $g = function () { return 1; }\n    }\n}\n",
+        )
+        .await;
+
+    let resp = server
+        .on_type_formatting("otfmt_oneline.php", 3, 38, "}")
+        .await;
+
+    assert!(
+        resp["error"].is_null(),
+        "onTypeFormatting error: {:?}",
+        resp
+    );
+    assert!(
+        resp["result"].is_null(),
+        "expected no edit for a one-line block, got: {:?}",
+        resp["result"]
+    );
+}
+
 /// A stray `}` inside a string literal earlier in the block must not throw
 /// off the brace-depth scan used to find the matching `{`. Nested one level
 /// deeper than the string so a miscounted depth would match the *outer*
