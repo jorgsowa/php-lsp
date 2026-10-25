@@ -16,6 +16,7 @@ All notable changes to php-lsp are documented here.
 
 - **Laravel index and `composer.json` reload**: changes to `.env`, `config/`, `routes/`, `lang/`, views, manifests and the other files the Laravel index reads, and to `composer.json` or `vendor/composer/installed.json`, are picked up from `workspace/didChangeWatchedFiles`. Both were read only at startup.
 - **PHPStan / PHPCS runs are bounded**: a run is killed after `externalTools.timeoutMs` (default 2 minutes), at most two runs execute at once, and a queued run is skipped if the file changed while it waited. A hung tool previously kept its process alive indefinitely, and every save started another.
+- **Two php-lsp versions deleting each other's cache**: startup removed every other version's cache directory, so two installed versions (e.g. two editors) wiped each other's cache on each launch. Another version's directory is now removed only after it has gone unused for a day.
 - **Cache sweep on every save**: `didSave` reopened the workspace cache the way startup does, re-stamping it and starting a sweep of every cache directory on each save. It now only writes the entry.
 
 ## [0.28.0] — 2026-10-25

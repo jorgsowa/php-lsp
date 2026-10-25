@@ -13,8 +13,9 @@
 //!
 //! - `<schema-version>` — `php-lsp` crate version; bumping it rotates the
 //!   entire cache so old entries are never decoded against a newer schema.
-//!   The previous version's directory is pruned by the next `WorkspaceCache::new`
-//!   call rather than left to accumulate release over release.
+//!   Another version's directory is pruned by `WorkspaceCache::new` once
+//!   none of its workspaces has been used for a day, so two installed
+//!   versions running side by side keep their own caches.
 //! - `<workspace-hash>` — blake3 of the canonicalized absolute path of the
 //!   first workspace root, truncated to 16 hex chars. Two separate projects
 //!   get isolated caches; two checkouts of the same project at the same
@@ -99,6 +100,9 @@ const WORKSPACE_MAX_IDLE: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 /// Age after which a workspace directory without a meta file is deleted;
 /// shields one that another instance has just created but not yet stamped.
 const NO_META_GRACE: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// How long another version's schema directory survives after its last use.
+const OTHER_SCHEMA_GRACE: Duration = Duration::from_secs(24 * 60 * 60);
 
 const META_FILE: &str = "workspace.json";
 
@@ -262,7 +266,7 @@ fn dir_size(dir: &Path) -> io::Result<u64> {
 }
 
 /// Removes sibling schema-version directories under `php_lsp_dir` other than
-/// `current_schema`, plus workspace directories under `current_schema` other
+/// `current_schema` that no instance has used within [`OTHER_SCHEMA_GRACE`], plus workspace directories under `current_schema` other
 /// than `current_workspace` that [`is_stale_workspace_dir`] rejects, then
 /// evicts least recently used workspaces past [`TOTAL_CACHE_SIZE_CAP`].
 /// `schema_version()` embeds `CARGO_PKG_VERSION`, so every release moves to a
@@ -284,21 +288,42 @@ fn prune_stale_dirs(
     current_workspace: String,
 ) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
-        let now = SystemTime::now();
-        for dir in subdirs(&php_lsp_dir) {
-            if dir.file_name() != Some(current_schema.as_ref()) {
-                let _ = std::fs::remove_dir_all(dir);
-            }
+        prune_stale_dirs_at(
+            &php_lsp_dir,
+            &current_schema,
+            &current_workspace,
+            SystemTime::now(),
+        );
+    })
+}
+
+fn prune_stale_dirs_at(
+    php_lsp_dir: &Path,
+    current_schema: &str,
+    current_workspace: &str,
+    now: SystemTime,
+) {
+    for dir in subdirs(php_lsp_dir) {
+        if dir.file_name() != Some(current_schema.as_ref()) && !schema_dir_in_use(&dir, now) {
+            let _ = std::fs::remove_dir_all(dir);
         }
-        let schema_dir = php_lsp_dir.join(&current_schema);
-        for dir in subdirs(&schema_dir) {
-            if dir.file_name() != Some(current_workspace.as_ref())
-                && is_stale_workspace_dir(&dir, now)
-            {
-                let _ = std::fs::remove_dir_all(dir);
-            }
+    }
+    let schema_dir = php_lsp_dir.join(current_schema);
+    for dir in subdirs(&schema_dir) {
+        if dir.file_name() != Some(current_workspace.as_ref()) && is_stale_workspace_dir(&dir, now)
+        {
+            let _ = std::fs::remove_dir_all(dir);
         }
-        evict_lru_workspaces(&schema_dir, &current_workspace, TOTAL_CACHE_SIZE_CAP);
+    }
+    evict_lru_workspaces(&schema_dir, current_workspace, TOTAL_CACHE_SIZE_CAP);
+}
+
+/// Another php-lsp version may be running against its own schema directory;
+/// keep it while any of its workspaces was used within [`OTHER_SCHEMA_GRACE`].
+fn schema_dir_in_use(schema_dir: &Path, now: SystemTime) -> bool {
+    subdirs(schema_dir).iter().any(|dir| {
+        let used = last_used(dir, read_workspace_meta(dir).as_ref());
+        now.duration_since(used).unwrap_or(Duration::ZERO) <= OTHER_SCHEMA_GRACE
     })
 }
 
@@ -701,19 +726,45 @@ mod tests {
         // Sibling flat file, like `php-binary-version.json` — must survive.
         std::fs::write(php_lsp_dir.join("php-binary-version.json"), b"{}").unwrap();
 
-        prune_stale_dirs(
-            php_lsp_dir.to_path_buf(),
-            "0.22.0-fi-v4".into(),
-            "current".into(),
-        )
-        .join()
-        .unwrap();
+        prune_stale_dirs_at(
+            php_lsp_dir,
+            "0.22.0-fi-v4",
+            "current",
+            SystemTime::now() + OTHER_SCHEMA_GRACE + Duration::from_secs(60),
+        );
 
         assert!(!stale.exists(), "stale schema directory must be removed");
         assert!(current.exists(), "current schema directory must survive");
         assert!(
             php_lsp_dir.join("php-binary-version.json").exists(),
             "flat sibling files must not be touched"
+        );
+    }
+
+    #[test]
+    fn prune_stale_dirs_keeps_schema_dir_another_version_is_using() {
+        let php_lsp_dir = TempDir::new().unwrap();
+        let root = TempDir::new().unwrap();
+        let other = php_lsp_dir.path().join("0.21.0-fi-v3");
+        workspace_dir_with_meta(&other, root.path());
+        let empty = php_lsp_dir.path().join("0.20.0-fi-v3");
+        std::fs::create_dir_all(&empty).unwrap();
+
+        prune_stale_dirs(
+            php_lsp_dir.path().to_path_buf(),
+            "0.22.0-fi-v4".into(),
+            "current".into(),
+        )
+        .join()
+        .unwrap();
+
+        assert!(
+            other.exists(),
+            "a recently used schema directory must survive"
+        );
+        assert!(
+            !empty.exists(),
+            "a schema directory with no workspaces is unused"
         );
     }
 
