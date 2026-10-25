@@ -166,6 +166,7 @@ pub(crate) fn route_call_at(
 /// `__('a.b')`/`trans('a.b')`, then `route('name')`. Returns `None`
 /// immediately for non-Laravel workspaces, or when the cursor isn't inside a
 /// recognized call's string argument.
+#[cfg_attr(target_family = "wasm", allow(dead_code))]
 pub(crate) fn resolve_string_key(
     doc: &crate::document::ast::ParsedDoc,
     position: Position,
@@ -260,6 +261,7 @@ pub(crate) fn completions_for_string_key(
 /// every domain that resolves to a real location. `root` (the workspace
 /// root) is used only to shorten the file path shown in the hover; a
 /// missing root just falls back to the full path.
+#[cfg_attr(target_family = "wasm", allow(dead_code))]
 pub(crate) fn hover_for_string_key(
     doc: &crate::document::ast::ParsedDoc,
     position: Position,
@@ -383,6 +385,7 @@ pub(crate) fn hover_for_string_key(
 /// go-to-definition (`resolve_string_key`) with the same targets surfaced as
 /// clickable underlines, matching how editors normally source
 /// `textDocument/documentLink`.
+#[cfg_attr(target_family = "wasm", allow(dead_code))]
 pub(crate) fn document_links(
     doc: &crate::document::ast::ParsedDoc,
     laravel: &LaravelIndex,
@@ -427,6 +430,7 @@ pub(crate) fn document_links(
 /// Sweeps `doc` for every bare call in `names`, resolving each string-literal
 /// argument through `lookup` and pushing a matching [`DocumentLink`] —
 /// shared body for every bare-call domain in [`document_links`].
+#[cfg_attr(target_family = "wasm", allow(dead_code))]
 fn push_links<'a>(
     out: &mut Vec<DocumentLink>,
     doc: &crate::document::ast::ParsedDoc,
@@ -456,6 +460,7 @@ fn push_links<'a>(
 /// site and look up a key; this is the reverse direction, starting from the
 /// definition and needing to know *which* key it is before a workspace
 /// sweep is possible.
+#[cfg_attr(target_family = "wasm", allow(dead_code))]
 pub(crate) fn resolve_definition_key(
     uri: &Uri,
     position: Position,
@@ -510,6 +515,7 @@ pub(crate) fn resolve_definition_key(
 /// exists (`env`, JSON-literal `trans`/`__`). `root` is the workspace root
 /// used to locate the file to edit; `None` (no workspace root) or a
 /// non-Laravel workspace yields no actions.
+#[cfg_attr(target_family = "wasm", allow(dead_code))]
 pub(crate) fn missing_key_actions(
     doc: &crate::document::ast::ParsedDoc,
     position: Position,

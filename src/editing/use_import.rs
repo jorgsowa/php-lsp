@@ -1,3 +1,6 @@
+// Reached only through the server, which is not built for wasm.
+#![cfg_attr(target_family = "wasm", allow(dead_code))]
+
 use std::collections::HashMap;
 use std::sync::Arc;
 

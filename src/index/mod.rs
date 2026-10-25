@@ -11,6 +11,7 @@ pub(crate) mod workspace_scan;
 // `**` matches any number of segments. A pattern matches a path, or anything beneath it.
 
 /// `None` for patterns that would otherwise match everything by accident (`""`, `"/"`).
+#[cfg_attr(target_family = "wasm", allow(dead_code))]
 fn pattern_segments(pat: &str) -> Option<Vec<&str>> {
     let mut p = pat.trim_start_matches("./");
     while let Some(rest) = p.strip_suffix("/**").or_else(|| p.strip_suffix('/')) {
@@ -20,10 +21,12 @@ fn pattern_segments(pat: &str) -> Option<Vec<&str>> {
     (!segs.is_empty()).then_some(segs)
 }
 
+#[cfg_attr(target_family = "wasm", allow(dead_code))]
 fn path_segments(path: &str) -> Vec<&str> {
     path.split('/').filter(|s| !s.is_empty()).collect()
 }
 
+#[cfg_attr(target_family = "wasm", allow(dead_code))]
 fn segment_matches(pat: &str, name: &str) -> bool {
     if !pat.contains(['*', '?']) {
         return pat == name;
@@ -50,6 +53,7 @@ fn segment_matches(pat: &str, name: &str) -> bool {
     p[pi..].iter().all(|&c| c == '*')
 }
 
+#[cfg_attr(target_family = "wasm", allow(dead_code))]
 fn segments_match(pat: &[&str], path: &[&str]) -> bool {
     match pat.split_first() {
         None => path.is_empty(),
@@ -61,15 +65,18 @@ fn segments_match(pat: &[&str], path: &[&str]) -> bool {
 }
 
 /// Anchored at the start of `path`; matches `path` or any of its ancestors.
+#[cfg_attr(target_family = "wasm", allow(dead_code))]
 fn matches_from_start(pat: &[&str], path: &[&str]) -> bool {
     (0..=path.len()).any(|end| segments_match(pat, &path[..end]))
 }
 
+#[cfg_attr(target_family = "wasm", allow(dead_code))]
 fn matches_at_any_depth(pat: &[&str], path: &[&str]) -> bool {
     (0..path.len()).any(|start| matches_from_start(pat, &path[start..]))
 }
 
 /// Matches `pat` at any depth; a `.php` file also matches by its stem (`Greeter` → `Greeter.php`).
+#[cfg_attr(target_family = "wasm", allow(dead_code))]
 pub(crate) fn matches_any(path: &str, patterns: &[String]) -> bool {
     let segs = path_segments(path);
     let stem_segs = segs
@@ -91,6 +98,7 @@ pub(crate) fn matches_any(path: &str, patterns: &[String]) -> bool {
         })
 }
 
+#[cfg_attr(target_family = "wasm", allow(dead_code))]
 pub(crate) fn matches_include_prefix(rel_path: &str, patterns: &[String]) -> bool {
     let segs = path_segments(rel_path);
     patterns
@@ -100,6 +108,7 @@ pub(crate) fn matches_include_prefix(rel_path: &str, patterns: &[String]) -> boo
 }
 
 /// Whether some path beneath directory `rel_path` could match one of `patterns`.
+#[cfg_attr(target_family = "wasm", allow(dead_code))]
 pub(crate) fn has_included_children(rel_path: &str, patterns: &[String]) -> bool {
     fn could_extend_to_match(pat: &[&str], path: &[&str]) -> bool {
         match (pat.split_first(), path.split_first()) {

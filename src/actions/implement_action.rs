@@ -49,6 +49,7 @@ pub fn implement_missing_actions(
 /// whose span overlaps `range` — the search needles for a text prefilter
 /// before parsing candidate files to find their declaring documents. Uses
 /// the same span-overlap check as `collect_actions`'s per-class walk.
+#[cfg_attr(target_family = "wasm", allow(dead_code))]
 pub(crate) fn target_type_names(
     stmts: &[Stmt<'_, '_>],
     sv: SourceView<'_>,
@@ -59,6 +60,7 @@ pub(crate) fn target_type_names(
     names
 }
 
+#[cfg_attr(target_family = "wasm", allow(dead_code))]
 fn collect_target_type_names(
     stmts: &[Stmt<'_, '_>],
     sv: SourceView<'_>,

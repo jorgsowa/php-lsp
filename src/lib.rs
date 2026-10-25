@@ -34,9 +34,6 @@
 //!   `navigation/references.rs`, `walk.rs`).
 //! - **`sv`** is the established local idiom for a borrowed `SourceView`.
 
-// Much of the library is reached only through `backend`; native clippy catches real dead code.
-#![cfg_attr(target_family = "wasm", allow(dead_code))]
-
 // ── Core concern modules ────────────────────────────────────────────────────
 mod document; // document lifecycle: parsed AST, salsa store, open-file state
 mod index; //    workspace indexing: compact FileIndex, background scan, cache

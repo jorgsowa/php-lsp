@@ -3,6 +3,9 @@
 //! go-to-definition and completion, so a hover is only ever offered where a
 //! jump would also succeed.
 
+// Reached only through the server, which is not built for wasm.
+#![cfg_attr(target_family = "wasm", allow(dead_code))]
+
 use std::path::Path;
 
 use tower_lsp_server::ls_types::{Hover, HoverContents, Location, MarkupContent, MarkupKind};

@@ -1,3 +1,6 @@
+// Reached only through the server, which is not built for wasm.
+#![cfg_attr(target_family = "wasm", allow(dead_code))]
+
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 

@@ -43,6 +43,7 @@ pub(crate) fn position_to_byte_offset(text: &str, pos: Position) -> usize {
 /// Apply one LSP incremental content change (replace `range` with `new_text`)
 /// to `text`. A malformed range whose end precedes its start degrades to an
 /// insertion at `start`.
+#[cfg_attr(target_family = "wasm", allow(dead_code))]
 pub(crate) fn apply_content_change(text: &mut String, range: Range, new_text: &str) {
     let start = position_to_byte_offset(text, range.start);
     let end = position_to_byte_offset(text, range.end).max(start);

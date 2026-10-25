@@ -2,6 +2,9 @@
 //! properties, constants, mixins), enclosing class at a cursor position, enum
 //! backing type, and function/method parameter lists. These answer
 //! structural facts directly from the parsed source and don't depend on mir.
+
+// Reached only through the server, which is not built for wasm.
+#![cfg_attr(target_family = "wasm", allow(dead_code))]
 use php_ast::{ClassMemberKind, EnumMemberKind, NamespaceBody, Stmt, StmtKind, Visibility};
 use tower_lsp_server::ls_types::Position;
 

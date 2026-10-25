@@ -9,6 +9,9 @@
 //! root, the `en` locale is visited before others (then alphabetically), so
 //! the first locale to define a key wins.
 
+// Reached only through the server, which is not built for wasm.
+#![cfg_attr(target_family = "wasm", allow(dead_code))]
+
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 

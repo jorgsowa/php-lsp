@@ -7,6 +7,9 @@
 //! fully guarded, so treating "missing" as risky would be a false positive.
 //! Only an explicit empty `$guarded` array is the real footgun.
 
+// Reached only through the server, which is not built for wasm.
+#![cfg_attr(target_family = "wasm", allow(dead_code))]
+
 use std::collections::HashSet;
 use std::ops::ControlFlow;
 

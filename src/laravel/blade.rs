@@ -28,6 +28,9 @@
 //! No diagnostics are added for Blade files — same deliberate scope
 //! boundary as every other domain in this module.
 
+// Reached only through the server, which is not built for wasm.
+#![cfg_attr(target_family = "wasm", allow(dead_code))]
+
 use std::path::Path;
 
 use tower_lsp_server::ls_types::{

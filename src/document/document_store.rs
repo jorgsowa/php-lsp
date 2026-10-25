@@ -1731,6 +1731,7 @@ impl DocumentStore {
     /// has anything to gain when the scope is *not* already narrowed — a
     /// narrowed scope is already the minimal necessary set, so partitioning
     /// it further just re-scans those files' bytes for no benefit.
+    #[cfg_attr(target_family = "wasm", allow(dead_code))]
     pub(crate) fn method_scope_is_narrowed(&self, owner_fqn: &str, method: &str) -> bool {
         !matches!(
             self.method_reference_scope_plan(owner_fqn, method),
@@ -1944,11 +1945,13 @@ impl DocumentStore {
     /// `debugStats` so a protocol-level test can assert a request with many
     /// narrowing-requiring declarations (code lens) pays one scan pass, not
     /// one per declaration.
+    #[cfg_attr(target_family = "wasm", allow(dead_code))]
     pub(crate) fn reachability_scan_passes(&self) -> u64 {
         self.reachability_scan_passes.load(Ordering::Relaxed)
     }
 
     /// See the `analysis_compute_count` field's docs.
+    #[cfg_attr(target_family = "wasm", allow(dead_code))]
     pub(crate) fn analysis_compute_count(&self) -> u64 {
         self.analysis_compute_count.load(Ordering::Relaxed)
     }
@@ -2446,6 +2449,7 @@ impl DocumentStore {
     /// is the per-file mention cache's hit rate; a warm, unedited repeat
     /// query should bump `reachability_scan_passes` without bumping this at
     /// all.
+    #[cfg_attr(target_family = "wasm", allow(dead_code))]
     pub(crate) fn mir_mention_scans_recorded(&self) -> u64 {
         self.with_session(|session| session.class_mention_stats().scans_recorded)
     }

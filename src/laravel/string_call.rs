@@ -133,6 +133,7 @@ pub(crate) fn call_string_prefix(
 /// file for Laravel string-key usages once the key is already known
 /// (find-references), as opposed to `call_string_arg`'s single
 /// cursor-position lookup.
+#[cfg_attr(target_family = "wasm", allow(dead_code))]
 pub(crate) fn find_call_sites(doc: &ParsedDoc, names: &[&str], target: &str) -> Vec<Range> {
     let sv = doc.view();
     collect_string_arg_calls(doc, names)
@@ -146,6 +147,7 @@ pub(crate) fn find_call_sites(doc: &ParsedDoc, names: &[&str], target: &str) -> 
 /// `doc`, with its decoded content and `Range` — unlike `find_call_sites`,
 /// not filtered to a single already-known target. Used to build document
 /// links for a whole file in one AST walk.
+#[cfg_attr(target_family = "wasm", allow(dead_code))]
 pub(crate) fn find_all_calls(doc: &ParsedDoc, names: &[&str]) -> Vec<(String, Range)> {
     let sv = doc.view();
     collect_string_arg_calls(doc, names)

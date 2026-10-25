@@ -20,6 +20,9 @@
 //! registration site rather than a specific middleware class, since a group
 //! has no single one.
 
+// Reached only through the server, which is not built for wasm.
+#![cfg_attr(target_family = "wasm", allow(dead_code))]
+
 use std::collections::HashMap;
 use std::ops::ControlFlow;
 use std::path::Path;

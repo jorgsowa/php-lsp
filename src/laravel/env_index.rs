@@ -98,6 +98,7 @@ fn parse_env_key(line: &str) -> Option<(&str, usize, usize)> {
 /// template, not the developer's real configuration to edit. The new
 /// declaration is prepended rather than appended so the edit never depends
 /// on knowing the file's current end-of-file position.
+#[cfg_attr(target_family = "wasm", allow(dead_code))]
 pub(crate) fn missing_env_key_action(root: &Path, key: &str) -> Option<CodeActionOrCommand> {
     let env_path = root.join(".env");
     if !env_path.is_file() {

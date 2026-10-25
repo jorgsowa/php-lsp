@@ -1,3 +1,6 @@
+// Reached only through the server, which is not built for wasm.
+#![cfg_attr(target_family = "wasm", allow(dead_code))]
+
 /// Per-category diagnostic toggle flags.
 /// The master `enabled` switch defaults to `true`. Individual category flags
 /// also default to `true`, so all diagnostics are on out of the box; set

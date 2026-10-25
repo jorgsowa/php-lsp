@@ -1,5 +1,6 @@
 pub(crate) struct CallableInfo {
     pub params: String,
+    #[cfg_attr(target_family = "wasm", allow(dead_code))]
     pub return_type: Option<String>,
     pub documentation: Option<String>,
 }

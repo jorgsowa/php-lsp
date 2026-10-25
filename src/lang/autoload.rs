@@ -1,3 +1,6 @@
+// Reached only through the server, which is not built for wasm.
+#![cfg_attr(target_family = "wasm", allow(dead_code))]
+
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
