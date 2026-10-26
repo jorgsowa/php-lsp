@@ -531,3 +531,52 @@ async fn declaration_change_in_one_file_does_not_break_sibling_hover() {
         ```"#]]
     .assert_eq(&render_hover(&hover_after));
 }
+
+/// `diagnostics.excludePaths` must silence a file whose URI percent-encodes
+/// its directory name (`my%20dir` for `my dir`).
+#[tokio::test]
+async fn diagnostics_exclude_paths_matches_percent_encoded_dir() {
+    let (mut server, _) = TestServer::new_with_options(serde_json::json!({
+        "diagnostics": { "excludePaths": ["my dir"] }
+    }))
+    .await;
+    let notif = server
+        .open("my%20dir/spaced.php", "<?php\n$w = new MissingSpaced();\n")
+        .await;
+    expect!["<empty>"].assert_eq(&render_diagnostics_notification(&notif));
+}
+
+/// An excluded open file must stay silent when a change to another open file
+/// sweeps every open file for republishing.
+#[tokio::test]
+async fn cross_file_republish_skips_excluded_files() {
+    let (mut server, _) = TestServer::new_with_options(serde_json::json!({
+        "diagnostics": { "excludePaths": ["excluded"] }
+    }))
+    .await;
+    server
+        .open("dep_excl.php", "<?php\nclass ExclDep {}\n")
+        .await;
+    let notif = server
+        .open("excluded/user_excl.php", "<?php\n$w = new ExclDep();\n")
+        .await;
+    expect!["<empty>"].assert_eq(&render_diagnostics_notification(&notif));
+    let user_uri = server.uri("excluded/user_excl.php");
+    let _ = server
+        .client()
+        .drain_publish_diagnostics_uris(tokio::time::Duration::from_millis(200))
+        .await;
+
+    server
+        .change("dep_excl.php", 2, "<?php\nclass ExclDepRenamed {}\n")
+        .await;
+
+    let seen = server
+        .client()
+        .drain_publish_diagnostics_uris(tokio::time::Duration::from_millis(300))
+        .await;
+    assert!(
+        !seen.iter().any(|u| u == &user_uri),
+        "excluded file received a publishDiagnostics: {seen:?}"
+    );
+}

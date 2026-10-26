@@ -230,7 +230,7 @@ use crate::lang::config::LspConfig;
 use crate::laravel::LaravelIndex;
 
 use crate::analysis::diagnostics::merge_file_diagnostics;
-use crate::document::open_files::compute_open_file_diagnostics;
+use crate::document::open_files::{compute_open_file_diagnostics, is_diagnostics_excluded};
 
 pub struct Backend {
     client: Client,
@@ -585,7 +585,7 @@ async fn compute_dependent_publishes_owned(
         let open_set: Vec<std::sync::Arc<str>> = open_files
             .urls()
             .into_iter()
-            .filter(|u| u != &changed_uri)
+            .filter(|u| u != &changed_uri && !is_diagnostics_excluded(u, &diag_cfg))
             .map(|u| std::sync::Arc::from(u.as_str()))
             .collect();
         if open_set.is_empty() {

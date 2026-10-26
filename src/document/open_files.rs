@@ -224,6 +224,15 @@ impl OpenFiles {
     }
 }
 
+/// Whether `diagnostics.excludePaths` silences `uri`, matched on its decoded path.
+pub(crate) fn is_diagnostics_excluded(uri: &Uri, diag_cfg: &DiagnosticsConfig) -> bool {
+    !diag_cfg.exclude_paths.is_empty()
+        && crate::index::matches_any(
+            &uri.path().decode().to_string_lossy(),
+            &diag_cfg.exclude_paths,
+        )
+}
+
 /// Build the full diagnostic bundle for an already-open file.
 ///
 /// Reuses cached parse diagnostics from `OpenFiles` (set by the file's own
@@ -247,7 +256,7 @@ pub(crate) fn compute_open_file_diagnostics(
     diag_cfg: &DiagnosticsConfig,
     is_laravel: bool,
 ) -> Vec<Diagnostic> {
-    if crate::index::matches_any(uri.path().as_str(), &diag_cfg.exclude_paths) {
+    if is_diagnostics_excluded(uri, diag_cfg) {
         return Vec::new();
     }
     let mut out = open_files.parse_diagnostics(uri).unwrap_or_default();
