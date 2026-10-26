@@ -26,14 +26,7 @@
 
           src = pkgs.lib.cleanSource ./.;
 
-          cargoLock = {
-            lockFile = ./Cargo.lock;
-            # mir-* crates are pinned to a git rev rather than crates.io;
-            # replace with the hash `nix build` reports on the first run.
-            outputHashes = {
-              "mir-analyzer-0.65.0" = pkgs.lib.fakeHash;
-            };
-          };
+          cargoLock.lockFile = ./Cargo.lock;
 
           buildInputs = pkgs.lib.optionals pkgs.stdenv.isDarwin [ pkgs.libiconv ];
 
