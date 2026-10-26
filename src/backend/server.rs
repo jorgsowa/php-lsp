@@ -725,7 +725,10 @@ impl LanguageServer for Backend {
         params: WillSaveTextDocumentParams,
     ) -> Result<Option<Vec<TextEdit>>> {
         guard_async_result("will_save_wait_until", async move {
-            if !self.config.load().features.formatting {
+            // Auto-save fires mid-typing; reformatting then would yank the buffer.
+            if !self.config.load().features.formatting
+                || params.reason != TextDocumentSaveReason::MANUAL
+            {
                 return Ok(None);
             }
             let source = self
