@@ -900,31 +900,38 @@ pub fn filtered_completions_at(
             // plus up to `WORKSPACE_CLASS_SEARCH_LIMIT` workspace-index matches).
             let use_pos = source.map(use_insert_position);
 
-            // Builds a class completion item, adding a `use` insertion edit
-            // unless the class is already reachable (same namespace, global,
-            // or already imported).
+            // Builds a class completion item. A class not yet reachable by its
+            // short name gets a `use` insertion edit, or is inserted fully
+            // qualified when the short name already means something else here.
             let push_class_item = |items: &mut Vec<CompletionItem>,
                                    label: &str,
                                    kind: CompletionItemKind,
                                    fqn: &str| {
-                let additional_text_edits = if let Some(pos) = use_pos {
+                let mut insert_text = None;
+                let mut additional_text_edits = None;
+                if let Some(pos) = use_pos {
                     let in_same_ns = !cur_ns.is_empty() && fqn == format!("{}\\{}", cur_ns, label);
                     let is_global = !fqn.contains('\\');
-                    let already = imports.contains_key(label);
-                    if !in_same_ns && !is_global && !already {
-                        Some(vec![TextEdit {
-                            range: Range {
-                                start: pos,
-                                end: pos,
-                            },
-                            new_text: format!("use {};\n", fqn),
-                        }])
-                    } else {
-                        None
+                    let imported_as = imports
+                        .iter()
+                        .find(|(alias, _)| alias.eq_ignore_ascii_case(label))
+                        .map(|(_, target)| target.trim_start_matches('\\'));
+                    match imported_as {
+                        Some(target) if target.eq_ignore_ascii_case(fqn) => {}
+                        Some(_) => insert_text = Some(format!("\\{fqn}")),
+                        None if in_same_ns || (is_global && cur_ns.is_empty()) => {}
+                        None if is_global => insert_text = Some(format!("\\{fqn}")),
+                        None => {
+                            additional_text_edits = Some(vec![TextEdit {
+                                range: Range {
+                                    start: pos,
+                                    end: pos,
+                                },
+                                new_text: format!("use {};\n", fqn),
+                            }])
+                        }
                     }
-                } else {
-                    None
-                };
+                }
                 items.push(CompletionItem {
                     label: label.to_string(),
                     kind: Some(kind),
@@ -933,6 +940,7 @@ pub fn filtered_completions_at(
                     } else {
                         None
                     },
+                    insert_text,
                     additional_text_edits,
                     ..Default::default()
                 });
@@ -979,8 +987,13 @@ pub fn filtered_completions_at(
                 }
             }
 
+            // A same-named class that must be inserted fully qualified is a
+            // different completion, not a duplicate.
             let mut seen = std::collections::HashSet::new();
-            items.retain(|i| seen.insert(i.label.clone()));
+            items.retain(|i| {
+                let qualified = i.insert_text.as_ref().filter(|t| t.starts_with('\\'));
+                seen.insert((i.label.clone(), qualified.cloned()))
+            });
 
             if prefix.contains('\\') {
                 // Namespace-qualified prefix: filter by FQN prefix match.

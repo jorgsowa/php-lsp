@@ -1708,6 +1708,120 @@ class Mailer {}
     expect![[r#"3:0-3:0 → "use Lib\\Mailer;\\n""#]].assert_eq(&out);
 }
 
+/// A short name already imported from another namespace must not be reused for
+/// a different class: that class is inserted fully qualified, with no `use`.
+#[tokio::test]
+async fn completion_class_shadowed_by_import_inserts_fqn() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let opened = s
+        .open_fixture(
+            r#"//- /main.php
+<?php
+namespace Main;
+use App\Foo;
+$x = new $0
+
+//- /app/Foo.php
+<?php
+namespace App;
+class Foo {}
+
+//- /other/Foo.php
+<?php
+namespace Other;
+class Foo {}
+"#,
+        )
+        .await;
+    let c = opened.cursor().clone();
+    let resp = s.completion(&c.path, c.line, c.character).await;
+    let items = match &resp["result"] {
+        v if v.is_array() => v.as_array().cloned().unwrap_or_default(),
+        v if v["items"].is_array() => v["items"].as_array().cloned().unwrap_or_default(),
+        _ => vec![],
+    };
+    let foo_item = |fqn: &str| {
+        items
+            .iter()
+            .find(|i| i["label"] == "Foo" && i["detail"] == fqn)
+            .unwrap_or_else(|| panic!("{fqn} not in completions: {items:?}"))
+            .clone()
+    };
+    let imported = foo_item("App\\Foo");
+    assert!(imported["insertText"].is_null(), "{imported}");
+    assert!(imported["additionalTextEdits"].is_null(), "{imported}");
+    let other = foo_item("Other\\Foo");
+    assert_eq!(other["insertText"], "\\Other\\Foo", "{other}");
+    assert!(other["additionalTextEdits"].is_null(), "{other}");
+}
+
+/// In a namespaced file a bare global class name would resolve into the
+/// current namespace, so it is inserted with a leading `\`.
+#[tokio::test]
+async fn completion_global_class_in_namespaced_file_inserts_leading_backslash() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let opened = s
+        .open_fixture(
+            r#"//- /main.php
+<?php
+namespace App;
+$x = new $0
+
+//- /GlobalThing.php
+<?php
+class GlobalThing {}
+"#,
+        )
+        .await;
+    let c = opened.cursor().clone();
+    let resp = s.completion(&c.path, c.line, c.character).await;
+    let items = match &resp["result"] {
+        v if v.is_array() => v.as_array().cloned().unwrap_or_default(),
+        v if v["items"].is_array() => v["items"].as_array().cloned().unwrap_or_default(),
+        _ => vec![],
+    };
+    let item = items
+        .iter()
+        .find(|i| i["label"] == "GlobalThing")
+        .expect("GlobalThing not in completions");
+    assert_eq!(item["insertText"], "\\GlobalThing", "{item}");
+    assert!(item["additionalTextEdits"].is_null(), "{item}");
+}
+
+/// A global class in a file without a namespace needs no qualification.
+#[tokio::test]
+async fn completion_global_class_in_global_file_inserts_bare_name() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let opened = s
+        .open_fixture(
+            r#"//- /main.php
+<?php
+$x = new $0
+
+//- /GlobalThing.php
+<?php
+class GlobalThing {}
+"#,
+        )
+        .await;
+    let c = opened.cursor().clone();
+    let resp = s.completion(&c.path, c.line, c.character).await;
+    let items = match &resp["result"] {
+        v if v.is_array() => v.as_array().cloned().unwrap_or_default(),
+        v if v["items"].is_array() => v["items"].as_array().cloned().unwrap_or_default(),
+        _ => vec![],
+    };
+    let item = items
+        .iter()
+        .find(|i| i["label"] == "GlobalThing")
+        .expect("GlobalThing not in completions");
+    assert!(item["insertText"].is_null(), "{item}");
+    assert!(item["additionalTextEdits"].is_null(), "{item}");
+}
+
 #[tokio::test]
 async fn completion_same_namespace_no_use_import() {
     let mut s = TestServer::new().await;
