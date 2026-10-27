@@ -422,10 +422,7 @@ class {
     .await;
     let resp = s.document_symbols("test.php").await;
     assert_document_symbol_containment(&resp);
-    expect![[r#"
-        Function valid @L1
-        Class <error> @L2"#]]
-    .assert_eq(&render_document_symbols(&resp));
+    expect!["Function valid @L1"].assert_eq(&render_document_symbols(&resp));
 }
 
 /// The function symbol's `range.start.line` must be the line where the
@@ -817,5 +814,48 @@ enum Priority {
         Enum Priority @L2
           EnumMember Low @L3
           Method label @L4"#]]
+    .assert_eq(&render_document_symbols(&resp));
+}
+
+/// Error recovery yields nameless declarations and parameters; none may reach
+/// the outline, and every range must start before it ends.
+#[tokio::test]
+async fn document_symbols_skip_error_recovery_names() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    s.open(
+        "a.php",
+        "<?php\nclass A { public function @return f(): bool {} }\nclass B { public function g(int $) {} }\n",
+    )
+    .await;
+    let resp = s.document_symbols("a.php").await;
+
+    fn pos(v: &serde_json::Value) -> (u64, u64) {
+        (
+            v["line"].as_u64().unwrap(),
+            v["character"].as_u64().unwrap(),
+        )
+    }
+    fn check(sym: &serde_json::Value) {
+        let name = sym["name"].as_str().unwrap();
+        assert!(!name.contains("<error>"), "error-recovery symbol {name}");
+        for key in ["range", "selectionRange"] {
+            let r = &sym[key];
+            assert!(
+                pos(&r["start"]) <= pos(&r["end"]),
+                "{name} has inverted {key}: {r}"
+            );
+        }
+        for child in sym["children"].as_array().into_iter().flatten() {
+            check(child);
+        }
+    }
+    for sym in resp["result"].as_array().unwrap() {
+        check(sym);
+    }
+    expect![[r#"
+        Class A @L1
+        Class B @L2
+          Method g @L2"#]]
     .assert_eq(&render_document_symbols(&resp));
 }

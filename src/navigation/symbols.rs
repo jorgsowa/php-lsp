@@ -129,22 +129,23 @@ fn symbols_from_statements(
     symbols
 }
 
-fn stmt_range(sv: SourceView<'_>, stmt: &Stmt<'_, '_>) -> Range {
-    let start = sv.position_of(stmt.span.start);
-    let end = sv.position_of(stmt.span.end);
+/// Error recovery can leave a span ending before it starts; clamp it to empty.
+fn span_range(sv: SourceView<'_>, span: php_ast::Span) -> Range {
+    let start = sv.position_of(span.start);
+    let end = sv.position_of(span.end.max(span.start));
     Range { start, end }
+}
+
+fn stmt_range(sv: SourceView<'_>, stmt: &Stmt<'_, '_>) -> Range {
+    span_range(sv, stmt.span)
 }
 
 fn member_range(sv: SourceView<'_>, member: &php_ast::ClassMember<'_, '_>) -> Range {
-    let start = sv.position_of(member.span.start);
-    let end = sv.position_of(member.span.end);
-    Range { start, end }
+    span_range(sv, member.span)
 }
 
 fn param_range(sv: SourceView<'_>, param: &php_ast::Param<'_, '_>) -> Range {
-    let start = sv.position_of(param.span.start);
-    let end = sv.position_of(param.span.end);
-    Range { start, end }
+    span_range(sv, param.span)
 }
 
 /// Per-parameter document symbols, used both for top-level functions and for
@@ -161,7 +162,7 @@ fn param_children_for(
     }
     let children: Vec<DocumentSymbol> = params
         .iter()
-        .filter(|p| p.visibility.is_none())
+        .filter(|p| p.visibility.is_none() && !p.name.is_error())
         .map(|p| {
             let prange = param_range(sv, p);
             let psel = sv.name_range_after_attrs(&p.name.to_string(), &p.attributes, p.span);
@@ -190,7 +191,7 @@ fn promoted_property_symbols_for(
 ) -> Vec<DocumentSymbol> {
     params
         .iter()
-        .filter(|p| p.visibility.is_some())
+        .filter(|p| p.visibility.is_some() && !p.name.is_error())
         .map(|p| {
             let prange = param_range(sv, p);
             let psel = sv.name_range_after_attrs(&p.name.to_string(), &p.attributes, p.span);
@@ -214,7 +215,7 @@ fn statement_to_symbol(
     full: bool,
 ) -> Option<DocumentSymbol> {
     match &stmt.kind {
-        StmtKind::Function(f) => {
+        StmtKind::Function(f) if !f.name.is_error() => {
             let range = stmt_range(sv, stmt);
             let selection_range =
                 sv.name_range_after_attrs(&f.name.to_string(), &f.attributes, stmt.span);
@@ -234,7 +235,7 @@ fn statement_to_symbol(
         }
 
         StmtKind::Class(c) => {
-            let name = c.name?;
+            let name = c.name.filter(|n| !n.is_error())?;
             let range = stmt_range(sv, stmt);
             let selection_range =
                 sv.name_range_after_attrs(&name.to_string(), &c.attributes, stmt.span);
@@ -246,7 +247,7 @@ fn statement_to_symbol(
                 .iter()
                 .flat_map(|member| -> Vec<DocumentSymbol> {
                     match &member.kind {
-                        ClassMemberKind::Method(m) => {
+                        ClassMemberKind::Method(m) if !m.name.is_error() => {
                             let mrange = member_range(sv, member);
                             let msel = sv.name_range_after_attrs(
                                 &m.name.to_string(),
@@ -269,7 +270,7 @@ fn statement_to_symbol(
                             .chain(promoted_property_symbols_for(sv, &m.params))
                             .collect()
                         }
-                        ClassMemberKind::Property(p) => {
+                        ClassMemberKind::Property(p) if !p.name.is_error() => {
                             let prange = member_range(sv, member);
                             let psel = sv.name_range_after_attrs(
                                 &p.name.to_string(),
@@ -288,7 +289,7 @@ fn statement_to_symbol(
                                 children: None,
                             }]
                         }
-                        ClassMemberKind::ClassConst(cc) => {
+                        ClassMemberKind::ClassConst(cc) if !cc.name.is_error() => {
                             let crange = member_range(sv, member);
                             let csel = sv.name_range_after_attrs(
                                 &cc.name.to_string(),
@@ -328,7 +329,7 @@ fn statement_to_symbol(
             })
         }
 
-        StmtKind::Interface(i) => {
+        StmtKind::Interface(i) if !i.name.is_error() => {
             let range = stmt_range(sv, stmt);
             let selection_range =
                 sv.name_range_after_attrs(&i.name.to_string(), &i.attributes, stmt.span);
@@ -338,7 +339,7 @@ fn statement_to_symbol(
                 .members
                 .iter()
                 .filter_map(|member| match &member.kind {
-                    ClassMemberKind::Method(m) => {
+                    ClassMemberKind::Method(m) if !m.name.is_error() => {
                         let mrange = member_range(sv, member);
                         let msel = sv.name_range_after_attrs(
                             &m.name.to_string(),
@@ -357,7 +358,7 @@ fn statement_to_symbol(
                             children: None,
                         })
                     }
-                    ClassMemberKind::ClassConst(cc) => {
+                    ClassMemberKind::ClassConst(cc) if !cc.name.is_error() => {
                         let crange = member_range(sv, member);
                         let csel = sv.name_range_after_attrs(
                             &cc.name.to_string(),
@@ -395,7 +396,7 @@ fn statement_to_symbol(
             })
         }
 
-        StmtKind::Trait(t) => {
+        StmtKind::Trait(t) if !t.name.is_error() => {
             let range = stmt_range(sv, stmt);
             let selection_range =
                 sv.name_range_after_attrs(&t.name.to_string(), &t.attributes, stmt.span);
@@ -405,7 +406,9 @@ fn statement_to_symbol(
                 .members
                 .iter()
                 .filter_map(|member| {
-                    if let ClassMemberKind::Method(m) = &member.kind {
+                    if let ClassMemberKind::Method(m) = &member.kind
+                        && !m.name.is_error()
+                    {
                         let mrange = member_range(sv, member);
                         let msel = sv.name_range_after_attrs(
                             &m.name.to_string(),
@@ -445,7 +448,7 @@ fn statement_to_symbol(
             })
         }
 
-        StmtKind::Enum(e) => {
+        StmtKind::Enum(e) if !e.name.is_error() => {
             let range = stmt_range(sv, stmt);
             let selection_range =
                 sv.name_range_after_attrs(&e.name.to_string(), &e.attributes, stmt.span);
@@ -455,11 +458,8 @@ fn statement_to_symbol(
                 .members
                 .iter()
                 .filter_map(|member| match &member.kind {
-                    EnumMemberKind::Case(c) => {
-                        let crange = Range {
-                            start: sv.position_of(member.span.start),
-                            end: sv.position_of(member.span.end),
-                        };
+                    EnumMemberKind::Case(c) if !c.name.is_error() => {
+                        let crange = span_range(sv, member.span);
                         let csel = sv.name_range_after_attrs(
                             &c.name.to_string(),
                             &c.attributes,
@@ -476,11 +476,8 @@ fn statement_to_symbol(
                             children: None,
                         })
                     }
-                    EnumMemberKind::Method(m) => {
-                        let mrange = Range {
-                            start: sv.position_of(member.span.start),
-                            end: sv.position_of(member.span.end),
-                        };
+                    EnumMemberKind::Method(m) if !m.name.is_error() => {
+                        let mrange = span_range(sv, member.span);
                         let msel = sv.name_range_after_attrs(
                             &m.name.to_string(),
                             &m.attributes,
@@ -498,11 +495,8 @@ fn statement_to_symbol(
                             children: None,
                         })
                     }
-                    EnumMemberKind::ClassConst(cc) => {
-                        let crange = Range {
-                            start: sv.position_of(member.span.start),
-                            end: sv.position_of(member.span.end),
-                        };
+                    EnumMemberKind::ClassConst(cc) if !cc.name.is_error() => {
+                        let crange = span_range(sv, member.span);
                         let csel = sv.name_range_after_attrs(
                             &cc.name.to_string(),
                             &cc.attributes,
@@ -551,6 +545,7 @@ fn format_fn_signature(
     use crate::document::ast::format_type_hint;
     let params_str = params
         .iter()
+        .filter(|p| !p.name.is_error())
         .map(|p| {
             let mut s = String::new();
             if p.by_ref {
