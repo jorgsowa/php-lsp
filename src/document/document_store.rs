@@ -12,7 +12,7 @@ use tower_lsp_server::ls_types::{SemanticToken, Uri};
 use crate::db::mir_queries::{LspWorkspace, LspWsFile};
 use crate::document::ast::ParsedDoc;
 use crate::document::cache_registry::{AnalysisCacheEntry, CacheRegistry};
-use crate::index::file_index::FileIndex;
+use crate::index::file_index::{FileIndex, SameDeclarations};
 use crate::lang::autoload::Psr4Map;
 
 /// A write invalidated a read and every bounded retry; the client should re-request.
@@ -2590,7 +2590,7 @@ impl DocumentStore {
             .get(uri)
             .and_then(|e| e.decl_index.as_ref().map(Arc::clone));
         let decl_changed = match (&old_fp, &new_index) {
-            (Some(old), Some(new)) => **old != **new,
+            (Some(old), Some(new)) => !old.same_declarations(new),
             (None, Some(new)) => !new.declares_nothing(),
             _ => false,
         };
@@ -4474,6 +4474,24 @@ mod tests {
                 "{u:?} should not have re-parsed because of an unrelated edit"
             );
         }
+    }
+
+    /// Moving a declaration to another line keeps sibling analyses cached.
+    #[test]
+    fn line_shift_does_not_bump_decl_version() {
+        let store = DocumentStore::new();
+        let ua = uri("/ls_a.php");
+        open(
+            &store,
+            ua.clone(),
+            "<?php\nfunction a() { return 1; }".to_string(),
+        );
+        let _ = store.cached_analysis(&ua).unwrap();
+        let before = store.caches.decl_version();
+
+        store.mirror_text(&ua, "<?php\n\n\nfunction a() { return 1; }");
+        let _ = store.cached_analysis(&ua);
+        assert_eq!(before, store.caches.decl_version());
     }
 
     /// Incremental analysis cache: a body-only edit to file A (no declaration

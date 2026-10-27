@@ -176,6 +176,147 @@ pub struct PropertyDef {
     pub name_char: u32,
 }
 
+/// Equality that ignores source positions, so shifting a declaration to
+/// another line doesn't count as changing it.
+pub trait SameDeclarations {
+    fn same_declarations(&self, other: &Self) -> bool;
+}
+
+impl<T: SameDeclarations> SameDeclarations for [T] {
+    fn same_declarations(&self, other: &Self) -> bool {
+        self.len() == other.len() && self.iter().zip(other).all(|(a, b)| a.same_declarations(b))
+    }
+}
+
+impl SameDeclarations for FileIndex {
+    fn same_declarations(&self, other: &Self) -> bool {
+        // `symbols` only feeds `workspace/symbol`; the declarations it lists are compared below.
+        let FileIndex {
+            namespace,
+            functions,
+            classes,
+            constants,
+            symbols: _,
+        } = self;
+        *namespace == other.namespace
+            && functions.same_declarations(&other.functions)
+            && classes.same_declarations(&other.classes)
+            && *constants == other.constants
+    }
+}
+
+impl SameDeclarations for FunctionDef {
+    fn same_declarations(&self, other: &Self) -> bool {
+        let FunctionDef {
+            name,
+            fqn,
+            params,
+            return_type,
+            start_line: _,
+            name_char: _,
+        } = self;
+        *name == other.name
+            && *fqn == other.fqn
+            && *params == other.params
+            && *return_type == other.return_type
+    }
+}
+
+impl SameDeclarations for ClassDef {
+    fn same_declarations(&self, other: &Self) -> bool {
+        let ClassDef {
+            name,
+            fqn,
+            kind,
+            is_abstract,
+            is_readonly,
+            parent,
+            implements,
+            traits,
+            methods,
+            properties,
+            constants,
+            cases,
+            start_line: _,
+            name_char: _,
+            doc_methods,
+            mixins,
+            trait_method_aliases,
+        } = self;
+        *name == other.name
+            && *fqn == other.fqn
+            && *kind == other.kind
+            && *is_abstract == other.is_abstract
+            && *is_readonly == other.is_readonly
+            && *parent == other.parent
+            && *implements == other.implements
+            && *traits == other.traits
+            && methods.same_declarations(&other.methods)
+            && properties.same_declarations(&other.properties)
+            && *constants == other.constants
+            && *cases == other.cases
+            && doc_methods.same_declarations(&other.doc_methods)
+            && *mixins == other.mixins
+            && *trait_method_aliases == other.trait_method_aliases
+    }
+}
+
+impl SameDeclarations for MethodDef {
+    fn same_declarations(&self, other: &Self) -> bool {
+        let MethodDef {
+            name,
+            is_static,
+            is_abstract,
+            visibility,
+            params,
+            return_type,
+            start_line: _,
+            name_char: _,
+        } = self;
+        *name == other.name
+            && *is_static == other.is_static
+            && *is_abstract == other.is_abstract
+            && *visibility == other.visibility
+            && *params == other.params
+            && *return_type == other.return_type
+    }
+}
+
+impl SameDeclarations for PropertyDef {
+    fn same_declarations(&self, other: &Self) -> bool {
+        let PropertyDef {
+            name,
+            is_static,
+            is_readonly,
+            type_hint,
+            visibility,
+            start_line: _,
+            name_char: _,
+        } = self;
+        *name == other.name
+            && *is_static == other.is_static
+            && *is_readonly == other.is_readonly
+            && *type_hint == other.type_hint
+            && *visibility == other.visibility
+    }
+}
+
+impl SameDeclarations for DocMethodEntry {
+    fn same_declarations(&self, other: &Self) -> bool {
+        let DocMethodEntry {
+            name,
+            is_static,
+            return_type,
+            start_line: _,
+            params,
+        } = self;
+        *name == other.name
+            && *is_static == other.is_static
+            && *return_type == other.return_type
+            && *params == other.params
+    }
+}
+
 impl FileIndex {
     /// Walk `doc.program().stmts` once and build a compact symbol index.
     pub fn extract(doc: &ParsedDoc) -> Self {

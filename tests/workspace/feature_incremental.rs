@@ -580,3 +580,36 @@ async fn cross_file_republish_skips_excluded_files() {
         "excluded file received a publishDiagnostics: {seen:?}"
     );
 }
+
+/// Shifting a declaration down a line leaves other files' analyses cached;
+/// renaming it doesn't.
+#[tokio::test]
+async fn line_shift_above_declaration_keeps_other_files_analysis() {
+    let mut server = TestServer::new().await;
+    let a = "<?php\nclass Foo {\n    public function bar(): int { return 1; }\n}\n";
+    server.open("a.php", a).await;
+    server
+        .open(
+            "b.php",
+            "<?php\nfunction f(Foo $foo): int {\n    return $foo->bar();\n}\n",
+        )
+        .await;
+    server.hover("b.php", 2, 18).await;
+
+    let before = server.debug_stats_analysis_compute_count().await;
+    server.change("a.php", 2, &format!("\n\n{a}")).await;
+    server.hover("b.php", 2, 18).await;
+    let after_shift = server.debug_stats_analysis_compute_count().await;
+    assert_eq!(after_shift - before, 1, "only a.php is re-analyzed");
+
+    server
+        .change("a.php", 3, &a.replace("bar()", "baz()"))
+        .await;
+    server.hover("b.php", 2, 18).await;
+    let after_rename = server.debug_stats_analysis_compute_count().await;
+    assert_eq!(
+        after_rename - after_shift,
+        2,
+        "a.php and b.php are re-analyzed"
+    );
+}
