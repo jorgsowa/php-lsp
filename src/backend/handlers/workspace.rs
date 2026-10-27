@@ -28,6 +28,9 @@ const PROJECT_METADATA_GLOBS: &[&str] = &[
     "**/build/manifest.json",
 ];
 
+/// Files whose creation or deletion reloads the Laravel asset index.
+const PUBLIC_ASSETS_GLOB: &str = "**/public/**";
+
 impl Backend {
     pub(crate) async fn handle_initialize(
         &self,
@@ -347,6 +350,10 @@ impl Backend {
             .map(|ext| format!("**/*.{ext}"))
             .chain(PROJECT_METADATA_GLOBS.iter().map(|g| g.to_string()))
             .map(|glob| serde_json::json!({"globPattern": glob}))
+            .chain(std::iter::once(serde_json::json!({
+                "globPattern": PUBLIC_ASSETS_GLOB,
+                "kind": WatchKind::Create.bits() | WatchKind::Delete.bits(),
+            })))
             .collect();
         let mut registrations = vec![
             Registration {

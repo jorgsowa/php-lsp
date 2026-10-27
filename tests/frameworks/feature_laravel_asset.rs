@@ -64,3 +64,59 @@ async fn asset_call_not_resolved_outside_laravel_project() {
     let out = render_locations(&resp, &s.uri(""));
     expect!["<none>"].assert_eq(&out);
 }
+
+/// The client is asked to report files created or deleted under `public/`,
+/// which is what reloads the asset index.
+#[tokio::test]
+async fn public_dir_creations_and_deletions_are_watched() {
+    let (mut s, _) = TestServer::new_with_client_capabilities(serde_json::json!({})).await;
+    let (_, params) = s
+        .client()
+        .expect_server_request("client/registerCapability")
+        .await;
+    let watchers = params["registrations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["id"] == "php-lsp-file-watcher")
+        .map(|r| r["registerOptions"]["watchers"].clone())
+        .expect("file watcher registration");
+    let public = watchers
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|w| w["globPattern"] == "**/public/**")
+        .expect("watcher for public/");
+    // WatchKind::Create | WatchKind::Delete
+    assert_eq!(public["kind"], 5);
+}
+
+#[tokio::test]
+async fn asset_created_after_startup_resolves_after_watched_file_change() {
+    const CREATED: u32 = 1;
+    let workspace = tempfile::tempdir().expect("workspace tempdir");
+    write_minimal_laravel_project(workspace.path());
+    let php = "<?php\n$href = asset('js/new.js');\n";
+    std::fs::write(workspace.path().join("app.php"), php).unwrap();
+
+    let mut s = TestServer::with_root(workspace.path()).await;
+    s.wait_for_index_ready().await;
+    s.open("app.php", php).await;
+    let resp = s.definition("app.php", 1, 20).await;
+    expect!["<none>"].assert_eq(&render_locations(&resp, &s.uri("")));
+
+    s.write_file("public/js/new.js", "x\n");
+    let created = s.uri("public/js/new.js");
+    s.did_change_watched_files(vec![(created, CREATED)]).await;
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let out = loop {
+        let resp = s.definition("app.php", 1, 20).await;
+        let out = render_locations(&resp, &s.uri(""));
+        if out != "<none>" || std::time::Instant::now() > deadline {
+            break out;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    };
+    expect!["public/js/new.js:0:0-0:0"].assert_eq(&out);
+}
