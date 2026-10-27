@@ -1320,3 +1320,53 @@ function f(int ...$old) {
     )
     .await;
 }
+
+/// Renaming a promoted constructor parameter renames the property and the
+/// `name:` arguments of `new`, from the parameter or from `$this->name`.
+#[tokio::test]
+async fn rename_promoted_param_updates_new_named_args() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    s.check_rename_annotated(
+        r#"//- /a.php
+<?php
+class P {
+    public function __construct(private int $o$0ld) {}
+    //                                       ^^^ rename
+    public function get(): int { return $this->old; }
+    //                                         ^^^ rename
+}
+
+//- /b.php
+<?php
+$p = new P(old: 1);
+//         ^^^ rename
+"#,
+        "new",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn rename_promoted_property_from_access_updates_new_named_args() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    s.check_rename_annotated(
+        r#"//- /a.php
+<?php
+class P {
+    public function __construct(private int $old) {}
+    //                                       ^^^ rename
+    public function get(): int { return $this->o$0ld; }
+    //                                         ^^^ rename
+}
+
+//- /b.php
+<?php
+$p = new P(old: 1);
+//         ^^^ rename
+"#,
+        "new",
+    )
+    .await;
+}

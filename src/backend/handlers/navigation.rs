@@ -691,6 +691,26 @@ impl Backend {
         changes
     }
 
+    /// Edits renaming the `old: value` named arguments of `new Foo(...)` when
+    /// `edit` renames a property promoted by `Foo`'s constructor.
+    pub(crate) async fn promoted_param_named_arg_edits(
+        &self,
+        edit: &WorkspaceEdit,
+        old: &str,
+        new: &str,
+    ) -> std::collections::HashMap<Uri, Vec<TextEdit>> {
+        for (uri, edits) in edit.changes.iter().flatten() {
+            let Some(doc) = self.docs.get_doc_salsa(uri) else {
+                continue;
+            };
+            let ranges: Vec<Range> = edits.iter().map(|e| e.range).collect();
+            if let Some(class) = crate::editing::rename::promoted_param_class(&doc, &ranges, old) {
+                return self.named_arg_rename_edits(uri, class, old, new).await;
+            }
+        }
+        Default::default()
+    }
+
     /// The symbol under the cursor and every site a rename of it must edit.
     async fn indexed_rename_locations(
         &self,

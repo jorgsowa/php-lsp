@@ -1249,12 +1249,7 @@ impl LanguageServer for Backend {
                         let old = word.trim_start_matches('$');
                         let new = params.new_name.trim_start_matches('$');
                         let arg_edits = self.named_arg_rename_edits(uri, callee, old, new).await;
-                        for (arg_uri, edits) in arg_edits {
-                            let changes = edit.changes.get_or_insert_with(Default::default);
-                            let file_edits = changes.entry(arg_uri).or_default();
-                            file_edits.extend(edits);
-                            crate::editing::rename::sort_and_dedup_edits(file_edits);
-                        }
+                        merge_rename_edits(&mut edit, arg_edits);
                     }
                     return Ok(Some(edit));
                 }
@@ -1262,7 +1257,14 @@ impl LanguageServer for Backend {
             // Everything else — classes, functions, methods, properties,
             // constants — renames from mir's posting lists (declaration
             // token and `use` import lines included).
-            Ok(self.indexed_rename(uri, position, &params.new_name).await)
+            let mut edit = self.indexed_rename(uri, position, &params.new_name).await;
+            if let Some(edit) = edit.as_mut() {
+                let old = word.trim_start_matches('$');
+                let new = params.new_name.trim_start_matches('$');
+                let arg_edits = self.promoted_param_named_arg_edits(edit, old, new).await;
+                merge_rename_edits(edit, arg_edits);
+            }
+            Ok(edit)
         })
         .await
     }
@@ -2519,6 +2521,15 @@ impl LanguageServer for Backend {
             self.handle_code_action_resolve(item).await
         })
         .await
+    }
+}
+
+fn merge_rename_edits(edit: &mut WorkspaceEdit, extra: HashMap<Uri, Vec<TextEdit>>) {
+    for (uri, edits) in extra {
+        let changes = edit.changes.get_or_insert_with(Default::default);
+        let file_edits = changes.entry(uri).or_default();
+        file_edits.extend(edits);
+        crate::editing::rename::sort_and_dedup_edits(file_edits);
     }
 }
 

@@ -562,6 +562,60 @@ pub fn named_arg_ranges(doc: &ParsedDoc, callee_ranges: &[Range], name: &str) ->
         .collect()
 }
 
+/// The name token of the class whose constructor promotes `$name` to a
+/// property, when one of `ranges` edits that parameter.
+pub fn promoted_param_class(doc: &ParsedDoc, ranges: &[Range], name: &str) -> Option<Position> {
+    struct Finder<'a> {
+        source: &'a str,
+        sv: crate::document::ast::SourceView<'a>,
+        offsets: Vec<u32>,
+        name: &'a str,
+        found: Option<Position>,
+    }
+
+    impl<'arena, 'src> Visitor<'arena, 'src> for Finder<'_> {
+        fn visit_stmt(&mut self, stmt: &php_ast::Stmt<'arena, 'src>) -> ControlFlow<()> {
+            if let php_ast::StmtKind::Class(c) = &stmt.kind
+                && let Some(class_name) = c.name.and_then(|n| n.as_str())
+            {
+                let promotes = c.body.members.iter().any(|member| {
+                    let php_ast::ClassMemberKind::Method(m) = &member.kind else {
+                        return false;
+                    };
+                    m.name == "__construct"
+                        && m.params.iter().any(|p| {
+                            (p.visibility.is_some() || p.is_readonly)
+                                && p.name == self.name
+                                && self.offsets.iter().any(|&off| {
+                                    let token = variable_token_span(self.source, p.span, self.name);
+                                    token.start <= off && off < token.end
+                                })
+                        })
+                });
+                if promotes {
+                    self.found = Some(self.sv.name_range_in_span(class_name, stmt.span).start);
+                    return ControlFlow::Break(());
+                }
+            }
+            php_ast::visitor::walk_stmt(self, stmt)
+        }
+    }
+
+    let sv = doc.view();
+    let mut finder = Finder {
+        source: doc.source(),
+        sv,
+        offsets: ranges
+            .iter()
+            .map(|r| sv.byte_of_position(r.start))
+            .collect(),
+        name,
+        found: None,
+    };
+    let _ = finder.visit_program(doc.program());
+    finder.found
+}
+
 /// A parameter's span also covers its type and default; keep only `$name`.
 fn variable_token_span(source: &str, span: php_ast::Span, bare: &str) -> php_ast::Span {
     let needle = format!("${bare}");
