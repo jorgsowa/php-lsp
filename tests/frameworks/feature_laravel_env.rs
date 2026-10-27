@@ -155,3 +155,62 @@ async fn env_key_added_after_startup_resolves_after_watched_file_change() {
     };
     expect![".env:1:0-1:7"].assert_eq(&out);
 }
+
+/// Watched-file changes reload only the parts of the Laravel index they can
+/// alter: a route save reloads routes, a Blade save reloads nothing, a new
+/// Blade file reloads views. `.env` is rewritten on disk but never reported,
+/// so it shows up only if something reloads the whole index.
+#[tokio::test]
+async fn watched_file_changes_reload_only_affected_laravel_parts() {
+    const CREATED: u32 = 1;
+    const CHANGED: u32 = 2;
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    std::fs::write(root.join("artisan"), "#!/usr/bin/env php\n").unwrap();
+    std::fs::write(root.join(".env"), "APP_NAME=Test\n").unwrap();
+    std::fs::create_dir_all(root.join("routes")).unwrap();
+    std::fs::write(root.join("routes/web.php"), "<?php\n").unwrap();
+    std::fs::create_dir_all(root.join("resources/views")).unwrap();
+    std::fs::write(root.join("resources/views/home.blade.php"), "hi\n").unwrap();
+    let php = "<?php\nenv('NEW_KEY');\nroute('fresh');\nview('later');\n";
+    std::fs::write(root.join("app.php"), php).unwrap();
+
+    let mut s = TestServer::with_root(root).await;
+    s.wait_for_index_ready().await;
+    s.open("app.php", php).await;
+    let def = async |s: &mut TestServer, line: u32, character: u32| {
+        let resp = s.definition("app.php", line, character).await;
+        render_locations(&resp, &s.uri(""))
+    };
+    let until_found = async |s: &mut TestServer, line: u32, character: u32| {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            let resp = s.definition("app.php", line, character).await;
+            let out = render_locations(&resp, &s.uri(""));
+            if out != "<none>" || std::time::Instant::now() > deadline {
+                break out;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    };
+
+    s.write_file(".env", "APP_NAME=Test\nNEW_KEY=1\n");
+    s.write_file("resources/views/home.blade.php", "hello\n");
+    let blade = s.uri("resources/views/home.blade.php");
+    s.did_change_watched_files(vec![(blade, CHANGED)]).await;
+
+    s.write_file(
+        "routes/web.php",
+        "<?php\nRoute::get('/', HomeController::class)->name('fresh');\n",
+    );
+    let routes = s.uri("routes/web.php");
+    s.did_change_watched_files(vec![(routes, CHANGED)]).await;
+    expect!["routes/web.php:1:46-1:51"].assert_eq(&until_found(&mut s, 2, 8).await);
+    expect!["<none>"].assert_eq(&def(&mut s, 1, 6).await);
+
+    s.write_file("resources/views/later.blade.php", "later\n");
+    let later = s.uri("resources/views/later.blade.php");
+    s.did_change_watched_files(vec![(later, CREATED)]).await;
+    expect!["resources/views/later.blade.php:0:0-0:0"].assert_eq(&until_found(&mut s, 3, 7).await);
+    expect!["<none>"].assert_eq(&def(&mut s, 1, 6).await);
+}

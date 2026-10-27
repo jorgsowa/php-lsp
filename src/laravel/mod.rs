@@ -68,7 +68,8 @@ use vite_index::{
 use std::path::Path;
 
 use tower_lsp_server::ls_types::{
-    CodeActionOrCommand, CompletionItem, DocumentLink, Hover, Location, Position, Range, Uri,
+    CodeActionOrCommand, CompletionItem, DocumentLink, FileChangeType, Hover, Location, Position,
+    Range, Uri,
 };
 
 #[cfg(not(target_family = "wasm"))]
@@ -92,7 +93,7 @@ const MIX_CALL_NAMES: &[&str] = &["mix"];
 /// Bare function names recognized as the `vite()` string-key helper call.
 const VITE_CALL_NAMES: &[&str] = &["vite"];
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct LaravelIndex {
     pub is_laravel: bool,
     pub env: EnvIndex,
@@ -131,40 +132,107 @@ impl LaravelIndex {
             livewire: LivewireIndex::load(root),
         }
     }
+
+    /// The index for `root` after `changes`, reloading only the parts they can
+    /// alter, or `None` when they alter nothing.
+    #[cfg_attr(target_family = "wasm", allow(dead_code))]
+    pub fn reloaded(
+        &self,
+        root: &Path,
+        changes: &[(std::path::PathBuf, FileChangeType)],
+    ) -> Option<Self> {
+        let mut parts = Vec::new();
+        for (path, change) in changes {
+            let Ok(rel) = path.strip_prefix(root) else {
+                continue;
+            };
+            if rel == Path::new("artisan") || rel == Path::new("composer.json") {
+                return Some(Self::load(root));
+            }
+            if self.is_laravel {
+                affected_parts(rel, *change != FileChangeType::CHANGED, &mut parts);
+            }
+        }
+        if parts.is_empty() {
+            return None;
+        }
+        let mut next = self.clone();
+        for part in parts {
+            match part {
+                Part::Env => next.env = EnvIndex::load(root),
+                Part::Config => next.config = ConfigIndex::load(root),
+                Part::Views => next.views = ViewIndex::load(root),
+                Part::Translations => next.translations = TranslationIndex::load(root),
+                Part::Routes => next.routes = RouteIndex::load(root),
+                Part::Assets => next.assets = AssetIndex::load(root),
+                Part::Mix => next.mix = MixIndex::load(root),
+                Part::Vite => next.vite = ViteIndex::load(root),
+                Part::Middleware => next.middleware = MiddlewareIndex::load(root),
+                Part::Components => next.components = ComponentIndex::load(root),
+                Part::Livewire => next.livewire = LivewireIndex::load(root),
+            }
+        }
+        Some(next)
+    }
 }
 
-/// Files and directories under a project root that [`LaravelIndex::load`]
-/// reads, relative to the root.
 #[cfg_attr(target_family = "wasm", allow(dead_code))]
-const INDEX_INPUT_FILES: &[&str] = &[
-    "artisan",
-    "composer.json",
-    ".env",
-    ".env.example",
-    "bootstrap/app.php",
-    "app/Http/Kernel.php",
-];
-#[cfg_attr(target_family = "wasm", allow(dead_code))]
-const INDEX_INPUT_DIRS: &[&str] = &[
-    "config",
-    "resources/views",
-    "lang",
-    "resources/lang",
-    "routes",
-    "public",
-    "app/View/Components",
-    "app/Livewire",
-    "app/Http/Livewire",
-];
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Part {
+    Env,
+    Config,
+    Views,
+    Translations,
+    Routes,
+    Assets,
+    Mix,
+    Vite,
+    Middleware,
+    Components,
+    Livewire,
+}
 
-/// Whether a change to `path` can alter the [`LaravelIndex`] built for `root`.
+/// Adds to `out` the parts of the index a change to `rel` (relative to the
+/// root) can alter. Name-to-file parts only change when a file comes or goes.
 #[cfg_attr(target_family = "wasm", allow(dead_code))]
-pub fn is_index_input(root: &Path, path: &Path) -> bool {
-    let Ok(rel) = path.strip_prefix(root) else {
-        return false;
+fn affected_parts(rel: &Path, added_or_removed: bool, out: &mut Vec<Part>) {
+    let is = |file: &str| rel == Path::new(file);
+    let under = |dir: &str| rel.starts_with(dir);
+    let content_part = if is(".env") || is(".env.example") {
+        Some(Part::Env)
+    } else if under("config") {
+        Some(Part::Config)
+    } else if under("lang") || under("resources/lang") {
+        Some(Part::Translations)
+    } else if under("routes") {
+        Some(Part::Routes)
+    } else if is("public/mix-manifest.json") {
+        Some(Part::Mix)
+    } else if is("public/build/manifest.json") {
+        Some(Part::Vite)
+    } else if is("bootstrap/app.php") || is("app/Http/Kernel.php") {
+        Some(Part::Middleware)
+    } else {
+        None
     };
-    INDEX_INPUT_FILES.iter().any(|f| rel == Path::new(f))
-        || INDEX_INPUT_DIRS.iter().any(|d| rel.starts_with(d))
+    let name_part = if !added_or_removed {
+        None
+    } else if under("resources/views") {
+        Some(Part::Views)
+    } else if under("public") {
+        Some(Part::Assets)
+    } else if under("app/View/Components") {
+        Some(Part::Components)
+    } else if under("app/Livewire") || under("app/Http/Livewire") {
+        Some(Part::Livewire)
+    } else {
+        None
+    };
+    for part in [content_part, name_part].into_iter().flatten() {
+        if !out.contains(&part) {
+            out.push(part);
+        }
+    }
 }
 
 /// PascalCase segment (e.g. a PHP class name like `InputGroup`) to
@@ -583,21 +651,24 @@ mod tests {
     use super::*;
 
     #[test]
-    fn index_inputs_cover_read_files_and_dirs_only() {
-        let root = Path::new("/proj");
-        for input in [
-            ".env",
-            "artisan",
-            "routes/api/v1.php",
-            "lang/en.json",
-            "public/x.css",
-        ] {
-            assert!(is_index_input(root, &root.join(input)), "{input}");
-        }
-        for other in ["app/Models/User.php", "vendor/a/b.php", "routes.php"] {
-            assert!(!is_index_input(root, &root.join(other)), "{other}");
-        }
-        assert!(!is_index_input(root, Path::new("/elsewhere/.env")));
+    fn changes_map_to_the_parts_they_alter() {
+        let parts = |rel: &str, added_or_removed: bool| {
+            let mut out = Vec::new();
+            affected_parts(Path::new(rel), added_or_removed, &mut out);
+            out
+        };
+        assert_eq!(parts(".env", false), [Part::Env]);
+        assert_eq!(parts("routes/api/v1.php", false), [Part::Routes]);
+        assert_eq!(parts("lang/en.json", false), [Part::Translations]);
+        assert!(parts("resources/views/home.blade.php", false).is_empty());
+        assert_eq!(parts("resources/views/home.blade.php", true), [Part::Views]);
+        assert!(parts("public/x.css", false).is_empty());
+        assert_eq!(
+            parts("public/mix-manifest.json", true),
+            [Part::Mix, Part::Assets]
+        );
+        assert!(parts("app/Models/User.php", true).is_empty());
+        assert!(parts("routes.php", true).is_empty());
     }
 
     #[test]

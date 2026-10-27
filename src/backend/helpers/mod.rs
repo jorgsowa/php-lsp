@@ -240,20 +240,20 @@ impl Backend {
     }
 
     /// Rebuild the PSR-4 map when composer metadata is among `changed`, and
-    /// the Laravel index when any of its inputs under the first root is.
-    pub(super) async fn reload_project_metadata(&self, changed: &[std::path::PathBuf]) {
+    /// the parts of the Laravel index its changes under the first root alter.
+    pub(super) async fn reload_project_metadata(
+        &self,
+        changed: &[(std::path::PathBuf, FileChangeType)],
+    ) {
         let roots: Vec<std::path::PathBuf> = (**self.root_paths.load()).clone();
         let Some(first_root) = roots.first().cloned() else {
             return;
         };
-        let psr4_changed = changed.iter().any(|p| {
+        let psr4_changed = changed.iter().any(|(p, _)| {
             roots
                 .iter()
                 .any(|root| crate::lang::autoload::is_psr4_input(root, p))
         });
-        let laravel_changed = changed
-            .iter()
-            .any(|p| crate::laravel::is_index_input(&first_root, p));
         if psr4_changed {
             let extensions = self.config.load().php_file_extensions();
             let psr4 = tokio::task::spawn_blocking(move || {
@@ -271,10 +271,10 @@ impl Backend {
                 self.psr4.store(Arc::new(psr4));
             }
         }
-        if laravel_changed
-            && let Ok(index) =
-                tokio::task::spawn_blocking(move || crate::laravel::LaravelIndex::load(&first_root))
-                    .await
+        let current = self.laravel.load_full();
+        let changed = changed.to_vec();
+        if let Ok(Some(index)) =
+            tokio::task::spawn_blocking(move || current.reloaded(&first_root, &changed)).await
         {
             self.laravel.store(Arc::new(index));
         }

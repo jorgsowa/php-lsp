@@ -869,10 +869,10 @@ impl LanguageServer for Backend {
                 Upsert(Uri, String),
                 Delete(Uri),
             }
-            let changed_paths: Vec<std::path::PathBuf> = params
+            let changed_paths: Vec<(std::path::PathBuf, FileChangeType)> = params
                 .changes
                 .iter()
-                .filter_map(|c| c.uri.to_file_path().map(|p| p.into_owned()))
+                .filter_map(|c| c.uri.to_file_path().map(|p| (p.into_owned(), c.typ)))
                 .collect();
             self.reload_project_metadata(&changed_paths).await;
 
