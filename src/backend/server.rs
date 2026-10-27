@@ -1241,7 +1241,19 @@ impl LanguageServer for Backend {
                     })
                     .await
                     .flatten();
-                if let Some(edit) = variable_edit {
+                if let Some(rename) = variable_edit {
+                    let mut edit = rename.edit;
+                    if let Some(callee) = rename.named_arg_callee {
+                        let old = word.trim_start_matches('$');
+                        let new = params.new_name.trim_start_matches('$');
+                        let arg_edits = self.named_arg_rename_edits(uri, callee, old, new).await;
+                        for (arg_uri, edits) in arg_edits {
+                            let changes = edit.changes.get_or_insert_with(Default::default);
+                            let file_edits = changes.entry(arg_uri).or_default();
+                            file_edits.extend(edits);
+                            crate::editing::rename::sort_and_dedup_edits(file_edits);
+                        }
+                    }
                     return Ok(Some(edit));
                 }
             }

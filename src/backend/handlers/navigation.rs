@@ -622,6 +622,81 @@ impl Backend {
         position: Position,
         new_name: &str,
     ) -> Option<WorkspaceEdit> {
+        let (word, locations) = self.indexed_rename_locations(uri, position).await?;
+        let mut changes: std::collections::HashMap<Uri, Vec<TextEdit>> =
+            std::collections::HashMap::new();
+        let mut doc_cache: std::collections::HashMap<
+            Uri,
+            Option<Arc<crate::document::ast::ParsedDoc>>,
+        > = std::collections::HashMap::new();
+        for loc in locations {
+            let ndoc = doc_cache
+                .entry(loc.uri.clone())
+                .or_insert_with(|| self.docs.get_doc_salsa(&loc.uri));
+            let Some(doc) = ndoc else { continue };
+            let Some(range) =
+                crate::editing::rename::narrow_range_to_word(doc.source(), loc.range, &word)
+            else {
+                continue;
+            };
+            changes.entry(loc.uri).or_default().push(TextEdit {
+                range,
+                new_text: new_name.to_string(),
+            });
+        }
+        for edits in changes.values_mut() {
+            crate::editing::rename::sort_and_dedup_edits(edits);
+        }
+        Some(WorkspaceEdit {
+            changes: Some(changes),
+            ..Default::default()
+        })
+    }
+
+    /// Edits renaming the `old: value` named arguments to `new` in every call
+    /// of the callee whose name token sits at `callee` in `uri`.
+    pub(crate) async fn named_arg_rename_edits(
+        &self,
+        uri: &Uri,
+        callee: Position,
+        old: &str,
+        new: &str,
+    ) -> std::collections::HashMap<Uri, Vec<TextEdit>> {
+        let mut changes: std::collections::HashMap<Uri, Vec<TextEdit>> =
+            std::collections::HashMap::new();
+        let Some((_, locations)) = self.indexed_rename_locations(uri, callee).await else {
+            return changes;
+        };
+        let mut by_uri: std::collections::HashMap<Uri, Vec<Range>> =
+            std::collections::HashMap::new();
+        for loc in locations {
+            by_uri.entry(loc.uri).or_default().push(loc.range);
+        }
+        for (loc_uri, callee_ranges) in by_uri {
+            let Some(doc) = self.docs.get_doc_salsa(&loc_uri) else {
+                continue;
+            };
+            let edits: Vec<TextEdit> =
+                crate::editing::rename::named_arg_ranges(&doc, &callee_ranges, old)
+                    .into_iter()
+                    .map(|range| TextEdit {
+                        range,
+                        new_text: new.to_string(),
+                    })
+                    .collect();
+            if !edits.is_empty() {
+                changes.insert(loc_uri, edits);
+            }
+        }
+        changes
+    }
+
+    /// The symbol under the cursor and every site a rename of it must edit.
+    async fn indexed_rename_locations(
+        &self,
+        uri: &Uri,
+        position: Position,
+    ) -> Option<(String, Vec<Location>)> {
         let source = self.get_open_text(uri).unwrap_or_default();
         let word = word_at_position(&source, position)?;
         if is_unresolvable_bareword_at(&source, position, &word) {
@@ -698,34 +773,7 @@ impl Backend {
             dedup_ref_locations(&mut locations);
         }
 
-        let mut changes: std::collections::HashMap<Uri, Vec<TextEdit>> =
-            std::collections::HashMap::new();
-        let mut doc_cache: std::collections::HashMap<
-            Uri,
-            Option<Arc<crate::document::ast::ParsedDoc>>,
-        > = std::collections::HashMap::new();
-        for loc in locations {
-            let ndoc = doc_cache
-                .entry(loc.uri.clone())
-                .or_insert_with(|| self.docs.get_doc_salsa(&loc.uri));
-            let Some(doc) = ndoc else { continue };
-            let Some(range) =
-                crate::editing::rename::narrow_range_to_word(doc.source(), loc.range, &word)
-            else {
-                continue;
-            };
-            changes.entry(loc.uri).or_default().push(TextEdit {
-                range,
-                new_text: new_name.to_string(),
-            });
-        }
-        for edits in changes.values_mut() {
-            crate::editing::rename::sort_and_dedup_edits(edits);
-        }
-        Some(WorkspaceEdit {
-            changes: Some(changes),
-            ..Default::default()
-        })
+        Some((word, locations))
     }
 
     /// Run mir's indexed-references query for `symbol` over `files` plus,

@@ -3,7 +3,9 @@ use std::ops::ControlFlow;
 
 use php_ast::visitor::{Visitor, walk_expr};
 use php_ast::{Expr, ExprKind};
-use tower_lsp_server::ls_types::{Position, Range, TextEdit, Uri, WorkspaceEdit};
+use tower_lsp_server::ls_types::{
+    DocumentHighlightKind, Position, Range, TextEdit, Uri, WorkspaceEdit,
+};
 
 use crate::document::ast::ParsedDoc;
 use crate::lang::is_php_keyword;
@@ -264,6 +266,15 @@ pub(crate) fn is_superglobal(word: &str) -> bool {
     )
 }
 
+/// A variable rename's in-document edit, plus where to find named-argument call
+/// sites when the variable is a parameter of a named callable.
+pub struct VariableRename {
+    pub edit: WorkspaceEdit,
+    /// The callee's name token: the function or method name, or the class name
+    /// for a constructor, whose references are the calls passing `name:` arguments.
+    pub named_arg_callee: Option<Position>,
+}
+
 /// Rename a `$variable` (or parameter) within its enclosing function/method scope.
 /// Only produces edits within the single document `uri`; variables don't cross files.
 pub fn rename_variable(
@@ -272,7 +283,7 @@ pub fn rename_variable(
     uri: &Uri,
     doc: &ParsedDoc,
     position: Position,
-) -> WorkspaceEdit {
+) -> VariableRename {
     let bare = var_name.trim_start_matches('$');
     let new_bare = new_name.trim_start_matches('$');
     let new_text = format!("${new_bare}");
@@ -283,6 +294,7 @@ pub fn rename_variable(
 
     let mut spans = Vec::new();
     collect_var_refs_in_scope(stmts, bare, byte_off, &mut spans);
+    let owner = param_owner(doc, bare, &spans);
 
     let mut seen = std::collections::HashSet::new();
     let mut edits: Vec<TextEdit> = spans
@@ -298,6 +310,16 @@ pub fn rename_variable(
                 })
         })
         .collect();
+    if let Some(comment) = owner.as_ref().and_then(|o| o.doc_comment) {
+        edits.extend(
+            docblock_param_spans(comment, bare)
+                .into_iter()
+                .map(|span| TextEdit {
+                    range: sv.range_of(span),
+                    new_text: new_text.clone(),
+                }),
+        );
+    }
     edits.sort_by_key(|e| (e.range.start.line, e.range.start.character));
 
     let mut changes = HashMap::new();
@@ -305,14 +327,239 @@ pub fn rename_variable(
         changes.insert(uri.clone(), edits);
     }
 
-    WorkspaceEdit {
-        changes: if changes.is_empty() {
-            None
-        } else {
-            Some(changes)
+    VariableRename {
+        edit: WorkspaceEdit {
+            changes: if changes.is_empty() {
+                None
+            } else {
+                Some(changes)
+            },
+            ..Default::default()
         },
-        ..Default::default()
+        named_arg_callee: owner.and_then(|o| o.callee),
     }
+}
+
+struct ParamOwner<'src> {
+    doc_comment: Option<php_ast::Comment<'src>>,
+    callee: Option<Position>,
+}
+
+/// The callable declaring the parameter `$name` whose span the scope walker
+/// collected, i.e. the parameter the renamed variable refers to.
+fn param_owner<'d>(
+    doc: &'d ParsedDoc,
+    name: &str,
+    spans: &[(php_ast::Span, DocumentHighlightKind)],
+) -> Option<ParamOwner<'d>> {
+    struct Finder<'a, 'src> {
+        sv: crate::document::ast::SourceView<'a>,
+        name: &'a str,
+        spans: &'a [(php_ast::Span, DocumentHighlightKind)],
+        class: Option<(&'src str, php_ast::Span)>,
+        found: Option<ParamOwner<'src>>,
+    }
+
+    impl<'src> Finder<'_, 'src> {
+        fn declares(&self, params: &[php_ast::Param<'_, 'src>]) -> bool {
+            params
+                .iter()
+                .any(|p| p.name == self.name && self.spans.iter().any(|(s, _)| *s == p.span))
+        }
+
+        fn method(&mut self, m: &php_ast::MethodDecl<'_, 'src>, span: php_ast::Span) -> bool {
+            if !self.declares(&m.params) {
+                return false;
+            }
+            let callee = if m.name.as_str() == Some("__construct") {
+                self.class
+                    .map(|(name, span)| self.sv.name_range_in_span(name, span).start)
+            } else {
+                m.name.as_str().map(|name| {
+                    self.sv
+                        .name_range_after_attrs(name, &m.attributes, span)
+                        .start
+                })
+            };
+            self.found = Some(ParamOwner {
+                doc_comment: m.doc_comment,
+                callee,
+            });
+            true
+        }
+    }
+
+    impl<'arena, 'src> Visitor<'arena, 'src> for Finder<'_, 'src> {
+        fn visit_stmt(&mut self, stmt: &php_ast::Stmt<'arena, 'src>) -> ControlFlow<()> {
+            match &stmt.kind {
+                php_ast::StmtKind::Function(f) if self.declares(&f.params) => {
+                    self.found = Some(ParamOwner {
+                        doc_comment: f.doc_comment,
+                        callee: f.name.as_str().map(|name| {
+                            self.sv
+                                .name_range_after_attrs(name, &f.attributes, stmt.span)
+                                .start
+                        }),
+                    });
+                    return ControlFlow::Break(());
+                }
+                php_ast::StmtKind::Class(c) => {
+                    let outer = self.class;
+                    self.class = c
+                        .name
+                        .and_then(|n| n.as_str())
+                        .map(|name| (name, stmt.span));
+                    let flow = php_ast::visitor::walk_stmt(self, stmt);
+                    self.class = outer;
+                    return flow;
+                }
+                php_ast::StmtKind::Interface(_)
+                | php_ast::StmtKind::Trait(_)
+                | php_ast::StmtKind::Enum(_) => {
+                    let outer = self.class.take();
+                    let flow = php_ast::visitor::walk_stmt(self, stmt);
+                    self.class = outer;
+                    return flow;
+                }
+                _ => {}
+            }
+            php_ast::visitor::walk_stmt(self, stmt)
+        }
+
+        fn visit_class_member(
+            &mut self,
+            member: &php_ast::ClassMember<'arena, 'src>,
+        ) -> ControlFlow<()> {
+            if let php_ast::ClassMemberKind::Method(m) = &member.kind
+                && self.method(m, member.span)
+            {
+                return ControlFlow::Break(());
+            }
+            php_ast::visitor::walk_class_member(self, member)
+        }
+
+        fn visit_enum_member(
+            &mut self,
+            member: &php_ast::EnumMember<'arena, 'src>,
+        ) -> ControlFlow<()> {
+            if let php_ast::EnumMemberKind::Method(m) = &member.kind
+                && self.method(m, member.span)
+            {
+                return ControlFlow::Break(());
+            }
+            php_ast::visitor::walk_enum_member(self, member)
+        }
+
+        fn visit_expr(&mut self, expr: &Expr<'arena, 'src>) -> ControlFlow<()> {
+            let declares = match &expr.kind {
+                ExprKind::Closure(c) => self.declares(&c.params),
+                ExprKind::ArrowFunction(a) => self.declares(&a.params),
+                _ => false,
+            };
+            if declares {
+                self.found = Some(ParamOwner {
+                    doc_comment: None,
+                    callee: None,
+                });
+                return ControlFlow::Break(());
+            }
+            walk_expr(self, expr)
+        }
+    }
+
+    let mut finder = Finder {
+        sv: doc.view(),
+        name,
+        spans,
+        class: None,
+        found: None,
+    };
+    let _ = finder.visit_program(doc.program());
+    finder.found
+}
+
+/// Spans of `$name` in the `@param` tags (`@psalm-param` and `@phpstan-param`
+/// included) of `comment`.
+fn docblock_param_spans(comment: php_ast::Comment<'_>, name: &str) -> Vec<php_ast::Span> {
+    let needle = format!("${name}");
+    let is_word_char = |c: char| c.is_alphanumeric() || c == '_';
+    let mut out = Vec::new();
+    let mut line_start = 0usize;
+    for line in comment.text.split_inclusive('\n') {
+        let tag = line.find("@param").or_else(|| {
+            line.find("@psalm-param")
+                .or_else(|| line.find("@phpstan-param"))
+        });
+        if let Some(tag) = tag {
+            let mut from = tag;
+            while let Some(pos) = line[from..].find(&needle) {
+                let at = from + pos;
+                let end = at + needle.len();
+                if !line[end..].chars().next().is_some_and(is_word_char) {
+                    let start = comment.span.start + (line_start + at) as u32;
+                    out.push(php_ast::Span::new(start, start + needle.len() as u32));
+                    break;
+                }
+                from = end;
+            }
+        }
+        line_start += line.len();
+    }
+    out
+}
+
+/// Ranges of the `name:` labels of named arguments in calls whose callee token
+/// (function or method name, or the class of a `new`) overlaps `callee_ranges`.
+pub fn named_arg_ranges(doc: &ParsedDoc, callee_ranges: &[Range], name: &str) -> Vec<Range> {
+    struct Finder<'a> {
+        callee_offsets: Vec<u32>,
+        name: &'a str,
+        out: Vec<php_ast::Span>,
+    }
+
+    impl<'arena, 'src> Visitor<'arena, 'src> for Finder<'_> {
+        fn visit_expr(&mut self, expr: &Expr<'arena, 'src>) -> ControlFlow<()> {
+            let call = match &expr.kind {
+                ExprKind::FunctionCall(c) => Some((c.name.span, &c.args)),
+                ExprKind::MethodCall(m) | ExprKind::NullsafeMethodCall(m) => {
+                    Some((m.method.span, &m.args))
+                }
+                ExprKind::StaticMethodCall(s) => Some((s.method.span, &s.args)),
+                ExprKind::New(n) => Some((n.class.span, &n.args)),
+                _ => None,
+            };
+            if let Some((callee, args)) = call
+                && self
+                    .callee_offsets
+                    .iter()
+                    .any(|&off| callee.start <= off && off < callee.end)
+            {
+                self.out.extend(
+                    args.iter()
+                        .filter_map(|a| a.name.as_ref())
+                        .filter(|n| n.to_string_repr() == self.name)
+                        .map(|n| n.span()),
+                );
+            }
+            walk_expr(self, expr)
+        }
+    }
+
+    let sv = doc.view();
+    let mut finder = Finder {
+        callee_offsets: callee_ranges
+            .iter()
+            .map(|r| sv.byte_of_position(r.start))
+            .collect(),
+        name,
+        out: Vec::new(),
+    };
+    let _ = finder.visit_program(doc.program());
+    finder
+        .out
+        .into_iter()
+        .map(|span| sv.range_of(span))
+        .collect()
 }
 
 /// A parameter's span also covers its type and default; keep only `$name`.

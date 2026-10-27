@@ -1176,3 +1176,84 @@ async fn rename_typed_param_edits_only_the_name() {
         1:65-1:69 → "$new""#]]
     .assert_eq(&out);
 }
+
+/// Renaming a function parameter also renames its `@param` tag and the
+/// `name:` named arguments passed to it, but not same-named arguments of
+/// another function.
+#[tokio::test]
+async fn rename_function_param_updates_docblock_and_named_args() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    s.check_rename_annotated(
+        r#"//- /a.php
+<?php
+/**
+ * @param int $old
+//            ^^^^ rename
+ */
+function foo(int $ol$0d): int { return $old; }
+//               ^^^^ rename
+//                                   ^^^^ rename
+function bar(int $old): void {}
+
+//- /b.php
+<?php
+foo(old: 1);
+//  ^^^ rename
+bar(old: 2);
+"#,
+        "new",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn rename_method_param_updates_named_args() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    s.check_rename_annotated(
+        r#"//- /a.php
+<?php
+class Greeter {
+    /** @psalm-param non-empty-string $name */
+    //                                ^^^^^ rename
+    public function greet(string $na$0me): string { return $name; }
+    //                           ^^^^^ rename
+    //                                                   ^^^^^ rename
+    public static function make(string $name): void {}
+}
+
+//- /b.php
+<?php
+$g = new Greeter();
+$g->greet(name: 'x');
+//        ^^^^ rename
+Greeter::make(name: 'y');
+"#,
+        "who",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn rename_constructor_param_updates_new_named_args() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    s.check_rename_annotated(
+        r#"//- /a.php
+<?php
+class Point {
+    public function __construct(int $x$0) { echo $x; }
+    //                              ^^ rename
+    //                                         ^^ rename
+}
+
+//- /b.php
+<?php
+$p = new Point(x: 1);
+//             ^ rename
+"#,
+        "$col",
+    )
+    .await;
+}
