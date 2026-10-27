@@ -698,7 +698,7 @@ function process(callable $callback$0): void {
     // Rename the parameter itself works
     expect![[r#"
         // main.php
-        1:17-1:35 → "$handler"
+        1:26-1:35 → "$handler"
         2:4-2:13 → "$handler""#]]
     .assert_eq(&out);
 }
@@ -850,7 +850,7 @@ function counter(): void {
     $count$0 = 0;
 //  ^^^^^^ rename
     $increment = function() use (&$count) {
-    //                           ^^^^^^^ rename
+    //                            ^^^^^^ rename
         $count++;
     };
     $increment();
@@ -1157,4 +1157,22 @@ async fn prepare_rename_on_type_keywords_returns_nothing() {
             "prepare_rename should block type keyword {label}"
         );
     }
+}
+
+/// A typed, defaulted parameter keeps its type and default.
+#[tokio::test]
+async fn rename_typed_param_edits_only_the_name() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_rename(
+            "<?php\nfunction foo(?int $ol$0d = null, string $oldest = '$old') { return $old; }\n",
+            "new",
+        )
+        .await;
+    expect![[r#"
+        // main.php
+        1:18-1:22 → "$new"
+        1:65-1:69 → "$new""#]]
+    .assert_eq(&out);
 }

@@ -288,6 +288,7 @@ pub fn rename_variable(
     let mut edits: Vec<TextEdit> = spans
         .into_iter()
         .filter_map(|(span, _)| {
+            let span = variable_token_span(doc.source(), span, bare);
             let start = sv.position_of(span.start);
             let end = sv.position_of(span.end);
             seen.insert((start.line, start.character))
@@ -312,4 +313,24 @@ pub fn rename_variable(
         },
         ..Default::default()
     }
+}
+
+/// A parameter's span also covers its type and default; keep only `$name`.
+fn variable_token_span(source: &str, span: php_ast::Span, bare: &str) -> php_ast::Span {
+    let needle = format!("${bare}");
+    let Some(text) = source.get(span.start as usize..span.end as usize) else {
+        return span;
+    };
+    let is_word_char = |c: char| c.is_alphanumeric() || c == '_';
+    let mut from = 0;
+    while let Some(pos) = text[from..].find(&needle) {
+        let at = from + pos;
+        let end = at + needle.len();
+        if !text[end..].chars().next().is_some_and(is_word_char) {
+            let start = span.start + at as u32;
+            return php_ast::Span::new(start, start + needle.len() as u32);
+        }
+        from = end;
+    }
+    span
 }
