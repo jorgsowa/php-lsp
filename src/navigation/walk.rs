@@ -353,7 +353,11 @@ fn scope_declares_var_in_expr(expr: &Expr<'_, '_>, var_name: &str) -> bool {
     v.found
 }
 
+/// A `use ($x)` capture binds `$x` to the enclosing scope, so the closure doesn't own it.
 fn closure_owns_var(c: &ClosureExpr<'_, '_>, var_name: &str) -> bool {
+    if c.use_vars.iter().any(|u| u.name == var_name) {
+        return false;
+    }
     c.params.iter().any(|p| p.name == var_name)
         || scope_declares_var_in_stmts(&c.body.stmts, var_name)
 }
@@ -577,12 +581,18 @@ impl<'arena, 'src> Visitor<'arena, 'src> for VarRefsVisitor<'_> {
                 }
                 walk_expr(self, expr)
             }
-            // Closures are scope boundaries, but arrow functions auto-capture outer variables.
+            // Closures are scope boundaries unless they capture the variable with use($x).
             ExprKind::Closure(c) => {
-                // Before stopping, collect variables from the closure's use($x) clause.
+                let mut captured = false;
                 for use_var in c.use_vars.iter() {
                     if use_var.name == self.var_name {
                         self.out.push((use_var.span, DocumentHighlightKind::READ));
+                        captured = true;
+                    }
+                }
+                if captured {
+                    for stmt in c.body.stmts.iter() {
+                        let _ = self.visit_stmt(stmt);
                     }
                 }
                 ControlFlow::Continue(())

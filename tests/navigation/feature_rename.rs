@@ -829,6 +829,7 @@ function greet(): void {
     $greeting = function() use ($name) {
     //                          ^^^^^ rename
         echo "Hello " . $name;
+        //              ^^^^^ rename
     };
     echo $name;
     //   ^^^^^ rename
@@ -852,6 +853,7 @@ function counter(): void {
     $increment = function() use (&$count) {
     //                            ^^^^^^ rename
         $count++;
+    //  ^^^^^^ rename
     };
     $increment();
     echo $count;
@@ -880,6 +882,7 @@ function process(): void {
     //                         ^^^^^^ rename
         if ($debug) {
             echo $input . $output;
+            //   ^^^^^^ rename
         }
     };
     $handler();
@@ -1254,6 +1257,66 @@ $p = new Point(x: 1);
 //             ^ rename
 "#,
         "$col",
+    )
+    .await;
+}
+
+/// A closure's captured variable is renamed in its body whether the rename
+/// starts outside or inside the closure.
+#[tokio::test]
+async fn rename_captured_variable_from_outside_closure() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    s.check_rename_annotated(
+        r#"<?php
+function outer() {
+    $ol$0d = 1;
+//  ^^^^ rename
+    $f = function () use ($old) { return $old; };
+    //                    ^^^^ rename
+    //                                   ^^^^ rename
+    $g = function () { return $old; };
+}
+"#,
+        "$new",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn rename_captured_variable_from_inside_closure() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    s.check_rename_annotated(
+        r#"<?php
+function outer() {
+    $old = 1;
+//  ^^^^ rename
+    $f = function () use ($old) { $old = 2; return $o$0ld; };
+    //                    ^^^^ rename
+    //                            ^^^^ rename
+    //                                             ^^^^ rename
+}
+"#,
+        "$new",
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn rename_variadic_param_captured_by_closure() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    s.check_rename_annotated(
+        r#"<?php
+function f(int ...$old) {
+//                ^^^^ rename
+    return function () use ($old) { return $o$0ld; };
+    //                      ^^^^ rename
+    //                                     ^^^^ rename
+}
+"#,
+        "$new",
     )
     .await;
 }
