@@ -217,7 +217,7 @@ async fn inline_variable_keeps_second_statement_on_same_line() {
     let out = s
         .check_code_action_apply(
             r#"<?php
-$x = foo(); doSomethingElse();
+$x = 5; doSomethingElse();
 echo $0$x$0;
 "#,
             "Inline variable '$x'",
@@ -226,7 +226,7 @@ echo $0$x$0;
     expect![[r#"
         <?php
         doSomethingElse();
-        echo foo();
+        echo 5;
     "#]]
     .assert_eq(&out);
 }
@@ -611,6 +611,331 @@ class A {
             public function f() {
                 return $this->name . $this->name;
             }
+        }
+    "#]]
+    .assert_eq(&out);
+}
+
+/// Writing the property between the assignment and the read changes the value.
+#[tokio::test]
+async fn inline_variable_no_action_when_property_written_before_read() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_code_action_apply(
+            r#"<?php
+function f($a) {
+    $x = $a->v;
+    $a->v = 2;
+    return $0$x$0;
+}
+"#,
+            "Inline variable '$x'",
+        )
+        .await;
+    expect!["<action not found: Inline variable '$x'>"].assert_eq(&out);
+}
+
+/// The same holds for an array element.
+#[tokio::test]
+async fn inline_variable_no_action_when_element_written_before_read() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_code_action_apply(
+            r#"<?php
+function f($a) {
+    $x = $a[0];
+    $a[0] = 2;
+    return $0$x$0;
+}
+"#,
+            "Inline variable '$x'",
+        )
+        .await;
+    expect!["<action not found: Inline variable '$x'>"].assert_eq(&out);
+}
+
+/// `sort` writes its argument by reference.
+#[tokio::test]
+async fn inline_variable_no_action_when_operand_sorted_before_read() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_code_action_apply(
+            r#"<?php
+function f($a) {
+    $x = $a;
+    sort($a);
+    return $0$x$0;
+}
+"#,
+            "Inline variable '$x'",
+        )
+        .await;
+    expect!["<action not found: Inline variable '$x'>"].assert_eq(&out);
+}
+
+/// The call would run after the mutation instead of before it.
+#[tokio::test]
+async fn inline_variable_no_action_when_call_moves_past_mutation() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_code_action_apply(
+            r#"<?php
+function f($a) {
+    $x = $a->count();
+    $a->add(1);
+    return $0$x$0;
+}
+"#,
+            "Inline variable '$x'",
+        )
+        .await;
+    expect!["<action not found: Inline variable '$x'>"].assert_eq(&out);
+}
+
+/// `$r = &1` doesn't parse, and writes through `$r` change `$x`.
+#[tokio::test]
+async fn inline_variable_no_action_when_bound_by_reference() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_code_action_apply(
+            r#"<?php
+function f() {
+    $x = 1;
+    $r = &$x;
+    $r = 2;
+    return $0$x$0;
+}
+"#,
+            "Inline variable '$x'",
+        )
+        .await;
+    expect!["<action not found: Inline variable '$x'>"].assert_eq(&out);
+}
+
+/// `foreach ([1] as &$v)` is a fatal error.
+#[tokio::test]
+async fn inline_variable_no_action_when_iterated_by_reference() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_code_action_apply(
+            r#"<?php
+function f() {
+    $x = [1];
+    foreach ($0$x$0 as &$v) {}
+}
+"#,
+            "Inline variable '$x'",
+        )
+        .await;
+    expect!["<action not found: Inline variable '$x'>"].assert_eq(&out);
+}
+
+/// `foreach (… as [$x])` writes `$x`.
+#[tokio::test]
+async fn inline_variable_no_action_when_destructured_by_foreach() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_code_action_apply(
+            r#"<?php
+function f($rows) {
+    $x = 0;
+    foreach ($rows as [$x]) {}
+    echo $0$x$0;
+}
+"#,
+            "Inline variable '$x'",
+        )
+        .await;
+    expect!["<action not found: Inline variable '$x'>"].assert_eq(&out);
+}
+
+/// The call would run on every iteration.
+#[tokio::test]
+async fn inline_variable_no_action_when_call_read_in_loop() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_code_action_apply(
+            r#"<?php
+function f($rows) {
+    $v = foo();
+    foreach ($rows as $row) {
+        echo $0$v$0;
+    }
+}
+"#,
+            "Inline variable '$v'",
+        )
+        .await;
+    expect!["<action not found: Inline variable '$v'>"].assert_eq(&out);
+}
+
+/// The call would run on every call of the closure.
+#[tokio::test]
+async fn inline_variable_no_action_when_call_read_in_arrow_fn() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_code_action_apply(
+            r#"<?php
+function f() {
+    $v = foo();
+    return fn() => $0$v$0;
+}
+"#,
+            "Inline variable '$v'",
+        )
+        .await;
+    expect!["<action not found: Inline variable '$v'>"].assert_eq(&out);
+}
+
+/// `compact('x')` reads the variable by name.
+#[tokio::test]
+async fn inline_variable_no_action_when_scope_uses_compact() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_code_action_apply(
+            r#"<?php
+function f() {
+    $x = foo();
+    echo $0$x$0;
+    return compact('x');
+}
+"#,
+            "Inline variable '$x'",
+        )
+        .await;
+    expect!["<action not found: Inline variable '$x'>"].assert_eq(&out);
+}
+
+/// The call would only run when the branch does.
+#[tokio::test]
+async fn inline_variable_no_action_when_call_read_conditionally() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_code_action_apply(
+            r#"<?php
+function f($c) {
+    $v = foo();
+    return $c ? $0$v$0 : null;
+}
+"#,
+            "Inline variable '$v'",
+        )
+        .await;
+    expect!["<action not found: Inline variable '$v'>"].assert_eq(&out);
+}
+
+/// `1.'a'` lexes as the float `1.` followed by a string.
+#[tokio::test]
+async fn inline_variable_parenthesizes_number_before_concat() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_code_action_apply(
+            r#"<?php
+$x = 1;
+echo $0$x$0.'a';
+"#,
+            "Inline variable '$x'",
+        )
+        .await;
+    expect![[r#"
+        <?php
+        echo (1).'a';
+    "#]]
+    .assert_eq(&out);
+}
+
+/// `Foo::class::make()` isn't the static call; `Foo::make()` is.
+#[tokio::test]
+async fn inline_variable_class_string_into_static_call() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_code_action_apply(
+            r#"<?php
+function f() {
+    $c = Foo::class;
+    return $0$c$0::make();
+}
+"#,
+            "Inline variable '$c'",
+        )
+        .await;
+    expect![[r#"
+        <?php
+        function f() {
+            return Foo::make();
+        }
+    "#]]
+    .assert_eq(&out);
+}
+
+/// Writes to unrelated locals and output don't block a property read.
+#[tokio::test]
+async fn inline_variable_property_read_past_unrelated_write() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_code_action_apply(
+            r#"<?php
+function f($a) {
+    $x = $a->v;
+    $n = 2;
+    echo $n;
+    return $0$x$0 * $n;
+}
+"#,
+            "Inline variable '$x'",
+        )
+        .await;
+    expect![[r#"
+        <?php
+        function f($a) {
+            $n = 2;
+            echo $n;
+            return $a->v * $n;
+        }
+    "#]]
+    .assert_eq(&out);
+}
+
+/// A constant initializer inlines into loops and arrow functions.
+#[tokio::test]
+async fn inline_variable_constant_into_loop_and_arrow_fn() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_code_action_apply(
+            r#"<?php
+function f($rows) {
+    $limit = 10;
+    foreach ($rows as $row) {
+        $row->cap($0$limit$0);
+    }
+    return fn() => $limit;
+}
+"#,
+            "Inline variable '$limit'",
+        )
+        .await;
+    expect![[r#"
+        <?php
+        function f($rows) {
+            foreach ($rows as $row) {
+                $row->cap(10);
+            }
+            return fn() => 10;
         }
     "#]]
     .assert_eq(&out);
