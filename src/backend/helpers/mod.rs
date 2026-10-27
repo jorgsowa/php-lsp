@@ -249,11 +249,13 @@ impl Backend {
         let Some(first_root) = roots.first().cloned() else {
             return;
         };
-        let psr4_changed = changed.iter().any(|(p, _)| {
-            roots
-                .iter()
-                .any(|root| crate::lang::autoload::is_psr4_input(root, p))
-        });
+        let inputs: Vec<_> = roots
+            .iter()
+            .map(|root| crate::lang::autoload::Psr4Inputs::new(root))
+            .collect();
+        let psr4_changed = changed
+            .iter()
+            .any(|(p, _)| inputs.iter().any(|i| i.contains(p)));
         if psr4_changed {
             let extensions = self.config.load().php_file_extensions();
             let psr4 = tokio::task::spawn_blocking(move || {

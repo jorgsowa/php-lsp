@@ -201,14 +201,30 @@ impl Psr4Map {
     }
 }
 
-/// Whether a change to `path` can alter the map [`Psr4Map::load_with_extensions`]
-/// builds for `root`: the project's own `composer.json` or `vendor/composer/*`.
-pub fn is_psr4_input(root: &Path, path: &Path) -> bool {
-    let composer_root = find_composer_root(root).unwrap_or_else(|| root.to_path_buf());
-    // `root`'s own file counts even when absent: creating or deleting it moves the composer root.
-    path == root.join("composer.json")
-        || path == composer_root.join("composer.json")
-        || path.parent() == Some(composer_root.join("vendor").join("composer").as_path())
+/// The files whose changes can alter the map [`Psr4Map::load_with_extensions`]
+/// builds for a root: the project's own `composer.json` or `vendor/composer/*`.
+pub struct Psr4Inputs {
+    root_manifest: PathBuf,
+    composer_manifest: PathBuf,
+    composer_dir: PathBuf,
+}
+
+impl Psr4Inputs {
+    pub fn new(root: &Path) -> Self {
+        let composer_root = find_composer_root(root).unwrap_or_else(|| root.to_path_buf());
+        Self {
+            // `root`'s own file counts even when absent: creating or deleting it moves the composer root.
+            root_manifest: root.join("composer.json"),
+            composer_manifest: composer_root.join("composer.json"),
+            composer_dir: composer_root.join("vendor").join("composer"),
+        }
+    }
+
+    pub fn contains(&self, path: &Path) -> bool {
+        path == self.root_manifest
+            || path == self.composer_manifest
+            || path.parent() == Some(self.composer_dir.as_path())
+    }
 }
 
 /// Walk up from `start` to find the nearest directory containing `composer.json`.
@@ -553,20 +569,21 @@ mod tests {
         let root = project.join("src");
         write(&project.join("composer.json"), "{}");
         std::fs::create_dir_all(&root).unwrap();
+        let inputs = Psr4Inputs::new(&root);
         for input in [
             "composer.json",
             "vendor/composer/installed.json",
             "vendor/composer/autoload_psr4.php",
             "src/composer.json",
         ] {
-            assert!(is_psr4_input(&root, &project.join(input)), "{input}");
+            assert!(inputs.contains(&project.join(input)), "{input}");
         }
         for other in [
             "vendor/acme/pkg/composer.json",
             "packages/api/composer.json",
             "src/vendor/composer/installed.json",
         ] {
-            assert!(!is_psr4_input(&root, &project.join(other)), "{other}");
+            assert!(!inputs.contains(&project.join(other)), "{other}");
         }
     }
 
