@@ -275,30 +275,45 @@ fn lsp_config_parses_features_section() {
 #[test]
 fn find_use_insert_line_after_php_open_tag() {
     let src = "<?php\nfunction foo() {}";
-    assert_eq!(find_use_insert_line(src), 1);
+    assert_eq!(
+        find_use_insert_line(&ParsedDoc::parse(src), Position::new(0, 0)),
+        1
+    );
 }
 
 #[test]
 fn find_use_insert_line_after_existing_use() {
     let src = "<?php\nuse Foo\\Bar;\nuse Baz\\Qux;\nclass Impl {}";
-    assert_eq!(find_use_insert_line(src), 3);
+    assert_eq!(
+        find_use_insert_line(&ParsedDoc::parse(src), Position::new(0, 0)),
+        3
+    );
 }
 
 #[test]
 fn find_use_insert_line_after_namespace() {
     let src = "<?php\nnamespace App\\Services;\nclass Service {}";
-    assert_eq!(find_use_insert_line(src), 2);
+    assert_eq!(
+        find_use_insert_line(&ParsedDoc::parse(src), Position::new(0, 0)),
+        2
+    );
 }
 
 #[test]
 fn find_use_insert_line_after_namespace_and_use() {
     let src = "<?php\nnamespace App;\nuse Foo\\Bar;\nclass Impl {}";
-    assert_eq!(find_use_insert_line(src), 3);
+    assert_eq!(
+        find_use_insert_line(&ParsedDoc::parse(src), Position::new(0, 0)),
+        3
+    );
 }
 
 #[test]
 fn find_use_insert_line_empty_file() {
-    assert_eq!(find_use_insert_line(""), 0);
+    assert_eq!(
+        find_use_insert_line(&ParsedDoc::parse(""), Position::new(0, 0)),
+        0
+    );
 }
 
 // indexed_file_op tests
@@ -433,7 +448,12 @@ fn defer_actions_strips_edit_and_adds_data() {
 fn build_use_import_edit_inserts_after_php_tag() {
     let src = "<?php\nclass Foo {}";
     let uri = ("file:///test.php").parse::<Uri>().unwrap();
-    let edit = build_use_import_edit(src, &uri, "App\\Services\\Bar");
+    let edit = build_use_import_edit(
+        &ParsedDoc::parse(src),
+        Position::new(0, 0),
+        &uri,
+        "App\\Services\\Bar",
+    );
     let changes = edit.changes.unwrap();
     let edits = changes.get(&uri).unwrap();
     assert_eq!(edits.len(), 1);
@@ -445,7 +465,12 @@ fn build_use_import_edit_inserts_after_php_tag() {
 fn build_use_import_edit_inserts_after_existing_use() {
     let src = "<?php\nuse Foo\\Bar;\nclass Impl {}";
     let uri = ("file:///test.php").parse::<Uri>().unwrap();
-    let edit = build_use_import_edit(src, &uri, "Baz\\Qux");
+    let edit = build_use_import_edit(
+        &ParsedDoc::parse(src),
+        Position::new(0, 0),
+        &uri,
+        "Baz\\Qux",
+    );
     let changes = edit.changes.unwrap();
     let edits = changes.get(&uri).unwrap();
     assert_eq!(edits[0].range.start.line, 2);

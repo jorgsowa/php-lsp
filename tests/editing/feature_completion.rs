@@ -1708,6 +1708,45 @@ class Mailer {}
     expect![[r#"3:0-3:0 → "use Lib\\Mailer;\\n""#]].assert_eq(&out);
 }
 
+/// In the second namespace of a file, the `use` goes under that namespace.
+#[tokio::test]
+async fn completion_use_import_into_namespace_of_cursor() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let opened = s
+        .open_fixture(
+            r#"//- /main.php
+<?php
+namespace First;
+
+use Other\Thing;
+
+namespace Second;
+
+function f() { return new $0; }
+
+//- /lib/Mailer.php
+<?php
+namespace Lib;
+class Mailer {}
+"#,
+        )
+        .await;
+    let c = opened.cursor().clone();
+    let resp = s.completion(&c.path, c.line, c.character).await;
+    let items = match &resp["result"] {
+        v if v.is_array() => v.as_array().cloned().unwrap_or_default(),
+        v if v["items"].is_array() => v["items"].as_array().cloned().unwrap_or_default(),
+        _ => vec![],
+    };
+    let mailer_item = items
+        .iter()
+        .find(|i| i["label"].as_str() == Some("Mailer"))
+        .expect("Mailer class not in completions");
+    let out = render_text_edits(&json!({ "result": mailer_item["additionalTextEdits"] }));
+    expect![[r#"6:0-6:0 → "use Lib\\Mailer;\\n""#]].assert_eq(&out);
+}
+
 /// A short name already imported from another namespace must not be reused for
 /// a different class: that class is inserted fully qualified, with no `use`.
 #[tokio::test]

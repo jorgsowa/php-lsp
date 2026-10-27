@@ -1088,6 +1088,72 @@ async fn code_action_quickfix_undefined_class_inserts_after_declare() {
     .assert_eq(&out);
 }
 
+/// The import goes into the namespace of the flagged code, not the first one.
+#[tokio::test]
+async fn code_action_quickfix_undefined_class_inserts_into_second_namespace() {
+    let mut server = TestServer::new().await;
+    server
+        .open(
+            "Service/Widget.php",
+            "<?php\nnamespace App\\Service;\n\nclass Widget {}\n",
+        )
+        .await;
+    server
+        .open(
+            "main.php",
+            "<?php\nnamespace First;\n\nclass A {}\n\nnamespace Second;\n\nnew Widget();\n",
+        )
+        .await;
+
+    let resp = server.code_action("main.php", 7, 4, 7, 10).await;
+    let action = resp["result"]
+        .as_array()
+        .and_then(|actions| {
+            actions
+                .iter()
+                .find(|a| a["title"] == "Add use App\\Service\\Widget")
+        })
+        .unwrap_or_else(|| panic!("expected an Add use quick-fix: {resp:#}"));
+    let out = canonicalize_workspace_edit(&action["edit"], &server.uri(""));
+    expect![[r#"
+        // main.php
+        6:0-6:0 → "use App\\Service\\Widget;\n""#]]
+    .assert_eq(&out);
+}
+
+/// With the namespace's `{` on its own line, the import goes after the brace.
+#[tokio::test]
+async fn code_action_quickfix_undefined_class_inserts_after_brace_on_next_line() {
+    let mut server = TestServer::new().await;
+    server
+        .open(
+            "Service/Widget.php",
+            "<?php\nnamespace App\\Service;\n\nclass Widget {}\n",
+        )
+        .await;
+    server
+        .open(
+            "main.php",
+            "<?php\nnamespace App\n{\n    new Widget();\n}\n",
+        )
+        .await;
+
+    let resp = server.code_action("main.php", 3, 8, 3, 14).await;
+    let action = resp["result"]
+        .as_array()
+        .and_then(|actions| {
+            actions
+                .iter()
+                .find(|a| a["title"] == "Add use App\\Service\\Widget")
+        })
+        .unwrap_or_else(|| panic!("expected an Add use quick-fix: {resp:#}"));
+    let out = canonicalize_workspace_edit(&action["edit"], &server.uri(""));
+    expect![[r#"
+        // main.php
+        3:0-3:0 → "use App\\Service\\Widget;\n""#]]
+    .assert_eq(&out);
+}
+
 /// Several classes with the same short name are ambiguous, so an import
 /// quick-fix must not guess between them.
 #[tokio::test]

@@ -1,7 +1,8 @@
 use php_ast::{ExprKind, NamespaceBody, Stmt, StmtKind};
 use tower_lsp_server::ls_types::{CompletionItem, CompletionItemKind, Position};
 
-use crate::lang::file_header::use_insert_line;
+use crate::document::ast::ParsedDoc;
+use crate::lang::file_header::{namespace_at, use_insert_line};
 
 /// An `#[\Attribute]`-annotated class with its resolved target bitmask.
 ///
@@ -254,26 +255,17 @@ pub(super) fn collect_classes_with_ns(
     }
 }
 
-/// The line+col where a new `use` statement should be inserted in the current file.
-pub(super) fn use_insert_position(source: &str) -> Position {
+/// Where a new `use` statement goes for code at `at`.
+pub(super) fn use_insert_position(doc: &ParsedDoc, at: Position) -> Position {
     Position {
-        line: use_insert_line(source, |stmt| !stmt.starts_with("use function ")),
+        line: use_insert_line(doc, at, |stmt| !stmt.starts_with("use function ")),
         character: 0,
     }
 }
 
-/// The namespace declared at the top of the given statements, if any.
-pub(super) fn current_file_namespace(stmts: &[Stmt<'_, '_>]) -> String {
-    for stmt in stmts {
-        if let StmtKind::Namespace(ns) = &stmt.kind {
-            return ns
-                .name
-                .as_ref()
-                .map(|n| n.to_string_repr().to_string())
-                .unwrap_or_default();
-        }
-    }
-    String::new()
+/// The namespace that code at `at` belongs to, if any.
+pub(super) fn current_namespace(doc: &ParsedDoc, at: Position) -> String {
+    namespace_at(&doc.program().stmts, doc.view().byte_of_position(at)).name()
 }
 
 /// Which symbol table a `use` completion should search — determined by

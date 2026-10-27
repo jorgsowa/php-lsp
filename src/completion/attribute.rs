@@ -4,7 +4,7 @@ use std::sync::Arc;
 use tower_lsp_server::ls_types::{CompletionItem, CompletionItemKind, Position, Range, TextEdit};
 
 use super::namespace::{
-    collect_attribute_classes, current_file_namespace, infer_attribute_target, use_insert_position,
+    collect_attribute_classes, current_namespace, infer_attribute_target, use_insert_position,
 };
 use crate::document::ast::ParsedDoc;
 
@@ -21,7 +21,7 @@ pub(super) fn attribute_completions(
     imports: &HashMap<String, String>,
 ) -> Vec<CompletionItem> {
     let context_target = infer_attribute_target(source, position);
-    let cur_ns = current_file_namespace(&doc.program().stmts);
+    let cur_ns = current_namespace(doc, position);
     let mut items: Vec<CompletionItem> = Vec::new();
     let mut seen = std::collections::HashSet::new();
 
@@ -57,7 +57,7 @@ pub(super) fn attribute_completions(
             let is_global = !entry.fqn.contains('\\');
             let already = imports.contains_key(&entry.label);
             let additional_text_edits = if !in_same_ns && !is_global && !already {
-                let insert_pos = use_insert_position(source);
+                let insert_pos = use_insert_position(doc, position);
                 Some(vec![TextEdit {
                     range: Range {
                         start: insert_pos,

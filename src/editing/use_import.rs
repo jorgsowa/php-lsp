@@ -48,9 +48,14 @@ pub(crate) fn find_fqn_for_function(
     None
 }
 
-/// Build a `WorkspaceEdit` that inserts `use FQN;` near the top of the file.
-pub(crate) fn build_use_import_edit(source: &str, uri: &Uri, fqn: &str) -> WorkspaceEdit {
-    let insert_line = find_use_insert_line(source);
+/// Build a `WorkspaceEdit` that inserts `use FQN;` into the namespace of the code at `at`.
+pub(crate) fn build_use_import_edit(
+    doc: &ParsedDoc,
+    at: Position,
+    uri: &Uri,
+    fqn: &str,
+) -> WorkspaceEdit {
+    let insert_line = find_use_insert_line(doc, at);
     let insert_text = format!("use {fqn};\n");
     let pos = Position {
         line: insert_line,
@@ -71,9 +76,14 @@ pub(crate) fn build_use_import_edit(source: &str, uri: &Uri, fqn: &str) -> Works
     }
 }
 
-/// Build a `WorkspaceEdit` that inserts `use function FQN;` near the top of the file.
-pub(crate) fn build_use_function_import_edit(source: &str, uri: &Uri, fqn: &str) -> WorkspaceEdit {
-    let insert_line = find_use_insert_line(source);
+/// Build a `WorkspaceEdit` that inserts `use function FQN;` into the namespace of the code at `at`.
+pub(crate) fn build_use_function_import_edit(
+    doc: &ParsedDoc,
+    at: Position,
+    uri: &Uri,
+    fqn: &str,
+) -> WorkspaceEdit {
+    let insert_line = find_use_insert_line(doc, at);
     let insert_text = format!("use function {fqn};\n");
     let pos = Position {
         line: insert_line,
@@ -94,6 +104,6 @@ pub(crate) fn build_use_function_import_edit(source: &str, uri: &Uri, fqn: &str)
     }
 }
 
-pub(crate) fn find_use_insert_line(source: &str) -> u32 {
-    use_insert_line(source, |_| true)
+pub(crate) fn find_use_insert_line(doc: &ParsedDoc, at: Position) -> u32 {
+    use_insert_line(doc, at, |_| true)
 }

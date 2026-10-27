@@ -104,7 +104,7 @@ impl Backend {
                     let Some(fqn) = wi.unique_class_fqn_by_short_name(class_name) else {
                         continue;
                     };
-                    let edit = build_use_import_edit(&source, &uri, fqn);
+                    let edit = build_use_import_edit(&doc, diag.range.start, &uri, fqn);
                     actions.push(CodeActionOrCommand::CodeAction(CodeAction {
                         title: format!("Add use {fqn}"),
                         kind: Some(CodeActionKind::QUICKFIX),
@@ -136,7 +136,8 @@ impl Backend {
                     if let Some(fqn) =
                         find_fqn_for_function(fn_name, &get_doc, &function_candidates)
                     {
-                        let edit = build_use_function_import_edit(&source, &uri, &fqn);
+                        let edit =
+                            build_use_function_import_edit(&doc, diag.range.start, &uri, &fqn);
                         let action = CodeAction {
                             title: format!("Add use function {fqn}"),
                             kind: Some(CodeActionKind::QUICKFIX),

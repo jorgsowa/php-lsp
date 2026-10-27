@@ -21,7 +21,7 @@ use member::{
 
 mod namespace;
 use namespace::{
-    collect_classes_with_ns, collect_fqns_with_prefix, current_file_namespace, typed_prefix,
+    collect_classes_with_ns, collect_fqns_with_prefix, current_namespace, typed_prefix,
     use_completion_prefix, use_insert_position,
 };
 
@@ -892,13 +892,14 @@ pub fn filtered_completions_at(
             items.extend(sym_items);
             items.extend(magic_items);
 
-            let cur_ns = current_file_namespace(&doc.program().stmts);
+            let at = position.unwrap_or_default();
+            let cur_ns = current_namespace(doc, at);
 
             // Same for every class candidate in this request (depends only on
             // `source`) — computed once instead of per candidate, since a single
             // request may build up to dozens of class items (open-doc classes
             // plus up to `WORKSPACE_CLASS_SEARCH_LIMIT` workspace-index matches).
-            let use_pos = source.map(use_insert_position);
+            let use_pos = source.map(|_| use_insert_position(doc, at));
 
             // Builds a class completion item. A class not yet reachable by its
             // short name gets a `use` insertion edit, or is inserted fully
