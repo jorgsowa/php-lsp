@@ -591,6 +591,7 @@ impl LanguageServer for Backend {
                 }
             }
             let Some(text) = updated else { return };
+            self.external_runs.cancel(&uri);
 
             // Store text immediately and capture the version token.
             // Features (completion, hover, …) see the new text instantly while
@@ -685,6 +686,7 @@ impl LanguageServer for Backend {
                 return;
             }
             self.close_open_file(&uri);
+            self.external_runs.cancel(&uri);
             // The salsa-mirrored text still holds the last edited buffer, which may
             // include unsaved changes the user just discarded on close. Re-sync from
             // disk so cross-file features resolve against the on-disk content; if the
@@ -828,8 +830,8 @@ impl LanguageServer for Backend {
                     let docs = Arc::clone(&self.docs);
                     let open_files = self.open_files.clone();
                     let diag_cfg = self.config.load().diagnostics.clone();
-                    let uri = uri.clone();
-                    tokio::spawn(async move {
+                    let run_uri = uri.clone();
+                    self.external_runs.start(run_uri, async move {
                         let _slot = crate::analysis::external::acquire_run_slot().await;
                         if open_files.current_version(&uri) != Some(version) {
                             return;

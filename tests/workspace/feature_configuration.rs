@@ -233,6 +233,7 @@ async fn save_and_check_marker(s: &mut TestServer, marker: &std::path::Path) -> 
 
 #[cfg(unix)]
 #[tokio::test]
+#[serial_test::serial(external_tool_slots)]
 async fn project_config_cannot_run_external_tool_binaries() {
     let tmp = tempfile::tempdir().unwrap();
     let tools = tempfile::tempdir().unwrap();
@@ -255,6 +256,7 @@ async fn project_config_cannot_run_external_tool_binaries() {
 
 #[cfg(unix)]
 #[tokio::test]
+#[serial_test::serial(external_tool_slots)]
 async fn editor_config_runs_external_tool_binaries() {
     let tmp = tempfile::tempdir().unwrap();
     let tools = tempfile::tempdir().unwrap();
@@ -306,16 +308,33 @@ async fn poll_until(timeout: std::time::Duration, mut cond: impl FnMut() -> bool
     cond()
 }
 
+/// A fake tool that records its own pid and that of a forked `sleep` child,
+/// one `<shell> <child>` line per run, then waits on the child.
+#[cfg(unix)]
+fn forking_tool_script(dir: &std::path::Path, pids: &std::path::Path) -> std::path::PathBuf {
+    tool_script(
+        dir,
+        &format!("sleep 30 &\necho \"$$ $!\" >> '{}'\nwait", pids.display()),
+    )
+}
+
+#[cfg(unix)]
+fn read_tool_pids(pids: &std::path::Path) -> Vec<String> {
+    std::fs::read_to_string(pids)
+        .unwrap_or_default()
+        .split_whitespace()
+        .map(str::to_string)
+        .collect()
+}
+
 #[cfg(unix)]
 #[tokio::test]
+#[serial_test::serial(external_tool_slots)]
 async fn external_tool_is_killed_after_timeout() {
     let tmp = tempfile::tempdir().unwrap();
     let tools = tempfile::tempdir().unwrap();
-    let pid_file = tools.path().join("pid");
-    let script = tool_script(
-        tools.path(),
-        &format!("echo $$ > '{}'\nexec sleep 30", pid_file.display()),
-    );
+    let pids = tools.path().join("pids");
+    let script = forking_tool_script(tools.path(), &pids);
     std::fs::write(tmp.path().join("a.php"), "<?php\necho 1;\n").unwrap();
 
     let mut s = TestServer::with_root_and_options(
@@ -332,23 +351,71 @@ async fn external_tool_is_killed_after_timeout() {
 
     let secs = std::time::Duration::from_secs(10);
     assert!(
-        poll_until(secs, || std::fs::read_to_string(&pid_file)
-            .is_ok_and(|p| !p.trim().is_empty()))
-        .await,
+        poll_until(secs, || read_tool_pids(&pids).len() == 2).await,
         "tool never started"
     );
-    let pid = std::fs::read_to_string(&pid_file)
-        .unwrap()
-        .trim()
-        .to_string();
+    for pid in read_tool_pids(&pids) {
+        assert!(
+            poll_until(secs, || !process_is_running(&pid)).await,
+            "tool process {pid} still running after its timeout"
+        );
+    }
+}
+
+/// A newer save or an edit supersedes the running tool: its processes die
+/// long before the timeout and its slot frees up.
+#[cfg(unix)]
+#[tokio::test]
+#[serial_test::serial(external_tool_slots)]
+async fn superseded_external_tool_run_is_killed() {
+    let tmp = tempfile::tempdir().unwrap();
+    let tools = tempfile::tempdir().unwrap();
+    let pids = tools.path().join("pids");
+    let script = forking_tool_script(tools.path(), &pids);
+    std::fs::write(tmp.path().join("a.php"), "<?php\necho 1;\n").unwrap();
+
+    let mut s = TestServer::with_root_and_options(
+        tmp.path(),
+        json!({"externalTools": {
+            "timeoutMs": 120000,
+            "phpstan": {"enabled": true, "binPath": script},
+        }}),
+    )
+    .await;
+    s.wait_for_index_ready().await;
+    s.open("a.php", "<?php\necho 1;\n").await;
+
+    let secs = std::time::Duration::from_secs(10);
+    s.save("a.php").await;
     assert!(
-        poll_until(secs, || !process_is_running(&pid)).await,
-        "tool process {pid} still running after its timeout"
+        poll_until(secs, || read_tool_pids(&pids).len() == 2).await,
+        "first run never started"
     );
+    s.save("a.php").await;
+    assert!(
+        poll_until(secs, || read_tool_pids(&pids).len() == 4).await,
+        "second run never started"
+    );
+    let all = read_tool_pids(&pids);
+    for pid in &all[..2] {
+        assert!(
+            poll_until(secs, || !process_is_running(pid)).await,
+            "process {pid} of the superseded run is still running"
+        );
+    }
+
+    s.change("a.php", 2, "<?php\necho 2;\n").await;
+    for pid in &all[2..] {
+        assert!(
+            poll_until(secs, || !process_is_running(pid)).await,
+            "process {pid} of the run for the edited buffer is still running"
+        );
+    }
 }
 
 #[cfg(unix)]
 #[tokio::test]
+#[serial_test::serial(external_tool_slots)]
 async fn external_tool_runs_are_capped() {
     let tmp = tempfile::tempdir().unwrap();
     let tools = tempfile::tempdir().unwrap();
@@ -363,7 +430,10 @@ async fn external_tool_runs_are_capped() {
             log = log.display()
         ),
     );
-    std::fs::write(tmp.path().join("a.php"), "<?php\necho 1;\n").unwrap();
+    const SAVES: usize = 6;
+    for i in 0..SAVES {
+        std::fs::write(tmp.path().join(format!("a{i}.php")), "<?php\necho 1;\n").unwrap();
+    }
 
     let mut s = TestServer::with_root_and_options(
         tmp.path(),
@@ -371,10 +441,10 @@ async fn external_tool_runs_are_capped() {
     )
     .await;
     s.wait_for_index_ready().await;
-    s.open("a.php", "<?php\necho 1;\n").await;
-    const SAVES: usize = 6;
-    for _ in 0..SAVES {
-        s.save("a.php").await;
+    for i in 0..SAVES {
+        let path = format!("a{i}.php");
+        s.open(&path, "<?php\necho 1;\n").await;
+        s.save(&path).await;
     }
 
     let read_counts = || -> Vec<usize> {

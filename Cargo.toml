@@ -78,6 +78,10 @@ percent-encoding = "2"
 mimalloc = { version = "0.1", default-features = false }
 tokio = { version = "1", features = ["full"] }
 
+# `killpg` for external tools' process groups.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dependencies.walkdir]
 version = "2"
 

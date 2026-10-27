@@ -250,6 +250,7 @@ pub struct Backend {
     /// `client/registerCapability` call for it).
     client_capabilities: Arc<ArcSwap<ClientCapabilities>>,
     code_lens_scopes: Arc<crate::analysis::code_lens::CodeLensScopeCache>,
+    external_runs: crate::analysis::external::RunRegistry,
     /// Test-only hold points for the responsiveness regression tests.
     debug_gate: Arc<debug_gate::DebugGate>,
 }
@@ -272,6 +273,7 @@ impl Backend {
             config: Arc::new(ArcSwap::from_pointee(LspConfig::default())),
             client_capabilities: Arc::new(ArcSwap::from_pointee(ClientCapabilities::default())),
             code_lens_scopes: Arc::default(),
+            external_runs: Default::default(),
             debug_gate: Arc::new(debug_gate::DebugGate::new()),
         }
     }

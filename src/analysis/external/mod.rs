@@ -35,7 +35,53 @@ pub async fn acquire_run_slot() -> tokio::sync::SemaphorePermit<'static> {
         .expect("RUN_SLOTS is never closed")
 }
 
-/// Run `command` to completion, killing it if it outlives `timeout`.
+/// One in-flight run per file: a newer save, an edit or a close aborts the
+/// previous run, which kills its process and frees its slot.
+#[cfg(not(target_family = "wasm"))]
+#[derive(Default)]
+pub struct RunRegistry {
+    runs: dashmap::DashMap<tower_lsp_server::ls_types::Uri, tokio::task::AbortHandle>,
+}
+
+#[cfg(not(target_family = "wasm"))]
+impl RunRegistry {
+    /// Spawn `run` for `uri`, aborting the run it supersedes.
+    pub fn start(
+        &self,
+        uri: tower_lsp_server::ls_types::Uri,
+        run: impl std::future::Future<Output = ()> + Send + 'static,
+    ) {
+        let handle = tokio::spawn(run).abort_handle();
+        if let Some(previous) = self.runs.insert(uri, handle) {
+            previous.abort();
+        }
+    }
+
+    pub fn cancel(&self, uri: &tower_lsp_server::ls_types::Uri) {
+        if let Some((_, run)) = self.runs.remove(uri) {
+            run.abort();
+        }
+    }
+}
+
+/// SIGKILLs a tool's process group on drop, so processes it forked die with it.
+#[cfg(unix)]
+struct ProcessGroupGuard(Option<u32>);
+
+#[cfg(unix)]
+impl Drop for ProcessGroupGuard {
+    fn drop(&mut self) {
+        if let Some(pgid) = self.0.and_then(|pid| i32::try_from(pid).ok()) {
+            // SAFETY: `killpg` has no memory-safety preconditions.
+            unsafe {
+                libc::killpg(pgid, libc::SIGKILL);
+            }
+        }
+    }
+}
+
+/// Run `command` to completion, killing it and its children if it outlives
+/// `timeout` or the run is aborted.
 #[cfg(not(target_family = "wasm"))]
 async fn output_with_timeout(
     mut command: tokio::process::Command,
@@ -43,7 +89,18 @@ async fn output_with_timeout(
     tool: &str,
 ) -> Option<std::process::Output> {
     command.kill_on_drop(true);
-    match tokio::time::timeout(timeout, command.output()).await {
+    #[cfg(unix)]
+    command.process_group(0);
+    let child = match command.spawn() {
+        Ok(child) => child,
+        Err(e) => {
+            tracing::debug!("{tool} did not run: {e}");
+            return None;
+        }
+    };
+    #[cfg(unix)]
+    let _group = ProcessGroupGuard(child.id());
+    match tokio::time::timeout(timeout, child.wait_with_output()).await {
         Ok(Ok(output)) => Some(output),
         Ok(Err(e)) => {
             tracing::debug!("{tool} did not run: {e}");
