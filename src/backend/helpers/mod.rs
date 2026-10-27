@@ -247,9 +247,9 @@ impl Backend {
             return;
         };
         let psr4_changed = changed.iter().any(|p| {
-            p.file_name().is_some_and(|n| n == "composer.json")
-                || p.parent()
-                    .is_some_and(|d| d.ends_with(std::path::Path::new("vendor/composer")))
+            roots
+                .iter()
+                .any(|root| crate::lang::autoload::is_psr4_input(root, p))
         });
         let laravel_changed = changed
             .iter()

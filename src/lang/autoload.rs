@@ -201,6 +201,16 @@ impl Psr4Map {
     }
 }
 
+/// Whether a change to `path` can alter the map [`Psr4Map::load_with_extensions`]
+/// builds for `root`: the project's own `composer.json` or `vendor/composer/*`.
+pub fn is_psr4_input(root: &Path, path: &Path) -> bool {
+    let composer_root = find_composer_root(root).unwrap_or_else(|| root.to_path_buf());
+    // `root`'s own file counts even when absent: creating or deleting it moves the composer root.
+    path == root.join("composer.json")
+        || path == composer_root.join("composer.json")
+        || path.parent() == Some(composer_root.join("vendor").join("composer").as_path())
+}
+
 /// Walk up from `start` to find the nearest directory containing `composer.json`.
 /// Returns `None` if not found within 8 levels. This handles workspaces rooted
 /// at a `src/` subdirectory where `composer.json` lives in the project root above.
@@ -534,6 +544,30 @@ mod tests {
         }
         let mut f = std::fs::File::create(path).unwrap();
         f.write_all(content.as_bytes()).unwrap();
+    }
+
+    #[test]
+    fn psr4_inputs_are_the_project_composer_files_only() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path();
+        let root = project.join("src");
+        write(&project.join("composer.json"), "{}");
+        std::fs::create_dir_all(&root).unwrap();
+        for input in [
+            "composer.json",
+            "vendor/composer/installed.json",
+            "vendor/composer/autoload_psr4.php",
+            "src/composer.json",
+        ] {
+            assert!(is_psr4_input(&root, &project.join(input)), "{input}");
+        }
+        for other in [
+            "vendor/acme/pkg/composer.json",
+            "packages/api/composer.json",
+            "src/vendor/composer/installed.json",
+        ] {
+            assert!(!is_psr4_input(&root, &project.join(other)), "{other}");
+        }
     }
 
     #[test]

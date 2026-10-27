@@ -565,6 +565,60 @@ async fn composer_json_change_reloads_psr4_map() {
     expect!["lib/Foo.php:3:6-3:9"].assert_eq(&out);
 }
 
+/// A dependency's `composer.json` doesn't feed the PSR-4 map, so its change
+/// leaves the map alone; the project's own file still reloads it.
+#[tokio::test]
+async fn vendor_package_composer_json_change_keeps_psr4_map() {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(tmp.path().join("composer.json"), "{}").unwrap();
+    std::fs::create_dir(tmp.path().join("lib")).unwrap();
+    std::fs::write(
+        tmp.path().join("lib/Foo.php"),
+        "<?php\nnamespace Acme;\n\nclass Foo {}\n",
+    )
+    .unwrap();
+    let app = "<?php\nnew \\Acme\\Foo();\n";
+    std::fs::write(tmp.path().join("app.php"), app).unwrap();
+
+    let mut server = TestServer::with_root_and_options(
+        tmp.path(),
+        serde_json::json!({"excludePaths": ["lib/"]}),
+    )
+    .await;
+    server.wait_for_index_ready().await;
+    server.open("app.php", app).await;
+
+    // On disk but unreported: only a reload of the map can pick it up.
+    server.write_file(
+        "composer.json",
+        r#"{"autoload": {"psr-4": {"Acme\\": "lib/"}}}"#,
+    );
+    server.write_file("vendor/acme/pkg/composer.json", "{}");
+    let vendor_uri = server.uri("vendor/acme/pkg/composer.json");
+    server
+        .did_change_watched_files(vec![(vendor_uri, CHANGED)])
+        .await;
+    let deadline = std::time::Instant::now() + Duration::from_secs(1);
+    while std::time::Instant::now() < deadline {
+        let resp = server.definition("app.php", 1, 11).await;
+        expect!["<none>"].assert_eq(&render_locations(&resp, &server.uri("")));
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    let uri = server.uri("composer.json");
+    server.did_change_watched_files(vec![(uri, CHANGED)]).await;
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let out = loop {
+        let resp = server.definition("app.php", 1, 11).await;
+        let out = render_locations(&resp, &server.uri(""));
+        if out != "<none>" || std::time::Instant::now() > deadline {
+            break out;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    };
+    expect!["lib/Foo.php:3:6-3:9"].assert_eq(&out);
+}
+
 #[tokio::test]
 async fn batch_changes_all_applied() {
     let mut server = TestServer::with_fixture("psr4-mini").await;
