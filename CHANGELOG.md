@@ -4,11 +4,15 @@ All notable changes to php-lsp are documented here.
 
 ## [Unreleased]
 
+## [0.29.0] — 2026-10-28
+
 ### Changed
 
 - **Code lens reference counts load on resolve**: `textDocument/codeLens` returns reference-count lenses without a title and `codeLens/resolve` fills them in, so editors only look up references for lenses on screen. The first resolve of a file still narrows every lens symbol in one shared workspace scan.
 - **Faster completion with many open files**: symbols from open files are filtered by the typed prefix before their items are built, and function/method signatures and docs come from `completionItem/resolve`. Identifier completion with 20 large files open dropped from ~32 ms to ~2 ms, and from ~67 ms to ~8 ms with no prefix. Highlighting an open-file function or method now shows its signature and docstring (as hover does), not the docblock rendered inline.
 - **Completion with no prefix is capped at 1,000 items**: the list is marked incomplete so the editor re-queries as you type. With 200 large files open it was ~9.5k items (1.25 MB of JSON, ~280 ms per request), now ~110 KB and ~5 ms.
+- **Faster first queries on cold large workspaces**: without a disk cache, mir's symbol index is built in parallel before `indexReady`, instead of by a serial walk of every file on the first query.
+- **Edits above a declaration keep cached analysis**: declaration positions are left out of a file's declaration fingerprint, so inserting a line above a class no longer evicts every open file's cached analysis.
 
 ### Security
 
@@ -16,25 +20,34 @@ All notable changes to php-lsp are documented here.
 
 ### Fixed
 
-- **Laravel index and `composer.json` reload**: changes to `.env`, `config/`, `routes/`, `lang/`, views, manifests and the other files the Laravel index reads, and to `composer.json` or `vendor/composer/installed.json`, are picked up from `workspace/didChangeWatchedFiles`. Both were read only at startup.
-- **PHPStan / PHPCS runs are bounded**: a run is killed after `externalTools.timeoutMs` (default 2 minutes), at most two runs execute at once, and a queued run is skipped if the file changed while it waited. A hung tool previously kept its process alive indefinitely, and every save started another.
+- **Laravel index and `composer.json` reload**: changes to `.env`, `config/`, `routes/`, `lang/`, views, manifests and the other files the Laravel index reads, and to `composer.json` or `vendor/composer/installed.json`, are picked up from `workspace/didChangeWatchedFiles`. Both were read only at startup. Only the index parts a change can affect are rebuilt, assets created or deleted under `public/` are picked up, and a dependency's `composer.json` under `vendor/` doesn't reload the PSR-4 map.
+- **PHPStan / PHPCS runs are bounded**: a run is killed after `externalTools.timeoutMs` (default 2 minutes), at most two runs execute at once, and a queued run is skipped if the file changed while it waited. A hung tool previously kept its process alive indefinitely, and every save started another. A timed-out run's whole process group is killed, and a newer save, an edit or closing the file cancels the file's running tool.
 - **Two php-lsp versions deleting each other's cache**: startup removed every other version's cache directory, so two installed versions (e.g. two editors) wiped each other's cache on each launch. Another version's directory is now removed only after it has gone unused for a day.
 - **Escaped JSON keys in Laravel indexes**: translation keys in `lang/*.json` and paths in Mix/Vite manifests written with escapes (`"\/js\/app.js"`, `"Caf\u00e9"`) were missing from go-to-definition, hover and completion, and a key whose text first appeared as a value pointed at that value.
 - **Files that aren't valid UTF-8 are indexed**: legacy files in Latin-1 or another 8-bit encoding were skipped by the workspace scan, file-watcher updates and autoload lookups. Invalid bytes are now replaced with U+FFFD.
 - **Symlinked directories and files are indexed**: the workspace scan skipped every symlink, so packages linked into `vendor/` by Composer path repositories were missing. Links pointing outside the workspace are followed (each target once, never into an ancestor); links to paths inside it are still skipped since the scan reaches those directly.
-- **Windows drive-letter spelling**: a file opened as `file:///c%3A/...` (VS Code) and the same file found by the workspace scan as `file:///C%3A/...` were tracked as two documents, duplicating declarations. Incoming URIs are normalized to the upper-case, encoded-colon form.
+- **Windows drive-letter spelling**: a file opened as `file:///c%3A/...` (VS Code) and the same file found by the workspace scan as `file:///C%3A/...` were tracked as two documents, duplicating declarations. Incoming URIs are normalized to the upper-case, encoded-colon form, and outgoing ones go back in the client's spelling.
 - **Cache sweep on every save**: `didSave` reopened the workspace cache the way startup does, re-stamping it and starting a sweep of every cache directory on each save. It now only writes the entry.
 - **Organize imports deleting trait-use**: in a file with no top-level imports, "Organize imports" treated a class-body `use HasFactory;` as an unused import and removed it. Only `use` statements before the first declaration are organized.
 - **Formatting added a blank line at end of file**: the whole-document edit stopped before the final newline, so each format (and each format-on-save) appended another blank line and the file never settled.
-- **Format-on-save ignored `features.formatting`**: `willSaveWaitUntil` was always advertised and always ran the formatter. It now follows the `formatting` feature flag.
+- **Format-on-save ignored `features.formatting`**: `willSaveWaitUntil` was always advertised and always ran the formatter. It now follows the `formatting` feature flag and formats only on a manual save, not on auto-save while typing.
 - **Range formatting**: formatting a selection doubled the newline after it, converted CRLF line endings to LF, dropped the selection's indentation and inserted a blank line at its start.
-- **Inline variable**: the action replaced every same-named variable in the file, including parameters of other functions and `"$x"` inside strings, and inlined `$x = $a + $b` into `$x * 2` as `$a + $b * 2`. It now works on the variable's own scope, parenthesizes the initializer where precedence needs it, accepts multi-line initializers, and is not offered for an assignment inside a nested block or reads inside strings, `isset`/`unset` or closure `use`.
-- **`use` inserted in the wrong place**: auto-import completion and the "Add use" quick-fix put the new `use` before `declare(strict_types=1)` (a fatal error) or after a class-body trait-use. It now goes after the file's last import, `declare` or `namespace`.
+- **Inline variable**: the action replaced every same-named variable in the file, including parameters of other functions and `"$x"` inside strings, and inlined `$x = $a + $b` into `$x * 2` as `$a + $b * 2`. It now works on the variable's own scope, parenthesizes the initializer where precedence needs it, accepts multi-line initializers, and is not offered for an assignment inside a nested block or reads inside strings, `isset`/`unset` or closure `use`. It is also not offered when a read is passed by reference, when an initializer operand is reassigned before a read, when an initializer that isn't safe to repeat (a call, `new`, `++`) would be evaluated more than once, or when a loop, branch or dynamic variable access could change its value before a read. A non-variable callee is parenthesized when inlined, and `Foo::class` after `new` or `instanceof` is inlined as `Foo`.
+- **`use` inserted in the wrong place**: auto-import completion and the "Add use" quick-fix put the new `use` before `declare(strict_types=1)` (a fatal error) or after a class-body trait-use. It now goes after the file's last import, `declare` or `namespace`, inside the namespace of the code being edited when a file has several, and after any inline HTML before `<?php`.
 - **Signature help in CRLF files**: the call's position was computed one byte short per line, so the receiver's class wasn't resolved and method calls could show no signature or another class's.
 - **`prepareRename` on a variable's `$`**: with the cursor on the sigil, the returned range started at `$` and cut off the name's last character (`$fo` for `$foo`).
 - **On-type `}` dedent**: typing the `}` of a one-line block or closure (`function () { return 1; }`) re-indented the whole line to the enclosing block's level. Only a `}` that starts its line is re-indented, matched against braces up to the typed one.
 - **Extract method**: parameters and the return value were inferred from variables anywhere in the file, so a same-named variable in another method added a bogus parameter or return. A selection that included the method signature was accepted, and the call was inserted with doubled indentation and a stray blank line. Variables are now read from the enclosing method only, the selection must lie inside its body and is extended to whole lines.
+- **Renaming a parameter**: the parameter's type, default and `&` were dropped from the declaration. Renaming now keeps them and also renames its `@param` tags and named arguments (`foo(x: 1)`, `new Foo(x: 1)`) across files, including a promoted property renamed from `$this->x`.
+- **Renaming a closure's captured variable**: the variable inside the closure body was left unchanged, whether the rename started inside or outside the closure.
+- **Class completion with a clashing short name**: picking a class whose short name was already imported for another class added a conflicting `use`, and a global class picked inside a namespace was inserted unqualified, resolving to the current namespace. Both are now inserted fully qualified.
+- **Document symbols from broken code**: declarations and parameters the parser couldn't name showed up as empty symbols, some with inverted ranges.
+- **`diagnostics.excludePaths`**: patterns didn't match paths with percent-encoded characters (spaces, non-ASCII), and the sweep re-diagnosing open files after an edit ignored the setting.
 - **Hover on trait-use**: hovering a class-body `use HasFactory;` showed it as an import statement instead of the trait.
+
+### Dependencies
+
+- **mir 0.88.0 from crates.io** instead of its git release tag.
 
 ## [0.28.0] — 2026-10-25
 
