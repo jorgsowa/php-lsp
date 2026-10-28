@@ -165,6 +165,37 @@ X::$0
 }
 
 #[tokio::test]
+async fn parent_static_access_offers_instance_methods() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_completion_ordered(
+            r#"<?php
+class P {
+    public $prop;
+    public static $sprop;
+    public function __construct() {}
+    private function pm(): void {}
+    protected function qm(): void {}
+    public function rm(): void {}
+    public static function sm(): void {}
+}
+class C extends P {
+    public function rm(): void { parent::$0 }
+}
+"#,
+        )
+        .await;
+    expect![[r#"
+        Property    $sprop
+        Method      __construct
+        Method      qm
+        Method      rm
+        Method      sm"#]]
+    .assert_eq(&members(&out));
+}
+
+#[tokio::test]
 async fn inherited_protected_members_are_offered_inside_a_subclass() {
     let mut s = TestServer::new().await;
     s.validate_syntax(false);

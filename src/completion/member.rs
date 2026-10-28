@@ -22,6 +22,8 @@ enum MemberAccess {
     Instance,
     /// `Class::`: static methods and properties, constants.
     Static,
+    /// `parent::`: like `Static`, plus the parent's instance methods.
+    Parent,
 }
 
 pub(super) fn all_instance_members(
@@ -43,21 +45,28 @@ pub(super) fn all_instance_members(
     )
 }
 
+/// Members offered after `Receiver::`; `is_parent` selects `parent::`.
 pub(super) fn all_static_members(
     class_name: &str,
     doc: &ParsedDoc,
     other_docs: &[Arc<ParsedDoc>],
     find_class_doc: Option<super::ClassDocLookup<'_>>,
     session: Option<&DocumentStore>,
+    is_parent: bool,
     scope_class: Option<&str>,
 ) -> Vec<CompletionItem> {
+    let access = if is_parent {
+        MemberAccess::Parent
+    } else {
+        MemberAccess::Static
+    };
     all_members(
         class_name,
         doc,
         other_docs,
         find_class_doc,
         session,
-        MemberAccess::Static,
+        access,
         scope_class,
     )
 }
@@ -113,6 +122,7 @@ fn all_members(
     let wants_method = |name: &str, meth_is_static: bool| match access {
         MemberAccess::Instance => !meth_is_static && !name.eq_ignore_ascii_case("__construct"),
         MemberAccess::Static => meth_is_static,
+        MemberAccess::Parent => true,
     };
     let all: Vec<&ParsedDoc> = std::iter::once(doc)
         .chain(other_docs.iter().map(|d| d.as_ref()))
@@ -376,6 +386,28 @@ fn push_mir_members(
     }
 }
 
+/// The name written before the `::` that ends at `position`.
+fn static_receiver_name(source: &str, position: Position) -> Option<String> {
+    let line = source.lines().nth(position.line as usize)?;
+    let col = utf16_offset_to_byte(line, position.character as usize);
+    let before = &line[..col];
+    let before = before.strip_suffix("::").unwrap_or(before);
+    Some(
+        before
+            .chars()
+            .rev()
+            .take_while(|&c| c.is_alphanumeric() || c == '_' || c == '\\')
+            .collect::<String>()
+            .chars()
+            .rev()
+            .collect(),
+    )
+}
+
+pub(super) fn is_parent_receiver(source: &str, position: Position) -> bool {
+    static_receiver_name(source, position).is_some_and(|n| n.eq_ignore_ascii_case("parent"))
+}
+
 /// Resolve `ClassName::` or the aliases `self::`, `static::`, `parent::`.
 ///
 /// `imports` is the file's `use`-import map (`alias → FQCN`). When the name
@@ -390,18 +422,7 @@ pub(super) fn resolve_static_receiver(
     position: Position,
     imports: &HashMap<String, String>,
 ) -> Option<String> {
-    let line = source.lines().nth(position.line as usize)?;
-    let col = utf16_offset_to_byte(line, position.character as usize);
-    let before = &line[..col];
-    let before = before.strip_suffix("::").unwrap_or(before);
-    let name: String = before
-        .chars()
-        .rev()
-        .take_while(|&c| c.is_alphanumeric() || c == '_' || c == '\\')
-        .collect::<String>()
-        .chars()
-        .rev()
-        .collect();
+    let name = static_receiver_name(source, position)?;
     match name.as_str() {
         "" => None,
         "self" | "static" => enclosing_class_at(source, doc, position),

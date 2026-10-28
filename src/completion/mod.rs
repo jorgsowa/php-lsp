@@ -15,8 +15,8 @@ use match_arm::match_arm_completions;
 
 mod member;
 use member::{
-    all_instance_members, all_static_members, magic_method_completions, mir_method_params,
-    resolve_receiver_class, resolve_static_receiver,
+    all_instance_members, all_static_members, is_parent_receiver, magic_method_completions,
+    mir_method_params, resolve_receiver_class, resolve_static_receiver,
 };
 
 mod namespace;
@@ -524,6 +524,7 @@ pub fn filtered_completions_at(
                     other_docs,
                     ctx.find_class_doc,
                     ctx.session,
+                    is_parent_receiver(src, pos),
                     scope_class,
                 );
                 if !items.is_empty() {
@@ -613,6 +614,7 @@ pub fn filtered_completions_at(
                             other_docs,
                             ctx.find_class_doc,
                             ctx.session,
+                            is_parent_receiver(src, colon_pos),
                             scope_class,
                         );
                         if !items.is_empty() {
