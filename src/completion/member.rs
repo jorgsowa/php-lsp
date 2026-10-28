@@ -16,13 +16,21 @@ use crate::types::type_map::{
 
 use super::callable_item;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MemberAccess {
+    /// `$obj->`: instance methods and properties.
+    Instance,
+    /// `Class::`: static methods and properties, constants.
+    Static,
+}
+
 pub(super) fn all_instance_members(
     class_name: &str,
     doc: &ParsedDoc,
     other_docs: &[Arc<ParsedDoc>],
     find_class_doc: Option<super::ClassDocLookup<'_>>,
     session: Option<&DocumentStore>,
-    in_class_scope: bool,
+    scope_class: Option<&str>,
 ) -> Vec<CompletionItem> {
     all_members(
         class_name,
@@ -30,8 +38,8 @@ pub(super) fn all_instance_members(
         other_docs,
         find_class_doc,
         session,
-        false,
-        in_class_scope,
+        MemberAccess::Instance,
+        scope_class,
     )
 }
 
@@ -41,7 +49,7 @@ pub(super) fn all_static_members(
     other_docs: &[Arc<ParsedDoc>],
     find_class_doc: Option<super::ClassDocLookup<'_>>,
     session: Option<&DocumentStore>,
-    in_class_scope: bool,
+    scope_class: Option<&str>,
 ) -> Vec<CompletionItem> {
     all_members(
         class_name,
@@ -49,18 +57,45 @@ pub(super) fn all_static_members(
         other_docs,
         find_class_doc,
         session,
-        true,
-        in_class_scope,
+        MemberAccess::Static,
+        scope_class,
     )
 }
 
+/// Visibility check relative to the class the cursor sits in.
+#[derive(Clone, Copy)]
+struct Scope {
+    /// The cursor is inside some class body.
+    in_class: bool,
+    /// The cursor is inside the receiver class itself.
+    in_root_class: bool,
+}
+
+impl Scope {
+    fn new(class_name: &str, scope_class: Option<&str>) -> Self {
+        let short = |n: &str| n.rsplit('\\').next().unwrap_or(n).to_owned();
+        Self {
+            in_class: scope_class.is_some(),
+            in_root_class: scope_class
+                .is_some_and(|s| short(s).eq_ignore_ascii_case(&short(class_name))),
+        }
+    }
+
+    /// Protected members are approximated as visible from any class body.
+    fn hides(self, visibility: Visibility, inherited: bool) -> bool {
+        match visibility {
+            Visibility::Public => false,
+            Visibility::Protected => !self.in_class,
+            Visibility::Private => inherited || !self.in_root_class,
+        }
+    }
+}
+
 /// Common class-hierarchy traversal for both instance (`->`) and static (`::`)
-/// member completion. `is_static` selects which subset of members to surface:
-/// - `false` (instance): non-static methods + properties, enum built-ins, mixins
-/// - `true`  (static):   static methods + properties, constants
+/// member completion. `access` selects which subset of members to surface.
 ///
-/// Inherited private members are never offered; inherited protected ones only
-/// when the cursor sits inside a class (`in_class_scope`).
+/// Private members are offered only inside the receiver class itself, and
+/// never when inherited; protected ones only inside a class (`scope_class`).
 ///
 /// Each class is read from mir's class table when `session` knows it, else
 /// from the AST of its defining document.
@@ -70,9 +105,15 @@ fn all_members(
     other_docs: &[Arc<ParsedDoc>],
     find_class_doc: Option<super::ClassDocLookup<'_>>,
     session: Option<&DocumentStore>,
-    is_static: bool,
-    in_class_scope: bool,
+    access: MemberAccess,
+    scope_class: Option<&str>,
 ) -> Vec<CompletionItem> {
+    let is_static = access != MemberAccess::Instance;
+    let scope = Scope::new(class_name, scope_class);
+    let wants_method = |name: &str, meth_is_static: bool| match access {
+        MemberAccess::Instance => !meth_is_static && !name.eq_ignore_ascii_case("__construct"),
+        MemberAccess::Static => meth_is_static,
+    };
     let all: Vec<&ParsedDoc> = std::iter::once(doc)
         .chain(other_docs.iter().map(|d| d.as_ref()))
         .collect();
@@ -92,7 +133,8 @@ fn all_members(
                 &class_like,
                 inherited,
                 is_static,
-                in_class_scope,
+                &wants_method,
+                scope,
                 &mut items,
                 &mut seen_names,
             );
@@ -149,13 +191,17 @@ fn all_members(
             .as_deref()
             .map(|p| resolve_class_ref(d, short, p));
         let hidden = |restricted: &[(String, bool)], name: &str| {
-            inherited
-                && restricted
-                    .iter()
-                    .any(|(n, private)| n == name && (*private || !in_class_scope))
+            restricted.iter().any(|(n, private)| {
+                let visibility = if *private {
+                    Visibility::Private
+                } else {
+                    Visibility::Protected
+                };
+                n == name && scope.hides(visibility, inherited)
+            })
         };
         for (name, meth_is_static, has_params) in members.methods {
-            if (meth_is_static == is_static)
+            if wants_method(&name, meth_is_static)
                 && !hidden(&members.restricted_methods, &name)
                 && seen_names.insert(name.clone())
             {
@@ -265,21 +311,15 @@ fn push_mir_members(
     class_like: &ClassLike,
     inherited: bool,
     is_static: bool,
-    in_class_scope: bool,
+    wants_method: &dyn Fn(&str, bool) -> bool,
+    scope: Scope,
     items: &mut Vec<CompletionItem>,
     seen_names: &mut HashSet<String>,
 ) {
-    let hidden = |visibility: Visibility| {
-        inherited
-            && match visibility {
-                Visibility::Public => false,
-                Visibility::Protected => !in_class_scope,
-                Visibility::Private => true,
-            }
-    };
+    let hidden = |visibility: Visibility| scope.hides(visibility, inherited);
     let owner = class_like.fqcn().to_string();
     for method in class_like.own_methods().values() {
-        if method.is_static == is_static
+        if wants_method(&method.name, method.is_static)
             && !hidden(method.visibility)
             && seen_names.insert(method.name.to_string())
         {

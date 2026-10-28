@@ -71,6 +71,100 @@ $c->$0
 }
 
 #[tokio::test]
+async fn own_private_and_protected_members_are_hidden_outside_the_class() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_completion_ordered(
+            r#"<?php
+class X {
+    private $p;
+    protected $q;
+    public $r;
+    public function __construct() {}
+    private function pm(): void {}
+    protected function qm(): void {}
+    public function rm(): void {}
+}
+$x = new X();
+$x->$0
+"#,
+        )
+        .await;
+    expect![[r#"
+        Property    $r
+        Method      rm"#]]
+    .assert_eq(&members(&out));
+}
+
+#[tokio::test]
+async fn own_private_members_are_offered_inside_the_class() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_completion_ordered(
+            r#"<?php
+class X {
+    private $p;
+    protected $q;
+    private function pm(): void {}
+    public function run(): void { $this->$0 }
+}
+"#,
+        )
+        .await;
+    expect![[r#"
+        Property    $p
+        Property    $q
+        Method      pm
+        Method      run"#]]
+    .assert_eq(&members(&out));
+}
+
+#[tokio::test]
+async fn private_members_of_another_class_are_hidden_inside_a_class() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_completion_ordered(
+            r#"<?php
+class X {
+    private function pm(): void {}
+    public function rm(): void {}
+}
+class Y {
+    public function run(X $x): void { $x->$0 }
+}
+"#,
+        )
+        .await;
+    expect!["Method      rm"].assert_eq(&members(&out));
+}
+
+#[tokio::test]
+async fn private_static_members_are_hidden_outside_the_class() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_completion_ordered(
+            r#"<?php
+class X {
+    private const HIDDEN = 1;
+    public const SHOWN = 2;
+    private static function pm(): void {}
+    public static function rm(): void {}
+}
+X::$0
+"#,
+        )
+        .await;
+    expect![[r#"
+        Constant    SHOWN
+        Method      rm"#]]
+    .assert_eq(&members(&out));
+}
+
+#[tokio::test]
 async fn inherited_protected_members_are_offered_inside_a_subclass() {
     let mut s = TestServer::new().await;
     s.validate_syntax(false);
