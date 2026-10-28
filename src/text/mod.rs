@@ -11,5 +11,6 @@ mod word;
 pub(crate) use fuzzy::*;
 pub(crate) use offset::*;
 pub(crate) use range::*;
+#[cfg_attr(target_family = "wasm", allow(unused_imports))]
 pub(crate) use source::*;
 pub(crate) use word::*;

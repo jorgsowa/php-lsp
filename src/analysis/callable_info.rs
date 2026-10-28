@@ -81,6 +81,7 @@ pub(crate) fn callable_info_for_name(
 }
 
 /// Whether the parameter of `symbol` that takes the `position`-th (or `name`d) argument is `&`.
+#[cfg_attr(target_family = "wasm", allow(dead_code))]
 pub(crate) fn param_is_byref(
     db: &mir_analyzer::db::MirDbStorage,
     symbol: &mir_analyzer::Name,
