@@ -1609,6 +1609,37 @@ pub fn render_resolved_code_lens(resp: &Value) -> String {
     format!("L{line}:{char} {title} [{cmd}]")
 }
 
+/// Render a `textDocument/documentLink` response as one `range -> target` row per link.
+pub fn render_document_links(resp: &Value, root_uri: &str) -> String {
+    if let Some(err) = resp.get("error").filter(|e| !e.is_null()) {
+        return format!("error: {err}");
+    }
+    let arr = resp["result"].as_array().cloned().unwrap_or_default();
+    if arr.is_empty() {
+        return "<no links>".to_owned();
+    }
+    let prefix = if root_uri.ends_with('/') {
+        root_uri.to_owned()
+    } else {
+        format!("{root_uri}/")
+    };
+    arr.iter()
+        .map(|link| {
+            let r = &link["range"];
+            let target = link["target"].as_str().unwrap_or("<none>");
+            format!(
+                "{}:{}-{}:{} -> {}",
+                r["start"]["line"],
+                r["start"]["character"],
+                r["end"]["line"],
+                r["end"]["character"],
+                target.strip_prefix(&prefix).unwrap_or(target)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
 /// Render a resolved `documentLink/resolve` response as snapshot-friendly text.
 /// Shows range and target URI.
 pub fn render_resolved_document_link(resp: &Value, root_uri: &str) -> String {

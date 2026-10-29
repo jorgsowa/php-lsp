@@ -60,7 +60,7 @@ use std::path::{Path, PathBuf};
 use common::fixture::{self, Cursor, Fixture};
 use common::render::{
     assert_highlights_match, collect_navigation_annotations, render_code_actions,
-    render_folding_ranges, render_prepare_rename,
+    render_document_links, render_folding_ranges, render_prepare_rename,
 };
 use common::*;
 use libtest_mimic::{Arguments, Failed, Trial};
@@ -375,6 +375,7 @@ enum Request {
     DocumentSymbols,
     WorkspaceSymbols(String),
     InlayHints,
+    DocumentLinks,
     FoldingRange,
     CodeActions,
     Rename(String),
@@ -412,6 +413,7 @@ impl Request {
             "document_symbols" => Self::DocumentSymbols,
             "workspace_symbols" => Self::WorkspaceSymbols(args.join(" ")),
             "inlay_hints" => Self::InlayHints,
+            "document_links" => Self::DocumentLinks,
             "folding_range" => Self::FoldingRange,
             "code_actions" => Self::CodeActions,
             "rename" => Self::Rename(one_arg()),
@@ -440,6 +442,7 @@ impl Request {
             Self::DocumentSymbols
                 | Self::WorkspaceSymbols(_)
                 | Self::InlayHints
+                | Self::DocumentLinks
                 | Self::FoldingRange
                 | Self::Diagnostics
         )
@@ -702,6 +705,7 @@ async fn execute(server: &mut TestServer, request: &Request, fx: &Fixture) -> St
             let lines = files[0].text.lines().count() as u32;
             render_inlay_hints(&server.inlay_hints(first, 0, 0, lines + 1, 0).await)
         }
+        Request::DocumentLinks => render_document_links(&server.document_link(first).await, &root),
         Request::FoldingRange => render_folding_ranges(&server.folding_range(first).await),
         Request::CodeActions => {
             let resp = match range {

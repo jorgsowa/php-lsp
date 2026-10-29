@@ -1,8 +1,8 @@
 /// Document links: clickable paths in require/include expressions and @link/@see docblock tags.
 use std::ops::ControlFlow;
 
-use php_ast::ExprKind;
 use php_ast::visitor::{Visitor, walk_expr};
+use php_ast::{BinaryOp, ExprKind, MagicConstKind};
 use tower_lsp_server::ls_types::{DocumentLink, Position, Range, Uri};
 
 use crate::document::ast::{ParsedDoc, SourceView};
@@ -69,11 +69,18 @@ fn link_from_path_expr(
     sv: SourceView<'_>,
     uri: &Uri,
 ) -> Option<DocumentLink> {
+    let (path_expr, dir_relative) = match &path_expr.kind {
+        ExprKind::Parenthesized(inner) => return link_from_path_expr(inner, sv, uri),
+        ExprKind::Binary(b) if b.op == BinaryOp::Concat && is_current_dir(b.left) => {
+            (b.right, true)
+        }
+        _ => (path_expr, false),
+    };
     let ExprKind::String(s) = &path_expr.kind else {
         return None;
     };
     let raw: &str = s;
-    if raw.is_empty() {
+    if raw.is_empty() || (dir_relative && !raw.starts_with('/')) {
         return None;
     }
     // span.start points to the opening quote; content starts one byte after
@@ -86,14 +93,15 @@ fn link_from_path_expr(
     };
     let range = Range { start, end };
 
-    let target = if std::path::Path::new(raw).is_absolute() {
+    let target = if !dir_relative && std::path::Path::new(raw).is_absolute() {
         Uri::from_file_path(raw)
     } else {
         // Resolve relative to the document URI's directory. `ls_types::Uri`
         // has no `.join()` (unlike `url::Url`), so go through the file path.
+        let relative = raw.trim_start_matches('/');
         let joined = uri
             .to_file_path()
-            .and_then(|base| base.parent().map(|dir| dir.join(raw)));
+            .and_then(|base| base.parent().map(|dir| normalize_path(&dir.join(relative))));
         joined.as_deref().and_then(|p| {
             // `Uri::from_file_path` canonicalizes (requires the path to
             // exist) whenever the joined path isn't OS-absolute. On Windows,
@@ -114,6 +122,38 @@ fn link_from_path_expr(
         tooltip: None,
         data: None,
     })
+}
+
+/// `__DIR__` or `dirname(__FILE__)`.
+fn is_current_dir(expr: &php_ast::Expr<'_, '_>) -> bool {
+    match &expr.kind {
+        ExprKind::MagicConst(MagicConstKind::Dir) => true,
+        ExprKind::FunctionCall(f) => {
+            let is_dirname = matches!(&f.name.kind, ExprKind::Identifier(n)
+                if n.trim_start_matches('\\').eq_ignore_ascii_case("dirname"));
+            is_dirname
+                && matches!(&f.args[..], [arg] if arg.value.as_ref().is_some_and(|v| {
+                    matches!(v.kind, ExprKind::MagicConst(MagicConstKind::File))
+                }))
+        }
+        _ => false,
+    }
+}
+
+/// Folds `.` and `..` components without touching the filesystem.
+fn normalize_path(path: &std::path::Path) -> std::path::PathBuf {
+    use std::path::Component;
+    let mut out = std::path::PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other),
+        }
+    }
+    out
 }
 
 /// Scan sv.source() text for `@link` and `@see` tags with HTTP(S) URLs in docblock/line comments.
