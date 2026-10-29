@@ -680,3 +680,48 @@ fn merge_file_editor_both_have_exclude_paths_all_present() {
     let cfg = LspConfig::from_value(&merged);
     assert_eq!(cfg.exclude_paths, vec!["a/*", "b/*", "c/*"]);
 }
+
+#[test]
+fn diagnostics_content_hash_tracks_every_published_field() {
+    let base = Diagnostic {
+        range: Range::new(Position::new(1, 0), Position::new(1, 3)),
+        severity: Some(DiagnosticSeverity::WARNING),
+        code: Some(NumberOrString::String("UndefinedFunction".into())),
+        source: Some("php-lsp".into()),
+        message: "Function foo() is not defined".into(),
+        tags: Some(vec![DiagnosticTag::UNNECESSARY]),
+        ..Default::default()
+    };
+    let hash = |d: &Diagnostic| diagnostics_content_hash(std::slice::from_ref(d));
+    assert_eq!(hash(&base), hash(&base.clone()));
+
+    let variants = [
+        Diagnostic {
+            severity: Some(DiagnosticSeverity::ERROR),
+            ..base.clone()
+        },
+        Diagnostic {
+            message: "Function bar() is not defined".into(),
+            ..base.clone()
+        },
+        Diagnostic {
+            tags: Some(vec![DiagnosticTag::DEPRECATED]),
+            ..base.clone()
+        },
+        Diagnostic {
+            range: Range::new(Position::new(2, 0), Position::new(2, 3)),
+            ..base.clone()
+        },
+        Diagnostic {
+            data: Some(serde_json::json!({"fqn": "foo"})),
+            ..base.clone()
+        },
+    ];
+    for v in &variants {
+        assert_ne!(hash(&base), hash(v), "{v:?}");
+    }
+    assert_ne!(
+        diagnostics_content_hash(&[]),
+        diagnostics_content_hash(std::slice::from_ref(&base))
+    );
+}

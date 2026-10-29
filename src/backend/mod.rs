@@ -732,10 +732,51 @@ pub(super) fn diagnostics_content_hash(diagnostics: &[Diagnostic]) -> u64 {
     use std::collections::hash_map::DefaultHasher;
     use std::hash::{Hash, Hasher};
     let mut hasher = DefaultHasher::new();
-    serde_json::to_string(diagnostics)
-        .unwrap_or_default()
-        .hash(&mut hasher);
+    diagnostics.len().hash(&mut hasher);
+    for d in diagnostics {
+        d.range.hash(&mut hasher);
+        d.severity.map(severity_key).hash(&mut hasher);
+        d.code.hash(&mut hasher);
+        d.code_description
+            .as_ref()
+            .map(|c| c.href.as_str())
+            .hash(&mut hasher);
+        d.source.hash(&mut hasher);
+        d.message.hash(&mut hasher);
+        d.related_information
+            .as_ref()
+            .map(Vec::len)
+            .hash(&mut hasher);
+        for r in d.related_information.iter().flatten() {
+            r.location.hash(&mut hasher);
+            r.message.hash(&mut hasher);
+        }
+        d.tags
+            .as_ref()
+            .map(|tags| tags.iter().map(tag_key).collect::<Vec<_>>())
+            .hash(&mut hasher);
+        d.data.hash(&mut hasher);
+    }
     hasher.finish()
+}
+
+// ls-types hides the protocol integer behind a private field and doesn't derive Hash.
+fn severity_key(s: DiagnosticSeverity) -> u8 {
+    match s {
+        DiagnosticSeverity::ERROR => 1,
+        DiagnosticSeverity::WARNING => 2,
+        DiagnosticSeverity::INFORMATION => 3,
+        DiagnosticSeverity::HINT => 4,
+        _ => 0,
+    }
+}
+
+fn tag_key(t: &DiagnosticTag) -> u8 {
+    match *t {
+        DiagnosticTag::UNNECESSARY => 1,
+        DiagnosticTag::DEPRECATED => 2,
+        _ => 0,
+    }
 }
 
 /// Compute and publish diagnostics for `uri`, then republish any open files
