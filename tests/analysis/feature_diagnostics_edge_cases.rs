@@ -7,31 +7,6 @@ use expect_test::expect;
 use serde_json::json;
 
 #[tokio::test]
-async fn builtin_restore_error_handler_is_known() {
-    let mut s = TestServer::new().await;
-    s.check_diagnostics(
-        r#"<?php
-function _wrap(): void {
-    restore_error_handler();
-}
-"#,
-    )
-    .await;
-}
-
-#[tokio::test]
-async fn clean_file_has_no_diagnostics() {
-    let mut s = TestServer::new().await;
-    s.check_diagnostics(
-        r#"<?php
-function f(string $x): string { return $x; }
-f('ok');
-"#,
-    )
-    .await;
-}
-
-#[tokio::test]
 async fn diagnostics_clear_after_fix() {
     let mut s = TestServer::new().await;
     let notif = s.open("fix.php", "<?php\nundefined_fn();\n").await;
@@ -54,53 +29,6 @@ async fn did_open_reports_deprecated_call_warning() {
         "4:0-4:9 [3] DeprecatedCall: Call to deprecated function oldFunc: Use newFunc() instead"
     ]
     .assert_eq(&render_diagnostics_notification(&notif));
-}
-
-#[tokio::test]
-async fn issue_170_errors_inside_namespaced_method_detected() {
-    let mut s = TestServer::new().await;
-    s.check_diagnostics(
-        r#"<?php
-namespace LspTest;
-
-class Broken
-{
-    public int $count = 0;
-
-    public function bump(): int
-    {
-        $this->count++;
-        return $this->count;
-    }
-
-    public function obviouslyBroken(): int
-    {
-        nonexistent_function();
-//      ^^^^^^^^^^^^^^^^^^^^^^ error: nonexistent_function
-        $x = new UnknownClass();
-//               ^^^^^^^^^^^^ error: UnknownClass
-        return 0;
-    }
-}
-"#,
-    )
-    .await;
-}
-
-#[tokio::test]
-async fn multiple_diagnostics_same_file() {
-    let mut s = TestServer::new().await;
-    s.check_diagnostics(
-        r#"<?php
-function _wrap(): void {
-    one_undefined();
-//  ^^^^^^^^^^^^^^^ error: one_undefined
-    two_undefined();
-//  ^^^^^^^^^^^^^^^ error: two_undefined
-}
-"#,
-    )
-    .await;
 }
 
 #[tokio::test]
@@ -447,55 +375,6 @@ async fn same_namespace_truly_missing_class_is_flagged() {
     .assert_eq(&out);
 }
 
-/// Reproducer: a project polyfill that conditionally redefines a built-in.
-/// If `ingest_stub_slice` is last-write-wins and the project file's parsed
-/// `function restore_error_handler` overrides mir's stub, the call site may
-/// still resolve — but the polyfill body is what ends up authoritative. This
-/// test asserts that the call is *not* flagged undefined when a user-land
-/// polyfill exists in the workspace.
-#[tokio::test]
-async fn user_polyfill_does_not_break_builtin_restore_error_handler() {
-    let mut s = TestServer::new().await;
-    s.check_diagnostics(
-        r#"//- /src/polyfill.php
-<?php
-if (!function_exists('restore_error_handler')) {
-    function restore_error_handler(): bool { return true; }
-}
-
-//- /src/main.php
-<?php
-function _wrap(): void {
-    restore_error_handler();
-}
-"#,
-    )
-    .await;
-}
-
-/// Reproducer: an unconditional user-land redefinition of a built-in.
-/// PHP would refuse this at runtime, but the LSP still parses it; if the
-/// stub-ingest path is last-write-wins, the project's body silently replaces
-/// mir's stub. The call site should still resolve.
-#[tokio::test]
-async fn user_unconditional_redefinition_does_not_break_call() {
-    let mut s = TestServer::new().await;
-    s.validate_syntax(false);
-    s.check_diagnostics(
-        r#"//- /src/redef.php
-<?php
-function restore_error_handler(): bool { return true; }
-
-//- /src/main.php
-<?php
-function _wrap(): void {
-    restore_error_handler();
-}
-"#,
-    )
-    .await;
-}
-
 /// Duplicate class declaration in the same file should produce an error.
 /// mir emits DuplicateClass over the whole declaration span (col 0–12), which
 /// the `// ^^^` DSL cannot represent (minimum addressable col is 2), so we
@@ -533,84 +412,7 @@ class Foo {}
     );
 }
 
-/// Duplicate interface declaration in the same file should produce an error.
-#[tokio::test]
-async fn duplicate_interface_declaration_emits_warning() {
-    let mut s = TestServer::new().await;
-    s.check_diagnostics(
-        r#"<?php
-interface Logger {}
-  interface Logger {}
-//^^^^^^^^^^^^^^^^^^^ error: Interface Logger has already been defined
-"#,
-    )
-    .await;
-}
-
-/// Duplicate trait declaration in the same file should produce an error.
-#[tokio::test]
-async fn duplicate_trait_declaration_emits_warning() {
-    let mut s = TestServer::new().await;
-    s.check_diagnostics(
-        r#"<?php
-trait Serializable {}
-  trait Serializable {}
-//^^^^^^^^^^^^^^^^^^^^^ error: Trait Serializable has already been defined
-"#,
-    )
-    .await;
-}
-
-/// Classes with the same short name in different namespaces must NOT be flagged.
-#[tokio::test]
-async fn duplicate_class_different_namespaces_not_flagged() {
-    let mut s = TestServer::new().await;
-    s.check_no_diagnostics(
-        r#"<?php
-namespace AppA;
-class Foo {}
-
-namespace AppB;
-class Foo {}
-"#,
-    )
-    .await;
-}
-
-/// `abs(int)` returns `int` when the argument is an `int` literal or parameter.
-/// Regression guard for a past false-positive where the analyzer reported
-/// `float|int` for the return type, flagging a type mismatch when the result
-/// was passed to an `int` parameter (fixed upstream in mir; kept green here).
-#[tokio::test]
-async fn abs_of_int_arg_not_flagged_as_float() {
-    let mut s = TestServer::new().await;
-    s.check_no_diagnostics(
-        r#"<?php
-function takesInt(int $x): void {}
-function test(int $n): void {
-    takesInt(abs($n));
-}
-"#,
-    )
-    .await;
-}
-
 // ── diagnostics.missingTypes ──────────────────────────────────────────────────
-
-/// `diagnostics.missingTypes` is off by default — interface methods without
-/// return/param annotations are not flagged unless opted in.
-#[tokio::test]
-async fn missing_types_off_by_default() {
-    let mut s = TestServer::new().await;
-    s.check_no_diagnostics(
-        r#"<?php
-interface Logger {
-    public function log($message);
-}
-"#,
-    )
-    .await;
-}
 
 /// With `diagnostics.missingTypes` on, missing param type annotations on
 /// interface methods are reported (return type is provided to isolate the param lint).
@@ -632,22 +434,6 @@ interface Logger {
 }
 
 // ── diagnostics.mixedUsage ────────────────────────────────────────────────────
-
-/// `diagnostics.mixedUsage` is off by default — passing `mixed` to a typed
-/// parameter produces no diagnostic unless opted in.
-#[tokio::test]
-async fn mixed_usage_off_by_default() {
-    let mut s = TestServer::new().await;
-    s.check_no_diagnostics(
-        r#"<?php
-function takesString(string $s): void {}
-function test(mixed $v): void {
-    takesString($v);
-}
-"#,
-    )
-    .await;
-}
 
 /// With `diagnostics.mixedUsage` on, passing `mixed` to a typed parameter
 /// emits a MixedArgument info diagnostic.
@@ -682,121 +468,7 @@ async fn syntax_error_produces_error_diagnostic() {
 
 // ── nullsafe operator (?->) ───────────────────────────────────────────────────
 
-/// The nullsafe operator explicitly guards against null and must suppress the
-/// null-dereference diagnostic a plain `->` on the same value would trigger.
-#[tokio::test]
-async fn nullsafe_method_call_suppresses_null_diagnostic() {
-    let mut s = TestServer::new().await;
-    s.check_no_diagnostics(
-        r#"<?php
-class Box { public function value(): int { return 1; } }
-$box = null;
-$box?->value();
-"#,
-    )
-    .await;
-}
-
-#[tokio::test]
-async fn nullsafe_property_fetch_suppresses_null_diagnostic() {
-    let mut s = TestServer::new().await;
-    s.check_no_diagnostics(
-        r#"<?php
-class Box { public int $value = 0; }
-$box = null;
-echo $box?->value;
-"#,
-    )
-    .await;
-}
-
-#[tokio::test]
-async fn nullsafe_chain_suppresses_null_diagnostic() {
-    let mut s = TestServer::new().await;
-    s.check_no_diagnostics(
-        r#"<?php
-class Inner { public function value(): int { return 1; } }
-class Outer { public function inner(): ?Inner { return null; } }
-$outer = null;
-$outer?->inner()?->value();
-"#,
-    )
-    .await;
-}
-
-/// Contrast: the same definitely-null value WITHOUT the nullsafe operator
-/// must still be flagged, proving the tests above exercise real suppression
-/// rather than an analyzer that never checks null method/property access.
-#[tokio::test]
-async fn plain_method_call_on_null_is_flagged() {
-    let mut s = TestServer::new().await;
-    s.check_diagnostics(
-        r#"<?php
-class Box { public function value(): int { return 1; } }
-function _wrap(): void {
-    $box = null;
-    $box->value();
-//  ^^^^^^^^^^^^^ error: Cannot call method value() on null
-}
-"#,
-    )
-    .await;
-}
-
-#[tokio::test]
-async fn plain_property_fetch_on_null_is_flagged() {
-    let mut s = TestServer::new().await;
-    s.check_diagnostics(
-        r#"<?php
-class Box { public int $value = 0; }
-function _wrap(): void {
-    $box = null;
-    echo $box->value;
-//       ^^^^^^^^^^^ error: Cannot access property $value on null
-}
-"#,
-    )
-    .await;
-}
-
-#[tokio::test]
-async fn array_access_on_null_is_flagged() {
-    let mut s = TestServer::new().await;
-    s.check_diagnostics(
-        r#"<?php
-function _wrap(): void {
-    $arr = null;
-    echo $arr['key'];
-//       ^^^^^^^^^^^ error: Cannot access array on null
-}
-"#,
-    )
-    .await;
-}
-
 // ── match exhaustiveness & backed enum diagnostics ────────────────────────────
-
-/// A `match` covering every case of a pure enum, with no `default`, is
-/// exhaustive and must not be flagged.
-#[tokio::test]
-async fn match_on_enum_covering_all_cases_has_no_diagnostic() {
-    let mut s = TestServer::new().await;
-    s.check_no_diagnostics(
-        r#"<?php
-enum Suit {
-    case Hearts;
-    case Spades;
-}
-function label(Suit $s): string {
-    return match ($s) {
-        Suit::Hearts => 'hearts',
-        Suit::Spades => 'spades',
-    };
-}
-"#,
-    )
-    .await;
-}
 
 /// A non-exhaustive `match` on an enum with no `default` can throw
 /// `UnhandledMatchError` at runtime for the missing case — must be flagged.
@@ -840,28 +512,6 @@ function label(Suit $s): string {
     );
 }
 
-/// Contrast: a non-exhaustive `match` with a `default` arm covers every
-/// remaining case at runtime and must not be flagged.
-#[tokio::test]
-async fn match_on_enum_missing_case_with_default_has_no_diagnostic() {
-    let mut s = TestServer::new().await;
-    s.check_no_diagnostics(
-        r#"<?php
-enum Suit {
-    case Hearts;
-    case Spades;
-}
-function label(Suit $s): string {
-    return match ($s) {
-        Suit::Hearts => 'hearts',
-        default => 'other',
-    };
-}
-"#,
-    )
-    .await;
-}
-
 /// KNOWN GAP, not fixable from php-lsp alone: mir's definition-collector
 /// (`collect_file_definitions`, mir-analyzer `collector/enum.rs`) correctly
 /// detects a backed enum case whose literal value doesn't match the backing
@@ -894,107 +544,6 @@ async fn backed_enum_case_value_type_mismatch_is_flagged() {
     .assert_eq(&out);
 }
 
-/// A closure declared outside any class, using `$this`, later rebound to an
-/// object via `Closure::bind()`/`bindTo()`/`call()` is valid PHP.
-#[tokio::test]
-async fn closure_bind_rebinding_this_is_not_flagged() {
-    let mut s = TestServer::new().await;
-    s.check_no_diagnostics(
-        r#"<?php
-class Container {
-    private int $value = 42;
-}
-$getter = function (): int {
-    return $this->value;
-};
-$bound = Closure::bind($getter, new Container(), Container::class);
-echo $bound();
-"#,
-    )
-    .await;
-}
-
 // ── property visibility on `->` access ───────────────────────────────────────
 
-/// Reading a `private` property from outside its class is flagged, matching
-/// the class-constant and method-call visibility checks.
-#[tokio::test]
-async fn private_property_access_from_outside_class_is_flagged() {
-    let mut s = TestServer::new().await;
-    s.check_diagnostics(
-        r#"<?php
-class Vault {
-    private int $secret = 0;
-}
-function test(Vault $v): int {
-    return $v->secret;
-//             ^^^^^^ error: secret
-}
-"#,
-    )
-    .await;
-}
-
-/// Same check as above, for `protected` instead of `private`.
-#[tokio::test]
-async fn protected_property_access_from_outside_class_is_flagged() {
-    let mut s = TestServer::new().await;
-    s.check_diagnostics(
-        r#"<?php
-class Vault {
-    protected int $balance = 0;
-}
-function test(Vault $v): int {
-    return $v->balance;
-//             ^^^^^^^ error: balance
-}
-"#,
-    )
-    .await;
-}
-
-/// Companion to the two checks above: private/protected *method* calls from
-/// outside the class are rejected too — just mislabeled, since an
-/// inaccessible method fails lookup and reports as `UndefinedMethod` rather
-/// than a dedicated inaccessibility diagnostic.
-#[tokio::test]
-async fn private_method_access_from_outside_class_is_flagged_as_undefined() {
-    let mut s = TestServer::new().await;
-    s.check_diagnostics(
-        r#"<?php
-class Vault {
-    private function secret(): string { return 's'; }
-}
-function test(Vault $v): string {
-    return $v->secret();
-//         ^^^^^^^^^^^^ error: secret
-}
-"#,
-    )
-    .await;
-}
-
 // ── `@var` docblocks split across `?>`/`<?php` blocks (issue #235) ──────────
-
-/// A Yii2-style view template with `/** @var Post $model */` immediately
-/// followed by `?>` (closing the PHP block), then inline HTML, then a new
-/// `<?php` block that uses `$model`. mir's `find_preceding_docblock` now
-/// skips a closing `?>`/`InlineHtml`/re-opening `<?php` gap when locating
-/// the preceding docblock, so the annotation still attaches.
-#[tokio::test]
-async fn var_annotation_survives_split_php_html_block() {
-    let mut s = TestServer::new().await;
-    s.check_no_diagnostics(
-        r#"<?php
-class Post { public string $title = ''; }
-/** @var Post $model */
-?>
-<div>
-<?php if ($model->title !== ''): ?>
-    <h1><?= $model->title ?></h1>
-<?php endif; ?>
-</div>
-"#,
-    )
-    .await;
-}

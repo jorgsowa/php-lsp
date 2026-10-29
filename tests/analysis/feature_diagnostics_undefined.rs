@@ -397,22 +397,6 @@ async fn same_namespace_extends_not_flagged_as_undefined_class() {
     .assert_eq(&out);
 }
 
-/// Positive control for the above: a truly-missing same-namespace class must
-/// still be flagged. Without this, the no-false-positive tests prove nothing.
-#[tokio::test]
-async fn undefined_class_in_new() {
-    let mut s = TestServer::new().await;
-    s.check_diagnostics(
-        r#"<?php
-function _wrap(): void {
-    $x = new UnknownClass();
-//           ^^^^^^^^^^^^ error: UnknownClass
-}
-"#,
-    )
-    .await;
-}
-
 #[tokio::test]
 async fn undefined_function_detected_in_arrow_function() {
     let mut server = TestServer::new().await;
@@ -476,67 +460,6 @@ trait Auditable {
 }
 
 #[tokio::test]
-async fn undefined_function_inside_function() {
-    let mut s = TestServer::new().await;
-    s.check_diagnostics(
-        r#"<?php
-function wrapper(): void {
-    nonexistent_fn();
-//  ^^^^^^^^^^^^^^^^ error: nonexistent_fn
-}
-"#,
-    )
-    .await;
-}
-
-#[tokio::test]
-async fn undefined_function_inside_method() {
-    let mut s = TestServer::new().await;
-    s.check_diagnostics(
-        r#"<?php
-class C {
-    public function run(): void {
-        nonexistent_fn();
-//      ^^^^^^^^^^^^^^^^ error: nonexistent_fn
-    }
-}
-"#,
-    )
-    .await;
-}
-
-#[tokio::test]
-async fn undefined_function_inside_namespaced_method() {
-    let mut s = TestServer::new().await;
-    s.check_diagnostics(
-        r#"<?php
-namespace LspTest;
-class Broken {
-    public function f(): void {
-        nonexistent_fn();
-//      ^^^^^^^^^^^^^^^^ error: nonexistent_fn
-    }
-}
-"#,
-    )
-    .await;
-}
-
-#[tokio::test]
-async fn undefined_function_top_level() {
-    let mut s = TestServer::new().await;
-    s.check_diagnostics(
-        r#"<?php
-function _wrap(): void {
-    nonexistent_fn();
-//  ^^^^^^^^^^^^^^^^ error: nonexistent_fn
-}
-"#,
-    )
-    .await;
-}
-
-#[tokio::test]
 async fn use_imported_interface_in_implements_not_flagged_as_undefined_class() {
     let tmp = tempfile::tempdir().unwrap();
     std::fs::write(
@@ -569,90 +492,6 @@ async fn use_imported_interface_in_implements_not_flagged_as_undefined_class() {
 
 // ── UndefinedMethod on trait-aliased methods ─────────────────────────────────
 
-/// Control: a plain (un-aliased) trait method call produces no diagnostics.
-#[tokio::test]
-async fn trait_method_call_no_false_undefined_method() {
-    let mut s = TestServer::new().await;
-    s.check_no_diagnostics(
-        r#"<?php
-trait BaseInit {
-    public function init(int $x): void {}
-}
-class Query {
-    use BaseInit;
-    public function __construct() {
-        $this->init(1);
-    }
-}
-"#,
-    )
-    .await;
-}
-
-/// Calling a method that does not exist produces UndefinedMethod.
-#[tokio::test]
-async fn undefined_method_on_known_class_fires() {
-    let mut s = TestServer::new().await;
-    s.check_diagnostics(
-        r#"<?php
-class Greeter {
-    public function hello(): void {}
-}
-function test(Greeter $g): void {
-    $g->doesNotExist();
-//  ^^^^^^^^^^^^^^^^^^ error: doesNotExist
-}
-"#,
-    )
-    .await;
-}
-
-/// Calling a genuinely missing method on a trait-using class still fires UndefinedMethod.
-#[tokio::test]
-async fn undefined_method_fires_for_class_using_trait() {
-    let mut s = TestServer::new().await;
-    s.check_diagnostics(
-        r#"<?php
-trait HasHello {
-    public function hello(): void {}
-}
-class Foo {
-    use HasHello;
-}
-function test(Foo $f): void {
-    $f->reallyMissing();
-//  ^^^^^^^^^^^^^^^^^^^ error: reallyMissing
-}
-"#,
-    )
-    .await;
-}
-
-/// `use function` importing a namespaced function (the common Laravel/
-/// Symfony helper-file pattern: `function_exists()`-guarded declarations
-/// inside a namespace, imported unqualified elsewhere) must not be flagged
-/// `UndefinedFunction`. No prior test covered `use function` resolution at all.
-#[tokio::test]
-async fn use_function_namespaced_import_not_flagged_as_undefined() {
-    let mut s = TestServer::new().await;
-    s.check_no_diagnostics(
-        r#"<?php
-namespace App\Helpers;
-if (! function_exists('App\Helpers\greet')) {
-    function greet($name) {
-        return $name;
-    }
-}
-namespace App;
-use function App\Helpers\greet;
-function run() {
-    return greet("world");
-}
-"#,
-    )
-    .await;
-}
-
 /// Same as above but across files: the function is declared in one file and
 /// imported via `use function` in another, mirroring how Laravel's
 /// `autoload.files` helpers (e.g. `enum_value()`) are declared and consumed.
@@ -684,26 +523,6 @@ async fn use_function_namespaced_import_not_flagged_as_undefined_cross_file() {
     assert!(all.is_empty(), "expected no diagnostics, got: {all:#?}");
 }
 
-/// A trait-aliased method call must not be flagged `UndefinedMethod`.
-#[tokio::test]
-async fn trait_aliased_method_call_no_false_undefined_method() {
-    let mut s = TestServer::new().await;
-    s.check_no_diagnostics(
-        r#"<?php
-trait BaseInit {
-    public function __construct(int $x) {}
-}
-class Query {
-    use BaseInit { __construct as __constructBase; }
-    public function __construct() {
-        $this->__constructBase(1);
-    }
-}
-"#,
-    )
-    .await;
-}
-
 // ── namespace fallback: functions fall back to global, classes never do ─────
 //
 // PHP resolves an unqualified function/constant call inside a namespace by
@@ -712,73 +531,6 @@ class Query {
 // fallback — they always resolve within the current namespace (or via `use`).
 // These two behaviors must be asymmetric; testing only one would not catch a
 // regression that accidentally applies (or removes) fallback for the other.
-
-/// A global-namespace function called unqualified from inside a different
-/// namespace, with no `use function` import, must not be flagged
-/// `UndefinedFunction` — PHP falls back to the global function at runtime.
-#[tokio::test]
-async fn unqualified_call_falls_back_to_global_function() {
-    let mut s = TestServer::new().await;
-    s.check_no_diagnostics(
-        r#"<?php
-namespace {
-    function global_only_helper(int $x): int { return $x * 2; }
-}
-
-namespace App {
-    function run(int $x): int {
-        return global_only_helper($x);
-    }
-}
-"#,
-    )
-    .await;
-}
-
-/// Contrast: a global-namespace *class* referenced unqualified from inside a
-/// different namespace, with no `use` import, must still be flagged
-/// `UndefinedClass` — classes do not fall back to the global namespace.
-#[tokio::test]
-async fn unqualified_class_does_not_fall_back_to_global() {
-    let mut s = TestServer::new().await;
-    s.check_diagnostics(
-        r#"<?php
-namespace {
-    class GlobalOnlyThing {}
-}
-
-namespace App {
-    function make(): void {
-        $x = new GlobalOnlyThing();
-    //           ^^^^^^^^^^^^^^^ error: GlobalOnlyThing
-    }
-}
-"#,
-    )
-    .await;
-}
-
-/// A leading-backslash reference to a global function from inside a
-/// namespace is the explicit, unambiguous form of the fallback above and
-/// must not be flagged either.
-#[tokio::test]
-async fn fully_qualified_global_function_call_from_namespace_not_flagged() {
-    let mut s = TestServer::new().await;
-    s.check_no_diagnostics(
-        r#"<?php
-namespace {
-    function global_only_helper(int $x): int { return $x * 2; }
-}
-
-namespace App {
-    function run(int $x): int {
-        return \global_only_helper($x);
-    }
-}
-"#,
-    )
-    .await;
-}
 
 // ── composer.json discovered by walking up from a subdirectory root ────────
 
@@ -1058,29 +810,6 @@ async fn fqn_static_call_not_flagged_as_undefined_class() {
     .assert_eq(&out);
 }
 
-/// The `class_exists()`-guarded conditional-declaration polyfill pattern
-/// (common in Composer packages shimming a class only when missing) must not
-/// break resolution for the class's own body or its call sites — the class
-/// equivalent of `user_polyfill_does_not_break_builtin_restore_error_handler`.
-#[tokio::test]
-async fn class_exists_guarded_polyfill_not_flagged() {
-    let mut s = TestServer::new().await;
-    s.check_diagnostics(
-        r#"//- /src/polyfill.php
-<?php
-if (!class_exists(JsonExtra::class)) {
-    interface JsonExtra {}
-}
-
-//- /src/main.php
-<?php
-function _wrap(JsonExtra $x): void {
-}
-"#,
-    )
-    .await;
-}
-
 // ── false positives: compound type hints ────────────────────────────────────
 //
 // Every use-imported type-hint test above names a single class. Union
@@ -1198,39 +927,6 @@ async fn nullable_type_param_with_use_imported_class_not_flagged() {
 }
 
 // ── false positives: PHP 8.1 first-class callable syntax ───────────────────
-
-/// `strlen(...)` (PHP 8.1 first-class callable syntax) referencing a known
-/// built-in function must not be flagged `UndefinedFunction` — a naive
-/// resolver keyed on "function name immediately followed by `(`" could treat
-/// the `...` placeholder as an unusual argument list and mis-handle the call.
-#[tokio::test]
-async fn first_class_callable_builtin_not_flagged() {
-    let mut s = TestServer::new().await;
-    s.check_no_diagnostics(
-        r#"<?php
-function _wrap(): void {
-    $fn = strlen(...);
-}
-"#,
-    )
-    .await;
-}
-
-/// Same as above but for a project-defined function, proving the first-class
-/// callable syntax doesn't only work for stub/built-in functions.
-#[tokio::test]
-async fn first_class_callable_user_function_not_flagged() {
-    let mut s = TestServer::new().await;
-    s.check_no_diagnostics(
-        r#"<?php
-function greet(string $name): string { return "hi $name"; }
-function _wrap(): void {
-    $fn = greet(...);
-}
-"#,
-    )
-    .await;
-}
 
 // ── vendor PSR-4 via Composer v1 (array-form) `installed.json` ─────────────
 

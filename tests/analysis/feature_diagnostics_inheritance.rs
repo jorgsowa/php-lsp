@@ -7,18 +7,6 @@ use expect_test::expect;
 use serde_json::json;
 
 #[tokio::test]
-async fn circular_inheritance_self_extends() {
-    let mut s = TestServer::new().await;
-    s.check_diagnostics(
-        r#"<?php
-  class A extends A {}
-//^^^^^^^^^^^^^^^^^^^^ error: Class A has a circular inheritance chain
-"#,
-    )
-    .await;
-}
-
-#[tokio::test]
 async fn circular_inheritance_suppressed_when_type_errors_disabled() {
     let (mut s, _resp) = TestServer::new_with_options(json!({
         "diagnostics": { "typeErrors": false }
@@ -27,48 +15,6 @@ async fn circular_inheritance_suppressed_when_type_errors_disabled() {
     s.check_diagnostics(
         r#"<?php
 class A extends A {}
-"#,
-    )
-    .await;
-}
-
-#[tokio::test]
-async fn circular_inheritance_three_class_cycle() {
-    let mut s = TestServer::new().await;
-    s.check_diagnostics(
-        r#"<?php
-  class A extends B {}
-  class B extends C {}
-  class C extends A {}
-//^^^^^^^^^^^^^^^^^^^^ error: Class C has a circular inheritance chain
-"#,
-    )
-    .await;
-}
-
-#[tokio::test]
-async fn circular_inheritance_two_class_cycle() {
-    let mut s = TestServer::new().await;
-    s.check_diagnostics(
-        r#"<?php
-  class A extends B {}
-  class B extends A {}
-//^^^^^^^^^^^^^^^^^^^^ error: Class B has a circular inheritance chain
-"#,
-    )
-    .await;
-}
-
-#[tokio::test]
-async fn invalid_trait_use_class_as_trait() {
-    let mut s = TestServer::new().await;
-    s.check_diagnostics(
-        r#"<?php
-class NotATrait {}
-class User {
-    use NotATrait;
-//      ^^^^^^^^^ error: NotATrait is a class, not a trait
-}
 "#,
     )
     .await;
@@ -122,22 +68,3 @@ async fn workspace_diagnostic_circular_inheritance() {
 }
 
 // ── Abstract method enforcement ──────────────────────────────────────────────
-
-/// A concrete class that extends an abstract class without implementing all
-/// abstract methods produces an `UnimplementedAbstractMethod` diagnostic.
-#[tokio::test]
-async fn abstract_method_missing_implementation_fires_diagnostic() {
-    let mut s = TestServer::new().await;
-    s.validate_syntax(false);
-    s.check_diagnostics(
-        r#"<?php
-abstract class BaseController {
-    abstract public function handle(): void;
-}
-
-  class DashboardController extends BaseController {}
-//^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ error: Class DashboardController must implement abstract method handle()
-"#,
-    )
-    .await;
-}

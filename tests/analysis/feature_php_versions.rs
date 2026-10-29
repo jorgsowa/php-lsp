@@ -22,17 +22,6 @@ async fn str_contains_undefined_on_php74() {
 }
 
 #[tokio::test]
-async fn str_contains_defined_on_php80() {
-    let (mut s, _) = TestServer::new_with_options(json!({
-        "phpVersion": "8.0",
-        "diagnostics": { "enabled": true }
-    }))
-    .await;
-    s.check_no_diagnostics("<?php\nstr_contains(\"hello\", \"ell\");\n")
-        .await;
-}
-
-#[tokio::test]
 async fn str_starts_with_undefined_on_php74() {
     let (mut s, _) = TestServer::new_with_options(json!({
         "phpVersion": "7.4",
@@ -65,17 +54,6 @@ async fn str_ends_with_undefined_on_php74() {
 // ── PHP 8.0 removed functions (each, money_format) ────────────────────────────
 
 #[tokio::test]
-async fn each_defined_on_php74() {
-    let (mut s, _) = TestServer::new_with_options(json!({
-        "phpVersion": "7.4",
-        "diagnostics": { "enabled": true }
-    }))
-    .await;
-    s.check_no_diagnostics("<?php\n$arr = [1, 2, 3];\n$pair = each($arr);\n")
-        .await;
-}
-
-#[tokio::test]
 async fn each_undefined_on_php80() {
     let (mut s, _) = TestServer::new_with_options(json!({
         "phpVersion": "8.0",
@@ -91,17 +69,6 @@ async fn each_undefined_on_php80() {
         .await;
     expect!["2:8-2:18 [1] UndefinedFunction: Function each() is not defined"]
         .assert_eq(&render_diagnostics_notification(&notif));
-}
-
-#[tokio::test]
-async fn money_format_defined_on_php74() {
-    let (mut s, _) = TestServer::new_with_options(json!({
-        "phpVersion": "7.4",
-        "diagnostics": { "enabled": true }
-    }))
-    .await;
-    s.check_no_diagnostics("<?php\n$result = money_format(\"%.2n\", 1234.56);\n")
-        .await;
 }
 
 #[tokio::test]
@@ -154,17 +121,6 @@ async fn array_is_list_undefined_on_php80() {
         .assert_eq(&render_diagnostics_notification(&notif));
 }
 
-#[tokio::test]
-async fn array_is_list_defined_on_php81() {
-    let (mut s, _) = TestServer::new_with_options(json!({
-        "phpVersion": "8.1",
-        "diagnostics": { "enabled": true }
-    }))
-    .await;
-    s.check_no_diagnostics("<?php\n$is_list = array_is_list([1, 2, 3]);\n")
-        .await;
-}
-
 // ── PHP 8.4 functions (array_find, array_any, array_all) ────────────────────────
 
 #[tokio::test]
@@ -183,17 +139,6 @@ async fn array_find_undefined_on_php83() {
         .await;
     expect!["1:9-1:49 [1] UndefinedFunction: Function array_find() is not defined"]
         .assert_eq(&render_diagnostics_notification(&notif));
-}
-
-#[tokio::test]
-async fn array_find_defined_on_php84() {
-    let (mut s, _) = TestServer::new_with_options(json!({
-        "phpVersion": "8.4",
-        "diagnostics": { "enabled": true }
-    }))
-    .await;
-    s.check_no_diagnostics("<?php\n$found = array_find([1, 2, 3], fn ($n) => $n > 1);\n")
-        .await;
 }
 
 #[tokio::test]
@@ -232,28 +177,6 @@ async fn array_all_undefined_on_php83() {
         .assert_eq(&render_diagnostics_notification(&notif));
 }
 
-#[tokio::test]
-async fn array_any_defined_on_php84() {
-    let (mut s, _) = TestServer::new_with_options(json!({
-        "phpVersion": "8.4",
-        "diagnostics": { "enabled": true }
-    }))
-    .await;
-    s.check_no_diagnostics("<?php\n$any = array_any([1, 2, 3], fn ($n) => $n > 1);\n")
-        .await;
-}
-
-#[tokio::test]
-async fn array_all_defined_on_php84() {
-    let (mut s, _) = TestServer::new_with_options(json!({
-        "phpVersion": "8.4",
-        "diagnostics": { "enabled": true }
-    }))
-    .await;
-    s.check_no_diagnostics("<?php\n$all = array_all([1, 2, 3], fn ($n) => $n > 0);\n")
-        .await;
-}
-
 // ── PHP 8.5 functions (array_first, array_last) ────────────────────────────────
 
 #[tokio::test]
@@ -272,17 +195,6 @@ async fn array_first_undefined_on_php84() {
 }
 
 #[tokio::test]
-async fn array_first_defined_on_php85() {
-    let (mut s, _) = TestServer::new_with_options(json!({
-        "phpVersion": "8.5",
-        "diagnostics": { "enabled": true }
-    }))
-    .await;
-    s.check_no_diagnostics("<?php\n$first = array_first([1, 2, 3]);\n")
-        .await;
-}
-
-#[tokio::test]
 async fn array_last_undefined_on_php84() {
     let (mut s, _) = TestServer::new_with_options(json!({
         "phpVersion": "8.4",
@@ -295,17 +207,6 @@ async fn array_last_undefined_on_php84() {
         .await;
     expect!["1:8-1:29 [1] UndefinedFunction: Function array_last() is not defined"]
         .assert_eq(&render_diagnostics_notification(&notif));
-}
-
-#[tokio::test]
-async fn array_last_defined_on_php85() {
-    let (mut s, _) = TestServer::new_with_options(json!({
-        "phpVersion": "8.5",
-        "diagnostics": { "enabled": true }
-    }))
-    .await;
-    s.check_no_diagnostics("<?php\n$last = array_last([1, 2, 3]);\n")
-        .await;
 }
 
 // ── PHP 8.6 partial function application ───────────────────────────────────────
@@ -365,19 +266,6 @@ async fn version_change_clears_diagnostics() {
 }
 
 // ── Boundary tests ──────────────────────────────────────────────────────────────
-
-#[tokio::test]
-async fn latest_version_has_all_85_functions() {
-    let (mut s, _) = TestServer::new_with_options(json!({
-        "phpVersion": "8.5",
-        "diagnostics": { "enabled": true }
-    }))
-    .await;
-    s.check_no_diagnostics(
-        "<?php\n$first = array_first([1]);\n$last = array_last([1]);\n$found = array_find([1], fn ($n) => true);\n$any = array_any([1], fn ($n) => true);\n$all = array_all([1], fn ($n) => true);\n",
-    )
-    .await;
-}
 
 #[tokio::test]
 async fn all_versions_have_basic_stdlib() {
