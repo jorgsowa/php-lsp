@@ -173,6 +173,57 @@ func$0tion greet(): void {}
     expect!["<not renameable>"].assert_eq(&out);
 }
 
+#[tokio::test]
+async fn prepare_rename_on_builtin_function_returns_nothing() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_prepare_rename(
+            r#"<?php
+$n = str$0len('abc');
+"#,
+        )
+        .await;
+    expect!["<not renameable>"].assert_eq(&out);
+}
+
+#[tokio::test]
+async fn rename_builtin_function_in_namespace_makes_no_edits() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_rename(
+            r#"//- /a.php
+<?php
+namespace App;
+$n = str$0len('abc');
+
+//- /b.php
+<?php
+$m = strlen('xyz');
+"#,
+            "mylen",
+        )
+        .await;
+    expect!["<no `changes` map in null>"].assert_eq(&out);
+}
+
+#[tokio::test]
+async fn rename_polyfilled_builtin_function_is_allowed() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    s.check_rename_annotated(
+        r#"<?php
+function str_con$0tains(string $h, string $n): bool { return true; }
+//       ^^^^^^^^^^^^ rename
+  str_contains('a', 'b');
+//^^^^^^^^^^^^ rename
+"#,
+        "my_contains",
+    )
+    .await;
+}
+
 /// `parent`, `self`, and `static` are PHP class-reference keywords and must
 /// not be renameable even though they look like identifiers.
 #[tokio::test]

@@ -740,6 +740,9 @@ impl Backend {
             Some(sym) => sym,
             None => build_mir_symbol(&word, kind, None, constant_owner.is_some())?,
         };
+        if self.is_builtin_function(&symbol, &word) {
+            return None;
+        }
 
         // Candidate scope: same shape as the references handler — visibility
         // narrowing for private/protected methods, else the whole workspace
@@ -841,6 +844,30 @@ impl Backend {
     /// cursor (receiver types, aliases, namespaces). `None` means either no
     /// codebase symbol exists there or mir has not yet analyzed a companion
     /// file this reference depends on.
+    /// Whether the symbol at `position` is a PHP built-in function, which
+    /// rename must leave alone.
+    pub(crate) async fn is_builtin_function_at(&self, uri: &Uri, position: Position) -> bool {
+        let source = self.get_open_text(uri).unwrap_or_default();
+        let Some(word) = word_at_position(&source, position) else {
+            return false;
+        };
+        let doc = self.get_doc(uri);
+        self.resolve_usage_symbol(uri, doc.as_ref(), &source, position)
+            .await
+            .is_some_and(|symbol| self.is_builtin_function(&symbol, &word))
+    }
+
+    /// A built-in function that no workspace file declares (a polyfill does).
+    fn is_builtin_function(&self, symbol: &mir_analyzer::Name, word: &str) -> bool {
+        let mir_analyzer::Name::Function(fqn) = symbol else {
+            return false;
+        };
+        let name = fqn.trim_start_matches('\\');
+        (mir_analyzer::is_builtin_function(name)
+            || mir_analyzer::is_builtin_function(&name.to_ascii_lowercase()))
+            && self.workspace_decl_locations_once(symbol, word).is_empty()
+    }
+
     async fn resolve_usage_symbol(
         &self,
         uri: &Uri,

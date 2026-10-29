@@ -1189,6 +1189,9 @@ impl LanguageServer for Backend {
                 })
                 .await
                 .unwrap_or_default();
+            if range.is_some() && self.is_builtin_function_at(uri, position).await {
+                return Ok(None);
+            }
             Ok(range.map(PrepareRenameResponse::Range))
         })
         .await
