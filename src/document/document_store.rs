@@ -1467,7 +1467,33 @@ impl DocumentStore {
                 )
             },
         )?;
+        let mut raw = raw;
+        if matches!(symbol, mir_analyzer::Name::Class(_)) {
+            self.drop_static_keyword_ranges(&mut raw);
+        }
         Ok(self.mir_ranges_to_ref_locations(raw))
+    }
+
+    /// Late-static-bound `static` names whichever class is called at runtime, not the
+    /// enclosing one, so it isn't a reference to it.
+    fn drop_static_keyword_ranges(&self, raw: &mut Vec<(Arc<str>, mir_analyzer::Range)>) {
+        let mut texts: HashMap<Arc<str>, Option<Arc<str>>> = HashMap::new();
+        raw.retain(|(file, range)| {
+            let (start, end) = (range.start.column as usize, range.end.column as usize);
+            if range.start.line != range.end.line || end.saturating_sub(start) != "static".len() {
+                return true;
+            }
+            let text = texts.entry(Arc::clone(file)).or_insert_with(|| {
+                file.parse::<Uri>()
+                    .ok()
+                    .and_then(|uri| self.source_text(&uri))
+            });
+            let token: Option<String> = text.as_deref().and_then(|t| {
+                let line = t.lines().nth(range.start.line.checked_sub(1)? as usize)?;
+                Some(line.chars().skip(start).take(end - start).collect())
+            });
+            !token.is_some_and(|t| t.eq_ignore_ascii_case("static"))
+        });
     }
 
     /// `use`-import lines referencing `symbol`, from mir's `use:` postings.
