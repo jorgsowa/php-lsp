@@ -13,7 +13,7 @@ use crate::analysis::diagnostics::parse_document_no_diags;
 use crate::document::document_store::DocumentStore;
 use crate::document::open_files::OpenFiles;
 use crate::index::file_index::FileIndex;
-use crate::index::{has_included_children, matches_any, matches_include_prefix};
+use crate::index::{has_included_children, matches_any, matches_include_prefix, normalize_path};
 
 /// Ask all connected clients to re-request semantic tokens, code lenses, inlay hints,
 /// and diagnostics. Called after bulk index operations so that previously-opened editors
@@ -107,8 +107,11 @@ pub(crate) async fn scan_workspace(
                 for key in ["autoload", "autoload-dev"] {
                     for file in json[key]["files"].as_array().unwrap_or(&vec![]) {
                         if let Some(rel) = file.as_str() {
-                            let abs = proj_root.join(rel);
-                            if extensions.is_php_source(&abs) && abs.exists() {
+                            let abs = normalize_path(&proj_root.join(rel));
+                            if extensions.is_php_source(&abs)
+                                && abs.exists()
+                                && !paths.contains(&abs)
+                            {
                                 paths.push(abs);
                             }
                         }
@@ -160,7 +163,11 @@ pub(crate) async fn scan_workspace(
 
     // Prepend explicit autoload.files so they are always indexed regardless of
     // whether the directory walk would reach them.
-    let php_paths: Vec<std::path::PathBuf> = autoload_paths.into_iter().chain(php_paths).collect();
+    let walked: Vec<std::path::PathBuf> = php_paths
+        .into_iter()
+        .filter(|p| !autoload_paths.contains(p))
+        .collect();
+    let php_paths: Vec<std::path::PathBuf> = autoload_paths.into_iter().chain(walked).collect();
 
     // Phase 2a: read files concurrently (I/O-bound).
     // mtime+size are fetched in Phase 2b via synchronous std::fs::metadata()

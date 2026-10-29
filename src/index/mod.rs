@@ -7,6 +7,22 @@ pub mod cache;
 #[cfg(not(target_family = "wasm"))]
 pub(crate) mod workspace_scan;
 
+/// Folds `.` and `..` components without touching the filesystem.
+pub(crate) fn normalize_path(path: &std::path::Path) -> std::path::PathBuf {
+    use std::path::Component;
+    let mut out = std::path::PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other),
+        }
+    }
+    out
+}
+
 // Path patterns are globs over `/`-separated segments: `*` and `?` match within a segment,
 // `**` matches any number of segments. A pattern matches a path, or anything beneath it.
 

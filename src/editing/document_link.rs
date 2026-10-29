@@ -6,6 +6,7 @@ use php_ast::{BinaryOp, ExprKind, MagicConstKind};
 use tower_lsp_server::ls_types::{DocumentLink, Position, Range, Uri};
 
 use crate::document::ast::{ParsedDoc, SourceView};
+use crate::index::normalize_path;
 use crate::text::byte_to_utf16;
 
 /// RFC3986 allows only unreserved chars in a path; matches what
@@ -138,22 +139,6 @@ fn is_current_dir(expr: &php_ast::Expr<'_, '_>) -> bool {
         }
         _ => false,
     }
-}
-
-/// Folds `.` and `..` components without touching the filesystem.
-fn normalize_path(path: &std::path::Path) -> std::path::PathBuf {
-    use std::path::Component;
-    let mut out = std::path::PathBuf::new();
-    for component in path.components() {
-        match component {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                out.pop();
-            }
-            other => out.push(other),
-        }
-    }
-    out
 }
 
 /// Scan sv.source() text for `@link` and `@see` tags with HTTP(S) URLs in docblock/line comments.
