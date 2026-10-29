@@ -356,6 +356,29 @@ pub(crate) fn resolve_fqn(
         return bare.to_string();
     }
 
+    // `namespace\foo` is relative to the current namespace and ignores imports.
+    if let Some(rest) = bare
+        .get(..10)
+        .filter(|prefix| prefix.eq_ignore_ascii_case("namespace\\"))
+        .map(|_| &bare[10..])
+    {
+        let ns = doc
+            .program()
+            .stmts
+            .iter()
+            .rev()
+            .find_map(|s| match &s.kind {
+                StmtKind::Namespace(ns) => {
+                    Some(ns.name.as_ref().map(|n| n.to_string_repr().to_string()))
+                }
+                _ => None,
+            });
+        return match ns.flatten() {
+            Some(ns) => format!("{ns}\\{rest}"),
+            None => rest.to_string(),
+        };
+    }
+
     // PHP semantics: `use` imports take precedence over local class names.
     // Check imports first before scanning for local declarations.
     if let Some(fqn) = file_imports.get(bare) {
@@ -459,6 +482,17 @@ mod tests {
         let d = doc(src);
         let imports = HashMap::from([("Sub".to_string(), "App\\Sub".to_string())]);
         assert_eq!(resolve_fqn(&d, "Sub\\Foo", &imports), "App\\Sub\\Foo");
+    }
+
+    #[test]
+    fn resolve_fqn_namespace_relative_name() {
+        let d = doc("<?php\nnamespace Acme;\nuse Other\\bar;\n");
+        let imports = HashMap::from([("bar".to_string(), "Other\\bar".to_string())]);
+        assert_eq!(resolve_fqn(&d, "namespace\\bar", &imports), "Acme\\bar");
+        assert_eq!(
+            resolve_fqn(&doc("<?php\n"), "NAMESPACE\\bar", &empty()),
+            "bar"
+        );
     }
 
     #[test]
