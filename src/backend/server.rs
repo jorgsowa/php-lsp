@@ -221,7 +221,7 @@ fn method_hover_for_fqcn(
     let mut value = crate::hover::formatting::wrap_php(&sig);
     if let Some(docstring) = m.docstring.as_deref().filter(|s| !s.is_empty()) {
         value.push_str("\n\n---\n\n");
-        value.push_str(docstring);
+        value.push_str(&crate::lang::doc_html::html_to_markdown(docstring));
     }
     Some(hover_markup(value))
 }

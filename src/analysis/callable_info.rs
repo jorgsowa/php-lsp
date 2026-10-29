@@ -1,3 +1,5 @@
+use crate::lang::doc_html::html_to_markdown;
+
 pub(crate) struct CallableInfo {
     pub params: String,
     #[cfg_attr(target_family = "wasm", allow(dead_code))]
@@ -44,7 +46,7 @@ pub(crate) fn callable_info_for_name(
             Some(CallableInfo {
                 params: format_declared_params(&f.params),
                 return_type: f.effective_return_type().map(ToString::to_string),
-                documentation: f.docstring.as_deref().map(str::to_string),
+                documentation: f.docstring.as_deref().map(html_to_markdown),
             })
         }
         mir_analyzer::Name::Method { class, name } => {
@@ -60,7 +62,7 @@ pub(crate) fn callable_info_for_name(
                     .as_deref()
                     .or(m.inferred_return_type.as_deref())
                     .map(ToString::to_string),
-                documentation: m.docstring.as_deref().map(str::to_string),
+                documentation: m.docstring.as_deref().map(html_to_markdown),
             })
         }
         mir_analyzer::Name::Class(fqcn) => {
@@ -72,7 +74,7 @@ pub(crate) fn callable_info_for_name(
             Some(CallableInfo {
                 params: format_declared_params(&m.params),
                 return_type: None,
-                documentation: m.docstring.as_deref().map(str::to_string),
+                documentation: m.docstring.as_deref().map(html_to_markdown),
             })
         }
         _ => None,

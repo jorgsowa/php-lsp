@@ -10,6 +10,7 @@ pub mod docblock;
 pub mod php_names;
 
 pub(crate) mod autoload;
+pub(crate) mod doc_html;
 pub(crate) mod docblock_gate;
 pub(crate) mod file_header;
 pub(crate) mod keywords;
