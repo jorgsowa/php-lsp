@@ -49,6 +49,10 @@ class User
 {
 }
 ===expect===
+// src/Model/Qualified.php
+6:28-6:43 → "\\App\\Domain\\User"
+8:19-8:34 → "\\App\\Domain\\User"
+
 // src/Model/Repo.php
 3:0-3:0 → "use App\\Domain\\User;\n"
 

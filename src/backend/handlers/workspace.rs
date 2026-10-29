@@ -8,7 +8,8 @@ use tower_lsp_server::ls_types::*;
 
 use crate::analysis::semantic_tokens::legend;
 use crate::editing::file_rename::{
-    delete_use_in_source, moved_file_edits, same_namespace_import_edit, use_edits_in_source,
+    delete_use_in_source, docblock_reference_edits, moved_file_edits, qualified_reference_edit,
+    same_namespace_import_edit, use_edits_in_source,
 };
 use crate::index::workspace_scan::{scan_workspace, send_refresh_requests};
 use crate::lang::autoload::Psr4Map;
@@ -891,6 +892,7 @@ impl Backend {
                     mir_analyzer::Name::class(old_fqn.trim_start_matches('\\').to_string());
                 let files: Vec<std::sync::Arc<str>> = self.docs.reference_candidate_files(&symbol);
                 let docs = std::sync::Arc::clone(&self.docs);
+                let candidate_files = files.clone();
                 let locations = tokio::task::spawn_blocking(move || {
                     let (_interactive, cancel_rev) = docs.settled_write_rev_guard();
                     docs.indexed_references(&symbol, &files, true, Some(cancel_rev))
@@ -923,6 +925,12 @@ impl Backend {
                             continue;
                         };
                         if ns_changed
+                            && let Some(edit) = qualified_reference_edit(&doc, range, &new_fqn_task)
+                        {
+                            out.push((loc.uri, edit));
+                            continue;
+                        }
+                        if ns_changed
                             && moved_uri.as_ref() != Some(&loc.uri)
                             && let Some(edit) = same_namespace_import_edit(
                                 &doc,
@@ -941,6 +949,20 @@ impl Backend {
                                     new_text: new_short_task.clone(),
                                 },
                             ));
+                        }
+                    }
+                    // Docblock types aren't in mir's reference postings.
+                    if ns_changed {
+                        for uri in candidate_files.iter().filter_map(|f| f.parse::<Uri>().ok()) {
+                            let Some(doc) = docs.get_doc_salsa(&uri) else {
+                                continue;
+                            };
+                            let import = moved_uri.as_ref() != Some(&uri);
+                            for edit in
+                                docblock_reference_edits(&doc, &old_fqn_task, &new_fqn_task, import)
+                            {
+                                out.push((uri.clone(), edit));
+                            }
                         }
                     }
                     out

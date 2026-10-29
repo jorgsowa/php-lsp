@@ -202,16 +202,11 @@ fn old_namespace_names(
     docblock_names: &[(u32, &str)],
     is_class: impl Fn(&str) -> bool,
 ) -> Vec<String> {
-    let mut bound = std::collections::HashSet::new();
+    let mut bound: std::collections::HashSet<String> = class_imports(segment)
+        .map(|(alias, _)| alias.to_ascii_lowercase())
+        .collect();
     for stmt in segment.stmts {
         match &stmt.kind {
-            StmtKind::Use(u) if u.kind == UseKind::Normal => {
-                for item in u.uses.iter() {
-                    if matches!(item.kind, None | Some(UseKind::Normal)) {
-                        bound.insert(use_item_alias_and_fqn(item).0.to_ascii_lowercase());
-                    }
-                }
-            }
             StmtKind::Class(c) => {
                 bound.extend(c.name.and_then(|n| n.as_str()).map(str::to_ascii_lowercase))
             }
@@ -251,6 +246,117 @@ fn old_namespace_names(
     }
     out.sort_by_key(|n| n.to_ascii_lowercase());
     out
+}
+
+/// `(local name, FQN)` of each class import in `segment`.
+fn class_imports<'a>(
+    segment: &'a NamespaceSegment<'_, '_, '_>,
+) -> impl Iterator<Item = (String, String)> + 'a {
+    segment
+        .stmts
+        .iter()
+        .filter_map(|stmt| match &stmt.kind {
+            StmtKind::Use(u) if u.kind == UseKind::Normal => Some(u.uses.iter()),
+            _ => None,
+        })
+        .flatten()
+        .filter(|item| matches!(item.kind, None | Some(UseKind::Normal)))
+        .map(use_item_alias_and_fqn)
+}
+
+/// The FQN (no leading `\`) a class name spelled `name` in `segment` refers to.
+fn resolve_class_name(segment: &NamespaceSegment<'_, '_, '_>, name: &str) -> String {
+    if let Some(fq) = name.strip_prefix('\\') {
+        return fq.to_string();
+    }
+    let ns = segment.name();
+    let ns = ns.trim_start_matches('\\');
+    if let Some(rest) = name
+        .get(..10)
+        .filter(|p| p.eq_ignore_ascii_case("namespace\\"))
+        .map(|_| &name[10..])
+    {
+        return qualify(ns, rest);
+    }
+    let (first, rest) = name
+        .split_once('\\')
+        .map_or((name, None), |(f, r)| (f, Some(r)));
+    match class_imports(segment).find(|(alias, _)| alias.eq_ignore_ascii_case(first)) {
+        Some((_, fqn)) => {
+            let fqn = fqn.trim_start_matches('\\');
+            rest.map_or_else(|| fqn.to_string(), |r| format!("{fqn}\\{r}"))
+        }
+        None => qualify(ns, name),
+    }
+}
+
+/// `new_fqn` spelled to replace the qualified name `spelled`: fully qualified,
+/// unless `spelled` was a global-namespace name without the leading `\`.
+fn requalify(spelled: &str, in_global: bool, new_fqn: &str) -> String {
+    let new = new_fqn.trim_start_matches('\\');
+    if in_global && !spelled.starts_with('\\') {
+        new.to_string()
+    } else {
+        format!("\\{new}")
+    }
+}
+
+/// Rewrites the qualified class reference ending at the short-name range
+/// `short` to name `new_fqn`; `None` for an unqualified reference.
+pub fn qualified_reference_edit(doc: &ParsedDoc, short: Range, new_fqn: &str) -> Option<TextEdit> {
+    let source = doc.source();
+    let view = doc.view();
+    let end = view.byte_of_position(short.start) as usize;
+    let start = source[..end]
+        .trim_end_matches(|c: char| c.is_ascii_alphanumeric() || c == '_' || c == '\\')
+        .len();
+    let qualifier = &source[start..end];
+    if !qualifier.ends_with('\\') {
+        return None;
+    }
+    let in_global = namespace_at(&doc.program().stmts, start as u32)
+        .name()
+        .is_empty();
+    Some(TextEdit {
+        range: Range::new(view.position_of(start as u32), short.end),
+        new_text: requalify(qualifier, in_global, new_fqn),
+    })
+}
+
+/// Edits for docblock type names in `doc` naming `old_fqn`: qualified ones are
+/// rewritten to `new_fqn`, unqualified ones get a same-namespace import when
+/// `import_unqualified`.
+pub fn docblock_reference_edits(
+    doc: &ParsedDoc,
+    old_fqn: &str,
+    new_fqn: &str,
+    import_unqualified: bool,
+) -> Vec<TextEdit> {
+    let old = old_fqn.trim_start_matches('\\');
+    let view = doc.view();
+    let stmts = &doc.program().stmts;
+    let mut edits = Vec::new();
+    for (at, name) in docblock_type_names(doc.source()) {
+        let segment = namespace_at(stmts, at);
+        if !resolve_class_name(&segment, name).eq_ignore_ascii_case(old) {
+            continue;
+        }
+        let range = Range::new(
+            view.position_of(at),
+            view.position_of(at + name.len() as u32),
+        );
+        if name.contains('\\') {
+            edits.push(TextEdit {
+                range,
+                new_text: requalify(name, segment.name().is_empty(), new_fqn),
+            });
+        } else if import_unqualified
+            && let Some(edit) = same_namespace_import_edit(doc, range.start, old_fqn, new_fqn)
+        {
+            edits.push(edit);
+        }
+    }
+    edits
 }
 
 const NON_CLASS_TYPES: &[&str] = &[
