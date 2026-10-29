@@ -54,7 +54,7 @@ class User
 8:19-8:34 → "\\App\\Domain\\User"
 
 // src/Model/Repo.php
-3:0-3:0 → "use App\\Domain\\User;\n"
+3:0-3:0 → "\nuse App\\Domain\\User;\n"
 
 // src/Model/User.php
 2:10-2:19 → "App\\Domain"

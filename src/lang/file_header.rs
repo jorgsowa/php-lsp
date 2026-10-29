@@ -126,6 +126,8 @@ pub(crate) fn namespace_at<'a, 'arena, 'src>(
 pub(crate) struct UseInsertion {
     pub line: u32,
     pub indent: String,
+    /// Whether `line` follows an existing `use`, not the namespace or file opening.
+    pub after_use: bool,
 }
 
 impl UseInsertion {
@@ -169,6 +171,7 @@ pub(crate) fn use_insertion(
         Some(first) if braced => line_indent(source, first.span.start),
         _ => "",
     };
+    let mut after_use = false;
     for stmt in segment.stmts {
         let anchors = match stmt.kind {
             StmtKind::Use(_) => {
@@ -179,6 +182,7 @@ pub(crate) fn use_insertion(
         };
         if anchors && line_after(stmt.span.end) >= line {
             line = line_after(stmt.span.end);
+            after_use = matches!(stmt.kind, StmtKind::Use(_));
             if braced {
                 indent = line_indent(source, stmt.span.start);
             }
@@ -187,6 +191,7 @@ pub(crate) fn use_insertion(
     UseInsertion {
         line,
         indent: indent.to_string(),
+        after_use,
     }
 }
 

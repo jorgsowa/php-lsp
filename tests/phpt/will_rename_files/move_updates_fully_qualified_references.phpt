@@ -46,7 +46,7 @@ class Foo {}
 2:11-2:20 → "App\\B\\Foo"
 
 // src/A/Docs.php
-3:0-3:0 → "use App\\B\\Foo;\n"
+3:0-3:0 → "\nuse App\\B\\Foo;\n"
 
 // src/A/Foo.php
 2:10-2:15 → "App\\B"

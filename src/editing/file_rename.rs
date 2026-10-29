@@ -2,7 +2,7 @@ use php_ast::{NamespaceBody, Span, Stmt, StmtKind, UseDecl, UseKind};
 use tower_lsp_server::ls_types::{Position, Range, TextEdit};
 
 use crate::document::ast::{ParsedDoc, use_item_alias_and_fqn};
-use crate::lang::file_header::{NamespaceSegment, namespace_at, use_insertion};
+use crate::lang::file_header::{NamespaceSegment, UseInsertion, namespace_at, use_insertion};
 use crate::navigation::walk::all_class_ref_names_in_stmts;
 
 /// Find every `use` item in `stmts` whose FQN (leading `\` ignored) equals
@@ -262,9 +262,9 @@ pub fn moved_file_edits(
             continue;
         }
         let insertion = use_insertion(doc, doc.view().position_of(segment.body_start), |_| true);
-        let uses: String = names
+        let stmts: Vec<String> = names
             .iter()
-            .map(|name| format!("{}use {};\n", insertion.indent, qualify(old_ns, name)))
+            .map(|name| format!("use {};", qualify(old_ns, name)))
             .collect();
         let pos = insertion.position();
         // Edit dedup keeps one insert per position, so extend an inserted namespace line.
@@ -274,12 +274,13 @@ pub fn moved_file_edits(
         {
             Some(ns_insert) => {
                 ns_insert.new_text.push('\n');
-                ns_insert.new_text.push_str(&uses);
+                for stmt in &stmts {
+                    ns_insert
+                        .new_text
+                        .push_str(&format!("{}{stmt}\n", insertion.indent));
+                }
             }
-            None => edits.push(TextEdit {
-                range: Range::new(pos, pos),
-                new_text: uses,
-            }),
+            None => edits.push(separated_use_edit(doc, &insertion, &stmts)),
         }
     }
     edits
@@ -675,8 +676,37 @@ pub fn same_namespace_import_edit(
     if !imports.is_empty() {
         return None;
     }
-    Some(
-        use_insertion(doc, at, |_| true)
-            .edit(&format!("use {};", new_fqn.trim_start_matches('\\'))),
-    )
+    let stmt = format!("use {};", new_fqn.trim_start_matches('\\'));
+    Some(separated_use_edit(
+        doc,
+        &use_insertion(doc, at, |_| true),
+        &[stmt],
+    ))
+}
+
+/// Inserts `stmts` at `insertion`, blank-line separated from a preceding
+/// `namespace X;` or `declare` and from following code.
+fn separated_use_edit(doc: &ParsedDoc, insertion: &UseInsertion, stmts: &[String]) -> TextEdit {
+    let line = |n: u32| doc.source().lines().nth(n as usize).map(str::trim);
+    let opens_block = insertion
+        .line
+        .checked_sub(1)
+        .and_then(line)
+        .is_some_and(|l| l.ends_with('{'));
+    let mut text = String::new();
+    if !insertion.after_use && !opens_block {
+        text.push('\n');
+    }
+    for stmt in stmts {
+        text.push_str(&format!("{}{stmt}\n", insertion.indent));
+    }
+    let next = line(insertion.line);
+    if next.is_some_and(|l| !l.is_empty() && !l.starts_with("use ") && l != "}") {
+        text.push('\n');
+    }
+    let pos = insertion.position();
+    TextEdit {
+        range: Range::new(pos, pos),
+        new_text: text,
+    }
 }

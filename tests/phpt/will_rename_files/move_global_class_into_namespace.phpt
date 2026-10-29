@@ -27,7 +27,7 @@ class User
 }
 ===expect===
 // lib/Repo.php
-3:0-3:0 → "use App\\User;\n"
+3:0-3:0 → "\nuse App\\User;\n"
 
 // lib/User.php
 3:0-3:0 → "\nnamespace App;\n"
