@@ -61,6 +61,14 @@ impl ConfigIndex {
                 if let StmtKind::Return(Some(expr)) = &stmt.kind
                     && let ExprKind::Array(elements) = &expr.kind
                 {
+                    // The whole-file key points at the `return` keyword.
+                    keys.entry(prefix.clone()).or_insert_with(|| Location {
+                        uri: uri.clone(),
+                        range: Range {
+                            start: sv.position_of(stmt.span.start),
+                            end: sv.position_of(stmt.span.start + "return".len() as u32),
+                        },
+                    });
                     collect_array_keys(elements, sv, &uri, &prefix, &mut keys);
                 }
             }
@@ -177,6 +185,10 @@ mod tests {
         assert_eq!(host.range.end.character, 17);
 
         assert!(idx.get("database.nonexistent").is_none());
+
+        let file = idx.get("database").unwrap();
+        assert_eq!((file.range.start.line, file.range.start.character), (1, 0));
+        assert_eq!(file.range.end.character, 6);
     }
 
     #[test]
@@ -210,6 +222,7 @@ mod tests {
         let idx = ConfigIndex::load(tmp.path());
         let loc = idx.get("services.stripe.key").unwrap();
         assert!(loc.uri.as_str().ends_with("config/services/stripe.php"));
+        assert!(idx.get("services.stripe").is_some());
     }
 
     #[test]
@@ -239,7 +252,7 @@ mod tests {
         );
         assert_eq!(providers.range.end.character, 14);
         // Positional list entries (no string key) contribute nothing further.
-        assert_eq!(idx.keys().count(), 1);
+        assert_eq!(idx.keys().count(), 2);
     }
 
     #[test]
@@ -251,8 +264,8 @@ mod tests {
             "<?php\nreturn [\n    'name' => 'x',\n    'env' => 'y',\n];\n",
         );
         let idx = ConfigIndex::load(tmp.path());
-        let items = config_completions(&idx, "app.");
+        let items = config_completions(&idx, "app");
         let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
-        assert_eq!(labels, vec!["app.env", "app.name"]);
+        assert_eq!(labels, vec!["app", "app.env", "app.name"]);
     }
 }
