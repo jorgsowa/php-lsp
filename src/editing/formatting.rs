@@ -62,17 +62,20 @@ fn range_edit(
         return None;
     }
 
-    let crlf = snippet.contains("\r\n");
+    let crlf = source
+        .find('\n')
+        .is_some_and(|i| source[..i].ends_with('\r'));
     let lf_snippet = snippet.replace("\r\n", "\n");
     let formatted = if lf_snippet.trim_start().starts_with("<?php") {
         format(&lf_snippet)?
     } else {
         format_fragment(&lf_snippet, &format)?
     };
-    let mut formatted = formatted.trim_end_matches('\n').to_string();
-    if lf_snippet.ends_with('\n') {
-        formatted.push('\n');
-    }
+    let trailing_newlines = lf_snippet[lf_snippet.trim_end().len()..]
+        .matches('\n')
+        .count();
+    let mut formatted = formatted.trim_end().to_string();
+    formatted.push_str(&"\n".repeat(trailing_newlines));
     if crlf {
         formatted = formatted.replace('\n', "\r\n");
     }
@@ -107,13 +110,18 @@ fn format_fragment(snippet: &str, format: &impl Fn(&str) -> Option<String>) -> O
         .lines()
         .filter(|l| !l.trim().is_empty())
         .map(|l| &l[..l.len() - l.trim_start().len()])
-        .min_by_key(|ws| ws.len())
+        .reduce(common_prefix)
         .unwrap_or("");
     let dedented: String = snippet
         .lines()
         .map(|l| l.strip_prefix(indent).unwrap_or(l.trim_start()))
         .collect::<Vec<_>>()
         .join("\n");
+    // The formatter indents with spaces; a tab-indented selection keeps tabs.
+    let uses_tabs = indent.contains('\t')
+        || snippet
+            .lines()
+            .any(|l| l.strip_prefix(indent).is_some_and(|r| r.starts_with('\t')));
     let formatted = format(&format!("<?php\n{dedented}\n"))?;
     // PSR-12 puts a blank line after `<?php`; it belongs to the wrapper, not the snippet.
     let body = formatted.strip_prefix("<?php")?.trim_start_matches('\n');
@@ -123,10 +131,23 @@ fn format_fragment(snippet: &str, format: &impl Fn(&str) -> Option<String>) -> O
         if !line.is_empty() {
             out.push_str(indent);
         }
-        out.push_str(line);
+        if uses_tabs {
+            let content = line.trim_start_matches(' ');
+            let spaces = line.len() - content.len();
+            out.push_str(&"\t".repeat(spaces / 4));
+            out.push_str(&" ".repeat(spaces % 4));
+            out.push_str(content);
+        } else {
+            out.push_str(line);
+        }
         out.push('\n');
     }
     Some(out)
+}
+
+fn common_prefix<'a>(a: &'a str, b: &str) -> &'a str {
+    let len = a.bytes().zip(b.bytes()).take_while(|(x, y)| x == y).count();
+    &a[..len]
 }
 
 /// Byte offset where line `line` starts, or `None` past the last line.
@@ -288,6 +309,31 @@ mod tests {
         let source = "<?php\nf( $x );";
         let edits = range_edit(source, range(1, 1, 3), fake_formatter).unwrap();
         assert_eq!(apply(source, &edits), "<?php\nf($x);");
+    }
+
+    #[test]
+    fn range_edit_keeps_trailing_blank_lines() {
+        let source = "<?php\nf( $x );\n\n\ng();\n";
+        let edits = range_edit(source, range(1, 4, 0), fake_formatter).unwrap();
+        assert_eq!(apply(source, &edits), "<?php\nf($x);\n\n\ng();\n");
+    }
+
+    #[test]
+    fn range_edit_uses_file_line_endings() {
+        let source = "<?php\r\nf( $x );";
+        let multiline = |src: &str| fake_formatter(src).map(|f| f.replace(";", ";\n// x"));
+        let edits = range_edit(source, range(1, 1, 8), multiline).unwrap();
+        assert_eq!(apply(source, &edits), "<?php\r\nf($x);\r\n// x");
+    }
+
+    #[test]
+    fn range_edit_keeps_relative_indent_with_mixed_tabs_and_spaces() {
+        let source = "<?php\nif (1) {\n    f( $x );\n\t\tg( $x );\n}\n";
+        let edits = range_edit(source, range(2, 4, 0), fake_formatter).unwrap();
+        assert_eq!(
+            apply(source, &edits),
+            "<?php\nif (1) {\n\tf($x);\n\t\tg($x);\n}\n"
+        );
     }
 
     #[test]

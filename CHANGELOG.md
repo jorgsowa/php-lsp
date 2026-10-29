@@ -7,6 +7,7 @@ All notable changes to php-lsp are documented here.
 ### Fixed
 
 - **Moving a class file updates its namespace**: `workspace/willRenameFiles` rewrites the moved file's `namespace` line (adding or removing it for the global namespace) and adds a `use` to callers that referenced the class unqualified from its old namespace.
+- **Range formatting edge cases**: `textDocument/rangeFormatting` keeps blank lines at the end of the selection, uses the file's line endings when the selection has no line break, and keeps relative indentation in selections that mix tab and space indentation (tab-indented selections stay tab-indented).
 
 ## [0.29.0] — 2026-10-28
 
