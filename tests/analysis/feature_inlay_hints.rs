@@ -407,6 +407,23 @@ async fn inlay_hints_respects_lsp_half_open_range_semantics() {
     expect!["2:2 x: [param]"].assert_eq(&out);
 }
 
+#[tokio::test]
+async fn inlay_hints_sub_range_includes_partially_overlapping_statements() {
+    let mut s = TestServer::new().await;
+    s.open(
+        "sub_range.php",
+        "<?php\nfunction f(int $a, int $b): int { return 0; }\nfunction g(): int { return 1; }\nf(1, 2);\n$y = g();\nf(\n    3,\n    4\n);\n",
+    )
+    .await;
+
+    // Starts exactly at the end of `g()` and ends mid-call, before the `4` argument.
+    let resp = s.inlay_hints("sub_range.php", 4, 8, 7, 0).await;
+    expect![[r#"
+        4:8 : int [type]
+        6:4 a: [param]"#]]
+    .assert_eq(&render_inlay_hints(&resp));
+}
+
 /// Method hint collisions: when multiple classes define a method with the same name,
 /// each call site shows the correct parameter hints for its own class.
 #[tokio::test]

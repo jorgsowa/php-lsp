@@ -44,6 +44,8 @@ pub fn inlay_hints(
         analysis,
         db,
         range,
+        range_start: sv.byte_of_position(range.start),
+        range_end: sv.byte_of_position(range.end),
     };
     hints_in_stmts(&ctx, &doc.program().stmts, &mut hints);
     hints
@@ -70,6 +72,16 @@ struct HintCtx<'a> {
     analysis: Option<&'a mir_analyzer::FileAnalysis>,
     db: Option<&'a mir_analyzer::db::MirDbStorage>,
     range: Range,
+    range_start: u32,
+    range_end: u32,
+}
+
+impl HintCtx<'_> {
+    /// Every hint a node emits sits within `[span.start, span.end]`, so nodes
+    /// outside the requested range can be skipped without resolving anything.
+    fn overlaps(&self, span: php_ast::Span) -> bool {
+        span.end >= self.range_start && span.start < self.range_end
+    }
 }
 
 // === Definition collection ===
@@ -252,6 +264,9 @@ fn hints_in_stmts(ctx: &HintCtx<'_>, stmts: &[Stmt<'_, '_>], out: &mut Vec<Inlay
 }
 
 fn hints_in_stmt(ctx: &HintCtx<'_>, stmt: &Stmt<'_, '_>, out: &mut Vec<InlayHint>) {
+    if !ctx.overlaps(stmt.span) {
+        return;
+    }
     match &stmt.kind {
         StmtKind::Expression(e) => hints_in_expr(ctx, e, out),
         StmtKind::Return(Some(v)) => hints_in_expr(ctx, v, out),
@@ -371,6 +386,9 @@ fn hints_in_stmt(ctx: &HintCtx<'_>, stmt: &Stmt<'_, '_>, out: &mut Vec<InlayHint
 }
 
 fn hints_in_expr(ctx: &HintCtx<'_>, expr: &Expr<'_, '_>, out: &mut Vec<InlayHint>) {
+    if !ctx.overlaps(expr.span) {
+        return;
+    }
     match &expr.kind {
         ExprKind::FunctionCall(f) => {
             let def = ident_name(f.name)
