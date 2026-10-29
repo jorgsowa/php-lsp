@@ -29,10 +29,6 @@ pub fn document_symbols(_source: &str, doc: &ParsedDoc) -> Vec<DocumentSymbol> {
 }
 
 /// `document_symbols` without signature details or parameter children.
-fn outline_symbols(doc: &ParsedDoc) -> Vec<DocumentSymbol> {
-    symbols_from_statements(doc.view(), &doc.program().stmts, false)
-}
-
 fn fn_detail(
     full: bool,
     params: &[php_ast::Param<'_, '_>],
@@ -574,12 +570,29 @@ pub fn workspace_symbols_from_workspace(
 ) -> Vec<SymbolInformation> {
     let (kind_filter, term) = parse_kind_filter(query);
     let matches_kind = |k: SymbolKind| kind_filter.is_none_or(|f| f == k);
+    let term = term.trim_start_matches('\\');
+    let qualified_query = term.contains('\\');
     let fq = crate::text::FuzzyQuery::new(term);
 
     let mut results = Vec::new();
     for (uri, index) in &wi.files {
         for row in &index.symbols {
-            if !matches_kind(row.kind) || !fq.symbol_match(&row.name) {
+            if row.kind == SymbolKind::NAMESPACE || !matches_kind(row.kind) {
+                continue;
+            }
+            let container = row.container.and_then(|i| index.symbols.get(i as usize));
+            let matched = if qualified_query {
+                let namespace = container
+                    .filter(|c| c.kind == SymbolKind::NAMESPACE)
+                    .map(|c| &*c.name);
+                match namespace {
+                    Some(ns) => fq.symbol_match(&format!("{ns}\\{}", row.name)),
+                    None => row.container.is_none() && fq.symbol_match(&row.name),
+                }
+            } else {
+                fq.symbol_match(&row.name)
+            };
+            if !matched {
                 continue;
             }
             results.push(SymbolInformation {
@@ -591,10 +604,7 @@ pub fn workspace_symbols_from_workspace(
                 },
                 tags: None,
                 deprecated: row.deprecated,
-                container_name: row
-                    .container
-                    .and_then(|i| index.symbols.get(i as usize))
-                    .map(|c| c.name.to_string()),
+                container_name: container.map(|c| c.name.to_string()),
             });
         }
     }
@@ -603,9 +613,46 @@ pub fn workspace_symbols_from_workspace(
 
 /// Flattens `document_symbols` into the rows `workspace_symbols_from_workspace` matches against.
 pub fn workspace_symbol_rows(doc: &ParsedDoc) -> Vec<WorkspaceSymbolRow> {
+    let sv = doc.view();
     let mut rows = Vec::new();
-    for sym in outline_symbols(doc) {
-        push_workspace_symbol_rows(&sym, None, sym.selection_range.start.line, &mut rows);
+    // Namespace rows are never reported; they only serve as top-level declarations' container.
+    let mut namespace_row = None;
+    for stmt in doc.program().stmts.iter() {
+        match &stmt.kind {
+            StmtKind::Namespace(ns) => {
+                namespace_row = ns.name.as_ref().map(|name| {
+                    rows.push(WorkspaceSymbolRow {
+                        name: name.to_string_repr().into(),
+                        kind: SymbolKind::NAMESPACE,
+                        line: sv.position_of(stmt.span.start).line,
+                        container: None,
+                        deprecated: None,
+                    });
+                    rows.len() as u32 - 1
+                });
+                if let NamespaceBody::Braced(inner) = &ns.body {
+                    for sym in symbols_from_statements(sv, &inner.stmts, false) {
+                        push_workspace_symbol_rows(
+                            &sym,
+                            namespace_row,
+                            sym.selection_range.start.line,
+                            &mut rows,
+                        );
+                    }
+                    namespace_row = None;
+                }
+            }
+            _ => {
+                if let Some(sym) = statement_to_symbol(sv, stmt, false) {
+                    push_workspace_symbol_rows(
+                        &sym,
+                        namespace_row,
+                        sym.selection_range.start.line,
+                        &mut rows,
+                    );
+                }
+            }
+        }
     }
     rows
 }
@@ -695,22 +742,22 @@ namespace App {
 }
 "#;
         expect_test::expect![[r#"
-            Class Svc L3 in=None dep=None
+            Class Svc L3 in=Some("App") dep=None
             Constant A L3 in=Some("Svc") dep=None
             Property $count L6 in=Some("Svc") dep=Some(true)
             Method __construct L7 in=Some("Svc") dep=None
             Property $name L7 in=Some("Svc") dep=None
             Method run L9 in=Some("Svc") dep=None
-            Interface Contract L11 in=None dep=None
+            Interface Contract L11 in=Some("App") dep=None
             Constant B L11 in=Some("Contract") dep=None
             Method go L11 in=Some("Contract") dep=None
-            Class Helps L12 in=None dep=None
+            Class Helps L12 in=Some("App") dep=None
             Method help L12 in=Some("Helps") dep=None
-            Enum Suit L13 in=None dep=None
+            Enum Suit L13 in=Some("App") dep=None
             EnumMember Hearts L13 in=Some("Suit") dep=None
             Constant D L13 in=Some("Suit") dep=None
             Method label L13 in=Some("Suit") dep=None
-            Function helper L15 in=None dep=Some(true)"#]]
+            Function helper L15 in=Some("App") dep=Some(true)"#]]
         .assert_eq(&workspace_symbol_dump(src, ""));
         expect_test::expect![[r#"
             Method __construct L7 in=Some("Svc") dep=None

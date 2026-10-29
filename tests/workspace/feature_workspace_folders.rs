@@ -216,8 +216,8 @@ async fn add_empty_workspace_folder_does_not_crash() {
 
     let out = server.snapshot_workspace_symbols("User").await;
     expect![[r#"
-        Class       User @ src/Model/User.php:4
-        Property    $users @ src/Service/Registry.php:9"#]]
+        Class       User @ src/Model/User.php:4 in App\Model
+        Property    $users @ src/Service/Registry.php:9 in Registry"#]]
     .assert_eq(&out);
 
     let out = server.snapshot_workspace_symbols("NonExistent").await;
@@ -266,8 +266,8 @@ async fn remove_workspace_folder_keeps_already_indexed_docs_queryable() {
 
     let out = server.snapshot_workspace_symbols("User").await;
     expect![[r#"
-        Class       User @ src/Model/User.php:4
-        Property    $users @ src/Service/Registry.php:9"#]]
+        Class       User @ src/Model/User.php:4 in App\Model
+        Property    $users @ src/Service/Registry.php:9 in Registry"#]]
     .assert_eq(&out);
 }
 
@@ -295,7 +295,7 @@ async fn nonexistent_psr4_dir_does_not_crash_server() {
     server.wait_for_index_ready().await;
 
     let out = server.snapshot_workspace_symbols("Alive").await;
-    expect!["Class       Alive @ src/Present/Alive.php:4"].assert_eq(&out);
+    expect!["Class       Alive @ src/Present/Alive.php:4 in Present"].assert_eq(&out);
 
     let (text, _, _) = server.locate("src/Present/Alive.php", "<?php", 0);
     server.open("src/Present/Alive.php", &text).await;
@@ -404,8 +404,8 @@ async fn did_rename_files_updates_index_to_new_path() {
 
     let out = server.snapshot_workspace_symbols("User").await;
     expect![[r#"
-        Class       User @ src/Entity/User.php:4
-        Property    $users @ src/Service/Registry.php:9"#]]
+        Class       User @ src/Entity/User.php:4 in App\Model
+        Property    $users @ src/Service/Registry.php:9 in Registry"#]]
     .assert_eq(&out);
 }
 
@@ -458,7 +458,8 @@ async fn did_create_files_adds_new_class_to_index() {
         .await;
 
     let out = server.snapshot_workspace_symbols("OrderRepo").await;
-    expect!["Class       OrderRepo @ src/Repository/OrderRepo.php:2"].assert_eq(&out);
+    expect![[r#"Class       OrderRepo @ src/Repository/OrderRepo.php:2 in App\Repository"#]]
+        .assert_eq(&out);
 }
 
 #[tokio::test]
@@ -657,10 +658,11 @@ async fn batch_changes_all_applied() {
         .await;
 
     let alpha_out = server.snapshot_workspace_symbols("Alpha").await;
-    expect![[r#"Class       Alpha @ src/Service/Alpha.php:3"#]].assert_eq(&alpha_out);
+    expect![[r#"Class       Alpha @ src/Service/Alpha.php:3 in App\Service"#]]
+        .assert_eq(&alpha_out);
 
     let beta_out = server.snapshot_workspace_symbols("Beta").await;
-    expect![[r#"Class       Beta @ src/Service/Beta.php:3"#]].assert_eq(&beta_out);
+    expect![[r#"Class       Beta @ src/Service/Beta.php:3 in App\Service"#]].assert_eq(&beta_out);
 
     let registry_out = server.snapshot_workspace_symbols("Registry").await;
     expect![[r#"<no symbols>"#]].assert_eq(&registry_out);

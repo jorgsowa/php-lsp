@@ -12,28 +12,28 @@ async fn monorepo_workspace_scan_indexes_all_packages() {
     let out = s.snapshot_workspace_symbols("").await;
     // Verify that symbols from all packages are indexed
     expect![[r#"
-        Class       ListUsersCommand @ packages/cli/src/Command/ListUsersCommand.php:5
-        Class       User @ packages/core/src/Entity/User.php:3
-        Class       UserController @ packages/api/src/Controller/UserController.php:6
-        Class       UserRepository @ packages/core/src/Repository/UserRepository.php:5
-        Class       UserTest @ packages/tests/src/Integration/UserTest.php:6
-        Method      __construct @ packages/api/src/Controller/UserController.php:7
-        Method      __construct @ packages/cli/src/Command/ListUsersCommand.php:6
-        Method      __construct @ packages/core/src/Entity/User.php:4
-        Method      execute @ packages/cli/src/Command/ListUsersCommand.php:10
-        Method      findAll @ packages/core/src/Repository/UserRepository.php:18
-        Method      findById @ packages/core/src/Repository/UserRepository.php:9
-        Method      getDisplayName @ packages/core/src/Entity/User.php:10
-        Method      index @ packages/api/src/Controller/UserController.php:15
-        Method      save @ packages/core/src/Repository/UserRepository.php:22
-        Method      show @ packages/api/src/Controller/UserController.php:11
-        Method      testUserRepository @ packages/tests/src/Integration/UserTest.php:7
-        Property    $email @ packages/core/src/Entity/User.php:7
-        Property    $id @ packages/core/src/Entity/User.php:5
-        Property    $name @ packages/core/src/Entity/User.php:6
-        Property    $repository @ packages/api/src/Controller/UserController.php:8
-        Property    $repository @ packages/cli/src/Command/ListUsersCommand.php:7
-        Property    $users @ packages/core/src/Repository/UserRepository.php:7"#]]
+        Class       ListUsersCommand @ packages/cli/src/Command/ListUsersCommand.php:5 in Acme\Cli\Command
+        Class       User @ packages/core/src/Entity/User.php:3 in Acme\Core\Entity
+        Class       UserController @ packages/api/src/Controller/UserController.php:6 in Acme\Api\Controller
+        Class       UserRepository @ packages/core/src/Repository/UserRepository.php:5 in Acme\Core\Repository
+        Class       UserTest @ packages/tests/src/Integration/UserTest.php:6 in Acme\Tests\Integration
+        Method      __construct @ packages/api/src/Controller/UserController.php:7 in UserController
+        Method      __construct @ packages/cli/src/Command/ListUsersCommand.php:6 in ListUsersCommand
+        Method      __construct @ packages/core/src/Entity/User.php:4 in User
+        Method      execute @ packages/cli/src/Command/ListUsersCommand.php:10 in ListUsersCommand
+        Method      findAll @ packages/core/src/Repository/UserRepository.php:18 in UserRepository
+        Method      findById @ packages/core/src/Repository/UserRepository.php:9 in UserRepository
+        Method      getDisplayName @ packages/core/src/Entity/User.php:10 in User
+        Method      index @ packages/api/src/Controller/UserController.php:15 in UserController
+        Method      save @ packages/core/src/Repository/UserRepository.php:22 in UserRepository
+        Method      show @ packages/api/src/Controller/UserController.php:11 in UserController
+        Method      testUserRepository @ packages/tests/src/Integration/UserTest.php:7 in UserTest
+        Property    $email @ packages/core/src/Entity/User.php:7 in User
+        Property    $id @ packages/core/src/Entity/User.php:5 in User
+        Property    $name @ packages/core/src/Entity/User.php:6 in User
+        Property    $repository @ packages/api/src/Controller/UserController.php:8 in UserController
+        Property    $repository @ packages/cli/src/Command/ListUsersCommand.php:7 in ListUsersCommand
+        Property    $users @ packages/core/src/Repository/UserRepository.php:7 in UserRepository"#]]
     .assert_eq(&out);
 }
 
@@ -43,7 +43,7 @@ async fn monorepo_workspace_symbols_scoped_by_package() {
     s.wait_for_index_ready().await;
 
     let out = s.snapshot_workspace_symbols("UserController").await;
-    expect!["Class       UserController @ packages/api/src/Controller/UserController.php:6"]
+    expect![[r#"Class       UserController @ packages/api/src/Controller/UserController.php:6 in Acme\Api\Controller"#]]
         .assert_eq(&out);
 }
 
@@ -211,14 +211,14 @@ async fn multi_psr4_all_mappings_indexed() {
 
     let out = s.snapshot_workspace_symbols("").await;
     expect![[r#"
-        Class       Mailer @ src/Service/Mailer.php:5
-        Class       MailerTest @ tests/Unit/MailerTest.php:6
-        Class       SmtpClient @ lib/Transport/SmtpClient.php:3
-        Method      __construct @ src/Service/Mailer.php:6
-        Method      deliver @ lib/Transport/SmtpClient.php:4
-        Method      send @ src/Service/Mailer.php:10
-        Method      testSend @ tests/Unit/MailerTest.php:7
-        Property    $client @ src/Service/Mailer.php:7"#]]
+        Class       Mailer @ src/Service/Mailer.php:5 in App\Service
+        Class       MailerTest @ tests/Unit/MailerTest.php:6 in Tests\Unit
+        Class       SmtpClient @ lib/Transport/SmtpClient.php:3 in Lib\Transport
+        Method      __construct @ src/Service/Mailer.php:6 in Mailer
+        Method      deliver @ lib/Transport/SmtpClient.php:4 in SmtpClient
+        Method      send @ src/Service/Mailer.php:10 in Mailer
+        Method      testSend @ tests/Unit/MailerTest.php:7 in MailerTest
+        Property    $client @ src/Service/Mailer.php:7 in Mailer"#]]
     .assert_eq(&out);
 }
 
@@ -283,7 +283,8 @@ async fn multi_psr4_autoload_dev_scanned() {
     s.wait_for_index_ready().await;
 
     let out = s.snapshot_workspace_symbols("MailerTest").await;
-    expect!["Class       MailerTest @ tests/Unit/MailerTest.php:6"].assert_eq(&out);
+    expect![[r#"Class       MailerTest @ tests/Unit/MailerTest.php:6 in Tests\Unit"#]]
+        .assert_eq(&out);
 }
 
 // ── Single prefix mapped to an array of base dirs ──────────────────────────────
@@ -302,12 +303,12 @@ async fn multi_psr4_array_all_bases_indexed() {
 
     let out = s.snapshot_workspace_symbols("").await;
     expect![[r#"
-        Class       Alpha @ src/Alpha.php:3
-        Class       Beta @ lib/Beta.php:3
-        Method      __construct @ lib/Beta.php:4
-        Method      describe @ src/Alpha.php:4
-        Method      run @ lib/Beta.php:8
-        Property    $alpha @ lib/Beta.php:5"#]]
+        Class       Alpha @ src/Alpha.php:3 in App
+        Class       Beta @ lib/Beta.php:3 in App
+        Method      __construct @ lib/Beta.php:4 in Beta
+        Method      describe @ src/Alpha.php:4 in Alpha
+        Method      run @ lib/Beta.php:8 in Beta
+        Property    $alpha @ lib/Beta.php:5 in Beta"#]]
     .assert_eq(&out);
 }
 
@@ -459,24 +460,24 @@ async fn monorepo_exclude_one_package() {
     let out = s.snapshot_workspace_symbols("").await;
     // ListUsersCommand (from packages/cli/) must be absent
     expect![[r#"
-        Class       User @ packages/core/src/Entity/User.php:3
-        Class       UserController @ packages/api/src/Controller/UserController.php:6
-        Class       UserRepository @ packages/core/src/Repository/UserRepository.php:5
-        Class       UserTest @ packages/tests/src/Integration/UserTest.php:6
-        Method      __construct @ packages/api/src/Controller/UserController.php:7
-        Method      __construct @ packages/core/src/Entity/User.php:4
-        Method      findAll @ packages/core/src/Repository/UserRepository.php:18
-        Method      findById @ packages/core/src/Repository/UserRepository.php:9
-        Method      getDisplayName @ packages/core/src/Entity/User.php:10
-        Method      index @ packages/api/src/Controller/UserController.php:15
-        Method      save @ packages/core/src/Repository/UserRepository.php:22
-        Method      show @ packages/api/src/Controller/UserController.php:11
-        Method      testUserRepository @ packages/tests/src/Integration/UserTest.php:7
-        Property    $email @ packages/core/src/Entity/User.php:7
-        Property    $id @ packages/core/src/Entity/User.php:5
-        Property    $name @ packages/core/src/Entity/User.php:6
-        Property    $repository @ packages/api/src/Controller/UserController.php:8
-        Property    $users @ packages/core/src/Repository/UserRepository.php:7"#]]
+        Class       User @ packages/core/src/Entity/User.php:3 in Acme\Core\Entity
+        Class       UserController @ packages/api/src/Controller/UserController.php:6 in Acme\Api\Controller
+        Class       UserRepository @ packages/core/src/Repository/UserRepository.php:5 in Acme\Core\Repository
+        Class       UserTest @ packages/tests/src/Integration/UserTest.php:6 in Acme\Tests\Integration
+        Method      __construct @ packages/api/src/Controller/UserController.php:7 in UserController
+        Method      __construct @ packages/core/src/Entity/User.php:4 in User
+        Method      findAll @ packages/core/src/Repository/UserRepository.php:18 in UserRepository
+        Method      findById @ packages/core/src/Repository/UserRepository.php:9 in UserRepository
+        Method      getDisplayName @ packages/core/src/Entity/User.php:10 in User
+        Method      index @ packages/api/src/Controller/UserController.php:15 in UserController
+        Method      save @ packages/core/src/Repository/UserRepository.php:22 in UserRepository
+        Method      show @ packages/api/src/Controller/UserController.php:11 in UserController
+        Method      testUserRepository @ packages/tests/src/Integration/UserTest.php:7 in UserTest
+        Property    $email @ packages/core/src/Entity/User.php:7 in User
+        Property    $id @ packages/core/src/Entity/User.php:5 in User
+        Property    $name @ packages/core/src/Entity/User.php:6 in User
+        Property    $repository @ packages/api/src/Controller/UserController.php:8 in UserController
+        Property    $users @ packages/core/src/Repository/UserRepository.php:7 in UserRepository"#]]
     .assert_eq(&out);
 }
 
@@ -494,12 +495,12 @@ async fn multi_psr4_exclude_tests_dir() {
     let out = s.snapshot_workspace_symbols("").await;
     // MailerTest (from tests/) must be absent
     expect![[r#"
-        Class       Mailer @ src/Service/Mailer.php:5
-        Class       SmtpClient @ lib/Transport/SmtpClient.php:3
-        Method      __construct @ src/Service/Mailer.php:6
-        Method      deliver @ lib/Transport/SmtpClient.php:4
-        Method      send @ src/Service/Mailer.php:10
-        Property    $client @ src/Service/Mailer.php:7"#]]
+        Class       Mailer @ src/Service/Mailer.php:5 in App\Service
+        Class       SmtpClient @ lib/Transport/SmtpClient.php:3 in Lib\Transport
+        Method      __construct @ src/Service/Mailer.php:6 in Mailer
+        Method      deliver @ lib/Transport/SmtpClient.php:4 in SmtpClient
+        Method      send @ src/Service/Mailer.php:10 in Mailer
+        Property    $client @ src/Service/Mailer.php:7 in Mailer"#]]
     .assert_eq(&out);
 }
 
@@ -512,13 +513,13 @@ async fn monorepo_multiple_files_same_namespace_different_packages() {
 
     let out = s.snapshot_workspace_symbols("User").await;
     expect![[r#"
-        Class       ListUsersCommand @ packages/cli/src/Command/ListUsersCommand.php:5
-        Class       User @ packages/core/src/Entity/User.php:3
-        Class       UserController @ packages/api/src/Controller/UserController.php:6
-        Class       UserRepository @ packages/core/src/Repository/UserRepository.php:5
-        Class       UserTest @ packages/tests/src/Integration/UserTest.php:6
-        Method      testUserRepository @ packages/tests/src/Integration/UserTest.php:7
-        Property    $users @ packages/core/src/Repository/UserRepository.php:7"#]]
+        Class       ListUsersCommand @ packages/cli/src/Command/ListUsersCommand.php:5 in Acme\Cli\Command
+        Class       User @ packages/core/src/Entity/User.php:3 in Acme\Core\Entity
+        Class       UserController @ packages/api/src/Controller/UserController.php:6 in Acme\Api\Controller
+        Class       UserRepository @ packages/core/src/Repository/UserRepository.php:5 in Acme\Core\Repository
+        Class       UserTest @ packages/tests/src/Integration/UserTest.php:6 in Acme\Tests\Integration
+        Method      testUserRepository @ packages/tests/src/Integration/UserTest.php:7 in UserTest
+        Property    $users @ packages/core/src/Repository/UserRepository.php:7 in UserRepository"#]]
     .assert_eq(&out);
 }
 

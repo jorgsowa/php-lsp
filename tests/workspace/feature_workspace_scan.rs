@@ -23,8 +23,8 @@ async fn index_ready_fires_after_scan_and_workspace_symbols_work() {
     s.wait_for_index_ready().await;
     let out = s.snapshot_workspace_symbols("User").await;
     expect![[r#"
-        Class       User @ src/Model/User.php:4
-        Property    $users @ src/Service/Registry.php:9"#]]
+        Class       User @ src/Model/User.php:4 in App\Model
+        Property    $users @ src/Service/Registry.php:9 in Registry"#]]
     .assert_eq(&out);
 }
 
@@ -74,7 +74,7 @@ async fn created_file_becomes_discoverable_via_workspace_symbols() {
         .await;
 
     let post = server.snapshot_workspace_symbols("Widget").await;
-    expect![[r#"Class       Widget @ src/Service/Widget.php:3"#]].assert_eq(&post);
+    expect![[r#"Class       Widget @ src/Service/Widget.php:3 in App\Service"#]].assert_eq(&post);
 }
 
 #[serial_test::serial]
@@ -95,7 +95,7 @@ async fn created_file_in_new_subdirectory_is_indexed() {
         .await;
 
     let out = server.snapshot_workspace_symbols("Job").await;
-    expect![[r#"Class       Job @ src/Queue/Job.php:3"#]].assert_eq(&out);
+    expect![[r#"Class       Job @ src/Queue/Job.php:3 in App\Queue"#]].assert_eq(&out);
 }
 
 // ── CHANGED ───────────────────────────────────────────────────────────────────
@@ -107,7 +107,7 @@ async fn changed_file_updates_workspace_index() {
     server.wait_for_index_ready().await;
 
     let pre = server.snapshot_workspace_symbols("Greeter").await;
-    expect![[r#"Class       Greeter @ src/Service/Greeter.php:6"#]].assert_eq(&pre);
+    expect![[r#"Class       Greeter @ src/Service/Greeter.php:6 in App\Service"#]].assert_eq(&pre);
 
     server.write_file(
         "src/Service/Greeter.php",
@@ -121,10 +121,12 @@ async fn changed_file_updates_workspace_index() {
         .await;
 
     let post = server.snapshot_workspace_symbols("GreeterUpdated").await;
-    expect![[r#"Class       GreeterUpdated @ src/Service/Greeter.php:3"#]].assert_eq(&post);
+    expect![[r#"Class       GreeterUpdated @ src/Service/Greeter.php:3 in App\Service"#]]
+        .assert_eq(&post);
 
     let gone = server.snapshot_workspace_symbols("Greeter").await;
-    expect![[r#"Class       GreeterUpdated @ src/Service/Greeter.php:3"#]].assert_eq(&gone);
+    expect![[r#"Class       GreeterUpdated @ src/Service/Greeter.php:3 in App\Service"#]]
+        .assert_eq(&gone);
 }
 
 // ── DELETED ───────────────────────────────────────────────────────────────────
@@ -136,7 +138,8 @@ async fn deleted_file_symbols_removed_from_index() {
     server.wait_for_index_ready().await;
 
     let pre = server.snapshot_workspace_symbols("Registry").await;
-    expect![[r#"Class       Registry @ src/Service/Registry.php:6"#]].assert_eq(&pre);
+    expect![[r#"Class       Registry @ src/Service/Registry.php:6 in App\Service"#]]
+        .assert_eq(&pre);
 
     server.remove_file("src/Service/Registry.php");
     let uri = server.uri("src/Service/Registry.php");
@@ -287,7 +290,7 @@ async fn hidden_directories_are_excluded_from_scan() {
     server.wait_for_index_ready().await;
 
     // Verify a known class from the fixture works
-    expect!["Class       Greeter @ src/Service/Greeter.php:6"]
+    expect![[r#"Class       Greeter @ src/Service/Greeter.php:6 in App\Service"#]]
         .assert_eq(&server.snapshot_workspace_symbols("Greeter").await);
 
     // Hidden directories should NOT appear in workspace symbols
@@ -313,7 +316,7 @@ async fn vendor_directory_indexed_by_default() {
     server.wait_for_index_ready().await;
 
     let out = server.snapshot_workspace_symbols("HttpKernel").await;
-    expect![[r#"Class       HttpKernel @ vendor/symfony/http-kernel/HttpKernel.php:3"#]]
+    expect![[r#"Class       HttpKernel @ vendor/symfony/http-kernel/HttpKernel.php:3 in Symfony\Component\HttpKernel"#]]
         .assert_eq(&out);
 }
 
@@ -359,7 +362,7 @@ async fn vendor_directory_indexed_when_index_vendor_true() {
     server.wait_for_index_ready().await;
 
     let out = server.snapshot_workspace_symbols("HttpKernel").await;
-    expect![[r#"Class       HttpKernel @ vendor/symfony/http-kernel/HttpKernel.php:3"#]]
+    expect![[r#"Class       HttpKernel @ vendor/symfony/http-kernel/HttpKernel.php:3 in Symfony\Component\HttpKernel"#]]
         .assert_eq(&out);
 }
 
@@ -519,9 +522,9 @@ async fn deeply_nested_directory_structure_is_indexed() {
 
     server.wait_for_index_ready().await;
 
-    expect!["Class       DeepClass @ src/Level1/Level2/Level3/Level4/Level5/DeepClass.php:3"]
+    expect![[r#"Class       DeepClass @ src/Level1/Level2/Level3/Level4/Level5/DeepClass.php:3 in App\Level1\Level2\Level3\Level4\Level5"#]]
         .assert_eq(&server.snapshot_workspace_symbols("DeepClass").await);
-    expect!["Class       ShallowClass @ src/Shallow/ShallowClass.php:3"]
+    expect![[r#"Class       ShallowClass @ src/Shallow/ShallowClass.php:3 in App\Shallow"#]]
         .assert_eq(&server.snapshot_workspace_symbols("ShallowClass").await);
 }
 
@@ -562,11 +565,11 @@ async fn multiple_top_level_directories_with_different_patterns() {
     server.wait_for_index_ready().await;
 
     // All workspace packages should be indexed
-    expect!["Class       ApiService @ packages/api/src/ApiService.php:3"]
+    expect![[r#"Class       ApiService @ packages/api/src/ApiService.php:3 in App\Api"#]]
         .assert_eq(&server.snapshot_workspace_symbols("ApiService").await);
-    expect!["Class       WebService @ packages/web/src/WebService.php:3"]
+    expect![[r#"Class       WebService @ packages/web/src/WebService.php:3 in App\Web"#]]
         .assert_eq(&server.snapshot_workspace_symbols("WebService").await);
-    expect!["Class       SharedUtil @ packages/shared/src/SharedUtil.php:3"]
+    expect![[r#"Class       SharedUtil @ packages/shared/src/SharedUtil.php:3 in App\Shared"#]]
         .assert_eq(&server.snapshot_workspace_symbols("SharedUtil").await);
     // Vendor in subdirectory should also be indexed (indexVendor: true)
     expect!["Class       External @ packages/api/vendor/external/External.php:1"]
@@ -589,7 +592,7 @@ async fn exclude_specific_package_in_monorepo_structure() {
     expect!["<no symbols>"].assert_eq(&server.snapshot_workspace_symbols("Greeter").await);
 
     // But classes in src/Model/ SHOULD be indexed
-    expect!["Class       User @ src/Model/User.php:4"]
+    expect![[r#"Class       User @ src/Model/User.php:4 in App\Model"#]]
         .assert_eq(&server.snapshot_workspace_symbols("User").await);
 }
 
@@ -783,7 +786,7 @@ async fn include_paths_override_exclude_paths() {
     expect!["<no symbols>"].assert_eq(&server.snapshot_workspace_symbols("Fish").await);
 
     // ...except the explicitly included subdirectory.
-    expect!["Class       Translator @ vendor/yiisoft/Translator.php:4"]
+    expect!["Class       Translator @ vendor/yiisoft/Translator.php:4 in yiisoft"]
         .assert_eq(&server.snapshot_workspace_symbols("Translator").await);
 }
 
@@ -803,14 +806,14 @@ async fn include_paths_only_affects_matched_entries() {
     server.wait_for_index_ready().await;
 
     // Greeter should be indexed (included).
-    expect!["Class       Greeter @ src/Service/Greeter.php:6"]
+    expect![[r#"Class       Greeter @ src/Service/Greeter.php:6 in App\Service"#]]
         .assert_eq(&server.snapshot_workspace_symbols("Greeter").await);
 
     // Registry (also in src/Service/) should NOT be indexed.
     expect!["<no symbols>"].assert_eq(&server.snapshot_workspace_symbols("Registry").await);
 
     // User (in src/Model/) should still be indexed.
-    expect!["Class       User @ src/Model/User.php:4"]
+    expect![[r#"Class       User @ src/Model/User.php:4 in App\Model"#]]
         .assert_eq(&server.snapshot_workspace_symbols("User").await);
 }
 
@@ -844,7 +847,7 @@ async fn include_paths_from_php_lsp_json() {
     server.wait_for_index_ready().await;
 
     // Greeter included via includePaths.
-    expect!["Class       Greeter @ src/Service/Greeter.php:6"]
+    expect![[r#"Class       Greeter @ src/Service/Greeter.php:6 in App\Service"#]]
         .assert_eq(&server.snapshot_workspace_symbols("Greeter").await);
 
     // Registry excluded.
@@ -885,11 +888,11 @@ async fn all_scanned_files_appear_in_workspace_index_after_index_ready() {
         results.push(server.snapshot_workspace_symbols(name).await);
     }
     expect![[r#"
-        Class       Alpha @ src/Alpha.php:3
-        Class       Beta @ src/Beta.php:3
-        Class       Gamma @ src/Gamma.php:3
-        Class       Delta @ src/Sub/Delta.php:3
-        Class       Epsilon @ src/Sub/Epsilon.php:3"#]]
+        Class       Alpha @ src/Alpha.php:3 in App
+        Class       Beta @ src/Beta.php:3 in App
+        Class       Gamma @ src/Gamma.php:3 in App
+        Class       Delta @ src/Sub/Delta.php:3 in App
+        Class       Epsilon @ src/Sub/Epsilon.php:3 in App"#]]
     .assert_eq(&results.join("\n"));
 }
 
@@ -905,7 +908,7 @@ async fn workspace_symbols_substring_match() {
     s.wait_for_index_ready().await;
     // "reeter" is a suffix of "Greeter" — must match via substring fallback
     let out = s.snapshot_workspace_symbols("reeter").await;
-    expect![[r#"Class       Greeter @ src/Service/Greeter.php:6"#]].assert_eq(&out);
+    expect![[r#"Class       Greeter @ src/Service/Greeter.php:6 in App\Service"#]].assert_eq(&out);
 }
 
 // Note: `include_paths_concatenated_with_editor_config` was removed because
@@ -947,7 +950,7 @@ async fn unreadable_file_does_not_truncate_workspace_index() {
     s.validate_syntax(false);
     s.wait_for_index_ready().await;
 
-    expect!["Class       BigKlass @ src/BigKlass.php:3"]
+    expect!["Class       BigKlass @ src/BigKlass.php:3 in App"]
         .assert_eq(&s.snapshot_workspace_symbols("BigKlass").await);
 }
 

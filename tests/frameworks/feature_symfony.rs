@@ -19,10 +19,10 @@ mod symbols {
         );
         let out = render_workspace_symbols(&resp, &server.uri(""));
         expect![[r#"
-            Class       BlogController @ src/Controller/Admin/BlogController.php:42
-            Class       BlogController @ src/Controller/BlogController.php:39
-            Class       BlogControllerTest @ tests/Controller/Admin/BlogControllerTest.php:36
-            Class       BlogControllerTest @ tests/Controller/BlogControllerTest.php:28"#]]
+            Class       BlogController @ src/Controller/Admin/BlogController.php:42 in App\Controller\Admin
+            Class       BlogController @ src/Controller/BlogController.php:39 in App\Controller
+            Class       BlogControllerTest @ tests/Controller/Admin/BlogControllerTest.php:36 in App\Tests\Controller\Admin
+            Class       BlogControllerTest @ tests/Controller/BlogControllerTest.php:28 in App\Tests\Controller"#]]
         .assert_eq(&out);
     }
 
@@ -36,12 +36,12 @@ mod symbols {
         let out = render_workspace_symbols(&resp, &server.uri(""));
         // Prefix query "Blog" must surface the Blog* family (BlogController, BlogSearchComponent, etc.)
         expect![[r#"
-            Class       BlogController @ src/Controller/Admin/BlogController.php:42
-            Class       BlogController @ src/Controller/BlogController.php:39
-            Class       BlogControllerTest @ tests/Controller/Admin/BlogControllerTest.php:36
-            Class       BlogControllerTest @ tests/Controller/BlogControllerTest.php:28
-            Class       BlogSearchComponent @ src/Twig/Components/BlogSearchComponent.php:27
-            Method      testPublicBlogPost @ tests/Controller/DefaultControllerTest.php:55"#]]
+            Class       BlogController @ src/Controller/Admin/BlogController.php:42 in App\Controller\Admin
+            Class       BlogController @ src/Controller/BlogController.php:39 in App\Controller
+            Class       BlogControllerTest @ tests/Controller/Admin/BlogControllerTest.php:36 in App\Tests\Controller\Admin
+            Class       BlogControllerTest @ tests/Controller/BlogControllerTest.php:28 in App\Tests\Controller
+            Class       BlogSearchComponent @ src/Twig/Components/BlogSearchComponent.php:27 in App\Twig\Components
+            Method      testPublicBlogPost @ tests/Controller/DefaultControllerTest.php:55 in DefaultControllerTest"#]]
         .assert_eq(&out);
     }
 

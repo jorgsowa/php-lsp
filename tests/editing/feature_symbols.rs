@@ -147,8 +147,8 @@ async fn workspace_symbol_finds_class_by_short_name() {
         )
         .await;
     expect![[r#"
-        Class       User @ src/Model/User.php:4
-        Property    $users @ src/Service/Registry.php:9"#]]
+        Class       User @ src/Model/User.php:4 in App\Model
+        Property    $users @ src/Service/Registry.php:9 in Registry"#]]
     .assert_eq(&out);
 }
 
@@ -169,7 +169,7 @@ class Config {
             "apiKey",
         )
         .await;
-    expect!["Property    $apiKey @ main.php:2"].assert_eq(&out);
+    expect!["Property    $apiKey @ main.php:2 in Config"].assert_eq(&out);
 }
 
 #[tokio::test]
@@ -188,7 +188,7 @@ class Mailer {
             "client",
         )
         .await;
-    expect!["Property    $client @ main.php:3"].assert_eq(&out);
+    expect!["Property    $client @ main.php:3 in Mailer"].assert_eq(&out);
 }
 
 /// `workspace/symbol` must find class constants — same gap as properties.
@@ -206,7 +206,7 @@ class Config {
             "MAX_RETRIES",
         )
         .await;
-    expect!["Constant    MAX_RETRIES @ main.php:1"].assert_eq(&out);
+    expect!["Constant    MAX_RETRIES @ main.php:1 in Config"].assert_eq(&out);
 }
 
 /// workspace/symbol with no matches returns `[]`, not `null`.

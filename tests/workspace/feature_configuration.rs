@@ -153,8 +153,8 @@ async fn change_configuration_php_version_change_rescans_workspace() {
 
     let out = server.snapshot_workspace_symbols("User").await;
     expect![[r#"
-        Class       User @ src/Model/User.php:4
-        Property    $users @ src/Service/Registry.php:9"#]]
+        Class       User @ src/Model/User.php:4 in App\Model
+        Property    $users @ src/Service/Registry.php:9 in Registry"#]]
     .assert_eq(&out);
 }
 

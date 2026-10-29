@@ -80,8 +80,8 @@ async fn warm_start_serves_symbols_correctly() {
         s.wait_for_index_ready().await;
         let syms = s.snapshot_workspace_symbols("User").await;
         expect![[r#"
-            Class       User @ src/Model/User.php:4
-            Property    $users @ src/Service/Registry.php:9"#]]
+            Class       User @ src/Model/User.php:4 in App\Model
+            Property    $users @ src/Service/Registry.php:9 in Registry"#]]
         .assert_eq(&syms);
         // Server drops; both tempdirs remain alive so cache files persist.
     }
@@ -93,8 +93,8 @@ async fn warm_start_serves_symbols_correctly() {
         // Symbols must be fully resolvable from the warm-loaded index.
         let syms = s.snapshot_workspace_symbols("User").await;
         expect![[r#"
-            Class       User @ src/Model/User.php:4
-            Property    $users @ src/Service/Registry.php:9"#]]
+            Class       User @ src/Model/User.php:4 in App\Model
+            Property    $users @ src/Service/Registry.php:9 in Registry"#]]
         .assert_eq(&syms);
     }
 }
@@ -137,7 +137,7 @@ async fn warm_start_detects_changed_file_content() {
         s.wait_for_index_ready().await;
         // The content-keyed cache detects the change → re-parsed → Widget found.
         let syms = s.snapshot_workspace_symbols("Widget").await;
-        expect![[r#"Class       Widget @ src/Model/User.php:3"#]].assert_eq(&syms);
+        expect![[r#"Class       Widget @ src/Model/User.php:3 in App\Model"#]].assert_eq(&syms);
     }
 }
 

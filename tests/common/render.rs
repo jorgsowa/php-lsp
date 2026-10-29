@@ -237,7 +237,10 @@ pub fn render_workspace_symbols(resp: &Value, root_uri: &str) -> String {
             let line = s["location"]["range"]["start"]["line"]
                 .as_u64()
                 .unwrap_or(0);
-            format!("{kind:<11} {name} @ {short}:{line}")
+            match s["containerName"].as_str().filter(|c| !c.is_empty()) {
+                Some(container) => format!("{kind:<11} {name} @ {short}:{line} in {container}"),
+                None => format!("{kind:<11} {name} @ {short}:{line}"),
+            }
         })
         .collect();
     rows.sort();
