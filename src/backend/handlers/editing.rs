@@ -64,7 +64,12 @@ impl Backend {
             let sem_diags = docs
                 .get_semantic_issues_salsa(&uri)
                 .map(|issues| {
-                    crate::semantic_diagnostics::issues_to_diagnostics(&issues, &uri, &diag_cfg)
+                    let source = docs.source_text(&uri);
+                    crate::semantic_diagnostics::issues_to_diagnostics(
+                        &issues,
+                        source.as_deref().unwrap_or_default(),
+                        &diag_cfg,
+                    )
                 })
                 .unwrap_or_default();
 

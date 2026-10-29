@@ -9,6 +9,7 @@ use tower_lsp_server::ls_types::{
 use crate::analysis::diagnostics::PHP_LSP_SOURCE;
 use crate::document::ast::ParsedDoc;
 use crate::lang::config::DiagnosticsConfig;
+use crate::text::Utf16Columns;
 
 /// Run semantic checks on `doc` against the supplied `AnalysisSession`.
 /// Ingests the current file through mir's diagnostics-only path and returns
@@ -31,13 +32,14 @@ pub fn semantic_diagnostics(
     let file: std::sync::Arc<str> = std::sync::Arc::from(uri.as_str());
     let analysis = session.analyze_file_diagnostics(uri.as_str(), doc.source());
     let class_issues = session.class_issues(std::slice::from_ref(&file));
+    let columns = Utf16Columns::new(doc.source());
     analysis
         .issues
         .into_iter()
         .chain(class_issues)
         .filter(|i| !i.suppressed)
         .filter(|i| issue_passes_filter(i, cfg))
-        .map(to_lsp_diagnostic)
+        .map(|i| to_lsp_diagnostic(i, &columns))
         .collect()
 }
 
@@ -51,20 +53,23 @@ pub fn semantic_diagnostics(
 /// `SyntaxError` diagnostics from its own parser pass (see
 /// `crate::analysis::diagnostics::diagnostics_from_doc`), so this is the one
 /// place every issue source funnels through before becoming a `Diagnostic`.
+///
+/// `source` is the file's text, needed to map mir's code-point columns to UTF-16.
 pub fn issues_to_diagnostics(
     issues: &[mir_issues::Issue],
-    _uri: &Uri,
+    source: &str,
     cfg: &DiagnosticsConfig,
 ) -> Vec<Diagnostic> {
     if !cfg.enabled {
         return vec![];
     }
+    let columns = Utf16Columns::new(source);
     issues
         .iter()
         .filter(|i| !matches!(i.kind, mir_issues::IssueKind::ParseError { .. }))
         .filter(|i| issue_passes_filter(i, cfg))
         .cloned()
-        .map(to_lsp_diagnostic)
+        .map(|i| to_lsp_diagnostic(i, &columns))
         .collect()
 }
 
@@ -75,19 +80,19 @@ pub fn issues_to_diagnostics(
 /// this costs nothing in steady state.
 pub fn issues_to_diagnostics_gated(
     issues: &[mir_issues::Issue],
-    uri: &Uri,
+    source: &str,
     cfg: &DiagnosticsConfig,
     index_ready: bool,
 ) -> Vec<Diagnostic> {
     if index_ready {
-        return issues_to_diagnostics(issues, uri, cfg);
+        return issues_to_diagnostics(issues, source, cfg);
     }
     let filtered: Vec<mir_issues::Issue> = issues
         .iter()
         .filter(|i| !issue_needs_workspace_index(&i.kind))
         .cloned()
         .collect();
-    issues_to_diagnostics(&filtered, uri, cfg)
+    issues_to_diagnostics(&filtered, source, cfg)
 }
 
 /// Whether resolving this issue required looking up a symbol (class,
@@ -189,12 +194,12 @@ fn issue_passes_filter(issue: &mir_issues::Issue, cfg: &DiagnosticsConfig) -> bo
     }
 }
 
-fn to_lsp_diagnostic(issue: mir_issues::Issue) -> Diagnostic {
-    // mir uses 1-based lines; LSP uses 0-based. Columns are 0-based on both sides.
+fn to_lsp_diagnostic(issue: mir_issues::Issue, columns: &Utf16Columns<&str>) -> Diagnostic {
+    // mir uses 1-based lines and code-point columns; LSP uses 0-based lines and UTF-16 columns.
     let line = issue.location.line.saturating_sub(1);
     let line_end = issue.location.line_end.saturating_sub(1).max(line);
-    let col_start = issue.location.col_start as u32;
-    let col_end = issue.location.col_end as u32;
+    let col_start = columns.convert(line, issue.location.col_start as u32);
+    let col_end = columns.convert(line_end, issue.location.col_end as u32);
     let end_character = if line_end == line {
         col_end.max(col_start + 1)
     } else {
@@ -246,7 +251,7 @@ mod tests {
             },
             location,
         );
-        let diag = to_lsp_diagnostic(issue);
+        let diag = to_lsp_diagnostic(issue, &Utf16Columns::new(""));
         assert_eq!(
             diag.code,
             Some(NumberOrString::String("UndefinedClass".to_string())),
@@ -275,14 +280,13 @@ mod tests {
                 col_end: 3,
             },
         );
-        let uri: Uri = "file:///test.php".parse().unwrap();
         let mut cfg = DiagnosticsConfig::default();
         assert_eq!(
-            issues_to_diagnostics(std::slice::from_ref(&issue), &uri, &cfg).len(),
+            issues_to_diagnostics(std::slice::from_ref(&issue), "", &cfg).len(),
             1
         );
         cfg.disabled = vec!["UndefinedClass".to_string()];
-        assert!(issues_to_diagnostics(&[issue], &uri, &cfg).is_empty());
+        assert!(issues_to_diagnostics(&[issue], "", &cfg).is_empty());
     }
 
     #[test]
@@ -302,7 +306,7 @@ mod tests {
                 col_end: 1,
             },
         );
-        let range = to_lsp_diagnostic(issue).range;
+        let range = to_lsp_diagnostic(issue, &Utf16Columns::new("")).range;
         assert_eq!(range.start, Position::new(1, 8));
         assert_eq!(range.end, Position::new(3, 1));
     }

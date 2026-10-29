@@ -77,6 +77,43 @@ pub(crate) fn utf16_code_units(s: &str) -> u32 {
     s.chars().map(|c| c.len_utf16() as u32).sum()
 }
 
+/// Converts 0-based Unicode code-point columns (mir's convention) into LSP
+/// UTF-16 columns for one text. Columns past the end of a line count one unit
+/// each, so out-of-range positions stay out of range.
+pub(crate) struct Utf16Columns<T: AsRef<str>> {
+    text: T,
+    // `None` for pure-ASCII text, where both encodings agree.
+    line_starts: Option<Vec<usize>>,
+}
+
+impl<T: AsRef<str>> Utf16Columns<T> {
+    pub(crate) fn new(text: T) -> Self {
+        let s = text.as_ref();
+        let line_starts = (!s.is_ascii()).then(|| {
+            std::iter::once(0)
+                .chain(s.match_indices('\n').map(|(i, _)| i + 1))
+                .collect()
+        });
+        Self { text, line_starts }
+    }
+
+    /// UTF-16 column of code-point column `col` on 0-based `line`.
+    pub(crate) fn convert(&self, line: u32, col: u32) -> u32 {
+        let Some(starts) = &self.line_starts else {
+            return col;
+        };
+        let s = self.text.as_ref();
+        let Some(&start) = starts.get(line as usize) else {
+            return col;
+        };
+        let end = starts.get(line as usize + 1).map_or(s.len(), |&e| e - 1);
+        let mut chars = s[start..end].chars();
+        (0..col)
+            .map(|_| chars.next().map_or(1, |c| c.len_utf16() as u32))
+            .sum()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -184,5 +221,24 @@ mod tests {
             let utf16 = byte_to_utf16(s, byte_idx) as usize;
             assert_eq!(utf16_offset_to_byte(s, utf16), byte_idx);
         }
+    }
+
+    #[test]
+    fn utf16_columns_converts_code_points_past_astral_chars() {
+        let cols = Utf16Columns::new("<?php\necho '😀😀'; $x;\nfoo();");
+        // `$x` sits at code point 11 and UTF-16 unit 13 on line 1.
+        assert_eq!(cols.convert(1, 11), 13);
+        assert_eq!(cols.convert(1, 6), 6);
+        assert_eq!(cols.convert(1, 7), 8);
+        assert_eq!(cols.convert(2, 3), 3);
+        // Past the end of a line or of the text, extra columns count one unit each.
+        assert_eq!(cols.convert(1, 20), 22);
+        assert_eq!(cols.convert(9, 4), 4);
+    }
+
+    #[test]
+    fn utf16_columns_is_identity_for_ascii() {
+        let cols = Utf16Columns::new("<?php\necho 1;");
+        assert_eq!(cols.convert(1, 5), 5);
     }
 }

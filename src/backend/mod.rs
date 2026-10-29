@@ -656,8 +656,12 @@ async fn compute_dependent_publishes_owned(
             if let Some(extra) = class_issues_by_file.remove(&Arc::<str>::from(url.as_str())) {
                 issues.extend(extra);
             }
-            let semantic =
-                crate::semantic_diagnostics::issues_to_diagnostics(&issues, &url, &diag_cfg);
+            let source = docs.source_text(&url);
+            let semantic = crate::semantic_diagnostics::issues_to_diagnostics(
+                &issues,
+                source.as_deref().unwrap_or_default(),
+                &diag_cfg,
+            );
             let mut diags = merge_file_diagnostics(parse, semantic);
             diags.extend(crate::laravel::unguarded_model_diagnostics(
                 &docs, &url, is_laravel,

@@ -1356,3 +1356,17 @@ async fn undefined_class_diagnostic_not_refreshed_after_dependency_file_created(
           <clean>"#]]
     .assert_eq(&out);
 }
+
+/// mir reports code-point columns; each emoji is two UTF-16 units in LSP columns.
+#[tokio::test]
+async fn diagnostic_range_after_emoji_uses_utf16_columns() {
+    let mut server = TestServer::new().await;
+    let notif = server
+        .open(
+            "emoji.php",
+            "<?php\nfunction f(): void {\n    echo '😀😀😀', $undefinedVar;\n}\n",
+        )
+        .await;
+    expect!["2:19-2:32 [1] UndefinedVariable: Variable $undefinedVar is not defined"]
+        .assert_eq(&render_diagnostics_notification(&notif));
+}

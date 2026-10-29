@@ -261,9 +261,10 @@ pub(crate) fn compute_open_file_diagnostics(
     }
     let mut out = open_files.parse_diagnostics(uri).unwrap_or_default();
     if let Some(issues) = docs.get_semantic_issues_salsa(uri) {
+        let source = docs.source_text(uri);
         out.extend(issues_to_diagnostics_gated(
             &issues,
-            uri,
+            source.as_deref().unwrap_or_default(),
             diag_cfg,
             docs.is_index_ready(),
         ));
