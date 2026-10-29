@@ -490,12 +490,6 @@ fn hover_at_core(
             value.push_str("\n\n---\n\n");
             value.push_str(&md);
         }
-        if is_php_builtin(&resolved_word) {
-            value.push_str(&format!(
-                "\n\n[php.net documentation]({})",
-                php_doc_url(&resolved_word)
-            ));
-        }
         return Some(Hover {
             contents: HoverContents::Markup(MarkupContent {
                 kind: MarkupKind::Markdown,
