@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use tower_lsp_server::ls_types::{Hover, HoverContents, MarkupContent, MarkupKind, Position, Uri};
 
+use crate::analysis::callable_info::callable_info_for_name;
 use crate::completion::ClassDocLookup;
 use crate::document::ast::ParsedDoc;
 use crate::document::document_store::DocumentStore;
@@ -500,11 +501,16 @@ fn hover_at_core(
     }
 
     if is_php_builtin(&resolved_word) {
-        let value = format!(
-            "```php\nfunction {}()\n```\n\n[php.net documentation]({})",
-            resolved_word,
+        let (sig, doc_md) = builtin_function_signature(session, &resolved_word);
+        let mut value = wrap_php(&sig);
+        if let Some(md) = doc_md.filter(|md| !md.is_empty()) {
+            value.push_str("\n\n---\n\n");
+            value.push_str(&md);
+        }
+        value.push_str(&format!(
+            "\n\n[php.net documentation]({})",
             php_doc_url(&resolved_word)
-        );
+        ));
         return Some(Hover {
             contents: HoverContents::Markup(MarkupContent {
                 kind: MarkupKind::Markdown,
@@ -542,6 +548,32 @@ fn candidates_for<'a>(
 /// Produce hover markdown for a member access resolved by mir. Returns the
 /// hover value string (not the full `Hover` struct — the caller wraps it).
 /// `None` means mir has no symbol here; the caller falls through to `resolve_declaration`.
+/// `function name(params): ret` and docs from mir's stubs, bare when mir can't answer.
+fn builtin_function_signature(
+    session: Option<&DocumentStore>,
+    name: &str,
+) -> (String, Option<String>) {
+    let symbol = mir_analyzer::Name::Function(name.into());
+    let info = session.and_then(|docs| {
+        docs.read_snapshot(|snap| callable_info_for_name(snap.db(), &symbol))
+            .ok()
+            .flatten()
+    });
+    match info {
+        Some(info) => {
+            let ret = info
+                .return_type
+                .map(|ty| format!(": {ty}"))
+                .unwrap_or_default();
+            (
+                format!("function {name}({}){ret}", info.params),
+                info.documentation,
+            )
+        }
+        None => (format!("function {name}()"), None),
+    }
+}
+
 fn mir_member_hover(
     sym: &mir_analyzer::ResolvedSymbol,
     word: &str,

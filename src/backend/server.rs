@@ -234,9 +234,6 @@ fn callable_signature_for_symbol(
     match symbol {
         mir_analyzer::Name::Function(fqn) => {
             let short = fqn.rsplit('\\').next().unwrap_or(fqn.as_ref());
-            if mir_analyzer::is_builtin_function(short) {
-                return None;
-            }
             let ret = info
                 .return_type
                 .as_deref()
@@ -283,23 +280,30 @@ fn completion_signature_and_docstring_for_symbol(
     db: &mir_analyzer::db::MirDbStorage,
     symbol: &mir_analyzer::Name,
 ) -> (Option<String>, Option<String>) {
-    if let Some((signature, docstring)) = callable_signature_for_symbol(db, symbol) {
-        return (Some(signature), docstring.filter(|s| !s.is_empty()));
-    }
-    if let mir_analyzer::Name::Function(fqn) = symbol {
-        let short = fqn.rsplit('\\').next().unwrap_or(fqn.as_ref());
-        if mir_analyzer::is_builtin_function(short) {
-            return (
-                None,
-                Some(format!(
-                    "```php\nfunction {}()\n```\n\n[php.net documentation]({})",
-                    short,
-                    crate::lang::php_names::php_doc_url(short)
-                )),
-            );
+    let builtin_function = match symbol {
+        mir_analyzer::Name::Function(fqn) => {
+            let short = fqn.rsplit('\\').next().unwrap_or(fqn.as_ref());
+            mir_analyzer::is_builtin_function(short).then_some(short)
         }
-    }
-    (None, None)
+        _ => None,
+    };
+    let link = builtin_function.map(|short| {
+        format!(
+            "[php.net documentation]({})",
+            crate::lang::php_names::php_doc_url(short)
+        )
+    });
+    let Some((signature, docstring)) = callable_signature_for_symbol(db, symbol) else {
+        let docs = builtin_function
+            .zip(link)
+            .map(|(short, link)| format!("```php\nfunction {short}()\n```\n\n{link}"));
+        return (None, docs);
+    };
+    let docstring = match (docstring.filter(|s| !s.is_empty()), link) {
+        (Some(doc), Some(link)) => Some(format!("{doc}\n\n{link}")),
+        (doc, link) => doc.or(link),
+    };
+    (Some(signature), docstring)
 }
 
 impl LanguageServer for Backend {

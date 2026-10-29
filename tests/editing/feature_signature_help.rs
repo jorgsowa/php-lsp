@@ -184,7 +184,10 @@ strlen($0);
 "#,
         )
         .await;
-    expect!["▶ strlen($string)  @param0"].assert_eq(&out);
+    expect![[r#"
+        ▶ strlen(string $string)  @param0
+          doc: Get string length"#]]
+    .assert_eq(&out);
 }
 
 #[tokio::test]
@@ -274,7 +277,10 @@ log($0);
 "#,
         )
         .await;
-    expect!["▶ log($num, $base = M_E)  @param0"].assert_eq(&out);
+    expect![[r#"
+        ▶ log(float $num, float $base = M_E)  @param0
+          doc: Natural logarithm"#]]
+    .assert_eq(&out);
 }
 
 /// Same as above but for a name with no builtin counterpart (`from`): a bare
@@ -349,7 +355,10 @@ async fn signature_help_fqn_builtin_call() {
 "#,
         )
         .await;
-    expect!["▶ strlen($string)  @param0"].assert_eq(&out);
+    expect![[r#"
+        ▶ strlen(string $string)  @param0
+          doc: Get string length"#]]
+    .assert_eq(&out);
 }
 
 #[tokio::test]
@@ -380,7 +389,10 @@ sprintf('%d %s %d', 1, 'x', $0);
 "#,
         )
         .await;
-    expect!["▶ sprintf($format, ...$values)  @param1"].assert_eq(&out);
+    expect![[r#"
+        ▶ sprintf(string $format, mixed ...$values)  @param1
+          doc: Return a formatted string"#]]
+    .assert_eq(&out);
 }
 
 /// Function defined in a separate file; signature must resolve via workspace index.

@@ -378,8 +378,32 @@ async fn hover_first_class_callable_builtin() {
         r#"<?php $fn = str$0len(...);"#,
         expect![[r#"
             ```php
-            function strlen()
+            function strlen(string $string): int<0, max>
             ```
+
+            ---
+
+            Get string length
+
+            [php.net documentation](https://www.php.net/function.strlen)"#]],
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn hover_builtin_function_call_shows_typed_signature() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    s.check_hover_annotated(
+        r#"<?php $n = str$0len('abc');"#,
+        expect![[r#"
+            ```php
+            function strlen(string $string): int<0, max>
+            ```
+
+            ---
+
+            Get string length
 
             [php.net documentation](https://www.php.net/function.strlen)"#]],
     )

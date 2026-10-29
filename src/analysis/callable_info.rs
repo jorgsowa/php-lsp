@@ -34,10 +34,6 @@ pub(crate) fn callable_info_for_name(
 ) -> Option<CallableInfo> {
     match symbol {
         mir_analyzer::Name::Function(fqn) => {
-            let short = fqn.rsplit('\\').next().unwrap_or(fqn.as_ref());
-            if mir_analyzer::is_builtin_function(short) {
-                return None;
-            }
             let f = mir_analyzer::db::find_function(
                 db,
                 mir_analyzer::db::Fqcn::from_str(db, fqn.as_ref()),

@@ -33,13 +33,11 @@ async fn completion_resolve_adds_documentation_to_function() {
     let resolved = s.completion_resolve(item.unwrap().clone()).await;
     let out = render_resolved_completion_item(&resolved);
     expect![[r#"
-array_map (Function)
-detail: <no detail>
-docs: ```php
-function array_map()
-```
+        array_map (Function)
+        detail: function array_map(callable|null $callback, array $array, array ...$arrays): array
+        docs: Applies the callback to the elements of the given arrays
 
-[php.net documentation](https://www.php.net/function.array-map)"#]]
+        [php.net documentation](https://www.php.net/function.array-map)"#]]
     .assert_eq(&out);
 }
 
@@ -68,10 +66,8 @@ async fn completion_resolve_idempotent_when_resolved() {
     assert_eq!(out1, out2, "resolve should be idempotent");
     expect![[r#"
         strlen (Function)
-        detail: <no detail>
-        docs: ```php
-        function strlen()
-        ```
+        detail: function strlen(string $string): int<0, max>
+        docs: Get string length
 
         [php.net documentation](https://www.php.net/function.strlen)"#]]
     .assert_eq(&out1);
