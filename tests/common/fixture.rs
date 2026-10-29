@@ -19,9 +19,14 @@
 //!
 //! ```text
 //! <?php
+//! $x = nonexistent_function();
+//! //   ^^^^^^^^^^^^^^^^^^^^ error: function is not defined
 //! nonexistent_function();
-//! // ^^^^^^^^^^^^^^^^^^^^ error: function is not defined
+//! //<^^^^^^^^^^^^^^^^^^^^ error: function is not defined
 //! ```
+//!
+//! `//<^^^` starts at column 0 and `//< ^^^` at column 1 (one column per
+//! space after `<`).
 //!
 //! Without any `//- /path` header the whole input is treated as a single file
 //! named `main.php`.
@@ -272,6 +277,12 @@ fn parse_annotation_line(line: &str, target_line: Option<u32>) -> Option<Diagnos
     let rest = line.trim_start();
     let indent_len = line.len() - rest.len();
     let rest = rest.strip_prefix("//")?;
+    // `//<` anchors the carets at column 0 plus one per space after `<`, so
+    // columns 0 and 1 (hidden behind the `//`) can be annotated.
+    let (rest, column_base) = match rest.strip_prefix('<') {
+        Some(r) => (r, 0),
+        None => (rest, indent_len + 2),
+    };
     let after_slashes = rest.trim_start();
     if !after_slashes.starts_with('^') {
         return None;
@@ -281,7 +292,7 @@ fn parse_annotation_line(line: &str, target_line: Option<u32>) -> Option<Diagnos
     let payload = after_slashes[carets_len..].trim_start();
 
     let target_line = target_line?;
-    let start_char = (indent_len + 2 + ws_before_carets) as u32;
+    let start_char = (column_base + ws_before_carets) as u32;
     let end_char = start_char + carets_len as u32;
 
     let (severity, message) = match payload.find(':') {
@@ -482,5 +493,18 @@ mod tests {
         let a = &f.files[0].annotations[0];
         assert_eq!(a.severity, "warning");
         assert_eq!(a.message, "might be slow");
+    }
+
+    #[test]
+    fn anchored_annotation_reaches_columns_zero_and_one() {
+        let src = "<?php\nfoo();\n//<^^^ at zero\n//< ^^ at one\n";
+        let f = parse(src);
+        assert_eq!(f.files[0].text, "<?php\nfoo();\n");
+        let spans: Vec<_> = f.files[0]
+            .annotations
+            .iter()
+            .map(|a| (a.line, a.start_char, a.end_char, a.message.as_str()))
+            .collect();
+        assert_eq!(spans, [(1, 0, 3, "at zero"), (1, 1, 3, "at one")]);
     }
 }

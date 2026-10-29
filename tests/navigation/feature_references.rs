@@ -7,18 +7,6 @@
 
 use super::*;
 
-#[path = "references/basic.rs"]
-mod basic;
-
-#[path = "references/cross_file.rs"]
-mod cross_file;
-
-#[path = "references/oop.rs"]
-mod oop;
-
-#[path = "references/visibility.rs"]
-mod visibility;
-
 #[path = "references/stress.rs"]
 mod stress;
 
@@ -37,9 +25,6 @@ mod workspace_scan;
 #[path = "references/cold_candidate_gating.rs"]
 mod cold_candidate_gating;
 
-#[path = "references/expressions.rs"]
-mod expressions;
-
 #[path = "references/edge_cases.rs"]
 mod edge_cases;
 
@@ -49,14 +34,8 @@ mod constants;
 #[path = "references/static_properties.rs"]
 mod static_properties;
 
-#[path = "references/advanced_types.rs"]
-mod advanced_types;
-
 #[path = "references/attributes_complete.rs"]
 mod attributes_complete;
-
-#[path = "references/variables.rs"]
-mod variables;
 
 #[path = "references/partial_result.rs"]
 mod partial_result;

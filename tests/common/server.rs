@@ -2131,7 +2131,7 @@ impl TestServer {
     ///
     /// Validates that every LSP `Location` in `resp` aligns with a `// ^^^ <tag>`
     /// annotation in the fixture, and that no annotation is uncovered.
-    fn assert_annotated_locations(
+    pub fn assert_annotated_locations(
         &self,
         resp: &serde_json::Value,
         fixture: &super::fixture::Fixture,
@@ -2142,6 +2142,11 @@ impl TestServer {
         validate_lsp_spans(resp, cursor_path, fixture);
         let expected = collect_navigation_annotations(fixture, accept_tags);
         assert_locations_match(resp, &expected, &self.uri(""), label);
+    }
+
+    /// A rename `WorkspaceEdit` as a `Location` list, for `assert_annotated_locations`.
+    pub fn rename_edit_as_locations(&self, resp: &Value) -> Value {
+        workspace_edit_as_location_response(resp, &self.uri(""))
     }
 
     /// Assert that references at `$0` exactly match the `// ^^^ def` and

@@ -22,6 +22,11 @@ path = "src/lib.rs"
 name = "php-lsp"
 path = "src/main.rs"
 
+[[test]]
+name = "phpt"
+path = "tests/phpt.rs"
+harness = false
+
 [[bench]]
 name = "parse"
 harness = false
@@ -95,6 +100,7 @@ indexmap = "2"
 criterion = { version = "0.8", features = ["html_reports"] }
 iai-callgrind = "0.16"
 serial_test = "4"
+libtest-mimic = "0.8"
 
 [[bench]]
 name = "iai_critical"

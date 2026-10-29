@@ -152,27 +152,6 @@ async fn keyword_tokens_have_no_references_and_touch_no_candidate_files() {
     }
 }
 
-/// The keyword bail-out must not shadow the legitimate `self::`/`static::`
-/// resolution path it sits right next to in `symbol_kind_at`: `self` and
-/// `static` are themselves reserved words, but immediately before `::` they
-/// must still resolve through to the method they qualify.
-#[tokio::test]
-async fn scope_resolution_keywords_still_resolve_through_double_colon() {
-    let mut s = TestServer::new().await;
-    s.validate_syntax(false);
-    s.check_references_annotated(
-        r#"<?php
-class C {
-    public static function ma$0ke(): static { return new static(); }
-    //                     ^^^^ def
-    public static function via(): static { return self::make(); }
-    //                                                  ^^^^ ref
-}
-"#,
-    )
-    .await;
-}
-
 /// Magic constants (`__CLASS__`, `__FUNCTION__`, ...) are reserved words too
 /// — they satisfy `word_at_position`'s identifier character class just like
 /// any keyword, and a lowercase-first check alone doesn't exclude them
@@ -210,28 +189,4 @@ __halt_$0compiler();
         )
         .await;
     expect!["<none>"].assert_eq(&out);
-}
-
-/// `from` is classified as a keyword token by `php_lexer::resolve_keyword`
-/// (it's part of `yield from`), but PHP only reserves it directly after
-/// `yield` — everywhere else, most commonly a backed enum's static factory
-/// (`Suit::from('H')`), it's an ordinary method name. This is the inverse of
-/// every other test in this file: the bare-keyword gate must *not* fire here,
-/// or a naive reuse of `resolve_keyword` would silently break references on
-/// any symbol literally named `from`.
-#[tokio::test]
-async fn method_named_from_still_resolves_references() {
-    let mut s = TestServer::new().await;
-    s.validate_syntax(false);
-    s.check_references_annotated(
-        r#"<?php
-class Suit {
-    public static function from(string $value): self { return new self(); }
-    //                     ^^^^ def
-}
-Suit::fr$0om('H');
-//    ^^^^ ref
-"#,
-    )
-    .await;
 }
