@@ -1959,13 +1959,17 @@ impl LanguageServer for Backend {
                 let docs = Arc::clone(&self.docs);
                 let fqn_task = fqn.clone();
                 self.blocking("goto_implementation.subtypes", move || {
-                    docs.indexed_subtype_classes(&fqn_task, false)
+                    docs.indexed_subtype_classes(&fqn_task, false).map(|sites| {
+                        sites
+                            .into_iter()
+                            .filter_map(|site| {
+                                subtype_site_to_location(&docs, &site.file, &site.range)
+                            })
+                            .collect()
+                    })
                 })
                 .await
                 .unwrap_or_else(|| Ok(Vec::new()))?
-                .into_iter()
-                .filter_map(|site| subtype_site_to_location(&site.file, &site.range))
-                .collect()
             };
             if locs.is_empty() && !on_method_decl {
                 let wi = self.workspace_index_async().await;
@@ -2004,13 +2008,18 @@ impl LanguageServer for Backend {
                 let impls = self
                     .blocking("goto_implementation.method_impls", move || {
                         docs.indexed_method_implementations(&enclosing_fqn, &method)
+                            .map(|impls| {
+                                impls
+                                    .into_iter()
+                                    .filter_map(|(_, file, range)| {
+                                        subtype_site_to_location(&docs, &file, &range)
+                                    })
+                                    .collect()
+                            })
                     })
                     .await
                     .unwrap_or_else(|| Ok(Vec::new()))?;
-                locs = impls
-                    .into_iter()
-                    .filter_map(|(_, file, range)| subtype_site_to_location(&file, &range))
-                    .collect();
+                locs = impls;
             }
             if locs.is_empty() {
                 Ok(None)

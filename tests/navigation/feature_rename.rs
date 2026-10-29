@@ -1421,3 +1421,20 @@ $p = new P(old: 1);
     )
     .await;
 }
+
+/// Calls after an emoji are renamed at their UTF-16 columns, not skipped.
+#[tokio::test]
+async fn rename_function_called_on_emoji_line() {
+    let mut s = TestServer::new().await;
+    s.open(
+        "main.php",
+        "<?php\nfunction bump(): void {}\necho '😀'; bump();\n",
+    )
+    .await;
+    let resp = s.rename("main.php", 1, 10, "make").await;
+    expect![[r#"
+        // main.php
+        1:9-1:13 → "make"
+        2:11-2:15 → "make""#]]
+    .assert_eq(&canonicalize_workspace_edit(&resp["result"], &s.uri("")));
+}

@@ -2679,3 +2679,15 @@ function go(Base $b) { $b->r$0un(); }
     )
     .await;
 }
+
+#[tokio::test]
+async fn implementation_after_emoji_uses_utf16_columns() {
+    let mut s = TestServer::new().await;
+    s.open(
+        "main.php",
+        "<?php\ninterface Shape {}\n/* 😀 */ class Square implements Shape {}\n",
+    )
+    .await;
+    let resp = s.implementation("main.php", 1, 12).await;
+    expect!["main.php:2:15-2:21"].assert_eq(&render_locations(&resp, &s.uri("")));
+}

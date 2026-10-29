@@ -856,3 +856,17 @@ function wor$0k(Repo $r): void { $r->save(); }
         .await;
     expect!["save @ main.php:2:29 fromRanges=[3:35-3:39]"].assert_eq(&out);
 }
+
+#[tokio::test]
+async fn incoming_call_range_after_emoji_uses_utf16_columns() {
+    let mut s = TestServer::new().await;
+    let out = s
+        .check_incoming_calls(
+            r#"<?php
+function lea$0f(): void {}
+function caller(): void { echo '😀'; leaf(); }
+"#,
+        )
+        .await;
+    expect!["caller @ main.php:2:9 fromRanges=[2:37-2:41]"].assert_eq(&out);
+}

@@ -328,3 +328,42 @@ async fn will_rename_files_group_use_import_pins_known_gap() {
         4:6-4:10 → "Account""#]]
     .assert_eq(&snap);
 }
+
+/// Class references after an emoji are rewritten at their UTF-16 columns.
+#[tokio::test]
+async fn will_rename_files_rewrites_reference_after_emoji() {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::write(
+        tmp.path().join("composer.json"),
+        r#"{"autoload":{"psr-4":{"App\\":"src/"}}}"#,
+    )
+    .unwrap();
+    std::fs::create_dir_all(tmp.path().join("src/Model")).unwrap();
+    std::fs::write(
+        tmp.path().join("src/Model/User.php"),
+        "<?php\nnamespace App\\Model;\nclass User {}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        tmp.path().join("src/boot.php"),
+        "<?php\nnamespace App;\nuse App\\Model\\User;\necho '😀'; new User();\n",
+    )
+    .unwrap();
+
+    let mut server = TestServer::with_root(tmp.path()).await;
+    server.wait_for_index_ready().await;
+    let old_uri = server.uri("src/Model/User.php");
+    let new_uri = server.uri("src/Model/Account.php");
+    let resp = server.will_rename_files(vec![(old_uri, new_uri)]).await;
+
+    assert!(resp["error"].is_null(), "willRenameFiles error: {resp:?}");
+    let snap = canonicalize_workspace_edit(&resp["result"], &server.uri(""));
+    expect![[r#"
+        // src/Model/User.php
+        2:6-2:10 → "Account"
+
+        // src/boot.php
+        2:4-2:18 → "App\\Model\\Account"
+        3:15-3:19 → "Account""#]]
+    .assert_eq(&snap);
+}

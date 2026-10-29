@@ -261,7 +261,7 @@ impl LensEnv<'_> {
             .indexed_subtype_classes(fqn, include_trait_users)
             .unwrap_or_default()
             .into_iter()
-            .filter_map(|site| subtype_site_to_location(&site.file, &site.range))
+            .filter_map(|site| subtype_site_to_location(self.store, &site.file, &site.range))
             .collect();
         let label = match locations.len() {
             0 => "0 implementations".to_string(),
@@ -537,22 +537,25 @@ fn property_name(class_fqn: &str, prop: &str) -> mir_analyzer::Name {
 }
 
 pub(crate) fn subtype_site_to_location(
+    store: &DocumentStore,
     file: &str,
     range: &mir_analyzer::Range,
 ) -> Option<Location> {
     let uri = (file).parse::<Uri>().ok()?;
-    // mir uses 1-based lines; 0-based columns.
+    // mir uses 1-based lines and code-point columns.
     let line = range.start.line.saturating_sub(1);
+    let columns = store.utf16_columns(file);
+    let convert = |col| columns.as_ref().map_or(col, |c| c.convert(line, col));
     Some(Location {
         uri,
         range: tower_lsp_server::ls_types::Range {
             start: tower_lsp_server::ls_types::Position {
                 line,
-                character: range.start.column,
+                character: convert(range.start.column),
             },
             end: tower_lsp_server::ls_types::Position {
                 line,
-                character: range.end.column,
+                character: convert(range.end.column),
             },
         },
     })

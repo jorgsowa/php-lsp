@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 
@@ -14,6 +14,7 @@ use crate::document::ast::ParsedDoc;
 use crate::document::cache_registry::{AnalysisCacheEntry, CacheRegistry};
 use crate::index::file_index::{FileIndex, SameDeclarations};
 use crate::lang::autoload::Psr4Map;
+use crate::text::Utf16Columns;
 
 /// A write invalidated a read and every bounded retry; the client should re-request.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1466,16 +1467,7 @@ impl DocumentStore {
                 )
             },
         )?;
-        Ok(raw
-            .into_iter()
-            .map(|(file, range)| {
-                // Mirror columns are 0-based code points (UTF-16 code units),
-                // the same convention used by LSP. We only need to convert
-                // mir's 1-based line numbers to 0-based for LSP.
-                let line = range.start.line.saturating_sub(1);
-                (file, line, range.start.column, range.end.column)
-            })
-            .collect())
+        Ok(self.mir_ranges_to_ref_locations(raw))
     }
 
     /// `use`-import lines referencing `symbol`, from mir's `use:` postings.
@@ -1492,14 +1484,33 @@ impl DocumentStore {
             |session| session.prepare_for_query(None),
             |snap| snap.indexed_use_import_locations(symbol, files),
         )?;
-        Ok(raw
-            .into_iter()
+        Ok(self.mir_ranges_to_ref_locations(raw))
+    }
+
+    /// Map mir's 1-based-line, code-point-column ranges to [`RefLocation`]s
+    /// with 0-based lines and UTF-16 columns.
+    fn mir_ranges_to_ref_locations(
+        &self,
+        raw: Vec<(Arc<str>, mir_analyzer::Range)>,
+    ) -> Vec<RefLocation> {
+        let mut columns: HashMap<Arc<str>, Option<Utf16Columns<Arc<str>>>> = HashMap::new();
+        raw.into_iter()
             .map(|(file, range)| {
-                // mir uses 1-based lines; 0-based columns.
                 let line = range.start.line.saturating_sub(1);
-                (file, line, range.start.column, range.end.column)
+                let cols = columns
+                    .entry(Arc::clone(&file))
+                    .or_insert_with(|| self.utf16_columns(&file));
+                let convert = |col| cols.as_ref().map_or(col, |c| c.convert(line, col));
+                let (start, end) = (convert(range.start.column), convert(range.end.column));
+                (file, line, start, end)
             })
-            .collect())
+            .collect()
+    }
+
+    /// Code-point to UTF-16 column converter for `file`'s mirrored text.
+    pub(crate) fn utf16_columns(&self, file: &str) -> Option<Utf16Columns<Arc<str>>> {
+        let uri = file.parse::<Uri>().ok()?;
+        self.source_text(&uri).map(Utf16Columns::new)
     }
 
     /// Replay disk-cached reference postings and subtype edges for the whole

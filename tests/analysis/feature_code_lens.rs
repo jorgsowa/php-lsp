@@ -739,3 +739,32 @@ async fn code_lens_correct_after_preceding_write() {
         L2:9-L2:17: 0 references [editor.action.showReferences]"#]]
     .assert_eq(&render_code_lens(&resp));
 }
+
+/// The locations a lens shows are UTF-16 ranges even after an emoji.
+#[tokio::test]
+async fn lens_locations_after_emoji_use_utf16_columns() {
+    let mut s = TestServer::new().await;
+    s.open(
+        "main.php",
+        "<?php\ninterface Shape {}\n/* 😀 */ class Square implements Shape {}\nfunction bump(): void {}\necho '😀'; bump();\n",
+    )
+    .await;
+    let resp = s.code_lens("main.php").await;
+    let mut out: Vec<String> = resp["result"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|l| {
+            let title = l["command"]["title"].as_str()?;
+            let locs = json!({ "result": l["command"]["arguments"].get(2)? });
+            Some(format!("{title}: {}", render_locations(&locs, &s.uri(""))))
+        })
+        .collect();
+    out.sort();
+    expect![[r#"
+        0 references: <none>
+        1 implementation: main.php:2:15-2:21
+        1 reference: main.php:2:33-2:38
+        1 reference: main.php:4:11-4:15"#]]
+    .assert_eq(&out.join("\n"));
+}

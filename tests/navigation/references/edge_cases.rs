@@ -2,6 +2,8 @@
 
 use super::*;
 
+use expect_test::expect;
+
 #[tokio::test]
 async fn references_no_partial_name_match() {
     // `greet` must not include occurrences of `greeting`.
@@ -321,4 +323,24 @@ $d->gérer();
 "#,
     )
     .await;
+}
+
+/// mir reports code-point columns; an emoji before a call shifts its UTF-16 column by two.
+#[tokio::test]
+async fn references_on_emoji_line_use_utf16_columns() {
+    let mut s = TestServer::new().await;
+    s.open(
+        "main.php",
+        "<?php\nfunction bump(): void {}\necho '😀'; bump();\n",
+    )
+    .await;
+
+    let resp = s.references("main.php", 1, 10, false).await;
+    expect!["main.php:2:11-2:15"].assert_eq(&render_locations(&resp, &s.uri("")));
+
+    let resp = s.references("main.php", 1, 10, true).await;
+    expect![[r#"
+        main.php:1:9-1:13
+        main.php:2:11-2:15"#]]
+    .assert_eq(&render_locations(&resp, &s.uri("")));
 }
