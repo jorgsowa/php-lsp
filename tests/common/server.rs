@@ -425,6 +425,36 @@ impl TestServer {
         }
     }
 
+    /// Start a server with `roots` as its `workspaceFolders`; `uri` resolves
+    /// paths against the first.
+    pub async fn with_roots(roots: &[&std::path::Path]) -> Self {
+        let mut client = spawn_server();
+        let folders: Vec<Value> = roots
+            .iter()
+            .map(|r| {
+                let uri = Uri::from_file_path(r).unwrap();
+                json!({ "uri": uri.as_str(), "name": uri.as_str() })
+            })
+            .collect();
+        client
+            .request(
+                "initialize",
+                json!({
+                    "processId": null,
+                    "workspaceFolders": folders,
+                    "capabilities": {},
+                }),
+            )
+            .await;
+        client.notify("initialized", json!({})).await;
+        TestServer {
+            client,
+            root: roots.first().map(|r| r.to_path_buf()),
+            _fixture_dir: None,
+            validate_syntax: true,
+        }
+    }
+
     /// Start a server rooted at `root` with custom `initializationOptions`.
     /// Used for tests that need to exercise configuration flags
     /// (`phpVersion`, `excludePaths`, etc.) rather than the defaults.

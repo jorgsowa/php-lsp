@@ -578,6 +578,7 @@ impl Backend {
                         Arc::clone(&docs),
                         open_files.clone(),
                         cache,
+                        &roots,
                         &exclude_paths,
                         &include_paths,
                         &extensions,

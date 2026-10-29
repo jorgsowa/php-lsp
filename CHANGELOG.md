@@ -12,6 +12,7 @@ All notable changes to php-lsp are documented here.
 - **Laravel files that aren't valid UTF-8 are read**: config, `.env`, route, middleware, translation and `composer.json` files in Latin-1 or another 8-bit encoding were skipped by the Laravel index, detection and hover. Invalid bytes are now replaced with U+FFFD.
 - **`autoload.files` entries are indexed once**: an entry like `./helpers.php`, or one the directory walk also reaches, was parsed twice and listed under two URIs.
 - **Added `use` statements are indented in braced namespaces**: imports added by completion, quick-fixes and file moves inside `namespace X { }` take the indentation of the namespace body instead of starting at column 0.
+- **Symlinks into another workspace root aren't followed**: in a multi-root workspace, a link from one root into another indexed the target's files a second time under the link path.
 
 ## [0.29.0] — 2026-10-28
 

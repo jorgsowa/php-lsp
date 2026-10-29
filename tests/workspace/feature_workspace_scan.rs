@@ -1005,3 +1005,27 @@ async fn symlinked_directories_are_followed_once() {
     expect!["Class       Own @ src/Own.php:1"]
         .assert_eq(&s.snapshot_workspace_symbols("Own").await);
 }
+
+/// A symlink from one workspace root into another isn't followed: the target
+/// root indexes those files itself, so following it would list them twice.
+#[cfg(unix)]
+#[tokio::test]
+async fn symlink_into_another_workspace_root_is_not_followed() {
+    use std::os::unix::fs::symlink;
+    let app = tempfile::tempdir().unwrap();
+    let lib = tempfile::tempdir().unwrap();
+    std::fs::create_dir(lib.path().join("src")).unwrap();
+    std::fs::write(
+        lib.path().join("src/Shared.php"),
+        "<?php\nclass Shared {}\n",
+    )
+    .unwrap();
+    symlink(lib.path().join("src"), app.path().join("lib")).unwrap();
+
+    let mut s = TestServer::with_roots(&[app.path(), lib.path()]).await;
+    s.wait_for_index_ready().await;
+    let lib_uri = tower_lsp_server::ls_types::Uri::from_file_path(lib.path()).unwrap();
+    let resp = s.workspace_symbols("Shared").await;
+    expect!["Class       Shared @ src/Shared.php:1"]
+        .assert_eq(&render_workspace_symbols(&resp, lib_uri.as_str()));
+}

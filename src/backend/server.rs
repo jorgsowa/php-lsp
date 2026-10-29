@@ -449,6 +449,7 @@ impl LanguageServer for Backend {
                         let ip = include_paths.clone();
                         let extensions = self.config.load().php_file_extensions();
                         let path_clone = path.clone();
+                        let roots = self.root_paths.load_full();
                         let client = self.client.clone();
                         let cp = cache_path.clone();
                         let warm_analysis = self.config.load().warm_analysis;
@@ -463,6 +464,7 @@ impl LanguageServer for Backend {
                                 Arc::clone(&docs),
                                 open_files,
                                 cache,
+                                &roots,
                                 &ex,
                                 &ip,
                                 &extensions,

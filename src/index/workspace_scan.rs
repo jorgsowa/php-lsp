@@ -55,7 +55,7 @@ pub(crate) type ScanProgressTx = tokio::sync::mpsc::UnboundedSender<(usize, usiz
 /// it — every indexed file's FileIndex, memoized thereafter.
 #[allow(clippy::too_many_arguments)]
 #[tracing::instrument(
-    skip(docs, open_files, cache, exclude_paths, include_paths),
+    skip(docs, open_files, cache, workspace_roots, exclude_paths, include_paths),
     fields(root = %root.display())
 )]
 /// `(total_indexed, from_cache)` — files counted in the index and how many
@@ -65,6 +65,7 @@ pub(crate) async fn scan_workspace(
     docs: Arc<DocumentStore>,
     open_files: OpenFiles,
     cache: Option<crate::index::cache::WorkspaceCache>,
+    workspace_roots: &[std::path::PathBuf],
     exclude_paths: &[String],
     include_paths: &[String],
     extensions: &mir_analyzer::PhpFileExtensions,
@@ -138,10 +139,11 @@ pub(crate) async fn scan_workspace(
     let excl: Vec<String> = exclude_paths.to_vec();
     let incl: Vec<String> = include_paths.to_vec();
     let exts = extensions.clone();
+    let roots = workspace_roots.to_vec();
     let php_paths: Vec<std::path::PathBuf> = tokio::task::spawn_blocking(move || {
         let out = Mutex::new(Vec::new());
         let count = AtomicUsize::new(0);
-        let links = SymlinkGuard::new(&root2);
+        let links = SymlinkGuard::new(&root2, &roots);
         walk_dir_parallel(
             root2.clone(),
             &root2,
@@ -368,18 +370,22 @@ fn walk_dir_parallel(
 }
 
 /// Decides which symlinks the scan follows. Only links whose target lies
-/// outside the workspace root are followed (targets inside it are reached
+/// outside every workspace root are followed (targets inside one are reached
 /// directly, and following them would index the same file twice), and a
 /// directory link is entered once and never when it points at an ancestor.
 pub(crate) struct SymlinkGuard {
     canonical_root: std::path::PathBuf,
+    other_roots: Vec<std::path::PathBuf>,
     visited: Mutex<std::collections::HashSet<std::path::PathBuf>>,
 }
 
 impl SymlinkGuard {
-    pub(crate) fn new(root: &std::path::Path) -> Self {
+    pub(crate) fn new(root: &std::path::Path, workspace_roots: &[std::path::PathBuf]) -> Self {
+        let canonical =
+            |p: &std::path::Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
         SymlinkGuard {
-            canonical_root: std::fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf()),
+            canonical_root: canonical(root),
+            other_roots: workspace_roots.iter().map(|r| canonical(r)).collect(),
             visited: Mutex::default(),
         }
     }
@@ -392,7 +398,10 @@ impl SymlinkGuard {
         parent: &std::path::Path,
     ) -> Option<(std::path::PathBuf, std::fs::Metadata)> {
         let target = std::fs::canonicalize(link).ok()?;
-        if target.starts_with(&self.canonical_root) || self.canonical_root.starts_with(&target) {
+        if target.starts_with(&self.canonical_root)
+            || self.canonical_root.starts_with(&target)
+            || self.other_roots.iter().any(|r| target.starts_with(r))
+        {
             return None;
         }
         let meta = std::fs::metadata(&target).ok()?;
@@ -443,6 +452,7 @@ mod tests {
             None,
             &[],
             &[],
+            &[],
             extensions,
             50_000,
             None,
@@ -475,6 +485,7 @@ mod tests {
                     Arc::new(DocumentStore::new()),
                     OpenFiles::default(),
                     None,
+                    &[],
                     &[],
                     &[],
                     &exts,
@@ -517,6 +528,7 @@ mod tests {
             Some(cache.clone()),
             &[],
             &[],
+            &[],
             &Default::default(),
             50_000,
             None,
@@ -543,6 +555,7 @@ mod tests {
             Arc::clone(&docs2),
             OpenFiles::default(),
             Some(cache.clone()),
+            &[],
             &[],
             &[],
             &Default::default(),
@@ -588,6 +601,7 @@ mod tests {
             Arc::clone(&docs),
             OpenFiles::default(),
             Some(cache.clone()),
+            &[],
             &[],
             &[],
             &Default::default(),
@@ -710,7 +724,7 @@ mod tests {
         let php_parallel: Vec<std::path::PathBuf> = tokio::task::spawn_blocking(move || {
             let out = super::Mutex::new(Vec::new());
             let count = super::AtomicUsize::new(0);
-            let links = super::SymlinkGuard::new(&root3);
+            let links = super::SymlinkGuard::new(&root3, &[]);
             super::walk_dir_parallel(
                 root3.clone(),
                 &root3,
