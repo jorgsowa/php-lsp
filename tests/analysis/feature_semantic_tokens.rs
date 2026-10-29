@@ -292,6 +292,33 @@ async fn semantic_tokens_deprecated_function_modifier() {
     .assert_eq(&out);
 }
 
+#[tokio::test]
+async fn semantic_tokens_non_deprecated_docblock_has_no_deprecated_modifier() {
+    use common::render_semantic_tokens;
+    use serde_json::json;
+
+    let (mut server, init_resp) = TestServer::new_with_options(json!({
+        "diagnostics": { "enabled": true }
+    }))
+    .await;
+    let legend_types = get_legend_types(&init_resp).await;
+
+    server
+        .open(
+            "documented.php",
+            "<?php\n/** @return void */ function fresh(): void {}\n",
+        )
+        .await;
+
+    let resp = server.semantic_tokens_full("documented.php").await;
+    let out = render_semantic_tokens(&resp, &legend_types);
+    expect![[r#"
+        1:0 len=19 type=comment mods=0b0
+        1:29 len=5 type=function mods=0b1
+        1:38 len=4 type=type mods=0b0"#]]
+    .assert_eq(&out);
+}
+
 /// Verify that classes, interfaces, and enums are properly tokenized.
 /// Classes and enums use type=class, while interfaces use type=interface.
 #[tokio::test]

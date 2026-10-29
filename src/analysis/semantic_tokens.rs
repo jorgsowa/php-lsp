@@ -244,7 +244,7 @@ fn push_attributes(out: &mut Vec<RawToken>, sv: SourceView<'_>, attrs: &[Attribu
 
 fn deprecated_mod(doc: Option<&php_ast::Comment<'_>>) -> u32 {
     doc.map(|c| {
-        if parse_docblock(c.text).is_deprecated() {
+        if c.text.contains("@deprecated") && parse_docblock(c.text).is_deprecated() {
             MOD_DEPRECATED
         } else {
             0
