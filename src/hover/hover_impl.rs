@@ -447,7 +447,12 @@ fn hover_at_core(
     }
 
     let all_stmts = &*doc.program().stmts as &[_];
-    let alias = resolve_use_alias_fqn(all_stmts, &word);
+    let alias = resolve_use_alias_fqn(all_stmts, &word).or_else(|| {
+        word.contains('\\').then(|| {
+            let fqn = crate::navigation::moniker::resolve_fqn(doc, &word, &doc.file_imports());
+            (fqn_short_name(&fqn).to_owned(), fqn)
+        })
+    });
     let resolved_word = alias
         .as_ref()
         .map_or_else(|| word.clone(), |(short, _)| short.clone());
