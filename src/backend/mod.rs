@@ -695,7 +695,7 @@ pub(super) async fn republish_after_index_ready(
     is_laravel: bool,
 ) {
     let uris = open_files.urls();
-    if uris.is_empty() {
+    if uris.is_empty() || open_files.client_pulls_diagnostics() {
         return;
     }
     let docs_ref = Arc::clone(&docs);
@@ -767,6 +767,9 @@ pub(super) async fn publish_with_dependents(
         } => (Some(version), Some(generation)),
         DiagnosticPublish::Other(version) => (version, None),
     };
+    if open_files.client_pulls_diagnostics() {
+        return;
+    }
     let docs_ref = Arc::clone(&docs);
     let open_files_ref = open_files.clone();
     let uri_ref = uri.clone();

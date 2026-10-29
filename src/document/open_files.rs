@@ -2,7 +2,7 @@
 #![cfg_attr(target_family = "wasm", allow(dead_code))]
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use dashmap::DashMap;
 use tower_lsp_server::ls_types::{Diagnostic, Uri};
@@ -57,6 +57,9 @@ pub struct OpenFiles {
     /// that stale close from erasing the reopened buffer.
     lifecycle_intents: Arc<DashMap<Uri, LifecycleIntent>>,
     next_lifecycle_generation: Arc<AtomicU64>,
+    /// Set when the client declared `textDocument.diagnostic`; such clients
+    /// pull, and a push on top would show every diagnostic twice.
+    client_pulls_diagnostics: Arc<AtomicBool>,
 }
 
 #[derive(Clone, Copy)]
@@ -69,6 +72,15 @@ struct LifecycleIntent {
 impl OpenFiles {
     pub(crate) fn new() -> Self {
         Self::default()
+    }
+
+    pub(crate) fn set_client_pulls_diagnostics(&self, pulls: bool) {
+        self.client_pulls_diagnostics
+            .store(pulls, Ordering::Relaxed);
+    }
+
+    pub(crate) fn client_pulls_diagnostics(&self) -> bool {
+        self.client_pulls_diagnostics.load(Ordering::Relaxed)
     }
 
     pub(crate) fn set_open_text(&self, docs: &DocumentStore, uri: Uri, text: String) -> u64 {

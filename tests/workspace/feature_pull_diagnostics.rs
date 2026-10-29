@@ -215,3 +215,48 @@ async fn pull_diagnostics_full_when_previous_result_id_stale() {
     expect!["1:0-1:20 [1] UndefinedFunction: Function undefined_function() is not defined"]
         .assert_eq(&render_pull_diagnostics(&resp));
 }
+
+/// A client that declares pull support must not also receive pushes, or each
+/// diagnostic is shown twice.
+#[tokio::test]
+async fn pull_capable_client_gets_no_push_diagnostics() {
+    let (mut s, _) = TestServer::new_with_client_capabilities(json!({
+        "textDocument": { "diagnostic": { "dynamicRegistration": false } }
+    }))
+    .await;
+    let uri = s.uri("test.php");
+    let text = "<?php\nundefined_function();\n";
+    s.client()
+        .notify(
+            "textDocument/didOpen",
+            json!({
+                "textDocument": {"uri": uri, "languageId": "php", "version": 1, "text": text}
+            }),
+        )
+        .await;
+
+    let resp = s.pull_diagnostics("test.php").await;
+    expect!["1:0-1:20 [1] UndefinedFunction: Function undefined_function() is not defined"]
+        .assert_eq(&render_pull_diagnostics(&resp));
+
+    s.client()
+        .notify(
+            "textDocument/didChange",
+            json!({
+                "textDocument": {"uri": uri, "version": 2},
+                "contentChanges": [{"text": "<?php\nother_undefined();\n"}]
+            }),
+        )
+        .await;
+    s.client()
+        .notify(
+            "textDocument/didSave",
+            json!({"textDocument": {"uri": uri}}),
+        )
+        .await;
+    let pushed = s
+        .client()
+        .drain_publish_diagnostics_uris(std::time::Duration::from_millis(500))
+        .await;
+    assert!(pushed.is_empty(), "unexpected pushes: {pushed:?}");
+}

@@ -56,6 +56,13 @@ impl Backend {
 
         self.client_capabilities
             .store(Arc::new(params.capabilities.clone()));
+        self.open_files.set_client_pulls_diagnostics(
+            params
+                .capabilities
+                .text_document
+                .as_ref()
+                .is_some_and(|td| td.diagnostic.is_some()),
+        );
 
         {
             let opts = params.initialization_options.as_ref();

@@ -763,26 +763,28 @@ impl LanguageServer for Backend {
             // Includes the semantic (mir) analysis pass, same as
             // `publish_with_dependents` — keep it off the async runtime worker
             // here too, not just on the did_open/did_change path.
-            let docs = Arc::clone(&self.docs);
-            let open_files = self.open_files.clone();
-            let uri_for_diags = uri.clone();
-            let all = self
-                .blocking_gated(super::debug_gate::GATE_DID_SAVE_DIAGNOSTICS, move || {
-                    compute_open_file_diagnostics(
-                        &docs,
-                        &open_files,
-                        &uri_for_diags,
-                        &diag_cfg,
-                        is_laravel,
-                    )
-                })
-                .await
-                .unwrap_or_default();
-            self.open_files
-                .note_published(&uri, super::diagnostics_content_hash(&all));
-            self.client
-                .publish_diagnostics(uri.clone(), all, None)
-                .await;
+            if !self.open_files.client_pulls_diagnostics() {
+                let docs = Arc::clone(&self.docs);
+                let open_files = self.open_files.clone();
+                let uri_for_diags = uri.clone();
+                let all = self
+                    .blocking_gated(super::debug_gate::GATE_DID_SAVE_DIAGNOSTICS, move || {
+                        compute_open_file_diagnostics(
+                            &docs,
+                            &open_files,
+                            &uri_for_diags,
+                            &diag_cfg,
+                            is_laravel,
+                        )
+                    })
+                    .await
+                    .unwrap_or_default();
+                self.open_files
+                    .note_published(&uri, super::diagnostics_content_hash(&all));
+                self.client
+                    .publish_diagnostics(uri.clone(), all, None)
+                    .await;
+            }
 
             // Persist the FileIndex to the disk cache so that a server restart
             // can skip re-parsing this file even for edits that happened between
@@ -850,6 +852,13 @@ impl LanguageServer for Backend {
                             return;
                         }
                         open_files.set_external_diagnostics(&uri, version, diagnostics);
+                        if open_files.client_pulls_diagnostics() {
+                            client
+                                .send_request::<request::WorkspaceDiagnosticRefresh>(())
+                                .await
+                                .ok();
+                            return;
+                        }
                         publish_with_dependents(
                             client,
                             docs,
