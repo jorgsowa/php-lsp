@@ -60,7 +60,7 @@ use std::path::{Path, PathBuf};
 use common::fixture::{self, Cursor, Fixture};
 use common::render::{
     assert_highlights_match, collect_navigation_annotations, render_code_actions,
-    render_folding_ranges,
+    render_folding_ranges, render_prepare_rename,
 };
 use common::*;
 use libtest_mimic::{Arguments, Failed, Trial};
@@ -378,6 +378,7 @@ enum Request {
     FoldingRange,
     CodeActions,
     Rename(String),
+    PrepareRename,
     /// Pull diagnostics for every opened file.
     Diagnostics,
 }
@@ -414,6 +415,7 @@ impl Request {
             "folding_range" => Self::FoldingRange,
             "code_actions" => Self::CodeActions,
             "rename" => Self::Rename(one_arg()),
+            "prepare_rename" => Self::PrepareRename,
             "diagnostics" => Self::Diagnostics,
             other => panic!("{label}: unknown request `{other}`"),
         }
@@ -720,6 +722,10 @@ async fn execute(server: &mut TestServer, request: &Request, fx: &Fixture) -> St
                 Some(err) => format!("error: {err}"),
                 None => canonicalize_workspace_edit(&resp["result"], &root),
             }
+        }
+        Request::PrepareRename => {
+            let c = c();
+            render_prepare_rename(&server.prepare_rename(&c.path, c.line, c.character).await)
         }
         Request::Diagnostics => {
             let mut out = Vec::new();

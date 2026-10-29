@@ -133,7 +133,8 @@ pub fn prepare_rename(doc: &ParsedDoc, position: Position) -> Option<Range> {
     while left > 0 && is_word(chars[left - 1]) {
         left -= 1;
     }
-    if chars.get(left) == Some(&'$') {
+    // Variable variables (`$$name`) carry several sigils.
+    while chars.get(left) == Some(&'$') {
         left += 1;
     }
 
