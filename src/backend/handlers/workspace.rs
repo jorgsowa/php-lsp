@@ -8,8 +8,7 @@ use tower_lsp_server::ls_types::*;
 
 use crate::analysis::semantic_tokens::legend;
 use crate::editing::file_rename::{
-    delete_use_in_source, namespace_edits_in_source, same_namespace_import_edit,
-    use_edits_in_source,
+    delete_use_in_source, moved_file_edits, same_namespace_import_edit, use_edits_in_source,
 };
 use crate::index::workspace_scan::{scan_workspace, send_refresh_requests};
 use crate::lang::autoload::Psr4Map;
@@ -864,15 +863,22 @@ impl Backend {
             let old_ns = old_fqn.rsplit_once('\\').map_or("", |(ns, _)| ns);
             let new_ns = new_fqn.rsplit_once('\\').map_or("", |(ns, _)| ns);
             let ns_changed = !old_ns.eq_ignore_ascii_case(new_ns);
-            if ns_changed
-                && let Some(old_uri) = &old_uri
-                && let Some(doc) = self.docs.get_doc_salsa(old_uri)
-            {
-                let edits = namespace_edits_in_source(&doc, &old_fqn, &new_fqn);
-                merged_changes
-                    .entry(old_uri.clone())
-                    .or_default()
-                    .extend(edits);
+            if ns_changed && let Some(old_uri) = old_uri.clone() {
+                let docs = std::sync::Arc::clone(&self.docs);
+                let (old_fqn_task, new_fqn_task) = (old_fqn.clone(), new_fqn.clone());
+                let edits = tokio::task::spawn_blocking(move || {
+                    let doc = docs.get_doc_salsa(&old_uri)?;
+                    let edits = moved_file_edits(&doc, &old_fqn_task, &new_fqn_task, |fqn| {
+                        docs.find_class_like(fqn).is_some()
+                    });
+                    Some((old_uri, edits))
+                })
+                .await
+                .ok()
+                .flatten();
+                if let Some((uri, edits)) = edits {
+                    merged_changes.entry(uri).or_default().extend(edits);
+                }
             }
 
             // Also rename the declaration itself plus reference sites (type

@@ -1,8 +1,9 @@
 use php_ast::{NamespaceBody, Span, Stmt, StmtKind, UseKind};
 use tower_lsp_server::ls_types::{Position, Range, TextEdit};
 
-use crate::document::ast::ParsedDoc;
-use crate::lang::file_header::{namespace_at, use_insertion};
+use crate::document::ast::{ParsedDoc, use_item_alias_and_fqn};
+use crate::lang::file_header::{NamespaceSegment, namespace_at, use_insertion};
+use crate::navigation::walk::all_class_ref_names_in_stmts;
 
 /// Find every `use` item in `stmts` whose FQN (leading `\` ignored) equals
 /// `target`, restricted to `use ClassName` statements (`UseKind::Normal`) —
@@ -122,9 +123,244 @@ fn namespace_of(fqn: &str) -> &str {
         .map_or("", |(ns, _)| ns)
 }
 
-/// Return `TextEdit`s that move the namespace declaration of a renamed class
-/// file from the namespace of `old_fqn` to that of `new_fqn`.
-pub fn namespace_edits_in_source(doc: &ParsedDoc, old_fqn: &str, new_fqn: &str) -> Vec<TextEdit> {
+/// Edits for a class file moved from `old_fqn` to `new_fqn`: its namespace
+/// declaration, plus imports for names that resolved against the old namespace.
+/// `is_class` tells whether an FQN names a known class-like, for docblock names.
+pub fn moved_file_edits(
+    doc: &ParsedDoc,
+    old_fqn: &str,
+    new_fqn: &str,
+    is_class: impl Fn(&str) -> bool,
+) -> Vec<TextEdit> {
+    let (old_ns, new_ns) = (namespace_of(old_fqn), namespace_of(new_fqn));
+    if old_ns.eq_ignore_ascii_case(new_ns) {
+        return Vec::new();
+    }
+    let mut edits = namespace_edits_in_source(doc, old_fqn, new_fqn);
+    let stmts = &doc.program().stmts;
+    let segments: Vec<_> = if stmts
+        .iter()
+        .any(|s| matches!(s.kind, StmtKind::Namespace(_)))
+    {
+        stmts
+            .iter()
+            .filter(|s| matches!(s.kind, StmtKind::Namespace(_)))
+            .map(|s| namespace_at(stmts, s.span.start))
+            .filter(|seg| {
+                seg.name()
+                    .trim_start_matches('\\')
+                    .eq_ignore_ascii_case(old_ns)
+            })
+            .collect()
+    } else {
+        vec![namespace_at(stmts, 0)]
+    };
+    let docblock_names = docblock_type_names(doc.source());
+    for segment in segments {
+        let names = old_namespace_names(&segment, &docblock_names, |name| {
+            is_class(&qualify(old_ns, name))
+        });
+        if names.is_empty() {
+            continue;
+        }
+        let insertion = use_insertion(doc, doc.view().position_of(segment.body_start), |_| true);
+        let uses: String = names
+            .iter()
+            .map(|name| format!("{}use {};\n", insertion.indent, qualify(old_ns, name)))
+            .collect();
+        let pos = insertion.position();
+        // Edit dedup keeps one insert per position, so extend an inserted namespace line.
+        match edits
+            .iter_mut()
+            .find(|e| e.range.start == pos && e.range.end == pos)
+        {
+            Some(ns_insert) => {
+                ns_insert.new_text.push('\n');
+                ns_insert.new_text.push_str(&uses);
+            }
+            None => edits.push(TextEdit {
+                range: Range::new(pos, pos),
+                new_text: uses,
+            }),
+        }
+    }
+    edits
+}
+
+fn qualify(ns: &str, name: &str) -> String {
+    if ns.is_empty() {
+        name.to_string()
+    } else {
+        format!("{ns}\\{name}")
+    }
+}
+
+/// Sorted leading segments of names in `segment` that resolve against its
+/// namespace: neither fully qualified, imported, declared in it, nor special.
+fn old_namespace_names(
+    segment: &NamespaceSegment<'_, '_, '_>,
+    docblock_names: &[(u32, &str)],
+    is_class: impl Fn(&str) -> bool,
+) -> Vec<String> {
+    let mut bound = std::collections::HashSet::new();
+    for stmt in segment.stmts {
+        match &stmt.kind {
+            StmtKind::Use(u) if u.kind == UseKind::Normal => {
+                for item in u.uses.iter() {
+                    if matches!(item.kind, None | Some(UseKind::Normal)) {
+                        bound.insert(use_item_alias_and_fqn(item).0.to_ascii_lowercase());
+                    }
+                }
+            }
+            StmtKind::Class(c) => {
+                bound.extend(c.name.and_then(|n| n.as_str()).map(str::to_ascii_lowercase))
+            }
+            StmtKind::Interface(d) => bound.extend(d.name.as_str().map(str::to_ascii_lowercase)),
+            StmtKind::Trait(d) => bound.extend(d.name.as_str().map(str::to_ascii_lowercase)),
+            StmtKind::Enum(d) => bound.extend(d.name.as_str().map(str::to_ascii_lowercase)),
+            _ => {}
+        }
+    }
+    let end = segment
+        .stmts
+        .last()
+        .map_or(segment.body_start, |s| s.span.end);
+    let code_names = all_class_ref_names_in_stmts(segment.stmts);
+    let code_names = code_names
+        .iter()
+        .filter(|name| {
+            !name.starts_with('\\')
+                && !name
+                    .get(..10)
+                    .is_some_and(|p| p.eq_ignore_ascii_case("namespace\\"))
+        })
+        .map(|name| name.split('\\').next().unwrap_or(name));
+    let doc_names = docblock_names
+        .iter()
+        .filter(|(at, name)| {
+            (segment.body_start..end).contains(at) && !name.contains('\\') && is_class(name)
+        })
+        .map(|(_, name)| *name);
+    let mut out: Vec<String> = Vec::new();
+    for name in code_names.chain(doc_names) {
+        let lower = name.to_ascii_lowercase();
+        if is_non_class_type(&lower) || !bound.insert(lower) {
+            continue;
+        }
+        out.push(name.to_string());
+    }
+    out.sort_by_key(|n| n.to_ascii_lowercase());
+    out
+}
+
+const NON_CLASS_TYPES: &[&str] = &[
+    "array", "bool", "boolean", "callable", "double", "false", "float", "int", "integer",
+    "iterable", "list", "mixed", "never", "null", "numeric", "object", "parent", "resource",
+    "scalar", "self", "static", "string", "true", "void",
+];
+
+fn is_non_class_type(lower: &str) -> bool {
+    NON_CLASS_TYPES.contains(&lower)
+}
+
+const DOCBLOCK_TYPE_TAGS: &[&str] = &[
+    "var",
+    "param",
+    "return",
+    "throws",
+    "property",
+    "property-read",
+    "property-write",
+    "mixin",
+    "extends",
+    "implements",
+    "use",
+    "template-extends",
+    "template-implements",
+    "template-use",
+];
+
+/// Class-like names in the type of each type-bearing docblock tag in `source`,
+/// with their byte offsets, in source spelling (`Foo`, `Sub\Foo`, `\Foo`).
+fn docblock_type_names(source: &str) -> Vec<(u32, &str)> {
+    let mut out = Vec::new();
+    let mut from = 0;
+    while let Some(open) = source[from..].find("/**") {
+        let start = from + open + 3;
+        let end = source[start..]
+            .find("*/")
+            .map_or(source.len(), |i| start + i);
+        let mut at = start;
+        while let Some(i) = source[at..end].find('@') {
+            let tag_start = at + i + 1;
+            let tag_len = source[tag_start..end]
+                .find(|c: char| !(c.is_ascii_alphanumeric() || c == '-'))
+                .unwrap_or(end - tag_start);
+            let tag = &source[tag_start..tag_start + tag_len];
+            let tag = tag
+                .strip_prefix("phpstan-")
+                .or_else(|| tag.strip_prefix("psalm-"))
+                .unwrap_or(tag);
+            at = tag_start + tag_len;
+            if DOCBLOCK_TYPE_TAGS.contains(&tag) {
+                at = type_names_at(source, at, end, &mut out);
+            }
+        }
+        from = end;
+    }
+    out
+}
+
+/// Scans the type expression after a tag at `from`, up to whitespace outside
+/// brackets; returns where it ends.
+fn type_names_at<'s>(
+    source: &'s str,
+    from: usize,
+    end: usize,
+    out: &mut Vec<(u32, &'s str)>,
+) -> usize {
+    let bytes = source.as_bytes();
+    let mut i = from;
+    while i < end && matches!(bytes[i], b' ' | b'\t') {
+        i += 1;
+    }
+    let (mut depth, mut quote) = (0u32, None);
+    while i < end {
+        let b = bytes[i];
+        if let Some(q) = quote {
+            quote = (b != q).then_some(q);
+            i += 1;
+            continue;
+        }
+        match b {
+            b'\'' | b'"' => quote = Some(b),
+            b'<' | b'(' | b'{' | b'[' => depth += 1,
+            b'>' | b')' | b'}' | b']' => depth = depth.saturating_sub(1),
+            b if b.is_ascii_whitespace() && depth == 0 => break,
+            b if b.is_ascii_alphabetic() || b == b'_' || b == b'\\' => {
+                let start = i;
+                while i < end
+                    && (bytes[i].is_ascii_alphanumeric() || matches!(bytes[i], b'_' | b'\\' | b'-'))
+                {
+                    i += 1;
+                }
+                let name = &source[start..i];
+                let after_colon = bytes.get(i) == Some(&b':') && bytes.get(i + 1) != Some(&b':');
+                let member = start >= 2 && &source[start - 2..start] == "::";
+                let variable = start >= 1 && bytes[start - 1] == b'$';
+                if !name.contains('-') && !after_colon && !member && !variable {
+                    out.push((start as u32, name));
+                }
+                continue;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    i
+}
+
+fn namespace_edits_in_source(doc: &ParsedDoc, old_fqn: &str, new_fqn: &str) -> Vec<TextEdit> {
     let (old_ns, new_ns) = (namespace_of(old_fqn), namespace_of(new_fqn));
     if old_ns.eq_ignore_ascii_case(new_ns) {
         return Vec::new();
