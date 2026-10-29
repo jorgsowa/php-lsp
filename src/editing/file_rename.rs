@@ -2,7 +2,7 @@ use php_ast::{NamespaceBody, Span, Stmt, StmtKind, UseKind};
 use tower_lsp_server::ls_types::{Position, Range, TextEdit};
 
 use crate::document::ast::ParsedDoc;
-use crate::lang::file_header::{namespace_at, use_insert_line};
+use crate::lang::file_header::{namespace_at, use_insertion};
 
 /// Find every `use` item in `stmts` whose FQN (leading `\` ignored) equals
 /// `target`, restricted to `use ClassName` statements (`UseKind::Normal`) —
@@ -235,15 +235,8 @@ pub fn same_namespace_import_edit(
     if !imports.is_empty() {
         return None;
     }
-    let pos = Position {
-        line: use_insert_line(doc, at, |_| true),
-        character: 0,
-    };
-    Some(TextEdit {
-        range: Range {
-            start: pos,
-            end: pos,
-        },
-        new_text: format!("use {};\n", new_fqn.trim_start_matches('\\')),
-    })
+    Some(
+        use_insertion(doc, at, |_| true)
+            .edit(&format!("use {};", new_fqn.trim_start_matches('\\'))),
+    )
 }

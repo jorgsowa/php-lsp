@@ -1,10 +1,10 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use tower_lsp_server::ls_types::{CompletionItem, CompletionItemKind, Position, Range, TextEdit};
+use tower_lsp_server::ls_types::{CompletionItem, CompletionItemKind, Position};
 
 use super::namespace::{
-    collect_attribute_classes, current_namespace, infer_attribute_target, use_insert_position,
+    class_use_insertion, collect_attribute_classes, current_namespace, infer_attribute_target,
 };
 use crate::document::ast::ParsedDoc;
 
@@ -57,14 +57,9 @@ pub(super) fn attribute_completions(
             let is_global = !entry.fqn.contains('\\');
             let already = imports.contains_key(&entry.label);
             let additional_text_edits = if !in_same_ns && !is_global && !already {
-                let insert_pos = use_insert_position(doc, position);
-                Some(vec![TextEdit {
-                    range: Range {
-                        start: insert_pos,
-                        end: insert_pos,
-                    },
-                    new_text: format!("use {};\n", entry.fqn),
-                }])
+                Some(vec![
+                    class_use_insertion(doc, position).edit(&format!("use {};", entry.fqn)),
+                ])
             } else {
                 None
             };

@@ -2,7 +2,7 @@ use php_ast::{ExprKind, NamespaceBody, Stmt, StmtKind};
 use tower_lsp_server::ls_types::{CompletionItem, CompletionItemKind, Position};
 
 use crate::document::ast::ParsedDoc;
-use crate::lang::file_header::{namespace_at, use_insert_line};
+use crate::lang::file_header::{UseInsertion, namespace_at, use_insertion};
 
 /// An `#[\Attribute]`-annotated class with its resolved target bitmask.
 ///
@@ -255,12 +255,9 @@ pub(super) fn collect_classes_with_ns(
     }
 }
 
-/// Where a new `use` statement goes for code at `at`.
-pub(super) fn use_insert_position(doc: &ParsedDoc, at: Position) -> Position {
-    Position {
-        line: use_insert_line(doc, at, |stmt| !stmt.starts_with("use function ")),
-        character: 0,
-    }
+/// Where a new class `use` statement goes for code at `at`.
+pub(super) fn class_use_insertion(doc: &ParsedDoc, at: Position) -> UseInsertion {
+    use_insertion(doc, at, |stmt| !stmt.starts_with("use function "))
 }
 
 /// The namespace that code at `at` belongs to, if any.

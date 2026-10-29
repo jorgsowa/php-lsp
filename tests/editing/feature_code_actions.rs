@@ -1150,7 +1150,7 @@ async fn code_action_quickfix_undefined_class_inserts_after_brace_on_next_line()
     let out = canonicalize_workspace_edit(&action["edit"], &server.uri(""));
     expect![[r#"
         // main.php
-        3:0-3:0 → "use App\\Service\\Widget;\n""#]]
+        3:0-3:0 → "    use App\\Service\\Widget;\n""#]]
     .assert_eq(&out);
 }
 

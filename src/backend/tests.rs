@@ -2,8 +2,9 @@ use super::helpers::{
     defer_actions, has_indexed_extension, indexed_file_op, position_to_byte_offset_strict,
 };
 use super::*;
-use crate::editing::use_import::{build_use_import_edit, find_use_insert_line};
+use crate::editing::use_import::build_use_import_edit;
 use crate::lang::config::{DiagnosticsConfig, FeaturesConfig, MAX_INDEXED_FILES};
+use crate::lang::file_header::use_insertion;
 use std::sync::Arc;
 use tower_lsp_server::ls_types::{Position, Range, Uri};
 
@@ -271,12 +272,12 @@ fn lsp_config_parses_features_section() {
     assert!(cfg.features.hover);
 }
 
-// find_use_insert_line tests
+// use_insertion tests
 #[test]
 fn find_use_insert_line_after_php_open_tag() {
     let src = "<?php\nfunction foo() {}";
     assert_eq!(
-        find_use_insert_line(&ParsedDoc::parse(src), Position::new(0, 0)),
+        use_insertion(&ParsedDoc::parse(src), Position::new(0, 0), |_| true).line,
         1
     );
 }
@@ -285,7 +286,7 @@ fn find_use_insert_line_after_php_open_tag() {
 fn find_use_insert_line_after_existing_use() {
     let src = "<?php\nuse Foo\\Bar;\nuse Baz\\Qux;\nclass Impl {}";
     assert_eq!(
-        find_use_insert_line(&ParsedDoc::parse(src), Position::new(0, 0)),
+        use_insertion(&ParsedDoc::parse(src), Position::new(0, 0), |_| true).line,
         3
     );
 }
@@ -294,7 +295,7 @@ fn find_use_insert_line_after_existing_use() {
 fn find_use_insert_line_after_namespace() {
     let src = "<?php\nnamespace App\\Services;\nclass Service {}";
     assert_eq!(
-        find_use_insert_line(&ParsedDoc::parse(src), Position::new(0, 0)),
+        use_insertion(&ParsedDoc::parse(src), Position::new(0, 0), |_| true).line,
         2
     );
 }
@@ -303,7 +304,7 @@ fn find_use_insert_line_after_namespace() {
 fn find_use_insert_line_after_namespace_and_use() {
     let src = "<?php\nnamespace App;\nuse Foo\\Bar;\nclass Impl {}";
     assert_eq!(
-        find_use_insert_line(&ParsedDoc::parse(src), Position::new(0, 0)),
+        use_insertion(&ParsedDoc::parse(src), Position::new(0, 0), |_| true).line,
         3
     );
 }
@@ -311,7 +312,7 @@ fn find_use_insert_line_after_namespace_and_use() {
 #[test]
 fn find_use_insert_line_empty_file() {
     assert_eq!(
-        find_use_insert_line(&ParsedDoc::parse(""), Position::new(0, 0)),
+        use_insertion(&ParsedDoc::parse(""), Position::new(0, 0), |_| true).line,
         0
     );
 }

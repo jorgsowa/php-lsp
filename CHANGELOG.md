@@ -11,6 +11,7 @@ All notable changes to php-lsp are documented here.
 - **`config('database')` resolves**: a key naming a whole Laravel config file now has go-to-definition, hover and completion, pointing at the file's `return`. Only keys inside the returned array were indexed.
 - **Laravel files that aren't valid UTF-8 are read**: config, `.env`, route, middleware, translation and `composer.json` files in Latin-1 or another 8-bit encoding were skipped by the Laravel index, detection and hover. Invalid bytes are now replaced with U+FFFD.
 - **`autoload.files` entries are indexed once**: an entry like `./helpers.php`, or one the directory walk also reaches, was parsed twice and listed under two URIs.
+- **Added `use` statements are indented in braced namespaces**: imports added by completion, quick-fixes and file moves inside `namespace X { }` take the indentation of the namespace body instead of starting at column 0.
 
 ## [0.29.0] — 2026-10-28
 

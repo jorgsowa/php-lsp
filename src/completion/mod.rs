@@ -21,8 +21,8 @@ use member::{
 
 mod namespace;
 use namespace::{
-    collect_classes_with_ns, collect_fqns_with_prefix, current_namespace, typed_prefix,
-    use_completion_prefix, use_insert_position,
+    class_use_insertion, collect_classes_with_ns, collect_fqns_with_prefix, current_namespace,
+    typed_prefix, use_completion_prefix,
 };
 
 mod symbols;
@@ -35,7 +35,7 @@ pub use symbols::{
 use std::sync::Arc;
 
 use tower_lsp_server::ls_types::{
-    CompletionItem, CompletionItemKind, InsertTextFormat, Position, Range, TextEdit, Uri,
+    CompletionItem, CompletionItemKind, InsertTextFormat, Position, Uri,
 };
 
 use crate::document::ast::ParsedDoc;
@@ -901,7 +901,7 @@ pub fn filtered_completions_at(
             // `source`) — computed once instead of per candidate, since a single
             // request may build up to dozens of class items (open-doc classes
             // plus up to `WORKSPACE_CLASS_SEARCH_LIMIT` workspace-index matches).
-            let use_pos = source.map(|_| use_insert_position(doc, at));
+            let use_insertion = source.map(|_| class_use_insertion(doc, at));
 
             // Builds a class completion item. A class not yet reachable by its
             // short name gets a `use` insertion edit, or is inserted fully
@@ -912,7 +912,7 @@ pub fn filtered_completions_at(
                                    fqn: &str| {
                 let mut insert_text = None;
                 let mut additional_text_edits = None;
-                if let Some(pos) = use_pos {
+                if let Some(insertion) = &use_insertion {
                     let in_same_ns = !cur_ns.is_empty() && fqn == format!("{}\\{}", cur_ns, label);
                     let is_global = !fqn.contains('\\');
                     let imported_as = imports
@@ -925,13 +925,8 @@ pub fn filtered_completions_at(
                         None if in_same_ns || (is_global && cur_ns.is_empty()) => {}
                         None if is_global => insert_text = Some(format!("\\{fqn}")),
                         None => {
-                            additional_text_edits = Some(vec![TextEdit {
-                                range: Range {
-                                    start: pos,
-                                    end: pos,
-                                },
-                                new_text: format!("use {};\n", fqn),
-                            }])
+                            additional_text_edits =
+                                Some(vec![insertion.edit(&format!("use {fqn};"))])
                         }
                     }
                 }

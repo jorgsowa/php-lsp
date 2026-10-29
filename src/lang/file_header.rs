@@ -2,7 +2,7 @@
 //! `<?php`, `declare`, `namespace` and import `use` statements live.
 
 use php_ast::{NamespaceBody, NamespaceDecl, Stmt, StmtKind};
-use tower_lsp_server::ls_types::Position;
+use tower_lsp_server::ls_types::{Position, Range, TextEdit};
 
 use crate::document::ast::ParsedDoc;
 
@@ -122,14 +122,35 @@ pub(crate) fn namespace_at<'a, 'arena, 'src>(
     }
 }
 
-/// The line on which a new `use` goes for code at `at`: after the last `use` of
-/// its namespace accepted by `is_anchor_use`, else after the namespace opening,
-/// or after `<?php` and `declare` in a file without one.
-pub(crate) fn use_insert_line(
+/// Where a new `use` statement goes, and the indentation it takes there.
+pub(crate) struct UseInsertion {
+    pub line: u32,
+    pub indent: String,
+}
+
+impl UseInsertion {
+    pub fn position(&self) -> Position {
+        Position::new(self.line, 0)
+    }
+
+    /// Inserts `stmt` (e.g. `use Foo;`) as its own line.
+    pub fn edit(&self, stmt: &str) -> TextEdit {
+        let pos = self.position();
+        TextEdit {
+            range: Range::new(pos, pos),
+            new_text: format!("{}{stmt}\n", self.indent),
+        }
+    }
+}
+
+/// Where a new `use` goes for code at `at`: after the last `use` of its
+/// namespace accepted by `is_anchor_use`, else after the namespace opening, or
+/// after `<?php` and `declare` in a file without one.
+pub(crate) fn use_insertion(
     doc: &ParsedDoc,
     at: Position,
     is_anchor_use: impl Fn(&str) -> bool,
-) -> u32 {
+) -> UseInsertion {
     let source = doc.source();
     let view = doc.view();
     let line_after = |offset: u32| view.position_of(offset).line + 1;
@@ -141,6 +162,13 @@ pub(crate) fn use_insert_line(
             .find("<?php")
             .map_or(0, |open| line_after(open as u32))
     };
+    let braced = segment
+        .decl
+        .is_some_and(|ns| matches!(ns.body, NamespaceBody::Braced(_)));
+    let mut indent = match segment.stmts.first() {
+        Some(first) if braced => line_indent(source, first.span.start),
+        _ => "",
+    };
     for stmt in segment.stmts {
         let anchors = match stmt.kind {
             StmtKind::Use(_) => {
@@ -149,11 +177,28 @@ pub(crate) fn use_insert_line(
             StmtKind::Declare(_) => segment.decl.is_none(),
             _ => false,
         };
-        if anchors {
-            line = line.max(line_after(stmt.span.end));
+        if anchors && line_after(stmt.span.end) >= line {
+            line = line_after(stmt.span.end);
+            if braced {
+                indent = line_indent(source, stmt.span.start);
+            }
         }
     }
-    line
+    UseInsertion {
+        line,
+        indent: indent.to_string(),
+    }
+}
+
+/// The leading whitespace of the line holding `offset`, if only whitespace precedes it.
+fn line_indent(source: &str, offset: u32) -> &str {
+    let before = &source[..offset as usize];
+    let line = &before[before.rfind('\n').map_or(0, |i| i + 1)..];
+    if line.trim_start_matches([' ', '\t']).is_empty() {
+        line
+    } else {
+        ""
+    }
 }
 
 fn is_keyword_stmt(trimmed: &str, keyword: &str) -> bool {
@@ -168,7 +213,7 @@ mod tests {
 
     fn insert_line(src: &str, cursor_line: u32) -> u32 {
         let doc = ParsedDoc::parse(src);
-        use_insert_line(&doc, Position::new(cursor_line, 0), |_| true)
+        use_insertion(&doc, Position::new(cursor_line, 0), |_| true).line
     }
 
     #[test]

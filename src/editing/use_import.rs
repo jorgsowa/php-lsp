@@ -4,10 +4,10 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use tower_lsp_server::ls_types::{Position, Range, TextEdit, Uri, WorkspaceEdit};
+use tower_lsp_server::ls_types::{Position, Uri, WorkspaceEdit};
 
 use crate::document::ast::ParsedDoc;
-use crate::lang::file_header::use_insert_line;
+use crate::lang::file_header::use_insertion;
 use crate::types::resolve::{Declaration, resolve_declaration};
 
 pub(crate) fn find_fqn_for_function(
@@ -55,19 +55,7 @@ pub(crate) fn build_use_import_edit(
     uri: &Uri,
     fqn: &str,
 ) -> WorkspaceEdit {
-    let insert_line = find_use_insert_line(doc, at);
-    let insert_text = format!("use {fqn};\n");
-    let pos = Position {
-        line: insert_line,
-        character: 0,
-    };
-    let edit = TextEdit {
-        range: Range {
-            start: pos,
-            end: pos,
-        },
-        new_text: insert_text,
-    };
+    let edit = use_insertion(doc, at, |_| true).edit(&format!("use {fqn};"));
     let mut changes = HashMap::new();
     changes.insert(uri.clone(), vec![edit]);
     WorkspaceEdit {
@@ -83,27 +71,11 @@ pub(crate) fn build_use_function_import_edit(
     uri: &Uri,
     fqn: &str,
 ) -> WorkspaceEdit {
-    let insert_line = find_use_insert_line(doc, at);
-    let insert_text = format!("use function {fqn};\n");
-    let pos = Position {
-        line: insert_line,
-        character: 0,
-    };
-    let edit = TextEdit {
-        range: Range {
-            start: pos,
-            end: pos,
-        },
-        new_text: insert_text,
-    };
+    let edit = use_insertion(doc, at, |_| true).edit(&format!("use function {fqn};"));
     let mut changes = HashMap::new();
     changes.insert(uri.clone(), vec![edit]);
     WorkspaceEdit {
         changes: Some(changes),
         ..Default::default()
     }
-}
-
-pub(crate) fn find_use_insert_line(doc: &ParsedDoc, at: Position) -> u32 {
-    use_insert_line(doc, at, |_| true)
 }
