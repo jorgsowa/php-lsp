@@ -10,7 +10,7 @@ pub(super) fn is_laravel_project(root: &Path) -> bool {
     if root.join("artisan").is_file() {
         return true;
     }
-    let Ok(text) = std::fs::read_to_string(root.join("composer.json")) else {
+    let Ok(text) = std::fs::read(root.join("composer.json")).map(crate::text::decode_source) else {
         return false;
     };
     let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) else {

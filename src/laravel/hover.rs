@@ -42,7 +42,7 @@ pub(crate) fn key_hover(
 /// through every index.
 fn defining_line(location: &Location) -> Option<String> {
     let path = location.uri.to_file_path()?;
-    let text = std::fs::read_to_string(path).ok()?;
+    let text = std::fs::read(path).map(crate::text::decode_source).ok()?;
     text.lines()
         .nth(location.range.start.line as usize)
         .map(str::to_string)

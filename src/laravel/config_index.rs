@@ -49,7 +49,7 @@ impl ConfigIndex {
             let Some(prefix) = dotted_prefix(&config_dir, &path) else {
                 continue;
             };
-            let Ok(text) = std::fs::read_to_string(&path) else {
+            let Ok(text) = std::fs::read(&path).map(crate::text::decode_source) else {
                 continue;
             };
             let Some(uri) = Uri::from_file_path(&path) else {
@@ -223,6 +223,20 @@ mod tests {
         let loc = idx.get("services.stripe.key").unwrap();
         assert!(loc.uri.as_str().ends_with("config/services/stripe.php"));
         assert!(idx.get("services.stripe").is_some());
+    }
+
+    #[test]
+    fn indexes_config_file_that_is_not_utf8() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("config")).unwrap();
+        std::fs::write(
+            tmp.path().join("config").join("app.php"),
+            b"<?php\n// caf\xe9\nreturn [\n    'name' => 'Caf\xe9',\n];\n",
+        )
+        .unwrap();
+        let idx = ConfigIndex::load(tmp.path());
+        let loc = idx.get("app.name").unwrap();
+        assert_eq!((loc.range.start.line, loc.range.start.character), (3, 5));
     }
 
     #[test]

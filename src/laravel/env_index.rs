@@ -38,7 +38,7 @@ impl EnvIndex {
         let mut vars = HashMap::new();
         for filename in [".env", ".env.example"] {
             let path = root.join(filename);
-            let Ok(text) = std::fs::read_to_string(&path) else {
+            let Ok(text) = std::fs::read(&path).map(crate::text::decode_source) else {
                 continue;
             };
             let Some(uri) = Uri::from_file_path(&path) else {
@@ -215,6 +215,19 @@ mod tests {
                 .as_str()
                 .ends_with(".env.example")
         );
+    }
+
+    #[test]
+    fn load_env_file_that_is_not_utf8() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(
+            tmp.path().join(".env"),
+            b"APP_NAME=Caf\xe9\nAPP_ENV=local\n",
+        )
+        .unwrap();
+        let idx = EnvIndex::load(tmp.path());
+        assert!(idx.get("APP_NAME").is_some());
+        assert_eq!(idx.get("APP_ENV").unwrap().range.start.line, 1);
     }
 
     #[test]

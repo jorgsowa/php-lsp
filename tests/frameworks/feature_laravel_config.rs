@@ -69,3 +69,25 @@ async fn config_call_completion_lists_dotted_keys_by_prefix() {
         Property    database.connections.mysql.host"#]]
     .assert_eq(&out);
 }
+
+#[tokio::test]
+async fn config_call_goto_definition_resolves_key_in_non_utf8_file() {
+    let workspace = tempfile::tempdir().expect("workspace tempdir");
+    std::fs::write(workspace.path().join("artisan"), "#!/usr/bin/env php\n").unwrap();
+    std::fs::create_dir_all(workspace.path().join("config")).unwrap();
+    std::fs::write(
+        workspace.path().join("config").join("app.php"),
+        b"<?php\n// Caf\xe9\nreturn [\n    'name' => 'Caf\xe9',\n];\n",
+    )
+    .unwrap();
+    let php = "<?php\n$name = config('app.name');\n";
+    std::fs::write(workspace.path().join("app.php"), php).unwrap();
+
+    let mut s = TestServer::with_root(workspace.path()).await;
+    s.wait_for_index_ready().await;
+    s.open("app.php", php).await;
+
+    let resp = s.definition("app.php", 1, 23).await;
+    let out = render_locations(&resp, &s.uri(""));
+    expect!["config/app.php:3:5-3:9"].assert_eq(&out);
+}

@@ -96,7 +96,7 @@ fn load_locale_php_files(locale_dir: &Path, out: &mut HashMap<String, Location>)
         let Some(group) = slash_prefix(locale_dir, &path) else {
             continue;
         };
-        let Ok(text) = std::fs::read_to_string(&path) else {
+        let Ok(text) = std::fs::read(&path).map(crate::text::decode_source) else {
             continue;
         };
         let Some(uri) = Uri::from_file_path(&path) else {
@@ -173,7 +173,7 @@ fn load_locale_json_file(path: &Path, out: &mut HashMap<String, Location>) {
 /// `mix_index`/`vite_index`, which index a differently-shaped JSON manifest
 /// the same way.
 pub(super) fn json_object_key_locations(path: &Path) -> Vec<(String, Location)> {
-    let Ok(text) = std::fs::read_to_string(path) else {
+    let Ok(text) = std::fs::read(path).map(crate::text::decode_source) else {
         return Vec::new();
     };
     if !serde_json::from_str::<serde_json::Value>(&text).is_ok_and(|v| v.is_object()) {
@@ -312,7 +312,7 @@ fn missing_translation_group_key_action(root: &Path, key: &str) -> Option<CodeAc
         return None;
     }
     let path = group_php_file_path(root, group)?;
-    let text = std::fs::read_to_string(&path).ok()?;
+    let text = std::fs::read(&path).map(crate::text::decode_source).ok()?;
     let uri = Uri::from_file_path(&path)?;
     let doc = parse_document_no_diags(&text);
     let sv = doc.view();
@@ -370,7 +370,7 @@ pub(crate) fn missing_translation_json_key_action(
         return missing_translation_group_key_action(root, key);
     }
     let path = target_translation_json(root)?;
-    let text = std::fs::read_to_string(&path).ok()?;
+    let text = std::fs::read(&path).map(crate::text::decode_source).ok()?;
     let json: serde_json::Value = serde_json::from_str(&text).ok()?;
     let map = json.as_object()?;
     let uri = Uri::from_file_path(&path)?;

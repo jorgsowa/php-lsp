@@ -52,7 +52,7 @@ impl RouteIndex {
     pub(super) fn load(root: &Path) -> Self {
         let mut routes = HashMap::new();
         for path in super::fs_walk::php_files_recursive(&root.join("routes")) {
-            let Ok(text) = std::fs::read_to_string(&path) else {
+            let Ok(text) = std::fs::read(&path).map(crate::text::decode_source) else {
                 continue;
             };
             let Some(uri) = Uri::from_file_path(&path) else {

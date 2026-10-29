@@ -69,7 +69,7 @@ impl MiddlewareIndex {
 
 fn load_bootstrap_app(root: &Path, out: &mut HashMap<String, Location>) {
     let path = root.join("bootstrap").join("app.php");
-    let Ok(text) = std::fs::read_to_string(&path) else {
+    let Ok(text) = std::fs::read(&path).map(crate::text::decode_source) else {
         return;
     };
     let Some(uri) = Uri::from_file_path(&path) else {
@@ -130,7 +130,7 @@ impl<'arena, 'src> Visitor<'arena, 'src> for AliasCallVisitor<'_> {
 
 fn load_http_kernel(root: &Path, out: &mut HashMap<String, Location>) {
     let path = root.join("app").join("Http").join("Kernel.php");
-    let Ok(text) = std::fs::read_to_string(&path) else {
+    let Ok(text) = std::fs::read(&path).map(crate::text::decode_source) else {
         return;
     };
     let Some(uri) = Uri::from_file_path(&path) else {
