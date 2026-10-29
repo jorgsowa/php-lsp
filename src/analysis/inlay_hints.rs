@@ -586,7 +586,7 @@ fn callable_signature_from_name(
                     .return_type
                     .as_deref()
                     .or(m.inferred_return_type.as_deref())
-                    .map(ToString::to_string),
+                    .map(bound_class_display),
                 tooltip: Some(TooltipSymbol {
                     kind: "method",
                     name: m.name.to_string(),
@@ -613,6 +613,23 @@ fn callable_signature_from_name(
         }
         _ => None,
     }
+}
+
+/// Displays `static`/`self` as the class they're bound to, matching hover; mir's
+/// `parent` carries the child class, so it stays as is.
+fn bound_class_display(ty: &mir_analyzer::Type) -> String {
+    let mut ty = ty.clone();
+    for atomic in ty.types.iter_mut() {
+        if let mir_types::Atomic::TStaticObject { fqcn } | mir_types::Atomic::TSelf { fqcn } =
+            atomic
+        {
+            *atomic = mir_types::Atomic::TNamedObject {
+                fqcn: *fqcn,
+                type_params: Default::default(),
+            };
+        }
+    }
+    ty.to_string()
 }
 
 fn declared_param_names(params: &[mir_analyzer::DeclaredParam]) -> Vec<String> {
