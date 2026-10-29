@@ -74,6 +74,38 @@ impl Backend {
             {
                 return Ok(None);
             }
+            // A named argument's label names a parameter of the callee, not a symbol of its own.
+            let cursor_offset = doc.view().byte_of_position(position);
+            if let Some((callee_offset, label)) =
+                crate::navigation::definition::named_arg_at(&doc, cursor_offset)
+            {
+                let docs = Arc::clone(&self.docs);
+                let uri_task = uri.clone();
+                let located = self
+                    .blocking_gated(super::super::debug_gate::GATE_GOTO_DEFINITION, move || {
+                        let callee = crate::navigation::mir_definition::mir_definition(
+                            &docs,
+                            &uri_task,
+                            callee_offset,
+                        )
+                        .ok()
+                        .flatten()?;
+                        let decl_doc = docs.get_doc_salsa(&callee.uri)?;
+                        let decl_offset = decl_doc.view().byte_of_position(callee.range.start);
+                        let range = crate::navigation::definition::param_range_of_declaration(
+                            &decl_doc,
+                            decl_offset,
+                            &label,
+                        )?;
+                        Some(Location {
+                            uri: callee.uri,
+                            range,
+                        })
+                    })
+                    .await
+                    .flatten();
+                return Ok(located.map(GotoDefinitionResponse::Scalar));
+            }
             if let Some(offset) = crate::text::word_range_at(&source, position)
                 .map(|range| doc.view().byte_of_position(range.start))
             {

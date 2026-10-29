@@ -1,6 +1,11 @@
+use std::ops::ControlFlow;
 use std::sync::Arc;
 
-use php_ast::Stmt;
+use php_ast::visitor::{Visitor, walk_expr, walk_stmt};
+use php_ast::{
+    ClassMember, ClassMemberKind, EnumMemberKind, Expr, ExprKind, MethodDecl, Param, Span, Stmt,
+    StmtKind,
+};
 use tower_lsp_server::ls_types::{Location, Position, Range, Uri};
 
 use super::walk::collect_var_refs_in_scope;
@@ -107,4 +112,135 @@ fn resolve_definition_range(
 
 fn definition_name_range(sv: SourceView<'_>, decl: &Declaration<'_>) -> Range {
     sv.name_range_in_span(decl.name(), decl.span())
+}
+
+/// The callee name offset and label of the named argument whose label contains `offset`.
+pub fn named_arg_at(doc: &ParsedDoc, offset: u32) -> Option<(u32, String)> {
+    struct Finder {
+        offset: u32,
+        found: Option<(u32, String)>,
+    }
+
+    impl<'arena, 'src> Visitor<'arena, 'src> for Finder {
+        fn visit_expr(&mut self, expr: &Expr<'arena, 'src>) -> ControlFlow<()> {
+            let call = match &expr.kind {
+                ExprKind::FunctionCall(c) => Some((c.name.span, &c.args)),
+                ExprKind::MethodCall(m) | ExprKind::NullsafeMethodCall(m) => {
+                    Some((m.method.span, &m.args))
+                }
+                ExprKind::StaticMethodCall(s) => Some((s.method.span, &s.args)),
+                ExprKind::New(n) => Some((n.class.span, &n.args)),
+                _ => None,
+            };
+            if let Some((callee, args)) = call
+                && let Some(label) = args.iter().filter_map(|a| a.name.as_ref()).find(|n| {
+                    let span = n.span();
+                    span.start <= self.offset && self.offset < span.end
+                })
+            {
+                self.found = Some((callee.start, label.to_string_repr().into_owned()));
+                return ControlFlow::Break(());
+            }
+            walk_expr(self, expr)
+        }
+    }
+
+    let mut finder = Finder {
+        offset,
+        found: None,
+    };
+    let _ = finder.visit_program(doc.program());
+    finder.found
+}
+
+/// The `$label` parameter of the callable whose name sits at `decl_offset`; a class
+/// name there means its constructor.
+pub fn param_range_of_declaration(doc: &ParsedDoc, decl_offset: u32, label: &str) -> Option<Range> {
+    struct Finder<'a> {
+        offset: u32,
+        label: &'a str,
+        found: Option<Span>,
+    }
+
+    impl Finder<'_> {
+        fn contains(&self, span: Span) -> bool {
+            span.start <= self.offset && self.offset < span.end
+        }
+
+        fn take_param(&mut self, params: &[Param<'_, '_>]) -> ControlFlow<()> {
+            self.found = params.iter().find(|p| p.name == self.label).map(|p| p.span);
+            ControlFlow::Break(())
+        }
+
+        fn members(&mut self, methods: &[(&MethodDecl<'_, '_>, Span)]) -> ControlFlow<()> {
+            let target = methods
+                .iter()
+                .find(|(_, span)| self.contains(*span))
+                .or_else(|| {
+                    methods
+                        .iter()
+                        .find(|(m, _)| m.name.as_str() == Some("__construct"))
+                });
+            match target {
+                Some((m, _)) => self.take_param(&m.params),
+                None => ControlFlow::Break(()),
+            }
+        }
+    }
+
+    fn class_methods<'m, 'arena, 'src>(
+        members: &'m [ClassMember<'arena, 'src>],
+    ) -> Vec<(&'m MethodDecl<'arena, 'src>, Span)> {
+        members
+            .iter()
+            .filter_map(|m| match &m.kind {
+                ClassMemberKind::Method(decl) => Some((decl, m.span)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    impl<'arena, 'src> Visitor<'arena, 'src> for Finder<'_> {
+        fn visit_stmt(&mut self, stmt: &Stmt<'arena, 'src>) -> ControlFlow<()> {
+            if !self.contains(stmt.span) {
+                return ControlFlow::Continue(());
+            }
+            match &stmt.kind {
+                StmtKind::Function(f) if !f.body.stmts.iter().any(|s| self.contains(s.span)) => {
+                    self.take_param(&f.params)
+                }
+                StmtKind::Class(c) => self.members(&class_methods(&c.body.members)),
+                StmtKind::Interface(i) => self.members(&class_methods(&i.body.members)),
+                StmtKind::Trait(t) => self.members(&class_methods(&t.body.members)),
+                StmtKind::Enum(e) => {
+                    let methods: Vec<_> = e
+                        .body
+                        .members
+                        .iter()
+                        .filter_map(|m| match &m.kind {
+                            EnumMemberKind::Method(decl) => Some((decl, m.span)),
+                            _ => None,
+                        })
+                        .collect();
+                    self.members(&methods)
+                }
+                _ => walk_stmt(self, stmt),
+            }
+        }
+    }
+
+    let mut finder = Finder {
+        offset: decl_offset,
+        label,
+        found: None,
+    };
+    let _ = finder.visit_program(doc.program());
+    let span = finder.found?;
+    let name = format!("${label}");
+    let start =
+        crate::document::ast::str_offset_in_range(doc.source(), span, &name).unwrap_or(span.start);
+    Some(
+        doc.view()
+            .range_of(Span::new(start, start + name.len() as u32)),
+    )
 }
