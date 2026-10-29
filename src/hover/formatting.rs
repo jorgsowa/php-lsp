@@ -44,11 +44,11 @@ pub(crate) fn format_params(params: &[Param<'_, '_>]) -> String {
         .iter()
         .map(|p| {
             let mut s = String::new();
-            if p.by_ref {
-                s.push('&');
-            }
             if let Some(t) = &p.type_hint {
                 s.push_str(&format!("{} ", format_type_hint(t)));
+            }
+            if p.by_ref {
+                s.push('&');
             }
             if p.variadic {
                 s.push_str("...");

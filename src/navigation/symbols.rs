@@ -548,14 +548,14 @@ fn format_fn_signature(
         .filter(|p| !p.name.is_error())
         .map(|p| {
             let mut s = String::new();
+            if let Some(t) = &p.type_hint {
+                s.push_str(&format!("{} ", format_type_hint(t)));
+            }
             if p.by_ref {
                 s.push('&');
             }
             if p.variadic {
                 s.push_str("...");
-            }
-            if let Some(t) = &p.type_hint {
-                s.push_str(&format!("{} ", format_type_hint(t)));
             }
             s.push_str(&format!("${}", p.name));
             s
