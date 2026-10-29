@@ -6,7 +6,7 @@ All notable changes to php-lsp are documented here.
 
 ### Fixed
 
-- **Moving a class file updates its namespace**: `workspace/willRenameFiles` rewrites the moved file's `namespace` line (adding or removing it for the global namespace) and adds a `use` to callers that referenced the class unqualified from its old namespace. The moved file imports the classes it used unqualified from its old namespace, and qualified references (`\App\Old\Foo` in code and docblocks) are rewritten.
+- **Moving a class file updates its namespace**: `workspace/willRenameFiles` rewrites the moved file's `namespace` line (adding or removing it for the global namespace) and adds a `use` to callers that referenced the class unqualified from its old namespace. The moved file imports the classes it used unqualified from its old namespace, qualified references (`\App\Old\Foo` in code and docblocks) are rewritten, and group uses (`use App\Old\{Bar, Foo}`) are updated.
 - **Range formatting edge cases**: `textDocument/rangeFormatting` keeps blank lines at the end of the selection, uses the file's line endings when the selection has no line break, and keeps relative indentation in selections that mix tab and space indentation (tab-indented selections stay tab-indented).
 - **`config('database')` resolves**: a key naming a whole Laravel config file now has go-to-definition, hover and completion, pointing at the file's `return`. Only keys inside the returned array were indexed.
 - **Laravel files that aren't valid UTF-8 are read**: config, `.env`, route, middleware, translation and `composer.json` files in Latin-1 or another 8-bit encoding were skipped by the Laravel index, detection and hover. Invalid bytes are now replaced with U+FFFD.

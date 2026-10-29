@@ -292,14 +292,9 @@ async fn will_delete_files_removes_aliased_import_line() {
     .assert_eq(&snap);
 }
 
-/// Known-gap pin: group `use App\Model\{User};` lines are not rewritten by
-/// the text-level `use` editor (before or after the importer-lookup change) —
-/// note the snapshot has no line-4 edit for Grouped.php. Reference sites and
-/// the declaration are still renamed via mir's postings, so the import line
-/// is the one stale remnant. If a `4:…` edit ever appears here, the gap was
-/// closed — update the docs alongside it.
+/// A group `use App\Model\{User};` member is respelled in place.
 #[tokio::test]
-async fn will_rename_files_group_use_import_pins_known_gap() {
+async fn will_rename_files_respells_group_use_member() {
     let dir = psr4_workspace(&[
         (
             "src/Model/User.php",
@@ -321,6 +316,7 @@ async fn will_rename_files_group_use_import_pins_known_gap() {
     let snap = canonicalize_workspace_edit(&resp["result"], &server.uri(""));
     expect![[r#"
         // src/Grouped.php
+        4:15-4:19 → "Account"
         8:28-8:32 → "Account"
         10:19-10:23 → "Account"
 

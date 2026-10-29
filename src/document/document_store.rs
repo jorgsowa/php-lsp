@@ -3072,18 +3072,34 @@ impl DocumentStore {
     /// candidate scope for `use`-line rewrites on file rename/delete: only
     /// importers can carry such a line.
     pub fn files_importing(&self, fqn: &str) -> Vec<Uri> {
-        let symbol = mir_analyzer::Name::class(fqn.trim_start_matches('\\').to_string());
+        let fqn = fqn.trim_start_matches('\\');
+        let symbol = mir_analyzer::Name::class(fqn.to_string());
         let files = self.reference_candidate_files(&symbol);
         // `use:` postings are read-only lookups; warm the candidate set first
         // so cold/uncommitted files commit their current import postings.
         let _ = self.indexed_references(&symbol, &files, false, None);
-        self.indexed_use_imports(&symbol, &files)
+        let mut importers: std::collections::HashSet<Uri> = self
+            .indexed_use_imports(&symbol, &files)
             .unwrap_or_default()
             .into_iter()
             .filter_map(|(file, _, _, _)| file.parse::<Uri>().ok())
-            .collect::<std::collections::HashSet<_>>()
-            .into_iter()
-            .collect()
+            .collect();
+        // mir's `use:` postings miss a group-use member sharing a line with another.
+        let group_openers: Vec<String> = fqn
+            .match_indices('\\')
+            .map(|(i, _)| format!("{}\\{{", &fqn[..i]))
+            .collect();
+        let short = crate::text::fqn_short_name(fqn);
+        importers.extend(
+            self.files_mentioning_short_name(&self.workspace_file_paths(), short)
+                .iter()
+                .filter_map(|f| f.parse::<Uri>().ok())
+                .filter(|uri| {
+                    self.source_text(uri)
+                        .is_none_or(|text| group_openers.iter().any(|o| text.contains(o.as_str())))
+                }),
+        );
+        importers.into_iter().collect()
     }
 }
 
