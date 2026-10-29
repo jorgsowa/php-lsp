@@ -13,6 +13,9 @@ pub(crate) fn format_declared_params(params: &[mir_analyzer::DeclaredParam]) -> 
             if let Some(ty) = &p.ty {
                 s.push_str(&format!("{ty} "));
             }
+            if p.is_byref {
+                s.push('&');
+            }
             if p.is_variadic {
                 s.push_str("...");
             }
