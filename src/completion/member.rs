@@ -74,37 +74,84 @@ pub(super) fn all_static_members(
 /// Visibility check relative to the class the cursor sits in.
 #[derive(Clone, Copy)]
 struct Scope {
-    /// The cursor is inside some class body.
-    in_class: bool,
     /// The cursor is inside the receiver class itself.
     in_root_class: bool,
+    /// The cursor's class may see protected members of the class being read.
+    protected_visible: bool,
 }
 
 impl Scope {
-    fn new(class_name: &str, scope_class: Option<&str>) -> Self {
-        let short = |n: &str| n.rsplit('\\').next().unwrap_or(n).to_owned();
-        Self {
-            in_class: scope_class.is_some(),
-            in_root_class: scope_class
-                .is_some_and(|s| short(s).eq_ignore_ascii_case(&short(class_name))),
-        }
-    }
-
-    /// Protected members are approximated as visible from any class body.
     fn hides(self, visibility: Visibility, inherited: bool) -> bool {
         match visibility {
             Visibility::Public => false,
-            Visibility::Protected => !self.in_class,
+            Visibility::Protected => !self.protected_visible,
             Visibility::Private => inherited || !self.in_root_class,
         }
     }
+}
+
+fn short_name(name: &str) -> &str {
+    name.rsplit('\\').next().unwrap_or(name)
+}
+
+/// Lowercased short names of `name` and its parent classes, or `None` for a
+/// trait or an unknown class, whose protected access can't be decided.
+fn class_lineage(
+    name: &str,
+    doc: &ParsedDoc,
+    all: &[&ParsedDoc],
+    find_class_doc: Option<super::ClassDocLookup<'_>>,
+    session: Option<&DocumentStore>,
+    is_root: bool,
+) -> Option<Vec<String>> {
+    let mut lineage = Vec::new();
+    let mut current = Some(name.to_owned());
+    let mut first = true;
+    while let Some(name) = current.take() {
+        let short = short_name(&name).to_ascii_lowercase();
+        if lineage.contains(&short) {
+            break;
+        }
+        let class_like =
+            session.and_then(|docs| mir_class_like(docs, doc, &name, is_root && first));
+        if let Some(class_like) = class_like {
+            if first && matches!(class_like, ClassLike::Trait(_)) {
+                return None;
+            }
+            current = class_like.parent().map(|p| p.to_string());
+        } else {
+            let fast_doc = find_class_doc.and_then(|f| f(&name));
+            let defining = match fast_doc.as_deref() {
+                Some(fd) => Some((fd, members_of_class(fd, &name))).filter(|(_, m)| m.found),
+                None => all.iter().find_map(|d| {
+                    let m = members_of_class(d, &name);
+                    m.found.then_some((*d, m))
+                }),
+            };
+            let Some((d, members)) = defining else {
+                if first {
+                    return None;
+                }
+                lineage.push(short);
+                break;
+            };
+            current = members
+                .parent
+                .as_deref()
+                .map(|p| resolve_class_ref(d, short_name(&name), p));
+        }
+        lineage.push(short);
+        first = false;
+    }
+    Some(lineage)
 }
 
 /// Common class-hierarchy traversal for both instance (`->`) and static (`::`)
 /// member completion. `access` selects which subset of members to surface.
 ///
 /// Private members are offered only inside the receiver class itself, and
-/// never when inherited; protected ones only inside a class (`scope_class`).
+/// never when inherited; protected ones only inside a class (`scope_class`)
+/// that extends, or is extended by, the class declaring them.
 ///
 /// Each class is read from mir's class table when `session` knows it, else
 /// from the AST of its defining document.
@@ -118,7 +165,8 @@ fn all_members(
     scope_class: Option<&str>,
 ) -> Vec<CompletionItem> {
     let is_static = access != MemberAccess::Instance;
-    let scope = Scope::new(class_name, scope_class);
+    let in_root_class =
+        scope_class.is_some_and(|s| short_name(s).eq_ignore_ascii_case(short_name(class_name)));
     let wants_method = |name: &str, meth_is_static: bool| match access {
         MemberAccess::Instance => !meth_is_static && !name.eq_ignore_ascii_case("__construct"),
         MemberAccess::Static => meth_is_static,
@@ -127,15 +175,41 @@ fn all_members(
     let all: Vec<&ParsedDoc> = std::iter::once(doc)
         .chain(other_docs.iter().map(|d| d.as_ref()))
         .collect();
+    let scope_lineage =
+        scope_class.map(|s| class_lineage(s, doc, &all, find_class_doc, session, true));
+    // PHP checks protected access against the class a member is declared in,
+    // which for a trait member is the class using the trait.
+    let protected_visible = |owner: &str| match &scope_lineage {
+        None => false,
+        Some(None) => true,
+        Some(Some(scope_line)) => {
+            scope_line.contains(&short_name(owner).to_ascii_lowercase())
+                || class_lineage(
+                    owner,
+                    doc,
+                    &all,
+                    find_class_doc,
+                    session,
+                    owner == class_name,
+                )
+                .is_some_and(|line| line.contains(&scope_line[0]))
+        }
+    };
     let mut items = Vec::new();
     let mut seen_names: HashSet<String> = HashSet::new();
     let mut visited: HashSet<String> = HashSet::new();
-    let mut queue: Vec<(String, bool)> = vec![(class_name.to_string(), false)];
+    // (class, inherited, owner whose protected access applies)
+    let mut queue: Vec<(String, bool, String)> =
+        vec![(class_name.to_string(), false, class_name.to_string())];
     let mut is_root = true;
-    while let Some((current, inherited)) = queue.pop() {
+    while let Some((current, inherited, owner)) = queue.pop() {
         if !visited.insert(current.clone()) {
             continue;
         }
+        let scope = Scope {
+            in_root_class,
+            protected_visible: protected_visible(&owner),
+        };
         let class_like = session.and_then(|docs| mir_class_like(docs, doc, &current, is_root));
         is_root = false;
         if let Some(class_like) = class_like {
@@ -149,17 +223,27 @@ fn all_members(
                 &mut seen_names,
             );
             let own_traits = class_like.class_traits();
-            let mut next: Vec<(String, bool)> = class_like
+            let mut next: Vec<(String, bool, String)> = class_like
                 .ancestor_fqcns()
                 .into_iter()
                 .map(|a| {
                     // Private members of a class's own traits stay visible to it.
                     let via_own_trait = own_traits.contains(&a);
-                    (a.to_string(), inherited || !via_own_trait)
+                    let a_owner = if via_own_trait {
+                        owner.clone()
+                    } else {
+                        a.to_string()
+                    };
+                    (a.to_string(), inherited || !via_own_trait, a_owner)
                 })
                 .collect();
             if !is_static {
-                next.extend(class_like.mixins().iter().map(|m| (m.to_string(), true)));
+                next.extend(
+                    class_like
+                        .mixins()
+                        .iter()
+                        .map(|m| (m.to_string(), true, m.to_string())),
+                );
             }
             // `queue` is a stack: push in reverse so traits are visited before the parent.
             queue.extend(next.into_iter().rev());
@@ -259,14 +343,16 @@ fn all_members(
             }
         } else {
             for mixin in mixin_classes_of(d, short) {
-                queue.push((resolve_class_ref(d, short, &mixin), true));
+                let mixin = resolve_class_ref(d, short, &mixin);
+                queue.push((mixin.clone(), true, mixin));
             }
         }
         for trait_name in members.trait_uses {
-            queue.push((resolve_class_ref(d, short, &trait_name), inherited));
+            let trait_name = resolve_class_ref(d, short, &trait_name);
+            queue.push((trait_name, inherited, owner.clone()));
         }
         if let Some(p) = parent {
-            queue.push((p, true));
+            queue.push((p.clone(), true, p));
         }
     }
     items
