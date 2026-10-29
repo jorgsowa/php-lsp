@@ -2,6 +2,7 @@ use php_ast::{NamespaceBody, Span, Stmt, StmtKind, UseKind};
 use tower_lsp_server::ls_types::{Position, Range, TextEdit};
 
 use crate::document::ast::ParsedDoc;
+use crate::lang::file_header::{namespace_at, use_insert_line};
 
 /// Find every `use` item in `stmts` whose FQN (leading `\` ignored) equals
 /// `target`, restricted to `use ClassName` statements (`UseKind::Normal`) —
@@ -113,4 +114,136 @@ pub fn use_edits_in_source(doc: &ParsedDoc, old_fqn: &str, new_fqn: &str) -> Vec
             }
         })
         .collect()
+}
+
+fn namespace_of(fqn: &str) -> &str {
+    fqn.trim_start_matches('\\')
+        .rsplit_once('\\')
+        .map_or("", |(ns, _)| ns)
+}
+
+/// Return `TextEdit`s that move the namespace declaration of a renamed class
+/// file from the namespace of `old_fqn` to that of `new_fqn`.
+pub fn namespace_edits_in_source(doc: &ParsedDoc, old_fqn: &str, new_fqn: &str) -> Vec<TextEdit> {
+    let (old_ns, new_ns) = (namespace_of(old_fqn), namespace_of(new_fqn));
+    if old_ns.eq_ignore_ascii_case(new_ns) {
+        return Vec::new();
+    }
+    let source = doc.source();
+    let sv = doc.view();
+    let stmts = &doc.program().stmts;
+    let decls: Vec<_> = stmts
+        .iter()
+        .filter_map(|stmt| match &stmt.kind {
+            StmtKind::Namespace(ns) => Some((stmt, ns)),
+            _ => None,
+        })
+        .collect();
+
+    if decls.is_empty() {
+        // A global-namespace file gains its declaration after `<?php` and `declare`.
+        let line = stmts
+            .iter()
+            .filter(|s| matches!(s.kind, StmtKind::Declare(_)))
+            .map(|s| sv.position_of(s.span.end).line + 1)
+            .max()
+            .or_else(|| {
+                source
+                    .find("<?php")
+                    .map(|o| sv.position_of(o as u32).line + 1)
+            })
+            .unwrap_or(0);
+        let pos = Position { line, character: 0 };
+        return vec![TextEdit {
+            range: Range {
+                start: pos,
+                end: pos,
+            },
+            new_text: format!("\nnamespace {new_ns};\n"),
+        }];
+    }
+
+    decls
+        .into_iter()
+        .filter_map(|(stmt, ns)| {
+            let name = ns.name.as_ref()?;
+            if !name
+                .to_string_repr()
+                .trim_start_matches('\\')
+                .eq_ignore_ascii_case(old_ns)
+            {
+                return None;
+            }
+            let span = name.span();
+            if new_ns.is_empty() && matches!(ns.body, NamespaceBody::Simple) {
+                let line = sv.position_of(stmt.span.start).line;
+                return Some(TextEdit {
+                    range: Range {
+                        start: Position { line, character: 0 },
+                        end: Position {
+                            line: line + 1,
+                            character: 0,
+                        },
+                    },
+                    new_text: String::new(),
+                });
+            }
+            Some(TextEdit {
+                range: Range {
+                    start: sv.position_of(span.start),
+                    end: sv.position_of(span.end),
+                },
+                new_text: new_ns.to_string(),
+            })
+        })
+        .collect()
+}
+
+/// An edit inserting `use new_fqn;` when the class reference at `at` resolves
+/// only because it shares the namespace of `old_fqn`: unqualified, in that
+/// namespace, and not imported.
+pub fn same_namespace_import_edit(
+    doc: &ParsedDoc,
+    at: Position,
+    old_fqn: &str,
+    new_fqn: &str,
+) -> Option<TextEdit> {
+    let (old_ns, new_ns) = (namespace_of(old_fqn), namespace_of(new_fqn));
+    if old_ns.eq_ignore_ascii_case(new_ns) || new_ns.is_empty() {
+        return None;
+    }
+    let source = doc.source();
+    let offset = doc.view().byte_of_position(at);
+    if offset > 0 && source.as_bytes().get(offset as usize - 1) == Some(&b'\\') {
+        return None;
+    }
+    let segment = namespace_at(&doc.program().stmts, offset);
+    if !segment
+        .name()
+        .trim_start_matches('\\')
+        .eq_ignore_ascii_case(old_ns)
+    {
+        return None;
+    }
+    let mut imports = Vec::new();
+    find_use_items(
+        source,
+        segment.stmts,
+        old_fqn.trim_start_matches('\\'),
+        &mut imports,
+    );
+    if !imports.is_empty() {
+        return None;
+    }
+    let pos = Position {
+        line: use_insert_line(doc, at, |_| true),
+        character: 0,
+    };
+    Some(TextEdit {
+        range: Range {
+            start: pos,
+            end: pos,
+        },
+        new_text: format!("use {};\n", new_fqn.trim_start_matches('\\')),
+    })
 }

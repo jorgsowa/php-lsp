@@ -279,6 +279,9 @@ async fn will_rename_file_rewrites_use_imports_in_dependents() {
     let root = server.uri("");
     let snap = canonicalize_workspace_edit(&resp["result"], &root);
     expect![[r#"
+        // src/Model/User.php
+        2:10-2:19 → "App\\Entity"
+
         // src/Service/Greeter.php
         4:4-4:18 → "App\\Entity\\User"
 

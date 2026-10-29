@@ -4,6 +4,10 @@ All notable changes to php-lsp are documented here.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Moving a class file updates its namespace**: `workspace/willRenameFiles` rewrites the moved file's `namespace` line (adding or removing it for the global namespace) and adds a `use` to callers that referenced the class unqualified from its old namespace.
+
 ## [0.29.0] — 2026-10-28
 
 ### Changed

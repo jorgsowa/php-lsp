@@ -382,6 +382,8 @@ enum Request {
     PrepareRename,
     /// Pull diagnostics for every opened file.
     Diagnostics,
+    /// `workspace/willRenameFiles` for one `old new` pair of workspace paths.
+    WillRenameFiles(String, String),
 }
 
 impl Request {
@@ -419,6 +421,10 @@ impl Request {
             "rename" => Self::Rename(one_arg()),
             "prepare_rename" => Self::PrepareRename,
             "diagnostics" => Self::Diagnostics,
+            "will_rename_files" => match args.as_slice() {
+                [old, new] => Self::WillRenameFiles(old.to_string(), new.to_string()),
+                _ => panic!("{label}: `will_rename_files` takes `<old path> <new path>`"),
+            },
             other => panic!("{label}: unknown request `{other}`"),
         }
     }
@@ -445,6 +451,7 @@ impl Request {
                 | Self::DocumentLinks
                 | Self::FoldingRange
                 | Self::Diagnostics
+                | Self::WillRenameFiles(..)
         )
     }
 }
@@ -738,6 +745,16 @@ async fn execute(server: &mut TestServer, request: &Request, fx: &Fixture) -> St
                 out.extend(rendered.lines().map(|l| format!("{}: {l}", f.path)));
             }
             out.join("\n")
+        }
+        Request::WillRenameFiles(old, new) => {
+            let resp = server
+                .will_rename_files(vec![(server.uri(old), server.uri(new))])
+                .await;
+            match resp.get("error").filter(|e| !e.is_null()) {
+                Some(err) => format!("error: {err}"),
+                None if resp["result"].is_null() => "null".to_owned(),
+                None => canonicalize_workspace_edit(&resp["result"], &root),
+            }
         }
     }
 }

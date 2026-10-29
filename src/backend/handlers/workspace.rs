@@ -7,7 +7,10 @@ use tower_lsp_server::ls_types::request::WorkDoneProgressCreate;
 use tower_lsp_server::ls_types::*;
 
 use crate::analysis::semantic_tokens::legend;
-use crate::editing::file_rename::{delete_use_in_source, use_edits_in_source};
+use crate::editing::file_rename::{
+    delete_use_in_source, namespace_edits_in_source, same_namespace_import_edit,
+    use_edits_in_source,
+};
 use crate::index::workspace_scan::{scan_workspace, send_refresh_requests};
 use crate::lang::autoload::Psr4Map;
 use crate::lang::config::LspConfig;
@@ -813,6 +816,7 @@ impl Backend {
             let (Some(old_path), Some(new_path)) = (old_path, new_path) else {
                 continue;
             };
+            let old_uri = file_rename.old_uri.parse::<Uri>().ok();
 
             let old_fqn = psr4.file_to_fqn(&old_path);
             let new_fqn = psr4.file_to_fqn(&new_path);
@@ -856,11 +860,26 @@ impl Backend {
                 }
             }
 
+            let old_ns = old_fqn.rsplit_once('\\').map_or("", |(ns, _)| ns);
+            let new_ns = new_fqn.rsplit_once('\\').map_or("", |(ns, _)| ns);
+            let ns_changed = !old_ns.eq_ignore_ascii_case(new_ns);
+            if ns_changed
+                && let Some(old_uri) = &old_uri
+                && let Some(doc) = self.docs.get_doc_salsa(old_uri)
+            {
+                let edits = namespace_edits_in_source(&doc, &old_fqn, &new_fqn);
+                merged_changes
+                    .entry(old_uri.clone())
+                    .or_default()
+                    .extend(edits);
+            }
+
             // Also rename the declaration itself plus reference sites (type
             // hints, `new`, static calls, hierarchy clauses) from mir's
             // posting lists; `use` lines live under separate `use:` keys, so
-            // this can't overlap the edits above.
-            if old_short != new_short {
+            // this can't overlap the edits above. Unqualified references
+            // that shared the old namespace gain an import of the new FQN.
+            if old_short != new_short || ns_changed {
                 let symbol =
                     mir_analyzer::Name::class(old_fqn.trim_start_matches('\\').to_string());
                 let files: Vec<std::sync::Arc<str>> = self.docs.reference_candidate_files(&symbol);
@@ -874,6 +893,9 @@ impl Backend {
                 let docs = std::sync::Arc::clone(&self.docs);
                 let old_short_task = old_short.clone();
                 let new_short_task = new_short.clone();
+                let old_fqn_task = old_fqn.clone();
+                let new_fqn_task = new_fqn.clone();
+                let moved_uri = old_uri.clone();
                 // Each reference site gets its declaring file parsed and its
                 // rename range narrowed; same rationale as the `use`-edit
                 // loop above.
@@ -893,13 +915,26 @@ impl Backend {
                         ) else {
                             continue;
                         };
-                        out.push((
-                            loc.uri,
-                            TextEdit {
-                                range,
-                                new_text: new_short_task.clone(),
-                            },
-                        ));
+                        if ns_changed
+                            && moved_uri.as_ref() != Some(&loc.uri)
+                            && let Some(edit) = same_namespace_import_edit(
+                                &doc,
+                                range.start,
+                                &old_fqn_task,
+                                &new_fqn_task,
+                            )
+                        {
+                            out.push((loc.uri.clone(), edit));
+                        }
+                        if old_short_task != new_short_task {
+                            out.push((
+                                loc.uri,
+                                TextEdit {
+                                    range,
+                                    new_text: new_short_task.clone(),
+                                },
+                            ));
+                        }
                     }
                     out
                 })
