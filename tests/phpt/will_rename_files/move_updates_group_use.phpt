@@ -11,14 +11,14 @@ will_rename_files src/A/Foo.php src/B/Foo.php
 namespace App\A;
 
 class Base {}
-===disk:src/C/Mixed.php===
+===disk:src/C/Combined.php===
 <?php
 
 namespace App\C;
 
 use App\A\{Base, Foo as G};
 
-class Mixed
+class Combined
 {
     public function m(Base $b, G $g): void {}
 }
@@ -68,7 +68,7 @@ class Foo {}
 // src/A/Foo.php
 2:10-2:15 → "App\\B"
 
-// src/C/Mixed.php
+// src/C/Combined.php
 4:15-4:25 → ""
 5:0-5:0 → "use App\\B\\Foo as G;\n"
 
