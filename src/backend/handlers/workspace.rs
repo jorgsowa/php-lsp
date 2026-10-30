@@ -400,17 +400,18 @@ impl Backend {
         self.client.register_capability(registrations).await.ok();
 
         if !roots.is_empty() {
-            {
-                let mut merged = Psr4Map::empty();
-                let extensions = self.config.load().php_file_extensions();
-                for root in &roots {
-                    merged.extend(Psr4Map::load_with_extensions(root, extensions.clone()));
-                }
-                self.psr4.store(Arc::new(merged));
-            }
-            let laravel_index = crate::laravel::LaravelIndex::load(&roots[0]);
-            let is_laravel = laravel_index.is_laravel;
-            self.laravel.store(Arc::new(laravel_index));
+            // `initialize` already loaded the PSR-4 map. The Laravel index
+            // walks and parses project files, so it loads beside the scan.
+            let laravel_load = {
+                let root = roots[0].clone();
+                let laravel = Arc::clone(&self.laravel);
+                tokio::task::spawn_blocking(move || {
+                    let index = crate::laravel::LaravelIndex::load(&root);
+                    let is_laravel = index.is_laravel;
+                    laravel.store(Arc::new(index));
+                    is_laravel
+                })
+            };
 
             let token = NumberOrString::String("php-lsp/indexing".to_string());
             self.client
@@ -683,6 +684,7 @@ impl Backend {
                         )
                         .await;
                 }
+                let is_laravel = laravel_load.await.unwrap_or(false);
                 docs.mark_index_ready();
                 drop(docs);
                 client.send_notification::<IndexReadyNotification>(()).await;
