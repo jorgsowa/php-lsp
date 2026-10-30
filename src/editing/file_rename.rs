@@ -310,9 +310,19 @@ pub fn moved_file_edits(
     let docblock_names = docblock_type_names(doc.source());
     for segment in segments {
         let removals = redundant_import_removals(doc, &segment, new_ns);
+        let (functions, constants) = function_and_const_names_in_stmts(segment.stmts);
+        // `Sub\helper()` resolves through namespace `Sub`, imported like a class.
+        let qualified: Vec<&str> = functions
+            .iter()
+            .map(|n| (UseKind::Function, n))
+            .chain(constants.iter().map(|n| (UseKind::Const, n)))
+            .filter(|(kind, n)| is_relative_qualified(n) && exists(*kind, &qualify(old_ns, n)))
+            .map(|(_, n)| n.as_str())
+            .collect();
         let names = old_namespace_names(
             &segment,
             &docblock_names,
+            &qualified,
             |name| exists(UseKind::Normal, &qualify(old_ns, name)),
             |name| {
                 moved_to(&qualify(old_ns, name))
@@ -327,7 +337,7 @@ pub fn moved_file_edits(
             })
             .collect();
         stmts.extend(old_namespace_function_const_imports(
-            &segment, old_ns, &exists,
+            &segment, functions, constants, old_ns, &exists,
         ));
         if stmts.is_empty() {
             edits.extend(removals);
@@ -409,6 +419,16 @@ fn redundant_import_removals(
     edits
 }
 
+fn is_namespace_relative(name: &str) -> bool {
+    name.get(..10)
+        .is_some_and(|p| p.eq_ignore_ascii_case("namespace\\"))
+}
+
+/// Qualified, but neither fully qualified nor `namespace\`-relative.
+fn is_relative_qualified(name: &str) -> bool {
+    name.contains('\\') && !name.starts_with('\\') && !is_namespace_relative(name)
+}
+
 fn qualify(ns: &str, name: &str) -> String {
     if ns.is_empty() {
         name.to_string()
@@ -422,6 +442,7 @@ fn qualify(ns: &str, name: &str) -> String {
 fn old_namespace_names(
     segment: &NamespaceSegment<'_, '_, '_>,
     docblock_names: &[(u32, &str)],
+    qualified_functions_consts: &[&str],
     is_class: impl Fn(&str) -> bool,
     moves_along: impl Fn(&str) -> bool,
 ) -> Vec<String> {
@@ -446,13 +467,10 @@ fn old_namespace_names(
     let code_names = all_class_ref_names_in_stmts(segment.stmts);
     let code_names = code_names
         .iter()
-        .filter(|name| {
-            !name.starts_with('\\')
-                && !name
-                    .get(..10)
-                    .is_some_and(|p| p.eq_ignore_ascii_case("namespace\\"))
-                && !moves_along(name)
-        })
+        .map(String::as_str)
+        .filter(|name| !name.starts_with('\\') && !is_namespace_relative(name))
+        .chain(qualified_functions_consts.iter().copied())
+        .filter(|name| !moves_along(name))
         .map(|name| name.split('\\').next().unwrap_or(name));
     let doc_names = docblock_names
         .iter()
@@ -479,6 +497,8 @@ fn old_namespace_names(
 /// in `segment` that resolve to ones declared in `old_ns`.
 fn old_namespace_function_const_imports(
     segment: &NamespaceSegment<'_, '_, '_>,
+    mut functions: Vec<String>,
+    mut constants: Vec<String>,
     old_ns: &str,
     exists: &impl Fn(UseKind, &str) -> bool,
 ) -> Vec<String> {
@@ -514,7 +534,6 @@ fn old_namespace_function_const_imports(
             _ => {}
         }
     }
-    let (mut functions, mut constants) = function_and_const_names_in_stmts(segment.stmts);
     functions.sort_by_key(|n| n.to_ascii_lowercase());
     constants.sort();
     let mut out = Vec::new();
