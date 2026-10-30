@@ -30,5 +30,6 @@ class Foo {}
 4:6-4:9 → "Bar"
 
 // src/A/User.php
+6:13-6:16 → "Bar"
 9:22-9:25 → "Bar"
 11:25-11:28 → "Bar"

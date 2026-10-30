@@ -83,6 +83,7 @@ async fn will_rename_files_rewrites_use_statements_in_dependents() {
 
         // src/Service/Registry.php
         4:4-4:18 → "App\\Model\\Account"
+        8:13-8:17 → "Account"
         11:29-11:33 → "Account""#]]
     .assert_eq(&snap);
 }

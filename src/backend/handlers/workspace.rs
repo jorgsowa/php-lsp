@@ -980,17 +980,15 @@ impl Backend {
                         }
                     }
                     // Docblock types aren't in mir's reference postings.
-                    if ns_changed {
-                        for uri in candidate_files.iter().filter_map(|f| f.parse::<Uri>().ok()) {
-                            let Some(doc) = docs.get_doc_salsa(&uri) else {
-                                continue;
-                            };
-                            let import = moved_uri.as_ref() != Some(&uri);
-                            for edit in
-                                docblock_reference_edits(&doc, &old_fqn_task, &new_fqn_task, import)
-                            {
-                                out.push((uri.clone(), edit));
-                            }
+                    for uri in candidate_files.iter().filter_map(|f| f.parse::<Uri>().ok()) {
+                        let Some(doc) = docs.get_doc_salsa(&uri) else {
+                            continue;
+                        };
+                        let import = moved_uri.as_ref() != Some(&uri);
+                        for edit in
+                            docblock_reference_edits(&doc, &old_fqn_task, &new_fqn_task, import)
+                        {
+                            out.push((uri.clone(), edit));
                         }
                     }
                     out

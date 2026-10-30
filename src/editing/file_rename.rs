@@ -529,8 +529,8 @@ pub fn qualified_reference_edit(doc: &ParsedDoc, short: Range, new_fqn: &str) ->
 }
 
 /// Edits for docblock type names in `doc` naming `old_fqn`: qualified ones are
-/// rewritten to `new_fqn`, unqualified ones get a same-namespace import when
-/// `import_unqualified`.
+/// rewritten to `new_fqn`, unqualified ones get the new short name and, when
+/// `import_unqualified`, a same-namespace import.
 pub fn docblock_reference_edits(
     doc: &ParsedDoc,
     old_fqn: &str,
@@ -538,6 +538,10 @@ pub fn docblock_reference_edits(
     import_unqualified: bool,
 ) -> Vec<TextEdit> {
     let old = old_fqn.trim_start_matches('\\');
+    let (old_short, new_short) = (
+        crate::text::fqn_short_name(old),
+        crate::text::fqn_short_name(new_fqn),
+    );
     let view = doc.view();
     let stmts = &doc.program().stmts;
     let mut edits = Vec::new();
@@ -555,10 +559,19 @@ pub fn docblock_reference_edits(
                 range,
                 new_text: requalify(name, segment.name().is_empty(), new_fqn),
             });
-        } else if import_unqualified
-            && let Some(edit) = same_namespace_import_edit(doc, range.start, old_fqn, new_fqn)
-        {
-            edits.push(edit);
+        } else {
+            if import_unqualified
+                && let Some(edit) = same_namespace_import_edit(doc, range.start, old_fqn, new_fqn)
+            {
+                edits.push(edit);
+            }
+            // An alias keeps its name; only the class's own short name changes.
+            if old_short != new_short && name.eq_ignore_ascii_case(old_short) {
+                edits.push(TextEdit {
+                    range,
+                    new_text: new_short.to_string(),
+                });
+            }
         }
     }
     edits
