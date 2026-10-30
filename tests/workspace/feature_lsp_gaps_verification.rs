@@ -202,7 +202,7 @@ async fn apply_edit_advertised_in_capabilities() {
     let (_, init_resp) = TestServer::new_with_options(json!({})).await;
 
     let workspace = &init_resp["result"]["capabilities"]["workspace"];
-    expect![[r#"{"fileOperations":{"didCreate":{"filters":[{"pattern":{"glob":"**/*.php","matches":"file"},"scheme":"file"}]},"didDelete":{"filters":[{"pattern":{"glob":"**/*.php","matches":"file"},"scheme":"file"}]},"didRename":{"filters":[{"pattern":{"glob":"**/*.php","matches":"file"},"scheme":"file"}]},"willCreate":{"filters":[{"pattern":{"glob":"**/*.php","matches":"file"},"scheme":"file"}]},"willDelete":{"filters":[{"pattern":{"glob":"**/*.php","matches":"file"},"scheme":"file"}]},"willRename":{"filters":[{"pattern":{"glob":"**/*.php","matches":"file"},"scheme":"file"}]}},"workspaceFolders":{"changeNotifications":true,"supported":true}}"#]].assert_eq(&workspace.to_string());
+    expect![[r#"{"fileOperations":{"didCreate":{"filters":[{"pattern":{"glob":"**/*.php","matches":"file"},"scheme":"file"}]},"didDelete":{"filters":[{"pattern":{"glob":"**/*.php","matches":"file"},"scheme":"file"}]},"didRename":{"filters":[{"pattern":{"glob":"**/*.php","matches":"file"},"scheme":"file"}]},"willCreate":{"filters":[{"pattern":{"glob":"**/*.php","matches":"file"},"scheme":"file"}]},"willDelete":{"filters":[{"pattern":{"glob":"**/*.php","matches":"file"},"scheme":"file"}]},"willRename":{"filters":[{"pattern":{"glob":"**/*.php","matches":"file"},"scheme":"file"},{"pattern":{"glob":"**/*","matches":"folder"},"scheme":"file"}]}},"workspaceFolders":{"changeNotifications":true,"supported":true}}"#]].assert_eq(&workspace.to_string());
 }
 
 // ============================================================================

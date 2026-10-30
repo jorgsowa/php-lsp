@@ -53,6 +53,20 @@ pub(super) fn indexed_file_op(extensions: &[String]) -> FileOperationRegistratio
     }
 }
 
+/// [`indexed_file_op`] plus any folder, whose indexed files move with it.
+pub(super) fn indexed_file_or_folder_op(extensions: &[String]) -> FileOperationRegistrationOptions {
+    let mut op = indexed_file_op(extensions);
+    op.filters.push(FileOperationFilter {
+        scheme: Some("file".to_string()),
+        pattern: FileOperationPattern {
+            glob: "**/*".to_string(),
+            matches: Some(FileOperationPatternKind::Folder),
+            options: None,
+        },
+    });
+    op
+}
+
 /// Whether `path` ends in one of the configured indexed extensions.
 pub(super) fn has_indexed_extension(path: &str, extensions: &[String]) -> bool {
     extensions

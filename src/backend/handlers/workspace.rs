@@ -9,14 +9,14 @@ use tower_lsp_server::ls_types::*;
 use crate::analysis::semantic_tokens::legend;
 use crate::editing::file_rename::{
     class_case_variants, delete_use_in_source, docblock_reference_edits, moved_file_edits,
-    qualified_reference_edit, same_namespace_import_edit, use_edits_in_source,
+    namespace_of, qualified_reference_edit, same_namespace_import_edit, use_edits_in_source,
 };
 use crate::index::workspace_scan::{scan_workspace, send_refresh_requests};
 use crate::lang::autoload::Psr4Map;
 use crate::lang::config::LspConfig;
 use crate::text::fqn_short_name;
 
-use super::super::helpers::{has_indexed_extension, indexed_file_op};
+use super::super::helpers::{has_indexed_extension, indexed_file_op, indexed_file_or_folder_op};
 use super::super::{Backend, IndexReadyNotification};
 
 /// Non-PHP files whose changes reload the PSR-4 map or the Laravel index.
@@ -315,7 +315,7 @@ impl Backend {
                     file_operations: {
                         let indexed_extensions = self.config.load().indexed_extensions.clone();
                         Some(WorkspaceFileOperationsServerCapabilities {
-                            will_rename: Some(indexed_file_op(&indexed_extensions)),
+                            will_rename: Some(indexed_file_or_folder_op(&indexed_extensions)),
                             did_rename: Some(indexed_file_op(&indexed_extensions)),
                             will_create: Some(indexed_file_op(&indexed_extensions)),
                             did_create: Some(indexed_file_op(&indexed_extensions)),
@@ -802,29 +802,62 @@ impl Backend {
         let mut merged_changes: std::collections::HashMap<Uri, Vec<TextEdit>> =
             std::collections::HashMap::new();
 
+        // A folder rename moves every indexed file under it.
+        let workspace_files = self.docs.workspace_file_paths();
+        let mut renames: Vec<(String, String)> = Vec::new();
         for file_rename in &params.files {
-            let old_path = file_rename
-                .old_uri
-                .parse::<Uri>()
-                .ok()
-                .and_then(|u| u.to_file_path().map(|c| c.into_owned()));
-            let new_path = file_rename
-                .new_uri
-                .parse::<Uri>()
-                .ok()
-                .and_then(|u| u.to_file_path().map(|c| c.into_owned()));
+            let old_dir = format!("{}/", file_rename.old_uri.trim_end_matches('/'));
+            let new_dir = format!("{}/", file_rename.new_uri.trim_end_matches('/'));
+            let children: Vec<(String, String)> = workspace_files
+                .iter()
+                .filter_map(|f| {
+                    let rest = f.strip_prefix(old_dir.as_str())?;
+                    Some((f.to_string(), format!("{new_dir}{rest}")))
+                })
+                .collect();
+            if children.is_empty() {
+                renames.push((file_rename.old_uri.clone(), file_rename.new_uri.clone()));
+            } else {
+                renames.extend(children);
+            }
+        }
+        let moves: Vec<(Uri, String, String)> = renames
+            .iter()
+            .filter_map(|(old, new)| {
+                let old_uri = old.parse::<Uri>().ok()?;
+                let old_path = old_uri.to_file_path()?.into_owned();
+                let new_path = new.parse::<Uri>().ok()?.to_file_path()?.into_owned();
+                let old_fqn = psr4.file_to_fqn(&old_path)?;
+                let new_fqn = psr4.file_to_fqn(&new_path)?;
+                Some((old_uri, old_fqn, new_fqn))
+            })
+            .collect();
+        let moved_fqns: std::sync::Arc<std::collections::HashMap<String, String>> =
+            std::sync::Arc::new(
+                moves
+                    .iter()
+                    .map(|(_, old, new)| {
+                        (
+                            old.trim_start_matches('\\').to_ascii_lowercase(),
+                            new.trim_start_matches('\\').to_string(),
+                        )
+                    })
+                    .collect(),
+            );
+        // Files changing namespace import what they need themselves.
+        let moved_namespaces: std::sync::Arc<std::collections::HashMap<Uri, String>> =
+            std::sync::Arc::new(
+                moves
+                    .iter()
+                    .filter(|(_, old, new)| {
+                        !namespace_of(old).eq_ignore_ascii_case(namespace_of(new))
+                    })
+                    .map(|(uri, _, new)| (uri.clone(), namespace_of(new).to_string()))
+                    .collect(),
+            );
 
-            let (Some(old_path), Some(new_path)) = (old_path, new_path) else {
-                continue;
-            };
-            let old_uri = file_rename.old_uri.parse::<Uri>().ok();
-
-            let old_fqn = psr4.file_to_fqn(&old_path);
-            let new_fqn = psr4.file_to_fqn(&new_path);
-
-            let (Some(old_fqn), Some(new_fqn)) = (old_fqn, new_fqn) else {
-                continue;
-            };
+        for (old_uri, old_fqn, new_fqn) in moves {
+            let old_uri = Some(old_uri);
 
             // `use` lines rewrite the full import path (the namespace may
             // change, not just the class name). Only importers of the old
@@ -861,26 +894,26 @@ impl Backend {
                 }
             }
 
-            let old_ns = old_fqn.rsplit_once('\\').map_or("", |(ns, _)| ns);
-            let new_ns = new_fqn.rsplit_once('\\').map_or("", |(ns, _)| ns);
-            let ns_changed = !old_ns.eq_ignore_ascii_case(new_ns);
+            let ns_changed = !namespace_of(&old_fqn).eq_ignore_ascii_case(namespace_of(&new_fqn));
             if ns_changed && let Some(old_uri) = old_uri.clone() {
                 let docs = std::sync::Arc::clone(&self.docs);
                 let (old_fqn_task, new_fqn_task) = (old_fqn.clone(), new_fqn.clone());
+                let moved = std::sync::Arc::clone(&moved_fqns);
                 let edits = tokio::task::spawn_blocking(move || {
                     let doc = docs.get_doc_salsa(&old_uri)?;
+                    let exists = |kind, fqn: &str| {
+                        let name = match kind {
+                            php_ast::UseKind::Normal => return docs.find_class_like(fqn).is_some(),
+                            php_ast::UseKind::Function => mir_analyzer::Name::function(fqn),
+                            php_ast::UseKind::Const => {
+                                mir_analyzer::Name::GlobalConstant(fqn.into())
+                            }
+                        };
+                        docs.definition_location(&name).is_some()
+                    };
                     let edits =
-                        moved_file_edits(&doc, &old_fqn_task, &new_fqn_task, |kind, fqn| {
-                            let name = match kind {
-                                php_ast::UseKind::Normal => {
-                                    return docs.find_class_like(fqn).is_some();
-                                }
-                                php_ast::UseKind::Function => mir_analyzer::Name::function(fqn),
-                                php_ast::UseKind::Const => {
-                                    mir_analyzer::Name::GlobalConstant(fqn.into())
-                                }
-                            };
-                            docs.definition_location(&name).is_some()
+                        moved_file_edits(&doc, &old_fqn_task, &new_fqn_task, exists, |fqn| {
+                            moved.get(&fqn.to_ascii_lowercase()).cloned()
                         });
                     Some((old_uri, edits))
                 })
@@ -932,7 +965,7 @@ impl Backend {
                 let new_short_task = new_short.clone();
                 let old_fqn_task = old_fqn.clone();
                 let new_fqn_task = new_fqn.clone();
-                let moved_uri = old_uri.clone();
+                let moved_namespaces = std::sync::Arc::clone(&moved_namespaces);
                 // Each reference site gets its declaring file parsed and its
                 // rename range narrowed; same rationale as the `use`-edit
                 // loop above.
@@ -952,14 +985,16 @@ impl Backend {
                         ) else {
                             continue;
                         };
+                        let ns_after = moved_namespaces.get(&loc.uri).map(String::as_str);
                         if ns_changed
-                            && let Some(edit) = qualified_reference_edit(&doc, range, &new_fqn_task)
+                            && let Some(edit) =
+                                qualified_reference_edit(&doc, range, &new_fqn_task, ns_after)
                         {
                             out.push((loc.uri, edit));
                             continue;
                         }
                         if ns_changed
-                            && moved_uri.as_ref() != Some(&loc.uri)
+                            && !moved_namespaces.contains_key(&loc.uri)
                             && let Some(edit) = same_namespace_import_edit(
                                 &doc,
                                 range.start,
@@ -984,9 +1019,9 @@ impl Backend {
                         let Some(doc) = docs.get_doc_salsa(&uri) else {
                             continue;
                         };
-                        let import = moved_uri.as_ref() != Some(&uri);
+                        let ns_after = moved_namespaces.get(&uri).map(String::as_str);
                         for edit in
-                            docblock_reference_edits(&doc, &old_fqn_task, &new_fqn_task, import)
+                            docblock_reference_edits(&doc, &old_fqn_task, &new_fqn_task, ns_after)
                         {
                             out.push((uri.clone(), edit));
                         }

@@ -267,7 +267,7 @@ fn group_use_edits(
     ]
 }
 
-fn namespace_of(fqn: &str) -> &str {
+pub fn namespace_of(fqn: &str) -> &str {
     fqn.trim_start_matches('\\')
         .rsplit_once('\\')
         .map_or("", |(ns, _)| ns)
@@ -275,12 +275,14 @@ fn namespace_of(fqn: &str) -> &str {
 
 /// Edits for a class file moved from `old_fqn` to `new_fqn`: its namespace
 /// declaration, plus imports for names that resolved against the old namespace.
-/// `exists` tells whether an FQN names a known class-like, function or constant.
+/// `exists` tells whether an FQN names a known class-like, function or constant;
+/// `moved_to` gives the new FQN of a class moved in the same batch.
 pub fn moved_file_edits(
     doc: &ParsedDoc,
     old_fqn: &str,
     new_fqn: &str,
     exists: impl Fn(UseKind, &str) -> bool,
+    moved_to: impl Fn(&str) -> Option<String>,
 ) -> Vec<TextEdit> {
     let (old_ns, new_ns) = (namespace_of(old_fqn), namespace_of(new_fqn));
     if old_ns.eq_ignore_ascii_case(new_ns) {
@@ -308,12 +310,21 @@ pub fn moved_file_edits(
     let docblock_names = docblock_type_names(doc.source());
     for segment in segments {
         let removals = redundant_import_removals(doc, &segment, new_ns);
-        let names = old_namespace_names(&segment, &docblock_names, |name| {
-            exists(UseKind::Normal, &qualify(old_ns, name))
-        });
+        let names = old_namespace_names(
+            &segment,
+            &docblock_names,
+            |name| exists(UseKind::Normal, &qualify(old_ns, name)),
+            |name| {
+                moved_to(&qualify(old_ns, name))
+                    .is_some_and(|to| to.eq_ignore_ascii_case(&qualify(new_ns, name)))
+            },
+        );
         let mut stmts: Vec<String> = names
             .iter()
-            .map(|name| format!("use {};", qualify(old_ns, name)))
+            .map(|name| {
+                let old = qualify(old_ns, name);
+                format!("use {};", moved_to(&old).unwrap_or(old))
+            })
             .collect();
         stmts.extend(old_namespace_function_const_imports(
             &segment, old_ns, &exists,
@@ -412,6 +423,7 @@ fn old_namespace_names(
     segment: &NamespaceSegment<'_, '_, '_>,
     docblock_names: &[(u32, &str)],
     is_class: impl Fn(&str) -> bool,
+    moves_along: impl Fn(&str) -> bool,
 ) -> Vec<String> {
     let mut bound: std::collections::HashSet<String> = class_imports(segment)
         .map(|(alias, _)| alias.to_ascii_lowercase())
@@ -439,12 +451,16 @@ fn old_namespace_names(
                 && !name
                     .get(..10)
                     .is_some_and(|p| p.eq_ignore_ascii_case("namespace\\"))
+                && !moves_along(name)
         })
         .map(|name| name.split('\\').next().unwrap_or(name));
     let doc_names = docblock_names
         .iter()
         .filter(|(at, name)| {
-            (segment.body_start..end).contains(at) && !name.contains('\\') && is_class(name)
+            (segment.body_start..end).contains(at)
+                && !name.contains('\\')
+                && is_class(name)
+                && !moves_along(name)
         })
         .map(|(_, name)| *name);
     let mut out: Vec<String> = Vec::new();
@@ -535,10 +551,14 @@ fn class_imports<'a>(
 
 /// The FQN (no leading `\`) a class name spelled `name` in `segment` refers to.
 fn resolve_class_name(segment: &NamespaceSegment<'_, '_, '_>, name: &str) -> String {
+    resolve_class_name_in(segment, &segment.name(), name)
+}
+
+/// [`resolve_class_name`] with `segment`'s imports but namespace `ns`.
+fn resolve_class_name_in(segment: &NamespaceSegment<'_, '_, '_>, ns: &str, name: &str) -> String {
     if let Some(fq) = name.strip_prefix('\\') {
         return fq.to_string();
     }
-    let ns = segment.name();
     let ns = ns.trim_start_matches('\\');
     if let Some(rest) = name
         .get(..10)
@@ -559,13 +579,17 @@ fn resolve_class_name(segment: &NamespaceSegment<'_, '_, '_>, name: &str) -> Str
     }
 }
 
-/// `new_fqn` spelled to replace the qualified name `spelled` in `segment`:
-/// relative to the namespace when `spelled` was and that still resolves, else
-/// fully qualified.
-fn requalify(segment: &NamespaceSegment<'_, '_, '_>, spelled: &str, new_fqn: &str) -> String {
+/// `new_fqn` spelled to replace the qualified name `spelled` in `segment`, which
+/// will be in namespace `ns`: relative when `spelled` was and that still
+/// resolves, else fully qualified.
+fn requalify(
+    segment: &NamespaceSegment<'_, '_, '_>,
+    ns: &str,
+    spelled: &str,
+    new_fqn: &str,
+) -> String {
     let new = new_fqn.trim_start_matches('\\');
     if !spelled.starts_with('\\') {
-        let ns = segment.name();
         let ns = ns.trim_start_matches('\\');
         let relative = if ns.is_empty() {
             Some(new)
@@ -575,7 +599,7 @@ fn requalify(segment: &NamespaceSegment<'_, '_, '_>, spelled: &str, new_fqn: &st
                 .map(|_| &new[ns.len() + 1..])
         };
         if let Some(relative) =
-            relative.filter(|r| resolve_class_name(segment, r).eq_ignore_ascii_case(new))
+            relative.filter(|r| resolve_class_name_in(segment, ns, r).eq_ignore_ascii_case(new))
         {
             return relative.to_string();
         }
@@ -584,8 +608,14 @@ fn requalify(segment: &NamespaceSegment<'_, '_, '_>, spelled: &str, new_fqn: &st
 }
 
 /// Rewrites the qualified class reference ending at the short-name range
-/// `short` to name `new_fqn`; `None` for an unqualified reference.
-pub fn qualified_reference_edit(doc: &ParsedDoc, short: Range, new_fqn: &str) -> Option<TextEdit> {
+/// `short` to name `new_fqn`, for `doc` moving to namespace `ns_after` if any;
+/// `None` for an unqualified reference or one already naming `new_fqn`.
+pub fn qualified_reference_edit(
+    doc: &ParsedDoc,
+    short: Range,
+    new_fqn: &str,
+    ns_after: Option<&str>,
+) -> Option<TextEdit> {
     let source = doc.source();
     let view = doc.view();
     let end = view.byte_of_position(short.start) as usize;
@@ -597,20 +627,23 @@ pub fn qualified_reference_edit(doc: &ParsedDoc, short: Range, new_fqn: &str) ->
         return None;
     }
     let segment = namespace_at(&doc.program().stmts, start as u32);
-    Some(TextEdit {
+    let ns = ns_after.map_or_else(|| segment.name().to_string(), str::to_string);
+    let new_text = requalify(&segment, &ns, qualifier, new_fqn);
+    let end = view.byte_of_position(short.end) as usize;
+    (new_text != source[start..end]).then(|| TextEdit {
         range: Range::new(view.position_of(start as u32), short.end),
-        new_text: requalify(&segment, qualifier, new_fqn),
+        new_text,
     })
 }
 
 /// Edits for docblock type names in `doc` naming `old_fqn`: qualified ones are
-/// rewritten to `new_fqn`, unqualified ones get the new short name and, when
-/// `import_unqualified`, a same-namespace import.
+/// rewritten to `new_fqn`, unqualified ones get the new short name and, unless
+/// `doc` moves to namespace `ns_after` (importing on its own), a same-namespace import.
 pub fn docblock_reference_edits(
     doc: &ParsedDoc,
     old_fqn: &str,
     new_fqn: &str,
-    import_unqualified: bool,
+    ns_after: Option<&str>,
 ) -> Vec<TextEdit> {
     let old = old_fqn.trim_start_matches('\\');
     let (old_short, new_short) = (
@@ -630,12 +663,13 @@ pub fn docblock_reference_edits(
             view.position_of(at + name.len() as u32),
         );
         if name.contains('\\') {
-            edits.push(TextEdit {
-                range,
-                new_text: requalify(&segment, name, new_fqn),
-            });
+            let ns = ns_after.map_or_else(|| segment.name().to_string(), str::to_string);
+            let new_text = requalify(&segment, &ns, name, new_fqn);
+            if new_text != name {
+                edits.push(TextEdit { range, new_text });
+            }
         } else {
-            if import_unqualified
+            if ns_after.is_none()
                 && let Some(edit) = same_namespace_import_edit(doc, range.start, old_fqn, new_fqn)
             {
                 edits.push(edit);
