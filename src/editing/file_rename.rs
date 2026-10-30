@@ -11,7 +11,7 @@ use crate::navigation::walk::all_class_ref_names_in_stmts;
 /// Returns `(enclosing statement span, item name span)` per match.
 ///
 /// Skips group-use members (`use App\Model\{User};`), whose `Name` span
-/// extends across the `{` into the prefix; [`find_group_use_items`] finds those.
+/// extends across the `{` into the prefix.
 fn find_use_items(source: &str, stmts: &[Stmt<'_, '_>], target: &str, out: &mut Vec<(Span, Span)>) {
     for stmt in stmts {
         match &stmt.kind {
@@ -84,44 +84,56 @@ pub fn delete_use_in_source(doc: &ParsedDoc, fqn: &str) -> Vec<TextEdit> {
 }
 
 /// Find `use` statements in `doc` that reference `old_fqn` and return
-/// `TextEdit`s that replace `old_fqn` with `new_fqn` at each match.
+/// `TextEdit`s that replace `old_fqn` with `new_fqn` at each match. An import
+/// made redundant by sharing the namespace of `new_fqn` is removed instead.
 ///
 /// Handles:
 /// - `use OldFqn;`
 /// - `use \OldFqn;`
 /// - `use OldFqn as Alias;`
+/// - `use Old\{Fqn, Other};`
 pub fn use_edits_in_source(doc: &ParsedDoc, old_fqn: &str, new_fqn: &str) -> Vec<TextEdit> {
     let old = old_fqn.trim_start_matches('\\');
     let new_clean = new_fqn.trim_start_matches('\\');
+    let (new_ns, new_short) = (
+        namespace_of(new_clean),
+        crate::text::fqn_short_name(new_clean),
+    );
     let source = doc.source();
     let sv = doc.view();
+    let stmts = &doc.program().stmts;
     let mut matches = Vec::new();
-    find_use_items(source, &doc.program().stmts, old, &mut matches);
+    find_use_decl_items(stmts, old, &mut matches);
 
-    let mut edits: Vec<TextEdit> = matches
-        .into_iter()
-        .map(|(_, name_span)| {
-            let span = fqn_span_without_backslash(source, name_span);
-            TextEdit {
-                range: Range {
-                    start: sv.position_of(span.start),
-                    end: sv.position_of(span.end),
-                },
+    let mut edits = Vec::new();
+    for (stmt, decl, idx) in matches {
+        let item = &decl.uses[idx];
+        let in_new_ns = namespace_at(stmts, stmt.span.start)
+            .name()
+            .trim_start_matches('\\')
+            .eq_ignore_ascii_case(new_ns);
+        if in_new_ns && item.alias.is_none_or(|a| a.eq_ignore_ascii_case(new_short)) {
+            edits.push(remove_use_item(doc, stmt, decl, idx));
+        } else if is_group_member(item) {
+            edits.extend(group_use_edits(doc, stmt, decl, idx, new_clean));
+        } else {
+            let span = fqn_span_without_backslash(source, item.name.span());
+            edits.push(TextEdit {
+                range: sv.range_of(span),
                 new_text: new_clean.to_string(),
-            }
-        })
-        .collect();
-    let mut groups = Vec::new();
-    find_group_use_items(&doc.program().stmts, old, &mut groups);
-    for (stmt, decl, idx) in groups {
-        edits.extend(group_use_edits(doc, stmt, decl, idx, new_clean));
+            });
+        }
     }
     edits
 }
 
-/// Like [`find_use_items`], for members of group uses (`use A\{B, C}`):
-/// `(statement, its declaration, member index)` per match.
-fn find_group_use_items<'a, 'arena, 'src>(
+fn is_group_member(item: &php_ast::UseItem<'_, '_>) -> bool {
+    item.span.start > item.name.span().start
+}
+
+/// Each class `use` item in `stmts` importing `target`, plain or group member:
+/// `(statement, its declaration, item index)`.
+fn find_use_decl_items<'a, 'arena, 'src>(
     stmts: &'a [Stmt<'arena, 'src>],
     target: &str,
     out: &mut Vec<(&'a Stmt<'arena, 'src>, &'a UseDecl<'arena, 'src>, usize)>,
@@ -130,8 +142,7 @@ fn find_group_use_items<'a, 'arena, 'src>(
         match &stmt.kind {
             StmtKind::Use(u) if u.kind == UseKind::Normal => {
                 for (idx, item) in u.uses.iter().enumerate() {
-                    if item.span.start > item.name.span().start
-                        && matches!(item.kind, None | Some(UseKind::Normal))
+                    if matches!(item.kind, None | Some(UseKind::Normal))
                         && item
                             .name
                             .to_string_repr()
@@ -144,11 +155,47 @@ fn find_group_use_items<'a, 'arena, 'src>(
             }
             StmtKind::Namespace(ns) => {
                 if let NamespaceBody::Braced(inner) = &ns.body {
-                    find_group_use_items(&inner.stmts, target, out);
+                    find_use_decl_items(&inner.stmts, target, out);
                 }
             }
             _ => {}
         }
+    }
+}
+
+/// Removes item `idx` of `decl` with its separating comma, or the whole
+/// statement's lines when it is the only item.
+fn remove_use_item(
+    doc: &ParsedDoc,
+    stmt: &Stmt<'_, '_>,
+    decl: &UseDecl<'_, '_>,
+    idx: usize,
+) -> TextEdit {
+    let view = doc.view();
+    let range = |start: u32, end: u32| Range::new(view.position_of(start), view.position_of(end));
+    let item = &decl.uses[idx];
+    let range = match (decl.uses.get(idx + 1), idx.checked_sub(1)) {
+        (Some(next), _) => range(item.span.start, next.span.start),
+        (None, Some(prev)) => range(decl.uses[prev].span.end, item.span.end),
+        (None, None) => {
+            let first = view.position_of(stmt.span.start).line;
+            let mut end = view.position_of(stmt.span.end).line + 1;
+            let blank = |n: u32| {
+                doc.source()
+                    .lines()
+                    .nth(n as usize)
+                    .is_some_and(|l| l.trim().is_empty())
+            };
+            // Don't leave a doubled blank line where the import was.
+            if first > 0 && blank(first - 1) && blank(end) {
+                end += 1;
+            }
+            Range::new(Position::new(first, 0), Position::new(end, 0))
+        }
+    };
+    TextEdit {
+        range,
+        new_text: String::new(),
     }
 }
 
@@ -193,10 +240,6 @@ fn group_use_edits(
             new_text: import,
         }];
     }
-    let removal = match decl.uses.get(idx + 1) {
-        Some(next) => range(item.span.start, next.span.start),
-        None => range(decl.uses[idx - 1].span.end, item.span.end),
-    };
     let line_start = source[..stmt.span.start as usize]
         .rfind('\n')
         .map_or(0, |i| i + 1);
@@ -204,10 +247,7 @@ fn group_use_edits(
     let indent = &indent[..indent.len() - indent.trim_start_matches([' ', '\t']).len()];
     let after = Position::new(view.position_of(stmt.span.end).line + 1, 0);
     vec![
-        TextEdit {
-            range: removal,
-            new_text: String::new(),
-        },
+        remove_use_item(doc, stmt, decl, idx),
         TextEdit {
             range: Range::new(after, after),
             new_text: format!("{indent}{import}\n"),
