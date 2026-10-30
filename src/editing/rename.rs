@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::ops::ControlFlow;
 
@@ -24,6 +25,16 @@ use crate::text::utf16_code_units;
 /// per PHP's case-insensitive semantics, but rename edits follow the
 /// case-sensitive editor convention) and must not be edited.
 pub fn narrow_range_to_word(source: &str, range: Range, word: &str) -> Option<Range> {
+    narrow_range(source, range, word, false)
+}
+
+/// [`narrow_range_to_word`] matching `word` in any ASCII case, as PHP resolves
+/// class names.
+pub fn narrow_range_to_word_any_case(source: &str, range: Range, word: &str) -> Option<Range> {
+    narrow_range(source, range, word, true)
+}
+
+fn narrow_range(source: &str, range: Range, word: &str, ignore_case: bool) -> Option<Range> {
     if word.is_empty() || range.start.line != range.end.line {
         return None;
     }
@@ -45,14 +56,24 @@ pub fn narrow_range_to_word(source: &str, range: Range, word: &str) -> Option<Ra
     let start_b = byte_at_col(range.start.character)?;
     let end_b = byte_at_col(range.end.character)?;
     let slice = line.get(start_b..end_b)?;
-    if slice == word {
+    if slice == word || (ignore_case && slice.eq_ignore_ascii_case(word)) {
         return Some(range);
     }
+    // ASCII case folding keeps byte offsets, so matches index into `slice`.
+    let (haystack, word): (Cow<str>, Cow<str>) = if ignore_case {
+        (
+            slice.to_ascii_lowercase().into(),
+            word.to_ascii_lowercase().into(),
+        )
+    } else {
+        (slice.into(), word.into())
+    };
+    let word = word.as_ref();
 
     let is_word_char = |c: char| c.is_alphanumeric() || c == '_';
     let mut found: Option<usize> = None;
     let mut search = 0usize;
-    while let Some(pos) = slice[search..].find(word) {
+    while let Some(pos) = haystack[search..].find(word) {
         let abs = search + pos;
         let before_ok = abs == 0 || !slice[..abs].chars().next_back().is_some_and(is_word_char);
         let after = abs + word.len();

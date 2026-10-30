@@ -17,7 +17,12 @@ fn find_use_items(source: &str, stmts: &[Stmt<'_, '_>], target: &str, out: &mut 
         match &stmt.kind {
             StmtKind::Use(u) if u.kind == UseKind::Normal => {
                 for item in u.uses.iter() {
-                    if item.name.to_string_repr().trim_start_matches('\\') != target {
+                    if !item
+                        .name
+                        .to_string_repr()
+                        .trim_start_matches('\\')
+                        .eq_ignore_ascii_case(target)
+                    {
                         continue;
                     }
                     let name_span = item.name.span();
@@ -496,6 +501,42 @@ pub fn docblock_reference_edits(
         }
     }
     edits
+}
+
+/// Case variants of class `fqn` spelled in `source`, as FQNs; mir keys class references by spelling.
+pub fn class_case_variants(source: &str, fqn: &str, out: &mut std::collections::HashSet<String>) {
+    let fqn = fqn.trim_start_matches('\\');
+    let (ns, short) = (namespace_of(fqn), crate::text::fqn_short_name(fqn));
+    let is_name_byte = |b: u8| b.is_ascii_alphanumeric() || b == b'_' || b >= 0x80;
+    let lower = source.to_ascii_lowercase();
+    let mut find = |needle: &str, qualified: bool| {
+        let needle = needle.to_ascii_lowercase();
+        for (at, _) in lower.match_indices(&needle) {
+            let end = at + needle.len();
+            let bytes = source.as_bytes();
+            let before = at.checked_sub(1).map(|i| bytes[i]);
+            let bounded = before.is_none_or(|b| !is_name_byte(b) && (qualified || b != b'\\'))
+                && bytes
+                    .get(end)
+                    .is_none_or(|&b| !is_name_byte(b) && b != b'\\');
+            if !bounded {
+                continue;
+            }
+            let spelled = &source[at..end];
+            let variant = if qualified {
+                spelled.to_string()
+            } else {
+                qualify(ns, spelled)
+            };
+            if variant != fqn {
+                out.insert(variant);
+            }
+        }
+    };
+    if !ns.is_empty() {
+        find(fqn, true);
+    }
+    find(short, false);
 }
 
 const NON_CLASS_TYPES: &[&str] = &[

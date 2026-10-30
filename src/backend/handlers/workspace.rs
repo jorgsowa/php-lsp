@@ -8,8 +8,8 @@ use tower_lsp_server::ls_types::*;
 
 use crate::analysis::semantic_tokens::legend;
 use crate::editing::file_rename::{
-    delete_use_in_source, docblock_reference_edits, moved_file_edits, qualified_reference_edit,
-    same_namespace_import_edit, use_edits_in_source,
+    class_case_variants, delete_use_in_source, docblock_reference_edits, moved_file_edits,
+    qualified_reference_edit, same_namespace_import_edit, use_edits_in_source,
 };
 use crate::index::workspace_scan::{scan_workspace, send_refresh_requests};
 use crate::lang::autoload::Psr4Map;
@@ -893,9 +893,27 @@ impl Backend {
                 let files: Vec<std::sync::Arc<str>> = self.docs.reference_candidate_files(&symbol);
                 let docs = std::sync::Arc::clone(&self.docs);
                 let candidate_files = files.clone();
+                let old_fqn_task = old_fqn.clone();
                 let locations = tokio::task::spawn_blocking(move || {
                     let (_interactive, cancel_rev) = docs.settled_write_rev_guard();
-                    docs.indexed_references(&symbol, &files, true, Some(cancel_rev))
+                    let mut variants = std::collections::HashSet::new();
+                    for uri in files.iter().filter_map(|f| f.parse::<Uri>().ok()) {
+                        if let Some(text) = docs.source_text(&uri) {
+                            class_case_variants(&text, &old_fqn_task, &mut variants);
+                        }
+                    }
+                    let mut locations =
+                        docs.indexed_references(&symbol, &files, true, Some(cancel_rev))?;
+                    for variant in variants {
+                        let variant = mir_analyzer::Name::class(variant);
+                        locations.extend(docs.indexed_references(
+                            &variant,
+                            &files,
+                            true,
+                            Some(cancel_rev),
+                        )?);
+                    }
+                    Ok::<_, crate::document::document_store::ContentModified>(locations)
                 })
                 .await
                 .unwrap_or_else(|_| Ok(Vec::new()))?;
@@ -917,7 +935,7 @@ impl Backend {
                         let Some(doc) = docs.get_doc_salsa(&loc.uri) else {
                             continue;
                         };
-                        let Some(range) = crate::editing::rename::narrow_range_to_word(
+                        let Some(range) = crate::editing::rename::narrow_range_to_word_any_case(
                             doc.source(),
                             loc.range,
                             &old_short_task,
