@@ -3,7 +3,7 @@ use tower_lsp_server::ls_types::{Position, Range, TextEdit};
 
 use crate::document::ast::{ParsedDoc, use_item_alias_and_fqn};
 use crate::lang::file_header::{NamespaceSegment, UseInsertion, namespace_at, use_insertion};
-use crate::navigation::walk::all_class_ref_names_in_stmts;
+use crate::navigation::walk::{all_class_ref_names_in_stmts, function_and_const_names_in_stmts};
 
 /// Find every `use` item in `stmts` whose FQN (leading `\` ignored) equals
 /// `target`, restricted to `use ClassName` statements (`UseKind::Normal`) —
@@ -268,12 +268,12 @@ fn namespace_of(fqn: &str) -> &str {
 
 /// Edits for a class file moved from `old_fqn` to `new_fqn`: its namespace
 /// declaration, plus imports for names that resolved against the old namespace.
-/// `is_class` tells whether an FQN names a known class-like, for docblock names.
+/// `exists` tells whether an FQN names a known class-like, function or constant.
 pub fn moved_file_edits(
     doc: &ParsedDoc,
     old_fqn: &str,
     new_fqn: &str,
-    is_class: impl Fn(&str) -> bool,
+    exists: impl Fn(UseKind, &str) -> bool,
 ) -> Vec<TextEdit> {
     let (old_ns, new_ns) = (namespace_of(old_fqn), namespace_of(new_fqn));
     if old_ns.eq_ignore_ascii_case(new_ns) {
@@ -301,16 +301,19 @@ pub fn moved_file_edits(
     let docblock_names = docblock_type_names(doc.source());
     for segment in segments {
         let names = old_namespace_names(&segment, &docblock_names, |name| {
-            is_class(&qualify(old_ns, name))
+            exists(UseKind::Normal, &qualify(old_ns, name))
         });
-        if names.is_empty() {
-            continue;
-        }
-        let insertion = use_insertion(doc, doc.view().position_of(segment.body_start), |_| true);
-        let stmts: Vec<String> = names
+        let mut stmts: Vec<String> = names
             .iter()
             .map(|name| format!("use {};", qualify(old_ns, name)))
             .collect();
+        stmts.extend(old_namespace_function_const_imports(
+            &segment, old_ns, &exists,
+        ));
+        if stmts.is_empty() {
+            continue;
+        }
+        let insertion = use_insertion(doc, doc.view().position_of(segment.body_start), |_| true);
         let pos = insertion.position();
         // Edit dedup keeps one insert per position, so extend an inserted namespace line.
         match edits
@@ -389,6 +392,64 @@ fn old_namespace_names(
         out.push(name.to_string());
     }
     out.sort_by_key(|n| n.to_ascii_lowercase());
+    out
+}
+
+/// `use function`/`use const` statements for unqualified calls and constants
+/// in `segment` that resolve to ones declared in `old_ns`.
+fn old_namespace_function_const_imports(
+    segment: &NamespaceSegment<'_, '_, '_>,
+    old_ns: &str,
+    exists: &impl Fn(UseKind, &str) -> bool,
+) -> Vec<String> {
+    if old_ns.is_empty() {
+        return Vec::new();
+    }
+    // Function names are case-insensitive, constant names case-sensitive.
+    let mut bound_functions = std::collections::HashSet::new();
+    let mut bound_consts = std::collections::HashSet::new();
+    for stmt in segment.stmts {
+        match &stmt.kind {
+            StmtKind::Use(u) => {
+                for item in u.uses.iter() {
+                    let (alias, _) = use_item_alias_and_fqn(item);
+                    match item.kind.unwrap_or(u.kind) {
+                        UseKind::Function => bound_functions.insert(alias.to_ascii_lowercase()),
+                        UseKind::Const => bound_consts.insert(alias),
+                        UseKind::Normal => false,
+                    };
+                }
+            }
+            StmtKind::Function(f) => {
+                bound_functions.extend(f.name.as_str().map(str::to_ascii_lowercase));
+            }
+            StmtKind::Const(items) => {
+                bound_consts.extend(
+                    items
+                        .iter()
+                        .filter_map(|i| i.name.as_str())
+                        .map(String::from),
+                );
+            }
+            _ => {}
+        }
+    }
+    let (mut functions, mut constants) = function_and_const_names_in_stmts(segment.stmts);
+    functions.sort_by_key(|n| n.to_ascii_lowercase());
+    constants.sort();
+    let mut out = Vec::new();
+    for name in functions.iter().filter(|n| !n.contains('\\')) {
+        let fqn = qualify(old_ns, name);
+        if bound_functions.insert(name.to_ascii_lowercase()) && exists(UseKind::Function, &fqn) {
+            out.push(format!("use function {fqn};"));
+        }
+    }
+    for name in constants.iter().filter(|n| !n.contains('\\')) {
+        let fqn = qualify(old_ns, name);
+        if bound_consts.insert(name.clone()) && exists(UseKind::Const, &fqn) {
+            out.push(format!("use const {fqn};"));
+        }
+    }
     out
 }
 

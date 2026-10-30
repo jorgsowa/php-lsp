@@ -3,9 +3,10 @@
 use std::ops::ControlFlow;
 
 use php_ast::{
-    ArrowFunctionExpr, Attribute, CatchClause, ClassMember, ClassMemberKind, ClosureExpr,
-    EnumMember, EnumMemberKind, Expr, ExprKind, MethodDecl, Name, NamespaceBody, Span, Stmt,
-    StmtKind, TraitUseDecl, TypeHint, TypeHintKind, UnaryPostfixOp, UnaryPrefixOp,
+    ArrowFunctionExpr, Attribute, BinaryOp, CallableCreateKind, CatchClause, ClassMember,
+    ClassMemberKind, ClosureExpr, EnumMember, EnumMemberKind, Expr, ExprKind, MethodDecl, Name,
+    NamespaceBody, Span, Stmt, StmtKind, TraitUseDecl, TypeHint, TypeHintKind, UnaryPostfixOp,
+    UnaryPrefixOp,
     visitor::{
         Visitor, walk_attribute, walk_catch_clause, walk_class_member, walk_enum_member, walk_expr,
         walk_stmt, walk_trait_use, walk_type_hint,
@@ -810,9 +811,7 @@ impl<'arena, 'src> Visitor<'arena, 'src> for AllClassRefsVisitor {
                     self.push_name(iface);
                 }
             }
-            ExprKind::Binary(b) => {
-                // `$x instanceof Foo` — parser models this as a Binary expr
-                // whose right-hand side is an Identifier.
+            ExprKind::Binary(b) if b.op == BinaryOp::Instanceof => {
                 if let ExprKind::Identifier(id) = &b.right.kind {
                     self.push_id(id);
                 }
@@ -877,6 +876,79 @@ impl<'arena, 'src> Visitor<'arena, 'src> for AllClassRefsVisitor {
             self.push_name(name);
         }
         walk_trait_use(self, trait_use)
+    }
+}
+
+/// Names of the functions called and constants read in `stmts`, as spelled.
+pub fn function_and_const_names_in_stmts(stmts: &[Stmt<'_, '_>]) -> (Vec<String>, Vec<String>) {
+    let mut v = FunctionConstRefsVisitor::default();
+    for stmt in stmts {
+        let _ = v.visit_stmt(stmt);
+    }
+    (v.functions, v.constants)
+}
+
+#[derive(Default)]
+struct FunctionConstRefsVisitor {
+    functions: Vec<String>,
+    constants: Vec<String>,
+    // Identifiers naming a class or member rather than a constant.
+    non_constants: std::collections::HashSet<(u32, u32)>,
+}
+
+impl FunctionConstRefsVisitor {
+    fn skip(&mut self, expr: &Expr<'_, '_>) {
+        self.non_constants.insert((expr.span.start, expr.span.end));
+    }
+
+    fn call(&mut self, name: &Expr<'_, '_>) {
+        if let ExprKind::Identifier(id) = &name.kind {
+            self.functions.push(id.to_string());
+        }
+        self.skip(name);
+    }
+}
+
+impl<'arena, 'src> Visitor<'arena, 'src> for FunctionConstRefsVisitor {
+    fn visit_expr(&mut self, expr: &Expr<'arena, 'src>) -> ControlFlow<()> {
+        match &expr.kind {
+            ExprKind::FunctionCall(c) => self.call(c.name),
+            ExprKind::CallableCreate(c) => match &c.kind {
+                CallableCreateKind::Function(name) => self.call(name),
+                CallableCreateKind::Method { method, .. }
+                | CallableCreateKind::NullsafeMethod { method, .. } => self.skip(method),
+                CallableCreateKind::StaticMethod { class, method } => {
+                    self.skip(class);
+                    self.skip(method);
+                }
+            },
+            ExprKind::New(n) => self.skip(n.class),
+            ExprKind::PropertyAccess(p) | ExprKind::NullsafePropertyAccess(p) => {
+                self.skip(p.property)
+            }
+            ExprKind::MethodCall(m) | ExprKind::NullsafeMethodCall(m) => self.skip(m.method),
+            ExprKind::StaticPropertyAccess(s) | ExprKind::ClassConstAccess(s) => {
+                self.skip(s.class);
+                self.skip(s.member);
+            }
+            ExprKind::StaticMethodCall(s) => {
+                self.skip(s.class);
+                self.skip(s.method);
+            }
+            ExprKind::StaticDynMethodCall(s) => self.skip(s.class),
+            ExprKind::ClassConstAccessDynamic { class, .. }
+            | ExprKind::StaticPropertyAccessDynamic { class, .. } => self.skip(class),
+            ExprKind::Binary(b) if b.op == BinaryOp::Instanceof => self.skip(b.right),
+            ExprKind::Identifier(id)
+                if !self
+                    .non_constants
+                    .contains(&(expr.span.start, expr.span.end)) =>
+            {
+                self.constants.push(id.to_string())
+            }
+            _ => {}
+        }
+        walk_expr(self, expr)
     }
 }
 
@@ -1158,6 +1230,23 @@ mod tests {
         let doc = parse(src);
         let out = all_class_ref_names_in_stmts(&doc.program().stmts);
         assert!(out.contains(&"MyClass".to_string()));
+    }
+
+    #[test]
+    fn all_class_refs_skips_constant_operands() {
+        let src = "<?php\n$x = $a + LIMIT;\n$y = $a ?? FALLBACK;";
+        let doc = parse(src);
+        let out = all_class_ref_names_in_stmts(&doc.program().stmts);
+        assert!(out.is_empty(), "got {out:?}");
+    }
+
+    #[test]
+    fn function_and_const_names_skip_members_and_classes() {
+        let src = "<?php\nfoo(BAR, \\Ns\\BAZ);\n$o->m();\n$o->p;\nA::B;\nA::c();\nnew D();\n$x instanceof E;\nqux(...);";
+        let doc = parse(src);
+        let (functions, constants) = function_and_const_names_in_stmts(&doc.program().stmts);
+        assert_eq!(functions, vec!["foo", "qux"]);
+        assert_eq!(constants, vec!["BAR", "\\Ns\\BAZ"]);
     }
 
     #[test]

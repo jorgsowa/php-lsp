@@ -869,9 +869,19 @@ impl Backend {
                 let (old_fqn_task, new_fqn_task) = (old_fqn.clone(), new_fqn.clone());
                 let edits = tokio::task::spawn_blocking(move || {
                     let doc = docs.get_doc_salsa(&old_uri)?;
-                    let edits = moved_file_edits(&doc, &old_fqn_task, &new_fqn_task, |fqn| {
-                        docs.find_class_like(fqn).is_some()
-                    });
+                    let edits =
+                        moved_file_edits(&doc, &old_fqn_task, &new_fqn_task, |kind, fqn| {
+                            let name = match kind {
+                                php_ast::UseKind::Normal => {
+                                    return docs.find_class_like(fqn).is_some();
+                                }
+                                php_ast::UseKind::Function => mir_analyzer::Name::function(fqn),
+                                php_ast::UseKind::Const => {
+                                    mir_analyzer::Name::GlobalConstant(fqn.into())
+                                }
+                            };
+                            docs.definition_location(&name).is_some()
+                        });
                     Some((old_uri, edits))
                 })
                 .await

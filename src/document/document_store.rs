@@ -2973,7 +2973,10 @@ impl DocumentStore {
             .collect()
     }
 
-    fn definition_location(&self, name: &mir_analyzer::Name) -> Option<mir_types::Location> {
+    pub(crate) fn definition_location(
+        &self,
+        name: &mir_analyzer::Name,
+    ) -> Option<mir_types::Location> {
         self.with_snapshot(|_| {}, |snap| snap.definition_of_cached(name))
             .ok()?
             .ok()
