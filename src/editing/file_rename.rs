@@ -182,24 +182,31 @@ fn remove_use_item(
     let range = match (decl.uses.get(idx + 1), idx.checked_sub(1)) {
         (Some(next), _) => range(item.span.start, next.span.start),
         (None, Some(prev)) => range(decl.uses[prev].span.end, item.span.end),
-        (None, None) => {
-            let first = view.position_of(stmt.span.start).line;
-            let mut end = view.position_of(stmt.span.end).line + 1;
-            let blank = |n: u32| {
-                doc.source()
-                    .lines()
-                    .nth(n as usize)
-                    .is_some_and(|l| l.trim().is_empty())
-            };
-            // Don't leave a doubled blank line where the import was.
-            if first > 0 && blank(first - 1) && blank(end) {
-                end += 1;
-            }
-            Range::new(Position::new(first, 0), Position::new(end, 0))
-        }
+        (None, None) => return remove_use_stmt(doc, stmt),
     };
     TextEdit {
         range,
+        new_text: String::new(),
+    }
+}
+
+/// Removes the lines of use statement `stmt`.
+fn remove_use_stmt(doc: &ParsedDoc, stmt: &Stmt<'_, '_>) -> TextEdit {
+    let view = doc.view();
+    let first = view.position_of(stmt.span.start).line;
+    let mut end = view.position_of(stmt.span.end).line + 1;
+    let blank = |n: u32| {
+        doc.source()
+            .lines()
+            .nth(n as usize)
+            .is_some_and(|l| l.trim().is_empty())
+    };
+    // Don't leave a doubled blank line where the import was.
+    if first > 0 && blank(first - 1) && blank(end) {
+        end += 1;
+    }
+    TextEdit {
+        range: Range::new(Position::new(first, 0), Position::new(end, 0)),
         new_text: String::new(),
     }
 }
@@ -300,6 +307,7 @@ pub fn moved_file_edits(
     };
     let docblock_names = docblock_type_names(doc.source());
     for segment in segments {
+        let removals = redundant_import_removals(doc, &segment, new_ns);
         let names = old_namespace_names(&segment, &docblock_names, |name| {
             exists(UseKind::Normal, &qualify(old_ns, name))
         });
@@ -311,10 +319,18 @@ pub fn moved_file_edits(
             &segment, old_ns, &exists,
         ));
         if stmts.is_empty() {
+            edits.extend(removals);
             continue;
         }
         let insertion = use_insertion(doc, doc.view().position_of(segment.body_start), |_| true);
         let pos = insertion.position();
+        // A removal swallowing the blank line after the imports must stop at the insertion.
+        edits.extend(removals.into_iter().map(|mut e| {
+            if e.range.start < pos && pos < e.range.end {
+                e.range.end = pos;
+            }
+            e
+        }));
         // Edit dedup keeps one insert per position, so extend an inserted namespace line.
         match edits
             .iter_mut()
@@ -329,6 +345,54 @@ pub fn moved_file_edits(
                 }
             }
             None => edits.push(separated_use_edit(doc, &insertion, &stmts)),
+        }
+    }
+    edits
+}
+
+/// Edits removing class imports in `segment` that name a class in `new_ns`
+/// under its own short name, since the file resolves those unqualified there.
+fn redundant_import_removals(
+    doc: &ParsedDoc,
+    segment: &NamespaceSegment<'_, '_, '_>,
+    new_ns: &str,
+) -> Vec<TextEdit> {
+    let view = doc.view();
+    let range = |start: u32, end: u32| Range::new(view.position_of(start), view.position_of(end));
+    let mut edits = Vec::new();
+    for stmt in segment.stmts {
+        let StmtKind::Use(decl) = &stmt.kind else {
+            continue;
+        };
+        let redundant: Vec<bool> = decl
+            .uses
+            .iter()
+            .map(|item| {
+                let (alias, fqn) = use_item_alias_and_fqn(item);
+                matches!(item.kind.unwrap_or(decl.kind), UseKind::Normal)
+                    && namespace_of(&fqn).eq_ignore_ascii_case(new_ns)
+                    && alias.eq_ignore_ascii_case(crate::text::fqn_short_name(&fqn))
+            })
+            .collect();
+        let Some(last_kept) = redundant.iter().rposition(|r| !r) else {
+            if !redundant.is_empty() {
+                edits.push(remove_use_stmt(doc, stmt));
+            }
+            continue;
+        };
+        let items = &decl.uses;
+        for idx in (0..last_kept).filter(|&i| redundant[i]) {
+            edits.push(TextEdit {
+                range: range(items[idx].span.start, items[idx + 1].span.start),
+                new_text: String::new(),
+            });
+        }
+        // Trailing removed items go with the comma after the last kept one.
+        if last_kept + 1 < items.len() {
+            edits.push(TextEdit {
+                range: range(items[last_kept].span.end, items[items.len() - 1].span.end),
+                new_text: String::new(),
+            });
         }
     }
     edits
