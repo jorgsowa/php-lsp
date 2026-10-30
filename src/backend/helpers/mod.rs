@@ -255,15 +255,15 @@ impl Backend {
     }
 
     /// Rebuild the PSR-4 map when composer metadata is among `changed`, and
-    /// the parts of the Laravel index its changes under the first root alter.
+    /// the parts of the Laravel index its changes alter.
     pub(super) async fn reload_project_metadata(
         &self,
         changed: &[(std::path::PathBuf, FileChangeType)],
     ) {
         let roots: Vec<std::path::PathBuf> = (**self.root_paths.load()).clone();
-        let Some(first_root) = roots.first().cloned() else {
+        if roots.is_empty() {
             return;
-        };
+        }
         let inputs: Vec<_> = roots
             .iter()
             .map(|root| crate::lang::autoload::Psr4Inputs::new(root))
@@ -273,6 +273,7 @@ impl Backend {
             .any(|(p, _)| inputs.iter().any(|i| i.contains(p)));
         if psr4_changed {
             let extensions = self.config.load().php_file_extensions();
+            let roots = roots.clone();
             let psr4 = tokio::task::spawn_blocking(move || {
                 let mut merged = crate::lang::autoload::Psr4Map::empty();
                 for root in &roots {
@@ -291,7 +292,7 @@ impl Backend {
         let current = self.laravel.load_full();
         let changed = changed.to_vec();
         if let Ok(Some(index)) =
-            tokio::task::spawn_blocking(move || current.reloaded(&first_root, &changed)).await
+            tokio::task::spawn_blocking(move || current.reloaded(&roots, &changed)).await
         {
             self.laravel.store(Arc::new(index));
         }

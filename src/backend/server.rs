@@ -1353,7 +1353,7 @@ impl LanguageServer for Backend {
             // string literal is never a `word_at_position` match. Mirrors
             // `handle_goto_definition`'s same early check.
             let laravel = self.laravel.load();
-            let laravel_root = self.root_paths.load().first().cloned();
+            let laravel_root = laravel.root.clone();
             let laravel_hover = crate::laravel::hover_for_string_key(
                 &doc,
                 position,

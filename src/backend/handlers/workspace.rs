@@ -403,10 +403,10 @@ impl Backend {
             // `initialize` already loaded the PSR-4 map. The Laravel index
             // walks and parses project files, so it loads beside the scan.
             let laravel_load = {
-                let root = roots[0].clone();
+                let roots = roots.clone();
                 let laravel = Arc::clone(&self.laravel);
                 tokio::task::spawn_blocking(move || {
-                    let index = crate::laravel::LaravelIndex::load(&root);
+                    let index = crate::laravel::LaravelIndex::load_first(&roots);
                     let is_laravel = index.is_laravel;
                     laravel.store(Arc::new(index));
                     is_laravel

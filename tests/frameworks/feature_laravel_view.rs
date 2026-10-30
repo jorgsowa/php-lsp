@@ -67,3 +67,46 @@ async fn view_call_completion_lists_views_by_prefix() {
     let out = render_completion(&resp);
     expect!["File        admin.dashboard"].assert_eq(&out);
 }
+
+#[cfg(unix)]
+#[tokio::test]
+async fn views_and_config_behind_symlinks_are_indexed() {
+    use std::os::unix::fs::symlink;
+    let shared = tempfile::tempdir().expect("shared tempdir");
+    std::fs::create_dir_all(shared.path().join("views/emails")).unwrap();
+    std::fs::write(
+        shared.path().join("views/emails/welcome.blade.php"),
+        "<h1>Hi</h1>\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(shared.path().join("config")).unwrap();
+    std::fs::write(
+        shared.path().join("config/mail.php"),
+        "<?php\nreturn ['from' => 'a@b.c'];\n",
+    )
+    .unwrap();
+    let workspace = tempfile::tempdir().expect("workspace tempdir");
+    write_minimal_laravel_project(workspace.path());
+    symlink(
+        shared.path().join("views/emails"),
+        workspace.path().join("resources/views/emails"),
+    )
+    .unwrap();
+    symlink(
+        shared.path().join("config"),
+        workspace.path().join("config"),
+    )
+    .unwrap();
+    let php = "<?php\nreturn view('emails.welcome', ['f' => config('mail.from')]);\n";
+    std::fs::write(workspace.path().join("app.php"), php).unwrap();
+
+    let mut s = TestServer::with_root(workspace.path()).await;
+    s.wait_for_index_ready().await;
+    s.open("app.php", php).await;
+
+    let resp = s.definition("app.php", 1, 20).await;
+    expect!["resources/views/emails/welcome.blade.php:0:0-0:0"]
+        .assert_eq(&render_locations(&resp, &s.uri("")));
+    let resp = s.definition("app.php", 1, 52).await;
+    expect!["config/mail.php:1:9-1:13"].assert_eq(&render_locations(&resp, &s.uri("")));
+}

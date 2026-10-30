@@ -91,3 +91,41 @@ async fn config_call_goto_definition_resolves_key_in_non_utf8_file() {
     let out = render_locations(&resp, &s.uri(""));
     expect!["config/app.php:3:5-3:9"].assert_eq(&out);
 }
+
+#[tokio::test]
+async fn laravel_app_in_second_workspace_root_is_indexed() {
+    use serde_json::json;
+    let lib = tempfile::tempdir().expect("lib tempdir");
+    std::fs::write(lib.path().join("Util.php"), "<?php\nclass Util {}\n").unwrap();
+    let app = tempfile::tempdir().expect("app tempdir");
+    write_minimal_laravel_project(app.path());
+    let php = "<?php\n$driver = config('database.default');\n";
+    std::fs::write(app.path().join("app.php"), php).unwrap();
+
+    let mut s = TestServer::with_roots(&[lib.path(), app.path()]).await;
+    s.wait_for_index_ready().await;
+    let app_uri = tower_lsp_server::ls_types::Uri::from_file_path(app.path()).unwrap();
+    let uri = format!("{}/app.php", app_uri.as_str());
+    let client = s.client();
+    client
+        .notify(
+            "textDocument/didOpen",
+            json!({"textDocument": {"uri": uri, "languageId": "php", "version": 1, "text": php}}),
+        )
+        .await;
+    client.wait_for_diagnostics_version(&uri, 1).await;
+    let at = json!({"textDocument": {"uri": uri}, "position": {"line": 1, "character": 26}});
+
+    let resp = client.request("textDocument/definition", at.clone()).await;
+    expect!["config/database.php:2:5-2:12"].assert_eq(&render_locations(&resp, app_uri.as_str()));
+    // Hover shows the definition path relative to the Laravel app's root.
+    let resp = client.request("textDocument/hover", at).await;
+    expect![[r#"
+        **config('database.default')**
+
+        ```php
+        'default' => 'mysql',
+        ```
+
+        `config/database.php`"#]].assert_eq(&render_hover(&resp));
+}

@@ -96,6 +96,8 @@ const VITE_CALL_NAMES: &[&str] = &["vite"];
 #[derive(Debug, Default, Clone)]
 pub struct LaravelIndex {
     pub is_laravel: bool,
+    /// The workspace root holding the Laravel app.
+    pub root: Option<std::path::PathBuf>,
     pub env: EnvIndex,
     pub config: ConfigIndex,
     pub views: ViewIndex,
@@ -119,6 +121,7 @@ impl LaravelIndex {
         }
         Self {
             is_laravel: true,
+            root: Some(root.to_path_buf()),
             env: EnvIndex::load(root),
             config: ConfigIndex::load(root),
             views: ViewIndex::load(root),
@@ -133,23 +136,37 @@ impl LaravelIndex {
         }
     }
 
-    /// The index for `root` after `changes`, reloading only the parts they can
-    /// alter, or `None` when they alter nothing.
+    /// The index for the first of `roots` holding a Laravel app.
+    #[cfg_attr(target_family = "wasm", allow(dead_code))]
+    pub fn load_first(roots: &[std::path::PathBuf]) -> Self {
+        roots
+            .iter()
+            .find(|root| detect::is_laravel_project(root))
+            .map_or_else(Self::default, |root| Self::load(root))
+    }
+
+    /// The index for workspace `roots` after `changes`, reloading only the
+    /// parts they can alter, or `None` when they alter nothing.
     #[cfg_attr(target_family = "wasm", allow(dead_code))]
     pub fn reloaded(
         &self,
-        root: &Path,
+        roots: &[std::path::PathBuf],
         changes: &[(std::path::PathBuf, FileChangeType)],
     ) -> Option<Self> {
+        let detection_changed = changes.iter().any(|(path, _)| {
+            roots.iter().any(|root| {
+                path.strip_prefix(root).is_ok_and(|rel| {
+                    rel == Path::new("artisan") || rel == Path::new("composer.json")
+                })
+            })
+        });
+        if detection_changed {
+            return Some(Self::load_first(roots));
+        }
+        let root = self.root.as_deref()?;
         let mut parts = Vec::new();
         for (path, change) in changes {
-            let Ok(rel) = path.strip_prefix(root) else {
-                continue;
-            };
-            if rel == Path::new("artisan") || rel == Path::new("composer.json") {
-                return Some(Self::load(root));
-            }
-            if self.is_laravel {
+            if let Ok(rel) = path.strip_prefix(root) {
                 affected_parts(rel, *change != FileChangeType::CHANGED, &mut parts);
             }
         }

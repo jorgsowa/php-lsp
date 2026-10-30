@@ -62,7 +62,7 @@ fn load_lang_root(lang_root: &Path, out: &mut HashMap<String, Location>) {
     let mut json_files: Vec<PathBuf> = Vec::new();
     for entry in entries.flatten() {
         let path = entry.path();
-        if entry.file_type().is_ok_and(|t| t.is_dir()) {
+        if path.is_dir() {
             locale_dirs.push(path);
         } else if path.extension().is_some_and(|e| e == "json") {
             json_files.push(path);
@@ -286,7 +286,7 @@ fn group_php_file_path(root: &Path, group: &str) -> Option<PathBuf> {
             continue;
         };
         for entry in entries.flatten() {
-            if !entry.file_type().is_ok_and(|t| t.is_dir()) {
+            if !entry.path().is_dir() {
                 continue;
             }
             let candidate = entry.path().join(format!("{group}.php"));

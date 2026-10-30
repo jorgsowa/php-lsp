@@ -15,6 +15,7 @@ All notable changes to php-lsp are documented here.
 - **Symlinks into another workspace root aren't followed**: in a multi-root workspace, a link from one root into another indexed the target's files a second time under the link path.
 - **Formatter and `php --version` runs are bounded**: `php-cs-fixer` and `phpcbf` are killed after 10 seconds and `php --version` after 5, with any processes they started. A hung formatter held the request forever, and a hung `php` wrapper stalled `initialize`. Large files no longer deadlock the formatter on a full output pipe.
 - **Startup no longer stalls on the Laravel index**: `initialized` built the Laravel index on the request loop and loaded the PSR-4 map a second time, holding every request that arrived meanwhile. The index now loads beside the workspace scan, before `indexReady`.
+- **Laravel apps in any workspace root, and behind symlinks, are indexed**: the Laravel index read only the first workspace root, so an app opened as a later folder had no `config()`, `view()`, `route()` or other string-key support. It now uses the first root holding a Laravel app, and hover paths and code actions resolve against that root. Symlinked directories under `config/`, `routes/`, `lang/`, `resources/views/`, `public/` and the component folders are followed, each target once.
 
 ## [0.29.0] — 2026-10-28
 

@@ -41,24 +41,13 @@ impl ComponentIndex {
     pub(super) fn load(root: &Path) -> Self {
         let mut components = HashMap::new();
         let base = root.join("app").join("View").join("Components");
-        walk(&base, &base, &mut components);
+        walk(&base, &mut components);
         Self { components }
     }
 }
 
-fn walk(base: &Path, dir: &Path, out: &mut HashMap<String, Location>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let Ok(file_type) = entry.file_type() else {
-            continue;
-        };
-        if file_type.is_dir() {
-            walk(base, &path, out);
-            continue;
-        }
+fn walk(base: &Path, out: &mut HashMap<String, Location>) {
+    for path in super::fs_walk::files_recursive(base) {
         let Some(name) = component_name_for(base, &path) else {
             continue;
         };

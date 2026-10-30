@@ -40,24 +40,13 @@ impl ViewIndex {
     pub(super) fn load(root: &Path) -> Self {
         let mut views = HashMap::new();
         let views_dir = root.join("resources").join("views");
-        walk(&views_dir, &views_dir, &mut views);
+        walk(&views_dir, &mut views);
         Self { views }
     }
 }
 
-fn walk(base: &Path, dir: &Path, out: &mut HashMap<String, Location>) {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let Ok(file_type) = entry.file_type() else {
-            continue;
-        };
-        if file_type.is_dir() {
-            walk(base, &path, out);
-            continue;
-        }
+fn walk(base: &Path, out: &mut HashMap<String, Location>) {
+    for path in super::fs_walk::files_recursive(base) {
         let Some(name) = view_name_for(base, &path) else {
             continue;
         };
