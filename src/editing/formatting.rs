@@ -11,10 +11,14 @@
 /// in-place, read the result, then return a single `TextEdit` that replaces
 /// the entire document (simplest correct approach for whole-file formatting).
 /// Range formatting narrows the edit to the requested line span.
-use std::process::{Command, Stdio};
+use std::process::Command;
+use std::time::Duration;
 use tower_lsp_server::ls_types::{Position, Range, TextEdit};
 
 use crate::text::end_position;
+
+/// Long enough for a cold php-cs-fixer start on a large file.
+const FORMATTER_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Format `source` with the best available PHP formatter.
 /// Returns `None` if no formatter is installed or if the source was unchanged.
@@ -173,18 +177,10 @@ fn try_php_cs_fixer(source: &str) -> Option<String> {
     //
     // We use `fix --quiet --rules=@PSR12 -` which outputs the fixed source on
     // stdout when stdin mode is supported (php-cs-fixer ≥ 3.x).
-    let output = Command::new("php-cs-fixer")
-        .args(["fix", "--quiet", "--no-interaction", "--rules=@PSR12", "-"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .ok()
-        .and_then(|mut child| {
-            use std::io::Write;
-            child.stdin.take()?.write_all(source.as_bytes()).ok()?;
-            child.wait_with_output().ok()
-        })?;
+    let mut command = Command::new("php-cs-fixer");
+    command.args(["fix", "--quiet", "--no-interaction", "--rules=@PSR12", "-"]);
+    let output =
+        crate::process::output_with_timeout(command, source.as_bytes(), FORMATTER_TIMEOUT)?;
 
     if output.status.success() || output.status.code() == Some(1) {
         // exit 0 = already formatted, exit 1 = fixed
@@ -198,18 +194,10 @@ fn try_php_cs_fixer(source: &str) -> Option<String> {
 
 fn try_phpcbf(source: &str) -> Option<String> {
     // phpcbf writes to stdout when passed `--stdin-path` and reads from stdin.
-    let output = Command::new("phpcbf")
-        .args(["--standard=PSR12", "--stdin-path=file.php", "-"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .ok()
-        .and_then(|mut child| {
-            use std::io::Write;
-            child.stdin.take()?.write_all(source.as_bytes()).ok()?;
-            child.wait_with_output().ok()
-        })?;
+    let mut command = Command::new("phpcbf");
+    command.args(["--standard=PSR12", "--stdin-path=file.php", "-"]);
+    let output =
+        crate::process::output_with_timeout(command, source.as_bytes(), FORMATTER_TIMEOUT)?;
 
     // phpcbf exits 1 on success (fixable issues found and fixed), 0 = nothing to fix
     if output.status.code() == Some(1) || output.status.success() {

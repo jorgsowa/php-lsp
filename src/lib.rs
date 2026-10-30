@@ -39,6 +39,7 @@ mod document; // document lifecycle: parsed AST, salsa store, open-file state
 mod index; //    workspace indexing: compact FileIndex, background scan, cache
 mod lang; //     PHP-language model: config, autoload, docblock, php_names
 mod laravel; //  Laravel framework support: project detection, string-key index (env/config/view/...)
+mod process; //  running external programs with a timeout
 mod text; //     generic text mechanics: offset, word, fuzzy, range
 mod types; //    type resolution & symbol lookup: type_map, type_query, resolve, symbol_map, stub_members
 

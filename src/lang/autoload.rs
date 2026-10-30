@@ -3,6 +3,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::Duration;
 
 use tower_lsp_server::ls_types::Uri;
 
@@ -401,10 +402,10 @@ fn detect_php_binary_version_with_cache(cache_file: Option<&Path>) -> Option<Str
         return Some(ver.to_string());
     }
 
-    let output = std::process::Command::new("php")
-        .arg("--version")
-        .output()
-        .ok()?;
+    let mut command = std::process::Command::new("php");
+    command.arg("--version");
+    // On the `initialize` path: a wrapper script that hangs mustn't stall startup.
+    let output = crate::process::output_with_timeout(command, b"", Duration::from_secs(5))?;
     let stdout = String::from_utf8_lossy(&output.stdout);
     // First line: "PHP X.Y.Z (cli) ..."
     let first_line = stdout.lines().next()?;

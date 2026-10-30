@@ -13,6 +13,7 @@ All notable changes to php-lsp are documented here.
 - **`autoload.files` entries are indexed once**: an entry like `./helpers.php`, or one the directory walk also reaches, was parsed twice and listed under two URIs.
 - **Added `use` statements are indented in braced namespaces**: imports added by completion, quick-fixes and file moves inside `namespace X { }` take the indentation of the namespace body instead of starting at column 0.
 - **Symlinks into another workspace root aren't followed**: in a multi-root workspace, a link from one root into another indexed the target's files a second time under the link path.
+- **Formatter and `php --version` runs are bounded**: `php-cs-fixer` and `phpcbf` are killed after 10 seconds and `php --version` after 5, with any processes they started. A hung formatter held the request forever, and a hung `php` wrapper stalled `initialize`. Large files no longer deadlock the formatter on a full output pipe.
 
 ## [0.29.0] — 2026-10-28
 
