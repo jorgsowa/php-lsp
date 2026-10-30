@@ -382,8 +382,8 @@ enum Request {
     PrepareRename,
     /// Pull diagnostics for every opened file.
     Diagnostics,
-    /// `workspace/willRenameFiles` for one `old new` pair of workspace paths.
-    WillRenameFiles(String, String),
+    /// `workspace/willRenameFiles` for `old new` pairs of workspace paths.
+    WillRenameFiles(Vec<(String, String)>),
 }
 
 impl Request {
@@ -421,10 +421,16 @@ impl Request {
             "rename" => Self::Rename(one_arg()),
             "prepare_rename" => Self::PrepareRename,
             "diagnostics" => Self::Diagnostics,
-            "will_rename_files" => match args.as_slice() {
-                [old, new] => Self::WillRenameFiles(old.to_string(), new.to_string()),
-                _ => panic!("{label}: `will_rename_files` takes `<old path> <new path>`"),
-            },
+            "will_rename_files" if !args.is_empty() && args.len().is_multiple_of(2) => {
+                Self::WillRenameFiles(
+                    args.chunks(2)
+                        .map(|p| (p[0].to_string(), p[1].to_string()))
+                        .collect(),
+                )
+            }
+            "will_rename_files" => {
+                panic!("{label}: `will_rename_files` takes `<old path> <new path>` pairs")
+            }
             other => panic!("{label}: unknown request `{other}`"),
         }
     }
@@ -746,10 +752,12 @@ async fn execute(server: &mut TestServer, request: &Request, fx: &Fixture) -> St
             }
             out.join("\n")
         }
-        Request::WillRenameFiles(old, new) => {
-            let resp = server
-                .will_rename_files(vec![(server.uri(old), server.uri(new))])
-                .await;
+        Request::WillRenameFiles(pairs) => {
+            let renames = pairs
+                .iter()
+                .map(|(old, new)| (server.uri(old), server.uri(new)))
+                .collect();
+            let resp = server.will_rename_files(renames).await;
             match resp.get("error").filter(|e| !e.is_null()) {
                 Some(err) => format!("error: {err}"),
                 None if resp["result"].is_null() => "null".to_owned(),

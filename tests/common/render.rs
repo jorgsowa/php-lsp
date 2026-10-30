@@ -48,18 +48,27 @@ pub fn canonicalize_workspace_edit(edit: &Value, root_uri: &str) -> String {
                 e["range"]["end"]["character"].as_u64().unwrap_or(0),
             )
         });
+        let pos = |p: &Value| {
+            (
+                p["line"].as_u64().unwrap_or(0),
+                p["character"].as_u64().unwrap_or(0),
+            )
+        };
+        let mut prev_end = (0, 0);
         for e in edits {
-            let s = &e["range"]["start"];
-            let en = &e["range"]["end"];
+            let (start, end) = (pos(&e["range"]["start"]), pos(&e["range"]["end"]));
             let text = e["newText"].as_str().unwrap_or("");
+            // Clients reject a whole WorkspaceEdit whose edits overlap.
+            let overlap = if start < prev_end {
+                "  !! overlaps"
+            } else {
+                ""
+            };
             out.push_str(&format!(
-                "{}:{}-{}:{} → {:?}\n",
-                s["line"].as_u64().unwrap_or(0),
-                s["character"].as_u64().unwrap_or(0),
-                en["line"].as_u64().unwrap_or(0),
-                en["character"].as_u64().unwrap_or(0),
-                text,
+                "{}:{}-{}:{} → {:?}{overlap}\n",
+                start.0, start.1, end.0, end.1, text,
             ));
+            prev_end = prev_end.max(end);
         }
         out.push('\n');
     }

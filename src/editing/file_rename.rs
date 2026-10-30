@@ -88,46 +88,90 @@ pub fn delete_use_in_source(doc: &ParsedDoc, fqn: &str) -> Vec<TextEdit> {
     edits
 }
 
-/// Find `use` statements in `doc` that reference `old_fqn` and return
-/// `TextEdit`s that replace `old_fqn` with `new_fqn` at each match. An import
-/// made redundant by sharing the namespace of `new_fqn` is removed instead.
+/// Edits making each class `use` item in `doc` that imports a moved class,
+/// per `moved_to`, import its new FQN; an import made redundant by sharing its
+/// new namespace is removed instead. Edits for one statement are built
+/// together so its moved members never yield overlapping edits.
 ///
 /// Handles:
 /// - `use OldFqn;`
 /// - `use \OldFqn;`
 /// - `use OldFqn as Alias;`
 /// - `use Old\{Fqn, Other};`
-pub fn use_edits_in_source(doc: &ParsedDoc, old_fqn: &str, new_fqn: &str) -> Vec<TextEdit> {
-    let old = old_fqn.trim_start_matches('\\');
-    let new_clean = new_fqn.trim_start_matches('\\');
-    let (new_ns, new_short) = (
-        namespace_of(new_clean),
-        crate::text::fqn_short_name(new_clean),
-    );
+pub fn use_edits_in_source(
+    doc: &ParsedDoc,
+    moved_to: impl Fn(&str) -> Option<String>,
+) -> Vec<TextEdit> {
     let source = doc.source();
-    let sv = doc.view();
+    let view = doc.view();
+    let range = |start: u32, end: u32| Range::new(view.position_of(start), view.position_of(end));
     let stmts = &doc.program().stmts;
-    let mut matches = Vec::new();
-    find_use_decl_items(stmts, old, &mut matches);
+    let mut decls = Vec::new();
+    class_use_decls(stmts, &mut decls);
 
     let mut edits = Vec::new();
-    for (stmt, decl, idx) in matches {
-        let item = &decl.uses[idx];
-        let in_new_ns = namespace_at(stmts, stmt.span.start)
-            .name()
-            .trim_start_matches('\\')
-            .eq_ignore_ascii_case(new_ns);
-        if in_new_ns && item.alias.is_none_or(|a| a.eq_ignore_ascii_case(new_short)) {
-            edits.push(remove_use_item(doc, stmt, decl, idx));
-        } else if is_group_member(item) {
-            edits.extend(group_use_edits(doc, stmt, decl, idx, new_clean));
-        } else {
-            let span = fqn_span_without_backslash(source, item.name.span());
-            edits.push(TextEdit {
-                range: sv.range_of(span),
-                new_text: new_clean.to_string(),
-            });
+    for (stmt, decl) in decls {
+        let mut removed = vec![false; decl.uses.len()];
+        let mut imports = Vec::new();
+        for (idx, item) in decl.uses.iter().enumerate() {
+            if !matches!(item.kind, None | Some(UseKind::Normal)) {
+                continue;
+            }
+            let Some(new) = moved_to(item.name.to_string_repr().trim_start_matches('\\')) else {
+                continue;
+            };
+            let new = new.trim_start_matches('\\');
+            let in_new_ns = namespace_at(stmts, stmt.span.start)
+                .name()
+                .trim_start_matches('\\')
+                .eq_ignore_ascii_case(namespace_of(new));
+            let short = crate::text::fqn_short_name(new);
+            if in_new_ns && item.alias.is_none_or(|a| a.eq_ignore_ascii_case(short)) {
+                removed[idx] = true;
+            } else if !is_group_member(item) {
+                let span = fqn_span_without_backslash(source, item.name.span());
+                edits.push(TextEdit {
+                    range: view.range_of(span),
+                    new_text: new.to_string(),
+                });
+            } else if let Some(rest) = group_member_spelling(source, item, new) {
+                edits.push(TextEdit {
+                    range: range(item.span.start, item.name.span().end),
+                    new_text: rest.to_string(),
+                });
+            } else {
+                removed[idx] = true;
+                imports.push(match item.alias {
+                    Some(alias) => format!("use {new} as {alias};"),
+                    None => format!("use {new};"),
+                });
+            }
         }
+        if imports.is_empty() {
+            edits.extend(use_item_removals(doc, stmt, decl, &removed));
+            continue;
+        }
+        let line_start = source[..stmt.span.start as usize]
+            .rfind('\n')
+            .map_or(0, |i| i + 1);
+        let indent = &source[line_start..stmt.span.start as usize];
+        let indent = &indent[..indent.len() - indent.trim_start_matches([' ', '\t']).len()];
+        if removed.iter().all(|&r| r) {
+            edits.push(TextEdit {
+                range: range(stmt.span.start, stmt.span.end),
+                new_text: imports.join(&format!("\n{indent}")),
+            });
+            continue;
+        }
+        edits.extend(use_item_removals(doc, stmt, decl, &removed));
+        let after = Position::new(view.position_of(stmt.span.end).line + 1, 0);
+        edits.push(TextEdit {
+            range: Range::new(after, after),
+            new_text: imports
+                .iter()
+                .map(|import| format!("{indent}{import}\n"))
+                .collect(),
+        });
     }
     edits
 }
@@ -136,31 +180,35 @@ fn is_group_member(item: &php_ast::UseItem<'_, '_>) -> bool {
     item.span.start > item.name.span().start
 }
 
-/// Each class `use` item in `stmts` importing `target`, plain or group member:
-/// `(statement, its declaration, item index)`.
-fn find_use_decl_items<'a, 'arena, 'src>(
+/// The spelling of `new` inside the group of member `item`, when `new` still
+/// starts with the group prefix.
+fn group_member_spelling<'n>(
+    source: &str,
+    item: &php_ast::UseItem<'_, '_>,
+    new: &'n str,
+) -> Option<&'n str> {
+    let local = &source[item.span.start as usize..item.name.span().end as usize];
+    let fqn = item.name.to_string_repr();
+    let prefix = fqn
+        .trim_start_matches('\\')
+        .strip_suffix(local)
+        .unwrap_or_default();
+    new.get(..prefix.len())
+        .filter(|p| !prefix.is_empty() && p.eq_ignore_ascii_case(prefix))
+        .map(|_| &new[prefix.len()..])
+}
+
+/// Each class `use` statement in `stmts` with its declaration.
+fn class_use_decls<'a, 'arena, 'src>(
     stmts: &'a [Stmt<'arena, 'src>],
-    target: &str,
-    out: &mut Vec<(&'a Stmt<'arena, 'src>, &'a UseDecl<'arena, 'src>, usize)>,
+    out: &mut Vec<(&'a Stmt<'arena, 'src>, &'a UseDecl<'arena, 'src>)>,
 ) {
     for stmt in stmts {
         match &stmt.kind {
-            StmtKind::Use(u) if u.kind == UseKind::Normal => {
-                for (idx, item) in u.uses.iter().enumerate() {
-                    if matches!(item.kind, None | Some(UseKind::Normal))
-                        && item
-                            .name
-                            .to_string_repr()
-                            .trim_start_matches('\\')
-                            .eq_ignore_ascii_case(target)
-                    {
-                        out.push((stmt, u, idx));
-                    }
-                }
-            }
+            StmtKind::Use(u) if u.kind == UseKind::Normal => out.push((stmt, u)),
             StmtKind::Namespace(ns) => {
                 if let NamespaceBody::Braced(inner) = &ns.body {
-                    find_use_decl_items(&inner.stmts, target, out);
+                    class_use_decls(&inner.stmts, out);
                 }
             }
             _ => {}
@@ -168,26 +216,39 @@ fn find_use_decl_items<'a, 'arena, 'src>(
     }
 }
 
-/// Removes item `idx` of `decl` with its separating comma, or the whole
-/// statement's lines when it is the only item.
-fn remove_use_item(
+/// Edits removing the items of `decl` flagged in `removed` with their
+/// separating commas, or the statement's lines when every item goes.
+fn use_item_removals(
     doc: &ParsedDoc,
     stmt: &Stmt<'_, '_>,
     decl: &UseDecl<'_, '_>,
-    idx: usize,
-) -> TextEdit {
+    removed: &[bool],
+) -> Vec<TextEdit> {
     let view = doc.view();
     let range = |start: u32, end: u32| Range::new(view.position_of(start), view.position_of(end));
-    let item = &decl.uses[idx];
-    let range = match (decl.uses.get(idx + 1), idx.checked_sub(1)) {
-        (Some(next), _) => range(item.span.start, next.span.start),
-        (None, Some(prev)) => range(decl.uses[prev].span.end, item.span.end),
-        (None, None) => return remove_use_stmt(doc, stmt),
+    let Some(last_kept) = removed.iter().rposition(|r| !r) else {
+        return if removed.is_empty() {
+            Vec::new()
+        } else {
+            vec![remove_use_stmt(doc, stmt)]
+        };
     };
-    TextEdit {
-        range,
-        new_text: String::new(),
+    let items = &decl.uses;
+    let mut edits: Vec<TextEdit> = (0..last_kept)
+        .filter(|&i| removed[i])
+        .map(|i| TextEdit {
+            range: range(items[i].span.start, items[i + 1].span.start),
+            new_text: String::new(),
+        })
+        .collect();
+    // Trailing removed items go with the comma after the last kept one.
+    if last_kept + 1 < items.len() {
+        edits.push(TextEdit {
+            range: range(items[last_kept].span.end, items[items.len() - 1].span.end),
+            new_text: String::new(),
+        });
     }
+    edits
 }
 
 /// Removes the lines of use statement `stmt`.
@@ -209,62 +270,6 @@ fn remove_use_stmt(doc: &ParsedDoc, stmt: &Stmt<'_, '_>) -> TextEdit {
         range: Range::new(Position::new(first, 0), Position::new(end, 0)),
         new_text: String::new(),
     }
-}
-
-/// Edits making group-use member `idx` of `decl` import `new` instead: the
-/// member is respelled when `new` shares the group prefix, else it moves to
-/// its own `use` after the statement.
-fn group_use_edits(
-    doc: &ParsedDoc,
-    stmt: &Stmt<'_, '_>,
-    decl: &UseDecl<'_, '_>,
-    idx: usize,
-    new: &str,
-) -> Vec<TextEdit> {
-    let source = doc.source();
-    let view = doc.view();
-    let range = |start: u32, end: u32| Range::new(view.position_of(start), view.position_of(end));
-    let item = &decl.uses[idx];
-    let name_end = item.name.span().end;
-    let local = &source[item.span.start as usize..name_end as usize];
-    let fqn = item.name.to_string_repr();
-    let prefix = fqn
-        .trim_start_matches('\\')
-        .strip_suffix(local)
-        .unwrap_or_default();
-    if let Some(rest) = new
-        .get(..prefix.len())
-        .filter(|p| !prefix.is_empty() && p.eq_ignore_ascii_case(prefix))
-        .map(|_| &new[prefix.len()..])
-    {
-        return vec![TextEdit {
-            range: range(item.span.start, name_end),
-            new_text: rest.to_string(),
-        }];
-    }
-    let import = match item.alias {
-        Some(alias) => format!("use {new} as {alias};"),
-        None => format!("use {new};"),
-    };
-    if decl.uses.len() == 1 {
-        return vec![TextEdit {
-            range: range(stmt.span.start, stmt.span.end),
-            new_text: import,
-        }];
-    }
-    let line_start = source[..stmt.span.start as usize]
-        .rfind('\n')
-        .map_or(0, |i| i + 1);
-    let indent = &source[line_start..stmt.span.start as usize];
-    let indent = &indent[..indent.len() - indent.trim_start_matches([' ', '\t']).len()];
-    let after = Position::new(view.position_of(stmt.span.end).line + 1, 0);
-    vec![
-        remove_use_item(doc, stmt, decl, idx),
-        TextEdit {
-            range: Range::new(after, after),
-            new_text: format!("{indent}{import}\n"),
-        },
-    ]
 }
 
 pub fn namespace_of(fqn: &str) -> &str {
@@ -378,8 +383,6 @@ fn redundant_import_removals(
     segment: &NamespaceSegment<'_, '_, '_>,
     new_ns: &str,
 ) -> Vec<TextEdit> {
-    let view = doc.view();
-    let range = |start: u32, end: u32| Range::new(view.position_of(start), view.position_of(end));
     let mut edits = Vec::new();
     for stmt in segment.stmts {
         let StmtKind::Use(decl) = &stmt.kind else {
@@ -395,26 +398,7 @@ fn redundant_import_removals(
                     && alias.eq_ignore_ascii_case(crate::text::fqn_short_name(&fqn))
             })
             .collect();
-        let Some(last_kept) = redundant.iter().rposition(|r| !r) else {
-            if !redundant.is_empty() {
-                edits.push(remove_use_stmt(doc, stmt));
-            }
-            continue;
-        };
-        let items = &decl.uses;
-        for idx in (0..last_kept).filter(|&i| redundant[i]) {
-            edits.push(TextEdit {
-                range: range(items[idx].span.start, items[idx + 1].span.start),
-                new_text: String::new(),
-            });
-        }
-        // Trailing removed items go with the comma after the last kept one.
-        if last_kept + 1 < items.len() {
-            edits.push(TextEdit {
-                range: range(items[last_kept].span.end, items[items.len() - 1].span.end),
-                new_text: String::new(),
-            });
-        }
+        edits.extend(use_item_removals(doc, stmt, decl, &redundant));
     }
     edits
 }

@@ -856,44 +856,57 @@ impl Backend {
                     .collect(),
             );
 
+        // `use` lines rewrite the full import path (the namespace may change,
+        // not just the class name). Only importers of a moved FQN can carry
+        // such a line, and the workspace index already records per-file
+        // imports — no text scan, parse only matches. A file is handled once
+        // for all moves, so members of one group use are edited together.
+        let renamed: std::collections::HashMap<String, (String, String)> = moves
+            .iter()
+            .filter(|(_, old, new)| old != new)
+            .map(|(_, old, new)| {
+                let old = old.trim_start_matches('\\');
+                (old.to_ascii_lowercase(), (old.to_string(), new.clone()))
+            })
+            .collect();
+        if !renamed.is_empty() {
+            let docs = std::sync::Arc::clone(&self.docs);
+            let gate = std::sync::Arc::clone(&self.debug_gate);
+            // Every importing file gets parsed and diffed; keep that off the
+            // async runtime worker, same as the reference-lookup path below.
+            let edits_by_uri = tokio::task::spawn_blocking(move || {
+                gate.pass(super::super::debug_gate::GATE_WILL_RENAME_FILES);
+                let importers: std::collections::HashSet<Uri> = renamed
+                    .values()
+                    .flat_map(|(old, _)| docs.files_importing(old))
+                    .collect();
+                let mut out = Vec::new();
+                for uri in importers {
+                    let Some(doc) = docs.get_doc_salsa(&uri) else {
+                        continue;
+                    };
+                    let edits = use_edits_in_source(&doc, |fqn| {
+                        renamed
+                            .get(&fqn.to_ascii_lowercase())
+                            .map(|(_, new)| new.clone())
+                    });
+                    if !edits.is_empty() {
+                        out.push((uri, edits));
+                    }
+                }
+                out
+            })
+            .await
+            .unwrap_or_default();
+            for (uri, edits) in edits_by_uri {
+                merged_changes.entry(uri).or_default().extend(edits);
+            }
+        }
+
         for (old_uri, old_fqn, new_fqn) in moves {
             let old_uri = Some(old_uri);
-
-            // `use` lines rewrite the full import path (the namespace may
-            // change, not just the class name). Only importers of the old
-            // FQN can carry such a line, and the workspace index already
-            // records per-file imports — no text scan, parse only matches.
             let old_short = fqn_short_name(&old_fqn).to_string();
             let new_short = fqn_short_name(&new_fqn).to_string();
-            if old_fqn != new_fqn {
-                let docs = std::sync::Arc::clone(&self.docs);
-                let old_fqn_task = old_fqn.clone();
-                let new_fqn_task = new_fqn.clone();
-                let gate = std::sync::Arc::clone(&self.debug_gate);
-                // Every importing file gets parsed and diffed; keep that off
-                // the async runtime worker, same as the reference-lookup path
-                // below.
-                let edits_by_uri = tokio::task::spawn_blocking(move || {
-                    gate.pass(super::super::debug_gate::GATE_WILL_RENAME_FILES);
-                    let mut out = Vec::new();
-                    for uri in docs.files_importing(&old_fqn_task) {
-                        let Some(doc) = docs.get_doc_salsa(&uri) else {
-                            continue;
-                        };
-                        let edits = use_edits_in_source(&doc, &old_fqn_task, &new_fqn_task);
-                        if !edits.is_empty() {
-                            out.push((uri, edits));
-                        }
-                    }
-                    out
-                })
-                .await
-                .unwrap_or_default();
-                for (uri, edits) in edits_by_uri {
-                    merged_changes.entry(uri).or_default().extend(edits);
-                }
-            }
-
             let ns_changed = !namespace_of(&old_fqn).eq_ignore_ascii_case(namespace_of(&new_fqn));
             if ns_changed && let Some(old_uri) = old_uri.clone() {
                 let docs = std::sync::Arc::clone(&self.docs);
