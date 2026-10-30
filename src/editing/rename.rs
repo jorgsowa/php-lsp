@@ -75,7 +75,12 @@ fn narrow_range(source: &str, range: Range, word: &str, ignore_case: bool) -> Op
     let mut search = 0usize;
     while let Some(pos) = haystack[search..].find(word) {
         let abs = search + pos;
-        let before_ok = abs == 0 || !slice[..abs].chars().next_back().is_some_and(is_word_char);
+        // A case-folded match must not hit a variable or member of the same name.
+        let before_ok = abs == 0
+            || !slice[..abs]
+                .chars()
+                .next_back()
+                .is_some_and(|c| is_word_char(c) || (ignore_case && matches!(c, '$' | '>' | ':')));
         let after = abs + word.len();
         let after_ok =
             after >= slice.len() || !slice[after..].chars().next().is_some_and(is_word_char);
