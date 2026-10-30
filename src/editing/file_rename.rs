@@ -495,15 +495,28 @@ fn resolve_class_name(segment: &NamespaceSegment<'_, '_, '_>, name: &str) -> Str
     }
 }
 
-/// `new_fqn` spelled to replace the qualified name `spelled`: fully qualified,
-/// unless `spelled` was a global-namespace name without the leading `\`.
-fn requalify(spelled: &str, in_global: bool, new_fqn: &str) -> String {
+/// `new_fqn` spelled to replace the qualified name `spelled` in `segment`:
+/// relative to the namespace when `spelled` was and that still resolves, else
+/// fully qualified.
+fn requalify(segment: &NamespaceSegment<'_, '_, '_>, spelled: &str, new_fqn: &str) -> String {
     let new = new_fqn.trim_start_matches('\\');
-    if in_global && !spelled.starts_with('\\') {
-        new.to_string()
-    } else {
-        format!("\\{new}")
+    if !spelled.starts_with('\\') {
+        let ns = segment.name();
+        let ns = ns.trim_start_matches('\\');
+        let relative = if ns.is_empty() {
+            Some(new)
+        } else {
+            new.get(..ns.len())
+                .filter(|p| p.eq_ignore_ascii_case(ns) && new[ns.len()..].starts_with('\\'))
+                .map(|_| &new[ns.len() + 1..])
+        };
+        if let Some(relative) =
+            relative.filter(|r| resolve_class_name(segment, r).eq_ignore_ascii_case(new))
+        {
+            return relative.to_string();
+        }
     }
+    format!("\\{new}")
 }
 
 /// Rewrites the qualified class reference ending at the short-name range
@@ -519,12 +532,10 @@ pub fn qualified_reference_edit(doc: &ParsedDoc, short: Range, new_fqn: &str) ->
     if !qualifier.ends_with('\\') {
         return None;
     }
-    let in_global = namespace_at(&doc.program().stmts, start as u32)
-        .name()
-        .is_empty();
+    let segment = namespace_at(&doc.program().stmts, start as u32);
     Some(TextEdit {
         range: Range::new(view.position_of(start as u32), short.end),
-        new_text: requalify(qualifier, in_global, new_fqn),
+        new_text: requalify(&segment, qualifier, new_fqn),
     })
 }
 
@@ -557,7 +568,7 @@ pub fn docblock_reference_edits(
         if name.contains('\\') {
             edits.push(TextEdit {
                 range,
-                new_text: requalify(name, segment.name().is_empty(), new_fqn),
+                new_text: requalify(&segment, name, new_fqn),
             });
         } else {
             if import_unqualified
