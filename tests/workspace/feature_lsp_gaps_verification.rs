@@ -34,14 +34,8 @@ const X
 
     expect![[r#"
         1:14-1:15 [1] SyntaxError: expected variable, found '{'
-        1:14-1:15 [1] SyntaxError: unclosed '')'' opened at 1:12
         2:6-2:7 [1] SyntaxError: expected class name, found '{'
-        4:0-4:0 [1] SyntaxError: expected ';', found end of file
-        4:0-4:0 [1] SyntaxError: expected '=', found end of file
-        4:0-4:0 [1] SyntaxError: expected '}', found end of file
-        4:0-4:0 [1] SyntaxError: expected constant name, found end of file
-        4:0-4:0 [1] SyntaxError: expected expression
-        4:0-4:0 [1] SyntaxError: unclosed ''}'' opened at 1:14"#]]
+        4:0-4:0 [1] SyntaxError: expected constant name, found end of file"#]]
     .assert_eq(&render_pull_diagnostics(&resp));
 }
 
@@ -93,10 +87,7 @@ class Foo {
         .await;
 
     expect![[r#"
-        4:11-4:19 [1] SyntaxError: expected ')', found 'function'
-        4:11-4:19 [1] SyntaxError: expected ';', found 'function'
         4:11-4:19 [1] SyntaxError: expected variable, found 'function'
-        4:4-4:10 [1] SyntaxError: Cannot declare promoted property outside a constructor
         5:8-5:26 [1] UndefinedFunction: Function nonexistent_func() is not defined"#]]
     .assert_eq(&render_pull_diagnostics(&resp));
 }
@@ -467,6 +458,6 @@ class {
     let out = render_pull_diagnostics(&resp);
     expect![[r#"
         1:6-1:7 [1] SyntaxError: expected class name, found '{'
-        2:0-2:0 [1] SyntaxError: expected '}', found end of file"#]]
+        2:0-2:0 [1] SyntaxError: unclosed '}' opened at 1:6"#]]
     .assert_eq(&out);
 }

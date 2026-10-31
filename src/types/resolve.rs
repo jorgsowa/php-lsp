@@ -285,7 +285,7 @@ fn resolve_member<'a>(
                 // Constructor-promoted parameters act as property declarations.
                 if container == Container::Class && m.name == "__construct" {
                     for p in m.params.iter() {
-                        if p.visibility.is_some() && p.name == bare {
+                        if p.modifiers.visibility.is_some() && p.name == bare {
                             let d = Declaration::PromotedParam { param: p };
                             if accept(&d) {
                                 return Some(d);

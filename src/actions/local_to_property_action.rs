@@ -79,7 +79,7 @@ fn collect_in_stmts<'a>(
                         continue;
                     }
                     // Static methods would need self::$prop, not $this->prop.
-                    if m.is_static {
+                    if m.modifiers.is_static {
                         return true;
                     }
                     // Don't convert a parameter into a property — it already has a slot.
@@ -139,6 +139,7 @@ fn collect_nested_closure_spans(stmts: &[Stmt<'_, '_>]) -> Vec<(u32, u32)> {
         spans: Vec<(u32, u32)>,
     }
     impl<'arena, 'src> Visitor<'arena, 'src> for Collector {
+        type Break = ();
         fn visit_expr(&mut self, expr: &php_ast::Expr<'arena, 'src>) -> ControlFlow<()> {
             if matches!(
                 &expr.kind,

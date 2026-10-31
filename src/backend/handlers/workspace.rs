@@ -923,6 +923,7 @@ impl Backend {
                             php_ast::UseKind::Const => {
                                 mir_analyzer::Name::GlobalConstant(fqn.into())
                             }
+                            _ => return false,
                         };
                         docs.definition_location(&name).is_some()
                     };

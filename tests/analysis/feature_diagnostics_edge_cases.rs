@@ -37,8 +37,7 @@ async fn parse_error_emits_diagnostic() {
     let notif = s.open("bad.php", "<?php\nfunction f( {\n").await;
     expect![[r#"
         1:12-1:13 [1] SyntaxError: expected variable, found '{'
-        1:12-1:13 [1] SyntaxError: unclosed '')'' opened at 1:10
-        2:0-2:0 [1] SyntaxError: unclosed ''}'' opened at 1:12"#]]
+        2:0-2:0 [1] SyntaxError: unclosed '}' opened at 1:12"#]]
     .assert_eq(&render_diagnostics_notification(&notif));
 }
 
@@ -86,8 +85,7 @@ async fn regression_parse_error_files_included() {
     expect![[r#"
         parse_only.php
           1:17 expected variable, found '{' [SyntaxError] (error)
-          1:17 unclosed '')'' opened at 1:15 [SyntaxError] (error)
-          2:0 unclosed ''}'' opened at 1:17 [SyntaxError] (error)"#]]
+          2:0 unclosed '}' opened at 1:17 [SyntaxError] (error)"#]]
     .assert_eq(&render_workspace_diagnostic(&resp, &server.uri("")));
 }
 
@@ -332,8 +330,8 @@ async fn requests_on_parse_error_file_do_not_error() {
         .open("broken.php", "<?php\nfunction f( $x { // missing ): body\n")
         .await;
     expect![[r#"
-        1:15-1:16 [1] SyntaxError: unclosed '')'' opened at 1:10
-        2:0-2:0 [1] SyntaxError: unclosed ''}'' opened at 1:15"#]]
+        1:15-1:16 [1] SyntaxError: unclosed ')' opened at 1:10
+        2:0-2:0 [1] SyntaxError: unclosed '}' opened at 1:15"#]]
     .assert_eq(&render_diagnostics_notification(&notif));
 
     let resp = server.hover("broken.php", 1, 10).await;
@@ -462,7 +460,7 @@ async fn syntax_error_produces_error_diagnostic() {
     let notif = s.open("syntax_err.php", "<?php\nclass {\n").await;
     expect![[r#"
         1:6-1:7 [1] SyntaxError: expected class name, found '{'
-        2:0-2:0 [1] SyntaxError: expected '}', found end of file"#]]
+        2:0-2:0 [1] SyntaxError: unclosed '}' opened at 1:6"#]]
     .assert_eq(&render_diagnostics_notification(&notif));
 }
 
@@ -540,7 +538,7 @@ async fn backed_enum_case_value_type_mismatch_is_flagged() {
 
     expect![[r#"
         ws_enum.php
-          2:18 Backed enum case Suit::Hearts has value of type 1, but backing type is string [BackedEnumCaseTypeMismatch] (error)"#]]
+          2:18 Enum case type int does not match enum backing type string [BackedEnumCaseTypeMismatch] (error)"#]]
     .assert_eq(&out);
 }
 

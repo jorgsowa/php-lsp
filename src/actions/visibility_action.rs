@@ -67,10 +67,11 @@ fn visit_members<'a>(
             continue;
         }
         let vis_and_attrs = match &member.kind {
-            ClassMemberKind::Method(m) => m.visibility.map(|v| (v, &m.attributes)),
-            ClassMemberKind::Property(p) => p.visibility.map(|v| (v, &p.attributes)),
-            ClassMemberKind::ClassConst(c) => c.visibility.map(|v| (v, &c.attributes)),
+            ClassMemberKind::Method(m) => m.modifiers.visibility.map(|v| (v, &m.attributes)),
+            ClassMemberKind::Property(p) => p.modifiers.visibility.map(|v| (v, &p.attributes)),
+            ClassMemberKind::ClassConst(c) => c.modifiers.visibility.map(|v| (v, &c.attributes)),
             ClassMemberKind::TraitUse(_) => None,
+            _ => None,
         };
         if let Some((vis, attrs)) = vis_and_attrs {
             // Skip past any leading attributes before searching for the
@@ -111,6 +112,7 @@ fn push_actions(
         Visibility::Public => &[Visibility::Protected, Visibility::Private],
         Visibility::Protected => &[Visibility::Public, Visibility::Private],
         Visibility::Private => &[Visibility::Public, Visibility::Protected],
+        _ => &[],
     };
 
     for &new_vis in candidates {
@@ -184,5 +186,6 @@ fn vis_str(vis: Visibility) -> &'static str {
         Visibility::Public => "public",
         Visibility::Protected => "protected",
         Visibility::Private => "private",
+        _ => "public",
     }
 }

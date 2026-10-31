@@ -54,7 +54,7 @@ fn collect<'a>(
                     let ClassMemberKind::Method(m) = &member.kind else {
                         continue;
                     };
-                    if m.is_static {
+                    if m.modifiers.is_static {
                         continue;
                     }
                     let Some(body) = &m.body else { continue };
@@ -94,6 +94,7 @@ fn find_facade_call(body: &php_ast::Block<'_, '_>, cursor: u32) -> Option<Facade
         found: Option<FacadeCall>,
     }
     impl<'arena, 'src> Visitor<'arena, 'src> for Finder {
+        type Break = ();
         fn visit_expr(&mut self, expr: &Expr<'arena, 'src>) -> ControlFlow<()> {
             if self.found.is_some() {
                 return ControlFlow::Break(());
@@ -101,12 +102,12 @@ fn find_facade_call(body: &php_ast::Block<'_, '_>, cursor: u32) -> Option<Facade
             if let ExprKind::StaticMethodCall(s) = &expr.kind
                 && expr.span.start <= self.cursor
                 && self.cursor <= expr.span.end
-                && let ExprKind::Identifier(class_ident) = &s.class.kind
-                && let Some((contract, prop)) = facades::lookup(class_ident.as_str())
+                && let ExprKind::Name(class_ident) = &s.class.kind
+                && let Some((contract, prop)) = facades::lookup(&class_ident.to_string_repr())
             {
                 self.found = Some(FacadeCall {
                     prefix_span: Span::new(s.class.span.start, s.method.span.start),
-                    facade: class_ident.as_str().to_string(),
+                    facade: class_ident.to_string_repr().into_owned(),
                     contract,
                     prop,
                 });

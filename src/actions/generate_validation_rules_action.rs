@@ -102,7 +102,7 @@ fn to_found_array(
             Some(Expr {
                 kind: ExprKind::String(s),
                 ..
-            }) => Some((*s).to_string()),
+            }) => Some(s.to_string_lossy().into_owned()),
             _ => None,
         })
         .collect();
@@ -123,6 +123,7 @@ fn find_validate_array(
         found: Option<(FoundArray, Receiver)>,
     }
     impl<'arena, 'src> Visitor<'arena, 'src> for Finder {
+        type Break = ();
         fn visit_expr(&mut self, expr: &Expr<'arena, 'src>) -> ControlFlow<()> {
             if self.found.is_some() {
                 return ControlFlow::Break(());
@@ -131,7 +132,7 @@ fn find_validate_array(
                 && let ExprKind::Identifier(method) = &mc.method.kind
                 && method.eq_ignore_ascii_case("validate")
                 && let Some(arg) = mc.args.first()
-                && let Some(value) = &arg.value
+                && let Some(value) = arg.value()
                 && let ExprKind::Array(elements) = &value.kind
                 && value.span.start <= self.cursor
                 && self.cursor <= value.span.end

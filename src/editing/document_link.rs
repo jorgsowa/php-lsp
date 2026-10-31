@@ -55,6 +55,7 @@ struct LinkCollector<'a> {
 }
 
 impl<'arena, 'src> Visitor<'arena, 'src> for LinkCollector<'_> {
+    type Break = ();
     fn visit_expr(&mut self, expr: &php_ast::Expr<'arena, 'src>) -> ControlFlow<()> {
         if let ExprKind::Include(_, path_expr) = &expr.kind
             && let Some(link) = link_from_path_expr(path_expr, self.sv, self.uri)
@@ -80,7 +81,7 @@ fn link_from_path_expr(
     let ExprKind::String(s) = &path_expr.kind else {
         return None;
     };
-    let raw: &str = s;
+    let raw = s.to_str()?;
     if raw.is_empty() || (dir_relative && !raw.starts_with('/')) {
         return None;
     }
@@ -130,10 +131,10 @@ fn is_current_dir(expr: &php_ast::Expr<'_, '_>) -> bool {
     match &expr.kind {
         ExprKind::MagicConst(MagicConstKind::Dir) => true,
         ExprKind::FunctionCall(f) => {
-            let is_dirname = matches!(&f.name.kind, ExprKind::Identifier(n)
-                if n.trim_start_matches('\\').eq_ignore_ascii_case("dirname"));
+            let is_dirname = matches!(&f.name.kind, ExprKind::Name(n)
+                if n.to_string_repr().trim_start_matches('\\').eq_ignore_ascii_case("dirname"));
             is_dirname
-                && matches!(&f.args[..], [arg] if arg.value.as_ref().is_some_and(|v| {
+                && matches!(&f.args[..], [arg] if arg.value().is_some_and(|v| {
                     matches!(v.kind, ExprKind::MagicConst(MagicConstKind::File))
                 }))
         }

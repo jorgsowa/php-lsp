@@ -149,6 +149,7 @@ fn anonymous_class_ranges(doc: &ParsedDoc) -> Vec<Range> {
         out: Vec<Range>,
     }
     impl<'arena, 'src> Visitor<'arena, 'src> for Finder<'_> {
+        type Break = ();
         fn visit_expr(&mut self, expr: &php_ast::Expr<'arena, 'src>) -> ControlFlow<()> {
             if matches!(expr.kind, ExprKind::AnonymousClass(_)) {
                 self.out.push(self.doc.view().range_of(expr.span));

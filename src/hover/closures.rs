@@ -179,7 +179,7 @@ fn find_closure_in_expr(
                 return Some(sig);
             }
             for arg in fc.args.iter() {
-                let Some(value) = &arg.value else { continue };
+                let Some(value) = arg.value() else { continue };
                 if let Some(sig) = find_closure_in_expr(source, value, cursor_byte, word_len) {
                     return Some(sig);
                 }
@@ -188,7 +188,7 @@ fn find_closure_in_expr(
         }
         ExprKind::MethodCall(mc) => {
             for arg in mc.args.iter() {
-                let Some(value) = &arg.value else { continue };
+                let Some(value) = arg.value() else { continue };
                 if let Some(sig) = find_closure_in_expr(source, value, cursor_byte, word_len) {
                     return Some(sig);
                 }
@@ -197,7 +197,7 @@ fn find_closure_in_expr(
         }
         ExprKind::StaticMethodCall(smc) => {
             for arg in smc.args.iter() {
-                let Some(value) = &arg.value else { continue };
+                let Some(value) = arg.value() else { continue };
                 if let Some(sig) = find_closure_in_expr(source, value, cursor_byte, word_len) {
                     return Some(sig);
                 }

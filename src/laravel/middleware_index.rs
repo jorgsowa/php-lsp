@@ -95,18 +95,19 @@ struct AliasCallVisitor<'a> {
 }
 
 impl<'arena, 'src> Visitor<'arena, 'src> for AliasCallVisitor<'_> {
+    type Break = ();
     fn visit_expr(&mut self, expr: &Expr<'arena, 'src>) -> ControlFlow<()> {
         if let ExprKind::MethodCall(mc) = &expr.kind {
             if is_ident(mc.method, "alias")
                 && let Some(arg) = mc.args.first()
-                && let Some(arg_value) = &arg.value
+                && let Some(arg_value) = arg.value()
                 && let ExprKind::Array(elements) = &arg_value.kind
             {
                 collect_flat_string_keys(elements, self.sv, self.uri, self.out);
             }
             if is_ident(mc.method, "group")
                 && mc.args.len() == 2
-                && let Some(name_arg) = mc.args[0].value.as_ref()
+                && let Some(name_arg) = mc.args[0].value()
                 && let ExprKind::String(name) = &name_arg.kind
             {
                 // `span.start`/`span.end` point at the surrounding quotes;
@@ -117,7 +118,7 @@ impl<'arena, 'src> Visitor<'arena, 'src> for AliasCallVisitor<'_> {
                     end: self.sv.position_of(name_arg.span.end - 1),
                 };
                 self.out
-                    .entry(name.to_string())
+                    .entry(name.to_string_lossy().into_owned())
                     .or_insert_with(|| Location {
                         uri: self.uri.clone(),
                         range,
@@ -156,6 +157,7 @@ struct KernelPropertyVisitor<'a> {
 }
 
 impl<'arena, 'src> Visitor<'arena, 'src> for KernelPropertyVisitor<'_> {
+    type Break = ();
     fn visit_class_member(&mut self, member: &ClassMember<'arena, 'src>) -> ControlFlow<()> {
         if let ClassMemberKind::Property(prop) = &member.kind
             && KERNEL_ALIAS_PROPERTIES
@@ -171,7 +173,11 @@ impl<'arena, 'src> Visitor<'arena, 'src> for KernelPropertyVisitor<'_> {
 }
 
 fn is_ident(expr: &Expr<'_, '_>, name: &str) -> bool {
-    matches!(&expr.kind, ExprKind::Identifier(n) if n.eq_ignore_ascii_case(name))
+    match &expr.kind {
+        ExprKind::Identifier(n) => n.eq_ignore_ascii_case(name),
+        ExprKind::Name(n) => n.to_string_repr().eq_ignore_ascii_case(name),
+        _ => false,
+    }
 }
 
 /// Collects every string-keyed entry of a flat (non-nested) array literal —
@@ -195,10 +201,11 @@ fn collect_flat_string_keys(
             start: sv.position_of(key_expr.span.start + 1),
             end: sv.position_of(key_expr.span.end - 1),
         };
-        out.entry(key.to_string()).or_insert_with(|| Location {
-            uri: uri.clone(),
-            range,
-        });
+        out.entry(key.to_string_lossy().into_owned())
+            .or_insert_with(|| Location {
+                uri: uri.clone(),
+                range,
+            });
     }
 }
 
@@ -240,6 +247,7 @@ fn collect_middleware_calls_raw(doc: &ParsedDoc) -> Vec<MiddlewareCall> {
     }
 
     impl<'arena, 'src> Visitor<'arena, 'src> for Collector<'_> {
+        type Break = ();
         fn visit_expr(&mut self, expr: &Expr<'arena, 'src>) -> ControlFlow<()> {
             let args = match &expr.kind {
                 ExprKind::MethodCall(mc) if is_ident(mc.method, "middleware") => Some(&mc.args),
@@ -248,16 +256,16 @@ fn collect_middleware_calls_raw(doc: &ParsedDoc) -> Vec<MiddlewareCall> {
             };
             if let Some(args) = args
                 && let Some(arg) = args.first()
-                && let Some(arg_value) = &arg.value
+                && let Some(arg_value) = arg.value()
             {
                 match &arg_value.kind {
-                    ExprKind::String(s) => self.push_string(s, arg_value.span),
+                    ExprKind::String(s) => self.push_string(&s.to_string_lossy(), arg_value.span),
                     ExprKind::Array(elements) => {
                         for el in elements.iter() {
                             if el.key.is_none()
-                                && let ExprKind::String(s) = &el.value.kind
+                                && let ExprKind::String(s) = &el.value().kind
                             {
-                                self.push_string(s, el.value.span);
+                                self.push_string(&s.to_string_lossy(), el.value().span);
                             }
                         }
                     }

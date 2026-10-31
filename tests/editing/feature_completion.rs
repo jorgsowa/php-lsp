@@ -4321,7 +4321,6 @@ $i->$0
         Function    in_array
         Keyword     include
         Keyword     include_once
-        Method      innerMethod
         Keyword     instanceof
         Keyword     insteadof
         Keyword     int

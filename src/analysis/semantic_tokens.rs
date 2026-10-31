@@ -399,6 +399,7 @@ fn push_type_hint(out: &mut Vec<RawToken>, sv: SourceView<'_>, hint: &TypeHint<'
                 push_type_hint(out, sv, t);
             }
         }
+        _ => {}
     }
 }
 
@@ -528,7 +529,7 @@ fn collect_stmt(sv: SourceView<'_>, stmt: &Stmt<'_, '_>, out: &mut Vec<RawToken>
                     EnumMemberKind::Method(m) => {
                         push_attributes(out, sv, &m.attributes);
                         let mut mmods = MOD_DECLARATION | deprecated_mod(m.doc_comment.as_ref());
-                        if m.is_static {
+                        if m.modifiers.is_static {
                             mmods |= MOD_STATIC;
                         }
                         push_name(out, sv, m.name.or_error(), TT_METHOD, mmods);
@@ -557,6 +558,7 @@ fn collect_stmt(sv: SourceView<'_>, stmt: &Stmt<'_, '_>, out: &mut Vec<RawToken>
                     EnumMemberKind::TraitUse(_) => {
                         // Trait use declarations don't produce tokens
                     }
+                    _ => {}
                 }
             }
         }
@@ -640,10 +642,10 @@ fn collect_class_member(
     if let ClassMemberKind::Method(m) = &member.kind {
         push_attributes(out, sv, &m.attributes);
         let mut mods = MOD_DECLARATION | deprecated_mod(m.doc_comment.as_ref());
-        if m.is_static {
+        if m.modifiers.is_static {
             mods |= MOD_STATIC;
         }
-        if m.is_abstract {
+        if m.modifiers.is_abstract {
             mods |= MOD_ABSTRACT;
         }
         push_name(out, sv, m.name.or_error(), TT_METHOD, mods);
@@ -656,7 +658,7 @@ fn collect_class_member(
             // also a property declaration — its readonly-ness must show up
             // in tokens the same way a plain property's does.
             let mut pmods = MOD_DECLARATION;
-            if p.is_readonly {
+            if p.modifiers.is_readonly {
                 pmods |= MOD_READONLY;
             }
             push_param(out, sv, p.name.or_error(), TT_PARAMETER, pmods);
@@ -673,7 +675,7 @@ fn collect_class_member(
             push_type_hint(out, sv, th);
         }
         let mut mods = MOD_DECLARATION;
-        if p.is_readonly {
+        if p.modifiers.is_readonly {
             mods |= MOD_READONLY;
         }
         push_param(out, sv, p.name.or_error(), TT_PROPERTY, mods);
@@ -725,14 +727,15 @@ fn collect_expr(sv: SourceView<'_>, expr: &php_ast::Expr<'_, '_>, out: &mut Vec<
         }
         ExprKind::New(n) => {
             for arg in n.args.iter() {
-                if let Some(value) = &arg.value {
+                if let Some(value) = arg.value() {
                     collect_expr(sv, value, out);
                 }
             }
         }
         ExprKind::FunctionCall(f) => {
-            if let ExprKind::Identifier(name) = &f.name.kind {
-                let name_str: &str = name;
+            if let ExprKind::Name(name) = &f.name.kind {
+                let repr = name.to_string_repr();
+                let name_str: &str = &repr;
                 push_at(
                     out,
                     sv,
@@ -745,7 +748,7 @@ fn collect_expr(sv: SourceView<'_>, expr: &php_ast::Expr<'_, '_>, out: &mut Vec<
                 collect_expr(sv, f.name, out);
             }
             for arg in f.args.iter() {
-                if let Some(value) = &arg.value {
+                if let Some(value) = arg.value() {
                     collect_expr(sv, value, out);
                 }
             }
@@ -764,7 +767,7 @@ fn collect_expr(sv: SourceView<'_>, expr: &php_ast::Expr<'_, '_>, out: &mut Vec<
                 );
             }
             for arg in m.args.iter() {
-                if let Some(value) = &arg.value {
+                if let Some(value) = arg.value() {
                     collect_expr(sv, value, out);
                 }
             }
@@ -783,7 +786,7 @@ fn collect_expr(sv: SourceView<'_>, expr: &php_ast::Expr<'_, '_>, out: &mut Vec<
                 );
             }
             for arg in m.args.iter() {
-                if let Some(value) = &arg.value {
+                if let Some(value) = arg.value() {
                     collect_expr(sv, value, out);
                 }
             }
@@ -813,7 +816,7 @@ fn collect_expr(sv: SourceView<'_>, expr: &php_ast::Expr<'_, '_>, out: &mut Vec<
                 if let Some(key) = &elem.key {
                     collect_expr(sv, key, out);
                 }
-                collect_expr(sv, &elem.value, out);
+                collect_expr(sv, elem.value(), out);
             }
         }
         ExprKind::UnaryPrefix(u) => collect_expr(sv, u.operand, out),
@@ -892,16 +895,16 @@ fn collect_expr(sv: SourceView<'_>, expr: &php_ast::Expr<'_, '_>, out: &mut Vec<
                 );
             }
             for arg in s.args.iter() {
-                if let Some(value) = &arg.value {
+                if let Some(value) = arg.value() {
                     collect_expr(sv, value, out);
                 }
             }
         }
-        ExprKind::StaticDynMethodCall(s) => {
+        ExprKind::StaticMethodCallDynamic(s) => {
             collect_class_ref(sv, s.class, out);
             collect_expr(sv, s.method, out);
             for arg in s.args.iter() {
-                if let Some(value) = &arg.value {
+                if let Some(value) = arg.value() {
                     collect_expr(sv, value, out);
                 }
             }
@@ -962,6 +965,7 @@ fn collect_expr(sv: SourceView<'_>, expr: &php_ast::Expr<'_, '_>, out: &mut Vec<
                     );
                 }
             }
+            _ => {}
         },
         _ => {}
     }
@@ -971,8 +975,9 @@ fn collect_expr(sv: SourceView<'_>, expr: &php_ast::Expr<'_, '_>, out: &mut Vec<
 /// `self::`, `$cls::`) — a bare class-like identifier gets `TT_CLASS`;
 /// anything else (a variable holding a class name/object) recurses normally.
 fn collect_class_ref(sv: SourceView<'_>, class: &php_ast::Expr<'_, '_>, out: &mut Vec<RawToken>) {
-    if let ExprKind::Identifier(name) = &class.kind {
-        let name_str: &str = name;
+    if let ExprKind::Name(name) = &class.kind {
+        let repr = name.to_string_repr();
+        let name_str: &str = &repr;
         push_at(
             out,
             sv,

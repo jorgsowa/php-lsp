@@ -275,7 +275,7 @@ fn collect_abstract_methods_fqn(
                                 Some(MethodStub {
                                     name: method.name.to_string(),
                                     visibility: "public",
-                                    is_static: method.is_static,
+                                    is_static: method.modifiers.is_static,
                                     params: format_params_str(&method.params),
                                     return_type: method
                                         .return_type
@@ -306,11 +306,13 @@ fn collect_abstract_methods_fqn(
                         .iter()
                         .filter_map(|m| {
                             if let ClassMemberKind::Method(method) = &m.kind {
-                                if method.is_abstract {
+                                if method.modifiers.is_abstract {
                                     Some(MethodStub {
                                         name: method.name.to_string(),
-                                        visibility: visibility_str(method.visibility.as_ref()),
-                                        is_static: method.is_static,
+                                        visibility: visibility_str(
+                                            method.modifiers.visibility.as_ref(),
+                                        ),
+                                        is_static: method.modifiers.is_static,
                                         params: format_params_str(&method.params),
                                         return_type: method
                                             .return_type
@@ -349,6 +351,7 @@ fn collect_abstract_methods_fqn(
                         // Unbraced form: all subsequent statements are in this namespace.
                         active_ns = ns_name.unwrap_or_default();
                     }
+                    _ => {}
                 }
             }
             _ => {}
@@ -375,7 +378,7 @@ fn collect_abstract_methods(stmts: &[Stmt<'_, '_>], name: &str) -> Option<Vec<Me
                             Some(MethodStub {
                                 name: method.name.to_string(),
                                 visibility: "public",
-                                is_static: method.is_static,
+                                is_static: method.modifiers.is_static,
                                 params: format_params_str(&method.params),
                                 return_type: method
                                     .return_type
@@ -399,11 +402,13 @@ fn collect_abstract_methods(stmts: &[Stmt<'_, '_>], name: &str) -> Option<Vec<Me
                     .iter()
                     .filter_map(|m| {
                         if let ClassMemberKind::Method(method) = &m.kind {
-                            if method.is_abstract {
+                            if method.modifiers.is_abstract {
                                 Some(MethodStub {
                                     name: method.name.to_string(),
-                                    visibility: visibility_str(method.visibility.as_ref()),
-                                    is_static: method.is_static,
+                                    visibility: visibility_str(
+                                        method.modifiers.visibility.as_ref(),
+                                    ),
+                                    is_static: method.modifiers.is_static,
                                     params: format_params_str(&method.params),
                                     return_type: method
                                         .return_type

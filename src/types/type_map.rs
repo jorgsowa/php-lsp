@@ -132,6 +132,7 @@ fn namespace_of_class(stmts: &[Stmt<'_, '_>], short: &str, ns_prefix: &str) -> O
                         }
                     }
                     NamespaceBody::Simple => current_ns = ns_name,
+                    _ => {}
                 }
                 false
             }
@@ -154,16 +155,20 @@ fn restriction(visibility: Option<Visibility>) -> Option<bool> {
 }
 
 fn push_method(out: &mut ClassMembers, m: &php_ast::MethodDecl<'_, '_>) {
-    out.methods
-        .push((m.name.to_string(), m.is_static, !m.params.is_empty()));
-    if let Some(private) = restriction(m.visibility) {
+    out.methods.push((
+        m.name.to_string(),
+        m.modifiers.is_static,
+        !m.params.is_empty(),
+    ));
+    if let Some(private) = restriction(m.modifiers.visibility) {
         out.restricted_methods.push((m.name.to_string(), private));
     }
 }
 
 fn push_property(out: &mut ClassMembers, p: &php_ast::PropertyDecl<'_, '_>) {
-    out.properties.push((p.name.to_string(), p.is_static));
-    if let Some(private) = restriction(p.visibility) {
+    out.properties
+        .push((p.name.to_string(), p.modifiers.is_static));
+    if let Some(private) = restriction(p.modifiers.visibility) {
         out.restricted_properties
             .push((p.name.to_string(), private));
     }
@@ -171,7 +176,7 @@ fn push_property(out: &mut ClassMembers, p: &php_ast::PropertyDecl<'_, '_>) {
 
 fn push_const(out: &mut ClassMembers, c: &php_ast::ClassConstDecl<'_, '_>) {
     out.constants.push(c.name.to_string());
-    if let Some(private) = restriction(c.visibility) {
+    if let Some(private) = restriction(c.modifiers.visibility) {
         out.restricted_constants.push((c.name.to_string(), private));
     }
 }
@@ -211,13 +216,13 @@ fn collect_members_stmts(
                             push_method(out, m);
                             if m.name == "__construct" {
                                 for p in m.params.iter() {
-                                    if p.visibility.is_some() {
+                                    if p.modifiers.visibility.is_some() {
                                         out.properties.push((p.name.to_string(), false));
-                                        if let Some(private) = restriction(p.visibility) {
+                                        if let Some(private) = restriction(p.modifiers.visibility) {
                                             out.restricted_properties
                                                 .push((p.name.to_string(), private));
                                         }
-                                        if p.is_readonly || class_is_readonly {
+                                        if p.modifiers.is_readonly || class_is_readonly {
                                             out.readonly_properties.push(p.name.to_string());
                                         }
                                     }
@@ -226,7 +231,7 @@ fn collect_members_stmts(
                         }
                         ClassMemberKind::Property(p) => {
                             push_property(out, p);
-                            if p.is_readonly || class_is_readonly {
+                            if p.modifiers.is_readonly || class_is_readonly {
                                 out.readonly_properties.push(p.name.to_string());
                             }
                         }
@@ -236,6 +241,7 @@ fn collect_members_stmts(
                                 out.trait_uses.push(name.to_string_repr().to_string());
                             }
                         }
+                        _ => {}
                     }
                 }
                 return c.extends.as_ref().map(|n| n.to_string_repr().to_string());
@@ -272,6 +278,7 @@ fn collect_members_stmts(
                         ClassMemberKind::Property(p) => push_property(out, p),
                         ClassMemberKind::ClassConst(c) => push_const(out, c),
                         ClassMemberKind::TraitUse(_) => {}
+                        _ => {}
                     }
                 }
                 for parent in i.extends.iter() {
@@ -291,6 +298,7 @@ fn collect_members_stmts(
                                 out.trait_uses.push(name.to_string_repr().to_string());
                             }
                         }
+                        _ => {}
                     }
                 }
                 return None; // traits have no parent
@@ -421,6 +429,7 @@ fn enclosing_class_fqn_in_stmts(
                     NamespaceBody::Simple => {
                         current_ns = ns_name;
                     }
+                    _ => {}
                 }
             }
             _ => {}

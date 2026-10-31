@@ -174,8 +174,7 @@ async fn diagnostics_replaced_not_appended_on_didchange() {
     let notif = server.open("d.php", "<?php\nbroken(;\n").await;
     expect![[r#"
         1:0-1:7 [1] UndefinedFunction: Function broken() is not defined
-        1:7-1:8 [1] SyntaxError: expected ')', found ';'
-        1:7-1:8 [1] SyntaxError: expected expression"#]]
+        1:7-1:8 [1] SyntaxError: expected expression, found ';'"#]]
     .assert_eq(&render_diagnostics_notification(&notif));
 
     let notif = server.change("d.php", 2, "<?php\n").await;
@@ -443,8 +442,7 @@ async fn cross_file_republish_preserves_dependent_parse_errors() {
     expect![[r#"
         1:4-1:13 [1] UndefinedClass: Class Triggered does not exist
         2:0-2:7 [1] UndefinedFunction: Function broken() is not defined
-        2:7-2:8 [1] SyntaxError: expected ')', found ';'
-        2:7-2:8 [1] SyntaxError: expected expression"#]]
+        2:7-2:8 [1] SyntaxError: expected expression, found ';'"#]]
     .assert_eq(&render_diagnostics_notification(&notif));
 
     server
@@ -454,9 +452,7 @@ async fn cross_file_republish_preserves_dependent_parse_errors() {
     let broken_uri = server.uri("broken.php");
     let notif = server.client().wait_for_diagnostics(&broken_uri).await;
     // UndefinedClass clears once Triggered is defined; parse errors survive.
-    expect![[r#"
-        2:7-2:8 [1] SyntaxError: expected ')', found ';'
-        2:7-2:8 [1] SyntaxError: expected expression"#]]
+    expect!["2:7-2:8 [1] SyntaxError: expected expression, found ';'"]
     .assert_eq(&render_diagnostics_notification(&notif));
 }
 

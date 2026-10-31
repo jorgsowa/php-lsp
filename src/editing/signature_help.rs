@@ -546,6 +546,7 @@ fn find_method_signature(
                     find_method_signature(&inner.stmts, class_short, method)
                 }
                 NamespaceBody::Simple => None,
+                _ => None,
             },
             _ => None,
         };

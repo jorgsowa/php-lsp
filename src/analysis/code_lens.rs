@@ -402,7 +402,7 @@ fn collect_lenses(
                                 // Constructor-promoted params: `public function __construct(public string $name)`.
                                 if m.name == "__construct" {
                                     for p in m.params.iter() {
-                                        if p.visibility.is_some() {
+                                        if p.modifiers.visibility.is_some() {
                                             let param_name = p.name.as_str().unwrap_or_default();
                                             let prop_range = sv.name_range(param_name);
                                             out.push(LensSlot::RefCount {
@@ -517,6 +517,7 @@ fn collect_lenses(
                     NamespaceBody::Simple => {
                         ns = ns_name;
                     }
+                    _ => {}
                 }
             }
             _ => {}

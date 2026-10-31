@@ -151,7 +151,11 @@ pub(crate) fn validation_rule_completions(prefix: &str) -> Vec<CompletionItem> {
 }
 
 fn is_ident(expr: &Expr<'_, '_>, name: &str) -> bool {
-    matches!(&expr.kind, ExprKind::Identifier(n) if n.eq_ignore_ascii_case(name))
+    match &expr.kind {
+        ExprKind::Identifier(n) => n.eq_ignore_ascii_case(name),
+        ExprKind::Name(n) => n.to_string_repr().eq_ignore_ascii_case(name),
+        _ => false,
+    }
 }
 
 /// The span (quotes included) of the rule-name string element containing
@@ -173,9 +177,9 @@ fn rule_value_span_at(
         if require_key && el.key.is_none() {
             continue;
         }
-        if el.value.span.start <= cursor && cursor <= el.value.span.end {
-            return match &el.value.kind {
-                ExprKind::String(_) => Some(el.value.span),
+        if el.value().span.start <= cursor && cursor <= el.value().span.end {
+            return match &el.value().kind {
+                ExprKind::String(_) => Some(el.value().span),
                 ExprKind::Array(nested) => rule_value_span_at(nested, cursor, false),
                 _ => None,
             };
@@ -195,6 +199,7 @@ struct RulesCallVisitor {
 }
 
 impl<'arena, 'src> Visitor<'arena, 'src> for RulesCallVisitor {
+    type Break = ();
     fn visit_expr(&mut self, expr: &Expr<'arena, 'src>) -> ControlFlow<()> {
         if self.found.is_some() {
             return ControlFlow::Break(());
@@ -210,7 +215,7 @@ impl<'arena, 'src> Visitor<'arena, 'src> for RulesCallVisitor {
             _ => None,
         };
         if let Some(arg) = array_arg
-            && let Some(arg_value) = &arg.value
+            && let Some(arg_value) = arg.value()
             && let ExprKind::Array(elements) = &arg_value.kind
             && arg_value.span.start <= self.cursor
             && self.cursor <= arg_value.span.end

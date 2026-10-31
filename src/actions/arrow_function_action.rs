@@ -175,7 +175,7 @@ fn collect_in_expr(
                 return true;
             }
             for arg in fc.args.iter() {
-                let Some(value) = &arg.value else { continue };
+                let Some(value) = arg.value() else { continue };
                 if collect_in_expr(value, source, cursor, uri, sv, out) {
                     return true;
                 }
@@ -184,7 +184,7 @@ fn collect_in_expr(
         }
         ExprKind::MethodCall(mc) | ExprKind::NullsafeMethodCall(mc) => {
             for arg in mc.args.iter() {
-                let Some(value) = &arg.value else { continue };
+                let Some(value) = arg.value() else { continue };
                 if collect_in_expr(value, source, cursor, uri, sv, out) {
                     return true;
                 }
@@ -193,7 +193,7 @@ fn collect_in_expr(
         }
         ExprKind::StaticMethodCall(smc) => {
             for arg in smc.args.iter() {
-                let Some(value) = &arg.value else { continue };
+                let Some(value) = arg.value() else { continue };
                 if collect_in_expr(value, source, cursor, uri, sv, out) {
                     return true;
                 }
@@ -489,7 +489,7 @@ fn collect_arrow_in_expr(
                 return true;
             }
             for arg in fc.args.iter() {
-                let Some(value) = &arg.value else { continue };
+                let Some(value) = arg.value() else { continue };
                 if collect_arrow_in_expr(value, source, cursor, uri, sv, out) {
                     return true;
                 }
@@ -498,7 +498,7 @@ fn collect_arrow_in_expr(
         }
         ExprKind::MethodCall(mc) | ExprKind::NullsafeMethodCall(mc) => {
             for arg in mc.args.iter() {
-                let Some(value) = &arg.value else { continue };
+                let Some(value) = arg.value() else { continue };
                 if collect_arrow_in_expr(value, source, cursor, uri, sv, out) {
                     return true;
                 }
@@ -507,7 +507,7 @@ fn collect_arrow_in_expr(
         }
         ExprKind::StaticMethodCall(smc) => {
             for arg in smc.args.iter() {
-                let Some(value) = &arg.value else { continue };
+                let Some(value) = arg.value() else { continue };
                 if collect_arrow_in_expr(value, source, cursor, uri, sv, out) {
                     return true;
                 }

@@ -1,11 +1,11 @@
 /// Docblock (`/** ... */`) parser.
 ///
 /// Delegates to [`mir_analyzer::DocblockParser`] for type parsing and
-/// [`php_rs_parser::phpdoc`] for description extraction.
+/// [`phpdoc_parser`] for description extraction.
 use std::collections::HashMap;
 
 use mir_analyzer::DocblockParser;
-use php_rs_parser::phpdoc;
+use phpdoc_parser as phpdoc;
 
 /// Flatten a `phpdoc::PhpDocText` (sequence of text segments + inline tags)
 /// into a single string. Inline tags are rendered as `{@name body}`.
@@ -24,6 +24,7 @@ fn flatten_phpdoc_text(t: &phpdoc::PhpDocText) -> String {
                 }
                 s.push('}');
             }
+            _ => {}
         }
     }
     s
@@ -258,7 +259,7 @@ impl Docblock {
 /// inner content — either form is handled).
 ///
 /// Delegates to [`mir_analyzer::DocblockParser`] for type resolution and
-/// [`php_rs_parser::phpdoc`] for description fields.
+/// [`phpdoc_parser`] for description fields.
 pub fn parse_docblock(raw: &str) -> Docblock {
     let is_inherit_doc = {
         let stripped = raw

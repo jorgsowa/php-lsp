@@ -209,18 +209,19 @@ impl ThrowCollector {
     fn collect_from_expr(&mut self, expr: &php_ast::Expr<'_, '_>) {
         match &expr.kind {
             ExprKind::New(n) => {
-                if let ExprKind::Identifier(name) = &n.class.kind {
+                if let ExprKind::Name(name) = &n.class.kind {
+                    let name = name.to_string_repr();
                     // `self`/`static`/`parent` resolve to the real class name where
                     // known, so `@throws self` (nonsensical to a reader) isn't
                     // offered and dedup against an existing `@throws RealName`
                     // tag actually works.
-                    let resolved = match name.as_str() {
+                    let resolved = match name.as_ref() {
                         "self" | "static" => self.self_name.clone(),
                         "parent" => self.parent_name.clone(),
                         _ => None,
                     };
                     self.classes
-                        .push(resolved.unwrap_or_else(|| name.as_str().to_string()));
+                        .push(resolved.unwrap_or_else(|| name.into_owned()));
                 }
             }
             ExprKind::Parenthesized(inner) => self.collect_from_expr(inner),
@@ -230,6 +231,7 @@ impl ThrowCollector {
 }
 
 impl<'arena, 'src> Visitor<'arena, 'src> for ThrowCollector {
+    type Break = ();
     fn visit_stmt(&mut self, stmt: &php_ast::Stmt<'arena, 'src>) -> ControlFlow<()> {
         match &stmt.kind {
             StmtKind::Throw(expr) => {
@@ -249,7 +251,7 @@ impl<'arena, 'src> Visitor<'arena, 'src> for ThrowCollector {
     fn visit_expr(&mut self, expr: &php_ast::Expr<'arena, 'src>) -> ControlFlow<()> {
         match &expr.kind {
             // PHP 8+ throw-as-expression: `$x ?? throw new Foo()`
-            ExprKind::ThrowExpr(inner) => {
+            ExprKind::Throw(inner) => {
                 self.collect_from_expr(inner);
                 ControlFlow::Continue(())
             }

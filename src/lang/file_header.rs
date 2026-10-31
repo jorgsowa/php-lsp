@@ -107,7 +107,7 @@ pub(crate) fn namespace_at<'a, 'arena, 'src>(
             stmts: &block.stmts,
             body_start: block.span.start + 1,
         },
-        NamespaceBody::Simple => {
+        _ => {
             let end = namespaces
                 .iter()
                 .find(|&&next| next > i)

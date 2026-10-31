@@ -229,6 +229,7 @@ fn is_member_access_name(doc: &ParsedDoc, offset: u32) -> bool {
     }
 
     impl<'arena, 'src> Visitor<'arena, 'src> for Finder {
+        type Break = ();
         fn visit_expr(&mut self, expr: &Expr<'arena, 'src>) -> ControlFlow<()> {
             if self.found {
                 return ControlFlow::Break(());
@@ -238,7 +239,7 @@ fn is_member_access_name(doc: &ParsedDoc, offset: u32) -> bool {
                     at(m.method.span, self.offset)
                 }
                 ExprKind::StaticMethodCall(s) => at(s.method.span, self.offset),
-                ExprKind::StaticDynMethodCall(s) => at(s.method.span, self.offset),
+                ExprKind::StaticMethodCallDynamic(s) => at(s.method.span, self.offset),
                 ExprKind::PropertyAccess(p) | ExprKind::NullsafePropertyAccess(p) => {
                     at(p.property.span, self.offset)
                 }
@@ -417,6 +418,7 @@ fn param_owner<'d>(
     }
 
     impl<'arena, 'src> Visitor<'arena, 'src> for Finder<'_, 'src> {
+        type Break = ();
         fn visit_stmt(&mut self, stmt: &php_ast::Stmt<'arena, 'src>) -> ControlFlow<()> {
             match &stmt.kind {
                 php_ast::StmtKind::Function(f) if self.declares(&f.params) => {
@@ -545,6 +547,7 @@ pub fn named_arg_ranges(doc: &ParsedDoc, callee_ranges: &[Range], name: &str) ->
     }
 
     impl<'arena, 'src> Visitor<'arena, 'src> for Finder<'_> {
+        type Break = ();
         fn visit_expr(&mut self, expr: &Expr<'arena, 'src>) -> ControlFlow<()> {
             let call = match &expr.kind {
                 ExprKind::FunctionCall(c) => Some((c.name.span, &c.args)),
@@ -601,6 +604,7 @@ pub fn promoted_param_class(doc: &ParsedDoc, ranges: &[Range], name: &str) -> Op
     }
 
     impl<'arena, 'src> Visitor<'arena, 'src> for Finder<'_> {
+        type Break = ();
         fn visit_stmt(&mut self, stmt: &php_ast::Stmt<'arena, 'src>) -> ControlFlow<()> {
             if let php_ast::StmtKind::Class(c) = &stmt.kind
                 && let Some(class_name) = c.name.and_then(|n| n.as_str())
@@ -611,7 +615,7 @@ pub fn promoted_param_class(doc: &ParsedDoc, ranges: &[Range], name: &str) -> Op
                     };
                     m.name == "__construct"
                         && m.params.iter().any(|p| {
-                            (p.visibility.is_some() || p.is_readonly)
+                            (p.modifiers.visibility.is_some() || p.modifiers.is_readonly)
                                 && p.name == self.name
                                 && self.offsets.iter().any(|&off| {
                                     let token = variable_token_span(self.source, p.span, self.name);

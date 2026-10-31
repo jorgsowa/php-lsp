@@ -112,10 +112,10 @@ fn collect_promote<'a>(
                 let mut prop_info: HashMap<String, PropInfo> = HashMap::new();
                 for member in c.body.members.iter() {
                     if let ClassMemberKind::Property(p) = &member.kind
-                        && !p.is_static
-                        && p.visibility.is_some()
+                        && !p.modifiers.is_static
+                        && p.modifiers.visibility.is_some()
                     {
-                        let vis = match &p.visibility {
+                        let vis = match &p.modifiers.visibility {
                             Some(Visibility::Private) => "private",
                             Some(Visibility::Protected) => "protected",
                             _ => "public",
@@ -133,7 +133,7 @@ fn collect_promote<'a>(
                                 member.span.start,
                                 member.span.end,
                                 vis,
-                                p.is_readonly,
+                                p.modifiers.is_readonly,
                                 type_hint,
                                 default,
                             ),
@@ -153,7 +153,7 @@ fn collect_promote<'a>(
 
                 for param in ctor.params.iter() {
                     // Skip already-promoted params.
-                    if param.visibility.is_some() {
+                    if param.modifiers.visibility.is_some() {
                         continue;
                     }
                     let param_name = param.name;

@@ -7,7 +7,7 @@ hover
 str_re$0place('a', 'b', 'abc');
 ===expect===
 ```php
-function str_replace(string|array<int|string, string> $search, string|array<int|string, scalar|Stringable|null> $replace, string|array<int|string, string> $subject, int &$count = null): ($subject is array ? array<int, string> : string)
+function str_replace(string|array<int|string, string> $search, string|array<int|string, scalar|Stringable|null> $replace, string|array<int|string, string> $subject, mixed &$count = null): ($subject is array ? array<int, string> : string)
 ```
 
 ---

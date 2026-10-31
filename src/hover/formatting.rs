@@ -9,7 +9,7 @@ pub(crate) fn format_expr_literal(expr: &php_ast::Expr<'_, '_>) -> Option<String
         ExprKind::Int(n) => Some(n.to_string()),
         ExprKind::Float(f) => Some(f.to_string()),
         ExprKind::Bool(b) => Some(if *b { "true" } else { "false" }.to_string()),
-        ExprKind::String(s) => Some(format!("'{}'", s)),
+        ExprKind::String(s) => Some(format!("'{}'", s.to_string_lossy())),
         _ => None,
     }
 }
@@ -69,7 +69,7 @@ pub(crate) fn format_default_value(expr: &php_ast::Expr<'_, '_>) -> String {
     match &expr.kind {
         ExprKind::Int(n) => n.to_string(),
         ExprKind::Float(f) => f.to_string(),
-        ExprKind::String(s) => format!("'{}'", s),
+        ExprKind::String(s) => format!("'{}'", s.to_string_lossy()),
         ExprKind::Bool(b) => {
             if *b {
                 "true".to_string()
@@ -97,10 +97,10 @@ pub(crate) fn wrap_php(sig: &str) -> String {
 /// `public static function foo(int $x): void`.
 pub(crate) fn method_signature(m: &MethodDecl<'_, '_>) -> String {
     let prefix = format_method_prefix(
-        m.visibility.as_ref(),
-        m.is_static,
-        m.is_abstract,
-        m.is_final,
+        m.modifiers.visibility.as_ref(),
+        m.modifiers.is_static,
+        m.modifiers.is_abstract,
+        m.modifiers.is_final,
     );
     let params = format_params(&m.params);
     let ret = m
@@ -189,6 +189,7 @@ fn visibility_str(v: &Visibility) -> &'static str {
         Visibility::Public => "public",
         Visibility::Protected => "protected",
         Visibility::Private => "private",
+        _ => "public",
     }
 }
 

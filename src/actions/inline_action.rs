@@ -301,6 +301,7 @@ impl AssignmentFinder {
 }
 
 impl<'arena, 'src> Visitor<'arena, 'src> for AssignmentFinder {
+    type Break = ();
     fn visit_stmt(&mut self, stmt: &Stmt<'arena, 'src>) -> ControlFlow<()> {
         if let StmtKind::Expression(expr) = &stmt.kind
             && let ExprKind::Assign(assign) = &expr.kind
@@ -393,6 +394,7 @@ fn is_repeatable(expr: &Expr<'_, '_>) -> bool {
         | ExprKind::Null
         | ExprKind::Variable(_)
         | ExprKind::Identifier(_)
+        | ExprKind::Name(_)
         | ExprKind::MagicConst(_)
         | ExprKind::ClassConstAccess(_) => true,
         ExprKind::Parenthesized(inner) | ExprKind::Cast(_, inner) => is_repeatable(inner),
@@ -413,9 +415,9 @@ fn is_repeatable(expr: &Expr<'_, '_>) -> bool {
             is_repeatable(access.array) && access.index.is_none_or(is_repeatable)
         }
         ExprKind::Array(elements) => elements.iter().all(|element| {
-            !element.by_ref
+            !element.is_by_ref()
                 && element.key.as_ref().is_none_or(is_repeatable)
-                && is_repeatable(&element.value)
+                && is_repeatable(element.value())
         }),
         _ => false,
     }
@@ -425,7 +427,7 @@ fn class_name(expr: &Expr<'_, '_>) -> Option<Span> {
     match &expr.kind {
         ExprKind::Variable(_) => Some(expr.span),
         ExprKind::ClassConstAccess(access)
-            if matches!(access.class.kind, ExprKind::Identifier(_))
+            if matches!(access.class.kind, ExprKind::Name(_))
                 && access
                     .member
                     .name_str()
@@ -440,6 +442,7 @@ fn class_name(expr: &Expr<'_, '_>) -> Option<Span> {
 fn variable_names(expr: &Expr<'_, '_>) -> Vec<String> {
     struct Names(Vec<String>);
     impl<'arena, 'src> Visitor<'arena, 'src> for Names {
+        type Break = ();
         fn visit_expr(&mut self, expr: &Expr<'arena, 'src>) -> ControlFlow<()> {
             if let ExprKind::Variable(name) = &expr.kind
                 && name.as_str() != "this"
@@ -459,6 +462,7 @@ fn variable_names(expr: &Expr<'_, '_>) -> Vec<String> {
 fn reads_state(expr: &Expr<'_, '_>) -> bool {
     struct State(bool);
     impl<'arena, 'src> Visitor<'arena, 'src> for State {
+        type Break = ();
         fn visit_expr(&mut self, expr: &Expr<'arena, 'src>) -> ControlFlow<()> {
             if matches!(
                 expr.kind,
@@ -505,8 +509,8 @@ impl ReadSites<'_> {
 
     fn note_args(&mut self, callee_offset: u32, args: &[Arg<'_, '_>]) {
         for (position, arg) in args.iter().enumerate() {
-            if let Some(value) = &arg.value
-                && !arg.unpack
+            if let Some(value) = arg.value()
+                && !arg.is_spread()
                 && self.reads.contains(&value.span)
             {
                 let source = self.source;
@@ -524,6 +528,7 @@ impl ReadSites<'_> {
 }
 
 impl<'arena, 'src> Visitor<'arena, 'src> for ReadSites<'_> {
+    type Break = ();
     fn visit_expr(&mut self, expr: &Expr<'arena, 'src>) -> ControlFlow<()> {
         match &expr.kind {
             ExprKind::FunctionCall(call) => {
@@ -614,7 +619,7 @@ impl<'s> ScopeScan<'s> {
             }
             ExprKind::Array(elements) => {
                 for element in elements.iter() {
-                    self.bind(&element.value, element.by_ref);
+                    self.bind(element.value(), element.is_by_ref());
                 }
             }
             ExprKind::ArrayAccess(access) => self.bind(access.array, by_ref),
@@ -636,15 +641,18 @@ impl<'s> ScopeScan<'s> {
 }
 
 fn is_dynamic_scope_call(name: &Expr<'_, '_>) -> bool {
-    name.name_str().is_some_and(|name| {
-        let name = name.trim_start_matches('\\');
-        ["compact", "extract", "get_defined_vars", "parse_str"]
-            .iter()
-            .any(|f| name.eq_ignore_ascii_case(f))
-    })
+    let ExprKind::Name(name) = &name.kind else {
+        return false;
+    };
+    let name = name.to_string_repr();
+    let name = name.trim_start_matches('\\');
+    ["compact", "extract", "get_defined_vars", "parse_str"]
+        .iter()
+        .any(|f| name.eq_ignore_ascii_case(f))
 }
 
 impl<'arena, 'src> Visitor<'arena, 'src> for ScopeScan<'_> {
+    type Break = ();
     fn visit_stmt(&mut self, stmt: &Stmt<'arena, 'src>) -> ControlFlow<()> {
         let scope_like = matches!(
             stmt.kind,
@@ -759,7 +767,7 @@ impl<'arena, 'src> Visitor<'arena, 'src> for ScopeScan<'_> {
                 for use_var in closure.use_vars.iter() {
                     self.zones.push(use_var.span);
                     if use_var.by_ref {
-                        let name = use_var.name.trim_start_matches('$').to_string();
+                        let name = use_var.name.or_error().trim_start_matches('$').to_string();
                         self.bindings.push((use_var.span, name.clone()));
                         self.ref_bound.push(name);
                     }
@@ -804,9 +812,9 @@ impl<'arena, 'src> Visitor<'arena, 'src> for ScopeScan<'_> {
                 self.write(expr.span, unary.operand);
             }
             ExprKind::Array(elements) => {
-                for element in elements.iter().filter(|element| element.by_ref) {
-                    self.zones.push(element.value.span);
-                    self.bind(&element.value, true);
+                for element in elements.iter().filter(|element| element.is_by_ref()) {
+                    self.zones.push(element.value().span);
+                    self.bind(element.value(), true);
                 }
             }
             ExprKind::FunctionCall(call) => {
@@ -820,13 +828,13 @@ impl<'arena, 'src> Visitor<'arena, 'src> for ScopeScan<'_> {
             }
             ExprKind::MethodCall(_)
             | ExprKind::StaticMethodCall(_)
-            | ExprKind::StaticDynMethodCall(_)
+            | ExprKind::StaticMethodCallDynamic(_)
             | ExprKind::New(_)
             | ExprKind::Clone(_)
             | ExprKind::CloneWith(..)
             | ExprKind::Exit(_)
             | ExprKind::Yield(_)
-            | ExprKind::ThrowExpr(_) => self.effects.push((expr.span, Effect::Other)),
+            | ExprKind::Throw(_) => self.effects.push((expr.span, Effect::Other)),
             ExprKind::Include(..) | ExprKind::Eval(_) | ExprKind::VariableVariable(_) => {
                 self.dynamic_scope = true;
             }
@@ -872,6 +880,7 @@ fn is_atomic(expr: &Expr<'_, '_>) -> bool {
             | ExprKind::Null
             | ExprKind::Variable(_)
             | ExprKind::Identifier(_)
+            | ExprKind::Name(_)
             | ExprKind::FunctionCall(_)
             | ExprKind::Array(_)
             | ExprKind::ArrayAccess(_)

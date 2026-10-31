@@ -399,7 +399,7 @@ fn hints_in_expr(ctx: &HintCtx<'_>, expr: &Expr<'_, '_>, out: &mut Vec<InlayHint
             }
             hints_in_expr(ctx, f.name, out);
             for arg in f.args.iter() {
-                if let Some(value) = &arg.value {
+                if let Some(value) = arg.value() {
                     hints_in_expr(ctx, value, out);
                 }
             }
@@ -410,7 +410,7 @@ fn hints_in_expr(ctx: &HintCtx<'_>, expr: &Expr<'_, '_>, out: &mut Vec<InlayHint
             }
             hints_in_expr(ctx, m.object, out);
             for arg in m.args.iter() {
-                if let Some(value) = &arg.value {
+                if let Some(value) = arg.value() {
                     hints_in_expr(ctx, value, out);
                 }
             }
@@ -421,20 +421,21 @@ fn hints_in_expr(ctx: &HintCtx<'_>, expr: &Expr<'_, '_>, out: &mut Vec<InlayHint
             }
             hints_in_expr(ctx, m.class, out);
             for arg in m.args.iter() {
-                if let Some(value) = &arg.value {
+                if let Some(value) = arg.value() {
                     hints_in_expr(ctx, value, out);
                 }
             }
         }
         ExprKind::New(n) => {
             let def = callable_from_symbol(ctx, n.class.span.start).or_else(|| {
-                ident_name(n.class).and_then(|class_name| ctx.defs.get(class_name).cloned())
+                ident_name(n.class)
+                    .and_then(|class_name| ctx.defs.get(class_name.as_ref()).cloned())
             });
             if let Some(def) = def {
                 emit_param_hints(ctx, &n.args, &def, out);
             }
             for arg in n.args.iter() {
-                if let Some(value) = &arg.value {
+                if let Some(value) = arg.value() {
                     hints_in_expr(ctx, value, out);
                 }
             }
@@ -497,7 +498,7 @@ fn emit_param_hints(
         // of positional parameters, so raw arg-list index no longer lines up
         // with the real parameter index for it *or anything after it* —
         // suppress hints for the rest of the call, not just the unpack itself.
-        if arg.unpack {
+        if arg.is_spread() {
             break;
         }
         // Skip named arguments (they already have the label in sv.source()).
@@ -551,7 +552,7 @@ fn callable_from_local_function(
     expr: &Expr<'_, '_>,
 ) -> Option<CallableSignature> {
     ident_name(expr)
-        .map(str::to_string)
+        .map(|name| name.into_owned())
         .or_else(|| {
             if let ExprKind::Variable(n) = &expr.kind {
                 Some(format!("${}", n.as_str()))
@@ -657,9 +658,9 @@ fn declared_param_names(params: &[mir_analyzer::DeclaredParam]) -> Vec<String> {
         .collect()
 }
 
-fn ident_name<'a>(expr: &'a Expr<'_, '_>) -> Option<&'a str> {
-    if let ExprKind::Identifier(name) = &expr.kind {
-        Some(name)
+fn ident_name<'a>(expr: &'a Expr<'_, '_>) -> Option<std::borrow::Cow<'a, str>> {
+    if let ExprKind::Name(name) = &expr.kind {
+        Some(name.to_string_repr())
     } else {
         None
     }

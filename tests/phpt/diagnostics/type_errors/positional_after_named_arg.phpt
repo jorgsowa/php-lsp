@@ -6,4 +6,4 @@ for the positional argument.
 <?php
 function bar(int $a, int $b): void {}
 bar(a: 1, 2);
-//        ^ error: cannot use positional argument after named argument
+//        ^ error: Cannot use positional argument after named argument

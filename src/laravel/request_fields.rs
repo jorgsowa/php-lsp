@@ -103,6 +103,7 @@ pub(crate) fn harvest_fields(stmts: &[Stmt<'_, '_>], receiver: &Receiver) -> Vec
         out: Vec<String>,
     }
     impl<'arena, 'src> Visitor<'arena, 'src> for Collector<'_> {
+        type Break = ();
         fn visit_expr(&mut self, expr: &Expr<'arena, 'src>) -> ControlFlow<()> {
             if let ExprKind::MethodCall(mc) = &expr.kind
                 && let ExprKind::Identifier(method) = &mc.method.kind
@@ -112,11 +113,11 @@ pub(crate) fn harvest_fields(stmts: &[Stmt<'_, '_>], receiver: &Receiver) -> Vec
                 && receiver_matches(mc.object, self.receiver)
                 && let Some(arg) = mc.args.first()
                 && arg.name.is_none()
-                && let Some(arg_value) = &arg.value
+                && let Some(arg_value) = arg.value()
                 && let ExprKind::String(s) = &arg_value.kind
-                && !self.out.iter().any(|f| f == *s)
+                && !self.out.iter().any(|f| *s == f.as_str())
             {
-                self.out.push((*s).to_string());
+                self.out.push(s.to_string_lossy().into_owned());
             }
             walk_expr(self, expr)
         }

@@ -103,6 +103,7 @@ fn smallest_expr_span_containing(doc: &ParsedDoc, target: Span) -> Option<Span> 
     }
 
     impl<'arena, 'src> Visitor<'arena, 'src> for Finder {
+        type Break = ();
         fn visit_expr(&mut self, expr: &Expr<'arena, 'src>) -> ControlFlow<()> {
             let span = expr.span;
             if span.start <= self.target.start

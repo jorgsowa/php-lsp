@@ -85,8 +85,14 @@ pub fn diagnostics_from_doc(doc: &ParsedDoc, target: mir_analyzer::PhpVersion) -
 /// `workspace_diagnostic`, and the dependent-republish path.
 pub fn merge_file_diagnostics(
     parse: Vec<Diagnostic>,
-    semantic: Vec<Diagnostic>,
+    semantic: impl IntoIterator<Item = Diagnostic>,
 ) -> Vec<Diagnostic> {
+    let compile_error = Some(NumberOrString::String("CompileError".to_string()));
+    let semantic: Vec<Diagnostic> = semantic
+        .into_iter()
+        // mir re-reports some parser diagnostics as `CompileError`; the parse pass already has them.
+        .filter(|d| d.code != compile_error || !parse.iter().any(|p| p.range == d.range))
+        .collect();
     let mut all = parse;
     all.extend(semantic);
     all
@@ -96,9 +102,7 @@ pub fn merge_file_diagnostics(
 /// above it (PHP 8.6 syntax) is lifted when the workspace targets that version.
 fn supported_by_target(e: &ParseError, target: mir_analyzer::PhpVersion) -> bool {
     match e {
-        ParseError::VersionTooLow { required, .. } => required
-            .parse::<mir_analyzer::PhpVersion>()
-            .is_ok_and(|required| required <= target),
+        ParseError::VersionTooLow { required, .. } => *required <= target.parser_version(),
         _ => false,
     }
 }

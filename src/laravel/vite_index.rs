@@ -89,7 +89,11 @@ pub(crate) fn vite_completions(index: &ViteIndex, prefix: &str) -> Vec<Completio
 }
 
 fn is_ident(expr: &Expr<'_, '_>, name: &str) -> bool {
-    matches!(&expr.kind, ExprKind::Identifier(n) if n.eq_ignore_ascii_case(name))
+    match &expr.kind {
+        ExprKind::Identifier(n) => n.eq_ignore_ascii_case(name),
+        ExprKind::Name(n) => n.to_string_repr().eq_ignore_ascii_case(name),
+        _ => false,
+    }
 }
 
 /// One `Vite::asset('...')` call site found in application code.
@@ -109,18 +113,19 @@ fn collect_vite_asset_calls(doc: &ParsedDoc) -> Vec<ViteAssetCall> {
     }
 
     impl<'arena, 'src> Visitor<'arena, 'src> for Collector<'_> {
+        type Break = ();
         fn visit_expr(&mut self, expr: &Expr<'arena, 'src>) -> ControlFlow<()> {
             if let ExprKind::StaticMethodCall(s) = &expr.kind
                 && is_ident(s.class, "Vite")
                 && is_ident(s.method, "asset")
                 && let Some(arg) = s.args.first()
-                && let Some(arg_value) = &arg.value
+                && let Some(arg_value) = arg.value()
                 && let ExprKind::String(path) = &arg_value.kind
                 && let Some(cspan) = content_span(self.source, arg_value.span)
             {
                 self.out.push(ViteAssetCall {
                     token_span: arg_value.span,
-                    path: (*path).to_string(),
+                    path: path.to_string_lossy().into_owned(),
                     range: self.sv.range_of(cspan),
                 });
             }

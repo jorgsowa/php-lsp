@@ -59,20 +59,24 @@ fn collect_string_arg_calls(doc: &ParsedDoc, names: &[&str]) -> Vec<StringArgCal
     }
 
     impl<'arena, 'src> Visitor<'arena, 'src> for Collector<'_> {
+        type Break = ();
         fn visit_expr(&mut self, expr: &Expr<'arena, 'src>) -> ControlFlow<()> {
             if let ExprKind::FunctionCall(f) = &expr.kind
-                && let Some(name) = f.name.name_str()
-                && self.names.iter().any(|n| n.eq_ignore_ascii_case(name))
+                && let ExprKind::Name(name) = &f.name.kind
+                && self
+                    .names
+                    .iter()
+                    .any(|n| n.eq_ignore_ascii_case(&name.to_string_repr()))
                 && let Some(arg) = f.args.first()
                 && arg.name.is_none()
-                && !arg.unpack
-                && let Some(arg_value) = &arg.value
+                && !arg.is_spread()
+                && let Some(arg_value) = arg.value()
                 && let ExprKind::String(s) = &arg_value.kind
                 && let Some(cspan) = content_span(self.source, arg_value.span)
             {
                 self.out.push(StringArgCall {
                     token_span: arg_value.span,
-                    content: (*s).to_string(),
+                    content: s.to_string_lossy().into_owned(),
                     content_span: cspan,
                 });
             }

@@ -7,7 +7,7 @@
 //! Sibling to `is_bare_keyword_at` (`crate::lang::keywords`): both exist so
 //! the bareword fallback used by goto-definition/references/hover/rename
 //! never treats a documentation-only token as a searchable symbol. Reuses
-//! `php_rs_parser::phpdoc::parse` (the same tag parser `crate::lang::docblock`
+//! `phpdoc_parser::parse` (the same tag parser `crate::lang::docblock`
 //! already delegates to) for tag/span structure instead of re-parsing it by
 //! hand — the tag-name half needs no list at all this way: any spelling,
 //! built-in or custom, is gated identically.
@@ -16,7 +16,7 @@
 //! `@param Foo $x`, `@see Foo`) — those already resolve correctly today via
 //! the ordinary bareword fallback and must keep doing so.
 
-use php_rs_parser::phpdoc::{self, PhpDocText};
+use phpdoc_parser::{self as phpdoc, PhpDocText};
 use tower_lsp_server::ls_types::Position;
 
 use crate::text::position_to_byte_offset;

@@ -184,6 +184,7 @@ fn find_class<'a>(
                         }
                     }
                     NamespaceBody::Simple => cur_ns = ns_name,
+                    _ => {}
                 }
             }
             StmtKind::Class(c) => {

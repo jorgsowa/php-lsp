@@ -183,17 +183,17 @@ pub(crate) fn cursor_is_on_constant_decl(
                 StmtKind::Expression(expr) => {
                     // Detect cursor inside `define('NAME', value)` string literal.
                     if let ExprKind::FunctionCall(f) = &expr.kind
-                        && let ExprKind::Identifier(id) = &f.name.kind
-                        && id.as_str() == "define"
+                        && let ExprKind::Name(id) = &f.name.kind
+                        && id.to_string_repr() == "define"
                         && let Some(first_arg) = f.args.first()
-                        && let Some(first_arg_value) = &first_arg.value
+                        && let Some(first_arg_value) = first_arg.value()
                         && let ExprKind::String(s) = &first_arg_value.kind
                     {
                         // String content starts one byte after the opening quote.
                         let start = first_arg_value.span.start + 1;
                         let end = start + s.len() as u32;
                         if cursor >= start && cursor < end {
-                            return Some((s.to_string(), None));
+                            return Some((s.to_string_lossy().into_owned(), None));
                         }
                     }
                 }
@@ -236,7 +236,7 @@ pub(crate) fn promoted_property_at_cursor(
                             && m.name == "__construct"
                         {
                             for param in m.params.iter() {
-                                if param.visibility.is_none() {
+                                if param.modifiers.visibility.is_none() {
                                     continue;
                                 }
                                 let param_name = param.name.or_error();

@@ -327,7 +327,7 @@ fn collect_members<'a>(
                 // Constructor-promoted parameters (only for Container::Class).
                 if container == Container::Class && m.name == "__construct" {
                     for p in m.params.iter() {
-                        if p.visibility.is_some() {
+                        if p.modifiers.visibility.is_some() {
                             let pname = p.name.or_error();
                             let bare = pname.trim_start_matches('$');
                             push(

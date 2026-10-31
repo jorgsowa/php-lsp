@@ -122,6 +122,7 @@ pub fn named_arg_at(doc: &ParsedDoc, offset: u32) -> Option<(u32, String)> {
     }
 
     impl<'arena, 'src> Visitor<'arena, 'src> for Finder {
+        type Break = ();
         fn visit_expr(&mut self, expr: &Expr<'arena, 'src>) -> ControlFlow<()> {
             let call = match &expr.kind {
                 ExprKind::FunctionCall(c) => Some((c.name.span, &c.args)),
@@ -201,6 +202,7 @@ pub fn param_range_of_declaration(doc: &ParsedDoc, decl_offset: u32, label: &str
     }
 
     impl<'arena, 'src> Visitor<'arena, 'src> for Finder<'_> {
+        type Break = ();
         fn visit_stmt(&mut self, stmt: &Stmt<'arena, 'src>) -> ControlFlow<()> {
             if !self.contains(stmt.span) {
                 return ControlFlow::Continue(());

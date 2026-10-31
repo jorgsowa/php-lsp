@@ -65,19 +65,17 @@ struct CreateCallVisitor<'a> {
 }
 
 impl<'arena, 'src> Visitor<'arena, 'src> for CreateCallVisitor<'_> {
+    type Break = ();
     fn visit_expr(&mut self, expr: &Expr<'arena, 'src>) -> ControlFlow<()> {
         if let ExprKind::StaticMethodCall(s) = &expr.kind
             && is_ident(s.method, "create")
-            && let ExprKind::Identifier(class_ident) = &s.class.kind
+            && let ExprKind::Name(class_ident) = &s.class.kind
             && matches!(
-                s.args
-                    .first()
-                    .and_then(|a| a.value.as_ref())
-                    .map(|v| &v.kind),
+                s.args.first().and_then(|a| a.value()).map(|v| &v.kind),
                 Some(ExprKind::Array(_))
             )
         {
-            let class_name = class_ident.as_str().to_string();
+            let class_name = class_ident.to_string_repr().into_owned();
             if let Some(GuardVerdict::Unguarded) =
                 classify_mass_assignment(&class_name, self.uri, self.docs, self.wi)
             {
@@ -94,7 +92,11 @@ impl<'arena, 'src> Visitor<'arena, 'src> for CreateCallVisitor<'_> {
 }
 
 fn is_ident(expr: &Expr<'_, '_>, name: &str) -> bool {
-    matches!(&expr.kind, ExprKind::Identifier(n) if n.eq_ignore_ascii_case(name))
+    match &expr.kind {
+        ExprKind::Identifier(n) => n.eq_ignore_ascii_case(name),
+        ExprKind::Name(n) => n.to_string_repr().eq_ignore_ascii_case(name),
+        _ => false,
+    }
 }
 
 fn diagnostic_for_call(

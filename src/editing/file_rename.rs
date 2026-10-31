@@ -12,7 +12,7 @@ use crate::navigation::walk::{all_class_ref_names_in_stmts, function_and_const_n
 ///
 /// Skips group-use members (`use App\Model\{User};`), whose `Name` span
 /// extends across the `{` into the prefix.
-fn find_use_items(source: &str, stmts: &[Stmt<'_, '_>], target: &str, out: &mut Vec<(Span, Span)>) {
+fn find_use_items(stmts: &[Stmt<'_, '_>], target: &str, out: &mut Vec<(Span, Span)>) {
     for stmt in stmts {
         match &stmt.kind {
             StmtKind::Use(u) if u.kind == UseKind::Normal => {
@@ -25,17 +25,15 @@ fn find_use_items(source: &str, stmts: &[Stmt<'_, '_>], target: &str, out: &mut 
                     {
                         continue;
                     }
-                    let name_span = item.name.span();
-                    let name_text = &source[name_span.start as usize..name_span.end as usize];
-                    if name_text.contains(['{', '}']) {
+                    if is_group_member(item) {
                         continue;
                     }
-                    out.push((stmt.span, name_span));
+                    out.push((stmt.span, item.name.span()));
                 }
             }
             StmtKind::Namespace(ns) => {
                 if let NamespaceBody::Braced(inner) = &ns.body {
-                    find_use_items(source, &inner.stmts, target, out);
+                    find_use_items(&inner.stmts, target, out);
                 }
             }
             _ => {}
@@ -62,7 +60,7 @@ pub fn delete_use_in_source(doc: &ParsedDoc, fqn: &str) -> Vec<TextEdit> {
     let clean = fqn.trim_start_matches('\\');
     let sv = doc.view();
     let mut matches = Vec::new();
-    find_use_items(doc.source(), &doc.program().stmts, clean, &mut matches);
+    find_use_items(&doc.program().stmts, clean, &mut matches);
 
     // A `use A, B;` statement matching on both items would otherwise queue
     // the same line twice.
@@ -126,7 +124,11 @@ pub fn use_edits_in_source(
                 .trim_start_matches('\\')
                 .eq_ignore_ascii_case(namespace_of(new));
             let short = crate::text::fqn_short_name(new);
-            if in_new_ns && item.alias.is_none_or(|a| a.eq_ignore_ascii_case(short)) {
+            if in_new_ns
+                && item
+                    .alias
+                    .is_none_or(|a| a.or_error().eq_ignore_ascii_case(short))
+            {
                 removed[idx] = true;
             } else if !is_group_member(item) {
                 let span = fqn_span_without_backslash(source, item.name.span());
@@ -176,8 +178,10 @@ pub fn use_edits_in_source(
     edits
 }
 
+/// A group member's name span covers only the text inside the braces, not the shared prefix.
 fn is_group_member(item: &php_ast::UseItem<'_, '_>) -> bool {
-    item.span.start > item.name.span().start
+    let span = item.name.span();
+    item.name.join_parts().len() > (span.end - span.start) as usize
 }
 
 /// The spelling of `new` inside the group of member `item`, when `new` still
@@ -501,6 +505,7 @@ fn old_namespace_function_const_imports(
                         UseKind::Function => bound_functions.insert(alias.to_ascii_lowercase()),
                         UseKind::Const => bound_consts.insert(alias),
                         UseKind::Normal => false,
+                        _ => false,
                     };
                 }
             }
@@ -935,7 +940,6 @@ pub fn same_namespace_import_edit(
     }
     let mut imports = Vec::new();
     find_use_items(
-        source,
         segment.stmts,
         old_fqn.trim_start_matches('\\'),
         &mut imports,

@@ -191,7 +191,7 @@ fn find_enclosing_method(
                     {
                         return Some(EnclosingMethod {
                             class_end: stmt.span.end,
-                            is_static: m.is_static,
+                            is_static: m.modifiers.is_static,
                             params: m.params.iter().map(|p| format!("${}", p.name)).collect(),
                             body: body.span,
                         });

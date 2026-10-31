@@ -73,6 +73,7 @@ pub(crate) fn find_named_arg_at(doc: &ParsedDoc, offset: u32) -> Option<(NamedAr
     }
 
     impl<'arena, 'src> Visitor<'arena, 'src> for Finder {
+        type Break = ();
         fn visit_expr(&mut self, expr: &Expr<'arena, 'src>) -> ControlFlow<()> {
             if self.result.is_some() {
                 return ControlFlow::Break(());
@@ -80,9 +81,12 @@ pub(crate) fn find_named_arg_at(doc: &ParsedDoc, offset: u32) -> Option<(NamedAr
             match &expr.kind {
                 ExprKind::FunctionCall(f) => {
                     if let Some(label) = label_at(&f.args, self.offset)
-                        && let Some(name) = f.name.name_str()
+                        && let ExprKind::Name(name) = &f.name.kind
                     {
-                        self.result = Some((NamedArgCallee::Function(name.to_string()), label));
+                        self.result = Some((
+                            NamedArgCallee::Function(name.to_string_repr().into_owned()),
+                            label,
+                        ));
                         return ControlFlow::Break(());
                     }
                 }
@@ -104,12 +108,12 @@ pub(crate) fn find_named_arg_at(doc: &ParsedDoc, offset: u32) -> Option<(NamedAr
                 }
                 ExprKind::StaticMethodCall(s) => {
                     if let Some(label) = label_at(&s.args, self.offset)
-                        && let ExprKind::Identifier(class) = &s.class.kind
+                        && let ExprKind::Name(class) = &s.class.kind
                         && let Some(method) = s.method.name_str()
                     {
                         self.result = Some((
                             NamedArgCallee::StaticMethod {
-                                class: class.trim_start_matches('\\').to_string(),
+                                class: class.to_string_repr().trim_start_matches('\\').to_string(),
                                 class_offset: s.class.span.start,
                                 method: method.to_string(),
                             },

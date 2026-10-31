@@ -32,9 +32,9 @@ fn find_property_info_in_stmts<'a>(
                     match &member.kind {
                         ClassMemberKind::Property(p) if p.name == prop_name => {
                             let modifiers = format_prop_prefix(
-                                p.visibility.as_ref(),
-                                p.is_static,
-                                p.is_readonly || class_is_readonly,
+                                p.modifiers.visibility.as_ref(),
+                                p.modifiers.is_static,
+                                p.modifiers.is_readonly || class_is_readonly,
                             );
                             let type_str = p
                                 .type_hint
@@ -48,11 +48,11 @@ fn find_property_info_in_stmts<'a>(
                         ClassMemberKind::Method(m) if m.name == "__construct" => {
                             // Check promoted constructor parameters
                             for p in m.params.iter() {
-                                if p.name == prop_name && p.visibility.is_some() {
+                                if p.name == prop_name && p.modifiers.visibility.is_some() {
                                     let modifiers = format_prop_prefix(
-                                        p.visibility.as_ref(),
+                                        p.modifiers.visibility.as_ref(),
                                         false,
-                                        p.is_readonly || class_is_readonly,
+                                        p.modifiers.is_readonly || class_is_readonly,
                                     );
                                     let type_str = p
                                         .type_hint

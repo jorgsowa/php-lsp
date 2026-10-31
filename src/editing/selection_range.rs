@@ -192,6 +192,7 @@ fn collect_spans_stmt(stmt: &Stmt<'_, '_>, off: u32, out: &mut Vec<(u32, u32)>) 
                         collect_spans_expr(&c.value, off, out);
                     }
                     EnumMemberKind::TraitUse(_) => {}
+                    _ => {}
                 }
             }
         }
@@ -273,16 +274,8 @@ fn collect_spans_stmt(stmt: &Stmt<'_, '_>, off: u32, out: &mut Vec<(u32, u32)>) 
                 collect_spans_expr(a, off, out);
             }
         }
-        StmtKind::Return(opt) => {
-            if let Some(e) = opt {
-                collect_spans_expr(e, off, out);
-            }
-        }
-        StmtKind::Break(opt) | StmtKind::Continue(opt) => {
-            if let Some(e) = opt {
-                collect_spans_expr(e, off, out);
-            }
-        }
+        StmtKind::Return(Some(e)) => collect_spans_expr(e, off, out),
+        StmtKind::Break(Some(e)) | StmtKind::Continue(Some(e)) => collect_spans_expr(e, off, out),
         StmtKind::Throw(e) => collect_spans_expr(e, off, out),
         StmtKind::Unset(args) => {
             for a in args.iter() {
@@ -319,6 +312,7 @@ fn collect_spans_stmt(stmt: &Stmt<'_, '_>, off: u32, out: &mut Vec<(u32, u32)>) 
         | StmtKind::Nop
         | StmtKind::InlineHtml(_)
         | StmtKind::Error => {}
+        _ => {}
     }
 }
 
@@ -360,11 +354,13 @@ fn collect_class_member(
                     PropertyHookBody::Block(stmts) => collect_spans_stmts(&stmts.stmts, off, out),
                     PropertyHookBody::Expression(e) => collect_spans_expr(e, off, out),
                     PropertyHookBody::Abstract => {}
+                    _ => {}
                 }
             }
         }
         ClassMemberKind::ClassConst(c) => collect_spans_expr(&c.value, off, out),
         ClassMemberKind::TraitUse(_) => {}
+        _ => {}
     }
 }
 
@@ -383,6 +379,7 @@ fn collect_spans_param(p: &Param<'_, '_>, off: u32, out: &mut Vec<(u32, u32)>) {
             PropertyHookBody::Block(stmts) => collect_spans_stmts(&stmts.stmts, off, out),
             PropertyHookBody::Expression(e) => collect_spans_expr(e, off, out),
             PropertyHookBody::Abstract => {}
+            _ => {}
         }
     }
 }
@@ -403,6 +400,7 @@ fn collect_spans_expr(expr: &Expr<'_, '_>, off: u32, out: &mut Vec<(u32, u32)>) 
         | ExprKind::Null
         | ExprKind::Variable(_)
         | ExprKind::Identifier(_)
+        | ExprKind::Name(_)
         | ExprKind::MagicConst(_)
         | ExprKind::Nowdoc { .. }
         | ExprKind::Error => {}
@@ -450,7 +448,7 @@ fn collect_spans_expr(expr: &Expr<'_, '_>, off: u32, out: &mut Vec<(u32, u32)>) 
                 if !push_if_contains(arg.span.start, arg.span.end, off, out) {
                     continue;
                 }
-                if let Some(value) = &arg.value {
+                if let Some(value) = arg.value() {
                     collect_spans_expr(value, off, out);
                 }
             }
@@ -463,7 +461,7 @@ fn collect_spans_expr(expr: &Expr<'_, '_>, off: u32, out: &mut Vec<(u32, u32)>) 
                 if let Some(k) = &el.key {
                     collect_spans_expr(k, off, out);
                 }
-                collect_spans_expr(&el.value, off, out);
+                collect_spans_expr(el.value(), off, out);
             }
         }
         ExprKind::ArrayAccess(a) => {
@@ -484,11 +482,7 @@ fn collect_spans_expr(expr: &Expr<'_, '_>, off: u32, out: &mut Vec<(u32, u32)>) 
         ExprKind::Empty(e) => collect_spans_expr(e, off, out),
         ExprKind::Include(_, e) => collect_spans_expr(e, off, out),
         ExprKind::Eval(e) => collect_spans_expr(e, off, out),
-        ExprKind::Exit(opt) => {
-            if let Some(e) = opt {
-                collect_spans_expr(e, off, out);
-            }
-        }
+        ExprKind::Exit(Some(e)) => collect_spans_expr(e, off, out),
         ExprKind::Clone(e) => collect_spans_expr(e, off, out),
         ExprKind::New(n) => {
             collect_spans_expr(n.class, off, out);
@@ -496,7 +490,7 @@ fn collect_spans_expr(expr: &Expr<'_, '_>, off: u32, out: &mut Vec<(u32, u32)>) 
                 if !push_if_contains(arg.span.start, arg.span.end, off, out) {
                     continue;
                 }
-                if let Some(value) = &arg.value {
+                if let Some(value) = arg.value() {
                     collect_spans_expr(value, off, out);
                 }
             }
@@ -512,7 +506,7 @@ fn collect_spans_expr(expr: &Expr<'_, '_>, off: u32, out: &mut Vec<(u32, u32)>) 
                 if !push_if_contains(arg.span.start, arg.span.end, off, out) {
                     continue;
                 }
-                if let Some(value) = &arg.value {
+                if let Some(value) = arg.value() {
                     collect_spans_expr(value, off, out);
                 }
             }
@@ -526,7 +520,7 @@ fn collect_spans_expr(expr: &Expr<'_, '_>, off: u32, out: &mut Vec<(u32, u32)>) 
                 if !push_if_contains(arg.span.start, arg.span.end, off, out) {
                     continue;
                 }
-                if let Some(value) = &arg.value {
+                if let Some(value) = arg.value() {
                     collect_spans_expr(value, off, out);
                 }
             }
@@ -562,7 +556,7 @@ fn collect_spans_expr(expr: &Expr<'_, '_>, off: u32, out: &mut Vec<(u32, u32)>) 
                 collect_spans_expr(&arm.body, off, out);
             }
         }
-        ExprKind::ThrowExpr(e) => collect_spans_expr(e, off, out),
+        ExprKind::Throw(e) => collect_spans_expr(e, off, out),
         ExprKind::Yield(y) => {
             if let Some(k) = y.key {
                 collect_spans_expr(k, off, out);
@@ -579,24 +573,26 @@ fn collect_spans_expr(expr: &Expr<'_, '_>, off: u32, out: &mut Vec<(u32, u32)>) 
                 collect_spans_expr(object, off, out)
             }
             CallableCreateKind::StaticMethod { class, .. } => collect_spans_expr(class, off, out),
+            _ => {}
         },
         ExprKind::CloneWith(target, withs) => {
             collect_spans_expr(target, off, out);
             collect_spans_expr(withs, off, out);
         }
-        ExprKind::StaticDynMethodCall(s) => {
+        ExprKind::StaticMethodCallDynamic(s) => {
             collect_spans_expr(s.class, off, out);
             collect_spans_expr(s.method, off, out);
             for arg in s.args.iter() {
                 if !push_if_contains(arg.span.start, arg.span.end, off, out) {
                     continue;
                 }
-                if let Some(value) = &arg.value {
+                if let Some(value) = arg.value() {
                     collect_spans_expr(value, off, out);
                 }
             }
         }
         ExprKind::Omit => {}
+        _ => {}
     }
 }
 

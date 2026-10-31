@@ -158,7 +158,7 @@ fn param_children_for(
     }
     let children: Vec<DocumentSymbol> = params
         .iter()
-        .filter(|p| p.visibility.is_none() && !p.name.is_error())
+        .filter(|p| p.modifiers.visibility.is_none() && !p.name.is_error())
         .map(|p| {
             let prange = param_range(sv, p);
             let psel = sv.name_range_after_attrs(&p.name.to_string(), &p.attributes, p.span);
@@ -187,7 +187,7 @@ fn promoted_property_symbols_for(
 ) -> Vec<DocumentSymbol> {
     params
         .iter()
-        .filter(|p| p.visibility.is_some() && !p.name.is_error())
+        .filter(|p| p.modifiers.visibility.is_some() && !p.name.is_error())
         .map(|p| {
             let prange = param_range(sv, p);
             let psel = sv.name_range_after_attrs(&p.name.to_string(), &p.attributes, p.span);

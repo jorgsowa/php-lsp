@@ -56,6 +56,7 @@ impl AllRefsVisitor<'_> {
 }
 
 impl<'arena, 'src> Visitor<'arena, 'src> for AllRefsVisitor<'_> {
+    type Break = ();
     fn visit_stmt(&mut self, stmt: &Stmt<'arena, 'src>) -> ControlFlow<()> {
         match &stmt.kind {
             StmtKind::Function(f) => self.push_name_str(f.name.or_error(), stmt.span),
@@ -116,9 +117,12 @@ impl<'arena, 'src> Visitor<'arena, 'src> for AllRefsVisitor<'_> {
     }
 
     fn visit_expr(&mut self, expr: &Expr<'arena, 'src>) -> ControlFlow<()> {
-        if let ExprKind::Identifier(name) = &expr.kind
-            && name.as_str() == self.word
-        {
+        let is_word = match &expr.kind {
+            ExprKind::Identifier(name) => name.as_str() == self.word,
+            ExprKind::Name(name) => name.to_string_repr() == self.word,
+            _ => false,
+        };
+        if is_word {
             self.out.push(expr.span);
         }
         walk_expr(self, expr)
@@ -175,8 +179,8 @@ impl VarRefsVisitor<'_> {
             }
             ExprKind::Array(elements) => {
                 for elem in elements.iter() {
-                    if !matches!(elem.value.kind, ExprKind::Omit) {
-                        self.mark_lvalue_writes(&elem.value);
+                    if !matches!(elem.value().kind, ExprKind::Omit) {
+                        self.mark_lvalue_writes(elem.value());
                     }
                 }
             }
@@ -200,8 +204,8 @@ impl VarDeclsVisitor<'_> {
             }
             ExprKind::Array(elements) => {
                 for elem in elements.iter() {
-                    if !self.found && !matches!(elem.value.kind, ExprKind::Omit) {
-                        self.mark_lvalue_decl(&elem.value);
+                    if !self.found && !matches!(elem.value().kind, ExprKind::Omit) {
+                        self.mark_lvalue_decl(elem.value());
                     }
                 }
             }
@@ -213,6 +217,7 @@ impl VarDeclsVisitor<'_> {
 }
 
 impl<'arena, 'src> Visitor<'arena, 'src> for VarDeclsVisitor<'_> {
+    type Break = ();
     fn visit_stmt(&mut self, stmt: &Stmt<'arena, 'src>) -> ControlFlow<()> {
         if self.found {
             return ControlFlow::Break(());
@@ -262,7 +267,7 @@ impl<'arena, 'src> Visitor<'arena, 'src> for VarDeclsVisitor<'_> {
             }
             StmtKind::TryCatch(t) => {
                 for catch in t.catches.iter() {
-                    if catch.var == Some(self.var_name) {
+                    if catch.var.is_some_and(|v| v == self.var_name) {
                         self.found = true;
                         return ControlFlow::Break(());
                     }
@@ -406,6 +411,7 @@ struct NestedVarScopeVisitor<'a, 'out> {
 }
 
 impl<'arena, 'src> Visitor<'arena, 'src> for NestedVarScopeVisitor<'_, '_> {
+    type Break = ();
     fn visit_expr(&mut self, expr: &Expr<'arena, 'src>) -> ControlFlow<()> {
         if self.found {
             return ControlFlow::Break(());
@@ -484,6 +490,7 @@ fn collect_nested_var_scope_in_expr(
 }
 
 impl<'arena, 'src> Visitor<'arena, 'src> for VarRefsVisitor<'_> {
+    type Break = ();
     fn visit_stmt(&mut self, stmt: &Stmt<'arena, 'src>) -> ControlFlow<()> {
         // Stop at scope-defining statement boundaries.
         match &stmt.kind {
@@ -776,6 +783,7 @@ impl AllClassRefsVisitor {
 }
 
 impl<'arena, 'src> Visitor<'arena, 'src> for AllClassRefsVisitor {
+    type Break = ();
     fn visit_stmt(&mut self, stmt: &Stmt<'arena, 'src>) -> ControlFlow<()> {
         match &stmt.kind {
             StmtKind::Class(c) => {
@@ -799,8 +807,8 @@ impl<'arena, 'src> Visitor<'arena, 'src> for AllClassRefsVisitor {
     fn visit_expr(&mut self, expr: &Expr<'arena, 'src>) -> ControlFlow<()> {
         match &expr.kind {
             ExprKind::New(n) => {
-                if let ExprKind::Identifier(id) = &n.class.kind {
-                    self.push_id(id);
+                if let ExprKind::Name(id) = &n.class.kind {
+                    self.push_id(&id.to_string_repr());
                 }
             }
             ExprKind::AnonymousClass(c) => {
@@ -812,23 +820,23 @@ impl<'arena, 'src> Visitor<'arena, 'src> for AllClassRefsVisitor {
                 }
             }
             ExprKind::Binary(b) if b.op == BinaryOp::Instanceof => {
-                if let ExprKind::Identifier(id) = &b.right.kind {
-                    self.push_id(id);
+                if let ExprKind::Name(id) = &b.right.kind {
+                    self.push_id(&id.to_string_repr());
                 }
             }
             ExprKind::StaticMethodCall(s) => {
-                if let ExprKind::Identifier(id) = &s.class.kind {
-                    self.push_id(id);
+                if let ExprKind::Name(id) = &s.class.kind {
+                    self.push_id(&id.to_string_repr());
                 }
             }
             ExprKind::StaticPropertyAccess(s) => {
-                if let ExprKind::Identifier(id) = &s.class.kind {
-                    self.push_id(id);
+                if let ExprKind::Name(id) = &s.class.kind {
+                    self.push_id(&id.to_string_repr());
                 }
             }
             ExprKind::ClassConstAccess(c) => {
-                if let ExprKind::Identifier(id) = &c.class.kind {
-                    self.push_id(id);
+                if let ExprKind::Name(id) = &c.class.kind {
+                    self.push_id(&id.to_string_repr());
                 }
             }
             _ => {}
@@ -861,6 +869,7 @@ impl<'arena, 'src> Visitor<'arena, 'src> for AllClassRefsVisitor {
                 ControlFlow::Continue(())
             }
             TypeHintKind::Keyword(_, _) => ControlFlow::Continue(()),
+            _ => ControlFlow::Continue(()),
         }
     }
 
@@ -902,14 +911,15 @@ impl FunctionConstRefsVisitor {
     }
 
     fn call(&mut self, name: &Expr<'_, '_>) {
-        if let ExprKind::Identifier(id) = &name.kind {
-            self.functions.push(id.to_string());
+        if let ExprKind::Name(id) = &name.kind {
+            self.functions.push(id.to_string_repr().into_owned());
         }
         self.skip(name);
     }
 }
 
 impl<'arena, 'src> Visitor<'arena, 'src> for FunctionConstRefsVisitor {
+    type Break = ();
     fn visit_expr(&mut self, expr: &Expr<'arena, 'src>) -> ControlFlow<()> {
         match &expr.kind {
             ExprKind::FunctionCall(c) => self.call(c.name),
@@ -921,6 +931,7 @@ impl<'arena, 'src> Visitor<'arena, 'src> for FunctionConstRefsVisitor {
                     self.skip(class);
                     self.skip(method);
                 }
+                _ => {}
             },
             ExprKind::New(n) => self.skip(n.class),
             ExprKind::PropertyAccess(p) | ExprKind::NullsafePropertyAccess(p) => {
@@ -935,16 +946,16 @@ impl<'arena, 'src> Visitor<'arena, 'src> for FunctionConstRefsVisitor {
                 self.skip(s.class);
                 self.skip(s.method);
             }
-            ExprKind::StaticDynMethodCall(s) => self.skip(s.class),
+            ExprKind::StaticMethodCallDynamic(s) => self.skip(s.class),
             ExprKind::ClassConstAccessDynamic { class, .. }
             | ExprKind::StaticPropertyAccessDynamic { class, .. } => self.skip(class),
             ExprKind::Binary(b) if b.op == BinaryOp::Instanceof => self.skip(b.right),
-            ExprKind::Identifier(id)
+            ExprKind::Name(id)
                 if !self
                     .non_constants
                     .contains(&(expr.span.start, expr.span.end)) =>
             {
-                self.constants.push(id.to_string())
+                self.constants.push(id.to_string_repr().into_owned())
             }
             _ => {}
         }

@@ -54,13 +54,14 @@ test-hooks = []
 dhat = { version = "0.3", optional = true }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
-mir-analyzer = "0.88.0"
-mir-issues = "0.88.0"
-mir-codebase = "0.88.0"
-mir-types = "0.88.0"
-php-rs-parser = "0.21"
-php-ast = "0.21"
-php-lexer = "0.21"
+mir-analyzer = "0.89.0"
+mir-issues = "0.89.0"
+mir-codebase = "0.89.0"
+mir-types = "0.89.0"
+php-rs-parser = "0.28"
+php-ast = "0.28"
+php-lexer = "0.28"
+phpdoc-parser = "0.28"
 bumpalo = { version = "3", features = ["collections"] }
 tower-lsp-server = "0.23"
 tower = "0.5"

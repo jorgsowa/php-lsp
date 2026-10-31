@@ -79,6 +79,7 @@ impl<'k> Collector<'k> {
                 self.namespace = outer;
             }
             NamespaceBody::Simple => self.namespace = name,
+            _ => {}
         }
     }
 
@@ -201,7 +202,7 @@ impl<'k> Collector<'k> {
                 ExprKind::Array(elements) => {
                     for elem in elements.iter() {
                         // Variables can be in the value (for indexed arrays) or as value/key pairs
-                        if let ExprKind::Variable(name) = &elem.value.kind {
+                        if let ExprKind::Variable(name) = &elem.value().kind {
                             self.push_variable(name.as_str());
                         }
                         // Also check key (for associative destructuring like [key => $var])

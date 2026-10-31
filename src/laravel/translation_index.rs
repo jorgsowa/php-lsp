@@ -140,7 +140,7 @@ fn collect_array_keys(
         let ExprKind::String(key) = &key_expr.kind else {
             continue;
         };
-        let dotted = format!("{prefix}.{key}");
+        let dotted = format!("{prefix}.{}", key.to_string_lossy());
         // `span.start`/`span.end` point at the surrounding quotes (see
         // `editing::document_link::link_from_path_expr`); trim one byte off
         // each side to land on the key text itself.
@@ -152,7 +152,7 @@ fn collect_array_keys(
             uri: uri.clone(),
             range,
         });
-        if let ExprKind::Array(nested) = &el.value.kind {
+        if let ExprKind::Array(nested) = &el.value().kind {
             collect_array_keys(nested, sv, uri, &dotted, out);
         }
     }

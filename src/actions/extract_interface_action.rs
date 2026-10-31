@@ -159,7 +159,7 @@ fn public_method_sigs<'a>(
                 return None;
             };
             // Skip non-public and lifecycle methods.
-            if !matches!(m.visibility, Some(Visibility::Public) | None) {
+            if !matches!(m.modifiers.visibility, Some(Visibility::Public) | None) {
                 return None;
             }
             let name = m.name.to_string();
@@ -168,7 +168,7 @@ fn public_method_sigs<'a>(
             }
             Some(MethodSig {
                 name,
-                is_static: m.is_static,
+                is_static: m.modifiers.is_static,
                 by_ref: m.by_ref,
                 params: format_params_str(&m.params),
                 return_type: m.return_type.as_ref().map(format_type_hint),

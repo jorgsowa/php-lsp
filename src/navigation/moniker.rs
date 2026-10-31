@@ -113,6 +113,7 @@ fn walk_for_member(
                             format!("{ns_name}\\")
                         };
                     }
+                    _ => {}
                 }
             }
             StmtKind::Class(c) => {
@@ -315,6 +316,7 @@ fn resolve_fqn_for_moniker(
                     NamespaceBody::Simple => {
                         current_ns = ns_name;
                     }
+                    _ => {}
                 }
             }
             k if matches_top(k, bare) => {
@@ -437,6 +439,7 @@ pub(crate) fn resolve_fqn(
                         // Set the "active namespace" for all following top-level stmts.
                         current_ns = ns_name;
                     }
+                    _ => {}
                 }
             }
             k if matches_top(k, bare) => {

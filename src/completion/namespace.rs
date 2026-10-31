@@ -66,6 +66,7 @@ pub(super) fn collect_attribute_classes(
                     NamespaceBody::Simple => {
                         cur_ns = ns_name;
                     }
+                    _ => {}
                 }
             }
             _ => {}
@@ -92,7 +93,7 @@ fn attribute_target_from_attrs(
         let target = attr
             .args
             .first()
-            .and_then(|arg| arg.value.as_ref())
+            .and_then(|arg| arg.value())
             .and_then(|value| resolve_target_expr(&value.kind))
             .unwrap_or(63); // TARGET_ALL when no argument given
         return Some(target);
@@ -248,6 +249,7 @@ pub(super) fn collect_classes_with_ns(
                         // Unbraced namespace: applies to all subsequent statements.
                         cur_ns = ns_name;
                     }
+                    _ => {}
                 }
             }
             _ => {}
@@ -375,6 +377,7 @@ pub(super) fn collect_fqns_with_prefix(
                     NamespaceBody::Simple => {
                         cur_ns = ns_name;
                     }
+                    _ => {}
                 }
             }
             _ => {}

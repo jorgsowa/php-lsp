@@ -73,6 +73,7 @@ struct ImportsVisitor {
 }
 
 impl<'arena, 'src> Visitor<'arena, 'src> for ImportsVisitor {
+    type Break = ();
     fn visit_stmt(&mut self, stmt: &Stmt<'arena, 'src>) -> ControlFlow<()> {
         match &stmt.kind {
             StmtKind::Use(u) if self.only_kind.is_none_or(|k| u.kind == k) => {
@@ -188,6 +189,7 @@ fn collect_local_type_decl_fqns(doc: &ParsedDoc) -> HashSet<String> {
                     NamespaceBody::Simple => {
                         current_ns = ns_name;
                     }
+                    _ => {}
                 }
             }
             k => {

@@ -271,16 +271,20 @@ pub(crate) fn compute_open_file_diagnostics(
     if is_diagnostics_excluded(uri, diag_cfg) {
         return Vec::new();
     }
-    let mut out = open_files.parse_diagnostics(uri).unwrap_or_default();
-    if let Some(issues) = docs.get_semantic_issues_salsa(uri) {
-        let source = docs.source_text(uri);
-        out.extend(issues_to_diagnostics_gated(
-            &issues,
-            source.as_deref().unwrap_or_default(),
-            diag_cfg,
-            docs.is_index_ready(),
-        ));
-    }
+    let parse = open_files.parse_diagnostics(uri).unwrap_or_default();
+    let semantic = docs
+        .get_semantic_issues_salsa(uri)
+        .map(|issues| {
+            let source = docs.source_text(uri);
+            issues_to_diagnostics_gated(
+                &issues,
+                source.as_deref().unwrap_or_default(),
+                diag_cfg,
+                docs.is_index_ready(),
+            )
+        })
+        .unwrap_or_default();
+    let mut out = crate::analysis::diagnostics::merge_file_diagnostics(parse, semantic);
     out.extend(crate::laravel::unguarded_model_diagnostics(
         docs, uri, is_laravel,
     ));

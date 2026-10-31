@@ -6,7 +6,6 @@
 //! features should ever treat one as a searchable symbol.
 
 use php_ast::BuiltinType;
-use php_lexer::TokenKind;
 use php_lexer::token::resolve_keyword;
 use tower_lsp_server::ls_types::Position;
 
@@ -26,12 +25,8 @@ pub(crate) fn is_php_keyword(word: &str) -> bool {
         return true;
     }
 
-    // `php-lexer::resolve_keyword` also classifies `from` as a keyword
-    // token, but PHP only reserves it directly after `yield` — everywhere
-    // else (e.g. `Suit::from(...)` on any backed enum) it's an ordinary
-    // identifier, so it must not be treated as a bare keyword here.
-    if let Some(kind) = resolve_keyword(word) {
-        return kind != TokenKind::From;
+    if resolve_keyword(word).is_some() {
+        return true;
     }
 
     is_reserved_builtin_type_word(word)
@@ -41,12 +36,6 @@ pub(crate) fn is_php_keyword(word: &str) -> bool {
 /// classified by the parser when they appear in type position
 /// (`php_ast::BuiltinType`).
 fn is_reserved_builtin_type_word(word: &str) -> bool {
-    // `Integer`/`Double`/`Boolean` are deliberately excluded: those are
-    // cast-expression aliases only (`(integer)`, `(double)`, `(boolean)`),
-    // never valid type hints, and — like bare `from` above — ordinary
-    // identifiers everywhere else. See `builtin_type_exhaustiveness_guard`
-    // in the test module: it fails to compile if `BuiltinType` ever grows a
-    // variant this list hasn't accounted for.
     const RESERVED: [BuiltinType; 17] = [
         BuiltinType::Int,
         BuiltinType::Float,
@@ -289,35 +278,6 @@ mod tests {
                 !is_php_keyword(word),
                 "{word} must not be treated as a keyword"
             );
-        }
-    }
-
-    // Exhaustive match with no wildcard arm: if `php_ast::BuiltinType` ever
-    // grows a new variant, this fails to compile until someone decides
-    // whether it belongs in `is_reserved_builtin_type_word`'s `RESERVED`
-    // list — the same silent-gap class of bug that let `__halt_compiler` go
-    // missing from the old hand-copied list.
-    #[allow(dead_code)]
-    fn builtin_type_exhaustiveness_guard(t: BuiltinType) -> bool {
-        match t {
-            BuiltinType::Int
-            | BuiltinType::Float
-            | BuiltinType::String
-            | BuiltinType::Bool
-            | BuiltinType::Void
-            | BuiltinType::Never
-            | BuiltinType::Mixed
-            | BuiltinType::Object
-            | BuiltinType::Iterable
-            | BuiltinType::Callable
-            | BuiltinType::Array
-            | BuiltinType::Self_
-            | BuiltinType::Parent_
-            | BuiltinType::Static
-            | BuiltinType::Null
-            | BuiltinType::True
-            | BuiltinType::False => true,
-            BuiltinType::Integer | BuiltinType::Double | BuiltinType::Boolean => false,
         }
     }
 }

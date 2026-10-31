@@ -82,14 +82,15 @@ struct RouteVisitor<'a> {
 }
 
 impl<'arena, 'src> Visitor<'arena, 'src> for RouteVisitor<'_> {
+    type Break = ();
     fn visit_expr(&mut self, expr: &Expr<'arena, 'src>) -> ControlFlow<()> {
         if let ExprKind::MethodCall(mc) = &expr.kind
             && is_ident(mc.method, "name")
             && let Some(arg) = mc.args.first()
-            && let Some(arg_value) = &arg.value
+            && let Some(arg_value) = arg.value()
             && let ExprKind::String(name) = &arg_value.kind
         {
-            let full_name = format!("{}{name}", self.prefix_stack.concat());
+            let full_name = format!("{}{}", self.prefix_stack.concat(), name.to_string_lossy());
             // `span.start`/`span.end` point at the surrounding quotes (see
             // `editing::document_link::link_from_path_expr`); trim one byte
             // off each side to land on the name text itself.
@@ -106,7 +107,7 @@ impl<'arena, 'src> Visitor<'arena, 'src> for RouteVisitor<'_> {
         if let ExprKind::StaticMethodCall(s) = &expr.kind
             && let Some(actions) = resource_actions(s.method)
             && let Some(arg) = s.args.first()
-            && let Some(arg_value) = &arg.value
+            && let Some(arg_value) = arg.value()
             && let ExprKind::String(base) = &arg_value.kind
         {
             let prefix = self.prefix_stack.concat();
@@ -118,7 +119,7 @@ impl<'arena, 'src> Visitor<'arena, 'src> for RouteVisitor<'_> {
                 end: self.sv.position_of(arg_value.span.end - 1),
             };
             for action in actions {
-                let full_name = format!("{prefix}{base}.{action}");
+                let full_name = format!("{prefix}{}.{action}", base.to_string_lossy());
                 self.out.entry(full_name).or_insert_with(|| Location {
                     uri: self.uri.clone(),
                     range,
@@ -144,7 +145,11 @@ impl<'arena, 'src> Visitor<'arena, 'src> for RouteVisitor<'_> {
 }
 
 fn is_ident(expr: &Expr<'_, '_>, name: &str) -> bool {
-    matches!(&expr.kind, ExprKind::Identifier(n) if n.eq_ignore_ascii_case(name))
+    match &expr.kind {
+        ExprKind::Identifier(n) => n.eq_ignore_ascii_case(name),
+        ExprKind::Name(n) => n.to_string_repr().eq_ignore_ascii_case(name),
+        _ => false,
+    }
 }
 
 const RESOURCE_ACTIONS: &[&str] = &[
@@ -172,13 +177,13 @@ fn group_closure<'arena, 'src>(
 ) -> Option<(Option<String>, &'arena Block<'arena, 'src>)> {
     match &expr.kind {
         ExprKind::StaticMethodCall(s) if is_ident(s.method, "group") && s.args.len() == 2 => {
-            let as_prefix = s.args[0].value.as_ref().and_then(array_as_prefix);
-            let block = closure_block(s.args[1].value.as_ref()?)?;
+            let as_prefix = s.args[0].value().and_then(array_as_prefix);
+            let block = closure_block(s.args[1].value()?)?;
             Some((as_prefix, block))
         }
         ExprKind::MethodCall(mc) if is_ident(mc.method, "group") && mc.args.len() == 1 => {
             let as_prefix = find_as_prefix_in_chain(mc.object);
-            let block = closure_block(mc.args[0].value.as_ref()?)?;
+            let block = closure_block(mc.args[0].value()?)?;
             Some((as_prefix, block))
         }
         _ => None,
@@ -205,10 +210,10 @@ fn array_as_prefix(expr: &Expr<'_, '_>) -> Option<String> {
         if *key != "as" {
             return None;
         }
-        let ExprKind::String(val) = &el.value.kind else {
+        let ExprKind::String(val) = &el.value().kind else {
             return None;
         };
-        Some(val.to_string())
+        Some(val.to_string_lossy().into_owned())
     })
 }
 
@@ -223,20 +228,20 @@ fn find_as_prefix_in_chain(expr: &Expr<'_, '_>) -> Option<String> {
         ExprKind::MethodCall(mc) => {
             if is_ident(mc.method, "name")
                 && let Some(arg) = mc.args.first()
-                && let Some(arg_value) = &arg.value
+                && let Some(arg_value) = arg.value()
                 && let ExprKind::String(s) = &arg_value.kind
             {
-                return Some(s.to_string());
+                return Some(s.to_string_lossy().into_owned());
             }
             find_as_prefix_in_chain(mc.object)
         }
         ExprKind::StaticMethodCall(s) if is_ident(s.method, "name") => {
             let arg = s.args.first()?;
-            let arg_value = arg.value.as_ref()?;
+            let arg_value = arg.value()?;
             let ExprKind::String(name) = &arg_value.kind else {
                 return None;
             };
-            Some(name.to_string())
+            Some(name.to_string_lossy().into_owned())
         }
         _ => None,
     }

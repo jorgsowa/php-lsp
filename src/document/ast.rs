@@ -522,6 +522,7 @@ fn fmt_kind(kind: &TypeHintKind<'_, '_>) -> String {
             .map(format_type_hint)
             .collect::<Vec<_>>()
             .join("&"),
+        _ => String::new(),
     }
 }
 

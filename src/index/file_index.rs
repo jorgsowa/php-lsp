@@ -376,6 +376,7 @@ fn collect_stmts(
                         }
                         cur_ns = ns_name;
                     }
+                    _ => {}
                 }
             }
 
@@ -430,18 +431,18 @@ fn collect_stmts(
                     match &member.kind {
                         ClassMemberKind::Method(m) => {
                             let mstart = view.position_of(member.span.start).line;
-                            let vis = method_visibility(m.visibility);
+                            let vis = method_visibility(m.modifiers.visibility);
                             let method_params = extract_params(&m.params);
                             // Constructor-promoted params → also add as PropertyDef.
                             for ast_param in m.params.iter() {
-                                if ast_param.visibility.is_some() {
-                                    let pvis = method_visibility(ast_param.visibility);
+                                if ast_param.modifiers.visibility.is_some() {
+                                    let pvis = method_visibility(ast_param.modifiers.visibility);
                                     let pstart = view.position_of(ast_param.span.start).line;
                                     let p_name = ast_param.name.or_error();
                                     class_def.properties.push(PropertyDef {
                                         name: Box::from(p_name),
                                         is_static: false,
-                                        is_readonly: ast_param.is_readonly,
+                                        is_readonly: ast_param.modifiers.is_readonly,
                                         type_hint: ast_param
                                             .type_hint
                                             .as_ref()
@@ -455,8 +456,8 @@ fn collect_stmts(
                             let m_name = m.name.or_error();
                             class_def.methods.push(MethodDef {
                                 name: Box::from(m_name),
-                                is_static: m.is_static,
-                                is_abstract: m.is_abstract,
+                                is_static: m.modifiers.is_static,
+                                is_abstract: m.modifiers.is_abstract,
                                 visibility: vis,
                                 params: method_params,
                                 return_type: m
@@ -468,13 +469,13 @@ fn collect_stmts(
                             });
                         }
                         ClassMemberKind::Property(p) => {
-                            let vis = method_visibility(p.visibility);
+                            let vis = method_visibility(p.modifiers.visibility);
                             let pstart = view.position_of(member.span.start).line;
                             let p_name = p.name.or_error();
                             class_def.properties.push(PropertyDef {
                                 name: Box::from(p_name),
-                                is_static: p.is_static,
-                                is_readonly: p.is_readonly,
+                                is_static: p.modifiers.is_static,
+                                is_readonly: p.modifiers.is_readonly,
                                 type_hint: p.type_hint.as_ref().map(|t| format_type_hint(t).into()),
                                 visibility: vis,
                                 start_line: pstart,
@@ -508,6 +509,7 @@ fn collect_stmts(
                                 }
                             }
                         }
+                        _ => {}
                     }
                 }
                 // Extract `@method` and `@mixin` docblock tags.
@@ -587,7 +589,7 @@ fn collect_stmts(
                             let m_name = m.name.or_error();
                             iface_def.methods.push(MethodDef {
                                 name: Box::from(m_name),
-                                is_static: m.is_static,
+                                is_static: m.modifiers.is_static,
                                 is_abstract: true,
                                 visibility: Visibility::Public,
                                 params: extract_params(&m.params),
@@ -637,12 +639,12 @@ fn collect_stmts(
                     match &member.kind {
                         ClassMemberKind::Method(m) => {
                             let mstart = view.position_of(member.span.start).line;
-                            let vis = method_visibility(m.visibility);
+                            let vis = method_visibility(m.modifiers.visibility);
                             let m_name = m.name.or_error();
                             trait_def.methods.push(MethodDef {
                                 name: Box::from(m_name),
-                                is_static: m.is_static,
-                                is_abstract: m.is_abstract,
+                                is_static: m.modifiers.is_static,
+                                is_abstract: m.modifiers.is_abstract,
                                 visibility: vis,
                                 params: extract_params(&m.params),
                                 return_type: m
@@ -654,13 +656,13 @@ fn collect_stmts(
                             });
                         }
                         ClassMemberKind::Property(p) => {
-                            let vis = method_visibility(p.visibility);
+                            let vis = method_visibility(p.modifiers.visibility);
                             let pstart = view.position_of(member.span.start).line;
                             let p_name = p.name.or_error();
                             trait_def.properties.push(PropertyDef {
                                 name: Box::from(p_name),
-                                is_static: p.is_static,
-                                is_readonly: p.is_readonly,
+                                is_static: p.modifiers.is_static,
+                                is_readonly: p.modifiers.is_readonly,
                                 type_hint: p.type_hint.as_ref().map(|t| format_type_hint(t).into()),
                                 visibility: vis,
                                 start_line: pstart,
@@ -694,6 +696,7 @@ fn collect_stmts(
                                 }
                             }
                         }
+                        _ => {}
                     }
                 }
                 index.classes.push(trait_def);
@@ -735,12 +738,12 @@ fn collect_stmts(
                         }
                         EnumMemberKind::Method(m) => {
                             let mstart = view.position_of(member.span.start).line;
-                            let vis = method_visibility(m.visibility);
+                            let vis = method_visibility(m.modifiers.visibility);
                             let m_name = m.name.or_error();
                             enum_def.methods.push(MethodDef {
                                 name: Box::from(m_name),
-                                is_static: m.is_static,
-                                is_abstract: m.is_abstract,
+                                is_static: m.modifiers.is_static,
+                                is_abstract: m.modifiers.is_abstract,
                                 visibility: vis,
                                 params: extract_params(&m.params),
                                 return_type: m

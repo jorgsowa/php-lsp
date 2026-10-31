@@ -2355,7 +2355,7 @@ impl DocumentStore {
                             if !matched[qi]
                                 && per_query_mir_queries[qi]
                                     .iter()
-                                    .any(|q| names.binary_search(&q.name).is_ok())
+                                    .any(|q| names.contains_name(&q.name))
                             {
                                 matched[qi] = true;
                             }
@@ -2919,7 +2919,7 @@ impl DocumentStore {
                             .any(|n| crate::text::contains_ascii_case_insensitive(&text, n));
                     };
                     let names = scanner.scan(text.as_ref());
-                    let hit = queries.iter().any(|q| names.binary_search(&q.name).is_ok());
+                    let hit = queries.iter().any(|q| names.contains_name(&q.name));
                     mir_db.set_file_class_mentions(
                         &Arc::<str>::from(url_str),
                         &text,
