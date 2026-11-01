@@ -4,10 +4,13 @@ All notable changes to php-lsp are documented here.
 
 ## [Unreleased]
 
+## [0.30.0] — 2026-11-01
+
 ### Changed
 
 - **Taint analysis is opt-in**: `Tainted*` security diagnostics need `diagnostics.taint: true`. Tracking taint took about a third of analysis CPU, so the analyzer now skips it by default.
 - **Faster analysis**: mir 0.89 with php-rs-parser 0.28 parses about 13% faster with half the AST allocations, finds references to a newly searched name without rescanning every file, and looks up the symbol under the cursor about 100x faster in large files. Syntax error messages are clearer and no longer repeat follow-on errors.
+- **New analyzer checks**: mir 0.89 reports dynamic property creation, implicitly nullable and misordered optional parameters, duplicate enum case values, trait and enum instantiation and invalid unpacking, and code PHP rejects at compile time (`CompileError`, e.g. trait conflicts or a positional argument after a named one).
 
 ### Fixed
 
