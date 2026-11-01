@@ -124,6 +124,10 @@ fn issue_passes_filter(issue: &mir_issues::Issue, cfg: &DiagnosticsConfig) -> bo
     if cfg.disabled.iter().any(|d| d == name) {
         return false;
     }
+    // Cached analyses can predate a taint toggle.
+    if name.starts_with("Tainted") {
+        return cfg.taint;
+    }
     match &issue.kind {
         IssueKind::UndefinedVariable { .. } | IssueKind::PossiblyUndefinedVariable { .. } => {
             cfg.undefined_variables

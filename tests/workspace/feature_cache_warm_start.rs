@@ -292,7 +292,8 @@ async fn warm_start_replays_reference_postings_from_first_session() {
     let opts = |warm_analysis: bool| {
         json!({
             "cachePath": cache_dir.path().to_str().unwrap(),
-            "diagnostics": {"enabled": false},
+            // Taint on keeps the cache epoch at the fingerprint 0 the direct reads below open with.
+            "diagnostics": {"enabled": false, "taint": true},
             "phpVersion": "8.3",
             "warmAnalysis": warm_analysis,
         })
@@ -356,7 +357,8 @@ async fn periodic_flush_persists_query_commits_without_shutdown() {
 
     let opts = json!({
         "cachePath": cache_dir.path().to_str().unwrap(),
-        "diagnostics": {"enabled": false},
+        // Taint on keeps the cache epoch at the fingerprint 0 the direct reads below open with.
+        "diagnostics": {"enabled": false, "taint": true},
         "phpVersion": "8.3",
         "warmAnalysis": false,
         "analysisCacheFlushIntervalMs": 50,

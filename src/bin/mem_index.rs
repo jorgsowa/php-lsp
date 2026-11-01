@@ -121,9 +121,10 @@ fn main() {
 
     let store = DocumentStore::new();
     let mut session = if full_pipeline {
-        Some(mir_analyzer::AnalysisSession::new(
-            mir_analyzer::PhpVersion::LATEST,
-        ))
+        Some(
+            mir_analyzer::AnalysisSession::new(mir_analyzer::PhpVersion::LATEST)
+                .with_taint_analysis(false),
+        )
     } else {
         None
     };

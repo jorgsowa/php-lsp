@@ -184,6 +184,7 @@ impl Backend {
             if let Ok(pv) = ver.parse::<mir_analyzer::PhpVersion>() {
                 self.docs.set_php_version(pv);
             }
+            self.docs.set_taint_analysis(cfg.diagnostics.taint);
             self.config.store(Arc::new(cfg));
         }
 

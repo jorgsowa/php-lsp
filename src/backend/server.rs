@@ -384,9 +384,10 @@ impl LanguageServer for Backend {
                 let version_changed = ver
                     .parse::<mir_analyzer::PhpVersion>()
                     .is_ok_and(|pv| self.docs.set_php_version(pv));
+                let taint_changed = self.docs.set_taint_analysis(cfg.diagnostics.taint);
                 self.config.store(Arc::new(cfg));
-                if version_changed {
-                    // set_php_version's drop_session_scoped_state cleared
+                if version_changed || taint_changed {
+                    // The session rebuild's drop_session_scoped_state cleared
                     // lsp_ws_files and nothing else repopulates it — without
                     // this, workspace_file_paths() (and everything scoped by
                     // it: references, rename, ...) silently sees an empty

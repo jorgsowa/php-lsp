@@ -128,7 +128,7 @@ fn main() {
     // Throwaway run so the first measured level isn't paying first-touch
     // CPU/allocator costs that would skew the cold sample.
     {
-        let mut session = AnalysisSession::new(PhpVersion::LATEST);
+        let mut session = AnalysisSession::new(PhpVersion::LATEST).with_taint_analysis(false);
         for cand in &candidates {
             session.set_file_text(cand.file.clone(), cand.text.clone());
         }
@@ -150,7 +150,7 @@ fn main() {
     let mut first = f64::NAN;
     let mut last = f64::NAN;
     for &warm in &warm_levels {
-        let mut session = AnalysisSession::new(PhpVersion::LATEST);
+        let mut session = AnalysisSession::new(PhpVersion::LATEST).with_taint_analysis(false);
         for sf in background.iter().take(warm) {
             session.set_file_text(sf.file.clone(), sf.text.clone());
         }
@@ -180,7 +180,7 @@ fn main() {
     // Visibility scoping: a private method's references can only live in its
     // declaring file, so the handler narrows the candidate set to that one file.
     {
-        let mut session = AnalysisSession::new(PhpVersion::LATEST);
+        let mut session = AnalysisSession::new(PhpVersion::LATEST).with_taint_analysis(false);
         for sf in &background {
             session.set_file_text(sf.file.clone(), sf.text.clone());
         }

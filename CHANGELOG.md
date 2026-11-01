@@ -4,6 +4,11 @@ All notable changes to php-lsp are documented here.
 
 ## [Unreleased]
 
+### Changed
+
+- **Taint analysis is opt-in**: `Tainted*` security diagnostics need `diagnostics.taint: true`. Tracking taint took about a third of analysis CPU, so the analyzer now skips it by default.
+- **Faster analysis**: mir 0.89 with php-rs-parser 0.28 parses about 13% faster with half the AST allocations, finds references to a newly searched name without rescanning every file, and looks up the symbol under the cursor about 100x faster in large files. Syntax error messages are clearer and no longer repeat follow-on errors.
+
 ### Fixed
 
 - **Moving a class file or folder updates its namespace**: `workspace/willRenameFiles` rewrites the moved file's `namespace` line (adding or removing it for the global namespace) and adds a `use` to callers that referenced the class unqualified from its old namespace. The moved file imports the classes, functions and constants it used unqualified from its old namespace, qualified references (`\App\Old\Foo` in code and docblocks) are rewritten, and group uses (`use App\Old\{Bar, Foo}`) are updated. Moving a folder updates every class file under it.

@@ -43,6 +43,7 @@ fn all_enabled() -> DiagnosticsConfig {
         unused_symbols: false,
         missing_types: false,
         mixed_usage: false,
+        taint: false,
         disabled: Vec::new(),
         exclude_paths: Vec::new(),
     }
@@ -52,7 +53,8 @@ fn new_session() -> mir_analyzer::AnalysisSession {
     // Sessions here run mir's parallel analysis before any DocumentStore
     // exists — size the rayon stacks like production first.
     php_lsp::document_store::ensure_rayon_worker_stacks();
-    let mut s = mir_analyzer::AnalysisSession::new(mir_analyzer::PhpVersion::LATEST);
+    let mut s = mir_analyzer::AnalysisSession::new(mir_analyzer::PhpVersion::LATEST)
+        .with_taint_analysis(false);
     s.ensure_all_stubs();
     s
 }

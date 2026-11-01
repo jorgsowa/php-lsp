@@ -37,6 +37,9 @@ pub struct DiagnosticsConfig {
     /// mixed to a typed property, array/property access on mixed, etc. Off by
     /// default; opt in via `diagnostics.mixedUsage`.
     pub mixed_usage: bool,
+    /// Taint-analysis security diagnostics (`TaintedSql`, `TaintedHtml`, ...). Off by default since
+    /// tracking taint costs about a third of analysis CPU; opt in via `diagnostics.taint`.
+    pub taint: bool,
     /// Issue names (the diagnostic `code`, e.g. `MissingThrowsDocblock`) that are never emitted.
     pub disabled: Vec<String>,
     /// Patterns (same syntax as the top-level `excludePaths`) for files that never get diagnostics,
@@ -58,6 +61,7 @@ impl Default for DiagnosticsConfig {
             unused_symbols: false,
             missing_types: false,
             mixed_usage: false,
+            taint: false,
             disabled: Vec::new(),
             exclude_paths: Vec::new(),
         }
@@ -99,6 +103,7 @@ impl DiagnosticsConfig {
             .get("mixedUsage")
             .and_then(|x| x.as_bool())
             .unwrap_or(false);
+        cfg.taint = obj.get("taint").and_then(|x| x.as_bool()).unwrap_or(false);
         let strings = |v: Option<&serde_json::Value>| -> Vec<String> {
             v.and_then(|x| x.as_array())
                 .map(|arr| {
@@ -614,6 +619,7 @@ mod tests {
                     unused_symbols: false,
                     missing_types: false,
                     mixed_usage: false,
+                    taint: false,
                     disabled: [],
                     exclude_paths: [],
                 },

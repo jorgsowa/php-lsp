@@ -188,6 +188,8 @@ pub struct DocumentStore {
     /// `with_user_stubs` so their `.php` files are registered as the
     /// highest-precedence symbol source alongside the bundled built-ins.
     user_stub_dirs: OnceLock<Vec<std::path::PathBuf>>,
+    /// `diagnostics.taint`. Written under the session lock, which also guards every session build.
+    taint_analysis: AtomicBool,
     /// URIs of autoload.files entries from composer.json. These define global
     /// helper functions (e.g. tap, class_uses_recursive in Laravel) that are
     /// not discoverable by namespace walk. Pre-ingested into the AnalysisSession
@@ -310,6 +312,7 @@ impl DocumentStore {
             analysis_session: Mutex::new((mir_analyzer::PhpVersion::LATEST, None)),
             session_cache_dir: OnceLock::new(),
             user_stub_dirs: OnceLock::new(),
+            taint_analysis: AtomicBool::new(false),
             autoload_uris: std::sync::RwLock::new(Vec::new()),
             index_ready: AtomicBool::new(false),
             write_revision: AtomicU64::new(0),
@@ -735,7 +738,8 @@ impl DocumentStore {
         // keeps in step with every edit path.
         let mut builder = mir_analyzer::AnalysisSession::new(php_version)
             .with_class_resolver(resolver)
-            .with_source_provider(Arc::new(crate::lang::autoload::UriSourceProvider::default()));
+            .with_source_provider(Arc::new(crate::lang::autoload::UriSourceProvider::default()))
+            .with_taint_analysis(self.taint_analysis.load(Ordering::Relaxed));
         // Must run before `with_cache_dir`: the cache epoch folds in a
         // fingerprint of the user stub set, which `with_cache_dir` only picks
         // up if it's already been configured.
@@ -1402,6 +1406,19 @@ impl DocumentStore {
             // `bool` return above).
             self.drop_session_scoped_state();
         }
+        true
+    }
+
+    /// Turn mir's taint tracking on or off. Same rebuild contract as
+    /// [`Self::set_php_version`]: returns `true` when the setting changed, and
+    /// the caller must then re-mirror open files and re-scan every root.
+    pub fn set_taint_analysis(&self, enabled: bool) -> bool {
+        let mut guard = self.lock_session();
+        if self.taint_analysis.swap(enabled, Ordering::Relaxed) == enabled {
+            return false;
+        }
+        guard.1 = None;
+        self.drop_session_scoped_state();
         true
     }
 
@@ -2353,9 +2370,7 @@ impl DocumentStore {
                         let names = mir_scanner.scan(text.as_ref());
                         for &qi in &unresolved {
                             if !matched[qi]
-                                && per_query_mir_queries[qi]
-                                    .iter()
-                                    .any(|q| names.contains_name(&q.name))
+                                && per_query_mir_queries[qi].iter().any(|q| names.contains(q))
                             {
                                 matched[qi] = true;
                             }
@@ -2919,7 +2934,7 @@ impl DocumentStore {
                             .any(|n| crate::text::contains_ascii_case_insensitive(&text, n));
                     };
                     let names = scanner.scan(text.as_ref());
-                    let hit = queries.iter().any(|q| names.contains_name(&q.name));
+                    let hit = queries.iter().any(|q| names.contains(q));
                     mir_db.set_file_class_mentions(
                         &Arc::<str>::from(url_str),
                         &text,
@@ -5089,6 +5104,16 @@ mod tests {
             dropped,
             "the stub-dir-less early session must be dropped and rebuilt"
         );
+    }
+
+    #[test]
+    fn set_taint_analysis_rebuilds_session_only_on_change() {
+        let store = DocumentStore::new();
+        store.with_session(|_| ());
+        assert!(!store.set_taint_analysis(false));
+        assert!(store.lock_session().1.is_some());
+        assert!(store.set_taint_analysis(true));
+        assert!(store.lock_session().1.is_none());
     }
 
     /// A panic under the session lock (and the nested `lsp_workspace` lock)

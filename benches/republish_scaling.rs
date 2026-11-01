@@ -57,7 +57,7 @@ struct Workspace {
 /// Build a session with `size` ingested dependents, `OPEN_FILES` of which are
 /// treated as the editor's open files.
 fn build(size: usize) -> Workspace {
-    let mut session = AnalysisSession::new(PhpVersion::LATEST);
+    let mut session = AnalysisSession::new(PhpVersion::LATEST).with_taint_analysis(false);
     session.ensure_all_stubs();
 
     let base: Arc<str> = Arc::from("bench://base.php");

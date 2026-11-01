@@ -42,6 +42,7 @@ All options are optional.
 | `unusedSymbols` | `false` | Unused-symbol warnings (unused variables, parameters, methods, properties, functions). Off by default so existing workspaces don't get a wave of new noisy warnings. |
 | `missingTypes` | `false` | Missing type annotations on interface methods and class properties. |
 | `mixedUsage` | `false` | Mixed-type usage lints: passing `mixed` to a typed parameter, assigning `mixed` to a typed property, array/property access on `mixed`, etc. |
+| `taint` | `false` | Taint-analysis security findings (`TaintedSql`, `TaintedHtml`, `TaintedShell`, ...): user input reaching a dangerous sink. Off by default because tracking taint costs about a third of analysis time. |
 | `disabled` | `[]` | Issue names to suppress regardless of category, matching the diagnostic's `code`, e.g. `["MissingThrowsDocblock", "UnusedParam"]`. |
 | `excludePaths` | `[]` | Paths whose files never get diagnostics, even when opened, e.g. `["vendor/*"]`. Same pattern syntax as the top-level `excludePaths`, but indexing is unaffected, so excluded files still feed completion, hover, and navigation. |
 
