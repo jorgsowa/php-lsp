@@ -32,7 +32,7 @@ use tower_lsp_server::ls_types::{
 
 use crate::document::ast::{ParsedDoc, SourceView};
 
-use super::string_call::content_span;
+use super::string_call::{content_span, is_ident, word_boundary_before};
 use super::translation_index::json_object_key_locations;
 
 #[derive(Debug, Default, Clone)]
@@ -86,14 +86,6 @@ pub(crate) fn vite_completions(index: &ViteIndex, prefix: &str) -> Vec<Completio
         .collect();
     items.sort_by(|a, b| a.label.cmp(&b.label));
     items
-}
-
-fn is_ident(expr: &Expr<'_, '_>, name: &str) -> bool {
-    match &expr.kind {
-        ExprKind::Identifier(n) => n.eq_ignore_ascii_case(name),
-        ExprKind::Name(n) => n.to_string_repr().eq_ignore_ascii_case(name),
-        _ => false,
-    }
 }
 
 /// One `Vite::asset('...')` call site found in application code.
@@ -194,10 +186,6 @@ fn ends_with_word(s: &str, word: &str) -> bool {
     s.len() >= word.len()
         && s[s.len() - word.len()..].eq_ignore_ascii_case(word)
         && word_boundary_before(s, s.len() - word.len())
-}
-
-fn word_boundary_before(s: &str, idx: usize) -> bool {
-    idx == 0 || !matches!(s.as_bytes()[idx - 1], b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_')
 }
 
 #[cfg(test)]

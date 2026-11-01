@@ -21,6 +21,8 @@ use tower_lsp_server::ls_types::Position;
 
 use crate::text::utf16_offset_to_byte;
 
+use super::string_call::word_boundary_before;
+
 /// Bare method names recognized as request field-accessors.
 pub(crate) const REQUEST_FIELD_METHODS: &[&str] = &["input", "get", "post", "query"];
 
@@ -89,10 +91,6 @@ pub(crate) fn method_call_string_prefix(
         Receiver::Variable(bare.to_string()),
         before[quote_idx + 1..].to_string(),
     ))
-}
-
-fn word_boundary_before(s: &str, idx: usize) -> bool {
-    idx == 0 || !matches!(s.as_bytes()[idx - 1], b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_')
 }
 
 /// Field names from `receiver->input('x')`/`get`/`post`/`query` calls

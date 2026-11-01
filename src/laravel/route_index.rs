@@ -26,6 +26,8 @@ use tower_lsp_server::ls_types::{
 use crate::analysis::diagnostics::parse_document_no_diags;
 use crate::document::ast::SourceView;
 
+use super::string_call::is_ident;
+
 #[derive(Debug, Default, Clone)]
 pub struct RouteIndex {
     routes: HashMap<String, Location>,
@@ -141,14 +143,6 @@ impl<'arena, 'src> Visitor<'arena, 'src> for RouteVisitor<'_> {
         }
 
         walk_expr(self, expr)
-    }
-}
-
-fn is_ident(expr: &Expr<'_, '_>, name: &str) -> bool {
-    match &expr.kind {
-        ExprKind::Identifier(n) => n.eq_ignore_ascii_case(name),
-        ExprKind::Name(n) => n.to_string_repr().eq_ignore_ascii_case(name),
-        _ => false,
     }
 }
 

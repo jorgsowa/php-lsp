@@ -210,8 +210,17 @@ fn preceded_by_call(before_quote: &str, names: &[&str]) -> bool {
     })
 }
 
-fn word_boundary_before(s: &str, idx: usize) -> bool {
+pub(crate) fn word_boundary_before(s: &str, idx: usize) -> bool {
     idx == 0 || !matches!(s.as_bytes()[idx - 1], b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_')
+}
+
+/// Whether `expr` is the bare name or member identifier `name` (ASCII case-insensitive).
+pub(crate) fn is_ident(expr: &Expr<'_, '_>, name: &str) -> bool {
+    match &expr.kind {
+        ExprKind::Identifier(n) => n.eq_ignore_ascii_case(name),
+        ExprKind::Name(n) => n.to_string_repr().eq_ignore_ascii_case(name),
+        _ => false,
+    }
 }
 
 #[cfg(test)]

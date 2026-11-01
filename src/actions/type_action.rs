@@ -8,6 +8,8 @@ use tower_lsp_server::ls_types::{
 
 use crate::document::ast::{ParsedDoc, SourceView};
 
+use super::line_in_range;
+
 /// Return "Add return type" code actions for any function/method within `range`
 /// that has no return type annotation and a concrete body.
 pub fn add_return_type_actions(
@@ -124,10 +126,6 @@ fn collect_in_stmts(
     out: &mut Vec<CodeActionOrCommand>,
 ) {
     collect(stmts, sv, range, uri, out);
-}
-
-fn line_in_range(line: u32, range: Range) -> bool {
-    line >= range.start.line && line <= range.end.line
 }
 
 /// Returns `true` if any `return <expr>` (non-void) statement appears

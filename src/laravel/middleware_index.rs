@@ -36,7 +36,7 @@ use tower_lsp_server::ls_types::{
 use crate::analysis::diagnostics::parse_document_no_diags;
 use crate::document::ast::{ParsedDoc, SourceView};
 
-use super::string_call::content_span;
+use super::string_call::{content_span, is_ident};
 
 #[derive(Debug, Default, Clone)]
 pub struct MiddlewareIndex {
@@ -169,14 +169,6 @@ impl<'arena, 'src> Visitor<'arena, 'src> for KernelPropertyVisitor<'_> {
             collect_flat_string_keys(elements, self.sv, self.uri, self.out);
         }
         ControlFlow::Continue(())
-    }
-}
-
-fn is_ident(expr: &Expr<'_, '_>, name: &str) -> bool {
-    match &expr.kind {
-        ExprKind::Identifier(n) => n.eq_ignore_ascii_case(name),
-        ExprKind::Name(n) => n.to_string_repr().eq_ignore_ascii_case(name),
-        _ => false,
     }
 }
 

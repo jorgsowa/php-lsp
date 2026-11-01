@@ -13,6 +13,7 @@ use tower_lsp_server::ls_types::{
     CodeAction, CodeActionKind, CodeActionOrCommand, Position, Range, TextEdit, Uri, WorkspaceEdit,
 };
 
+use super::line_indent;
 use crate::document::ast::ParsedDoc;
 
 /// Return a "Extract method" code action when `range` spans multiple lines inside
@@ -282,15 +283,6 @@ fn collect_assigned_vars(text: &str) -> Vec<String> {
         }
     }
     vars
-}
-
-/// Return the leading whitespace of line `line` in `source`.
-fn line_indent(source: &str, line: u32) -> String {
-    source
-        .lines()
-        .nth(line as usize)
-        .map(|l| l.chars().take_while(|c| c.is_whitespace()).collect())
-        .unwrap_or_default()
 }
 
 /// Re-indent a block of text so every non-empty line starts with `prefix`.

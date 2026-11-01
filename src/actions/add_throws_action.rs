@@ -17,6 +17,8 @@ use tower_lsp_server::ls_types::{
 use crate::document::ast::{ParsedDoc, SourceView};
 use crate::lang::docblock::parse_docblock;
 
+use super::line_in_range;
+
 /// Return "Add @throws …" actions for every function/method whose declaration
 /// line falls within `range`, already has a docblock, and whose body contains
 /// `throw new ClassName()` expressions not yet listed in `@throws`.
@@ -273,8 +275,4 @@ fn extract_indent(source: &str, line: u32) -> String {
             l[..n].to_string()
         })
         .unwrap_or_default()
-}
-
-fn line_in_range(line: u32, range: Range) -> bool {
-    line >= range.start.line && line <= range.end.line
 }

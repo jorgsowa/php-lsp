@@ -5,6 +5,7 @@ use tower_lsp_server::ls_types::{
     CodeAction, CodeActionKind, CodeActionOrCommand, Range, TextEdit, Uri, WorkspaceEdit,
 };
 
+use super::indent_before;
 use crate::document::ast::{ParsedDoc, SourceView};
 
 /// Offer "Convert switch to match" when the cursor is inside a `switch` statement
@@ -285,9 +286,9 @@ fn build_match_text(sw: &SwitchStmt<'_, '_>, span: Span, source: &str) -> Option
         return None;
     }
 
-    let base_indent = line_indent(source, span.start as usize);
+    let base_indent = indent_before(source, span.start as usize);
     let arm_indent = if let Some(first_case) = sw.body.cases.first() {
-        line_indent(source, first_case.span.start as usize)
+        indent_before(source, first_case.span.start as usize)
     } else {
         format!("{}    ", base_indent)
     };
@@ -302,12 +303,4 @@ fn build_match_text(sw: &SwitchStmt<'_, '_>, span: Span, source: &str) -> Option
     result.push_str(&format!("{base_indent}}};"));
 
     Some(result)
-}
-
-fn line_indent(source: &str, pos: usize) -> String {
-    let line_start = source[..pos].rfind('\n').map_or(0, |i| i + 1);
-    source[line_start..pos]
-        .chars()
-        .take_while(|c| c.is_whitespace())
-        .collect()
 }

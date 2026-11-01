@@ -11,6 +11,8 @@ use tower_lsp_server::ls_types::{
 use crate::document::ast::{ParsedDoc, SourceView, format_type_hint};
 use crate::lang::docblock::{Docblock, parse_docblock};
 
+use super::line_in_range;
+
 /// Return "Update PHPDoc to match signature" for every function/method whose
 /// declaration line falls within `range`, already has a docblock, and whose
 /// @param/@return section is out of sync with the actual signature.
@@ -273,8 +275,4 @@ fn generate_updated_docblock<'a>(
 
     lines.push(format!("{indent} */"));
     lines.join("\n") + "\n"
-}
-
-fn line_in_range(line: u32, range: Range) -> bool {
-    line >= range.start.line && line <= range.end.line
 }

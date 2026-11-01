@@ -24,6 +24,8 @@ use tower_lsp_server::ls_types::{CompletionItem, CompletionItemKind, Position};
 
 use crate::document::ast::ParsedDoc;
 
+use super::string_call::is_ident;
+
 /// Built-in Laravel validation rule names. Bare names only — parameterized
 /// suffixes (`max:255`, `in:a,b,c`) aren't completed past the `:`, matching
 /// the scope of this feature (see `ROADMAP.md` open work #2).
@@ -148,14 +150,6 @@ pub(crate) fn validation_rule_completions(prefix: &str) -> Vec<CompletionItem> {
         .collect();
     items.sort_by(|a, b| a.label.cmp(&b.label));
     items
-}
-
-fn is_ident(expr: &Expr<'_, '_>, name: &str) -> bool {
-    match &expr.kind {
-        ExprKind::Identifier(n) => n.eq_ignore_ascii_case(name),
-        ExprKind::Name(n) => n.to_string_repr().eq_ignore_ascii_case(name),
-        _ => false,
-    }
 }
 
 /// The span (quotes included) of the rule-name string element containing

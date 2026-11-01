@@ -10,6 +10,7 @@ use tower_lsp_server::ls_types::{
     CodeAction, CodeActionKind, CodeActionOrCommand, Position, Range, TextEdit, Uri, WorkspaceEdit,
 };
 
+use super::line_indent;
 use crate::document::ast::ParsedDoc;
 use crate::text::selected_text_range;
 
@@ -85,14 +86,6 @@ pub fn extract_variable_actions(
         }),
         ..Default::default()
     })]
-}
-
-fn line_indent(source: &str, line: u32) -> String {
-    source
-        .lines()
-        .nth(line as usize)
-        .map(|l| l.chars().take_while(|c| c.is_whitespace()).collect())
-        .unwrap_or_default()
 }
 
 /// Span of the smallest `Expr` node in `doc` that contains (or equals) `target`, or `None` if none does.

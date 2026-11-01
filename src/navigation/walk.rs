@@ -901,7 +901,7 @@ pub fn function_and_const_names_in_stmts(stmts: &[Stmt<'_, '_>]) -> (Vec<String>
 struct FunctionConstRefsVisitor {
     functions: Vec<String>,
     constants: Vec<String>,
-    // Identifiers naming a class or member rather than a constant.
+    // Names in class or callee position rather than constant reads.
     non_constants: std::collections::HashSet<(u32, u32)>,
 }
 
@@ -925,27 +925,12 @@ impl<'arena, 'src> Visitor<'arena, 'src> for FunctionConstRefsVisitor {
             ExprKind::FunctionCall(c) => self.call(c.name),
             ExprKind::CallableCreate(c) => match &c.kind {
                 CallableCreateKind::Function(name) => self.call(name),
-                CallableCreateKind::Method { method, .. }
-                | CallableCreateKind::NullsafeMethod { method, .. } => self.skip(method),
-                CallableCreateKind::StaticMethod { class, method } => {
-                    self.skip(class);
-                    self.skip(method);
-                }
+                CallableCreateKind::StaticMethod { class, .. } => self.skip(class),
                 _ => {}
             },
             ExprKind::New(n) => self.skip(n.class),
-            ExprKind::PropertyAccess(p) | ExprKind::NullsafePropertyAccess(p) => {
-                self.skip(p.property)
-            }
-            ExprKind::MethodCall(m) | ExprKind::NullsafeMethodCall(m) => self.skip(m.method),
-            ExprKind::StaticPropertyAccess(s) | ExprKind::ClassConstAccess(s) => {
-                self.skip(s.class);
-                self.skip(s.member);
-            }
-            ExprKind::StaticMethodCall(s) => {
-                self.skip(s.class);
-                self.skip(s.method);
-            }
+            ExprKind::StaticPropertyAccess(s) | ExprKind::ClassConstAccess(s) => self.skip(s.class),
+            ExprKind::StaticMethodCall(s) => self.skip(s.class),
             ExprKind::StaticMethodCallDynamic(s) => self.skip(s.class),
             ExprKind::ClassConstAccessDynamic { class, .. }
             | ExprKind::StaticPropertyAccessDynamic { class, .. } => self.skip(class),

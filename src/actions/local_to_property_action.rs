@@ -7,6 +7,7 @@ use tower_lsp_server::ls_types::{
     CodeAction, CodeActionKind, CodeActionOrCommand, Range, TextEdit, Uri, WorkspaceEdit,
 };
 
+use super::indent_before;
 use crate::document::ast::{ParsedDoc, SourceView};
 use crate::text::word_at_position;
 
@@ -206,7 +207,7 @@ fn build_action(
     let replacement = format!("$this->{prop_name}");
 
     let indent = if let Some(first) = class_body.members.first() {
-        line_indent(source, first.span.start as usize)
+        indent_before(source, first.span.start as usize)
     } else {
         "    ".to_string()
     };
@@ -269,12 +270,4 @@ fn build_action(
         }),
         ..Default::default()
     }))
-}
-
-fn line_indent(source: &str, pos: usize) -> String {
-    let line_start = source[..pos].rfind('\n').map_or(0, |i| i + 1);
-    source[line_start..pos]
-        .chars()
-        .take_while(|c| c.is_whitespace())
-        .collect()
 }

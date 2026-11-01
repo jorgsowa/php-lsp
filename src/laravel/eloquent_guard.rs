@@ -22,6 +22,8 @@ use crate::db::workspace_index::WorkspaceIndexData;
 use crate::document::ast::SourceView;
 use crate::document::document_store::DocumentStore;
 
+use super::string_call::is_ident;
+
 const ELOQUENT_MODEL_FQN: &str = "Illuminate\\Database\\Eloquent\\Model";
 const DIAGNOSTIC_CODE: &str = "UnguardedMassAssignment";
 /// Guards against pathological/circular `extends` chains.
@@ -88,14 +90,6 @@ impl<'arena, 'src> Visitor<'arena, 'src> for CreateCallVisitor<'_> {
             }
         }
         walk_expr(self, expr)
-    }
-}
-
-fn is_ident(expr: &Expr<'_, '_>, name: &str) -> bool {
-    match &expr.kind {
-        ExprKind::Identifier(n) => n.eq_ignore_ascii_case(name),
-        ExprKind::Name(n) => n.to_string_repr().eq_ignore_ascii_case(name),
-        _ => false,
     }
 }
 

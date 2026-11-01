@@ -28,12 +28,7 @@ fn parse_error_message(e: &ParseError, sv: SourceView<'_>) -> String {
     }
 }
 
-/// Parse `source` without converting parse errors into LSP `Diagnostic`s.
-///
-/// Hot-path callers (workspace scan, the salsa `parsed_doc` query) discard
-/// diagnostics — using this variant skips an O(errors) Vec allocation per
-/// file. Callers that actually publish diagnostics call [`parse_document`]
-/// instead.
+/// Parse `source` without converting parse errors into LSP `Diagnostic`s; see [`diagnostics_from_doc`].
 pub fn parse_document_no_diags(source: &str) -> ParsedDoc {
     ParsedDoc::parse(Arc::from(source))
 }
@@ -105,16 +100,6 @@ fn supported_by_target(e: &ParseError, target: mir_analyzer::PhpVersion) -> bool
         ParseError::VersionTooLow { required, .. } => *required <= target.parser_version(),
         _ => false,
     }
-}
-
-/// Parse `source` and return the (owned) `ParsedDoc` plus any parse diagnostics.
-pub fn parse_document(
-    source: &str,
-    target: mir_analyzer::PhpVersion,
-) -> (ParsedDoc, Vec<Diagnostic>) {
-    let doc = parse_document_no_diags(source);
-    let diagnostics = diagnostics_from_doc(&doc, target);
-    (doc, diagnostics)
 }
 
 #[cfg(test)]

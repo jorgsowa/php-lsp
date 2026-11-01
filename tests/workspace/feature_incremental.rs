@@ -453,7 +453,7 @@ async fn cross_file_republish_preserves_dependent_parse_errors() {
     let notif = server.client().wait_for_diagnostics(&broken_uri).await;
     // UndefinedClass clears once Triggered is defined; parse errors survive.
     expect!["2:7-2:8 [1] SyntaxError: expected expression, found ';'"]
-    .assert_eq(&render_diagnostics_notification(&notif));
+        .assert_eq(&render_diagnostics_notification(&notif));
 }
 
 // ── snapshot_query retry reduction ───────────────────────────────────────────

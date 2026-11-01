@@ -6,6 +6,8 @@ use tower_lsp_server::ls_types::{
 
 use crate::document::ast::{ParsedDoc, SourceView, format_type_hint};
 
+use super::line_in_range;
+
 /// Return "Generate PHPDoc" code actions for any function/method whose declaration line
 /// falls within `range` and does not already have a docblock.
 pub fn phpdoc_actions(
@@ -91,10 +93,6 @@ fn collect(
             _ => {}
         }
     }
-}
-
-fn line_in_range(line: u32, range: Range) -> bool {
-    line >= range.start.line && line <= range.end.line
 }
 
 fn make_action(
