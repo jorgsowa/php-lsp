@@ -127,5 +127,6 @@ async fn laravel_app_in_second_workspace_root_is_indexed() {
         'default' => 'mysql',
         ```
 
-        `config/database.php`"#]].assert_eq(&render_hover(&resp));
+        `config/database.php`"#]]
+    .assert_eq(&render_hover(&resp));
 }

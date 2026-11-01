@@ -106,6 +106,8 @@ fn collect_phpt(dir: &Path, out: &mut Vec<PathBuf>) {
 
 fn run_file(path: &Path) -> Result<(), Failed> {
     let content = std::fs::read_to_string(path).map_err(|e| format!("read {path:?}: {e}"))?;
+    // A Windows checkout with `core.autocrlf` turns every line ending into CRLF.
+    let content = content.replace("\r\n", "\n");
     let label = path.display().to_string();
     let outcome = std::panic::catch_unwind(AssertUnwindSafe(|| {
         let phpt = Phpt::parse(&content, &label);
