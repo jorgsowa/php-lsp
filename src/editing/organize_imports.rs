@@ -1,9 +1,5 @@
-/// Code action: "Organize imports" — sorts `use` statements alphabetically
-/// and removes ones whose short name doesn't appear in the file body.
-use std::collections::HashMap;
-
 use tower_lsp_server::ls_types::{
-    CodeAction, CodeActionKind, CodeActionOrCommand, Position, Range, TextEdit, Uri, WorkspaceEdit,
+    CodeActionKind, CodeActionOrCommand, Position, Range, TextEdit, Uri,
 };
 
 use crate::lang::file_header::header_lines;
@@ -114,17 +110,13 @@ fn sort_and_dedup(group: &mut Vec<UseStatement>) {
 }
 
 fn make_action(uri: &Uri, edit: TextEdit) -> CodeActionOrCommand {
-    let mut changes = HashMap::new();
-    changes.insert(uri.clone(), vec![edit]);
-    CodeActionOrCommand::CodeAction(CodeAction {
-        title: "Organize imports".to_string(),
-        kind: Some(CodeActionKind::SOURCE_ORGANIZE_IMPORTS),
-        edit: Some(WorkspaceEdit {
-            changes: Some(changes),
-            ..Default::default()
-        }),
-        ..Default::default()
-    })
+    let edits = vec![edit];
+    crate::actions::single_file_action(
+        "Organize imports",
+        CodeActionKind::SOURCE_ORGANIZE_IMPORTS,
+        uri,
+        edits,
+    )
 }
 
 /// The kind of a `use` statement.

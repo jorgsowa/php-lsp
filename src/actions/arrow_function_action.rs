@@ -1,12 +1,8 @@
-use std::collections::HashMap;
-
 use php_ast::{
     ArrowFunctionExpr, ClassMemberKind, ClosureExpr, Expr, ExprKind, NamespaceBody, Span, Stmt,
     StmtKind,
 };
-use tower_lsp_server::ls_types::{
-    CodeAction, CodeActionKind, CodeActionOrCommand, Range, TextEdit, Uri, WorkspaceEdit,
-};
+use tower_lsp_server::ls_types::{CodeActionKind, CodeActionOrCommand, Range, TextEdit, Uri};
 
 use crate::document::ast::{ParsedDoc, SourceView};
 
@@ -235,24 +231,17 @@ fn build_action(
 
     let edit_range = sv.range_of(span);
 
-    let mut changes = HashMap::new();
-    changes.insert(
-        uri.clone(),
-        vec![TextEdit {
-            range: edit_range,
-            new_text,
-        }],
-    );
+    let edits = vec![TextEdit {
+        range: edit_range,
+        new_text,
+    }];
 
-    Some(CodeActionOrCommand::CodeAction(CodeAction {
-        title: "Convert to arrow function".to_string(),
-        kind: Some(CodeActionKind::REFACTOR),
-        edit: Some(WorkspaceEdit {
-            changes: Some(changes),
-            ..Default::default()
-        }),
-        ..Default::default()
-    }))
+    Some(crate::actions::single_file_action(
+        "Convert to arrow function",
+        CodeActionKind::REFACTOR,
+        uri,
+        edits,
+    ))
 }
 
 /// Build the arrow-function source text for the given closure.
@@ -529,24 +518,17 @@ fn build_arrow_to_closure_action(
 
     let edit_range = sv.range_of(span);
 
-    let mut changes = HashMap::new();
-    changes.insert(
-        uri.clone(),
-        vec![TextEdit {
-            range: edit_range,
-            new_text,
-        }],
-    );
+    let edits = vec![TextEdit {
+        range: edit_range,
+        new_text,
+    }];
 
-    Some(CodeActionOrCommand::CodeAction(CodeAction {
-        title: "Convert to closure".to_string(),
-        kind: Some(CodeActionKind::REFACTOR),
-        edit: Some(WorkspaceEdit {
-            changes: Some(changes),
-            ..Default::default()
-        }),
-        ..Default::default()
-    }))
+    Some(crate::actions::single_file_action(
+        "Convert to closure",
+        CodeActionKind::REFACTOR,
+        uri,
+        edits,
+    ))
 }
 
 /// Build the closure source text for the given arrow function.

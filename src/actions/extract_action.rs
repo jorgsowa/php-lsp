@@ -1,5 +1,3 @@
-/// Code action: "Extract variable" — wraps the selected expression in a `$extracted` variable.
-use std::collections::HashMap;
 use std::ops::ControlFlow;
 
 use php_ast::{
@@ -7,7 +5,7 @@ use php_ast::{
     visitor::{Visitor, walk_expr},
 };
 use tower_lsp_server::ls_types::{
-    CodeAction, CodeActionKind, CodeActionOrCommand, Position, Range, TextEdit, Uri, WorkspaceEdit,
+    CodeActionKind, CodeActionOrCommand, Position, Range, TextEdit, Uri,
 };
 
 use super::line_indent;
@@ -59,33 +57,26 @@ pub fn extract_variable_actions(
 
     let replace_text = "$extracted".to_string();
 
-    let mut changes = HashMap::new();
-    changes.insert(
-        uri.clone(),
-        vec![
-            TextEdit {
-                range: Range {
-                    start: insert_pos,
-                    end: insert_pos,
-                },
-                new_text: insert_text,
+    let edits = vec![
+        TextEdit {
+            range: Range {
+                start: insert_pos,
+                end: insert_pos,
             },
-            TextEdit {
-                range,
-                new_text: replace_text,
-            },
-        ],
-    );
+            new_text: insert_text,
+        },
+        TextEdit {
+            range,
+            new_text: replace_text,
+        },
+    ];
 
-    vec![CodeActionOrCommand::CodeAction(CodeAction {
-        title: "Extract variable".to_string(),
-        kind: Some(CodeActionKind::REFACTOR_EXTRACT),
-        edit: Some(WorkspaceEdit {
-            changes: Some(changes),
-            ..Default::default()
-        }),
-        ..Default::default()
-    })]
+    vec![crate::actions::single_file_action(
+        "Extract variable",
+        CodeActionKind::REFACTOR_EXTRACT,
+        uri,
+        edits,
+    )]
 }
 
 /// Span of the smallest `Expr` node in `doc` that contains (or equals) `target`, or `None` if none does.

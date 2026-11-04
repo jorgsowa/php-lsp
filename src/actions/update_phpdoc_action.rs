@@ -1,11 +1,6 @@
-/// Code action: update an existing PHPDoc to match the current function/method
-/// signature (add missing @param, remove stale @param, rename mismatched @param,
-/// add missing @return).
-use std::collections::HashMap;
-
 use php_ast::{ClassMemberKind, EnumMemberKind, NamespaceBody, Param, Stmt, StmtKind, TypeHint};
 use tower_lsp_server::ls_types::{
-    CodeAction, CodeActionKind, CodeActionOrCommand, Position, Range, TextEdit, Uri, WorkspaceEdit,
+    CodeActionKind, CodeActionOrCommand, Position, Range, TextEdit, Uri,
 };
 
 use crate::document::ast::{ParsedDoc, SourceView, format_type_hint};
@@ -111,24 +106,17 @@ fn maybe_push<'a>(
         },
     };
 
-    let mut changes = HashMap::new();
-    changes.insert(
-        uri.clone(),
-        vec![TextEdit {
-            range: edit_range,
-            new_text,
-        }],
-    );
+    let edits = vec![TextEdit {
+        range: edit_range,
+        new_text,
+    }];
 
-    out.push(CodeActionOrCommand::CodeAction(CodeAction {
-        title: "Update PHPDoc to match signature".to_string(),
-        kind: Some(CodeActionKind::REFACTOR),
-        edit: Some(WorkspaceEdit {
-            changes: Some(changes),
-            ..Default::default()
-        }),
-        ..Default::default()
-    }));
+    out.push(crate::actions::single_file_action(
+        "Update PHPDoc to match signature",
+        CodeActionKind::REFACTOR,
+        uri,
+        edits,
+    ));
 }
 
 /// Return `true` when the docblock's @param/@return section is out of sync.

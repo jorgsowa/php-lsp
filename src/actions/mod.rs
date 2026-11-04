@@ -18,7 +18,34 @@ pub mod type_action;
 pub mod update_phpdoc_action;
 pub mod visibility_action;
 
-use tower_lsp_server::ls_types::Range;
+use std::collections::HashMap;
+
+use tower_lsp_server::ls_types::{
+    CodeAction, CodeActionKind, CodeActionOrCommand, Range, TextEdit, Uri, WorkspaceEdit,
+};
+
+/// A `WorkspaceEdit` applying `edits` to the single document `uri`.
+pub(crate) fn single_file_edit(uri: &Uri, edits: Vec<TextEdit>) -> WorkspaceEdit {
+    WorkspaceEdit {
+        changes: Some(HashMap::from([(uri.clone(), edits)])),
+        ..Default::default()
+    }
+}
+
+/// A code action applying `edits` to the single document `uri`.
+pub(crate) fn single_file_action(
+    title: impl Into<String>,
+    kind: CodeActionKind,
+    uri: &Uri,
+    edits: Vec<TextEdit>,
+) -> CodeActionOrCommand {
+    CodeActionOrCommand::CodeAction(CodeAction {
+        title: title.into(),
+        kind: Some(kind),
+        edit: Some(single_file_edit(uri, edits)),
+        ..Default::default()
+    })
+}
 
 pub(crate) fn line_in_range(line: u32, range: Range) -> bool {
     line >= range.start.line && line <= range.end.line

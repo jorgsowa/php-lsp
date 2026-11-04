@@ -1,9 +1,5 @@
-use std::collections::HashMap;
-
 use php_ast::{ClassMemberKind, NamespaceBody, Stmt, StmtKind, Visibility};
-use tower_lsp_server::ls_types::{
-    CodeAction, CodeActionKind, CodeActionOrCommand, Range, TextEdit, Uri, WorkspaceEdit,
-};
+use tower_lsp_server::ls_types::{CodeActionKind, CodeActionOrCommand, Range, TextEdit, Uri};
 
 use crate::document::ast::{ParsedDoc, SourceView};
 
@@ -121,23 +117,16 @@ fn push_actions(
             start: sv.position_of(kw_range.start as u32),
             end: sv.position_of(kw_range.end as u32),
         };
-        let mut changes = HashMap::new();
-        changes.insert(
-            uri.clone(),
-            vec![TextEdit {
-                range: edit_range,
-                new_text: new_kw.to_string(),
-            }],
-        );
-        out.push(CodeActionOrCommand::CodeAction(CodeAction {
-            title: format!("Make {new_kw}"),
-            kind: Some(CodeActionKind::REFACTOR),
-            edit: Some(WorkspaceEdit {
-                changes: Some(changes),
-                ..Default::default()
-            }),
-            ..Default::default()
-        }));
+        let edits = vec![TextEdit {
+            range: edit_range,
+            new_text: new_kw.to_string(),
+        }];
+        out.push(crate::actions::single_file_action(
+            format!("Make {new_kw}"),
+            CodeActionKind::REFACTOR,
+            uri,
+            edits,
+        ));
     }
 }
 

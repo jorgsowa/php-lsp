@@ -1,15 +1,5 @@
-/// Code action: "Extract interface from class"
-///
-/// Offered when the cursor is on the class declaration. Collects all public
-/// non-constructor methods, generates a `NameInterface` above the class, and
-/// adds `implements NameInterface` (or appends to an existing `implements`
-/// list) to the class header.
-use std::collections::HashMap;
-
 use php_ast::{ClassMemberKind, NamespaceBody, Stmt, StmtKind, Visibility};
-use tower_lsp_server::ls_types::{
-    CodeAction, CodeActionKind, CodeActionOrCommand, Range, TextEdit, Uri, WorkspaceEdit,
-};
+use tower_lsp_server::ls_types::{CodeActionKind, CodeActionOrCommand, Range, TextEdit, Uri};
 
 use crate::document::ast::{ParsedDoc, SourceView, format_type_hint};
 use crate::hover::format_params_str;
@@ -125,18 +115,14 @@ fn collect<'a>(
                     new_text: implements_text,
                 };
 
-                let mut changes = HashMap::new();
-                changes.insert(uri.clone(), vec![interface_edit, implements_edit]);
+                let edits = vec![interface_edit, implements_edit];
 
-                out.push(CodeActionOrCommand::CodeAction(CodeAction {
-                    title: format!("Extract interface '{interface_name}'"),
-                    kind: Some(CodeActionKind::REFACTOR_EXTRACT),
-                    edit: Some(WorkspaceEdit {
-                        changes: Some(changes),
-                        ..Default::default()
-                    }),
-                    ..Default::default()
-                }));
+                out.push(crate::actions::single_file_action(
+                    format!("Extract interface '{interface_name}'"),
+                    CodeActionKind::REFACTOR_EXTRACT,
+                    uri,
+                    edits,
+                ));
             }
             StmtKind::Namespace(ns) => {
                 if let NamespaceBody::Braced(inner) = &ns.body {

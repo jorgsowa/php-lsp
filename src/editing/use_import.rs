@@ -1,7 +1,6 @@
 // Reached only through the server, which is not built for wasm.
 #![cfg_attr(target_family = "wasm", allow(dead_code))]
 
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use tower_lsp_server::ls_types::{Position, Uri, WorkspaceEdit};
@@ -56,12 +55,7 @@ pub(crate) fn build_use_import_edit(
     fqn: &str,
 ) -> WorkspaceEdit {
     let edit = use_insertion(doc, at, |_| true).edit(&format!("use {fqn};"));
-    let mut changes = HashMap::new();
-    changes.insert(uri.clone(), vec![edit]);
-    WorkspaceEdit {
-        changes: Some(changes),
-        ..Default::default()
-    }
+    crate::actions::single_file_edit(uri, vec![edit])
 }
 
 /// Build a `WorkspaceEdit` that inserts `use function FQN;` into the namespace of the code at `at`.
@@ -72,10 +66,5 @@ pub(crate) fn build_use_function_import_edit(
     fqn: &str,
 ) -> WorkspaceEdit {
     let edit = use_insertion(doc, at, |_| true).edit(&format!("use function {fqn};"));
-    let mut changes = HashMap::new();
-    changes.insert(uri.clone(), vec![edit]);
-    WorkspaceEdit {
-        changes: Some(changes),
-        ..Default::default()
-    }
+    crate::actions::single_file_edit(uri, vec![edit])
 }

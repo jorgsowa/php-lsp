@@ -1,21 +1,3 @@
-/// Code action: "Inline variable" — replaces all usages of a variable with its
-/// initializer expression and removes the assignment statement.
-///
-/// Only acts when:
-/// - The cursor/selection is on or inside a variable name (e.g. `$extracted`).
-/// - The variable is bound exactly once in its function scope, by a plain
-///   `$var = <expr>;` statement that precedes every read and sits in the same
-///   block as all of them.
-/// - Every read is a plain value: not interpolated, captured by a closure,
-///   checked by `isset`, assigned to, bound by reference or iterated by
-///   reference; nothing in the scope reads variables by name (`compact`, `$$`).
-/// - The initializer is safe to evaluate at each read:
-///   - a constant expression, anywhere;
-///   - variables and property/array reads, if nothing but writes to other
-///     locals and output runs between the assignment and the last read;
-///   - anything else, read once, unconditionally, in the next statement, with
-///     nothing observable evaluated before the read.
-use std::collections::HashMap;
 use std::ops::ControlFlow;
 
 use php_ast::{
@@ -24,8 +6,7 @@ use php_ast::{
     visitor::{Visitor, walk_block, walk_class_member, walk_expr, walk_stmt},
 };
 use tower_lsp_server::ls_types::{
-    CodeAction, CodeActionKind, CodeActionOrCommand, DocumentHighlightKind, Range, TextEdit, Uri,
-    WorkspaceEdit,
+    CodeActionKind, CodeActionOrCommand, DocumentHighlightKind, Range, TextEdit, Uri,
 };
 
 use crate::document::ast::ParsedDoc;
@@ -218,18 +199,12 @@ pub fn inline_variable_actions(
         new_text: String::new(),
     });
 
-    let mut changes = HashMap::new();
-    changes.insert(uri.clone(), edits);
-
-    vec![CodeActionOrCommand::CodeAction(CodeAction {
-        title: format!("Inline variable '{var_name}'"),
-        kind: Some(CodeActionKind::REFACTOR_INLINE),
-        edit: Some(WorkspaceEdit {
-            changes: Some(changes),
-            ..Default::default()
-        }),
-        ..Default::default()
-    })]
+    vec![crate::actions::single_file_action(
+        format!("Inline variable '{var_name}'"),
+        CodeActionKind::REFACTOR_INLINE,
+        uri,
+        edits,
+    )]
 }
 
 fn contains(outer: Span, inner: Span) -> bool {

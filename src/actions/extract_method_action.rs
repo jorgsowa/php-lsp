@@ -1,16 +1,6 @@
-/// Code action: "Extract method" — moves selected statements inside a class method
-/// into a new `private function extractedMethod()` on the same class.
-///
-/// Variable analysis:
-/// - Variables that appear in the selection **and** were assigned/used before the
-///   selection starts become **parameters** of the extracted method (`mixed $x`).
-/// - Variables that are **assigned inside** the selection and referenced **after**
-///   the selection ends become the **return value** (single variable for now).
-use std::collections::HashMap;
-
 use php_ast::{ClassMemberKind, NamespaceBody, Span, StmtKind};
 use tower_lsp_server::ls_types::{
-    CodeAction, CodeActionKind, CodeActionOrCommand, Position, Range, TextEdit, Uri, WorkspaceEdit,
+    CodeActionKind, CodeActionOrCommand, Position, Range, TextEdit, Uri,
 };
 
 use super::line_indent;
@@ -118,33 +108,26 @@ pub fn extract_method_actions(
         character: 0,
     };
 
-    let mut changes = HashMap::new();
-    changes.insert(
-        uri.clone(),
-        vec![
-            TextEdit {
-                range,
-                new_text: call_text,
+    let edits = vec![
+        TextEdit {
+            range,
+            new_text: call_text,
+        },
+        TextEdit {
+            range: Range {
+                start: insert_pos,
+                end: insert_pos,
             },
-            TextEdit {
-                range: Range {
-                    start: insert_pos,
-                    end: insert_pos,
-                },
-                new_text: new_method,
-            },
-        ],
-    );
+            new_text: new_method,
+        },
+    ];
 
-    vec![CodeActionOrCommand::CodeAction(CodeAction {
-        title: "Extract method".to_string(),
-        kind: Some(CodeActionKind::REFACTOR_EXTRACT),
-        edit: Some(WorkspaceEdit {
-            changes: Some(changes),
-            ..Default::default()
-        }),
-        ..Default::default()
-    })]
+    vec![crate::actions::single_file_action(
+        "Extract method",
+        CodeActionKind::REFACTOR_EXTRACT,
+        uri,
+        edits,
+    )]
 }
 
 /// Expands `start..end` to whole lines, or `None` when the selection shares a

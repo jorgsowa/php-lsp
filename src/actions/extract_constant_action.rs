@@ -1,8 +1,5 @@
-/// Code action: "Extract constant" — extracts a selected literal into a named PHP constant.
-use std::collections::HashMap;
-
 use tower_lsp_server::ls_types::{
-    CodeAction, CodeActionKind, CodeActionOrCommand, Position, Range, TextEdit, Uri, WorkspaceEdit,
+    CodeActionKind, CodeActionOrCommand, Position, Range, TextEdit, Uri,
 };
 
 use crate::text::selected_text_range;
@@ -327,32 +324,25 @@ fn build_action(
     replace_range: Range,
     uri: &Uri,
 ) -> Vec<CodeActionOrCommand> {
-    let mut changes = HashMap::new();
-    changes.insert(
-        uri.clone(),
-        vec![
-            TextEdit {
-                range: Range {
-                    start: insert_pos,
-                    end: insert_pos,
-                },
-                new_text: decl,
+    let edits = vec![
+        TextEdit {
+            range: Range {
+                start: insert_pos,
+                end: insert_pos,
             },
-            TextEdit {
-                range: replace_range,
-                new_text: reference,
-            },
-        ],
-    );
-    vec![CodeActionOrCommand::CodeAction(CodeAction {
-        title: title.to_string(),
-        kind: Some(CodeActionKind::REFACTOR_EXTRACT),
-        edit: Some(WorkspaceEdit {
-            changes: Some(changes),
-            ..Default::default()
-        }),
-        ..Default::default()
-    })]
+            new_text: decl,
+        },
+        TextEdit {
+            range: replace_range,
+            new_text: reference,
+        },
+    ];
+    vec![crate::actions::single_file_action(
+        title.to_string(),
+        CodeActionKind::REFACTOR_EXTRACT,
+        uri,
+        edits,
+    )]
 }
 
 #[cfg(test)]

@@ -1,9 +1,6 @@
-/// Code action: "Add return type declaration" for functions/methods that lack one.
-use std::collections::HashMap;
-
 use php_ast::{ClassMemberKind, EnumMemberKind, NamespaceBody, Stmt, StmtKind};
 use tower_lsp_server::ls_types::{
-    CodeAction, CodeActionKind, CodeActionOrCommand, Position, Range, TextEdit, Uri, WorkspaceEdit,
+    CodeActionKind, CodeActionOrCommand, Position, Range, TextEdit, Uri,
 };
 
 use crate::document::ast::{ParsedDoc, SourceView};
@@ -236,24 +233,17 @@ fn push_action(
         line: pos.line,
         character: pos.character,
     };
-    let mut changes = HashMap::new();
-    changes.insert(
-        uri.clone(),
-        vec![TextEdit {
-            range: Range {
-                start: insert_pos,
-                end: insert_pos,
-            },
-            new_text: format!(": {type_str}"),
-        }],
-    );
-    out.push(CodeActionOrCommand::CodeAction(CodeAction {
-        title: format!("Add return type `: {type_str}`"),
-        kind: Some(CodeActionKind::REFACTOR),
-        edit: Some(WorkspaceEdit {
-            changes: Some(changes),
-            ..Default::default()
-        }),
-        ..Default::default()
-    }));
+    let edits = vec![TextEdit {
+        range: Range {
+            start: insert_pos,
+            end: insert_pos,
+        },
+        new_text: format!(": {type_str}"),
+    }];
+    out.push(crate::actions::single_file_action(
+        format!("Add return type `: {type_str}`"),
+        CodeActionKind::REFACTOR,
+        uri,
+        edits,
+    ));
 }

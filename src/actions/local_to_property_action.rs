@@ -1,11 +1,8 @@
-use std::collections::HashMap;
 use std::ops::ControlFlow;
 
 use php_ast::visitor::{Visitor, walk_expr};
 use php_ast::{ClassBody, ClassMemberKind, ExprKind, NamespaceBody, Stmt, StmtKind};
-use tower_lsp_server::ls_types::{
-    CodeAction, CodeActionKind, CodeActionOrCommand, Range, TextEdit, Uri, WorkspaceEdit,
-};
+use tower_lsp_server::ls_types::{CodeActionKind, CodeActionOrCommand, Range, TextEdit, Uri};
 
 use super::indent_before;
 use crate::document::ast::{ParsedDoc, SourceView};
@@ -258,16 +255,10 @@ fn build_action(
             .then(b.range.start.character.cmp(&a.range.start.character))
     });
 
-    let mut changes = HashMap::new();
-    changes.insert((*uri).clone(), edits);
-
-    Some(CodeActionOrCommand::CodeAction(CodeAction {
-        title: format!("Convert '{var}' to instance property"),
-        kind: Some(CodeActionKind::REFACTOR),
-        edit: Some(WorkspaceEdit {
-            changes: Some(changes),
-            ..Default::default()
-        }),
-        ..Default::default()
-    }))
+    Some(crate::actions::single_file_action(
+        format!("Convert '{var}' to instance property"),
+        CodeActionKind::REFACTOR,
+        uri,
+        edits,
+    ))
 }

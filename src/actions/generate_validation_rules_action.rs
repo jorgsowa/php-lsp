@@ -1,21 +1,8 @@
-/// Code action: "Generate validation rules from $request usages" — offered
-/// when the cursor is inside an array literal that's either the sole
-/// argument to `$request->validate([...])`/`$this->validate([...])`, or the
-/// `return [...]` of a method named `rules()`. Inserts a `'field' =>
-/// 'required'` stub for every field name harvested from
-/// `->input()`/`->get()`/`->post()`/`->query()` calls elsewhere — the same
-/// enclosing method for the `validate()` case, or anywhere else in the same
-/// class for `rules()` (a FormRequest's own `rules()` body has no `$request`
-/// variable to call these on; a `prepareForValidation()`-style hook using
-/// `$this->input(...)` is the realistic source there).
-use std::collections::HashMap;
 use std::ops::ControlFlow;
 
 use php_ast::visitor::{Visitor, walk_expr};
 use php_ast::{ArrayElement, ClassMemberKind, Expr, ExprKind, NamespaceBody, Span, Stmt, StmtKind};
-use tower_lsp_server::ls_types::{
-    CodeAction, CodeActionKind, CodeActionOrCommand, Range, TextEdit, Uri, WorkspaceEdit,
-};
+use tower_lsp_server::ls_types::{CodeActionKind, CodeActionOrCommand, Range, TextEdit, Uri};
 
 use crate::document::ast::{ParsedDoc, SourceView};
 use crate::laravel::request_fields::{Receiver, harvest_fields};
@@ -236,25 +223,18 @@ fn build_action(
         .map(|f| format!("'{f}' => 'required', "))
         .collect();
 
-    let mut changes = HashMap::new();
-    changes.insert(
-        uri.clone(),
-        vec![TextEdit {
-            range: Range {
-                start: pos,
-                end: pos,
-            },
-            new_text,
-        }],
-    );
+    let edits = vec![TextEdit {
+        range: Range {
+            start: pos,
+            end: pos,
+        },
+        new_text,
+    }];
 
-    Some(CodeActionOrCommand::CodeAction(CodeAction {
-        title: "Generate validation rules from $request usages".to_string(),
-        kind: Some(CodeActionKind::QUICKFIX),
-        edit: Some(WorkspaceEdit {
-            changes: Some(changes),
-            ..Default::default()
-        }),
-        ..Default::default()
-    }))
+    Some(crate::actions::single_file_action(
+        "Generate validation rules from $request usages",
+        CodeActionKind::QUICKFIX,
+        uri,
+        edits,
+    ))
 }

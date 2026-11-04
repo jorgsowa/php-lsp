@@ -1,20 +1,7 @@
-/// Code action: "Convert facade call to dependency injection" — rewrites a
-/// `Cache::get(...)`-style static facade call under the cursor, inside a
-/// non-static instance method, to `$this->cache->get(...)`, adding a
-/// constructor-promoted parameter for the facade's contract interface
-/// (generating a constructor if the class doesn't have one yet).
-///
-/// v1 scope: rewrites only the call site under the cursor, not every
-/// occurrence of the facade in the class — same single-site scope every
-/// other action in this module has (extract, inline, promote, …).
-use std::collections::HashMap;
-
 use php_ast::visitor::{Visitor, walk_expr};
 use php_ast::{ClassMemberKind, Expr, ExprKind, NamespaceBody, Span, Stmt, StmtKind};
 use std::ops::ControlFlow;
-use tower_lsp_server::ls_types::{
-    CodeAction, CodeActionKind, CodeActionOrCommand, Range, TextEdit, Uri, WorkspaceEdit,
-};
+use tower_lsp_server::ls_types::{CodeActionKind, CodeActionOrCommand, Range, TextEdit, Uri};
 
 use crate::document::ast::{ParsedDoc, SourceView};
 use crate::laravel::facades;
@@ -217,18 +204,12 @@ fn build_action(
         }
     }
 
-    let mut changes = HashMap::new();
-    changes.insert(uri.clone(), edits);
-
-    CodeActionOrCommand::CodeAction(CodeAction {
-        title: format!("Convert {}:: call to dependency injection", call.facade),
-        kind: Some(CodeActionKind::REFACTOR),
-        edit: Some(WorkspaceEdit {
-            changes: Some(changes),
-            ..Default::default()
-        }),
-        ..Default::default()
-    })
+    crate::actions::single_file_action(
+        format!("Convert {}:: call to dependency injection", call.facade),
+        CodeActionKind::REFACTOR,
+        uri,
+        edits,
+    )
 }
 
 fn first_paren_after(source: &str, from_offset: u32) -> Option<u32> {

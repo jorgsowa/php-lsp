@@ -21,9 +21,7 @@
 use std::collections::HashMap;
 
 use php_ast::{ClassMemberKind, ExprKind, NamespaceBody, Stmt, StmtKind, Visibility};
-use tower_lsp_server::ls_types::{
-    CodeAction, CodeActionKind, CodeActionOrCommand, Range, TextEdit, Uri, WorkspaceEdit,
-};
+use tower_lsp_server::ls_types::{CodeActionKind, CodeActionOrCommand, Range, TextEdit, Uri};
 
 use crate::document::ast::{ParsedDoc, SourceView};
 
@@ -320,18 +318,12 @@ fn build_action(
             .then(b.range.start.character.cmp(&a.range.start.character))
     });
 
-    let mut changes = HashMap::new();
-    changes.insert(uri.clone(), edits);
-
-    Some(CodeActionOrCommand::CodeAction(CodeAction {
-        title: title.to_string(),
-        kind: Some(CodeActionKind::REFACTOR),
-        edit: Some(WorkspaceEdit {
-            changes: Some(changes),
-            ..Default::default()
-        }),
-        ..Default::default()
-    }))
+    Some(crate::actions::single_file_action(
+        title.to_string(),
+        CodeActionKind::REFACTOR,
+        uri,
+        edits,
+    ))
 }
 
 /// Return a `Range` that covers the full line(s) containing `[span_start, span_end]`,

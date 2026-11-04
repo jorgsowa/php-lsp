@@ -1,9 +1,5 @@
-use std::collections::HashMap;
-
 use php_ast::{ClassMemberKind, Expr, ExprKind, NamespaceBody, Span, Stmt, StmtKind, SwitchStmt};
-use tower_lsp_server::ls_types::{
-    CodeAction, CodeActionKind, CodeActionOrCommand, Range, TextEdit, Uri, WorkspaceEdit,
-};
+use tower_lsp_server::ls_types::{CodeActionKind, CodeActionOrCommand, Range, TextEdit, Uri};
 
 use super::indent_before;
 use crate::document::ast::{ParsedDoc, SourceView};
@@ -135,24 +131,17 @@ fn build_action(
 
     let edit_range = sv.range_of(span);
 
-    let mut changes = HashMap::new();
-    changes.insert(
-        uri.clone(),
-        vec![TextEdit {
-            range: edit_range,
-            new_text,
-        }],
-    );
+    let edits = vec![TextEdit {
+        range: edit_range,
+        new_text,
+    }];
 
-    Some(CodeActionOrCommand::CodeAction(CodeAction {
-        title: "Convert switch to match".to_string(),
-        kind: Some(CodeActionKind::REFACTOR),
-        edit: Some(WorkspaceEdit {
-            changes: Some(changes),
-            ..Default::default()
-        }),
-        ..Default::default()
-    }))
+    Some(crate::actions::single_file_action(
+        "Convert switch to match",
+        CodeActionKind::REFACTOR,
+        uri,
+        edits,
+    ))
 }
 
 struct MatchArm {

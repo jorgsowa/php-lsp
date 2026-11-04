@@ -1,9 +1,9 @@
 /// Code actions: "Generate constructor" and "Generate getters/setters".
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use php_ast::{ClassMemberKind, NamespaceBody, Stmt, StmtKind};
 use tower_lsp_server::ls_types::{
-    CodeAction, CodeActionKind, CodeActionOrCommand, Position, Range, TextEdit, Uri, WorkspaceEdit,
+    CodeActionKind, CodeActionOrCommand, Position, Range, TextEdit, Uri,
 };
 
 use crate::document::ast::{ParsedDoc, SourceView, format_type_hint};
@@ -265,26 +265,19 @@ fn push_action(
         line: closing_line,
         character: 0,
     };
-    let mut changes = HashMap::new();
-    changes.insert(
-        uri.clone(),
-        vec![TextEdit {
-            range: Range {
-                start: pos,
-                end: pos,
-            },
-            new_text,
-        }],
-    );
-    out.push(CodeActionOrCommand::CodeAction(CodeAction {
-        title: title.to_string(),
-        kind: Some(CodeActionKind::REFACTOR),
-        edit: Some(WorkspaceEdit {
-            changes: Some(changes),
-            ..Default::default()
-        }),
-        ..Default::default()
-    }));
+    let edits = vec![TextEdit {
+        range: Range {
+            start: pos,
+            end: pos,
+        },
+        new_text,
+    }];
+    out.push(crate::actions::single_file_action(
+        title.to_string(),
+        CodeActionKind::REFACTOR,
+        uri,
+        edits,
+    ));
 }
 
 fn capitalize(s: &str) -> String {
