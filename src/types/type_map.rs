@@ -64,7 +64,7 @@ pub struct ClassMembers {
 /// Return all members (methods, properties, constants) of `class_name`.
 /// Also returns the direct parent class name via `ClassMembers::parent`.
 pub fn members_of_class(doc: &ParsedDoc, class_name: &str) -> ClassMembers {
-    let short = class_name.rsplit('\\').next().unwrap_or(class_name);
+    let short = crate::text::fqn_short_name(class_name);
     let mut out = ClassMembers::default();
     if !declared_in_namespace_of(doc, class_name) {
         return out;
@@ -570,7 +570,7 @@ pub fn params_of_function(doc: &ParsedDoc, func_name: &str) -> Vec<String> {
 /// Return the parameter names of `method_name` on class `class_name`.
 /// Primarily used to offer named-argument completions for attribute constructors.
 pub fn params_of_method(doc: &ParsedDoc, class_name: &str, method_name: &str) -> Vec<String> {
-    let short = class_name.rsplit('\\').next().unwrap_or(class_name);
+    let short = crate::text::fqn_short_name(class_name);
     let mut out = Vec::new();
     if !declared_in_namespace_of(doc, class_name) {
         return out;

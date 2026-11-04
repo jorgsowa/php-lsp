@@ -233,7 +233,7 @@ fn callable_signature_for_symbol(
     let info = callable_info_for_name(db, symbol)?;
     match symbol {
         mir_analyzer::Name::Function(fqn) => {
-            let short = fqn.rsplit('\\').next().unwrap_or(fqn.as_ref());
+            let short = crate::text::fqn_short_name(fqn);
             let ret = info
                 .return_type
                 .as_deref()
@@ -282,7 +282,7 @@ fn completion_signature_and_docstring_for_symbol(
 ) -> (Option<String>, Option<String>) {
     let builtin_function = match symbol {
         mir_analyzer::Name::Function(fqn) => {
-            let short = fqn.rsplit('\\').next().unwrap_or(fqn.as_ref());
+            let short = crate::text::fqn_short_name(fqn);
             mir_analyzer::is_builtin_function(short).then_some(short)
         }
         _ => None,

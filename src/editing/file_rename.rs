@@ -902,10 +902,7 @@ fn namespace_edits_in_source(doc: &ParsedDoc, old_fqn: &str, new_fqn: &str) -> V
                 });
             }
             Some(TextEdit {
-                range: Range {
-                    start: sv.position_of(span.start),
-                    end: sv.position_of(span.end),
-                },
+                range: sv.range_of(span),
                 new_text: new_ns.to_string(),
             })
         })

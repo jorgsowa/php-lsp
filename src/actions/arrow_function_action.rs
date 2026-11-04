@@ -233,10 +233,7 @@ fn build_action(
 
     let new_text = build_arrow_text(closure, span, return_expr, source)?;
 
-    let edit_range = Range {
-        start: sv.position_of(span.start),
-        end: sv.position_of(span.end),
-    };
+    let edit_range = sv.range_of(span);
 
     let mut changes = HashMap::new();
     changes.insert(
@@ -530,10 +527,7 @@ fn build_arrow_to_closure_action(
 ) -> Option<CodeActionOrCommand> {
     let new_text = build_closure_text(af, span, source)?;
 
-    let edit_range = Range {
-        start: sv.position_of(span.start),
-        end: sv.position_of(span.end),
-    };
+    let edit_range = sv.range_of(span);
 
     let mut changes = HashMap::new();
     changes.insert(

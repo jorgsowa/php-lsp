@@ -222,7 +222,7 @@ fn find_use_block(source: &str) -> Option<UseBlock> {
     };
 
     // Body start: byte offset of the line after the last use line.
-    let body_start_byte = line_start_byte(source, last + 1);
+    let body_start_byte = crate::text::position_to_byte_offset(source, Position::new(last + 1, 0));
 
     Some(UseBlock {
         range,
@@ -331,26 +331,6 @@ fn is_used(u: &UseStatement, body: &str) -> bool {
     false
 }
 
-/// Return the byte offset of the start of line `line_no` (0-indexed).
-fn line_start_byte(source: &str, line_no: u32) -> usize {
-    let mut current = 0u32;
-    let mut offset = 0;
-    for (i, c) in source.char_indices() {
-        if current == line_no {
-            return i;
-        }
-        if c == '\n' {
-            current += 1;
-            offset = i + 1;
-        }
-    }
-    if current == line_no {
-        offset
-    } else {
-        source.len()
-    }
-}
-
 /// Convert a UTF-16 column offset to a byte offset within a line that starts at `line_start`.
 fn utf16_col_to_byte(source: &str, line_start: usize, utf16_col: u32) -> usize {
     let mut byte_off = line_start;
@@ -369,12 +349,12 @@ fn utf16_col_to_byte(source: &str, line_start: usize, utf16_col: u32) -> usize {
 fn byte_range_of(source: &str, range: Range) -> std::ops::Range<usize> {
     let start = utf16_col_to_byte(
         source,
-        line_start_byte(source, range.start.line),
+        crate::text::position_to_byte_offset(source, Position::new(range.start.line, 0)),
         range.start.character,
     );
     let end = utf16_col_to_byte(
         source,
-        line_start_byte(source, range.end.line),
+        crate::text::position_to_byte_offset(source, Position::new(range.end.line, 0)),
         range.end.character,
     );
     start..end.min(source.len())

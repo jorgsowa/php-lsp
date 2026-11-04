@@ -203,10 +203,7 @@ pub fn inline_variable_actions(
                 format!("({rhs})")
             };
             TextEdit {
-                range: Range {
-                    start: sv.position_of(read.start),
-                    end: sv.position_of(read.end),
-                },
+                range: sv.range_of(*read),
                 new_text,
             }
         })

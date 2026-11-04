@@ -8,7 +8,7 @@ use tower_lsp_server::ls_types::{CompletionItem, CompletionItemKind, InsertTextF
 use crate::document::ast::ParsedDoc;
 use crate::document::document_store::DocumentStore;
 use crate::navigation::moniker::resolve_fqn;
-use crate::text::utf16_offset_to_byte;
+use crate::text::{fqn_short_name, utf16_offset_to_byte};
 use crate::types::type_map::{
     ClassMembers, enclosing_class_at, members_of_class, mixin_classes_of, parent_class_name,
     resolve_class_ref,
@@ -90,10 +90,6 @@ impl Scope {
     }
 }
 
-fn short_name(name: &str) -> &str {
-    name.rsplit('\\').next().unwrap_or(name)
-}
-
 /// Lowercased short names of `name` and its parent classes, or `None` for a
 /// trait or an unknown class, whose protected access can't be decided.
 fn class_lineage(
@@ -108,7 +104,7 @@ fn class_lineage(
     let mut current = Some(name.to_owned());
     let mut first = true;
     while let Some(name) = current.take() {
-        let short = short_name(&name).to_ascii_lowercase();
+        let short = fqn_short_name(&name).to_ascii_lowercase();
         if lineage.contains(&short) {
             break;
         }
@@ -138,7 +134,7 @@ fn class_lineage(
             current = members
                 .parent
                 .as_deref()
-                .map(|p| resolve_class_ref(d, short_name(&name), p));
+                .map(|p| resolve_class_ref(d, fqn_short_name(&name), p));
         }
         lineage.push(short);
         first = false;
@@ -165,8 +161,8 @@ fn all_members(
     scope_class: Option<&str>,
 ) -> Vec<CompletionItem> {
     let is_static = access != MemberAccess::Instance;
-    let in_root_class =
-        scope_class.is_some_and(|s| short_name(s).eq_ignore_ascii_case(short_name(class_name)));
+    let in_root_class = scope_class
+        .is_some_and(|s| fqn_short_name(s).eq_ignore_ascii_case(fqn_short_name(class_name)));
     let wants_method = |name: &str, meth_is_static: bool| match access {
         MemberAccess::Instance => !meth_is_static && !name.eq_ignore_ascii_case("__construct"),
         MemberAccess::Static => meth_is_static,
@@ -183,7 +179,7 @@ fn all_members(
         None => false,
         Some(None) => true,
         Some(Some(scope_line)) => {
-            scope_line.contains(&short_name(owner).to_ascii_lowercase())
+            scope_line.contains(&fqn_short_name(owner).to_ascii_lowercase())
                 || class_lineage(
                     owner,
                     doc,
@@ -257,7 +253,7 @@ fn all_members(
         // and friends below) always compares against the short name as
         // declared in source, so that's what they get; `find_class_doc`
         // wants the disambiguating full name.
-        let short: &str = current.rsplit('\\').next().unwrap_or(&current);
+        let short = fqn_short_name(&current);
 
         // Fast path: workspace-index lookup gives O(1) access to the one doc
         // that defines `current`. Fallback: scan all docs linearly (original

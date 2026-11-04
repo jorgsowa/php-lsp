@@ -42,10 +42,7 @@ pub fn goto_definition(
                 || src_at_start.starts_with("protected ")
                 || src_at_start.starts_with("readonly ");
             let range = if is_promoted {
-                Range {
-                    start: sv.position_of(span.start),
-                    end: sv.position_of(span.end),
-                }
+                sv.range_of(span)
             } else {
                 let name_with_sigil = format!("${bare}");
                 let precise_start =
