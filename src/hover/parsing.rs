@@ -9,16 +9,7 @@ use crate::text::fqn_short_name;
 pub fn extract_receiver_var_before_cursor(line: &str, cursor_col_utf16: usize) -> Option<String> {
     let chars: Vec<char> = line.chars().collect();
 
-    // Convert UTF-16 cursor column to char index.
-    let mut utf16 = 0usize;
-    let mut char_idx = 0usize;
-    for ch in &chars {
-        if utf16 >= cursor_col_utf16 {
-            break;
-        }
-        utf16 += ch.len_utf16();
-        char_idx += 1;
-    }
+    let char_idx = crate::text::utf16_col_to_char_index(&chars, cursor_col_utf16);
 
     // Find the start of the word under the cursor (expand left).
     let is_word_char = |c: char| c.is_alphanumeric() || c == '_';
@@ -50,15 +41,7 @@ pub fn extract_receiver_var_before_cursor(line: &str, cursor_col_utf16: usize) -
 /// The cursor's member name follows `->`/`?->` on a receiver other than `$this`.
 pub fn is_arrow_access_on_non_this_receiver(line: &str, cursor_col_utf16: usize) -> bool {
     let chars: Vec<char> = line.chars().collect();
-    let mut utf16 = 0usize;
-    let mut char_idx = 0usize;
-    for ch in &chars {
-        if utf16 >= cursor_col_utf16 {
-            break;
-        }
-        utf16 += ch.len_utf16();
-        char_idx += 1;
-    }
+    let char_idx = crate::text::utf16_col_to_char_index(&chars, cursor_col_utf16);
     let mut word_start = char_idx;
     while word_start > 0
         && (chars[word_start - 1].is_alphanumeric() || chars[word_start - 1] == '_')
@@ -80,15 +63,7 @@ pub fn is_arrow_access_on_non_this_receiver(line: &str, cursor_col_utf16: usize)
 pub fn extract_static_class_before_cursor(line: &str, cursor_col_utf16: usize) -> Option<String> {
     let chars: Vec<char> = line.chars().collect();
 
-    let mut utf16 = 0usize;
-    let mut char_idx = 0usize;
-    for ch in &chars {
-        if utf16 >= cursor_col_utf16 {
-            break;
-        }
-        utf16 += ch.len_utf16();
-        char_idx += 1;
-    }
+    let char_idx = crate::text::utf16_col_to_char_index(&chars, cursor_col_utf16);
 
     let is_word_char = |c: char| c.is_alphanumeric() || c == '_';
     let mut word_start = char_idx;

@@ -206,7 +206,8 @@ fn is_member_name_position(doc: &ParsedDoc, position: Position) -> bool {
     let Some(line) = source.lines().nth(range.start.line as usize) else {
         return false;
     };
-    let before = utf16_prefix(line, range.start.character).trim_end();
+    let before =
+        line[..crate::text::utf16_offset_to_byte(line, range.start.character as usize)].trim_end();
     match before.strip_suffix("function") {
         Some(rest) => rest
             .chars()
@@ -264,18 +265,6 @@ fn is_member_access_name(doc: &ParsedDoc, offset: u32) -> bool {
         let _ = finder.visit_stmt(stmt);
     }
     finder.found
-}
-
-/// The substring of `line` up to UTF-16 column `col`.
-fn utf16_prefix(line: &str, col: u32) -> &str {
-    let mut u16s = 0u32;
-    for (i, ch) in line.char_indices() {
-        if u16s >= col {
-            return &line[..i];
-        }
-        u16s += ch.len_utf16() as u32;
-    }
-    line
 }
 
 pub(crate) fn is_superglobal(word: &str) -> bool {

@@ -22,6 +22,20 @@ pub(crate) fn utf16_offset_to_byte(s: &str, utf16_offset: usize) -> usize {
     s.len()
 }
 
+/// Index into `chars` of the char at UTF-16 column `col`, clamped to `chars.len()`.
+pub(crate) fn utf16_col_to_char_index(chars: &[char], col: usize) -> usize {
+    let mut utf16 = 0usize;
+    let mut idx = 0usize;
+    for ch in chars {
+        if utf16 >= col {
+            break;
+        }
+        utf16 += ch.len_utf16();
+        idx += 1;
+    }
+    idx
+}
+
 /// Convert an LSP `Position` (line + UTF-16 character column) into a byte
 /// offset in `text`. Out-of-range lines clamp to `text.len()`; out-of-range
 /// columns clamp to the end of the line (before its `\n`). Used by

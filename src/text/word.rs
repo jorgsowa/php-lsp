@@ -34,15 +34,7 @@ pub(crate) fn split_params(s: &str) -> Vec<&str> {
 /// Extract the word (identifier) under the cursor, handling UTF-16 offsets.
 fn char_range_for_word(line: &str, char_offset: usize) -> Option<(usize, usize)> {
     let chars: Vec<char> = line.chars().collect();
-    let mut utf16_len = 0usize;
-    let mut char_pos = 0usize;
-    for ch in &chars {
-        if utf16_len >= char_offset {
-            break;
-        }
-        utf16_len += ch.len_utf16();
-        char_pos += 1;
-    }
+    let char_pos = crate::text::utf16_col_to_char_index(&chars, char_offset);
     let total_utf16: usize = chars.iter().map(|c| c.len_utf16()).sum();
     if char_offset > total_utf16 {
         return None;

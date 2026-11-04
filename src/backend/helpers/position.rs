@@ -24,15 +24,7 @@ pub(crate) fn symbol_kind_at(source: &str, position: Position, word: &str) -> Op
 
     // Convert UTF-16 column to char index.
     let col = position.character as usize;
-    let mut utf16_col = 0usize;
-    let mut char_idx = 0usize;
-    for ch in &chars {
-        if utf16_col >= col {
-            break;
-        }
-        utf16_col += ch.len_utf16();
-        char_idx += 1;
-    }
+    let mut char_idx = crate::text::utf16_col_to_char_index(&chars, col);
 
     // Walk left past identifier characters to find the first character before the word.
     let is_word_char = |c: char| c.is_alphanumeric() || c == '_';

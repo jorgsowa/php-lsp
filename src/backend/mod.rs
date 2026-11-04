@@ -530,15 +530,7 @@ fn class_before_double_colon(source: &str, position: Position) -> Option<String>
     let chars: Vec<char> = line.chars().collect();
     let col = position.character as usize;
 
-    let mut utf16_col = 0usize;
-    let mut char_idx = 0usize;
-    for ch in &chars {
-        if utf16_col >= col {
-            break;
-        }
-        utf16_col += ch.len_utf16();
-        char_idx += 1;
-    }
+    let mut char_idx = crate::text::utf16_col_to_char_index(&chars, col);
 
     let is_word = |c: char| c.is_alphanumeric() || c == '_';
     while char_idx > 0 && is_word(chars[char_idx - 1]) {
