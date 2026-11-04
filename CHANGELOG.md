@@ -4,6 +4,10 @@ All notable changes to php-lsp are documented here.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Lower memory after indexing large files**: parser arenas were pooled and kept their largest chunk, so a few huge vendor files (generated data arrays such as the AWS SDK's `api-2.json.php`) held tens of MB, up to 128 MB for one file, for the whole session. Each parse now frees its arena when the document is dropped.
+
 ## [0.30.0] — 2026-11-01
 
 ### Changed

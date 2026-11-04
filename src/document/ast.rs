@@ -5,57 +5,10 @@
 //! crate-root glossary in `lib.rs`.
 use std::collections::HashMap;
 use std::mem::ManuallyDrop;
-use std::sync::{Arc, LazyLock, Mutex, OnceLock};
+use std::sync::{Arc, OnceLock};
 
 use php_ast::{Program, Span, TypeHint, TypeHintKind};
 use tower_lsp_server::ls_types::{Position, Range};
-
-// ── BumpPool ──────────────────────────────────────────────────────────────────
-
-const POOL_CAP: usize = 8;
-
-struct BumpPool {
-    // Box<Bump> required: arena_box.as_ref() is transmuted to &'static Bump in
-    // ParsedDoc::parse(). The Box keeps the Bump at a stable heap address so
-    // that reference remains valid after the Box is moved into ArenaGuard.
-    #[allow(clippy::vec_box)]
-    pool: Mutex<Vec<Box<bumpalo::Bump>>>,
-}
-
-impl BumpPool {
-    fn take(&self) -> Box<bumpalo::Bump> {
-        self.pool
-            .lock()
-            .unwrap()
-            .pop()
-            .unwrap_or_else(|| Box::new(bumpalo::Bump::new()))
-    }
-
-    fn give(&self, mut arena: Box<bumpalo::Bump>) {
-        arena.reset();
-        let mut p = self.pool.lock().unwrap();
-        if p.len() < POOL_CAP {
-            p.push(arena);
-        }
-    }
-}
-
-static BUMP_POOL: LazyLock<BumpPool> = LazyLock::new(|| BumpPool {
-    pool: Mutex::new(Vec::new()),
-});
-
-// ── ArenaGuard ────────────────────────────────────────────────────────────────
-
-/// Returns the arena to the pool on drop.
-struct ArenaGuard(Option<Box<bumpalo::Bump>>);
-
-impl Drop for ArenaGuard {
-    fn drop(&mut self) {
-        if let Some(arena) = self.0.take() {
-            BUMP_POOL.give(arena);
-        }
-    }
-}
 
 // ── ParsedDoc ─────────────────────────────────────────────────────────────────
 
@@ -64,11 +17,11 @@ impl Drop for ArenaGuard {
 /// SAFETY invariants:
 /// - `program` uses `ManuallyDrop` and is explicitly dropped in `Drop::drop()`
 ///   before any field auto-drop runs. This guarantees arena-allocated nodes are
-///   gone before `ArenaGuard` recycles the arena — regardless of field order.
+///   gone before the arena is freed — regardless of field order.
 /// - `_source: Arc<str>` keeps the source text alive at a stable heap address.
 ///   The transmuted `&'static str` in the parser arena remains valid for the
 ///   lifetime of `ParsedDoc` because `_source` is dropped last (after `program`
-///   is manually dropped and after `_arena` is recycled).
+///   is manually dropped).
 /// - The `'static` lifetimes in `ManuallyDrop<Box<Program<'static, 'static>>>`
 ///   are erased versions of the true lifetimes `'_arena` and `'_source`. The
 ///   public `program()` accessor re-attaches them to `&self`, preventing any
@@ -78,7 +31,8 @@ pub struct ParsedDoc {
     pub errors: Vec<php_rs_parser::diagnostics::ParseError>,
     _source: Arc<str>,
     line_starts: Vec<u32>,
-    _arena: ArenaGuard,
+    // Boxed so the arena keeps a stable address for the transmuted `&'static Bump`.
+    _arena: Box<bumpalo::Bump>,
     /// Memoized `use`-statement local-name → FQN map. Computed on first
     /// access via `file_imports()`; a fresh `ParsedDoc` per edit makes this a
     /// once-per-revision cost instead of once-per-caller (goto-definition,
@@ -105,8 +59,7 @@ impl ParsedDoc {
     /// query), no heap allocation occurs (refcount bump only).
     pub fn parse(source: impl Into<Arc<str>>) -> Self {
         let source: Arc<str> = source.into();
-        // Take a pre-warmed arena from the pool (or allocate a fresh one).
-        let arena_box = BUMP_POOL.take();
+        let arena_box = Box::new(bumpalo::Bump::new());
 
         // SAFETY: `Arc<str>` data lives at a stable heap address for as long as
         // the Arc is alive. `_source` keeps the Arc alive for `ParsedDoc`'s
@@ -127,7 +80,7 @@ impl ParsedDoc {
             errors: result.errors,
             _source: source,
             line_starts,
-            _arena: ArenaGuard(Some(arena_box)),
+            _arena: arena_box,
             imports_cache: OnceLock::new(),
         }
     }
