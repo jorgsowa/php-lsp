@@ -16,10 +16,6 @@ use std::path::Path;
 
 use tower_lsp_server::ls_types::{Location, Position, Uri};
 
-use crate::text::zero_width_location;
-
-use super::pascal_to_kebab;
-
 #[derive(Debug, Default, Clone)]
 pub struct ComponentIndex {
     components: HashMap<String, Location>,
@@ -41,36 +37,9 @@ impl ComponentIndex {
     pub(super) fn load(root: &Path) -> Self {
         let mut components = HashMap::new();
         let base = root.join("app").join("View").join("Components");
-        walk(&base, &mut components);
+        super::index_kebab_components(&base, &mut components);
         Self { components }
     }
-}
-
-fn walk(base: &Path, out: &mut HashMap<String, Location>) {
-    for path in super::fs_walk::files_recursive(base) {
-        let Some(name) = component_name_for(base, &path) else {
-            continue;
-        };
-        let Some(uri) = Uri::from_file_path(&path) else {
-            continue;
-        };
-        out.entry(name)
-            .or_insert_with(|| zero_width_location(&uri, 0));
-    }
-}
-
-/// Kebab-dotted component name for `path` (a `.php` file), relative to
-/// `base` (`app/View/Components`) — `Forms/InputGroup.php` -> `forms.input-group`.
-fn component_name_for(base: &Path, path: &Path) -> Option<String> {
-    let rel = path.strip_prefix(base).ok()?;
-    let rel_str = rel.to_str()?.replace('\\', "/");
-    let stem = rel_str.strip_suffix(".php")?;
-    Some(
-        stem.split('/')
-            .map(pascal_to_kebab)
-            .collect::<Vec<_>>()
-            .join("."),
-    )
 }
 
 #[cfg(test)]

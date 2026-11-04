@@ -138,18 +138,11 @@ const RULE_NAMES: &[&str] = &[
 
 /// Completion items for validation rule names starting with `prefix`.
 pub(crate) fn validation_rule_completions(prefix: &str) -> Vec<CompletionItem> {
-    let mut items: Vec<CompletionItem> = RULE_NAMES
-        .iter()
-        .filter(|name| name.starts_with(prefix))
-        .map(|name| CompletionItem {
-            label: (*name).to_string(),
-            kind: Some(CompletionItemKind::KEYWORD),
-            insert_text: Some((*name).to_string()),
-            ..Default::default()
-        })
-        .collect();
-    items.sort_by(|a, b| a.label.cmp(&b.label));
-    items
+    super::prefix_completions(
+        RULE_NAMES.iter().copied(),
+        prefix,
+        CompletionItemKind::KEYWORD,
+    )
 }
 
 /// The span (quotes included) of the rule-name string element containing

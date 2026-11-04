@@ -131,18 +131,7 @@ pub(crate) fn missing_env_key_action(root: &Path, key: &str) -> Option<CodeActio
 
 /// Completion items for env var names starting with `prefix`.
 pub(crate) fn env_completions(index: &EnvIndex, prefix: &str) -> Vec<CompletionItem> {
-    let mut items: Vec<CompletionItem> = index
-        .names()
-        .filter(|name| name.starts_with(prefix))
-        .map(|name| CompletionItem {
-            label: name.to_string(),
-            kind: Some(CompletionItemKind::CONSTANT),
-            insert_text: Some(name.to_string()),
-            ..Default::default()
-        })
-        .collect();
-    items.sort_by(|a, b| a.label.cmp(&b.label));
-    items
+    super::prefix_completions(index.names(), prefix, CompletionItemKind::CONSTANT)
 }
 
 #[cfg(test)]

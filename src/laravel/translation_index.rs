@@ -15,14 +15,14 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use php_ast::{ArrayElement, ExprKind, StmtKind};
+use php_ast::{ExprKind, StmtKind};
 use tower_lsp_server::ls_types::{
     CodeAction, CodeActionKind, CodeActionOrCommand, CompletionItem, CompletionItemKind, Location,
     Position, Range, TextEdit, Uri, WorkspaceEdit,
 };
 
 use crate::analysis::diagnostics::parse_document_no_diags;
-use crate::document::ast::{SourceView, offset_to_position};
+use crate::document::ast::offset_to_position;
 
 #[derive(Debug, Default, Clone)]
 pub struct TranslationIndex {
@@ -93,7 +93,7 @@ fn load_lang_root(lang_root: &Path, out: &mut HashMap<String, Location>) {
 /// convention), so `lang/en/vendor/auth.php` becomes group `vendor/auth`.
 fn load_locale_php_files(locale_dir: &Path, out: &mut HashMap<String, Location>) {
     for path in super::fs_walk::php_files_recursive(locale_dir) {
-        let Some(group) = slash_prefix(locale_dir, &path) else {
+        let Some(group) = super::relative_key(locale_dir, &path, "/") else {
             continue;
         };
         let Ok(text) = std::fs::read(&path).map(crate::text::decode_source) else {
@@ -108,52 +108,8 @@ fn load_locale_php_files(locale_dir: &Path, out: &mut HashMap<String, Location>)
             if let StmtKind::Return(Some(expr)) = &stmt.kind
                 && let ExprKind::Array(elements) = &expr.kind
             {
-                collect_array_keys(elements, sv, &uri, &group, out);
+                super::collect_array_keys(elements, sv, &uri, &group, out);
             }
-        }
-    }
-}
-
-/// `path`'s location relative to `locale_dir` as a slash-joined group name —
-/// directory components joined with the file stem, e.g. `en/vendor/auth.php`
-/// under locale dir `en/` becomes `vendor/auth`.
-fn slash_prefix(locale_dir: &Path, path: &Path) -> Option<String> {
-    let rel = path.strip_prefix(locale_dir).ok()?;
-    let mut components: Vec<&str> = rel
-        .components()
-        .filter_map(|c| c.as_os_str().to_str())
-        .collect();
-    let stem = Path::new(components.pop()?).file_stem()?.to_str()?;
-    components.push(stem);
-    Some(components.join("/"))
-}
-
-fn collect_array_keys(
-    elements: &[ArrayElement<'_, '_>],
-    sv: SourceView<'_>,
-    uri: &Uri,
-    prefix: &str,
-    out: &mut HashMap<String, Location>,
-) {
-    for el in elements {
-        let Some(key_expr) = &el.key else { continue };
-        let ExprKind::String(key) = &key_expr.kind else {
-            continue;
-        };
-        let dotted = format!("{prefix}.{}", key.to_string_lossy());
-        // `span.start`/`span.end` point at the surrounding quotes (see
-        // `editing::document_link::link_from_path_expr`); trim one byte off
-        // each side to land on the key text itself.
-        let range = Range {
-            start: sv.position_of(key_expr.span.start + 1),
-            end: sv.position_of(key_expr.span.end - 1),
-        };
-        out.entry(dotted.clone()).or_insert_with(|| Location {
-            uri: uri.clone(),
-            range,
-        });
-        if let ExprKind::Array(nested) = &el.value().kind {
-            collect_array_keys(nested, sv, uri, &dotted, out);
         }
     }
 }
@@ -413,18 +369,7 @@ pub(crate) fn translation_completions(
     index: &TranslationIndex,
     prefix: &str,
 ) -> Vec<CompletionItem> {
-    let mut items: Vec<CompletionItem> = index
-        .keys()
-        .filter(|key| key.starts_with(prefix))
-        .map(|key| CompletionItem {
-            label: key.to_string(),
-            kind: Some(CompletionItemKind::TEXT),
-            insert_text: Some(key.to_string()),
-            ..Default::default()
-        })
-        .collect();
-    items.sort_by(|a, b| a.label.cmp(&b.label));
-    items
+    super::prefix_completions(index.keys(), prefix, CompletionItemKind::TEXT)
 }
 
 #[cfg(test)]

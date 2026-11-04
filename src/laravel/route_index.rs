@@ -243,18 +243,7 @@ fn find_as_prefix_in_chain(expr: &Expr<'_, '_>) -> Option<String> {
 
 /// Completion items for route names starting with `prefix`.
 pub(crate) fn route_completions(index: &RouteIndex, prefix: &str) -> Vec<CompletionItem> {
-    let mut items: Vec<CompletionItem> = index
-        .names()
-        .filter(|name| name.starts_with(prefix))
-        .map(|name| CompletionItem {
-            label: name.to_string(),
-            kind: Some(CompletionItemKind::REFERENCE),
-            insert_text: Some(name.to_string()),
-            ..Default::default()
-        })
-        .collect();
-    items.sort_by(|a, b| a.label.cmp(&b.label));
-    items
+    super::prefix_completions(index.names(), prefix, CompletionItemKind::REFERENCE)
 }
 
 #[cfg(test)]

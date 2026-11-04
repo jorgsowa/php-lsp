@@ -65,12 +65,16 @@ use vite_index::{
     collect_vite_asset_links, vite_asset_at, vite_asset_string_prefix, vite_completions,
 };
 
+use std::collections::HashMap;
 use std::path::Path;
 
+use php_ast::{ArrayElement, ExprKind};
 use tower_lsp_server::ls_types::{
-    CodeActionOrCommand, CompletionItem, DocumentLink, FileChangeType, Hover, Location, Position,
-    Range, Uri,
+    CodeActionOrCommand, CompletionItem, CompletionItemKind, DocumentLink, FileChangeType, Hover,
+    Location, Position, Range, Uri,
 };
+
+use crate::document::ast::SourceView;
 
 #[cfg(not(target_family = "wasm"))]
 pub(crate) use string_call::find_call_sites;
@@ -266,6 +270,94 @@ fn pascal_to_kebab(segment: &str) -> String {
         out.extend(c.to_lowercase());
     }
     out
+}
+
+/// Kebab-dotted name of every `.php` file under `base`: `Forms/InputGroup.php` -> `forms.input-group`.
+fn index_kebab_components(base: &Path, out: &mut HashMap<String, Location>) {
+    for path in fs_walk::files_recursive(base) {
+        let Some(name) = kebab_component_name(base, &path) else {
+            continue;
+        };
+        let Some(uri) = Uri::from_file_path(&path) else {
+            continue;
+        };
+        out.entry(name)
+            .or_insert_with(|| crate::text::zero_width_location(&uri, 0));
+    }
+}
+
+fn kebab_component_name(base: &Path, path: &Path) -> Option<String> {
+    let rel = path.strip_prefix(base).ok()?;
+    let rel_str = rel.to_str()?.replace('\\', "/");
+    let stem = rel_str.strip_suffix(".php")?;
+    Some(
+        stem.split('/')
+            .map(pascal_to_kebab)
+            .collect::<Vec<_>>()
+            .join("."),
+    )
+}
+
+/// `path` relative to `base` with directories and file stem joined by `sep`: `services/stripe.php` -> `services.stripe`.
+fn relative_key(base: &Path, path: &Path, sep: &str) -> Option<String> {
+    let rel = path.strip_prefix(base).ok()?;
+    let mut components: Vec<&str> = rel
+        .components()
+        .filter_map(|c| c.as_os_str().to_str())
+        .collect();
+    let stem = Path::new(components.pop()?).file_stem()?.to_str()?;
+    components.push(stem);
+    Some(components.join(sep))
+}
+
+/// Every string key of a PHP array literal, nested keys dotted under `prefix`.
+fn collect_array_keys(
+    elements: &[ArrayElement<'_, '_>],
+    sv: SourceView<'_>,
+    uri: &Uri,
+    prefix: &str,
+    out: &mut HashMap<String, Location>,
+) {
+    for el in elements {
+        let Some(key_expr) = &el.key else { continue };
+        let ExprKind::String(key) = &key_expr.kind else {
+            continue;
+        };
+        let dotted = format!("{prefix}.{}", key.to_string_lossy());
+        // `span.start`/`span.end` point at the surrounding quotes (see
+        // `editing::document_link::link_from_path_expr`); trim one byte off
+        // each side to land on the key text itself.
+        let range = Range {
+            start: sv.position_of(key_expr.span.start + 1),
+            end: sv.position_of(key_expr.span.end - 1),
+        };
+        out.entry(dotted.clone()).or_insert_with(|| Location {
+            uri: uri.clone(),
+            range,
+        });
+        if let ExprKind::Array(nested) = &el.value().kind {
+            collect_array_keys(nested, sv, uri, &dotted, out);
+        }
+    }
+}
+
+/// Completion items for the `names` starting with `prefix`, sorted by label.
+fn prefix_completions<'a>(
+    names: impl Iterator<Item = &'a str>,
+    prefix: &str,
+    kind: CompletionItemKind,
+) -> Vec<CompletionItem> {
+    let mut items: Vec<CompletionItem> = names
+        .filter(|name| name.starts_with(prefix))
+        .map(|name| CompletionItem {
+            label: name.to_string(),
+            kind: Some(kind),
+            insert_text: Some(name.to_string()),
+            ..Default::default()
+        })
+        .collect();
+    items.sort_by(|a, b| a.label.cmp(&b.label));
+    items
 }
 
 /// The route name and its `Range`, when the cursor sits inside a

@@ -203,18 +203,7 @@ fn collect_flat_string_keys(
 
 /// Completion items for middleware aliases starting with `prefix`.
 pub(crate) fn middleware_completions(index: &MiddlewareIndex, prefix: &str) -> Vec<CompletionItem> {
-    let mut items: Vec<CompletionItem> = index
-        .names()
-        .filter(|name| name.starts_with(prefix))
-        .map(|name| CompletionItem {
-            label: name.to_string(),
-            kind: Some(CompletionItemKind::CONSTANT),
-            insert_text: Some(name.to_string()),
-            ..Default::default()
-        })
-        .collect();
-    items.sort_by(|a, b| a.label.cmp(&b.label));
-    items
+    super::prefix_completions(index.names(), prefix, CompletionItemKind::CONSTANT)
 }
 
 /// One `->middleware(...)`/`Route::middleware(...)` string argument found in

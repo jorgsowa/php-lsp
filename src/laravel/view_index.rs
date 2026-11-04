@@ -72,18 +72,7 @@ fn view_name_for(base: &Path, path: &Path) -> Option<String> {
 
 /// Completion items for dot-separated view names starting with `prefix`.
 pub(crate) fn view_completions(index: &ViewIndex, prefix: &str) -> Vec<CompletionItem> {
-    let mut items: Vec<CompletionItem> = index
-        .names()
-        .filter(|name| name.starts_with(prefix))
-        .map(|name| CompletionItem {
-            label: name.to_string(),
-            kind: Some(CompletionItemKind::FILE),
-            insert_text: Some(name.to_string()),
-            ..Default::default()
-        })
-        .collect();
-    items.sort_by(|a, b| a.label.cmp(&b.label));
-    items
+    super::prefix_completions(index.names(), prefix, CompletionItemKind::FILE)
 }
 
 #[cfg(test)]

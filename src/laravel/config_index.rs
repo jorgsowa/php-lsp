@@ -13,13 +13,12 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use php_ast::{ArrayElement, ExprKind, StmtKind};
+use php_ast::{ExprKind, StmtKind};
 use tower_lsp_server::ls_types::{
     CompletionItem, CompletionItemKind, Location, Position, Range, Uri,
 };
 
 use crate::analysis::diagnostics::parse_document_no_diags;
-use crate::document::ast::SourceView;
 
 #[derive(Debug, Default, Clone)]
 pub struct ConfigIndex {
@@ -46,7 +45,7 @@ impl ConfigIndex {
         let mut keys = HashMap::new();
         let config_dir = root.join("config");
         for path in super::fs_walk::php_files_recursive(&config_dir) {
-            let Some(prefix) = dotted_prefix(&config_dir, &path) else {
+            let Some(prefix) = super::relative_key(&config_dir, &path, ".") else {
                 continue;
             };
             let Ok(text) = std::fs::read(&path).map(crate::text::decode_source) else {
@@ -69,7 +68,7 @@ impl ConfigIndex {
                             end: sv.position_of(stmt.span.start + "return".len() as u32),
                         },
                     });
-                    collect_array_keys(elements, sv, &uri, &prefix, &mut keys);
+                    super::collect_array_keys(elements, sv, &uri, &prefix, &mut keys);
                 }
             }
         }
@@ -77,64 +76,9 @@ impl ConfigIndex {
     }
 }
 
-/// `path`'s location relative to `config_dir` as a dotted prefix — directory
-/// components joined with the file stem, e.g. `config/services/stripe.php`
-/// under `config_dir` `config/` becomes `services.stripe`.
-fn dotted_prefix(config_dir: &Path, path: &Path) -> Option<String> {
-    let rel = path.strip_prefix(config_dir).ok()?;
-    let mut components: Vec<&str> = rel
-        .components()
-        .filter_map(|c| c.as_os_str().to_str())
-        .collect();
-    let stem = Path::new(components.pop()?).file_stem()?.to_str()?;
-    components.push(stem);
-    Some(components.join("."))
-}
-
-fn collect_array_keys(
-    elements: &[ArrayElement<'_, '_>],
-    sv: SourceView<'_>,
-    uri: &Uri,
-    prefix: &str,
-    out: &mut HashMap<String, Location>,
-) {
-    for el in elements {
-        let Some(key_expr) = &el.key else { continue };
-        let ExprKind::String(key) = &key_expr.kind else {
-            continue;
-        };
-        let dotted = format!("{prefix}.{}", key.to_string_lossy());
-        // `span.start`/`span.end` point at the surrounding quotes (see
-        // `editing::document_link::link_from_path_expr`); trim one byte off
-        // each side to land on the key text itself.
-        let range = Range {
-            start: sv.position_of(key_expr.span.start + 1),
-            end: sv.position_of(key_expr.span.end - 1),
-        };
-        out.entry(dotted.clone()).or_insert_with(|| Location {
-            uri: uri.clone(),
-            range,
-        });
-        if let ExprKind::Array(nested) = &el.value().kind {
-            collect_array_keys(nested, sv, uri, &dotted, out);
-        }
-    }
-}
-
 /// Completion items for dotted config keys starting with `prefix`.
 pub(crate) fn config_completions(index: &ConfigIndex, prefix: &str) -> Vec<CompletionItem> {
-    let mut items: Vec<CompletionItem> = index
-        .keys()
-        .filter(|key| key.starts_with(prefix))
-        .map(|key| CompletionItem {
-            label: key.to_string(),
-            kind: Some(CompletionItemKind::PROPERTY),
-            insert_text: Some(key.to_string()),
-            ..Default::default()
-        })
-        .collect();
-    items.sort_by(|a, b| a.label.cmp(&b.label));
-    items
+    super::prefix_completions(index.keys(), prefix, CompletionItemKind::PROPERTY)
 }
 
 #[cfg(test)]
