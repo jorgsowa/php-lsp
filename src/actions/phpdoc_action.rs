@@ -102,15 +102,7 @@ fn make_action(
     params: &[Param<'_, '_>],
     return_type: Option<String>,
 ) -> Option<CodeActionOrCommand> {
-    let indent = source
-        .lines()
-        .nth(fn_line as usize)
-        .map(|line| {
-            let n = line.len() - line.trim_start().len();
-            &line[..n]
-        })
-        .unwrap_or("")
-        .to_string();
+    let indent = crate::actions::line_indent(source, fn_line);
 
     let mut lines: Vec<String> = vec![format!("{indent}/**")];
 

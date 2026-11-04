@@ -97,7 +97,7 @@ fn maybe_push<'a>(
     let doc_start_line = sv.position_of(doc_comment.span.start).line;
     let doc_end_line = sv.position_of(doc_comment.span.end.saturating_sub(1)).line;
 
-    let indent = extract_indent(source, doc_start_line);
+    let indent = crate::actions::line_indent(source, doc_start_line);
     let new_text = generate_updated_docblock(&indent, &parsed, params, return_type);
 
     let edit_range = Range {
@@ -164,17 +164,6 @@ fn needs_update<'a>(
         return true;
     }
     false
-}
-
-fn extract_indent(source: &str, line: u32) -> String {
-    source
-        .lines()
-        .nth(line as usize)
-        .map(|l| {
-            let n = l.len() - l.trim_start().len();
-            l[..n].to_string()
-        })
-        .unwrap_or_default()
 }
 
 fn generate_updated_docblock<'a>(
