@@ -335,13 +335,13 @@ fn collect_lenses(
                 let range = sv.name_range(name);
                 out.push(LensSlot::RefCount {
                     range,
-                    symbol: mir_analyzer::Name::function(fqn_in(&ns, name)),
+                    symbol: mir_analyzer::Name::function(crate::text::qualify_name(&ns, name)),
                 });
             }
             StmtKind::Class(c) => {
                 if let Some(class_name) = c.name {
                     let class_name_str = class_name.as_str().unwrap_or_default();
-                    let class_fqn = fqn_in(&ns, class_name_str);
+                    let class_fqn = crate::text::qualify_name(&ns, class_name_str);
                     let class_range = sv.name_range(class_name_str);
                     out.push(LensSlot::RefCount {
                         range: class_range,
@@ -428,7 +428,7 @@ fn collect_lenses(
             }
             StmtKind::Interface(i) => {
                 let name = i.name.as_str().unwrap_or_default();
-                let fqn = fqn_in(&ns, name);
+                let fqn = crate::text::qualify_name(&ns, name);
                 let range = sv.name_range(name);
                 out.push(LensSlot::RefCount {
                     range,
@@ -439,7 +439,7 @@ fn collect_lenses(
             }
             StmtKind::Trait(t) => {
                 let trait_name = t.name.as_str().unwrap_or_default();
-                let trait_fqn = fqn_in(&ns, trait_name);
+                let trait_fqn = crate::text::qualify_name(&ns, trait_name);
                 let range = sv.name_range(trait_name);
                 out.push(LensSlot::RefCount {
                     range,
@@ -473,7 +473,7 @@ fn collect_lenses(
             }
             StmtKind::Enum(e) => {
                 let enum_name = e.name.as_str().unwrap_or_default();
-                let enum_fqn = fqn_in(&ns, enum_name);
+                let enum_fqn = crate::text::qualify_name(&ns, enum_name);
                 let range = sv.name_range(enum_name);
                 out.push(LensSlot::RefCount {
                     range,
@@ -522,14 +522,6 @@ fn collect_lenses(
             }
             _ => {}
         }
-    }
-}
-
-fn fqn_in(ns: &str, name: &str) -> String {
-    if ns.is_empty() {
-        name.to_string()
-    } else {
-        format!("{ns}\\{name}")
     }
 }
 

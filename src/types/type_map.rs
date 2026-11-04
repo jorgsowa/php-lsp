@@ -374,13 +374,6 @@ fn enclosing_class_fqn_in_stmts(
     pos: Position,
     ns_prefix: &str,
 ) -> Option<String> {
-    let make_fqn = |ns: &str, short: &str| -> String {
-        if ns.is_empty() {
-            short.to_owned()
-        } else {
-            format!("{}\\{}", ns, short)
-        }
-    };
     let mut current_ns = ns_prefix.to_owned();
     for stmt in stmts {
         match &stmt.kind {
@@ -388,28 +381,30 @@ fn enclosing_class_fqn_in_stmts(
                 let start = sv.position_of(stmt.span.start).line;
                 let end = sv.position_of(stmt.span.end).line;
                 if pos.line >= start && pos.line <= end {
-                    return c.name.map(|n| make_fqn(&current_ns, &n.to_string()));
+                    return c
+                        .name
+                        .map(|n| crate::text::qualify_name(&current_ns, &n.to_string()));
                 }
             }
             StmtKind::Interface(i) => {
                 let start = sv.position_of(stmt.span.start).line;
                 let end = sv.position_of(stmt.span.end).line;
                 if pos.line >= start && pos.line <= end {
-                    return Some(make_fqn(&current_ns, &i.name.to_string()));
+                    return Some(crate::text::qualify_name(&current_ns, &i.name.to_string()));
                 }
             }
             StmtKind::Trait(t) => {
                 let start = sv.position_of(stmt.span.start).line;
                 let end = sv.position_of(stmt.span.end).line;
                 if pos.line >= start && pos.line <= end {
-                    return Some(make_fqn(&current_ns, &t.name.to_string()));
+                    return Some(crate::text::qualify_name(&current_ns, &t.name.to_string()));
                 }
             }
             StmtKind::Enum(e) => {
                 let start = sv.position_of(stmt.span.start).line;
                 let end = sv.position_of(stmt.span.end).line;
                 if pos.line >= start && pos.line <= end {
-                    return Some(make_fqn(&current_ns, &e.name.to_string()));
+                    return Some(crate::text::qualify_name(&current_ns, &e.name.to_string()));
                 }
             }
             StmtKind::Namespace(ns) => {

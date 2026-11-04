@@ -325,23 +325,26 @@ pub fn moved_file_edits(
             .iter()
             .map(|n| (UseKind::Function, n))
             .chain(constants.iter().map(|n| (UseKind::Const, n)))
-            .filter(|(kind, n)| is_relative_qualified(n) && exists(*kind, &qualify(old_ns, n)))
+            .filter(|(kind, n)| {
+                is_relative_qualified(n) && exists(*kind, &crate::text::qualify_name(old_ns, n))
+            })
             .map(|(_, n)| n.as_str())
             .collect();
         let names = old_namespace_names(
             &segment,
             &docblock_names,
             &qualified,
-            |name| exists(UseKind::Normal, &qualify(old_ns, name)),
+            |name| exists(UseKind::Normal, &crate::text::qualify_name(old_ns, name)),
             |name| {
-                moved_to(&qualify(old_ns, name))
-                    .is_some_and(|to| to.eq_ignore_ascii_case(&qualify(new_ns, name)))
+                moved_to(&crate::text::qualify_name(old_ns, name)).is_some_and(|to| {
+                    to.eq_ignore_ascii_case(&crate::text::qualify_name(new_ns, name))
+                })
             },
         );
         let mut stmts: Vec<String> = names
             .iter()
             .map(|name| {
-                let old = qualify(old_ns, name);
+                let old = crate::text::qualify_name(old_ns, name);
                 format!("use {};", moved_to(&old).unwrap_or(old))
             })
             .collect();
@@ -415,14 +418,6 @@ fn is_namespace_relative(name: &str) -> bool {
 /// Qualified, but neither fully qualified nor `namespace\`-relative.
 fn is_relative_qualified(name: &str) -> bool {
     name.contains('\\') && !name.starts_with('\\') && !is_namespace_relative(name)
-}
-
-fn qualify(ns: &str, name: &str) -> String {
-    if ns.is_empty() {
-        name.to_string()
-    } else {
-        format!("{ns}\\{name}")
-    }
 }
 
 /// Sorted leading segments of names in `segment` that resolve against its
@@ -527,13 +522,13 @@ fn old_namespace_function_const_imports(
     constants.sort();
     let mut out = Vec::new();
     for name in functions.iter().filter(|n| !n.contains('\\')) {
-        let fqn = qualify(old_ns, name);
+        let fqn = crate::text::qualify_name(old_ns, name);
         if bound_functions.insert(name.to_ascii_lowercase()) && exists(UseKind::Function, &fqn) {
             out.push(format!("use function {fqn};"));
         }
     }
     for name in constants.iter().filter(|n| !n.contains('\\')) {
-        let fqn = qualify(old_ns, name);
+        let fqn = crate::text::qualify_name(old_ns, name);
         if bound_consts.insert(name.clone()) && exists(UseKind::Const, &fqn) {
             out.push(format!("use const {fqn};"));
         }
@@ -573,7 +568,7 @@ fn resolve_class_name_in(segment: &NamespaceSegment<'_, '_, '_>, ns: &str, name:
         .filter(|p| p.eq_ignore_ascii_case("namespace\\"))
         .map(|_| &name[10..])
     {
-        return qualify(ns, rest);
+        return crate::text::qualify_name(ns, rest);
     }
     let (first, rest) = name
         .split_once('\\')
@@ -583,7 +578,7 @@ fn resolve_class_name_in(segment: &NamespaceSegment<'_, '_, '_>, ns: &str, name:
             let fqn = fqn.trim_start_matches('\\');
             rest.map_or_else(|| fqn.to_string(), |r| format!("{fqn}\\{r}"))
         }
-        None => qualify(ns, name),
+        None => crate::text::qualify_name(ns, name),
     }
 }
 
@@ -717,7 +712,7 @@ pub fn class_case_variants(source: &str, fqn: &str, out: &mut std::collections::
             let variant = if qualified {
                 spelled.to_string()
             } else {
-                qualify(ns, spelled)
+                crate::text::qualify_name(ns, spelled)
             };
             if variant != fqn {
                 out.insert(variant);

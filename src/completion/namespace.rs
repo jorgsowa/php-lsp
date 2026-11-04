@@ -29,14 +29,6 @@ pub(super) fn collect_attribute_classes(
 ) {
     let mut cur_ns = ns_prefix.to_string();
 
-    let fqn_for = |short: &str, ns: &str| -> String {
-        if ns.is_empty() {
-            short.to_string()
-        } else {
-            format!("{}\\{}", ns, short)
-        }
-    };
-
     for stmt in stmts {
         match &stmt.kind {
             StmtKind::Class(c) => {
@@ -48,7 +40,7 @@ pub(super) fn collect_attribute_classes(
                 if let Some(target) = target {
                     out.push(AttributeClassEntry {
                         label: short.to_string(),
-                        fqn: fqn_for(&short.to_string(), &cur_ns),
+                        fqn: crate::text::qualify_name(&cur_ns, &short.to_string()),
                         target,
                     });
                 }
@@ -194,14 +186,6 @@ pub(super) fn collect_classes_with_ns(
     // which apply to all subsequent statements at the same level.
     let mut cur_ns = ns_prefix.to_string();
 
-    let fqn_for = |short: &str, ns: &str| -> String {
-        if ns.is_empty() {
-            short.to_string()
-        } else {
-            format!("{}\\{}", ns, short)
-        }
-    };
-
     for stmt in stmts {
         match &stmt.kind {
             StmtKind::Class(c) => {
@@ -210,7 +194,7 @@ pub(super) fn collect_classes_with_ns(
                     items.push((
                         short.to_string(),
                         CompletionItemKind::CLASS,
-                        fqn_for(&short.to_string(), &cur_ns),
+                        crate::text::qualify_name(&cur_ns, &short.to_string()),
                     ));
                 }
             }
@@ -218,21 +202,21 @@ pub(super) fn collect_classes_with_ns(
                 items.push((
                     i.name.to_string(),
                     CompletionItemKind::INTERFACE,
-                    fqn_for(&i.name.to_string(), &cur_ns),
+                    crate::text::qualify_name(&cur_ns, &i.name.to_string()),
                 ));
             }
             StmtKind::Trait(t) => {
                 items.push((
                     t.name.to_string(),
                     CompletionItemKind::CLASS,
-                    fqn_for(&t.name.to_string(), &cur_ns),
+                    crate::text::qualify_name(&cur_ns, &t.name.to_string()),
                 ));
             }
             StmtKind::Enum(e) => {
                 items.push((
                     e.name.to_string(),
                     CompletionItemKind::ENUM,
-                    fqn_for(&e.name.to_string(), &cur_ns),
+                    crate::text::qualify_name(&cur_ns, &e.name.to_string()),
                 ));
             }
             StmtKind::Namespace(ns) => {
@@ -296,11 +280,7 @@ pub(super) fn collect_fqns_with_prefix(
         match &stmt.kind {
             StmtKind::Class(c) if kind == UseCompletionKind::ClassLike => {
                 if let Some(name) = c.name {
-                    let fqn = if cur_ns.is_empty() {
-                        name.to_string()
-                    } else {
-                        format!("{cur_ns}\\{name}")
-                    };
+                    let fqn = crate::text::qualify_name(&cur_ns, &name.to_string());
                     if prefix.is_empty() || fqn.to_lowercase().contains(&prefix_lc) {
                         out.push(CompletionItem {
                             label: fqn.clone(),
@@ -312,11 +292,7 @@ pub(super) fn collect_fqns_with_prefix(
                 }
             }
             StmtKind::Interface(i) if kind == UseCompletionKind::ClassLike => {
-                let fqn = if cur_ns.is_empty() {
-                    i.name.to_string()
-                } else {
-                    format!("{cur_ns}\\{}", i.name)
-                };
+                let fqn = crate::text::qualify_name(&cur_ns, &i.name.to_string());
                 if prefix.is_empty() || fqn.to_lowercase().contains(&prefix_lc) {
                     out.push(CompletionItem {
                         label: fqn.clone(),
@@ -327,11 +303,7 @@ pub(super) fn collect_fqns_with_prefix(
                 }
             }
             StmtKind::Function(f) if kind == UseCompletionKind::Function => {
-                let fqn = if cur_ns.is_empty() {
-                    f.name.to_string()
-                } else {
-                    format!("{cur_ns}\\{}", f.name)
-                };
+                let fqn = crate::text::qualify_name(&cur_ns, &f.name.to_string());
                 if prefix.is_empty() || fqn.to_lowercase().contains(&prefix_lc) {
                     out.push(CompletionItem {
                         label: fqn.clone(),
@@ -343,11 +315,7 @@ pub(super) fn collect_fqns_with_prefix(
             }
             StmtKind::Const(items) if kind == UseCompletionKind::Const => {
                 for item in items.iter() {
-                    let fqn = if cur_ns.is_empty() {
-                        item.name.to_string()
-                    } else {
-                        format!("{cur_ns}\\{}", item.name)
-                    };
+                    let fqn = crate::text::qualify_name(&cur_ns, &item.name.to_string());
                     if prefix.is_empty() || fqn.to_lowercase().contains(&prefix_lc) {
                         out.push(CompletionItem {
                             label: fqn.clone(),
@@ -362,13 +330,7 @@ pub(super) fn collect_fqns_with_prefix(
                 let ns_name = ns_stmt
                     .name
                     .as_ref()
-                    .map(|n| {
-                        if cur_ns.is_empty() {
-                            n.to_string_repr().to_string()
-                        } else {
-                            format!("{cur_ns}\\{}", n.to_string_repr())
-                        }
-                    })
+                    .map(|n| crate::text::qualify_name(&cur_ns, n.to_string_repr().as_ref()))
                     .unwrap_or_else(|| cur_ns.clone());
                 match &ns_stmt.body {
                     NamespaceBody::Braced(inner) => {

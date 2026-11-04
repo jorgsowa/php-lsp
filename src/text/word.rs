@@ -148,6 +148,15 @@ pub(crate) fn fqn_short_name(fqn: &str) -> &str {
     fqn.rsplit('\\').next().unwrap_or(fqn)
 }
 
+/// `name` qualified with namespace `ns`: `("App", "Foo")` -> `App\Foo`, `("", "Foo")` -> `Foo`.
+pub(crate) fn qualify_name(ns: &str, name: &str) -> String {
+    if ns.is_empty() {
+        name.to_string()
+    } else {
+        format!("{ns}\\{name}")
+    }
+}
+
 /// Compare an already-resolved class identity with a declaration in one
 /// document. A short name is an intentional fallback; an FQCN must match both
 /// the namespace and the declaration name.

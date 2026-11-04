@@ -260,11 +260,7 @@ fn collect_abstract_methods_fqn(
         match &stmt.kind {
             StmtKind::Interface(i) if i.name == short => {
                 // Verify the namespace matches.
-                let declared_fqn = if active_ns.is_empty() {
-                    i.name.to_string()
-                } else {
-                    format!("{}\\{}", active_ns, i.name)
-                };
+                let declared_fqn = crate::text::qualify_name(&active_ns, &i.name.to_string());
                 if fqn_eq(fqn, &declared_fqn) {
                     let stubs = i
                         .body
@@ -294,11 +290,7 @@ fn collect_abstract_methods_fqn(
                 if c.name.as_ref().map(|n| n.to_string()) == Some(short.to_string())
                     && c.modifiers.is_abstract =>
             {
-                let declared_fqn = if active_ns.is_empty() {
-                    short.to_string()
-                } else {
-                    format!("{}\\{}", active_ns, short)
-                };
+                let declared_fqn = crate::text::qualify_name(&active_ns, short);
                 if fqn_eq(fqn, &declared_fqn) {
                     let stubs = c
                         .body

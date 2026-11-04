@@ -53,11 +53,7 @@ impl<'k> Collector<'k> {
     }
 
     fn qualify(&self, short: &str) -> String {
-        if self.namespace.is_empty() {
-            short.to_string()
-        } else {
-            format!("{}\\{}", self.namespace, short)
-        }
+        crate::text::qualify_name(&self.namespace, short)
     }
 
     /// Enters `ns`: a braced body is walked by `walk` under that namespace,
