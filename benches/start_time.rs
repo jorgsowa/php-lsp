@@ -18,12 +18,11 @@
 //! Writes `target/perf/start_time.json` and `.md`.
 //! Run with `cargo bench --bench start_time`. Release mode matters.
 
-use php_lsp::backend::Backend;
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream, ReadHalf, WriteHalf};
-use tower_lsp_server::{LspService, Server};
+use tower_lsp_server::Server;
 
 const INDEX_READY_TIMEOUT_SECS: u64 = 180;
 const PROBE_INTERVAL_MS: u64 = 25;
@@ -129,7 +128,7 @@ fn spawn_server() -> Client {
     let (client_stream, server_stream) = tokio::io::duplex(1 << 20);
     let (server_read, server_write) = tokio::io::split(server_stream);
     let (client_read, client_write) = tokio::io::split(client_stream);
-    let (service, socket) = LspService::new(Backend::new);
+    let (service, socket) = php_lsp::backend::build_lsp_service();
     tokio::spawn(Server::new(server_read, server_write, socket).serve(service));
     Client {
         write: client_write,

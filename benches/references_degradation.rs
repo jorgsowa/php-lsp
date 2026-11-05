@@ -253,7 +253,14 @@ fn scope_narrowing_comparison(store: &DocumentStore, total_files: usize) {
                 .files
                 .iter()
                 .flat_map(|(_, idx)| idx.classes.iter())
-                .filter(|c| c.parent.as_deref() == Some(cls.name.as_ref()))
+                .filter(|c| {
+                    c.parent
+                        .as_deref()
+                        .map(|p| p.trim_start_matches('\\'))
+                        .is_some_and(|p| {
+                            p.eq_ignore_ascii_case(&fqn) || p.eq_ignore_ascii_case(&cls.name)
+                        })
+                })
                 .count();
             if protected_target.is_none()
                 && sub_count > 0

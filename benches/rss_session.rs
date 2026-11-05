@@ -13,7 +13,6 @@
 //!
 //! Run with `cargo bench --bench rss_session`. Release mode matters.
 
-use php_lsp::backend::Backend;
 use serde_json::{Value, json};
 
 // Match the production binary's allocator — RSS behavior is allocator
@@ -32,7 +31,7 @@ static ALLOC: dhat::Alloc = dhat::Alloc;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream, ReadHalf, WriteHalf};
-use tower_lsp_server::{LspService, Server};
+use tower_lsp_server::Server;
 
 const EDIT_ROUNDS: usize = 75; // 4 edits per round (one per open file) → 300 edits
 const RSS_SAMPLE_EVERY: usize = 5; // rounds
@@ -208,9 +207,7 @@ fn spawn_server() -> Client {
     let (client_stream, server_stream) = tokio::io::duplex(1 << 20);
     let (server_read, server_write) = tokio::io::split(server_stream);
     let (client_read, client_write) = tokio::io::split(client_stream);
-    let (service, socket) = LspService::build(Backend::new)
-        .custom_method("$/php-lsp/debugStats", Backend::debug_stats)
-        .finish();
+    let (service, socket) = php_lsp::backend::build_lsp_service();
     tokio::spawn(Server::new(server_read, server_write, socket).serve(service));
     Client {
         write: client_write,
