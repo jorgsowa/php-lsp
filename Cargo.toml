@@ -54,10 +54,10 @@ test-hooks = []
 dhat = { version = "0.3", optional = true }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
-mir-analyzer = "0.90.0"
-mir-issues = "0.90.0"
-mir-codebase = "0.90.0"
-mir-types = "0.90.0"
+mir-analyzer = "0.91.0"
+mir-issues = "0.91.0"
+mir-codebase = "0.91.0"
+mir-types = "0.91.0"
 php-rs-parser = "0.28"
 php-ast = "0.28"
 php-lexer = "0.28"

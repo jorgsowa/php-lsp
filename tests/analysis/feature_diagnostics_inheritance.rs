@@ -44,7 +44,7 @@ async fn same_namespace_trait_use_truly_missing_is_flagged() {
     let out = render_workspace_diagnostic(&resp, &s.uri(""));
     expect![[r#"
         src/Person.php
-          3:8 Trait MissingTrait does not exist [UndefinedTrait] (error)"#]]
+          3:8 Trait App\MissingTrait does not exist [UndefinedTrait] (error)"#]]
     .assert_eq(&out);
 }
 
