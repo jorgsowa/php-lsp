@@ -61,9 +61,25 @@ impl Backend {
         // hop instead of on the tokio worker thread, consistent with
         // hover/completion/inlay_hint.
         let actions = tokio::task::spawn_blocking(move || {
-            let sem_diags = docs
-                .get_semantic_issues_salsa(&uri)
-                .map(|issues| {
+            // The import quickfixes only need body-analysis issues; the
+            // workspace-wide class checks are skipped on every cursor move.
+            let analysis = docs.cached_analysis(&uri);
+            let sem_diags = analysis
+                .as_ref()
+                .map(|analysis| {
+                    let issues: Vec<mir_issues::Issue> = analysis
+                        .issues
+                        .iter()
+                        .filter(|i| {
+                            !i.suppressed
+                                && matches!(
+                                    i.kind,
+                                    mir_issues::IssueKind::UndefinedClass { .. }
+                                        | mir_issues::IssueKind::UndefinedFunction { .. }
+                                )
+                        })
+                        .cloned()
+                        .collect();
                     let source = docs.source_text(&uri);
                     crate::semantic_diagnostics::issues_to_diagnostics(
                         &issues,
@@ -167,10 +183,8 @@ impl Backend {
             actions.extend(extract_variable_actions(&source, &doc, range, &uri));
             actions.extend(extract_method_actions(&source, &doc, range, &uri));
             actions.extend(extract_constant_actions(&source, range, &uri));
-            let analysis = std::cell::OnceCell::new();
             let is_byref_param = |slot: ArgSlot<'_>| {
                 let Some(symbol) = analysis
-                    .get_or_init(|| docs.cached_analysis(&uri))
                     .as_ref()
                     .and_then(|a| a.symbol_at(slot.callee_offset))
                     .and_then(|s| s.to_symbol())
@@ -293,9 +307,8 @@ impl Backend {
 
         let docs = Arc::clone(&self.docs);
         let fallback = item.clone();
-        // `generate_deferred_actions` can run a full-workspace scan (the
-        // "implement" tag's Aho-Corasick search over every cached doc);
-        // keep it off the async runtime worker, matching `handle_code_action`.
+        // `generate_deferred_actions` parses declaring files for the
+        // "implement" tag; keep it off the async runtime worker.
         let resolved = self
             .blocking_gated(
                 super::super::debug_gate::GATE_CODE_ACTION_RESOLVE,

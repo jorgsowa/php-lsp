@@ -112,34 +112,18 @@ pub(super) const DEFERRED_ACTION_TAGS: &[&str] = &[
 
 impl Backend {
     /// Run [`crate::document::document_store::DocumentStore::cached_analysis`] without
-    /// blocking the async executor. The warm path (cache entry current for the
-    /// file's text) resolves synchronously; the cold path — mir Pass 1 + Pass 2,
-    /// which can take hundreds of ms on large files and is hit after every
-    /// keystroke because edits clear the analysis cache — runs on the blocking
-    /// pool so it doesn't stall other in-flight requests.
+    /// blocking the async executor, abandoning the cold path once a newer edit
+    /// lands (the editor re-requests for the new text).
     pub(super) async fn cached_analysis_async(
         &self,
         uri: &Uri,
     ) -> Option<Arc<mir_analyzer::FileAnalysis>> {
-        if let Some(hit) = self.docs.cached_analysis_if_fresh(uri) {
-            return Some(hit);
-        }
-        let docs = Arc::clone(&self.docs);
-        let uri_owned = uri.clone();
-        match tokio::task::spawn_blocking(move || docs.cached_analysis(&uri_owned)).await {
-            Ok(r) => r,
-            Err(e) => {
-                tracing::warn!("cached_analysis panicked for {uri:?}: {e}");
-                None
-            }
-        }
+        self.cached_analysis_async_cancellable(uri, self.docs.write_rev())
+            .await
     }
 
-    /// Like [`Self::cached_analysis_async`], but aborts the cold analysis path
-    /// when `write_rev` advances past `cancel_rev`. This is useful for
-    /// high-frequency UI requests such as completion: after a newer keystroke
-    /// arrives, the editor will ask again and the older analysis should stop
-    /// retrying through salsa cancellation.
+    /// Like [`Self::cached_analysis_async`], with the staleness revision taken
+    /// by the caller (e.g. at request start) instead of at this call.
     pub(super) async fn cached_analysis_async_cancellable(
         &self,
         uri: &Uri,
@@ -401,7 +385,7 @@ pub(super) fn generate_deferred_actions(
             let all_docs = if needles.is_empty() {
                 Vec::new()
             } else {
-                docs.docs_for_scan_mentioning(&needles)
+                docs_declaring_short_names(docs, &needles)
             };
             implement_missing_actions(source, doc, &all_docs, range, uri, &imports)
         }
@@ -411,4 +395,22 @@ pub(super) fn generate_deferred_actions(
         "promote" => promote_constructor_actions(source, doc, range, uri),
         _ => Vec::new(),
     }
+}
+
+/// Parsed docs of the files declaring a class-like whose short name is in
+/// `names` (ASCII-case-insensitive), found through the workspace index.
+fn docs_declaring_short_names(
+    docs: &DocumentStore,
+    names: &[String],
+) -> Vec<(Uri, Arc<ParsedDoc>)> {
+    let wi = docs.get_workspace_index_salsa();
+    let mut uris: Vec<Uri> = Vec::new();
+    wi.for_each_class(|uri, cls| {
+        if names.iter().any(|n| cls.name.eq_ignore_ascii_case(n)) && !uris.contains(uri) {
+            uris.push(uri.clone());
+        }
+    });
+    uris.into_iter()
+        .filter_map(|uri| docs.get_doc_salsa(&uri).map(|doc| (uri, doc)))
+        .collect()
 }

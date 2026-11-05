@@ -9,6 +9,8 @@ All notable changes to php-lsp are documented here.
 - **mir 0.91**: faster analysis with lower peak memory on large workspaces, new `UnusedConstant` check and broader dead-code detection, fewer false positives (templates, conditional return types, narrowing, taint guards), Psalm path-scoped `<errorLevel>` handlers. `UndefinedTrait` names the trait by its fully qualified name. A class or function declared in several files resolves to the same declaration on every run; go-to-definition still prefers the current file's own declaration.
 - **One index cache instead of two**: the workspace index is built from mir's per-file definitions, so each file is parsed once, and php-lsp no longer writes its own cache file for every indexed file. The cache directory moves to a new layout; the previous one is removed after a day unused.
 
+- **Faster code actions**: requesting code actions on a cursor move no longer reruns workspace-wide class checks or walks every file for "Implement missing methods" (on Symfony, ~45–85 ms down to under 1 ms). Hover, signature help, inlay hints and go-to-type-definition stop analyzing a file once a newer edit arrives.
+
 ### Fixed
 
 - **Lower memory after indexing large files**: parser arenas were pooled and kept their largest chunk, so a few huge vendor files (generated data arrays such as the AWS SDK's `api-2.json.php`) held tens of MB, up to 128 MB for one file, for the whole session. Each parse now frees its arena when the document is dropped.
