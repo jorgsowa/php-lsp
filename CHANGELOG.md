@@ -4,6 +4,10 @@ All notable changes to php-lsp are documented here.
 
 ## [Unreleased]
 
+### Changed
+
+- **mir 0.90**: faster analysis with lower peak memory on large workspaces, new `UnusedConstant` check and broader dead-code detection, fewer false positives. A class or function declared in several files resolves to the same declaration on every run; go-to-definition still prefers the current file's own declaration.
+
 ### Fixed
 
 - **Lower memory after indexing large files**: parser arenas were pooled and kept their largest chunk, so a few huge vendor files (generated data arrays such as the AWS SDK's `api-2.json.php`) held tens of MB, up to 128 MB for one file, for the whole session. Each parse now frees its arena when the document is dropped.

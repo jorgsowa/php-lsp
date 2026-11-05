@@ -21,7 +21,43 @@ pub fn mir_definition(
             None => Ok(None),
         },
     )?;
-    Ok(resolved.and_then(|(name, (file, range))| to_lsp_location(docs, &name, &file, range)))
+    Ok(resolved.and_then(|(name, (file, range))| {
+        if file.as_ref() != uri.as_str()
+            && let Some(local) = same_file_declaration(docs, uri, &name)
+        {
+            return Some(local);
+        }
+        to_lsp_location(docs, &name, &file, range)
+    }))
+}
+
+/// mir picks one winner among duplicate top-level declarations; the requesting file's own wins here.
+fn same_file_declaration(docs: &DocumentStore, uri: &Uri, name: &Name) -> Option<Location> {
+    let index = docs.get_index_salsa(uri)?;
+    let (line, name_char, short) = match name {
+        Name::Class(fqn) => {
+            let fqn = fqn.trim_start_matches('\\');
+            let c = index
+                .classes
+                .iter()
+                .find(|c| c.fqn.eq_ignore_ascii_case(fqn))?;
+            (c.start_line, c.name_char, &c.name)
+        }
+        Name::Function(fqn) => {
+            let fqn = fqn.trim_start_matches('\\');
+            let f = index
+                .functions
+                .iter()
+                .find(|f| f.fqn.trim_start_matches('\\').eq_ignore_ascii_case(fqn))?;
+            (f.start_line, f.name_char, &f.name)
+        }
+        _ => return None,
+    };
+    let end = name_char + short.encode_utf16().count() as u32;
+    Some(Location {
+        uri: uri.clone(),
+        range: Range::new(Position::new(line, name_char), Position::new(line, end)),
+    })
 }
 
 /// The interface or abstract method that the method under `offset` implements.
