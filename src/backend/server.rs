@@ -417,18 +417,13 @@ impl LanguageServer for Backend {
             }
 
             // Add new folders and kick off background scans for each.
-            let (exclude_paths, include_paths, max_indexed_files, cache_path) = {
+            let (exclude_paths, include_paths, max_indexed_files) = {
                 let cfg = self.config.load();
                 let mut exclude = cfg.exclude_paths.clone();
                 if !cfg.index_vendor && !exclude.iter().any(|p| p == "vendor" || p == "vendor/") {
                     exclude.push("vendor/".to_string());
                 }
-                (
-                    exclude,
-                    cfg.include_paths.clone(),
-                    cfg.max_indexed_files,
-                    cfg.cache_path.clone(),
-                )
+                (exclude, cfg.include_paths.clone(), cfg.max_indexed_files)
             };
             for added in &params.event.added {
                 if let Some(path) = added.uri.to_file_path().map(|c| c.into_owned()) {
@@ -452,19 +447,12 @@ impl LanguageServer for Backend {
                         let path_clone = path.clone();
                         let roots = self.root_paths.load_full();
                         let client = self.client.clone();
-                        let cp = cache_path.clone();
                         let warm_analysis = self.config.load().warm_analysis;
                         tokio::spawn(async move {
-                            let cache = if let Some(p) = cp {
-                                Some(crate::index::cache::WorkspaceCache::with_dir(p))
-                            } else {
-                                crate::index::cache::WorkspaceCache::new(&path_clone)
-                            };
                             scan_workspace(
                                 path_clone,
                                 Arc::clone(&docs),
                                 open_files,
-                                cache,
                                 &roots,
                                 &ex,
                                 &ip,
@@ -789,40 +777,8 @@ impl LanguageServer for Backend {
                     .await;
             }
 
-            // Persist the FileIndex to the disk cache so that a server restart
-            // can skip re-parsing this file even for edits that happened between
-            // workspace scans. Content-keyed so the entry matches the scan's key
-            // on restart regardless of mtime granularity.
-            let cache_path = self.config.load().cache_path.clone();
             if let Some(path) = uri.to_file_path().map(|c| c.into_owned()) {
                 let root = self.root_paths.load().first().cloned();
-                // Deliberately not `offload::run` — see the fire-and-forget
-                // comment on `did_change`'s warm-resweep; this cache write is
-                // never awaited either.
-                tokio::task::spawn_blocking({
-                    let path = path.clone();
-                    let uri = uri.clone();
-                    let root = root.clone();
-                    move || {
-                        let cache = if let Some(p) = cache_path {
-                            crate::index::cache::WorkspaceCache::with_dir(p)
-                        } else if let Some(r) = &root {
-                            let Some(c) = crate::index::cache::WorkspaceCache::open(r) else {
-                                return;
-                            };
-                            c
-                        } else {
-                            return;
-                        };
-                        let Ok(text) = std::fs::read(&path).map(crate::text::decode_source) else {
-                            return;
-                        };
-                        let key = crate::index::cache::WorkspaceCache::key_for(uri.as_str(), &text);
-                        let doc = parse_document_no_diags(&text);
-                        let index = crate::index::file_index::FileIndex::extract(&doc);
-                        let _ = cache.write(&key, &index);
-                    }
-                });
 
                 // External tools (PHPStan/PHPCS) are opt-in and much slower
                 // than the in-process analyzer, so they run in the background

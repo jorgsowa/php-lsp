@@ -6,8 +6,7 @@
 /// a full `ParsedDoc`, allowing the LSP to keep thousands of background files
 /// in memory without exhausting RAM.
 ///
-/// Call [`FileIndex::extract`] right after parsing; the `ParsedDoc` (and its
-/// bumpalo arena) can be dropped immediately after extraction.
+/// Built from mir's per-file definitions by [`FileIndex::from_definitions`].
 ///
 /// The `-Def` types here (`FunctionDef`, `ClassDef`, `MethodDef`, …) are owned
 /// declaration records stored in the index — distinct from the `-Entry` rows of
@@ -15,12 +14,9 @@
 /// crate-root glossary in `lib.rs`.
 use std::sync::Arc;
 
-use php_ast::{
-    ClassMemberKind, EnumMemberKind, NamespaceBody, Stmt, StmtKind, TraitAdaptationKind,
-};
-
-use crate::document::ast::{ParsedDoc, format_type_hint};
-use crate::lang::docblock::parse_docblock;
+use mir_codebase::definitions::{self as mir, StubSlice};
+use mir_types::{Location, Type};
+use tower_lsp_server::ls_types::SymbolKind;
 
 #[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct FileIndex {
@@ -36,7 +32,7 @@ pub struct FileIndex {
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct WorkspaceSymbolRow {
     pub name: Box<str>,
-    pub kind: tower_lsp_server::ls_types::SymbolKind,
+    pub kind: SymbolKind,
     pub line: u32,
     /// Index of the enclosing row in the same `symbols` vec.
     pub container: Option<u32>,
@@ -318,505 +314,602 @@ impl SameDeclarations for DocMethodEntry {
 }
 
 impl FileIndex {
-    /// Walk `doc.program().stmts` once and build a compact symbol index.
-    pub fn extract(doc: &ParsedDoc) -> Self {
-        let source = doc.source();
-        let view = doc.view();
-        let mut index = FileIndex::default();
-        collect_stmts(source, &view, &doc.program().stmts, None, &mut index);
-        index.symbols = crate::navigation::symbols::workspace_symbol_rows(doc);
-        index
-    }
-}
+    /// Builds the index from mir's per-file definitions; `source` locates declared names.
+    pub fn from_definitions(slice: &StubSlice, source: &str) -> Self {
+        let text = SourceText::new(source);
+        let mut decls: Vec<Decl> = Vec::new();
+        for f in &slice.functions {
+            decls.push(function_decl(&text, f));
+        }
+        for c in &slice.classes {
+            decls.push(class_decl(&text, c));
+        }
+        for i in &slice.interfaces {
+            decls.push(interface_decl(&text, i));
+        }
+        for t in &slice.traits {
+            decls.push(trait_decl(&text, t));
+        }
+        for e in &slice.enums {
+            decls.push(enum_decl(&text, e));
+        }
+        decls.sort_by_key(|d| d.key);
 
-fn fqn(namespace: Option<&str>, name: &str) -> Box<str> {
-    match namespace {
-        Some(ns) if !ns.is_empty() => format!("{}\\{}", ns, name).into(),
-        _ => name.into(),
-    }
-}
-
-fn collect_stmts(
-    source: &str,
-    view: &crate::document::ast::SourceView<'_>,
-    stmts: &[Stmt<'_, '_>],
-    namespace: Option<&str>,
-    index: &mut FileIndex,
-) {
-    use crate::document::ast::str_offset;
-
-    let name_char = |name: &str| -> u32 {
-        str_offset(source, name)
-            .map(|off| view.position_of(off).character)
-            .unwrap_or(0)
-    };
-
-    // Track the current namespace for unbraced `namespace Foo;` statements.
-    let mut cur_ns: Option<Box<str>> = namespace.map(|s| s.into());
-
-    for stmt in stmts {
-        match &stmt.kind {
-            StmtKind::Namespace(ns) => {
-                let ns_name = ns.name.as_ref().map(|n| n.to_string_repr().into());
-
-                match &ns.body {
-                    NamespaceBody::Braced(inner) => {
-                        // Braced namespace: recurse with its name as context.
-                        let ns_str = ns_name.as_deref();
-                        // Update the top-level namespace if not already set.
-                        if index.namespace.is_none() {
-                            index.namespace = ns_name.clone();
-                        }
-                        collect_stmts(source, view, &inner.stmts, ns_str, index);
-                    }
-                    NamespaceBody::Simple => {
-                        // Unbraced namespace: all following stmts belong to it.
-                        if index.namespace.is_none() {
-                            index.namespace = ns_name.clone();
-                        }
-                        cur_ns = ns_name;
-                    }
-                    _ => {}
+        let mut index = FileIndex {
+            namespace: slice
+                .namespace
+                .as_deref()
+                .map(|ns| ns.trim_start_matches('\\').into()),
+            constants: slice
+                .constants
+                .iter()
+                .map(|(name, _)| short_name(name).into())
+                .collect(),
+            ..FileIndex::default()
+        };
+        let mut namespace_rows: Vec<(Box<str>, u32)> = Vec::new();
+        for decl in decls {
+            let container = decl.namespace.map(|ns| {
+                if let Some((_, row)) = namespace_rows.iter().find(|(n, _)| *n == ns) {
+                    return *row;
                 }
-            }
-
-            StmtKind::Function(f) => {
-                let start_line = view.position_of(stmt.span.start).line;
-                let ns = cur_ns.as_deref();
-                let f_name = f.name.or_error();
-                index.functions.push(FunctionDef {
-                    name: Box::from(f_name),
-                    fqn: fqn(ns, f_name),
-                    params: extract_params(&f.params),
-                    return_type: f.return_type.as_ref().map(|t| format_type_hint(t).into()),
-                    start_line,
-                    name_char: name_char(f_name),
+                let row = index.symbols.len() as u32;
+                index.symbols.push(WorkspaceSymbolRow {
+                    name: ns.clone(),
+                    kind: SymbolKind::NAMESPACE,
+                    line: decl.row.line,
+                    container: None,
+                    deprecated: None,
+                });
+                namespace_rows.push((ns, row));
+                row
+            });
+            let own = index.symbols.len() as u32;
+            let line = decl.row.line;
+            index.symbols.push(WorkspaceSymbolRow {
+                container,
+                ..decl.row
+            });
+            let mut children = decl.children;
+            children.sort_by_key(|(key, _)| *key);
+            for (_, mut child) in children {
+                // Constants and enum cases report their container's line.
+                if matches!(child.kind, SymbolKind::CONSTANT | SymbolKind::ENUM_MEMBER) {
+                    child.line = line;
+                }
+                index.symbols.push(WorkspaceSymbolRow {
+                    container: Some(own),
+                    ..child
                 });
             }
-
-            StmtKind::Class(c) => {
-                let Some(class_name) = c.name else { continue };
-                let class_name_str = class_name.or_error();
-                let start_line = view.position_of(stmt.span.start).line;
-                let ns = cur_ns.as_deref();
-
-                let mut class_def = ClassDef {
-                    name: Box::from(class_name_str),
-                    fqn: fqn(ns, class_name_str),
-                    kind: ClassKind::Class,
-                    is_abstract: c.modifiers.is_abstract,
-                    is_readonly: c.modifiers.is_readonly,
-                    parent: c
-                        .extends
-                        .as_ref()
-                        .map(|e| Arc::from(e.to_string_repr().as_ref())),
-                    implements: c
-                        .implements
-                        .iter()
-                        .map(|i| Arc::from(i.to_string_repr().as_ref()))
-                        .collect(),
-                    traits: Vec::new(),
-                    methods: Vec::new(),
-                    properties: Vec::new(),
-                    constants: Vec::new(),
-                    cases: Vec::new(),
-                    start_line,
-                    name_char: name_char(class_name_str),
-                    doc_methods: Vec::new(),
-                    mixins: Vec::new(),
-                    trait_method_aliases: Vec::new(),
-                };
-
-                for member in c.body.members.iter() {
-                    match &member.kind {
-                        ClassMemberKind::Method(m) => {
-                            let mstart = view.position_of(member.span.start).line;
-                            let vis = method_visibility(m.modifiers.visibility);
-                            let method_params = extract_params(&m.params);
-                            // Constructor-promoted params → also add as PropertyDef.
-                            for ast_param in m.params.iter() {
-                                if ast_param.modifiers.visibility.is_some() {
-                                    let pvis = method_visibility(ast_param.modifiers.visibility);
-                                    let pstart = view.position_of(ast_param.span.start).line;
-                                    let p_name = ast_param.name.or_error();
-                                    class_def.properties.push(PropertyDef {
-                                        name: Box::from(p_name),
-                                        is_static: false,
-                                        is_readonly: ast_param.modifiers.is_readonly,
-                                        type_hint: ast_param
-                                            .type_hint
-                                            .as_ref()
-                                            .map(|t| format_type_hint(t).into()),
-                                        visibility: pvis,
-                                        start_line: pstart,
-                                        name_char: name_char(p_name),
-                                    });
-                                }
-                            }
-                            let m_name = m.name.or_error();
-                            class_def.methods.push(MethodDef {
-                                name: Box::from(m_name),
-                                is_static: m.modifiers.is_static,
-                                is_abstract: m.modifiers.is_abstract,
-                                visibility: vis,
-                                params: method_params,
-                                return_type: m
-                                    .return_type
-                                    .as_ref()
-                                    .map(|t| format_type_hint(t).into()),
-                                start_line: mstart,
-                                name_char: name_char(m_name),
-                            });
-                        }
-                        ClassMemberKind::Property(p) => {
-                            let vis = method_visibility(p.modifiers.visibility);
-                            let pstart = view.position_of(member.span.start).line;
-                            let p_name = p.name.or_error();
-                            class_def.properties.push(PropertyDef {
-                                name: Box::from(p_name),
-                                is_static: p.modifiers.is_static,
-                                is_readonly: p.modifiers.is_readonly,
-                                type_hint: p.type_hint.as_ref().map(|t| format_type_hint(t).into()),
-                                visibility: vis,
-                                start_line: pstart,
-                                name_char: name_char(p_name),
-                            });
-                        }
-                        ClassMemberKind::ClassConst(cc) => {
-                            class_def.constants.push(Box::from(cc.name.or_error()));
-                        }
-                        ClassMemberKind::TraitUse(tu) => {
-                            for t in tu.traits.iter() {
-                                class_def
-                                    .traits
-                                    .push(Arc::from(t.to_string_repr().as_ref()));
-                            }
-                            for adaptation in tu.adaptations.iter() {
-                                if let TraitAdaptationKind::Alias {
-                                    method,
-                                    new_name: Some(new_name),
-                                    trait_name,
-                                    ..
-                                } = &adaptation.kind
-                                {
-                                    class_def.trait_method_aliases.push(TraitMethodAlias {
-                                        alias: Box::from(new_name.to_string_repr().as_ref()),
-                                        original: Box::from(method.to_string_repr().as_ref()),
-                                        trait_name: trait_name
-                                            .as_ref()
-                                            .map(|n| Box::from(n.to_string_repr().as_ref())),
-                                    });
-                                }
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-                // Extract `@method` and `@mixin` docblock tags.
-                // `@method` tags become virtual method entries for go-to-definition.
-                // `@mixin` tags extend the class hierarchy walked by mir.
-                if let Some(doc) = &c.doc_comment {
-                    let db = parse_docblock(doc.text);
-                    for dm in &db.methods {
-                        let line = doc_method_tag_line(view, doc, &dm.name);
-                        let ret = if dm.return_type.is_empty() {
-                            None
-                        } else {
-                            Some(Box::from(dm.return_type.as_str()))
-                        };
-                        class_def.doc_methods.push(DocMethodEntry {
-                            name: Box::from(dm.name.as_str()),
-                            is_static: dm.is_static,
-                            return_type: ret,
-                            start_line: line,
-                            params: dm
-                                .params
-                                .iter()
-                                .map(|p| DocMethodParam {
-                                    name: Box::from(p.name.as_str()),
-                                    type_hint: if p.type_hint.is_empty() {
-                                        None
-                                    } else {
-                                        Some(Box::from(p.type_hint.as_str()))
-                                    },
-                                    is_variadic: p.is_variadic,
-                                    is_byref: p.is_byref,
-                                    is_optional: p.is_optional,
-                                })
-                                .collect(),
-                        });
-                    }
-                    for mixin in &db.mixins {
-                        class_def.mixins.push(Arc::from(mixin.as_str()));
-                    }
-                }
-                index.classes.push(class_def);
+            match decl.item {
+                DeclItem::Function(f) => index.functions.push(f),
+                DeclItem::Class(c) => index.classes.push(*c),
             }
-
-            StmtKind::Interface(i) => {
-                let start_line = view.position_of(stmt.span.start).line;
-                let ns = cur_ns.as_deref();
-
-                let i_name = i.name.or_error();
-                let mut iface_def = ClassDef {
-                    name: Box::from(i_name),
-                    fqn: fqn(ns, i_name),
-                    kind: ClassKind::Interface,
-                    is_abstract: true,
-                    is_readonly: false,
-                    parent: None,
-                    implements: i
-                        .extends
-                        .iter()
-                        .map(|e| Arc::from(e.to_string_repr().as_ref()))
-                        .collect(),
-                    traits: Vec::new(),
-                    methods: Vec::new(),
-                    properties: Vec::new(),
-                    constants: Vec::new(),
-                    cases: Vec::new(),
-                    start_line,
-                    name_char: name_char(i_name),
-                    doc_methods: Vec::new(),
-                    mixins: Vec::new(),
-                    trait_method_aliases: Vec::new(),
-                };
-
-                for member in i.body.members.iter() {
-                    match &member.kind {
-                        ClassMemberKind::Method(m) => {
-                            let mstart = view.position_of(member.span.start).line;
-                            let m_name = m.name.or_error();
-                            iface_def.methods.push(MethodDef {
-                                name: Box::from(m_name),
-                                is_static: m.modifiers.is_static,
-                                is_abstract: true,
-                                visibility: Visibility::Public,
-                                params: extract_params(&m.params),
-                                return_type: m
-                                    .return_type
-                                    .as_ref()
-                                    .map(|t| format_type_hint(t).into()),
-                                start_line: mstart,
-                                name_char: name_char(m_name),
-                            });
-                        }
-                        ClassMemberKind::ClassConst(cc) => {
-                            iface_def.constants.push(Box::from(cc.name.or_error()));
-                        }
-                        _ => {}
-                    }
-                }
-                index.classes.push(iface_def);
-            }
-
-            StmtKind::Trait(t) => {
-                let start_line = view.position_of(stmt.span.start).line;
-                let ns = cur_ns.as_deref();
-
-                let t_name = t.name.or_error();
-                let mut trait_def = ClassDef {
-                    name: Box::from(t_name),
-                    fqn: fqn(ns, t_name),
-                    kind: ClassKind::Trait,
-                    is_abstract: false,
-                    is_readonly: false,
-                    parent: None,
-                    implements: Vec::new(),
-                    traits: Vec::new(),
-                    methods: Vec::new(),
-                    properties: Vec::new(),
-                    constants: Vec::new(),
-                    cases: Vec::new(),
-                    start_line,
-                    name_char: name_char(t_name),
-                    doc_methods: Vec::new(),
-                    mixins: Vec::new(),
-                    trait_method_aliases: Vec::new(),
-                };
-
-                for member in t.body.members.iter() {
-                    match &member.kind {
-                        ClassMemberKind::Method(m) => {
-                            let mstart = view.position_of(member.span.start).line;
-                            let vis = method_visibility(m.modifiers.visibility);
-                            let m_name = m.name.or_error();
-                            trait_def.methods.push(MethodDef {
-                                name: Box::from(m_name),
-                                is_static: m.modifiers.is_static,
-                                is_abstract: m.modifiers.is_abstract,
-                                visibility: vis,
-                                params: extract_params(&m.params),
-                                return_type: m
-                                    .return_type
-                                    .as_ref()
-                                    .map(|t| format_type_hint(t).into()),
-                                start_line: mstart,
-                                name_char: name_char(m_name),
-                            });
-                        }
-                        ClassMemberKind::Property(p) => {
-                            let vis = method_visibility(p.modifiers.visibility);
-                            let pstart = view.position_of(member.span.start).line;
-                            let p_name = p.name.or_error();
-                            trait_def.properties.push(PropertyDef {
-                                name: Box::from(p_name),
-                                is_static: p.modifiers.is_static,
-                                is_readonly: p.modifiers.is_readonly,
-                                type_hint: p.type_hint.as_ref().map(|t| format_type_hint(t).into()),
-                                visibility: vis,
-                                start_line: pstart,
-                                name_char: name_char(p_name),
-                            });
-                        }
-                        ClassMemberKind::ClassConst(cc) => {
-                            trait_def.constants.push(Box::from(cc.name.or_error()));
-                        }
-                        ClassMemberKind::TraitUse(tu) => {
-                            for tr in tu.traits.iter() {
-                                trait_def
-                                    .traits
-                                    .push(Arc::from(tr.to_string_repr().as_ref()));
-                            }
-                            for adaptation in tu.adaptations.iter() {
-                                if let TraitAdaptationKind::Alias {
-                                    method,
-                                    new_name: Some(new_name),
-                                    trait_name,
-                                    ..
-                                } = &adaptation.kind
-                                {
-                                    trait_def.trait_method_aliases.push(TraitMethodAlias {
-                                        alias: Box::from(new_name.to_string_repr().as_ref()),
-                                        original: Box::from(method.to_string_repr().as_ref()),
-                                        trait_name: trait_name
-                                            .as_ref()
-                                            .map(|n| Box::from(n.to_string_repr().as_ref())),
-                                    });
-                                }
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-                index.classes.push(trait_def);
-            }
-
-            StmtKind::Enum(e) => {
-                let start_line = view.position_of(stmt.span.start).line;
-                let ns = cur_ns.as_deref();
-
-                let e_name = e.name.or_error();
-                let mut enum_def = ClassDef {
-                    name: Box::from(e_name),
-                    fqn: fqn(ns, e_name),
-                    kind: ClassKind::Enum,
-                    is_abstract: false,
-                    is_readonly: false,
-                    parent: None,
-                    implements: e
-                        .implements
-                        .iter()
-                        .map(|i| Arc::from(i.to_string_repr().as_ref()))
-                        .collect(),
-                    traits: Vec::new(),
-                    methods: Vec::new(),
-                    properties: Vec::new(),
-                    constants: Vec::new(),
-                    cases: Vec::new(),
-                    start_line,
-                    name_char: name_char(e_name),
-                    doc_methods: Vec::new(),
-                    mixins: Vec::new(),
-                    trait_method_aliases: Vec::new(),
-                };
-
-                for member in e.body.members.iter() {
-                    match &member.kind {
-                        EnumMemberKind::Case(c) => {
-                            enum_def.cases.push(Box::from(c.name.or_error()));
-                        }
-                        EnumMemberKind::Method(m) => {
-                            let mstart = view.position_of(member.span.start).line;
-                            let vis = method_visibility(m.modifiers.visibility);
-                            let m_name = m.name.or_error();
-                            enum_def.methods.push(MethodDef {
-                                name: Box::from(m_name),
-                                is_static: m.modifiers.is_static,
-                                is_abstract: m.modifiers.is_abstract,
-                                visibility: vis,
-                                params: extract_params(&m.params),
-                                return_type: m
-                                    .return_type
-                                    .as_ref()
-                                    .map(|t| format_type_hint(t).into()),
-                                start_line: mstart,
-                                name_char: name_char(m_name),
-                            });
-                        }
-                        EnumMemberKind::ClassConst(cc) => {
-                            enum_def.constants.push(Box::from(cc.name.or_error()));
-                        }
-                        _ => {}
-                    }
-                }
-                index.classes.push(enum_def);
-            }
-
-            StmtKind::Const(consts) => {
-                for c in consts.iter() {
-                    index.constants.push(Box::from(c.name.or_error()));
-                }
-            }
-            _ => {}
         }
+        index
+    }
+
+    /// Collects `source` with a throwaway mir database, for callers without a session.
+    pub fn from_source(path: &str, source: &str) -> Self {
+        let mut db = mir_analyzer::db::MirDbStorage::default();
+        let file = db.upsert_source_file(Arc::from(path), Arc::from(source));
+        let defs = mir_analyzer::db::collect_file_definitions_uncached(&db, file);
+        Self::from_definitions(&defs.slice, source)
     }
 }
 
-fn extract_params<'a, 'b>(params: &[php_ast::Param<'a, 'b>]) -> Vec<ParamDef> {
+type SortKey = (u32, u16);
+type ChildRow = (SortKey, WorkspaceSymbolRow);
+
+struct Decl {
+    key: SortKey,
+    namespace: Option<Box<str>>,
+    row: WorkspaceSymbolRow,
+    children: Vec<ChildRow>,
+    item: DeclItem,
+}
+
+enum DeclItem {
+    Function(FunctionDef),
+    Class(Box<ClassDef>),
+}
+
+fn sort_key(loc: Option<&Location>) -> SortKey {
+    loc.map_or((u32::MAX, u16::MAX), |l| (l.line, l.col_start))
+}
+
+fn short_name(fqn: &str) -> &str {
+    fqn.rsplit('\\').next().unwrap_or(fqn)
+}
+
+fn namespace_of(fqn: &str) -> Option<Box<str>> {
+    fqn.trim_start_matches('\\')
+        .rsplit_once('\\')
+        .map(|(ns, _)| ns.into())
+}
+
+/// mir resolves names; a leading `\` keeps them fully-qualified for consumers that re-resolve.
+fn absolute(name: &Arc<str>) -> Arc<str> {
+    if name.starts_with('\\') {
+        Arc::clone(name)
+    } else {
+        Arc::from(format!("\\{name}"))
+    }
+}
+
+fn type_string(ty: Option<&Arc<Type>>) -> Option<Box<str>> {
+    ty.map(|t| t.to_string().into())
+}
+
+fn deprecated_flag(deprecated: &Option<Arc<str>>) -> Option<bool> {
+    deprecated.as_ref().map(|_| true)
+}
+
+fn visibility(v: mir::Visibility) -> Visibility {
+    match v {
+        mir::Visibility::Public => Visibility::Public,
+        mir::Visibility::Protected => Visibility::Protected,
+        mir::Visibility::Private => Visibility::Private,
+    }
+}
+
+fn param_defs(params: &[mir::DeclaredParam]) -> Vec<ParamDef> {
     params
         .iter()
         .map(|p| ParamDef {
-            name: Box::from(p.name.or_error()),
-            type_hint: p.type_hint.as_ref().map(|t| format_type_hint(t).into()),
-            has_default: p.default.is_some(),
-            variadic: p.variadic,
+            name: p.name.as_str().trim_start_matches('$').into(),
+            type_hint: type_string(p.ty.as_ref()),
+            has_default: p.has_default,
+            variadic: p.is_variadic,
         })
         .collect()
 }
 
-fn method_visibility(vis: Option<php_ast::Visibility>) -> Visibility {
-    match vis {
-        Some(php_ast::Visibility::Protected) => Visibility::Protected,
-        Some(php_ast::Visibility::Private) => Visibility::Private,
-        _ => Visibility::Public,
+fn row(name: &str, kind: SymbolKind, line: u32, deprecated: Option<bool>) -> WorkspaceSymbolRow {
+    WorkspaceSymbolRow {
+        name: name.into(),
+        kind,
+        line,
+        container: None,
+        deprecated,
     }
 }
 
-/// Return the source line (0-based) of the `@method method_name` tag within
-/// `doc_comment`. Falls back to the docblock's own start line if not found.
-fn doc_method_tag_line(
-    view: &crate::document::ast::SourceView<'_>,
-    doc_comment: &php_ast::Comment<'_>,
-    method_name: &str,
-) -> u32 {
-    let text = doc_comment.text;
-    let base = doc_comment.span.start as usize;
-    let mut offset = 0usize;
-    while let Some(tag_pos) = text[offset..].find("@method") {
-        let segment_start = offset + tag_pos;
-        let segment = &text[segment_start..];
-        let line_len = segment.find('\n').unwrap_or(segment.len());
-        // Require `method_name(` to avoid matching the name as a substring
-        // inside a parameter name (e.g. `@method void log(string $find)` must
-        // not match when looking for `find`).
-        let needle = format!("{}(", method_name);
-        if segment[..line_len].contains(needle.as_str()) {
-            return view.position_of((base + segment_start) as u32).line;
-        }
-        offset = segment_start + "@method".len();
+fn function_decl(text: &SourceText<'_>, f: &mir::FunctionDef) -> Decl {
+    let (line, name_char) = text.declared_name(f.location.as_ref(), &["function"], &f.short_name);
+    Decl {
+        key: sort_key(f.location.as_ref()),
+        namespace: namespace_of(&f.fqn),
+        row: row(
+            &f.short_name,
+            SymbolKind::FUNCTION,
+            line,
+            deprecated_flag(&f.deprecated),
+        ),
+        children: Vec::new(),
+        item: DeclItem::Function(FunctionDef {
+            name: f.short_name.as_ref().into(),
+            fqn: f.fqn.trim_start_matches('\\').into(),
+            params: param_defs(&f.params),
+            return_type: type_string(f.return_type.as_ref()),
+            start_line: line,
+            name_char,
+        }),
     }
-    view.position_of(doc_comment.span.start).line
+}
+
+/// Real (non-`@method`) methods with their workspace-symbol rows.
+fn methods<'a>(
+    text: &SourceText<'_>,
+    own: impl Iterator<Item = &'a Arc<mir::MethodDef>>,
+    interface: bool,
+    rows: &mut Vec<ChildRow>,
+) -> Vec<MethodDef> {
+    own.filter(|m| !m.is_virtual)
+        .map(|m| {
+            let (line, name_char) = text.declared_name(m.location.as_ref(), &["function"], &m.name);
+            rows.push((
+                sort_key(m.location.as_ref()),
+                row(
+                    &m.name,
+                    SymbolKind::METHOD,
+                    line,
+                    deprecated_flag(&m.deprecated),
+                ),
+            ));
+            MethodDef {
+                name: m.name.as_ref().into(),
+                is_static: m.is_static,
+                is_abstract: interface || m.is_abstract,
+                visibility: if interface {
+                    Visibility::Public
+                } else {
+                    visibility(m.visibility)
+                },
+                params: param_defs(&m.params),
+                return_type: type_string(m.return_type.as_ref()),
+                start_line: line,
+                name_char,
+            }
+        })
+        .collect()
+}
+
+fn properties<'a>(
+    text: &SourceText<'_>,
+    own: impl Iterator<Item = &'a mir::PropertyDef>,
+    rows: Option<&mut Vec<ChildRow>>,
+) -> Vec<PropertyDef> {
+    let mut props: Vec<(SortKey, PropertyDef, Option<bool>)> = own
+        .filter(|p| !p.from_docblock)
+        .map(|p| {
+            let (line, name_char) = text.declared_variable(p.location.as_ref(), &p.name);
+            let def = PropertyDef {
+                name: p.name.as_ref().into(),
+                is_static: p.is_static,
+                is_readonly: p.is_readonly,
+                type_hint: type_string(p.ty.as_ref()),
+                visibility: visibility(p.visibility),
+                start_line: line,
+                name_char,
+            };
+            (
+                sort_key(p.location.as_ref()),
+                def,
+                deprecated_flag(&p.deprecated),
+            )
+        })
+        .collect();
+    props.sort_by_key(|(key, _, _)| *key);
+    if let Some(rows) = rows {
+        for (key, p, deprecated) in &props {
+            let name = format!("${}", p.name);
+            rows.push((
+                *key,
+                row(&name, SymbolKind::PROPERTY, p.start_line, *deprecated),
+            ));
+        }
+    }
+    props.into_iter().map(|(_, p, _)| p).collect()
+}
+
+fn constants<'a>(
+    own: impl Iterator<Item = &'a mir::ConstantDef>,
+    rows: &mut Vec<ChildRow>,
+) -> Vec<Box<str>> {
+    let mut consts: Vec<&mir::ConstantDef> = own.collect();
+    consts.sort_by_key(|c| sort_key(c.location.as_ref()));
+    for c in &consts {
+        rows.push((
+            sort_key(c.location.as_ref()),
+            row(
+                &c.name,
+                SymbolKind::CONSTANT,
+                0,
+                deprecated_flag(&c.deprecated),
+            ),
+        ));
+    }
+    consts.iter().map(|c| c.name.as_ref().into()).collect()
+}
+
+fn doc_methods(c: &mir::ClassDef) -> Vec<DocMethodEntry> {
+    let mut entries: Vec<(SortKey, DocMethodEntry)> = c
+        .own_methods
+        .values()
+        .filter(|m| m.is_virtual)
+        .map(|m| {
+            let entry = DocMethodEntry {
+                name: m.name.as_ref().into(),
+                is_static: m.is_static,
+                return_type: type_string(m.return_type.as_ref()),
+                start_line: m.location.as_ref().map_or(0, |l| l.line.saturating_sub(1)),
+                params: m
+                    .params
+                    .iter()
+                    .map(|p| DocMethodParam {
+                        name: p.name.as_str().trim_start_matches('$').into(),
+                        type_hint: type_string(p.ty.as_ref()),
+                        is_variadic: p.is_variadic,
+                        is_byref: p.is_byref,
+                        is_optional: p.is_optional,
+                    })
+                    .collect(),
+            };
+            (sort_key(m.location.as_ref()), entry)
+        })
+        .collect();
+    entries.sort_by_key(|(key, _)| *key);
+    entries.into_iter().map(|(_, e)| e).collect()
+}
+
+fn trait_method_aliases(c: &mir::ClassDef) -> Vec<TraitMethodAlias> {
+    let mut aliases: Vec<(SortKey, TraitMethodAlias)> = c
+        .trait_aliases
+        .iter()
+        .map(|(key, (trait_name, original, _, alias))| {
+            let alias = TraitMethodAlias {
+                alias: alias.as_ref().into(),
+                original: original.as_ref().into(),
+                trait_name: trait_name.as_ref().map(|t| absolute(t).as_ref().into()),
+            };
+            (sort_key(c.trait_alias_locations.get(key)), alias)
+        })
+        .collect();
+    aliases.sort_by_key(|(key, _)| *key);
+    aliases.into_iter().map(|(_, a)| a).collect()
+}
+
+struct ClassShell<'a> {
+    fqcn: &'a str,
+    short_name: &'a str,
+    location: Option<&'a Location>,
+    deprecated: &'a Option<Arc<str>>,
+    kind: ClassKind,
+    row_kind: SymbolKind,
+}
+
+fn class_like_decl(
+    text: &SourceText<'_>,
+    shell: ClassShell<'_>,
+    children: Vec<ChildRow>,
+    build: impl FnOnce(u32, u32) -> ClassDef,
+) -> Decl {
+    let (line, name_char) = text.declared_name(
+        shell.location,
+        &["class", "interface", "trait", "enum"],
+        shell.short_name,
+    );
+    let mut def = build(line, name_char);
+    def.name = shell.short_name.into();
+    def.fqn = shell.fqcn.trim_start_matches('\\').into();
+    def.kind = shell.kind;
+    Decl {
+        key: sort_key(shell.location),
+        namespace: namespace_of(shell.fqcn),
+        row: row(
+            shell.short_name,
+            shell.row_kind,
+            line,
+            deprecated_flag(shell.deprecated),
+        ),
+        children,
+        item: DeclItem::Class(Box::new(def)),
+    }
+}
+
+fn empty_class(start_line: u32, name_char: u32) -> ClassDef {
+    ClassDef {
+        name: Box::default(),
+        fqn: Box::default(),
+        kind: ClassKind::Class,
+        is_abstract: false,
+        is_readonly: false,
+        parent: None,
+        implements: Vec::new(),
+        traits: Vec::new(),
+        methods: Vec::new(),
+        properties: Vec::new(),
+        constants: Vec::new(),
+        cases: Vec::new(),
+        start_line,
+        name_char,
+        doc_methods: Vec::new(),
+        mixins: Vec::new(),
+        trait_method_aliases: Vec::new(),
+    }
+}
+
+fn class_decl(text: &SourceText<'_>, c: &mir::ClassDef) -> Decl {
+    let mut rows = Vec::new();
+    let methods = methods(text, c.own_methods.values(), false, &mut rows);
+    let properties = properties(text, c.own_properties.values(), Some(&mut rows));
+    let constants = constants(c.own_constants.values(), &mut rows);
+    let shell = ClassShell {
+        fqcn: &c.fqcn,
+        short_name: &c.short_name,
+        location: c.location.as_ref(),
+        deprecated: &c.deprecated,
+        kind: ClassKind::Class,
+        row_kind: SymbolKind::CLASS,
+    };
+    class_like_decl(text, shell, rows, |line, name_char| ClassDef {
+        is_abstract: c.is_abstract,
+        is_readonly: c.is_readonly,
+        parent: c.parent.as_ref().map(absolute),
+        implements: c.interfaces.iter().map(absolute).collect(),
+        traits: c.traits.iter().map(absolute).collect(),
+        methods,
+        properties,
+        constants,
+        doc_methods: doc_methods(c),
+        mixins: c.mixins.iter().map(absolute).collect(),
+        trait_method_aliases: trait_method_aliases(c),
+        ..empty_class(line, name_char)
+    })
+}
+
+fn interface_decl(text: &SourceText<'_>, i: &mir::InterfaceDef) -> Decl {
+    let mut rows = Vec::new();
+    let methods = methods(text, i.own_methods.values(), true, &mut rows);
+    let constants = constants(i.own_constants.values(), &mut rows);
+    let shell = ClassShell {
+        fqcn: &i.fqcn,
+        short_name: &i.short_name,
+        location: i.location.as_ref(),
+        deprecated: &i.deprecated,
+        kind: ClassKind::Interface,
+        row_kind: SymbolKind::INTERFACE,
+    };
+    class_like_decl(text, shell, rows, |line, name_char| ClassDef {
+        is_abstract: true,
+        implements: i.extends.iter().map(absolute).collect(),
+        methods,
+        constants,
+        ..empty_class(line, name_char)
+    })
+}
+
+fn trait_decl(text: &SourceText<'_>, t: &mir::TraitDef) -> Decl {
+    let mut rows = Vec::new();
+    let methods = methods(text, t.own_methods.values(), false, &mut rows);
+    let properties = properties(text, t.own_properties.values(), None);
+    let mut constant_rows = Vec::new();
+    let constants = constants(t.own_constants.values(), &mut constant_rows);
+    let shell = ClassShell {
+        fqcn: &t.fqcn,
+        short_name: &t.short_name,
+        location: t.location.as_ref(),
+        deprecated: &t.deprecated,
+        kind: ClassKind::Trait,
+        row_kind: SymbolKind::CLASS,
+    };
+    class_like_decl(text, shell, rows, |line, name_char| ClassDef {
+        traits: t.traits.iter().map(absolute).collect(),
+        methods,
+        properties,
+        constants,
+        ..empty_class(line, name_char)
+    })
+}
+
+fn enum_decl(text: &SourceText<'_>, e: &mir::EnumDef) -> Decl {
+    let mut rows = Vec::new();
+    let mut cases: Vec<&mir::EnumCaseDef> = e.cases.values().collect();
+    cases.sort_by_key(|c| sort_key(c.location.as_ref()));
+    for case in &cases {
+        rows.push((
+            sort_key(case.location.as_ref()),
+            row(&case.name, SymbolKind::ENUM_MEMBER, 0, None),
+        ));
+    }
+    let methods = methods(text, e.own_methods.values(), false, &mut rows);
+    let constants = constants(e.own_constants.values(), &mut rows);
+    let shell = ClassShell {
+        fqcn: &e.fqcn,
+        short_name: &e.short_name,
+        location: e.location.as_ref(),
+        deprecated: &e.deprecated,
+        kind: ClassKind::Enum,
+        row_kind: SymbolKind::ENUM,
+    };
+    class_like_decl(text, shell, rows, |line, name_char| ClassDef {
+        implements: e.interfaces.iter().map(absolute).collect(),
+        traits: e.traits.iter().map(absolute).collect(),
+        methods,
+        constants,
+        cases: cases.iter().map(|c| c.name.as_ref().into()).collect(),
+        ..empty_class(line, name_char)
+    })
+}
+
+/// Source text with a line table, for turning mir's declaration spans into name positions.
+struct SourceText<'a> {
+    src: &'a str,
+    line_starts: Vec<usize>,
+}
+
+impl<'a> SourceText<'a> {
+    fn new(src: &'a str) -> Self {
+        let mut line_starts = vec![0];
+        line_starts.extend(src.match_indices('\n').map(|(i, _)| i + 1));
+        Self { src, line_starts }
+    }
+
+    /// Byte offset of a 1-based line and code-point column.
+    fn offset(&self, line: u32, column: u16) -> usize {
+        let Some(&start) = self.line_starts.get(line.saturating_sub(1) as usize) else {
+            return self.src.len();
+        };
+        self.src[start..]
+            .char_indices()
+            .nth(column as usize)
+            .map_or(self.src.len(), |(i, _)| start + i)
+    }
+
+    fn line_start(&self, line: u32) -> usize {
+        self.line_starts
+            .get(line.saturating_sub(1) as usize)
+            .copied()
+            .unwrap_or(self.src.len())
+    }
+
+    /// 0-based line and UTF-16 column of a byte offset.
+    fn position(&self, offset: usize) -> (u32, u32) {
+        let line = self
+            .line_starts
+            .partition_point(|&s| s <= offset)
+            .saturating_sub(1);
+        let start = self.line_starts[line];
+        let character = self.src[start..offset]
+            .chars()
+            .map(|c| c.len_utf16() as u32)
+            .sum();
+        (line as u32, character)
+    }
+
+    /// Position of `name` after the first of `keywords` in the declaration span.
+    fn declared_name(&self, loc: Option<&Location>, keywords: &[&str], name: &str) -> (u32, u32) {
+        self.find_in_span(loc, |src, from, to| {
+            let after = keywords
+                .iter()
+                .filter_map(|k| find_word(src, from, to, k, true).map(|i| i + k.len()))
+                .min()?;
+            find_word(src, after, to, name, false).or_else(|| find_word(src, after, to, name, true))
+        })
+    }
+
+    /// Position of `$name`'s identifier in the declaration span.
+    fn declared_variable(&self, loc: Option<&Location>, name: &str) -> (u32, u32) {
+        let var = format!("${name}");
+        self.find_in_span(loc, |src, from, to| {
+            find_word(src, from, to, &var, false).map(|i| i + 1)
+        })
+    }
+
+    fn find_in_span(
+        &self,
+        loc: Option<&Location>,
+        find: impl Fn(&str, usize, usize) -> Option<usize>,
+    ) -> (u32, u32) {
+        let Some(loc) = loc else { return (0, 0) };
+        let start = self.offset(loc.line, loc.col_start);
+        let end = self.offset(loc.line_end, loc.col_end).max(start);
+        // Columns are u16; on longer lines retry from the start of the line.
+        let found =
+            find(self.src, start, end).or_else(|| find(self.src, self.line_start(loc.line), end));
+        match found {
+            Some(offset) => self.position(offset),
+            None => self.position(start.min(self.src.len())),
+        }
+    }
+}
+
+fn is_ident_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_' || b >= 0x80
+}
+
+/// First whole-identifier occurrence of `word` in `src[from..to]`.
+fn find_word(src: &str, from: usize, to: usize, word: &str, ignore_case: bool) -> Option<usize> {
+    let bytes = src.as_bytes();
+    let w = word.as_bytes();
+    let to = to.min(bytes.len());
+    if w.is_empty() || from >= to {
+        return None;
+    }
+    let first_is_ident = is_ident_byte(w[0]);
+    (from..=to.checked_sub(w.len())?).find(|&i| {
+        let candidate = &bytes[i..i + w.len()];
+        let matches = if ignore_case {
+            candidate.eq_ignore_ascii_case(w)
+        } else {
+            candidate == w
+        };
+        matches
+            && (!first_is_ident || i == 0 || !is_ident_byte(bytes[i - 1]))
+            && bytes.get(i + w.len()).is_none_or(|&b| !is_ident_byte(b))
+    })
 }
 
 #[cfg(test)]
@@ -826,8 +919,7 @@ mod tests {
     #[test]
     fn extracts_class_and_method() {
         let src = "<?php\nclass Greeter {\n    public function greet(string $name): string {}\n}";
-        let doc = ParsedDoc::parse(src.to_string());
-        let idx = FileIndex::extract(&doc);
+        let idx = FileIndex::from_source("file:///t.php", src);
         assert_eq!(idx.classes.len(), 1);
         let cls = &idx.classes[0];
         assert_eq!(&*cls.name, "Greeter");
@@ -845,8 +937,7 @@ mod tests {
     #[test]
     fn extracts_function() {
         let src = "<?php\nfunction add(int $a, int $b): int {}";
-        let doc = ParsedDoc::parse(src.to_string());
-        let idx = FileIndex::extract(&doc);
+        let idx = FileIndex::from_source("file:///t.php", src);
         assert_eq!(idx.functions.len(), 1);
         let f = &idx.functions[0];
         assert_eq!(&*f.name, "add");
@@ -861,8 +952,7 @@ mod tests {
     #[test]
     fn extracts_namespace() {
         let src = "<?php\nnamespace App\\Services;\nclass Mailer {}";
-        let doc = ParsedDoc::parse(src.to_string());
-        let idx = FileIndex::extract(&doc);
+        let idx = FileIndex::from_source("file:///t.php", src);
         assert_eq!(idx.namespace.as_deref(), Some("App\\Services"));
         assert_eq!(&*idx.classes[0].fqn, "App\\Services\\Mailer");
     }
@@ -870,8 +960,7 @@ mod tests {
     #[test]
     fn extracts_braced_namespace() {
         let src = "<?php\nnamespace App\\Models {\n    class User {}\n}";
-        let doc = ParsedDoc::parse(src.to_string());
-        let idx = FileIndex::extract(&doc);
+        let idx = FileIndex::from_source("file:///t.php", src);
         assert_eq!(idx.namespace.as_deref(), Some("App\\Models"));
         assert_eq!(&*idx.classes[0].fqn, "App\\Models\\User");
     }
@@ -879,8 +968,7 @@ mod tests {
     #[test]
     fn extracts_interface() {
         let src = "<?php\ninterface Countable {\n    public function count(): int;\n}";
-        let doc = ParsedDoc::parse(src.to_string());
-        let idx = FileIndex::extract(&doc);
+        let idx = FileIndex::from_source("file:///t.php", src);
         assert_eq!(idx.classes.len(), 1);
         assert_eq!(idx.classes[0].kind, ClassKind::Interface);
         assert_eq!(&*idx.classes[0].methods[0].name, "count");
@@ -890,8 +978,7 @@ mod tests {
     #[test]
     fn extracts_trait() {
         let src = "<?php\ntrait Loggable {\n    public function log(): void {}\n}";
-        let doc = ParsedDoc::parse(src.to_string());
-        let idx = FileIndex::extract(&doc);
+        let idx = FileIndex::from_source("file:///t.php", src);
         assert_eq!(idx.classes[0].kind, ClassKind::Trait);
         assert_eq!(&*idx.classes[0].methods[0].name, "log");
     }
@@ -899,8 +986,7 @@ mod tests {
     #[test]
     fn extracts_enum_cases() {
         let src = "<?php\nenum Status { case Active; case Inactive; }";
-        let doc = ParsedDoc::parse(src.to_string());
-        let idx = FileIndex::extract(&doc);
+        let idx = FileIndex::from_source("file:///t.php", src);
         assert_eq!(idx.classes[0].kind, ClassKind::Enum);
         assert!(idx.classes[0].cases.iter().any(|c| c.as_ref() == "Active"));
         assert!(
@@ -914,8 +1000,7 @@ mod tests {
     #[test]
     fn readonly_class_is_marked() {
         let src = "<?php\nreadonly class ValueObject { public function __construct(public string $id) {} }";
-        let doc = ParsedDoc::parse(src.to_string());
-        let idx = FileIndex::extract(&doc);
+        let idx = FileIndex::from_source("file:///t.php", src);
         let cls = &idx.classes[0];
         assert!(cls.is_readonly);
     }
@@ -923,16 +1008,14 @@ mod tests {
     #[test]
     fn non_readonly_class_is_not_marked() {
         let src = "<?php\nclass Plain {}";
-        let doc = ParsedDoc::parse(src.to_string());
-        let idx = FileIndex::extract(&doc);
+        let idx = FileIndex::from_source("file:///t.php", src);
         assert!(!idx.classes[0].is_readonly);
     }
 
     #[test]
     fn readonly_property_is_marked() {
         let src = "<?php\nclass Dto { public readonly string $value; }";
-        let doc = ParsedDoc::parse(src.to_string());
-        let idx = FileIndex::extract(&doc);
+        let idx = FileIndex::from_source("file:///t.php", src);
         let prop = &idx.classes[0].properties[0];
         assert!(prop.is_readonly);
     }
@@ -940,8 +1023,7 @@ mod tests {
     #[test]
     fn non_readonly_property_is_not_marked() {
         let src = "<?php\nclass Dto { public string $value; }";
-        let doc = ParsedDoc::parse(src.to_string());
-        let idx = FileIndex::extract(&doc);
+        let idx = FileIndex::from_source("file:///t.php", src);
         let prop = &idx.classes[0].properties[0];
         assert!(!prop.is_readonly);
     }
@@ -949,8 +1031,7 @@ mod tests {
     #[test]
     fn readonly_promoted_param_is_marked() {
         let src = "<?php\nclass Dto { public function __construct(public readonly string $id) {} }";
-        let doc = ParsedDoc::parse(src.to_string());
-        let idx = FileIndex::extract(&doc);
+        let idx = FileIndex::from_source("file:///t.php", src);
         let prop = idx.classes[0]
             .properties
             .iter()
@@ -962,8 +1043,7 @@ mod tests {
     #[test]
     fn extracts_class_properties_and_constants() {
         let src = "<?php\nclass Config {\n    public string $host;\n    const VERSION = '1.0';\n}";
-        let doc = ParsedDoc::parse(src.to_string());
-        let idx = FileIndex::extract(&doc);
+        let idx = FileIndex::from_source("file:///t.php", src);
         let cls = &idx.classes[0];
         assert_eq!(cls.properties.len(), 1);
         assert_eq!(&*cls.properties[0].name, "host");
@@ -973,32 +1053,29 @@ mod tests {
     #[test]
     fn extracts_trait_use() {
         let src = "<?php\ntrait T {}\nclass MyClass { use T; }";
-        let doc = ParsedDoc::parse(src.to_string());
-        let idx = FileIndex::extract(&doc);
+        let idx = FileIndex::from_source("file:///t.php", src);
         let cls = idx
             .classes
             .iter()
             .find(|c| c.name.as_ref() == "MyClass")
             .unwrap();
-        assert!(cls.traits.iter().any(|t| t.as_ref() == "T"));
+        assert!(cls.traits.iter().any(|t| t.as_ref() == "\\T"));
     }
 
     #[test]
     fn extracts_class_implements_and_extends() {
         let src = "<?php\nclass Dog extends Animal implements Pet, Movable {}";
-        let doc = ParsedDoc::parse(src.to_string());
-        let idx = FileIndex::extract(&doc);
+        let idx = FileIndex::from_source("file:///t.php", src);
         let cls = &idx.classes[0];
-        assert_eq!(cls.parent.as_deref(), Some("Animal"));
-        assert!(cls.implements.iter().any(|i| i.as_ref() == "Pet"));
-        assert!(cls.implements.iter().any(|i| i.as_ref() == "Movable"));
+        assert_eq!(cls.parent.as_deref(), Some("\\Animal"));
+        assert!(cls.implements.iter().any(|i| i.as_ref() == "\\Pet"));
+        assert!(cls.implements.iter().any(|i| i.as_ref() == "\\Movable"));
     }
 
     #[test]
     fn constructor_promoted_params_become_properties() {
         let src = "<?php\nclass User {\n    public function __construct(public string $name) {}\n}";
-        let doc = ParsedDoc::parse(src.to_string());
-        let idx = FileIndex::extract(&doc);
+        let idx = FileIndex::from_source("file:///t.php", src);
         let cls = &idx.classes[0];
         // Should have a property from the promoted param.
         assert!(
@@ -1011,8 +1088,7 @@ mod tests {
     #[test]
     fn extracts_doc_methods_from_class_docblock() {
         let src = "<?php\n/**\n * @method User find(int $id)\n * @method static Builder where(string $col, mixed $val)\n */\nclass Model {}";
-        let doc = ParsedDoc::parse(src.to_string());
-        let idx = FileIndex::extract(&doc);
+        let idx = FileIndex::from_source("file:///t.php", src);
         let cls = &idx.classes[0];
         assert_eq!(cls.doc_methods.len(), 2, "expected 2 @method entries");
 
@@ -1035,8 +1111,7 @@ mod tests {
     fn doc_method_tag_line_no_substring_collision() {
         // `log` has a param named `$find`; `find` must resolve to its own line, not `log`'s.
         let src = "<?php\n/**\n * @method void log(string $find)\n * @method Model find()\n */\nclass Builder {}";
-        let doc = ParsedDoc::parse(src.to_string());
-        let idx = FileIndex::extract(&doc);
+        let idx = FileIndex::from_source("file:///t.php", src);
         let cls = &idx.classes[0];
         let find = cls.doc_methods.iter().find(|m| m.name.as_ref() == "find");
         assert!(find.is_some(), "expected @method find");
@@ -1046,27 +1121,24 @@ mod tests {
     #[test]
     fn class_without_docblock_has_no_doc_methods() {
         let src = "<?php\nclass Plain {\n    public function foo(): void {}\n}";
-        let doc = ParsedDoc::parse(src.to_string());
-        let idx = FileIndex::extract(&doc);
+        let idx = FileIndex::from_source("file:///t.php", src);
         assert!(idx.classes[0].doc_methods.is_empty());
     }
 
     #[test]
     fn extracts_mixins_from_class_docblock() {
         let src = "<?php\n/**\n * @mixin Macroable\n * @mixin HasEvents\n */\nclass Builder {}";
-        let doc = ParsedDoc::parse(src.to_string());
-        let idx = FileIndex::extract(&doc);
+        let idx = FileIndex::from_source("file:///t.php", src);
         let cls = &idx.classes[0];
         assert_eq!(cls.mixins.len(), 2, "expected 2 @mixin entries");
-        assert!(cls.mixins.iter().any(|m| m.as_ref() == "Macroable"));
-        assert!(cls.mixins.iter().any(|m| m.as_ref() == "HasEvents"));
+        assert!(cls.mixins.iter().any(|m| m.as_ref() == "\\Macroable"));
+        assert!(cls.mixins.iter().any(|m| m.as_ref() == "\\HasEvents"));
     }
 
     #[test]
     fn class_without_docblock_has_no_mixins() {
         let src = "<?php\nclass Plain {}";
-        let doc = ParsedDoc::parse(src.to_string());
-        let idx = FileIndex::extract(&doc);
+        let idx = FileIndex::from_source("file:///t.php", src);
         assert!(idx.classes[0].mixins.is_empty());
     }
 }

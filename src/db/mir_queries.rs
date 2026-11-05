@@ -16,15 +16,11 @@ use crate::document::ast::ParsedDoc;
 use crate::index::file_index::FileIndex;
 use crate::types::symbol_map::SymbolMap;
 
-/// Per-file php-lsp input on the converged db: pairs mir's shared `SourceFile`
-/// (the text source of truth) with the optional warm-start `cached_index`
-/// (a `FileIndex` loaded from the on-disk cache). `file_index` keys on this so
-/// the cached fast-path survives the merge; an edit updates `source`'s text and
-/// clears `cached_index`, both invalidating `file_index`.
+/// Per-file php-lsp input on the converged db, wrapping mir's shared `SourceFile`
+/// (the text source of truth).
 #[salsa::input]
 pub struct LspWsFile {
     pub source: SourceFile,
-    pub cached_index: Option<Arc<FileIndex>>,
 }
 
 /// php-lsp's workspace scoping input on the converged db: the set of project
@@ -51,16 +47,16 @@ pub fn symbol_map(db: &dyn MirDatabase, file: SourceFile) -> SymbolMapArc {
     SymbolMapArc(Arc::new(SymbolMap::build(doc.get())))
 }
 
-/// Compact per-file declaration index. Warm-start fast path: if a disk-cached
-/// index was seeded onto `wf`, return it without parsing. Otherwise share the
-/// converged-db [`parsed_doc`] and extract.
+/// Compact per-file declaration index, projected from mir's memoized (and
+/// disk-cached) definitions so no file is parsed twice.
 #[salsa::tracked]
 pub fn file_index(db: &dyn MirDatabase, wf: LspWsFile) -> IndexArc {
-    if let Some(cached) = wf.cached_index(db) {
-        return IndexArc(cached.clone());
-    }
-    let doc = parsed_doc(db, *wf.source(db));
-    IndexArc(Arc::new(FileIndex::extract(doc.get())))
+    let source = *wf.source(db);
+    let defs = mir_analyzer::db::collect_file_definitions(db, source);
+    IndexArc(Arc::new(FileIndex::from_definitions(
+        &defs.slice,
+        source.text(db),
+    )))
 }
 
 /// Aggregate workspace index over the project files in `ws`. Depends on each

@@ -473,7 +473,7 @@ mod navigation {
     async fn goto_definition_parameter_type_in_vendor() {
         // Read-only against the checked-out fixture (no per-test copy): a
         // fresh `with_fixture` TempDir would give every vendor file a new
-        // absolute path each run, defeating the on-disk FileIndex cache
+        // absolute path each run, defeating the on-disk cache
         // that's supposed to make repeat vendor scans near-free (see
         // `WorkspaceCache`) and forcing a full cold parse of all ~5200
         // vendor files on every single test instead of once per test binary.

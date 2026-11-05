@@ -7,6 +7,7 @@ All notable changes to php-lsp are documented here.
 ### Changed
 
 - **mir 0.90**: faster analysis with lower peak memory on large workspaces, new `UnusedConstant` check and broader dead-code detection, fewer false positives. A class or function declared in several files resolves to the same declaration on every run; go-to-definition still prefers the current file's own declaration.
+- **One index cache instead of two**: the workspace index is built from mir's per-file definitions, so each file is parsed once, and php-lsp no longer writes its own cache file for every indexed file. The cache directory moves to a new layout; the previous one is removed after a day unused.
 
 ### Fixed
 

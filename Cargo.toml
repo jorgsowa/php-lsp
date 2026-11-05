@@ -70,7 +70,6 @@ tokio = { version = "1", features = ["sync", "macros", "io-util", "rt", "time"] 
 futures = "0.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-bincode = { version = "2", features = ["serde"] }
 blake3 = "1"
 dashmap = "6"
 rayon = "1"

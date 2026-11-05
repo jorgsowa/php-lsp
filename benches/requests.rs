@@ -325,8 +325,8 @@ fn bench_completion_laravel(c: &mut Criterion) {
     // does via get_workspace_index_salsa() + get_doc_salsa().
     let class_doc_map: std::collections::HashMap<String, Arc<ParsedDoc>> = {
         let mut map = std::collections::HashMap::new();
-        for (_, doc) in &docs {
-            let idx = FileIndex::extract(doc);
+        for (uri, doc) in &docs {
+            let idx = FileIndex::from_source(uri.as_str(), doc.source());
             for cls in idx.classes {
                 map.entry(cls.name.to_string())
                     .or_insert_with(|| Arc::clone(doc));
@@ -480,7 +480,12 @@ fn bench_completion_identifier(c: &mut Criterion) {
 
 fn to_indexes(docs: &OtherDocs) -> Vec<(Uri, Arc<FileIndex>)> {
     docs.iter()
-        .map(|(uri, parsed)| (uri.clone(), Arc::new(FileIndex::extract(parsed))))
+        .map(|(uri, parsed)| {
+            (
+                uri.clone(),
+                Arc::new(FileIndex::from_source(uri.as_str(), parsed.source())),
+            )
+        })
         .collect()
 }
 
@@ -926,8 +931,10 @@ fn bench_workspace_parse(c: &mut Criterion) {
     group.bench_function("sequential", |b| {
         b.iter(|| {
             sources.iter().for_each(|(_, src)| {
-                let doc = ParsedDoc::parse(src.clone());
-                std::hint::black_box(php_lsp::file_index::FileIndex::extract(&doc));
+                std::hint::black_box(php_lsp::file_index::FileIndex::from_source(
+                    "file:///bench.php",
+                    src,
+                ));
             });
         });
     });
@@ -935,8 +942,10 @@ fn bench_workspace_parse(c: &mut Criterion) {
     group.bench_function("rayon", |b| {
         b.iter(|| {
             sources.par_iter().for_each(|(_, src)| {
-                let doc = ParsedDoc::parse(src.clone());
-                std::hint::black_box(php_lsp::file_index::FileIndex::extract(&doc));
+                std::hint::black_box(php_lsp::file_index::FileIndex::from_source(
+                    "file:///bench.php",
+                    src,
+                ));
             });
         });
     });

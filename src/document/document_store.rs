@@ -106,9 +106,8 @@ pub struct DocumentStore {
     // state (live text, version token, parse-diagnostics cache) lives on
     // `Backend` in its `open_files` map; the set of files tracked by salsa
     // is exactly `source_files.keys()`.
-    /// `Uri -> LspWsFile` lookup on the shared mir db. Each `LspWsFile` pairs
-    /// mir's `SourceFile` (the shared text input) with the optional warm-start
-    /// `cached_index`. Created/updated through the `AnalysisSession`'s
+    /// `Uri -> LspWsFile` lookup on the shared mir db. Each `LspWsFile` wraps
+    /// mir's `SourceFile` (the shared text input). Created/updated through the `AnalysisSession`'s
     /// `with_db_mut` under the db write lock; reads run on cheap snapshot clones.
     lsp_ws_files: DashMap<Uri, LspWsFile>,
     /// URIs that have been removed. Re-opening a deleted URI un-deletes it here
@@ -1073,11 +1072,6 @@ impl DocumentStore {
                     if *wf.source(db) != sf {
                         wf.set_source(db).to(sf);
                     }
-                    // Any text change invalidates a previously-seeded cached index.
-                    // Only set when present to avoid a spurious second revision bump.
-                    if wf.cached_index(db).is_some() {
-                        wf.set_cached_index(db).to(None);
-                    }
                 });
                 self.caches.text_cache.insert(uri.clone(), text_arc);
                 // Evict only this file's analysis; cross-file invalidation is handled
@@ -1086,7 +1080,7 @@ impl DocumentStore {
                 self.write_revision.fetch_add(1, Ordering::Release);
             } else {
                 let sf = session.upsert_source_file(path, text_arc.clone(), dur);
-                let wf = session.with_db_mut(|db| LspWsFile::new(db, sf, None));
+                let wf = session.with_db_mut(|db| LspWsFile::new(db, sf));
                 self.lsp_ws_files.insert(uri.clone(), wf);
                 self.caches.text_cache.insert(uri.clone(), text_arc);
                 self.mark_workspace_files_dirty();
@@ -1104,26 +1098,21 @@ impl DocumentStore {
         self.lsp_ws_files.get(uri).map(|e| *e)
     }
 
-    /// Phase K2: pre-seed a `FileIndex` loaded from the on-disk cache onto
-    /// the `FileText` input for `uri`. The next `file_index` call for that
-    /// file returns the cached index directly, skipping parse + extract.
-    ///
-    /// Must be called **before** any `file_index(db, sf)` call for this file —
-    /// otherwise salsa has already memoized the fresh-parse result and setting
-    /// `cached_index` now would only bump the revision without using the cache.
-    /// In practice the workspace-scan path seeds immediately after `mirror_text`
-    /// and before any query runs.
-    ///
-    /// Returns `false` when `uri` was not mirrored (caller should mirror
-    /// first); returns `true` on success.
-    pub fn seed_cached_index(&self, uri: &Uri, index: Arc<FileIndex>) -> bool {
-        self.with_session(|session| {
-            let Some(wf) = self.lsp_ws_file(uri) else {
-                return false;
-            };
-            session.with_db_mut(|db| wf.set_cached_index(db).to(Some(index)));
-            true
-        })
+    /// Computes `file_index` for `uris` in parallel, so the serial workspace
+    /// aggregate built afterwards only reads memos.
+    pub fn prewarm_file_indexes(&self, uris: &[Uri]) {
+        let files: Vec<LspWsFile> = uris.iter().filter_map(|u| self.lsp_ws_file(u)).collect();
+        if files.is_empty() {
+            return;
+        }
+        use rayon::prelude::*;
+        let db = self.with_session(|session| session.snapshot_db());
+        // A concurrent write cancels the pass; the indexes then compute lazily.
+        let _ = salsa::Cancelled::catch(std::panic::AssertUnwindSafe(|| {
+            files.par_iter().for_each_with(db.clone(), |db, wf| {
+                let _ = crate::db::mir_queries::file_index(db, *wf);
+            });
+        }));
     }
 
     /// Evict the semantic-tokens cache for `uri`. Called by Backend when a
@@ -1195,19 +1184,10 @@ impl DocumentStore {
         let mut guard = self.lock_session();
         if let Some(session) = guard.1.as_mut() {
             session.invalidate_file(uri.as_str());
-            // `file_index` has no LRU cap (unlike `parsed_doc`/`symbol_map`),
-            // so without this it would keep holding this file's pre-deletion
-            // `FileIndex` (and any seeded on-disk `cached_index`) in memory
-            // for the rest of the process's life. Clear the seed and force
-            // one recompute against the now-emptied text (`invalidate_file`
-            // above already cleared it via mir's `remove_source_file`) to
-            // shrink the memo to near-nothing immediately.
+            // `file_index` has no LRU cap (unlike `parsed_doc`/`symbol_map`):
+            // recompute it against the text `invalidate_file` just emptied so
+            // the pre-deletion `FileIndex` doesn't stay memoized.
             if let Some(wf) = self.lsp_ws_files.get(uri).map(|e| *e) {
-                session.with_db_mut(|db| {
-                    if wf.cached_index(db).is_some() {
-                        wf.set_cached_index(db).to(None);
-                    }
-                });
                 let db = session.snapshot_db();
                 let _ = crate::db::mir_queries::file_index(&db, wf);
             }
@@ -3944,17 +3924,6 @@ mod tests {
     /// parsed_cache must stay bounded — inserting more than
     /// `PARSED_CACHE_CAP` unique URLs must not cause unbounded growth.
     /// Eviction is probabilistic, so we only assert the bound, not which
-    /// Seeding a cached index for a URL that was never mirrored is a no-op
-    /// (returns `false`) — avoids silently allocating SourceFiles outside
-    /// `mirror_text`'s control.
-    #[test]
-    fn seed_cached_index_noops_for_unknown_uri() {
-        let store = DocumentStore::new();
-        let u = uri("/never_mirrored.php");
-        let index = Arc::new(crate::index::file_index::FileIndex::default());
-        assert!(!store.seed_cached_index(&u, index));
-    }
-
     /// entries survive.
     #[test]
     fn parsed_cache_stays_bounded_under_many_inserts() {

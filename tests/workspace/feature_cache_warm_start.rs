@@ -1,10 +1,9 @@
 //! On-disk cache warm-start correctness.
 //!
-//! A cold start scans and parses every workspace file; a warm start (same
-//! root, same cache dir) must serve `FileIndex` entries from disk without
-//! re-parsing. These tests exercise the observable guarantee: symbols are
-//! correct after a warm restart, and a file modified between starts is
-//! detected because the content key changes even when mtime/size are stable.
+//! A warm start (same root, same cache dir) reuses mir's on-disk caches.
+//! These tests exercise the observable guarantee: symbols are correct after a
+//! warm restart, and a file modified between starts is detected because the
+//! content key changes even when mtime/size are stable.
 //!
 //! The `cachePath` initializationOption pins both servers to the same
 //! cache directory without touching `XDG_CACHE_HOME`, keeping tests
@@ -34,31 +33,6 @@ fn fixture_path(name: &str) -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures")
         .join(name)
-}
-
-fn count_bin_files(dir: &std::path::Path) -> usize {
-    std::fs::read_dir(dir)
-        .map(|rd| {
-            rd.flatten()
-                .filter(|e| e.path().extension().is_some_and(|ext| ext == "bin"))
-                .count()
-        })
-        .unwrap_or(0)
-}
-
-/// Poll `dir` for its `.bin` entry count to exceed `before` — a real signal
-/// that a new (content-keyed) cache entry landed, instead of guessing how
-/// long the write's `spawn_blocking` task takes.
-async fn wait_for_new_cache_entry(dir: &std::path::Path, before: usize) {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-    while count_bin_files(dir) <= before {
-        assert!(
-            std::time::Instant::now() < deadline,
-            "timed out waiting for a new cache entry in {}",
-            dir.display()
-        );
-        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-    }
 }
 
 /// Warm restart (same workspace root, same cache dir) must expose the same
@@ -141,22 +115,9 @@ async fn warm_start_detects_changed_file_content() {
     }
 }
 
-/// `textDocument/didSave` must write a cache entry keyed exactly the way a
-/// workspace scan would key it (same uri + content), so a later scan can hit
-/// it instead of re-parsing.
-///
-/// This can't be proven by symbol resolution after a restart: did_save's
-/// handler re-reads the file from disk to compute both the cached content
-/// and the cache key, so whatever a subsequent scan finds on disk is by
-/// construction identical to what did_save cached — a warm-start symbol
-/// snapshot would look right even if did_save silently failed to write
-/// anything at all, or the write raced with the read that follows it,
-/// wrote to a wrong key, or FileIndex serialization was
-/// broken. Reading the cache directly with the same key the scanner
-/// would compute is the only way to actually pin "did_save wrote a
-/// findable entry."
+/// Content saved in one session is what the next session indexes.
 #[tokio::test]
-async fn did_save_writes_a_cache_entry_findable_by_key() {
+async fn saved_content_is_indexed_after_restart() {
     let workspace = tempfile::tempdir().expect("workspace tempdir");
     let cache_dir = tempfile::tempdir().expect("cache tempdir");
     copy_dir_all(&fixture_path("psr4-mini"), workspace.path()).expect("copy fixture");
@@ -166,82 +127,12 @@ async fn did_save_writes_a_cache_entry_findable_by_key() {
         "diagnostics": {"enabled": false},
     });
 
-    let mut s = TestServer::with_root_and_options(workspace.path(), opts).await;
-    s.wait_for_index_ready().await;
-
-    let user_content = "<?php\nnamespace App\\Model;\n\nclass User { public int $id; }\n";
-    let user_php = workspace.path().join("src/Model/User.php");
-    std::fs::write(&user_php, user_content).expect("write User.php");
-    let uri = s.uri("src/Model/User.php");
-    s.client()
-        .notify(
-            "textDocument/didSave",
-            serde_json::json!({ "textDocument": { "uri": uri } }),
-        )
-        .await;
-
-    // Poll for did_save's spawn_blocking task to write the cache entry — a
-    // fixed sleep here flakes under parallel test load.
-    let cache = php_lsp::cache::WorkspaceCache::with_dir(cache_dir.path().to_path_buf());
-    let key = php_lsp::cache::WorkspaceCache::key_for(&uri, user_content);
-    let mut cached: Option<php_lsp::file_index::FileIndex> = None;
-    for _ in 0..100 {
-        cached = cache.read(&key);
-        if cached.is_some() {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    }
-    assert!(
-        cached.is_some(),
-        "did_save should have written a FileIndex cache entry keyed by (uri, saved content)"
-    );
-    let classes: Vec<&str> = cached
-        .as_ref()
-        .unwrap()
-        .classes
-        .iter()
-        .map(|c| c.name.as_ref())
-        .collect();
-    assert_eq!(
-        classes,
-        vec!["User"],
-        "cached FileIndex should reflect the saved content, not the original fixture"
-    );
-}
-
-/// A cache entry written by `did_save` is actually consulted (not just
-/// written and ignored) on the next workspace scan: with the entry
-/// pre-seeded to a key a fresh parse would never independently produce,
-/// warm start must still surface the class the entry describes.
-///
-/// FLAKY under full-suite contention: `wait_for_new_cache_entry`'s 2s
-/// deadline for the background `spawn_blocking` disk write can miss when
-/// many other test binaries are running concurrently. Confirmed
-/// pre-existing (reproduces identically on the unmodified baseline,
-/// 2026-08-04) — not caused by any change in this branch. TODO: make the
-/// wait deterministic (a debugStats counter, like the rest of this test
-/// file already does) instead of a fixed wall-clock timeout.
-#[ignore = "flaky under CPU contention: fixed 2s wait for a background disk write; see doc comment"]
-#[tokio::test]
-async fn did_save_cache_is_found_by_subsequent_scan() {
-    let workspace = tempfile::tempdir().expect("workspace tempdir");
-    let cache_dir = tempfile::tempdir().expect("cache tempdir");
-    copy_dir_all(&fixture_path("psr4-mini"), workspace.path()).expect("copy fixture");
-
-    let opts = json!({
-        "cachePath": cache_dir.path().to_str().unwrap(),
-        "diagnostics": {"enabled": false},
-    });
-
-    // ── First server: open and save a file so did_save writes the cache ───────
+    // ── First server: save new content ────────────────────────────────────────
     {
         let mut s = TestServer::with_root_and_options(workspace.path(), opts.clone()).await;
         s.wait_for_index_ready().await;
-        let before = count_bin_files(cache_dir.path());
 
         let user_content = "<?php\nnamespace App\\Model;\n\nclass User { public int $id; }\n";
-        // Write new content and trigger did_save so the cache entry is refreshed.
         let user_php = workspace.path().join("src/Model/User.php");
         std::fs::write(&user_php, user_content).expect("write User.php");
         let uri = s.uri("src/Model/User.php");
@@ -251,23 +142,16 @@ async fn did_save_cache_is_found_by_subsequent_scan() {
                 serde_json::json!({ "textDocument": { "uri": uri } }),
             )
             .await;
-
-        // did_save's cache write runs on spawn_blocking; the changed content
-        // means a new content-keyed entry, distinct from the one the initial
-        // scan wrote for User.php's original content — wait for it to land
-        // instead of guessing how long the write takes.
-        wait_for_new_cache_entry(cache_dir.path(), before).await;
     }
 
-    // ── Second server: warm start — scan must hit the did_save cache entry ────
+    // ── Second server: warm start ─────────────────────────────────────────────
     {
         let mut s = TestServer::with_root_and_options(workspace.path(), opts).await;
         s.wait_for_index_ready().await;
-        // User class still visible (cache hit from did_save write).
         let syms = s.snapshot_workspace_symbols("User").await;
         expect![[r#"
-            Class       User @ src/Model/User.php:3
-            Property    $users @ src/Service/Registry.php:9"#]]
+            Class       User @ src/Model/User.php:3 in App\Model
+            Property    $users @ src/Service/Registry.php:9 in Registry"#]]
         .assert_eq(&syms);
     }
 }

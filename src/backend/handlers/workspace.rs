@@ -560,26 +560,11 @@ impl Backend {
 
                 let scan_start = std::time::Instant::now();
                 let mut total = 0usize;
-                let mut from_cache = 0usize;
-                let mut first_root_cache = first_root_cache;
                 for root in &roots {
-                    // The first root's cache was already opened synchronously
-                    // above (to attach the session cache dir before the
-                    // prewarm task could race it); reuse it here instead of
-                    // opening it twice. Later roots (multi-root workspaces)
-                    // still open their own.
-                    let cache = first_root_cache.take().or_else(|| {
-                        if let Some(ref p) = cache_path {
-                            Some(crate::index::cache::WorkspaceCache::with_dir(p.clone()))
-                        } else {
-                            crate::index::cache::WorkspaceCache::new(root)
-                        }
-                    });
-                    let (n, c) = scan_workspace(
+                    total += scan_workspace(
                         root.clone(),
                         Arc::clone(&docs),
                         open_files.clone(),
-                        cache,
                         &roots,
                         &exclude_paths,
                         &include_paths,
@@ -588,8 +573,6 @@ impl Backend {
                         Some(progress_tx.clone()),
                     )
                     .await;
-                    total += n;
-                    from_cache += c;
                 }
                 // Drop the sender to close the channel; the receiver task exits once
                 // it has processed all remaining messages.
@@ -616,7 +599,6 @@ impl Backend {
                     .await;
 
                 if debug {
-                    let parsed = total.saturating_sub(from_cache);
                     let root_list = roots
                         .iter()
                         .map(|r| r.display().to_string())
@@ -627,8 +609,7 @@ impl Backend {
                         .log_message(
                             MessageType::INFO,
                             format!(
-                                "php-lsp: debug: {from_cache} from cache, {parsed} parsed fresh \
-                                 | {ns_count} PSR-4 namespaces | roots: {root_list}"
+                                "php-lsp: debug: {ns_count} PSR-4 namespaces | roots: {root_list}"
                             ),
                         )
                         .await;

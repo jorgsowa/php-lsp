@@ -62,8 +62,8 @@ Editor / AI agent
 
 - **Async parsing** — edits are debounced (default 100 ms, configurable via `initializationOptions.debounceMs`) and parsed in `spawn_blocking`; version tokens discard stale results.
 - **Text sync** — `FULL` sync mode; raw text is stored immediately on change for instant feature response before parsing completes.
-- **Two-tier document model** — open files carry a full `ParsedDoc` (~100 KB with arena + AST); background files store a lightweight `FileIndex` (~2 KB, declarations only) via salsa-memoized queries.
+- **Two-tier document model** — open files carry a full `ParsedDoc` (~100 KB with arena + AST); background files store a lightweight `FileIndex` (~2 KB, declarations only), projected from mir's per-file definitions via salsa-memoized queries.
 - **Workspace scan** — background task on `initialized`; 50k file cap; skips hidden dirs; eagerly indexes `vendor/` by default (set `indexVendor: false` to skip it for very large vendor trees; vendor files then load on demand via PSR-4); respects `excludePaths` and `includePaths`.
-- **On-disk cache** — `FileIndex` entries persisted under `~/.cache/php-lsp/`; warm starts skip re-parsing entirely.
+- **On-disk cache** — mir's per-file definitions and analysis results persisted under `~/.cache/php-lsp/`; warm starts skip re-parsing entirely.
 - **Eager vs deferred code actions** — cheap actions (extract variable/method/constant, inline, organize imports) return full edits immediately; expensive actions (PHPDoc, constructor, getters/setters, return type) carry a `data` payload resolved by `codeAction/resolve` when the user selects them.
 - **mir-php** — `mir_php::analyze(source, stmts, all)` accepts the current document as the first `all` entry for declaration-location tracking; the remaining entries are all other indexed documents.

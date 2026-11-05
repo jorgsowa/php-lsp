@@ -205,31 +205,20 @@ impl Backend {
     /// sequence; unlike the initial-boot indexing path this needs no
     /// progress-bar UI, so it isn't shared with that richer flow.
     pub(super) async fn rescan_roots_after_version_change(&self, roots: &[std::path::PathBuf]) {
-        let (exclude_paths, include_paths, max_indexed_files, cache_path) = {
+        let (exclude_paths, include_paths, max_indexed_files) = {
             let cfg = self.config.load();
             let mut exclude = cfg.exclude_paths.clone();
             if !cfg.index_vendor && !exclude.iter().any(|p| p == "vendor" || p == "vendor/") {
                 exclude.push("vendor/".to_string());
             }
-            (
-                exclude,
-                cfg.include_paths.clone(),
-                cfg.max_indexed_files,
-                cfg.cache_path.clone(),
-            )
+            (exclude, cfg.include_paths.clone(), cfg.max_indexed_files)
         };
         let extensions = self.config.load().php_file_extensions();
         for root in roots {
-            let cache = if let Some(ref p) = cache_path {
-                Some(crate::index::cache::WorkspaceCache::with_dir(p.clone()))
-            } else {
-                crate::index::cache::WorkspaceCache::new(root)
-            };
             crate::index::workspace_scan::scan_workspace(
                 root.clone(),
                 Arc::clone(&self.docs),
                 self.open_files.clone(),
-                cache,
                 roots,
                 &exclude_paths,
                 &include_paths,

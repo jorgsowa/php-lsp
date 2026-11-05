@@ -705,7 +705,10 @@ mod tests {
     fn workspace_symbol_dump(src: &str, query: &str) -> String {
         let uri: Uri = "file:///ws/a.php".parse().unwrap();
         let doc = Arc::new(ParsedDoc::parse(src.to_owned()));
-        let index = Arc::new(crate::index::file_index::FileIndex::extract(&doc));
+        let index = Arc::new(crate::index::file_index::FileIndex::from_source(
+            uri.as_str(),
+            doc.source(),
+        ));
         let wi =
             crate::db::workspace_index::WorkspaceIndexData::from_files(vec![(uri.clone(), index)]);
         workspace_symbols_from_workspace(query, &wi)
