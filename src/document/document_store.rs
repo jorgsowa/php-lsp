@@ -496,7 +496,7 @@ impl DocumentStore {
         cancel: &mir_analyzer::IndexCancel,
         progress: Option<&tokio::sync::mpsc::UnboundedSender<(u32, u32)>>,
     ) -> bool {
-        run_chunks(
+        let completed = run_chunks(
             queue,
             warm_chunk_size(),
             cancel,
@@ -504,17 +504,20 @@ impl DocumentStore {
             || self.yield_to_interactive_reads(),
             |chunk| {
                 let settled = self.reanalyze_files(chunk, cancel).is_some();
-                if settled {
+                // Eviction cancels in-flight reads and holds the session lock while they unwind.
+                if settled && self.interactive_reads.load(Ordering::Relaxed) == 0 {
                     self.evict_lru_memos();
                 }
                 settled
             },
-        )
+        );
+        self.yield_to_interactive_reads();
+        self.evict_lru_memos();
+        completed
     }
 
     /// Salsa enforces `lru` caps only at a new revision, which a read-only sweep never starts.
     fn evict_lru_memos(&self) {
-        self.yield_to_interactive_reads();
         self.with_session(|session| {
             session.with_db_mut(salsa::Database::trigger_lru_eviction);
         });
