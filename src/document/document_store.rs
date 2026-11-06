@@ -502,8 +502,22 @@ impl DocumentStore {
             cancel,
             progress,
             || self.yield_to_interactive_reads(),
-            |chunk| self.reanalyze_files(chunk, cancel).is_some(),
+            |chunk| {
+                let settled = self.reanalyze_files(chunk, cancel).is_some();
+                if settled {
+                    self.evict_lru_memos();
+                }
+                settled
+            },
         )
+    }
+
+    /// Salsa enforces `lru` caps only at a new revision, which a read-only sweep never starts.
+    fn evict_lru_memos(&self) {
+        self.yield_to_interactive_reads();
+        self.with_session(|session| {
+            session.with_db_mut(salsa::Database::trigger_lru_eviction);
+        });
     }
 
     /// The reference-warm phase: one deduped reanalysis queue holding mir's
@@ -3393,6 +3407,37 @@ mod tests {
             count_before,
             "delete-reopen cycles must not create new salsa inputs (L1-B regression guard)"
         );
+    }
+
+    #[test]
+    fn warm_analysis_sweep_enforces_parse_lru() {
+        const PARSE_FILE_LRU: usize = 256;
+        let store = DocumentStore::new();
+        let uris: Vec<Uri> = (0..PARSE_FILE_LRU + 44)
+            .map(|i| uri(&format!("/f{i}.php")))
+            .collect();
+        for (i, u) in uris.iter().enumerate() {
+            store.ingest(u.clone(), &format!("<?php\nclass F{i} {{}}"));
+        }
+        let files: Vec<_> = store.with_session(|session| {
+            uris.iter()
+                .map(|u| session.lookup_source_file(u.as_str()).unwrap())
+                .collect()
+        });
+        let asts: Vec<_> = store
+            .read_snapshot(|snap| {
+                files
+                    .iter()
+                    .map(|f| Arc::downgrade(&mir_analyzer::db::parse_file(snap.db(), *f).0))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap();
+
+        let cancel = store.begin_warm_sweep();
+        store.warm_analysis_sweep(&[], &cancel);
+
+        let alive = asts.iter().filter(|ast| ast.strong_count() > 0).count();
+        assert!(alive <= PARSE_FILE_LRU, "{alive} ASTs outlived the sweep");
     }
 
     #[test]

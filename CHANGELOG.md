@@ -4,6 +4,10 @@ All notable changes to php-lsp are documented here.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Memory caps ignored during the warm sweep**: mir's memo limits were applied only after an edit, so a sweep kept every analyzed file's AST in memory. They now apply after each chunk of the sweep. On a 50,000-file workspace, settled memory drops from 2.5 GB to 2.0 GB and peak from 2.8 GB to 2.2 GB, and memory no longer grows after an edit.
+
 ## [0.31.0] — 2026-11-06
 
 ### Changed
