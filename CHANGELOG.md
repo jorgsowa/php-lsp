@@ -6,7 +6,7 @@ All notable changes to php-lsp are documented here.
 
 ### Changed
 
-- **Gitignored files are no longer indexed**: the workspace scan honours `.gitignore` files inside a git repository, so ignored fixtures, build output and caches no longer use memory or count towards `maxIndexedFiles`. `vendor/` is still indexed, and `includePaths` overrides the rules. A repository with 53,000 PHP files, 307 of them tracked, drops from 2.5 GB to 190 MB.
+- **Gitignored checkouts are no longer indexed**: the workspace scan skips a gitignored directory that is its own git checkout, such as cloned test fixtures, so they no longer use memory or count towards `maxIndexedFiles`. Other ignored files stay indexed, since tracked code can depend on generated classes, and `includePaths` overrides the skip. A repository with 53,000 PHP files, 307 of them tracked, drops from 2.5 GB to 190 MB.
 
 ### Fixed
 

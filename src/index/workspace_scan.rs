@@ -292,13 +292,11 @@ fn walk_dir_parallel(
         let is_excluded = matches_any(&rel_path, excl);
         let is_included = matches_include_prefix(&rel_path, incl) || matches_any(&rel_path, incl);
         let force_included = is_included || (is_dir && has_included_children(&rel_path, incl));
-        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-        let is_vendor_dir = is_dir && name == "vendor";
-        if !force_included && (is_excluded || (!is_vendor_dir && ignores.is_ignored(&path, is_dir)))
-        {
+        if !force_included && (is_excluded || (is_dir && ignores.is_ignored_checkout(&path))) {
             continue;
         }
         if is_dir {
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
             if !name.starts_with('.') && link_target.is_none_or(|t| links.first_visit(t)) {
                 subdirs.push(path);
             }
@@ -331,7 +329,7 @@ fn walk_dir_parallel(
     }
 
     subdirs.into_par_iter().for_each(|sub| {
-        // `vendor/` is usually gitignored but is indexed deliberately.
+        // `vendor/` is usually gitignored, and source installs put a checkout in it.
         let unfiltered = GitIgnores::default();
         let sub_ignores = if sub.file_name().is_some_and(|n| n == "vendor") {
             &unfiltered
@@ -391,13 +389,18 @@ impl GitIgnores {
         next
     }
 
-    fn is_ignored(&self, path: &std::path::Path, is_dir: bool) -> bool {
-        self.rules
-            .iter()
-            .rev()
-            .map(|rules| rules.matched(path, is_dir))
-            .find(|m| !m.is_none())
-            .is_some_and(|m| m.is_ignore())
+    /// Only separate checkouts are skipped: tracked code can depend on other ignored code.
+    fn is_ignored_checkout(&self, dir: &std::path::Path) -> bool {
+        !self.rules.is_empty()
+            && dir.join(".git").exists()
+            && self
+                .rules
+                .iter()
+                .rev()
+                .filter(|rules| dir.starts_with(rules.path()))
+                .map(|rules| rules.matched_path_or_any_parents(dir, true))
+                .find(|m| !m.is_none())
+                .is_some_and(|m| m.is_ignore())
     }
 }
 
@@ -518,45 +521,48 @@ mod tests {
         .await
     }
 
-    #[tokio::test]
-    async fn scan_skips_gitignored_files_but_keeps_vendor() {
-        let dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir(dir.path().join(".git")).unwrap();
-        std::fs::write(
-            dir.path().join(".gitignore"),
-            "/vendor/\nfixtures/\n*.gen.php\n!keep.gen.php\n",
-        )
-        .unwrap();
-        write_php(dir.path(), "src/App.php");
-        write_php(dir.path(), "src/keep.gen.php");
-        write_php(dir.path(), "src/drop.gen.php");
-        write_php(dir.path(), "fixtures/a/b.php");
-        write_php(dir.path(), "vendor/acme/fixtures/Lib.php");
-        write_php(dir.path(), "src/nested/kept.php");
-        write_php(dir.path(), "src/nested/local.php");
-        std::fs::write(dir.path().join("src/nested/.gitignore"), "local.php\n").unwrap();
-
-        assert_eq!(scan_count(dir.path(), &[]).await, 4);
+    fn git_repo(root: &std::path::Path, gitignore: &str) {
+        std::fs::create_dir_all(root.join(".git")).unwrap();
+        std::fs::write(root.join(".gitignore"), gitignore).unwrap();
     }
 
     #[tokio::test]
-    async fn include_paths_override_gitignore() {
+    async fn scan_skips_only_gitignored_checkouts() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir(dir.path().join(".git")).unwrap();
-        std::fs::write(dir.path().join(".gitignore"), "generated/\n").unwrap();
+        git_repo(dir.path(), "/vendor/\nfixtures/\ngenerated/\n*.gen.php\n");
+        write_php(dir.path(), "src/App.php");
         write_php(dir.path(), "generated/Model.php");
+        write_php(dir.path(), "src/drop.gen.php");
+        write_php(dir.path(), "vendor/acme/Lib.php");
+        write_php(dir.path(), "vendor/source/Installed.php");
+        std::fs::create_dir(dir.path().join("vendor/source/.git")).unwrap();
+        write_php(dir.path(), "fixtures/loose/Sample.php");
+        write_php(dir.path(), "fixtures/clone/Cloned.php");
+        std::fs::create_dir(dir.path().join("fixtures/clone/.git")).unwrap();
+        write_php(dir.path(), "submodule/Tracked.php");
+        std::fs::create_dir(dir.path().join("submodule/.git")).unwrap();
+
+        assert_eq!(scan_count(dir.path(), &[]).await, 7);
+    }
+
+    #[tokio::test]
+    async fn include_paths_override_gitignored_checkout() {
+        let dir = tempfile::tempdir().unwrap();
+        git_repo(dir.path(), "fixtures/\n");
+        write_php(dir.path(), "fixtures/clone/Cloned.php");
+        std::fs::create_dir(dir.path().join("fixtures/clone/.git")).unwrap();
 
         assert_eq!(scan_count(dir.path(), &[]).await, 0);
-        assert_eq!(scan_count(dir.path(), &["generated".to_string()]).await, 1);
+        assert_eq!(scan_count(dir.path(), &["fixtures".to_string()]).await, 1);
     }
 
     #[tokio::test]
     async fn gitignore_in_repo_root_applies_to_a_subdirectory_workspace() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir(dir.path().join(".git")).unwrap();
-        std::fs::write(dir.path().join(".gitignore"), "app/cache/\n").unwrap();
+        git_repo(dir.path(), "app/fixtures/\n");
         write_php(dir.path(), "app/src/A.php");
-        write_php(dir.path(), "app/cache/B.php");
+        write_php(dir.path(), "app/fixtures/clone/B.php");
+        std::fs::create_dir(dir.path().join("app/fixtures/clone/.git")).unwrap();
 
         assert_eq!(scan_count(&dir.path().join("app"), &[]).await, 1);
     }
@@ -564,8 +570,9 @@ mod tests {
     #[tokio::test]
     async fn gitignore_outside_a_repository_is_not_applied() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::write(dir.path().join(".gitignore"), "generated/\n").unwrap();
-        write_php(dir.path(), "generated/Model.php");
+        std::fs::write(dir.path().join(".gitignore"), "fixtures/\n").unwrap();
+        write_php(dir.path(), "fixtures/clone/Cloned.php");
+        std::fs::create_dir(dir.path().join("fixtures/clone/.git")).unwrap();
 
         assert_eq!(scan_count(dir.path(), &[]).await, 1);
     }
