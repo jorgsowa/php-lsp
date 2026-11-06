@@ -48,6 +48,8 @@ const TAIL_GROWTH_CEILING_MB: f64 = 120.0;
 /// baseline, not counted as session growth; edit-idle re-warms during the run
 /// replace memos rather than adding them.
 const GROWTH_CEILING_MB: f64 = 400.0;
+/// Post-sweep RSS per indexed file. Growth gates can't see an inflated baseline.
+const BASELINE_KB_PER_FILE_CEILING: f64 = 220.0;
 const INDEX_READY_TIMEOUT_SECS: u64 = 300;
 const DIAG_TIMEOUT_SECS: u64 = 30;
 
@@ -301,6 +303,11 @@ async fn run() {
 
     let rss_baseline = rss_mb();
     eprintln!("baseline RSS after index + 4 opens: {rss_baseline:.0} MB");
+    let indexed_files =
+        c.request_no_params("$/php-lsp/debugStats").await["result"]["workspace_file_count"]
+            .as_u64()
+            .expect("debugStats reports workspace_file_count");
+    let baseline_kb_per_file = rss_baseline * 1024.0 / indexed_files as f64;
 
     let rounds: usize = std::env::var("RSS_SESSION_ROUNDS")
         .ok()
@@ -385,7 +392,12 @@ async fn run() {
         // Short diagnosis runs never reach the tail window — skip that gate.
         None => true,
     };
-    let ok = growth <= GROWTH_CEILING_MB && tail_ok;
+    println!(
+        "baseline: {baseline_kb_per_file:.0} KB per file over {indexed_files} files (ceiling {BASELINE_KB_PER_FILE_CEILING})"
+    );
+    let ok = growth <= GROWTH_CEILING_MB
+        && tail_ok
+        && baseline_kb_per_file <= BASELINE_KB_PER_FILE_CEILING;
     println!(
         "gates: {}",
         if ok {
