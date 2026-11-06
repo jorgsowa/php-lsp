@@ -80,6 +80,7 @@ percent-encoding = "2"
 # The language server itself (`backend`, the workspace scan, external phpstan/phpcs) needs all of tokio,
 # and its allocator, `mimalloc`, is C: the library alone has no C in it on wasm.
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
+ignore = "0.4"
 mimalloc = { version = "0.1", default-features = false }
 tokio = { version = "1", features = ["full"] }
 

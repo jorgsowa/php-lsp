@@ -139,6 +139,7 @@ pub(crate) async fn scan_workspace(
         let out = Mutex::new(Vec::new());
         let count = AtomicUsize::new(0);
         let links = SymlinkGuard::new(&root2, &roots);
+        let ignores = GitIgnores::above(&root2);
         walk_dir_parallel(
             root2.clone(),
             &root2,
@@ -149,6 +150,7 @@ pub(crate) async fn scan_workspace(
             &out,
             &count,
             &links,
+            &ignores,
         );
         out.into_inner().unwrap()
     })
@@ -254,6 +256,7 @@ fn walk_dir_parallel(
     out: &Mutex<Vec<std::path::PathBuf>>,
     count: &AtomicUsize,
     links: &SymlinkGuard,
+    ignores: &GitIgnores,
 ) {
     if count.load(AtomicOrdering::Relaxed) >= max_files {
         return;
@@ -262,6 +265,7 @@ fn walk_dir_parallel(
         Ok(r) => r,
         Err(_) => return,
     };
+    let ignores = ignores.entering(&dir);
 
     let mut subdirs = Vec::new();
     let mut files = Vec::new();
@@ -287,11 +291,14 @@ fn walk_dir_parallel(
 
         let is_excluded = matches_any(&rel_path, excl);
         let is_included = matches_include_prefix(&rel_path, incl) || matches_any(&rel_path, incl);
-        if is_excluded && !is_included && !(is_dir && has_included_children(&rel_path, incl)) {
+        let force_included = is_included || (is_dir && has_included_children(&rel_path, incl));
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        let is_vendor_dir = is_dir && name == "vendor";
+        if !force_included && (is_excluded || (!is_vendor_dir && ignores.is_ignored(&path, is_dir)))
+        {
             continue;
         }
         if is_dir {
-            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
             if !name.starts_with('.') && link_target.is_none_or(|t| links.first_visit(t)) {
                 subdirs.push(path);
             }
@@ -324,10 +331,74 @@ fn walk_dir_parallel(
     }
 
     subdirs.into_par_iter().for_each(|sub| {
+        // `vendor/` is usually gitignored but is indexed deliberately.
+        let unfiltered = GitIgnores::default();
+        let sub_ignores = if sub.file_name().is_some_and(|n| n == "vendor") {
+            &unfiltered
+        } else {
+            &ignores
+        };
         walk_dir_parallel(
-            sub, root, excl, incl, extensions, max_files, out, count, links,
+            sub,
+            root,
+            excl,
+            incl,
+            extensions,
+            max_files,
+            out,
+            count,
+            links,
+            sub_ignores,
         );
     });
+}
+
+/// `.gitignore` rules for a directory, outermost first; inactive outside a repository or in `vendor/`.
+#[derive(Clone, Default)]
+struct GitIgnores {
+    active: bool,
+    rules: Vec<Arc<ignore::gitignore::Gitignore>>,
+}
+
+impl GitIgnores {
+    /// Rules from the enclosing repository's root down to `root`'s parent.
+    fn above(root: &std::path::Path) -> Self {
+        let Some(repo_root) = root.ancestors().find(|dir| dir.join(".git").exists()) else {
+            return Self::default();
+        };
+        let mut ignores = Self {
+            active: true,
+            rules: Vec::new(),
+        };
+        let parents: Vec<_> = root
+            .ancestors()
+            .skip(1)
+            .take_while(|dir| dir.starts_with(repo_root))
+            .collect();
+        for dir in parents.into_iter().rev() {
+            ignores = ignores.entering(dir);
+        }
+        ignores
+    }
+
+    fn entering(&self, dir: &std::path::Path) -> Self {
+        let mut next = self.clone();
+        let file = dir.join(".gitignore");
+        if self.active && file.is_file() {
+            let (rules, _partial_errors) = ignore::gitignore::Gitignore::new(file);
+            next.rules.push(Arc::new(rules));
+        }
+        next
+    }
+
+    fn is_ignored(&self, path: &std::path::Path, is_dir: bool) -> bool {
+        self.rules
+            .iter()
+            .rev()
+            .map(|rules| rules.matched(path, is_dir))
+            .find(|m| !m.is_none())
+            .is_some_and(|m| m.is_ignore())
+    }
 }
 
 /// Decides which symlinks the scan follows. Only links whose target lies
@@ -424,6 +495,79 @@ mod tests {
         drop(guard);
         let indexed = scan.await.unwrap();
         assert_eq!(indexed, 3, "scan must resume and index everything");
+    }
+
+    fn write_php(root: &std::path::Path, rel: &str) {
+        let path = root.join(rel);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, "<?php\nfunction f() {}").unwrap();
+    }
+
+    async fn scan_count(root: &std::path::Path, include: &[String]) -> usize {
+        scan_workspace(
+            root.to_path_buf(),
+            Arc::new(DocumentStore::new()),
+            OpenFiles::default(),
+            &[],
+            &[],
+            include,
+            &Default::default(),
+            50_000,
+            None,
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn scan_skips_gitignored_files_but_keeps_vendor() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join(".git")).unwrap();
+        std::fs::write(
+            dir.path().join(".gitignore"),
+            "/vendor/\nfixtures/\n*.gen.php\n!keep.gen.php\n",
+        )
+        .unwrap();
+        write_php(dir.path(), "src/App.php");
+        write_php(dir.path(), "src/keep.gen.php");
+        write_php(dir.path(), "src/drop.gen.php");
+        write_php(dir.path(), "fixtures/a/b.php");
+        write_php(dir.path(), "vendor/acme/fixtures/Lib.php");
+        write_php(dir.path(), "src/nested/kept.php");
+        write_php(dir.path(), "src/nested/local.php");
+        std::fs::write(dir.path().join("src/nested/.gitignore"), "local.php\n").unwrap();
+
+        assert_eq!(scan_count(dir.path(), &[]).await, 4);
+    }
+
+    #[tokio::test]
+    async fn include_paths_override_gitignore() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join(".git")).unwrap();
+        std::fs::write(dir.path().join(".gitignore"), "generated/\n").unwrap();
+        write_php(dir.path(), "generated/Model.php");
+
+        assert_eq!(scan_count(dir.path(), &[]).await, 0);
+        assert_eq!(scan_count(dir.path(), &["generated".to_string()]).await, 1);
+    }
+
+    #[tokio::test]
+    async fn gitignore_in_repo_root_applies_to_a_subdirectory_workspace() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join(".git")).unwrap();
+        std::fs::write(dir.path().join(".gitignore"), "app/cache/\n").unwrap();
+        write_php(dir.path(), "app/src/A.php");
+        write_php(dir.path(), "app/cache/B.php");
+
+        assert_eq!(scan_count(&dir.path().join("app"), &[]).await, 1);
+    }
+
+    #[tokio::test]
+    async fn gitignore_outside_a_repository_is_not_applied() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(".gitignore"), "generated/\n").unwrap();
+        write_php(dir.path(), "generated/Model.php");
+
+        assert_eq!(scan_count(dir.path(), &[]).await, 1);
     }
 
     #[tokio::test]
