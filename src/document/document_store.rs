@@ -231,6 +231,8 @@ pub struct DocumentStore {
     /// its per-file salsa writes can't starve a request's snapshot into an
     /// endless `Cancelled` retry loop. Advisory only — relaxed ordering.
     interactive_reads: AtomicU64,
+    /// Snapshots alive outside the session lock; see [`Self::lease_snapshot`].
+    leased_snapshots: AtomicU64,
 }
 
 const SETTLE_BUDGET: std::time::Duration = std::time::Duration::from_millis(50);
@@ -264,6 +266,15 @@ pub struct InteractiveReadGuard<'a>(&'a AtomicU64);
 impl Drop for InteractiveReadGuard<'_> {
     fn drop(&mut self) {
         self.0.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+/// Marks a mir snapshot as alive; drop it after the snapshot.
+pub struct SnapshotLease<'a>(&'a AtomicU64);
+
+impl Drop for SnapshotLease<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Release);
     }
 }
 
@@ -321,7 +332,20 @@ impl DocumentStore {
             warm_sweeps_completed: AtomicU64::new(0),
             warm_start_replays_completed: AtomicU64::new(0),
             interactive_reads: AtomicU64::new(0),
+            leased_snapshots: AtomicU64::new(0),
         }
+    }
+
+    /// Take inside the session lock, alongside a snapshot that outlives it, so
+    /// LRU eviction never cancels or waits on that snapshot.
+    fn lease_snapshot(&self) -> SnapshotLease<'_> {
+        self.leased_snapshots.fetch_add(1, Ordering::Relaxed);
+        SnapshotLease(&self.leased_snapshots)
+    }
+
+    /// Whether `uri` is a live file of the workspace index.
+    pub fn is_indexed(&self, uri: &Uri) -> bool {
+        self.lsp_ws_files.contains_key(uri) && !self.deleted_uris.contains(uri)
     }
 
     /// Mark an interactive read (a request the user is waiting on) as in
@@ -501,25 +525,21 @@ impl DocumentStore {
             warm_chunk_size(),
             cancel,
             progress,
-            || self.yield_to_interactive_reads(),
-            |chunk| {
-                let settled = self.reanalyze_files(chunk, cancel).is_some();
-                // Eviction cancels in-flight reads and holds the session lock while they unwind.
-                if settled && self.interactive_reads.load(Ordering::Relaxed) == 0 {
-                    self.evict_lru_memos();
-                }
-                settled
-            },
+            || self.yield_and_evict_lru_memos(),
+            |chunk| self.reanalyze_files(chunk, cancel).is_some(),
         );
-        self.yield_to_interactive_reads();
-        self.evict_lru_memos();
+        self.yield_and_evict_lru_memos();
         completed
     }
 
     /// Salsa enforces `lru` caps only at a new revision, which a read-only sweep never starts.
-    fn evict_lru_memos(&self) {
+    /// Skipped while any snapshot is alive: eviction would cancel it and wait for it to unwind.
+    fn yield_and_evict_lru_memos(&self) {
+        self.yield_to_interactive_reads();
         self.with_session(|session| {
-            session.with_db_mut(salsa::Database::trigger_lru_eviction);
+            if self.leased_snapshots.load(Ordering::Acquire) == 0 {
+                session.with_db_mut(salsa::Database::trigger_lru_eviction);
+            }
         });
     }
 
@@ -821,9 +841,9 @@ impl DocumentStore {
     ) -> Result<R, ContentModified> {
         use std::panic::AssertUnwindSafe;
         for _ in 0..SNAPSHOT_ATTEMPTS {
-            let snapshot = self.with_session(|session| {
+            let (_lease, snapshot) = self.with_session(|session| {
                 prepare(session);
-                session.snapshot()
+                (self.lease_snapshot(), session.snapshot())
             });
             let result = salsa::Cancelled::catch(AssertUnwindSafe(|| f(&snapshot))).and_then(|r| r);
             drop(snapshot);
@@ -1028,7 +1048,8 @@ impl DocumentStore {
     ) -> Option<Option<R>> {
         use std::panic::AssertUnwindSafe;
         for _ in 0..attempts {
-            let (db, h) = self.with_session(|session| (session.snapshot_db(), handle()));
+            let (_lease, db, h) = self
+                .with_session(|session| (self.lease_snapshot(), session.snapshot_db(), handle()));
             let Some(h) = h else {
                 return Some(None);
             };
@@ -1123,7 +1144,8 @@ impl DocumentStore {
             return;
         }
         use rayon::prelude::*;
-        let db = self.with_session(|session| session.snapshot_db());
+        let (_lease, db) =
+            self.with_session(|session| (self.lease_snapshot(), session.snapshot_db()));
         // A concurrent write cancels the pass; the indexes then compute lazily.
         let _ = salsa::Cancelled::catch(std::panic::AssertUnwindSafe(|| {
             files.par_iter().for_each_with(db.clone(), |db, wf| {
@@ -2245,7 +2267,8 @@ impl DocumentStore {
         // parallel loop below takes its own fresh snapshot instead of
         // reusing this one.
         {
-            let mir_db = self.with_session(|session| session.snapshot_db());
+            let (_lease, mir_db) =
+                self.with_session(|session| (self.lease_snapshot(), session.snapshot_db()));
             let all_needles = per_query_needles.iter().flatten().map(|s| s.as_str());
             let (raw_needles, bounded_needles): (Vec<&str>, Vec<&str>) =
                 all_needles.partition(|n| needle_needs_raw_match(n));
@@ -2294,7 +2317,8 @@ impl DocumentStore {
             })
             .collect();
 
-        let mir_db = self.with_session(|session| session.snapshot_db());
+        let (_lease, mir_db) =
+            self.with_session(|session| (self.lease_snapshot(), session.snapshot_db()));
         let mir_scanner = mir_db.class_mention_scanner();
         let per_query_mir_queries: Vec<Vec<mir_analyzer::db::MentionQuery>> = per_query_needles
             .iter()
@@ -2894,7 +2918,8 @@ impl DocumentStore {
         // same writer-starvation discipline as
         // `resolve_reachability_queries_uncached`.
         let urls: Vec<Uri> = {
-            let mir_db = self.with_session(|session| session.snapshot_db());
+            let (_lease, mir_db) =
+                self.with_session(|session| (self.lease_snapshot(), session.snapshot_db()));
             mir_db.add_literal_mention_names(needles.iter().map(|s| s.as_str()));
             let queries: Vec<mir_analyzer::db::MentionQuery> = needles
                 .iter()
@@ -3076,7 +3101,10 @@ impl DocumentStore {
             .filter(|p| exclude != Some(p.as_ref()))
             .find_map(|p| {
                 let &file_idx = wi.path_to_file_idx.get(p.as_ref())?;
-                let (uri, _) = wi.files.get(file_idx as usize)?;
+                let (uri, index) = wi.files.get(file_idx as usize)?;
+                if !index.may_declare(word, bare) {
+                    return None;
+                }
                 let doc = self.get_doc_salsa(uri)?;
                 crate::navigation::declaration::any_declaration_in_doc(uri, &doc, word, bare)
             })
@@ -3441,6 +3469,51 @@ mod tests {
 
         let alive = asts.iter().filter(|ast| ast.strong_count() > 0).count();
         assert!(alive <= PARSE_FILE_LRU, "{alive} ASTs outlived the sweep");
+    }
+
+    #[test]
+    fn lru_eviction_skips_while_a_snapshot_is_alive() {
+        let store = Arc::new(DocumentStore::new());
+        store.ingest(uri("/a.php"), "<?php\nclass A {}");
+        let (lease, snapshot) =
+            store.with_session(|session| (store.lease_snapshot(), session.snapshot()));
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let evicting = Arc::clone(&store);
+        std::thread::spawn(move || {
+            evicting.yield_and_evict_lru_memos();
+            let _ = tx.send(());
+        });
+        rx.recv_timeout(std::time::Duration::from_secs(10))
+            .expect("eviction waited on a live snapshot");
+        assert!(matches!(snapshot.find_class_like("A"), Ok(Some(_))));
+        drop(snapshot);
+        drop(lease);
+    }
+
+    #[test]
+    fn find_declaration_parses_only_the_declaring_file() {
+        let store = DocumentStore::new();
+        for i in 0..50 {
+            store.ingest(
+                uri(&format!("/caller{i}.php")),
+                &format!("<?php\nclass Caller{i} {{ function go($x) {{ $x->needle(); }} }}"),
+            );
+        }
+        store.ingest(
+            uri("/owner.php"),
+            "<?php\nclass Owner { function needle() {} }",
+        );
+        let wi = store.get_workspace_index_salsa();
+
+        let before = store.parse_count();
+        let found = store.find_declaration(&wi, "needle", None).unwrap();
+        assert_eq!(found.uri, uri("/owner.php"));
+        assert_eq!(store.parse_count() - before, 1);
+
+        let before = store.parse_count();
+        assert!(store.find_declaration(&wi, "go_nowhere", None).is_none());
+        assert_eq!(store.parse_count(), before);
     }
 
     #[test]

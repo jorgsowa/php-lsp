@@ -850,12 +850,16 @@ impl LanguageServer for Backend {
 
             let extensions = self.config.load().indexed_extensions.clone();
             let mut changes = Vec::with_capacity(params.changes.len());
+            let mut unscanned = self.unscanned_watched_files(&params.changes).await;
             for change in params.changes {
                 if !super::helpers::has_indexed_extension(change.uri.path().as_str(), &extensions) {
                     continue;
                 }
                 match change.typ {
                     FileChangeType::CREATED | FileChangeType::CHANGED => {
+                        if unscanned.remove(&change.uri) {
+                            continue;
+                        }
                         if let Some(path) = change.uri.to_file_path()
                             && let Ok(text) =
                                 tokio::fs::read(&path).await.map(crate::text::decode_source)

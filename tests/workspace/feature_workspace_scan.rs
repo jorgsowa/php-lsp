@@ -954,6 +954,37 @@ async fn unreadable_file_does_not_truncate_workspace_index() {
         .assert_eq(&s.snapshot_workspace_symbols("BigKlass").await);
 }
 
+/// The watcher applies the scan's rules to new files.
+#[tokio::test]
+async fn watcher_does_not_index_a_file_the_scan_would_skip() {
+    let tmp = tempfile::tempdir().unwrap();
+    std::fs::create_dir_all(tmp.path().join("cache")).unwrap();
+    std::fs::write(
+        tmp.path().join(".php-lsp.json"),
+        r#"{"excludePaths": ["cache/"]}"#,
+    )
+    .unwrap();
+    std::fs::write(tmp.path().join("Seen.php"), "<?php\nclass Seen {}\n").unwrap();
+
+    let mut s = TestServer::with_root(tmp.path()).await;
+    s.wait_for_index_ready().await;
+
+    std::fs::write(
+        tmp.path().join("cache/Compiled.php"),
+        "<?php\nclass Compiled {}\n",
+    )
+    .unwrap();
+    std::fs::write(tmp.path().join("Added.php"), "<?php\nclass Added {}\n").unwrap();
+    let compiled = s.uri("cache/Compiled.php");
+    let added = s.uri("Added.php");
+    s.did_change_watched_files(vec![(compiled, 1), (added, 1)])
+        .await;
+    s.wait_until_symbol_present("Added", std::time::Duration::from_secs(5))
+        .await;
+
+    expect!["<no symbols>"].assert_eq(&s.snapshot_workspace_symbols("Compiled").await);
+}
+
 /// A legacy file that isn't valid UTF-8 (Latin-1 `é` in a comment) is
 /// indexed by the scan and by `didChangeWatchedFiles`, not skipped.
 #[tokio::test]

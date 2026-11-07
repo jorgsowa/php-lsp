@@ -45,6 +45,23 @@ impl FileIndex {
     pub fn declares_nothing(&self) -> bool {
         self.functions.is_empty() && self.classes.is_empty() && self.constants.is_empty()
     }
+
+    /// Whether `any_declaration_in_doc` could match here, answered without parsing the file.
+    /// Non-classes always might: their `@method` tags and hooked properties aren't indexed.
+    pub fn may_declare(&self, word: &str, bare: &str) -> bool {
+        self.functions.iter().any(|f| &*f.name == word)
+            || self.classes.iter().any(|c| {
+                c.kind != ClassKind::Class
+                    || &*c.name == word
+                    || c.methods.iter().any(|m| &*m.name == word)
+                    || c.properties.iter().any(|p| &*p.name == bare)
+                    || c.constants.iter().any(|k| &**k == word)
+                    || c.cases.iter().any(|k| &**k == word)
+                    || c.doc_methods
+                        .iter()
+                        .any(|m| m.name.eq_ignore_ascii_case(word))
+            })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -1083,6 +1100,39 @@ mod tests {
             "expected promoted property 'name', got: {:?}",
             cls.properties.iter().map(|p| &p.name).collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn may_declare_matches_every_indexed_declaration_kind() {
+        let index = FileIndex::from_source(
+            "file:///a.php",
+            "<?php
+            function helper() {}
+            /** @method tagged() */
+            class Owner {
+                const LIMIT = 1;
+                public int $count = 0;
+                function run() {}
+            }",
+        );
+        for word in ["helper", "Owner", "LIMIT", "run", "tagged", "TAGGED"] {
+            assert!(index.may_declare(word, word), "{word}");
+        }
+        assert!(index.may_declare("$count", "count"));
+        assert!(!index.may_declare("unrelated", "unrelated"));
+        assert!(!index.may_declare("count", "unrelated"));
+    }
+
+    #[test]
+    fn may_declare_keeps_members_the_index_omits_as_candidates() {
+        for source in [
+            "<?php /** @method tagged() */ interface Shape {}",
+            "<?php /** @method tagged() */ trait Shape {}",
+            "<?php /** @method tagged() */ enum Shape {}",
+        ] {
+            let index = FileIndex::from_source("file:///a.php", source);
+            assert!(index.may_declare("tagged", "tagged"), "{source}");
+        }
     }
 
     #[test]

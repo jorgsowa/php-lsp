@@ -182,6 +182,53 @@ impl Backend {
         wi
     }
 
+    /// Created or changed files the workspace scan would leave out and that aren't indexed yet.
+    pub(super) async fn unscanned_watched_files(
+        &self,
+        changes: &[tower_lsp_server::ls_types::FileEvent],
+    ) -> std::collections::HashSet<tower_lsp_server::ls_types::Uri> {
+        use tower_lsp_server::ls_types::FileChangeType;
+        let untracked: Vec<_> = changes
+            .iter()
+            .filter(|c| c.typ != FileChangeType::DELETED)
+            .filter(|c| !self.open_files.contains(&c.uri) && !self.docs.is_indexed(&c.uri))
+            .map(|c| c.uri.clone())
+            .collect();
+        if untracked.is_empty() {
+            return Default::default();
+        }
+        let (exclude, include) = {
+            let cfg = self.config.load();
+            let mut exclude = cfg.exclude_paths.clone();
+            if !cfg.index_vendor && !exclude.iter().any(|p| p == "vendor" || p == "vendor/") {
+                exclude.push("vendor/".to_string());
+            }
+            (exclude, cfg.include_paths.clone())
+        };
+        let roots = self.root_paths.load_full();
+        tokio::task::spawn_blocking(move || {
+            untracked
+                .into_iter()
+                .filter(|uri| {
+                    uri.to_file_path().is_some_and(|file| {
+                        let mut containing = roots
+                            .iter()
+                            .filter(|root| file.starts_with(root))
+                            .peekable();
+                        containing.peek().is_some()
+                            && containing.all(|root| {
+                                crate::index::workspace_scan::scan_skips_file(
+                                    &file, root, &exclude, &include,
+                                )
+                            })
+                    })
+                })
+                .collect()
+        })
+        .await
+        .unwrap_or_default()
+    }
+
     /// Re-scan every current root and replay warm-start disk-cache postings,
     /// after a runtime PHP-version change dropped the session-scoped file
     /// set (`DocumentStore::set_php_version`'s `drop_session_scoped_state`).

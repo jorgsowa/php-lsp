@@ -97,7 +97,13 @@ pub fn goto_declaration_from_index(
     // keyed under `bare`, `@method` doc-methods (not indexed at all), and
     // any candidate miss fall back to the exhaustive scan below, identical
     // to the original behavior.
-    for uri in &candidate_uris {
+    let may_declare = |uri: &Uri| {
+        wi.path_to_file_idx
+            .get(uri.as_str())
+            .and_then(|&idx| wi.files.get(idx as usize))
+            .is_none_or(|(_, index)| index.may_declare(&word, bare))
+    };
+    for uri in candidate_uris.iter().filter(|uri| may_declare(uri)) {
         if let Some(doc) = get_doc(uri)
             && let Some(loc) = any_declaration_in_doc(uri, &doc, &word, bare)
         {
@@ -105,7 +111,10 @@ pub fn goto_declaration_from_index(
         }
     }
 
-    for (uri, _) in &wi.files {
+    for (uri, index) in &wi.files {
+        if !index.may_declare(&word, bare) {
+            continue;
+        }
         let Some(doc) = get_doc(uri) else { continue };
         if let Some(loc) = any_declaration_in_doc(uri, &doc, &word, bare) {
             return Some(loc);

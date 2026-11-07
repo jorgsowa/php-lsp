@@ -289,10 +289,7 @@ fn walk_dir_parallel(
             (ft.is_dir(), ft.is_file(), None)
         };
 
-        let is_excluded = matches_any(&rel_path, excl);
-        let is_included = matches_include_prefix(&rel_path, incl) || matches_any(&rel_path, incl);
-        let force_included = is_included || (is_dir && has_included_children(&rel_path, incl));
-        if !force_included && (is_excluded || (is_dir && ignores.is_ignored_checkout(&path))) {
+        if skips_entry(&path, &rel_path, is_dir, excl, incl, &ignores) {
             continue;
         }
         if is_dir {
@@ -329,9 +326,8 @@ fn walk_dir_parallel(
     }
 
     subdirs.into_par_iter().for_each(|sub| {
-        // `vendor/` is usually gitignored, and source installs put a checkout in it.
         let unfiltered = GitIgnores::default();
-        let sub_ignores = if sub.file_name().is_some_and(|n| n == "vendor") {
+        let sub_ignores = if is_vendor_dir(&sub) {
             &unfiltered
         } else {
             &ignores
@@ -349,6 +345,66 @@ fn walk_dir_parallel(
             sub_ignores,
         );
     });
+}
+
+fn skips_entry(
+    path: &std::path::Path,
+    rel_path: &str,
+    is_dir: bool,
+    excl: &[String],
+    incl: &[String],
+    ignores: &GitIgnores,
+) -> bool {
+    let force_included = matches_include_prefix(rel_path, incl)
+        || matches_any(rel_path, incl)
+        || (is_dir && has_included_children(rel_path, incl));
+    !force_included
+        && (matches_any(rel_path, excl) || (is_dir && ignores.is_ignored_checkout(path)))
+}
+
+/// `vendor/` is usually gitignored, and source installs put a checkout in it.
+fn is_vendor_dir(dir: &std::path::Path) -> bool {
+    dir.file_name().is_some_and(|n| n == "vendor")
+}
+
+/// Whether the workspace scan would leave `file`, under `root`, unindexed.
+pub(crate) fn scan_skips_file(
+    file: &std::path::Path,
+    root: &std::path::Path,
+    excl: &[String],
+    incl: &[String],
+) -> bool {
+    let Ok(relative) = file.strip_prefix(root) else {
+        return false;
+    };
+    let mut ignores = GitIgnores::above(root).entering(root);
+    let mut current = root.to_path_buf();
+    let mut rel_path = String::new();
+    for component in relative.components() {
+        current.push(component);
+        if !rel_path.is_empty() {
+            rel_path.push('/');
+        }
+        rel_path.push_str(&component.as_os_str().to_string_lossy());
+        let is_dir = current != file;
+        if skips_entry(&current, &rel_path, is_dir, excl, incl, &ignores)
+            || (is_dir
+                && rel_path
+                    .rsplit('/')
+                    .next()
+                    .is_some_and(|n| n.starts_with('.')))
+        {
+            return true;
+        }
+        if is_dir {
+            ignores = if is_vendor_dir(&current) {
+                GitIgnores::default()
+            } else {
+                ignores.entering(&current)
+            };
+        }
+    }
+    false
 }
 
 /// `.gitignore` rules for a directory, outermost first; inactive outside a repository or in `vendor/`.
@@ -543,6 +599,33 @@ mod tests {
         std::fs::create_dir(dir.path().join("submodule/.git")).unwrap();
 
         assert_eq!(scan_count(dir.path(), &[]).await, 7);
+    }
+
+    #[test]
+    fn scan_skips_file_agrees_with_the_walk() {
+        use super::scan_skips_file;
+        let dir = tempfile::tempdir().unwrap();
+        git_repo(dir.path(), "fixtures/\ngenerated/\n");
+        std::fs::create_dir_all(dir.path().join("fixtures/clone/.git")).unwrap();
+        std::fs::create_dir_all(dir.path().join("vendor/source/.git")).unwrap();
+        let skips = |rel: &str, excl: &[&str], incl: &[&str]| {
+            let strings = |v: &[&str]| v.iter().map(|p| p.to_string()).collect::<Vec<_>>();
+            scan_skips_file(
+                &dir.path().join(rel),
+                dir.path(),
+                &strings(excl),
+                &strings(incl),
+            )
+        };
+
+        assert!(!skips("src/App.php", &[], &[]));
+        assert!(!skips("generated/Model.php", &[], &[]));
+        assert!(!skips("vendor/source/Installed.php", &[], &[]));
+        assert!(skips("fixtures/clone/deep/Cloned.php", &[], &[]));
+        assert!(skips(".cache/Stale.php", &[], &[]));
+        assert!(skips("cache/Compiled.php", &["cache/"], &[]));
+        assert!(!skips("fixtures/clone/Cloned.php", &[], &["fixtures"]));
+        assert!(!skips("cache/Keep.php", &["cache/"], &["cache/Keep.php"]));
     }
 
     #[tokio::test]
