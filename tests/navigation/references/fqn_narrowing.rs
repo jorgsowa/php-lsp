@@ -557,3 +557,119 @@ async fn narrowing_finds_namespaced_function_via_use_function_import() {
         caller.php:3:0-3:6"#]]
     .assert_eq(&render_locations(&resp, &server.uri("")));
 }
+
+#[tokio::test]
+async fn narrowing_finds_class_symbol_via_group_use_import() {
+    // `use App\{Widget}` never spells `App\Widget`, so only the import rule
+    // reaches `caller.php`.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("widget.php"),
+        "<?php\nnamespace App;\nclass Widget {}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("caller.php"),
+        "<?php\nnamespace Other;\nuse App\\{Widget};\nfunction f(Widget $w): void {}\n",
+    )
+    .unwrap();
+
+    let mut server = TestServer::with_root(dir.path()).await;
+    server.wait_for_index_ready().await;
+    server
+        .open("widget.php", "<?php\nnamespace App;\nclass Widget {}\n")
+        .await;
+
+    let (_, line, ch) = server.locate("widget.php", "Widget", 0);
+    let resp = server.references("widget.php", line, ch, false).await;
+    assert!(resp["error"].is_null(), "references error: {resp:?}");
+    expect![[r#"
+        caller.php:2:9-2:15
+        caller.php:3:11-3:17"#]]
+    .assert_eq(&render_locations(&resp, &server.uri("")));
+}
+
+#[tokio::test]
+async fn narrowing_finds_global_class_via_unqualified_import() {
+    // A namespaced file importing a global class as `use Legacy;` never
+    // writes `\Legacy`, so only the import rule reaches it.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("legacy.php"), "<?php\nclass Legacy {}\n").unwrap();
+    std::fs::write(
+        dir.path().join("caller.php"),
+        "<?php\nnamespace Other;\nuse Legacy;\nfunction f(Legacy $l): void {}\n",
+    )
+    .unwrap();
+
+    let mut server = TestServer::with_root(dir.path()).await;
+    server.wait_for_index_ready().await;
+    server.open("legacy.php", "<?php\nclass Legacy {}\n").await;
+
+    let (_, line, ch) = server.locate("legacy.php", "Legacy", 0);
+    let resp = server.references("legacy.php", line, ch, false).await;
+    assert!(resp["error"].is_null(), "references error: {resp:?}");
+    expect![[r#"
+        caller.php:2:4-2:10
+        caller.php:3:11-3:17"#]]
+    .assert_eq(&render_locations(&resp, &server.uri("")));
+}
+
+#[tokio::test]
+async fn narrowing_finds_namespaced_function_via_group_use_function_import() {
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("helper.php"),
+        "<?php\nnamespace App\\Util;\nfunction helper(): void {}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("caller.php"),
+        "<?php\nnamespace Other;\nuse App\\Util\\{function helper};\nhelper();\n",
+    )
+    .unwrap();
+
+    let mut server = TestServer::with_root(dir.path()).await;
+    server.wait_for_index_ready().await;
+    server
+        .open(
+            "helper.php",
+            "<?php\nnamespace App\\Util;\nfunction helper(): void {}\n",
+        )
+        .await;
+
+    let (_, line, ch) = server.locate("helper.php", "helper", 0);
+    let resp = server.references("helper.php", line, ch, false).await;
+    assert!(resp["error"].is_null(), "references error: {resp:?}");
+    expect![[r#"
+        caller.php:2:14-2:29
+        caller.php:3:0-3:6"#]]
+    .assert_eq(&render_locations(&resp, &server.uri("")));
+}
+
+#[tokio::test]
+async fn narrowing_finds_class_symbol_via_namespace_prefix_import() {
+    // `use Foo\Bar;` then `Bar\Baz` spells neither `Foo\Bar\Baz` nor imports
+    // it directly; the import names one of its namespaces.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(
+        dir.path().join("baz.php"),
+        "<?php\nnamespace Foo\\Bar;\nclass Baz {}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.path().join("caller.php"),
+        "<?php\nnamespace Other;\nuse Foo\\Bar;\nfunction f(Bar\\Baz $b): void {}\n",
+    )
+    .unwrap();
+
+    let mut server = TestServer::with_root(dir.path()).await;
+    server.wait_for_index_ready().await;
+    server
+        .open("baz.php", "<?php\nnamespace Foo\\Bar;\nclass Baz {}\n")
+        .await;
+
+    let (_, line, ch) = server.locate("baz.php", "Baz", 0);
+    let resp = server.references("baz.php", line, ch, false).await;
+    assert!(resp["error"].is_null(), "references error: {resp:?}");
+    expect!["caller.php:3:11-3:18"].assert_eq(&render_locations(&resp, &server.uri("")));
+}

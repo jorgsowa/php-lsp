@@ -2172,8 +2172,9 @@ impl DocumentStore {
     /// callers share one scan instead of paying N. Callers should use the
     /// memoizing wrapper.
     ///
-    /// The namespace/import checks are cheap in-memory field comparisons and
-    /// stay per-query. The qualified-mention fallback is answered by mir's
+    /// The namespace check is a cheap in-memory field comparison and stays
+    /// per-query; the import check reads `use` statements at the token level,
+    /// only in files mentioning a target's short name. The qualified-mention fallback is answered by mir's
     /// own `ClassMentionIndex` (`class_mention_scanner`/
     /// `class_mention_answer`/`set_file_class_mentions`) for every needle,
     /// bounded or raw alike — the same persistent per-file mention cache
@@ -2266,6 +2267,19 @@ impl DocumentStore {
         // `Self::attempt_mir_handle_query`'s doc comment warns about. The
         // parallel loop below takes its own fresh snapshot instead of
         // reusing this one.
+        // A file importing a target (`use Foo\{Bar}`, `use LogicException;`,
+        // `use Foo;` then `Foo\Bar`) mentions its last segment as a word, so
+        // only files that do get their `use` statements read.
+        let per_query_short_names: Vec<Vec<&str>> = per_query_targets
+            .iter()
+            .map(|targets| {
+                targets
+                    .iter()
+                    .map(|t| t.rsplit_once('\\').map_or(*t, |(_, last)| last))
+                    .collect()
+            })
+            .collect();
+
         {
             let (_lease, mir_db) =
                 self.with_session(|session| (self.lease_snapshot(), session.snapshot_db()));
@@ -2278,44 +2292,11 @@ impl DocumentStore {
             if !raw_needles.is_empty() {
                 mir_db.add_raw_mention_needles(raw_needles);
             }
+            mir_db.add_literal_mention_names(per_query_short_names.iter().flatten().copied());
         }
 
         let ws = self.get_workspace_index_salsa();
         let n = queries.len();
-        let workspace_files = self.workspace_file_paths();
-        let per_query_import_matches: Vec<std::collections::HashSet<Arc<str>>> = queries
-            .iter()
-            .map(|q| {
-                let symbols: Vec<mir_analyzer::Name> = q
-                    .fqns
-                    .iter()
-                    .map(|fqn| match q.kind {
-                        ReachabilitySymbolKind::Class => {
-                            mir_analyzer::Name::class(fqn.trim_start_matches('\\').to_string())
-                        }
-                        ReachabilitySymbolKind::Function => {
-                            mir_analyzer::Name::function(fqn.trim_start_matches('\\').to_string())
-                        }
-                        ReachabilitySymbolKind::GlobalConstant => {
-                            mir_analyzer::Name::global_constant(
-                                fqn.trim_start_matches('\\').to_string(),
-                            )
-                        }
-                    })
-                    .collect();
-                let mut matches = std::collections::HashSet::new();
-                for symbol in &symbols {
-                    let _ = self.indexed_references(symbol, &workspace_files, false, None);
-                    matches.extend(
-                        self.indexed_use_imports(symbol, &workspace_files)
-                            .unwrap_or_default()
-                            .into_iter()
-                            .map(|(file, _, _, _)| file),
-                    );
-                }
-                matches
-            })
-            .collect();
 
         let (_lease, mir_db) =
             self.with_session(|session| (self.lease_snapshot(), session.snapshot_db()));
@@ -2329,6 +2310,24 @@ impl DocumentStore {
                     .collect()
             })
             .collect();
+        // Per query: each lowercased target with its short-name mention query.
+        let per_query_import_targets: Vec<Vec<(String, Option<mir_analyzer::db::MentionQuery>)>> =
+            per_query_targets
+                .iter()
+                .zip(&per_query_short_names)
+                .map(|(targets, shorts)| {
+                    targets
+                        .iter()
+                        .zip(shorts)
+                        .map(|(t, short)| {
+                            (
+                                t.to_ascii_lowercase(),
+                                mir_db.prepare_class_mention_query(short),
+                            )
+                        })
+                        .collect()
+                })
+                .collect();
         // For a common short name most of the corpus fails the cheap
         // namespace/import checks and falls through to the mention lookup
         // (or, for a file that's cold or edited since its last scan, the
@@ -2358,44 +2357,48 @@ impl DocumentStore {
                         matched[qi] = true;
                         continue;
                     }
-                    if per_query_import_matches[qi].contains(&Arc::<str>::from(url.as_str())) {
-                        matched[qi] = true;
-                        continue;
-                    }
                     unresolved.push(qi);
                 }
                 if !unresolved.is_empty()
                     && let Some(text) = self.source_text(url)
                 {
                     let url_str = url.as_str();
-                    let mut needs_scan = false;
+                    // Scanned against the *whole* current universe, not just
+                    // this call's needles, so a future, differently-shaped
+                    // query against this same file is also a lookup instead
+                    // of its own fresh scan. No scanner: assume a mention.
+                    let mut scan = None;
+                    let mut mentions = |q: &mir_analyzer::db::MentionQuery| {
+                        mir_db
+                            .class_mention_answer(url_str, q, &text)
+                            .unwrap_or_else(|| match &mir_scanner {
+                                Some(s) => scan
+                                    .get_or_insert_with(|| s.scan(text.as_ref()))
+                                    .contains(q),
+                                None => true,
+                            })
+                    };
+                    let mut imports: Option<Vec<String>> = None;
                     for &qi in &unresolved {
-                        for q in &per_query_mir_queries[qi] {
-                            match mir_db.class_mention_answer(url_str, q, &text) {
-                                Some(true) => {
-                                    matched[qi] = true;
-                                    break;
-                                }
-                                Some(false) => {}
-                                None => {
-                                    needs_scan = true;
-                                }
+                        if per_query_mir_queries[qi].iter().any(&mut mentions) {
+                            matched[qi] = true;
+                            continue;
+                        }
+                        for (target, short) in &per_query_import_targets[qi] {
+                            if short.as_ref().is_none_or(&mut mentions)
+                                && imports
+                                    .get_or_insert_with(|| {
+                                        crate::index::use_imports::imported_names(&text)
+                                    })
+                                    .iter()
+                                    .any(|i| crate::index::use_imports::import_reaches(i, target))
+                            {
+                                matched[qi] = true;
+                                break;
                             }
                         }
                     }
-                    if needs_scan && let Some(mir_scanner) = &mir_scanner {
-                        // Scanned against the *whole* current universe, not
-                        // just this call's needles, so a future, differently-
-                        // shaped query against this same file is also a
-                        // lookup instead of its own fresh scan.
-                        let names = mir_scanner.scan(text.as_ref());
-                        for &qi in &unresolved {
-                            if !matched[qi]
-                                && per_query_mir_queries[qi].iter().any(|q| names.contains(q))
-                            {
-                                matched[qi] = true;
-                            }
-                        }
+                    if let (Some(names), Some(mir_scanner)) = (scan, &mir_scanner) {
                         mir_db.set_file_class_mentions(
                             &Arc::<str>::from(url_str),
                             &text,
