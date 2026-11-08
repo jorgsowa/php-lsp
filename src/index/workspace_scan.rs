@@ -146,13 +146,15 @@ pub(crate) async fn scan_workspace(
             &excl,
             &incl,
             &exts,
-            max_files,
+            max_files.saturating_mul(WALK_OVERSHOOT),
             &out,
             &count,
             &links,
             &ignores,
         );
-        out.into_inner().unwrap()
+        let mut paths = out.into_inner().unwrap();
+        keep_within_cap(&mut paths, &root2, max_files);
+        paths
     })
     .await
     .unwrap_or_else(|e| {
@@ -241,10 +243,11 @@ pub(crate) async fn scan_workspace(
 /// benefit, but also would not regress (falls back to one recursive call
 /// doing all the work itself).
 ///
-/// `max_files` is enforced exactly (matching the old serial walk's contract)
-/// via a compare-exchange reservation on `count`: each directory's file batch
-/// atomically claims only as much of the remaining budget as is left, so the
-/// total pushed to `out` across every parallel branch never exceeds the cap.
+/// `max_files` bounds the walk exactly via a compare-exchange reservation on
+/// `count`: each directory's file batch atomically claims only as much of the
+/// remaining budget as is left, so the total pushed to `out` across every
+/// parallel branch never exceeds it. The caller passes a multiple of the
+/// index cap and picks the kept files itself (see [`keep_within_cap`]).
 #[allow(clippy::too_many_arguments)]
 fn walk_dir_parallel(
     dir: std::path::PathBuf,
@@ -363,6 +366,30 @@ fn skips_entry(
 }
 
 /// `vendor/` is usually gitignored, and source installs put a checkout in it.
+/// How many times `max_files` the walk collects before choosing which files to keep.
+const WALK_OVERSHOOT: usize = 4;
+
+/// Trim an over-cap walk to `max_files`, project files before `vendor/` ones and
+/// by path within each, so the parallel walk's order never decides what is kept.
+fn keep_within_cap(paths: &mut Vec<std::path::PathBuf>, root: &std::path::Path, max_files: usize) {
+    if paths.len() <= max_files {
+        return;
+    }
+    let in_vendor = |p: &std::path::Path| {
+        p.strip_prefix(root)
+            .unwrap_or(p)
+            .components()
+            .any(|c| c.as_os_str() == "vendor")
+    };
+    paths.sort_by_cached_key(|p| (in_vendor(p), p.clone()));
+    tracing::warn!(
+        found = paths.len(),
+        max_files,
+        "workspace has more PHP files than maxIndexedFiles; indexing project files first"
+    );
+    paths.truncate(max_files);
+}
+
 fn is_vendor_dir(dir: &std::path::Path) -> bool {
     dir.file_name().is_some_and(|n| n == "vendor")
 }
@@ -626,6 +653,70 @@ mod tests {
         assert!(skips("cache/Compiled.php", &["cache/"], &[]));
         assert!(!skips("fixtures/clone/Cloned.php", &[], &["fixtures"]));
         assert!(!skips("cache/Keep.php", &["cache/"], &["cache/Keep.php"]));
+    }
+
+    #[tokio::test]
+    async fn file_cap_keeps_project_files_before_vendor_in_path_order() {
+        let dir = tempfile::tempdir().unwrap();
+        for i in 0..6 {
+            write_php(dir.path(), &format!("vendor/acme/V{i}.php"));
+        }
+        for i in 0..4 {
+            write_php(dir.path(), &format!("src/S{i}.php"));
+        }
+        let indexed_under_cap = |cap: usize| {
+            let root = dir.path().to_path_buf();
+            async move {
+                let docs = Arc::new(DocumentStore::new());
+                scan_workspace(
+                    root.clone(),
+                    Arc::clone(&docs),
+                    OpenFiles::default(),
+                    &[],
+                    &[],
+                    &[],
+                    &Default::default(),
+                    cap,
+                    None,
+                )
+                .await;
+                let mut rels: Vec<String> = docs
+                    .workspace_file_paths()
+                    .iter()
+                    .filter_map(|f| {
+                        f.parse::<Uri>()
+                            .ok()?
+                            .to_file_path()
+                            .map(|p| p.into_owned())
+                    })
+                    .map(|p| {
+                        let p = p.canonicalize().unwrap_or(p);
+                        let root = root.canonicalize().unwrap();
+                        p.strip_prefix(&root)
+                            .unwrap()
+                            .to_string_lossy()
+                            .replace('\\', "/")
+                    })
+                    .collect();
+                rels.sort();
+                rels
+            }
+        };
+
+        assert_eq!(
+            indexed_under_cap(5).await,
+            [
+                "src/S0.php",
+                "src/S1.php",
+                "src/S2.php",
+                "src/S3.php",
+                "vendor/acme/V0.php"
+            ]
+        );
+        assert_eq!(
+            indexed_under_cap(3).await,
+            ["src/S0.php", "src/S1.php", "src/S2.php"]
+        );
     }
 
     #[tokio::test]
