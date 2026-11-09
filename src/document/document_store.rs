@@ -526,7 +526,7 @@ impl DocumentStore {
             cancel,
             progress,
             || self.yield_and_evict_lru_memos(),
-            |chunk| self.reanalyze_files(chunk, cancel).is_some(),
+            |chunk| self.warm_files(chunk, cancel),
         );
         self.yield_and_evict_lru_memos();
         completed
@@ -888,6 +888,25 @@ impl DocumentStore {
         )
         .ok()
         .flatten()
+    }
+
+    fn warm_files(&self, files: &[Arc<str>], cancel: &mir_analyzer::IndexCancel) -> bool {
+        if files.is_empty() || cancel.is_cancelled() {
+            return false;
+        }
+        self.with_background_snapshot(
+            |session| {
+                session.prepare_for_query(None);
+                for file in files {
+                    if cancel.is_cancelled() {
+                        return;
+                    }
+                    session.prepare_file_for_analysis(file);
+                }
+            },
+            |snap| snap.warm_files(files, cancel),
+        )
+        .unwrap_or(false)
     }
 
     /// Members of a built-in PHP class from the phpstorm stubs, or `None`

@@ -501,3 +501,93 @@ async fn watcher_rename_stays_visible_in_seeded_symbol_index() {
         s.shutdown().await;
     }
 }
+
+const SWEEP_A: &str = "<?php\nclass A { public function run(): void {} }\n";
+const SWEEP_B: &str = "<?php\nclass B { public function run(): void {} }\n";
+const SWEEP_FACTORY_A: &str =
+    "<?php\nclass Factory { public function make(): A { return new A(); } }\n";
+const SWEEP_FACTORY_B: &str =
+    "<?php\nclass Factory { public function make(): B { return new B(); } }\n";
+const SWEEP_CALLER: &str = "<?php\nfunction go(Factory $f): void { $f->make()->run(); }\n";
+
+fn sweep_workspace() -> (tempfile::TempDir, tempfile::TempDir) {
+    let workspace = tempfile::tempdir().expect("workspace tempdir");
+    let cache_dir = tempfile::tempdir().expect("cache tempdir");
+    for (name, text) in [
+        ("a.php", SWEEP_A),
+        ("b.php", SWEEP_B),
+        ("factory.php", SWEEP_FACTORY_A),
+        ("caller.php", SWEEP_CALLER),
+    ] {
+        std::fs::write(workspace.path().join(name), text).expect("write fixture");
+    }
+    (workspace, cache_dir)
+}
+
+fn sweep_opts(cache_dir: &tempfile::TempDir) -> serde_json::Value {
+    json!({
+        "cachePath": cache_dir.path().to_str().unwrap(),
+        "diagnostics": {"enabled": false},
+        "phpVersion": "8.3",
+        "warmAnalysis": true,
+    })
+}
+
+async fn sweep_session_and_shutdown(workspace: &tempfile::TempDir, cache_dir: &tempfile::TempDir) {
+    let mut s = TestServer::with_root_and_options(workspace.path(), sweep_opts(cache_dir)).await;
+    s.wait_for_index_ready().await;
+    assert!(
+        s.wait_for_warm_sweeps(1).await,
+        "warm sweep did not complete"
+    );
+    s.shutdown().await;
+}
+
+/// References to `B::run` (cursor on its declaration in b.php).
+async fn b_run_references(s: &mut TestServer) -> String {
+    s.open("b.php", SWEEP_B).await;
+    let resp = s.references("b.php", 1, 26, false).await;
+    render_locations(&resp, &s.uri(""))
+}
+
+/// A warm restart skips files whose replayed postings are still exact, but a
+/// file depending on one changed between sessions is re-analyzed: its cached
+/// `A::run` posting must become `B::run`.
+#[tokio::test]
+async fn warm_sweep_skips_unchanged_files_but_reanalyzes_dependents_of_changes() {
+    let (workspace, cache_dir) = sweep_workspace();
+    sweep_session_and_shutdown(&workspace, &cache_dir).await;
+
+    std::fs::write(workspace.path().join("factory.php"), SWEEP_FACTORY_B).expect("rewrite");
+    let mut s = TestServer::with_root_and_options(workspace.path(), sweep_opts(&cache_dir)).await;
+    s.wait_for_index_ready().await;
+    assert!(
+        s.wait_for_warm_sweeps(1).await,
+        "warm sweep did not complete"
+    );
+    expect!["caller.php:1:44-1:47"].assert_eq(&b_run_references(&mut s).await);
+    s.shutdown().await;
+}
+
+/// A file skipped at boot that depends on a file edited in the session is
+/// re-analyzed by the edit's re-sweep.
+#[tokio::test]
+async fn edit_resweep_reanalyzes_skipped_dependents() {
+    let (workspace, cache_dir) = sweep_workspace();
+    sweep_session_and_shutdown(&workspace, &cache_dir).await;
+
+    let mut s = TestServer::with_root_and_options(workspace.path(), sweep_opts(&cache_dir)).await;
+    s.wait_for_index_ready().await;
+    assert!(
+        s.wait_for_warm_sweeps(1).await,
+        "warm sweep did not complete"
+    );
+    s.open("factory.php", SWEEP_FACTORY_A).await;
+    s.change("factory.php", 2, SWEEP_FACTORY_B).await;
+    assert!(
+        s.wait_for_warm_sweeps(2).await,
+        "edit re-sweep did not complete"
+    );
+    expect!["caller.php:1:44-1:47"].assert_eq(&b_run_references(&mut s).await);
+    s.shutdown().await;
+}
