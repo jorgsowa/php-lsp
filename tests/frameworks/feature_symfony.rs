@@ -581,7 +581,7 @@ mod hover {
         let out = render_hover(&resp);
         expect![[r#"
             ```php
-            class Tag implements \JsonSerializable
+            class Tag implements \JsonSerializable, \Stringable
             ```"#]]
         .assert_eq(&out);
     }
