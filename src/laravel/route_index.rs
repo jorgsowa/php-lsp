@@ -12,11 +12,7 @@
 //! `Route::name('prefix.')->group(function () { ... })` equivalent both
 //! prepend their `as` prefix to every `->name(...)`/resource registration
 //! inside the closure, including nested groups.
-//!
-//! Folio pages register names with `name('...')` in their leading PHP block;
-//! the page directories come from `Folio::path(...)` in `app/Providers` plus
-//! the default `resources/views/pages`. Route files shipped by installed
-//! packages (`vendor/*/*/routes`) are indexed after the project's own.
+//! Folio page `name('...')` calls and installed packages' route files are indexed too.
 
 use std::collections::HashMap;
 use std::ops::ControlFlow;
@@ -60,9 +56,7 @@ impl RouteIndex {
         &self.folio_dirs
     }
 
-    /// Every `.php` file under `routes/`, including nested subdirectories —
-    /// `require`d files that live outside that tree still aren't followed —
-    /// then Folio pages, then package route files.
+    /// Every `.php` file under `routes/`, then Folio pages, then package route files.
     pub(super) fn load(root: &Path) -> Self {
         let mut routes = HashMap::new();
         for path in super::fs_walk::php_files_recursive(&root.join("routes")) {
@@ -143,8 +137,7 @@ fn index_folio_page(path: &Path, routes: &mut HashMap<String, Location>) {
     }
 }
 
-/// Directories passed to `Folio::path(...)`/`Folio::route(...)` in the app's
-/// service providers, plus Folio's default `resources/views/pages`.
+/// Directories passed to `Folio::path`/`Folio::route` in app providers, plus the default `resources/views/pages`.
 fn folio_page_dirs(root: &Path) -> Vec<PathBuf> {
     let mut dirs = Vec::new();
     for path in super::fs_walk::php_files_recursive(&root.join("app").join("Providers")) {
@@ -168,8 +161,7 @@ fn folio_page_dirs(root: &Path) -> Vec<PathBuf> {
     dirs
 }
 
-/// `resource_path('views/x')` or `base_path('x')` at the start of `args`, as
-/// a root-relative directory.
+/// `resource_path('views/x')` or `base_path('x')` at the start of `args`, relative to the root.
 fn folio_dir_arg(args: &str) -> Option<PathBuf> {
     let args = args.trim_start();
     let (base, rest) = if let Some(rest) = args.strip_prefix("resource_path(") {
