@@ -173,6 +173,76 @@ async fn route_call_hover_shows_registration_line() {
     .assert_eq(&out);
 }
 
+fn write_folio_page(root: &std::path::Path) {
+    let providers = root.join("app").join("Providers");
+    std::fs::create_dir_all(&providers).unwrap();
+    std::fs::write(
+        providers.join("FolioServiceProvider.php"),
+        "<?php\nclass FolioServiceProvider {\n    public function boot(): void {\n        Folio::path(resource_path('views/folio'))->uri('/');\n    }\n}\n",
+    )
+    .unwrap();
+    let pages = root
+        .join("resources")
+        .join("views")
+        .join("folio")
+        .join("explore");
+    std::fs::create_dir_all(&pages).unwrap();
+    std::fs::write(
+        pages.join("index.blade.php"),
+        "<?php\n\nuse function Laravel\\Folio\\name;\n\nname('explore');\n?>\n<div></div>\n",
+    )
+    .unwrap();
+}
+
+#[tokio::test]
+async fn route_call_hover_resolves_folio_page_name() {
+    let workspace = tempfile::tempdir().expect("workspace tempdir");
+    write_full_laravel_project(workspace.path());
+    write_folio_page(workspace.path());
+    let php = "<?php\n$url = route('explore');\n";
+    std::fs::write(workspace.path().join("app.php"), php).unwrap();
+
+    let mut s = TestServer::with_root(workspace.path()).await;
+    s.wait_for_index_ready().await;
+    s.open("app.php", php).await;
+
+    let resp = s.hover("app.php", 1, 16).await;
+    expect![[r#"
+        **route('explore')**
+
+        ```php
+        name('explore');
+        ```
+
+        `resources/views/folio/explore/index.blade.php`"#]]
+    .assert_eq(&render_hover(&resp));
+}
+
+#[tokio::test]
+async fn route_call_hover_in_blade_resolves_folio_page_name() {
+    let workspace = tempfile::tempdir().expect("workspace tempdir");
+    write_full_laravel_project(workspace.path());
+    write_folio_page(workspace.path());
+    let blade = "<a href=\"{{ route('explore') }}\">Explore</a>\n";
+    let path = "resources/views/nav.blade.php";
+    std::fs::write(workspace.path().join(path), blade).unwrap();
+
+    let mut s = TestServer::with_root(workspace.path()).await;
+    s.wait_for_index_ready().await;
+    s.open(path, blade).await;
+
+    let resp = s.hover(path, 0, 22).await;
+    expect![[r#"
+        **route('explore')**
+
+        ```php
+        name('explore');
+        ```
+
+        `resources/views/folio/explore/index.blade.php`"#]]
+    .assert_eq(&render_hover(&resp));
+}
+
 #[tokio::test]
 async fn asset_call_hover_shows_resolved_path_without_snippet() {
     let workspace = tempfile::tempdir().expect("workspace tempdir");

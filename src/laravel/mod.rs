@@ -171,7 +171,12 @@ impl LaravelIndex {
         let mut parts = Vec::new();
         for (path, change) in changes {
             if let Ok(rel) = path.strip_prefix(root) {
-                affected_parts(rel, *change != FileChangeType::CHANGED, &mut parts);
+                affected_parts(
+                    rel,
+                    *change != FileChangeType::CHANGED,
+                    self.routes.folio_dirs(),
+                    &mut parts,
+                );
             }
         }
         if parts.is_empty() {
@@ -216,7 +221,12 @@ enum Part {
 /// Adds to `out` the parts of the index a change to `rel` (relative to the
 /// root) can alter. Name-to-file parts only change when a file comes or goes.
 #[cfg_attr(target_family = "wasm", allow(dead_code))]
-fn affected_parts(rel: &Path, added_or_removed: bool, out: &mut Vec<Part>) {
+fn affected_parts(
+    rel: &Path,
+    added_or_removed: bool,
+    folio_dirs: &[std::path::PathBuf],
+    out: &mut Vec<Part>,
+) {
     let is = |file: &str| rel == Path::new(file);
     let under = |dir: &str| rel.starts_with(dir);
     let content_part = if is(".env") || is(".env.example") {
@@ -233,6 +243,8 @@ fn affected_parts(rel: &Path, added_or_removed: bool, out: &mut Vec<Part>) {
         Some(Part::Vite)
     } else if is("bootstrap/app.php") || is("app/Http/Kernel.php") {
         Some(Part::Middleware)
+    } else if under("app/Providers") || folio_dirs.iter().any(|dir| rel.starts_with(dir)) {
+        Some(Part::Routes)
     } else {
         None
     };
@@ -763,7 +775,8 @@ mod tests {
     fn changes_map_to_the_parts_they_alter() {
         let parts = |rel: &str, added_or_removed: bool| {
             let mut out = Vec::new();
-            affected_parts(Path::new(rel), added_or_removed, &mut out);
+            let folio = [Path::new("resources/views/pages").to_path_buf()];
+            affected_parts(Path::new(rel), added_or_removed, &folio, &mut out);
             out
         };
         assert_eq!(parts(".env", false), [Part::Env]);
@@ -778,6 +791,18 @@ mod tests {
         );
         assert!(parts("app/Models/User.php", true).is_empty());
         assert!(parts("routes.php", true).is_empty());
+        assert_eq!(
+            parts("resources/views/pages/about.blade.php", false),
+            [Part::Routes]
+        );
+        assert_eq!(
+            parts("resources/views/pages/about.blade.php", true),
+            [Part::Routes, Part::Views]
+        );
+        assert_eq!(
+            parts("app/Providers/FolioServiceProvider.php", false),
+            [Part::Routes]
+        );
     }
 
     #[test]

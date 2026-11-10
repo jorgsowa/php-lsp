@@ -4,6 +4,10 @@ All notable changes to php-lsp are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- **Laravel Folio and package routes**: `route('name')` completion, hover and go-to-definition, in PHP and Blade, now find names registered with Folio's `name('...')` in page templates (directories from `Folio::path(...)` in `app/Providers`, plus `resources/views/pages`) and in route files of installed packages such as Fortify.
+
 ### Changed
 
 - **Gitignored checkouts are no longer indexed**: the workspace scan skips a gitignored directory that is its own git checkout, such as cloned test fixtures, so they no longer use memory or count towards `maxIndexedFiles`. Other ignored files stay indexed, since tracked code can depend on generated classes, and `includePaths` overrides the skip. A repository with 53,000 PHP files, 307 of them tracked, drops from 2.5 GB to 190 MB.

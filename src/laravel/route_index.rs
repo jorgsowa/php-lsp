@@ -12,13 +12,18 @@
 //! `Route::name('prefix.')->group(function () { ... })` equivalent both
 //! prepend their `as` prefix to every `->name(...)`/resource registration
 //! inside the closure, including nested groups.
+//!
+//! Folio pages register names with `name('...')` in their leading PHP block;
+//! the page directories come from `Folio::path(...)` in `app/Providers` plus
+//! the default `resources/views/pages`. Route files shipped by installed
+//! packages (`vendor/*/*/routes`) are indexed after the project's own.
 
 use std::collections::HashMap;
 use std::ops::ControlFlow;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use php_ast::visitor::{Visitor, walk_expr};
-use php_ast::{Block, Expr, ExprKind};
+use php_ast::{Block, Expr, ExprKind, StmtKind};
 use tower_lsp_server::ls_types::{
     CompletionItem, CompletionItemKind, Location, Position, Range, Uri,
 };
@@ -31,6 +36,8 @@ use super::string_call::is_ident;
 #[derive(Debug, Default, Clone)]
 pub struct RouteIndex {
     routes: HashMap<String, Location>,
+    /// Folio page directories, relative to the workspace root.
+    folio_dirs: Vec<PathBuf>,
 }
 
 impl RouteIndex {
@@ -49,31 +56,153 @@ impl RouteIndex {
         crate::laravel::location_lookup::key_at(&self.routes, uri, position)
     }
 
+    pub(super) fn folio_dirs(&self) -> &[PathBuf] {
+        &self.folio_dirs
+    }
+
     /// Every `.php` file under `routes/`, including nested subdirectories —
-    /// `require`d files that live outside that tree still aren't followed.
+    /// `require`d files that live outside that tree still aren't followed —
+    /// then Folio pages, then package route files.
     pub(super) fn load(root: &Path) -> Self {
         let mut routes = HashMap::new();
         for path in super::fs_walk::php_files_recursive(&root.join("routes")) {
-            let Ok(text) = std::fs::read(&path).map(crate::text::decode_source) else {
-                continue;
-            };
-            let Some(uri) = Uri::from_file_path(&path) else {
-                continue;
-            };
-            let doc = parse_document_no_diags(&text);
-            let sv = doc.view();
-            let mut visitor = RouteVisitor {
-                sv,
-                uri: &uri,
-                prefix_stack: Vec::new(),
-                out: &mut routes,
-            };
-            for stmt in doc.program().stmts.iter() {
-                let _ = visitor.visit_stmt(stmt);
+            index_route_file(&path, &mut routes);
+        }
+        let folio_dirs = folio_page_dirs(root);
+        for dir in &folio_dirs {
+            for path in super::fs_walk::php_files_recursive(&root.join(dir)) {
+                index_folio_page(&path, &mut routes);
             }
         }
-        Self { routes }
+        for dir in package_route_dirs(root) {
+            for path in super::fs_walk::php_files_recursive(&dir) {
+                index_route_file(&path, &mut routes);
+            }
+        }
+        Self { routes, folio_dirs }
     }
+}
+
+fn index_route_file(path: &Path, routes: &mut HashMap<String, Location>) {
+    let Ok(text) = std::fs::read(path).map(crate::text::decode_source) else {
+        return;
+    };
+    let Some(uri) = Uri::from_file_path(path) else {
+        return;
+    };
+    let doc = parse_document_no_diags(&text);
+    let sv = doc.view();
+    let mut visitor = RouteVisitor {
+        sv,
+        uri: &uri,
+        prefix_stack: Vec::new(),
+        out: routes,
+    };
+    for stmt in doc.program().stmts.iter() {
+        let _ = visitor.visit_stmt(stmt);
+    }
+}
+
+const FOLIO_NAME_FN: &str = "Laravel\\Folio\\name";
+
+/// A Folio page's `name('...')` call, made at the top level of its PHP block.
+fn index_folio_page(path: &Path, routes: &mut HashMap<String, Location>) {
+    let Ok(text) = std::fs::read(path).map(crate::text::decode_source) else {
+        return;
+    };
+    if !text.contains(FOLIO_NAME_FN) {
+        return;
+    }
+    let Some(uri) = Uri::from_file_path(path) else {
+        return;
+    };
+    let doc = parse_document_no_diags(&text);
+    let sv = doc.view();
+    for stmt in doc.program().stmts.iter() {
+        if let StmtKind::Expression(expr) = &stmt.kind
+            && let ExprKind::FunctionCall(f) = &expr.kind
+            && let ExprKind::Name(name) = &f.name.kind
+            && matches!(
+                name.to_string_repr().trim_start_matches('\\'),
+                "name" | FOLIO_NAME_FN
+            )
+            && let Some(arg_value) = f.args.first().and_then(|a| a.value())
+            && let ExprKind::String(route_name) = &arg_value.kind
+        {
+            let range = Range {
+                start: sv.position_of(arg_value.span.start + 1),
+                end: sv.position_of(arg_value.span.end - 1),
+            };
+            routes
+                .entry(route_name.to_string_lossy().into_owned())
+                .or_insert_with(|| Location {
+                    uri: uri.clone(),
+                    range,
+                });
+        }
+    }
+}
+
+/// Directories passed to `Folio::path(...)`/`Folio::route(...)` in the app's
+/// service providers, plus Folio's default `resources/views/pages`.
+fn folio_page_dirs(root: &Path) -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    for path in super::fs_walk::php_files_recursive(&root.join("app").join("Providers")) {
+        let Ok(text) = std::fs::read(&path).map(crate::text::decode_source) else {
+            continue;
+        };
+        for call in ["Folio::path(", "Folio::route("] {
+            for (idx, _) in text.match_indices(call) {
+                if let Some(dir) = folio_dir_arg(&text[idx + call.len()..])
+                    && !dirs.contains(&dir)
+                {
+                    dirs.push(dir);
+                }
+            }
+        }
+    }
+    let default = Path::new("resources").join("views").join("pages");
+    if !dirs.contains(&default) && root.join(&default).is_dir() {
+        dirs.push(default);
+    }
+    dirs
+}
+
+/// `resource_path('views/x')` or `base_path('x')` at the start of `args`, as
+/// a root-relative directory.
+fn folio_dir_arg(args: &str) -> Option<PathBuf> {
+    let args = args.trim_start();
+    let (base, rest) = if let Some(rest) = args.strip_prefix("resource_path(") {
+        (Path::new("resources"), rest)
+    } else {
+        (Path::new(""), args.strip_prefix("base_path(")?)
+    };
+    let rest = rest.trim_start();
+    let quote = rest.chars().next().filter(|c| *c == '\'' || *c == '"')?;
+    let rest = &rest[1..];
+    let arg = &rest[..rest.find(quote)?];
+    Some(base.join(arg.trim_start_matches('/')))
+}
+
+/// `vendor/{vendor}/{package}/routes` for every installed package that has one.
+fn package_route_dirs(root: &Path) -> Vec<PathBuf> {
+    let mut dirs = Vec::new();
+    let Ok(vendors) = std::fs::read_dir(root.join("vendor")) else {
+        return dirs;
+    };
+    for vendor in vendors.flatten() {
+        let Ok(packages) = std::fs::read_dir(vendor.path()) else {
+            continue;
+        };
+        for package in packages.flatten() {
+            let routes = package.path().join("routes");
+            if routes.is_dir() {
+                dirs.push(routes);
+            }
+        }
+    }
+    dirs.sort();
+    dirs
 }
 
 struct RouteVisitor<'a> {
@@ -408,6 +537,102 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let idx = RouteIndex::load(tmp.path());
         assert_eq!(idx.names().count(), 0);
+    }
+
+    #[test]
+    fn indexes_folio_page_names_from_provider_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let providers = tmp.path().join("app").join("Providers");
+        std::fs::create_dir_all(&providers).unwrap();
+        std::fs::write(
+            providers.join("FolioServiceProvider.php"),
+            "<?php\nclass FolioServiceProvider {\n    public function boot(): void {\n        Folio::path(resource_path('views/folio'))->uri('/');\n    }\n}\n",
+        )
+        .unwrap();
+        let pages = tmp
+            .path()
+            .join("resources")
+            .join("views")
+            .join("folio")
+            .join("explore");
+        std::fs::create_dir_all(&pages).unwrap();
+        std::fs::write(
+            pages.join("index.blade.php"),
+            "<?php\n\nuse function Laravel\\Folio\\name;\n\nname('explore');\n?>\n<div>{{ $x }}</div>\n",
+        )
+        .unwrap();
+        std::fs::write(
+            pages.join("[id].blade.php"),
+            "<?php\n\\Laravel\\Folio\\name('explore.board');\n?>\n<div></div>\n",
+        )
+        .unwrap();
+        std::fs::write(
+            pages.join("plain.blade.php"),
+            "<?php\nname('not-folio');\n?>\n",
+        )
+        .unwrap();
+
+        let idx = RouteIndex::load(tmp.path());
+        let loc = idx.get("explore").unwrap();
+        assert!(loc.uri.as_str().ends_with("index.blade.php"));
+        assert_eq!((loc.range.start.line, loc.range.start.character), (4, 6));
+        assert_eq!(loc.range.end.character, 13);
+        assert!(idx.get("explore.board").is_some());
+        assert!(idx.get("not-folio").is_none());
+        assert_eq!(
+            idx.folio_dirs(),
+            [Path::new("resources").join("views").join("folio")]
+        );
+    }
+
+    #[test]
+    fn indexes_folio_default_pages_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let pages = tmp.path().join("resources").join("views").join("pages");
+        std::fs::create_dir_all(&pages).unwrap();
+        std::fs::write(
+            pages.join("about.blade.php"),
+            "<?php\nuse function Laravel\\Folio\\name;\nname('about');\n?>\n",
+        )
+        .unwrap();
+        assert!(RouteIndex::load(tmp.path()).get("about").is_some());
+    }
+
+    #[test]
+    fn indexes_package_routes_after_project_routes() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_routes(
+            tmp.path(),
+            "web.php",
+            "<?php\nRoute::get('/in', Foo::class)->name('login');\n",
+        );
+        let pkg = tmp
+            .path()
+            .join("vendor")
+            .join("laravel")
+            .join("fortify")
+            .join("routes");
+        std::fs::create_dir_all(&pkg).unwrap();
+        std::fs::write(
+            pkg.join("routes.php"),
+            "<?php\nRoute::get('/login', Foo::class)->name('login');\nRoute::get('/register', Foo::class)->name('register');\n",
+        )
+        .unwrap();
+        let idx = RouteIndex::load(tmp.path());
+        assert!(
+            idx.get("login")
+                .unwrap()
+                .uri
+                .as_str()
+                .contains("/routes/web.php")
+        );
+        assert!(
+            idx.get("register")
+                .unwrap()
+                .uri
+                .as_str()
+                .contains("/vendor/")
+        );
     }
 
     #[test]
