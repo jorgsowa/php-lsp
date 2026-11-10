@@ -205,3 +205,23 @@ async fn scoped_ingestion_excludes_same_name_different_class() {
     assert!(resp["error"].is_null(), "references error: {resp:?}");
     expect!["caller.php:2:4-2:12"].assert_eq(&render_locations(&resp, &server.uri("")));
 }
+
+#[tokio::test]
+async fn references_method_called_through_untyped_property_assigned_in_constructor() {
+    let dir = tempfile::tempdir().unwrap();
+    let context = "<?php\nnamespace App;\nclass Context {\n    public function getAll(): array { return []; }\n}\n";
+    std::fs::write(dir.path().join("Context.php"), context).unwrap();
+    std::fs::write(
+        dir.path().join("Enumerator.php"),
+        "<?php\nnamespace App;\nclass Enumerator {\n    private $context;\n    public function __construct(Context $context) { $this->context = $context; }\n    protected function vars(): array { return $this->context->getAll(); }\n}\n",
+    )
+    .unwrap();
+
+    let mut server = TestServer::with_root(dir.path()).await;
+    server.wait_for_index_ready().await;
+    server.open("Context.php", context).await;
+
+    let resp = server.references("Context.php", 3, 22, false).await;
+    assert!(resp["error"].is_null(), "references error: {resp:?}");
+    expect!["Enumerator.php:5:62-5:68"].assert_eq(&render_locations(&resp, &server.uri("")));
+}

@@ -625,3 +625,22 @@ $fn$0;
     )
     .await;
 }
+
+#[tokio::test]
+async fn hover_nullable_needle_narrowed_by_strict_in_array() {
+    let mut s = TestServer::new().await;
+    s.check_hover_annotated(
+        r#"<?php
+final class Customer {}
+/** @param list<Customer> $customers */
+function f(?Customer $candidate, array $customers): void
+{
+    if (in_array($candidate, $customers, true)) {
+        $candi$0date;
+    }
+}
+"#,
+        expect!["`$candidate` `Customer`"],
+    )
+    .await;
+}
