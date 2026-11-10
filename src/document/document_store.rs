@@ -877,12 +877,7 @@ impl DocumentStore {
         self.with_background_snapshot(
             |session| {
                 session.prepare_for_query(None);
-                for file in files {
-                    if cancel.is_cancelled() {
-                        return;
-                    }
-                    session.prepare_file_for_analysis(file);
-                }
+                session.prepare_files_for_analysis_cancellable(files, &|| cancel.is_cancelled());
             },
             |snap| snap.reanalyze_files(files, cancel),
         )
@@ -899,20 +894,18 @@ impl DocumentStore {
                 session.prepare_for_query(None);
                 // warm_files skips files with fresh postings only when a cache exists.
                 let skip_fresh = session.cache().is_some();
-                let mut pending: Vec<&Arc<str>> = files.iter().collect();
+                let mut pending: Vec<Arc<str>> = files.to_vec();
                 // Preparing one file can load classes that make another's postings stale.
                 loop {
                     let (stale, fresh): (Vec<_>, Vec<_>) = pending
                         .into_iter()
                         .partition(|f| !skip_fresh || !session.reference_postings_fresh(f));
-                    if stale.is_empty() {
+                    if stale.is_empty()
+                        || !session.prepare_files_for_analysis_cancellable(&stale, &|| {
+                            cancel.is_cancelled()
+                        })
+                    {
                         return;
-                    }
-                    for file in stale {
-                        if cancel.is_cancelled() {
-                            return;
-                        }
-                        session.prepare_file_for_analysis(file);
                     }
                     pending = fresh;
                 }
