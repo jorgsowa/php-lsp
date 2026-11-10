@@ -7,9 +7,11 @@ All notable changes to php-lsp are documented here.
 ### Changed
 
 - **Gitignored checkouts are no longer indexed**: the workspace scan skips a gitignored directory that is its own git checkout, such as cloned test fixtures, so they no longer use memory or count towards `maxIndexedFiles`. Other ignored files stay indexed, since tracked code can depend on generated classes, and `includePaths` overrides the skip. A repository with 53,000 PHP files, 307 of them tracked, drops from 2.5 GB to 190 MB.
+- **Faster warm restarts**: the background warm sweep no longer re-analyzes or prepares files whose cached references are still exact. It still analyzes files changed since the last session or edited in this one, and every file that depends on them. On Symfony (16,700 files), the sweep after a restart drops from about 9.5 to 1.1 CPU-seconds and from 4.5 to 0.8 seconds.
 
 ### Fixed
 
+- **Stale references after a restart**: when a file changed between sessions, files depending on it replayed cached references computed against the old version until the warm sweep reached them. Their cached results are now discarded at startup (mir 0.96).
 - **Memory caps ignored during the warm sweep**: mir's memo limits were applied only after an edit, so a sweep kept every analyzed file's AST in memory. They now apply between chunks of the sweep and when it ends, whenever no analysis snapshot is alive, so eviction never cancels or waits on a request or background analysis. On a 50,000-file workspace, settled memory drops from 2.5 GB to 2.0 GB and peak from 2.8 GB to 2.2 GB, and memory no longer grows after an edit.
 - **Go-to-definition parsed every candidate file**: its workspace fallback, and `textDocument/declaration` on a miss, built a full AST for each file that mentioned the word, or for every file in the workspace. Both now check each file's declaration index first and parse only files that may declare the word. On a 50,000-file workspace this removes a spike of about 1 GB per such lookup.
 - **File watcher indexed files the scan skips**: a file created in an `excludePaths` directory or in a gitignored checkout was indexed when the editor reported it. Already indexed files still update.
