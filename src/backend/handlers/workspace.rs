@@ -386,10 +386,9 @@ impl Backend {
                 let roots = roots.clone();
                 let laravel = Arc::clone(&self.laravel);
                 tokio::task::spawn_blocking(move || {
-                    let index = crate::laravel::LaravelIndex::load_first(&roots);
-                    let is_laravel = index.is_laravel;
-                    laravel.store(Arc::new(index));
-                    is_laravel
+                    let index = Arc::new(crate::laravel::LaravelIndex::load_first(&roots));
+                    laravel.store(Arc::clone(&index));
+                    index
                 })
             };
 
@@ -645,7 +644,7 @@ impl Backend {
                         )
                         .await;
                 }
-                let is_laravel = laravel_load.await.unwrap_or(false);
+                let laravel = laravel_load.await.unwrap_or_default();
                 docs.mark_index_ready();
                 drop(docs);
                 client.send_notification::<IndexReadyNotification>(()).await;
@@ -658,7 +657,7 @@ impl Backend {
                     Arc::clone(&salsa_docs),
                     open_files.clone(),
                     config.load().diagnostics.clone(),
-                    is_laravel,
+                    laravel,
                 ));
 
                 // Reference-warm phase, behind readiness. Mir's returned

@@ -28,7 +28,7 @@ async fn dependent_reanalysis_is_skipped_before_index_ready() {
         open_files,
         changed_uri,
         DiagnosticsConfig::default(),
-        false,
+        Default::default(),
     )
     .await;
 

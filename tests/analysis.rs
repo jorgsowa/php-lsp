@@ -34,6 +34,8 @@ mod feature_inlay_hints;
 mod feature_inline_value;
 #[path = "analysis/feature_laravel_eloquent_guard.rs"]
 mod feature_laravel_eloquent_guard;
+#[path = "analysis/feature_laravel_missing_keys.rs"]
+mod feature_laravel_missing_keys;
 #[path = "analysis/feature_php_versions.rs"]
 mod feature_php_versions;
 #[path = "analysis/feature_semantic_tokens.rs"]

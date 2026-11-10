@@ -266,7 +266,7 @@ pub(crate) fn compute_open_file_diagnostics(
     open_files: &OpenFiles,
     uri: &Uri,
     diag_cfg: &DiagnosticsConfig,
-    is_laravel: bool,
+    laravel: &crate::laravel::LaravelIndex,
 ) -> Vec<Diagnostic> {
     if is_diagnostics_excluded(uri, diag_cfg) {
         return Vec::new();
@@ -285,8 +285,11 @@ pub(crate) fn compute_open_file_diagnostics(
         })
         .unwrap_or_default();
     let mut out = crate::analysis::diagnostics::merge_file_diagnostics(parse, semantic);
-    out.extend(crate::laravel::unguarded_model_diagnostics(
-        docs, uri, is_laravel,
+    out.extend(crate::laravel::file_diagnostics(
+        docs,
+        uri,
+        laravel,
+        &diag_cfg.disabled,
     ));
     out.extend(open_files.external_diagnostics(uri));
     out
@@ -349,14 +352,16 @@ mod tests {
         );
         let diag_cfg = DiagnosticsConfig::default();
 
-        let before = compute_open_file_diagnostics(&docs, &open_files, &uri, &diag_cfg, false);
+        let before =
+            compute_open_file_diagnostics(&docs, &open_files, &uri, &diag_cfg, &Default::default());
         assert!(
             before.is_empty(),
             "UndefinedClass must be suppressed before the index is ready, got: {before:?}"
         );
 
         docs.mark_index_ready();
-        let after = compute_open_file_diagnostics(&docs, &open_files, &uri, &diag_cfg, false);
+        let after =
+            compute_open_file_diagnostics(&docs, &open_files, &uri, &diag_cfg, &Default::default());
         assert!(
             after
                 .iter()
@@ -381,7 +386,8 @@ mod tests {
         );
         let diag_cfg = DiagnosticsConfig::default();
 
-        let before = compute_open_file_diagnostics(&docs, &open_files, &uri, &diag_cfg, false);
+        let before =
+            compute_open_file_diagnostics(&docs, &open_files, &uri, &diag_cfg, &Default::default());
         assert!(
             !before.is_empty(),
             "a same-file return-type mismatch must not wait on the workspace index"
@@ -404,10 +410,24 @@ mod tests {
         };
 
         assert!(
-            compute_open_file_diagnostics(&docs, &open_files, &vendor, &diag_cfg, false).is_empty()
+            compute_open_file_diagnostics(
+                &docs,
+                &open_files,
+                &vendor,
+                &diag_cfg,
+                &Default::default()
+            )
+            .is_empty()
         );
         assert!(
-            !compute_open_file_diagnostics(&docs, &open_files, &app, &diag_cfg, false).is_empty()
+            !compute_open_file_diagnostics(
+                &docs,
+                &open_files,
+                &app,
+                &diag_cfg,
+                &Default::default()
+            )
+            .is_empty()
         );
     }
 }

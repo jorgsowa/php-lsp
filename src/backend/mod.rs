@@ -230,9 +230,7 @@ impl Service<JsonRpcRequest> for LifecycleService {
     }
 }
 
-/// `ServerCapabilities` has no `typeHierarchyProvider` field, so it is added to
-/// the serialized `initialize` result for clients that read capabilities only
-/// from the handshake.
+/// `ServerCapabilities` lacks a `typeHierarchyProvider` field, so it is added to the serialized result.
 fn with_static_type_hierarchy(response: JsonRpcResponse) -> JsonRpcResponse {
     let (id, body) = response.into_parts();
     let body = body.map(|mut result| {
@@ -588,7 +586,7 @@ async fn compute_dependent_publishes_owned(
     open_files: OpenFiles,
     changed_uri: Uri,
     diag_cfg: crate::lang::config::DiagnosticsConfig,
-    is_laravel: bool,
+    laravel: Arc<LaravelIndex>,
 ) -> Vec<(Uri, Vec<Diagnostic>)> {
     tokio::task::spawn_blocking(move || {
         // A dependent sweep started during the initial scan can deadlock the
@@ -683,8 +681,11 @@ async fn compute_dependent_publishes_owned(
                 &diag_cfg,
             );
             let mut diags = merge_file_diagnostics(parse, semantic);
-            diags.extend(crate::laravel::unguarded_model_diagnostics(
-                &docs, &url, is_laravel,
+            diags.extend(crate::laravel::file_diagnostics(
+                &docs,
+                &url,
+                &laravel,
+                &diag_cfg.disabled,
             ));
             diags.extend(open_files.external_diagnostics(&url));
             out.push((url, diags));
@@ -712,7 +713,7 @@ pub(super) async fn republish_after_index_ready(
     docs: Arc<DocumentStore>,
     open_files: OpenFiles,
     diag_cfg: crate::lang::config::DiagnosticsConfig,
-    is_laravel: bool,
+    laravel: Arc<LaravelIndex>,
 ) {
     let uris = open_files.urls();
     if uris.is_empty() || open_files.client_pulls_diagnostics() {
@@ -728,7 +729,7 @@ pub(super) async fn republish_after_index_ready(
                     &open_files_ref,
                     &uri,
                     &diag_cfg,
-                    is_laravel,
+                    &laravel,
                 );
                 (uri, diags)
             })
@@ -819,7 +820,7 @@ pub(super) async fn publish_with_dependents(
     uri: Uri,
     publish: DiagnosticPublish,
     diag_cfg: crate::lang::config::DiagnosticsConfig,
-    is_laravel: bool,
+    laravel: Arc<LaravelIndex>,
 ) {
     let (version, expected_open_generation) = match publish {
         DiagnosticPublish::Open {
@@ -835,13 +836,14 @@ pub(super) async fn publish_with_dependents(
     let open_files_ref = open_files.clone();
     let uri_ref = uri.clone();
     let diag_cfg_ref = diag_cfg.clone();
+    let laravel_ref = Arc::clone(&laravel);
     let all_diags = tokio::task::spawn_blocking(move || {
         compute_open_file_diagnostics(
             &docs_ref,
             &open_files_ref,
             &uri_ref,
             &diag_cfg_ref,
-            is_laravel,
+            &laravel_ref,
         )
     })
     .await
@@ -856,8 +858,7 @@ pub(super) async fn publish_with_dependents(
         .publish_diagnostics(uri.clone(), all_diags, version)
         .await;
     let dependents =
-        compute_dependent_publishes_owned(docs, open_files.clone(), uri, diag_cfg, is_laravel)
-            .await;
+        compute_dependent_publishes_owned(docs, open_files.clone(), uri, diag_cfg, laravel).await;
     for (dep_uri, dep_diags) in dependents {
         let hash = diagnostics_content_hash(&dep_diags);
         if open_files.published_hash(&dep_uri) == Some(hash) {

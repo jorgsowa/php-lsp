@@ -10,7 +10,7 @@
 //! every nesting level so both `config('database')` (the whole file) and
 //! `config('database.connections.mysql.host')` (a leaf) resolve.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use php_ast::{ExprKind, StmtKind};
@@ -23,6 +23,9 @@ use crate::analysis::diagnostics::parse_document_no_diags;
 #[derive(Debug, Default, Clone)]
 pub struct ConfigIndex {
     keys: HashMap<String, Location>,
+    shapes: super::ArrayShapes,
+    /// Config files shipped by installed packages, merged into the app's config at runtime.
+    package_files: HashSet<String>,
 }
 
 impl ConfigIndex {
@@ -41,8 +44,20 @@ impl ConfigIndex {
         crate::laravel::location_lookup::key_at(&self.keys, uri, position)
     }
 
+    /// Whether `config(key)` is absent beneath an array literal or names a file no one ships.
+    pub(crate) fn is_missing(&self, key: &str) -> bool {
+        let file = key.split('.').next().unwrap_or(key);
+        if self.package_files.contains(file) {
+            return false;
+        }
+        self.shapes
+            .missing(&self.keys, key)
+            .unwrap_or(!self.keys.is_empty())
+    }
+
     pub(super) fn load(root: &Path) -> Self {
         let mut keys = HashMap::new();
+        let mut shapes = super::ArrayShapes::default();
         let config_dir = root.join("config");
         for path in super::fs_walk::php_files_recursive(&config_dir) {
             let Some(prefix) = super::relative_key(&config_dir, &path, ".") else {
@@ -56,10 +71,12 @@ impl ConfigIndex {
             };
             let doc = parse_document_no_diags(&text);
             let sv = doc.view();
+            let mut returns_array = false;
             for stmt in doc.program().stmts.iter() {
                 if let StmtKind::Return(Some(expr)) = &stmt.kind
                     && let ExprKind::Array(elements) = &expr.kind
                 {
+                    returns_array = true;
                     // The whole-file key points at the `return` keyword.
                     keys.entry(prefix.clone()).or_insert_with(|| Location {
                         uri: uri.clone(),
@@ -68,12 +85,45 @@ impl ConfigIndex {
                             end: sv.position_of(stmt.span.start + "return".len() as u32),
                         },
                     });
-                    super::collect_array_keys(elements, sv, &uri, &prefix, &mut keys);
+                    super::collect_array_keys(elements, sv, &uri, &prefix, &mut keys, &mut shapes);
+                }
+            }
+            if !returns_array {
+                shapes.mark_open(&prefix);
+            }
+        }
+        Self {
+            keys,
+            shapes,
+            package_files: package_config_files(root),
+        }
+    }
+}
+
+fn package_config_files(root: &Path) -> HashSet<String> {
+    let mut files = HashSet::new();
+    let Ok(vendors) = std::fs::read_dir(root.join("vendor")) else {
+        return files;
+    };
+    for vendor in vendors.flatten() {
+        let Ok(packages) = std::fs::read_dir(vendor.path()) else {
+            continue;
+        };
+        for package in packages.flatten() {
+            let Ok(entries) = std::fs::read_dir(package.path().join("config")) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().is_some_and(|e| e == "php")
+                    && let Some(stem) = path.file_stem().and_then(|s| s.to_str())
+                {
+                    files.insert(stem.to_string());
                 }
             }
         }
-        Self { keys }
     }
+    files
 }
 
 /// Completion items for dotted config keys starting with `prefix`.
@@ -88,6 +138,47 @@ mod tests {
     fn write_config(root: &Path, name: &str, contents: &str) {
         std::fs::create_dir_all(root.join("config")).unwrap();
         std::fs::write(root.join("config").join(name), contents).unwrap();
+    }
+
+    #[test]
+    fn missing_keys_are_only_reported_when_provably_absent() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_config(
+            tmp.path(),
+            "app.php",
+            "<?php\nreturn [\n    'name' => 'x',\n    'providers' => ServiceProvider::defaultProviders()->toArray(),\n    'nested' => ['a' => 1],\n    'mixed' => [...$extra, 'b' => 2],\n];\n",
+        );
+        write_config(
+            tmp.path(),
+            "computed.php",
+            "<?php\nreturn array_merge($a, ['x' => 1]);\n",
+        );
+        let pkg = tmp
+            .path()
+            .join("vendor")
+            .join("laravel")
+            .join("sanctum")
+            .join("config");
+        std::fs::create_dir_all(&pkg).unwrap();
+        std::fs::write(pkg.join("sanctum.php"), "<?php\nreturn [];\n").unwrap();
+        let idx = ConfigIndex::load(tmp.path());
+
+        assert!(!idx.is_missing("app"));
+        assert!(!idx.is_missing("app.name"));
+        assert!(!idx.is_missing("app.nested.a"));
+        assert!(idx.is_missing("app.missing"));
+        assert!(idx.is_missing("app.nested.missing"));
+        assert!(idx.is_missing("gate.missing"));
+        assert!(!idx.is_missing("app.providers.0"));
+        assert!(!idx.is_missing("app.mixed.c"));
+        assert!(!idx.is_missing("computed.anything"));
+        assert!(!idx.is_missing("sanctum.expiration"));
+    }
+
+    #[test]
+    fn missing_config_dir_reports_nothing() {
+        let tmp = tempfile::tempdir().unwrap();
+        assert!(!ConfigIndex::load(tmp.path()).is_missing("app.name"));
     }
 
     #[test]

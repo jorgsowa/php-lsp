@@ -555,7 +555,7 @@ impl LanguageServer for Backend {
                     generation: lifecycle_generation,
                 },
                 self.config.load().diagnostics.clone(),
-                self.laravel.load_full().is_laravel,
+                self.laravel.load_full(),
             )
             .await;
         })
@@ -600,7 +600,7 @@ impl LanguageServer for Backend {
             let diag_cfg = cfg.diagnostics.clone();
             let debounce_ms = cfg.debounce_ms;
             let warm_analysis = cfg.warm_analysis;
-            let is_laravel = self.laravel.load_full().is_laravel;
+            let laravel = self.laravel.load_full();
             tokio::spawn(async move {
                 // Debounce: if another edit arrives before we parse, the version
                 // gate below will discard this result.
@@ -638,7 +638,7 @@ impl LanguageServer for Backend {
                     uri.clone(),
                     DiagnosticPublish::Other(Some(document_version)),
                     diag_cfg,
-                    is_laravel,
+                    laravel,
                 )
                 .await;
 
@@ -750,7 +750,7 @@ impl LanguageServer for Backend {
             // prior set entirely, so omitting them would clear errors the editor
             // showed after the last did_change.
             let diag_cfg = self.config.load().diagnostics.clone();
-            let is_laravel = self.laravel.load_full().is_laravel;
+            let laravel = self.laravel.load_full();
             // Includes the semantic (mir) analysis pass, same as
             // `publish_with_dependents` — keep it off the async runtime worker
             // here too, not just on the did_open/did_change path.
@@ -758,6 +758,7 @@ impl LanguageServer for Backend {
                 let docs = Arc::clone(&self.docs);
                 let open_files = self.open_files.clone();
                 let uri_for_diags = uri.clone();
+                let laravel = Arc::clone(&laravel);
                 let all = self
                     .blocking_gated(super::debug_gate::GATE_DID_SAVE_DIAGNOSTICS, move || {
                         compute_open_file_diagnostics(
@@ -765,7 +766,7 @@ impl LanguageServer for Backend {
                             &open_files,
                             &uri_for_diags,
                             &diag_cfg,
-                            is_laravel,
+                            &laravel,
                         )
                     })
                     .await
@@ -825,7 +826,7 @@ impl LanguageServer for Backend {
                             uri,
                             DiagnosticPublish::Other(None),
                             diag_cfg,
-                            is_laravel,
+                            laravel,
                         )
                         .await;
                     });

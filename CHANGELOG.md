@@ -8,6 +8,8 @@ All notable changes to php-lsp are documented here.
 
 - **Laravel Folio and package routes**: `route('name')` completion, hover and go-to-definition, in PHP and Blade, now find names registered with Folio's `name('...')` in page templates (directories from `Folio::path(...)` in `app/Providers`, plus `resources/views/pages`) and in route files of installed packages such as Fortify.
 
+- **Laravel missing-key warnings**: `env()`, `config()`, `route()`, `view()` and `__()`/`trans()` calls whose key is not defined in the project are reported (`UndefinedEnvKey`, `UndefinedConfigKey`, `UndefinedRoute`, `UndefinedView`, `UndefinedTranslationKey`). Keys the index can't see stay silent: `env()` with a default or inside `config/`, config files and translation groups shipped by installed packages or the framework, computed arrays, and JSON-style translation strings. Codes can be turned off with `diagnostics.disabled`.
+
 ### Changed
 
 - **Gitignored checkouts are no longer indexed**: the workspace scan skips a gitignored directory that is its own git checkout, such as cloned test fixtures, so they no longer use memory or count towards `maxIndexedFiles`. Other ignored files stay indexed, since tracked code can depend on generated classes, and `includePaths` overrides the skip. A repository with 53,000 PHP files, 307 of them tracked, drops from 2.5 GB to 190 MB.

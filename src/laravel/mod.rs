@@ -27,6 +27,7 @@ mod hover;
 mod livewire_index;
 mod location_lookup;
 mod middleware_index;
+mod missing_keys;
 mod mix_index;
 pub(crate) mod request_fields;
 mod route_index;
@@ -40,7 +41,6 @@ mod vite_index;
 pub use asset_index::AssetIndex;
 pub use component_index::ComponentIndex;
 pub use config_index::ConfigIndex;
-pub use eloquent_guard::unguarded_model_diagnostics;
 pub use env_index::EnvIndex;
 pub use livewire_index::LivewireIndex;
 pub use middleware_index::MiddlewareIndex;
@@ -78,6 +78,30 @@ use crate::document::ast::SourceView;
 
 #[cfg(not(target_family = "wasm"))]
 pub(crate) use string_call::find_call_sites;
+
+/// Laravel-specific diagnostics for the file at `uri`, minus `disabled` codes.
+#[cfg_attr(target_family = "wasm", allow(dead_code))]
+pub fn file_diagnostics(
+    docs: &crate::document::document_store::DocumentStore,
+    uri: &Uri,
+    laravel: &LaravelIndex,
+    disabled: &[String],
+) -> Vec<tower_lsp_server::ls_types::Diagnostic> {
+    if !laravel.is_laravel {
+        return Vec::new();
+    }
+    let mut out = eloquent_guard::unguarded_model_diagnostics(docs, uri, true);
+    if !blade::is_blade_uri(uri)
+        && let Some(doc) = docs.get_doc_salsa(uri)
+    {
+        out.extend(missing_keys::missing_key_diagnostics(&doc, uri, laravel));
+    }
+    out.retain(|d| match &d.code {
+        Some(tower_lsp_server::ls_types::NumberOrString::String(code)) => !disabled.contains(code),
+        _ => true,
+    });
+    out
+}
 
 /// Bare function names recognized as the `env()` string-key helper call.
 const ENV_CALL_NAMES: &[&str] = &["env"];
@@ -322,6 +346,49 @@ fn relative_key(base: &Path, path: &Path, sep: &str) -> Option<String> {
     Some(components.join(sep))
 }
 
+/// Dotted keys holding array literals whose keys are all string literals, so absence beneath them is provable.
+#[derive(Debug, Default, Clone)]
+pub(crate) struct ArrayShapes {
+    closed: std::collections::HashSet<String>,
+    open: std::collections::HashSet<String>,
+}
+
+impl ArrayShapes {
+    fn record(&mut self, key: &str, elements: &[ArrayElement<'_, '_>]) {
+        let enumerable = elements.iter().all(|el| {
+            !el.is_spread() && matches!(el.key.as_ref().map(|k| &k.kind), Some(ExprKind::String(_)))
+        });
+        if enumerable {
+            self.closed.insert(key.to_string());
+        } else {
+            self.mark_open(key);
+        }
+    }
+
+    fn mark_open(&mut self, key: &str) {
+        self.open.insert(key.to_string());
+    }
+
+    fn is_known(&self, key: &str) -> bool {
+        self.closed.contains(key) || self.open.contains(key)
+    }
+
+    /// Whether `key` is absent beneath a closed array; `None` when no dotted ancestor is known.
+    fn missing(&self, keys: &HashMap<String, Location>, key: &str) -> Option<bool> {
+        let mut candidate = key;
+        loop {
+            if keys.contains_key(candidate) || self.is_known(candidate) {
+                return Some(
+                    candidate != key
+                        && self.closed.contains(candidate)
+                        && !self.open.contains(candidate),
+                );
+            }
+            candidate = candidate.rsplit_once('.')?.0;
+        }
+    }
+}
+
 /// Every string key of a PHP array literal, nested keys dotted under `prefix`.
 fn collect_array_keys(
     elements: &[ArrayElement<'_, '_>],
@@ -329,7 +396,9 @@ fn collect_array_keys(
     uri: &Uri,
     prefix: &str,
     out: &mut HashMap<String, Location>,
+    shapes: &mut ArrayShapes,
 ) {
+    shapes.record(prefix, elements);
     for el in elements {
         let Some(key_expr) = &el.key else { continue };
         let ExprKind::String(key) = &key_expr.kind else {
@@ -348,7 +417,7 @@ fn collect_array_keys(
             range,
         });
         if let ExprKind::Array(nested) = &el.value().kind {
-            collect_array_keys(nested, sv, uri, &dotted, out);
+            collect_array_keys(nested, sv, uri, &dotted, out, shapes);
         }
     }
 }

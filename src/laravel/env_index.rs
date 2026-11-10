@@ -12,6 +12,8 @@ use tower_lsp_server::ls_types::{
 #[derive(Debug, Default, Clone)]
 pub struct EnvIndex {
     vars: HashMap<String, Location>,
+    /// Whether `.env` or `.env.example` exists.
+    has_source: bool,
 }
 
 impl EnvIndex {
@@ -21,6 +23,10 @@ impl EnvIndex {
 
     pub fn names(&self) -> impl Iterator<Item = &str> {
         self.vars.keys().map(String::as_str)
+    }
+
+    pub(crate) fn has_source(&self) -> bool {
+        self.has_source
     }
 
     /// The env var name whose `.env`/`.env.example` declaration contains
@@ -36,11 +42,13 @@ impl EnvIndex {
     /// likely to be the file they expect a jump-to-definition to land in.
     pub(super) fn load(root: &Path) -> Self {
         let mut vars = HashMap::new();
+        let mut has_source = false;
         for filename in [".env", ".env.example"] {
             let path = root.join(filename);
             let Ok(text) = std::fs::read(&path).map(crate::text::decode_source) else {
                 continue;
             };
+            has_source = true;
             let Some(uri) = Uri::from_file_path(&path) else {
                 continue;
             };
@@ -63,7 +71,7 @@ impl EnvIndex {
                 });
             }
         }
-        Self { vars }
+        Self { vars, has_source }
     }
 }
 

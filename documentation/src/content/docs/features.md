@@ -94,6 +94,7 @@ the protocol's `Diagnostic` shape, it does no type-checking of its own.
 ## Laravel
 
 - **String-key completion and navigation** — `route()`, `view()`, `config()`, `env()`, `asset()`, `trans()`/`__()`, and `->middleware('alias')`/`Route::middleware([...])` resolve to their defining location, with hover and document links; route names include Folio pages and routes shipped by installed packages
+- **Missing-key warnings** — `env()`, `config()`, `route()`, `view()` and `trans()`/`__()` calls whose key is not defined in the project
 - **Quickfixes** — missing route names, facade-to-dependency-injection conversion, unguarded mass assignment
 - **Request handling** — `$request` field completion and validation-rule generation
 - **Blade templates** — completion, hover, go-to-definition, and document links for the same helpers inside `{{ }}`/`{!! !!}` expressions; `@include`/`@extends`/`@each`/`@component`/`@livewire` directives; `<x-alert>`/`<x-forms.input>`/`<livewire:counter>` component tags, resolving anonymous components and Livewire view-only components through `resources/views`, falling back to class-based `App\View\Components\*`/`App\Livewire\*` when no matching view exists

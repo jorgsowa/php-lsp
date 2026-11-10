@@ -21,9 +21,9 @@ impl Backend {
             let docs = Arc::clone(&self.docs);
             let open_files = self.open_files.clone();
             let uri_owned = uri.clone();
-            let is_laravel = self.laravel.load_full().is_laravel;
+            let laravel = self.laravel.load_full();
             tokio::task::spawn_blocking(move || {
-                compute_open_file_diagnostics(&docs, &open_files, &uri_owned, &diag_cfg, is_laravel)
+                compute_open_file_diagnostics(&docs, &open_files, &uri_owned, &diag_cfg, &laravel)
             })
             .await
             .map_err(|e| {
@@ -77,7 +77,7 @@ impl Backend {
         let docs = Arc::clone(&self.docs);
         let open_files = self.open_files.clone();
         let diag_cfg_sweep = diag_cfg.clone();
-        let is_laravel = self.laravel.load_full().is_laravel;
+        let laravel = self.laravel.load_full();
         let items = tokio::task::spawn_blocking(move || {
             // A user-facing pull: pause the background scan for the sweep and
             // snapshot a settled revision, so only a genuine user edit aborts
@@ -95,7 +95,7 @@ impl Backend {
                     &open_files,
                     &uri,
                     &diag_cfg_sweep,
-                    is_laravel,
+                    &laravel,
                 );
                 let result_id = compute_diagnostic_result_id(&all_diags, uri.as_str());
                 results.push(if previous_map.get(&uri) == Some(&result_id) {

@@ -27,6 +27,7 @@ use crate::document::ast::offset_to_position;
 #[derive(Debug, Default, Clone)]
 pub struct TranslationIndex {
     keys: HashMap<String, Location>,
+    shapes: super::ArrayShapes,
 }
 
 impl TranslationIndex {
@@ -45,16 +46,33 @@ impl TranslationIndex {
         crate::laravel::location_lookup::key_at(&self.keys, uri, position)
     }
 
+    /// Whether `__(key)` is absent beneath a group file; keys without one may be JSON-style strings.
+    pub(crate) fn is_missing(&self, key: &str) -> bool {
+        key.contains('.') && self.shapes.missing(&self.keys, key) == Some(true)
+    }
+
     pub(super) fn load(root: &Path) -> Self {
         let mut keys = HashMap::new();
+        let mut shapes = super::ArrayShapes::default();
         for lang_root in [root.join("lang"), root.join("resources").join("lang")] {
-            load_lang_root(&lang_root, &mut keys);
+            load_lang_root(&lang_root, &mut keys, &mut shapes);
         }
-        Self { keys }
+        // The framework's groups (`validation`, `auth`, ...) are merged beneath the app's files.
+        let framework = root.join("vendor/laravel/framework/src/Illuminate/Translation/lang/en");
+        for path in super::fs_walk::php_files_recursive(&framework) {
+            if let Some(group) = super::relative_key(&framework, &path, "/") {
+                shapes.mark_open(&group);
+            }
+        }
+        Self { keys, shapes }
     }
 }
 
-fn load_lang_root(lang_root: &Path, out: &mut HashMap<String, Location>) {
+fn load_lang_root(
+    lang_root: &Path,
+    out: &mut HashMap<String, Location>,
+    shapes: &mut super::ArrayShapes,
+) {
     let Ok(entries) = std::fs::read_dir(lang_root) else {
         return;
     };
@@ -78,7 +96,7 @@ fn load_lang_root(lang_root: &Path, out: &mut HashMap<String, Location>) {
         (name != "en", name)
     });
     for dir in &locale_dirs {
-        load_locale_php_files(dir, out);
+        load_locale_php_files(dir, out, shapes);
     }
     json_files.sort_by(|a, b| a.file_name().cmp(&b.file_name()));
     for file in &json_files {
@@ -91,7 +109,11 @@ fn load_lang_root(lang_root: &Path, out: &mut HashMap<String, Location>) {
 /// locale directory with the `.php` extension stripped and directory
 /// separators kept as `/` (matching Laravel's own file-path-as-group-name
 /// convention), so `lang/en/vendor/auth.php` becomes group `vendor/auth`.
-fn load_locale_php_files(locale_dir: &Path, out: &mut HashMap<String, Location>) {
+fn load_locale_php_files(
+    locale_dir: &Path,
+    out: &mut HashMap<String, Location>,
+    shapes: &mut super::ArrayShapes,
+) {
     for path in super::fs_walk::php_files_recursive(locale_dir) {
         let Some(group) = super::relative_key(locale_dir, &path, "/") else {
             continue;
@@ -104,12 +126,17 @@ fn load_locale_php_files(locale_dir: &Path, out: &mut HashMap<String, Location>)
         };
         let doc = parse_document_no_diags(&text);
         let sv = doc.view();
+        let mut returns_array = false;
         for stmt in doc.program().stmts.iter() {
             if let StmtKind::Return(Some(expr)) = &stmt.kind
                 && let ExprKind::Array(elements) = &expr.kind
             {
-                super::collect_array_keys(elements, sv, &uri, &group, out);
+                returns_array = true;
+                super::collect_array_keys(elements, sv, &uri, &group, out, shapes);
             }
+        }
+        if !returns_array {
+            shapes.mark_open(&group);
         }
     }
 }
@@ -380,6 +407,39 @@ mod tests {
         let dir = root.join(lang_dir).join(locale);
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join(name), contents).unwrap();
+    }
+
+    #[test]
+    fn missing_keys_are_only_reported_beneath_group_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        write_php_lang(
+            tmp.path(),
+            "lang",
+            "en",
+            "boards.php",
+            "<?php\nreturn ['explore' => 'Explore', 'visibility' => ['public' => 'Public']];\n",
+        );
+        write_php_lang(
+            tmp.path(),
+            "lang",
+            "en",
+            "validation.php",
+            "<?php\nreturn ['custom' => []];\n",
+        );
+        let framework = tmp
+            .path()
+            .join("vendor/laravel/framework/src/Illuminate/Translation/lang/en");
+        std::fs::create_dir_all(&framework).unwrap();
+        std::fs::write(framework.join("validation.php"), "<?php\nreturn [];\n").unwrap();
+        let idx = TranslationIndex::load(tmp.path());
+
+        assert!(!idx.is_missing("boards.explore"));
+        assert!(!idx.is_missing("boards.visibility.public"));
+        assert!(idx.is_missing("boards.missing"));
+        assert!(idx.is_missing("boards.visibility.private"));
+        assert!(!idx.is_missing("validation.required"));
+        assert!(!idx.is_missing("auth.failed"));
+        assert!(!idx.is_missing("Welcome back."));
     }
 
     #[test]
