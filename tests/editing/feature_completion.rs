@@ -1397,7 +1397,7 @@ async fn completion_array_map_foreach_element_type() {
         .check_completion_ordered(
             r#"<?php
 class Widget { public function render() {} }
-$items = array_map(fn($x): Widget => $x, []);
+$items = array_map(fn($x): Widget => $x, range(1, 3));
 foreach ($items as $item) { $item->$0 }
 "#,
         )

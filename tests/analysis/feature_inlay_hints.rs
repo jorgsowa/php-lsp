@@ -895,7 +895,7 @@ async fn inlay_hints_foreach_type_hint() {
         .check_inlay_hints(
             r#"<?php
 class User {}
-$users = array_map(fn($x): User => $x, []);
+$users = array_map(fn($x): User => $x, range(1, 3));
 foreach ($users as $user) {
     $user;
 }
@@ -1015,7 +1015,7 @@ async fn inlay_hints_foreach_key_value_type_hint() {
         .check_inlay_hints(
             r#"<?php
 class User {}
-$users = array_map(fn($x): User => $x, []);
+$users = array_map(fn($x): User => $x, range(1, 3));
 foreach ($users as $k => $user) {
     $user;
 }
@@ -1126,7 +1126,7 @@ async fn inlay_hints_kind_field_values() {
     //   - line 4 foreach → type hint (kind=1, label ": User") from array_map return
     s.open(
         "kinds.php",
-        "<?php\nclass User {}\nfunction greet(string $name): void {}\n$users = array_map(fn($x): User => $x, []);\nforeach ($users as $u) {}\ngreet('Alice');\n",
+        "<?php\nclass User {}\nfunction greet(string $name): void {}\n$users = array_map(fn($x): User => $x, range(1, 3));\nforeach ($users as $u) {}\ngreet('Alice');\n",
     )
     .await;
     let resp = s.inlay_hints("kinds.php", 0, 0, 7, 0).await;

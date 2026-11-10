@@ -937,9 +937,9 @@ dependencies = [
 
 [[package]]
 name = "mir-analyzer"
-version = "0.95.0"
+version = "0.96.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a888fcefcfa6b5d77a467b7020f402c3366241df2cd7d4fe842b9f44dd333aca"
+checksum = "9d8663584bc179dd4439be6bfa0976698a259325158911126db299802974efe5"
 dependencies = [
  "aho-corasick",
  "bincode",
@@ -969,9 +969,9 @@ dependencies = [
 
 [[package]]
 name = "mir-codebase"
-version = "0.95.0"
+version = "0.96.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "51bfe422fae978119c599b1d14051fd7ab675490bee64be5bc52b49563eb4e83"
+checksum = "30fe104619b0664c39daaad15b05f632563489afd272d60320b73ea16dac6409"
 dependencies = [
  "dashmap",
  "indexmap",
@@ -982,9 +982,9 @@ dependencies = [
 
 [[package]]
 name = "mir-issues"
-version = "0.95.0"
+version = "0.96.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f6e8d8f4e0cbdd2fa044cb3af67149672a1b98040dc69483c2927ac401d09a4a"
+checksum = "878612054a4099188f328c2de5bf42646034693fdab90b9c895d9302d6815cc3"
 dependencies = [
  "mir-types",
  "serde",
@@ -992,9 +992,9 @@ dependencies = [
 
 [[package]]
 name = "mir-plugin"
-version = "0.95.0"
+version = "0.96.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2b4441f7e78a91af83c01cc0831b032ded31eb9e4adaba9fd95e1160de508567"
+checksum = "524c5e6b7d7fa03454f0bd05a6cb6587892c88f522b71fa4a8219bea225a68b3"
 dependencies = [
  "mir-issues",
  "mir-types",
@@ -1006,9 +1006,9 @@ dependencies = [
 
 [[package]]
 name = "mir-types"
-version = "0.95.0"
+version = "0.96.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "11dbaf1e1fd665f3c46c2933656ed8fa1242325e818f926c95b024b482c71117"
+checksum = "56b6b9599d2efdf649dee54d711abba019c356c03b072d0d48f07427e7d5764e"
 dependencies = [
  "dashmap",
  "indexmap",
