@@ -15,6 +15,7 @@ All notable changes to php-lsp are documented here.
 - **Memory caps ignored during the warm sweep**: mir's memo limits were applied only after an edit, so a sweep kept every analyzed file's AST in memory. They now apply between chunks of the sweep and when it ends, whenever no analysis snapshot is alive, so eviction never cancels or waits on a request or background analysis. On a 50,000-file workspace, settled memory drops from 2.5 GB to 2.0 GB and peak from 2.8 GB to 2.2 GB, and memory no longer grows after an edit.
 - **Go-to-definition parsed every candidate file**: its workspace fallback, and `textDocument/declaration` on a miss, built a full AST for each file that mentioned the word, or for every file in the workspace. Both now check each file's declaration index first and parse only files that may declare the word. On a 50,000-file workspace this removes a spike of about 1 GB per such lookup.
 - **File watcher indexed files the scan skips**: a file created in an `excludePaths` directory or in a gitignored checkout was indexed when the editor reported it. Already indexed files still update.
+- **Type hierarchy hidden from most clients**: `typeHierarchyProvider` is now advertised in the `initialize` response instead of only through dynamic registration, which clients without `typeHierarchy.dynamicRegistration` never received.
 
 ## [0.31.0] — 2026-11-06
 

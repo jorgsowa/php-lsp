@@ -203,11 +203,19 @@ impl Service<JsonRpcRequest> for LifecycleService {
     fn call(&mut self, request: JsonRpcRequest) -> Self::Future {
         let request = self.spellings.normalize_request(request);
         let lifecycle = self.inner.inner().note_lifecycle_intent(&request);
+        let is_initialize = request.method() == "initialize";
         let future = self.inner.call(request);
         let spellings = self.spellings.clone();
         let future = async move {
             let response = future.await?;
-            Ok(response.map(|response| spellings.restore_response(response)))
+            Ok(response.map(|response| {
+                let response = spellings.restore_response(response);
+                if is_initialize {
+                    with_static_type_hierarchy(response)
+                } else {
+                    response
+                }
+            }))
         };
         match lifecycle {
             Some(guard) => {
@@ -220,6 +228,26 @@ impl Service<JsonRpcRequest> for LifecycleService {
             None => Box::pin(future),
         }
     }
+}
+
+/// `ServerCapabilities` has no `typeHierarchyProvider` field, so it is added to
+/// the serialized `initialize` result for clients that read capabilities only
+/// from the handshake.
+fn with_static_type_hierarchy(response: JsonRpcResponse) -> JsonRpcResponse {
+    let (id, body) = response.into_parts();
+    let body = body.map(|mut result| {
+        if let Some(caps) = result
+            .get_mut("capabilities")
+            .and_then(serde_json::Value::as_object_mut)
+        {
+            caps.insert(
+                "typeHierarchyProvider".to_string(),
+                serde_json::Value::Bool(true),
+            );
+        }
+        result
+    });
+    JsonRpcResponse::from_parts(id, body)
 }
 
 use crate::document::ast::ParsedDoc;

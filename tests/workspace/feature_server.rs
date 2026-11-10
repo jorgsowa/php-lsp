@@ -42,6 +42,7 @@ const UNCONDITIONAL_CAPS: &[&str] = &[
     "diagnosticProvider",
     "workspace",
     "monikerProvider",
+    "typeHierarchyProvider",
 ];
 
 #[tokio::test]

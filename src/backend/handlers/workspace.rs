@@ -352,7 +352,6 @@ impl Backend {
             self.docs.mark_index_ready();
         }
 
-        let php_selector = serde_json::json!([{"language": "php"}]);
         let watched_globs: Vec<serde_json::Value> = self
             .config
             .load()
@@ -366,7 +365,7 @@ impl Backend {
                 "kind": WatchKind::Create.bits() | WatchKind::Delete.bits(),
             })))
             .collect();
-        let mut registrations = vec![
+        let registrations = vec![
             Registration {
                 id: "php-lsp-file-watcher".to_string(),
                 method: "workspace/didChangeWatchedFiles".to_string(),
@@ -378,26 +377,6 @@ impl Backend {
                 register_options: Some(serde_json::json!({"section": "php-lsp"})),
             },
         ];
-        // `lsp-types` 0.94 has no static `typeHierarchyProvider` capability
-        // field, so this is the only way to advertise support — but a
-        // dynamic registration is only meaningful to a client that declared
-        // it understands one; sending it regardless would ask a client with
-        // no such capability to route a method it never agreed to handle.
-        let supports_type_hierarchy_registration = self
-            .client_capabilities
-            .load()
-            .text_document
-            .as_ref()
-            .and_then(|td| td.type_hierarchy.as_ref())
-            .and_then(|th| th.dynamic_registration)
-            .unwrap_or(false);
-        if supports_type_hierarchy_registration {
-            registrations.push(Registration {
-                id: "php-lsp-type-hierarchy".to_string(),
-                method: "textDocument/prepareTypeHierarchy".to_string(),
-                register_options: Some(serde_json::json!({"documentSelector": php_selector})),
-            });
-        }
         self.client.register_capability(registrations).await.ok();
 
         if !roots.is_empty() {
