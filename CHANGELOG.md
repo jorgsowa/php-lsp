@@ -14,6 +14,7 @@ All notable changes to php-lsp are documented here.
 
 - **Gitignored checkouts are no longer indexed**: the workspace scan skips a gitignored directory that is its own git checkout, such as cloned test fixtures, so they no longer use memory or count towards `maxIndexedFiles`. Other ignored files stay indexed, since tracked code can depend on generated classes, and `includePaths` overrides the skip. A repository with 53,000 PHP files, 307 of them tracked, drops from 2.5 GB to 190 MB.
 - **Faster warm restarts**: the background warm sweep no longer re-analyzes or prepares files whose cached references are still exact. It still analyzes files changed since the last session or edited in this one, and every file that depends on them. On Symfony (16,700 files), the sweep after a restart drops from about 9.5 to 1.1 CPU-seconds and from 4.5 to 0.8 seconds.
+- **Faster workspace indexing**: finding each class's name in its declaration no longer rescans the whole class body once per keyword it lacks. On Symfony, startup before the index is ready drops from about 7.0 to 5.8 CPU-seconds.
 - **mir 0.97**: parsing takes about 19% less CPU, and the warm sweep and dependent re-analysis prepare files in parallel (Symfony's first sweep finishes about 10% sooner). New checks cover `resource` types, `#[\NoDiscard]` results and invalid dynamic member names, and a class declaring `__toString()` shows the implicit `\Stringable` in hover.
 
 ### Fixed

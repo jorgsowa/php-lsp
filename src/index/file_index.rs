@@ -869,10 +869,7 @@ impl<'a> SourceText<'a> {
     /// Position of `name` after the first of `keywords` in the declaration span.
     fn declared_name(&self, loc: Option<&Location>, keywords: &[&str], name: &str) -> (u32, u32) {
         self.find_in_span(loc, |src, from, to| {
-            let after = keywords
-                .iter()
-                .filter_map(|k| find_word(src, from, to, k, true).map(|i| i + k.len()))
-                .min()?;
+            let after = first_keyword_end(src, from, to, keywords)?;
             find_word(src, after, to, name, false).or_else(|| find_word(src, after, to, name, true))
         })
     }
@@ -907,6 +904,44 @@ fn is_ident_byte(b: u8) -> bool {
     b.is_ascii_alphanumeric() || b == b'_' || b >= 0x80
 }
 
+/// End of the first whole identifier in `src[from..to]` equal to any of
+/// `keywords`, ignoring ASCII case.
+fn first_keyword_end(src: &str, from: usize, to: usize, keywords: &[&str]) -> Option<usize> {
+    let bytes = src.as_bytes();
+    let to = to.min(bytes.len());
+    if from >= to {
+        return None;
+    }
+    let mut i = from;
+    // An identifier that starts before `from` can't match.
+    if i > 0 && is_ident_byte(bytes[i - 1]) {
+        while i < to && is_ident_byte(bytes[i]) {
+            i += 1;
+        }
+    }
+    while i < to {
+        if !is_ident_byte(bytes[i]) {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < bytes.len() && is_ident_byte(bytes[i]) {
+            i += 1;
+        }
+        if i > to {
+            return None;
+        }
+        let word = &bytes[start..i];
+        if keywords
+            .iter()
+            .any(|k| word.eq_ignore_ascii_case(k.as_bytes()))
+        {
+            return Some(i);
+        }
+    }
+    None
+}
+
 /// First whole-identifier occurrence of `word` in `src[from..to]`.
 fn find_word(src: &str, from: usize, to: usize, word: &str, ignore_case: bool) -> Option<usize> {
     let bytes = src.as_bytes();
@@ -932,6 +967,37 @@ fn find_word(src: &str, from: usize, to: usize, word: &str, ignore_case: bool) -
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn first_keyword_end_matches_earliest_whole_keyword() {
+        let kws = ["class", "interface", "trait", "enum"];
+        let oracle = |src: &str, from: usize, to: usize| {
+            kws.iter()
+                .filter_map(|k| find_word(src, from, to, k, true).map(|i| i + k.len()))
+                .min()
+        };
+        let cases = [
+            "#[Attr] final class Foo { function interface() {} }",
+            "/** @see Enum */ abstract CLASS Foo {}",
+            "$classes = 1; trait T {}",
+            "subclass x_enum enumx Enum",
+            "über class Ünicode {}",
+            "readonly class",
+            "classX",
+            "",
+        ];
+        for src in cases {
+            for from in 0..=src.len() {
+                for to in from..=src.len() + 2 {
+                    assert_eq!(
+                        first_keyword_end(src, from, to, &kws),
+                        oracle(src, from, to),
+                        "{src:?} {from}..{to}"
+                    );
+                }
+            }
+        }
+    }
 
     #[test]
     fn extracts_class_and_method() {
