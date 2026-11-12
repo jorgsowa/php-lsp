@@ -55,6 +55,7 @@ pub(crate) fn declared_param_labels(params: &[mir_analyzer::DeclaredParam]) -> V
         .collect()
 }
 
+#[cfg_attr(target_family = "wasm", allow(dead_code))]
 pub(crate) fn format_declared_params(params: &[mir_analyzer::DeclaredParam]) -> String {
     ParamLabel::join(&declared_param_labels(params))
 }
