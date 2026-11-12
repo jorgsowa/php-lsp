@@ -4,10 +4,6 @@ All notable changes to php-lsp are documented here.
 
 ## [Unreleased]
 
-### Fixed
-
-- **Signature help split parameters at commas inside types and defaults**: a parameter typed `array<int|string, string>`, as in `str_replace`, or with a default like `string $glue = ', '` came out as two parameters, and the highlighted parameter drifted for every argument after it. Parameters now come one by one from the declaration. Commas inside a `match` block in an earlier argument no longer move the highlight either.
-
 ## [0.32.0] — 2026-11-12
 
 ### Added
@@ -31,6 +27,7 @@ All notable changes to php-lsp are documented here.
 - **Unstable file selection above `maxIndexedFiles`**: which files were kept depended on the order of the parallel directory walk. Project files are now kept before `vendor/` ones, in path order, so the same files are indexed on every run.
 - **File watcher indexed files the scan skips**: a file created in an `excludePaths` directory or in a gitignored checkout was indexed when the editor reported it. Already indexed files still update.
 - **Type hierarchy hidden from most clients**: `typeHierarchyProvider` is now advertised in the `initialize` response instead of only through dynamic registration, which clients without `typeHierarchy.dynamicRegistration` never received.
+- **Signature help split parameters at commas inside types and defaults**: a parameter typed `array<int|string, string>`, as in `str_replace`, or with a default like `string $glue = ', '` came out as two parameters, and the highlighted parameter drifted for every argument after it. Parameters now come one by one from the declaration. Commas inside a `match` block in an earlier argument no longer move the highlight either.
 
 ### Dependencies
 
