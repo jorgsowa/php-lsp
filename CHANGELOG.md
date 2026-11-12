@@ -4,27 +4,33 @@ All notable changes to php-lsp are documented here.
 
 ## [Unreleased]
 
+## [0.32.0] — 2026-11-12
+
 ### Added
 
-- **Laravel Folio and package routes**: `route('name')` completion, hover and go-to-definition, in PHP and Blade, now find names registered with Folio's `name('...')` in page templates (directories from `Folio::path(...)` in `app/Providers`, plus `resources/views/pages`) and in route files of installed packages such as Fortify.
-
+- **Laravel Folio and package routes**: `route('name')` completion, hover and go-to-definition, in PHP and Blade, find names registered with Folio's `name('...')` in page templates (directories from `Folio::path(...)` in `app/Providers`, plus `resources/views/pages`) and in route files of installed packages such as Fortify.
 - **Laravel missing-key warnings**: `env()`, `config()`, `route()`, `view()` and `__()`/`trans()` calls whose key is not defined in the project are reported (`UndefinedEnvKey`, `UndefinedConfigKey`, `UndefinedRoute`, `UndefinedView`, `UndefinedTranslationKey`). Keys the index can't see stay silent: `env()` with a default or inside `config/`, config files and translation groups shipped by installed packages or the framework, computed arrays, and JSON-style translation strings. Codes can be turned off with `diagnostics.disabled`.
 
 ### Changed
 
+- **Faster startup and restarts**: the background warm sweep skips files whose cached references are still exact and no longer collects diagnostics, files are prepared for analysis in parallel, and indexing finds each class's name in one pass over its source. Files changed since the last session or edited in this one, and every file depending on them, are still re-analyzed. On Symfony (16,700 files), CPU time until the index is ready drops from about 14 to 7 seconds on a restart and from about 15 to 9 on a first start, and the sweep after a restart drops from about 18 CPU-seconds to under 1.
+- **Faster first references**: files importing a class are found by reading their `use` statements instead of analyzing them. On Symfony, the first references query for a class after startup drops from 0.3–1.6 s to 30–60 ms.
 - **Gitignored checkouts are no longer indexed**: the workspace scan skips a gitignored directory that is its own git checkout, such as cloned test fixtures, so they no longer use memory or count towards `maxIndexedFiles`. Other ignored files stay indexed, since tracked code can depend on generated classes, and `includePaths` overrides the skip. A repository with 53,000 PHP files, 307 of them tracked, drops from 2.5 GB to 190 MB.
-- **Faster warm restarts**: the background warm sweep no longer re-analyzes or prepares files whose cached references are still exact. It still analyzes files changed since the last session or edited in this one, and every file that depends on them. On Symfony (16,700 files), the sweep after a restart drops from about 9.5 to 1.1 CPU-seconds and from 4.5 to 0.8 seconds.
-- **Faster workspace indexing**: finding each class's name in its declaration no longer rescans the whole class body once per keyword it lacks. On Symfony, startup before the index is ready drops from about 7.0 to 5.8 CPU-seconds.
-- **mir 0.97**: parsing takes about 19% less CPU, and the warm sweep and dependent re-analysis prepare files in parallel (Symfony's first sweep finishes about 10% sooner). New checks cover `resource` types, `#[\NoDiscard]` results and invalid dynamic member names, and a class declaring `__toString()` shows the implicit `\Stringable` in hover.
+- **Faster analysis with mir 0.98**: parsing takes about 19% less CPU. New checks cover `resource` types, `#[\NoDiscard]` results and invalid dynamic member names, and a class declaring `__toString()` shows the implicit `\Stringable` in hover.
 
 ### Fixed
 
-- **Stale references after a restart**: when a file changed between sessions, files depending on it replayed cached references computed against the old version until the warm sweep reached them. Their cached results are now discarded at startup (mir 0.96).
-- **Slow first restart after indexing**: vendor files read on demand weren't recorded in the analysis cache, so the next session re-analyzed every file depending on them, about 2,500 files on Symfony. The first warm sweep after a fresh index now costs about 1.1 CPU-seconds instead of up to 7 (mir 0.98).
+- **Stale references after a restart**: when a file changed between sessions, files depending on it replayed cached references computed against the old version until the warm sweep reached them. Their cached results are now discarded at startup.
+- **Slow first restart after indexing**: vendor files read on demand weren't recorded in the analysis cache, so the next session re-analyzed every file depending on them, about 2,500 files on Symfony. The first warm sweep after a fresh index now costs about 1.1 CPU-seconds instead of up to 7.
 - **Memory caps ignored during the warm sweep**: mir's memo limits were applied only after an edit, so a sweep kept every analyzed file's AST in memory. They now apply between chunks of the sweep and when it ends, whenever no analysis snapshot is alive, so eviction never cancels or waits on a request or background analysis. On a 50,000-file workspace, settled memory drops from 2.5 GB to 2.0 GB and peak from 2.8 GB to 2.2 GB, and memory no longer grows after an edit.
 - **Go-to-definition parsed every candidate file**: its workspace fallback, and `textDocument/declaration` on a miss, built a full AST for each file that mentioned the word, or for every file in the workspace. Both now check each file's declaration index first and parse only files that may declare the word. On a 50,000-file workspace this removes a spike of about 1 GB per such lookup.
+- **Unstable file selection above `maxIndexedFiles`**: which files were kept depended on the order of the parallel directory walk. Project files are now kept before `vendor/` ones, in path order, so the same files are indexed on every run.
 - **File watcher indexed files the scan skips**: a file created in an `excludePaths` directory or in a gitignored checkout was indexed when the editor reported it. Already indexed files still update.
 - **Type hierarchy hidden from most clients**: `typeHierarchyProvider` is now advertised in the `initialize` response instead of only through dynamic registration, which clients without `typeHierarchy.dynamicRegistration` never received.
+
+### Dependencies
+
+- **mir updated to 0.98.0** (from 0.91.0) and the PHP parser crates to 0.29 (from 0.28).
 
 ## [0.31.0] — 2026-11-06
 

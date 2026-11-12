@@ -51,7 +51,7 @@ cargo build --release
 
 ```bash
 php-lsp --version
-# php-lsp 0.31.0
+# php-lsp 0.32.0
 ```
 
 If you get `command not found`, ensure the install directory is on your `PATH`:
