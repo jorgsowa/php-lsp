@@ -4,6 +4,10 @@ All notable changes to php-lsp are documented here.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Signature help split parameters at commas inside types and defaults**: a parameter typed `array<int|string, string>`, as in `str_replace`, or with a default like `string $glue = ', '` came out as two parameters, and the highlighted parameter drifted for every argument after it. Parameters now come one by one from the declaration. Commas inside a `match` block in an earlier argument no longer move the highlight either.
+
 ## [0.32.0] — 2026-11-12
 
 ### Added

@@ -5,21 +5,42 @@ use tower_lsp_server::ls_types::{Position, Range};
 
 use super::offset::utf16_offset_to_byte;
 
-/// Split a parameter list string on commas, respecting bracket nesting.
+/// Split a rendered parameter list on its top-level commas, each part trimmed.
 ///
-/// This avoids splitting inside default values like `array $x = [1, 2, 3]`.
-/// Each returned slice is trimmed of leading/trailing whitespace.
+/// Commas nested in `()`, `[]`, `{}` or string literals never split. Inside a
+/// parameter's type (before its `$name`) `<...>` nests too, as in
+/// `array<int, string>`; after the name, `<` and `>` are operators in the
+/// default value (`=>`, `<<`, `1 < 2`) and are ignored.
 pub(crate) fn split_params(s: &str) -> Vec<&str> {
     let mut parts = Vec::new();
     let mut depth = 0i32;
+    let mut angle = 0i32;
+    let mut in_type = true;
+    let mut quote: Option<char> = None;
+    let mut escaped = false;
     let mut start = 0;
     for (i, ch) in s.char_indices() {
+        if let Some(q) = quote {
+            if escaped {
+                escaped = false;
+            } else if ch == '\\' {
+                escaped = true;
+            } else if ch == q {
+                quote = None;
+            }
+            continue;
+        }
         match ch {
+            '\'' | '"' => quote = Some(ch),
             '(' | '[' | '{' => depth += 1,
             ')' | ']' | '}' => depth -= 1,
-            ',' if depth == 0 => {
+            '<' if in_type => angle += 1,
+            '>' if in_type && angle > 0 => angle -= 1,
+            '$' if depth == 0 && angle == 0 => in_type = false,
+            ',' if depth == 0 && angle == 0 => {
                 parts.push(s[start..i].trim());
                 start = i + 1;
+                in_type = true;
             }
             _ => {}
         }
@@ -283,5 +304,103 @@ mod tests {
     fn contains_ascii_case_insensitive_empty_needle_matches_anything() {
         assert!(contains_ascii_case_insensitive("anything", ""));
         assert!(contains_ascii_case_insensitive("", ""));
+    }
+
+    #[test]
+    fn split_params_keeps_generic_type_arguments_together() {
+        assert_eq!(
+            split_params(
+                "string|array<int|string, string> $search, string|array<int|string, scalar|Stringable|null> $replace, string|array<int|string, string> $subject, mixed &$count = null"
+            ),
+            [
+                "string|array<int|string, string> $search",
+                "string|array<int|string, scalar|Stringable|null> $replace",
+                "string|array<int|string, string> $subject",
+                "mixed &$count = null",
+            ]
+        );
+    }
+
+    #[test]
+    fn split_params_handles_nested_and_closing_generic_pairs() {
+        assert_eq!(
+            split_params("array<int, array<string, int>> $a, int<0, max> $b, Foo<A, B>|null $c"),
+            [
+                "array<int, array<string, int>> $a",
+                "int<0, max> $b",
+                "Foo<A, B>|null $c"
+            ]
+        );
+    }
+
+    #[test]
+    fn split_params_ignores_comparison_and_shift_operators_in_defaults() {
+        assert_eq!(
+            split_params("int $a = 1 << 2, bool $b = 1 < 2, int $c = 8 >> 1, array<int, int> $d"),
+            [
+                "int $a = 1 << 2",
+                "bool $b = 1 < 2",
+                "int $c = 8 >> 1",
+                "array<int, int> $d"
+            ]
+        );
+    }
+
+    #[test]
+    fn split_params_ignores_arrows_in_array_defaults() {
+        assert_eq!(
+            split_params("array $a = ['k' => 1, 'j' => 2], array<string, int> $b = ['x' => 1]"),
+            [
+                "array $a = ['k' => 1, 'j' => 2]",
+                "array<string, int> $b = ['x' => 1]"
+            ]
+        );
+    }
+
+    #[test]
+    fn split_params_ignores_commas_inside_string_defaults() {
+        assert_eq!(
+            split_params(
+                r#"string $sep = ', ', string $q = "a,\"b", string $e = 'it\'s, ok', $last"#
+            ),
+            [
+                "string $sep = ', '",
+                r#"string $q = "a,\"b""#,
+                r"string $e = 'it\'s, ok'",
+                "$last"
+            ]
+        );
+    }
+
+    #[test]
+    fn split_params_keeps_shapes_and_callable_types_together() {
+        assert_eq!(
+            split_params(
+                "array{a: int, b: list<string>} $s, callable(int, string): array<int, bool> $cb, Closure(int $x, int $y): void $c"
+            ),
+            [
+                "array{a: int, b: list<string>} $s",
+                "callable(int, string): array<int, bool> $cb",
+                "Closure(int $x, int $y): void $c"
+            ]
+        );
+    }
+
+    #[test]
+    fn split_params_keeps_string_literal_types_together() {
+        assert_eq!(
+            split_params("'a,b'|'c' $mode, int $n"),
+            ["'a,b'|'c' $mode", "int $n"]
+        );
+    }
+
+    #[test]
+    fn split_params_plain_lists() {
+        assert_eq!(
+            split_params("$array, $callback = null, $mode = 0"),
+            ["$array", "$callback = null", "$mode = 0"]
+        );
+        assert!(split_params("").is_empty());
+        assert_eq!(split_params("...$arrays"), ["...$arrays"]);
     }
 }

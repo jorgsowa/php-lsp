@@ -1809,6 +1809,37 @@ impl TestServer {
         render_signature_help(&resp)
     }
 
+    /// Signature help with every parameter label of the active signature
+    /// listed under it as `[i] label`, the active one marked with `*`.
+    pub async fn check_signature_help_params(&mut self, src: &str) -> String {
+        let opened = self.open_fixture(src).await;
+        let c = opened.cursor().clone();
+        let resp = self.signature_help(&c.path, c.line, c.character).await;
+        let result = &resp["result"];
+        if result.is_null() {
+            return "<no signature>".to_owned();
+        }
+        let sig = &result["signatures"][result["activeSignature"].as_u64().unwrap_or(0) as usize];
+        let active = result["activeParameter"].as_u64();
+        let label = sig["label"].as_str().unwrap_or("");
+        let mut out = label.to_owned();
+        for (i, param) in sig["parameters"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .enumerate()
+        {
+            let plabel = param["label"].as_str().unwrap_or("<non-string label>");
+            assert!(
+                label.contains(plabel),
+                "parameter label {plabel:?} is not a substring of {label:?}"
+            );
+            let marker = if active == Some(i as u64) { "*" } else { " " };
+            out.push_str(&format!("\n{marker}[{i}] {plabel}"));
+        }
+        out
+    }
+
     /// Inlay hints over the full text of the fixture's first file, rendered
     /// as sorted `line:col <label>` lines.
     pub async fn check_inlay_hints(&mut self, src: &str) -> String {

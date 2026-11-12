@@ -4,9 +4,9 @@ use tower_lsp_server::ls_types::{
     SignatureHelp, SignatureInformation,
 };
 
-use crate::analysis::callable_info::callable_info_for_name;
+use crate::analysis::callable_info::{ParamLabel, callable_info_for_name};
 use crate::document::ast::ParsedDoc;
-use crate::hover::format_params_str;
+use crate::hover::formatting::format_param;
 use crate::lang::docblock::{find_docblock, parse_docblock};
 use crate::text::{
     class_matches_declaration, fqn_short_name, position_to_byte_offset, split_params,
@@ -79,37 +79,31 @@ pub fn signature_help(
             .as_ref()
             .and_then(|symbol| callable_info_for_name(db, symbol))
     });
-    let sig_text = local_sig
+    let sig_params = local_sig
         .or(local_doc_method_sig)
-        .or_else(|| resolved.as_ref().map(|info| info.params.clone()))
-        .or_else(|| builtin_signature(&func_name).map(|s| s.to_string()))?;
+        .or_else(|| resolved.as_ref().map(|info| info.param_labels.clone()))
+        .or_else(|| builtin_signature(&func_name).map(builtin_param_labels))?;
 
     let display_name = func_name.trim_start_matches('\\');
-    let label = format!("{}({})", display_name, sig_text);
+    let label = format!("{}({})", display_name, ParamLabel::join(&sig_params));
     let docblock = find_docblock(&doc.program().stmts, &func_name);
     let mut named_index = None;
-    let params: Vec<ParameterInformation> = split_params(&sig_text)
+    let params: Vec<ParameterInformation> = sig_params
         .into_iter()
-        .filter(|p| !p.is_empty())
         .enumerate()
-        .map(|(idx, p)| {
-            // Extract the variable name (e.g. "$name") from the param string.
-            let param_name = p
-                .split_whitespace()
-                .find_map(|t| t.trim_start_matches(['&', '.']).strip_prefix('$'))
-                .unwrap_or("");
-            if named_index.is_none() && ctx.named_arg.as_deref() == Some(param_name) {
+        .map(|(idx, param)| {
+            if named_index.is_none() && ctx.named_arg.as_deref() == Some(param.name.as_str()) {
                 named_index = Some(idx);
             }
             let doc = docblock.as_ref().and_then(|db| {
                 db.params
                     .iter()
-                    .find(|dp| dp.name.trim_start_matches('$') == param_name)
+                    .find(|dp| dp.name.trim_start_matches('$') == param.name)
                     .filter(|dp| !dp.description.is_empty())
                     .map(|dp| Documentation::String(dp.description.clone()))
             });
             ParameterInformation {
-                label: ParameterLabel::Simple(p.to_string()),
+                label: ParameterLabel::Simple(param.label),
                 documentation: doc,
             }
         })
@@ -187,8 +181,8 @@ fn call_context(source: &str, position: Position) -> Option<CallContext> {
             continue;
         }
         match text[i] {
-            ')' | ']' => depth += 1,
-            '(' | '[' if depth > 0 => depth -= 1,
+            ')' | ']' | '}' => depth += 1,
+            '(' | '[' | '{' if depth > 0 => depth -= 1,
             '(' if depth == 0 => {
                 if let Some((name, name_start)) = extract_name_before(&text, i) {
                     let receiver = extract_receiver_before(&text, i, name.chars().count());
@@ -441,7 +435,7 @@ fn find_doc_method_params_in_doc(
     stmts: &[Stmt<'_, '_>],
     class_name: &str,
     method_name: &str,
-) -> Option<String> {
+) -> Option<Vec<ParamLabel>> {
     find_doc_method_params_in_doc_impl(stmts, class_name, method_name, None)
 }
 
@@ -450,7 +444,7 @@ fn find_doc_method_params_in_doc_impl(
     class_name: &str,
     method_name: &str,
     namespace: Option<&str>,
-) -> Option<String> {
+) -> Option<Vec<ParamLabel>> {
     for stmt in stmts {
         match &stmt.kind {
             StmtKind::Class(c)
@@ -467,6 +461,7 @@ fn find_doc_method_params_in_doc_impl(
                         .params
                         .iter()
                         .map(|p| {
+                            let name = p.name.trim_start_matches('$');
                             let mut s = String::new();
                             if !p.type_hint.is_empty() {
                                 s.push_str(&p.type_hint);
@@ -479,14 +474,16 @@ fn find_doc_method_params_in_doc_impl(
                                 s.push_str("...");
                             }
                             s.push('$');
-                            s.push_str(&p.name);
+                            s.push_str(name);
                             if p.is_optional {
                                 s.push_str(" = ...");
                             }
-                            s
+                            ParamLabel {
+                                name: name.to_string(),
+                                label: s,
+                            }
                         })
-                        .collect::<Vec<_>>()
-                        .join(", "),
+                        .collect(),
                 );
             }
             StmtKind::Namespace(ns) => {
@@ -521,7 +518,7 @@ fn find_method_signature(
     stmts: &[Stmt<'_, '_>],
     class_short: &str,
     method: &str,
-) -> Option<String> {
+) -> Option<Vec<ParamLabel>> {
     for stmt in stmts {
         let found = match &stmt.kind {
             StmtKind::Class(c) if c.name.as_ref().is_some_and(|n| *n == class_short) => {
@@ -536,7 +533,7 @@ fn find_method_signature(
             StmtKind::Enum(e) if e.name == class_short => {
                 e.body.members.iter().find_map(|m| match &m.kind {
                     EnumMemberKind::Method(m) if m.name.or_error().eq_ignore_ascii_case(method) => {
-                        Some(format_params_str(&m.params))
+                        Some(ast_param_labels(&m.params))
                     }
                     _ => None,
                 })
@@ -557,10 +554,13 @@ fn find_method_signature(
     None
 }
 
-fn class_method_params(members: &[php_ast::ClassMember<'_, '_>], method: &str) -> Option<String> {
+fn class_method_params(
+    members: &[php_ast::ClassMember<'_, '_>],
+    method: &str,
+) -> Option<Vec<ParamLabel>> {
     members.iter().find_map(|m| match &m.kind {
         ClassMemberKind::Method(m) if m.name.or_error().eq_ignore_ascii_case(method) => {
-            Some(format_params_str(&m.params))
+            Some(ast_param_labels(&m.params))
         }
         _ => None,
     })
@@ -568,7 +568,7 @@ fn class_method_params(members: &[php_ast::ClassMember<'_, '_>], method: &str) -
 
 /// The signature of `method` when exactly one distinct signature exists
 /// among the file's class-likes.
-fn unambiguous_method_signature(stmts: &[Stmt<'_, '_>], method: &str) -> Option<String> {
+fn unambiguous_method_signature(stmts: &[Stmt<'_, '_>], method: &str) -> Option<Vec<ParamLabel>> {
     let mut sigs = Vec::new();
     collect_method_signatures(stmts, method, &mut sigs);
     sigs.sort_unstable();
@@ -576,7 +576,7 @@ fn unambiguous_method_signature(stmts: &[Stmt<'_, '_>], method: &str) -> Option<
     (sigs.len() == 1).then(|| sigs.remove(0))
 }
 
-fn collect_method_signatures(stmts: &[Stmt<'_, '_>], method: &str, out: &mut Vec<String>) {
+fn collect_method_signatures(stmts: &[Stmt<'_, '_>], method: &str, out: &mut Vec<Vec<ParamLabel>>) {
     for stmt in stmts {
         match &stmt.kind {
             StmtKind::Class(c) => out.extend(class_method_params(&c.body.members, method)),
@@ -584,7 +584,7 @@ fn collect_method_signatures(stmts: &[Stmt<'_, '_>], method: &str, out: &mut Vec
             StmtKind::Trait(t) => out.extend(class_method_params(&t.body.members, method)),
             StmtKind::Enum(e) => out.extend(e.body.members.iter().find_map(|m| match &m.kind {
                 EnumMemberKind::Method(m) if m.name.or_error().eq_ignore_ascii_case(method) => {
-                    Some(format_params_str(&m.params))
+                    Some(ast_param_labels(&m.params))
                 }
                 _ => None,
             })),
@@ -598,11 +598,15 @@ fn collect_method_signatures(stmts: &[Stmt<'_, '_>], method: &str, out: &mut Vec
     }
 }
 
-fn find_signature(stmts: &[Stmt<'_, '_>], word: &str, has_receiver: bool) -> Option<String> {
+fn find_signature(
+    stmts: &[Stmt<'_, '_>],
+    word: &str,
+    has_receiver: bool,
+) -> Option<Vec<ParamLabel>> {
     for stmt in stmts {
         match &stmt.kind {
             StmtKind::Function(f) if f.name == word => {
-                return Some(format_params_str(&f.params));
+                return Some(ast_param_labels(&f.params));
             }
             StmtKind::Class(c) => {
                 if has_receiver {
@@ -610,7 +614,7 @@ fn find_signature(stmts: &[Stmt<'_, '_>], word: &str, has_receiver: bool) -> Opt
                         if let ClassMemberKind::Method(m) = &member.kind
                             && m.name.or_error().eq_ignore_ascii_case(word)
                         {
-                            return Some(format_params_str(&m.params));
+                            return Some(ast_param_labels(&m.params));
                         }
                     }
                 }
@@ -619,7 +623,7 @@ fn find_signature(stmts: &[Stmt<'_, '_>], word: &str, has_receiver: bool) -> Opt
                         if let ClassMemberKind::Method(m) = &member.kind
                             && m.name == "__construct"
                         {
-                            return Some(format_params_str(&m.params));
+                            return Some(ast_param_labels(&m.params));
                         }
                     }
                 }
@@ -629,7 +633,7 @@ fn find_signature(stmts: &[Stmt<'_, '_>], word: &str, has_receiver: bool) -> Opt
                     if let ClassMemberKind::Method(m) = &member.kind
                         && m.name.or_error().eq_ignore_ascii_case(word)
                     {
-                        return Some(format_params_str(&m.params));
+                        return Some(ast_param_labels(&m.params));
                     }
                 }
             }
@@ -638,7 +642,7 @@ fn find_signature(stmts: &[Stmt<'_, '_>], word: &str, has_receiver: bool) -> Opt
                     if let ClassMemberKind::Method(m) = &member.kind
                         && m.name.or_error().eq_ignore_ascii_case(word)
                     {
-                        return Some(format_params_str(&m.params));
+                        return Some(ast_param_labels(&m.params));
                     }
                 }
             }
@@ -647,7 +651,7 @@ fn find_signature(stmts: &[Stmt<'_, '_>], word: &str, has_receiver: bool) -> Opt
                     if let EnumMemberKind::Method(m) = &member.kind
                         && m.name.or_error().eq_ignore_ascii_case(word)
                     {
-                        return Some(format_params_str(&m.params));
+                        return Some(ast_param_labels(&m.params));
                     }
                 }
             }
@@ -662,6 +666,30 @@ fn find_signature(stmts: &[Stmt<'_, '_>], word: &str, has_receiver: bool) -> Opt
         }
     }
     None
+}
+
+fn ast_param_labels(params: &[php_ast::Param<'_, '_>]) -> Vec<ParamLabel> {
+    params
+        .iter()
+        .map(|p| ParamLabel {
+            name: p.name.to_string(),
+            label: format_param(p),
+        })
+        .collect()
+}
+
+fn builtin_param_labels(sig: &str) -> Vec<ParamLabel> {
+    split_params(sig)
+        .into_iter()
+        .map(|label| ParamLabel {
+            name: label
+                .split_whitespace()
+                .find_map(|t| t.trim_start_matches(['&', '.']).strip_prefix('$'))
+                .unwrap_or("")
+                .to_string(),
+            label: label.to_string(),
+        })
+        .collect()
 }
 
 fn builtin_signature(name: &str) -> Option<&'static str> {
@@ -945,6 +973,35 @@ mod tests {
                 w[0].0,
                 w[1].0
             );
+        }
+    }
+
+    #[test]
+    fn builtin_param_labels_extract_names() {
+        let labels = builtin_param_labels(builtin_signature("array_filter").unwrap());
+        let got: Vec<(&str, &str)> = labels
+            .iter()
+            .map(|p| (p.name.as_str(), p.label.as_str()))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                ("array", "$array"),
+                ("callback", "$callback = null"),
+                ("mode", "$mode = 0")
+            ]
+        );
+        let variadic = builtin_param_labels("&$array, ...$values");
+        assert_eq!(variadic[0].name, "array");
+        assert_eq!(variadic[1].name, "values");
+    }
+
+    #[test]
+    fn builtin_sigs_split_into_named_params() {
+        for (name, sig) in BUILTIN_SIGS {
+            for p in builtin_param_labels(sig) {
+                assert!(!p.name.is_empty(), "{name}: unnamed param {:?}", p.label);
+            }
         }
     }
 }

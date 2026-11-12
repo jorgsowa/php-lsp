@@ -865,3 +865,208 @@ async fn signature_help_method_call_in_crlf_file() {
     let resp = s.signature_help("crlf.php", 4, 8).await;
     expect!["▶ run(string $b)  @param0"].assert_eq(&common::render_signature_help(&resp));
 }
+
+#[tokio::test]
+async fn signature_help_stub_generic_param_types_are_not_split() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_signature_help_params(
+            r#"<?php
+str_replace('a', $0);
+"#,
+        )
+        .await;
+    expect![[r#"
+        str_replace(string|array<int|string, string> $search, string|array<int|string, scalar|Stringable|null> $replace, string|array<int|string, string> $subject, mixed &$count = null)
+         [0] string|array<int|string, string> $search
+        *[1] string|array<int|string, scalar|Stringable|null> $replace
+         [2] string|array<int|string, string> $subject
+         [3] mixed &$count = null"#]]
+    .assert_eq(&out);
+}
+
+#[tokio::test]
+async fn signature_help_stub_named_arg_after_generic_param() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_signature_help(
+            r#"<?php
+str_replace(subject: $0);
+"#,
+        )
+        .await;
+    expect![[r#"
+        ▶ str_replace(string|array<int|string, string> $search, string|array<int|string, scalar|Stringable|null> $replace, string|array<int|string, string> $subject, mixed &$count = null)  @param2
+          doc: Replace all occurrences of the search string with the replacement string"#]].assert_eq(&out);
+}
+
+#[tokio::test]
+async fn signature_help_cross_file_docblock_generic_param_types() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_signature_help_params(
+            r#"
+//- /lib.php
+<?php
+/**
+ * @param array<string, int> $map
+ * @param list<array{id: int, tags: array<int, string>}> $rows
+ */
+function index(array $map, array $rows, int $limit = 10): void {}
+
+//- /main.php
+<?php
+index([], [], $0);
+"#,
+        )
+        .await;
+    expect![[r#"
+        index(array<string, int> $map, list<array{'id': int, 'tags': array<int, string>}> $rows, int $limit = 10)
+         [0] array<string, int> $map
+         [1] list<array{'id': int, 'tags': array<int, string>}> $rows
+        *[2] int $limit = 10"#]]
+    .assert_eq(&out);
+}
+
+#[tokio::test]
+async fn signature_help_cross_file_method_generic_param_types() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_signature_help_params(
+            r#"
+//- /src/Repo.php
+<?php
+class Repo {
+    /** @param array<string, mixed> $criteria */
+    public function findBy(array $criteria, ?string $order = null): array { return []; }
+}
+
+//- /main.php
+<?php
+function run(Repo $r): void {
+    $r->findBy([], $0);
+}
+"#,
+        )
+        .await;
+    expect![[r#"
+        findBy(array<string, mixed> $criteria, string|null $order = null)
+         [0] array<string, mixed> $criteria
+        *[1] string|null $order = null"#]]
+    .assert_eq(&out);
+}
+
+#[tokio::test]
+async fn signature_help_cross_file_constructor_generic_param_types() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_signature_help_params(
+            r#"
+//- /src/Bag.php
+<?php
+class Bag {
+    /** @param array<int, string> $items */
+    public function __construct(array $items, bool $frozen = false) {}
+}
+
+//- /main.php
+<?php
+new Bag([], $0);
+"#,
+        )
+        .await;
+    expect![[r#"
+        Bag(array<int, string> $items, bool $frozen = false)
+         [0] array<int, string> $items
+        *[1] bool $frozen = false"#]]
+    .assert_eq(&out);
+}
+
+#[tokio::test]
+async fn signature_help_docblock_method_generic_param_types() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_signature_help_params(
+            r#"<?php
+/**
+ * @method void put(array<string, int> $map, int $ttl = 60)
+ */
+class Cache {
+    public function __call($name, $args) {}
+}
+function run(Cache $c): void {
+    $c->put([], $0);
+}
+"#,
+        )
+        .await;
+    expect![[r#"
+        put(array<string, int> $map, int $ttl = ...)
+         [0] array<string, int> $map
+        *[1] int $ttl = ..."#]]
+    .assert_eq(&out);
+}
+
+#[tokio::test]
+async fn signature_help_local_string_default_with_comma_is_not_split() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_signature_help_params(
+            r#"<?php
+function join_all(array $parts, string $glue = ', ', int $limit = 0): string { return ''; }
+join_all([], ', ', $0);
+"#,
+        )
+        .await;
+    expect![[r#"
+        join_all(array $parts, string $glue = ', ', int $limit = 0)
+         [0] array $parts
+         [1] string $glue = ', '
+        *[2] int $limit = 0"#]]
+    .assert_eq(&out);
+}
+
+#[tokio::test]
+async fn signature_help_local_method_string_default_with_comma_is_not_split() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_signature_help_params(
+            r#"<?php
+class Csv {
+    public function row(array $cells, string $sep = ',', string $quote = '"'): string { return ''; }
+}
+$c = new Csv();
+$c->row([], ',', $0);
+"#,
+        )
+        .await;
+    expect![[r#"
+        row(array $cells, string $sep = ',', string $quote = '"')
+         [0] array $cells
+         [1] string $sep = ','
+        *[2] string $quote = '"'"#]]
+    .assert_eq(&out);
+}
+
+#[tokio::test]
+async fn signature_help_match_arms_in_argument_do_not_advance_active_param() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_signature_help(
+            r#"<?php
+function pick(string $a, int $b, int $c): void {}
+pick(match ($x) { 1, 2 => 'a', default => 'b' }, $0);
+"#,
+        )
+        .await;
+    expect!["▶ pick(string $a, int $b, int $c)  @param1"].assert_eq(&out);
+}

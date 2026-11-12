@@ -42,25 +42,27 @@ pub fn format_params_str(params: &[Param<'_, '_>]) -> String {
 pub(crate) fn format_params(params: &[Param<'_, '_>]) -> String {
     params
         .iter()
-        .map(|p| {
-            let mut s = String::new();
-            if let Some(t) = &p.type_hint {
-                s.push_str(&format!("{} ", format_type_hint(t)));
-            }
-            if p.by_ref {
-                s.push('&');
-            }
-            if p.variadic {
-                s.push_str("...");
-            }
-            s.push_str(&format!("${}", p.name));
-            if let Some(default) = &p.default {
-                s.push_str(&format!(" = {}", format_default_value(default)));
-            }
-            s
-        })
+        .map(format_param)
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+pub(crate) fn format_param(p: &Param<'_, '_>) -> String {
+    let mut s = String::new();
+    if let Some(t) = &p.type_hint {
+        s.push_str(&format!("{} ", format_type_hint(t)));
+    }
+    if p.by_ref {
+        s.push('&');
+    }
+    if p.variadic {
+        s.push_str("...");
+    }
+    s.push_str(&format!("${}", p.name));
+    if let Some(default) = &p.default {
+        s.push_str(&format!(" = {}", format_default_value(default)));
+    }
+    s
 }
 
 /// Format a default parameter value for display in signatures.
