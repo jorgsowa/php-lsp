@@ -25,7 +25,7 @@ impl FuzzyQuery {
     /// - `"GRF"` matches `"getRecentFiles"`
     /// - `"str_r"` matches `"str_replace"` (boundary after `_`)
     ///
-    /// See [`Self::symbol_match`] for the variant that also accepts
+    /// See [`Self::symbol_rank`] for the variant that also accepts
     /// substrings, which is appropriate for workspace symbol search but not
     /// for completions.
     pub(crate) fn camel_match(&self, candidate: &str) -> bool {
@@ -43,9 +43,18 @@ impl FuzzyQuery {
     /// Like [`Self::camel_match`] but also accepts contiguous substrings as a
     /// fallback.  Use for workspace symbol search (where "Controller" should
     /// match "BlogController") but NOT for completions (substring produces too
-    /// many hits).
-    pub(crate) fn symbol_match(&self, candidate: &str) -> bool {
-        if self.camel_match(candidate) {
+    /// many hits). Ranked: 0 exact, 1 prefix, 2 abbreviation or substring.
+    pub(crate) fn symbol_rank(&self, candidate: &str) -> Option<u8> {
+        if starts_with_at(candidate, &self.lower, 0) {
+            let exact = candidate.chars().flat_map(char::to_lowercase).count()
+                == self.lower.chars().count();
+            return Some(if exact { 0 } else { 1 });
+        }
+        self.symbol_fallback(candidate).then_some(2)
+    }
+
+    fn symbol_fallback(&self, candidate: &str) -> bool {
+        if self.camel_abbrev(candidate) {
             return true;
         }
         // Substring fallback: "Controller" matches "BlogController".
@@ -116,7 +125,16 @@ mod tests {
         FuzzyQuery::new(query).camel_match(candidate)
     }
     fn symbol(query: &str, candidate: &str) -> bool {
-        FuzzyQuery::new(query).symbol_match(candidate)
+        FuzzyQuery::new(query).symbol_rank(candidate).is_some()
+    }
+
+    #[test]
+    fn symbol_rank_orders_exact_prefix_then_fuzzy() {
+        let q = FuzzyQuery::new("user");
+        assert_eq!(q.symbol_rank("User"), Some(0));
+        assert_eq!(q.symbol_rank("UserRepository"), Some(1));
+        assert_eq!(q.symbol_rank("AppUser"), Some(2));
+        assert_eq!(q.symbol_rank("Order"), None);
     }
 
     #[test]
@@ -141,7 +159,7 @@ mod tests {
 
     #[test]
     fn fuzzy_symbol_match_substring_fallback() {
-        // symbol_match (used for workspace symbols) DOES match substrings
+        // symbol_rank (used for workspace symbols) DOES match substrings
         assert!(symbol("Controller", "BlogController"));
         assert!(symbol("controller", "BlogController"));
         assert!(symbol("controller", "UserController"));

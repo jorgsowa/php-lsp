@@ -564,6 +564,10 @@ fn format_fn_signature(
     format!("({}){}", params_str, ret_str)
 }
 
+/// Upper bound on workspace/symbol results; clients re-query as the user types.
+const MAX_WORKSPACE_SYMBOLS: usize = 1000;
+
+/// Matches ranked exact, then prefix, then fuzzy; shorter names first within a rank.
 pub fn workspace_symbols_from_workspace(
     query: &str,
     wi: &crate::db::workspace_index::WorkspaceIndexData,
@@ -574,41 +578,58 @@ pub fn workspace_symbols_from_workspace(
     let qualified_query = term.contains('\\');
     let fq = crate::text::FuzzyQuery::new(term);
 
-    let mut results = Vec::new();
+    let mut matches = Vec::new();
     for (uri, index) in &wi.files {
         for row in &index.symbols {
             if row.kind == SymbolKind::NAMESPACE || !matches_kind(row.kind) {
                 continue;
             }
             let container = row.container.and_then(|i| index.symbols.get(i as usize));
-            let matched = if qualified_query {
+            let rank = if qualified_query {
                 let namespace = container
                     .filter(|c| c.kind == SymbolKind::NAMESPACE)
                     .map(|c| &*c.name);
                 match namespace {
-                    Some(ns) => fq.symbol_match(&format!("{ns}\\{}", row.name)),
-                    None => row.container.is_none() && fq.symbol_match(&row.name),
+                    Some(ns) => fq.symbol_rank(&format!("{ns}\\{}", row.name)),
+                    None if row.container.is_none() => fq.symbol_rank(&row.name),
+                    None => None,
                 }
             } else {
-                fq.symbol_match(&row.name)
+                fq.symbol_rank(&row.name)
             };
-            if !matched {
-                continue;
+            if let Some(rank) = rank {
+                matches.push((rank, row, container, uri));
             }
-            results.push(SymbolInformation {
-                name: row.name.to_string(),
-                kind: row.kind,
-                location: Location {
-                    uri: uri.clone(),
-                    range: zero_width_range(row.line),
-                },
-                tags: None,
-                deprecated: row.deprecated,
-                container_name: container.map(|c| c.name.to_string()),
-            });
         }
     }
-    results
+    type Match<'a> = (
+        u8,
+        &'a WorkspaceSymbolRow,
+        Option<&'a WorkspaceSymbolRow>,
+        &'a Uri,
+    );
+    fn sort_key<'a>(&(rank, row, _, uri): &Match<'a>) -> (u8, usize, &'a str, &'a str, u32) {
+        (rank, row.name.len(), &row.name, uri.as_str(), row.line)
+    }
+    if matches.len() > MAX_WORKSPACE_SYMBOLS {
+        matches.select_nth_unstable_by(MAX_WORKSPACE_SYMBOLS, |a, b| sort_key(a).cmp(&sort_key(b)));
+        matches.truncate(MAX_WORKSPACE_SYMBOLS);
+    }
+    matches.sort_unstable_by(|a, b| sort_key(a).cmp(&sort_key(b)));
+    matches
+        .into_iter()
+        .map(|(_, row, container, uri)| SymbolInformation {
+            name: row.name.to_string(),
+            kind: row.kind,
+            location: Location {
+                uri: uri.clone(),
+                range: zero_width_range(row.line),
+            },
+            tags: None,
+            deprecated: row.deprecated,
+            container_name: container.map(|c| c.name.to_string()),
+        })
+        .collect()
 }
 
 /// Flattens `document_symbols` into the rows `workspace_symbols_from_workspace` matches against.
@@ -745,29 +766,41 @@ namespace App {
 }
 "#;
         expect_test::expect![[r#"
-            Class Svc L3 in=Some("App") dep=None
             Constant A L3 in=Some("Svc") dep=None
-            Property $count L6 in=Some("Svc") dep=Some(true)
-            Method __construct L7 in=Some("Svc") dep=None
-            Property $name L7 in=Some("Svc") dep=None
-            Method run L9 in=Some("Svc") dep=None
-            Interface Contract L11 in=Some("App") dep=None
             Constant B L11 in=Some("Contract") dep=None
-            Method go L11 in=Some("Contract") dep=None
-            Class Helps L12 in=Some("App") dep=None
-            Method help L12 in=Some("Helps") dep=None
-            Enum Suit L13 in=Some("App") dep=None
-            EnumMember Hearts L13 in=Some("Suit") dep=None
             Constant D L13 in=Some("Suit") dep=None
+            Method go L11 in=Some("Contract") dep=None
+            Class Svc L3 in=Some("App") dep=None
+            Method run L9 in=Some("Svc") dep=None
+            Enum Suit L13 in=Some("App") dep=None
+            Method help L12 in=Some("Helps") dep=None
+            Property $name L7 in=Some("Svc") dep=None
+            Class Helps L12 in=Some("App") dep=None
             Method label L13 in=Some("Suit") dep=None
-            Function helper L15 in=Some("App") dep=Some(true)"#]]
+            Property $count L6 in=Some("Svc") dep=Some(true)
+            EnumMember Hearts L13 in=Some("Suit") dep=None
+            Function helper L15 in=Some("App") dep=Some(true)
+            Interface Contract L11 in=Some("App") dep=None
+            Method __construct L7 in=Some("Svc") dep=None"#]]
         .assert_eq(&workspace_symbol_dump(src, ""));
         expect_test::expect![[r#"
-            Method __construct L7 in=Some("Svc") dep=None
-            Method run L9 in=Some("Svc") dep=None
             Method go L11 in=Some("Contract") dep=None
+            Method run L9 in=Some("Svc") dep=None
             Method help L12 in=Some("Helps") dep=None
-            Method label L13 in=Some("Suit") dep=None"#]]
+            Method label L13 in=Some("Suit") dep=None
+            Method __construct L7 in=Some("Svc") dep=None"#]]
         .assert_eq(&workspace_symbol_dump(src, "#method:"));
+    }
+
+    #[test]
+    fn workspace_symbols_rank_exact_then_prefix_then_fuzzy() {
+        let src =
+            "<?php\nclass AppUser {}\nclass UserRepository {}\nclass User {}\nclass Users {}\n";
+        expect_test::expect![[r#"
+            Class User L3 in=None dep=None
+            Class Users L4 in=None dep=None
+            Class UserRepository L2 in=None dep=None
+            Class AppUser L1 in=None dep=None"#]]
+        .assert_eq(&workspace_symbol_dump(src, "user"));
     }
 }
