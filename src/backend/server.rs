@@ -12,7 +12,7 @@ use crate::analysis::callable_info::{callable_info_for_name, format_declared_par
 use crate::completion::{CompletionCtx, filtered_completions_at};
 use crate::document::ast::ParsedDoc;
 use crate::document::open_files::compute_open_file_diagnostics;
-use crate::hover::{extract_static_class_before_cursor, hover_info_with_maps};
+use crate::hover::{extract_static_class_before_cursor, hover_info_with_lazy_maps};
 use crate::index::file_index::ClassKind;
 use crate::index::workspace_scan::{scan_workspace, send_refresh_requests};
 use crate::lang::config::LspConfig;
@@ -1337,9 +1337,9 @@ impl LanguageServer for Backend {
             }
             let open = self.open_urls();
             let other_docs = self.docs.other_docs(uri, &open);
-            let other_maps = self.docs.other_symbol_maps(uri, &open);
             let analysis = self.cached_analysis_async(uri).await;
             let docs_for_hover = Arc::clone(&self.docs);
+            let uri_for_maps = uri.clone();
             let source_clone = source.clone();
             let doc_clone = Arc::clone(&doc);
             // Lets mir-member/static-prop hover resolve a class's declaring doc
@@ -1374,13 +1374,13 @@ impl LanguageServer for Backend {
             };
             let result = self
                 .blocking("hover", move || {
-                    hover_info_with_maps(
+                    hover_info_with_lazy_maps(
                         &source_clone,
                         &doc_clone,
                         analysis.as_deref(),
                         position,
                         &other_docs,
-                        &other_maps,
+                        || docs_for_hover.other_symbol_maps(&uri_for_maps, &open),
                         Some(&docs_for_hover),
                         Some(&find_class_doc_fn),
                     )

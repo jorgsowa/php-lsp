@@ -59,17 +59,43 @@ pub fn hover_info_with_maps(
         position,
         session,
         find_class_doc,
-        |resolved_word| {
-            for (_, sym_map) in other_maps {
-                if let Some(entry) = sym_map.lookup(resolved_word, |e| is_hoverable_kind(e.kind))
-                    && let Some(sig) = &entry.signature
-                {
-                    return Some((sig.clone(), entry.doc_markdown.clone()));
-                }
-            }
-            None
-        },
+        |resolved_word| signature_from_maps(other_maps, resolved_word),
     )
+}
+
+/// Like [`hover_info_with_maps`], but builds the symbol maps only when the cross-file lookup needs them.
+#[allow(clippy::too_many_arguments)]
+pub fn hover_info_with_lazy_maps(
+    source: &str,
+    doc: &ParsedDoc,
+    analysis: Option<&mir_analyzer::FileAnalysis>,
+    position: Position,
+    other_docs: &[(Uri, Arc<ParsedDoc>)],
+    other_maps: impl FnOnce() -> Vec<(Uri, Arc<SymbolMap>)>,
+    session: Option<&DocumentStore>,
+    find_class_doc: Option<ClassDocLookup<'_>>,
+) -> Option<Hover> {
+    let other_maps = std::cell::LazyCell::new(other_maps);
+    hover_at_core(
+        source,
+        doc,
+        analysis,
+        other_docs,
+        position,
+        session,
+        find_class_doc,
+        |resolved_word| signature_from_maps(&other_maps, resolved_word),
+    )
+}
+
+fn signature_from_maps(
+    maps: &[(Uri, Arc<SymbolMap>)],
+    resolved_word: &str,
+) -> Option<(String, Option<String>)> {
+    maps.iter().find_map(|(_, sym_map)| {
+        let entry = sym_map.lookup(resolved_word, |e| is_hoverable_kind(e.kind))?;
+        Some((entry.signature.clone()?, entry.doc_markdown.clone()))
+    })
 }
 
 fn builtin_class_hover(

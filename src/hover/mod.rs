@@ -6,7 +6,7 @@ mod named_args;
 mod parsing;
 
 pub use formatting::format_params_str;
-pub use hover_impl::hover_info_with_maps;
+pub use hover_impl::{hover_info_with_lazy_maps, hover_info_with_maps};
 pub use parsing::extract_static_class_before_cursor;
 pub use parsing::resolve_use_alias;
 pub use parsing::resolve_use_alias_fqn;
