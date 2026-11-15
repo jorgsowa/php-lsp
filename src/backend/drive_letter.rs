@@ -14,9 +14,9 @@ use serde_json::{Map, Value};
 use tower_lsp_server::jsonrpc::{Request, Response};
 use tower_lsp_server::{ClientSocket, Loopback};
 
-/// The client's spelling of each drive-letter URI it sent, by canonical form.
+/// The client's spelling of each drive's URI prefix (e.g. `file:///c%3A`), by upper-case drive letter.
 #[derive(Clone, Default)]
-pub(super) struct ClientSpellings(Arc<Mutex<HashMap<String, String>>>);
+pub(super) struct ClientSpellings(Arc<Mutex<HashMap<u8, String>>>);
 
 impl ClientSpellings {
     /// `request` with every drive-letter `file` URI in its params rewritten to
@@ -28,8 +28,8 @@ impl ClientSpellings {
         let mut seen = Vec::new();
         let request = map_params(request, |params| normalize_value(params, &mut seen));
         let mut spellings = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        for (canonical, original) in seen {
-            spellings.entry(canonical).or_insert(original);
+        for (drive, prefix) in seen {
+            spellings.entry(drive).or_insert(prefix);
         }
         request
     }
@@ -108,17 +108,20 @@ fn contains_drive_uri(value: &Value) -> bool {
     }
 }
 
-/// Rewrites drive-letter URIs in place, noting each `(canonical, original)` in `seen`.
-fn normalize_value(value: &mut Value, seen: &mut Vec<(String, String)>) {
+/// Rewrites drive-letter URIs in place, noting each `(drive, client prefix)` in `seen`.
+fn normalize_value(value: &mut Value, seen: &mut Vec<(u8, String)>) {
     match value {
         Value::Array(items) => items.iter_mut().for_each(|v| normalize_value(v, seen)),
         Value::Object(map) => {
             for (key, v) in map.iter_mut() {
                 match v {
                     Value::String(s) if is_uri_key(key) => {
-                        if let Some(normalized) = normalized_drive_uri(s) {
-                            let original = std::mem::replace(s, normalized.clone());
-                            seen.push((normalized, original));
+                        if let Some((drive, prefix, tail)) = split_drive_uri(s) {
+                            let canonical = canonical_prefix(drive);
+                            if prefix != canonical {
+                                seen.push((drive, prefix.to_owned()));
+                                *s = canonical + tail;
+                            }
                         }
                     }
                     _ => normalize_value(v, seen),
@@ -131,15 +134,15 @@ fn normalize_value(value: &mut Value, seen: &mut Vec<(String, String)>) {
 
 /// Puts back the client's spelling under `uri`-suffixed keys and in the
 /// URI-keyed `changes` map of a `WorkspaceEdit`.
-fn restore_value(value: &mut Value, spellings: &HashMap<String, String>) {
+fn restore_value(value: &mut Value, spellings: &HashMap<u8, String>) {
     match value {
         Value::Array(items) => items.iter_mut().for_each(|v| restore_value(v, spellings)),
         Value::Object(map) => {
             for (key, v) in map.iter_mut() {
                 match v {
                     Value::String(s) if is_uri_key(key) => {
-                        if let Some(original) = spellings.get(s.as_str()) {
-                            s.clone_from(original);
+                        if let Some(original) = restored_drive_uri(s, spellings) {
+                            *s = original;
                         }
                     }
                     Value::Object(changes) if key == "changes" => {
@@ -147,7 +150,7 @@ fn restore_value(value: &mut Value, spellings: &HashMap<String, String>) {
                             .into_iter()
                             .map(|(uri, mut edits)| {
                                 restore_value(&mut edits, spellings);
-                                (spellings.get(&uri).cloned().unwrap_or(uri), edits)
+                                (restored_drive_uri(&uri, spellings).unwrap_or(uri), edits)
                             })
                             .collect::<Map<_, _>>();
                     }
@@ -159,8 +162,9 @@ fn restore_value(value: &mut Value, spellings: &HashMap<String, String>) {
     }
 }
 
-/// `Some` when `s` is a drive-letter `file` URI not already in canonical form.
-fn normalized_drive_uri(s: &str) -> Option<String> {
+/// A drive-letter `file` URI split into its upper-case drive, the prefix up to
+/// and including the colon as spelled, and the rest.
+fn split_drive_uri(s: &str) -> Option<(u8, &str, &str)> {
     let rest = s.strip_prefix("file:///")?;
     let drive = *rest.as_bytes().first()?;
     if !drive.is_ascii_alphabetic() {
@@ -174,8 +178,26 @@ fn normalized_drive_uri(s: &str) -> Option<String> {
     if !(tail.is_empty() || tail.starts_with('/')) {
         return None;
     }
-    let normalized = format!("file:///{}%3A{tail}", drive.to_ascii_uppercase() as char);
-    (normalized != s).then_some(normalized)
+    let prefix = &s[..s.len() - tail.len()];
+    Some((drive.to_ascii_uppercase(), prefix, tail))
+}
+
+fn canonical_prefix(drive: u8) -> String {
+    format!("file:///{}%3A", drive as char)
+}
+
+/// `Some` when `s` is a drive-letter `file` URI not already in canonical form.
+fn normalized_drive_uri(s: &str) -> Option<String> {
+    let (drive, prefix, tail) = split_drive_uri(s)?;
+    let canonical = canonical_prefix(drive);
+    (prefix != canonical).then(|| canonical + tail)
+}
+
+/// `Some` when `s` is a canonical drive-letter URI on a drive the client spells differently.
+fn restored_drive_uri(s: &str, spellings: &HashMap<u8, String>) -> Option<String> {
+    let (drive, prefix, tail) = split_drive_uri(s)?;
+    let client = spellings.get(&drive)?;
+    (prefix != client && prefix == canonical_prefix(drive)).then(|| format!("{client}{tail}"))
 }
 
 #[cfg(test)]
@@ -251,15 +273,17 @@ mod tests {
         let request = Request::build("workspace/applyEdit")
             .params(serde_json::json!({
                 "edit": {"changes": {"file:///C%3A/a.php": [], "file:///C%3A/b.php": []}},
-                "uri": "file:///C%3A/a.php"
+                "uri": "file:///C%3A/a.php",
+                "targetUri": "file:///D%3A/c.php"
             }))
             .finish();
         let params = spellings.restore_request(request).into_parts().2.unwrap();
         assert_eq!(
             params,
             serde_json::json!({
-                "edit": {"changes": {"file:///c%3A/a.php": [], "file:///C%3A/b.php": []}},
-                "uri": "file:///c%3A/a.php"
+                "edit": {"changes": {"file:///c%3A/a.php": [], "file:///c%3A/b.php": []}},
+                "uri": "file:///c%3A/a.php",
+                "targetUri": "file:///D%3A/c.php"
             })
         );
     }
