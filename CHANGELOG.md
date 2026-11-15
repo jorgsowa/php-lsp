@@ -9,10 +9,14 @@ All notable changes to php-lsp are documented here.
 ### Changed
 
 - **New checks with mir 0.101**: `LessSpecificReturnStatement`, `InvalidScalarArgument` and `@pure-unless-callable-is-impure`, narrowing that survives calls to methods of the same class, and edits inside a function body no longer re-analyze the files that use the declarations below it.
+- **Ranked workspace symbols**: `workspace/symbol` lists exact matches first, then prefix matches, then abbreviation and substring matches, shorter names first within each group, and returns at most 1,000 results.
+- **Lighter hover and code actions**: hover builds the other open files' symbol tables only when its cross-file fallback runs, and code actions convert only the issues inside the requested range.
 
 ### Fixed
 
 - **Lower memory** ([#269](https://github.com/jorgsowa/php-lsp/issues/269)): the warm sweep no longer keeps each swept file's analysis in memory, source texts and cached analysis results are held compressed, and memory freed while the server is idle is returned to the OS right away. On Symfony (17,400 files), settled memory drops from about 1,020 MB to 680 MB after a first start and from 645 MB to 515 MB after a restart; on a 1,700-file Laravel project, from 214 MB to 157 MB and from 145 MB to 112 MB.
+- **Cache metadata race between instances**: two servers on the same workspace wrote the cache's metadata through one shared temporary file and could rename each other's half-written copy. Each write now uses its own temporary file.
+- **Drive-letter table growth on Windows**: the client's spelling of drive letters in URIs was remembered per file, so the table grew with every file the client named. It is now kept per drive.
 
 ### Dependencies
 
