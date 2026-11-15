@@ -27,6 +27,7 @@
 
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 /// Handle to the cache directory for a single workspace. Construction is
@@ -267,9 +268,19 @@ fn write_workspace_meta(dir: &Path, root: &Path) -> io::Result<()> {
             .map_or(0, |d| d.as_secs()),
     };
     let path = dir.join(META_FILE);
-    let tmp = path.with_extension("json.tmp");
-    std::fs::write(&tmp, serde_json::to_vec(&meta).map_err(io::Error::other)?)?;
-    std::fs::rename(&tmp, &path)
+    // Unique per writer so concurrent instances sharing the cache never rename each other's file.
+    static NEXT_TMP: AtomicU64 = AtomicU64::new(0);
+    let tmp = path.with_extension(format!(
+        "json.{}.{}.tmp",
+        std::process::id(),
+        NEXT_TMP.fetch_add(1, Ordering::Relaxed)
+    ));
+    let written = std::fs::write(&tmp, serde_json::to_vec(&meta).map_err(io::Error::other)?)
+        .and_then(|()| std::fs::rename(&tmp, &path));
+    if written.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    written
 }
 
 /// A workspace cache directory is stale when its recorded root is gone, or
