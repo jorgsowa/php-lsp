@@ -71,7 +71,10 @@ impl Backend {
                         .issues
                         .iter()
                         .filter(|i| {
+                            // mir lines are 1-based.
+                            let line = i.location.line.saturating_sub(1);
                             !i.suppressed
+                                && (range.start.line..=range.end.line).contains(&line)
                                 && matches!(
                                     i.kind,
                                     mir_issues::IssueKind::UndefinedClass { .. }
@@ -101,11 +104,6 @@ impl Backend {
                 // candidate in another namespace.
                 for diag in &sem_diags {
                     if diag.code != Some(NumberOrString::String("UndefinedClass".to_string())) {
-                        continue;
-                    }
-                    if diag.range.start.line < range.start.line
-                        || diag.range.start.line > range.end.line
-                    {
                         continue;
                     }
                     let resolved_name = diag
@@ -138,11 +136,6 @@ impl Backend {
                 // UndefinedFunction → use function FQN;
                 for diag in &sem_diags {
                     if diag.code != Some(NumberOrString::String("UndefinedFunction".to_string())) {
-                        continue;
-                    }
-                    if diag.range.start.line < range.start.line
-                        || diag.range.start.line > range.end.line
-                    {
                         continue;
                     }
                     let fn_name = diag
