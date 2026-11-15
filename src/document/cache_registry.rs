@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use dashmap::DashMap;
+use mir_analyzer::db::SourceText;
 use tower_lsp_server::ls_types::{SemanticToken, Uri};
 
 use crate::document::ast::ParsedDoc;
@@ -33,9 +34,9 @@ pub(crate) struct CacheRegistry {
     /// Cached semantic tokens per document: (result_id, tokens).
     pub(crate) token_cache: DashMap<Uri, (String, Arc<Vec<SemanticToken>>)>,
     /// G2: lock-free mirror of each file's last-set text for dedup in mirror_text.
-    pub(crate) text_cache: DashMap<Uri, Arc<str>>,
+    pub(crate) text_cache: DashMap<Uri, SourceText>,
     /// G3: cross-revision read-through cache for parsed_doc.
-    pub(crate) parsed_cache: DashMap<Uri, (Arc<str>, Arc<ParsedDoc>)>,
+    pub(crate) parsed_cache: DashMap<Uri, (SourceText, Arc<ParsedDoc>)>,
     /// Per-file mir body analysis cache plus the file's last declaration index.
     pub(crate) analysis_cache: DashMap<Uri, AnalysisCacheEntry>,
     /// Monotonically increasing counter bumped on any declaration-level change.
@@ -187,7 +188,7 @@ impl CacheRegistry {
     /// [`PARSED_CACHE_CAP`]. Recency-based (not arbitrary): a references
     /// sweep over a large candidate set must not evict the open files the
     /// user is actively editing.
-    pub(crate) fn insert_parsed(&self, uri: Uri, text: Arc<str>, doc: Arc<ParsedDoc>) {
+    pub(crate) fn insert_parsed(&self, uri: Uri, text: SourceText, doc: Arc<ParsedDoc>) {
         self.shed_stale(&self.parsed_cache, PARSED_CACHE_CAP);
         self.touch(&uri);
         self.parsed_cache.insert(uri, (text, doc));

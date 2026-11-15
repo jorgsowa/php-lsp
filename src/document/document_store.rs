@@ -6,6 +6,7 @@ use arc_swap::{ArcSwap, ArcSwapOption};
 
 use dashmap::{DashMap, DashSet};
 use mir_analyzer::ReferenceIncludes;
+use mir_analyzer::db::SourceText;
 use salsa::Setter;
 use tower_lsp_server::ls_types::{SemanticToken, Uri};
 
@@ -775,7 +776,8 @@ impl DocumentStore {
         let mut builder = mir_analyzer::AnalysisSession::new(php_version)
             .with_class_resolver(resolver)
             .with_source_provider(Arc::new(crate::lang::autoload::UriSourceProvider::default()))
-            .with_taint_analysis(self.taint_analysis.load(Ordering::Relaxed));
+            .with_taint_analysis(self.taint_analysis.load(Ordering::Relaxed))
+            .with_compressed_sources(true);
         // Must run before `with_cache_dir`: the cache epoch folds in a
         // fingerprint of the user stub set, which `with_cache_dir` only picks
         // up if it's already been configured.
@@ -1095,7 +1097,7 @@ impl DocumentStore {
         // unchanged files, where most threads would otherwise serialise on
         // `host.lock()` just to confirm a no-op.
         if let Some(cached) = self.caches.text_cache.get(uri)
-            && **cached == *text
+            && cached.matches(text)
             && !self.deleted_uris.contains(uri)
             && self.lsp_ws_files.contains_key(uri)
         {
@@ -1113,6 +1115,11 @@ impl DocumentStore {
     pub fn mirror_text_arc(&self, uri: &Uri, text_arc: Arc<str>) {
         let dur = Self::input_durability(uri);
         let path: Arc<str> = Arc::from(uri.as_str());
+        // Compressed before the session lock: parallel scans would otherwise serialize on it.
+        let text = match self.caches.text_cache.get(uri) {
+            Some(cached) if cached.matches(&text_arc) => cached.clone(),
+            _ => SourceText::compressed(text_arc),
+        };
         self.with_session(|session| {
             if let Some(wf) = self.lsp_ws_files.get(uri).map(|e| *e) {
                 // A resurrected (previously-deleted) file changes
@@ -1125,27 +1132,27 @@ impl DocumentStore {
                 // Fast path: byte-identical text already mirrored — skip the write
                 // lock and the revision bump entirely.
                 if let Some(cached) = self.caches.text_cache.get(uri)
-                    && **cached == *text_arc
+                    && cached.same(&text)
                 {
                     return;
                 }
-                let sf = session.upsert_source_file(path, text_arc.clone(), dur);
+                let sf = session.upsert_source_text(path, text.clone(), dur);
                 session.with_db_mut(|db| {
                     // mir re-creates a removed path's `SourceFile`; the old one is blanked to "".
                     if *wf.source(db) != sf {
                         wf.set_source(db).to(sf);
                     }
                 });
-                self.caches.text_cache.insert(uri.clone(), text_arc);
+                self.caches.text_cache.insert(uri.clone(), text);
                 // Evict only this file's analysis; cross-file invalidation is handled
                 // lazily in `cached_analysis` via the declaration fingerprint.
                 self.caches.evict_analysis(uri);
                 self.write_revision.fetch_add(1, Ordering::Release);
             } else {
-                let sf = session.upsert_source_file(path, text_arc.clone(), dur);
+                let sf = session.upsert_source_text(path, text.clone(), dur);
                 let wf = session.with_db_mut(|db| LspWsFile::new(db, sf));
                 self.lsp_ws_files.insert(uri.clone(), wf);
-                self.caches.text_cache.insert(uri.clone(), text_arc);
+                self.caches.text_cache.insert(uri.clone(), text);
                 self.mark_workspace_files_dirty();
                 self.write_revision.fetch_add(1, Ordering::Release);
             }
@@ -1321,7 +1328,7 @@ impl DocumentStore {
     fn get_parsed_cached(&self, uri: &Uri) -> Option<Arc<ParsedDoc>> {
         if let Some(current_text) = self.caches.text_cache.get(uri)
             && let Some(entry) = self.caches.parsed_cache.get(uri)
-            && Arc::ptr_eq(&*current_text, &entry.0)
+            && current_text.same(&entry.0)
         {
             let doc = entry.1.clone();
             drop(entry);
@@ -1334,7 +1341,7 @@ impl DocumentStore {
             || self.lsp_ws_file(uri),
             |db, wf| {
                 let sf = *wf.source(db);
-                let text = sf.text(db).clone();
+                let text = sf.contents(db).clone();
                 let doc = crate::db::mir_queries::parsed_doc(db, sf).0.clone();
                 (text, doc)
             },
@@ -1354,7 +1361,7 @@ impl DocumentStore {
     pub fn get_doc_snapshot_or_stale(&self, uri: &Uri) -> Option<Arc<ParsedDoc>> {
         if let Some(current_text) = self.caches.text_cache.get(uri)
             && let Some(entry) = self.caches.parsed_cache.get(uri)
-            && Arc::ptr_eq(&*current_text, &entry.0)
+            && current_text.same(&entry.0)
         {
             let doc = entry.1.clone();
             drop(entry);
@@ -1367,7 +1374,7 @@ impl DocumentStore {
             || self.lsp_ws_file(uri),
             |db, wf| {
                 let sf = *wf.source(db);
-                let text = sf.text(db).clone();
+                let text = sf.contents(db).clone();
                 let doc = crate::db::mir_queries::parsed_doc(db, sf).0.clone();
                 (text, doc)
             },
@@ -1616,20 +1623,20 @@ impl DocumentStore {
     /// the background before the broader ambient sweep, when any, reaches
     /// them.
     pub fn warm_start_indexes(&self) -> Vec<Arc<str>> {
-        let files: Vec<(Arc<str>, Arc<str>)> = self
+        let files: Vec<(Arc<str>, SourceText)> = self
             .lsp_ws_files
             .iter()
             .filter(|e| !self.deleted_uris.contains(e.key()))
             .filter_map(|e| {
                 let text = self.caches.text_cache.get(e.key())?;
-                Some((Arc::<str>::from(e.key().as_str()), Arc::clone(&text)))
+                Some((Arc::<str>::from(e.key().as_str()), text.clone()))
             })
             .collect();
         if files.is_empty() {
             return Vec::new();
         }
         let untrusted = self.with_session(|session| {
-            let untrusted = session.warm_start_files(&files);
+            let untrusted = session.warm_start_sources(&files);
             // Unseeded, queries fall back to mir's serial all-files walk; rebuild parses in parallel.
             if files.len() >= EAGER_SYMBOL_INDEX_MIN_FILES
                 && !session.workspace_symbol_index_ready()
@@ -2385,8 +2392,10 @@ impl DocumentStore {
                     unresolved.push(qi);
                 }
                 if !unresolved.is_empty()
-                    && let Some(text) = self.source_text(url)
+                    && let Some(version) = self.source_version(url)
                 {
+                    let text = std::cell::OnceCell::new();
+                    let text = || text.get_or_init(|| version.text());
                     let url_str = url.as_str();
                     // Scanned against the *whole* current universe, not just
                     // this call's needles, so a future, differently-shaped
@@ -2395,11 +2404,9 @@ impl DocumentStore {
                     let mut scan = None;
                     let mut mentions = |q: &mir_analyzer::db::MentionQuery| {
                         mir_db
-                            .class_mention_answer(url_str, q, &text)
+                            .class_mention_answer(url_str, q, &version)
                             .unwrap_or_else(|| match &mir_scanner {
-                                Some(s) => scan
-                                    .get_or_insert_with(|| s.scan(text.as_ref()))
-                                    .contains(q),
+                                Some(s) => scan.get_or_insert_with(|| s.scan(text())).contains(q),
                                 None => true,
                             })
                     };
@@ -2413,7 +2420,7 @@ impl DocumentStore {
                             if short.as_ref().is_none_or(&mut mentions)
                                 && imports
                                     .get_or_insert_with(|| {
-                                        crate::index::use_imports::imported_names(&text)
+                                        crate::index::use_imports::imported_names(text())
                                     })
                                     .iter()
                                     .any(|i| crate::index::use_imports::import_reaches(i, target))
@@ -2426,7 +2433,7 @@ impl DocumentStore {
                     if let (Some(names), Some(mir_scanner)) = (scan, &mir_scanner) {
                         mir_db.set_file_class_mentions(
                             &Arc::<str>::from(url_str),
-                            &text,
+                            &version,
                             mir_scanner.epoch(),
                             names,
                         );
@@ -2575,7 +2582,12 @@ impl DocumentStore {
     /// salsa workspace. Used by the references handler to pre-filter session
     /// results by checking whether a file mentions the owning class name.
     pub fn source_text(&self, uri: &Uri) -> Option<Arc<str>> {
-        self.caches.text_cache.get(uri).map(|e| Arc::clone(&e))
+        self.caches.text_cache.get(uri).map(|e| e.text())
+    }
+
+    /// The stored version of `uri`'s text, without decompressing it.
+    fn source_version(&self, uri: &Uri) -> Option<SourceText> {
+        self.caches.text_cache.get(uri).map(|e| e.clone())
     }
 
     /// Cache the semantic tokens computed for a delta response.
@@ -2666,7 +2678,7 @@ impl DocumentStore {
         let cur_ver = self.caches.decl_version();
         let analysis = {
             let entry = self.caches.analysis_cache.get(uri)?;
-            (Arc::ptr_eq(&entry.source, &source) && entry.decl_version == cur_ver)
+            (entry.source == source && entry.decl_version == cur_ver)
                 .then(|| entry.analysis.as_ref().map(Arc::clone))??
         };
         self.caches.touch(uri);
@@ -2711,7 +2723,7 @@ impl DocumentStore {
     ) {
         self.caches.bump_decl_version();
         session.bump_prepare_generation();
-        if let Some(source) = self.caches.text_cache.get(uri).map(|t| Arc::clone(&*t)) {
+        if let Some(source) = self.caches.text_cache.get(uri).map(|t| t.text()) {
             if let Some(mut entry) = self.caches.analysis_cache.get_mut(uri) {
                 entry.source = source;
                 entry.decl_index = new_index.as_ref().map(Arc::clone);
@@ -2829,7 +2841,7 @@ impl DocumentStore {
                     self.caches
                         .text_cache
                         .get(auri)
-                        .map(|t| (Arc::from(auri.as_str()), Arc::clone(&*t)))
+                        .map(|t| (Arc::from(auri.as_str()), t.text()))
                 })
                 .collect()
         };
@@ -2845,7 +2857,7 @@ impl DocumentStore {
                     .caches
                     .text_cache
                     .get(uri)
-                    .is_none_or(|t| !Arc::ptr_eq(&t, &source));
+                    .is_none_or(|t| !t.matches(&source));
                 if text_changed || should_cancel() {
                     superseded.set(true);
                     return;
@@ -2961,13 +2973,13 @@ impl DocumentStore {
                 .iter()
                 .filter(|e| !self.deleted_uris.contains(e.key()))
                 .filter(|e| {
-                    let Some(text) = self.source_text(e.key()) else {
+                    let Some(version) = self.source_version(e.key()) else {
                         return false;
                     };
                     let url_str = e.key().as_str();
                     let mut unanswered = false;
                     for q in &queries {
-                        match mir_db.class_mention_answer(url_str, q, &text) {
+                        match mir_db.class_mention_answer(url_str, q, &version) {
                             Some(true) => return true,
                             Some(false) => {}
                             None => unanswered = true,
@@ -2976,6 +2988,7 @@ impl DocumentStore {
                     if !unanswered {
                         return false;
                     }
+                    let text = version.text();
                     let Some(scanner) = &scanner else {
                         // Defensive only: the needles were admitted above,
                         // so the universe (and scanner) can't be empty.
@@ -2987,7 +3000,7 @@ impl DocumentStore {
                     let hit = queries.iter().any(|q| names.contains(q));
                     mir_db.set_file_class_mentions(
                         &Arc::<str>::from(url_str),
-                        &text,
+                        &version,
                         scanner.epoch(),
                         names,
                     );

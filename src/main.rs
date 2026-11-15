@@ -8,7 +8,36 @@ static ALLOC: dhat::Alloc = dhat::Alloc;
 
 use tower_lsp_server::Server;
 
+#[cfg(not(feature = "dhat-heap"))]
+mod mi {
+    use std::ffi::{c_int, c_long};
+    unsafe extern "C" {
+        pub fn mi_option_set(option: c_int, value: c_long);
+        #[cfg(test)]
+        pub fn mi_option_get(option: c_int) -> c_long;
+    }
+    // Ids from mimalloc v3's `mi_option_e`.
+    pub const PURGE_DELAY: c_int = 15;
+    pub const PAGE_COMMIT_ON_DEMAND: c_int = 40;
+}
+
+/// An idle server never reaches mimalloc's delayed purge, so free pages are returned at once.
+#[cfg(not(feature = "dhat-heap"))]
+fn tune_allocator() {
+    use mi::*;
+    for (id, env, value) in [
+        (PURGE_DELAY, "MIMALLOC_PURGE_DELAY", 0),
+        (PAGE_COMMIT_ON_DEMAND, "MIMALLOC_PAGE_COMMIT_ON_DEMAND", 1),
+    ] {
+        if std::env::var_os(env).is_none() {
+            unsafe { mi_option_set(id, value) };
+        }
+    }
+}
+
 fn main() {
+    #[cfg(not(feature = "dhat-heap"))]
+    tune_allocator();
     // Cap the blocking pool well below tokio's 512 default. mimalloc keeps a
     // heap per thread, and memory freed cross-thread is only recycled when
     // the owning thread allocates again — a burst-grown pool leaves hundreds
@@ -70,4 +99,18 @@ async fn main_async() {
     let stdout = tokio::io::stdout();
     let (service, socket) = php_lsp::backend::build_lsp_service();
     Server::new(stdin, stdout, socket).serve(service).await;
+}
+
+#[cfg(all(test, not(feature = "dhat-heap")))]
+mod tests {
+    #[test]
+    fn mimalloc_option_ids_match_the_linked_version() {
+        // purge_delay is the only option defaulting to 1000 ms.
+        if std::env::var_os("MIMALLOC_PURGE_DELAY").is_none() {
+            assert_eq!(
+                unsafe { super::mi::mi_option_get(super::mi::PURGE_DELAY) },
+                1000
+            );
+        }
+    }
 }

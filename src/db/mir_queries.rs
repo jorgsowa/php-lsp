@@ -55,7 +55,7 @@ pub fn file_index(db: &dyn MirDatabase, wf: LspWsFile) -> IndexArc {
     let defs = mir_analyzer::db::collect_file_definitions(db, source);
     IndexArc(Arc::new(FileIndex::from_definitions(
         &defs.slice,
-        source.text(db),
+        &source.text(db),
     )))
 }
 

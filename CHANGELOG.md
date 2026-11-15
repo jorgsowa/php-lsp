@@ -4,6 +4,14 @@ All notable changes to php-lsp are documented here.
 
 ## [Unreleased]
 
+### Changed
+
+- **mir 0.101**: new checks such as `LessSpecificReturnStatement`, `InvalidScalarArgument` and `@pure-unless-callable-is-impure`, narrowing that survives calls to methods of the same class, and edits inside a function body no longer re-analyze the files using the declarations below it.
+
+### Fixed
+
+- **Lower memory** ([#269](https://github.com/jorgsowa/php-lsp/issues/269)): the warm sweep no longer keeps every swept file's analysis, source text and cached analysis results are held compressed, and freed memory is returned to the OS while the server is idle. On Symfony (17,400 files), settled memory drops from about 1,020 MB to 680 MB after a first start and from 645 MB to 515 MB after a restart; on a 1,700-file Laravel project, from 214 MB to 157 MB and from 145 MB to 112 MB.
+
 ## [0.32.0] — 2026-11-12
 
 ### Added

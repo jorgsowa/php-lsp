@@ -111,18 +111,18 @@ dependencies = [
 
 [[package]]
 name = "ar_archive_writer"
-version = "0.5.3"
+version = "0.5.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "73cd58deff2140a0a8eae87e417bd01db68a33e148aa93d1e8cd837e55e312b6"
+checksum = "523e5e187fff36fcb8d1d19ccf0ca4ca43ec3d158316057f66dc6f72716bc5ec"
 dependencies = [
  "object 0.39.1",
 ]
 
 [[package]]
 name = "arc-swap"
-version = "1.9.4"
+version = "1.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "db4c94f57a570fce5d381be3289b3f79aef6332d72948fe82ab5772e423ccf92"
+checksum = "84a22b5d51209f6de83d37a0b33d320acb8da88823e42a94c075140708f032a5"
 dependencies = [
  "rustversion",
 ]
@@ -230,9 +230,9 @@ checksum = "37b2a672a2cb129a2e41c10b1224bb368f9f37a2b16b612598138befd7b37eb5"
 
 [[package]]
 name = "cc"
-version = "1.11.1"
+version = "1.11.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4ff2a8126fff0f8c839080d619675a585e61720bb12d2baceae45769fd66f155"
+checksum = "33ef9e3e8154a45c7a95cff4c1299702106ad94062d7bb85fdc5d3a5afd91d45"
 dependencies = [
  "find-msvc-tools",
  "shlex",
@@ -478,9 +478,9 @@ checksum = "00d174d5400e5e8fd687ad1049e2f578285fa914201b1af7e8b112a4546bd826"
 
 [[package]]
 name = "errno"
-version = "0.3.14"
+version = "0.3.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
+checksum = "e35d6e78f4cebb90e51d543db8fe41528851d6deeef6ef21ebd4bfdc1e784776"
 dependencies = [
  "libc",
  "windows-sys",
@@ -886,6 +886,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "lz4_flex"
+version = "0.11.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "13591d77a9b6d941f7e6fcade7f9dfd9e801308752bde50c0a9bb5852778c22c"
+
+[[package]]
 name = "matchers"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -937,9 +943,9 @@ dependencies = [
 
 [[package]]
 name = "mir-analyzer"
-version = "0.98.0"
+version = "0.101.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bb3cc063db11292a545fe5e39ad148172167eacbe96bf8133639efa66b0b1750"
+checksum = "78212e130897deede839b9037dbf739f5314bd791989693c9c36c7dd06c8e0d6"
 dependencies = [
  "aho-corasick",
  "bincode",
@@ -947,6 +953,7 @@ dependencies = [
  "boxcar",
  "dashmap",
  "indexmap",
+ "lz4_flex",
  "mir-codebase",
  "mir-issues",
  "mir-plugin",
@@ -969,9 +976,9 @@ dependencies = [
 
 [[package]]
 name = "mir-codebase"
-version = "0.98.0"
+version = "0.101.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b07776cd69580bb3e569838a3dbe56e627e6558a18ce135d9004620cbc0d5039"
+checksum = "5f7388b0dab5eda063633d0ca3a2be258285d6b568459e9009179b12aee3397a"
 dependencies = [
  "dashmap",
  "indexmap",
@@ -982,9 +989,9 @@ dependencies = [
 
 [[package]]
 name = "mir-issues"
-version = "0.98.0"
+version = "0.101.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7c4d71f1f84982a0eccd9657e3528f86b345ed14ce41a5954a884bb4b107cf59"
+checksum = "590f26d4e889d44c8e40d82a20ab212e19c498b47b90a9382466c69df73adaa7"
 dependencies = [
  "mir-types",
  "serde",
@@ -992,9 +999,9 @@ dependencies = [
 
 [[package]]
 name = "mir-plugin"
-version = "0.98.0"
+version = "0.101.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3a75b0ede373743ef39e4a9fafc0ad5152aea20c80c1bc2dec661b74fe037b80"
+checksum = "8510d3dc7931bb85d96ff2a66fa2d2a88e8a5876f21512cf71aa5eecff4996df"
 dependencies = [
  "mir-issues",
  "mir-types",
@@ -1006,9 +1013,9 @@ dependencies = [
 
 [[package]]
 name = "mir-types"
-version = "0.98.0"
+version = "0.101.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "26c08140072ea428903e45dff886ff0a61ff714bfa71a653c64c4e5b0a17c3bf"
+checksum = "4ba0af4347a67639c6c4694b20c2374efd31d3cfc9e54b491d85e7dfe9e31b88"
 dependencies = [
  "dashmap",
  "indexmap",

@@ -27,6 +27,11 @@ name = "phpt"
 path = "tests/phpt.rs"
 harness = false
 
+[[test]]
+name = "warm_sweep_memory"
+path = "tests/warm_sweep_memory.rs"
+harness = false
+
 [[bench]]
 name = "parse"
 harness = false
@@ -54,10 +59,10 @@ test-hooks = []
 dhat = { version = "0.3", optional = true }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
-mir-analyzer = "0.98.0"
-mir-issues = "0.98.0"
-mir-codebase = "0.98.0"
-mir-types = "0.98.0"
+mir-analyzer = "0.101.0"
+mir-issues = "0.101.0"
+mir-codebase = "0.101.0"
+mir-types = "0.101.0"
 php-rs-parser = "0.29"
 php-ast = "0.29"
 php-lexer = "0.29"
