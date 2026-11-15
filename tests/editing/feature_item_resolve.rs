@@ -547,8 +547,8 @@ function tested() {}
     }
     expect![[r#"
         test (Function) @ main.php:1:9-1:13
-        testing (Function) @ main.php:2:9-2:16
-        tested (Function) @ main.php:3:9-3:15"#]]
+        tested (Function) @ main.php:3:9-3:15
+        testing (Function) @ main.php:2:9-2:16"#]]
     .assert_eq(&results.join("\n"));
 }
 
