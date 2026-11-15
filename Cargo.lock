@@ -1161,7 +1161,7 @@ dependencies = [
 
 [[package]]
 name = "php-lsp"
-version = "0.32.0"
+version = "0.33.0"
 dependencies = [
  "arc-swap",
  "blake3",

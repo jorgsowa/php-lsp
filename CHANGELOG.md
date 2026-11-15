@@ -4,6 +4,8 @@ All notable changes to php-lsp are documented here.
 
 ## [Unreleased]
 
+## [0.33.0] — 2026-11-15
+
 ### Changed
 
 - **New checks with mir 0.101**: `LessSpecificReturnStatement`, `InvalidScalarArgument` and `@pure-unless-callable-is-impure`, narrowing that survives calls to methods of the same class, and edits inside a function body no longer re-analyze the files that use the declarations below it.
