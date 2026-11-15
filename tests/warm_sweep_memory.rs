@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream, ReadHalf, WriteHalf};
 use tower_lsp_server::Server;
+use tower_lsp_server::ls_types::Uri;
 
 struct Counting;
 
@@ -159,7 +160,7 @@ async fn child(workspace: &Path, cache: &Path) -> isize {
         "initialize",
         Some(json!({
             "processId": null,
-            "rootUri": format!("file://{}", workspace.display()),
+            "rootUri": Uri::from_file_path(workspace).unwrap().as_str(),
             "capabilities": {},
             "initializationOptions": {
                 "cachePath": cache,
