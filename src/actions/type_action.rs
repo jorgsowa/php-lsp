@@ -42,7 +42,7 @@ fn collect(
                     }
                 }
                 // Recurse into nested functions
-                collect_in_stmts(&f.body.stmts, sv, range, uri, out);
+                collect(&f.body.stmts, sv, range, uri, out);
             }
             StmtKind::Class(c) => {
                 for member in c.body.members.iter() {
@@ -113,16 +113,6 @@ fn collect(
             _ => {}
         }
     }
-}
-
-fn collect_in_stmts(
-    stmts: &[Stmt<'_, '_>],
-    sv: SourceView<'_>,
-    range: Range,
-    uri: &Uri,
-    out: &mut Vec<CodeActionOrCommand>,
-) {
-    collect(stmts, sv, range, uri, out);
 }
 
 /// Returns `true` if any `return <expr>` (non-void) statement appears
