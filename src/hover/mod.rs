@@ -6,7 +6,9 @@ mod named_args;
 mod parsing;
 
 pub use formatting::format_params_str;
-pub use hover_impl::{hover_info_with_lazy_maps, hover_info_with_maps};
+pub use hover_impl::hover_info_with_lazy_maps;
+#[cfg(any(test, feature = "test-hooks"))]
+pub use hover_impl::hover_info_with_maps;
 pub use parsing::extract_static_class_before_cursor;
 pub use parsing::is_arrow_access_on_non_this_receiver;
 pub use parsing::resolve_use_alias;

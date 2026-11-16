@@ -11,9 +11,3 @@ use crate::types::symbol_map::SymbolMap;
 /// every `build` call produces a new `Arc`, so a changed parse always propagates.
 #[derive(Clone)]
 pub struct SymbolMapArc(pub Arc<SymbolMap>);
-
-impl SymbolMapArc {
-    pub fn get(&self) -> &SymbolMap {
-        &self.0
-    }
-}

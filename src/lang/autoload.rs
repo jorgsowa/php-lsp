@@ -143,6 +143,11 @@ impl Psr4Map {
         }
     }
 
+    #[cfg(test)]
+    pub fn load(root: &Path) -> Self {
+        Self::load_with_extensions(root, mir_analyzer::PhpFileExtensions::default())
+    }
+
     /// Build a map from a workspace root. Delegates all resolution logic to
     /// `mir_analyzer::Psr4Map` (which handles PSR-4, PSR-0, classmap, vendor
     /// eager files, and `autoload_classmap.php`). Also extracts project PSR-4
@@ -151,10 +156,6 @@ impl Psr4Map {
     /// If `root` itself has no `composer.json`, walks up parent directories to
     /// find one (up to 8 levels). This handles workspaces rooted at a `src/`
     /// subdirectory where the project's `composer.json` lives one level up.
-    pub fn load(root: &Path) -> Self {
-        Self::load_with_extensions(root, mir_analyzer::PhpFileExtensions::default())
-    }
-
     pub fn load_with_extensions(root: &Path, extensions: mir_analyzer::PhpFileExtensions) -> Self {
         let composer_root = find_composer_root(root).unwrap_or_else(|| root.to_path_buf());
         let mut inners = Vec::new();

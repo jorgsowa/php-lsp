@@ -40,6 +40,7 @@ fn is_hoverable(decl: &Declaration<'_>) -> bool {
 /// `other_docs` scan only when it misses (index not ready, unsaved file, …).
 /// Named-arg hover still walks `other_docs` directly — it has no single
 /// resolved class to key a fast lookup on.
+#[cfg(any(test, feature = "test-hooks"))]
 #[allow(clippy::too_many_arguments)]
 pub fn hover_info_with_maps(
     source: &str,

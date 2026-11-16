@@ -50,9 +50,10 @@ harness = false
 
 [features]
 dhat-heap = ["dep:dhat"]
-# Debug-gate hold points for the responsiveness regression tests. Never in
-# production builds: the self dev-dependency below enables it for test
-# targets only, so plain `cargo build` compiles the hooks out entirely.
+# Debug-gate hold points for the responsiveness regression tests, plus the
+# entry points benches call directly. Never in production builds: the self
+# dev-dependency below enables it for test targets only, so plain
+# `cargo build` compiles them out entirely.
 test-hooks = []
 
 [dependencies]

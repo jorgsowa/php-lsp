@@ -408,6 +408,7 @@ impl FileIndex {
     }
 
     /// Collects `source` with a throwaway mir database, for callers without a session.
+    #[cfg(any(test, feature = "test-hooks"))]
     pub fn from_source(path: &str, source: &str) -> Self {
         let mut db = mir_analyzer::db::MirDbStorage::default();
         let file = db.upsert_source_file(Arc::from(path), Arc::from(source));

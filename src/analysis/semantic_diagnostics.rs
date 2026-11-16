@@ -2,12 +2,9 @@
 ///
 /// Delegates all analysis to the `mir-analyzer` crate and converts its `Issue`
 /// type into the `tower-lsp` `Diagnostic` type expected by the LSP backend.
-use tower_lsp_server::ls_types::{
-    Diagnostic, DiagnosticSeverity, NumberOrString, Position, Range, Uri,
-};
+use tower_lsp_server::ls_types::{Diagnostic, DiagnosticSeverity, NumberOrString, Position, Range};
 
 use crate::analysis::diagnostics::PHP_LSP_SOURCE;
-use crate::document::ast::ParsedDoc;
 use crate::lang::config::DiagnosticsConfig;
 use crate::text::Utf16Columns;
 
@@ -20,9 +17,10 @@ use crate::text::Utf16Columns;
 /// caching, PSR-4 lazy-loading, and `collector_issues` diagnostics — for
 /// that, see `DocumentStore::get_semantic_issues_salsa` and
 /// `compute_open_file_diagnostics`.
+#[cfg(any(test, feature = "test-hooks"))]
 pub fn semantic_diagnostics(
-    uri: &Uri,
-    doc: &ParsedDoc,
+    uri: &tower_lsp_server::ls_types::Uri,
+    doc: &crate::document::ast::ParsedDoc,
     session: &mut mir_analyzer::AnalysisSession,
     cfg: &DiagnosticsConfig,
 ) -> Vec<Diagnostic> {

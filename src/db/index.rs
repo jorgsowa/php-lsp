@@ -11,9 +11,3 @@ use crate::index::file_index::FileIndex;
 /// `workspace_index`) when a body-only edit produces an identical index.
 #[derive(Clone, PartialEq, Debug)]
 pub struct IndexArc(pub Arc<FileIndex>);
-
-impl IndexArc {
-    pub fn get(&self) -> &FileIndex {
-        &self.0
-    }
-}
