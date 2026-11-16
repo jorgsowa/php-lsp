@@ -21,9 +21,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use php_lsp::analysis::code_lens::{CodeLensScopeCache, code_lenses, resolve_code_lens};
-use php_lsp::ast::ParsedDoc;
-use php_lsp::document_store::DocumentStore;
+use php_lsp::DocumentStore;
+use php_lsp::ParsedDoc;
+use php_lsp::{CodeLensScopeCache, code_lenses, resolve_code_lens};
 use tower_lsp_server::ls_types::Uri;
 
 const OWNER: &str = "Service";

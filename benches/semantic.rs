@@ -22,9 +22,9 @@ use criterion::{Criterion, criterion_group, criterion_main};
 use std::hint::black_box;
 use tower_lsp_server::ls_types::Uri;
 
-use php_lsp::ast::ParsedDoc;
-use php_lsp::config::DiagnosticsConfig;
-use php_lsp::semantic_diagnostics::semantic_diagnostics;
+use php_lsp::DiagnosticsConfig;
+use php_lsp::ParsedDoc;
+use php_lsp::semantic_diagnostics;
 
 const MEDIUM: &str = include_str!("fixtures/medium_class.php");
 
@@ -52,7 +52,7 @@ fn all_enabled() -> DiagnosticsConfig {
 fn new_session() -> mir_analyzer::AnalysisSession {
     // Sessions here run mir's parallel analysis before any DocumentStore
     // exists — size the rayon stacks like production first.
-    php_lsp::document_store::ensure_rayon_worker_stacks();
+    php_lsp::ensure_rayon_worker_stacks();
     let mut s = mir_analyzer::AnalysisSession::new(mir_analyzer::PhpVersion::LATEST)
         .with_taint_analysis(false);
     s.ensure_all_stubs();

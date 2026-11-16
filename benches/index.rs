@@ -2,7 +2,7 @@ use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use std::hint::black_box;
 use tower_lsp_server::ls_types::Uri;
 
-use php_lsp::document_store::DocumentStore;
+use php_lsp::DocumentStore;
 
 const SMALL: &str = include_str!("fixtures/small_class.php");
 const MEDIUM: &str = include_str!("fixtures/medium_class.php");

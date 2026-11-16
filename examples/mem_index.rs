@@ -21,8 +21,8 @@ use std::time::Instant;
 use rayon::prelude::*;
 use tower_lsp_server::ls_types::Uri;
 
-use php_lsp::ast::ParsedDoc;
-use php_lsp::document_store::DocumentStore;
+use php_lsp::DocumentStore;
+use php_lsp::ParsedDoc;
 
 fn rss_kb() -> u64 {
     // macOS

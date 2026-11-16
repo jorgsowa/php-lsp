@@ -201,10 +201,3 @@ impl WorkspaceIndexData {
 /// `WorkspaceIndexData` structurally.
 #[derive(Clone)]
 pub struct WorkspaceIndexArc(pub Arc<WorkspaceIndexData>);
-
-impl WorkspaceIndexArc {
-    #[cfg(test)]
-    pub fn get(&self) -> &WorkspaceIndexData {
-        &self.0
-    }
-}

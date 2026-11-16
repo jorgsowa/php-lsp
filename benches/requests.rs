@@ -6,15 +6,15 @@ use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use rayon::prelude::*;
 use tower_lsp_server::ls_types::{Location, Position, Range, Uri};
 
-use php_lsp::ast::ParsedDoc;
-use php_lsp::call_hierarchy::prepare_call_hierarchy_indexed;
-use php_lsp::completion::{CompletionCtx, filtered_completions_at};
-use php_lsp::definition::goto_definition;
-use php_lsp::document_store::DocumentStore;
-use php_lsp::file_index::FileIndex;
-use php_lsp::hover::hover_info_with_maps;
-use php_lsp::symbol_map::SymbolMap;
-use php_lsp::symbols::{document_symbols, workspace_symbols_from_workspace};
+use php_lsp::DocumentStore;
+use php_lsp::FileIndex;
+use php_lsp::ParsedDoc;
+use php_lsp::SymbolMap;
+use php_lsp::goto_definition;
+use php_lsp::hover_info_with_maps;
+use php_lsp::prepare_call_hierarchy_indexed;
+use php_lsp::{CompletionCtx, filtered_completions_at};
+use php_lsp::{document_symbols, workspace_symbols_from_workspace};
 
 const MEDIUM: &str = include_str!("fixtures/medium_class.php");
 const SMALL: &str = include_str!("fixtures/small_class.php");
@@ -490,7 +490,7 @@ fn to_indexes(docs: &OtherDocs) -> Vec<(Uri, Arc<FileIndex>)> {
 }
 
 fn bench_semantic_tokens(c: &mut Criterion) {
-    use php_lsp::analysis::semantic_tokens::{semantic_tokens, semantic_tokens_range};
+    use php_lsp::{semantic_tokens, semantic_tokens_range};
 
     let mut group = c.benchmark_group("semantic_tokens");
     let medium = Arc::new(ParsedDoc::parse(MEDIUM.to_owned()));
@@ -534,7 +534,7 @@ fn bench_semantic_tokens(c: &mut Criterion) {
 }
 
 fn bench_inlay_hints(c: &mut Criterion) {
-    use php_lsp::analysis::inlay_hints::inlay_hints;
+    use php_lsp::inlay_hints;
 
     let full_range = tower_lsp_server::ls_types::Range {
         start: Position {
@@ -805,9 +805,7 @@ fn bench_workspace_index_rebuild(c: &mut Criterion) {
         b.iter(|| old_build_maps_reconstruction(&indexes));
     });
     group.bench_function("new_classes_by_lowercase_name_only", |b| {
-        b.iter(|| {
-            black_box(php_lsp::db::workspace_index::WorkspaceIndexData::from_files(indexes.clone()))
-        });
+        b.iter(|| black_box(php_lsp::WorkspaceIndexData::from_files(indexes.clone())));
     });
     group.finish();
 }
@@ -815,7 +813,7 @@ fn bench_workspace_index_rebuild(c: &mut Criterion) {
 fn bench_workspace_symbol(c: &mut Criterion) {
     let other_docs = cross_file_docs();
     let other_indexes = to_indexes(&other_docs);
-    let other_wi = php_lsp::db::workspace_index::WorkspaceIndexData::from_files(other_indexes);
+    let other_wi = php_lsp::WorkspaceIndexData::from_files(other_indexes);
 
     let mut group = c.benchmark_group("workspace_symbol");
     // Small-set fuzzy search: query matches `UserService`, `UserRepository`, etc.
@@ -829,7 +827,7 @@ fn bench_workspace_symbol(c: &mut Criterion) {
             docs.len()
         );
         let indexes = to_indexes(&docs);
-        let wi = php_lsp::db::workspace_index::WorkspaceIndexData::from_files(indexes);
+        let wi = php_lsp::WorkspaceIndexData::from_files(indexes);
         group.sample_size(10);
         // Common prefix across Illuminate — should match many symbols.
         group.bench_function("laravel_framework", |b| {
@@ -931,10 +929,7 @@ fn bench_workspace_parse(c: &mut Criterion) {
     group.bench_function("sequential", |b| {
         b.iter(|| {
             sources.iter().for_each(|(_, src)| {
-                std::hint::black_box(php_lsp::file_index::FileIndex::from_source(
-                    "file:///bench.php",
-                    src,
-                ));
+                std::hint::black_box(php_lsp::FileIndex::from_source("file:///bench.php", src));
             });
         });
     });
@@ -942,10 +937,7 @@ fn bench_workspace_parse(c: &mut Criterion) {
     group.bench_function("rayon", |b| {
         b.iter(|| {
             sources.par_iter().for_each(|(_, src)| {
-                std::hint::black_box(php_lsp::file_index::FileIndex::from_source(
-                    "file:///bench.php",
-                    src,
-                ));
+                std::hint::black_box(php_lsp::FileIndex::from_source("file:///bench.php", src));
             });
         });
     });

@@ -2605,7 +2605,7 @@ impl DocumentStore {
     /// `FileAnalyzer`. The session lazy-loads dependencies via PSR-4 so the
     /// LSP no longer needs to mirror vendor up-front. Callers apply their
     /// own `DiagnosticsConfig` filter via
-    /// [`crate::semantic_diagnostics::issues_to_diagnostics`].
+    /// [`crate::analysis::semantic_diagnostics::issues_to_diagnostics`].
     #[tracing::instrument(skip_all)]
     pub fn get_semantic_issues_salsa(&self, uri: &Uri) -> Option<Arc<[mir_issues::Issue]>> {
         let file: Arc<str> = Arc::from(uri.as_str());

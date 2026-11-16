@@ -75,7 +75,7 @@ impl WorkspaceCache {
     /// cap fits, and the rebuild cost is bounded to one full
     /// re-scan.
     pub fn new(root: &Path) -> Option<Self> {
-        let base = cache_base_dir()?;
+        let base = super::cache_base_dir()?;
         let schema = schema_version();
         let php_lsp_dir = base.join("php-lsp");
         let workspace = workspace_hash(root);
@@ -314,29 +314,6 @@ fn last_used(dir: &Path, meta: Option<&WorkspaceMeta>) -> SystemTime {
         UNIX_EPOCH + Duration::from_secs(m.last_used_secs)
     });
     stamped.max(mtime)
-}
-
-/// Platform cache directory: `$XDG_CACHE_HOME` or `$HOME/.cache` on Unix,
-/// `%LOCALAPPDATA%` on Windows. Deliberately doesn't depend on the `dirs`
-/// crate — keeps the footprint small and the behaviour predictable.
-pub(crate) fn cache_base_dir() -> Option<PathBuf> {
-    if let Some(xdg) = std::env::var_os("XDG_CACHE_HOME")
-        && !xdg.is_empty()
-    {
-        return Some(PathBuf::from(xdg));
-    }
-    if cfg!(windows) {
-        if let Some(local) = std::env::var_os("LOCALAPPDATA")
-            && !local.is_empty()
-        {
-            return Some(PathBuf::from(local));
-        }
-    } else if let Some(home) = std::env::var_os("HOME")
-        && !home.is_empty()
-    {
-        return Some(PathBuf::from(home).join(".cache"));
-    }
-    None
 }
 
 /// Schema marker: bumping `php-lsp`'s crate version invalidates every cached

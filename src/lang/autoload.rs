@@ -387,8 +387,8 @@ pub fn resolve_php_version_from_roots(
 /// `initialize` critical path, so the result is cached keyed by the resolved
 /// binary's path + mtime + size — a PHP upgrade or PATH change re-detects.
 pub fn detect_php_binary_version() -> Option<String> {
-    let cache_file = crate::index::cache::cache_base_dir()
-        .map(|d| d.join("php-lsp").join("php-binary-version.json"));
+    let cache_file =
+        crate::index::cache_base_dir().map(|d| d.join("php-lsp").join("php-binary-version.json"));
     detect_php_binary_version_with_cache(cache_file.as_deref())
 }
 

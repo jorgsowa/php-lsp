@@ -84,7 +84,7 @@ impl Backend {
                         .cloned()
                         .collect();
                     let source = docs.source_text(&uri);
-                    crate::semantic_diagnostics::issues_to_diagnostics(
+                    crate::analysis::semantic_diagnostics::issues_to_diagnostics(
                         &issues,
                         source.as_deref().unwrap_or_default(),
                         &diag_cfg,

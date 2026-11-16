@@ -16,7 +16,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use mir_analyzer::{AnalysisSession, Name, PhpVersion, ReferenceIncludes};
-use php_lsp::document_store::DocumentStore;
+use php_lsp::DocumentStore;
 use tower_lsp_server::ls_types::Uri;
 
 const METHOD: &str = "save";
@@ -85,7 +85,7 @@ fn measure(mut op: impl FnMut()) -> f64 {
 fn main() {
     // The sessions below run mir's parallel analysis before any
     // DocumentStore exists — size the rayon stacks like production first.
-    php_lsp::document_store::ensure_rayon_worker_stacks();
+    php_lsp::ensure_rayon_worker_stacks();
     let Some(all) = laravel_sources() else {
         eprintln!(
             "Laravel fixture not found — run scripts/setup_laravel_fixture.sh to enable references_degradation"
@@ -217,12 +217,12 @@ fn main() {
 /// the subtype map is built once inside the memoized `workspace_index`, not
 /// rebuilt per request.
 fn scope_narrowing_comparison(store: &DocumentStore, total_files: usize) {
-    use php_lsp::file_index::{ClassKind, Visibility};
+    use php_lsp::{ClassKind, Visibility};
 
     store.mark_index_ready();
     let ws = store.get_workspace_index_salsa();
 
-    let narrowable = |cls: &php_lsp::file_index::ClassDef| {
+    let narrowable = |cls: &php_lsp::ClassDef| {
         matches!(cls.kind, ClassKind::Class | ClassKind::Enum)
             && cls.traits.is_empty()
             && cls.mixins.is_empty()

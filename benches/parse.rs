@@ -1,5 +1,5 @@
 use criterion::{BatchSize, BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use php_lsp::ast::ParsedDoc;
+use php_lsp::ParsedDoc;
 use std::hint::black_box;
 
 const FIXTURES: &[(&str, &str)] = &[

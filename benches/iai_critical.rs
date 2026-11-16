@@ -5,10 +5,10 @@ use std::hint::black_box;
 use iai_callgrind::{library_benchmark, library_benchmark_group, main};
 use tower_lsp_server::ls_types::Uri;
 
-use php_lsp::ast::ParsedDoc;
-use php_lsp::document_store::DocumentStore;
-use php_lsp::hover::hover_info_with_maps;
-use php_lsp::symbol_map::SymbolMap;
+use php_lsp::DocumentStore;
+use php_lsp::ParsedDoc;
+use php_lsp::SymbolMap;
+use php_lsp::hover_info_with_maps;
 
 const MEDIUM: &str = include_str!("fixtures/medium_class.php");
 const SMALL: &str = include_str!("fixtures/small_class.php");

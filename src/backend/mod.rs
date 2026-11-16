@@ -675,7 +675,7 @@ async fn compute_dependent_publishes_owned(
                 issues.extend(extra);
             }
             let source = docs.source_text(&url);
-            let semantic = crate::semantic_diagnostics::issues_to_diagnostics(
+            let semantic = crate::analysis::semantic_diagnostics::issues_to_diagnostics(
                 &issues,
                 source.as_deref().unwrap_or_default(),
                 &diag_cfg,
@@ -920,8 +920,8 @@ mod drive_letter;
 pub use drive_letter::ClientLoopback;
 mod handlers;
 mod helpers;
-pub mod offload;
-pub mod panic_guard;
+pub(crate) mod offload;
+pub(crate) mod panic_guard;
 mod server;
 #[cfg(test)]
 mod tests;

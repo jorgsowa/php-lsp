@@ -3,10 +3,34 @@
 
 pub mod file_index;
 
-pub mod cache;
+#[cfg(not(target_family = "wasm"))]
+pub(crate) mod cache;
 pub(crate) mod use_imports;
 #[cfg(not(target_family = "wasm"))]
 pub(crate) mod workspace_scan;
+
+/// Platform cache directory: `$XDG_CACHE_HOME` or `$HOME/.cache` on Unix,
+/// `%LOCALAPPDATA%` on Windows. Deliberately doesn't depend on the `dirs`
+/// crate — keeps the footprint small and the behaviour predictable.
+pub(crate) fn cache_base_dir() -> Option<std::path::PathBuf> {
+    if let Some(xdg) = std::env::var_os("XDG_CACHE_HOME")
+        && !xdg.is_empty()
+    {
+        return Some(std::path::PathBuf::from(xdg));
+    }
+    if cfg!(windows) {
+        if let Some(local) = std::env::var_os("LOCALAPPDATA")
+            && !local.is_empty()
+        {
+            return Some(std::path::PathBuf::from(local));
+        }
+    } else if let Some(home) = std::env::var_os("HOME")
+        && !home.is_empty()
+    {
+        return Some(std::path::PathBuf::from(home).join(".cache"));
+    }
+    None
+}
 
 /// Folds `.` and `..` components without touching the filesystem.
 pub(crate) fn normalize_path(path: &std::path::Path) -> std::path::PathBuf {

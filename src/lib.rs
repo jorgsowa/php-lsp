@@ -43,16 +43,22 @@ mod process; //  running external programs with a timeout
 mod text; //     generic text mechanics: offset, word, fuzzy, range
 mod types; //    type resolution & symbol lookup: type_map, type_query, resolve, symbol_map, stub_members
 
+// Native builds expose only the server and the items below, so rustc flags code nothing reaches;
+// the wasm32-wasip1 library build is consumed through these modules directly.
+macro_rules! feature_modules {
+    ($($name:ident),* $(,)?) => {$(
+        #[cfg(target_family = "wasm")]
+        pub mod $name;
+        #[cfg(not(target_family = "wasm"))]
+        mod $name;
+    )*};
+}
+
 // ── LSP feature capabilities ─────────────────────────────────────────────────
-pub mod actions;
-pub mod analysis;
-pub mod completion;
-pub mod editing;
-pub mod hover;
-pub mod navigation;
+feature_modules!(actions, analysis, completion, editing, hover, navigation);
 
 // ── Salsa query layer ────────────────────────────────────────────────────────
-pub mod db;
+feature_modules!(db);
 
 // ── Server entry point & cross-cutting infrastructure ────────────────────────
 // The server needs threads, files and child processes. Everything above it builds for
@@ -62,14 +68,21 @@ pub mod backend;
 #[cfg(test)]
 mod test_utils;
 
-// Re-exports for benchmark crates and integration tests that use the flat `php_lsp::X` paths.
-pub use analysis::semantic_diagnostics;
-pub use document::ast;
-pub use document::document_store;
-pub use index::cache;
-pub use index::file_index;
-pub use lang::config;
-pub use navigation::call_hierarchy;
-pub use navigation::definition;
-pub use navigation::symbols;
-pub use types::symbol_map;
+// Entry points that benchmarks and integration tests drive directly.
+pub use analysis::code_lens::{CodeLensScopeCache, code_lenses, resolve_code_lens};
+pub use analysis::inlay_hints::inlay_hints;
+#[cfg(any(test, feature = "test-hooks"))]
+pub use analysis::semantic_diagnostics::semantic_diagnostics;
+pub use analysis::semantic_tokens::{semantic_tokens, semantic_tokens_range};
+pub use completion::{CompletionCtx, filtered_completions_at};
+pub use db::workspace_index::WorkspaceIndexData;
+pub use document::ast::ParsedDoc;
+pub use document::document_store::{DocumentStore, ensure_rayon_worker_stacks};
+#[cfg(any(test, feature = "test-hooks"))]
+pub use hover::hover_info_with_maps;
+pub use index::file_index::{ClassDef, ClassKind, FileIndex, Visibility};
+pub use lang::config::DiagnosticsConfig;
+pub use navigation::call_hierarchy::prepare_call_hierarchy_indexed;
+pub use navigation::definition::goto_definition;
+pub use navigation::symbols::{document_symbols, workspace_symbols_from_workspace};
+pub use types::symbol_map::SymbolMap;

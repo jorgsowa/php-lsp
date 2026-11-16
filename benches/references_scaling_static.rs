@@ -26,7 +26,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use mir_analyzer::Name;
-use php_lsp::document_store::DocumentStore;
+use php_lsp::DocumentStore;
 use tower_lsp_server::ls_types::Uri;
 
 const HOT_METHOD: &str = "process";
