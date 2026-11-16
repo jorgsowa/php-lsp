@@ -60,6 +60,30 @@ function getLabel(string $status): string {
     );
 }
 
+#[tokio::test]
+async fn switch_to_match_offered_for_switch_inside_closure() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_code_actions(
+            r#"<?php
+$label = function(string $status): string {
+    switch ($status) {
+        case 'active':
+            return 'Active';
+        default:
+            return $0'Unknown';
+    }
+};
+"#,
+        )
+        .await;
+    assert!(
+        out.contains("Convert switch to match"),
+        "expected action in: {out}"
+    );
+}
+
 // ── Not offered ───────────────────────────────────────────────────────────────
 
 #[tokio::test]

@@ -1,9 +1,7 @@
-use php_ast::{
-    ArrowFunctionExpr, ClassMemberKind, ClosureExpr, Expr, ExprKind, NamespaceBody, Span, Stmt,
-    StmtKind,
-};
+use php_ast::{ArrowFunctionExpr, ClosureExpr, Expr, ExprKind, Span, StmtKind};
 use tower_lsp_server::ls_types::{CodeActionKind, CodeActionOrCommand, Range, TextEdit, Uri};
 
+use super::cursor_walk::{CursorVisitor, walk_expr_at, walk_stmts_at};
 use crate::document::ast::{ParsedDoc, SourceView};
 
 /// Offer "Convert to arrow function" when the cursor is inside a closure whose
@@ -17,187 +15,37 @@ pub fn closure_to_arrow_function_actions(
 ) -> Vec<CodeActionOrCommand> {
     let sv = doc.view();
     let cursor = sv.byte_of_position(range.start);
-    let mut out = Vec::new();
-    collect_in_stmts(&doc.program().stmts, source, cursor, uri, sv, &mut out);
-    out
+    let mut finder = ClosureFinder {
+        source,
+        uri,
+        sv,
+        out: Vec::new(),
+    };
+    walk_stmts_at(&doc.program().stmts, cursor, &mut finder);
+    finder.out
 }
 
-fn collect_in_stmts(
-    stmts: &[Stmt<'_, '_>],
-    source: &str,
-    cursor: u32,
-    uri: &Uri,
-    sv: SourceView<'_>,
-    out: &mut Vec<CodeActionOrCommand>,
-) -> bool {
-    for stmt in stmts {
-        if stmt.span.end < cursor || stmt.span.start > cursor {
-            continue;
-        }
-        if collect_in_stmt(stmt, source, cursor, uri, sv, out) {
-            return true;
-        }
-    }
-    false
+struct ClosureFinder<'s> {
+    source: &'s str,
+    uri: &'s Uri,
+    sv: SourceView<'s>,
+    out: Vec<CodeActionOrCommand>,
 }
 
-fn collect_in_stmt(
-    stmt: &Stmt<'_, '_>,
-    source: &str,
-    cursor: u32,
-    uri: &Uri,
-    sv: SourceView<'_>,
-    out: &mut Vec<CodeActionOrCommand>,
-) -> bool {
-    match &stmt.kind {
-        StmtKind::Expression(expr) | StmtKind::Throw(expr) => {
-            collect_in_expr(expr, source, cursor, uri, sv, out)
+impl CursorVisitor for ClosureFinder<'_> {
+    fn visit_expr(&mut self, expr: &Expr<'_, '_>, cursor: u32) -> Option<bool> {
+        let ExprKind::Closure(c) = &expr.kind else {
+            return None;
+        };
+        // Prefer the innermost convertible closure: recurse into body first.
+        if walk_stmts_at(&c.body.stmts, cursor, self) {
+            return Some(true);
         }
-        StmtKind::Return(Some(expr)) => collect_in_expr(expr, source, cursor, uri, sv, out),
-        StmtKind::Function(f) => collect_in_stmts(&f.body.stmts, source, cursor, uri, sv, out),
-        StmtKind::Class(c) => {
-            for member in c.body.members.iter() {
-                if let ClassMemberKind::Method(m) = &member.kind
-                    && let Some(body) = &m.body
-                    && collect_in_stmts(&body.stmts, source, cursor, uri, sv, out)
-                {
-                    return true;
-                }
-            }
-            false
-        }
-        StmtKind::Namespace(ns) => {
-            if let NamespaceBody::Braced(inner) = &ns.body {
-                collect_in_stmts(&inner.stmts, source, cursor, uri, sv, out)
-            } else {
-                false
-            }
-        }
-        StmtKind::Block(b) => collect_in_stmts(&b.stmts, source, cursor, uri, sv, out),
-        StmtKind::If(i) => {
-            if collect_in_expr(&i.condition, source, cursor, uri, sv, out) {
-                return true;
-            }
-            if collect_in_stmt(i.then_branch, source, cursor, uri, sv, out) {
-                return true;
-            }
-            for ei in i.elseif_branches.iter() {
-                if collect_in_expr(&ei.condition, source, cursor, uri, sv, out)
-                    || collect_in_stmt(&ei.body, source, cursor, uri, sv, out)
-                {
-                    return true;
-                }
-            }
-            if let Some(e) = &i.else_branch {
-                collect_in_stmt(e, source, cursor, uri, sv, out)
-            } else {
-                false
-            }
-        }
-        StmtKind::While(w) => {
-            collect_in_expr(&w.condition, source, cursor, uri, sv, out)
-                || collect_in_stmt(w.body, source, cursor, uri, sv, out)
-        }
-        StmtKind::DoWhile(d) => {
-            collect_in_stmt(d.body, source, cursor, uri, sv, out)
-                || collect_in_expr(&d.condition, source, cursor, uri, sv, out)
-        }
-        StmtKind::For(f) => {
-            for e in f
-                .init
-                .iter()
-                .chain(f.condition.iter())
-                .chain(f.update.iter())
-            {
-                if collect_in_expr(e, source, cursor, uri, sv, out) {
-                    return true;
-                }
-            }
-            collect_in_stmt(f.body, source, cursor, uri, sv, out)
-        }
-        StmtKind::Foreach(f) => {
-            collect_in_expr(&f.expr, source, cursor, uri, sv, out)
-                || collect_in_stmt(f.body, source, cursor, uri, sv, out)
-        }
-        StmtKind::TryCatch(t) => {
-            if collect_in_stmts(&t.body.stmts, source, cursor, uri, sv, out) {
-                return true;
-            }
-            for catch in t.catches.iter() {
-                if collect_in_stmts(&catch.body.stmts, source, cursor, uri, sv, out) {
-                    return true;
-                }
-            }
-            if let Some(finally) = &t.finally {
-                collect_in_stmts(&finally.stmts, source, cursor, uri, sv, out)
-            } else {
-                false
-            }
-        }
-        _ => false,
-    }
-}
-
-fn collect_in_expr(
-    expr: &Expr<'_, '_>,
-    source: &str,
-    cursor: u32,
-    uri: &Uri,
-    sv: SourceView<'_>,
-    out: &mut Vec<CodeActionOrCommand>,
-) -> bool {
-    if expr.span.end < cursor || expr.span.start > cursor {
-        return false;
-    }
-    match &expr.kind {
-        ExprKind::Closure(c) => {
-            // Prefer the innermost convertible closure: recurse into body first.
-            if collect_in_stmts(&c.body.stmts, source, cursor, uri, sv, out) {
-                return true;
-            }
-            if let Some(action) = build_action(c, expr.span, source, uri, sv) {
-                out.push(action);
-                return true;
-            }
-            false
-        }
-        ExprKind::ArrowFunction(af) => {
-            // Walk into the arrow function body so nested closures are reachable.
-            collect_in_expr(af.body, source, cursor, uri, sv, out)
-        }
-        ExprKind::Assign(a) => collect_in_expr(a.value, source, cursor, uri, sv, out),
-        ExprKind::FunctionCall(fc) => {
-            if collect_in_expr(fc.name, source, cursor, uri, sv, out) {
-                return true;
-            }
-            for arg in fc.args.iter() {
-                let Some(value) = arg.value() else { continue };
-                if collect_in_expr(value, source, cursor, uri, sv, out) {
-                    return true;
-                }
-            }
-            false
-        }
-        ExprKind::MethodCall(mc) | ExprKind::NullsafeMethodCall(mc) => {
-            for arg in mc.args.iter() {
-                let Some(value) = arg.value() else { continue };
-                if collect_in_expr(value, source, cursor, uri, sv, out) {
-                    return true;
-                }
-            }
-            false
-        }
-        ExprKind::StaticMethodCall(smc) => {
-            for arg in smc.args.iter() {
-                let Some(value) = arg.value() else { continue };
-                if collect_in_expr(value, source, cursor, uri, sv, out) {
-                    return true;
-                }
-            }
-            false
-        }
-        ExprKind::Parenthesized(inner) => collect_in_expr(inner, source, cursor, uri, sv, out),
-        _ => false,
+        let Some(action) = build_action(c, expr.span, self.source, self.uri, self.sv) else {
+            return Some(false);
+        };
+        self.out.push(action);
+        Some(true)
     }
 }
 
@@ -319,191 +167,39 @@ pub fn arrow_function_to_closure_actions(
 ) -> Vec<CodeActionOrCommand> {
     let sv = doc.view();
     let cursor = sv.byte_of_position(range.start);
-    let mut out = Vec::new();
-    collect_arrow_in_stmts(&doc.program().stmts, source, cursor, uri, sv, &mut out);
-    out
+    let mut finder = ArrowFinder {
+        source,
+        uri,
+        sv,
+        out: Vec::new(),
+    };
+    walk_stmts_at(&doc.program().stmts, cursor, &mut finder);
+    finder.out
 }
 
-fn collect_arrow_in_stmts(
-    stmts: &[Stmt<'_, '_>],
-    source: &str,
-    cursor: u32,
-    uri: &Uri,
-    sv: SourceView<'_>,
-    out: &mut Vec<CodeActionOrCommand>,
-) -> bool {
-    for stmt in stmts {
-        if stmt.span.end < cursor || stmt.span.start > cursor {
-            continue;
-        }
-        if collect_arrow_in_stmt(stmt, source, cursor, uri, sv, out) {
-            return true;
-        }
-    }
-    false
+struct ArrowFinder<'s> {
+    source: &'s str,
+    uri: &'s Uri,
+    sv: SourceView<'s>,
+    out: Vec<CodeActionOrCommand>,
 }
 
-fn collect_arrow_in_stmt(
-    stmt: &Stmt<'_, '_>,
-    source: &str,
-    cursor: u32,
-    uri: &Uri,
-    sv: SourceView<'_>,
-    out: &mut Vec<CodeActionOrCommand>,
-) -> bool {
-    match &stmt.kind {
-        StmtKind::Expression(expr) | StmtKind::Throw(expr) => {
-            collect_arrow_in_expr(expr, source, cursor, uri, sv, out)
+impl CursorVisitor for ArrowFinder<'_> {
+    fn visit_expr(&mut self, expr: &Expr<'_, '_>, cursor: u32) -> Option<bool> {
+        let ExprKind::ArrowFunction(af) = &expr.kind else {
+            return None;
+        };
+        // Prefer the innermost arrow function: recurse into body first.
+        if walk_expr_at(af.body, cursor, self) {
+            return Some(true);
         }
-        StmtKind::Return(Some(expr)) => collect_arrow_in_expr(expr, source, cursor, uri, sv, out),
-        StmtKind::Function(f) => {
-            collect_arrow_in_stmts(&f.body.stmts, source, cursor, uri, sv, out)
-        }
-        StmtKind::Class(c) => {
-            for member in c.body.members.iter() {
-                if let ClassMemberKind::Method(m) = &member.kind
-                    && let Some(body) = &m.body
-                    && collect_arrow_in_stmts(&body.stmts, source, cursor, uri, sv, out)
-                {
-                    return true;
-                }
-            }
-            false
-        }
-        StmtKind::Namespace(ns) => {
-            if let NamespaceBody::Braced(inner) = &ns.body {
-                collect_arrow_in_stmts(&inner.stmts, source, cursor, uri, sv, out)
-            } else {
-                false
-            }
-        }
-        StmtKind::Block(b) => collect_arrow_in_stmts(&b.stmts, source, cursor, uri, sv, out),
-        StmtKind::If(i) => {
-            if collect_arrow_in_expr(&i.condition, source, cursor, uri, sv, out) {
-                return true;
-            }
-            if collect_arrow_in_stmt(i.then_branch, source, cursor, uri, sv, out) {
-                return true;
-            }
-            for ei in i.elseif_branches.iter() {
-                if collect_arrow_in_expr(&ei.condition, source, cursor, uri, sv, out)
-                    || collect_arrow_in_stmt(&ei.body, source, cursor, uri, sv, out)
-                {
-                    return true;
-                }
-            }
-            if let Some(e) = &i.else_branch {
-                collect_arrow_in_stmt(e, source, cursor, uri, sv, out)
-            } else {
-                false
-            }
-        }
-        StmtKind::While(w) => {
-            collect_arrow_in_expr(&w.condition, source, cursor, uri, sv, out)
-                || collect_arrow_in_stmt(w.body, source, cursor, uri, sv, out)
-        }
-        StmtKind::DoWhile(d) => {
-            collect_arrow_in_stmt(d.body, source, cursor, uri, sv, out)
-                || collect_arrow_in_expr(&d.condition, source, cursor, uri, sv, out)
-        }
-        StmtKind::For(f) => {
-            for e in f
-                .init
-                .iter()
-                .chain(f.condition.iter())
-                .chain(f.update.iter())
-            {
-                if collect_arrow_in_expr(e, source, cursor, uri, sv, out) {
-                    return true;
-                }
-            }
-            collect_arrow_in_stmt(f.body, source, cursor, uri, sv, out)
-        }
-        StmtKind::Foreach(f) => {
-            collect_arrow_in_expr(&f.expr, source, cursor, uri, sv, out)
-                || collect_arrow_in_stmt(f.body, source, cursor, uri, sv, out)
-        }
-        StmtKind::TryCatch(t) => {
-            if collect_arrow_in_stmts(&t.body.stmts, source, cursor, uri, sv, out) {
-                return true;
-            }
-            for catch in t.catches.iter() {
-                if collect_arrow_in_stmts(&catch.body.stmts, source, cursor, uri, sv, out) {
-                    return true;
-                }
-            }
-            if let Some(finally) = &t.finally {
-                collect_arrow_in_stmts(&finally.stmts, source, cursor, uri, sv, out)
-            } else {
-                false
-            }
-        }
-        _ => false,
-    }
-}
-
-fn collect_arrow_in_expr(
-    expr: &Expr<'_, '_>,
-    source: &str,
-    cursor: u32,
-    uri: &Uri,
-    sv: SourceView<'_>,
-    out: &mut Vec<CodeActionOrCommand>,
-) -> bool {
-    if expr.span.end < cursor || expr.span.start > cursor {
-        return false;
-    }
-    match &expr.kind {
-        ExprKind::ArrowFunction(af) => {
-            // Prefer the innermost arrow function: recurse into body first.
-            if collect_arrow_in_expr(af.body, source, cursor, uri, sv, out) {
-                return true;
-            }
-            if let Some(action) = build_arrow_to_closure_action(af, expr.span, source, uri, sv) {
-                out.push(action);
-                return true;
-            }
-            false
-        }
-        ExprKind::Closure(c) => {
-            // Walk into closure body so nested arrow functions are reachable.
-            collect_arrow_in_stmts(&c.body.stmts, source, cursor, uri, sv, out)
-        }
-        ExprKind::Assign(a) => collect_arrow_in_expr(a.value, source, cursor, uri, sv, out),
-        ExprKind::FunctionCall(fc) => {
-            if collect_arrow_in_expr(fc.name, source, cursor, uri, sv, out) {
-                return true;
-            }
-            for arg in fc.args.iter() {
-                let Some(value) = arg.value() else { continue };
-                if collect_arrow_in_expr(value, source, cursor, uri, sv, out) {
-                    return true;
-                }
-            }
-            false
-        }
-        ExprKind::MethodCall(mc) | ExprKind::NullsafeMethodCall(mc) => {
-            for arg in mc.args.iter() {
-                let Some(value) = arg.value() else { continue };
-                if collect_arrow_in_expr(value, source, cursor, uri, sv, out) {
-                    return true;
-                }
-            }
-            false
-        }
-        ExprKind::StaticMethodCall(smc) => {
-            for arg in smc.args.iter() {
-                let Some(value) = arg.value() else { continue };
-                if collect_arrow_in_expr(value, source, cursor, uri, sv, out) {
-                    return true;
-                }
-            }
-            false
-        }
-        ExprKind::Parenthesized(inner) => {
-            collect_arrow_in_expr(inner, source, cursor, uri, sv, out)
-        }
-        _ => false,
+        let Some(action) =
+            build_arrow_to_closure_action(af, expr.span, self.source, self.uri, self.sv)
+        else {
+            return Some(false);
+        };
+        self.out.push(action);
+        Some(true)
     }
 }
 

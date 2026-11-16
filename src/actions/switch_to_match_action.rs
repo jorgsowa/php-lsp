@@ -1,6 +1,7 @@
-use php_ast::{ClassMemberKind, Expr, ExprKind, NamespaceBody, Span, Stmt, StmtKind, SwitchStmt};
+use php_ast::{Expr, ExprKind, Span, Stmt, StmtKind, SwitchStmt};
 use tower_lsp_server::ls_types::{CodeActionKind, CodeActionOrCommand, Range, TextEdit, Uri};
 
+use super::cursor_walk::{CursorVisitor, walk_stmts_at};
 use super::indent_before;
 use crate::document::ast::{ParsedDoc, SourceView};
 
@@ -17,106 +18,41 @@ pub fn switch_to_match_actions(
 ) -> Vec<CodeActionOrCommand> {
     let sv = doc.view();
     let cursor = sv.byte_of_position(range.start);
-    let mut out = Vec::new();
-    collect_in_stmts(&doc.program().stmts, source, cursor, uri, sv, &mut out);
-    out
+    let mut finder = SwitchFinder {
+        source,
+        uri,
+        sv,
+        out: Vec::new(),
+    };
+    walk_stmts_at(&doc.program().stmts, cursor, &mut finder);
+    finder.out
 }
 
-fn collect_in_stmts(
-    stmts: &[Stmt<'_, '_>],
-    source: &str,
-    cursor: u32,
-    uri: &Uri,
-    sv: SourceView<'_>,
-    out: &mut Vec<CodeActionOrCommand>,
-) -> bool {
-    for stmt in stmts {
-        if stmt.span.end < cursor || stmt.span.start > cursor {
-            continue;
-        }
-        if collect_in_stmt(stmt, source, cursor, uri, sv, out) {
-            return true;
-        }
-    }
-    false
+struct SwitchFinder<'s> {
+    source: &'s str,
+    uri: &'s Uri,
+    sv: SourceView<'s>,
+    out: Vec<CodeActionOrCommand>,
 }
 
-fn collect_in_stmt(
-    stmt: &Stmt<'_, '_>,
-    source: &str,
-    cursor: u32,
-    uri: &Uri,
-    sv: SourceView<'_>,
-    out: &mut Vec<CodeActionOrCommand>,
-) -> bool {
-    match &stmt.kind {
-        StmtKind::Switch(sw) => {
-            // Prefer innermost switch: recurse into case bodies first.
-            for case in sw.body.cases.iter() {
-                if collect_in_stmts(&case.body, source, cursor, uri, sv, out) {
-                    return true;
-                }
-            }
-            if let Some(action) = build_action(sw, stmt.span, source, uri, sv) {
-                out.push(action);
-            }
-            true
+impl CursorVisitor for SwitchFinder<'_> {
+    fn visit_stmt(&mut self, stmt: &Stmt<'_, '_>, cursor: u32) -> Option<bool> {
+        let StmtKind::Switch(sw) = &stmt.kind else {
+            return None;
+        };
+        // Prefer innermost switch: recurse into case bodies first.
+        if sw
+            .body
+            .cases
+            .iter()
+            .any(|case| walk_stmts_at(&case.body, cursor, self))
+        {
+            return Some(true);
         }
-        StmtKind::Function(f) => collect_in_stmts(&f.body.stmts, source, cursor, uri, sv, out),
-        StmtKind::Class(c) => {
-            for member in c.body.members.iter() {
-                if let ClassMemberKind::Method(m) = &member.kind
-                    && let Some(body) = &m.body
-                    && collect_in_stmts(&body.stmts, source, cursor, uri, sv, out)
-                {
-                    return true;
-                }
-            }
-            false
+        if let Some(action) = build_action(sw, stmt.span, self.source, self.uri, self.sv) {
+            self.out.push(action);
         }
-        StmtKind::Namespace(ns) => {
-            if let NamespaceBody::Braced(inner) = &ns.body {
-                collect_in_stmts(&inner.stmts, source, cursor, uri, sv, out)
-            } else {
-                false
-            }
-        }
-        StmtKind::Block(b) => collect_in_stmts(&b.stmts, source, cursor, uri, sv, out),
-        StmtKind::If(i) => {
-            if collect_in_stmt(i.then_branch, source, cursor, uri, sv, out) {
-                return true;
-            }
-            for ei in i.elseif_branches.iter() {
-                if collect_in_stmt(&ei.body, source, cursor, uri, sv, out) {
-                    return true;
-                }
-            }
-            if let Some(e) = &i.else_branch {
-                collect_in_stmt(e, source, cursor, uri, sv, out)
-            } else {
-                false
-            }
-        }
-        StmtKind::While(w) => collect_in_stmt(w.body, source, cursor, uri, sv, out),
-        StmtKind::DoWhile(d) => collect_in_stmt(d.body, source, cursor, uri, sv, out),
-        StmtKind::For(f) => collect_in_stmt(f.body, source, cursor, uri, sv, out),
-        StmtKind::Foreach(f) => collect_in_stmt(f.body, source, cursor, uri, sv, out),
-        StmtKind::TryCatch(t) => {
-            if collect_in_stmts(&t.body.stmts, source, cursor, uri, sv, out) {
-                return true;
-            }
-            for catch in t.catches.iter() {
-                if collect_in_stmts(&catch.body.stmts, source, cursor, uri, sv, out) {
-                    return true;
-                }
-            }
-            if let Some(finally) = &t.finally {
-                collect_in_stmts(&finally.stmts, source, cursor, uri, sv, out)
-            } else {
-                false
-            }
-        }
-        _ => false,
+        Some(true)
     }
 }
 

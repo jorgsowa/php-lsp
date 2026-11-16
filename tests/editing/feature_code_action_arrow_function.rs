@@ -42,6 +42,27 @@ $fn = function() { return $042; };
     );
 }
 
+#[tokio::test]
+async fn arrow_fn_offered_for_closure_inside_switch_case() {
+    let mut s = TestServer::new().await;
+    s.validate_syntax(false);
+    let out = s
+        .check_code_actions(
+            r#"<?php
+switch ($mode) {
+    case 'a':
+        $fn = function() { return $042; };
+        break;
+}
+"#,
+        )
+        .await;
+    assert!(
+        out.contains("Convert to arrow function"),
+        "expected action in: {out}"
+    );
+}
+
 // --- Not offered ---
 
 #[tokio::test]
