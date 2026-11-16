@@ -14,7 +14,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use tower_lsp_server::ls_types::{Location, Position, Uri};
+use tower_lsp_server::ls_types::Location;
 
 #[derive(Debug, Default, Clone)]
 pub struct ComponentIndex {
@@ -28,10 +28,6 @@ impl ComponentIndex {
 
     pub fn names(&self) -> impl Iterator<Item = &str> {
         self.components.keys().map(String::as_str)
-    }
-
-    pub fn key_at(&self, uri: &Uri, position: Position) -> Option<&str> {
-        crate::laravel::location_lookup::key_at(&self.components, uri, position)
     }
 
     pub(super) fn load(root: &Path) -> Self {

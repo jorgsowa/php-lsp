@@ -2,42 +2,6 @@ use php_ast::{NamespaceBody, Stmt, StmtKind, UseKind};
 
 use crate::text::fqn_short_name;
 
-/// Extract the receiver variable from immediately before `->word` or `?->word`
-/// at the cursor's exact column position.  Uses the column rather than
-/// `str::find()` so multiple method calls on the same line are handled
-/// correctly.
-pub fn extract_receiver_var_before_cursor(line: &str, cursor_col_utf16: usize) -> Option<String> {
-    let chars: Vec<char> = line.chars().collect();
-
-    let char_idx = crate::text::utf16_col_to_char_index(&chars, cursor_col_utf16);
-
-    // Find the start of the word under the cursor (expand left).
-    let is_word_char = |c: char| c.is_alphanumeric() || c == '_';
-    let mut word_start = char_idx;
-    while word_start > 0 && is_word_char(chars[word_start - 1]) {
-        word_start -= 1;
-    }
-
-    // Check for `?->` (3 chars) or `->` (2 chars) immediately before word_start.
-    let (is_arrow, arrow_end) = if word_start >= 3
-        && chars[word_start - 3] == '?'
-        && chars[word_start - 2] == '-'
-        && chars[word_start - 1] == '>'
-    {
-        (true, word_start - 3)
-    } else if word_start >= 2 && chars[word_start - 2] == '-' && chars[word_start - 1] == '>' {
-        (true, word_start - 2)
-    } else {
-        (false, 0)
-    };
-
-    if !is_arrow {
-        return None;
-    }
-
-    extract_name_from_chars_end(&chars[..arrow_end])
-}
-
 /// The cursor's member name follows `->`/`?->` on a receiver other than `$this`.
 pub fn is_arrow_access_on_non_this_receiver(line: &str, cursor_col_utf16: usize) -> bool {
     let chars: Vec<char> = line.chars().collect();
@@ -100,38 +64,6 @@ pub fn extract_static_class_before_cursor(line: &str, cursor_col_utf16: usize) -
     let full: String = before_colons[start..end].iter().collect();
     // Return only the last segment so callers get a short name.
     Some(fqn_short_name(&full).to_owned())
-}
-
-/// Walk backwards through `chars`, skipping whitespace, and return the
-/// identifier (with `$` prefix if present) ending at the last non-space char.
-pub(crate) fn extract_name_from_chars_end(chars: &[char]) -> Option<String> {
-    let is_var_char = |c: char| c.is_alphanumeric() || c == '_' || c == '$';
-    let end = chars.len()
-        - chars
-            .iter()
-            .rev()
-            .take_while(|&&c| c == ' ' || c == '\t')
-            .count();
-    if end == 0 {
-        return None;
-    }
-    let mut start = end;
-    while start > 0 && is_var_char(chars[start - 1]) {
-        start -= 1;
-    }
-    if start == end {
-        return None;
-    }
-    let name: String = chars[start..end].iter().collect();
-    if name.starts_with('$') && name.len() > 1 {
-        Some(name)
-    } else if !name.is_empty() && !name.starts_with('$') {
-        // Plain identifier (e.g. `$obj->getUser()->name` — the inner result):
-        // treat as a non-variable receiver; callers handle the `$` lookup.
-        Some(format!("${}", name))
-    } else {
-        None
-    }
 }
 
 /// Resolve a use-import alias to the short class name.

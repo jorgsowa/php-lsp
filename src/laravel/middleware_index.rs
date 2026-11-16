@@ -52,13 +52,6 @@ impl MiddlewareIndex {
         self.aliases.keys().map(String::as_str)
     }
 
-    /// The middleware alias whose registration contains `position`, if any —
-    /// the reverse of `get`, used to recognize a find-references request
-    /// starting from the definition site.
-    pub fn key_at(&self, uri: &Uri, position: Position) -> Option<&str> {
-        crate::laravel::location_lookup::key_at(&self.aliases, uri, position)
-    }
-
     pub(super) fn load(root: &Path) -> Self {
         let mut aliases = HashMap::new();
         load_bootstrap_app(root, &mut aliases);

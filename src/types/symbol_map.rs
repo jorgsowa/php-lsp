@@ -1,9 +1,8 @@
 //! Per-file memoized symbol table.
 //!
 //! [`SymbolMap`] is a pre-computed `HashMap<name, Vec<SymbolEntry>>` built from
-//! a parsed PHP file in one AST pass. Each entry stores the precise LSP `Range`
-//! of the identifier, the declaration kind, whether it is abstract, a
-//! pre-rendered hover signature, and a pre-extracted docblock (as markdown).
+//! a parsed PHP file in one AST pass. Each entry stores the declaration kind,
+//! a pre-rendered hover signature, and a pre-extracted docblock (as markdown).
 //!
 //! Because building the map is O(AST_size) but lookup is O(1), the payoff is
 //! on the cross-file / `other_docs` path: a stable file (one that hasn't changed
@@ -14,7 +13,6 @@
 use std::collections::HashMap;
 
 use php_ast::{ClassMemberKind, EnumMemberKind, NamespaceBody, Stmt, StmtKind};
-use tower_lsp_server::ls_types::Range;
 
 use crate::document::ast::ParsedDoc;
 use crate::hover::formatting::declaration_signature;
@@ -40,8 +38,6 @@ pub enum SymbolEntryKind {
 /// A single resolved declaration stored in the pre-computed symbol map.
 #[derive(Debug, Clone)]
 pub struct SymbolEntry {
-    /// Precise LSP range of the identifier (not the full declaration span).
-    pub name_range: Range,
     pub kind: SymbolEntryKind,
     /// Pre-rendered hover signature (e.g. `function foo(int $x): void`).
     /// `None` for properties and promoted parameters, which use the mir path.
@@ -64,9 +60,8 @@ pub struct SymbolMap {
 impl SymbolMap {
     /// Walk `doc`'s AST once and build the complete symbol map.
     pub fn build(doc: &ParsedDoc) -> Self {
-        let sv = doc.view();
         let mut entries: HashMap<String, Vec<SymbolEntry>> = HashMap::new();
-        collect_stmts(&doc.program().stmts, sv, &mut entries);
+        collect_stmts(&doc.program().stmts, &mut entries);
         SymbolMap { entries }
     }
 
@@ -100,11 +95,7 @@ fn doc_to_markdown(c: &php_ast::Comment<'_>) -> Option<String> {
     if md.is_empty() { None } else { Some(md) }
 }
 
-fn collect_stmts<'a>(
-    stmts: &'a [Stmt<'a, 'a>],
-    sv: crate::document::ast::SourceView<'_>,
-    out: &mut HashMap<String, Vec<SymbolEntry>>,
-) {
+fn collect_stmts<'a>(stmts: &'a [Stmt<'a, 'a>], out: &mut HashMap<String, Vec<SymbolEntry>>) {
     for stmt in stmts {
         match &stmt.kind {
             StmtKind::Function(f) => {
@@ -121,7 +112,6 @@ fn collect_stmts<'a>(
                     out,
                     name.to_owned(),
                     SymbolEntry {
-                        name_range: sv.name_range_in_span(name, stmt.span),
                         kind: SymbolEntryKind::Function,
                         signature: sig,
                         doc_markdown,
@@ -144,14 +134,13 @@ fn collect_stmts<'a>(
                         out,
                         name.to_owned(),
                         SymbolEntry {
-                            name_range: sv.name_range_in_span(name, stmt.span),
                             kind: SymbolEntryKind::Class,
                             signature: sig,
                             doc_markdown,
                         },
                     );
                 }
-                collect_members(c.body.members.iter(), sv, Container::Class, out);
+                collect_members(c.body.members.iter(), Container::Class, out);
             }
 
             StmtKind::Interface(i) => {
@@ -166,13 +155,12 @@ fn collect_stmts<'a>(
                     out,
                     name.to_owned(),
                     SymbolEntry {
-                        name_range: sv.name_range_in_span(name, stmt.span),
                         kind: SymbolEntryKind::Interface,
                         signature: sig,
                         doc_markdown,
                     },
                 );
-                collect_members(i.body.members.iter(), sv, Container::Interface, out);
+                collect_members(i.body.members.iter(), Container::Interface, out);
             }
 
             StmtKind::Trait(t) => {
@@ -187,13 +175,12 @@ fn collect_stmts<'a>(
                     out,
                     name.to_owned(),
                     SymbolEntry {
-                        name_range: sv.name_range_in_span(name, stmt.span),
                         kind: SymbolEntryKind::Trait,
                         signature: sig,
                         doc_markdown,
                     },
                 );
-                collect_members(t.body.members.iter(), sv, Container::Trait, out);
+                collect_members(t.body.members.iter(), Container::Trait, out);
             }
 
             StmtKind::Enum(e) => {
@@ -208,7 +195,6 @@ fn collect_stmts<'a>(
                     out,
                     name.to_owned(),
                     SymbolEntry {
-                        name_range: sv.name_range_in_span(name, stmt.span),
                         kind: SymbolEntryKind::Enum,
                         signature: sig,
                         doc_markdown,
@@ -230,7 +216,6 @@ fn collect_stmts<'a>(
                                 out,
                                 case_name.to_owned(),
                                 SymbolEntry {
-                                    name_range: sv.name_range_in_span(case_name, member.span),
                                     kind: SymbolEntryKind::EnumCase,
                                     signature: sig,
                                     doc_markdown,
@@ -249,7 +234,6 @@ fn collect_stmts<'a>(
                                 out,
                                 mname.to_owned(),
                                 SymbolEntry {
-                                    name_range: sv.name_range_in_span(mname, member.span),
                                     kind: SymbolEntryKind::Method {
                                         container: Container::Enum,
                                     },
@@ -271,7 +255,6 @@ fn collect_stmts<'a>(
                                 out,
                                 cc_name.to_owned(),
                                 SymbolEntry {
-                                    name_range: sv.name_range_in_span(cc_name, member.span),
                                     kind: SymbolEntryKind::ClassConst {
                                         container: Container::Enum,
                                     },
@@ -287,7 +270,7 @@ fn collect_stmts<'a>(
 
             StmtKind::Namespace(ns) => {
                 if let NamespaceBody::Braced(inner) = &ns.body {
-                    collect_stmts(&inner.stmts, sv, out);
+                    collect_stmts(&inner.stmts, out);
                 }
             }
 
@@ -298,7 +281,6 @@ fn collect_stmts<'a>(
 
 fn collect_members<'a>(
     members: impl Iterator<Item = &'a php_ast::ClassMember<'a, 'a>>,
-    sv: crate::document::ast::SourceView<'_>,
     container: Container,
     out: &mut HashMap<String, Vec<SymbolEntry>>,
 ) {
@@ -312,12 +294,10 @@ fn collect_members<'a>(
                 };
                 let sig = declaration_signature(&m_decl, mname);
                 let doc_markdown = m.doc_comment.as_ref().and_then(doc_to_markdown);
-                let name_range = sv.name_range_in_span(mname, member.span);
                 push(
                     out,
                     mname.to_owned(),
                     SymbolEntry {
-                        name_range,
                         kind: SymbolEntryKind::Method { container },
                         signature: sig,
                         doc_markdown,
@@ -334,7 +314,6 @@ fn collect_members<'a>(
                                 out,
                                 bare.to_owned(),
                                 SymbolEntry {
-                                    name_range: sv.name_range_in_span(pname, p.span),
                                     kind: SymbolEntryKind::PromotedParam,
                                     signature: None,
                                     doc_markdown: None,
@@ -354,12 +333,10 @@ fn collect_members<'a>(
                 };
                 let sig = declaration_signature(&cc_decl, cc_name);
                 let doc_markdown = cc.doc_comment.as_ref().and_then(doc_to_markdown);
-                let name_range = sv.name_range_in_span(cc_name, member.span);
                 push(
                     out,
                     cc_name.to_owned(),
                     SymbolEntry {
-                        name_range,
                         kind: SymbolEntryKind::ClassConst { container },
                         signature: sig,
                         doc_markdown,
@@ -371,12 +348,10 @@ fn collect_members<'a>(
                 let pname = p.name.or_error();
                 let bare = pname.trim_start_matches('$');
                 // Properties: signature rendered via mir, not here.
-                let name_range = sv.name_range_in_span(pname, member.span);
                 push(
                     out,
                     bare.to_owned(),
                     SymbolEntry {
-                        name_range,
                         kind: SymbolEntryKind::Property { container },
                         signature: None,
                         doc_markdown: None,
