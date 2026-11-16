@@ -7,4 +7,5 @@ pub mod organize_imports;
 pub mod rename;
 pub mod selection_range;
 pub mod signature_help;
+#[cfg(not(target_family = "wasm"))]
 pub mod use_import;
