@@ -3,6 +3,7 @@ pub mod declaration;
 pub mod definition;
 pub mod mir_definition;
 pub mod moniker;
+#[cfg(not(target_family = "wasm"))]
 pub mod reference_extras;
 pub mod references;
 pub mod symbols;
