@@ -582,6 +582,8 @@ impl Backend {
                             );
                             dedup_ref_locations(&mut locations);
                         }
+                        locations.extend(self.extra_reference_locations(&symbol, &files).await?);
+                        dedup_ref_locations(&mut locations);
                         if include_declaration {
                             locations.retain(|loc| location_starts_on_symbol(&self.docs, loc));
                             locations.extend(self.workspace_decl_locations(&symbol, &word).await);
@@ -628,6 +630,8 @@ impl Backend {
                     )
                     .await?;
             }
+            locations.extend(self.extra_reference_locations(&symbol, &files).await?);
+            dedup_ref_locations(&mut locations);
             if include_declaration {
                 locations.retain(|loc| location_starts_on_symbol(&self.docs, loc));
                 locations.extend(self.workspace_decl_locations(&symbol, &word).await);
@@ -829,6 +833,153 @@ impl Backend {
         }
 
         Some((word, locations))
+    }
+
+    /// Sites mir's typed postings miss: accesses through an untyped property
+    /// whose class php-lsp can infer, `$expr::CONST` on an unresolved receiver,
+    /// docblock `@see`/`@uses` links, and function names passed as strings.
+    async fn extra_reference_locations(
+        &self,
+        symbol: &mir_analyzer::Name,
+        files: &[Arc<str>],
+    ) -> Result<Vec<Location>> {
+        let docs = Arc::clone(&self.docs);
+        let symbol = symbol.clone();
+        let files = files.to_vec();
+        tokio::task::spawn_blocking(move || {
+            use crate::navigation::reference_extras::{
+                ExtraTarget, docblock_and_string_spans, dynamic_class_constant_spans,
+                inferred_untyped_property_receiver, may_contain_extra_site,
+                may_contain_untyped_property_access,
+            };
+            use mir_analyzer::Name;
+
+            let (_interactive, cancel_rev) = docs.settled_write_rev_guard();
+            let mut locs: Vec<Location> = Vec::new();
+
+            // mir records these under a name-only key and surfaces them only
+            // when the typed lookup is empty; an empty owner reads that key.
+            let untyped_receiver = match &symbol {
+                Name::Method { class, name } if !class.is_empty() && &**name != "__construct" => {
+                    Some(Name::method("", name))
+                }
+                Name::Property { class, name } if !class.is_empty() => {
+                    Some(Name::property("", name.trim_start_matches('$')))
+                }
+                _ => None,
+            };
+            if let Some(untyped) = untyped_receiver {
+                let owner = match &symbol {
+                    Name::Method { class, .. } | Name::Property { class, .. } => {
+                        class.trim_start_matches('\\').to_string()
+                    }
+                    _ => String::new(),
+                };
+                let untyped_name = match &untyped {
+                    Name::Method { name, .. } | Name::Property { name, .. } => name.to_string(),
+                    _ => String::new(),
+                };
+                let scope: Vec<Arc<str>> = files
+                    .iter()
+                    .filter(|f| {
+                        f.parse::<Uri>()
+                            .ok()
+                            .and_then(|uri| docs.source_text(&uri))
+                            .is_none_or(|text| {
+                                may_contain_untyped_property_access(&text, &untyped_name)
+                            })
+                    })
+                    .cloned()
+                    .collect();
+                let sites: Vec<Location> = if scope.is_empty() {
+                    Vec::new()
+                } else {
+                    docs.indexed_references(&untyped, &scope, false, Some(cancel_rev))?
+                        .into_iter()
+                        .filter_map(session_tuple_to_location)
+                        .collect()
+                };
+                // Only sites whose receiver php-lsp can type as the owner (or a subclass).
+                for site in sites {
+                    let Some(doc) = docs.get_doc_salsa(&site.uri) else {
+                        continue;
+                    };
+                    let offset = doc.view().byte_of_position(site.range.start);
+                    let Some(receiver) = inferred_untyped_property_receiver(&doc, offset) else {
+                        continue;
+                    };
+                    let in_hierarchy = receiver.eq_ignore_ascii_case(&owner)
+                        || docs.with_session(|s| {
+                            s.ancestors_of(&receiver)
+                                .iter()
+                                .any(|a| a.trim_start_matches('\\').eq_ignore_ascii_case(&owner))
+                        });
+                    if in_hierarchy {
+                        locs.push(site);
+                    }
+                }
+            }
+
+            let target = match &symbol {
+                Name::Function(fqn) => ExtraTarget::Function(fqn.trim_start_matches('\\')),
+                Name::Method { class, name } if !class.is_empty() => ExtraTarget::Method {
+                    class: class.trim_start_matches('\\'),
+                    name,
+                },
+                Name::Property { class, name } if !class.is_empty() => ExtraTarget::Property {
+                    class: class.trim_start_matches('\\'),
+                    name,
+                },
+                Name::ClassConstant { class, name } if !class.is_empty() => ExtraTarget::Constant {
+                    class: class.trim_start_matches('\\'),
+                    name,
+                },
+                _ => return Ok(locs),
+            };
+            for file in docs.files_mentioning_short_name(&files, target.needle()) {
+                if docs.write_rev() != cancel_rev {
+                    return Err(ContentModified);
+                }
+                let Ok(uri) = file.parse::<Uri>() else {
+                    continue;
+                };
+                if docs
+                    .source_text(&uri)
+                    .is_some_and(|text| !may_contain_extra_site(&text, target))
+                {
+                    continue;
+                }
+                let Some(doc) = docs.get_doc_salsa(&uri) else {
+                    continue;
+                };
+                let mut spans = docblock_and_string_spans(&doc, target);
+                if let ExtraTarget::Constant { class, name } = target {
+                    // Keep only the accesses mir couldn't attribute to some class.
+                    for span in dynamic_class_constant_spans(&doc, name) {
+                        let resolved = docs.mir_name_at(&uri, span.start)?;
+                        let unknown_or_same = match &resolved {
+                            None => true,
+                            Some(Name::ClassConstant { class: owner, .. }) => {
+                                owner.trim_start_matches('\\').eq_ignore_ascii_case(class)
+                            }
+                            Some(_) => false,
+                        };
+                        if unknown_or_same {
+                            spans.push(span);
+                        }
+                    }
+                }
+                let view = doc.view();
+                locs.extend(spans.into_iter().map(|span| Location {
+                    uri: uri.clone(),
+                    range: view.range_of(span),
+                }));
+            }
+            Ok::<_, ContentModified>(locs)
+        })
+        .await
+        .unwrap_or_else(|_| Ok(Vec::new()))
+        .map_err(Into::into)
     }
 
     /// Run mir's indexed-references query for `symbol` over `files` plus,

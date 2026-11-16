@@ -3,6 +3,7 @@ pub mod declaration;
 pub mod definition;
 pub mod mir_definition;
 pub mod moniker;
+pub mod reference_extras;
 pub mod references;
 pub mod symbols;
 pub mod type_definition;

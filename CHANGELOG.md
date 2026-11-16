@@ -4,6 +4,10 @@ All notable changes to php-lsp are documented here.
 
 ## [Unreleased]
 
+### Fixed
+
+- **More complete find references**: references now include calls through an untyped property whose class the constructor assigns (`$this->context->getAll()` after `$this->context = $context` from a `Context $context` parameter), class constants read off a receiver whose type is unknown (`$shell::VERSION`), docblock `@see`/`@uses` links (`{@see Docblock::$vectors}`, matched case-insensitively against imports), and function names passed as strings to `function_exists()`, `call_user_func()` and similar, or written as a namespaced name in any string.
+
 ## [0.33.0] — 2026-11-15
 
 ### Changed
