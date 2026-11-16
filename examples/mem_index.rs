@@ -4,13 +4,13 @@
 /// Two modes (controlled by `--full` flag):
 ///
 ///   # FileIndex only (DocumentStore, fast):
-///   cargo run --release --bin mem_index -- benches/fixtures/laravel/src
+///   cargo run --release --example mem_index -- benches/fixtures/laravel/src
 ///
 ///   # Full pipeline (DocumentStore + Codebase, matches real LSP):
-///   cargo run --release --bin mem_index -- --full benches/fixtures/laravel/src
+///   cargo run --release --example mem_index -- --full benches/fixtures/laravel/src
 ///
 ///   # Full pipeline with heap profile:
-///   cargo run --release --features dhat-heap --bin mem_index -- --full benches/fixtures/laravel/src
+///   cargo run --release --features dhat-heap --example mem_index -- --full benches/fixtures/laravel/src
 #[cfg(feature = "dhat-heap")]
 #[global_allocator]
 static ALLOC: dhat::Alloc = dhat::Alloc;

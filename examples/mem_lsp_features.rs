@@ -3,7 +3,7 @@
 /// against the Laravel fixture and reports RSS deltas + a dhat heap profile,
 /// so allocation can be attributed to a specific feature's handler stack.
 ///
-/// cargo run --release --features dhat-heap --bin mem_lsp_features
+/// cargo run --release --features dhat-heap --example mem_lsp_features
 #[cfg(feature = "dhat-heap")]
 #[global_allocator]
 static ALLOC: dhat::Alloc = dhat::Alloc;

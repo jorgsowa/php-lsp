@@ -132,7 +132,7 @@ diff before.txt after.txt
 
 Best for: understanding *where* memory is allocated (not just total RSS).
 
-Use `mem_index` — a standalone binary that indexes a directory and exits
+Use `mem_index` — a standalone example that indexes a directory and exits
 cleanly, so dhat's `Drop` runs and the profile is written.
 
 Two modes:
@@ -144,13 +144,13 @@ Two modes:
 
 ```bash
 # DocumentStore only (FileIndex path):
-cargo run --release --bin mem_index -- benches/fixtures/laravel/src
+cargo run --release --example mem_index -- benches/fixtures/laravel/src
 
 # Full pipeline — matches real LSP workspace scan:
-cargo run --release --bin mem_index -- --full benches/fixtures/laravel/src
+cargo run --release --example mem_index -- --full benches/fixtures/laravel/src
 
 # Full pipeline with heap profile:
-cargo run --release --features dhat-heap --bin mem_index -- --full benches/fixtures/laravel/src
+cargo run --release --features dhat-heap --example mem_index -- --full benches/fixtures/laravel/src
 ```
 
 Example output (`--full`, 1 609 files):
@@ -173,10 +173,10 @@ https://nnethercote.github.io/dh_view/dh_view.html
 
 To compare before/after a change:
 ```bash
-cargo run --release --features dhat-heap --bin mem_index -- --full benches/fixtures/laravel/src
+cargo run --release --features dhat-heap --example mem_index -- --full benches/fixtures/laravel/src
 cp dhat-heap.json dhat-heap-before.json
 # make your change, rebuild
-cargo run --release --features dhat-heap --bin mem_index -- --full benches/fixtures/laravel/src
+cargo run --release --features dhat-heap --example mem_index -- --full benches/fixtures/laravel/src
 cp dhat-heap.json dhat-heap-after.json
 # open both in browser tabs at https://nnethercote.github.io/dh_view/dh_view.html
 ```

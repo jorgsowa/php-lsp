@@ -48,7 +48,7 @@ for the full tooling guide. Quick reference:
 
 # Measure full-pipeline memory (matches real LSP workspace scan):
 cargo build --release
-cargo run --release --bin mem_index -- --full benches/fixtures/laravel/src
+cargo run --release --example mem_index -- --full benches/fixtures/laravel/src
 ```
 
 ## Issues

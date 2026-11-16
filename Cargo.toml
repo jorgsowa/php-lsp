@@ -93,14 +93,12 @@ tokio = { version = "1", features = ["full"] }
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
-[dependencies.walkdir]
-version = "2"
-
 [dev-dependencies]
 # Self-dependency: turns on test-hooks whenever test/bench targets build,
 # without affecting `cargo build` of the binary.
 php-lsp = { path = ".", features = ["test-hooks"] }
 tempfile = "3"
+walkdir = "2"
 expect-test = "1"
 criterion = { version = "0.8", features = ["html_reports"] }
 iai-callgrind = "0.16"
