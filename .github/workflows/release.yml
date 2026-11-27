@@ -166,9 +166,43 @@ jobs:
             php-lsp-${{ matrix.target }}.zip
             php-lsp-${{ matrix.target }}.zip.sha256
 
+  build-wasm:
+    name: Build (wasm32-wasip1)
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+        with:
+          toolchain: "1.98.1"
+          targets: wasm32-wasip1
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: wasm32-wasip1
+
+      - name: Build
+        run: |
+          scripts/build-wasm.sh .
+          sha256sum php-lsp.wasm > php-lsp.wasm.sha256
+
+      - name: Upload to GitHub Release
+        uses: softprops/action-gh-release@e598afbe1493e6b1bafb1f389cabb956eab91231 # v3.0.3
+        with:
+          fail_on_unmatched_files: true
+          files: |
+            php-lsp.wasm
+            php-lsp.wasm.sha256
+
   publish-crates:
     name: Publish to crates.io
-    needs: build
+    needs: [build, build-wasm]
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
